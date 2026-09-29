@@ -1,0 +1,6 @@
+# RTL-SDR dongles for Trunk Recorder Lite (and other SDR apps): let users in the
+# plugdev group open them. Install: sudo cp 60-trunk-lite-rtlsdr.rules
+# /etc/udev/rules.d/ && sudo udevadm control --reload && replug the dongle.
+# (trunk-lite detaches the kernel DVB driver itself; no blacklist needed.)
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="2832", MODE="0660", GROUP="plugdev", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="2838", MODE="0660", GROUP="plugdev", TAG+="uaccess"

@@ -6,18 +6,56 @@ every call it can hear as WAV + Trunk Recorder–compatible JSON. It is written
 in Rust, with no GNU Radio or OP25 dependency; a desktop build (macOS, Linux,
 Windows), a browser build and a browser-based interface for both are the goal.
 
-**Status:** the decoding core is done and verified; the live app is next (see
+**Status:** the desktop app works end to end — live RTL-SDR input (one or
+several dongles), decoding, recording, and a browser interface — on macOS,
+with builds for Linux and Windows. The web build and Phase 2 are next (see
 [Roadmap](#roadmap)). The previous TypeScript/browser implementation lives in
 [`archive/ts-engine`](archive/ts-engine) and serves as a reference.
 
-## Build and run
+## Run it
 
-Needs Rust 1.82+.
+Download a release binary (a single file, ~3 MB, the interface built in), or
+build it. Then:
 
 ```bash
-cargo build --release
-cargo test --release
+trunk-lite          # opens http://localhost:8080 — set up the system, press Start
+```
 
+Set the control channels and your dongle(s) in the browser, press **Start**.
+Calls are written to the recordings folder (default `~/TrunkRecorderLite`) as
+`<system>/<year>/<month>/<day>/<talkgroup>-<epoch>_<freq>.wav|json`, Trunk
+Recorder's layout and JSON fields; the interface shows live status, a
+waterfall per dongle, active calls (listen live) and recent recordings. The
+config lives in `~/Library/Application Support/trunk-lite/` (macOS),
+`%APPDATA%\trunk-lite\` (Windows) or `~/.config/trunk-lite/` (Linux).
+
+Dongle setup: **macOS** works as-is. **Windows** needs the WinUSB driver for
+the dongle (Zadig), as every RTL-SDR app. **Linux** needs USB access: install
+`packaging/linux/60-trunk-lite-rtlsdr.rules` into `/etc/udev/rules.d/` (the
+kernel DVB driver is detached automatically).
+
+`trunk-lite devices` lists dongles; `trunk-lite capture out.cu8 --freq Hz
+--serial SN --seconds 30` records raw IQ like `rtl_sdr`.
+
+## Build
+
+Needs Rust 1.82+ and Node 20+ (for the interface).
+
+```bash
+(cd web && npm ci && npm run build)     # the interface → web/dist, embedded in the binary
+cargo build --release                   # target/release/trunk-lite
+cargo test --release
+cargo build --profile dist              # stripped, as released
+```
+
+`web/`: `npm run dev` serves the interface with hot reload on :5173, talking to
+a running `trunk-lite` on :8080. Releases are built by
+`.github/workflows/build.yml` (macOS universal, static Linux x86-64 / ARM64,
+Windows).
+
+## Replay captures
+
+```bash
 # Record from an rtl_sdr capture (unsigned 8-bit IQ):
 rtl_sdr -f 858300000 -s 2400000 -g 38.6 -n 72000000 capture.cu8        # 30 s
 ./target/release/trunk-lite replay capture.cu8 --center 858300000 --rate 2400000 \
@@ -52,7 +90,9 @@ receiver bank = CQPSK + CQPSK with a T/2 CMA equaliser + C4FM, best of each fram
 | `…/p25/diversity.rs` | Receiver diversity: per-frame best of several receivers |
 | `…/mbe/` | IMBE vocoder (mbelib + Trunk Recorder's enhanced synthesis) |
 | `…/trunk/` | TSBK parser (Trunk Recorder's `p25_parser.cc`), call manager (`monitor_systems.cc`), voice call tracker, engine (multi-source) |
-| `crates/trunk-lite` | The app: `replay` and `tool` (per-channel JSON for the research scripts) today |
+| `crates/trunk-lite` | The app: `serve` (default; source threads, engine thread, web server + WebSocket), `replay`, `capture`, `devices`, `tool` |
+| `…/src/sdr.rs` | RTL-SDR over USB via `rtlsdr-nusb` (pure Rust; no libusb / librtlsdr) |
+| `web/` | The browser interface (React + Vite), embedded in the binary |
 | `research/native-bench` | Benchmarks, the C++ prototype, synthetic simulcast ground truth, comparison scripts — see its `RESULTS.md` |
 | `scripts/gen_tables.ts` | Regenerates `trunk-core/src/tables.rs` from the archived sources |
 
@@ -78,18 +118,14 @@ NAC 0x443, from an R820T RTL-SDR):
 
 1. ~~Rust core: channelizer, receivers, P25 Phase 1, vocoder, trunking~~ — done
 2. ~~Verification against TS, C++ and Trunk Recorder~~ — done
-3. Live input: RTL-SDR over USB with no system libraries (a Rust driver shared
-   with the web build), several dongles; desktop app with an embedded web
-   server and browser interface (the archived UI, ported); single-binary
-   builds for macOS, Linux (x86-64, ARM), Windows
+3. ~~Live input (pure-Rust USB, several dongles), desktop app with embedded
+   web server and browser interface, single-binary builds for macOS, Linux
+   (x86-64, ARM), Windows~~ — done (verified live on macOS; Linux and Windows
+   binaries build, hardware testing there pending)
 4. Web build: the same core as WebAssembly in Web Workers, WebUSB, OPFS storage
 5. Phase 2 TDMA voice (H-DQPSK, AMBE+2) — feature parity with the archive
 6. Release packaging (prebuilt binaries); optional USRP support via UHD (C++,
    an opt-in build feature)
-
-Dongle setup (for live input, step 3): Windows needs WinUSB for the dongle
-(Zadig), as every RTL-SDR app; Linux needs a udev rule for USB `0bda:2838`,
-and the app is to detach the kernel DVB driver itself.
 
 ## License
 

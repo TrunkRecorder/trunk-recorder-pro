@@ -1,0 +1,103 @@
+# Test, then build trunk-lite for every platform; a tag v* publishes a release
+# with the binaries. Each binary embeds the web interface (web/dist).
+name: build
+
+on:
+  push:
+    branches: [main, rust-core]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm, cache-dependency-path: web/package-lock.json }
+      - run: npm ci && npm run build
+        working-directory: web
+      - uses: actions/upload-artifact@v4
+        with: { name: web-dist, path: web/dist }
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: wasm32-unknown-unknown }
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --release --workspace
+      - run: cargo check --release -p trunk-core --target wasm32-unknown-unknown
+
+  build:
+    needs: [web, test]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: macos-universal, os: macos-14 }
+          - { name: linux-x86_64, os: ubuntu-latest, target: x86_64-unknown-linux-musl }
+          - { name: linux-aarch64, os: ubuntu-latest, target: aarch64-unknown-linux-musl }
+          - { name: windows-x86_64, os: windows-latest, target: x86_64-pc-windows-msvc }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: web-dist, path: web/dist }
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target || 'aarch64-apple-darwin,x86_64-apple-darwin' }}
+      - uses: Swatinem/rust-cache@v2
+        with: { key: "${{ matrix.name }}" }
+
+      - name: Build (macOS universal)
+        if: matrix.name == 'macos-universal'
+        run: |
+          cargo build --profile dist -p trunk-lite --target aarch64-apple-darwin
+          cargo build --profile dist -p trunk-lite --target x86_64-apple-darwin
+          mkdir -p dist
+          lipo -create -output dist/trunk-lite target/aarch64-apple-darwin/dist/trunk-lite target/x86_64-apple-darwin/dist/trunk-lite
+
+      - name: Build (Linux, static musl)
+        if: startsWith(matrix.name, 'linux')
+        run: |
+          pip install ziglang
+          cargo install cargo-zigbuild --locked
+          cargo zigbuild --profile dist -p trunk-lite --target ${{ matrix.target }}
+          mkdir -p dist
+          cp target/${{ matrix.target }}/dist/trunk-lite dist/
+          cp packaging/linux/60-trunk-lite-rtlsdr.rules dist/
+
+      - name: Build (Windows)
+        if: startsWith(matrix.name, 'windows')
+        env: { RUSTFLAGS: "-C target-feature=+crt-static" }
+        shell: bash
+        run: |
+          cargo build --profile dist -p trunk-lite --target ${{ matrix.target }}
+          mkdir -p dist
+          cp target/${{ matrix.target }}/dist/trunk-lite.exe dist/
+
+      - name: Package
+        shell: bash
+        run: |
+          cp README.md dist/
+          name="trunk-lite-${GITHUB_REF_NAME//\//-}-${{ matrix.name }}"
+          if [[ "${{ matrix.name }}" == windows* ]]; then
+            (cd dist && 7z a "../$name.zip" .)
+          else
+            tar -C dist -czf "$name.tar.gz" .
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: trunk-lite-${{ matrix.name }}
+          path: trunk-lite-*.*
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with: { files: "trunk-lite-*.*" }
