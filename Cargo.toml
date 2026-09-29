@@ -1,0 +1,22 @@
+[workspace]
+resolver = "2"
+members = ["crates/trunk-core", "crates/trunk-lite"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/TrunkRecorder/trunk-recorder-lite"
+
+[workspace.dependencies]
+trunk-core = { path = "crates/trunk-core" }
+rustfft = "6"
+num-complex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+debug = 1

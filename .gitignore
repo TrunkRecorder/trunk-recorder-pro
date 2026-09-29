@@ -4,3 +4,9 @@ captures/
 *.cu8
 *.tsbuildinfo
 .DS_Store
+*.cf32
+research/native-bench/cpp/bench
+research/native-bench/cpp/bench-novec
+research/native-bench/cpp/p25tool
+research/native-bench/cpp/recorder
+/target

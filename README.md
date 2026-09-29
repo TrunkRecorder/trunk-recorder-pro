@@ -1,134 +1,97 @@
 # Trunk Recorder Lite
 
-Trunk Recorder in a web page. Plug an RTL-SDR into Chrome, enter the control
-channels, press Start: it follows a **P25** trunked system (Phase 1 control
-channel; Phase 1 and Phase 2 voice) and records every call it can hear to the
-browser's storage as WAV + Trunk Recorder–compatible JSON. Nothing to install.
+A lightweight, self-contained trunked-radio recorder: point one or more
+RTL-SDRs at a **P25** system and it follows the control channel and records
+every call it can hear as WAV + Trunk Recorder–compatible JSON. It is written
+in Rust, with no GNU Radio or OP25 dependency; a desktop build (macOS, Linux,
+Windows), a browser build and a browser-based interface for both are the goal.
 
-Status: working end to end on real air — see [Verified](#verified). Design and
-evidence: [FEASIBILITY.md](FEASIBILITY.md).
+**Status:** the decoding core is done and verified; the live app is next (see
+[Roadmap](#roadmap)). The previous TypeScript/browser implementation lives in
+[`archive/ts-engine`](archive/ts-engine) and serves as a reference.
 
-## Run it
+## Build and run
 
-Needs Node 20+ and Chrome or Edge (WebUSB).
-
-```bash
-npm install
-npm run dev        # http://localhost:5173
-npm test           # 21 node tests: DSP, parser, call manager, end-to-end synthetic system
-npm run build      # static site in dist/
-```
-
-The page must be **cross-origin isolated** (it shares sample buffers between
-workers with `SharedArrayBuffer`). Vite's dev/preview servers send the headers;
-for production, `public/_headers` sets them on Cloudflare Pages / Netlify. Any
-other host needs:
-
-```
-Cross-Origin-Opener-Policy: same-origin
-Cross-Origin-Embedder-Policy: require-corp
-```
-
-### Without a dongle
-
-Replay an `rtl_sdr` capture in the page (Source → Replay a capture), or
-headless in node, which writes the calls to disk:
+Needs Rust 1.82+.
 
 ```bash
-rtl_sdr -f 858300000 -s 2400000 -g 38.6 -n 48000000 capture.cu8   # 20 s
-npm run replay -- capture.cu8 --center 858300000 --rate 2400000 \
-    --cc 857987500,858987500 --out calls/ [--talkgroups tg.csv] [--verbose]
+cargo build --release
+cargo test --release
+
+# Record from an rtl_sdr capture (unsigned 8-bit IQ):
+rtl_sdr -f 858300000 -s 2400000 -g 38.6 -n 72000000 capture.cu8        # 30 s
+./target/release/trunk-lite replay capture.cu8 --center 858300000 --rate 2400000 \
+    --cc 857987500 --out calls/ [--talkgroups tg.csv] [--bandplan site.bandplan]
+
+# Several dongles on one system (control channel on either):
+./target/release/trunk-lite replay --source a.cu8,858300000,2400000 \
+    --source b.cu8,860700000,2400000 --cc 857987500 --out calls/
 ```
 
-### Dongle setup per OS
-
-- **macOS**: works as-is.
-- **Windows**: install WinUSB for the dongle with Zadig (same as every RTL-SDR app).
-- **Linux**: unload/blacklist `dvb_usb_rtl28xxu` and add a udev rule for USB `0bda:2838`.
-- **Android**: Chrome + a USB-OTG adapter.
-
-### Where recordings go
-
-Into the browser's private storage (OPFS) for the page's origin, e.g.
-`http://localhost:5173` — not a normal folder. Play or download single calls
-from **Recent calls**, or copy them all out with **Export to folder…**. That
-writes `<system>/<date>/<talkgroup>-<epoch>_<freq>.wav|json` plus
-`index.ndjson`, Trunk Recorder's layout. `samples/` holds a first set.
-
-Recording stops if the tab closes or the computer sleeps. The page holds a
-screen wake lock while visible; for long unattended runs, set the OS not to
-sleep. If the USB link stalls (e.g. across a sleep/wake), the radio worker
-reopens the dongle and carries on.
+Calls are written as `<talkgroup>-<epoch>_<freq>.wav|json` with Trunk
+Recorder's JSON fields. `--bandplan` keeps the system's IDEN tables between
+runs, so a grant heard before the next IDEN broadcast can be followed at once.
 
 ## How it works
 
 ```
-main thread (React UI)  ── setup, status, waterfall, calls, live audio
-   │
-   ├─ radio worker ── WebUSB (4 transfers in flight) → u8 IQ
-   │                  → shared fast-convolution channelizer (1 FFT per block, N channels)
-   │                  → per-channel SampleRing (SharedArrayBuffer, fixed size, drop+count on overflow)
-   │
-   └─ trunk worker ── control channel → TSBK parser → CallManager
-                      voice channels  → P25 voice decoder → per-call audio
-                      concluded calls → WAV + JSON in OPFS (calls/<system>/<date>/)
+source u8 IQ ─► Channelizer (one shared FFT, N channels, 1 s pre-roll history)
+   ├─ control channel ─► receiver bank ─► framer ─► TSDU ─► TSBKs ─► parser ─► CallManager
+   └─ voice channels  ─► receiver bank ─► framer ─► LDUs  ─► soft FEC ─► IMBE ─► audio
+receiver bank = CQPSK + CQPSK with a T/2 CMA equaliser + C4FM, best of each frame
 ```
 
 | Path | What |
 |---|---|
-| `src/engine/channelizer.ts` | Overlap-save multi-head channelizer (after CyberEther's `filter_engine`); spectrum history for **pre-roll** — a voice channel opened by a grant starts ~1 s *before* the grant |
-| `src/engine/ring.ts` | SPSC `SharedArrayBuffer` ring (after CyberEther's `CircularBuffer`) |
-| `src/protocols/types.ts` | **The protocol seam**: `TrunkMessage` (Trunk Recorder's), `ControlDecoder`, `VoiceDecoder`, `ProtocolDriver` |
-| `src/protocols/p25/` | P25 driver: streaming control-channel decoder, `tsbkParser.ts` (port of Trunk Recorder's `p25_parser.cc`), voice adapter |
-| `src/protocols/registry.ts` | System types by name — add SmartNet / DMR / conventional here |
-| `src/trunking/callManager.ts` | Call lifecycle, from Trunk Recorder's `monitor_systems.cc` |
-| `src/trunking/trunkEngine.ts` | One system end to end; talks to the radio only through `ChannelPort`, so it runs in the worker and in node alike |
-| `src/recording/` | WAV, Trunk Recorder call JSON, OPFS store |
-| `src/vendor/ff/` | P25 + vocoder DSP **copied** from freq-finder (op25 / mbelib ports) — see `src/vendor/VENDORED.md` |
-| `tools/replay.ts` | Headless replay of a capture |
-| `research/bench/` | The benchmarks behind the design |
-
-### Adding a system type
-
-Implement `ProtocolDriver` (`src/protocols/types.ts`) and register it in
-`src/protocols/registry.ts`. A trunked protocol supplies a `ControlDecoder`
-that emits `TrunkMessage`s (grant / update / …) and a `VoiceDecoder` per voice
-channel; the call manager, recorder pool, storage and UI need no changes.
-Conventional systems will skip the control decoder and keep permanent voice
-channels whose own activity opens and closes calls.
+| `crates/trunk-core` | Platform-independent core (native and WebAssembly): no I/O, one dependency (`rustfft`) |
+| `…/dsp/channelizer.rs` | Overlap-save multi-head channelizer (after CyberEther's `filter_engine`), pre-roll, waterfall spectrum |
+| `…/dsp/cqpsk.rs`, `c4fm.rs` | Streaming receivers with soft bits; optional CMA equaliser |
+| `…/p25/frame.rs` | Framer with flywheel sync and NID recovery |
+| `…/p25/tsbk.rs` | Viterbi (soft) trellis decoder + CRC — 98–99 % of TSBKs on simulcast, vs 62 % for op25's greedy decoder |
+| `…/p25/fec.rs`, `voice.rs` | Golay / Hamming (hard and soft), Reed–Solomon, IMBE framing, LC / ES / HDU / TDULC |
+| `…/p25/diversity.rs` | Receiver diversity: per-frame best of several receivers |
+| `…/mbe/` | IMBE vocoder (mbelib + Trunk Recorder's enhanced synthesis) |
+| `…/trunk/` | TSBK parser (Trunk Recorder's `p25_parser.cc`), call manager (`monitor_systems.cc`), voice call tracker, engine (multi-source) |
+| `crates/trunk-lite` | The app: `replay` and `tool` (per-channel JSON for the research scripts) today |
+| `research/native-bench` | Benchmarks, the C++ prototype, synthetic simulcast ground truth, comparison scripts — see its `RESULTS.md` |
+| `scripts/gen_tables.ts` | Regenerates `trunk-core/src/tables.rs` from the archived sources |
 
 ## Verified
 
-On real air (a P25 Phase 1 simulcast/CQPSK site, NAC 0x443, WACN 0xBEE00,
-SysID 0x445), from an R820T RTL-SDR at 2.4 MSPS:
+Against the archived TypeScript engine, the C++ prototype and Trunk Recorder,
+on synthetic P25 (with ground truth) and on real air (a CQPSK simulcast site,
+NAC 0x443, from an R820T RTL-SDR):
 
-- **In Chrome** (headless, replaying a 20 s capture of that site through the
-  real workers, rings and OPFS): control channel 98–100 % of TSBKs decoded,
-  CQPSK auto-detected, identity complete; two clear calls recorded (TG 2501
-  19.3 s, TG 101 15.8 s) and played back from OPFS; encrypted and out-of-band
-  grants monitored, not recorded; radio worker ≈ 9 % of a core.
-- **Live from the dongle** (node + node-usb's WebUSB, same `RtlSource` /
-  webrtlsdr driver, channelizer and engine, 120 s): 100 % of real-time
-  samples received, longest USB gap 66 ms; control channel 92 % decoded
-  (4106 TSBKs); 34 grants followed, clear calls recorded (TG 2501 45 s,
-  TG 101 2 s); everything on one thread at 25 % of a core.
-- **Tests** (`npm test`): channelizer gain/rejection/pre-roll exactness, ring
-  wrap and overflow, TSBK field layout vs `p25_parser.cc`, call lifecycle,
-  talkgroup CSV, and a synthetic P25 system end to end (grant → pre-rolled
-  voice channel → complete call).
+- **Bit-exact** with the TypeScript decoders on identical input: IMBE / LC / ES
+  / HDU / TDULC decoding (0 mismatches) and vocoder audio (max difference 0).
+- **Same results as the C++ prototype:** identical TSBK sets on real air
+  (1149 / 2354 of 1149 / 2354), identical ground-truth scores, the same calls
+  and durations.
+- **Simulcast, synthetic ground truth** (two transmitters, 40 µs, 0.7 echo):
+  100 % of TSBKs and 0 wrong voice codewords.
+- **Real air vs Trunk Recorder on the same capture:** more control messages
+  decoded (1156 vs ~282) and more audio per call (e.g. TG 102 9.5 s vs 8.1 s).
+- **CPU:** 1.6 % of one core for a 2.4 MSPS site (CC + 2 voice channels,
+  three receivers each); 6 % for 8 MSPS with 16 simultaneous calls.
 
-Not yet verified: WebUSB with a real dongle *inside Chrome* (automation can't
-click the WebUSB chooser — do it by hand once: `npm run dev`, Source → RTL-SDR
-dongle → Start); a Phase 2 call on real air; a 24 h run.
+## Roadmap
 
-## Not in Lite (yet)
+1. ~~Rust core: channelizer, receivers, P25 Phase 1, vocoder, trunking~~ — done
+2. ~~Verification against TS, C++ and Trunk Recorder~~ — done
+3. Live input: RTL-SDR over USB with no system libraries (a Rust driver shared
+   with the web build), several dongles; desktop app with an embedded web
+   server and browser interface (the archived UI, ported); single-binary
+   builds for macOS, Linux (x86-64, ARM), Windows
+4. Web build: the same core as WebAssembly in Web Workers, WebUSB, OPFS storage
+5. Phase 2 TDMA voice (H-DQPSK, AMBE+2) — feature parity with the archive
+6. Release packaging (prebuilt binaries); optional USRP support via UHD (C++,
+   an opt-in build feature)
 
-Uploads (rdio-scanner, OpenMHz, Broadcastify — planned, no server), SmartNet,
-DMR, conventional systems, multiple dongles/systems, m4a/Opus encoding (WAV
-only), MBT (multi-block) control messages, unit tags, and anything needing a
-socket or a shell (simplestream, unit_script, stat_socket).
+Dongle setup (for live input, step 3): Windows needs WinUSB for the dongle
+(Zadig), as every RTL-SDR app; Linux needs a udev rule for USB `0bda:2838`,
+and the app is to detach the kernel DVB driver itself.
 
 ## License
 
-GPL-3.0-or-later (the P25 code derives from op25). The vocoder is an mbelib
-port (ISC). `@jtarrio/webrtlsdr` is Apache-2.0.
+GPL-3.0-or-later (the P25 code derives from op25). The vocoder derives from
+mbelib (ISC).

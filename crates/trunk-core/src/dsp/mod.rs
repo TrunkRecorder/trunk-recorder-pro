@@ -1,0 +1,24 @@
+//! Signal processing: the shared channelizer and the P25 symbol receivers.
+
+pub mod c4fm;
+pub mod channelizer;
+pub mod cqpsk;
+
+pub use channelizer::{Channelizer, HeadId};
+
+/// One decided symbol from a receiver: the dibit, the channel-sample instant
+/// it was sampled at (common to every receiver on the channel, so frames from
+/// different receivers can be matched), and each bit's reliability (distance
+/// from its decision boundary, ≥ 0; high bit first).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Symbol {
+    pub dibit: u8,
+    pub sample: f64,
+    pub rel_hi: f32,
+    pub rel_lo: f32,
+}
+
+/// A symbol receiver: channel IQ in, decided symbols out.
+pub trait Receiver {
+    fn push(&mut self, iq: &[crate::Complex32], out: &mut Vec<Symbol>);
+}

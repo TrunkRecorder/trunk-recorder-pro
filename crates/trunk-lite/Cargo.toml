@@ -1,0 +1,15 @@
+[package]
+name = "trunk-lite"
+description = "Trunk Recorder Lite: record a P25 trunked system from SDRs, with a browser interface."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "trunk-lite"
+path = "src/main.rs"
+
+[dependencies]
+trunk-core.workspace = true
+serde_json.workspace = true
