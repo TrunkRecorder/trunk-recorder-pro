@@ -3,8 +3,9 @@
 # packages, SHA256SUMS and that version's CHANGELOG.md section as notes.
 #
 # Packages (packaging/package.sh): macOS DMG (the app) + CLI tarball,
-# static Linux x86-64 / ARM64 tarballs with an installer, Windows zip, and
-# the browser (WebAssembly) build.
+# Linux x86-64 / ARM64 tarballs with an installer (glibc ≥ 2.28, not static:
+# the optional USRP / Airspy drivers are loaded at run time), Windows zip,
+# and the browser (WebAssembly) build.
 #
 # macOS signing is optional. With these repository secrets the app is signed
 # with a Developer ID and the DMG notarized; without them it is signed ad hoc
@@ -93,8 +94,8 @@ jobs:
       matrix:
         include:
           - { kind: macos, os: macos-14 }
-          - { kind: linux-x86_64, os: ubuntu-latest, target: x86_64-unknown-linux-musl }
-          - { kind: linux-aarch64, os: ubuntu-latest, target: aarch64-unknown-linux-musl }
+          - { kind: linux-x86_64, os: ubuntu-latest, target: x86_64-unknown-linux-gnu, glibc: "2.28" }
+          - { kind: linux-aarch64, os: ubuntu-latest, target: aarch64-unknown-linux-gnu, glibc: "2.28" }
           - { kind: windows-x86_64, os: windows-latest, target: x86_64-pc-windows-msvc }
     runs-on: ${{ matrix.os }}
     env:
@@ -137,12 +138,12 @@ jobs:
           security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
           echo "MACOS_SIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
 
-      - name: Build (Linux, static musl)
+      - name: Build (Linux, against glibc ${{ matrix.glibc }} so it runs on any distribution since ~2019)
         if: startsWith(matrix.kind, 'linux')
         run: |
           pip install ziglang
           cargo install cargo-zigbuild --locked
-          cargo zigbuild --locked --profile dist -p trunk-lite --target ${{ matrix.target }}
+          cargo zigbuild --locked --profile dist -p trunk-lite --target ${{ matrix.target }}.${{ matrix.glibc }}
           echo "BIN=target/${{ matrix.target }}/dist/trunk-lite" >> "$GITHUB_ENV"
 
       - name: Build (Windows)

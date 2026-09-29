@@ -9,14 +9,18 @@
 //!
 //! trunk-lite replay <capture.cu8> --center Hz --rate Hz --cc Hz[,Hz…] [options]
 //! trunk-lite replay --source cap1.cu8,center,rate --source cap2.cu8,center,rate --cc Hz …
+//!     Captures: cu8 (rtl_sdr), cs16 or cf32 (GNU Radio / UHD) — from the
+//!     extension (.cf32/.cfile/.fc32, .cs16/.sc16) or `--format`, or a 4th
+//!     --source field.
 //!     Record a trunked system from rtl_sdr captures (unsigned 8-bit IQ), writing
 //!     <out>/<tg>-<epoch>_<freq>.wav + .json like Trunk Recorder.
 //!     --out calls  --short-name sys1  --talkgroups tg.csv  --bandplan file
 //!     --recorders 32  --preroll 1  --timeout 3  --epoch <unix s>
 //!     --record-encrypted  --keep-silent  --no-unknown  --quiet
 //!
-//! trunk-lite devices
-//!     List RTL-SDR dongles.
+//! trunk-lite devices [--usrp [args]]
+//!     List RTL-SDRs and Airspys, and whether the USRP (UHD) and Airspy
+//!     drivers are installed; --usrp also searches for USRPs.
 //! trunk-lite capture <out.cu8> --freq Hz --rate Hz [--gain dB] [--ppm 0] [--serial S] [--seconds 10]
 //!     Record raw u8 IQ, like rtl_sdr.
 //!
@@ -24,6 +28,7 @@
 //!     One channel's decode, as JSON lines (the research/native-bench format).
 //! ```
 
+mod radio;
 mod runtime;
 mod sdr;
 mod server;
@@ -91,8 +96,9 @@ usage:
       Start the recorder and open its web interface (the default). Use
       --bind 0.0.0.0 to reach it from other machines (no authentication!).
       --start begins recording with the saved settings at once.
-  trunk-lite devices
-      List RTL-SDR dongles.
+  trunk-lite devices [--usrp]
+      List RTL-SDRs and Airspys (and USRPs with --usrp); shows whether the
+      optional USRP (UHD) and Airspy (libairspy) drivers are installed.
   trunk-lite capture <out.cu8> --freq Hz [--rate 2400000] [--gain dB] [--serial S] [--seconds 10]
       Record raw IQ, like rtl_sdr.
   trunk-lite replay <capture.cu8> --center Hz --rate Hz --cc Hz[,Hz…] [--out calls] …
@@ -115,26 +121,63 @@ fn main() {
         Some(s) if s.starts_with("--") => serve(&Args::parse(&argv)),
         Some("replay") => replay(&Args::parse(&argv[1..])),
         Some("tool") => tool::run(&Args::parse(&argv[1..])),
-        Some("devices") => sdr::list().iter().for_each(|d| println!("{d}")),
+        Some("devices") => devices(&Args::parse(&argv[1..])),
         Some("capture") => capture(&Args::parse(&argv[1..])),
         _ => die(USAGE),
+    }
+}
+
+fn devices(a: &Args) {
+    println!("RTL-SDR (built in):");
+    for d in sdr::devices() {
+        println!("  {} · SN {}", d["product"].as_str().unwrap_or(""), d["serial"].as_str().unwrap_or(""));
+    }
+    let ai = radio::airspy::info();
+    println!("Airspy: {}", ai.detail);
+    for d in radio::airspy::devices() {
+        println!("  {}", d["label"].as_str().unwrap_or(""));
+    }
+    let ui = radio::uhd::info();
+    println!("USRP: {}", ui.detail);
+    if ui.loaded {
+        match a.get("usrp") {
+            None => println!("  (search with: trunk-lite devices --usrp)"),
+            Some(args) => {
+                let args = if args == "1" { "" } else { args };
+                match radio::uhd::find(args) {
+                    Ok(v) if v.is_empty() => println!("  none found"),
+                    Ok(v) => v.iter().for_each(|d| println!("  {d}")),
+                    Err(e) => println!("  {e}"),
+                }
+            }
+        }
     }
 }
 
 fn replay(a: &Args) {
     // Sources: --source file,center,rate (repeatable) or one positional capture.
     let mut files = Vec::new();
+    let mut formats = Vec::new();
     let mut sources = Vec::new();
+    let format_of = |path: &str, given: Option<&str>| match given.or(a.get("format")) {
+        Some("cu8") => config::SampleFormat::Cu8,
+        Some("cs16") => config::SampleFormat::Cs16,
+        Some("cf32") => config::SampleFormat::Cf32,
+        Some(f) => die(&format!("unknown sample format {f} (cu8, cs16, cf32)")),
+        None => config::SampleFormat::from_path(path),
+    };
     for s in a.all("source") {
         let f: Vec<&str> = s.split(',').collect();
         if f.len() != 3 {
-            die("--source wants file,center,rate");
+            die("--source wants file,center,rate[,cu8|cs16|cf32]");
         }
         files.push(f[0].to_string());
+        formats.push(format_of(f[0], f.get(3).copied()));
         sources.push(SourceConfig { center_hz: f[1].parse().unwrap_or(0.0), rate_hz: f[2].parse().unwrap_or(2_400_000.0) });
     }
     if let Some(p) = a.positional.first() {
         files.push(p.clone());
+        formats.push(format_of(p, None));
         sources.push(SourceConfig { center_hz: a.num("center", 0.0), rate_hz: a.num("rate", 2_400_000.0) });
     }
     if files.is_empty() {
@@ -172,7 +215,7 @@ fn replay(a: &Args) {
 
     let data: Vec<Vec<u8>> = files.iter().map(|f| fs::read(f).unwrap_or_else(|e| die(&format!("{f}: {e}")))).collect();
     let rate0 = engine.sources()[0].rate_hz;
-    let air_s = data[0].len() as f64 / 2.0 / rate0;
+    let air_s = (data[0].len() / formats[0].bytes_per_sample()) as f64 / rate0;
     let t0 = Instant::now();
     // Interleave the sources in ~13.6 ms chunks (rtl_sdr's 32768-sample transfers
     // at 2.4 MSPS), so their clocks advance together as they would live.
@@ -182,10 +225,14 @@ fn replay(a: &Args) {
     loop {
         let mut any = false;
         for (i, d) in data.iter().enumerate() {
-            let n = ((engine.sources()[i].rate_hz * chunk_s) as usize) * 2;
-            let end = (pos[i] + n).min(d.len());
+            let bps = formats[i].bytes_per_sample();
+            let n = ((engine.sources()[i].rate_hz * chunk_s) as usize) * bps;
+            let end = (pos[i] + n).min(d.len() - d.len() % bps);
             if pos[i] < end {
-                engine.push_u8(i, &d[pos[i]..end]);
+                match formats[i] {
+                    config::SampleFormat::Cu8 => engine.push_u8(i, &d[pos[i]..end]),
+                    f => engine.push_iq(i, &trunk_app::samples::to_iq(f, &d[pos[i]..end])),
+                }
                 pos[i] = end;
                 any = true;
             }
@@ -278,6 +325,7 @@ fn capture(a: &Args) {
                 dropped += d;
             }
             Ok(sdr::SourceMsg::Error { error, .. }) => eprintln!("{error}"),
+            Ok(sdr::SourceMsg::Iq { .. }) => {}
             Ok(sdr::SourceMsg::End { .. }) | Err(_) => break,
         }
     }

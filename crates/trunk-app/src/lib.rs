@@ -2,6 +2,7 @@
 //! (`trunk-web`): the config and a platform-independent recording [`Session`].
 
 pub mod config;
+pub mod samples;
 pub mod session;
 
 pub use config::Config;

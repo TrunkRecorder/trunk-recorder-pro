@@ -6,7 +6,9 @@
 //! `status` (~2/s), `spectrum` (~7/s per source), `log`, `concluded`,
 //! `devices`, `error`, and audio frames `[1][u32 call id][u32 talkgroup][i16…]`
 //! (8 kHz) to connections that asked to listen.
-//! Browser → server: `setConfig`, `start`, `stop`, `devices`,
+//! `radios` (the optional USRP / Airspy drivers and their devices) comes in
+//! `hello` and answers `findRadios`, which also searches for USRPs.
+//! Browser → server: `setConfig`, `start`, `stop`, `devices`, `findRadios`,
 //! `listen {on, talkgroup}`, `quit` (stop recording, tell every browser
 //! `quit`, exit). GET /api/version identifies a running instance.
 
@@ -122,6 +124,7 @@ fn devices_json() -> Value {
 
 async fn session(ctx: Arc<Ctx>, mut socket: WebSocket) {
     let mut rx = ctx.hub.subscribe();
+    let radios = tokio::task::spawn_blocking(|| crate::radio::radios_json(false)).await.unwrap_or(Value::Null);
     let hello = {
         let config = ctx.config.lock().unwrap().clone();
         let history: Vec<Value> = ctx.history.lock().unwrap().iter().take(300).cloned().collect();
@@ -134,6 +137,7 @@ async fn session(ctx: Arc<Ctx>, mut socket: WebSocket) {
             "devices": sdr::devices(),
             "phase": ctx.phase.lock().unwrap().to_json(),
             "history": history,
+            "radios": radios,
         })
     };
     if socket.send(Message::Text(hello.to_string().into())).await.is_err() {
@@ -224,6 +228,10 @@ async fn command(ctx: &Arc<Ctx>, v: &Value, listen: &mut Option<Option<u32>>) ->
             None
         }
         "devices" => Some(devices_json()),
+        "findRadios" => {
+            let radios = tokio::task::spawn_blocking(|| crate::radio::radios_json(true)).await.unwrap_or(Value::Null);
+            Some(json!({ "type": "radios", "radios": radios }))
+        }
         "quit" => {
             ctx.quit.notify_one();
             None

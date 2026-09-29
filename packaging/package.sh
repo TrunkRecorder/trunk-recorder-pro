@@ -9,7 +9,7 @@
 # Writes into <out-dir>:
 #   macos    trunk-lite-<v>-macos.dmg               Trunk Recorder Lite.app (universal)
 #            trunk-lite-<v>-macos-universal.tar.gz  the command-line binary
-#   linux-*  trunk-lite-<v>-linux-<arch>.tar.gz     binary, install.sh, udev rule, service, menu entry
+#   linux-*  trunk-lite-<v>-linux-<arch>.tar.gz     binary (glibc ≥ 2.28), install.sh, udev rule, service, menu entry
 #   windows  trunk-lite-<v>-windows-x86_64.zip
 #   browser  trunk-lite-<v>-browser.zip             the WebAssembly build, for any static web server
 #
@@ -58,7 +58,7 @@ macos)
   sed "s/@VERSION@/$version/g" "$root/packaging/macos/Info.plist" > "$app/Contents/Info.plist"
   cp "$root/packaging/icons/AppIcon.icns" "$app/Contents/Resources/AppIcon.icns"
   if [ -n "${MACOS_SIGN_IDENTITY:-}" ]; then
-    codesign --force --options runtime --timestamp --sign "$MACOS_SIGN_IDENTITY" "$app"
+    codesign --force --options runtime --timestamp --entitlements "$root/packaging/macos/entitlements.plist" --sign "$MACOS_SIGN_IDENTITY" "$app"
   else
     codesign --force --sign - "$app"
   fi

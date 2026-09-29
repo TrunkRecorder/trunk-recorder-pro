@@ -1,4 +1,4 @@
-//! A running recorder: one thread per source (RTL-SDR or capture file) and an
+//! A running recorder: one thread per source (RTL-SDR, USRP, Airspy or capture file) and an
 //! engine thread that decodes, writes calls to disk in Trunk Recorder's layout
 //! (`<captureDir>/<shortName>/<YYYY>/<M>/<D>/<tg>-<epoch>_<freq>.wav|json`) and
 //! publishes what happens to the browser interface through the [`Hub`].
@@ -18,7 +18,8 @@ use serde_json::{json, Value};
 use tokio::sync::broadcast;
 use trunk_app::{Output, Session};
 
-use crate::config::{Config, Source};
+use crate::config::{Config, SampleFormat, Source};
+use crate::radio::{airspy, uhd};
 use crate::sdr::{self, RtlConfig, SourceMsg};
 
 /// A message for every connected browser.
@@ -104,7 +105,13 @@ pub fn start(ctx: Arc<Ctx>, cfg: Config) -> Result<Runner, String> {
             Source::Rtlsdr { serial, rate_hz, gain_db, ppm, .. } => {
                 sdr::run(i, RtlConfig { serial, center_hz: center as u64, rate_hz: rate_hz as u32, gain_db, ppm }, tx, stop)
             }
-            Source::File { path, rate_hz, realtime, .. } => run_file(i, &path, rate_hz, realtime, tx, stop),
+            Source::Usrp { args, rate_hz, gain_db, antenna, ppm, .. } => {
+                uhd::run(i, uhd::UsrpConfig { args, center_hz: center, rate_hz, gain_db, antenna, ppm }, tx, stop)
+            }
+            Source::Airspy { serial, rate_hz, gain, bias_tee, ppm, .. } => {
+                airspy::run(i, airspy::AirspyConfig { serial, center_hz: center, rate_hz, gain, bias_tee, ppm }, tx, stop)
+            }
+            Source::File { path, rate_hz, realtime, format, .. } => run_file(i, &path, rate_hz, realtime, format, tx, stop),
         }).map_err(|e| e.to_string())?);
     }
     drop(tx);
@@ -119,7 +126,7 @@ pub fn start(ctx: Arc<Ctx>, cfg: Config) -> Result<Runner, String> {
 }
 
 /// Replay a capture file as a source, paced to real time or as fast as possible.
-fn run_file(source: usize, path: &str, rate_hz: f64, realtime: bool, tx: SyncSender<SourceMsg>, stop: Arc<AtomicBool>) {
+fn run_file(source: usize, path: &str, rate_hz: f64, realtime: bool, format: SampleFormat, tx: SyncSender<SourceMsg>, stop: Arc<AtomicBool>) {
     let mut f = match fs::File::open(path) {
         Ok(f) => f,
         Err(e) => {
@@ -128,18 +135,23 @@ fn run_file(source: usize, path: &str, rate_hz: f64, realtime: bool, tx: SyncSen
             return;
         }
     };
-    let chunk = 65536usize;
+    let bps = format.bytes_per_sample();
+    let chunk = 32768 * bps;
     let t0 = Instant::now();
     let mut sent = 0u64;
     while !stop.load(Ordering::Relaxed) {
         let mut buf = vec![0u8; chunk];
-        let n = f.read(&mut buf).unwrap_or(0);
-        if n == 0 {
+        let n = read_full(&mut f, &mut buf);
+        if n < bps {
             break;
         }
-        buf.truncate(n & !1);
-        sent += buf.len() as u64 / 2;
-        if tx.send(SourceMsg::Data { source, bytes: buf, dropped: 0 }).is_err() {
+        buf.truncate(n - n % bps);
+        sent += (buf.len() / bps) as u64;
+        let msg = match format {
+            SampleFormat::Cu8 => SourceMsg::Data { source, bytes: buf, dropped: 0 },
+            _ => SourceMsg::Iq { source, samples: trunk_app::samples::to_iq(format, &buf), dropped: 0 },
+        };
+        if tx.send(msg).is_err() {
             return;
         }
         if realtime {
@@ -150,6 +162,18 @@ fn run_file(source: usize, path: &str, rate_hz: f64, realtime: bool, tx: SyncSen
         }
     }
     let _ = tx.send(SourceMsg::End { source });
+}
+
+/// Fill `buf` unless the file ends first; bytes read.
+fn read_full(f: &mut fs::File, buf: &mut [u8]) -> usize {
+    let mut n = 0;
+    while n < buf.len() {
+        match f.read(&mut buf[n..]) {
+            Ok(0) | Err(_) => break,
+            Ok(k) => n += k,
+        }
+    }
+    n
 }
 
 fn local_ymd(t: i64) -> (i32, u32, u32) {
@@ -172,6 +196,11 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Rec
             Ok(SourceMsg::Data { source, bytes, dropped }) => {
                 let t = Instant::now();
                 session.push(source, &bytes, dropped);
+                session.add_busy_ms(t.elapsed().as_secs_f64() * 1000.0);
+            }
+            Ok(SourceMsg::Iq { source, samples, dropped }) => {
+                let t = Instant::now();
+                session.push_iq(source, &samples, dropped);
                 session.add_busy_ms(t.elapsed().as_secs_f64() * 1000.0);
             }
             Ok(SourceMsg::Error { source, error }) => session.source_error(source, &error),

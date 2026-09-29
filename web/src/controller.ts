@@ -4,7 +4,7 @@
 
 import { useSyncExternalStore } from "react";
 import { LivePlayer } from "./livePlayer.ts";
-import type { AudioChunk, CallEntry, CallView, Config, Device, EngineStatus, FromRecorder, LogLine, Phase, SourceStatus, Spectrum } from "./protocol.ts";
+import type { AudioChunk, CallEntry, CallView, Config, Device, EngineStatus, FromRecorder, LogLine, Phase, Radios, SourceStatus, Spectrum } from "./protocol.ts";
 import { WsTransport, type Transport } from "./transport.ts";
 import type { WorkerTransport } from "./web/workerTransport.ts";
 
@@ -21,6 +21,10 @@ export interface AppState {
   ended: boolean;
   config: Config | null;
   devices: Device[];
+  /** Optional drivers (desktop app); null in the web build. */
+  radios: Radios | null;
+  /** A USRP search is running. */
+  findingRadios: boolean;
   status: EngineStatus | null;
   sources: SourceStatus[];
   load: number;
@@ -46,6 +50,8 @@ let state: AppState = {
   ended: false,
   config: null,
   devices: [],
+  radios: null,
+  findingRadios: false,
   status: null,
   sources: [],
   load: 0,
@@ -100,6 +106,7 @@ transport.onMessage = (m: FromRecorder) => {
         config: m.config,
         devices: m.devices,
         history: m.history,
+        radios: m.radios ?? null,
         phase: m.phase.phase,
         error: m.phase.error,
         ended: m.phase.ended,
@@ -130,6 +137,9 @@ transport.onMessage = (m: FromRecorder) => {
       break;
     case "devices":
       set({ devices: m.devices });
+      break;
+    case "radios":
+      set({ radios: m.radios, findingRadios: false });
       break;
     case "error":
       set({ error: m.message });
@@ -178,6 +188,11 @@ export function forgetHistory(): void {
 }
 export function refreshDevices(): void {
   transport.send({ type: "devices" });
+}
+/** Search for USRPs (and re-list Airspys); a USRP search can take seconds. */
+export function findRadios(): void {
+  set({ findingRadios: true });
+  transport.send({ type: "findRadios" });
 }
 
 // ── run ──────────────────────────────────────────────────────────────────────

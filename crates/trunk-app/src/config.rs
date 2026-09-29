@@ -1,4 +1,4 @@
-//! The app's configuration: which sources (dongles or capture files), which
+//! The app's configuration: which sources (RTL-SDRs, USRPs, Airspys or capture files), which
 //! system, recording rules and the web server. Stored as JSON in the platform
 //! config folder; the browser interface reads and edits it.
 
@@ -14,20 +14,105 @@ pub enum Source {
     /// An RTL-SDR dongle. `serial` "" = the first free one; `center_hz` 0 = auto.
     #[serde(rename_all = "camelCase")]
     Rtlsdr { serial: String, center_hz: f64, rate_hz: f64, gain_db: Option<f32>, ppm: i32 },
-    /// An rtl_sdr capture (unsigned 8-bit IQ) on this machine.
+    /// A USRP through UHD (installed separately; loaded at run time).
+    /// `args`: UHD device arguments, "" = the first found ("serial=…",
+    /// "type=b200", "addr=192.168.10.2"). `antenna` "" = the device's default.
     #[serde(rename_all = "camelCase")]
-    File { path: String, center_hz: f64, rate_hz: f64, realtime: bool },
+    Usrp {
+        #[serde(default)]
+        args: String,
+        center_hz: f64,
+        rate_hz: f64,
+        #[serde(default)]
+        gain_db: f64,
+        #[serde(default)]
+        antenna: String,
+        #[serde(default)]
+        ppm: f64,
+    },
+    /// An Airspy R2 / Mini through libairspy (installed separately; loaded
+    /// at run time). `serial` hex, "" = the first; `gain` the linearity gain
+    /// step 0..21.
+    #[serde(rename_all = "camelCase")]
+    Airspy {
+        #[serde(default)]
+        serial: String,
+        center_hz: f64,
+        rate_hz: f64,
+        #[serde(default = "airspy_gain")]
+        gain: u8,
+        #[serde(default)]
+        bias_tee: bool,
+        #[serde(default)]
+        ppm: f64,
+    },
+    /// A capture on this machine: `format` "cu8" (rtl_sdr), "cs16" or "cf32"
+    /// (GNU Radio / UHD complex float).
+    #[serde(rename_all = "camelCase")]
+    File {
+        path: String,
+        center_hz: f64,
+        rate_hz: f64,
+        realtime: bool,
+        #[serde(default)]
+        format: SampleFormat,
+    },
+}
+
+fn airspy_gain() -> u8 {
+    14
+}
+
+/// Sample format of a capture file.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SampleFormat {
+    /// Unsigned 8-bit I/Q (rtl_sdr).
+    #[default]
+    Cu8,
+    /// Signed 16-bit I/Q, little-endian.
+    Cs16,
+    /// 32-bit float I/Q, little-endian (GNU Radio "complex", UHD fc32).
+    Cf32,
+}
+
+impl SampleFormat {
+    /// From a file name's extension (.cf32 / .cfile / .fc32 / .raw → cf32, .cs16 / .sc16 → cs16, else cu8).
+    pub fn from_path(path: &str) -> Self {
+        let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+        match ext.as_str() {
+            "cf32" | "cfile" | "fc32" | "complex" => SampleFormat::Cf32,
+            "cs16" | "sc16" => SampleFormat::Cs16,
+            _ => SampleFormat::Cu8,
+        }
+    }
+    pub fn bytes_per_sample(self) -> usize {
+        match self {
+            SampleFormat::Cu8 => 2,
+            SampleFormat::Cs16 => 4,
+            SampleFormat::Cf32 => 8,
+        }
+    }
 }
 
 impl Source {
     pub fn center_hz(&self) -> f64 {
         match self {
-            Source::Rtlsdr { center_hz, .. } | Source::File { center_hz, .. } => *center_hz,
+            Source::Rtlsdr { center_hz, .. } | Source::Usrp { center_hz, .. } | Source::Airspy { center_hz, .. } | Source::File { center_hz, .. } => *center_hz,
         }
     }
     pub fn rate_hz(&self) -> f64 {
         match self {
-            Source::Rtlsdr { rate_hz, .. } | Source::File { rate_hz, .. } => *rate_hz,
+            Source::Rtlsdr { rate_hz, .. } | Source::Usrp { rate_hz, .. } | Source::Airspy { rate_hz, .. } | Source::File { rate_hz, .. } => *rate_hz,
+        }
+    }
+    /// For the interface: "RTL-SDR SN 200", "USRP serial=…", "file x.cu8".
+    pub fn label(&self) -> String {
+        match self {
+            Source::Rtlsdr { serial, .. } => format!("RTL-SDR {}", if serial.is_empty() { "(first)".into() } else { format!("SN {serial}") }),
+            Source::Usrp { args, .. } => format!("USRP {}", if args.is_empty() { "(first)" } else { args }),
+            Source::Airspy { serial, .. } => format!("Airspy {}", if serial.is_empty() { "(first)".into() } else { format!("SN {serial}") }),
+            Source::File { path, .. } => format!("file {}", path.rsplit(['/', '\\']).next().unwrap_or(path)),
         }
     }
 }

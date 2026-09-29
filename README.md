@@ -1,7 +1,7 @@
 # Trunk Recorder Lite
 
 A lightweight, self-contained trunked-radio recorder: point one or more
-RTL-SDRs at a **P25** system (Phase 1 and Phase 2 TDMA voice) and it follows the control channel and records
+RTL-SDRs (or, optionally, USRPs and Airspys) at a **P25** system (Phase 1 and Phase 2 TDMA voice) and it follows the control channel and records
 every call it can hear as WAV + Trunk Recorder–compatible JSON. It is written
 in Rust, with no GNU Radio or OP25 dependency; a desktop build (macOS, Linux,
 Windows), a browser build and a browser-based interface for both are the goal.
@@ -32,7 +32,8 @@ install). `SHA256SUMS` lists their checksums.
   [Zadig](https://zadig.akeo.ie), pick “Bulk-In, Interface (Interface 0)”,
   install WinUSB.
 - **Linux** (x86-64 or ARM64, e.g. a Raspberry Pi 4/5 with a 64-bit OS; any
-  distribution — the binary is static):
+  distribution from about 2019 on — glibc 2.28 or newer, e.g. Debian 10,
+  Ubuntu 20.04, RHEL 8, Raspberry Pi OS bullseye):
 
   ```bash
   tar xzf trunk-lite-<version>-linux-x86_64.tar.gz
@@ -41,10 +42,35 @@ install). `SHA256SUMS` lists their checksums.
   ```
 
   `install.sh` puts `trunk-lite` in `/usr/local/bin`, adds a udev rule so
-  your user can open RTL-SDRs (the kernel's DVB driver is detached
+  your user can open RTL-SDRs, Airspys and USB USRPs (the kernel's DVB driver is detached
   automatically) and a menu entry. `trunk-lite.service` in the package runs it
   headless as a systemd user service.
 - **Browser**, no install: see [In the browser](#in-the-browser-no-install).
+
+### USRP and Airspy (optional)
+
+RTL-SDRs work with nothing else installed. USRPs (Ettus / NI, through UHD)
+and Airspy R2 / Mini (through libairspy) use their makers' drivers, which you
+install yourself; Trunk Recorder Lite finds them when it starts — no special
+build — and offers **USRP** and **Airspy** as source types in Setup (which
+says what is missing if a driver isn't found).
+
+| | macOS | Debian / Ubuntu / Raspberry Pi OS | Windows |
+|---|---|---|---|
+| USRP | `brew install uhd` | `sudo apt install libuhd-dev uhd-host` | Ettus's UHD installer (adds `uhd.dll` to PATH) |
+| Airspy | `brew install airspy` | `sudo apt install libairspy0` | `airspy.dll` from airspy-tools, next to `trunk-lite.exe` |
+
+USRPs also need UHD's FPGA images once: `uhd_images_downloader` (sudo on
+Linux). `trunk-lite devices` shows which drivers were found; `trunk-lite
+devices --usrp` also searches for USRPs. A driver installed somewhere unusual
+can be named with `TRUNK_LITE_UHD=/path/to/libuhd…` / `TRUNK_LITE_AIRSPY=…`.
+
+Settings: a USRP takes UHD device arguments (blank = the first found,
+`serial=…`, `addr=192.168.10.2`), any sample rate its clock supports (e.g. 8
+MSPS covers ~7 MHz), a gain in dB and an antenna (e.g. `RX2`, `TX/RX`).
+An Airspy runs at 10 or 2.5 MSPS (R2) or 6 or 3 MSPS (Mini), with a
+linearity gain step of 0–21 and an optional bias-T. Wider sources cost more
+CPU: about 1–2 % of a core per 2.4 MSPS.
 
 ## Run it
 
@@ -66,8 +92,10 @@ the calls in progress before exiting. `--bind 0.0.0.0` makes the interface
 reachable from other machines — it has no login, so only on a network you
 trust (or use `ssh -L 8080:localhost:8080`).
 
-`trunk-lite devices` lists dongles; `trunk-lite capture out.cu8 --freq Hz
---serial SN --seconds 30` records raw IQ like `rtl_sdr`.
+`trunk-lite devices` lists radios; `trunk-lite capture out.cu8 --freq Hz
+--serial SN --seconds 30` records raw IQ from an RTL-SDR like `rtl_sdr`.
+Capture files can be `cu8` (rtl_sdr), `cs16` or `cf32` (GNU Radio, UHD's
+`rx_samples_to_file`).
 
 ### In the browser (no install)
 
@@ -109,8 +137,8 @@ cargo install wasm-bindgen-cli --version 0.2.129 --locked
 (cd web && npm run dev:web)                     # hot reload, engine in the page
 ```
  Releases are built by
-`.github/workflows/build.yml` (macOS universal, static Linux x86-64 / ARM64,
-Windows).
+`.github/workflows/build.yml` (macOS universal, Linux x86-64 / ARM64 against
+glibc 2.28, Windows).
 
 ## Replay captures
 
@@ -154,6 +182,7 @@ receiver bank = CQPSK + CQPSK with a T/2 CMA equaliser + C4FM, best of each fram
 | `…/trunk/` | TSBK parser (Trunk Recorder's `p25_parser.cc`), call manager (`monitor_systems.cc`), Phase 1 and TDMA voice trackers, engine (multi-source) |
 | `crates/trunk-lite` | The app: `serve` (default; source threads, engine thread, web server + WebSocket), `replay`, `capture`, `devices`, `tool` |
 | `…/src/sdr.rs` | RTL-SDR over USB via `rtlsdr-nusb` (pure Rust; no libusb / librtlsdr) |
+| `…/src/radio/` | USRP (UHD's C API) and Airspy (libairspy), loaded at run time when installed |
 | `crates/trunk-app` | The app layer shared by desktop and browser: config and a recording `Session` (status, spectrum, log, calls, files) |
 | `crates/trunk-web` | The browser build: `Session` and the RTL-SDR driver (WebUSB) exported to JavaScript with `wasm-bindgen` |
 | `web/` | The browser interface (React + Vite), embedded in the binary; `src/web/` runs the engine in a worker for the browser version |
@@ -200,11 +229,14 @@ NAC 0x443, from an R820T RTL-SDR):
    needs a hands-on test)
 5. ~~Phase 2 TDMA voice (H-DQPSK, AMBE+2) — feature parity with the archive~~
    — done (verified on real air from captures)
-6. ~~Release packaging~~ — done: macOS app (DMG), static Linux tarballs with an
+6. ~~Release packaging~~ — done: macOS app (DMG), Linux tarballs with an
    installer, Windows zip, browser zip; CI builds, checksums and publishes on
    a version tag (not yet run on GitHub; Apple signing/notarization when the
    secrets are added)
-7. Optional USRP support via UHD (C++, an opt-in build feature)
+7. ~~Optional USRP (UHD) and Airspy (libairspy) sources~~ — done: drivers
+   loaded at run time when installed; float (`cf32` / `cs16`) captures;
+   verified on captures and driver loading on macOS / Linux (streaming from
+   the hardware not yet tested)
 
 ## License
 

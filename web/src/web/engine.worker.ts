@@ -80,7 +80,10 @@ async function start(): Promise<void> {
         const rtl = await WebRtl.open(s.serial, centers[i] ?? s.centerHz, s.rateHz, s.gainDb ?? undefined, s.ppm);
         rtls.push(rtl);
         void pumpRtl(i, rtl);
+      } else if (s.kind === "usrp" || s.kind === "airspy") {
+        throw new Error(`Source ${i + 1}: USRP and Airspy need the desktop app.`);
       } else {
+        if (s.format && s.format !== "cu8") throw new Error(`Source ${i + 1}: the browser version reads rtl_sdr (cu8) captures only.`);
         const f = files[i];
         if (!f) throw new Error(`Source ${i + 1}: choose the capture file again (the browser forgets it on reload).`);
         void pumpFile(i, f, s.rateHz, s.realtime);

@@ -18,13 +18,6 @@ pub struct RtlConfig {
     pub ppm: i32,
 }
 
-pub fn list() -> Vec<String> {
-    match Device::list().wait() {
-        Ok(v) => v.iter().map(|d| format!("{d:?}")).collect(),
-        Err(e) => vec![format!("error: {e}")],
-    }
-}
-
 /// Attached dongles, for the browser: [{serial, product, index}].
 pub fn devices() -> Vec<serde_json::Value> {
     Device::list()
@@ -47,6 +40,8 @@ pub fn devices() -> Vec<serde_json::Value> {
 pub enum SourceMsg {
     /// Raw u8 IQ, and samples the driver knows were dropped just before it.
     Data { source: usize, bytes: Vec<u8>, dropped: u64 },
+    /// Float IQ (USRP, Airspy, float captures).
+    Iq { source: usize, samples: Vec<num_complex::Complex32>, dropped: u64 },
     Error { source: usize, error: String },
     /// A finite source (a capture file) has no more data.
     End { source: usize },

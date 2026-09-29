@@ -206,3 +206,15 @@ td.srcs {
   width: 44px;
   height: 44px;
 }
+
+.grid2 > .banner.wide {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+.banner.small {
+  font-size: 0.85em;
+  line-height: 1.5;
+}
+.banner code {
+  font-size: 0.95em;
+}

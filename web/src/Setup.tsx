@@ -1,6 +1,21 @@
-import { useEffect, useRef, useState } from "react";
-import { autoCenter, formatMhz, importTrunkRecorderConfig, newDongle, parseFreqList, resolvedCenters, SAMPLE_RATES, usableHalfWidth } from "./config.ts";
-import { refreshDevices, setNotice, updateConfig, useApp, web } from "./controller.ts";
+import { useEffect, useId, useRef, useState } from "react";
+import {
+  AIRSPY_RATES,
+  autoCenter,
+  formatFromPath,
+  formatMhz,
+  importTrunkRecorderConfig,
+  newAirspy,
+  newDongle,
+  newFile,
+  newUsrp,
+  parseFreqList,
+  resolvedCenters,
+  SAMPLE_RATES,
+  USRP_RATES,
+  usableHalfWidth,
+} from "./config.ts";
+import { findRadios, refreshDevices, setNotice, updateConfig, useApp, web } from "./controller.ts";
 import type { Config, Source } from "./protocol.ts";
 import { parseTalkgroupCsv } from "./talkgroups.ts";
 
@@ -50,6 +65,68 @@ async function connectDongle(): Promise<void> {
   }
 }
 
+/** A sample rate in MSPS: pick a common one or type another. */
+function RateInput(props: { hz: number; options: number[]; onChange: (hz: number) => void; free?: boolean }) {
+  const id = useId();
+  if (!props.free) {
+    return (
+      <select value={props.hz} onChange={(e) => props.onChange(Number(e.target.value))}>
+        {(props.options.includes(props.hz) ? props.options : [props.hz, ...props.options]).map((r) => (
+          <option key={r} value={r}>
+            {(r / 1e6).toFixed(3)} MSPS
+          </option>
+        ))}
+      </select>
+    );
+  }
+  return (
+    <>
+      <input
+        className="mono"
+        list={id}
+        defaultValue={props.hz / 1e6}
+        onChange={(e) => {
+          const v = Number(e.target.value);
+          if (v > 0) props.onChange(Math.round(v * 1e6));
+        }}
+      />
+      <datalist id={id}>
+        {props.options.map((r) => (
+          <option key={r} value={r / 1e6} />
+        ))}
+      </datalist>
+    </>
+  );
+}
+
+/** Why an optional driver can't be used, and how to install it. */
+function DriverMissing(props: { kind: "usrp" | "airspy"; detail: string }) {
+  return (
+    <div className="banner bad small wide">
+      {props.kind === "usrp" ? (
+        <span>
+          USRP support needs <b>UHD</b>, which wasn&apos;t found ({props.detail}). Install it — macOS: <code>brew install uhd</code>; Debian/Ubuntu:{" "}
+          <code>sudo apt install libuhd-dev uhd-host</code>; Windows: Ettus&apos;s UHD installer — then run <code>uhd_images_downloader</code> and restart
+          Trunk Recorder Lite.
+        </span>
+      ) : (
+        <span>
+          Airspy support needs <b>libairspy</b>, which wasn&apos;t found ({props.detail}). Install it — macOS: <code>brew install airspy</code>; Debian/Ubuntu:{" "}
+          <code>sudo apt install libairspy0</code>; Windows: put <code>airspy.dll</code> (from airspy-tools) next to <code>trunk-lite.exe</code> — then
+          restart Trunk Recorder Lite.
+        </span>
+      )}
+    </div>
+  );
+}
+
+const KINDS: { kind: Source["kind"]; label: string; desktop?: boolean }[] = [
+  { kind: "rtlsdr", label: "RTL-SDR" },
+  { kind: "usrp", label: "USRP", desktop: true },
+  { kind: "airspy", label: "Airspy", desktop: true },
+  { kind: "file", label: "Capture file" },
+];
+
 function SourceCard(props: { c: Config; i: number }) {
   const s = useApp();
   const { c, i } = props;
@@ -61,23 +138,24 @@ function SourceCard(props: { c: Config; i: number }) {
   const setKind = (kind: Source["kind"]) =>
     updateConfig((x) => {
       const old = x.sources[i];
-      x.sources[i] =
-        kind === "rtlsdr" ? { ...newDongle(), centerHz: old.centerHz, rateHz: old.rateHz } : { kind: "file", path: "", centerHz: old.centerHz, rateHz: old.rateHz, realtime: true };
+      const fresh = kind === "rtlsdr" ? newDongle() : kind === "usrp" ? newUsrp() : kind === "airspy" ? newAirspy() : newFile();
+      x.sources[i] = { ...fresh, centerHz: old.centerHz } as Source;
     });
   const fileRef = useRef<HTMLInputElement>(null);
-  const used = new Set(c.sources.filter((x, k) => k !== i && x.kind === "rtlsdr").map((x) => (x.kind === "rtlsdr" ? x.serial : "")));
+  const others = c.sources.filter((_, k) => k !== i);
+  const used = new Set(others.map((x) => (x.kind === "rtlsdr" ? `r:${x.serial}` : x.kind === "airspy" ? `a:${x.serial}` : x.kind === "usrp" ? `u:${x.args}` : "")));
+  const radios = s.radios;
 
   return (
     <div className="source-card">
       <div className="row source-head">
         <strong>Source {i + 1}</strong>
         <div className="seg small" role="radiogroup" aria-label={`Source ${i + 1} kind`}>
-          <button role="radio" aria-checked={src.kind === "rtlsdr"} className={src.kind === "rtlsdr" ? "on" : ""} onClick={() => setKind("rtlsdr")}>
-            RTL-SDR dongle
-          </button>
-          <button role="radio" aria-checked={src.kind === "file"} className={src.kind === "file" ? "on" : ""} onClick={() => setKind("file")}>
-            Capture file
-          </button>
+          {KINDS.filter((k) => !k.desktop || !web).map((k) => (
+            <button key={k.kind} role="radio" aria-checked={src.kind === k.kind} className={src.kind === k.kind ? "on" : ""} onClick={() => setKind(k.kind)}>
+              {k.label}
+            </button>
+          ))}
         </div>
         <span className="spacer" />
         {c.sources.length > 1 && (
@@ -93,7 +171,7 @@ function SourceCard(props: { c: Config; i: number }) {
         )}
       </div>
       <div className="grid2">
-        {src.kind === "rtlsdr" ? (
+        {src.kind === "rtlsdr" && (
           <Field
             label="Dongle"
             hint={s.devices.length ? undefined : web ? "No dongle connected — press Connect and pick it in the browser's list." : "No dongle found — plug one in and press Refresh."}
@@ -102,10 +180,10 @@ function SourceCard(props: { c: Config; i: number }) {
               <select value={src.serial} onChange={(e) => edit((x) => x.kind === "rtlsdr" && void (x.serial = e.target.value))}>
                 <option value="">First available</option>
                 {s.devices.map((d) => (
-                  <option key={d.serial || d.index} value={d.serial} disabled={used.has(d.serial)}>
+                  <option key={d.serial || d.index} value={d.serial} disabled={used.has(`r:${d.serial}`)}>
                     {d.product}
                     {d.serial ? ` · SN ${d.serial}` : ""}
-                    {used.has(d.serial) ? " (in use)" : ""}
+                    {used.has(`r:${d.serial}`) ? " (in use)" : ""}
                   </option>
                 ))}
               </select>
@@ -120,44 +198,117 @@ function SourceCard(props: { c: Config; i: number }) {
               )}
             </div>
           </Field>
-        ) : web ? (
-          <Field label="Capture file" hint="rtl_sdr output (unsigned 8-bit IQ). The browser forgets the choice on reload." wide>
-            <div className="row">
-              <button className="btn ghost small" onClick={() => fileRef.current?.click()}>
-                Choose file…
-              </button>
-              <span className="mono">{web.file(i)?.name ?? (src.path ? `${src.path} (choose again)` : "none")}</span>
-            </div>
-            <input
-              ref={fileRef}
-              type="file"
-              hidden
-              onChange={(e) => {
-                const f = e.target.files?.[0] ?? null;
-                web?.setFile(i, f);
-                edit((x) => x.kind === "file" && void (x.path = f?.name ?? ""));
-                e.target.value = "";
-              }}
-            />
-          </Field>
-        ) : (
-          <Field label="Capture file" hint="rtl_sdr output (unsigned 8-bit IQ), a path on the recorder's computer." wide>
-            <input className="mono" value={src.path} placeholder="/path/to/capture.cu8" onChange={(e) => edit((x) => x.kind === "file" && void (x.path = e.target.value))} />
-          </Field>
         )}
+        {src.kind === "usrp" &&
+          (radios && !radios.usrp.available ? (
+            <DriverMissing kind="usrp" detail={radios.usrp.detail} />
+          ) : (
+            <Field
+              label="USRP"
+              hint={
+                radios?.usrp.devices === null
+                  ? `${radios?.usrp.detail ?? "UHD"} · press Find to search, or type UHD device arguments (blank = first found)`
+                  : radios?.usrp.devices?.length
+                    ? radios.usrp.detail
+                    : "None found — check the cable / network, or type device arguments (e.g. addr=192.168.10.2)"
+              }
+            >
+              <div className="row">
+                <input
+                  className="mono"
+                  list={`usrp-${i}`}
+                  value={src.args}
+                  placeholder="first found"
+                  onChange={(e) => edit((x) => x.kind === "usrp" && void (x.args = e.target.value))}
+                />
+                <datalist id={`usrp-${i}`}>
+                  {(radios?.usrp.devices ?? []).map((d) => (
+                    <option key={d.args} value={d.args}>
+                      {d.label}
+                    </option>
+                  ))}
+                </datalist>
+                <button className="btn ghost small" disabled={s.findingRadios} onClick={findRadios}>
+                  {s.findingRadios ? "Searching…" : "Find"}
+                </button>
+              </div>
+            </Field>
+          ))}
+        {src.kind === "airspy" &&
+          (radios && !radios.airspy.available ? (
+            <DriverMissing kind="airspy" detail={radios.airspy.detail} />
+          ) : (
+            <Field label="Airspy" hint={radios?.airspy.devices?.length ? radios.airspy.detail : `${radios?.airspy.detail ?? "libairspy"} · none found — plug one in and press Refresh`}>
+              <div className="row">
+                <select value={src.serial} onChange={(e) => edit((x) => x.kind === "airspy" && void (x.serial = e.target.value))}>
+                  <option value="">First available</option>
+                  {src.serial && !(radios?.airspy.devices ?? []).some((d) => d.serial === src.serial) && <option value={src.serial}>SN {src.serial} (not connected)</option>}
+                  {(radios?.airspy.devices ?? []).map((d) => (
+                    <option key={d.serial} value={d.serial} disabled={used.has(`a:${d.serial}`)}>
+                      {d.label}
+                      {used.has(`a:${d.serial}`) ? " (in use)" : ""}
+                    </option>
+                  ))}
+                </select>
+                <button className="btn ghost small" disabled={s.findingRadios} onClick={findRadios}>
+                  Refresh
+                </button>
+              </div>
+            </Field>
+          ))}
+        {src.kind === "file" &&
+          (web ? (
+            <Field label="Capture file" hint="rtl_sdr output (unsigned 8-bit IQ). The browser forgets the choice on reload." wide>
+              <div className="row">
+                <button className="btn ghost small" onClick={() => fileRef.current?.click()}>
+                  Choose file…
+                </button>
+                <span className="mono">{web.file(i)?.name ?? (src.path ? `${src.path} (choose again)` : "none")}</span>
+              </div>
+              <input
+                ref={fileRef}
+                type="file"
+                hidden
+                onChange={(e) => {
+                  const f = e.target.files?.[0] ?? null;
+                  web?.setFile(i, f);
+                  edit((x) => x.kind === "file" && void (x.path = f?.name ?? ""));
+                  e.target.value = "";
+                }}
+              />
+            </Field>
+          ) : (
+            <Field label="Capture file" hint="A path on the recorder's computer." wide>
+              <input
+                className="mono"
+                value={src.path}
+                placeholder="/path/to/capture.cu8"
+                onChange={(e) =>
+                  edit((x) => {
+                    if (x.kind !== "file") return;
+                    x.path = e.target.value;
+                    x.format = formatFromPath(x.path);
+                  })
+                }
+              />
+            </Field>
+          ))}
         <Field label="Center frequency, MHz" hint={src.centerHz ? "Manual" : auto ? `Auto: ${formatMhz(auto, 4)} MHz` : i === 0 ? "Auto — needs control channels" : "Required"}>
           <MhzInput hz={src.centerHz} placeholder={auto ? formatMhz(auto, 4) : "MHz"} onChange={(hz) => edit((x) => void (x.centerHz = hz))} />
         </Field>
-        <Field label="Sample rate">
-          <select value={src.rateHz} onChange={(e) => edit((x) => void (x.rateHz = Number(e.target.value)))}>
-            {SAMPLE_RATES.map((r) => (
-              <option key={r} value={r}>
-                {(r / 1e6).toFixed(3)} MSPS
-              </option>
-            ))}
-          </select>
+        <Field
+          label="Sample rate"
+          hint={src.kind === "usrp" ? "MSPS; wider covers more channels, costs more CPU" : src.kind === "airspy" ? "R2: 10 or 2.5; Mini: 6 or 3 (10 on newer firmware)" : undefined}
+        >
+          <RateInput
+            key={src.kind}
+            hz={src.rateHz}
+            free={src.kind === "usrp" || (src.kind === "file" && !web)}
+            options={src.kind === "usrp" ? USRP_RATES : src.kind === "airspy" ? AIRSPY_RATES : src.kind === "file" ? [...SAMPLE_RATES, 8_000_000, 10_000_000] : SAMPLE_RATES}
+            onChange={(hz) => edit((x) => void (x.rateHz = hz))}
+          />
         </Field>
-        {src.kind === "rtlsdr" ? (
+        {src.kind === "rtlsdr" && (
           <>
             <Field label="Gain, dB" hint="Blank = tuner AGC">
               <input
@@ -174,8 +325,52 @@ function SourceCard(props: { c: Config; i: number }) {
               <input className="mono" value={src.ppm} onChange={(e) => edit((x) => x.kind === "rtlsdr" && void (x.ppm = Number(e.target.value) || 0))} />
             </Field>
           </>
-        ) : (
-          <Toggle label="Real-time pace" hint="off = as fast as the computer decodes" checked={src.realtime} onChange={(v) => edit((x) => x.kind === "file" && void (x.realtime = v))} />
+        )}
+        {src.kind === "usrp" && (
+          <>
+            <Field label="Gain, dB" hint="B200/B210: 0–76">
+              <input className="mono" value={src.gainDb} onChange={(e) => edit((x) => x.kind === "usrp" && void (x.gainDb = Number(e.target.value) || 0))} />
+            </Field>
+            <Field label="Antenna" hint="Blank = the device's default (e.g. RX2, TX/RX)">
+              <input className="mono" value={src.antenna} placeholder="default" onChange={(e) => edit((x) => x.kind === "usrp" && void (x.antenna = e.target.value.trim()))} />
+            </Field>
+            <Field label="Frequency correction, ppm">
+              <input className="mono" value={src.ppm} onChange={(e) => edit((x) => x.kind === "usrp" && void (x.ppm = Number(e.target.value) || 0))} />
+            </Field>
+          </>
+        )}
+        {src.kind === "airspy" && (
+          <>
+            <Field label="Gain" hint="Linearity gain step, 0–21">
+              <input
+                type="range"
+                min={0}
+                max={21}
+                value={src.gain}
+                onChange={(e) => edit((x) => x.kind === "airspy" && void (x.gain = Number(e.target.value)))}
+                aria-valuetext={String(src.gain)}
+              />
+              <span className="mono small">{src.gain}</span>
+            </Field>
+            <Field label="Frequency correction, ppm">
+              <input className="mono" value={src.ppm} onChange={(e) => edit((x) => x.kind === "airspy" && void (x.ppm = Number(e.target.value) || 0))} />
+            </Field>
+            <Toggle label="Bias-T" hint="powers an LNA over the antenna cable" checked={src.biasTee} onChange={(v) => edit((x) => x.kind === "airspy" && void (x.biasTee = v))} />
+          </>
+        )}
+        {src.kind === "file" && (
+          <>
+            {!web && (
+              <Field label="Sample format">
+                <select value={src.format ?? "cu8"} onChange={(e) => edit((x) => x.kind === "file" && void (x.format = e.target.value as "cu8" | "cs16" | "cf32"))}>
+                  <option value="cu8">cu8 — rtl_sdr (unsigned 8-bit)</option>
+                  <option value="cs16">cs16 — signed 16-bit</option>
+                  <option value="cf32">cf32 — float (GNU Radio, UHD)</option>
+                </select>
+              </Field>
+            )}
+            <Toggle label="Real-time pace" hint="off = as fast as the computer decodes" checked={src.realtime} onChange={(v) => edit((x) => x.kind === "file" && void (x.realtime = v))} />
+          </>
         )}
       </div>
       {center ? (
@@ -292,7 +487,7 @@ export function Setup() {
         <header className="panel-head">
           <h2>Sources</h2>
           <button className="btn ghost" onClick={() => updateConfig((x) => void x.sources.push(newDongle()))}>
-            Add a dongle
+            Add a source
           </button>
         </header>
         <div className="stack">

@@ -5,8 +5,9 @@
 
 use serde_json::{json, Value};
 use trunk_core::trunk::{parse_csv, Call, Engine, Event};
+use trunk_core::Complex32;
 
-use crate::config::{Config, Source};
+use crate::config::Config;
 
 pub enum Output {
     /// A JSON message for the interface.
@@ -25,7 +26,7 @@ pub type LocalYmd = fn(i64) -> (i32, u32, u32);
 
 #[derive(Default, Clone)]
 struct SourceStats {
-    bytes: u64,
+    samples: u64,
     dropped: u64,
     errors: u64,
     last_error: Option<String>,
@@ -81,7 +82,15 @@ impl Session {
     pub fn push(&mut self, source: usize, bytes: &[u8], dropped: u64) {
         self.engine.push_u8(source, bytes);
         let s = &mut self.stats[source];
-        s.bytes += bytes.len() as u64;
+        s.samples += bytes.len() as u64 / 2;
+        s.dropped += dropped;
+    }
+
+    /// Float IQ from `source` (USRP, Airspy, float captures).
+    pub fn push_iq(&mut self, source: usize, iq: &[Complex32], dropped: u64) {
+        self.engine.push_iq(source, iq);
+        let s = &mut self.stats[source];
+        s.samples += iq.len() as u64;
         s.dropped += dropped;
     }
 
@@ -122,8 +131,8 @@ impl Session {
             let dt = (now_ms - self.rate_mark.0) / 1000.0;
             if dt >= 1.0 {
                 for (i, s) in self.stats.iter_mut().enumerate() {
-                    s.rate_measured = (s.bytes - self.rate_mark.1[i]) as f64 / 2.0 / dt;
-                    self.rate_mark.1[i] = s.bytes;
+                    s.rate_measured = (s.samples - self.rate_mark.1[i]) as f64 / dt;
+                    self.rate_mark.1[i] = s.samples;
                 }
                 self.rate_mark.0 = now_ms;
             }
@@ -196,10 +205,7 @@ impl Session {
             .zip(&self.stats)
             .enumerate()
             .map(|(i, ((s, sc), ss))| {
-                let label = match s {
-                    Source::Rtlsdr { serial, .. } => format!("RTL-SDR {}", if serial.is_empty() { "(first)".into() } else { format!("SN {serial}") }),
-                    Source::File { path, .. } => format!("file {}", path.rsplit(['/', '\\']).next().unwrap_or(path)),
-                };
+                let label = s.label();
                 json!({ "index": i, "label": label, "centerHz": sc.center_hz, "rateHz": sc.rate_hz, "rateMeasured": ss.rate_measured,
                         "dropped": ss.dropped, "errors": ss.errors, "lastError": ss.last_error, "ended": ss.ended })
             })

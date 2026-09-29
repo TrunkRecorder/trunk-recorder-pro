@@ -1,6 +1,15 @@
-# RTL-SDR dongles for Trunk Recorder Lite (and other SDR apps): let users in the
+# SDRs for Trunk Recorder Lite (and other SDR apps): let users in the
 # plugdev group open them. Install: sudo cp 60-trunk-lite-rtlsdr.rules
 # /etc/udev/rules.d/ && sudo udevadm control --reload && replug the dongle.
 # (trunk-lite detaches the kernel DVB driver itself; no blacklist needed.)
 SUBSYSTEM=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="2832", MODE="0660", GROUP="plugdev", TAG+="uaccess"
 SUBSYSTEM=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="2838", MODE="0660", GROUP="plugdev", TAG+="uaccess"
+# Airspy R2 / Mini (libairspy) and USRP B200 / B210 / B200mini (UHD), for when
+# their drivers are installed — UHD's and libairspy's own packages usually
+# add these too.
+SUBSYSTEM=="usb", ATTRS{idVendor}=="1d50", ATTRS{idProduct}=="60a1", MODE="0660", GROUP="plugdev", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="2500", ATTRS{idProduct}=="0020", MODE="0660", GROUP="plugdev", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="2500", ATTRS{idProduct}=="0021", MODE="0660", GROUP="plugdev", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="2500", ATTRS{idProduct}=="0022", MODE="0660", GROUP="plugdev", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="3923", ATTRS{idProduct}=="7813", MODE="0660", GROUP="plugdev", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="3923", ATTRS{idProduct}=="7814", MODE="0660", GROUP="plugdev", TAG+="uaccess"

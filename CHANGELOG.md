@@ -15,6 +15,9 @@ platform, with no GNU Radio, OP25 or other runtime dependencies.
   system's WACN / System ID / NAC from the control channel.
 - **Several RTL-SDRs** feeding one system, over a pure-Rust USB driver (no
   librtlsdr / libusb to install).
+- **USRP and Airspy** sources (optional): used when UHD / libairspy is
+  installed, found at run time by the same binary.
+- Captures in `cu8`, `cs16` or `cf32` (GNU Radio / UHD) formats.
 - **Trunk Recorder–compatible output**: WAV + call JSON in Trunk Recorder's
   folder layout and field names; talkgroup CSV import; import of a Trunk
   Recorder config.
@@ -25,5 +28,5 @@ platform, with no GNU Radio, OP25 or other runtime dependencies.
   opening the app again shows the running instance.
 - **Browser version**: the same engine as WebAssembly, WebUSB dongles, calls
   stored in the browser and exportable to a folder.
-- Packages: macOS app (universal, DMG), static Linux x86-64 / ARM64 with an
-  installer, Windows 64-bit, and the browser build.
+- Packages: macOS app (universal, DMG), Linux x86-64 / ARM64 (glibc 2.28+)
+  with an installer, Windows 64-bit, and the browser build.

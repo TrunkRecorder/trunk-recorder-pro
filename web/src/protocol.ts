@@ -2,9 +2,26 @@
 // server.rs). The desktop app carries them over a WebSocket; the web build
 // will carry the same messages between the page and its engine worker.
 
+export type SampleFormat = "cu8" | "cs16" | "cf32";
+
 export type Source =
   | { kind: "rtlsdr"; serial: string; centerHz: number; rateHz: number; gainDb: number | null; ppm: number }
-  | { kind: "file"; path: string; centerHz: number; rateHz: number; realtime: boolean };
+  /** USRP through UHD (desktop app, UHD installed). `args` "" = first found. */
+  | { kind: "usrp"; args: string; centerHz: number; rateHz: number; gainDb: number; antenna: string; ppm: number }
+  /** Airspy R2 / Mini through libairspy (desktop app). `gain`: linearity step 0–21. */
+  | { kind: "airspy"; serial: string; centerHz: number; rateHz: number; gain: number; biasTee: boolean; ppm: number }
+  | { kind: "file"; path: string; centerHz: number; rateHz: number; realtime: boolean; format?: SampleFormat };
+
+/** An optional driver (desktop app) and what it found; `devices` null = not searched. */
+export interface DriverState {
+  available: boolean;
+  detail: string;
+  devices: { args?: string; serial?: string; label: string }[] | null;
+}
+export interface Radios {
+  usrp: DriverState;
+  airspy: DriverState;
+}
 
 export interface Config {
   sources: Source[];
@@ -116,7 +133,18 @@ export interface Spectrum {
 }
 
 export type FromRecorder =
-  | { type: "hello"; version: string; platform: string; config: Config; configPath: string; devices: Device[]; phase: PhaseState & { type: "state" }; history: CallEntry[] }
+  | {
+      type: "hello";
+      version: string;
+      platform: string;
+      config: Config;
+      configPath: string;
+      devices: Device[];
+      phase: PhaseState & { type: "state" };
+      history: CallEntry[];
+      radios?: Radios;
+    }
+  | { type: "radios"; radios: Radios }
   | ({ type: "state" } & PhaseState)
   | { type: "config"; config: Config }
   | { type: "status"; status: EngineStatus; sources: SourceStatus[]; load: number; calls: CallView[] }
@@ -132,6 +160,7 @@ export type ToRecorder =
   | { type: "start" }
   | { type: "stop" }
   | { type: "devices" }
+  | { type: "findRadios" }
   | { type: "listen"; on: boolean; talkgroup: number | null }
   | { type: "quit" };
 
