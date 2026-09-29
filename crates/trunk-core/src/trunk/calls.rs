@@ -20,7 +20,6 @@ pub enum Reason {
     Encrypted,
     NoSource,
     NoRecorder,
-    Phase2Unsupported,
 }
 
 impl Reason {
@@ -30,7 +29,6 @@ impl Reason {
             Reason::Encrypted => "encrypted",
             Reason::NoSource => "no_source",
             Reason::NoRecorder => "no_recorder",
-            Reason::Phase2Unsupported => "phase2_unsupported",
         }
     }
 }

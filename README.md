@@ -1,7 +1,7 @@
 # Trunk Recorder Lite
 
 A lightweight, self-contained trunked-radio recorder: point one or more
-RTL-SDRs at a **P25** system and it follows the control channel and records
+RTL-SDRs at a **P25** system (Phase 1 and Phase 2 TDMA voice) and it follows the control channel and records
 every call it can hear as WAV + Trunk Recorder–compatible JSON. It is written
 in Rust, with no GNU Radio or OP25 dependency; a desktop build (macOS, Linux,
 Windows), a browser build and a browser-based interface for both are the goal.
@@ -9,7 +9,7 @@ Windows), a browser build and a browser-based interface for both are the goal.
 **Status:** the desktop app works end to end — live RTL-SDR input (one or
 several dongles), decoding, recording, and a browser interface — on macOS,
 with builds for Linux and Windows. The browser version runs the same engine as
-WebAssembly. Phase 2 is next (see [Roadmap](#roadmap)). The previous TypeScript/browser implementation lives in
+WebAssembly. Phase 2 TDMA voice is decoded too (see [Roadmap](#roadmap)). The previous TypeScript/browser implementation lives in
 [`archive/ts-engine`](archive/ts-engine) and serves as a reference.
 
 ## Run it
@@ -89,7 +89,9 @@ rtl_sdr -f 858300000 -s 2400000 -g 38.6 -n 72000000 capture.cu8        # 30 s
 ```
 
 Calls are written as `<talkgroup>-<epoch>_<freq>.wav|json` with Trunk
-Recorder's JSON fields. `--bandplan` keeps the system's IDEN tables between
+Recorder's JSON fields (Phase 2 TDMA calls as `…_<freq>.<slot>.wav`; the
+scrambler seed — WACN, System ID, NAC — comes from the control channel, no
+setup needed). `--bandplan` keeps the system's IDEN tables between
 runs, so a grant heard before the next IDEN broadcast can be followed at once.
 
 ## How it works
@@ -110,8 +112,9 @@ receiver bank = CQPSK + CQPSK with a T/2 CMA equaliser + C4FM, best of each fram
 | `…/p25/tsbk.rs` | Viterbi (soft) trellis decoder + CRC — 98–99 % of TSBKs on simulcast, vs 62 % for op25's greedy decoder |
 | `…/p25/fec.rs`, `voice.rs` | Golay / Hamming (hard and soft), Reed–Solomon, IMBE framing, LC / ES / HDU / TDULC |
 | `…/p25/diversity.rs` | Receiver diversity: per-frame best of several receivers |
-| `…/mbe/` | IMBE vocoder (mbelib + Trunk Recorder's enhanced synthesis) |
-| `…/trunk/` | TSBK parser (Trunk Recorder's `p25_parser.cc`), call manager (`monitor_systems.cc`), voice call tracker, engine (multi-source) |
+| `…/p25/phase2.rs` | Phase 2 TDMA: slot framer, scrambler, ISCH / DUID, AMBE codeword FEC, ESS, MAC PDUs |
+| `…/mbe/` | IMBE and AMBE+2 vocoders (mbelib + Trunk Recorder's enhanced synthesis) |
+| `…/trunk/` | TSBK parser (Trunk Recorder's `p25_parser.cc`), call manager (`monitor_systems.cc`), Phase 1 and TDMA voice trackers, engine (multi-source) |
 | `crates/trunk-lite` | The app: `serve` (default; source threads, engine thread, web server + WebSocket), `replay`, `capture`, `devices`, `tool` |
 | `…/src/sdr.rs` | RTL-SDR over USB via `rtlsdr-nusb` (pure Rust; no libusb / librtlsdr) |
 | `crates/trunk-app` | The app layer shared by desktop and browser: config and a recording `Session` (status, spectrum, log, calls, files) |
@@ -137,6 +140,11 @@ NAC 0x443, from an R820T RTL-SDR):
   decoded (1156 vs ~282) and more audio per call (e.g. TG 102 9.5 s vs 8.1 s).
 - **CPU:** 1.6 % of one core for a 2.4 MSPS site (CC + 2 voice channels,
   three receivers each); 6 % for 8 MSPS with 16 simultaneous calls.
+- **Phase 2 TDMA, real air** (DCFD's 770 MHz channels): bit-exact with the
+  TypeScript decoder (10,588 AMBE codewords, 3,741 MAC PDUs, vocoder audio
+  max difference 0), the same receiver performance (82–97 % of codewords
+  clean, per channel), 0.85 % of a core per channel; clear calls recorded
+  with every voice frame on air.
 - **Browser (WebAssembly, Chrome):** the same calls as the native build on the
   same capture (identical lengths; one bit-exact, the other within ±2 LSB from
   floating-point rounding), 7 % of a core in real time, 30 s of air decoded in
@@ -153,7 +161,8 @@ NAC 0x443, from an R820T RTL-SDR):
 4. ~~Web build: the same core as WebAssembly in a Web Worker, WebUSB, OPFS
    storage, the same interface~~ — done (verified on captures; live WebUSB
    needs a hands-on test)
-5. Phase 2 TDMA voice (H-DQPSK, AMBE+2) — feature parity with the archive
+5. ~~Phase 2 TDMA voice (H-DQPSK, AMBE+2) — feature parity with the archive~~
+   — done (verified on real air from captures)
 6. Release packaging (prebuilt binaries); optional USRP support via UHD (C++,
    an opt-in build feature)
 

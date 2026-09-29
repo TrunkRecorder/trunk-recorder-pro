@@ -31,11 +31,13 @@ pub struct Options {
     /// detection. Worse than differential on the simulcast tested so far.
     pub coherent: bool,
     pub pll_kp: f32,
+    /// Symbol rate: 4800 (Phase 1) or 6000 (Phase 2 H-DQPSK).
+    pub baud: f64,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Options { eq_taps: 0, eq_mu: 0.02, soft_amplitude: true, coherent: false, pll_kp: 0.04 }
+        Options { eq_taps: 0, eq_mu: 0.02, soft_amplitude: true, coherent: false, pll_kp: 0.04, baud: 4800.0 }
     }
 }
 
@@ -103,7 +105,7 @@ pub struct Cqpsk {
 
 impl Cqpsk {
     pub fn new(fs: f64, mut opt: Options) -> Self {
-        let sps = fs / 4800.0;
+        let sps = fs / opt.baud;
         let alpha = 0.35;
         let persym = (sps.round() as usize).max(1);
         let span = (512 / persym).clamp(4, 11);
@@ -211,8 +213,9 @@ impl Cqpsk {
             self.prev = s;
             // No sync for ~1 s: the loop may sit on a wrong equilibrium. Re-pick
             // the sampling phase by energy.
-            if self.symbols - self.last_sync > 4800 && self.symbols - self.last_reacq > 2400 {
-                self.reacquire();
+            let baud = self.opt.baud as u64;
+            if self.symbols - self.last_sync > baud && self.symbols - self.last_reacq > baud / 2 {
+                self.reacquire(end);
             }
         }
         let keep = (REACQ_SYMBOLS as f64 * sps) as u64 + 8;
@@ -253,7 +256,7 @@ impl Cqpsk {
         self.symbol(y, at, out);
     }
 
-    fn reacquire(&mut self) {
+    fn reacquire(&mut self, end: f64) {
         self.last_reacq = self.symbols;
         let from = self.pos - REACQ_SYMBOLS as f64 * self.sps;
         if from < self.y_base as f64 + 1.0 {
@@ -273,7 +276,11 @@ impl Cqpsk {
             }
         }
         // `from` is a whole number of symbols behind pos, so phase 0 ≡ pos.
-        let shift = ((best as f64 / 16.0) * self.sps + self.sps / 2.0).rem_euclid(self.sps) - self.sps / 2.0;
+        let mut shift = ((best as f64 / 16.0) * self.sps + self.sps / 2.0).rem_euclid(self.sps) - self.sps / 2.0;
+        // Never past the filtered samples we have: step back a symbol instead.
+        if self.pos + shift + 2.0 >= end {
+            shift -= self.sps;
+        }
         self.pos += shift;
         self.rate = 0.0;
         self.prev = Complex32::new(Self::at(&self.yi, self.y_base, self.pos), Self::at(&self.yq, self.y_base, self.pos));
@@ -324,9 +331,14 @@ impl Cqpsk {
             rel_lo: r.re.abs() * norm,
         });
         self.sr = ((self.sr << 2) | dib as u64) & 0xFFFF_FFFF_FFFF;
-        const FS: u64 = 0x5575_F5FF_77FF;
-        const INV: u64 = 0xAAAA_AAAA_AAAA;
-        if self.symbols - self.last_sync >= 24 && ((self.sr ^ FS).count_ones() <= 4 || (self.sr ^ FS ^ INV).count_ones() <= 4) {
+        // Frame sync: Phase 1's 48 bits, or Phase 2's 40-bit S-ISCH.
+        let (fs, inv, mask, len) = if self.opt.baud > 5000.0 {
+            (0x57_5D57_F7FFu64, 0xAA_AAAA_AAAAu64, 0xFF_FFFF_FFFFu64, 20)
+        } else {
+            (0x5575_F5FF_77FF, 0xAAAA_AAAA_AAAA, 0xFFFF_FFFF_FFFF, 24)
+        };
+        let sr = self.sr & mask;
+        if self.symbols - self.last_sync >= len && ((sr ^ fs).count_ones() <= 4 || (sr ^ fs ^ inv).count_ones() <= 4) {
             self.syncs += 1;
             self.last_sync = self.symbols;
         }

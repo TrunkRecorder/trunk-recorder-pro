@@ -5,6 +5,7 @@ pub mod engine;
 pub mod message;
 pub mod record;
 pub mod talkgroups;
+pub mod tdma;
 pub mod tracker;
 
 pub use calls::{Call, CallConfig, CallId};

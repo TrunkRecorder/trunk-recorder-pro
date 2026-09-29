@@ -75,7 +75,7 @@ export interface CallView {
   freqHz: number;
   slot: number | null;
   state: "recording" | "monitoring";
-  reason: "unknown_tg" | "encrypted" | "no_source" | "no_recorder" | "phase2_unsupported" | null;
+  reason: "unknown_tg" | "encrypted" | "no_source" | "no_recorder" | null;
   encrypted: boolean;
   emergency: boolean;
   startS: number;

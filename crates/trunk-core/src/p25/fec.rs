@@ -221,6 +221,12 @@ fn gpow(e: i32) -> i32 {
 /// A correction below `shortened_below` (a shortened code's zero padding)
 /// means a wrong codeword. Returns symbols corrected, or −1.
 pub fn rs_decode(cw: &mut [u8; 63], nroots: usize, shortened_below: usize) -> i32 {
+    rs_decode_erasures(cw, nroots, &[], shortened_below)
+}
+
+/// [`rs_decode`] with known-bad positions (`erasures`): errors-and-erasures
+/// Berlekamp–Massey. The count returned includes the erasures corrected.
+pub fn rs_decode_erasures(cw: &mut [u8; 63], nroots: usize, erasures: &[usize], shortened_below: usize) -> i32 {
     let n = 63i32;
     let s: Vec<i32> = (0..nroots)
         .map(|j| {
@@ -231,11 +237,22 @@ pub fn rs_decode(cw: &mut [u8; 63], nroots: usize, shortened_below: usize) -> i3
     if s.iter().all(|&v| v == 0) {
         return 0;
     }
+    let ne = erasures.len();
+    if ne > nroots {
+        return -1;
+    }
+    // Erasure locator Γ(x) = Π (1 − X_k x), X_k = α^(n−1−p).
     let mut lambda = vec![0i32; nroots + 1];
     lambda[0] = 1;
+    for &p in erasures {
+        let x = gpow(n - 1 - p as i32);
+        for j in (1..=nroots).rev() {
+            lambda[j] ^= gmul(lambda[j - 1], x);
+        }
+    }
     let mut b_poly = lambda.clone();
-    let (mut l, mut m, mut b) = (0usize, 1usize, 1i32);
-    for r in 0..nroots {
+    let (mut l, mut m, mut b) = (ne, 1usize, 1i32);
+    for r in ne..nroots {
         let mut d = s[r];
         for i in 1..=l {
             d ^= gmul(lambda[i], s[r - i]);
@@ -249,8 +266,8 @@ pub fn rs_decode(cw: &mut [u8; 63], nroots: usize, shortened_below: usize) -> i3
         for i in m..=nroots {
             lambda[i] ^= gmul(coef, b_poly[i - m]);
         }
-        if 2 * l <= r {
-            l = r + 1 - l;
+        if 2 * l <= r + ne {
+            l = r + 1 + ne - l;
             b_poly = t;
             b = d;
             m = 1;

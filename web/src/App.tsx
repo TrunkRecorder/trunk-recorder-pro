@@ -97,8 +97,6 @@ function reasonText(c: CallView): string {
       return "no free recorder";
     case "unknown_tg":
       return "not in talkgroup list";
-    case "phase2_unsupported":
-      return "Phase 2 — not supported yet";
     default:
       return "monitoring";
   }

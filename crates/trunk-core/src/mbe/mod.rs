@@ -1,12 +1,15 @@
-//! IMBE 7200x4400 (P25 Phase 1) vocoder: mbelib 1.3.0 (ISC) with Trunk
-//! Recorder's "enhanced" synthesis and TIA-102.BABA-A §7.7/§7.8 error
-//! concealment. Double precision throughout; the RNG is injectable so output
-//! can be compared sample by sample with the reference implementations.
-//! AMBE+2 (Phase 2) is still to come.
+//! IMBE 7200x4400 (P25 Phase 1) and AMBE+2 3600x2450 (P25 Phase 2) vocoders:
+//! mbelib 1.3.0 (ISC) with Trunk Recorder's "enhanced" synthesis and
+//! TIA-102.BABA-A §7.7/§7.8 error concealment. Double precision throughout;
+//! the RNG is injectable so output can be compared sample by sample with the
+//! reference implementations.
 
 use std::f64::consts::{E, PI};
 
-use crate::tables::{B2, BA, BO, HOBA, IMBE_JI, QUANTSTEP, STANDDEV, WS};
+use crate::tables::{
+    AMBE_DG, AMBE_HOCB5, AMBE_HOCB6, AMBE_HOCB7, AMBE_HOCB8, AMBE_LMPRBL, AMBE_LTABLE, AMBE_PRBA24, AMBE_PRBA58, AMBE_VUV, AMBE_W0TABLE, B2, BA, BO, HOBA,
+    IMBE_JI, QUANTSTEP, STANDDEV, WS,
+};
 
 pub const FRAME_SAMPLES: usize = 160;
 pub const SAMPLE_RATE: u32 = 8000;
@@ -439,11 +442,143 @@ fn decode_imbe4400_parms(d: &[u8; 88], cur: &mut Parms, prev: &mut Parms) -> boo
     true
 }
 
+/// What mbe_decodeAmbe2450Parms made of a frame.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Ambe {
+    Voice,
+    Erasure,
+    Tone,
+}
+
+/// mbe_decodeAmbe2450Parms.
+fn decode_ambe2450_parms(d: &[u8; 49], cur: &mut Parms, prev: &mut Parms) -> Ambe {
+    let bit = |i: usize| d[i] as usize;
+    let mut cik = [[0.0f64; 18]; 5];
+    let mut gm = [0.0f64; 9];
+    let mut ri = [0.0f64; 9];
+    let mut tl = [0.0f64; NL];
+    let mut flokl = [0.0f64; NL];
+    let mut deltal = [0.0f64; NL];
+    let mut intkl = [0usize; NL];
+    let mut silence = false;
+    let mut f0 = 0.0;
+    let mut l_count = 0usize;
+
+    cur.repeat = prev.repeat;
+    let b0 = (bit(0) << 6) | (bit(1) << 5) | (bit(2) << 4) | (bit(3) << 3) | (bit(37) << 2) | (bit(38) << 1) | bit(39);
+    match b0 {
+        120..=123 => return Ambe::Erasure,
+        124 | 125 => {
+            silence = true;
+            cur.w0 = 2.0 * PI / 32.0;
+            f0 = 1.0 / 32.0;
+            l_count = 14;
+            cur.l = 14;
+            for l in 1..=l_count {
+                cur.vl[l] = 0;
+            }
+        }
+        126 | 127 => return Ambe::Tone,
+        _ => {}
+    }
+    if !silence {
+        f0 = AMBE_W0TABLE[b0] as f64;
+        cur.w0 = f0 * 2.0 * PI;
+    }
+    let unvc = 0.2046 / cur.w0.sqrt();
+    if !silence {
+        l_count = AMBE_LTABLE[b0] as usize;
+        cur.l = l_count;
+    }
+
+    // V/UV
+    let b1 = (bit(4) << 4) | (bit(5) << 3) | (bit(6) << 2) | (bit(7) << 1) | bit(35);
+    for l in 1..=l_count {
+        let jl = (l as f64 * 16.0 * f0) as usize;
+        if !silence {
+            cur.vl[l] = AMBE_VUV[b1 * 8 + jl] as i8;
+        }
+    }
+    // gain
+    let b2 = (bit(8) << 4) | (bit(9) << 3) | (bit(10) << 2) | (bit(11) << 1) | bit(36);
+    cur.gamma = AMBE_DG[b2] as f64 + 0.5 * prev.gamma;
+
+    // PRBA vectors
+    let b3 = (bit(12) << 8) | (bit(13) << 7) | (bit(14) << 6) | (bit(15) << 5) | (bit(16) << 4) | (bit(17) << 3) | (bit(18) << 2) | (bit(19) << 1) | bit(40);
+    for k in 0..3 {
+        gm[2 + k] = AMBE_PRBA24[b3 * 3 + k] as f64;
+    }
+    let b4 = (bit(20) << 6) | (bit(21) << 5) | (bit(22) << 4) | (bit(23) << 3) | (bit(41) << 2) | (bit(42) << 1) | bit(43);
+    for k in 0..4 {
+        gm[5 + k] = AMBE_PRBA58[b4 * 4 + k] as f64;
+    }
+    for i in 1..=8 {
+        ri[i] = (1..=8).map(|m| (if m == 1 { 1.0 } else { 2.0 }) * gm[m] * (PI * (m - 1) as f64 * (i as f64 - 0.5) / 8.0).cos()).sum();
+    }
+    let rconst = 1.0 / (2.0 * std::f64::consts::SQRT_2);
+    for i in 1..=4 {
+        cik[i][1] = 0.5 * (ri[2 * i - 1] + ri[2 * i]);
+        cik[i][2] = rconst * (ri[2 * i - 1] - ri[2 * i]);
+    }
+
+    // HOC
+    let b5 = (bit(24) << 4) | (bit(25) << 3) | (bit(26) << 2) | (bit(27) << 1) | bit(44);
+    let b6 = (bit(28) << 3) | (bit(29) << 2) | (bit(30) << 1) | bit(45);
+    let b7 = (bit(31) << 3) | (bit(32) << 2) | (bit(33) << 1) | bit(46);
+    let b8 = (bit(34) << 2) | (bit(47) << 1) | bit(48);
+    let ji: [usize; 5] = [0, AMBE_LMPRBL[l_count * 4] as usize, AMBE_LMPRBL[l_count * 4 + 1] as usize, AMBE_LMPRBL[l_count * 4 + 2] as usize, AMBE_LMPRBL[l_count * 4 + 3] as usize];
+    let hoc: [(&[f32], usize); 4] = [(&AMBE_HOCB5, b5), (&AMBE_HOCB6, b6), (&AMBE_HOCB7, b7), (&AMBE_HOCB8, b8)];
+    for i in 1..=4 {
+        let (tbl, bi) = hoc[i - 1];
+        for k in 3..=ji[i] {
+            cik[i][k] = if k > 6 { 0.0 } else { tbl[bi * 4 + k - 3] as f64 };
+        }
+    }
+    // inverse DCT of each C(i,k) → T(l)
+    let mut l = 1;
+    for i in 1..=4 {
+        for j in 1..=ji[i] {
+            tl[l] = (1..=ji[i]).map(|k| (if k == 1 { 1.0 } else { 2.0 }) * cik[i][k] * (PI * (k - 1) as f64 * (j as f64 - 0.5) / ji[i] as f64).cos()).sum();
+            l += 1;
+        }
+    }
+
+    if cur.l > prev.l {
+        for l in prev.l + 1..=cur.l {
+            prev.ml[l] = prev.ml[prev.l];
+            prev.log2ml[l] = prev.log2ml[prev.l];
+        }
+    }
+    prev.log2ml[0] = prev.log2ml[1];
+    prev.ml[0] = prev.ml[1];
+
+    let mut sum43 = 0.0;
+    for l in 1..=cur.l {
+        flokl[l] = (prev.l as f64 / cur.l as f64) * l as f64;
+        intkl[l] = flokl[l] as usize;
+        deltal[l] = flokl[l] - intkl[l] as f64;
+        sum43 += (1.0 - deltal[l]) * prev.log2ml[intkl[l]] + deltal[l] * prev.log2ml[intkl[l] + 1];
+    }
+    sum43 *= 0.65 / cur.l as f64;
+    let sum42 = (1..=cur.l).map(|l| tl[l]).sum::<f64>() / cur.l as f64;
+    let big_gamma = cur.gamma - 0.5 * ((cur.l as f64).ln() / 2f64.ln()) - sum42;
+    for l in 1..=cur.l {
+        let c1 = 0.65 * (1.0 - deltal[l]) * prev.log2ml[intkl[l]];
+        let c2 = 0.65 * deltal[l] * prev.log2ml[intkl[l] + 1];
+        cur.log2ml[l] = tl[l] + c1 + c2 - sum43 + big_gamma;
+        cur.ml[l] = if cur.vl[l] == 1 { (0.693 * cur.log2ml[l]).exp() } else { unvc * (0.693 * cur.log2ml[l]).exp() };
+    }
+    Ambe::Voice
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Voice,
     Repeat,
     Muted,
+    /// AMBE erasure / tone frame (silence here).
+    Erasure,
+    Tone,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -454,8 +589,8 @@ pub enum Profile {
     Enhanced,
 }
 
-/// One IMBE stream (a P25 Phase 1 call). Frames must arrive in order; a new
-/// call wants [`Decoder::reset`].
+/// One vocoder stream (a P25 Phase 1 call, or one Phase 2 timeslot). Frames
+/// must arrive in order; a new call wants [`Decoder::reset`].
 pub struct Decoder {
     rand: Rng,
     uvq: usize,
@@ -526,6 +661,57 @@ impl Decoder {
         self.cur.repeat = 0;
         self.speak(out);
         Kind::Voice
+    }
+
+    /// 49 AMBE+2 information bits (mbelib's ambe_d, after FEC) → 160 samples.
+    /// Repeat rules are mbelib's (`errs` > 3 repeats; Trunk Recorder left
+    /// Phase 2's thresholds alone). "Enhanced" fades where mbelib cuts to
+    /// silence and resets: past 3 repeats, and on tone / erasure frames.
+    pub fn ambe(&mut self, d: &[u8; 49], errs: u32, out: &mut [f32; FRAME_SAMPLES]) -> Kind {
+        let enhanced = self.profile == Profile::Enhanced;
+        let r = decode_ambe2450_parms(d, &mut self.cur, &mut self.prev);
+        let mut kind = Kind::Voice;
+        match r {
+            Ambe::Erasure => {
+                self.cur.repeat = 0;
+                kind = Kind::Erasure;
+            }
+            Ambe::Tone => {
+                self.cur.repeat = 0;
+                kind = Kind::Tone;
+            }
+            Ambe::Voice if errs > 3 => {
+                move_parms(&self.prev, &mut self.cur);
+                self.cur.repeat += 1;
+                kind = Kind::Repeat;
+            }
+            Ambe::Voice => self.cur.repeat = 0,
+        }
+        if r == Ambe::Voice {
+            if self.cur.repeat <= 3 {
+                if enhanced {
+                    self.speak(out);
+                } else {
+                    move_parms(&self.cur, &mut self.prev);
+                    spectral_amp_enhance(&mut self.cur);
+                    synthesize_speech(out, &mut self.cur, &mut self.enh, self.uvq, &mut self.rand, None);
+                    move_parms(&self.cur, &mut self.enh);
+                }
+            } else if enhanced {
+                self.fade_out(out);
+                kind = Kind::Muted;
+            } else {
+                out.fill(0.0);
+                init_parms(&mut self.cur, &mut self.prev, &mut self.enh);
+                kind = Kind::Muted;
+            }
+        } else if enhanced {
+            self.fade_out(out);
+        } else {
+            out.fill(0.0);
+            init_parms(&mut self.cur, &mut self.prev, &mut self.enh);
+        }
+        kind
     }
 
     fn speak(&mut self, out: &mut [f32; FRAME_SAMPLES]) {

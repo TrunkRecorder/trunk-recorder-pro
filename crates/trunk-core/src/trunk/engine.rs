@@ -6,6 +6,8 @@
 //!   control channel head → receiver bank → TSDU groups → TSBKs → TsbkParser → CallManager
 //!   CallManager.start_recording → a voice head on whichever source covers the
 //!     frequency (with pre-roll) → receiver bank → VoiceTracker → audio
+//!     (Phase 2 TDMA: H-DQPSK receiver → slot framer → TdmaTracker, one head
+//!     for both slots)
 //!   call end → Concluded (TR JSON + audio)
 //! ```
 //!
@@ -22,11 +24,14 @@ use super::calls::{Call, CallConfig, CallEvent, CallId, CallManager, Reason, Rec
 use super::message::{Message, MessageType, TsbkParser};
 use super::record::{call_record, ConcludeInfo};
 use super::talkgroups::Talkgroups;
+use super::tdma::TdmaTracker;
 use super::tracker::{TrackerOut, VoiceTracker};
-use crate::dsp::{Channelizer, HeadId};
+use crate::dsp::cqpsk::{self, Cqpsk};
+use crate::dsp::{Channelizer, HeadId, Receiver, Symbol};
 use crate::mbe;
 use crate::p25::diversity::{best_frame, best_tsbks, Bank, BankConfig, Group};
 use crate::p25::frame::TSDU;
+use crate::p25::phase2::{self, Packet};
 
 /// One-sided channel filter cutoff for P25, Hz.
 const CHANNEL_CUTOFF_HZ: f64 = 7000.0;
@@ -126,15 +131,30 @@ struct Source {
     chz: Channelizer,
 }
 
+enum Voice {
+    /// Phase 1: receiver bank → IMBE tracker.
+    Fdma { bank: Bank, tracker: VoiceTracker },
+    /// Phase 2: H-DQPSK receiver → slot framer → TDMA tracker (both slots).
+    Tdma { rx: Cqpsk, framer: phase2::Framer, tracker: TdmaTracker, syms: Vec<Symbol>, pkts: Vec<Packet> },
+}
+
+impl Voice {
+    fn bad_frames(&self) -> u64 {
+        match self {
+            Voice::Fdma { tracker, .. } => tracker.bad_frames,
+            Voice::Tdma { tracker, .. } => tracker.bad_frames,
+        }
+    }
+}
+
 struct Channel {
     source: usize,
     head: HeadId,
     /// Absolute input sample (of its source) of the head's first output.
     start_sample: u64,
-    call: Option<CallId>,
-    call_tg: u32,
-    bank: Bank,
-    tracker: VoiceTracker,
+    /// The call on each TDMA slot (Phase 1: slot 0).
+    calls: [Option<CallId>; 2],
+    voice: Voice,
 }
 
 struct Recording {
@@ -154,7 +174,9 @@ struct Radio {
     preroll_s: f64,
     bank_cfg: BankConfig,
     groups: Vec<Group>,
-    tout: Vec<TrackerOut>,
+    tout: Vec<(usize, TrackerOut)>,
+    /// Phase 2 scrambler seed (NAC, System ID, WACN), once the control channel gave it.
+    tdma_key: Option<(u32, u32, u32)>,
     /// Audio / info produced inside start_recording (pre-roll), applied after.
     pending: Vec<(CallId, TrackerOut)>,
 }
@@ -164,16 +186,55 @@ impl Radio {
         self.sources.iter().position(|s| (hz - s.cfg.center_hz).abs() <= s.cfg.rate_hz / 2.0 * USABLE)
     }
 
-    /// Run a channel's receivers over `iq`, collecting what its tracker produced.
-    fn run_channel(ch: &mut Channel, iq: &[Complex32], rate: f64, src_rate: f64, groups: &mut Vec<Group>, tout: &mut Vec<TrackerOut>, flush: bool) {
-        groups.clear();
-        ch.bank.push(iq, groups);
-        if flush {
-            ch.bank.flush(groups);
+    /// Run a channel's receivers over `iq`, collecting what its tracker
+    /// produced as (slot, output).
+    fn run_channel(
+        ch: &mut Channel,
+        iq: &[Complex32],
+        rate: f64,
+        src_rate: f64,
+        key: Option<(u32, u32, u32)>,
+        groups: &mut Vec<Group>,
+        tout: &mut Vec<(usize, TrackerOut)>,
+        flush: bool,
+    ) {
+        let t0 = ch.start_sample as f64 / src_rate;
+        match &mut ch.voice {
+            Voice::Fdma { bank, tracker } => {
+                groups.clear();
+                bank.push(iq, groups);
+                if flush {
+                    bank.flush(groups);
+                }
+                let mut out = Vec::new();
+                for g in groups.iter() {
+                    tracker.group(g, t0 + best_frame(g).sample / rate, &mut out);
+                }
+                tout.extend(out.into_iter().map(|o| (0, o)));
+            }
+            Voice::Tdma { rx, framer, tracker, syms, pkts } => {
+                if let Some((nac, sys, wacn)) = key {
+                    tracker.set_key(nac, sys, wacn);
+                }
+                syms.clear();
+                pkts.clear();
+                rx.push(iq, syms);
+                for s in syms.iter() {
+                    framer.push(s, pkts);
+                }
+                for p in pkts.iter() {
+                    tracker.packet(p, t0 + p.sample / rate, tout);
+                }
+            }
         }
-        for g in groups.iter() {
-            let t = ch.start_sample as f64 / src_rate + best_frame(g).sample / rate;
-            ch.tracker.group(g, t, tout);
+    }
+
+    /// Hand a channel's outputs to the calls on its slots.
+    fn route(ch: &Channel, tout: &mut Vec<(usize, TrackerOut)>, pending: &mut Vec<(CallId, TrackerOut)>) {
+        for (slot, o) in tout.drain(..) {
+            if let Some(id) = ch.calls[slot & 1] {
+                pending.push((id, o));
+            }
         }
     }
 }
@@ -181,9 +242,6 @@ impl Radio {
 impl RecorderHost for Radio {
     fn start_recording(&mut self, call: &Call) -> Result<(), Reason> {
         let Some(src) = self.source_for(call.freq_hz as f64) else { return Err(Reason::NoSource) };
-        if call.phase2_tdma {
-            return Err(Reason::Phase2Unsupported);
-        }
         if self.recordings.len() >= self.max_recorders {
             return Err(Reason::NoRecorder);
         }
@@ -192,37 +250,43 @@ impl RecorderHost for Radio {
             self.next_num - 1
         });
         self.recordings.insert(call.id, Recording { audio: Vec::new(), recorder_num });
+        let slot = if call.phase2_tdma { call.tdma_slot as usize & 1 } else { 0 };
         if let Some(ch) = self.channels.get_mut(&call.freq_hz) {
-            // A newer call on the same channel takes it over, as in Trunk Recorder.
-            ch.call = Some(call.id);
-            ch.call_tg = call.talkgroup;
+            // A newer call on the same channel (slot) takes it over, as in Trunk Recorder.
+            ch.calls[slot] = Some(call.id);
             return Ok(());
         }
         let s = &mut self.sources[src];
         let rate = s.chz.output_rate();
         let (head, pre, start_sample) = s.chz.add_head(call.freq_hz as f64 - s.cfg.center_hz, CHANNEL_CUTOFF_HZ, self.preroll_s);
         let seed = call.freq_hz as u32;
-        let mut ch = Channel {
-            source: src,
-            head,
-            start_sample,
-            call: Some(call.id),
-            call_tg: call.talkgroup,
-            bank: Bank::new(rate, self.bank_cfg),
-            tracker: VoiceTracker::new(mbe::lcg(seed)),
+        let voice = if call.phase2_tdma {
+            let mut tracker = TdmaTracker::new(seed);
+            tracker.soft = self.bank_cfg.soft;
+            let rx = Cqpsk::new(rate, cqpsk::Options { baud: phase2::SYMBOL_RATE, ..Default::default() });
+            Voice::Tdma { rx, framer: phase2::Framer::default(), tracker, syms: Vec::new(), pkts: Vec::new() }
+        } else {
+            Voice::Fdma { bank: Bank::new(rate, self.bank_cfg), tracker: VoiceTracker::new(mbe::lcg(seed)) }
         };
+        let mut calls = [None, None];
+        calls[slot] = Some(call.id);
+        let mut ch = Channel { source: src, head, start_sample, calls, voice };
         // Pre-roll: decode the replayed air now.
         self.tout.clear();
-        Self::run_channel(&mut ch, &pre, rate, s.cfg.rate_hz, &mut self.groups, &mut self.tout, false);
-        for o in self.tout.drain(..) {
-            self.pending.push((call.id, o));
-        }
+        Self::run_channel(&mut ch, &pre, rate, s.cfg.rate_hz, self.tdma_key, &mut self.groups, &mut self.tout, false);
+        Self::route(&ch, &mut self.tout, &mut self.pending);
         self.channels.insert(call.freq_hz, ch);
         Ok(())
     }
 
     fn stop_recording(&mut self, call: &Call) {
-        if self.channels.get(&call.freq_hz).is_some_and(|ch| ch.call == Some(call.id)) {
+        let Some(ch) = self.channels.get_mut(&call.freq_hz) else { return };
+        for c in ch.calls.iter_mut() {
+            if *c == Some(call.id) {
+                *c = None;
+            }
+        }
+        if ch.calls.iter().all(Option::is_none) {
             let ch = self.channels.remove(&call.freq_hz).unwrap();
             self.sources[ch.source].chz.remove_head(ch.head);
         }
@@ -273,6 +337,7 @@ impl Engine {
                 bank_cfg: cfg.bank,
                 groups: Vec::new(),
                 tout: Vec::new(),
+                tdma_key: None,
                 pending: Vec::new(),
             },
             calls: CallManager::new(cfg.calls, talkgroups),
@@ -383,14 +448,9 @@ impl Engine {
             let ch = self.radio.channels.get_mut(&f).unwrap();
             let src_rate = self.radio.sources[ch.source].cfg.rate_hz;
             let rate = self.radio.sources[ch.source].chz.output_rate();
-            let id = ch.call;
             self.radio.tout.clear();
-            Radio::run_channel(ch, &[], rate, src_rate, &mut self.radio.groups, &mut self.radio.tout, true);
-            if let Some(id) = id {
-                for o in self.radio.tout.drain(..) {
-                    self.radio.pending.push((id, o));
-                }
-            }
+            Radio::run_channel(ch, &[], rate, src_rate, self.radio.tdma_key, &mut self.radio.groups, &mut self.radio.tout, true);
+            Radio::route(ch, &mut self.radio.tout, &mut self.radio.pending);
         }
         self.apply_pending();
         self.calls.end_all(&mut self.radio, &mut self.call_events);
@@ -431,12 +491,8 @@ impl Engine {
             let Some(ch) = radio.channels.get_mut(&f) else { continue };
             let Some(iq) = radio.sources[source].chz.output(ch.head) else { continue };
             radio.tout.clear();
-            Radio::run_channel(ch, iq, rate, src_rate, &mut radio.groups, &mut radio.tout, false);
-            if let Some(id) = ch.call {
-                for o in radio.tout.drain(..) {
-                    radio.pending.push((id, o));
-                }
-            }
+            Radio::run_channel(ch, iq, rate, src_rate, radio.tdma_key, &mut radio.groups, &mut radio.tout, false);
+            Radio::route(ch, &mut radio.tout, &mut radio.pending);
         }
         // The control channel.
         if source == self.cc_source {
@@ -487,6 +543,9 @@ impl Engine {
                         }
                         _ => {}
                     }
+                }
+                if let (Some(nac), Some(sys), Some(wacn)) = (self.identity.nac, self.identity.sys_id, self.identity.wacn) {
+                    self.radio.tdma_key = Some((nac as u32, sys, wacn));
                 }
                 self.calls.handle(&msgs, &mut self.radio, &mut self.call_events);
                 self.events.extend(msgs.into_iter().map(Event::Message));
@@ -551,7 +610,7 @@ impl Engine {
         if audio.is_empty() && !self.cfg.keep_silent_calls {
             return;
         }
-        let errors = self.radio.channels.get(&call.freq_hz).map_or(0, |ch| ch.tracker.bad_frames);
+        let errors = self.radio.channels.get(&call.freq_hz).map_or(0, |ch| ch.voice.bad_frames());
         let (json, base_name) = call_record(
             call,
             &ConcludeInfo {

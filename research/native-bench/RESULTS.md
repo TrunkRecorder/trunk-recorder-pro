@@ -243,7 +243,8 @@ receivers on every channel, decode, vocoder and files.
 
 **Not done yet:**
 - **Phase 2 TDMA** (H-DQPSK, AMBE+2, scrambling). DCFD's 770 MHz grants are
-  TDMA; they are out of this capture's band anyway.
+  TDMA; they are out of this capture's band anyway. *(Since done, in Rust:
+  see [Phase 2 TDMA in Rust](#phase-2-tdma-in-rust-2026-09-29).)*
 - **Live input.** Needs librtlsdr/libusb async plus several dongles in one
   engine.
 - **Other features:**
@@ -354,6 +355,79 @@ Tools: `gen_lsm.ts`, `score_lsm.py` and `lsm_eval.sh` (synthetic ground truth);
 `simulcast_eval.sh` (real captures); `p25tool` flags `--trellis`, `--soft`,
 `--flywheel`, `--nidrecover`, `--softfec`, `--eq`/`--mu`, `--coherent`,
 `--diversity`.
+
+## Phase 2 TDMA in Rust (2026-09-29)
+
+**Capture.** DCFD's control channel grants TDMA voice on 769.9–774.3 MHz. Two
+RTL-SDRs recorded 180 s at the same time: SN 200 on the control channel
+(858.3 MHz) and SN 91 on three TDMA channels (770.7 MHz centre). Both ran at
+2.4 MSPS with 0 samples dropped. Most TDMA talkgroups on this site use AES
+(algid 0x84). TGs 2203 and 2207 are clear.
+
+**What was ported** (from the archived TS engine's op25-derived `phase2.ts`
+and mbelib's AMBE+2):
+
+- the 6000 sym/s H-DQPSK receiver (the CQPSK receiver with a symbol-rate
+  option);
+- the slot framer (S-ISCH sync, I-ISCH slot confidence);
+- the scrambler (WACN / SysID / NAC from the control channel);
+- DUID decoding, AMBE codeword FEC (Golay 24 + PN-masked Golay 23, soft
+  Chase-II on c1);
+- ESS (RS(44,16)) and MAC PDUs (RS(63,35) with erasures, CRC-12);
+- the AMBE+2 vocoder;
+- a per-channel TDMA tracker (both slots, PTT / END_PTT, cipher). One channel
+  head serves both slots' calls.
+
+**Equivalence with the TS decoder** (`ts_p2_check.ts` re-decodes the raw
+slot dibits `trunk-lite tool p2 --soft none` printed):
+
+| | Compared | Mismatches |
+|---|---|---|
+| Burst types | 6,741 slots | 0 |
+| AMBE codewords (bits + FEC error count) | 10,588 | 0 |
+| MAC PDUs | 3,741 | 0 |
+| AMBE+2 vocoder audio, both slots, two channels | 210 s | max difference 0 |
+
+**Receiver vs the TS H-DQPSK chain** (`ts_p2_rx.ts`, the same channel IQ;
+"clean" = AMBE codeword with ≤ 1 bit corrected):
+
+| Channel | TS slots | Rust slots | TS clean | Rust clean | Rust MAC ok / fail |
+|---|---|---|---|---|---|
+| 769.9062 | 2013 | 2016 | 90.2 % | 90.4 % | 1071 / 142 |
+| 770.4688 | 2842 | 2844 | 82.1 % | 82.2 % | 1042 / 314 |
+| 770.9688 | 4725 | 4725 | 97.1 % | 97.1 % | 2440 / 88 |
+
+Rust costs 0.85 % of a core per channel, channelizer included. The TS
+demodulator alone costs 2 %. The T/2 CMA equaliser is slightly worse here
+(5 taps: −0.1 to −1.3 points), so TDMA channels run the plain receiver.
+
+**The engine end to end** (`replay` with both captures):
+
+- **Slot mapping:** MAC_PTT talkgroups sit on the grants' TDMA slots (TG 2207
+  and 2203 on logical channel 1, as granted).
+- **Encryption:** three calls not flagged encrypted in their grants were
+  found encrypted from the voice channel (PTT / ESS algid 0x84).
+- **Clear calls:** all three were recorded. Two have exactly the audio on air
+  (5.12 s and 3.16 s of voice frames). The third was already in progress at
+  capture start (heard via an update at 0.26 s) and is 0.7 s short of its
+  11.8 s.
+- **Speed:** 180 s of air from both sources in 4.9 s.
+
+**Bug found on the way.** The CQPSK receiver's re-acquisition could move the
+sampling point past the filtered samples. It panicked on a TDMA channel
+demodulated as Phase 1, where there is no Phase 1 sync, so it re-acquires
+every 0.5 s. It now steps back a symbol instead. Phase 1 output is unchanged:
+byte-identical audio on the DCFD captures.
+
+**Reproduce:**
+
+```bash
+trunk-lite replay --source p2cc.cu8,858300000,2400000 --source p2v.cu8,770700000,2400000 --cc 857987500 --out out/
+trunk-lite tool p2 p2v.cu8 --center 770700000 --freq 770968750 --nac 0x443 --sysid 0x445 --wacn 0xbee00 --soft none --audio rs.f32 --slot 0 > p2.jsonl
+node --experimental-strip-types ts_p2_check.ts p2.jsonl 0x443 0x445 0xbee00 rs.f32 0
+trunk-lite tool voice p2v.cu8 --center 770700000 --freq 770968750 --iq ch.cf32 > /dev/null
+node --experimental-strip-types ts_p2_rx.ts ch.cf32 37500 0x443 0x445 0xbee00
+```
 
 ## Where Trunk Recorder's CPU goes
 
