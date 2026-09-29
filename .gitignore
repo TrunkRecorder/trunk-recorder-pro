@@ -1,0 +1,6 @@
+node_modules/
+dist/
+captures/
+*.cu8
+*.tsbuildinfo
+.DS_Store
