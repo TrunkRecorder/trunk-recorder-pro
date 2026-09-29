@@ -16,7 +16,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use chrono::{Datelike, Local, TimeZone};
 use serde_json::{json, Value};
 use tokio::sync::broadcast;
-use trunk_core::trunk::{parse_csv, Call, Engine, Event};
+use trunk_app::{Output, Session};
 
 use crate::config::{Config, Source};
 use crate::sdr::{self, RtlConfig, SourceMsg};
@@ -87,12 +87,9 @@ pub fn start(ctx: Arc<Ctx>, cfg: Config) -> Result<Runner, String> {
         return Err(p);
     }
     let epoch_ms = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_millis() as f64);
-    let talkgroups = parse_csv(&cfg.system.talkgroups_csv);
-    let mut engine = Engine::new(cfg.engine_config(epoch_ms), talkgroups)?;
     let bandplan_path = crate::config::config_dir().join(format!("{}.bandplan", cfg.system.short_name));
-    if let Ok(s) = fs::read_to_string(&bandplan_path) {
-        engine.load_bandplan(&s);
-    }
+    let saved_plan = fs::read_to_string(&bandplan_path).ok();
+    let session = Session::new(cfg.clone(), epoch_ms, saved_plan.as_deref(), local_ymd)?;
     let stop = Arc::new(AtomicBool::new(false));
     let (tx, rx) = mpsc::sync_channel::<SourceMsg>(256);
     let centers = cfg.resolved_centers();
@@ -113,7 +110,7 @@ pub fn start(ctx: Arc<Ctx>, cfg: Config) -> Result<Runner, String> {
     threads.push(
         std::thread::Builder::new()
             .name("engine".into())
-            .spawn(move || engine_thread(ctx2, cfg, engine, rx, stop2, bandplan_path))
+            .spawn(move || engine_thread(ctx2, cfg, session, rx, stop2, bandplan_path))
             .map_err(|e| e.to_string())?,
     );
     Ok(Runner { stop, threads })
@@ -153,25 +150,17 @@ fn run_file(source: usize, path: &str, rate_hz: f64, realtime: bool, tx: SyncSen
     let _ = tx.send(SourceMsg::End { source });
 }
 
-#[derive(Default, Clone)]
-struct SourceStats {
-    bytes: u64,
-    dropped: u64,
-    errors: u64,
-    last_error: Option<String>,
-    rate_measured: f64,
-    ended: bool,
+fn local_ymd(t: i64) -> (i32, u32, u32) {
+    let d = Local.timestamp_opt(t, 0).single().unwrap_or_else(Local::now);
+    (d.year(), d.month(), d.day())
 }
 
-fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut engine: Engine, rx: mpsc::Receiver<SourceMsg>, stop: Arc<AtomicBool>, bandplan_path: PathBuf) {
+fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Receiver<SourceMsg>, stop: Arc<AtomicBool>, bandplan_path: PathBuf) {
     ctx.set_phase("running", None, false);
     let dir = PathBuf::from(&cfg.recording.capture_dir);
-    let n = cfg.sources.len();
-    let mut stats = vec![SourceStats::default(); n];
-    let mut rate_mark = (Instant::now(), vec![0u64; n]);
-    let (mut busy, t0) = (Duration::ZERO, Instant::now());
-    let (mut last_status, mut last_spec) = (Instant::now(), Instant::now());
-    let mut log: Vec<Value> = Vec::new();
+    let t0 = Instant::now();
+    let now_ms = || t0.elapsed().as_secs_f64() * 1000.0;
+    let mut out = Vec::new();
     let mut ended_all = false;
     loop {
         if stop.load(Ordering::Relaxed) {
@@ -180,19 +169,12 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut engine: Engine, rx: mpsc::Recei
         match rx.recv_timeout(Duration::from_millis(50)) {
             Ok(SourceMsg::Data { source, bytes, dropped }) => {
                 let t = Instant::now();
-                engine.push_u8(source, &bytes);
-                busy += t.elapsed();
-                stats[source].bytes += bytes.len() as u64;
-                stats[source].dropped += dropped;
+                session.push(source, &bytes, dropped);
+                session.add_busy_ms(t.elapsed().as_secs_f64() * 1000.0);
             }
-            Ok(SourceMsg::Error { source, error }) => {
-                stats[source].errors += 1;
-                stats[source].last_error = Some(error.clone());
-                log.push(json!({ "timeS": engine.status().now_s, "kind": "error", "text": format!("source {source}: {error}") }));
-            }
+            Ok(SourceMsg::Error { source, error }) => session.source_error(source, &error),
             Ok(SourceMsg::End { source }) => {
-                stats[source].ended = true;
-                if stats.iter().all(|s| s.ended) {
+                if session.source_ended(source) {
                     // (Not "ended" when the user stopped it: the file thread ends on stop too.)
                     ended_all = !stop.load(Ordering::Relaxed);
                     break;
@@ -201,137 +183,43 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut engine: Engine, rx: mpsc::Recei
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
         }
-        for ev in engine.drain_events() {
-            handle_event(&ctx, &cfg, &dir, &engine, ev, &mut log);
-        }
-        if last_spec.elapsed() >= Duration::from_millis(150) {
-            last_spec = Instant::now();
-            for (i, s) in engine.sources().iter().enumerate() {
-                let bins: Vec<f32> = engine.spectrum(i, 512).iter().map(|v| (v * 10.0).round() / 10.0).collect();
-                publish(&ctx.hub, json!({ "type": "spectrum", "source": i, "centerHz": s.center_hz, "rateHz": s.rate_hz, "bins": bins }));
-            }
-        }
-        if last_status.elapsed() >= Duration::from_millis(500) {
-            last_status = Instant::now();
-            let dt = rate_mark.0.elapsed().as_secs_f64();
-            if dt >= 1.0 {
-                for (i, s) in stats.iter_mut().enumerate() {
-                    s.rate_measured = (s.bytes - rate_mark.1[i]) as f64 / 2.0 / dt;
-                    rate_mark.1[i] = s.bytes;
-                }
-                rate_mark.0 = Instant::now();
-            }
-            if !log.is_empty() {
-                publish(&ctx.hub, json!({ "type": "log", "lines": std::mem::take(&mut log) }));
-            }
-            publish(&ctx.hub, status_json(&cfg, &engine, &stats, busy.as_secs_f64() / t0.elapsed().as_secs_f64().max(1e-3)));
-        }
+        session.want_audio = ctx.hub.receiver_count() > 0;
+        session.poll(now_ms(), &mut out);
+        deliver(&ctx, &dir, &mut out);
     }
     ctx.set_phase("stopping", None, false);
-    engine.finish();
-    for ev in engine.drain_events() {
-        handle_event(&ctx, &cfg, &dir, &engine, ev, &mut log);
-    }
-    if !log.is_empty() {
-        publish(&ctx.hub, json!({ "type": "log", "lines": log }));
-    }
+    session.finish(&mut out);
+    deliver(&ctx, &dir, &mut out);
     let _ = fs::create_dir_all(bandplan_path.parent().unwrap_or(Path::new(".")));
-    let _ = fs::write(&bandplan_path, engine.bandplan());
+    let _ = fs::write(&bandplan_path, session.bandplan());
     stop.store(true, Ordering::Relaxed);
     ctx.set_phase("idle", None, ended_all);
 }
 
-fn call_view(c: &Call) -> Value {
-    json!({
-        "id": c.id,
-        "talkgroup": c.talkgroup,
-        "alphaTag": c.talkgroup_info.as_ref().map_or("", |t| t.alpha_tag.as_str()),
-        "freqHz": c.freq_hz,
-        "slot": if c.phase2_tdma { Some(c.tdma_slot) } else { None },
-        "state": if c.recording { "recording" } else { "monitoring" },
-        "reason": c.reason.map(|r| r.as_str()),
-        "encrypted": c.encrypted,
-        "emergency": c.emergency,
-        "startS": c.start_s,
-        "sources": c.sources.iter().map(|s| s.src).collect::<Vec<_>>(),
-    })
-}
-
-fn status_json(cfg: &Config, engine: &Engine, stats: &[SourceStats], load: f64) -> Value {
-    let st = engine.status();
-    let id = &st.identity;
-    let sources: Vec<Value> = cfg
-        .sources
-        .iter()
-        .zip(engine.sources())
-        .zip(stats)
-        .enumerate()
-        .map(|(i, ((s, sc), ss))| {
-            let label = match s {
-                Source::Rtlsdr { serial, .. } => format!("RTL-SDR {}", if serial.is_empty() { "(first)".into() } else { format!("SN {serial}") }),
-                Source::File { path, .. } => format!("file {}", Path::new(path).file_name().map_or(path.clone(), |f| f.to_string_lossy().into_owned())),
-            };
-            json!({ "index": i, "label": label, "centerHz": sc.center_hz, "rateHz": sc.rate_hz, "rateMeasured": ss.rate_measured,
-                    "dropped": ss.dropped, "errors": ss.errors, "lastError": ss.last_error, "ended": ss.ended })
-        })
-        .collect();
-    json!({
-        "type": "status",
-        "status": {
-            "nowS": st.now_s, "controlChannelHz": st.control_channel_hz,
-            "identity": { "nac": id.nac, "wacn": id.wacn, "sysId": id.sys_id, "rfss": id.rfss, "site": id.site },
-            "good": st.good, "bad": st.bad, "modulation": if st.modulation.is_empty() { None } else { Some(st.modulation) },
-            "activeCalls": st.active_calls, "recording": st.recording, "channelsOpen": st.channels_open, "callsConcluded": st.calls_concluded,
-        },
-        "sources": sources,
-        "load": load,
-        "calls": engine.active_calls().iter().map(call_view).collect::<Vec<_>>(),
-    })
-}
-
-fn handle_event(ctx: &Ctx, cfg: &Config, dir: &Path, engine: &Engine, ev: Event, log: &mut Vec<Value>) {
-    let _ = engine;
-    match ev {
-        Event::Message(m) => log.push(json!({ "timeS": m.time_s, "kind": m.kind.as_str(), "text": m.meta })),
-        Event::ControlChannel { freq_hz } => {
-            log.push(json!({ "timeS": 0, "kind": "control", "text": format!("Control channel {:.5} MHz", freq_hz as f64 / 1e6) }))
-        }
-        Event::Audio { call_id, talkgroup, samples } => {
-            if ctx.hub.receiver_count() == 0 {
-                return;
+/// Write call files, keep history, forward everything to the browsers.
+fn deliver(ctx: &Ctx, dir: &Path, out: &mut Vec<Output>) {
+    for o in out.drain(..) {
+        match o {
+            Output::Text(t) => {
+                let _ = ctx.hub.send(Arc::new(Out::Text(t)));
             }
-            let mut frame = Vec::with_capacity(9 + samples.len() * 2);
-            frame.push(1u8);
-            frame.extend_from_slice(&call_id.to_le_bytes());
-            frame.extend_from_slice(&talkgroup.to_le_bytes());
-            for s in samples {
-                frame.extend_from_slice(&((s.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes());
+            Output::Audio { tg, frame } => {
+                let _ = ctx.hub.send(Arc::new(Out::Audio { tg, frame }));
             }
-            let _ = ctx.hub.send(Arc::new(Out::Audio { tg: talkgroup, frame }));
-        }
-        Event::Concluded(k) => {
-            // Trunk Recorder's layout: <shortName>/<year>/<month>/<day>/, local time.
-            let start_s = serde_json::from_str::<Value>(&k.json).ok().and_then(|v| v["start_time"].as_i64()).unwrap_or(0);
-            let t = Local.timestamp_opt(start_s, 0).single().unwrap_or_else(Local::now);
-            let rel = format!("{}/{}/{}/{}/{}", cfg.system.short_name, t.year(), t.month(), t.day(), k.base_name);
-            let base = dir.join(&rel);
-            if let Some(d) = base.parent() {
-                let _ = fs::create_dir_all(d);
-            }
-            let wav_ok = fs::write(format!("{}.wav", base.display()), trunk_core::wav::encode(&k.audio, 8000)).is_ok();
-            let _ = fs::write(format!("{}.json", base.display()), &k.json);
-            if !wav_ok {
-                log.push(json!({ "timeS": 0, "kind": "error", "text": format!("couldn't write {}", base.display()) }));
-            }
-            let entry = json!({ "path": rel, "record": serde_json::from_str::<Value>(&k.json).unwrap_or(Value::Null) });
-            {
+            Output::File { rel, wav, json, entry } => {
+                let base = dir.join(&rel);
+                if let Some(d) = base.parent() {
+                    let _ = fs::create_dir_all(d);
+                }
+                let ok = fs::write(format!("{}.wav", base.display()), wav).is_ok() && fs::write(format!("{}.json", base.display()), json).is_ok();
+                if !ok {
+                    publish(&ctx.hub, json!({ "type": "log", "lines": [{ "timeS": 0, "kind": "error", "text": format!("couldn't write {}", base.display()) }] }));
+                }
                 let mut h = ctx.history.lock().unwrap();
-                h.push_front(entry.clone());
+                h.push_front(entry);
                 h.truncate(500);
             }
-            publish(&ctx.hub, json!({ "type": "concluded", "entry": entry }));
         }
-        Event::CallStart(_) | Event::CallUpdate(_) | Event::CallEnd(_) => {}
     }
 }
 

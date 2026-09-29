@@ -22,11 +22,12 @@
 //!     One channel's decode, as JSON lines (the research/native-bench format).
 //! ```
 
-mod config;
 mod runtime;
 mod sdr;
 mod server;
 mod tool;
+
+pub use trunk_app::config;
 
 use std::collections::HashMap;
 use std::fs;

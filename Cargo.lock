@@ -1057,6 +1057,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "trunk-app"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "trunk-core",
+]
+
+[[package]]
 name = "trunk-core"
 version = "0.1.0"
 dependencies = [
@@ -1076,8 +1085,13 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "trunk-app",
  "trunk-core",
 ]
+
+[[package]]
+name = "trunk-web"
+version = "0.1.0"
 
 [[package]]
 name = "tungstenite"
