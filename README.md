@@ -42,8 +42,9 @@ kernel DVB driver is detached automatically).
 The browser version is the same engine compiled to WebAssembly, running in a
 Web Worker, with the dongle over WebUSB (Chrome or Edge) and calls kept in the
 browser's private storage (OPFS); **Export to folder…** copies them out in
-Trunk Recorder's layout. Serve `web/dist-web` (or the `-browser.zip` release)
-from any static web server over HTTPS or on `localhost` — WebUSB and module
+Trunk Recorder's layout. CI publishes it to GitHub Pages from `main`; or
+serve `web/dist-web` (or the `-browser.zip` release) from any static web
+server, in any folder, over HTTPS or on `localhost` — WebUSB and module
 workers don't run from `file://`. Press **Connect…** on a dongle source to pick
 it. The desktop app is the better choice for several dongles or long
 unattended runs.
