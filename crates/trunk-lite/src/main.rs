@@ -9,10 +9,16 @@
 //!     --recorders 32  --preroll 1  --timeout 3  --epoch <unix s>
 //!     --record-encrypted  --keep-silent  --no-unknown  --quiet
 //!
+//! trunk-lite devices
+//!     List RTL-SDR dongles.
+//! trunk-lite capture <out.cu8> --freq Hz --rate Hz [--gain dB] [--ppm 0] [--serial S] [--seconds 10]
+//!     Record raw u8 IQ, like rtl_sdr.
+//!
 //! trunk-lite tool cc|voice|frames <capture.cu8> --center Hz --rate Hz (--cc Hz | --freq Hz) [options]
 //!     One channel's decode, as JSON lines (the research/native-bench format).
 //! ```
 
+mod sdr;
 mod tool;
 
 use std::collections::HashMap;
@@ -72,6 +78,8 @@ fn main() {
     match argv.first().map(|s| s.as_str()) {
         Some("replay") => replay(&Args::parse(&argv[1..])),
         Some("tool") => tool::run(&Args::parse(&argv[1..])),
+        Some("devices") => sdr::list().iter().for_each(|d| println!("{d}")),
+        Some("capture") => capture(&Args::parse(&argv[1..])),
         _ => die("usage: trunk-lite replay|tool …  (see the top of crates/trunk-lite/src/main.rs)"),
     }
 }
@@ -202,4 +210,43 @@ fn handle_events(engine: &mut Engine, out_dir: &str, quiet: bool) -> usize {
         }
     }
     written
+}
+
+fn capture(a: &Args) {
+    use std::io::Write;
+    use std::sync::{atomic::AtomicBool, mpsc, Arc};
+    let out = a.positional.first().unwrap_or_else(|| die("capture <out.cu8> --freq Hz …"));
+    let cfg = sdr::RtlConfig {
+        serial: a.get("serial").unwrap_or("").into(),
+        center_hz: a.num("freq", 0.0) as u64,
+        rate_hz: a.num("rate", 2_400_000.0) as u32,
+        gain_db: a.get("gain").and_then(|g| g.parse().ok()),
+        ppm: a.num("ppm", 0.0) as i32,
+    };
+    let want = (a.num("seconds", 10.0) * cfg.rate_hz as f64) as u64 * 2;
+    let (tx, rx) = mpsc::sync_channel(64);
+    let stop = Arc::new(AtomicBool::new(false));
+    let s2 = stop.clone();
+    let c2 = cfg.clone();
+    let th = std::thread::spawn(move || sdr::run(0, c2, tx, s2));
+    let mut f = std::io::BufWriter::new(fs::File::create(out).unwrap_or_else(|e| die(&format!("{out}: {e}"))));
+    let (mut got, mut dropped) = (0u64, 0u64);
+    let t0 = Instant::now();
+    while got < want {
+        match rx.recv() {
+            Ok(sdr::SourceMsg::Data { bytes, dropped: d, .. }) => {
+                let n = (bytes.len() as u64).min(want - got) as usize;
+                let _ = f.write_all(&bytes[..n]);
+                got += n as u64;
+                dropped += d;
+            }
+            Ok(sdr::SourceMsg::Error { error, .. }) => eprintln!("{error}"),
+            Err(_) => break,
+        }
+    }
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    drop(rx);
+    let _ = th.join();
+    let secs = t0.elapsed().as_secs_f64();
+    eprintln!("{} samples in {secs:.2} s ({:.3} of real time), {dropped} dropped", got / 2, (got / 2) as f64 / cfg.rate_hz as f64 / secs);
 }
