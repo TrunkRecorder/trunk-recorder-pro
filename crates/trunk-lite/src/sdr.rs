@@ -25,11 +25,31 @@ pub fn list() -> Vec<String> {
     }
 }
 
+/// Attached dongles, for the browser: [{serial, product, index}].
+pub fn devices() -> Vec<serde_json::Value> {
+    Device::list()
+        .wait()
+        .map(|v| {
+            v.iter()
+                .map(|d| {
+                    serde_json::json!({
+                        "index": d.index,
+                        "serial": d.serial.clone().unwrap_or_default(),
+                        "product": d.product.clone().unwrap_or_else(|| "RTL-SDR".into()),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// What a source thread reports.
 pub enum SourceMsg {
     /// Raw u8 IQ, and samples the driver knows were dropped just before it.
     Data { source: usize, bytes: Vec<u8>, dropped: u64 },
     Error { source: usize, error: String },
+    /// A finite source (a capture file) has no more data.
+    End { source: usize },
 }
 
 /// Stream a dongle until `stop` is set; blocks go to `tx`. Reopens the device

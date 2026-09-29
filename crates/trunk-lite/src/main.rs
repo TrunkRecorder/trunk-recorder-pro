@@ -1,6 +1,10 @@
 //! Trunk Recorder Lite — command line.
 //!
 //! ```text
+//! trunk-lite [serve] [--config file.json] [--port 8080] [--bind 127.0.0.1] [--no-open]
+//!     The app: a browser interface at http://localhost:8080 to set up, start
+//!     and watch the recorder. Calls go to the capture folder in the config.
+//!
 //! trunk-lite replay <capture.cu8> --center Hz --rate Hz --cc Hz[,Hz…] [options]
 //! trunk-lite replay --source cap1.cu8,center,rate --source cap2.cu8,center,rate --cc Hz …
 //!     Record a trunked system from rtl_sdr captures (unsigned 8-bit IQ), writing
@@ -18,7 +22,10 @@
 //!     One channel's decode, as JSON lines (the research/native-bench format).
 //! ```
 
+mod config;
+mod runtime;
 mod sdr;
+mod server;
 mod tool;
 
 use std::collections::HashMap;
@@ -76,11 +83,13 @@ fn die(msg: &str) -> ! {
 fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     match argv.first().map(|s| s.as_str()) {
+        None | Some("serve") => serve(&Args::parse(argv.get(1..).unwrap_or(&[]))),
+        Some(s) if s.starts_with("--") => serve(&Args::parse(&argv)),
         Some("replay") => replay(&Args::parse(&argv[1..])),
         Some("tool") => tool::run(&Args::parse(&argv[1..])),
         Some("devices") => sdr::list().iter().for_each(|d| println!("{d}")),
         Some("capture") => capture(&Args::parse(&argv[1..])),
-        _ => die("usage: trunk-lite replay|tool …  (see the top of crates/trunk-lite/src/main.rs)"),
+        _ => die("usage: trunk-lite [serve] | replay | tool | devices | capture  (see the top of crates/trunk-lite/src/main.rs)"),
     }
 }
 
@@ -241,7 +250,7 @@ fn capture(a: &Args) {
                 dropped += d;
             }
             Ok(sdr::SourceMsg::Error { error, .. }) => eprintln!("{error}"),
-            Err(_) => break,
+            Ok(sdr::SourceMsg::End { .. }) | Err(_) => break,
         }
     }
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -249,4 +258,48 @@ fn capture(a: &Args) {
     let _ = th.join();
     let secs = t0.elapsed().as_secs_f64();
     eprintln!("{} samples in {secs:.2} s ({:.3} of real time), {dropped} dropped", got / 2, (got / 2) as f64 / cfg.rate_hz as f64 / secs);
+}
+
+fn serve(a: &Args) {
+    use std::collections::VecDeque;
+    use std::sync::{Arc, Mutex};
+    let config_path = a.get("config").map(std::path::PathBuf::from).unwrap_or_else(|| config::config_dir().join("config.json"));
+    let mut cfg = config::Config::load(&config_path);
+    if let Some(p) = a.get("port").and_then(|p| p.parse().ok()) {
+        cfg.server.port = p;
+    }
+    if let Some(b) = a.get("bind") {
+        cfg.server.bind = b.to_string();
+    }
+    let history = runtime::scan_history(Path::new(&cfg.recording.capture_dir), 300);
+    let addr: std::net::SocketAddr = format!("{}:{}", cfg.server.bind, cfg.server.port).parse().unwrap_or_else(|e| die(&format!("bind address: {e}")));
+    let (hub, _) = tokio::sync::broadcast::channel(4096);
+    let ctx = Arc::new(runtime::Ctx {
+        config_path: config_path.clone(),
+        config: Mutex::new(cfg),
+        hub,
+        runner: Mutex::new(None),
+        phase: Mutex::new(runtime::PhaseInfo { phase: "idle", error: None, ended: false }),
+        history: Mutex::new(history.into_iter().collect::<VecDeque<_>>()),
+    });
+    let url = format!("http://{}:{}", if addr.ip().is_unspecified() { "localhost".into() } else { addr.ip().to_string() }, addr.port());
+    println!("Trunk Recorder Lite {} — open {url}\nconfig: {}", env!("CARGO_PKG_VERSION"), config_path.display());
+    if !a.flag("no-open") {
+        open_browser(&url);
+    }
+    let rt = tokio::runtime::Runtime::new().unwrap_or_else(|e| die(&e.to_string()));
+    if let Err(e) = rt.block_on(server::serve(ctx.clone(), addr)) {
+        die(&format!("web server on {addr}: {e}"));
+    }
+}
+
+fn open_browser(url: &str) {
+    let r = if cfg!(target_os = "macos") {
+        std::process::Command::new("open").arg(url).spawn()
+    } else if cfg!(windows) {
+        std::process::Command::new("cmd").args(["/C", "start", "", url]).spawn()
+    } else {
+        std::process::Command::new("xdg-open").arg(url).spawn()
+    };
+    let _ = r;
 }

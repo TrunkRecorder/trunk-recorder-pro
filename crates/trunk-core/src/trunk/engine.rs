@@ -312,6 +312,11 @@ impl Engine {
         &self.cfg.sources
     }
 
+    /// Calls in progress (recording or monitoring).
+    pub fn active_calls(&self) -> &[Call] {
+        &self.calls.calls
+    }
+
     /// Everything that happened since the last call.
     pub fn drain_events(&mut self) -> Vec<Event> {
         std::mem::take(&mut self.events)

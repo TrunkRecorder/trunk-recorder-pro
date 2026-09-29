@@ -14,3 +14,9 @@ path = "src/main.rs"
 trunk-core.workspace = true
 serde_json.workspace = true
 rtlsdr-nusb = "0.3"
+serde.workspace = true
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "net", "time", "fs"] }
+axum = { version = "0.8", features = ["ws"] }
+rust-embed = "8"
+mime_guess = "2"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
