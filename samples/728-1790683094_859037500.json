@@ -1,0 +1,51 @@
+{
+  "call_num": 42,
+  "freq": 859037500,
+  "freq_error": 0,
+  "signal": 0,
+  "noise": 0,
+  "source_num": 0,
+  "recorder_num": 1,
+  "tdma_slot": 0,
+  "phase2_tdma": 0,
+  "start_time": 1790683094,
+  "stop_time": 1790683096,
+  "start_time_ms": 1790683094190,
+  "stop_time_ms": 1790683096665,
+  "emergency": 0,
+  "priority": 4,
+  "mode": 0,
+  "duplex": 0,
+  "encrypted": 0,
+  "call_length": 2,
+  "call_length_ms": 1800,
+  "talkgroup": 728,
+  "talkgroup_tag": "",
+  "talkgroup_description": "",
+  "talkgroup_group_tag": "",
+  "talkgroup_group": "",
+  "color_code": -1,
+  "audio_type": "digital",
+  "short_name": "sys1",
+  "freqList": [
+    {
+      "freq": 859037500,
+      "time": 1790683094,
+      "pos": 0,
+      "len": 1.8,
+      "error_count": 6,
+      "spike_count": 0
+    }
+  ],
+  "srcList": [
+    {
+      "src": 1116708,
+      "time": 1790683094,
+      "pos": 0,
+      "emergency": 0,
+      "signal_system": "",
+      "tag": "",
+      "tag_ota": ""
+    }
+  ]
+}
