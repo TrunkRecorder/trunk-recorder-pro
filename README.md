@@ -211,6 +211,10 @@ NAC 0x443, from an R820T RTL-SDR):
   max difference 0), the same receiver performance (82–97 % of codewords
   clean, per channel), 0.85 % of a core per channel; clear calls recorded
   with every voice frame on air.
+- **USRP B200, live** (through UHD 4.9, DCFD's control channel and voice at
+  858 MHz, 8 MSPS): exactly 8.000 MSPS with 0 samples dropped over 3 min,
+  99.8 % of TSBKs (3183 / 6), clear calls recorded with audio matching their
+  length, 3.6 % of one core.
 - **Browser (WebAssembly, Chrome):** the same calls as the native build on the
   same capture (identical lengths; one bit-exact, the other within ±2 LSB from
   floating-point rounding), 7 % of a core in real time, 30 s of air decoded in
@@ -235,8 +239,9 @@ NAC 0x443, from an R820T RTL-SDR):
    secrets are added)
 7. ~~Optional USRP (UHD) and Airspy (libairspy) sources~~ — done: drivers
    loaded at run time when installed; float (`cf32` / `cs16`) captures;
-   verified on captures and driver loading on macOS / Linux (streaming from
-   the hardware not yet tested)
+   verified live on a USRP B200 (8 MSPS, 0 dropped, 99.8 % of control
+   messages, 4 clear calls recorded in full, 3.6 % of a core); Airspy
+   streaming not yet tested on hardware
 
 ## License
 
