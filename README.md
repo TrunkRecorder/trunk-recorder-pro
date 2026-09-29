@@ -47,6 +47,14 @@ npm run replay -- capture.cu8 --center 858300000 --rate 2400000 \
 - **Linux**: unload/blacklist `dvb_usb_rtl28xxu` and add a udev rule for USB `0bda:2838`.
 - **Android**: Chrome + a USB-OTG adapter.
 
+### Where recordings go
+
+Into the browser's private storage (OPFS) for the page's origin, e.g.
+`http://localhost:5173` — not a normal folder. Play or download single calls
+from **Recent calls**, or copy them all out with **Export to folder…**. That
+writes `<system>/<date>/<talkgroup>-<epoch>_<freq>.wav|json` plus
+`index.ndjson`, Trunk Recorder's layout. `samples/` holds a first set.
+
 Recording stops if the tab closes or the computer sleeps. The page holds a
 screen wake lock while visible; for long unattended runs, set the OS not to
 sleep. If the USB link stalls (e.g. across a sleep/wake), the radio worker

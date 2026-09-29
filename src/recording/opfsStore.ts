@@ -92,6 +92,36 @@ export async function callFile(c: StoredCall, ext: "wav" | "json"): Promise<File
   return (await d.getFileHandle(`${c.baseName}.${ext}`)).getFile();
 }
 
+/**
+ * Copy every stored call into a folder the user picked (File System Access
+ * API, Chrome/Edge), as <dest>/<shortName>/<date>/<base>.wav|json plus
+ * index.ndjson — Trunk Recorder's layout. Returns the number of calls copied.
+ */
+export async function exportCalls(dest: FileSystemDirectoryHandle, onProgress?: (done: number, total: number) => void): Promise<number> {
+  const calls = await listCalls(Number.MAX_SAFE_INTEGER);
+  const write = async (dir: FileSystemDirectoryHandle, name: string, data: Blob | string) => {
+    const w = await (await dir.getFileHandle(name, { create: true })).createWritable();
+    await w.write(data);
+    await w.close();
+  };
+  let done = 0;
+  for (const c of calls) {
+    let d = dest;
+    for (const part of c.dir.split("/").filter(Boolean)) d = await d.getDirectoryHandle(part, { create: true });
+    try {
+      await write(d, `${c.baseName}.wav`, await callFile(c, "wav"));
+      await write(d, `${c.baseName}.json`, await callFile(c, "json"));
+      done++;
+    } catch {
+      /* listed in the index but missing from storage: skip */
+    }
+    onProgress?.(done, calls.length);
+  }
+  const index = await (await (await callsRoot()).getFileHandle(INDEX)).getFile();
+  await write(dest, INDEX, index);
+  return done;
+}
+
 export async function clearCalls(): Promise<void> {
   const root = await navigator.storage.getDirectory();
   await root.removeEntry("calls", { recursive: true }).catch(() => {});

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { formatMhz } from "../config.ts";
-import { callFile, clearCalls, storageEstimate, type StoredCall } from "../recording/opfsStore.ts";
+import { callFile, clearCalls, exportCalls, storageEstimate, type StoredCall } from "../recording/opfsStore.ts";
 import type { CallView } from "../worker/messages.ts";
 import {
   dismissError,
@@ -192,6 +192,24 @@ function History({ s }: { s: AppState }) {
   const [playing, setPlaying] = useState<{ key: string; url: string } | null>(null);
   const [filter, setFilter] = useState("");
   const [usage, setUsage] = useState<{ usage: number; quota: number; persisted: boolean } | null>(null);
+  const [exporting, setExporting] = useState<string | null>(null);
+  const canExport = typeof (window as { showDirectoryPicker?: unknown }).showDirectoryPicker === "function";
+  const onExport = async () => {
+    let dest: FileSystemDirectoryHandle;
+    try {
+      dest = await (window as unknown as { showDirectoryPicker(o: { mode: string }): Promise<FileSystemDirectoryHandle> }).showDirectoryPicker({ mode: "readwrite" });
+    } catch {
+      return; // picker cancelled
+    }
+    try {
+      const n = await exportCalls(dest, (d, t) => setExporting(`Exporting ${d} / ${t}…`));
+      setNotice(`Exported ${n} call${n === 1 ? "" : "s"} (WAV + JSON, plus index.ndjson) to “${dest.name}”.`);
+    } catch (e) {
+      setNotice(`Export failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setExporting(null);
+    }
+  };
   useEffect(() => {
     void storageEstimate().then(setUsage);
   }, [s.history.length]);
@@ -261,6 +279,12 @@ function History({ s }: { s: AppState }) {
       <footer className="panel-foot muted small">
         {usage ? `${(usage.usage / 1e6).toFixed(1)} MB used of ${(usage.quota / 1e9).toFixed(1)} GB in this browser's private storage${usage.persisted ? "" : " (may be evicted under disk pressure)"}` : ""}
         <span className="spacer" />
+        {exporting && <span>{exporting}</span>}
+        {canExport && s.history.length > 0 && (
+          <button className="btn ghost small" disabled={!!exporting} onClick={() => void onExport()} title="Copy every recorded call (WAV + JSON) into a folder on your disk">
+            Export to folder…
+          </button>
+        )}
         {!usage?.persisted && (
           <button className="btn ghost small" onClick={() => void navigator.storage.persist().then(() => storageEstimate().then(setUsage))}>
             Keep storage
