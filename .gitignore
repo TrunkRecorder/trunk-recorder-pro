@@ -10,3 +10,5 @@ research/native-bench/cpp/bench-novec
 research/native-bench/cpp/p25tool
 research/native-bench/cpp/recorder
 /target
+web/node_modules/
+web/dist/

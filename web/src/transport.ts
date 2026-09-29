@@ -1,0 +1,60 @@
+// How the interface reaches the recorder. The desktop app: a WebSocket to the
+// local trunk-lite server (reconnecting). The web build will provide a worker
+// transport with the same shape.
+
+import { decodeAudioFrame, type AudioChunk, type FromRecorder, type ToRecorder } from "./protocol.ts";
+
+export interface Transport {
+  send(msg: ToRecorder): void;
+  onMessage: (msg: FromRecorder) => void;
+  onAudio: (chunk: AudioChunk) => void;
+  onConnection: (connected: boolean) => void;
+  /** Where recorded files are served (desktop: the server's /calls/). */
+  callUrl(path: string, ext: "wav" | "json"): string;
+}
+
+export class WsTransport implements Transport {
+  onMessage: (msg: FromRecorder) => void = () => {};
+  onAudio: (chunk: AudioChunk) => void = () => {};
+  onConnection: (connected: boolean) => void = () => {};
+  private ws: WebSocket | null = null;
+  private queue: ToRecorder[] = [];
+  private retryMs = 500;
+
+  constructor(private readonly url = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api/ws`) {
+    this.connect();
+  }
+
+  private connect(): void {
+    const ws = new WebSocket(this.url);
+    ws.binaryType = "arraybuffer";
+    ws.onopen = () => {
+      this.retryMs = 500;
+      this.onConnection(true);
+      for (const m of this.queue.splice(0)) ws.send(JSON.stringify(m));
+    };
+    ws.onmessage = (ev) => {
+      if (typeof ev.data === "string") this.onMessage(JSON.parse(ev.data) as FromRecorder);
+      else {
+        const a = decodeAudioFrame(ev.data as ArrayBuffer);
+        if (a) this.onAudio(a);
+      }
+    };
+    ws.onclose = () => {
+      this.ws = null;
+      this.onConnection(false);
+      setTimeout(() => this.connect(), this.retryMs);
+      this.retryMs = Math.min(5000, this.retryMs * 2);
+    };
+    this.ws = ws;
+  }
+
+  send(msg: ToRecorder): void {
+    if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(msg));
+    else this.queue.push(msg);
+  }
+
+  callUrl(path: string, ext: "wav" | "json"): string {
+    return `/calls/${path.split("/").map(encodeURIComponent).join("/")}.${ext}`;
+  }
+}
