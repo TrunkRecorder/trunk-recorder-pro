@@ -12,3 +12,5 @@ research/native-bench/cpp/recorder
 /target
 web/node_modules/
 web/dist/
+web/dist-web/
+web/src/web/pkg/

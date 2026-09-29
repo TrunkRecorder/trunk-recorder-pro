@@ -1,0 +1,4 @@
+# The web build (trunk-web): WebAssembly SIMD (rustfft's and our filters'
+# vector paths), and web-sys's WebUSB bindings (behind its unstable flag).
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "target-feature=+simd128", "--cfg=web_sys_unstable_apis"]

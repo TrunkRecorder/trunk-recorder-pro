@@ -1,19 +1,21 @@
 // How the interface reaches the recorder. The desktop app: a WebSocket to the
-// local trunk-lite server (reconnecting). The web build will provide a worker
-// transport with the same shape.
+// local trunk-lite server (reconnecting). The web build: the recorder in a Web
+// Worker (web/src/web/workerTransport.ts).
 
 import { decodeAudioFrame, type AudioChunk, type FromRecorder, type ToRecorder } from "./protocol.ts";
 
 export interface Transport {
+  readonly kind: "desktop" | "web";
   send(msg: ToRecorder): void;
   onMessage: (msg: FromRecorder) => void;
   onAudio: (chunk: AudioChunk) => void;
   onConnection: (connected: boolean) => void;
-  /** Where recorded files are served (desktop: the server's /calls/). */
-  callUrl(path: string, ext: "wav" | "json"): string;
+  /** A URL for a recorded file (desktop: the server's /calls/; web: a blob from OPFS). */
+  callUrl(path: string, ext: "wav" | "json"): Promise<string>;
 }
 
 export class WsTransport implements Transport {
+  readonly kind = "desktop" as const;
   onMessage: (msg: FromRecorder) => void = () => {};
   onAudio: (chunk: AudioChunk) => void = () => {};
   onConnection: (connected: boolean) => void = () => {};
@@ -54,7 +56,7 @@ export class WsTransport implements Transport {
     else this.queue.push(msg);
   }
 
-  callUrl(path: string, ext: "wav" | "json"): string {
+  async callUrl(path: string, ext: "wav" | "json"): Promise<string> {
     return `/calls/${path.split("/").map(encodeURIComponent).join("/")}.${ext}`;
   }
 }

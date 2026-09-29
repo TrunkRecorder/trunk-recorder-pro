@@ -8,8 +8,8 @@ Windows), a browser build and a browser-based interface for both are the goal.
 
 **Status:** the desktop app works end to end — live RTL-SDR input (one or
 several dongles), decoding, recording, and a browser interface — on macOS,
-with builds for Linux and Windows. The web build and Phase 2 are next (see
-[Roadmap](#roadmap)). The previous TypeScript/browser implementation lives in
+with builds for Linux and Windows. The browser version runs the same engine as
+WebAssembly. Phase 2 is next (see [Roadmap](#roadmap)). The previous TypeScript/browser implementation lives in
 [`archive/ts-engine`](archive/ts-engine) and serves as a reference.
 
 ## Run it
@@ -37,6 +37,17 @@ kernel DVB driver is detached automatically).
 `trunk-lite devices` lists dongles; `trunk-lite capture out.cu8 --freq Hz
 --serial SN --seconds 30` records raw IQ like `rtl_sdr`.
 
+### In the browser (no install)
+
+The browser version is the same engine compiled to WebAssembly, running in a
+Web Worker, with the dongle over WebUSB (Chrome or Edge) and calls kept in the
+browser's private storage (OPFS); **Export to folder…** copies them out in
+Trunk Recorder's layout. Serve `web/dist-web` (or the `-browser.zip` release)
+from any static web server over HTTPS or on `localhost` — WebUSB and module
+workers don't run from `file://`. Press **Connect…** on a dongle source to pick
+it. The desktop app is the better choice for several dongles or long
+unattended runs.
+
 ## Build
 
 Needs Rust 1.82+ and Node 20+ (for the interface).
@@ -49,7 +60,18 @@ cargo build --profile dist              # stripped, as released
 ```
 
 `web/`: `npm run dev` serves the interface with hot reload on :5173, talking to
-a running `trunk-lite` on :8080. Releases are built by
+a running `trunk-lite` on :8080.
+
+The browser version additionally needs the `wasm32-unknown-unknown` target and
+`wasm-bindgen-cli` at the version in `Cargo.lock` (0.2.129):
+
+```bash
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --version 0.2.129 --locked
+(cd web && npm run wasm && npm run build:web)   # → web/dist-web
+(cd web && npm run dev:web)                     # hot reload, engine in the page
+```
+ Releases are built by
 `.github/workflows/build.yml` (macOS universal, static Linux x86-64 / ARM64,
 Windows).
 
@@ -92,7 +114,9 @@ receiver bank = CQPSK + CQPSK with a T/2 CMA equaliser + C4FM, best of each fram
 | `…/trunk/` | TSBK parser (Trunk Recorder's `p25_parser.cc`), call manager (`monitor_systems.cc`), voice call tracker, engine (multi-source) |
 | `crates/trunk-lite` | The app: `serve` (default; source threads, engine thread, web server + WebSocket), `replay`, `capture`, `devices`, `tool` |
 | `…/src/sdr.rs` | RTL-SDR over USB via `rtlsdr-nusb` (pure Rust; no libusb / librtlsdr) |
-| `web/` | The browser interface (React + Vite), embedded in the binary |
+| `crates/trunk-app` | The app layer shared by desktop and browser: config and a recording `Session` (status, spectrum, log, calls, files) |
+| `crates/trunk-web` | The browser build: `Session` and the RTL-SDR driver (WebUSB) exported to JavaScript with `wasm-bindgen` |
+| `web/` | The browser interface (React + Vite), embedded in the binary; `src/web/` runs the engine in a worker for the browser version |
 | `research/native-bench` | Benchmarks, the C++ prototype, synthetic simulcast ground truth, comparison scripts — see its `RESULTS.md` |
 | `scripts/gen_tables.ts` | Regenerates `trunk-core/src/tables.rs` from the archived sources |
 
@@ -113,6 +137,10 @@ NAC 0x443, from an R820T RTL-SDR):
   decoded (1156 vs ~282) and more audio per call (e.g. TG 102 9.5 s vs 8.1 s).
 - **CPU:** 1.6 % of one core for a 2.4 MSPS site (CC + 2 voice channels,
   three receivers each); 6 % for 8 MSPS with 16 simultaneous calls.
+- **Browser (WebAssembly, Chrome):** the same calls as the native build on the
+  same capture (identical lengths; one bit-exact, the other within ±2 LSB from
+  floating-point rounding), 7 % of a core in real time, 30 s of air decoded in
+  1.5 s.
 
 ## Roadmap
 
@@ -122,7 +150,9 @@ NAC 0x443, from an R820T RTL-SDR):
    web server and browser interface, single-binary builds for macOS, Linux
    (x86-64, ARM), Windows~~ — done (verified live on macOS; Linux and Windows
    binaries build, hardware testing there pending)
-4. Web build: the same core as WebAssembly in Web Workers, WebUSB, OPFS storage
+4. ~~Web build: the same core as WebAssembly in a Web Worker, WebUSB, OPFS
+   storage, the same interface~~ — done (verified on captures; live WebUSB
+   needs a hands-on test)
 5. Phase 2 TDMA voice (H-DQPSK, AMBE+2) — feature parity with the archive
 6. Release packaging (prebuilt binaries); optional USRP support via UHD (C++,
    an opt-in build feature)

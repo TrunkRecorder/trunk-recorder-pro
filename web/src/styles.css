@@ -180,3 +180,16 @@ a.btn {
   display: inline-flex;
   align-items: center;
 }
+
+td.srcs {
+  max-width: 14em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.storage {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}

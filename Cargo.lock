@@ -1092,6 +1092,14 @@ dependencies = [
 [[package]]
 name = "trunk-web"
 version = "0.1.0"
+dependencies = [
+ "js-sys",
+ "rtlsdr-nusb",
+ "serde_json",
+ "trunk-app",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+]
 
 [[package]]
 name = "tungstenite"

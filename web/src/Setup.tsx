@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { autoCenter, formatMhz, importTrunkRecorderConfig, newDongle, parseFreqList, resolvedCenters, SAMPLE_RATES, usableHalfWidth } from "./config.ts";
-import { refreshDevices, setNotice, updateConfig, useApp } from "./controller.ts";
+import { refreshDevices, setNotice, updateConfig, useApp, web } from "./controller.ts";
 import type { Config, Source } from "./protocol.ts";
 import { parseTalkgroupCsv } from "./talkgroups.ts";
 
@@ -42,6 +42,14 @@ function MhzInput(props: { hz: number; placeholder?: string; onChange: (hz: numb
   );
 }
 
+async function connectDongle(): Promise<void> {
+  try {
+    await web?.requestUsb();
+  } catch (e) {
+    setNotice(e instanceof Error ? e.message : String(e));
+  }
+}
+
 function SourceCard(props: { c: Config; i: number }) {
   const s = useApp();
   const { c, i } = props;
@@ -56,6 +64,7 @@ function SourceCard(props: { c: Config; i: number }) {
       x.sources[i] =
         kind === "rtlsdr" ? { ...newDongle(), centerHz: old.centerHz, rateHz: old.rateHz } : { kind: "file", path: "", centerHz: old.centerHz, rateHz: old.rateHz, realtime: true };
     });
+  const fileRef = useRef<HTMLInputElement>(null);
   const used = new Set(c.sources.filter((x, k) => k !== i && x.kind === "rtlsdr").map((x) => (x.kind === "rtlsdr" ? x.serial : "")));
 
   return (
@@ -72,14 +81,23 @@ function SourceCard(props: { c: Config; i: number }) {
         </div>
         <span className="spacer" />
         {c.sources.length > 1 && (
-          <button className="btn ghost small" onClick={() => updateConfig((x) => void x.sources.splice(i, 1))}>
+          <button
+            className="btn ghost small"
+            onClick={() => {
+              web?.removeFile(i);
+              updateConfig((x) => void x.sources.splice(i, 1));
+            }}
+          >
             Remove
           </button>
         )}
       </div>
       <div className="grid2">
         {src.kind === "rtlsdr" ? (
-          <Field label="Dongle" hint={s.devices.length ? undefined : "No dongle found — plug one in and press Refresh."}>
+          <Field
+            label="Dongle"
+            hint={s.devices.length ? undefined : web ? "No dongle connected — press Connect and pick it in the browser's list." : "No dongle found — plug one in and press Refresh."}
+          >
             <div className="row">
               <select value={src.serial} onChange={(e) => edit((x) => x.kind === "rtlsdr" && void (x.serial = e.target.value))}>
                 <option value="">First available</option>
@@ -91,10 +109,36 @@ function SourceCard(props: { c: Config; i: number }) {
                   </option>
                 ))}
               </select>
-              <button className="btn ghost small" onClick={refreshDevices}>
-                Refresh
-              </button>
+              {web ? (
+                <button className="btn ghost small" onClick={() => void connectDongle()}>
+                  Connect…
+                </button>
+              ) : (
+                <button className="btn ghost small" onClick={refreshDevices}>
+                  Refresh
+                </button>
+              )}
             </div>
+          </Field>
+        ) : web ? (
+          <Field label="Capture file" hint="rtl_sdr output (unsigned 8-bit IQ). The browser forgets the choice on reload." wide>
+            <div className="row">
+              <button className="btn ghost small" onClick={() => fileRef.current?.click()}>
+                Choose file…
+              </button>
+              <span className="mono">{web.file(i)?.name ?? (src.path ? `${src.path} (choose again)` : "none")}</span>
+            </div>
+            <input
+              ref={fileRef}
+              type="file"
+              hidden
+              onChange={(e) => {
+                const f = e.target.files?.[0] ?? null;
+                web?.setFile(i, f);
+                edit((x) => x.kind === "file" && void (x.path = f?.name ?? ""));
+                e.target.value = "";
+              }}
+            />
           </Field>
         ) : (
           <Field label="Capture file" hint="rtl_sdr output (unsigned 8-bit IQ), a path on the recorder's computer." wide>
@@ -260,6 +304,18 @@ export function Setup() {
           </p>
           <details className="help">
             <summary>Dongle not showing up?</summary>
+            {web ? (
+              <ul>
+                <li>The browser version needs Chrome or Edge (WebUSB). Press Connect and choose the dongle; the browser remembers it for this site.</li>
+                <li>
+                  <b>Windows:</b> install the WinUSB driver for “Bulk-In, Interface 0” with Zadig.
+                </li>
+                <li>
+                  <b>Linux:</b> add a udev rule giving your user access to USB 0bda:2838 and unload <code>dvb_usb_rtl28xxu</code>.
+                </li>
+                <li>For several dongles or long unattended runs, the desktop app is sturdier.</li>
+              </ul>
+            ) : (
             <ul>
               <li>
                 <b>Windows:</b> install the WinUSB driver for “Bulk-In, Interface 0” with Zadig (the same step every RTL-SDR app needs).
@@ -271,6 +327,7 @@ export function Setup() {
                 <b>macOS:</b> works as-is. Quit other SDR apps that hold the dongle.
               </li>
             </ul>
+            )}
           </details>
         </div>
       </section>
@@ -280,9 +337,13 @@ export function Setup() {
           <h2>Recording</h2>
         </header>
         <div className="stack">
-          <Field label="Recordings folder" hint="On the recorder's computer. Calls go to <folder>/<short name>/<year>/<month>/<day>/." wide>
-            <input className="mono" value={c.recording.captureDir} onChange={(e) => updateConfig((x) => void (x.recording.captureDir = e.target.value))} />
-          </Field>
+          {web ? (
+            <p className="muted small">Calls are kept in this browser's storage (<i>Recorded calls</i> → Export to folder copies them out in Trunk Recorder's layout).</p>
+          ) : (
+            <Field label="Recordings folder" hint="On the recorder's computer. Calls go to <folder>/<short name>/<year>/<month>/<day>/." wide>
+              <input className="mono" value={c.recording.captureDir} onChange={(e) => updateConfig((x) => void (x.recording.captureDir = e.target.value))} />
+            </Field>
+          )}
           <Toggle label="Record talkgroups not in the CSV" checked={c.recording.recordUnknown} onChange={(v) => updateConfig((x) => void (x.recording.recordUnknown = v))} />
           <Toggle label="Record unit-to-unit calls" checked={c.recording.recordUnitToUnit} onChange={(v) => updateConfig((x) => void (x.recording.recordUnitToUnit = v))} />
           <Toggle label="Keep calls with no audio" hint="encrypted, or nothing decoded" checked={c.recording.keepSilentCalls} onChange={(v) => updateConfig((x) => void (x.recording.keepSilentCalls = v))} />

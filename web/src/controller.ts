@@ -6,6 +6,7 @@ import { useSyncExternalStore } from "react";
 import { LivePlayer } from "./livePlayer.ts";
 import type { AudioChunk, CallEntry, CallView, Config, Device, EngineStatus, FromRecorder, LogLine, Phase, SourceStatus, Spectrum } from "./protocol.ts";
 import { WsTransport, type Transport } from "./transport.ts";
+import type { WorkerTransport } from "./web/workerTransport.ts";
 
 export interface AppState {
   connected: boolean;
@@ -71,7 +72,18 @@ export function useApp(): AppState {
 }
 
 const player = new LivePlayer();
-export const transport: Transport = new WsTransport();
+// The web build (`vite build --mode web`) runs the recorder in this page; the
+// desktop build leaves the worker and WebAssembly out entirely.
+export const web: WorkerTransport | null = import.meta.env.MODE === "web" ? new (await import("./web/workerTransport.ts")).WorkerTransport() : null;
+export const transport: Transport = web ?? new WsTransport();
+
+/** Save a recorded file (a download from the recorder, or out of browser storage). */
+export async function downloadCall(path: string, ext: "wav" | "json"): Promise<void> {
+  const a = document.createElement("a");
+  a.href = await transport.callUrl(path, ext);
+  a.download = `${path.split("/").pop()}.${ext}`;
+  a.click();
+}
 
 transport.onConnection = (connected) => set({ connected, ...(connected ? {} : { phase: "idle" as Phase }) });
 transport.onAudio = onAudio;
@@ -152,6 +164,9 @@ export function dismissError(): void {
 }
 export function setNotice(notice: string | null): void {
   set({ notice });
+}
+export function forgetHistory(): void {
+  set({ history: [] });
 }
 export function refreshDevices(): void {
   transport.send({ type: "devices" });

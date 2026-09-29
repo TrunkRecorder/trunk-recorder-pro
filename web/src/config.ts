@@ -4,6 +4,25 @@ import type { Config, Source } from "./protocol.ts";
 
 export const SAMPLE_RATES = [2_400_000, 2_048_000, 2_560_000, 3_200_000, 1_920_000, 1_024_000];
 
+/** A fresh config (the web build; the desktop app gets its own from the recorder). */
+export function defaultConfig(): Config {
+  return {
+    sources: [newDongle()],
+    system: { shortName: "sys1", type: "p25", controlChannels: [], modulation: "auto", talkgroupsCsv: "", talkgroupsName: "" },
+    recording: {
+      captureDir: "",
+      prerollS: 1,
+      maxRecorders: 32,
+      callTimeoutS: 3,
+      recordUnknown: true,
+      recordEncrypted: false,
+      recordUnitToUnit: true,
+      keepSilentCalls: false,
+    },
+    server: { bind: "127.0.0.1", port: 8080 },
+  };
+}
+
 export function newDongle(): Source {
   return { kind: "rtlsdr", serial: "", centerHz: 0, rateHz: 2_400_000, gainDb: 38.6, ppm: 0 };
 }

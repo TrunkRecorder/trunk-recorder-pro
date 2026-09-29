@@ -1,5 +1,6 @@
 # Test, then build trunk-lite for every platform; a tag v* publishes a release
-# with the binaries. Each binary embeds the web interface (web/dist).
+# with the binaries. Each binary embeds the web interface (web/dist). The
+# browser version (web/dist-web: the engine as WebAssembly) is built alongside.
 name: build
 
 on:
@@ -18,10 +19,28 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: npm, cache-dependency-path: web/package-lock.json }
-      - run: npm ci && npm run build
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: wasm32-unknown-unknown }
+      - uses: Swatinem/rust-cache@v2
+        with: { key: wasm }
+      # Must match the wasm-bindgen version in Cargo.lock.
+      - uses: taiki-e/install-action@v2
+        with: { tool: wasm-bindgen@0.2.129 }
+      - run: npm ci && npm run wasm && npm run build && npm run build:web
         working-directory: web
       - uses: actions/upload-artifact@v4
         with: { name: web-dist, path: web/dist }
+      - name: Package the browser version
+        run: |
+          cp README.md web/dist-web/
+          name="trunk-lite-${GITHUB_REF_NAME//\//-}-browser"
+          (cd web/dist-web && zip -qr "../../$name.zip" .)
+      - uses: actions/upload-artifact@v4
+        with: { name: trunk-lite-browser, path: trunk-lite-*-browser.zip }
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with: { files: "trunk-lite-*-browser.zip" }
 
   test:
     runs-on: ubuntu-latest

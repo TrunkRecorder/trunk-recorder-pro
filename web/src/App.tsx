@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { formatMhz, startProblem } from "./config.ts";
-import { dismissError, setListen, setNotice, start, stop, transport, useApp, type AppState } from "./controller.ts";
+import { dismissError, downloadCall, setListen, setNotice, start, stop, transport, useApp, web, type AppState } from "./controller.ts";
+import { BrowserStorage } from "./web/BrowserStorage.tsx";
 import type { CallEntry, CallView } from "./protocol.ts";
 import { Setup } from "./Setup.tsx";
 import { Waterfall } from "./Waterfall.tsx";
@@ -174,6 +175,19 @@ function ActiveCalls({ s }: { s: AppState }) {
 
 function History({ s }: { s: AppState }) {
   const [playing, setPlaying] = useState<string | null>(null);
+  const [playingUrl, setPlayingUrl] = useState<string | null>(null);
+  useEffect(() => {
+    setPlayingUrl(null);
+    if (!playing) return;
+    let live = true;
+    transport.callUrl(playing, "wav").then(
+      (u) => live && setPlayingUrl(u),
+      () => live && setPlaying(null),
+    );
+    return () => {
+      live = false;
+    };
+  }, [playing]);
   const [filter, setFilter] = useState("");
   const rows = useMemo(() => {
     const f = filter.trim().toLowerCase();
@@ -211,17 +225,19 @@ function History({ s }: { s: AppState }) {
                     {c.record.emergency ? <span className="badge bad">EMERG</span> : null}
                   </td>
                   <td className="mono">{(c.record.call_length_ms / 1000).toFixed(1)} s</td>
-                  <td className="mono">{c.record.srcList?.map((x) => x.src).join(", ") || "—"}</td>
+                  <td className="mono srcs" title={[...new Set(c.record.srcList?.map((x) => x.src))].join(", ")}>
+                    {[...new Set(c.record.srcList?.map((x) => x.src))].join(", ") || "—"}
+                  </td>
                   <td className="actions">
                     <button className="btn ghost small" onClick={() => setPlaying(c.path)}>
                       Play
                     </button>
-                    <a className="btn ghost small" href={transport.callUrl(c.path, "wav")} download>
+                    <button className="btn ghost small" onClick={() => void downloadCall(c.path, "wav")}>
                       WAV
-                    </a>
-                    <a className="btn ghost small" href={transport.callUrl(c.path, "json")} download>
+                    </button>
+                    <button className="btn ghost small" onClick={() => void downloadCall(c.path, "json")}>
                       JSON
-                    </a>
+                    </button>
                   </td>
                 </tr>
               ))}
@@ -229,9 +245,11 @@ function History({ s }: { s: AppState }) {
           </table>
         </div>
       )}
-      {playing && <audio className="player" src={transport.callUrl(playing, "wav")} controls autoPlay onEnded={() => setPlaying(null)} />}
+      {playing && playingUrl && <audio className="player" src={playingUrl} controls autoPlay onEnded={() => setPlaying(null)} />}
       <footer className="panel-foot muted small">
-        {s.config ? (
+        {web ? (
+          <BrowserStorage />
+        ) : s.config ? (
           <span>
             Saved to <span className="mono">{s.config.recording.captureDir}</span>
           </span>
