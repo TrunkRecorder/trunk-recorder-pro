@@ -37,26 +37,10 @@ jobs:
           (cd web/dist-web && zip -qr "../../$name.zip" .)
       - uses: actions/upload-artifact@v4
         with: { name: trunk-lite-browser, path: trunk-lite-*-browser.zip }
-      - name: Upload the browser version for GitHub Pages
-        if: github.ref == 'refs/heads/main'
-        uses: actions/upload-pages-artifact@v3
-        with: { path: web/dist-web }
       - name: Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with: { files: "trunk-lite-*-browser.zip" }
-
-  # The browser version on GitHub Pages, from main. Needs Pages enabled with
-  # "GitHub Actions" as the source (Settings → Pages).
-  pages:
-    needs: web
-    if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    permissions: { pages: write, id-token: write }
-    environment: { name: github-pages, url: "${{ steps.deploy.outputs.page_url }}" }
-    steps:
-      - id: deploy
-        uses: actions/deploy-pages@v4
 
   test:
     runs-on: ubuntu-latest

@@ -12,7 +12,7 @@ const version = /^version\s*=\s*"([^"]+)"/m.exec(readFileSync(new URL("../Cargo.
 // WebAssembly, run from src/web/pkg, which `npm run wasm` builds).
 export default defineConfig(({ mode }) => ({
   // The browser version uses relative URLs so it runs from any folder
-  // (e.g. GitHub Pages at /trunk-recorder-lite/).
+  // (e.g. unzipped from the -browser.zip release onto any web server).
   base: mode === "web" ? "./" : "/",
   plugins: [react()],
   define: { __APP_VERSION__: JSON.stringify(version) },
