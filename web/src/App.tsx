@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { formatMhz, startProblem } from "./config.ts";
-import { dismissError, downloadCall, setListen, setNotice, start, stop, transport, useApp, web, type AppState } from "./controller.ts";
+import { dismissError, downloadCall, quitApp, setListen, setNotice, start, stop, transport, useApp, web, type AppState } from "./controller.ts";
 import { BrowserStorage } from "./web/BrowserStorage.tsx";
 import type { CallEntry, CallView } from "./protocol.ts";
 import { Setup } from "./Setup.tsx";
@@ -292,6 +292,18 @@ export function App() {
   const problem = s.config ? startProblem(s.config) : "Connecting to the recorder…";
   const liveDongle = s.config?.sources.some((x) => x.kind === "rtlsdr") ?? false;
 
+  if (s.quit) {
+    return (
+      <div className="app">
+        <div className="quit-screen">
+          <span className="logo" aria-hidden="true" />
+          <h1>Trunk Recorder Lite has quit</h1>
+          <p className="muted">Recording stopped and calls in progress were saved. You can close this tab; open the app again to start it.</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="app">
       <header className="topbar">
@@ -315,6 +327,11 @@ export function App() {
           ) : (
             <button className="btn primary" disabled={!s.connected || s.phase === "stopping" || !!problem} title={problem ?? ""} onClick={start}>
               Start
+            </button>
+          )}
+          {!web && s.connected && (
+            <button className="btn ghost" onClick={quitApp} title="Stop recording and quit the app">
+              Quit
             </button>
           )}
         </div>

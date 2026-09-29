@@ -4,6 +4,8 @@
 //! trunk-lite [serve] [--config file.json] [--port 8080] [--bind 127.0.0.1] [--no-open]
 //!     The app: a browser interface at http://localhost:8080 to set up, start
 //!     and watch the recorder. Calls go to the capture folder in the config.
+//!     Already running on that port? Opens the browser there and exits.
+//!     --start (or the config's server.autoStart): start recording right away.
 //!
 //! trunk-lite replay <capture.cu8> --center Hz --rate Hz --cc Hz[,Hz…] [options]
 //! trunk-lite replay --source cap1.cu8,center,rate --source cap2.cu8,center,rate --cc Hz …
@@ -81,16 +83,41 @@ fn die(msg: &str) -> ! {
     std::process::exit(2)
 }
 
+const USAGE: &str = "\
+Trunk Recorder Lite — record a P25 trunked radio system from RTL-SDRs.
+
+usage:
+  trunk-lite [serve] [--port 8080] [--bind 127.0.0.1] [--config file.json] [--no-open] [--start]
+      Start the recorder and open its web interface (the default). Use
+      --bind 0.0.0.0 to reach it from other machines (no authentication!).
+      --start begins recording with the saved settings at once.
+  trunk-lite devices
+      List RTL-SDR dongles.
+  trunk-lite capture <out.cu8> --freq Hz [--rate 2400000] [--gain dB] [--serial S] [--seconds 10]
+      Record raw IQ, like rtl_sdr.
+  trunk-lite replay <capture.cu8> --center Hz --rate Hz --cc Hz[,Hz…] [--out calls] …
+  trunk-lite replay --source cap.cu8,center,rate [--source …] --cc Hz …
+      Record calls from captures instead of dongles.
+  trunk-lite tool cc|voice|frames|p2 <capture.cu8> …
+      One channel's decode as JSON lines (diagnostics).
+  trunk-lite --version
+
+Docs: https://github.com/TrunkRecorder/trunk-recorder-lite
+";
+
 fn main() {
-    let argv: Vec<String> = std::env::args().skip(1).collect();
+    // Finder may pass a process serial number (-psn_…) to an app bundle.
+    let argv: Vec<String> = std::env::args().skip(1).filter(|a| !a.starts_with("-psn_")).collect();
     match argv.first().map(|s| s.as_str()) {
+        Some("--version" | "-V" | "version") => println!("trunk-lite {}", env!("CARGO_PKG_VERSION")),
+        Some("--help" | "-h" | "help") => print!("{USAGE}"),
         None | Some("serve") => serve(&Args::parse(argv.get(1..).unwrap_or(&[]))),
         Some(s) if s.starts_with("--") => serve(&Args::parse(&argv)),
         Some("replay") => replay(&Args::parse(&argv[1..])),
         Some("tool") => tool::run(&Args::parse(&argv[1..])),
         Some("devices") => sdr::list().iter().for_each(|d| println!("{d}")),
         Some("capture") => capture(&Args::parse(&argv[1..])),
-        _ => die("usage: trunk-lite [serve] | replay | tool | devices | capture  (see the top of crates/trunk-lite/src/main.rs)"),
+        _ => die(USAGE),
     }
 }
 
@@ -261,6 +288,22 @@ fn capture(a: &Args) {
     eprintln!("{} samples in {secs:.2} s ({:.3} of real time), {dropped} dropped", got / 2, (got / 2) as f64 / cfg.rate_hz as f64 / secs);
 }
 
+/// A startup failure of the app. Started from Finder / Explorer / a desktop
+/// launcher there is no terminal to print to, so also show a dialog.
+fn fatal(msg: &str) -> ! {
+    use std::io::IsTerminal;
+    if !std::io::stderr().is_terminal() {
+        let text = format!("Trunk Recorder Lite couldn't start.\n\n{msg}");
+        if cfg!(target_os = "macos") {
+            let script = format!("display alert \"Trunk Recorder Lite\" message {:?} as critical", text);
+            let _ = std::process::Command::new("osascript").args(["-e", &script]).status();
+        } else if cfg!(target_os = "linux") {
+            let _ = std::process::Command::new("notify-send").args(["-u", "critical", "Trunk Recorder Lite", &text]).status();
+        }
+    }
+    die(msg)
+}
+
 fn serve(a: &Args) {
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
@@ -272,8 +315,25 @@ fn serve(a: &Args) {
     if let Some(b) = a.get("bind") {
         cfg.server.bind = b.to_string();
     }
+    let addr: std::net::SocketAddr = format!("{}:{}", cfg.server.bind, cfg.server.port).parse().unwrap_or_else(|e| fatal(&format!("bind address: {e}")));
+    let url = format!("http://{}:{}", if addr.ip().is_unspecified() { "localhost".into() } else { addr.ip().to_string() }, addr.port());
+    let listener = match std::net::TcpListener::bind(addr) {
+        Ok(l) => l,
+        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+            // Launched twice (a double-click on an app that is already
+            // running): show the running one.
+            if already_running(addr.port()) {
+                println!("Trunk Recorder Lite is already running — {url}");
+                if !a.flag("no-open") {
+                    open_browser(&url);
+                }
+                return;
+            }
+            fatal(&format!("Port {} is in use by another program. Start with --port <another port>.", addr.port()));
+        }
+        Err(e) => fatal(&format!("web server on {addr}: {e}")),
+    };
     let history = runtime::scan_history(Path::new(&cfg.recording.capture_dir), 300);
-    let addr: std::net::SocketAddr = format!("{}:{}", cfg.server.bind, cfg.server.port).parse().unwrap_or_else(|e| die(&format!("bind address: {e}")));
     let (hub, _) = tokio::sync::broadcast::channel(4096);
     let ctx = Arc::new(runtime::Ctx {
         config_path: config_path.clone(),
@@ -282,16 +342,42 @@ fn serve(a: &Args) {
         runner: Mutex::new(None),
         phase: Mutex::new(runtime::PhaseInfo { phase: "idle", error: None, ended: false }),
         history: Mutex::new(history.into_iter().collect::<VecDeque<_>>()),
+        quit: tokio::sync::Notify::new(),
     });
-    let url = format!("http://{}:{}", if addr.ip().is_unspecified() { "localhost".into() } else { addr.ip().to_string() }, addr.port());
     println!("Trunk Recorder Lite {} — open {url}\nconfig: {}", env!("CARGO_PKG_VERSION"), config_path.display());
+    let auto = a.flag("start") || ctx.config.lock().unwrap().server.auto_start;
+    if auto {
+        let cfg = ctx.config.lock().unwrap().clone();
+        ctx.set_phase("starting", None, false);
+        match runtime::start(ctx.clone(), cfg) {
+            Ok(r) => *ctx.runner.lock().unwrap() = Some(r),
+            Err(e) => {
+                eprintln!("not started: {e}");
+                ctx.set_phase("idle", Some(e), false);
+            }
+        }
+    }
     if !a.flag("no-open") {
         open_browser(&url);
     }
-    let rt = tokio::runtime::Runtime::new().unwrap_or_else(|e| die(&e.to_string()));
-    if let Err(e) = rt.block_on(server::serve(ctx.clone(), addr)) {
-        die(&format!("web server on {addr}: {e}"));
+    let rt = tokio::runtime::Runtime::new().unwrap_or_else(|e| fatal(&e.to_string()));
+    if let Err(e) = rt.block_on(server::serve(ctx.clone(), listener)) {
+        fatal(&format!("web server on {addr}: {e}"));
     }
+    println!("Stopped.");
+}
+
+/// Is trunk-lite what answers on this port?
+fn already_running(port: u16) -> bool {
+    use std::io::{Read, Write};
+    let Ok(mut s) = std::net::TcpStream::connect_timeout(&([127, 0, 0, 1], port).into(), std::time::Duration::from_secs(1)) else { return false };
+    let _ = s.set_read_timeout(Some(std::time::Duration::from_secs(2)));
+    if s.write_all(b"GET /api/version HTTP/1.0\r\nHost: localhost\r\n\r\n").is_err() {
+        return false;
+    }
+    let mut body = String::new();
+    let _ = s.read_to_string(&mut body);
+    body.contains(&format!("\"app\":\"{}\"", server::APP_ID))
 }
 
 fn open_browser(url: &str) {

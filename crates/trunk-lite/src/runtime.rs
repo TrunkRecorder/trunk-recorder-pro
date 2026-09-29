@@ -57,6 +57,8 @@ pub struct Ctx {
     pub phase: Mutex<PhaseInfo>,
     /// Recently concluded calls (newest first), as sent to the browser.
     pub history: Mutex<VecDeque<Value>>,
+    /// Signalled by a browser's `quit`.
+    pub quit: tokio::sync::Notify,
 }
 
 impl Ctx {

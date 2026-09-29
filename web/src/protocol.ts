@@ -26,7 +26,7 @@ export interface Config {
     recordUnitToUnit: boolean;
     keepSilentCalls: boolean;
   };
-  server: { bind: string; port: number };
+  server: { bind: string; port: number; autoStart: boolean };
 }
 
 export interface Device {
@@ -124,14 +124,16 @@ export type FromRecorder =
   | { type: "log"; lines: LogLine[] }
   | { type: "concluded"; entry: CallEntry }
   | { type: "devices"; devices: Device[] }
-  | { type: "error"; message: string };
+  | { type: "error"; message: string }
+  | { type: "quit" };
 
 export type ToRecorder =
   | { type: "setConfig"; config: Config }
   | { type: "start" }
   | { type: "stop" }
   | { type: "devices" }
-  | { type: "listen"; on: boolean; talkgroup: number | null };
+  | { type: "listen"; on: boolean; talkgroup: number | null }
+  | { type: "quit" };
 
 /** Live audio: one 20 ms (or longer) chunk of a call, 8 kHz. */
 export interface AudioChunk {

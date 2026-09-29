@@ -59,6 +59,7 @@ export class WorkerTransport implements Transport {
         /* not persisted; still used this session */
       }
     }
+    if (msg.type === "quit") return; // nothing to quit in a browser tab
     if (msg.type === "start") this.post({ type: "files", files: this.files });
     this.post(msg);
   }

@@ -12,10 +12,41 @@ with builds for Linux and Windows. The browser version runs the same engine as
 WebAssembly. Phase 2 TDMA voice is decoded too (see [Roadmap](#roadmap)). The previous TypeScript/browser implementation lives in
 [`archive/ts-engine`](archive/ts-engine) and serves as a reference.
 
-## Run it
+## Install
 
-Download a release binary (a single file, ~3 MB, the interface built in), or
-build it. Then:
+Download the package for your system from the
+[releases](https://github.com/TrunkRecorder/trunk-recorder-lite/releases)
+(each is a single ~3–7 MB program with the interface built in; nothing else to
+install). `SHA256SUMS` lists their checksums.
+
+- **macOS** (11+, Apple silicon and Intel): open `trunk-lite-<version>-macos.dmg`
+  and drag **Trunk Recorder Lite** to Applications. Until releases are signed
+  with an Apple Developer ID, macOS blocks the first launch: open it once,
+  then **System Settings → Privacy & Security → Open Anyway**. The app has no
+  Dock icon; it opens its interface in your browser. Open the app again to get
+  back to it, and use **Quit** in the interface to stop it.
+- **Windows** (10/11, 64-bit): unzip `trunk-lite-<version>-windows-x86_64.zip`
+  and run `trunk-lite.exe`. SmartScreen may warn about an unrecognised app:
+  **More info → Run anyway**. The console window is the app; closing it quits.
+  Dongles need the WinUSB driver once, as for every RTL-SDR program: run
+  [Zadig](https://zadig.akeo.ie), pick “Bulk-In, Interface (Interface 0)”,
+  install WinUSB.
+- **Linux** (x86-64 or ARM64, e.g. a Raspberry Pi 4/5 with a 64-bit OS; any
+  distribution — the binary is static):
+
+  ```bash
+  tar xzf trunk-lite-<version>-linux-x86_64.tar.gz
+  cd trunk-lite-<version>-linux-x86_64 && sudo ./install.sh
+  trunk-lite
+  ```
+
+  `install.sh` puts `trunk-lite` in `/usr/local/bin`, adds a udev rule so
+  your user can open RTL-SDRs (the kernel's DVB driver is detached
+  automatically) and a menu entry. `trunk-lite.service` in the package runs it
+  headless as a systemd user service.
+- **Browser**, no install: see [In the browser](#in-the-browser-no-install).
+
+## Run it
 
 ```bash
 trunk-lite          # opens http://localhost:8080 — set up the system, press Start
@@ -29,10 +60,11 @@ waterfall per dongle, active calls (listen live) and recent recordings. The
 config lives in `~/Library/Application Support/trunk-lite/` (macOS),
 `%APPDATA%\trunk-lite\` (Windows) or `~/.config/trunk-lite/` (Linux).
 
-Dongle setup: **macOS** works as-is. **Windows** needs the WinUSB driver for
-the dongle (Zadig), as every RTL-SDR app. **Linux** needs USB access: install
-`packaging/linux/60-trunk-lite-rtlsdr.rules` into `/etc/udev/rules.d/` (the
-kernel DVB driver is detached automatically).
+On a machine that records unattended, turn on **Start recording when the app
+starts** (or run `trunk-lite --start`); Ctrl-C, SIGTERM and **Quit** all save
+the calls in progress before exiting. `--bind 0.0.0.0` makes the interface
+reachable from other machines — it has no login, so only on a network you
+trust (or use `ssh -L 8080:localhost:8080`).
 
 `trunk-lite devices` lists dongles; `trunk-lite capture out.cu8 --freq Hz
 --serial SN --seconds 30` records raw IQ like `rtl_sdr`.
@@ -58,6 +90,11 @@ cargo build --release                   # target/release/trunk-lite
 cargo test --release
 cargo build --profile dist              # stripped, as released
 ```
+
+Release packages: `packaging/package.sh <macos|linux-x86_64|linux-aarch64|windows-x86_64|browser> <version> <binary> <out-dir>`
+(what CI runs; see the top of the script). Tagging `v<version>` (the
+version in `Cargo.toml`, with a matching section in `CHANGELOG.md`) makes CI
+publish a release.
 
 `web/`: `npm run dev` serves the interface with hot reload on :5173, talking to
 a running `trunk-lite` on :8080.
@@ -163,8 +200,11 @@ NAC 0x443, from an R820T RTL-SDR):
    needs a hands-on test)
 5. ~~Phase 2 TDMA voice (H-DQPSK, AMBE+2) — feature parity with the archive~~
    — done (verified on real air from captures)
-6. Release packaging (prebuilt binaries); optional USRP support via UHD (C++,
-   an opt-in build feature)
+6. ~~Release packaging~~ — done: macOS app (DMG), static Linux tarballs with an
+   installer, Windows zip, browser zip; CI builds, checksums and publishes on
+   a version tag (not yet run on GitHub; Apple signing/notarization when the
+   secrets are added)
+7. Optional USRP support via UHD (C++, an opt-in build feature)
 
 ## License
 

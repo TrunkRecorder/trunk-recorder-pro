@@ -193,3 +193,16 @@ td.srcs {
   align-items: center;
   gap: 6px;
 }
+
+.quit-screen {
+  max-width: 34rem;
+  margin: 18vh auto 0;
+  text-align: center;
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+}
+.quit-screen .logo {
+  width: 44px;
+  height: 44px;
+}

@@ -19,7 +19,7 @@ export function defaultConfig(): Config {
       recordUnitToUnit: true,
       keepSilentCalls: false,
     },
-    server: { bind: "127.0.0.1", port: 8080 },
+    server: { bind: "127.0.0.1", port: 8080, autoStart: false },
   };
 }
 

@@ -91,11 +91,13 @@ impl Default for Recording {
 pub struct Server {
     pub bind: String,
     pub port: u16,
+    /// Start recording when the app starts (headless machines, after a reboot).
+    pub auto_start: bool,
 }
 
 impl Default for Server {
     fn default() -> Self {
-        Server { bind: "127.0.0.1".into(), port: 8080 }
+        Server { bind: "127.0.0.1".into(), port: 8080, auto_start: false }
     }
 }
 

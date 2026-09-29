@@ -10,6 +10,8 @@ import type { WorkerTransport } from "./web/workerTransport.ts";
 
 export interface AppState {
   connected: boolean;
+  /** The recorder was told to quit (desktop app). */
+  quit: boolean;
   version: string;
   platform: string;
   configPath: string;
@@ -34,6 +36,7 @@ export interface AppState {
 
 let state: AppState = {
   connected: false,
+  quit: false,
   version: "",
   platform: "",
   configPath: "",
@@ -131,6 +134,11 @@ transport.onMessage = (m: FromRecorder) => {
     case "error":
       set({ error: m.message });
       break;
+    case "quit":
+      player.stop();
+      transport.close?.();
+      set({ quit: true, connected: false, phase: "idle" });
+      break;
   }
 };
 
@@ -179,6 +187,13 @@ export function start(): void {
   set({ error: null, ended: false });
   transport.send({ type: "start" });
   if (state.listen) player.resume();
+}
+
+/** Stop recording and end the desktop app (the web build has nothing to quit). */
+export function quitApp(): void {
+  if ((state.phase === "running" || state.phase === "starting") && !confirm("Recording is running. Quit anyway? Calls in progress are saved.")) return;
+  flushConfig();
+  transport.send({ type: "quit" });
 }
 
 export function stop(): void {

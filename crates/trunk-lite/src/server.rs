@@ -7,9 +7,9 @@
 //! `devices`, `error`, and audio frames `[1][u32 call id][u32 talkgroup][i16…]`
 //! (8 kHz) to connections that asked to listen.
 //! Browser → server: `setConfig`, `start`, `stop`, `devices`,
-//! `listen {on, talkgroup}`.
+//! `listen {on, talkgroup}`, `quit` (stop recording, tell every browser
+//! `quit`, exit). GET /api/version identifies a running instance.
 
-use std::net::SocketAddr;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
@@ -31,14 +31,53 @@ use crate::sdr;
 #[allow_missing = true]
 struct Ui;
 
-pub async fn serve(ctx: Arc<Ctx>, addr: SocketAddr) -> std::io::Result<()> {
+/// What `GET /api/version` answers — how a second launch recognises us.
+pub const APP_ID: &str = "trunk-lite";
+
+/// Serve until `quit` from a browser, Ctrl-C or SIGTERM. Recording is stopped
+/// first either way, so calls in progress are written out.
+pub async fn serve(ctx: Arc<Ctx>, listener: std::net::TcpListener) -> std::io::Result<()> {
+    listener.set_nonblocking(true)?;
+    let listener = tokio::net::TcpListener::from_std(listener)?;
     let app = Router::new()
         .route("/api/ws", get(ws))
+        .route("/api/version", get(|| async { axum::Json(json!({ "app": APP_ID, "version": env!("CARGO_PKG_VERSION") })) }))
         .route("/calls/{*path}", get(call_file))
         .fallback(static_file)
-        .with_state(ctx);
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await
+        .with_state(ctx.clone());
+    let ctx2 = ctx.clone();
+    let shutdown = async move {
+        tokio::select! {
+            _ = ctx2.quit.notified() => {}
+            _ = tokio::signal::ctrl_c() => {}
+            _ = terminate() => {}
+        }
+        let ctx3 = ctx2.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            if let Some(r) = ctx3.runner.lock().unwrap().take() {
+                r.stop();
+            }
+        })
+        .await;
+        publish(&ctx2.hub, json!({ "type": "quit" }));
+        // Let the sessions deliver it before the connections close.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    };
+    axum::serve(listener, app).with_graceful_shutdown(shutdown).await
+}
+
+#[cfg(unix)]
+async fn terminate() {
+    match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+        Ok(mut s) => {
+            s.recv().await;
+        }
+        Err(_) => std::future::pending().await,
+    }
+}
+#[cfg(not(unix))]
+async fn terminate() {
+    std::future::pending::<()>().await
 }
 
 async fn static_file(uri: Uri) -> Response {
@@ -114,7 +153,9 @@ async fn session(ctx: Arc<Ctx>, mut socket: WebSocket) {
                             _ => continue,
                         },
                     };
-                    if socket.send(m).await.is_err() {
+                    let quit = matches!(&*out, Out::Text(s) if s == r#"{"type":"quit"}"#);
+                    if socket.send(m).await.is_err() || quit {
+                        let _ = socket.send(Message::Close(None)).await;
                         return;
                     }
                 }
@@ -183,6 +224,10 @@ async fn command(ctx: &Arc<Ctx>, v: &Value, listen: &mut Option<Option<u32>>) ->
             None
         }
         "devices" => Some(devices_json()),
+        "quit" => {
+            ctx.quit.notify_one();
+            None
+        }
         "listen" => {
             *listen = if v["on"].as_bool() == Some(true) { Some(v["talkgroup"].as_u64().map(|t| t as u32)) } else { None };
             None

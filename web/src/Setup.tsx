@@ -241,7 +241,7 @@ export function Setup() {
           </Field>
           <Field label="Type">
             <select value="p25" disabled>
-              <option value="p25">P25 (Phase 1)</option>
+              <option value="p25">P25 (Phase 1 and 2)</option>
             </select>
           </Field>
           <Field label="Control channels, MHz" hint="Comma separated. The first one in range is tried first; the rest are fallbacks." wide>
@@ -347,6 +347,14 @@ export function Setup() {
           <Toggle label="Record talkgroups not in the CSV" checked={c.recording.recordUnknown} onChange={(v) => updateConfig((x) => void (x.recording.recordUnknown = v))} />
           <Toggle label="Record unit-to-unit calls" checked={c.recording.recordUnitToUnit} onChange={(v) => updateConfig((x) => void (x.recording.recordUnitToUnit = v))} />
           <Toggle label="Keep calls with no audio" hint="encrypted, or nothing decoded" checked={c.recording.keepSilentCalls} onChange={(v) => updateConfig((x) => void (x.recording.keepSilentCalls = v))} />
+          {!web && (
+            <Toggle
+              label="Start recording when the app starts"
+              hint="for a machine that records unattended, e.g. after a reboot"
+              checked={c.server.autoStart}
+              onChange={(v) => updateConfig((x) => void (x.server.autoStart = v))}
+            />
+          )}
           <div className="grid3">
             <Field label="Pre-roll, s" hint="Air replayed from before the grant">
               <input className="mono" value={c.recording.prerollS} onChange={(e) => updateConfig((x) => void (x.recording.prerollS = Math.max(0, Math.min(3, Number(e.target.value) || 0))))} />

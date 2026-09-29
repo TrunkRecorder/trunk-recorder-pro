@@ -10,6 +10,8 @@ export interface Transport {
   onMessage: (msg: FromRecorder) => void;
   onAudio: (chunk: AudioChunk) => void;
   onConnection: (connected: boolean) => void;
+  /** Stop for good (the recorder quit): no more reconnecting. */
+  close?(): void;
   /** A URL for a recorded file (desktop: the server's /calls/; web: a blob from OPFS). */
   callUrl(path: string, ext: "wav" | "json"): Promise<string>;
 }
@@ -22,6 +24,7 @@ export class WsTransport implements Transport {
   private ws: WebSocket | null = null;
   private queue: ToRecorder[] = [];
   private retryMs = 500;
+  private closed = false;
 
   constructor(private readonly url = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api/ws`) {
     this.connect();
@@ -44,11 +47,17 @@ export class WsTransport implements Transport {
     };
     ws.onclose = () => {
       this.ws = null;
+      if (this.closed) return;
       this.onConnection(false);
       setTimeout(() => this.connect(), this.retryMs);
       this.retryMs = Math.min(5000, this.retryMs * 2);
     };
     this.ws = ws;
+  }
+
+  close(): void {
+    this.closed = true;
+    this.ws?.close();
   }
 
   send(msg: ToRecorder): void {
