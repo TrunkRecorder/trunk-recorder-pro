@@ -281,7 +281,8 @@ impl CallManager {
             priority: m.priority,
             duplex: m.duplex,
             mode: m.mode,
-            analog: false,
+            // The control channel says (SmartNet), or the talkgroup file does (TR's mode "A").
+            analog: m.analog || tg.as_ref().is_some_and(|t| t.mode.starts_with('A')),
             start_s: m.time_s,
             last_update_s: m.time_s,
             last_audio_s: m.time_s,

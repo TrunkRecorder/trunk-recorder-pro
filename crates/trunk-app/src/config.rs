@@ -141,6 +141,41 @@ pub struct System {
     /// Record talkgroups not in its CSV; None = the Recording setting.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub record_unknown: Option<bool>,
+    /// SmartNet (`type` "smartnet"): the band plan, as Trunk Recorder names
+    /// it — "800_standard", "800_reband", "800_splinter", "900", or
+    /// "400_custom" with the four numbers below (Hz; offset is a channel number).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub bandplan: String,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub bandplan_base: f64,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub bandplan_spacing: f64,
+    #[serde(skip_serializing_if = "is_zero_u16")]
+    pub bandplan_offset: u16,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub bandplan_high: f64,
+    /// SmartNet: voice mode of a talkgroup never heard granted — "digital" (P25) or "analog".
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub default_mode: String,
+}
+
+fn is_zero(v: &f64) -> bool {
+    *v == 0.0
+}
+fn is_zero_u16(v: &u16) -> bool {
+    *v == 0
+}
+
+impl System {
+    pub fn is_smartnet(&self) -> bool {
+        self.kind.eq_ignore_ascii_case("smartnet")
+    }
+
+    /// The SmartNet settings, or why they don't work.
+    pub fn smartnet(&self) -> Result<trunk_core::trunk::SmartnetConfig, String> {
+        let bandplan = trunk_core::smartnet::Bandplan::from_config(&self.bandplan, self.bandplan_base, self.bandplan_spacing, self.bandplan_offset, self.bandplan_high)?;
+        Ok(trunk_core::trunk::SmartnetConfig { bandplan, analog_default: self.default_mode.eq_ignore_ascii_case("analog") })
+    }
 }
 
 impl Default for System {
@@ -156,6 +191,12 @@ impl Default for System {
             expect: SiteIdentity::default(),
             voice_channels: vec![],
             record_unknown: None,
+            bandplan: String::new(),
+            bandplan_base: 0.0,
+            bandplan_spacing: 0.0,
+            bandplan_offset: 0,
+            bandplan_high: 0.0,
+            default_mode: String::new(),
         }
     }
 }
@@ -587,6 +628,11 @@ impl Config {
         }
         let inside = |f: f64| self.sources.iter().zip(&centers).any(|(s, &c)| (f - c).abs() <= usable_half_width(s.rate_hz()));
         for s in self.active_systems() {
+            if s.is_smartnet() {
+                if let Err(e) = s.smartnet() {
+                    return Some(format!("{}: {e}", s.short_name));
+                }
+            }
             if !s.control_channels.iter().any(|&f| inside(f)) {
                 return Some(format!("No control channel of {} falls inside any source's bandwidth — move a center frequency or add a source.", s.short_name));
             }
@@ -623,6 +669,7 @@ impl Config {
                 bank: s.bank(),
                 talkgroups: parse_csv(&s.talkgroups_csv),
                 expect: s.expect.engine(),
+                smartnet: if s.is_smartnet() { s.smartnet().ok() } else { None },
             })
             .collect();
         // With one system, conventional P25 channels also look up its talkgroup

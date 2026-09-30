@@ -13,6 +13,13 @@ platform, with no GNU Radio, OP25 or other runtime dependencies.
   on a simulcast site where op25's decoder gets 62 %.
 - **P25 Phase 2 TDMA** voice (H-DQPSK, AMBE+2), descrambled with the
   system's WACN / System ID / NAC from the control channel.
+- **Motorola SmartNet / SmartZone** (Type II) control channels: 3600 baud
+  2FSK, soft-Viterbi OSW decoding, Trunk Recorder's OSW parser and band
+  plans (800 standard / rebanded / splinter, 900, OBT `400_custom`). Voice
+  follows the grant: P25 Phase 1 for digital grants, narrowband FM for analog
+  (`defaultMode` for talkgroups never heard granted). Configured with Trunk
+  Recorder's names (`type` "smartnet", `bandplan`, `bandplanBase`, …). On
+  WMATA's OBT system: ~90 % of OSWs where Trunk Recorder gets 40–60 %.
 - **Conventional channels**: analog narrowband FM and P25, alongside a
   trunked system or on their own. Found by energy in the spectrum the
   channelizer already computes (an idle channel costs almost nothing), opened

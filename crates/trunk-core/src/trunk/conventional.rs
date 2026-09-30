@@ -333,6 +333,7 @@ impl Conventional {
                             vframes.push(f);
                         }
                         TrackerOut::Info { source, emergency, encrypted } => infos.push((source, emergency, encrypted)),
+                        TrackerOut::AnalogAudio(a) => audio.extend_from_slice(&a),
                     }
                 }
                 up

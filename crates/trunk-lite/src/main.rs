@@ -20,6 +20,9 @@
 //!     More systems (or sites): --system name:Hz[,Hz…][:nac=443,sysid=445,wacn=bee00,rfss=1,site=3]
 //!     (repeatable; the identity is optional — a control channel that
 //!     disagrees isn't followed). With several, calls go to <out>/<name>/.
+//!     SmartNet: --smartnet 800_standard|800_reband|800_splinter|900|400_custom
+//!     (400_custom: --bp-base Hz --bp-spacing Hz --bp-offset N --bp-high Hz)
+//!     [--analog-default] (talkgroups never heard granted are analog FM)
 //!     Conventional channels (with or without --cc): --fm Hz[,Hz…]  --p25 Hz[,Hz…]
 //!     or --channels channels.csv (the channel-file format; see README)
 //!     --squelch dB (open threshold above the noise floor, default 8)
@@ -241,7 +244,19 @@ fn replay(a: &Args) {
     // Trunked systems: --cc (one, named --short-name) and/or --system (repeatable).
     let mut systems: Vec<SystemConfig> = Vec::new();
     if !ccs.is_empty() {
-        systems.push(SystemConfig { short_name: a.get("short-name").unwrap_or("replay").into(), control_channels: ccs, calls, talkgroups: talkgroups.clone(), ..Default::default() });
+        // --smartnet <band plan>: the --cc system is SmartNet.
+        let smartnet = a.get("smartnet").map(|plan| trunk_core::trunk::SmartnetConfig {
+            bandplan: tool::smartnet_bandplan(a, if plan == "1" { "800_standard" } else { plan }),
+            analog_default: a.flag("analog-default"),
+        });
+        systems.push(SystemConfig {
+            short_name: a.get("short-name").unwrap_or("replay").into(),
+            control_channels: ccs,
+            calls,
+            talkgroups: talkgroups.clone(),
+            smartnet,
+            ..Default::default()
+        });
     }
     for spec in a.all("system") {
         systems.push(parse_system(spec, calls, &talkgroups).unwrap_or_else(|e| die(&format!("--system {spec}: {e}"))));
@@ -314,10 +329,11 @@ fn replay(a: &Args) {
     for s in &st.systems {
         let id = &s.identity;
         println!(
-            "  {}: CC {} good / {} bad TSBKs, {}, NAC {} WACN {} SysID {} RFSS {} site {}, {} call(s){}",
+            "  {}: CC {} good / {} bad {}, {}, NAC {} WACN {} SysID {} RFSS {} site {}, {} call(s){}",
             s.short_name,
             s.good,
             s.bad,
+            if s.modulation == "2FSK" { "OSWs" } else { "TSBKs" },
             s.modulation,
             hex(id.nac.map(u32::from)),
             hex(id.wacn),
@@ -373,12 +389,13 @@ fn handle_events(engine: &mut Engine, out_dir: &str, multi: bool, quiet: bool) -
             Event::ControlChannel { system, freq_hz } if !quiet => println!("{}control channel {:.4} MHz", sys_tag(engine, system), freq_hz as f64 / 1e6),
             Event::Note { system, text } => eprintln!("{}{text}", sys_tag(engine, system)),
             Event::CallStart(c) if !quiet => println!(
-                "{:7.2}s  {}CALL {} start TG {} {:.4} MHz{} → {}",
+                "{:7.2}s  {}CALL {} start TG {} {:.4} MHz{}{} → {}",
                 c.start_s,
                 sys_tag(engine, c.system),
                 c.id,
                 c.talkgroup,
                 c.freq_hz as f64 / 1e6,
+                if c.analog { " FM" } else { "" },
                 if c.phase2_tdma { format!(" slot {}", c.tdma_slot) } else { String::new() },
                 if c.recording { "recording".into() } else { format!("monitoring ({})", c.reason.map_or("", |r| r.as_str())) }
             ),
