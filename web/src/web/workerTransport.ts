@@ -59,8 +59,8 @@ export class WorkerTransport implements Transport {
         /* not persisted; still used this session */
       }
     }
-    if (msg.type === "quit" || msg.type === "findRadios") return; // desktop-only
-    if (msg.type === "start") this.post({ type: "files", files: this.files });
+    if (msg.type === "quit" || msg.type === "findRadios" || msg.type === "channelFile") return; // desktop-only
+    if (msg.type === "start" || msg.type === "surveyStart") this.post({ type: "files", files: this.files });
     this.post(msg);
   }
 

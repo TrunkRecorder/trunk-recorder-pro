@@ -31,6 +31,7 @@ use super::message::{Message, MessageType, TsbkParser};
 use super::record::{call_record, ConcludeInfo};
 use super::talkgroups::Talkgroups;
 use super::tdma::TdmaTracker;
+use super::frames::{frames_jsonl, CallFrames};
 use super::tracker::{TrackerOut, VoiceTracker};
 use crate::dsp::cqpsk::{self, Cqpsk};
 use crate::dsp::{Channelizer, HeadId, Receiver, Symbol};
@@ -71,6 +72,8 @@ pub struct EngineConfig {
     /// Conventional channels, energy-detected on whichever source covers them.
     pub conventional: Vec<ConvChannel>,
     pub conv: ConvConfig,
+    /// Keep each call's vocoder frames ([`Concluded::frames`]).
+    pub capture_frames: bool,
 }
 
 impl Default for EngineConfig {
@@ -87,6 +90,7 @@ impl Default for EngineConfig {
             bank: BankConfig::default(),
             conventional: vec![],
             conv: ConvConfig::default(),
+            capture_frames: false,
         }
     }
 }
@@ -100,6 +104,9 @@ pub struct Concluded {
     pub base_name: String,
     /// 8 kHz mono in [−1, 1].
     pub audio: Vec<f32>,
+    /// With [`EngineConfig::capture_frames`]: the vocoder frames behind
+    /// `audio`, as JSON lines (see [`super::frames::frames_jsonl`]).
+    pub frames: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -152,12 +159,6 @@ enum Voice {
 }
 
 impl Voice {
-    fn bad_frames(&self) -> u64 {
-        match self {
-            Voice::Fdma { tracker, .. } => tracker.bad_frames,
-            Voice::Tdma { tracker, .. } => tracker.bad_frames,
-        }
-    }
 }
 
 struct Channel {
@@ -172,6 +173,7 @@ struct Channel {
 
 struct Recording {
     audio: Vec<f32>,
+    frames: CallFrames,
     recorder_num: u32,
 }
 
@@ -185,6 +187,7 @@ struct Radio {
     next_num: u32,
     max_recorders: usize,
     preroll_s: f64,
+    capture_frames: bool,
     bank_cfg: BankConfig,
     groups: Vec<Group>,
     tout: Vec<(usize, TrackerOut)>,
@@ -262,7 +265,7 @@ impl RecorderHost for Radio {
             self.next_num += 1;
             self.next_num - 1
         });
-        self.recordings.insert(call.id, Recording { audio: Vec::new(), recorder_num });
+        self.recordings.insert(call.id, Recording { audio: Vec::new(), frames: CallFrames::new(self.capture_frames), recorder_num });
         let slot = if call.phase2_tdma { call.tdma_slot as usize & 1 } else { 0 };
         if let Some(ch) = self.channels.get_mut(&call.freq_hz) {
             // A newer call on the same channel (slot) takes it over, as in Trunk Recorder.
@@ -354,6 +357,7 @@ impl Engine {
                 next_num: 0,
                 max_recorders: cfg.max_recorders,
                 preroll_s: cfg.preroll_s,
+                capture_frames: cfg.capture_frames,
                 bank_cfg: cfg.bank,
                 groups: Vec::new(),
                 tout: Vec::new(),
@@ -488,7 +492,7 @@ impl Engine {
     }
 
     fn call_rules(&self) -> CallRules {
-        CallRules { call_timeout_s: self.cfg.calls.call_timeout_s, record_encrypted: self.cfg.calls.record_encrypted }
+        CallRules { call_timeout_s: self.cfg.calls.call_timeout_s, record_encrypted: self.cfg.calls.record_encrypted, capture_frames: self.cfg.capture_frames }
     }
 
     /// Report what the conventional channels did.
@@ -498,8 +502,8 @@ impl Engine {
                 ConvOut::Start(c) => self.events.push(Event::CallStart(c)),
                 ConvOut::Update(c) => self.events.push(Event::CallUpdate(c)),
                 ConvOut::Audio { call_id, talkgroup, samples } => self.events.push(Event::Audio { call_id, talkgroup, samples }),
-                ConvOut::End { call, audio, errors, recorder_num } => {
-                    self.write_call(&call, audio, errors, recorder_num);
+                ConvOut::End { call, audio, frames, recorder_num } => {
+                    self.write_call(&call, audio, frames, recorder_num);
                     self.events.push(Event::CallEnd(call));
                 }
             }
@@ -620,9 +624,10 @@ impl Engine {
     fn apply_pending(&mut self) {
         for (id, o) in std::mem::take(&mut self.radio.pending) {
             match o {
-                TrackerOut::Audio(samples) => {
+                TrackerOut::Audio(samples, frame) => {
                     let Some(rec) = self.radio.recordings.get_mut(&id) else { continue };
                     rec.audio.extend_from_slice(&samples);
+                    rec.frames.push(frame);
                     self.calls.note_audio(id, self.now_s);
                     let tg = self.calls.calls.iter().find(|c| c.id == id).map_or(0, |c| c.talkgroup);
                     self.events.push(Event::Audio { call_id: id, talkgroup: tg, samples });
@@ -667,12 +672,11 @@ impl Engine {
     fn conclude(&mut self, call: &Call) {
         let Some(rec) = self.radio.recordings.remove(&call.id) else { return };
         self.radio.free_nums.push(rec.recorder_num);
-        let errors = self.radio.channels.get(&call.freq_hz).map_or(0, |ch| ch.voice.bad_frames());
-        self.write_call(call, rec.audio, errors, rec.recorder_num);
+        self.write_call(call, rec.audio, rec.frames, rec.recorder_num);
     }
 
     /// A finished call's record and audio, as [`Event::Concluded`].
-    fn write_call(&mut self, call: &Call, audio: Vec<f32>, errors: u64, recorder_num: u32) {
+    fn write_call(&mut self, call: &Call, audio: Vec<f32>, frames: CallFrames, recorder_num: u32) {
         // An encrypted call's "audio" is at most a few frames vocoded before
         // the cipher was known: noise. Trunk Recorder keeps none either.
         let audio = if call.encrypted { Vec::new() } else { audio };
@@ -685,12 +689,13 @@ impl Engine {
                 short_name: &self.cfg.short_name,
                 epoch_ms_at_zero: self.cfg.epoch_ms_at_zero,
                 audio_seconds: audio.len() as f64 / mbe::SAMPLE_RATE as f64,
-                error_count: errors,
+                errors: &frames.errors,
                 recorder_num,
                 end_s: call.last_audio_s,
             },
         );
         self.concluded += 1;
-        self.events.push(Event::Concluded(Concluded { call: call.clone(), json, base_name, audio }));
+        let frames = frames.captured.filter(|_| !audio.is_empty()).map(|f| frames_jsonl(&f));
+        self.events.push(Event::Concluded(Concluded { call: call.clone(), json, base_name, audio, frames }));
     }
 }

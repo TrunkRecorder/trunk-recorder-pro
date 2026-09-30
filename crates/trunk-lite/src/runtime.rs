@@ -60,6 +60,10 @@ pub struct Ctx {
     pub history: Mutex<VecDeque<Value>>,
     /// Signalled by a browser's `quit`.
     pub quit: tokio::sync::Notify,
+    /// The first-run survey, when one is running (never with recording).
+    pub survey: Mutex<Option<crate::survey::SurveyRunner>>,
+    /// Its latest snapshot, for browsers that connect meanwhile.
+    pub survey_last: Mutex<Option<Value>>,
 }
 
 impl Ctx {
@@ -85,7 +89,18 @@ impl Runner {
 }
 
 /// Start recording with `cfg`. The engine thread reports the phase.
-pub fn start(ctx: Arc<Ctx>, cfg: Config) -> Result<Runner, String> {
+pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
+    // A linked channel file is read afresh, so a spreadsheet's edits apply.
+    if !cfg.conventional.channel_file.is_empty() {
+        let r = cfg.load_channel_file(&ctx.config_path);
+        let mut shared = ctx.config.lock().unwrap();
+        if shared.conventional.channel_file == cfg.conventional.channel_file {
+            shared.conventional.channels = cfg.conventional.channels.clone();
+            shared.conventional.channel_file_status = cfg.conventional.channel_file_status.clone();
+            publish(&ctx.hub, serde_json::json!({ "type": "config", "config": &*shared }));
+        }
+        r?;
+    }
     if let Some(p) = cfg.problem() {
         return Err(p);
     }
@@ -126,7 +141,7 @@ pub fn start(ctx: Arc<Ctx>, cfg: Config) -> Result<Runner, String> {
 }
 
 /// Replay a capture file as a source, paced to real time or as fast as possible.
-fn run_file(source: usize, path: &str, rate_hz: f64, realtime: bool, format: SampleFormat, tx: SyncSender<SourceMsg>, stop: Arc<AtomicBool>) {
+pub(crate) fn run_file(source: usize, path: &str, rate_hz: f64, realtime: bool, format: SampleFormat, tx: SyncSender<SourceMsg>, stop: Arc<AtomicBool>) {
     let mut f = match fs::File::open(path) {
         Ok(f) => f,
         Err(e) => {
@@ -204,6 +219,7 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Rec
                 session.add_busy_ms(t.elapsed().as_secs_f64() * 1000.0);
             }
             Ok(SourceMsg::Error { source, error }) => session.source_error(source, &error),
+            Ok(SourceMsg::Tuned { .. }) => {}
             Ok(SourceMsg::End { source }) => {
                 if session.source_ended(source) {
                     // (Not "ended" when the user stopped it: the file thread ends on stop too.)
@@ -237,12 +253,14 @@ fn deliver(ctx: &Ctx, dir: &Path, out: &mut Vec<Output>) {
             Output::Audio { tg, frame } => {
                 let _ = ctx.hub.send(Arc::new(Out::Audio { tg, frame }));
             }
-            Output::File { rel, wav, json, entry } => {
+            Output::File { rel, wav, json, frames, entry } => {
                 let base = dir.join(&rel);
                 if let Some(d) = base.parent() {
                     let _ = fs::create_dir_all(d);
                 }
-                let ok = fs::write(format!("{}.wav", base.display()), wav).is_ok() && fs::write(format!("{}.json", base.display()), json).is_ok();
+                let ok = fs::write(format!("{}.wav", base.display()), wav).is_ok()
+                    && fs::write(format!("{}.json", base.display()), json).is_ok()
+                    && frames.is_none_or(|f| fs::write(format!("{}.frames.jsonl", base.display()), f).is_ok());
                 if !ok {
                     publish(&ctx.hub, json!({ "type": "log", "lines": [{ "timeS": 0, "kind": "error", "text": format!("couldn't write {}", base.display()) }] }));
                 }

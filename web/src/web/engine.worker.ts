@@ -2,7 +2,7 @@
 // RTL-SDR driver (WebUSB), speaking the same protocol as the desktop app's
 // server, so the interface is identical. Calls are stored in OPFS.
 
-import init, { WebRtl, WebSession } from "./pkg/trunk_web.js";
+import init, { survey_bands, WebRtl, WebSession, WebSurvey } from "./pkg/trunk_web.js";
 import type { Config, FromRecorder } from "../protocol.ts";
 import { resolvedCenters } from "../config.ts";
 import { listCalls, readText, saveCall, writeText } from "./opfs.ts";
@@ -14,7 +14,11 @@ export type ToWorker =
   | { type: "start" }
   | { type: "stop" }
   | { type: "devices" }
-  | { type: "listen"; on: boolean; talkgroup: number | null };
+  | { type: "listen"; on: boolean; talkgroup: number | null }
+  | { type: "surveyStart"; source: number; bands: string[]; findGain: boolean }
+  | { type: "surveyListen"; freqHz: number }
+  | { type: "surveyRescan" }
+  | { type: "surveyStop" };
 
 /** Worker → page: a protocol message, or a live audio frame. */
 export type FromWorker = { msg: FromRecorder } | { audio: ArrayBuffer; tg: number };
@@ -62,8 +66,96 @@ function deliver(outs: { t: string; json?: string; tg?: number; frame?: Uint8Arr
   }
 }
 
+// ── first-run survey: one source, retuned as the survey asks ─────────────────
+
+let survey: WebSurvey | null = null;
+let surveyRtl: WebRtl | null = null;
+let surveyTimer: ReturnType<typeof setInterval> | null = null;
+let surveying = false;
+
+function surveyPoll(): void {
+  if (survey) deliver(survey.poll(performance.now()));
+}
+
+async function surveyStart(req: { source: number; bands: string[]; findGain: boolean }): Promise<void> {
+  if (running) return post({ type: "error", message: "Stop recording first — the scan needs the radio to itself." });
+  await surveyStop(false);
+  if (!config) return;
+  try {
+    await ready;
+    const src = config.sources[req.source];
+    if (!src) throw new Error("No such source.");
+    if (src.kind === "usrp" || src.kind === "airspy") throw new Error("USRP and Airspy need the desktop app.");
+    const s = new WebSurvey(JSON.stringify(config), JSON.stringify(req));
+    survey = s;
+    surveying = true;
+    surveyTimer = setInterval(surveyPoll, 100);
+    if (src.kind === "rtlsdr") {
+      const first = s.command() as { tune?: number } | undefined;
+      const rtl = await WebRtl.open(src.serial, first?.tune ?? src.centerHz, src.rateHz, src.gainDb ?? undefined, src.ppm);
+      surveyRtl = rtl;
+      s.tuned(first?.tune ?? src.centerHz);
+      void pumpSurveyRtl(s, rtl);
+    } else {
+      if (src.format && src.format !== "cu8") throw new Error("The browser version reads rtl_sdr (cu8) captures only.");
+      const f = files[req.source];
+      if (!f) throw new Error("Choose the capture file again (the browser forgets it on reload).");
+      void pumpSurveyFile(s, f, resolvedCenters(config)[req.source] ?? src.centerHz);
+    }
+  } catch (e) {
+    await surveyStop();
+    post({ type: "error", message: e instanceof Error ? e.message : String(e) });
+  }
+}
+
+async function pumpSurveyRtl(s: WebSurvey, rtl: WebRtl): Promise<void> {
+  while (surveying && survey === s) {
+    try {
+      // Retunes happen between blocks (the dongle's promises go one at a time).
+      for (let c = s.command() as { tune?: number; gain?: number } | undefined; c; c = s.command() as typeof c) {
+        const hz = c.tune !== undefined ? ((await rtl.retune(c.tune)) as number) : ((await rtl.set_gain(c.gain!)) as number);
+        s.tuned(hz);
+      }
+      const b = (await rtl.next()) as { bytes: Uint8Array; dropped: number } | undefined;
+      if (!b || survey !== s) break;
+      s.push(b.bytes);
+    } catch (e) {
+      if (!surveying || survey !== s) break;
+      s.source_error(e instanceof Error ? e.message : String(e));
+      break;
+    }
+  }
+}
+
+async function pumpSurveyFile(s: WebSurvey, f: File, centerHz: number): Promise<void> {
+  const chunk = 1 << 17;
+  for (let off = 0; surveying && survey === s && off < f.size; off += chunk) {
+    for (let c = s.command(); c; c = s.command()) s.tuned(centerHz);
+    s.push(new Uint8Array(await f.slice(off, Math.min(f.size, off + chunk)).arrayBuffer()));
+    await new Promise((r) => setTimeout(r, 0));
+  }
+  if (survey === s) {
+    s.finish();
+    surveyPoll();
+  }
+}
+
+async function surveyStop(tell = true): Promise<void> {
+  const was = survey !== null;
+  surveying = false;
+  if (surveyTimer) clearInterval(surveyTimer);
+  surveyTimer = null;
+  const rtl = surveyRtl;
+  surveyRtl = null;
+  if (rtl) await rtl.close().catch(() => {});
+  survey?.free();
+  survey = null;
+  if (was && tell) post({ type: "survey", stage: "idle" });
+}
+
 async function start(): Promise<void> {
   if (running || !config) return;
+  await surveyStop();
   setPhase("starting");
   try {
     await ready;
@@ -165,6 +257,8 @@ onmessage = async (ev: MessageEvent<ToWorker>) => {
         devices: await devices(),
         phase,
         history: await listCalls(300),
+        surveyBands: await ready.then(() => JSON.parse(survey_bands())).catch(() => []),
+        survey: { type: "survey", stage: "idle" },
       });
       break;
     case "setConfig":
@@ -185,6 +279,18 @@ onmessage = async (ev: MessageEvent<ToWorker>) => {
     case "listen":
       listen = { on: m.on, talkgroup: m.talkgroup };
       session?.set_want_audio(m.on);
+      break;
+    case "surveyStart":
+      await surveyStart(m);
+      break;
+    case "surveyListen":
+      survey?.listen(m.freqHz);
+      break;
+    case "surveyRescan":
+      survey?.rescan();
+      break;
+    case "surveyStop":
+      await surveyStop();
       break;
   }
 };

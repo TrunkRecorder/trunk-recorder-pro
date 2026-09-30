@@ -9,6 +9,10 @@
 //! (CQPSK + CQPSK/EQ + C4FM, `--eq 9 --mu 0.02`). Decoding: `--trellis
 //! greedy|viterbi`, `--soft none|amp`, `--softfec 0|1`, `--flywheel 0|1`,
 //! `--nidrecover 0|1`. Output: `--audio out.f32` (voice), `--iq out.cf32`.
+//!
+//! `tool revoice <call.frames.jsonl> <out.wav> [--profile enhanced|mbelib]
+//! [--seed 1]` — vocode a call's frame capture (the recording setting
+//! "Save vocoder frames") again, e.g. with the other vocoder profile.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -26,9 +30,12 @@ use trunk_core::p25::voice::{decode_hdu, decode_ldu1_lc, decode_ldu2_es, decode_
 use crate::{die, Args};
 
 pub fn run(a: &Args) {
-    let mode = a.positional.first().map(String::as_str).unwrap_or_else(|| die("tool cc|voice|frames|p2 <capture> …"));
+    let mode = a.positional.first().map(String::as_str).unwrap_or_else(|| die("tool cc|voice|frames|p2|revoice <capture> …"));
     if mode == "p2" {
         return run_p2(a);
+    }
+    if mode == "revoice" {
+        return run_revoice(a);
     }
     let path = a.positional.get(1).unwrap_or_else(|| die("tool: no capture"));
     let cap = std::fs::read(path).unwrap_or_else(|e| die(&format!("{path}: {e}")));
@@ -238,6 +245,51 @@ fn num_any(a: &Args, key: &str) -> u32 {
         let v = v.trim();
         if let Some(h) = v.strip_prefix("0x") { u32::from_str_radix(h, 16) } else { v.parse() }.unwrap_or_else(|_| die(&format!("--{key}: not a number")))
     })
+}
+
+/// `tool revoice`: a frame capture back through the vocoder.
+fn run_revoice(a: &Args) {
+    use trunk_core::trunk::frames::hex_bits;
+    let path = a.positional.get(1).unwrap_or_else(|| die("tool revoice <call.frames.jsonl> <out.wav>"));
+    let out = a.positional.get(2).unwrap_or_else(|| die("tool revoice: no output .wav"));
+    let mbelib = a.get("profile") == Some("mbelib");
+    let profile = if mbelib { mbe::Profile::Mbelib } else { mbe::Profile::Enhanced };
+    let mut dec = mbe::Decoder::new(mbe::lcg(a.num("seed", 1.0) as u32), profile);
+    let text = std::fs::read_to_string(path).unwrap_or_else(|e| die(&format!("{path}: {e}")));
+    let (mut audio, mut kinds, mut differ) = (Vec::new(), BTreeMap::<String, u32>::new(), 0u32);
+    fn not_frame<T>(path: &str, n: usize) -> T {
+        die(&format!("{path}:{}: not a frame record", n + 1))
+    }
+    for (n, line) in text.lines().enumerate().filter(|(_, l)| !l.trim().is_empty()) {
+        let f: serde_json::Value = serde_json::from_str(line).unwrap_or_else(|_| not_frame(path, n));
+        let int = |k: &str| f[k].as_u64().unwrap_or_else(|| not_frame(path, n)) as u32;
+        let codec = f["codec"].as_str().unwrap_or_else(|| not_frame(path, n));
+        let hex = f["bits"].as_str().unwrap_or_else(|| not_frame(path, n));
+        let mut buf = [0f32; FRAME_SAMPLES];
+        let kind = match codec {
+            "imbe" => {
+                let bits: [u8; 88] = hex_bits(hex, 88).and_then(|b| b.try_into().ok()).unwrap_or_else(|| not_frame(path, n));
+                let erased = f["erased"].as_bool().unwrap_or(false);
+                dec.imbe(&bits, int("e0"), if erased { 0 } else { int("errs") }, erased, &mut buf)
+            }
+            "ambe" => {
+                let bits: [u8; 49] = hex_bits(hex, 49).and_then(|b| b.try_into().ok()).unwrap_or_else(|| not_frame(path, n));
+                dec.ambe(&bits, int("errs"), &mut buf)
+            }
+            _ => not_frame(path, n),
+        };
+        let name = format!("{kind:?}").to_lowercase();
+        differ += (f["out"].as_str() != Some(name.as_str())) as u32;
+        *kinds.entry(name).or_default() += 1;
+        if mbelib {
+            mbe::to_unit(&mut buf);
+        } else {
+            mbe::to_limited(&mut buf);
+        }
+        audio.extend_from_slice(&buf);
+    }
+    std::fs::write(out, trunk_core::wav::encode(&audio, mbe::SAMPLE_RATE)).unwrap_or_else(|e| die(&format!("{out}: {e}")));
+    eprintln!("{} frames ({:.2} s) → {out}: {kinds:?}; {differ} decoded differently from the recording", audio.len() / FRAME_SAMPLES, audio.len() as f64 / mbe::SAMPLE_RATE as f64);
 }
 
 fn run_p2(a: &Args) {

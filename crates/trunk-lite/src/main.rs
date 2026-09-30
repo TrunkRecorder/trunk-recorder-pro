@@ -16,8 +16,9 @@
 //!     <out>/<tg>-<epoch>_<freq>.wav + .json like Trunk Recorder.
 //!     --out calls  --short-name sys1  --talkgroups tg.csv  --bandplan file
 //!     --recorders 32  --preroll 1  --timeout 3  --epoch <unix s>
-//!     --record-encrypted  --keep-silent  --no-unknown  --quiet
+//!     --record-encrypted  --keep-silent  --no-unknown  --capture-frames  --quiet
 //!     Conventional channels (with or without --cc): --fm Hz[,Hz…]  --p25 Hz[,Hz…]
+//!     or --channels channels.csv (the channel-file format; see README)
 //!     --squelch dB (open threshold above the noise floor, default 8)
 //!
 //! trunk-lite devices [--usrp [args]]
@@ -26,14 +27,23 @@
 //! trunk-lite capture <out.cu8> --freq Hz --rate Hz [--gain dB] [--ppm 0] [--serial S] [--seconds 10]
 //!     Record raw u8 IQ, like rtl_sdr.
 //!
+//! trunk-lite survey [--serial S] [--bands 800,700,…] [--gain dB | --no-gain] [--ppm 0] [--seconds 30]
+//! trunk-lite survey <capture> --center Hz --rate Hz
+//!     Find a P25 system: scan the bands (or look at a capture), then listen
+//!     to the best control channel; JSON lines of what was found, then the
+//!     system (IDs, band plan, alternates, neighbours, voice channels, ppm).
+//!
 //! trunk-lite tool cc|voice|frames <capture.cu8> --center Hz --rate Hz (--cc Hz | --freq Hz) [options]
 //!     One channel's decode, as JSON lines (the research/native-bench format).
+//! trunk-lite tool revoice <call.frames.jsonl> <out.wav> [--profile enhanced|mbelib]
+//!     Vocode a call's saved frames again.
 //! ```
 
 mod radio;
 mod runtime;
 mod sdr;
 mod server;
+mod survey;
 mod tool;
 
 pub use trunk_app::config;
@@ -106,10 +116,18 @@ usage:
   trunk-lite replay <capture.cu8> --center Hz --rate Hz --cc Hz[,Hz…] [--out calls] …
   trunk-lite replay --source cap.cu8,center,rate [--source …] --cc Hz …
   trunk-lite replay <capture> --center Hz --rate Hz --fm Hz[,Hz…] --p25 Hz[,Hz…] [--squelch 8]
+  trunk-lite replay <capture> --center Hz --rate Hz --channels channels.csv
       Record calls from captures instead of dongles (a trunked system from
       --cc, conventional analog FM / P25 channels, or both).
+  trunk-lite survey [--serial S] [--bands 800,700,900,uhf,vhf,uhf-fed,t-band] [--gain dB] [--seconds 30]
+  trunk-lite survey <capture> --center Hz --rate Hz
+      Find a P25 system from scratch: scan for control channels, then listen
+      to the best one and report its IDs, alternates, neighbours, voice
+      channels and the dongle's frequency correction (ppm).
   trunk-lite tool cc|voice|frames|p2 <capture.cu8> …
       One channel's decode as JSON lines (diagnostics).
+  trunk-lite tool revoice <call.frames.jsonl> <out.wav> [--profile enhanced|mbelib]
+      Vocode a call's saved frames (recording setting \"Save vocoder frames\") again.
   trunk-lite --version
 
 Docs: https://github.com/TrunkRecorder/trunk-recorder-lite
@@ -127,6 +145,7 @@ fn main() {
         Some("tool") => tool::run(&Args::parse(&argv[1..])),
         Some("devices") => devices(&Args::parse(&argv[1..])),
         Some("capture") => capture(&Args::parse(&argv[1..])),
+        Some("survey") => survey::cli(&Args::parse(&argv[1..])),
         _ => die(USAGE),
     }
 }
@@ -193,6 +212,16 @@ fn replay(a: &Args) {
         .into_iter()
         .map(|f| ConvChannel::new(f, ConvMode::Fm))
         .chain(hz_list("p25").into_iter().map(|f| ConvChannel::new(f, ConvMode::P25)))
+        .chain(a.get("channels").map_or_else(Vec::new, |p| {
+            let text = fs::read_to_string(p).unwrap_or_else(|e| die(&format!("{p}: {e}")));
+            let parsed = trunk_app::channels::parse(&text).unwrap_or_else(|e| die(&format!("{p}: {e}")));
+            for n in &parsed.notes {
+                eprintln!("{p}: {n}");
+            }
+            let mut cfg = config::Config::default();
+            cfg.conventional.channels = parsed.channels;
+            cfg.engine_config(0.0).conventional
+        }))
         .collect();
     let out_dir = a.get("out").unwrap_or("calls").to_string();
     fs::create_dir_all(&out_dir).unwrap_or_else(|e| die(&format!("{out_dir}: {e}")));
@@ -215,6 +244,7 @@ fn replay(a: &Args) {
         epoch_ms_at_zero: a.num("epoch", 0.0) * 1000.0,
         conventional,
         conv: ConvConfig { squelch_db: a.num("squelch", ConvConfig::default().squelch_db), ..Default::default() },
+        capture_frames: a.flag("capture-frames"),
         ..Default::default()
     };
     let mut engine = Engine::new(cfg, talkgroups).unwrap_or_else(|e| die(&e));
@@ -297,6 +327,9 @@ fn handle_events(engine: &mut Engine, out_dir: &str, quiet: bool) -> usize {
                 let base = Path::new(out_dir).join(&k.base_name).display().to_string();
                 let _ = fs::write(format!("{base}.wav"), trunk_core::wav::encode(&k.audio, 8000));
                 let _ = fs::write(format!("{base}.json"), &k.json);
+                if let Some(f) = &k.frames {
+                    let _ = fs::write(format!("{base}.frames.jsonl"), f);
+                }
                 if !quiet {
                     println!("         wrote {}.wav  ({:.1} s audio)", k.base_name, k.audio.len() as f64 / 8000.0);
                 }
@@ -337,7 +370,7 @@ fn capture(a: &Args) {
                 dropped += d;
             }
             Ok(sdr::SourceMsg::Error { error, .. }) => eprintln!("{error}"),
-            Ok(sdr::SourceMsg::Iq { .. }) => {}
+            Ok(sdr::SourceMsg::Iq { .. } | sdr::SourceMsg::Tuned { .. }) => {}
             Ok(sdr::SourceMsg::End { .. }) | Err(_) => break,
         }
     }
@@ -403,6 +436,8 @@ fn serve(a: &Args) {
         phase: Mutex::new(runtime::PhaseInfo { phase: "idle", error: None, ended: false }),
         history: Mutex::new(history.into_iter().collect::<VecDeque<_>>()),
         quit: tokio::sync::Notify::new(),
+        survey: Mutex::new(None),
+        survey_last: Mutex::new(None),
     });
     println!("Trunk Recorder Lite {} — open {url}\nconfig: {}", env!("CARGO_PKG_VERSION"), config_path.display());
     let auto = a.flag("start") || ctx.config.lock().unwrap().server.auto_start;

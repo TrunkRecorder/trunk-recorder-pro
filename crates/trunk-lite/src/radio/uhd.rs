@@ -13,7 +13,7 @@ use libloading::Library;
 use num_complex::Complex32;
 
 use super::DriverInfo;
-use crate::sdr::SourceMsg;
+use crate::sdr::{Control, SourceMsg};
 
 type Handle = *mut c_void;
 type Err = c_int;
@@ -212,8 +212,16 @@ pub struct UsrpConfig {
 
 /// Stream a USRP until `stop`; reopens after errors with a short back-off.
 pub fn run(source: usize, cfg: UsrpConfig, tx: SyncSender<SourceMsg>, stop: Arc<AtomicBool>) {
+    run_with(source, cfg, tx, stop, None)
+}
+
+/// [`run`], retuned on request.
+pub fn run_with(source: usize, mut cfg: UsrpConfig, tx: SyncSender<SourceMsg>, stop: Arc<AtomicBool>, ctl: Option<Arc<Control>>) {
     while !stop.load(Ordering::Relaxed) {
-        if let Err(e) = stream_once(source, &cfg, &tx, &stop) {
+        if let Some(c) = ctl.as_ref().and_then(|c| *c.current_hz.lock().unwrap()) {
+            cfg.center_hz = c;
+        }
+        if let Err(e) = stream_once(source, &cfg, &tx, &stop, ctl.as_deref()) {
             let _ = tx.send(SourceMsg::Error { source, error: e });
             std::thread::sleep(Duration::from_secs(3));
         }
@@ -250,7 +258,7 @@ impl Drop for Session<'_> {
     }
 }
 
-fn stream_once(source: usize, cfg: &UsrpConfig, tx: &SyncSender<SourceMsg>, stop: &AtomicBool) -> Result<(), String> {
+fn stream_once(source: usize, cfg: &UsrpConfig, tx: &SyncSender<SourceMsg>, stop: &AtomicBool, ctl: Option<&Control>) -> Result<(), String> {
     let a = api()?;
     let mut s = Session { a, usrp: std::ptr::null_mut(), rx: std::ptr::null_mut(), md: std::ptr::null_mut(), streaming: false };
     let args = CString::new(cfg.args.as_str()).map_err(|e| e.to_string())?;
@@ -303,6 +311,23 @@ fn stream_once(source: usize, cfg: &UsrpConfig, tx: &SyncSender<SourceMsg>, stop
         let mut next_t: Option<f64> = None;
         let mut timeouts = 0;
         while !stop.load(Ordering::Relaxed) {
+            if let Some(c) = ctl {
+                let (freq, gain) = c.take();
+                if let Some(f) = freq {
+                    let mut req = TuneRequest { target_freq: f / (1.0 + cfg.ppm * 1e-6), ..req };
+                    check(a, "tune", (a.set_rx_freq)(s.usrp, &mut req, 0, &mut res))?;
+                    *c.current_hz.lock().unwrap() = Some(f);
+                }
+                if let Some(g) = gain {
+                    check(a, "set gain", (a.set_rx_gain)(s.usrp, g as f64, 0, c"".as_ptr()))?;
+                }
+                if freq.is_some() || gain.is_some() {
+                    let hz = c.current_hz.lock().unwrap().unwrap_or(cfg.center_hz);
+                    if tx.send(SourceMsg::Tuned { center_hz: hz }).is_err() {
+                        return Ok(());
+                    }
+                }
+            }
             let mut buf = vec![Complex32::default(); per];
             let mut ptr = buf.as_mut_ptr() as *mut c_void;
             let mut n = 0usize;

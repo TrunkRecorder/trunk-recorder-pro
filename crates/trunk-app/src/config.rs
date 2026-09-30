@@ -144,6 +144,8 @@ impl Default for System {
 }
 
 /// Conventional channels: one frequency each, found by energy detection.
+/// Either listed here, or kept in a CSV file (`channelFile`, desktop) to edit
+/// in a spreadsheet — see [`crate::channels`] for its columns.
 ///
 /// ```json
 /// "conventional": {
@@ -159,12 +161,20 @@ impl Default for System {
 pub struct Conventional {
     /// Open threshold for every channel, dB above the measured noise floor.
     pub squelch_db: f64,
+    /// A CSV the channels are read from, absolute or relative to the config
+    /// file's folder; read when the app starts, when recording starts and
+    /// on Reload. Empty: the channels are the list below.
+    pub channel_file: String,
+    /// The channels (while a channel file is linked: its contents, not saved here).
     pub channels: Vec<Channel>,
+    /// How the channel file last read, for the interface (not saved).
+    #[serde(skip_deserializing)]
+    pub channel_file_status: String,
 }
 
 impl Default for Conventional {
     fn default() -> Self {
-        Conventional { squelch_db: ConvConfig::default().squelch_db, channels: vec![] }
+        Conventional { squelch_db: ConvConfig::default().squelch_db, channel_file: String::new(), channels: vec![], channel_file_status: String::new() }
     }
 }
 
@@ -249,6 +259,8 @@ pub struct Recording {
     pub record_encrypted: bool,
     pub record_unit_to_unit: bool,
     pub keep_silent_calls: bool,
+    /// Save each call's vocoder frames next to its audio, for diagnosis.
+    pub capture_frames: bool,
 }
 
 impl Default for Recording {
@@ -262,6 +274,7 @@ impl Default for Recording {
             record_encrypted: false,
             record_unit_to_unit: true,
             keep_silent_calls: false,
+            capture_frames: false,
         }
     }
 }
@@ -325,14 +338,83 @@ pub fn default_capture_dir() -> PathBuf {
 }
 
 impl Config {
+    /// The config at `path` (defaults if missing or unreadable), with a
+    /// linked channel file read in.
     pub fn load(path: &Path) -> Config {
-        std::fs::read_to_string(path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+        let mut c: Config = std::fs::read_to_string(path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        let _ = c.load_channel_file(path);
+        c
     }
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
         if let Some(d) = path.parent() {
             std::fs::create_dir_all(d)?;
         }
-        std::fs::write(path, serde_json::to_string_pretty(self).unwrap_or_default())
+        let mut c = self.clone();
+        c.conventional.channel_file_status.clear();
+        if !c.conventional.channel_file.is_empty() {
+            // The file holds them.
+            c.conventional.channels.clear();
+        }
+        std::fs::write(path, serde_json::to_string_pretty(&c).unwrap_or_default())
+    }
+
+    /// The linked channel file's location (relative paths from the config
+    /// file's folder), or None.
+    pub fn channel_file_path(&self, config_path: &Path) -> Option<PathBuf> {
+        let f = self.conventional.channel_file.trim();
+        if f.is_empty() {
+            return None;
+        }
+        let p = PathBuf::from(f);
+        Some(if p.is_absolute() { p } else { config_path.parent().unwrap_or(Path::new(".")).join(p) })
+    }
+
+    /// Read the linked channel file into `conventional.channels` (a no-op
+    /// when none is linked). On an error the channels are left as they were;
+    /// either way `channel_file_status` says what happened.
+    pub fn load_channel_file(&mut self, config_path: &Path) -> Result<(), String> {
+        let Some(p) = self.channel_file_path(config_path) else {
+            self.conventional.channel_file_status.clear();
+            return Ok(());
+        };
+        let r = std::fs::read_to_string(&p).map_err(|e| e.to_string()).and_then(|t| crate::channels::parse(&t));
+        match r {
+            Ok(parsed) => {
+                let n = parsed.channels.len();
+                self.conventional.channels = parsed.channels;
+                self.conventional.channel_file_status =
+                    format!("{n} channel{} read.{}", if n == 1 { "" } else { "s" }, parsed.notes.iter().map(|x| format!(" {x}")).collect::<String>());
+                Ok(())
+            }
+            Err(e) => {
+                let msg = format!("Channel file {}: {e}", p.display());
+                self.conventional.channel_file_status = msg.clone();
+                Err(msg)
+            }
+        }
+    }
+
+    /// Link the channels to a CSV at `path` (created from the current list
+    /// if it doesn't exist yet), or unlink with "" — the channels then stay
+    /// in the config, as last read.
+    pub fn link_channel_file(&mut self, config_path: &Path, path: &str) -> Result<(), String> {
+        let old = std::mem::replace(&mut self.conventional.channel_file, path.trim().to_string());
+        let Some(p) = self.channel_file_path(config_path) else {
+            self.conventional.channel_file_status.clear();
+            return Ok(());
+        };
+        if !p.exists() {
+            let made = p.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::write(&p, crate::channels::write(&self.conventional.channels)));
+            if let Err(e) = made {
+                self.conventional.channel_file = old;
+                return Err(format!("Couldn't create {}: {e}", p.display()));
+            }
+        }
+        if let Err(e) = self.load_channel_file(config_path) {
+            self.conventional.channel_file = old;
+            return Err(e);
+        }
+        Ok(())
     }
 
     /// The conventional channels that are switched on.
@@ -411,6 +493,7 @@ impl Config {
             bank: BankConfig { cqpsk: m != "fsk4", cqpsk_eq: m != "fsk4", c4fm: m != "qpsk", ..Default::default() },
             conventional: self.enabled_channels().map(Channel::engine_channel).collect(),
             conv: ConvConfig { squelch_db: self.conventional.squelch_db, ..Default::default() },
+            capture_frames: self.recording.capture_frames,
         }
     }
 }
@@ -477,5 +560,50 @@ mod tests {
         assert!(c.problem().unwrap().contains("center frequency"));
         c.conventional.channels.clear();
         assert!(c.problem().unwrap().contains("conventional channel"));
+    }
+
+    #[test]
+    fn channel_file_link_edit_save_load_unlink() {
+        let dir = std::env::temp_dir().join(format!("trunk-lite-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let cfg_path = dir.join("config.json");
+        let mut c = Config::default();
+        c.conventional.channels = vec![Channel {
+            freq_hz: 154_430_000.0,
+            mode: ChannelMode::Fm,
+            name: "Fire".into(),
+            talkgroup: None,
+            description: String::new(),
+            tag: String::new(),
+            group: String::new(),
+            squelch_db: None,
+            enabled: true,
+        }];
+        // Linking a new path writes the current list there.
+        c.link_channel_file(&cfg_path, "channels.csv").unwrap();
+        let file = dir.join("channels.csv");
+        assert!(std::fs::read_to_string(&file).unwrap().contains("154.4300,fm,Fire"));
+        // Edited in a spreadsheet: re-read.
+        std::fs::write(&file, "Frequency,Mode,Alpha Tag
+154.4300,fm,Fire
+460.125,p25,PD
+").unwrap();
+        c.load_channel_file(&cfg_path).unwrap();
+        assert_eq!(c.conventional.channels.len(), 2);
+        assert_eq!(c.conventional.channel_file_status, "2 channels read.");
+        // Saved without the list; loading reads the file again.
+        c.save(&cfg_path).unwrap();
+        let saved = std::fs::read_to_string(&cfg_path).unwrap();
+        assert!(saved.contains("\"channelFile\": \"channels.csv\"") && saved.contains("\"channels\": []"), "{saved}");
+        assert_eq!(Config::load(&cfg_path).conventional.channels.len(), 2);
+        // A broken file keeps the last good list and says why.
+        std::fs::write(&file, "Name\nx\n").unwrap();
+        assert!(c.load_channel_file(&cfg_path).unwrap_err().contains("No Frequency column"));
+        assert_eq!(c.conventional.channels.len(), 2);
+        // Unlinking keeps the channels in the config.
+        c.link_channel_file(&cfg_path, "").unwrap();
+        c.save(&cfg_path).unwrap();
+        assert_eq!(Config::load(&cfg_path).conventional.channels.len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

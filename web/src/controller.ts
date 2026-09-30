@@ -4,7 +4,23 @@
 
 import { useSyncExternalStore } from "react";
 import { LivePlayer } from "./livePlayer.ts";
-import type { AudioChunk, CallEntry, CallView, Config, Device, EngineStatus, FromRecorder, LogLine, Phase, Radios, SourceStatus, Spectrum } from "./protocol.ts";
+import type {
+  AudioChunk,
+  CallEntry,
+  CallView,
+  Config,
+  Device,
+  EngineStatus,
+  FromRecorder,
+  LogLine,
+  Phase,
+  Radios,
+  SourceStatus,
+  Spectrum,
+  SurveyBand,
+  SurveyState,
+  SurveySuggestion,
+} from "./protocol.ts";
 import { WsTransport, type Transport } from "./transport.ts";
 import type { WorkerTransport } from "./web/workerTransport.ts";
 
@@ -36,6 +52,12 @@ export interface AppState {
   /** Only play this talkgroup live (null = any). */
   listenTalkgroup: number | null;
   nowPlaying: { talkgroup: number; callId: number } | null;
+  /** The first-run survey, as the recorder last reported it. */
+  survey: SurveyState;
+  surveyBands: SurveyBand[];
+  surveySpectrum: Spectrum | null;
+  /** Bumped when the config is replaced from outside the form (fields re-read it). */
+  configEpoch: number;
 }
 
 let state: AppState = {
@@ -62,6 +84,10 @@ let state: AppState = {
   listen: false,
   listenTalkgroup: null,
   nowPlaying: null,
+  survey: { stage: "idle" },
+  surveyBands: [],
+  surveySpectrum: null,
+  configEpoch: 0,
 };
 
 const listeners = new Set<() => void>();
@@ -110,6 +136,8 @@ transport.onMessage = (m: FromRecorder) => {
         phase: m.phase.phase,
         error: m.phase.error,
         ended: m.phase.ended,
+        surveyBands: m.surveyBands ?? [],
+        survey: m.survey ?? { stage: "idle" },
       });
       if (state.listen) transport.send({ type: "listen", on: true, talkgroup: state.listenTalkgroup });
       break;
@@ -134,6 +162,12 @@ transport.onMessage = (m: FromRecorder) => {
       break;
     case "concluded":
       set({ history: [m.entry, ...state.history].slice(0, 500) });
+      break;
+    case "survey":
+      set({ survey: m, ...(m.stage === "idle" ? { surveySpectrum: null } : {}) });
+      break;
+    case "surveySpectrum":
+      set({ surveySpectrum: m });
       break;
     case "devices":
       set({ devices: m.devices });
@@ -177,6 +211,22 @@ function flushConfig(): void {
   }
 }
 
+/** Link the conventional channels to a CSV file on the recorder's computer, reload it, or unlink (""). */
+export function setChannelFile(path: string): void {
+  flushConfig();
+  transport.send({ type: "channelFile", path });
+}
+
+/** Save text as a file through the browser. */
+export function downloadText(name: string, text: string, type = "text/csv"): void {
+  const url = URL.createObjectURL(new Blob([text], { type }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
+
 export function dismissError(): void {
   set({ error: null });
 }
@@ -193,6 +243,37 @@ export function refreshDevices(): void {
 export function findRadios(): void {
   set({ findingRadios: true });
   transport.send({ type: "findRadios" });
+}
+
+// ── first-run survey ─────────────────────────────────────────────────────────
+
+export function startSurvey(source: number, bands: string[], findGain: boolean): void {
+  flushConfig();
+  set({ error: null, surveySpectrum: null });
+  transport.send({ type: "surveyStart", source, bands, findGain });
+}
+export function surveyListen(freqHz: number): void {
+  transport.send({ type: "surveyListen", freqHz });
+}
+export function surveyRescan(): void {
+  transport.send({ type: "surveyRescan" });
+}
+export function stopSurvey(): void {
+  transport.send({ type: "surveyStop" });
+}
+
+/** Put what the survey found into the config: control channels, and source `i`'s ppm, gain and centre. */
+export function applySurvey(i: number, sug: SurveySuggestion): void {
+  updateConfig((c) => {
+    c.system.controlChannels = sug.controlChannels;
+    const src = c.sources[i];
+    if (src && src.kind !== "file") {
+      if (sug.ppmApply !== null) src.ppm = sug.ppmApply;
+      src.centerHz = sug.centerHz;
+      if (src.kind === "rtlsdr" && sug.gainDb !== null) src.gainDb = sug.gainDb;
+    }
+  });
+  set({ configEpoch: state.configEpoch + 1 });
 }
 
 // ── run ──────────────────────────────────────────────────────────────────────

@@ -20,6 +20,7 @@ export function defaultConfig(): Config {
       recordEncrypted: false,
       recordUnitToUnit: true,
       keepSilentCalls: false,
+      captureFrames: false,
     },
     server: { bind: "127.0.0.1", port: 8080, autoStart: false },
   };
@@ -109,65 +110,152 @@ export function startProblem(c: Config): string | null {
   return null;
 }
 
-/** A frequency as MHz (has a decimal point, under 10 GHz in MHz) or Hz — Trunk Recorder's rule. */
-function freqFrom(text: string): number | null {
-  const v = Number(text);
-  if (!Number.isFinite(v) || v <= 0) return null;
-  return text.includes(".") && v < 10_000 ? Math.round(v * 1e6) : Math.round(v);
+// Conventional channels as CSV, for a spreadsheet. The same rules as the
+// recorder's channel file (crates/trunk-app/src/channels.rs) — keep them together.
+
+/** The columns channelsToCsv writes. */
+export const CHANNEL_CSV_HEADER = "TG Number,Frequency,Mode,Alpha Tag,Description,Tag,Category,Squelch dB,Enable";
+
+/** RFC-4180-ish split on `delim`. */
+function splitOn(line: string, delim: string): string[] {
+  if (delim === ",") return splitCsvLine(line);
+  const out: string[] = [];
+  let cur = "";
+  let q = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (q) {
+      if (ch === '"' && line[i + 1] === '"') {
+        cur += '"';
+        i++;
+      } else if (ch === '"') q = false;
+      else cur += ch;
+    } else if (ch === '"') q = true;
+    else if (ch === delim) {
+      out.push(cur.trim());
+      cur = "";
+    } else cur += ch;
+  }
+  out.push(cur.trim());
+  return out;
+}
+
+/** A frequency cell: MHz with a decimal point (under 10 GHz in MHz), else Hz. */
+function freqCell(cell: string, decimalComma: boolean): number | null {
+  const t = (decimalComma ? cell.replace(/,/g, ".") : cell).trim();
+  const v = Number(t);
+  if (!t || !Number.isFinite(v) || v <= 0) return null;
+  return t.includes(".") && v < 10_000 ? Math.round(v * 1e6) : Math.round(v);
+}
+
+function rowsList(rows: number[]): string {
+  return rows.slice(0, 8).join(", ") + (rows.length > 8 ? ` and ${rows.length - 8} more` : "");
 }
 
 /**
- * Conventional channels from a CSV: Trunk Recorder's channelFile (TG Number,
- * Frequency, Tone, Alpha Tag, Description, Tag, Category, Enable, Squelch …)
- * plus an optional Mode column (fm / p25, or A / D). What can't carry over is
- * reported.
+ * Conventional channels from a CSV: Trunk Recorder's channel file (TG Number,
+ * Frequency, Alpha Tag, Description, Tag, Category, Enable) plus Mode and
+ * Squelch dB; commas, semicolons or tabs; Excel's byte-order mark and decimal
+ * commas. `error` when there is no Frequency column.
  */
-export function parseChannelCsv(text: string, dfltMode: Channel["mode"] = "fm"): { channels: Channel[]; notes: string[] } {
-  const lines = text.split(/\r?\n/).filter((l) => l.trim() && !l.trim().startsWith("#"));
-  const notes: string[] = [];
-  if (!lines.length) return { channels: [], notes: ["The file is empty."] };
-  const head = splitCsvLine(lines[0]).map((h) => h.toLowerCase());
+export function parseChannelCsv(text: string): { channels: Channel[]; notes: string[]; error?: string } {
+  const lines = text
+    .replace(/^\uFEFF/, "")
+    .split(/\r?\n/)
+    .map((l, i) => ({ row: i + 1, l }))
+    .filter(({ l }) => l.trim() && !l.trimStart().startsWith("#"));
+  if (!lines.length) return { channels: [], notes: [], error: "The channel file is empty." };
+  const headLine = lines[0].l;
+  const delim = [",", ";", "\t"].reduce((best, d) => (headLine.split(d).length > headLine.split(best).length ? d : best), ",");
+  const decimalComma = delim !== ",";
+  const head = splitOn(headLine, delim).map((h) => h.toLowerCase());
   const col = (...names: string[]) => head.findIndex((h) => names.includes(h));
   const cFreq = col("frequency", "freq", "freqhz");
-  if (cFreq < 0) return { channels: [], notes: ["No Frequency column (the first row must name the columns)."] };
+  if (cFreq < 0) return { channels: [], notes: [], error: "No Frequency column: the first row must name the columns (TG Number, Frequency, Mode, Alpha Tag, …)." };
   const cTg = col("tg number", "talkgroup", "tg");
   const cName = col("alpha tag", "name");
   const cDesc = col("description");
   const cTag = col("tag");
   const cGroup = col("category", "group");
-  const cEnable = col("enable", "enabled");
   const cMode = col("mode");
+  const cSq = col("squelch db", "squelchdb");
+  const cTrSq = col("squelch");
+  const cEnable = col("enable", "enabled");
   const cTone = col("tone");
-  const cSq = col("squelch");
   const channels: Channel[] = [];
+  const badFreq: number[] = [];
+  const badMode: number[] = [];
+  const badTg: number[] = [];
+  const badSq: number[] = [];
   let toned = 0;
-  let squelched = 0;
-  let bad = 0;
-  for (const line of lines.slice(1)) {
-    const f = splitCsvLine(line);
+  for (const { row, l } of lines.slice(1)) {
+    const f = splitOn(l, delim);
     const at = (i: number) => (i >= 0 ? f[i] ?? "" : "");
-    const freqHz = freqFrom(at(cFreq));
+    const freqHz = freqCell(at(cFreq), decimalComma);
     if (freqHz === null) {
-      bad++;
+      badFreq.push(row);
       continue;
     }
     const m = at(cMode).toLowerCase();
-    const mode: Channel["mode"] = m === "p25" || m === "d" || m === "digital" ? "p25" : m === "fm" || m === "a" || m === "analog" ? "fm" : dfltMode;
-    const tg = Number.parseInt(at(cTg), 10);
-    const ch: Channel = { freqHz, mode, name: at(cName), enabled: at(cEnable).toLowerCase() !== "false" };
-    if (Number.isFinite(tg) && tg > 0) ch.talkgroup = tg;
+    let mode: Channel["mode"] = "fm";
+    if (["p25", "digital", "d"].includes(m)) mode = "p25";
+    else if (!["", "fm", "nfm", "analog", "a"].includes(m)) badMode.push(row);
+    const ch: Channel = { freqHz, mode, name: at(cName), enabled: !["false", "no", "0", "off"].includes(at(cEnable).toLowerCase()) };
+    const tgText = at(cTg);
+    if (tgText) {
+      const tg = Number(tgText);
+      if (Number.isInteger(tg) && tg > 0 && tg < 2 ** 32) ch.talkgroup = tg;
+      else badTg.push(row);
+    }
+    const sqText = at(cSq);
+    if (sqText) {
+      const sq = Number(decimalComma ? sqText.replace(/,/g, ".") : sqText);
+      if (Number.isFinite(sq) && sq >= 3 && sq <= 40) ch.squelchDb = sq;
+      else badSq.push(row);
+    }
     if (at(cDesc)) ch.description = at(cDesc);
     if (at(cTag)) ch.tag = at(cTag);
     if (at(cGroup)) ch.group = at(cGroup);
     if (Number(at(cTone)) > 0) toned++;
-    if (at(cSq)) squelched++;
     channels.push(ch);
   }
-  if (bad) notes.push(`${bad} row(s) without a usable frequency were skipped.`);
-  if (toned) notes.push(`${toned} channel(s) have a tone: tones aren't matched yet, so they record whatever is on the frequency.`);
-  if (squelched) notes.push("Squelch values were not carried over: here squelch is dB above the measured noise floor, not an absolute level.");
-  if (cMode < 0 && channels.length) notes.push(`No Mode column: imported as ${dfltMode === "fm" ? "analog FM" : "P25"}.`);
+  const notes: string[] = [];
+  if (badFreq.length) notes.push(`Skipped row(s) ${rowsList(badFreq)} — no usable frequency.`);
+  if (badMode.length) notes.push(`Row(s) ${rowsList(badMode)}: unknown Mode (use fm or p25) — read as fm.`);
+  if (badTg.length) notes.push(`Row(s) ${rowsList(badTg)}: TG Number isn't a positive whole number — using the default.`);
+  if (badSq.length) notes.push(`Row(s) ${rowsList(badSq)}: Squelch dB must be 3–40 (dB above the noise) — using the default.`);
+  if (toned) notes.push(`${toned} channel(s) have a Tone: tones aren't matched yet, so they record whatever is on the frequency.`);
+  if (cTrSq >= 0 && cSq < 0) notes.push("The Squelch column (Trunk Recorder's absolute level) was not read: use Squelch dB, in dB above the noise floor.");
   return { channels, notes };
+}
+
+/** MHz with at least 4 and at most 6 decimals (154.4300, 154.43125). */
+export function mhzCell(hz: number): string {
+  const [int, frac = ""] = (hz / 1e6).toFixed(6).split(".");
+  return `${int}.${frac.replace(/0+$/, "").padEnd(4, "0")}`;
+}
+
+function csvCell(s: string | undefined): string {
+  const v = s ?? "";
+  return /[,";\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
+}
+
+/** The channels as CSV (CHANNEL_CSV_HEADER's columns), which parseChannelCsv and the recorder read back unchanged. */
+export function channelsToCsv(channels: Channel[]): string {
+  const rows = channels.map((c) =>
+    [
+      c.talkgroup ?? "",
+      mhzCell(c.freqHz),
+      c.mode,
+      csvCell(c.name),
+      csvCell(c.description),
+      csvCell(c.tag),
+      csvCell(c.group),
+      c.squelchDb ?? "",
+      String(c.enabled),
+    ].join(","),
+  );
+  return [CHANNEL_CSV_HEADER, ...rows].join("\n") + "\n";
 }
 
 /** Parse a comma/space separated list of MHz (or Hz) values. */

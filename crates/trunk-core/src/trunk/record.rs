@@ -4,13 +4,14 @@
 use std::fmt::Write;
 
 use super::calls::Call;
+use super::frames::FrameErrors;
 
 pub struct ConcludeInfo<'a> {
     pub short_name: &'a str,
     /// Wall-clock epoch ms at sample-clock time 0.
     pub epoch_ms_at_zero: f64,
     pub audio_seconds: f64,
-    pub error_count: u64,
+    pub errors: &'a FrameErrors,
     pub recorder_num: u32,
     pub end_s: f64,
 }
@@ -71,11 +72,12 @@ pub fn call_record(call: &Call, info: &ConcludeInfo) -> (String, String) {
     );
     let _ = write!(
         j,
-        "\"freqList\":[{{\"freq\":{},\"time\":{},\"pos\":0,\"len\":{},\"error_count\":{},\"spike_count\":0}}],\"srcList\":[",
+        "\"freqList\":[{{\"freq\":{},\"time\":{},\"pos\":0,\"len\":{},\"error_count\":{},\"spike_count\":0}}],{},\"srcList\":[",
         call.freq_hz,
         start_ms.div_euclid(1000),
         (secs * 100.0).round() / 100.0,
-        info.error_count
+        info.errors.total_errors(),
+        info.errors.json()
     );
     for (i, s) in call.sources.iter().enumerate() {
         let _ = write!(

@@ -1191,6 +1191,7 @@ dependencies = [
  "rtlsdr-nusb",
  "serde_json",
  "trunk-app",
+ "trunk-core",
  "wasm-bindgen",
  "wasm-bindgen-futures",
 ]

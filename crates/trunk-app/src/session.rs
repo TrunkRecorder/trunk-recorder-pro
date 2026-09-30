@@ -16,8 +16,9 @@ pub enum Output {
     Audio { tg: u32, frame: Vec<u8> },
     /// A concluded call to store at `<rel>.wav` / `<rel>.json` (relative to
     /// the recordings folder); `entry` is its history entry, also sent as a
-    /// `concluded` message.
-    File { rel: String, wav: Vec<u8>, json: String, entry: Value },
+    /// `concluded` message. `frames`: the frame capture, for
+    /// `<rel>.frames.jsonl`.
+    File { rel: String, wav: Vec<u8>, json: String, frames: Option<String>, entry: Value },
 }
 
 /// Local calendar date (year, month, day) of a Unix time — Trunk Recorder's
@@ -187,7 +188,7 @@ impl Session {
                 let (y, m, d) = (self.local_ymd)(record["start_time"].as_i64().unwrap_or(0));
                 let rel = format!("{}/{y}/{m}/{d}/{}", self.cfg.system.short_name, k.base_name);
                 let entry = json!({ "path": rel, "record": record });
-                out.push(Output::File { rel, wav: trunk_core::wav::encode(&k.audio, 8000), json: k.json, entry: entry.clone() });
+                out.push(Output::File { rel, wav: trunk_core::wav::encode(&k.audio, 8000), json: k.json, frames: k.frames, entry: entry.clone() });
                 out.push(Output::Text(json!({ "type": "concluded", "entry": entry }).to_string()));
             }
             Event::CallStart(_) | Event::CallUpdate(_) | Event::CallEnd(_) => {}

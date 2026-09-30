@@ -4,6 +4,7 @@
 //! control / encryption sync from whichever copy decodes, each codeword from
 //! the receiver the soft decoder trusted most.
 
+use super::frames::{Codec, VoiceFrame};
 use crate::mbe::{self, Kind, FRAME_SAMPLES};
 use crate::p25::diversity::{best_es, best_frame, best_imbe, best_lc, Group};
 use crate::p25::frame::{HDU, LDU1, LDU2, TDU, TDULC};
@@ -11,8 +12,8 @@ use crate::p25::voice::{decode_hdu, decode_tdulc, imbe_params_to_bits, ldu_codew
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum TrackerOut {
-    /// 20 ms of 8 kHz audio in [−1, 1].
-    Audio(Vec<f32>),
+    /// 20 ms of 8 kHz audio in [−1, 1], and the vocoder frame it came from.
+    Audio(Vec<f32>, VoiceFrame),
     /// Link control named a source / emergency, or the call turned out encrypted.
     Info { source: Option<u32>, emergency: bool, encrypted: bool },
 }
@@ -152,10 +153,12 @@ impl VoiceTracker {
         }
         let mut buf = [0f32; FRAME_SAMPLES];
         let bits = imbe_params_to_bits(&u);
-        if self.dec.imbe(&bits, e0, if erased { 0 } else { errs }, erased, &mut buf) != Kind::Voice {
+        let kind = self.dec.imbe(&bits, e0, if erased { 0 } else { errs }, erased, &mut buf);
+        if kind != Kind::Voice {
             self.bad_frames += 1;
         }
-        mbe::to_unit(&mut buf);
-        out.push(TrackerOut::Audio(buf.to_vec()));
+        mbe::to_limited(&mut buf);
+        let frame = VoiceFrame { codec: Codec::Imbe, bits: bits.to_vec(), e0, errs, erased, kind };
+        out.push(TrackerOut::Audio(buf.to_vec(), frame));
     }
 }

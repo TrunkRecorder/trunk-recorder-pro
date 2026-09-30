@@ -14,7 +14,7 @@ use libloading::Library;
 use num_complex::Complex32;
 
 use super::DriverInfo;
-use crate::sdr::SourceMsg;
+use crate::sdr::{Control, SourceMsg};
 
 type Dev = *mut c_void;
 
@@ -145,8 +145,16 @@ pub struct AirspyConfig {
 }
 
 pub fn run(source: usize, cfg: AirspyConfig, tx: SyncSender<SourceMsg>, stop: Arc<AtomicBool>) {
+    run_with(source, cfg, tx, stop, None)
+}
+
+/// [`run`], retuned on request.
+pub fn run_with(source: usize, mut cfg: AirspyConfig, tx: SyncSender<SourceMsg>, stop: Arc<AtomicBool>, ctl: Option<Arc<Control>>) {
     while !stop.load(Ordering::Relaxed) {
-        if let Err(e) = stream_once(source, &cfg, &tx, &stop) {
+        if let Some(c) = ctl.as_ref().and_then(|c| *c.current_hz.lock().unwrap()) {
+            cfg.center_hz = c;
+        }
+        if let Err(e) = stream_once(source, &cfg, &tx, &stop, ctl.as_deref()) {
             let _ = tx.send(SourceMsg::Error { source, error: e });
             std::thread::sleep(Duration::from_secs(3));
         }
@@ -200,7 +208,7 @@ impl Drop for Device<'_> {
     }
 }
 
-fn stream_once(source: usize, cfg: &AirspyConfig, tx: &SyncSender<SourceMsg>, stop: &Arc<AtomicBool>) -> Result<(), String> {
+fn stream_once(source: usize, cfg: &AirspyConfig, tx: &SyncSender<SourceMsg>, stop: &Arc<AtomicBool>, ctl: Option<&Control>) -> Result<(), String> {
     let a = api()?;
     let mut dev: Dev = std::ptr::null_mut();
     // SAFETY: libairspy calls on the device this function opens.
@@ -231,7 +239,17 @@ fn stream_once(source: usize, cfg: &AirspyConfig, tx: &SyncSender<SourceMsg>, st
         check(a, "start", (a.start_rx)(d.dev, on_samples, ctx_ptr))?;
         d.streaming = true;
         let result = loop {
-            std::thread::sleep(Duration::from_millis(100));
+            std::thread::sleep(Duration::from_millis(if ctl.is_some() { 10 } else { 100 }));
+            if let Some(c) = ctl {
+                // Only the frequency: a survey leaves the linearity gain as set.
+                if let (Some(f), _) = c.take() {
+                    if let Err(e) = check(a, "tune", (a.set_freq)(d.dev, (f / (1.0 + cfg.ppm * 1e-6)).round() as u32)) {
+                        break Err(e);
+                    }
+                    *c.current_hz.lock().unwrap() = Some(f);
+                    let _ = tx.send(SourceMsg::Tuned { center_hz: f });
+                }
+            }
             if stop.load(Ordering::Relaxed) || ctx.closed.load(Ordering::Relaxed) {
                 break Ok(());
             }

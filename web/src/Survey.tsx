@@ -1,0 +1,393 @@
+// "Find my system": the first-run survey. Scan the bands for P25 control
+// channels, listen to the best one, and fill in the control channels, the
+// dongle's frequency correction, gain and centre from what it announces.
+// The recorder does the work (crates/trunk-core/src/survey.rs); this shows it.
+
+import { useState } from "react";
+import { formatMhz } from "./config.ts";
+import { applySurvey, setNotice, startSurvey, stopSurvey, surveyListen, surveyRescan, useApp, web } from "./controller.ts";
+import type { Config, SurveyCandidate, SurveyIdentity, SurveyMonitor, SurveySuggestion } from "./protocol.ts";
+import { Waterfall } from "./Waterfall.tsx";
+
+const hex = (v: number | null | undefined) => (v === null || v === undefined ? "?" : v.toString(16).toUpperCase());
+
+function idText(id: SurveyIdentity): string {
+  const parts: string[] = [];
+  if (id.nac !== null) parts.push(`NAC ${hex(id.nac)}`);
+  if (id.sysId !== null) parts.push(`SysID ${hex(id.sysId)}`);
+  if (id.rfss !== null && id.site !== null) parts.push(`site ${id.rfss}-${id.site}`);
+  return parts.join(" · ");
+}
+
+const KIND: Record<SurveyCandidate["kind"], string> = { control: "Control channel", p25: "P25 (voice / data)", other: "Not P25" };
+
+function Candidates(props: { list: SurveyCandidate[]; listening: number | null; onListen?: (hz: number) => void }) {
+  const [showOther, setShowOther] = useState(false);
+  const others = props.list.filter((c) => c.kind === "other").length;
+  const rows = props.list.filter((c) => showOther || c.kind !== "other");
+  const decoded = (c: SurveyCandidate) => (c.good + c.bad ? `${Math.round((100 * c.good) / (c.good + c.bad))} %` : "");
+  return (
+    <div className="stack">
+      {rows.length ? (
+        <div className="table-wrap">
+          <table className="calls">
+            <thead>
+              <tr>
+                <th>MHz</th>
+                <th>Signal</th>
+                <th>What</th>
+                <th>System</th>
+                <th>Decoded</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((c) => (
+                <tr key={c.freqHz} className={c.kind === "control" ? "" : "st-monitoring"}>
+                  <td className="mono" title={c.correctedHz ? `heard at ${formatMhz(c.freqHz)} MHz before correction` : "as heard, before frequency correction"}>
+                    {formatMhz(c.correctedHz ?? c.freqHz)}
+                  </td>
+                  <td className="mono">{c.snrDb.toFixed(0)} dB</td>
+                  <td>
+                    {KIND[c.kind]}
+                    {c.modulation && <span className="tag">{c.modulation}</span>}
+                  </td>
+                  <td className="mono small">{idText(c.identity)}</td>
+                  <td className="mono small">{decoded(c)}</td>
+                  <td className="actions">
+                    {c.kind === "control" && props.onListen && (
+                      <button className="btn ghost small" disabled={props.listening !== null && Math.abs(props.listening - c.freqHz) < 6000} onClick={() => props.onListen?.(c.freqHz)}>
+                        {props.listening !== null && Math.abs(props.listening - c.freqHz) < 6000 ? "Listening" : "Listen"}
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <p className="empty small">Nothing found yet.</p>
+      )}
+      {others > 0 && (
+        <label className="toggle small">
+          <input type="checkbox" checked={showOther} onChange={(e) => setShowOther(e.target.checked)} />
+          <span>
+            Show {others} other continuous signal{others === 1 ? "" : "s"} (not P25: other trunking systems, data)
+          </span>
+        </label>
+      )}
+    </div>
+  );
+}
+
+function Check(props: { state: "ok" | "wait" | "info"; label: string; children?: React.ReactNode }) {
+  return (
+    <li className={`check check-${props.state}`}>
+      <span className="check-mark" aria-hidden="true">
+        {props.state === "ok" ? "✓" : props.state === "wait" ? "…" : "·"}
+      </span>
+      <span>
+        <b>{props.label}</b> {props.children}
+      </span>
+    </li>
+  );
+}
+
+const mhzList = (l: number[]) => l.map((f) => formatMhz(f)).join(", ");
+
+function MonitorView(props: { m: SurveyMonitor; sug: SurveySuggestion | null; c: Config; source: number; onDone: () => void }) {
+  const { m, sug, c } = props;
+  const total = m.good + m.bad;
+  const pct = total ? Math.round((100 * m.good) / total) : 0;
+  const src = c.sources[props.source];
+  const rtl = src?.kind === "rtlsdr";
+  const id = m.identity;
+  const gainSteps = m.gain.steps.length;
+  const apply = () => {
+    if (!sug) return;
+    applySurvey(props.source, sug);
+    stopSurvey();
+    const bits = [`control channel${sug.controlChannels.length === 1 ? "" : "s"} ${mhzList(sug.controlChannels)} MHz`];
+    if (src && src.kind !== "file") {
+      if (sug.ppmApply !== null) bits.push(`correction ${sug.ppmApply > 0 ? "+" : ""}${sug.ppmApply} ppm`);
+      if (rtl && sug.gainDb !== null) bits.push(`gain ${sug.gainDb} dB`);
+      bits.push(`center ${formatMhz(sug.centerHz, 4)} MHz`);
+    }
+    setNotice(`Set up: ${bits.join(", ")}. Press Start to record.`);
+    props.onDone();
+  };
+  return (
+    <div className="stack">
+      <ul className="checklist">
+        <Check state={m.good >= 10 ? "ok" : "wait"} label="Control channel">
+          {total ? (
+            <>
+              decoding {pct} % of {total} messages{m.modulation ? ` · ${m.modulation}` : ""}
+              {m.snrDb !== null ? ` · ${m.snrDb.toFixed(0)} dB above the noise` : ""}
+            </>
+          ) : (
+            "waiting for messages…"
+          )}
+        </Check>
+        <Check state={id.wacn !== null && id.sysId !== null ? "ok" : "wait"} label="System">
+          {id.wacn !== null || id.sysId !== null || id.nac !== null ? (
+            <span className="mono">
+              WACN {hex(id.wacn)} · SysID {hex(id.sysId)} · NAC {hex(id.nac)}
+              {id.rfss !== null && id.site !== null ? ` · RFSS ${id.rfss} site ${id.site}` : ""}
+            </span>
+          ) : (
+            "waiting for the network status broadcast…"
+          )}
+        </Check>
+        <Check state={m.idens > 0 ? "ok" : "wait"} label="Band plan">
+          {m.idens > 0 ? `${m.idens} channel table${m.idens === 1 ? "" : "s"} (IDEN) heard` : "waiting for the channel tables…"}
+        </Check>
+        <Check state={m.ppm !== null ? "ok" : "wait"} label="Frequency correction">
+          {m.ppm !== null && m.advertisedHz !== null && m.offsetHz !== null ? (
+            <>
+              the channel announces {formatMhz(m.advertisedHz)} MHz and is heard {Math.abs(m.offsetHz).toFixed(0)} Hz {m.offsetHz < 0 ? "low" : "high"} →{" "}
+              <b className="mono">
+                {m.ppm > 0 ? "+" : ""}
+                {m.ppm.toFixed(2)} ppm
+              </b>
+              {rtl ? ` (the dongle takes ${Math.round(m.ppm)})` : ""}
+            </>
+          ) : m.advertisedHz === null ? (
+            "waiting for the channel to announce its frequency…"
+          ) : (
+            "measuring…"
+          )}
+        </Check>
+        {m.gain.state !== "off" && (
+          <Check state={m.gain.state === "done" ? "ok" : "wait"} label="Gain">
+            {m.gain.state === "done"
+              ? m.gain.bestDb !== null
+                ? `${m.gain.bestDb} dB is the lowest with the best signal (tried ${gainSteps})`
+                : "couldn't pick one; keeping the current setting"
+              : m.gain.state === "running"
+                ? `trying settings… (${gainSteps} done)`
+                : "tried once decoding is steady"}
+          </Check>
+        )}
+        <Check state="info" label="Alternate control channels">
+          {m.secondary.length ? <span className="mono">{mhzList(m.secondary)} MHz</span> : "none announced (yet)"}
+        </Check>
+        <Check state="info" label="Neighbouring sites">
+          {m.adjacent.length ? (
+            <span className="mono small">{m.adjacent.map((a) => `${a.rfss}-${a.site} ${formatMhz(a.freqHz)}`).join(" · ")}</span>
+          ) : (
+            "none announced (yet)"
+          )}
+        </Check>
+        <Check state="info" label="Voice channels in use">
+          {m.voice.length ? (
+            <>
+              {m.voice.length} seen
+              {m.voice.some((v) => v.tdma) ? " (Phase 2 TDMA among them)" : ""}:{" "}
+              <span className="mono small">
+                {m.voice
+                  .slice(0, 24)
+                  .map((v) => formatMhz(v.freqHz, 4))
+                  .join(", ")}
+                {m.voice.length > 24 ? " …" : ""}
+              </span>
+            </>
+          ) : (
+            "none yet — listening longer shows where calls go"
+          )}
+        </Check>
+      </ul>
+      {sug && (
+        <div className="banner">
+          <div className="stack">
+            <div>
+              <b>Ready to record.</b> This sets the control channel{sug.controlChannels.length === 1 ? "" : "s"} to{" "}
+              <span className="mono">{mhzList(sug.controlChannels)}</span> MHz
+              {src && src.kind !== "file" && (
+                <>
+                  {sug.ppmApply !== null && (
+                    <>
+                      , source {props.source + 1}'s correction to{" "}
+                      <span className="mono">
+                        {sug.ppmApply > 0 ? "+" : ""}
+                        {sug.ppmApply}
+                      </span>{" "}
+                      ppm
+                    </>
+                  )}
+                  {rtl && sug.gainDb !== null && <>, gain to {sug.gainDb} dB</>}
+                  , and its center to <span className="mono">{formatMhz(sug.centerHz, 4)}</span> MHz
+                </>
+              )}
+              .
+            </div>
+            {src && src.kind !== "file" && (
+              <div className="small muted">
+                {sug.voiceTotal === 0
+                  ? "No calls seen yet, so the center is placed around the control channel. Listen a little longer to see where the voice channels are."
+                  : sug.voiceCovered < sug.voiceTotal
+                    ? `This source covers ${sug.voiceCovered} of the ${sug.voiceTotal} voice channels seen; the system spans ${(sug.spanHz / 1e6).toFixed(1)} MHz — add another dongle (or use a wider SDR) to record the rest.`
+                    : `This source covers all ${sug.voiceTotal} voice channels seen so far.`}
+              </div>
+            )}
+            {!m.ready && <div className="small muted">Still measuring — waiting a few more seconds gives a better result.</div>}
+            <div className="row">
+              <button className="btn primary" onClick={apply}>
+                Use this system
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function SurveyPanel(props: { c: Config }) {
+  const s = useApp();
+  const { c } = props;
+  const sv = s.survey;
+  const recording = s.phase !== "idle";
+  const [open, setOpen] = useState(() => c.system.controlChannels.length === 0);
+  const [source, setSource] = useState(0);
+  const [picked, setPicked] = useState<string[] | null>(null);
+  const [findGain, setFindGain] = useState(true);
+  const bands = picked ?? s.surveyBands.filter((b) => b.defaultOn).map((b) => b.id);
+  const src = c.sources[Math.min(source, c.sources.length - 1)];
+  const active = sv.stage !== "idle";
+  const unsupported = web && (src?.kind === "usrp" || src?.kind === "airspy");
+  const bandLabel = (id: string) => s.surveyBands.find((b) => b.id === id)?.label ?? id;
+
+  if (!s.surveyBands.length) return null;
+  return (
+    <section className="panel survey">
+      <header className="panel-head">
+        <h2>Find my system</h2>
+        <div className="row">
+          {active ? (
+            <>
+              {sv.stage !== "scanning" && (
+                <button className="btn ghost" onClick={surveyRescan}>
+                  Scan again
+                </button>
+              )}
+              <button className="btn ghost" onClick={stopSurvey}>
+                {sv.stage === "done" ? "Close" : "Stop"}
+              </button>
+            </>
+          ) : (
+            <button className="btn ghost" onClick={() => setOpen(!open)} aria-expanded={open}>
+              {open ? "Hide" : "Show"}
+            </button>
+          )}
+        </div>
+      </header>
+      {!active && open && (
+        <div className="stack">
+          <p className="muted small">
+            Don't know the frequencies? Connect your radio and the recorder scans the public-safety bands for P25 control channels, listens to the strongest, and
+            works out the system's control channels and your radio's frequency correction — usually in a minute or two. You can still type everything in by hand
+            below.
+          </p>
+          {(c.sources.length > 1 || src?.kind === "rtlsdr") && (
+          <div className="grid2">
+            {c.sources.length > 1 && (
+              <label className="field">
+                <span className="field-label">Radio</span>
+                <select value={source} onChange={(e) => setSource(Number(e.target.value))}>
+                  {c.sources.map((x, i) => (
+                    <option key={i} value={i}>
+                      Source {i + 1} ({x.kind === "rtlsdr" ? "RTL-SDR" : x.kind === "usrp" ? "USRP" : x.kind === "airspy" ? "Airspy" : "capture file"})
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            {src?.kind === "rtlsdr" && (
+              <label className="toggle">
+                <input type="checkbox" checked={findGain} onChange={(e) => setFindGain(e.target.checked)} />
+                <span>
+                  Find the best gain <span className="field-hint">— adds ~15 s</span>
+                </span>
+              </label>
+            )}
+          </div>
+          )}
+          {src?.kind === "file" ? (
+            <p className="muted small">A capture file is examined at its center frequency ({src.centerHz ? `${formatMhz(src.centerHz, 4)} MHz` : "set it below"}).</p>
+          ) : (
+            <fieldset className="bands">
+              <legend className="field-label">Bands to scan</legend>
+              {s.surveyBands.map((b) => (
+                <label key={b.id} className="toggle">
+                  <input
+                    type="checkbox"
+                    checked={bands.includes(b.id)}
+                    onChange={(e) => setPicked(e.target.checked ? [...bands, b.id] : bands.filter((x) => x !== b.id))}
+                  />
+                  <span>
+                    {b.label} <span className="field-hint mono">{`${(b.loHz / 1e6).toFixed(0)}–${(b.hiHz / 1e6).toFixed(0)}`}</span>
+                  </span>
+                </label>
+              ))}
+            </fieldset>
+          )}
+          {unsupported && <p className="warn small">USRP and Airspy need the desktop app.</p>}
+          <div className="row">
+            <button
+              className="btn primary"
+              disabled={!s.connected || recording || unsupported || (src?.kind !== "file" && !bands.length)}
+              title={recording ? "Stop recording first" : ""}
+              onClick={() => startSurvey(Math.min(source, c.sources.length - 1), bands, src?.kind === "rtlsdr" && findGain)}
+            >
+              Scan
+            </button>
+            {recording && <span className="muted small">Stop recording to scan — the scan needs the radio to itself.</span>}
+          </div>
+        </div>
+      )}
+      {sv.stage !== "idle" && (
+        <div className="stack">
+          {sv.error && <div className="banner bad small">{sv.error}</div>}
+          {sv.stage === "scanning" && sv.progress && (
+            <div className="stack">
+              <div className="row small">
+                <span>
+                  Scanning <b>{bandLabel(sv.progress.band)}</b> around <span className="mono">{formatMhz(sv.progress.centerHz, 3)}</span> MHz
+                </span>
+                <span className="spacer" />
+                <span className="muted">
+                  step {sv.progress.hop} of {sv.progress.hops}
+                </span>
+              </div>
+              <progress className="survey-progress" value={sv.progress.hop - 1} max={sv.progress.hops} />
+            </div>
+          )}
+          {sv.monitor && (
+            <>
+              <div className="row">
+                <span>
+                  {sv.stage === "monitoring" ? "Listening to" : "Listened to"} <span className="mono">{formatMhz(sv.monitor.advertisedHz ?? sv.monitor.heardHz)}</span> MHz
+                  {sv.stage === "monitoring" && <span className="muted small"> · {sv.monitor.elapsedS.toFixed(0)} s</span>}
+                </span>
+              </div>
+              {sv.stage === "monitoring" && s.surveySpectrum && <Waterfall radio={s.surveySpectrum} label="Survey" ccHz={sv.monitor.heardHz} calls={[]} />}
+              <MonitorView m={sv.monitor} sug={sv.suggest} c={c} source={sv.source} onDone={() => setOpen(false)} />
+            </>
+          )}
+          {sv.message && <div className="banner subtle">{sv.message}</div>}
+          {(sv.candidates.length > 0 || !sv.monitor) && (
+            <details className="help" open={!sv.monitor}>
+              <summary>
+                Signals found ({sv.candidates.filter((x) => x.kind === "control").length} control channel
+                {sv.candidates.filter((x) => x.kind === "control").length === 1 ? "" : "s"})
+              </summary>
+              <Candidates list={sv.candidates} listening={sv.monitor?.freqHz ?? null} onListen={surveyListen} />
+            </details>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}

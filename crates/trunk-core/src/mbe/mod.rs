@@ -5,6 +5,10 @@
 //! reference implementations.
 
 use std::f64::consts::{E, PI};
+use std::sync::Arc;
+
+use rustfft::num_complex::Complex;
+use rustfft::{Fft, FftPlanner};
 
 use crate::tables::{
     AMBE_DG, AMBE_HOCB5, AMBE_HOCB6, AMBE_HOCB7, AMBE_HOCB8, AMBE_LMPRBL, AMBE_LTABLE, AMBE_PRBA24, AMBE_PRBA58, AMBE_VUV, AMBE_W0TABLE, B2, BA, BO, HOBA,
@@ -81,7 +85,8 @@ fn init_parms(cur: &mut Parms, prev: &mut Parms, enh: &mut Parms) {
     move_parms(prev, enh);
 }
 
-fn spectral_amp_enhance(cur: &mut Parms) {
+/// TIA spectral enhancement; returns R_M0 (the frame's energy before it).
+fn spectral_amp_enhance(cur: &mut Parms) -> f64 {
     let (mut rm0, mut rm1) = (0.0, 0.0);
     for l in 1..=cur.l {
         rm0 += cur.ml[l] * cur.ml[l];
@@ -106,6 +111,35 @@ fn spectral_amp_enhance(cur: &mut Parms) {
     let gamma = if sum == 0.0 { 1.0 } else { (rm0 / sum).sqrt() };
     for l in 1..=cur.l {
         cur.ml[l] *= gamma;
+    }
+    rm0
+}
+
+/// TIA-102.BABA-A adaptive smoothing (Trunk Recorder's float decoder): once
+/// the channel has errors, harmonics louder than a threshold set by the
+/// smoothed energy `se` are forced voiced and the total amplitude is capped,
+/// so a corrupted frame that got past the repeat rules can't burst.
+fn adaptive_smoothing(cur: &mut Parms, se: f64, er: f64, et: u32) {
+    let et = et as f64;
+    let vm = if er <= 0.005 && et <= 4.0 {
+        f64::INFINITY
+    } else if er <= 0.0125 && et == 0.0 {
+        45.255 * se.powf(0.375) / (277.6 * er).exp()
+    } else {
+        1.414 * se.powf(0.375)
+    };
+    let mut am = 0.0;
+    for l in 1..=cur.l {
+        if cur.ml[l] > vm {
+            cur.vl[l] = 1;
+        }
+        am += cur.ml[l];
+    }
+    let tm: f64 = if er <= 0.005 && et <= 6.0 { 20480.0 } else { (6000.0 - 300.0 * et).max(0.0) };
+    if tm <= am {
+        for l in 1..=cur.l {
+            cur.ml[l] *= tm / am;
+        }
     }
 }
 
@@ -182,8 +216,82 @@ fn envelope_phase(mp: &Parms, maxl: usize, o: &SynthOpts) -> [f64; 58] {
     env
 }
 
-/// mbe_synthesizeSpeechf; `opts` None = mbelib exactly.
-fn synthesize_speech(out: &mut [f32; FRAME_SAMPLES], cur: &mut Parms, prev: &mut Parms, uvq: usize, rand: &mut Rng, opts: Option<&SynthOpts>) {
+/// Unvoiced synthesis as colored noise (Trunk Recorder's
+/// `synth_unvoiced_smooth`). mbelib's multisine noise holds each frame's
+/// spectrum between 49-sample cross-fades and redraws its phases every frame,
+/// which steps at the boundaries. Here each frame's unvoiced bands are
+/// complex Gaussian bins at exactly the band's power (M is a spectral density,
+/// as in TIA), inverse-FFT'd to a stationary segment whose first 160 samples
+/// cross-fade in over this frame (sin/cos, constant power) and whose next 160
+/// continue under the following frame's cross-fade.
+struct UvSynth {
+    fft: Arc<dyn Fft<f64>>,
+    buf: Vec<Complex<f64>>,
+    tail: [f64; FRAME_SAMPLES],
+}
+
+impl UvSynth {
+    const N: usize = 512;
+    /// Trunk Recorder's UV_DENSITY (0.85), over its ×4 voiced gain: here a
+    /// voiced harmonic's amplitude is M itself.
+    const DENSITY: f64 = 0.85 / 4.0;
+
+    fn new() -> Self {
+        UvSynth { fft: FftPlanner::new().plan_fft_inverse(Self::N), buf: vec![Complex::default(); Self::N], tail: [0.0; FRAME_SAMPLES] }
+    }
+
+    fn reset(&mut self) {
+        self.tail = [0.0; FRAME_SAMPLES];
+    }
+
+    fn synth(&mut self, out: &mut [f32; FRAME_SAMPLES], cur: &Parms, rand: &mut Rng, o: &SynthOpts) {
+        let n = Self::N;
+        let nf = n as f64;
+        self.buf.fill(Complex::default());
+        let bin = |x: f64| (x * cur.w0 * nf / (2.0 * PI)).ceil() as usize;
+        for l in 1..=cur.l {
+            if cur.vl[l] != 0 {
+                continue;
+            }
+            let lf = l as f64;
+            let (lo, hi) = (bin(lf - 0.5).max(1), bin(lf + 0.5).min(n / 2));
+            if hi <= lo {
+                continue;
+            }
+            let mut pow = 0.0;
+            for k in lo..hi {
+                // Box-Muller
+                let r = (-(1.0 - rand()).ln()).sqrt();
+                let a = 2.0 * PI * rand();
+                self.buf[k] = Complex::new(r * a.cos(), r * a.sin());
+                pow += r * r;
+            }
+            let g = Self::DENSITY * cur.ml[l] * hf_gain(cur.w0 * lf, o) * ((hi - lo) as f64 / pow).sqrt();
+            for k in lo..hi {
+                self.buf[k] *= g;
+                self.buf[n - k] = self.buf[k].conj();
+            }
+        }
+        self.fft.process(&mut self.buf);
+        for (i, v) in out.iter_mut().enumerate() {
+            let p = (i as f64 + 0.5) / FRAME_SAMPLES as f64 * (PI / 2.0);
+            *v = (*v as f64 + p.cos() * self.tail[i] + p.sin() * self.buf[i].re) as f32;
+            self.tail[i] = self.buf[i + FRAME_SAMPLES].re;
+        }
+    }
+}
+
+/// mbe_synthesizeSpeechf; `opts` None = mbelib exactly. With `uv`, unvoiced
+/// harmonics are synthesized as colored noise instead of mbelib's multisines.
+fn synthesize_speech(
+    out: &mut [f32; FRAME_SAMPLES],
+    cur: &mut Parms,
+    prev: &mut Parms,
+    uvq: usize,
+    rand: &mut Rng,
+    opts: Option<&SynthOpts>,
+    uv: Option<&mut UvSynth>,
+) {
     const N: usize = 160;
     let uvthreshold = 2700.0 * PI / 4000.0;
     let uvsine = 1.3591409 * E;
@@ -236,6 +344,7 @@ fn synthesize_speech(out: &mut [f32; FRAME_SAMPLES], cur: &mut Parms, prev: &mut
         m_old[l] = prev.ml[l] * opts.map_or(1.0, |o| hf_gain(pw0 * l as f64, o));
     }
     let uv_noise = |rand: &mut Rng| if opts.is_some() { rand() - 0.5 } else { rand() };
+    let multisine = uv.is_none();
 
     let mut rphase = [0.0f64; 64];
     let mut rphase2 = [0.0f64; 64];
@@ -244,14 +353,14 @@ fn synthesize_speech(out: &mut [f32; FRAME_SAMPLES], cur: &mut Parms, prev: &mut
         let (cw0l, pw0l) = (cw0 * lf, pw0 * lf);
         let (cv, pv) = (cur.vl[l], prev.vl[l]);
         if cv == 0 && pv == 1 {
-            for r in rphase.iter_mut().take(uvquality) {
+            for r in rphase.iter_mut().take(if multisine { uvquality } else { 0 }) {
                 *r = rand() * (PI * 2.0) - PI;
             }
             for n in 0..N {
                 let nf = n as f64;
                 let c1 = WS[n + N] as f64 * m_old[l] * (pw0l * nf + prev.phil[l]).cos();
                 let mut c3 = 0.0;
-                for i in 0..uvquality {
+                for i in 0..if multisine { uvquality } else { 0 } {
                     c3 += (cw0 * nf * (lf + i as f64 * uvstep - uvoffset) + rphase[i]).cos();
                     if cw0l > uvthreshold {
                         c3 += (cw0l - uvthreshold) * uvrand * uv_noise(rand);
@@ -261,14 +370,14 @@ fn synthesize_speech(out: &mut [f32; FRAME_SAMPLES], cur: &mut Parms, prev: &mut
                 out[n] = (out[n] as f64 + (c1 + c3)) as f32;
             }
         } else if cv == 1 && pv == 0 {
-            for r in rphase.iter_mut().take(uvquality) {
+            for r in rphase.iter_mut().take(if multisine { uvquality } else { 0 }) {
                 *r = rand() * (PI * 2.0) - PI;
             }
             for n in 0..N {
                 let nf = n as f64;
                 let c1 = WS[n] as f64 * m_new[l] * (cw0l * (nf - N as f64) + cur.phil[l]).cos();
                 let mut c3 = 0.0;
-                for i in 0..uvquality {
+                for i in 0..if multisine { uvquality } else { 0 } {
                     c3 += (pw0 * nf * (lf + i as f64 * uvstep - uvoffset) + rphase[i]).cos();
                     if pw0l > uvthreshold {
                         c3 += (pw0l - uvthreshold) * uvrand * uv_noise(rand);
@@ -297,7 +406,7 @@ fn synthesize_speech(out: &mut [f32; FRAME_SAMPLES], cur: &mut Parms, prev: &mut
                     out[n] = (out[n] as f64 + (c1 + c2)) as f32;
                 }
             }
-        } else {
+        } else if multisine {
             for r in rphase.iter_mut().take(uvquality) {
                 *r = rand() * (PI * 2.0) - PI;
             }
@@ -326,12 +435,32 @@ fn synthesize_speech(out: &mut [f32; FRAME_SAMPLES], cur: &mut Parms, prev: &mut
             }
         }
     }
+    if let (Some(u), Some(o)) = (uv, opts) {
+        u.synth(out, cur, rand, o);
+    }
 }
 
 /// mbelib's float → short gain (×7, clipped at ±32760), scaled to [−1, 1].
 pub fn to_unit(buf: &mut [f32]) {
     for v in buf.iter_mut() {
         *v = ((7.0 * *v as f64).clamp(-32760.0, 32760.0) / 32768.0) as f32;
+    }
+}
+
+/// Where [`to_limited`] starts to compress: −3 dBFS.
+const LIMIT_KNEE: f64 = 0.7;
+
+/// mbelib's ×7 gain to [−1, 1] through a soft limiter instead of a hard
+/// clip: unchanged below the knee, then a tanh curve that meets it with the
+/// same slope and approaches full scale. mbelib's gain leaves loud talkers'
+/// onsets only a few dB of headroom, and each hard-clipped sample clicks.
+pub fn to_limited(buf: &mut [f32]) {
+    const K: f64 = LIMIT_KNEE;
+    for v in buf.iter_mut() {
+        let x = 7.0 * *v as f64 / 32768.0;
+        let a = x.abs();
+        let y = if a <= K { a } else { K + (1.0 - K) * ((a - K) / (1.0 - K)).tanh() };
+        *v = y.copysign(x) as f32;
     }
 }
 
@@ -598,23 +727,28 @@ pub struct Decoder {
     cur: Parms,
     prev: Parms,
     enh: Parms,
+    uv: UvSynth,
     er: f64,
+    /// Smoothed spectral energy S_E (TIA), for adaptive smoothing.
+    se: f64,
 }
 
 impl Decoder {
     pub fn new(rand: Rng, profile: Profile) -> Self {
-        let mut d = Decoder { rand, uvq: 3, profile, cur: Parms::default(), prev: Parms::default(), enh: Parms::default(), er: 0.0 };
+        let mut d = Decoder { rand, uvq: 3, profile, cur: Parms::default(), prev: Parms::default(), enh: Parms::default(), uv: UvSynth::new(), er: 0.0, se: 0.0 };
         d.reset();
         d
     }
 
     pub fn reset(&mut self) {
         init_parms(&mut self.cur, &mut self.prev, &mut self.enh);
+        self.uv.reset();
         self.er = 0.0;
+        self.se = 10000.0;
     }
 
     /// 88 information bits → 160 samples at mbelib's float scale (apply
-    /// [`to_unit`] for [−1, 1]). `e0`/`et`: FEC errors in u0 / in total;
+    /// [`to_limited`] or [`to_unit`] for [−1, 1]). `e0`/`et`: FEC errors in u0 / in total;
     /// `erased`: the frame is known lost.
     pub fn imbe(&mut self, d: &[u8; 88], e0: u32, et: u32, erased: bool, out: &mut [f32; FRAME_SAMPLES]) -> Kind {
         if self.profile == Profile::Mbelib {
@@ -631,7 +765,7 @@ impl Decoder {
             if self.cur.repeat <= 3 {
                 move_parms(&self.cur, &mut self.prev);
                 spectral_amp_enhance(&mut self.cur);
-                synthesize_speech(out, &mut self.cur, &mut self.enh, self.uvq, &mut self.rand, None);
+                synthesize_speech(out, &mut self.cur, &mut self.enh, self.uvq, &mut self.rand, None, None);
                 move_parms(&self.cur, &mut self.enh);
             } else {
                 out.fill(0.0);
@@ -655,11 +789,11 @@ impl Decoder {
             }
             move_parms(&self.prev, &mut self.cur);
             self.cur.repeat = self.prev.repeat + 1;
-            self.speak(out);
+            self.speak(out, None);
             return Kind::Repeat;
         }
         self.cur.repeat = 0;
-        self.speak(out);
+        self.speak(out, Some(et));
         Kind::Voice
     }
 
@@ -690,11 +824,11 @@ impl Decoder {
         if r == Ambe::Voice {
             if self.cur.repeat <= 3 {
                 if enhanced {
-                    self.speak(out);
+                    self.speak(out, None);
                 } else {
                     move_parms(&self.cur, &mut self.prev);
                     spectral_amp_enhance(&mut self.cur);
-                    synthesize_speech(out, &mut self.cur, &mut self.enh, self.uvq, &mut self.rand, None);
+                    synthesize_speech(out, &mut self.cur, &mut self.enh, self.uvq, &mut self.rand, None, None);
                     move_parms(&self.cur, &mut self.enh);
                 }
             } else if enhanced {
@@ -714,10 +848,18 @@ impl Decoder {
         kind
     }
 
-    fn speak(&mut self, out: &mut [f32; FRAME_SAMPLES]) {
+    /// `smooth_et`: a freshly decoded Phase 1 frame's error count, for TIA
+    /// adaptive smoothing (a repeat already had it). Phase 2 skips it: Trunk
+    /// Recorder runs it there with no error rate, where it only caps totals
+    /// far above speech.
+    fn speak(&mut self, out: &mut [f32; FRAME_SAMPLES], smooth_et: Option<u32>) {
         move_parms(&self.cur, &mut self.prev);
-        spectral_amp_enhance(&mut self.cur);
-        synthesize_speech(out, &mut self.cur, &mut self.enh, self.uvq, &mut self.rand, Some(&ENHANCED));
+        let rm0 = spectral_amp_enhance(&mut self.cur);
+        if let Some(et) = smooth_et {
+            self.se = (0.95 * self.se + 0.05 * rm0).max(10000.0);
+            adaptive_smoothing(&mut self.cur, self.se, self.er, et);
+        }
+        synthesize_speech(out, &mut self.cur, &mut self.enh, self.uvq, &mut self.rand, Some(&ENHANCED), Some(&mut self.uv));
         move_parms(&self.cur, &mut self.enh);
     }
 
@@ -729,8 +871,114 @@ impl Decoder {
             self.cur.ml[l] = 0.0;
             self.cur.vl[l] = 0;
         }
-        synthesize_speech(out, &mut self.cur, &mut self.enh, self.uvq, &mut self.rand, Some(&ENHANCED));
+        synthesize_speech(out, &mut self.cur, &mut self.enh, self.uvq, &mut self.rand, Some(&ENHANCED), Some(&mut self.uv));
         move_parms(&self.cur, &mut self.enh);
         move_parms(&self.prev, &mut self.cur);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 200 frames of one steady frame (harmonics voiced where
+    /// `l % voiced_mod == 0`; 0: all unvoiced) through the enhanced synthesis,
+    /// with colored-noise or mbelib multisine unvoiced synthesis.
+    fn steady(smooth: bool, w0: f64, voiced_mod: usize) -> Vec<f32> {
+        let mut rand = lcg(1);
+        let (mut cur, mut prev, mut enh) = (Parms::default(), Parms::default(), Parms::default());
+        init_parms(&mut cur, &mut prev, &mut enh);
+        let mut uv = UvSynth::new();
+        let mut audio = Vec::new();
+        for _ in 0..200 {
+            cur.w0 = w0;
+            cur.l = 24;
+            for l in 1..=cur.l {
+                cur.ml[l] = 1.0;
+                cur.vl[l] = (voiced_mod > 0 && l % voiced_mod == 0) as i8;
+            }
+            let mut out = [0f32; FRAME_SAMPLES];
+            synthesize_speech(&mut out, &mut cur, &mut enh, 3, &mut rand, Some(&ENHANCED), smooth.then_some(&mut uv));
+            move_parms(&cur, &mut enh);
+            audio.extend_from_slice(&out);
+        }
+        audio.drain(..2 * FRAME_SAMPLES);
+        audio
+    }
+
+    /// Mean |step| across frame boundaries over the mean |step| inside frames.
+    fn boundary_ratio(a: &[f32]) -> f64 {
+        let (mut at, mut na, mut inside, mut ni) = (0.0, 0, 0.0, 0);
+        for i in 1..a.len() {
+            let d = (a[i] - a[i - 1]).abs() as f64;
+            if i % FRAME_SAMPLES == 0 {
+                at += d;
+                na += 1;
+            } else {
+                inside += d;
+                ni += 1;
+            }
+        }
+        (at / na as f64) / (inside / ni as f64)
+    }
+
+    fn rms(a: &[f32]) -> f64 {
+        (a.iter().map(|&v| v as f64 * v as f64).sum::<f64>() / a.len() as f64).sqrt()
+    }
+
+    #[test]
+    fn unvoiced_noise_is_continuous_across_frames() {
+        for vm in [0, 2] {
+            let multisine = boundary_ratio(&steady(false, 0.05, vm));
+            let smooth = boundary_ratio(&steady(true, 0.05, vm));
+            assert!(multisine > 1.5, "mbelib's multisine noise should step at the boundary: {multisine}");
+            assert!(smooth < 1.15, "boundary step with colored noise: {smooth}");
+        }
+        for w0 in [0.05, 0.08, 0.12] {
+            let db = 20.0 * (rms(&steady(true, w0, 0)) / rms(&steady(false, w0, 0))).log10();
+            eprintln!("w0 {w0}: colored noise {db:+.1} dB vs multisine");
+        }
+    }
+
+    #[test]
+    fn limiter_is_transparent_below_the_knee_and_smooth_above() {
+        let unit = |v: f64| {
+            let mut b = [(v * 32768.0 / 7.0) as f32];
+            to_limited(&mut b);
+            b[0] as f64
+        };
+        for x in [0.0, 0.1, -0.5, 0.69] {
+            assert!((unit(x) - x).abs() < 1e-6, "{x} → {}", unit(x));
+        }
+        let mut last = 0.0;
+        for i in 1..=4000 {
+            let x = i as f64 / 1000.0;
+            let y = unit(x);
+            assert!(y >= last && y <= 1.0, "monotonic, within full scale: {x} → {y}");
+            last = y;
+        }
+        // slope continuous at the knee
+        let (h, k) = (1e-4, LIMIT_KNEE);
+        assert!(((unit(k + h) - unit(k)) / h - 1.0).abs() < 1e-3);
+        assert!((unit(-2.0) + unit(2.0)).abs() < 1e-7);
+    }
+
+    #[test]
+    fn adaptive_smoothing_only_engages_under_errors() {
+        let mut p = Parms { l: 20, ..Default::default() };
+        for l in 1..=p.l {
+            p.ml[l] = 500.0;
+        }
+        let clean = {
+            let mut q = p.clone();
+            adaptive_smoothing(&mut q, 1e4, 0.0, 0);
+            q
+        };
+        assert_eq!(clean.ml, p.ml);
+        let mut q = p.clone();
+        adaptive_smoothing(&mut q, 1e4, 0.02, 8);
+        let am: f64 = (1..=q.l).map(|l| q.ml[l]).sum();
+        assert!((am - 3600.0).abs() < 1e-6, "total amplitude capped at 6000 - 300·ET: {am}");
+        assert!((1..=q.l).all(|l| q.vl[l] == 1), "loud harmonics forced voiced");
     }
 }

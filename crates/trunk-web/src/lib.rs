@@ -5,6 +5,8 @@
 //!   IQ, poll it for interface messages, live audio and call files.
 //! * [`WebRtl`] — an RTL-SDR dongle over WebUSB (rtlsdr-nusb on nusb's WebUSB
 //!   backend; works in a worker once the page has been granted the device).
+//! * [`WebSurvey`] — the first-run survey (trunk-app): it asks for retunes,
+//!   takes u8 IQ, and reports `survey` / `surveySpectrum` messages.
 //!
 //! Build: `cargo build -p trunk-web --target wasm32-unknown-unknown --profile
 //! dist` with `-C target-feature=+simd128`, then `wasm-bindgen --target web`
@@ -15,7 +17,9 @@ use std::rc::Rc;
 
 use js_sys::{Array, Object, Reflect, Uint8Array};
 use rtlsdr_nusb::{Device, GainConfig, RawIq, RxStream};
+use trunk_app::survey::{Request, SurveySession};
 use trunk_app::{Config, Output, Session};
+use trunk_core::survey::Command;
 use wasm_bindgen::prelude::*;
 
 fn local_ymd(t: i64) -> (i32, u32, u32) {
@@ -41,7 +45,8 @@ fn to_js(out: &mut Vec<Output>) -> Array {
                 set(&obj, "tg", tg);
                 set(&obj, "frame", Uint8Array::from(frame.as_slice()));
             }
-            Output::File { rel, wav, json, entry } => {
+            // (No frame capture in the browser: the setting is desktop-only.)
+            Output::File { rel, wav, json, entry, .. } => {
                 set(&obj, "t", "file");
                 set(&obj, "rel", rel);
                 set(&obj, "wav", Uint8Array::from(wav.as_slice()));
@@ -96,6 +101,69 @@ impl WebSession {
     }
     pub fn bandplan(&self) -> String {
         self.s.bandplan()
+    }
+}
+
+/// The bands the survey can scan: JSON [{id, label, loHz, hiHz, defaultOn}].
+#[wasm_bindgen]
+pub fn survey_bands() -> String {
+    trunk_app::survey::bands_json().to_string()
+}
+
+#[wasm_bindgen]
+pub struct WebSurvey {
+    s: SurveySession,
+    out: Vec<Output>,
+}
+
+#[wasm_bindgen]
+impl WebSurvey {
+    /// `request_json`: {source, bands, findGain}.
+    #[wasm_bindgen(constructor)]
+    pub fn new(config_json: &str, request_json: &str) -> Result<WebSurvey, JsError> {
+        let cfg: Config = serde_json::from_str(config_json).map_err(|e| JsError::new(&format!("config: {e}")))?;
+        let req: serde_json::Value = serde_json::from_str(request_json).map_err(|e| JsError::new(&e.to_string()))?;
+        let s = SurveySession::new(&cfg, &Request::from_json(&req)).map_err(|e| JsError::new(&e))?;
+        Ok(WebSurvey { s, out: Vec::new() })
+    }
+    /// What the radio should do next: {tune: Hz} | {gain: dB} | undefined.
+    pub fn command(&mut self) -> JsValue {
+        match self.s.command() {
+            None => JsValue::UNDEFINED,
+            Some(c) => {
+                let o = Object::new();
+                match c {
+                    Command::Tune(hz) => set(&o, "tune", hz),
+                    Command::Gain(db) => set(&o, "gain", db),
+                }
+                o.into()
+            }
+        }
+    }
+    /// The radio applied the last command and is centred on `center_hz`.
+    pub fn tuned(&mut self, center_hz: f64) {
+        self.s.survey().tuned(center_hz);
+    }
+    pub fn push(&mut self, bytes: &[u8]) {
+        self.s.survey().push_u8(bytes);
+    }
+    pub fn listen(&mut self, freq_hz: f64) {
+        self.s.survey().listen(freq_hz);
+    }
+    pub fn rescan(&mut self) {
+        self.s.survey().rescan();
+    }
+    /// The input ended (a capture file).
+    pub fn finish(&mut self) {
+        self.s.survey().finish();
+    }
+    pub fn source_error(&mut self, error: &str) {
+        self.s.source_error(error);
+    }
+    /// Messages since the last poll: [{t:"text", json}].
+    pub fn poll(&mut self, now_ms: f64) -> Array {
+        self.s.poll(now_ms, &mut self.out);
+        to_js(&mut self.out)
     }
 }
 
@@ -158,6 +226,31 @@ impl WebRtl {
                 }
                 None => Ok(JsValue::UNDEFINED),
             }
+        })
+    }
+
+    /// Retune (the stream is stopped meanwhile, so no queued block is from
+    /// the old frequency); resolves to the centre actually tuned.
+    pub fn retune(&self, center_hz: f64) -> js_sys::Promise {
+        let inner = self.inner.clone();
+        wasm_bindgen_futures::future_to_promise(async move {
+            let mut g = inner.borrow_mut();
+            let Some(r) = g.as_mut() else { return Err(err("closed")) };
+            r.rx.stop().await.map_err(err)?;
+            r.dev.set_frequency_hz(center_hz.round() as u64).await.map_err(err)?;
+            r.rx.start().await.map_err(err)?;
+            Ok(JsValue::from_f64(r.dev.actual_frequency_hz() as f64))
+        })
+    }
+
+    /// Set a manual gain (dB); resolves to the tuned centre.
+    pub fn set_gain(&self, gain_db: f32) -> js_sys::Promise {
+        let inner = self.inner.clone();
+        wasm_bindgen_futures::future_to_promise(async move {
+            let mut g = inner.borrow_mut();
+            let Some(r) = g.as_mut() else { return Err(err("closed")) };
+            r.dev.set_gain(GainConfig::Manual(gain_db)).await.map_err(err)?;
+            Ok(JsValue::from_f64(r.dev.actual_frequency_hz() as f64))
         })
     }
 

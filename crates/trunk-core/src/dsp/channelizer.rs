@@ -130,6 +130,9 @@ impl Channelizer {
     pub fn history_seconds(&self) -> f64 {
         (self.history_count * self.l) as f64 / self.fs
     }
+    pub fn fft_size(&self) -> usize {
+        self.n
+    }
     pub fn head_ids(&self) -> Vec<HeadId> {
         self.heads.keys().copied().collect()
     }
@@ -224,6 +227,26 @@ impl Channelizer {
             *o = (10.0 * ((acc / per as f64) * norm + 1e-14).log10()) as f32;
         }
         out
+    }
+
+    /// Mean |X|² per bin of the latest block in `out.len()` equal cells
+    /// (a divisor of the FFT size), fft-shifted (first cell starts at −fs/2);
+    /// zeros before the first block. The survey's raw spectrum.
+    pub fn cell_powers(&self, out: &mut [f32]) {
+        if self.history_count == 0 || out.is_empty() {
+            out.fill(0.0);
+            return;
+        }
+        let n = self.n;
+        let slot = ((self.block - 1) as usize % self.hist_cap) * n;
+        let per = n / out.len();
+        for (c, o) in out.iter_mut().enumerate() {
+            let mut acc = 0.0f32;
+            for k in 0..per {
+                acc += self.spectra[slot + (c * per + k + n / 2) % n].norm_sqr();
+            }
+            *o = acc / per as f32;
+        }
     }
 
     /// Mean |X|² per bin over the bins within ±`half_width_hz` of `offset_hz`

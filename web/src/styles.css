@@ -223,3 +223,14 @@ td.srcs {
 .banner code {
   font-size: 0.95em;
 }
+
+/* Find my system (the first-run survey) */
+.survey .bands { border: 0; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px 18px; }
+.survey .bands legend { margin-bottom: 6px; padding: 0; }
+.survey-progress { width: 100%; height: 6px; accent-color: var(--accent); }
+.checklist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.check { display: flex; gap: 8px; align-items: baseline; overflow-wrap: anywhere; }
+.check-mark { flex: none; width: 1.2em; text-align: center; font-weight: 700; color: var(--muted); }
+.check-ok .check-mark { color: var(--ok); }
+.check-wait .check-mark { color: var(--warn); }
+.check b { font-weight: 600; margin-right: 4px; }

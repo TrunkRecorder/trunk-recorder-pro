@@ -47,7 +47,14 @@ export interface Config {
     talkgroupsName: string;
   };
   /** Energy-detected channels; `squelchDb` is the open threshold above the noise floor. */
-  conventional: { squelchDb: number; channels: Channel[] };
+  conventional: {
+    squelchDb: number;
+    /** Desktop: a CSV the channels are read from ("" = the list here). Changed with the channelFile message. */
+    channelFile?: string;
+    channels: Channel[];
+    /** How the channel file last read (from the recorder). */
+    channelFileStatus?: string;
+  };
   recording: {
     captureDir: string;
     prerollS: number;
@@ -57,6 +64,8 @@ export interface Config {
     recordEncrypted: boolean;
     recordUnitToUnit: boolean;
     keepSilentCalls: boolean;
+    /** Save each call's vocoder frames (<call>.frames.jsonl) for diagnosis. */
+    captureFrames: boolean;
   };
   server: { bind: string; port: number; autoStart: boolean };
 }
@@ -149,6 +158,92 @@ export interface Spectrum {
   bins: number[];
 }
 
+// ── first-run survey (crates/trunk-app/src/survey.rs) ────────────────────────
+
+/** A band the survey can scan. */
+export interface SurveyBand {
+  id: string;
+  label: string;
+  loHz: number;
+  hiHz: number;
+  defaultOn: boolean;
+}
+
+export interface SurveyIdentity {
+  nac: number | null;
+  wacn: number | null;
+  sysId: number | null;
+  rfss: number | null;
+  site: number | null;
+}
+
+/** A signal the scan found. `freqHz` as heard (uncorrected); `correctedHz` once the ppm is known. */
+export interface SurveyCandidate {
+  freqHz: number;
+  correctedHz: number | null;
+  band: string;
+  snrDb: number;
+  widthHz: number;
+  kind: "control" | "p25" | "other";
+  frames: number;
+  good: number;
+  bad: number;
+  modulation: string;
+  identity: SurveyIdentity;
+}
+
+export interface SurveyMonitor {
+  freqHz: number | null;
+  heardHz: number;
+  identity: SurveyIdentity;
+  /** The frequency the control channel announces for itself. */
+  advertisedHz: number | null;
+  secondary: number[];
+  adjacent: { rfss: number; site: number; sysId: number; freqHz: number }[];
+  voice: { freqHz: number; grants: number; tdma: boolean }[];
+  idens: number;
+  good: number;
+  bad: number;
+  modulation: string;
+  snrDb: number | null;
+  offsetHz: number | null;
+  /** Total correction to set, ppm. */
+  ppm: number | null;
+  gain: { state: "off" | "waiting" | "running" | "done"; steps: { gainDb: number; snrDb: number; okRatio: number; clipped: number }[]; bestDb: number | null };
+  elapsedS: number;
+  ready: boolean;
+}
+
+/** What to put in the config. */
+export interface SurveySuggestion {
+  controlChannels: number[];
+  ppm: number | null;
+  /** As the source takes it (an RTL-SDR: whole ppm). */
+  ppmApply: number | null;
+  gainDb: number | null;
+  centerHz: number;
+  voiceCovered: number;
+  voiceTotal: number;
+  spanHz: number;
+  nac: number | null;
+  sysId: number | null;
+  wacn: number | null;
+}
+
+export type SurveyState =
+  | { stage: "idle" }
+  | {
+      stage: "scanning" | "monitoring" | "done";
+      source: number;
+      bands: string[];
+      message: string;
+      error: string | null;
+      progress: { hop: number; hops: number; band: string; centerHz: number } | null;
+      candidates: SurveyCandidate[];
+      monitor: SurveyMonitor | null;
+      suggest: SurveySuggestion | null;
+    };
+
 export type FromRecorder =
   | {
       type: "hello";
@@ -160,6 +255,8 @@ export type FromRecorder =
       phase: PhaseState & { type: "state" };
       history: CallEntry[];
       radios?: Radios;
+      surveyBands?: SurveyBand[];
+      survey?: { type: "survey" } & SurveyState;
     }
   | { type: "radios"; radios: Radios }
   | ({ type: "state" } & PhaseState)
@@ -168,6 +265,8 @@ export type FromRecorder =
   | ({ type: "spectrum" } & Spectrum)
   | { type: "log"; lines: LogLine[] }
   | { type: "concluded"; entry: CallEntry }
+  | ({ type: "survey" } & SurveyState)
+  | ({ type: "surveySpectrum" } & Spectrum)
   | { type: "devices"; devices: Device[] }
   | { type: "error"; message: string }
   | { type: "quit" };
@@ -179,6 +278,14 @@ export type ToRecorder =
   | { type: "devices" }
   | { type: "findRadios" }
   | { type: "listen"; on: boolean; talkgroup: number | null }
+  /** Link the conventional channels to a CSV (created from the list if new), reload it (same path), or unlink (""). */
+  | { type: "channelFile"; path: string }
+  /** Find a system: scan `bands` with source `source`, then monitor the best control channel. */
+  | { type: "surveyStart"; source: number; bands: string[]; findGain: boolean }
+  /** Stop scanning and monitor this signal (as heard). */
+  | { type: "surveyListen"; freqHz: number }
+  | { type: "surveyRescan" }
+  | { type: "surveyStop" }
   | { type: "quit" };
 
 /** Live audio: one 20 ms (or longer) chunk of a call, 8 kHz. */

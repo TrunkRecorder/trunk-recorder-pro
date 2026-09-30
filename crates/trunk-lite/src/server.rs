@@ -11,6 +11,11 @@
 //! Browser → server: `setConfig`, `start`, `stop`, `devices`, `findRadios`,
 //! `listen {on, talkgroup}`, `quit` (stop recording, tell every browser
 //! `quit`, exit). GET /api/version identifies a running instance.
+//!
+//! The first-run survey (see [`crate::survey`]): `surveyStart {source, bands,
+//! findGain}`, `surveyListen {freqHz}`, `surveyRescan`, `surveyStop`; it
+//! reports `survey` snapshots (`stage` "idle" when none runs) and
+//! `surveySpectrum`. `hello` carries `surveyBands` and the latest snapshot.
 
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
@@ -56,6 +61,7 @@ pub async fn serve(ctx: Arc<Ctx>, listener: std::net::TcpListener) -> std::io::R
         }
         let ctx3 = ctx2.clone();
         let _ = tokio::task::spawn_blocking(move || {
+            stop_survey(&ctx3);
             if let Some(r) = ctx3.runner.lock().unwrap().take() {
                 r.stop();
             }
@@ -118,6 +124,16 @@ async fn ws(State(ctx): State<Arc<Ctx>>, up: WebSocketUpgrade) -> Response {
     up.on_upgrade(move |socket| session(ctx, socket))
 }
 
+/// End a running survey (frees its radio) and tell the browsers.
+fn stop_survey(ctx: &Ctx) {
+    let r = ctx.survey.lock().unwrap().take();
+    if let Some(r) = r {
+        r.stop();
+        *ctx.survey_last.lock().unwrap() = None;
+        publish(&ctx.hub, crate::survey::idle_json());
+    }
+}
+
 fn devices_json() -> Value {
     json!({ "type": "devices", "devices": sdr::devices() })
 }
@@ -138,6 +154,8 @@ async fn session(ctx: Arc<Ctx>, mut socket: WebSocket) {
             "phase": ctx.phase.lock().unwrap().to_json(),
             "history": history,
             "radios": radios,
+            "surveyBands": trunk_app::survey::bands_json(),
+            "survey": ctx.survey_last.lock().unwrap().clone().unwrap_or_else(crate::survey::idle_json),
         })
     };
     if socket.send(Message::Text(hello.to_string().into())).await.is_err() {
@@ -185,7 +203,12 @@ async fn session(ctx: Arc<Ctx>, mut socket: WebSocket) {
 async fn command(ctx: &Arc<Ctx>, v: &Value, listen: &mut Option<Option<u32>>) -> Option<Value> {
     match v["type"].as_str()? {
         "setConfig" => match serde_json::from_value::<Config>(v["config"].clone()) {
-            Ok(c) => {
+            Ok(mut c) => {
+                // The channel file is linked with "channelFile", not here; while
+                // linked, the channels are the file's (re-read: a spreadsheet may
+                // have changed it).
+                c.conventional.channel_file = ctx.config.lock().unwrap().conventional.channel_file.clone();
+                let _ = c.load_channel_file(&ctx.config_path);
                 let saved = c.save(&ctx.config_path);
                 *ctx.config.lock().unwrap() = c.clone();
                 publish(&ctx.hub, json!({ "type": "config", "config": c }));
@@ -193,10 +216,27 @@ async fn command(ctx: &Arc<Ctx>, v: &Value, listen: &mut Option<Option<u32>>) ->
             }
             Err(e) => Some(json!({ "type": "error", "message": format!("Bad config: {e}") })),
         },
+        // Link the conventional channels to a CSV (created from the list if
+        // new), reload it (the same path again), or unlink ("").
+        "channelFile" => {
+            let path = v["path"].as_str().unwrap_or("").to_string();
+            let mut c = ctx.config.lock().unwrap().clone();
+            let r = c.link_channel_file(&ctx.config_path, &path);
+            if r.is_ok() || !c.conventional.channel_file.is_empty() {
+                let saved = c.save(&ctx.config_path);
+                *ctx.config.lock().unwrap() = c.clone();
+                publish(&ctx.hub, json!({ "type": "config", "config": c }));
+                if let Err(e) = saved {
+                    return Some(json!({ "type": "error", "message": format!("Couldn't save the config: {e}") }));
+                }
+            }
+            r.err().map(|e| json!({ "type": "error", "message": e }))
+        }
         "start" => {
             let cfg = ctx.config.lock().unwrap().clone();
             let ctx2 = ctx.clone();
             let r = tokio::task::spawn_blocking(move || {
+                stop_survey(&ctx2);
                 if let Some(old) = ctx2.runner.lock().unwrap().take() {
                     old.stop();
                 }
@@ -233,7 +273,48 @@ async fn command(ctx: &Arc<Ctx>, v: &Value, listen: &mut Option<Option<u32>>) ->
             Some(json!({ "type": "radios", "radios": radios }))
         }
         "quit" => {
+            let ctx2 = ctx.clone();
+            let _ = tokio::task::spawn_blocking(move || stop_survey(&ctx2)).await;
             ctx.quit.notify_one();
+            None
+        }
+        "surveyStart" => {
+            let cfg = ctx.config.lock().unwrap().clone();
+            let req = trunk_app::survey::Request::from_json(v);
+            let ctx2 = ctx.clone();
+            let r = tokio::task::spawn_blocking(move || {
+                if ctx2.runner.lock().unwrap().is_some() {
+                    return Some("Stop recording first — the scan needs the radio to itself.".to_string());
+                }
+                stop_survey(&ctx2);
+                match crate::survey::start(ctx2.clone(), cfg, req) {
+                    Ok(r) => {
+                        *ctx2.survey.lock().unwrap() = Some(r);
+                        None
+                    }
+                    Err(e) => Some(e),
+                }
+            })
+            .await
+            .ok()
+            .flatten();
+            r.map(|e| json!({ "type": "error", "message": e }))
+        }
+        "surveyListen" => {
+            if let (Some(r), Some(f)) = (ctx.survey.lock().unwrap().as_ref(), v["freqHz"].as_f64()) {
+                r.send(crate::survey::UserCmd::Listen(f));
+            }
+            None
+        }
+        "surveyRescan" => {
+            if let Some(r) = ctx.survey.lock().unwrap().as_ref() {
+                r.send(crate::survey::UserCmd::Rescan);
+            }
+            None
+        }
+        "surveyStop" => {
+            let ctx2 = ctx.clone();
+            let _ = tokio::task::spawn_blocking(move || stop_survey(&ctx2)).await;
             None
         }
         "listen" => {

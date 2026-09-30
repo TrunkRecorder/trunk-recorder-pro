@@ -25,6 +25,7 @@
 use num_complex::Complex32;
 
 use super::calls::{Call, CallId, CallManager, CallSource};
+use super::frames::CallFrames;
 use super::talkgroups::Talkgroup;
 use super::tracker::{TrackerOut, VoiceTracker};
 use crate::dsp::fm::{self, ChannelFilter, Nbfm};
@@ -113,7 +114,7 @@ pub enum ConvOut {
     Start(Call),
     Update(Call),
     Audio { call_id: CallId, talkgroup: u32, samples: Vec<f32> },
-    End { call: Call, audio: Vec<f32>, errors: u64, recorder_num: u32 },
+    End { call: Call, audio: Vec<f32>, frames: CallFrames, recorder_num: u32 },
 }
 
 enum Rx {
@@ -125,7 +126,8 @@ enum Rx {
 struct Live {
     call: Call,
     audio: Vec<f32>,
-    bad_frames_at_start: u64,
+    /// P25: the vocoder frames behind `audio`.
+    frames: CallFrames,
     /// The talkgroup came from P25 link control (not the channel's default).
     tg_from_air: bool,
 }
@@ -174,6 +176,8 @@ pub struct Conventional {
 pub struct CallRules {
     pub call_timeout_s: f64,
     pub record_encrypted: bool,
+    /// Keep each call's vocoder frames (see [`super::frames`]).
+    pub capture_frames: bool,
 }
 
 impl Conventional {
@@ -261,7 +265,7 @@ impl Conventional {
             if let Some(l) = &o.live {
                 if now_s - l.call.last_audio_s > rules.call_timeout_s {
                     let l = o.live.take().unwrap();
-                    Self::end(l, &o.rx, idx as u32, out);
+                    Self::end(l, idx as u32, out);
                 }
             }
             let o = ch.open.as_ref().unwrap();
@@ -302,6 +306,7 @@ impl Conventional {
     fn run(ch: &mut Chan, iq: &[Complex32], now_s: f64, meter_thr: f32, num: u32, calls: &mut CallManager, rules: &CallRules, max_call_s: f64, out: &mut Vec<ConvOut>) {
         let o = ch.open.as_mut().unwrap();
         let mut audio = Vec::new();
+        let mut vframes = Vec::new();
         let mut infos = Vec::new();
         // P25: air time of the first frame that produced output, and the end of the last.
         let mut air: Option<(f64, f64)> = None;
@@ -323,7 +328,10 @@ impl Conventional {
                 }
                 for t in tout {
                     match t {
-                        TrackerOut::Audio(a) => audio.extend_from_slice(&a),
+                        TrackerOut::Audio(a, f) => {
+                            audio.extend_from_slice(&a);
+                            vframes.push(f);
+                        }
                         TrackerOut::Info { source, emergency, encrypted } => infos.push((source, emergency, encrypted)),
                     }
                 }
@@ -350,7 +358,7 @@ impl Conventional {
             let new_tg = l.tg_from_air && air_tg.is_some_and(|t| t != l.call.talkgroup);
             if too_long || new_tg {
                 let l = o.live.take().unwrap();
-                Self::end(l, &o.rx, num, out);
+                Self::end(l, num, out);
             } else if air_tg.is_some() && !l.tg_from_air {
                 let info = Self::info_for(&ch.cfg, tg, calls);
                 let l = o.live.as_mut().unwrap();
@@ -386,12 +394,8 @@ impl Conventional {
                 sources: Vec::new(),
                 talkgroup_info: Self::info_for(&ch.cfg, tg, calls),
             };
-            let bad = match &o.rx {
-                Rx::P25 { tracker, .. } => tracker.bad_frames,
-                Rx::Fm(_) => 0,
-            };
             out.push(ConvOut::Start(call.clone()));
-            o.live = Some(Live { call, audio: Vec::new(), bad_frames_at_start: bad, tg_from_air: air_tg.is_some() });
+            o.live = Some(Live { call, audio: Vec::new(), frames: CallFrames::new(rules.capture_frames), tg_from_air: air_tg.is_some() });
         }
         let l = o.live.as_mut().unwrap();
         l.call.last_update_s = now_s;
@@ -418,6 +422,9 @@ impl Conventional {
         }
         if !audio.is_empty() && !(l.call.encrypted && !rules.record_encrypted) {
             l.audio.extend_from_slice(&audio);
+            for f in vframes {
+                l.frames.push(f);
+            }
             out.push(ConvOut::Audio { call_id: l.call.id, talkgroup: l.call.talkgroup, samples: audio });
         }
     }
@@ -432,12 +439,8 @@ impl Conventional {
         cfg.info.clone().map(|t| Talkgroup { number: tg, ..t }).or(listed)
     }
 
-    fn end(l: Live, rx: &Rx, num: u32, out: &mut Vec<ConvOut>) {
-        let errors = match rx {
-            Rx::P25 { tracker, .. } => tracker.bad_frames - l.bad_frames_at_start,
-            Rx::Fm(_) => 0,
-        };
-        out.push(ConvOut::End { call: l.call, audio: l.audio, errors, recorder_num: num });
+    fn end(l: Live, num: u32, out: &mut Vec<ConvOut>) {
+        out.push(ConvOut::End { call: l.call, audio: l.audio, frames: l.frames, recorder_num: num });
     }
 
     /// End of input: flush the receivers and end every call.
@@ -453,9 +456,10 @@ impl Conventional {
                 }
                 if let Some(l) = o.live.as_mut() {
                     for t in tout {
-                        if let TrackerOut::Audio(a) = t {
+                        if let TrackerOut::Audio(a, f) = t {
                             if !(l.call.encrypted && !rules.record_encrypted) {
                                 l.audio.extend_from_slice(&a);
+                                l.frames.push(f);
                             }
                         }
                     }
@@ -463,7 +467,7 @@ impl Conventional {
             }
             let o = ch.open.take().unwrap();
             if let Some(l) = o.live {
-                Self::end(l, &o.rx, idx as u32, out);
+                Self::end(l, idx as u32, out);
             }
         }
     }
@@ -569,6 +573,7 @@ mod tests {
         assert!((secs(a[1].1) - 1.0).abs() < 0.15, "second call {:.2} s of audio", secs(a[1].1));
         assert!((a[0].0.start_s - 0.5).abs() < 0.1, "first call starts at {:.2} s", a[0].0.start_s);
         assert!(a[0].2.contains("\"audio_type\":\"analog\""));
+        assert!(a[0].2.contains("\"error_count\":0,\"spike_count\":0}],\"errorList\":[],\"srcList\":["), "{}", a[0].2);
         let w = by_tg(2);
         assert_eq!(w.len(), 1);
         assert!((secs(w[0].1) - 2.0).abs() < 0.2, "weak call {:.2} s", secs(w[0].1));

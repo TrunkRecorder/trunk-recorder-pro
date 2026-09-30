@@ -4,6 +4,7 @@
 //! (TDMA slots 0 and 1) share the frequency; each has its own vocoder and
 //! burst counting. After op25 p25p2_tdma.cc handle_packet.
 
+use super::frames::{Codec, VoiceFrame};
 use super::tracker::TrackerOut;
 use crate::mbe::{self, Kind, FRAME_SAMPLES};
 use crate::p25::phase2::{
@@ -151,11 +152,13 @@ impl TdmaTracker {
                     continue;
                 }
                 let mut buf = [0f32; FRAME_SAMPLES];
-                if s.dec.ambe(&f.bits, f.errs, &mut buf) != Kind::Voice {
+                let kind = s.dec.ambe(&f.bits, f.errs, &mut buf);
+                if kind != Kind::Voice {
                     self.bad_frames += 1;
                 }
-                mbe::to_unit(&mut buf);
-                out.push((c, TrackerOut::Audio(buf.to_vec())));
+                mbe::to_limited(&mut buf);
+                let frame = VoiceFrame { codec: Codec::Ambe, bits: f.bits.to_vec(), e0: 0, errs: f.errs, erased: false, kind };
+                out.push((c, TrackerOut::Audio(buf.to_vec(), frame)));
             }
             if kind == BURST_2V {
                 let a = s.next_algid;

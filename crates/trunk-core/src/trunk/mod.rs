@@ -4,6 +4,7 @@
 pub mod calls;
 pub mod conventional;
 pub mod engine;
+pub mod frames;
 pub mod message;
 pub mod record;
 pub mod talkgroups;

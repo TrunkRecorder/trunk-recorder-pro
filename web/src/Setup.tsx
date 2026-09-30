@@ -2,10 +2,12 @@ import { useEffect, useId, useRef, useState } from "react";
 import {
   AIRSPY_RATES,
   autoCenterFor,
+  channelsToCsv,
   defaultTalkgroup,
   formatFromPath,
   formatMhz,
   importTrunkRecorderConfig,
+  mhzCell,
   newAirspy,
   newDongle,
   newFile,
@@ -17,8 +19,9 @@ import {
   USRP_RATES,
   usableHalfWidth,
 } from "./config.ts";
-import { findRadios, refreshDevices, setNotice, updateConfig, useApp, web } from "./controller.ts";
+import { downloadText, findRadios, refreshDevices, setChannelFile, setNotice, updateConfig, useApp, web } from "./controller.ts";
 import type { Channel, Config, Source } from "./protocol.ts";
+import { SurveyPanel } from "./Survey.tsx";
 import { parseTalkgroupCsv } from "./talkgroups.ts";
 
 function Field(props: { label: string; hint?: string; children: React.ReactNode; wide?: boolean }) {
@@ -386,7 +389,10 @@ function SourceCard(props: { c: Config; i: number }) {
 
 let nextRowId = 1;
 
-/** Conventional channels: a table editor, bulk add, and Trunk Recorder channel CSV import. */
+/**
+ * Conventional channels: a table editor, bulk add, CSV import / export, and
+ * (desktop) a linked CSV file to edit in a spreadsheet instead.
+ */
 function ConventionalPanel(props: { c: Config }) {
   const { c } = props;
   const conv = c.conventional ?? { squelchDb: 8, channels: [] };
@@ -396,6 +402,9 @@ function ConventionalPanel(props: { c: Config }) {
   if (ids.current.length !== chans.length) ids.current = chans.map(() => nextRowId++);
   const csvRef = useRef<HTMLInputElement>(null);
   const [bulk, setBulk] = useState("");
+  const [pending, setPending] = useState<{ name: string; channels: Channel[]; notes: string[] } | null>(null);
+  const [filePath, setFilePath] = useState("channels.csv");
+  const linked = !web && !!conv.channelFile;
   const [bulkMode, setBulkMode] = useState<Channel["mode"]>("fm");
   const edit = (fn: (x: Config["conventional"]) => void) =>
     updateConfig((x) => {
@@ -411,12 +420,20 @@ function ConventionalPanel(props: { c: Config }) {
     ids.current.push(...list.map(() => nextRowId++));
     edit((x) => void x.channels.push(...list));
   };
+  const replaceAll = (list: Channel[]) => {
+    ids.current = list.map(() => nextRowId++);
+    edit((x) => void (x.channels = list));
+  };
   const onCsv = async (f: File | undefined) => {
     if (!f) return;
-    const { channels, notes } = parseChannelCsv(await f.text());
-    add(channels);
-    setNotice(`Added ${channels.length} channel(s) from ${f.name}.${notes.length ? " " + notes.join(" ") : ""}`);
+    const { channels, notes, error } = parseChannelCsv(await f.text());
+    if (error) return setNotice(`${f.name}: ${error}`);
+    if (!chans.length) {
+      replaceAll(channels);
+      setNotice(`Read ${channels.length} channel(s) from ${f.name}.${notes.length ? " " + notes.join(" ") : ""}`);
+    } else setPending({ name: f.name, channels, notes });
   };
+  const exportCsv = () => downloadText(`${c.system.shortName || "channels"}-channels.csv`, channelsToCsv(chans));
   const enabled = chans.filter((ch) => ch.enabled).length;
   const optNum = (v: string): number | undefined => (v.trim() === "" || !Number.isFinite(Number(v)) ? undefined : Number(v));
 
@@ -425,43 +442,122 @@ function ConventionalPanel(props: { c: Config }) {
       <header className="panel-head">
         <h2>Conventional channels</h2>
         <div className="row">
-          <button className="btn ghost" onClick={() => csvRef.current?.click()}>
-            Import CSV…
+          {!linked && (
+            <button className="btn ghost" onClick={() => csvRef.current?.click()}>
+              Import CSV…
+            </button>
+          )}
+          <button className="btn ghost" disabled={!chans.length} onClick={exportCsv} title="Save the list as a CSV to edit in a spreadsheet">
+            Export CSV
           </button>
-          <button className="btn ghost" onClick={() => add([{ freqHz: 0, mode: bulkMode, name: "", enabled: true }])}>
-            Add a channel
-          </button>
+          {!linked && (
+            <button className="btn ghost" onClick={() => add([{ freqHz: 0, mode: bulkMode, name: "", enabled: true }])}>
+              Add a channel
+            </button>
+          )}
         </div>
-        <input ref={csvRef} type="file" accept=".csv,text/csv" hidden onChange={(e) => void onCsv(e.target.files?.[0])} />
+        <input
+          ref={csvRef}
+          type="file"
+          accept=".csv,text/csv"
+          hidden
+          onChange={(e) => {
+            void onCsv(e.target.files?.[0]);
+            e.target.value = "";
+          }}
+        />
       </header>
       <div className="stack">
         <p className="muted small">
           Analog FM or P25 channels anywhere inside a source's bandwidth, alongside a trunked system or on their own. Each is watched in the spectrum the recorder
           already computes, so an idle channel costs almost nothing; a call starts when its signal rises above the noise floor by the squelch level.
         </p>
+        {pending && (
+          <div className="banner">
+            <div>
+              Read {pending.channels.length} channel{pending.channels.length === 1 ? "" : "s"} from {pending.name}.{pending.notes.length ? " " + pending.notes.join(" ") : ""}
+            </div>
+            <div className="row">
+              <button
+                className="btn primary"
+                onClick={() => {
+                  replaceAll(pending.channels);
+                  setPending(null);
+                }}
+              >
+                Replace the list ({chans.length} now)
+              </button>
+              <button
+                className="btn"
+                onClick={() => {
+                  add(pending.channels);
+                  setPending(null);
+                }}
+              >
+                Add to the list
+              </button>
+              <button className="btn ghost" onClick={() => setPending(null)}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+        {!web &&
+          (linked ? (
+            <div className="banner">
+              <div>
+                Channels come from <code>{conv.channelFile}</code> on the recorder's computer (next to the config unless the path is absolute). Edit it in a
+                spreadsheet, then Reload; recording also re-reads it each time it starts.
+              </div>
+              {conv.channelFileStatus && <div className="small mono">{conv.channelFileStatus}</div>}
+              <div className="row">
+                <button className="btn" onClick={() => setChannelFile(conv.channelFile ?? "")}>
+                  Reload
+                </button>
+                <button className="btn ghost" onClick={() => setChannelFile("")} title="Keep the channels here, in the app's settings, and stop reading the file">
+                  Unlink
+                </button>
+              </div>
+            </div>
+          ) : (
+            <Field
+              label="Channel file (optional)"
+              hint="Keep the channels in a CSV on the recorder's computer and edit them in Excel, Numbers or LibreOffice. Relative paths are next to the config file. A new file is created from this list."
+              wide
+            >
+              <div className="row">
+                <input className="mono grow" value={filePath} placeholder="channels.csv" onChange={(e) => setFilePath(e.target.value)} />
+                <button className="btn" disabled={!filePath.trim()} onClick={() => setChannelFile(filePath.trim())}>
+                  Use this file
+                </button>
+              </div>
+            </Field>
+          ))}
         <div className="grid3">
           <Field label="Squelch, dB above noise" hint="For every channel without its own. Raise it if noise opens channels.">
             <input className="mono" value={conv.squelchDb} onChange={(e) => edit((x) => void (x.squelchDb = Math.max(3, Math.min(40, Number(e.target.value) || 8))))} />
           </Field>
-          <Field label="Add frequencies, MHz" hint="Comma or space separated" wide>
-            <div className="row">
-              <input className="mono grow" value={bulk} placeholder="154.430, 155.100, 460.125" onChange={(e) => setBulk(e.target.value)} />
-              <select value={bulkMode} onChange={(e) => setBulkMode(e.target.value as Channel["mode"])} aria-label="Mode for the added channels">
-                <option value="fm">Analog FM</option>
-                <option value="p25">P25</option>
-              </select>
-              <button
-                className="btn"
-                disabled={!parseFreqList(bulk).length}
-                onClick={() => {
-                  add(parseFreqList(bulk).map((freqHz) => ({ freqHz, mode: bulkMode, name: "", enabled: true })));
-                  setBulk("");
-                }}
-              >
-                Add
-              </button>
-            </div>
-          </Field>
+          {!linked && (
+            <Field label="Add frequencies, MHz" hint="Comma or space separated" wide>
+              <div className="row">
+                <input className="mono grow" value={bulk} placeholder="154.430, 155.100, 460.125" onChange={(e) => setBulk(e.target.value)} />
+                <select value={bulkMode} onChange={(e) => setBulkMode(e.target.value as Channel["mode"])} aria-label="Mode for the added channels">
+                  <option value="fm">Analog FM</option>
+                  <option value="p25">P25</option>
+                </select>
+                <button
+                  className="btn"
+                  disabled={!parseFreqList(bulk).length}
+                  onClick={() => {
+                    add(parseFreqList(bulk).map((freqHz) => ({ freqHz, mode: bulkMode, name: "", enabled: true })));
+                    setBulk("");
+                  }}
+                >
+                  Add
+                </button>
+              </div>
+            </Field>
+          )}
         </div>
         {chans.length > 0 && (
           <>
@@ -482,23 +578,24 @@ function ConventionalPanel(props: { c: Config }) {
                   {chans.map((ch, i) => (
                     <tr key={ids.current[i]} className={ch.enabled ? "" : "st-monitoring"}>
                       <td>
-                        <input type="checkbox" checked={ch.enabled} aria-label="Record this channel" onChange={(e) => editRow(i, (x) => void (x.enabled = e.target.checked))} />
+                        <input type="checkbox" disabled={linked} checked={ch.enabled} aria-label="Record this channel" onChange={(e) => editRow(i, (x) => void (x.enabled = e.target.checked))} />
                       </td>
                       <td>
-                        <MhzInput hz={ch.freqHz} onChange={(hz) => editRow(i, (x) => void (x.freqHz = hz))} />
+                        {linked ? <span className="mono">{mhzCell(ch.freqHz)}</span> : <MhzInput hz={ch.freqHz} onChange={(hz) => editRow(i, (x) => void (x.freqHz = hz))} />}
                       </td>
                       <td>
-                        <select value={ch.mode} aria-label="Mode" onChange={(e) => editRow(i, (x) => void (x.mode = e.target.value as Channel["mode"]))}>
+                        <select value={ch.mode} disabled={linked} aria-label="Mode" onChange={(e) => editRow(i, (x) => void (x.mode = e.target.value as Channel["mode"]))}>
                           <option value="fm">Analog FM</option>
                           <option value="p25">P25</option>
                         </select>
                       </td>
                       <td>
-                        <input value={ch.name} placeholder="Name" aria-label="Name" onChange={(e) => editRow(i, (x) => void (x.name = e.target.value))} />
+                        <input value={ch.name} disabled={linked} placeholder="Name" aria-label="Name" onChange={(e) => editRow(i, (x) => void (x.name = e.target.value))} />
                       </td>
                       <td>
                         <input
                           className="mono narrow"
+                          disabled={linked}
                           value={ch.talkgroup ?? ""}
                           placeholder={ch.freqHz ? String(defaultTalkgroup(ch.freqHz)) : "auto"}
                           aria-label="Talkgroup"
@@ -514,6 +611,7 @@ function ConventionalPanel(props: { c: Config }) {
                       <td>
                         <input
                           className="mono narrow"
+                          disabled={linked}
                           value={ch.squelchDb ?? ""}
                           placeholder={String(conv.squelchDb)}
                           aria-label="Squelch, dB above noise"
@@ -527,40 +625,46 @@ function ConventionalPanel(props: { c: Config }) {
                         />
                       </td>
                       <td>
-                        <button className="btn ghost small danger" title="Remove" aria-label="Remove channel" onClick={() => remove(i)}>
-                          ×
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <div className="row">
-              <span className="muted small">
-                {chans.length} channel{chans.length === 1 ? "" : "s"}, {enabled} on
-              </span>
-              <span className="spacer" />
-              <button
-                className="btn ghost small danger"
-                onClick={() => {
-                  if (window.confirm(`Remove all ${chans.length} conventional channels?`)) {
-                    ids.current = [];
-                    edit((x) => void (x.channels = []));
-                  }
-                }}
-              >
-                Remove all
-              </button>
+                        {!linked && (
+                            <button className="btn ghost small danger" title="Remove" aria-label="Remove channel" onClick={() => remove(i)}>
+                              ×
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="row">
+                <span className="muted small">
+                  {chans.length} channel{chans.length === 1 ? "" : "s"}, {enabled} on
+                </span>
+                <span className="spacer" />
+                {!linked && (
+                <button
+                  className="btn ghost small danger"
+                  onClick={() => {
+                    if (window.confirm(`Remove all ${chans.length} conventional channels?`)) {
+                      ids.current = [];
+                      edit((x) => void (x.channels = []));
+                    }
+                  }}
+                >
+                  Remove all
+                </button>
+              )}
             </div>
           </>
         )}
         <details className="help">
           <summary>CSV format</summary>
           <p className="small">
-            A header row, then one channel per row. Trunk Recorder's channel file works as is: <code>TG Number</code>, <code>Frequency</code> (MHz with a decimal
-            point, or Hz), <code>Alpha Tag</code>, <code>Description</code>, <code>Tag</code>, <code>Category</code>, <code>Enable</code>. Add a{" "}
-            <code>Mode</code> column (<code>fm</code> / <code>p25</code>) to mix analog and P25; without one, channels come in as analog FM.
+            A header row, then one channel per row; <b>Export CSV</b> writes one to start from. Columns, in any order: <code>TG Number</code> (empty = the
+            frequency in kHz), <code>Frequency</code> (MHz with a decimal point, or Hz), <code>Mode</code> (<code>fm</code> or <code>p25</code>; empty = fm),{" "}
+            <code>Alpha Tag</code>, <code>Description</code>, <code>Tag</code>, <code>Category</code>, <code>Squelch dB</code> (above the noise; empty = the
+            default), <code>Enable</code> (<code>false</code> = off). Trunk Recorder's channel file reads as is; its <code>Squelch</code> column (an absolute
+            level) isn't used.
           </p>
         </details>
       </div>
@@ -578,6 +682,11 @@ export function Setup() {
     if (loaded && !ccText) setCcText((s.config?.system.controlChannels ?? []).map((f) => formatMhz(f)).join(", "));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loaded]);
+  // The survey filled the config in: show its control channels.
+  useEffect(() => {
+    if (s.configEpoch) setCcText((s.config?.system.controlChannels ?? []).map((f) => formatMhz(f)).join(", "));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [s.configEpoch]);
   const importRef = useRef<HTMLInputElement>(null);
   const tgRef = useRef<HTMLInputElement>(null);
   if (!c) return <p className="muted">Connecting to the recorder…</p>;
@@ -608,6 +717,7 @@ export function Setup() {
 
   return (
     <div className="setup">
+      <SurveyPanel c={c} />
       <section className="panel">
         <header className="panel-head">
           <h2>System</h2>
@@ -680,7 +790,7 @@ export function Setup() {
         </header>
         <div className="stack">
           {c.sources.map((_, i) => (
-            <SourceCard key={i} c={c} i={i} />
+            <SourceCard key={`${i}-${s.configEpoch}`} c={c} i={i} />
           ))}
           <p className="muted small">
             Several dongles can cover one system: the control channel runs on whichever covers it, and each call is recorded from whichever covers its frequency.
@@ -730,6 +840,14 @@ export function Setup() {
           <Toggle label="Record talkgroups not in the CSV" checked={c.recording.recordUnknown} onChange={(v) => updateConfig((x) => void (x.recording.recordUnknown = v))} />
           <Toggle label="Record unit-to-unit calls" checked={c.recording.recordUnitToUnit} onChange={(v) => updateConfig((x) => void (x.recording.recordUnitToUnit = v))} />
           <Toggle label="Keep calls with no audio" hint="encrypted, or nothing decoded" checked={c.recording.keepSilentCalls} onChange={(v) => updateConfig((x) => void (x.recording.keepSilentCalls = v))} />
+          {!web && (
+            <Toggle
+              label="Save vocoder frames"
+              hint="diagnostics: each call's decoded voice frames and error counts, as <call>.frames.jsonl"
+              checked={c.recording.captureFrames}
+              onChange={(v) => updateConfig((x) => void (x.recording.captureFrames = v))}
+            />
+          )}
           {!web && (
             <Toggle
               label="Start recording when the app starts"

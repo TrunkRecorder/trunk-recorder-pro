@@ -2,7 +2,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::SyncSender;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rtlsdr_nusb::{Device, GainConfig, MaybeFuture};
@@ -45,20 +45,47 @@ pub enum SourceMsg {
     Error { source: usize, error: String },
     /// A finite source (a capture file) has no more data.
     End { source: usize },
+    /// A [`Control`] request was applied; the samples after this are at `center_hz`.
+    Tuned { center_hz: f64 },
+}
+
+/// Retune / gain requests for a running source (the survey). The source
+/// applies them between blocks and answers each with [`SourceMsg::Tuned`].
+#[derive(Default)]
+pub struct Control {
+    pub freq_hz: Mutex<Option<f64>>,
+    pub gain_db: Mutex<Option<f32>>,
+    /// The centre last applied, so a reopened device comes back there.
+    pub current_hz: Mutex<Option<f64>>,
+}
+
+impl Control {
+    /// Pending requests (taken).
+    pub fn take(&self) -> (Option<f64>, Option<f32>) {
+        (self.freq_hz.lock().unwrap().take(), self.gain_db.lock().unwrap().take())
+    }
 }
 
 /// Stream a dongle until `stop` is set; blocks go to `tx`. Reopens the device
 /// after USB errors (a stall, a sleep/wake) with a short back-off.
 pub fn run(source: usize, cfg: RtlConfig, tx: SyncSender<SourceMsg>, stop: Arc<AtomicBool>) {
+    run_with(source, cfg, tx, stop, None)
+}
+
+/// [`run`], retuned on request.
+pub fn run_with(source: usize, mut cfg: RtlConfig, tx: SyncSender<SourceMsg>, stop: Arc<AtomicBool>, ctl: Option<Arc<Control>>) {
     while !stop.load(Ordering::Relaxed) {
-        if let Err(e) = stream_once(source, &cfg, &tx, &stop) {
+        if let Some(c) = ctl.as_ref().and_then(|c| *c.current_hz.lock().unwrap()) {
+            cfg.center_hz = c as u64;
+        }
+        if let Err(e) = stream_once(source, &cfg, &tx, &stop, ctl.as_deref()) {
             let _ = tx.send(SourceMsg::Error { source, error: e });
             std::thread::sleep(Duration::from_secs(2));
         }
     }
 }
 
-fn stream_once(source: usize, cfg: &RtlConfig, tx: &SyncSender<SourceMsg>, stop: &AtomicBool) -> Result<(), String> {
+fn stream_once(source: usize, cfg: &RtlConfig, tx: &SyncSender<SourceMsg>, stop: &AtomicBool, ctl: Option<&Control>) -> Result<(), String> {
     let mut b = Device::builder().raw_iq().frequency_hz(cfg.center_hz).sample_rate_hz(cfg.rate_hz).correction_ppm(cfg.ppm);
     b = b.gain(cfg.gain_db.map_or(GainConfig::Auto, GainConfig::Manual));
     if !cfg.serial.is_empty() {
@@ -70,6 +97,33 @@ fn stream_once(source: usize, cfg: &RtlConfig, tx: &SyncSender<SourceMsg>, stop:
     let result = loop {
         if stop.load(Ordering::Relaxed) {
             break Ok(());
+        }
+        if let Some(c) = ctl {
+            let (freq, gain) = c.take();
+            if let Some(f) = freq {
+                // Stopped while retuning, so no queued block is from the old frequency.
+                if let Err(e) = rx.stop().wait() {
+                    break Err(format!("USB: {e}"));
+                }
+                if let Err(e) = dev.set_frequency_hz(f.round() as u64).wait() {
+                    break Err(format!("tune {:.4} MHz: {e}", f / 1e6));
+                }
+                if let Err(e) = rx.start().wait() {
+                    break Err(format!("USB: {e}"));
+                }
+            }
+            if let Some(g) = gain {
+                if let Err(e) = dev.set_gain(GainConfig::Manual(g)).wait() {
+                    break Err(format!("gain {g} dB: {e}"));
+                }
+            }
+            if freq.is_some() || gain.is_some() {
+                let hz = dev.actual_frequency_hz() as f64;
+                *c.current_hz.lock().unwrap() = Some(hz);
+                if tx.send(SourceMsg::Tuned { center_hz: hz }).is_err() {
+                    break Ok(());
+                }
+            }
         }
         match rx.next_block(Some(Duration::from_secs(2))).wait() {
             Ok(Some(block)) => {

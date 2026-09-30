@@ -110,12 +110,54 @@ workers don't run from `file://`. Press **Connect…** on a dongle source to pic
 it. The desktop app is the better choice for several dongles or long
 unattended runs.
 
+### Find my system
+
+Don't know the frequencies? Under **Find my system** in Setup, press **Scan**
+with a dongle connected. The recorder steps through the P25 bands (800, 700
+and 900 MHz, UHF 450–470, VHF 136–174 by default; UHF federal 380–420 and
+T-band 470–512 on request), about 1.3 s per 2 MHz step. In each step it looks
+for carriers that stay on (a control channel never keys down) and checks each
+one with the P25 receivers. Then it listens to the control channel with the
+best signal and shows what that channel announces:
+
+- the system's WACN, System ID, NAC, RFSS and site, and its band plan;
+- its alternate control channels and neighbouring sites;
+- the voice channels it grants calls on;
+- the **frequency correction** (ppm) your radio needs. The channel announces
+  its own frequency, and base stations are GPS- or rubidium-locked, so how far
+  off the recorder hears it is the radio's error;
+- on an RTL-SDR, the **gain**: it tries gains from 19.7 to 49.6 dB and keeps
+  the lowest one within 1 dB of the best signal that doesn't clip.
+
+**Use this system** writes the control channels, the ppm, the gain and a
+center frequency that covers the most voice channels seen. It also says when
+the system spans more than one dongle can cover. Any other control channel
+the scan found can be picked with **Listen**. Everything can still be typed
+in by hand.
+
+From the command line (JSON lines of what's found, then the system):
+
+```bash
+trunk-lite survey --serial 200 --bands 800,700 --seconds 30
+trunk-lite survey capture.cu8 --center 858300000 --rate 2400000   # a capture: one look
+```
+
 ## Conventional channels
 
 Conventional channels are single frequencies — analog narrowband FM or P25 —
-recorded whenever something transmits on them. Add them in the browser under
-**Conventional channels** (a table, a box to paste many frequencies, or
-**Import CSV…**), or in the config file:
+recorded whenever something transmits on them. There are three ways to keep
+the list:
+
+- **In the browser**, under **Conventional channels**: a table, a box to paste
+  many frequencies, **Import CSV…** (replace the list or add to it) and
+  **Export CSV**.
+- **In a spreadsheet** (desktop app): under *Channel file*, enter a path such as
+  `channels.csv` and press **Use this file**. A new file is created from the
+  current list; from then on the channels are read from it — edit it in Excel,
+  Numbers or LibreOffice, then press **Reload** (recording also re-reads it
+  every time it starts). Relative paths are next to the config file.
+  **Unlink** keeps the channels in the app's settings again.
+- **In the config file**, as JSON:
 
 ```json
 "conventional": {
@@ -137,6 +179,33 @@ recorded whenever something transmits on them. Add them in the browser under
 | `talkgroup` | The number calls are filed under (file names, JSON, uploaders). Default: the frequency in kHz, e.g. 154430 — stable however you reorder the list. P25 channels use the talkgroup the radio sends, when it sends one |
 | `squelchDb` | How far above the noise floor a signal must be to open the channel, in dB. Per channel, or for all in the section (default 8). The noise floor is measured, so this doesn't depend on the dongle or gain the way Trunk Recorder's absolute squelch does |
 | `enabled` | `false` keeps a channel in the list without recording it |
+| `channelFile` (section) | A CSV to read the channels from instead of `channels` (desktop) |
+
+The CSV has a header row, then one channel per row; columns in any order:
+
+```csv
+TG Number,Frequency,Mode,Alpha Tag,Description,Tag,Category,Squelch dB,Enable
+1001,154.4300,fm,County Fire Dispatch,,,Fire,,true
+,155.1000,fm,EMS Ops,,,,,true
+,460.1250,p25,PD Tac 2,,,,12,true
+,453.0000,fm,,,,,,false
+```
+
+| Column | |
+|---|---|
+| `Frequency` | MHz with a decimal point (`154.4300`), or Hz (`154430000`) |
+| `Mode` | `fm` or `p25` (also `analog` / `digital`, `A` / `D`); empty = `fm` |
+| `TG Number` | Empty = the frequency in kHz |
+| `Alpha Tag`, `Description`, `Tag`, `Category` | Names for the call JSON |
+| `Squelch dB` | dB above the noise floor, 3–40; empty = the default |
+| `Enable` | `false` (or `no`, `0`) = off; empty = on |
+
+Trunk Recorder's channel file reads as is (its `Tone`, `Comment` and `Signal
+Detector` columns are ignored; its `Squelch` column is an absolute level and
+isn't used). Files saved by Excel in any locale work: commas, semicolons or
+tabs, decimal commas, and the byte-order mark. Rows that can't be read are
+reported by row number; a file that can't be read at all keeps the last good
+list. `trunk-lite replay … --channels channels.csv` reads the same format.
 
 A config can have a trunked system, conventional channels, or both; leave the
 control channels empty for conventional only. Every enabled channel must lie
@@ -156,9 +225,8 @@ signal, as in Trunk Recorder. Analog audio is de-emphasised and high-passed at
 300 Hz, which removes CTCSS tones. Tones and NACs aren't matched yet: a channel
 records whatever transmits on its frequency.
 
-**From Trunk Recorder.** **Import CSV…** reads Trunk Recorder's channel file
-(`TG Number`, `Frequency`, `Alpha Tag`, `Description`, `Tag`, `Category`,
-`Enable`); add a `Mode` column (`fm` / `p25`) to mix analog and P25 in one
+**From Trunk Recorder.** **Import CSV…** (or a channel file) reads Trunk
+Recorder's channel file; add a `Mode` column to mix analog and P25 in one
 file. **Import Trunk Recorder config…** brings in `conventional` and
 `conventionalP25` systems' `channels` lists. Squelch values aren't carried
 over: Trunk Recorder's are absolute levels; here squelch is dB above the noise.
@@ -210,6 +278,7 @@ rtl_sdr -f 858300000 -s 2400000 -g 38.6 -n 72000000 capture.cu8        # 30 s
 # Conventional channels (with or without --cc); talkgroup = frequency in kHz:
 ./target/release/trunk-lite replay capture.cu8 --center 154500000 --rate 2400000 \
     --fm 154430000,155100000 --p25 154725000 [--squelch 8] --out calls/
+#   or --channels channels.csv (the channel-file format above)
 ```
 
 Calls are written as `<talkgroup>-<epoch>_<freq>.wav|json` with Trunk
@@ -244,7 +313,7 @@ receiver bank = CQPSK + CQPSK with a T/2 CMA equaliser + C4FM, best of each fram
 | `crates/trunk-lite` | The app: `serve` (default; source threads, engine thread, web server + WebSocket), `replay`, `capture`, `devices`, `tool` |
 | `…/src/sdr.rs` | RTL-SDR over USB via `rtlsdr-nusb` (pure Rust; no libusb / librtlsdr) |
 | `…/src/radio/` | USRP (UHD's C API) and Airspy (libairspy), loaded at run time when installed |
-| `crates/trunk-app` | The app layer shared by desktop and browser: config and a recording `Session` (status, spectrum, log, calls, files) |
+| `crates/trunk-app` | The app layer shared by desktop and browser: config, the conventional channel CSV (`channels.rs`), and a recording `Session` (status, spectrum, log, calls, files) |
 | `crates/trunk-web` | The browser build: `Session` and the RTL-SDR driver (WebUSB) exported to JavaScript with `wasm-bindgen` |
 | `web/` | The browser interface (React + Vite), embedded in the binary; `src/web/` runs the engine in a worker for the browser version |
 | `research/native-bench` | Benchmarks, the C++ prototype, synthetic simulcast ground truth, comparison scripts — see its `RESULTS.md` |
