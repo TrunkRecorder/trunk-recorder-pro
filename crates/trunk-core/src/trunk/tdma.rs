@@ -7,9 +7,11 @@
 use super::frames::{Codec, VoiceFrame};
 use super::tracker::TrackerOut;
 use crate::mbe::{self, Kind, FRAME_SAMPLES};
+use crate::p25::alias::{mac_messages, mac_talker, MacAliases};
 use crate::p25::phase2::{
     decode_acch, decode_ess, decode_vcw, duid_decode, isch_lookup, parse_mac_ptt, read_ess_a, read_ess_b, xor_mask, Packet, BURST_2V, BURST_4V,
-    BURST_FACCH_S, BURST_FACCH_U, BURST_LCCH_S, BURST_SACCH_S, BURST_SACCH_U, BURST_DIBITS, MAC_ACTIVE, MAC_END_PTT, MAC_PTT, SLOT_CHANNEL, SLOT_DIBITS,
+    BURST_FACCH_S, BURST_FACCH_U, BURST_LCCH_S, BURST_SACCH_S, BURST_SACCH_U, BURST_DIBITS, MAC_ACTIVE, MAC_END_PTT, MAC_HANGTIME, MAC_IDLE, MAC_PTT,
+    MAC_SIGNAL, SLOT_CHANNEL, SLOT_DIBITS,
 };
 use crate::p25::voice::ALGID_CLEAR;
 
@@ -23,6 +25,10 @@ struct Slot {
     ess_b: [u8; 16],
     next_algid: u8,
     end_s: f64,
+    /// Who is talking (MAC_PTT, Group Voice Channel User), until the transmission ends.
+    talker: Option<u32>,
+    talkgroup: Option<u32>,
+    aliases: MacAliases,
 }
 
 impl Slot {
@@ -37,6 +43,9 @@ impl Slot {
             ess_b: [0; 16],
             next_algid: ALGID_CLEAR,
             end_s: 0.0,
+            talker: None,
+            talkgroup: None,
+            aliases: MacAliases::default(),
         }
     }
 }
@@ -180,14 +189,32 @@ impl TdmaTracker {
                     s.encrypted = ptt.algid != ALGID_CLEAR;
                     s.first4v = ((p.slot >> 1) as i32 + pdu.offset as i32 + 1) % 5;
                     s.burst_id = -1;
+                    s.talker = (ptt.source != 0).then_some(ptt.source);
+                    s.talkgroup = (ptt.group != 0).then_some(ptt.group);
                     out.push((c, TrackerOut::Info { source: (ptt.source != 0).then_some(ptt.source), emergency: false, encrypted: s.encrypted }));
                 }
                 MAC_END_PTT => {
                     s.active = false;
                     s.algid = ALGID_CLEAR;
+                    s.talker = None;
                 }
                 MAC_ACTIVE => s.first4v = if pdu.offset > 4 { 0 } else { pdu.offset as i32 },
                 _ => {}
+            }
+            // The messages a SIGNAL / IDLE / ACTIVE / HANGTIME PDU carries (op25 decode_mac_msg).
+            if matches!(pdu.opcode, MAC_SIGNAL | MAC_IDLE | MAC_ACTIVE | MAC_HANGTIME) {
+                let bytes = if pdu.opcode == MAC_SIGNAL { &pdu.bytes[..pdu.bytes.len().min(18)] } else { &pdu.bytes[..] };
+                for m in mac_messages(bytes) {
+                    if let Some(u) = mac_talker(&m) {
+                        s.talker = Some(u);
+                    }
+                    if let Some(a) = s.aliases.msg(&m, s.talker, s.talkgroup) {
+                        out.push((c, TrackerOut::Alias(a)));
+                    }
+                }
+                if pdu.opcode == MAC_HANGTIME {
+                    s.talker = None;
+                }
             }
         }
     }

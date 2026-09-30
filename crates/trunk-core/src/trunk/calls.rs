@@ -109,6 +109,12 @@ impl Default for CallConfig {
 pub trait RecorderHost {
     /// Start recording; `Err` when out of band / no recorder free / unsupported.
     fn start_recording(&mut self, call: &Call) -> Result<(), Reason>;
+    /// Follow a call that isn't recorded — its voice channel's link control
+    /// only (who talks, talker aliases); true when a channel was opened.
+    fn follow(&mut self, _call: &Call) -> bool {
+        false
+    }
+    /// Stop recording (or following) `call`; nothing when it has no channel.
     fn stop_recording(&mut self, call: &Call);
 }
 
@@ -207,9 +213,7 @@ impl CallManager {
             let quiet_audio = now_s - c.last_audio_s > t;
             if quiet_cc && (!c.recording || quiet_audio) {
                 let c = self.calls.remove(i);
-                if c.recording {
-                    host.stop_recording(&c);
-                }
+                host.stop_recording(&c);
                 ev.push(CallEvent::End(c));
             }
         }
@@ -219,9 +223,7 @@ impl CallManager {
     /// End everything (source stopped).
     pub fn end_all(&mut self, host: &mut dyn RecorderHost, ev: &mut Vec<CallEvent>) {
         for c in std::mem::take(&mut self.calls) {
-            if c.recording {
-                host.stop_recording(&c);
-            }
+            host.stop_recording(&c);
             ev.push(CallEvent::End(c));
         }
     }
@@ -298,7 +300,10 @@ impl CallManager {
         if tg.is_none() && !self.cfg.record_unknown && !patched_known && !self.talkgroups.is_empty() {
             c.reason = Some(Reason::UnknownTg);
         } else if c.encrypted && !self.cfg.record_encrypted {
+            // No audio to record, but its terminators' link control is in
+            // the clear: who spoke, and their talker aliases.
             c.reason = Some(Reason::Encrypted);
+            host.follow(&c);
         } else {
             match host.start_recording(&c) {
                 Ok(()) => c.recording = true,

@@ -27,7 +27,7 @@ impl Talkgroup {
 pub type Talkgroups = HashMap<u32, Talkgroup>;
 
 /// RFC-4180-ish split: commas, double-quoted fields, "" escapes.
-fn split_csv_line(line: &str) -> Vec<String> {
+pub(crate) fn split_csv_line(line: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut cur = String::new();
     let mut quoted = false;

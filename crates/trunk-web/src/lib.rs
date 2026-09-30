@@ -103,6 +103,16 @@ impl WebSession {
         self.s.finish(&mut self.out);
         to_js(&mut self.out)
     }
+    /// Preload talker aliases: JSON `{shortName: csv}` saved from a previous
+    /// run ([`WebSession::units_changed`]).
+    pub fn load_units(&mut self, units_json: &str) {
+        let units: serde_json::Map<String, serde_json::Value> = serde_json::from_str(units_json).unwrap_or_default();
+        self.s.load_units(&|name| units.get(name).and_then(|v| v.as_str()).map(str::to_string));
+    }
+    /// Talker aliases of the systems that learned any since the last call, as JSON `{shortName: csv}`.
+    pub fn units_changed(&mut self) -> String {
+        serde_json::Value::Object(self.s.units_changed().into_iter().map(|(n, c)| (n, serde_json::Value::String(c))).collect()).to_string()
+    }
     /// Each system's band plan, as JSON `{shortName: plan}`.
     pub fn bandplans(&self) -> String {
         serde_json::Value::Object(self.s.bandplans().into_iter().map(|(n, p)| (n, serde_json::Value::String(p))).collect()).to_string()

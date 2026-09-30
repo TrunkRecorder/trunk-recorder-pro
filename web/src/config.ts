@@ -3,6 +3,9 @@
 import type { Channel, Config, SiteIdentity, Source, System } from "./protocol.ts";
 import { splitCsvLine } from "./talkgroups.ts";
 
+/** A new RTL-SDR's gain, dB (higher overloads its front end near strong transmitters). */
+export const RTL_DEFAULT_GAIN_DB = 25.4;
+
 export const SAMPLE_RATES = [2_400_000, 2_048_000, 2_560_000, 3_200_000, 1_920_000, 1_024_000];
 
 /** A fresh config (the web build; the desktop app gets its own from the recorder). */
@@ -32,7 +35,7 @@ export const USRP_RATES = [2_400_000, 4_000_000, 5_000_000, 6_400_000, 8_000_000
 export const AIRSPY_RATES = [10_000_000, 6_000_000, 3_000_000, 2_500_000];
 
 export function newDongle(): Source {
-  return { kind: "rtlsdr", serial: "", centerHz: 0, rateHz: 2_400_000, gainDb: 38.6, ppm: 0 };
+  return { kind: "rtlsdr", serial: "", centerHz: 0, rateHz: 2_400_000, gainDb: RTL_DEFAULT_GAIN_DB, ppm: 0 };
 }
 export function newUsrp(): Source {
   return { kind: "usrp", args: "", centerHz: 0, rateHz: 8_000_000, gainDb: 40, antenna: "", ppm: 0 };
@@ -460,7 +463,7 @@ export function importTrunkRecorderConfig(text: string, base: Config): { config:
       serial: /^\d$/.test(serial) ? "" : serial,
       centerHz: center,
       rateHz: rate,
-      gainDb: s.agc === true ? null : gain ?? 38.6,
+      gainDb: s.agc === true ? null : gain ?? RTL_DEFAULT_GAIN_DB,
       ppm: Math.round(ppm),
     });
   }

@@ -25,6 +25,7 @@ import type {
 } from "./protocol.ts";
 import { activeSystems, newSystem, resolvedCenters, sameSystem, siteName, sourceCovering, usableHalfWidth } from "./config.ts";
 import { WsTransport, type Transport } from "./transport.ts";
+import { parseUnitsCsv, type UnitAliases } from "./units.ts";
 import type { WorkerTransport } from "./web/workerTransport.ts";
 
 export interface AppState {
@@ -51,6 +52,8 @@ export interface AppState {
   spectra: Spectrum[];
   log: LogLine[];
   history: CallEntry[];
+  /** Each system's radios' talker aliases, by short name. */
+  units: Record<string, UnitAliases>;
   listen: boolean;
   /** Only play this system's calls live (SystemStatus.index, CONVENTIONAL; null = any). */
   listenSystem: number | null;
@@ -86,6 +89,7 @@ let state: AppState = {
   spectra: [],
   log: [],
   history: [],
+  units: {},
   listen: false,
   listenSystem: null,
   listenTalkgroup: null,
@@ -138,6 +142,7 @@ transport.onMessage = (m: FromRecorder) => {
         config: m.config,
         devices: m.devices,
         history: m.history,
+        units: Object.fromEntries(Object.entries(m.units ?? {}).map(([name, csv]) => [name, parseUnitsCsv(csv)])),
         radios: m.radios ?? null,
         phase: m.phase.phase,
         error: m.phase.error,
@@ -168,6 +173,9 @@ transport.onMessage = (m: FromRecorder) => {
       break;
     case "concluded":
       set({ history: [m.entry, ...state.history].slice(0, 500) });
+      break;
+    case "unitAlias":
+      set({ units: { ...state.units, [m.system]: { ...state.units[m.system], [m.unit]: m.alias } } });
       break;
     case "survey":
       set({ survey: m, ...(m.stage === "idle" ? { surveySpectrum: null } : {}) });

@@ -158,6 +158,22 @@ impl Session {
         self.flush_log(out);
     }
 
+    /// Preload each system's talker aliases: `units` gives the CSV saved
+    /// for a short name ([`Session::units_changed`]).
+    pub fn load_units(&mut self, units: &dyn Fn(&str) -> Option<String>) {
+        for n in self.engine.unit_table_names() {
+            if let Some(csv) = units(&n) {
+                self.engine.load_units(&n, &csv);
+            }
+        }
+    }
+
+    /// (short name, talker alias CSV) of each system that learned an alias
+    /// since the last call, to save.
+    pub fn units_changed(&mut self) -> Vec<(String, String)> {
+        self.engine.units_changed()
+    }
+
     /// Each system's (short name, band plan), to keep for the next run.
     pub fn bandplans(&self) -> Vec<(String, String)> {
         self.engine.systems().iter().enumerate().map(|(i, s)| (s.short_name.clone(), self.engine.bandplan(i))).collect()
@@ -213,6 +229,11 @@ impl Session {
                 let entry = json!({ "path": rel, "record": record });
                 out.push(Output::File { rel, wav: trunk_core::wav::encode(&k.audio, 8000), json: k.json, frames: k.frames, entry: entry.clone() });
                 out.push(Output::Text(json!({ "type": "concluded", "entry": entry }).to_string()));
+            }
+            Event::UnitAlias { system, unit, alias, talkgroup } => {
+                let name = self.system_name(system).to_string();
+                self.log.push(json!({ "timeS": self.engine.status().now_s, "kind": "alias", "text": format!("Unit {unit} is \"{alias}\" (TG {talkgroup})"), "system": name }));
+                out.push(Output::Text(json!({ "type": "unitAlias", "system": name, "unit": unit, "alias": alias }).to_string()));
             }
             Event::CallStart(_) | Event::CallUpdate(_) | Event::CallEnd(_) => {}
         }

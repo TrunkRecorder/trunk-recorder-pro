@@ -144,6 +144,14 @@ async fn session(ctx: Arc<Ctx>, mut socket: WebSocket) {
     let hello = {
         let config = ctx.config.lock().unwrap().clone();
         let history: Vec<Value> = ctx.history.lock().unwrap().iter().take(300).cloned().collect();
+        // Each system's talker aliases, as saved (CSV).
+        let units: serde_json::Map<String, Value> = config
+            .systems
+            .iter()
+            .map(|s| &s.short_name)
+            .chain([&config.conventional.short_name])
+            .filter_map(|n| std::fs::read_to_string(crate::runtime::units_path(n)).ok().map(|csv| (n.clone(), Value::String(csv))))
+            .collect();
         json!({
             "type": "hello",
             "version": env!("CARGO_PKG_VERSION"),
@@ -153,6 +161,7 @@ async fn session(ctx: Arc<Ctx>, mut socket: WebSocket) {
             "devices": sdr::devices(),
             "phase": ctx.phase.lock().unwrap().to_json(),
             "history": history,
+            "units": units,
             "radios": radios,
             "surveyBands": trunk_app::survey::bands_json(),
             "survey": ctx.survey_last.lock().unwrap().clone().unwrap_or_else(crate::survey::idle_json),

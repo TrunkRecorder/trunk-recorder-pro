@@ -399,6 +399,17 @@ fn handle_events(engine: &mut Engine, out_dir: &str, multi: bool, quiet: bool) -
                 if c.phase2_tdma { format!(" slot {}", c.tdma_slot) } else { String::new() },
                 if c.recording { "recording".into() } else { format!("monitoring ({})", c.reason.map_or("", |r| r.as_str())) }
             ),
+            Event::UnitAlias {
+                system,
+                unit,
+                alias,
+                talkgroup,
+            } if !quiet => {
+                println!(
+                    "{}ALIAS unit {unit} = \"{alias}\" (TG {talkgroup})",
+                    sys_tag(engine, system)
+                )
+            }
             Event::CallEnd(c) if !quiet => {
                 let srcs: Vec<String> = c.sources.iter().map(|s| s.src.to_string()).collect();
                 println!("{:7.2}s  {}CALL {} end   TG {} srcs [{}]{}", c.last_update_s.max(c.last_audio_s), sys_tag(engine, c.system), c.id, c.talkgroup, srcs.join(","), if c.encrypted { " ENC" } else { "" });

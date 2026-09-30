@@ -5,6 +5,7 @@ use std::fmt::Write;
 
 use super::calls::Call;
 use super::frames::FrameErrors;
+use super::units::UnitAliases;
 
 pub struct ConcludeInfo<'a> {
     pub short_name: &'a str,
@@ -14,6 +15,8 @@ pub struct ConcludeInfo<'a> {
     pub errors: &'a FrameErrors,
     pub recorder_num: u32,
     pub end_s: f64,
+    /// The system's talker aliases (each source's `tag_ota`).
+    pub units: Option<&'a UnitAliases>,
 }
 
 fn esc(s: &str) -> String {
@@ -82,12 +85,13 @@ pub fn call_record(call: &Call, info: &ConcludeInfo) -> (String, String) {
     for (i, s) in call.sources.iter().enumerate() {
         let _ = write!(
             j,
-            "{}{{\"src\":{},\"time\":{},\"pos\":{},\"emergency\":{},\"signal_system\":\"\",\"tag\":\"\",\"tag_ota\":\"\"}}",
+            "{}{{\"src\":{},\"time\":{},\"pos\":{},\"emergency\":{},\"signal_system\":\"\",\"tag\":\"\",\"tag_ota\":\"{}\"}}",
             if i > 0 { "," } else { "" },
             s.src,
             ms(s.time_s).div_euclid(1000),
             ((s.time_s - call.start_s) * 100.0).round().max(0.0) / 100.0,
-            s.emergency as u8
+            s.emergency as u8,
+            esc(info.units.and_then(|u| u.get(s.src)).unwrap_or(""))
         );
     }
     j.push_str("]}");

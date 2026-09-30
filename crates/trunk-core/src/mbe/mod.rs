@@ -714,7 +714,8 @@ pub enum Kind {
 pub enum Profile {
     /// mbelib's behaviour exactly.
     Mbelib,
-    /// Trunk Recorder's synthesis + TIA concealment (the default).
+    /// Trunk Recorder's synthesis + TIA concealment, with repeat thresholds
+    /// for soft-decision FEC unless [`Decoder::hard_fec`] (the default).
     Enhanced,
 }
 
@@ -731,13 +732,44 @@ pub struct Decoder {
     er: f64,
     /// Smoothed spectral energy S_E (TIA), for adaptive smoothing.
     se: f64,
+    /// Phase 1 frame repeat (TIA §7.7): E0 ≥ `repeat_e0` or
+    /// ET ≥ `repeat_et` + 40·ER.
+    repeat_e0: u32,
+    repeat_et: f64,
 }
+
+/// Repeat thresholds for soft-decision FEC counts (the default). A soft
+/// decoder corrects past the hard codes' limits, and it counts what it
+/// corrected: E0 = 3 (the most a hard Golay(23,12) decoder corrects) or ET
+/// of 10–15 is usually still a good frame. Measured on DCFD simulcast
+/// against a cleaner receiver's audio of the same calls, playing such frames
+/// beat repeating them 72–79 % of the time; at E0 ≥ 4 repeating wins.
+const SOFT_REPEAT: (u32, f64) = (4, 16.0);
+/// TIA-102.BABA-A's thresholds, for hard-decision counts (Trunk Recorder's).
+const HARD_REPEAT: (u32, f64) = (3, 10.0);
 
 impl Decoder {
     pub fn new(rand: Rng, profile: Profile) -> Self {
-        let mut d = Decoder { rand, uvq: 3, profile, cur: Parms::default(), prev: Parms::default(), enh: Parms::default(), uv: UvSynth::new(), er: 0.0, se: 0.0 };
+        let mut d = Decoder {
+            rand,
+            uvq: 3,
+            profile,
+            cur: Parms::default(),
+            prev: Parms::default(),
+            enh: Parms::default(),
+            uv: UvSynth::new(),
+            er: 0.0,
+            se: 0.0,
+            repeat_e0: SOFT_REPEAT.0,
+            repeat_et: SOFT_REPEAT.1,
+        };
         d.reset();
         d
+    }
+
+    /// Error counts come from hard-decision FEC: TIA's repeat thresholds.
+    pub fn hard_fec(&mut self) {
+        (self.repeat_e0, self.repeat_et) = HARD_REPEAT;
     }
 
     pub fn reset(&mut self) {
@@ -782,7 +814,7 @@ impl Decoder {
             return Kind::Muted;
         }
         let ok = !erased && decode_imbe4400_parms(d, &mut self.cur, &mut self.prev);
-        if !ok || e0 >= 3 || et as f64 >= 10.0 + 40.0 * self.er {
+        if !ok || e0 >= self.repeat_e0 || et as f64 >= self.repeat_et + 40.0 * self.er {
             if self.prev.repeat >= 4 {
                 self.fade_out(out);
                 return Kind::Muted;

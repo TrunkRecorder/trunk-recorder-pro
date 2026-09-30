@@ -26,6 +26,17 @@ platform, with no GNU Radio, OP25 or other runtime dependencies.
   air (which carrier comes up when a channel number is granted) — on WMATA,
   exactly Trunk Recorder's hand-made `400_custom` plan, all four control
   channels and the voice channels, from one dongle.
+- **Talker aliases**: the names radios send over the air with their unit
+  ID (Motorola and Harris, Phase 1 and Phase 2 — Trunk Recorder's
+  decoders), on trunked systems (SmartNet's P25 voice included) and
+  conventional P25 channels. On DC's system: the same names Trunk Recorder
+  decodes. The interface shows a radio's alias in place of its unit ID
+  (the ID on hover), in live calls and history, and history can be
+  filtered by it. Encrypted calls aren't recorded, but their voice channel
+  is still followed (when a recorder is free) for the link control sent in
+  the clear: who spoke and their aliases. Each system's aliases are kept between runs in
+  `<shortName>.units.csv`, Trunk Recorder's `unitTagsOTA` format, and saved
+  in each call's `srcList` as `tag_ota`.
 - **Conventional channels**: analog narrowband FM and P25, alongside a
   trunked system or on their own. Found by energy in the spectrum the
   channelizer already computes (an idle channel costs almost nothing), opened
@@ -56,7 +67,9 @@ platform, with no GNU Radio, OP25 or other runtime dependencies.
   Recorder config's P25 systems are all imported. `trunk-lite replay
   --system name:Hz[:nac=…,site=…]`.
 - **Several RTL-SDRs** feeding the systems, over a pure-Rust USB driver (no
-  librtlsdr / libusb to install).
+  librtlsdr / libusb to install). New dongles start at 25.4 dB gain: higher
+  gains overload the front end near strong 800 MHz transmitters (about 3x
+  the voice-frame errors at 38.6 dB).
 - **USRP and Airspy** sources (optional): used when UHD / libairspy is
   installed, found at run time by the same binary.
 - Captures in `cu8`, `cs16` or `cf32` (GNU Radio / UHD) formats.

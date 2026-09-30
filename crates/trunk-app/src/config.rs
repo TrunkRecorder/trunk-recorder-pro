@@ -401,6 +401,12 @@ impl Default for Server {
     }
 }
 
+/// A new RTL-SDR's gain, dB. Higher gains overload the front end near
+/// strong transmitters without clipping the ADC: on an 858 MHz simulcast
+/// system 38.6 dB gave ~3x the FEC errors (and 5 % repeated voice frames)
+/// that 23–28 dB did.
+pub const RTL_DEFAULT_GAIN_DB: f32 = 25.4;
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", from = "RawConfig")]
 pub struct Config {
@@ -415,7 +421,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            sources: vec![Source::Rtlsdr { serial: String::new(), center_hz: 0.0, rate_hz: 2_400_000.0, gain_db: Some(38.6), ppm: 0 }],
+            sources: vec![Source::Rtlsdr { serial: String::new(), center_hz: 0.0, rate_hz: 2_400_000.0, gain_db: Some(RTL_DEFAULT_GAIN_DB), ppm: 0 }],
             systems: vec![],
             conventional: Conventional::default(),
             recording: Recording::default(),

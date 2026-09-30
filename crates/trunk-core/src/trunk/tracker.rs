@@ -6,6 +6,7 @@
 
 use super::frames::{Codec, VoiceFrame};
 use crate::mbe::{self, Kind, FRAME_SAMPLES};
+use crate::p25::alias::{Alias, LcAliases};
 use crate::p25::diversity::{best_es, best_frame, best_imbe, best_lc, Group};
 use crate::p25::frame::{HDU, LDU1, LDU2, TDU, TDULC};
 use crate::p25::voice::{decode_hdu, decode_tdulc, imbe_params_to_bits, ldu_codeword_end_bit, ALGID_CLEAR};
@@ -18,6 +19,8 @@ pub enum TrackerOut {
     Info { source: Option<u32>, emergency: bool, encrypted: bool },
     /// Analog FM voice (a SmartNet analog channel): 8 kHz audio, squelched.
     AnalogAudio(Vec<f32>),
+    /// A radio's talker alias, heard during the call.
+    Alias(Alias),
 }
 
 /// Algorithm id when encryption is known but not which cipher.
@@ -29,6 +32,9 @@ pub struct VoiceTracker {
     encrypted: bool,
     algid: i32,
     tgid: Option<u32>,
+    /// The unit link control named for the current transmission.
+    talker: Option<u32>,
+    aliases: LcAliases,
     call_frames: u64,
     end_s: f64,
     /// Vocoder frames / repeated or muted, over the channel's life.
@@ -44,6 +50,8 @@ impl VoiceTracker {
             encrypted: false,
             algid: ALGID_CLEAR as i32,
             tgid: None,
+            talker: None,
+            aliases: LcAliases::default(),
             call_frames: 0,
             end_s: 0.0,
             frames: 0,
@@ -81,11 +89,16 @@ impl VoiceTracker {
                             if lc.tgid.is_some() {
                                 self.tgid = lc.tgid;
                             }
+                            if lc.source.is_some_and(|s| s != 0) {
+                                self.talker = lc.source;
+                            }
                             let svc = lc.svc_opts.unwrap_or(0);
                             if svc & 0x40 != 0 && self.algid == ALGID_CLEAR as i32 {
                                 self.set_encryption(ALGID_UNKNOWN, out);
                             }
                             out.push(TrackerOut::Info { source: lc.source, emergency: svc & 0x80 != 0, encrypted: self.encrypted });
+                        } else if let Some(a) = self.aliases.lcw(&lc.raw, self.talker, self.tgid) {
+                            out.push(TrackerOut::Alias(a));
                         }
                     }
                 } else if let Some(es) = best_es(g) {
@@ -106,9 +119,19 @@ impl VoiceTracker {
                 }
             }
             TDU | TDULC => {
-                if best.nid.duid == TDULC && self.active && self.tgid.is_none() {
-                    if let Some(lc) = decode_tdulc(&best.raw).filter(|lc| !lc.protected) {
+                // Link control from whichever receiver's copy decodes. Motorola
+                // sends talker aliases here, in the terminators after the voice.
+                let lc = g
+                    .iter()
+                    .filter(|f| f.nid.duid == TDULC)
+                    .find_map(|f| decode_tdulc(&f.raw))
+                    .filter(|lc| !lc.protected);
+                if let Some(lc) = lc {
+                    if self.active && self.tgid.is_none() {
                         self.tgid = lc.tgid;
+                    }
+                    if let Some(a) = self.aliases.lcw(&lc.raw, self.talker, self.tgid) {
+                        out.push(TrackerOut::Alias(a));
                     }
                 }
                 self.active = false;
@@ -122,6 +145,7 @@ impl VoiceTracker {
         self.dec.reset();
         self.active = true;
         self.tgid = tgid;
+        self.talker = None;
         self.encrypted = self.algid != ALGID_CLEAR as i32;
         self.end_s = t;
         self.call_frames = 0;

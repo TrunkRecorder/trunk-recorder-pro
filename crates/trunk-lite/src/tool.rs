@@ -72,6 +72,9 @@ pub fn run(a: &Args) {
     let mut iq_out = a.get("iq").map(|p| BufWriter::new(File::create(p).unwrap_or_else(|e| die(&format!("{p}: {e}")))));
     let mut audio_out = a.get("audio").map(|p| BufWriter::new(File::create(p).unwrap_or_else(|e| die(&format!("{p}: {e}")))));
     let mut vocoder = mbe::Decoder::new(mbe::lcg(1), if a.get("profile") == Some("mbelib") { mbe::Profile::Mbelib } else { mbe::Profile::Enhanced });
+    if !soft_fec {
+        vocoder.hard_fec();
+    }
     let stdout = std::io::stdout();
     let mut out = BufWriter::new(stdout.lock());
 
@@ -166,8 +169,10 @@ fn lc_json(key: &str, lc: Option<LinkControl>) -> String {
     match lc {
         None => format!(",\"{key}\":null"),
         Some(lc) => format!(
-            ",\"{key}\":{{\"lco\":{},\"prot\":{},\"svc\":{},\"tgid\":{},\"target\":{},\"src\":{}}}",
+            ",\"{key}\":{{\"lco\":{},\"mfid\":{},\"raw\":\"{}\",\"prot\":{},\"svc\":{},\"tgid\":{},\"target\":{},\"src\":{}}}",
             lc.lco,
+            lc.mfid,
+            lc.raw.iter().map(|b| format!("{b:02x}")).collect::<String>(),
             lc.protected as u8,
             lc.svc_opts.map_or(-1, |v| v as i64),
             n(lc.tgid),

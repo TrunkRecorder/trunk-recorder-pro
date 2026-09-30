@@ -212,7 +212,8 @@ export interface CallRecord {
   call_length_ms: number;
   emergency: number;
   encrypted: number;
-  srcList: { src: number }[];
+  /** `tag_ota`: the unit's talker alias when the call was saved. */
+  srcList: { src: number; tag_ota?: string }[];
 }
 
 /** A recorded call: `path` (no extension) under the capture folder. */
@@ -340,6 +341,8 @@ export type FromRecorder =
       devices: Device[];
       phase: PhaseState & { type: "state" };
       history: CallEntry[];
+      /** Each system's radios' talker aliases, as saved: short name → unitTagsOTA CSV. */
+      units?: Record<string, string>;
       radios?: Radios;
       surveyBands?: SurveyBand[];
       survey?: { type: "survey" } & SurveyState;
@@ -351,6 +354,8 @@ export type FromRecorder =
   | ({ type: "spectrum" } & Spectrum)
   | { type: "log"; lines: LogLine[] }
   | { type: "concluded"; entry: CallEntry }
+  /** A radio's talker alias, newly heard on system `system` (its short name). */
+  | { type: "unitAlias"; system: string; unit: number; alias: string }
   | ({ type: "survey" } & SurveyState)
   | ({ type: "surveySpectrum" } & Spectrum)
   | { type: "devices"; devices: Device[] }

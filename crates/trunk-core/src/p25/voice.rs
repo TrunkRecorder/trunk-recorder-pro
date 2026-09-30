@@ -134,6 +134,8 @@ pub struct LinkControl {
     pub tgid: Option<u32>,
     pub target: Option<u32>,
     pub source: Option<u32>,
+    /// The word itself (manufacturer-specific formats: talker aliases).
+    pub raw: [u8; 9],
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -189,7 +191,7 @@ fn ldu_hexbits(fb: &[u8]) -> [u8; 63] {
 }
 
 pub fn parse_lcw(w: &[u8; 9]) -> LinkControl {
-    let mut lc = LinkControl { lco: w[0] & 0x3f, mfid: w[1], protected: w[0] & 0x80 != 0, ..Default::default() };
+    let mut lc = LinkControl { lco: w[0] & 0x3f, mfid: w[1], protected: w[0] & 0x80 != 0, raw: *w, ..Default::default() };
     if lc.protected {
         return lc;
     }

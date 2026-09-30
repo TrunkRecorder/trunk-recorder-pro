@@ -45,6 +45,20 @@ function useMsgRates(systems: SystemStatus[]): Map<number, number> {
   return out;
 }
 
+/** A radio: its talker alias when known (the unit ID on hover), else its unit ID. */
+function Unit({ id, alias }: { id: number; alias: string | undefined }) {
+  return alias ? (
+    <span className="unit" title={`Unit ${id}`}>
+      {alias}
+    </span>
+  ) : (
+    <span className="mono">{id}</span>
+  );
+}
+
+/** A unit's alias on a system: as learned, else as the call record saved it. */
+const aliasOf = (s: AppState, system: string, id: number, saved?: string) => s.units[system]?.[id] || saved || undefined;
+
 const ccTone = (x: SystemStatus, perS: number | undefined): "ok" | "warn" | "bad" => (x.mismatch ? "bad" : (perS ?? 0) > 5 ? "ok" : (perS ?? 0) > 0 ? "warn" : "bad");
 const pctText = (x: SystemStatus) => (x.good + x.bad ? `${Math.round((100 * x.good) / (x.good + x.bad))}% decoded` : "no decodes yet");
 
@@ -308,6 +322,9 @@ function ActiveCalls({ s }: { s: AppState }) {
     .filter((c) => only === null || c.system === only)
     .sort((a, b) => Number(b.state === "recording") - Number(a.state === "recording") || b.startS - a.startS);
   const nameOf = (i: number | null) => choices.find((x) => x.index === i)?.name ?? "";
+  const playingCall = s.nowPlaying && s.calls.find((c) => c.id === s.nowPlaying?.callId);
+  const talkerId = playingCall?.sources.at(-1);
+  const talker = playingCall && talkerId !== undefined ? { id: talkerId, alias: aliasOf(s, playingCall.systemName, talkerId) } : null;
   return (
     <section className="panel">
       <header className="panel-head">
@@ -328,6 +345,12 @@ function ActiveCalls({ s }: { s: AppState }) {
       {s.nowPlaying && s.listen && (
         <div className="now-playing">
           ▶ {multi ? `${nameOf(s.nowPlaying.system)} · ` : ""}TG {s.nowPlaying.talkgroup}
+          {talker && (
+            <>
+              {" · "}
+              <Unit id={talker.id} alias={talker.alias} />
+            </>
+          )}
         </div>
       )}
       {calls.length === 0 ? (
@@ -365,7 +388,7 @@ function ActiveCalls({ s }: { s: AppState }) {
                     {c.slot !== null && <span className="muted"> · s{c.slot}</span>}
                     {c.analog && <span className="muted"> · FM</span>}
                   </td>
-                  <td className="mono">{c.sources.at(-1) ?? "—"}</td>
+                  <td className="unit-cell">{c.sources.length ? <Unit id={c.sources.at(-1)!} alias={aliasOf(s, c.systemName, c.sources.at(-1)!)} /> : "—"}</td>
                   <td className="mono">{clock(Math.max(0, now - c.startS))}</td>
                   <td>
                     <span className={`dot dot-${c.state}${c.encrypted ? " dot-enc" : ""}`} /> {reasonText(c)}
@@ -410,10 +433,13 @@ function History({ s }: { s: AppState }) {
   const systems = useMemo(() => [...new Set(s.history.map(systemOf))].sort(), [s.history]);
   const rows = useMemo(() => {
     const f = filter.trim().toLowerCase();
+    const unitMatch = (c: CallEntry) =>
+      c.record.srcList?.some((x) => String(x.src).includes(f) || (aliasOf(s, systemOf(c), x.src, x.tag_ota) ?? "").toLowerCase().includes(f));
     const ok = (c: CallEntry) =>
-      (only === null || systemOf(c) === only) && (!f || String(c.record.talkgroup).includes(f) || (c.record.talkgroup_tag ?? "").toLowerCase().includes(f));
+      (only === null || systemOf(c) === only) &&
+      (!f || String(c.record.talkgroup).includes(f) || (c.record.talkgroup_tag ?? "").toLowerCase().includes(f) || unitMatch(c));
     return f || only !== null ? s.history.filter(ok) : s.history;
-  }, [s.history, filter, only]);
+  }, [s.history, s.units, filter, only]);
   const multi = systems.length > 1;
   // A system's color while it runs (its index), else none.
   const colorOf = (name: string) => {
@@ -436,7 +462,7 @@ function History({ s }: { s: AppState }) {
               ))}
             </select>
           )}
-          <input className="search" placeholder="Filter talkgroup…" value={filter} onChange={(e) => setFilter(e.target.value)} />
+          <input className="search" placeholder="Filter talkgroup or unit…" value={filter} onChange={(e) => setFilter(e.target.value)} />
         </div>
       </header>
       {rows.length === 0 ? (
@@ -470,9 +496,7 @@ function History({ s }: { s: AppState }) {
                     {c.record.emergency ? <span className="badge bad">EMERG</span> : null}
                   </td>
                   <td className="mono">{(c.record.call_length_ms / 1000).toFixed(1)} s</td>
-                  <td className="mono srcs" title={[...new Set(c.record.srcList?.map((x) => x.src))].join(", ")}>
-                    {[...new Set(c.record.srcList?.map((x) => x.src))].join(", ") || "—"}
-                  </td>
+                  <Sources s={s} entry={c} />
                   <td className="actions">
                     <button className="btn ghost small" onClick={() => setPlaying(c.path)}>
                       Play
@@ -504,13 +528,33 @@ function History({ s }: { s: AppState }) {
   );
 }
 
+/** A recorded call's radios, in the order they spoke: aliases first, every one on hover. */
+function Sources({ s, entry }: { s: AppState; entry: CallEntry }) {
+  const system = systemOf(entry);
+  const seen = new Map<number, string | undefined>();
+  for (const x of entry.record.srcList ?? []) if (!seen.has(x.src)) seen.set(x.src, aliasOf(s, system, x.src, x.tag_ota));
+  const units = [...seen];
+  return (
+    <td className="srcs" title={units.map(([id, alias]) => (alias ? `${alias} (${id})` : String(id))).join(", ")}>
+      {units.length
+        ? units.map(([id, alias], i) => (
+            <Fragment key={id}>
+              {i > 0 && ", "}
+              <Unit id={id} alias={alias} />
+            </Fragment>
+          ))
+        : "—"}
+    </td>
+  );
+}
+
 function Log({ s }: { s: AppState }) {
   const [show, setShow] = useState<"calls" | "all">("calls");
   const [only, setOnly] = useState<number | null>(null);
   const systems = s.status?.systems ?? [];
   const multi = systems.length > 1;
   const onlyName = systems.find((x) => x.index === only)?.shortName;
-  const lines = (show === "all" ? s.log : s.log.filter((l) => /grant|update|control|patch|status|sysid|adjacent|error/.test(l.kind))).filter(
+  const lines = (show === "all" ? s.log : s.log.filter((l) => /grant|update|control|patch|status|sysid|adjacent|error|alias/.test(l.kind))).filter(
     (l) => onlyName === undefined || l.system === onlyName,
   );
   return (

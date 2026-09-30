@@ -31,6 +31,7 @@ use super::tracker::{TrackerOut, VoiceTracker};
 use crate::dsp::fm::{self, ChannelFilter, Nbfm};
 use crate::dsp::{Channelizer, HeadId};
 use crate::mbe;
+use crate::p25::alias::Alias;
 use crate::p25::diversity::{best_frame, Bank, BankConfig, Group};
 
 /// Half-width of the band the detector sums, Hz (a 12.5 kHz channel's signal).
@@ -115,6 +116,8 @@ pub enum ConvOut {
     Update(Call),
     Audio { call_id: CallId, talkgroup: u32, samples: Vec<f32> },
     End { call: Call, audio: Vec<f32>, frames: CallFrames, recorder_num: u32 },
+    /// A radio's talker alias, heard on a P25 channel.
+    Alias(Alias),
 }
 
 enum Rx {
@@ -334,6 +337,7 @@ impl Conventional {
                         }
                         TrackerOut::Info { source, emergency, encrypted } => infos.push((source, emergency, encrypted)),
                         TrackerOut::AnalogAudio(a) => audio.extend_from_slice(&a),
+                        TrackerOut::Alias(a) => out.push(ConvOut::Alias(a)),
                     }
                 }
                 up

@@ -36,9 +36,11 @@ use super::talkgroups::Talkgroups;
 use super::tdma::TdmaTracker;
 use super::frames::{frames_jsonl, CallFrames};
 use super::tracker::{TrackerOut, VoiceTracker};
+use super::units::{UnitAlias, UnitAliases};
 use crate::dsp::cqpsk::{self, Cqpsk};
 use crate::dsp::{Channelizer, HeadId, Receiver, Symbol};
 use crate::mbe;
+use crate::p25::alias::Alias;
 use crate::p25::diversity::{best_frame, best_tsbks, Bank, BankConfig, Group};
 use crate::p25::frame::TSDU;
 use crate::p25::phase2::{self, Packet};
@@ -181,6 +183,8 @@ pub enum Event {
     CallEnd(Call),
     /// Live audio for a recording call.
     Audio { call_id: CallId, system: u16, talkgroup: u32, samples: Vec<f32> },
+    /// System `system` heard a radio's talker alias it didn't know (or knew by another name).
+    UnitAlias { system: u16, unit: u32, alias: String, talkgroup: u32 },
     Concluded(Concluded),
 }
 
@@ -403,24 +407,16 @@ struct SysHost<'a> {
     bank: BankConfig,
 }
 
-impl RecorderHost for SysHost<'_> {
-    fn start_recording(&mut self, call: &Call) -> Result<(), Reason> {
+impl SysHost<'_> {
+    /// Open `call`'s voice channel on source `src` (a newer call on one
+    /// already open takes its slot over, as in Trunk Recorder).
+    fn open_channel(&mut self, call: &Call, src: usize) {
         let r = &mut *self.radio;
-        let Some(src) = r.source_for(call.freq_hz as f64) else { return Err(Reason::NoSource) };
-        if r.recordings.len() >= r.max_recorders {
-            return Err(Reason::NoRecorder);
-        }
-        let recorder_num = r.free_nums.pop().unwrap_or_else(|| {
-            r.next_num += 1;
-            r.next_num - 1
-        });
-        r.recordings.insert(call.id, Recording { audio: Vec::new(), frames: CallFrames::new(r.capture_frames), recorder_num });
         let slot = if call.phase2_tdma { call.tdma_slot as usize & 1 } else { 0 };
         let key = (self.system, call.freq_hz);
         if let Some(ch) = r.channels.get_mut(&key) {
-            // A newer call on the same channel (slot) takes it over, as in Trunk Recorder.
             ch.calls[slot] = Some(call.id);
-            return Ok(());
+            return;
         }
         let s = &mut r.sources[src];
         let rate = s.chz.output_rate();
@@ -451,7 +447,45 @@ impl RecorderHost for SysHost<'_> {
         Radio::run_channel(&mut ch, &pre, rate, s.cfg.rate_hz, tk, &mut r.groups, &mut r.tout, false);
         Radio::route(&ch, &mut r.tout, &mut r.pending);
         r.channels.insert(key, ch);
+    }
+}
+
+impl RecorderHost for SysHost<'_> {
+    fn start_recording(&mut self, call: &Call) -> Result<(), Reason> {
+        let r = &mut *self.radio;
+        let Some(src) = r.source_for(call.freq_hz as f64) else {
+            return Err(Reason::NoSource);
+        };
+        if r.recordings.len() >= r.max_recorders {
+            return Err(Reason::NoRecorder);
+        }
+        let recorder_num = r.free_nums.pop().unwrap_or_else(|| {
+            r.next_num += 1;
+            r.next_num - 1
+        });
+        r.recordings.insert(
+            call.id,
+            Recording {
+                audio: Vec::new(),
+                frames: CallFrames::new(r.capture_frames),
+                recorder_num,
+            },
+        );
+        self.open_channel(call, src);
         Ok(())
+    }
+
+    fn follow(&mut self, call: &Call) -> bool {
+        // Only with a recorder's worth of room to spare, and never on analog.
+        let r = &*self.radio;
+        if call.analog || r.recordings.len() + r.channels.len() >= r.max_recorders {
+            return false;
+        }
+        let Some(src) = r.source_for(call.freq_hz as f64) else {
+            return false;
+        };
+        self.open_channel(call, src);
+        true
     }
 
     fn stop_recording(&mut self, call: &Call) {
@@ -495,6 +529,8 @@ struct Trunk {
     /// Why this control channel is not ours, while it isn't.
     mismatch: Option<String>,
     adjacent: std::collections::BTreeMap<(u32, u32), AdjacentSite>,
+    /// Its radios' talker aliases.
+    units: UnitAliases,
 }
 
 impl Trunk {
@@ -684,6 +720,8 @@ pub struct Engine {
     conv_calls: CallManager,
     conv_out: Vec<ConvOut>,
     conv_concluded: u64,
+    /// Conventional channels' radios' talker aliases (unless a trunked system has their short name: then its).
+    conv_units: UnitAliases,
     now_s: f64,
     events: Vec<Event>,
     call_events: Vec<CallEvent>,
@@ -747,6 +785,7 @@ impl Engine {
                 nac_votes: HashMap::new(),
                 mismatch: None,
                 adjacent: Default::default(),
+                units: UnitAliases::default(),
                 cfg: sc.clone(),
             };
             if !sc.control_channels.is_empty() {
@@ -755,7 +794,19 @@ impl Engine {
             trunks.push(t);
         }
         let conv_calls = CallManager::with_ids(cfg.calls, cfg.conv_talkgroups.clone(), CONVENTIONAL, ids);
-        Ok(Engine { radio, trunks, conv, conv_calls, conv_out: Vec::new(), conv_concluded: 0, now_s: 0.0, events, call_events: Vec::new(), cfg })
+        Ok(Engine {
+            radio,
+            trunks,
+            conv,
+            conv_calls,
+            conv_out: Vec::new(),
+            conv_concluded: 0,
+            conv_units: UnitAliases::default(),
+            now_s: 0.0,
+            events,
+            call_events: Vec::new(),
+            cfg,
+        })
     }
 
     /// Preload system `system`'s band plan saved by [`Engine::bandplan`] (a
@@ -767,6 +818,113 @@ impl Engine {
     }
     pub fn bandplan(&self, system: usize) -> String {
         self.trunks.get(system).map_or_else(String::new, |t| t.parser.bandplan_to_string())
+    }
+
+    /// The trunked system conventional channels share talker aliases with:
+    /// the one with their short name.
+    fn conv_units_owner(&self) -> Option<usize> {
+        self.trunks
+            .iter()
+            .position(|t| t.cfg.short_name == self.cfg.conv_short_name)
+    }
+
+    /// The talker alias table of `system` (a call's), [`CONVENTIONAL`] included.
+    fn units(&self, system: u16) -> Option<&UnitAliases> {
+        let i = if system == CONVENTIONAL {
+            self.conv_units_owner()
+        } else {
+            Some(system as usize)
+        };
+        match i {
+            Some(i) => self.trunks.get(i).map(|t| &t.units),
+            None => Some(&self.conv_units),
+        }
+    }
+    fn units_mut(&mut self, system: u16) -> Option<&mut UnitAliases> {
+        let i = if system == CONVENTIONAL {
+            self.conv_units_owner()
+        } else {
+            Some(system as usize)
+        };
+        match i {
+            Some(i) => self.trunks.get_mut(i).map(|t| &mut t.units),
+            None => Some(&mut self.conv_units),
+        }
+    }
+
+    /// The short names that keep a talker alias table: each trunked system's,
+    /// and the conventional channels' when they have their own.
+    pub fn unit_table_names(&self) -> Vec<String> {
+        let mut n: Vec<String> = self
+            .trunks
+            .iter()
+            .map(|t| t.cfg.short_name.clone())
+            .collect();
+        if !self.cfg.conventional.is_empty() && self.conv_units_owner().is_none() {
+            n.push(self.cfg.conv_short_name.clone());
+        }
+        n
+    }
+    /// Preload the talker aliases (Trunk Recorder's unitTagsOTA CSV) kept under `short_name`.
+    pub fn load_units(&mut self, short_name: &str, csv: &str) {
+        if let Some(i) = self
+            .trunks
+            .iter()
+            .position(|t| t.cfg.short_name == short_name)
+        {
+            self.trunks[i].units = UnitAliases::parse_csv(csv);
+        } else if short_name == self.cfg.conv_short_name {
+            self.conv_units = UnitAliases::parse_csv(csv);
+        }
+    }
+    /// (short name, CSV) of each talker alias table that learned something since the last call.
+    pub fn units_changed(&mut self) -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = self
+            .trunks
+            .iter_mut()
+            .filter_map(|t| {
+                t.units
+                    .take_changed()
+                    .then(|| (t.cfg.short_name.clone(), t.units.to_csv()))
+            })
+            .collect();
+        if self.conv_units.take_changed() {
+            out.push((self.cfg.conv_short_name.clone(), self.conv_units.to_csv()));
+        }
+        out
+    }
+    /// A radio's talker alias on system `system` (a call's).
+    pub fn unit_alias(&self, system: u16, unit: u32) -> Option<&str> {
+        self.units(system)?.get(unit)
+    }
+
+    /// Note a talker alias heard on a call of `system`'s.
+    fn learn_alias(&mut self, system: u16, a: Alias, call_tg: Option<u32>) {
+        let tg = a.talkgroup.or(call_tg);
+        let (now_s, wacn, sys_id) = match self.trunks.get(system as usize) {
+            Some(t) => (t.now_s, t.identity.wacn, t.identity.sys_id),
+            None => (self.now_s, None, None),
+        };
+        let hex = |v: Option<u32>, w: usize| v.map_or(String::new(), |v| format!("{v:0w$x}"));
+        let learned = UnitAlias {
+            alias: a.alias.clone(),
+            source: a.source.to_string(),
+            time: ((self.cfg.epoch_ms_at_zero + now_s * 1000.0) / 1000.0) as i64,
+            wacn: hex(wacn, 5),
+            sys: hex(sys_id, 3),
+            talkgroup: tg,
+        };
+        if self
+            .units_mut(system)
+            .is_some_and(|u| u.learn(a.unit, learned))
+        {
+            self.events.push(Event::UnitAlias {
+                system,
+                unit: a.unit,
+                alias: a.alias,
+                talkgroup: tg.unwrap_or(0),
+            });
+        }
     }
 
     pub fn sources(&self) -> &[SourceConfig] {
@@ -873,6 +1031,7 @@ impl Engine {
                     self.write_call(&call, audio, frames, recorder_num);
                     self.events.push(Event::CallEnd(call));
                 }
+                ConvOut::Alias(a) => self.learn_alias(CONVENTIONAL, a, None),
             }
         }
         self.conv_out = out;
@@ -947,6 +1106,15 @@ impl Engine {
                         }
                     }
                 }
+                TrackerOut::Alias(a) => {
+                    let tg = t
+                        .calls
+                        .calls
+                        .iter()
+                        .find(|c| c.id == id)
+                        .map(|c| c.talkgroup);
+                    self.learn_alias(sys, a, tg);
+                }
             }
         }
     }
@@ -997,6 +1165,7 @@ impl Engine {
                 errors: &frames.errors,
                 recorder_num,
                 end_s: call.last_audio_s,
+                units: self.units(call.system),
             },
         );
         let frames = frames.captured.filter(|_| !audio.is_empty()).map(|f| frames_jsonl(&f));

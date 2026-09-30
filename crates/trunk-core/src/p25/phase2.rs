@@ -199,10 +199,12 @@ pub struct MacPdu {
     pub bytes: Vec<u8>,
 }
 
+pub const MAC_SIGNAL: u8 = 0;
 pub const MAC_PTT: u8 = 1;
 pub const MAC_END_PTT: u8 = 2;
 pub const MAC_IDLE: u8 = 3;
 pub const MAC_ACTIVE: u8 = 4;
+pub const MAC_HANGTIME: u8 = 6;
 
 /// op25 handle_acch_frame (SACCH / FACCH): RS(63,35) with erasures, CRC-12.
 pub fn decode_acch(burst: &[u8], fast: bool) -> Option<MacPdu> {

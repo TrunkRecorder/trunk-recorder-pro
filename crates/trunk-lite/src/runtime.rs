@@ -105,7 +105,8 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
         return Err(p);
     }
     let epoch_ms = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_millis() as f64);
-    let session = Session::new(cfg.clone(), epoch_ms, &|name| fs::read_to_string(bandplan_path(name)).ok(), local_ymd)?;
+    let mut session = Session::new(cfg.clone(), epoch_ms, &|name| fs::read_to_string(bandplan_path(name)).ok(), local_ymd)?;
+    session.load_units(&|name| fs::read_to_string(units_path(name)).ok());
     let stop = Arc::new(AtomicBool::new(false));
     let (tx, rx) = mpsc::sync_channel::<SourceMsg>(256);
     let centers = cfg.resolved_centers();
@@ -141,6 +142,19 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
 /// Where a system's band plan is kept between runs.
 fn bandplan_path(short_name: &str) -> PathBuf {
     crate::config::config_dir().join(format!("{short_name}.bandplan"))
+}
+
+/// Where a system's radios' talker aliases are kept (Trunk Recorder's unitTagsOTA CSV).
+pub(crate) fn units_path(short_name: &str) -> PathBuf {
+    crate::config::config_dir().join(format!("{short_name}.units.csv"))
+}
+
+/// Save the talker aliases systems learned since the last save.
+fn save_units(session: &mut Session) {
+    for (name, csv) in session.units_changed() {
+        let _ = fs::create_dir_all(crate::config::config_dir());
+        let _ = fs::write(units_path(&name), csv);
+    }
 }
 
 /// Replay a capture file as a source, paced to real time or as fast as possible.
@@ -236,6 +250,7 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Rec
         session.want_audio = ctx.hub.receiver_count() > 0;
         session.poll(now_ms(), &mut out);
         deliver(&ctx, &dir, &mut out);
+        save_units(&mut session);
     }
     ctx.set_phase("stopping", None, false);
     session.finish(&mut out);
@@ -244,6 +259,7 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Rec
     for (name, plan) in session.bandplans() {
         let _ = fs::write(bandplan_path(&name), plan);
     }
+    save_units(&mut session);
     stop.store(true, Ordering::Relaxed);
     ctx.set_phase("idle", None, ended_all);
 }

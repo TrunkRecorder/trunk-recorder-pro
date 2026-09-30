@@ -313,7 +313,7 @@ glibc 2.28, Windows).
 
 ```bash
 # Record from an rtl_sdr capture (unsigned 8-bit IQ):
-rtl_sdr -f 858300000 -s 2400000 -g 38.6 -n 72000000 capture.cu8        # 30 s
+rtl_sdr -f 858300000 -s 2400000 -g 25.4 -n 72000000 capture.cu8        # 30 s
 ./target/release/trunk-lite replay capture.cu8 --center 858300000 --rate 2400000 \
     --cc 857987500 --out calls/ [--talkgroups tg.csv] [--bandplan site.bandplan]
 

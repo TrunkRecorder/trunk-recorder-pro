@@ -153,6 +153,23 @@ async function surveyStop(tell = true): Promise<void> {
   if (was && tell) post({ type: "survey", stage: "idle" });
 }
 
+/** Each system's radios' talker aliases (Trunk Recorder's unitTagsOTA CSV), as saved. */
+async function savedUnits(cfg: Config): Promise<Record<string, string>> {
+  const units: Record<string, string> = {};
+  for (const name of new Set([...cfg.systems.map((x) => x.shortName), cfg.conventional.shortName])) {
+    const csv = await readText(`units-${name}.csv`);
+    if (csv) units[name] = csv;
+  }
+  return units;
+}
+
+async function saveUnits(changed: string): Promise<void> {
+  if (changed === "{}") return;
+  for (const [name, csv] of Object.entries(JSON.parse(changed) as Record<string, string>)) {
+    await writeText(`units-${name}.csv`, csv).catch(() => {});
+  }
+}
+
 async function start(): Promise<void> {
   if (running || !config) return;
   await surveyStop();
@@ -167,6 +184,7 @@ async function start(): Promise<void> {
       if (p) plans[x.shortName] = p;
     }
     session = new WebSession(JSON.stringify(cfg), Date.now(), JSON.stringify(plans));
+    session.load_units(JSON.stringify(await savedUnits(cfg)));
     session.set_want_audio(listen.on);
     const centers = resolvedCenters(cfg);
     running = true;
@@ -187,7 +205,9 @@ async function start(): Promise<void> {
       }
     }
     timer = setInterval(() => {
-      if (session) deliver(session.poll(performance.now()));
+      if (!session) return;
+      deliver(session.poll(performance.now()));
+      void saveUnits(session.units_changed());
     }, 50);
     setPhase("running");
   } catch (e) {
@@ -243,6 +263,7 @@ async function stop(ended = false): Promise<void> {
   const s = session;
   session = null;
   deliver(s.finish());
+  await saveUnits(s.units_changed());
   for (const [name, plan] of Object.entries(JSON.parse(s.bandplans()) as Record<string, string>)) {
     await writeText(`bandplan-${name}.txt`, plan).catch(() => {});
   }
@@ -264,6 +285,7 @@ onmessage = async (ev: MessageEvent<ToWorker>) => {
         devices: await devices(),
         phase,
         history: await listCalls(300),
+        units: await savedUnits(m.config),
         surveyBands: await ready.then(() => JSON.parse(survey_bands())).catch(() => []),
         survey: { type: "survey", stage: "idle" },
       });
