@@ -28,6 +28,8 @@ pub enum Bandplan {
     /// VHF / UHF (OBT, "400_custom" etc.): receive channels `offset`… map to
     /// `base_hz` + `spacing_hz` · (chan − offset), up to `high_hz`.
     Obt { base_hz: f64, spacing_hz: f64, offset: u16, high_hz: f64 },
+    /// Plan unknown (the survey): a channel's "frequency" is its number.
+    Raw,
 }
 
 impl Bandplan {
@@ -86,6 +88,7 @@ impl Bandplan {
                 }
                 935.0125 + 0.0125 * chan as f64
             }
+            Bandplan::Raw => return (chan < 0x2f8).then_some(chan as u64),
             Bandplan::Obt { base_hz, spacing_hz, offset, high_hz } => {
                 let high = offset as f64 + (high_hz - base_hz) / spacing_hz;
                 if chan < offset || chan as f64 >= high + 0.5 {
@@ -101,6 +104,7 @@ impl Bandplan {
     fn is_tx_chan(&self, chan: u16) -> bool {
         match *self {
             Bandplan::Obt { offset, .. } => chan < offset && chan + 380 >= offset,
+            Bandplan::Raw => false,
             _ => self.rx_hz(chan).is_some(),
         }
     }
@@ -268,6 +272,10 @@ impl Parser {
                 }
             } else if osw1.cmd == 0x2f8 {
                 // Two-OSW system idle.
+            } else if osw1.cmd == 0x30b && osw1.grp && osw1.addr & 0xfc00 == 0x2800 {
+                // System ID + this control channel (seen on WMATA; not in TR's parser).
+                let cc = self.plan.rx_hz(osw1.addr & 0x3ff);
+                self.sysid(osw2.addr, cc, osw1.t, out);
             } else if let (Some(f), true, true, true) = (osw1.rx, osw1.grp, osw1.addr != 0, osw2.addr != 0) {
                 // Two-OSW group voice grant: the inbound channel's OSW carries
                 // the source and (group bit) the mode — set = analog. Except

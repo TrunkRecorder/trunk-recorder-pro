@@ -1,7 +1,9 @@
-// "Find my system": the survey. Scan the bands for P25 control channels,
+// "Find my system": the survey. Scan the bands for P25 and SmartNet control channels,
 // listen to the best one, and add it as a system — control channels, site
 // identity, the dongle's frequency correction, gain and centre from what it
 // announces. Neighbouring sites it announces can be added as systems too.
+// SmartNet doesn't announce its band plan: listening learns it from which
+// carrier comes up when a channel number is granted.
 // The recorder does the work (crates/trunk-core/src/survey.rs); this shows it.
 
 import { useState } from "react";
@@ -20,7 +22,8 @@ function idText(id: SurveyIdentity): string {
   return parts.join(" · ");
 }
 
-const KIND: Record<SurveyCandidate["kind"], string> = { control: "Control channel", p25: "P25 (voice / data)", other: "Not P25" };
+const KIND: Record<SurveyCandidate["kind"], string> = { control: "Control channel", smartnet: "SmartNet control channel", p25: "P25 (voice / data)", other: "Not P25 or SmartNet" };
+const isControl = (c: SurveyCandidate) => c.kind === "control" || c.kind === "smartnet";
 
 /** The site key of a scanned control channel: its secondaries share it. */
 const siteKey = (id: SurveyIdentity) => (id.sysId !== null && id.site !== null ? `${id.nac}/${id.sysId}/${id.rfss}/${id.site}` : null);
@@ -58,7 +61,7 @@ function Candidates(props: { c: Config; list: SurveyCandidate[]; listening: numb
             </thead>
             <tbody>
               {rows.map((c) => (
-                <tr key={c.freqHz} className={c.kind === "control" ? "" : "st-monitoring"}>
+                <tr key={c.freqHz} className={isControl(c) ? "" : "st-monitoring"}>
                   <td className="mono" title={c.correctedHz ? `heard at ${formatMhz(c.freqHz)} MHz before correction` : "as heard, before frequency correction"}>
                     {formatMhz(c.correctedHz ?? c.freqHz)}
                   </td>
@@ -81,7 +84,8 @@ function Candidates(props: { c: Config; list: SurveyCandidate[]; listening: numb
                           </button>
                         );
                       })()}
-                    {c.kind === "control" && props.onListen && (
+                    {c.kind === "smartnet" && !props.onListen && <span className="muted small">listen to learn its band plan</span>}
+                    {isControl(c) && props.onListen && (
                       <button className="btn ghost small" disabled={props.listening !== null && Math.abs(props.listening - c.freqHz) < 6000} onClick={() => props.onListen?.(c.freqHz)}>
                         {props.listening !== null && Math.abs(props.listening - c.freqHz) < 6000 ? "Listening" : "Listen"}
                       </button>
@@ -99,7 +103,7 @@ function Candidates(props: { c: Config; list: SurveyCandidate[]; listening: numb
         <label className="toggle small">
           <input type="checkbox" checked={showOther} onChange={(e) => setShowOther(e.target.checked)} />
           <span>
-            Show {others} other continuous signal{others === 1 ? "" : "s"} (not P25: other trunking systems, data)
+            Show {others} other continuous signal{others === 1 ? "" : "s"} (not P25 or SmartNet: other trunking systems, data)
           </span>
         </label>
       )}
@@ -122,6 +126,31 @@ function Check(props: { state: "ok" | "wait" | "info"; label: string; children?:
 
 const mhzList = (l: number[]) => l.map((f) => formatMhz(f)).join(", ");
 
+/** What the SmartNet band plan search has found so far. */
+function SmartnetPlan(props: { s: NonNullable<SurveyMonitor["smartnet"]> }) {
+  const { s } = props;
+  const found = `${s.points.length} of ${s.channels.length} granted channel${s.channels.length === 1 ? "" : "s"} located`;
+  if (!s.bandplan) {
+    return (
+      <>
+        learning it from where granted channels come up — {found}
+        {s.ccChan !== null ? ` (this is channel ${s.ccChan})` : ""}. It needs two channels on one line; calls on channels this source can see make it quicker.
+      </>
+    );
+  }
+  const b = s.bandplan;
+  return (
+    <>
+      <span className="mono">
+        {b.bandplan === "400_custom"
+          ? `${b.bandplan}: channel ${b.bandplanOffset} = ${formatMhz(b.bandplanBase ?? 0)} MHz, ${(b.bandplanSpacing ?? 0) / 1000} kHz steps`
+          : b.bandplan}
+      </span>{" "}
+      — learned from the air ({found}, {s.inliers ?? 0} on the line)
+    </>
+  );
+}
+
 function MonitorView(props: { m: SurveyMonitor; sug: SurveySuggestion | null; c: Config; source: number; onDone: () => void }) {
   const { m, sug, c } = props;
   const total = m.good + m.bad;
@@ -139,6 +168,7 @@ function MonitorView(props: { m: SurveyMonitor; sug: SurveySuggestion | null; c:
     const done = applySurvey(props.source, sug, target);
     stopSurvey();
     const bits = [`control channel${sug.controlChannels.length === 1 ? "" : "s"} ${mhzList(sug.controlChannels)} MHz`];
+    if (sug.type === "smartnet" && sug.bandplan) bits.unshift(`SmartNet, band plan ${sug.bandplan.bandplan}`);
     if (sug.site !== null) bits.push(`site lock ${sug.rfss ?? "?"}-${sug.site}`);
     if (src && src.kind !== "file") {
       if (sug.ppmApply !== null) bits.push(`correction ${sug.ppmApply > 0 ? "+" : ""}${sug.ppmApply} ppm`);
@@ -165,6 +195,11 @@ function MonitorView(props: { m: SurveyMonitor; sug: SurveySuggestion | null; c:
             "waiting for messages…"
           )}
         </Check>
+        {m.smartnet ? (
+          <Check state={id.sysId !== null ? "ok" : "wait"} label="System">
+            {id.sysId !== null ? <span className="mono">SmartNet · System ID {hex(id.sysId)}</span> : "SmartNet — waiting for the system ID broadcast…"}
+          </Check>
+        ) : (
         <Check state={id.wacn !== null && id.sysId !== null ? "ok" : "wait"} label="System">
           {id.wacn !== null || id.sysId !== null || id.nac !== null ? (
             <span className="mono">
@@ -175,9 +210,16 @@ function MonitorView(props: { m: SurveyMonitor; sug: SurveySuggestion | null; c:
             "waiting for the network status broadcast…"
           )}
         </Check>
-        <Check state={m.idens > 0 ? "ok" : "wait"} label="Band plan">
-          {m.idens > 0 ? `${m.idens} channel table${m.idens === 1 ? "" : "s"} (IDEN) heard` : "waiting for the channel tables…"}
-        </Check>
+        )}
+        {m.smartnet ? (
+          <Check state={m.smartnet.bandplan ? "ok" : "wait"} label="Band plan">
+            <SmartnetPlan s={m.smartnet} />
+          </Check>
+        ) : (
+          <Check state={m.idens > 0 ? "ok" : "wait"} label="Band plan">
+            {m.idens > 0 ? `${m.idens} channel table${m.idens === 1 ? "" : "s"} (IDEN) heard` : "waiting for the channel tables…"}
+          </Check>
+        )}
         <Check state={m.ppm !== null ? "ok" : "wait"} label="Frequency correction">
           {m.ppm !== null && m.advertisedHz !== null && m.offsetHz !== null ? (
             <>
@@ -451,8 +493,8 @@ export function SurveyPanel(props: { c: Config }) {
           {(sv.candidates.length > 0 || !sv.monitor) && (
             <details className="help" open={!sv.monitor}>
               <summary>
-                Signals found ({sv.candidates.filter((x) => x.kind === "control").length} control channel
-                {sv.candidates.filter((x) => x.kind === "control").length === 1 ? "" : "s"})
+                Signals found ({sv.candidates.filter(isControl).length} control channel
+                {sv.candidates.filter(isControl).length === 1 ? "" : "s"})
               </summary>
               <Candidates c={c} list={sv.candidates} listening={sv.monitor?.freqHz ?? null} onListen={surveyListen} />
             </details>

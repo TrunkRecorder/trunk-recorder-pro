@@ -171,6 +171,12 @@ impl SurveySession {
                     "bestDb": m.gain.best_db,
                 },
                 "elapsedS": m.elapsed_s, "ready": m.ready(),
+                "smartnet": m.smartnet.as_ref().map(|s| json!({
+                    "ccChan": s.cc_chan, "altChans": s.alt_chans, "channels": s.channels,
+                    "points": s.points.iter().map(|p| json!({ "chan": p.chan, "hz": p.hz.round(), "riseDb": (p.rise_db * 10.0).round() / 10.0 })).collect::<Vec<_>>(),
+                    "spacingHz": s.fit.map(|f| f.spacing_hz), "inliers": s.fit.map(|f| f.inliers),
+                    "bandplan": s.plan.as_ref().map(plan_json),
+                })),
             })
         });
         let progress = s.progress().map(|(hop, hops, band, center)| json!({ "hop": hop, "hops": hops, "band": band, "centerHz": center }));
@@ -200,7 +206,10 @@ impl SurveySession {
         let (center, covered) = best_center(cc, &ccs, &voice, rate);
         let lo = voice.iter().chain(&ccs).copied().fold(f64::INFINITY, f64::min);
         let hi = voice.iter().chain(&ccs).copied().fold(f64::NEG_INFINITY, f64::max);
+        let smartnet = m.smartnet.as_ref().and_then(|s| s.plan.as_ref());
         Some(json!({
+            "type": if smartnet.is_some() { "smartnet" } else { "p25" },
+            "bandplan": smartnet.map(plan_json),
             "controlChannels": ccs,
             "ppm": ppm.map(|p| (p * 100.0).round() / 100.0),
             // An RTL-SDR takes whole ppm.
@@ -217,6 +226,15 @@ impl SurveySession {
             "site": m.identity.site,
             "voiceChannels": voice,
         }))
+    }
+}
+
+/// A learned SmartNet band plan in the config's terms (Trunk Recorder's names).
+fn plan_json(p: &trunk_core::smartnet::plan::PlanConfig) -> Value {
+    if p.name == "400_custom" {
+        json!({ "bandplan": p.name, "bandplanBase": p.base_hz, "bandplanSpacing": p.spacing_hz, "bandplanOffset": p.offset, "bandplanHigh": p.high_hz })
+    } else {
+        json!({ "bandplan": p.name })
     }
 }
 

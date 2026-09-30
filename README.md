@@ -147,8 +147,8 @@ with a dongle connected. The recorder steps through the P25 bands (800, 700
 and 900 MHz, UHF 450–470, VHF 136–174 by default; UHF federal 380–420 and
 T-band 470–512 on request), about 1.3 s per 2 MHz step. In each step it looks
 for carriers that stay on (a control channel never keys down) and checks each
-one with the P25 receivers. Then it listens to the control channel with the
-best signal and shows what that channel announces:
+one with the P25 and SmartNet receivers. Then it listens to the control
+channel with the best signal and shows what that channel announces:
 
 - the system's WACN, System ID, NAC, RFSS and site, and its band plan;
 - its alternate control channels and neighbouring sites;
@@ -158,6 +158,16 @@ best signal and shows what that channel announces:
   off the recorder hears it is the radio's error;
 - on an RTL-SDR, the **gain**: it tries gains from 19.7 to 49.6 dB and keeps
   the lowest one within 1 dB of the best signal that doesn't clip.
+
+A **SmartNet** control channel names channels only by number, and on VHF /
+UHF (OBT) systems nothing on the air says what frequency a number is. So the
+survey watches: while a channel number is being granted, one carrier in the
+spectrum comes up that is down otherwise. A few such channels, and the
+number the control channel broadcasts for itself, give the band plan
+(Trunk Recorder's `400_custom` base / spacing / offset, or an 800 / 900 MHz
+plan when the channels land on one) — and with it the alternate control
+channels and every voice channel granted, even ones outside the dongle's
+view. On WMATA (UHF OBT) it takes a minute or so of normal traffic.
 
 **Add this system** adds it — control channels, a site lock with the
 identity it announced, the voice channels seen — and sets the ppm, the gain
@@ -173,6 +183,7 @@ From the command line (JSON lines of what's found, then the system):
 
 ```bash
 trunk-lite survey --serial 200 --bands 800,700 --seconds 30
+trunk-lite survey --serial 91 --bands t-band --seconds 120                # e.g. a UHF SmartNet system
 trunk-lite survey capture.cu8 --center 858300000 --rate 2400000   # a capture: one look
 ```
 

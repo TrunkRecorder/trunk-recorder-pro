@@ -1,10 +1,15 @@
-//! Finding a P25 system with nothing configured: sweep the land-mobile bands
-//! for carriers that never key down (a control channel transmits all the
-//! time), check each with the P25 receivers, then sit on the best one and
+//! Finding a P25 or SmartNet system with nothing configured: sweep the
+//! land-mobile bands for carriers that never key down (a control channel
+//! transmits all the time), check each with the P25 and SmartNet receivers,
+//! then sit on the best one and
 //! learn the system from its broadcasts — band plan, identity, alternate
 //! control channels, neighbouring sites, the voice channels it grants — and
 //! the radio's frequency error, from where the control channel is heard
 //! versus the frequency it announces for itself.
+//!
+//! A SmartNet control channel doesn't broadcast its band plan (OBT systems
+//! least of all), so the monitor learns it from the air: which carrier comes
+//! up when a channel number is granted ([`crate::smartnet::plan`]).
 //!
 //! ```text
 //! scan, per hop:  settle → spectrum: each ~1 kHz cell's 20th-percentile power
@@ -37,6 +42,8 @@ use crate::p25::diversity::{best_frame, best_tsbks, Bank, BankConfig, Group};
 use crate::p25::frame::{LDU1, LDU2, TSDU};
 use crate::p25::Tsbk;
 use crate::trunk::engine::Identity;
+use crate::smartnet::plan::{self, PlanConfig, PlanFinder};
+use crate::smartnet::{self as sn, FramerOut};
 use crate::trunk::{Message, MessageType, TsbkParser};
 
 /// One-sided channel filter cutoff for P25, Hz.
@@ -128,6 +135,8 @@ pub enum Kind {
     Other,
     /// P25 frames but no control messages (a voice channel, conventional P25).
     P25,
+    /// A SmartNet / SmartZone control channel (CRC-valid OSWs).
+    SmartNet,
     /// A P25 control channel.
     Control,
 }
@@ -137,6 +146,7 @@ impl Kind {
         match self {
             Kind::Other => "other",
             Kind::P25 => "p25",
+            Kind::SmartNet => "smartnet",
             Kind::Control => "control",
         }
     }
@@ -154,7 +164,7 @@ pub struct Candidate {
     pub frames: u32,
     pub good: u32,
     pub bad: u32,
-    /// "C4FM" | "CQPSK" | "".
+    /// "C4FM" | "CQPSK" | "2FSK" (SmartNet) | "".
     pub modulation: &'static str,
     pub identity: Identity,
 }
@@ -237,12 +247,31 @@ pub struct SystemInfo {
     pub ppm: Option<f64>,
     pub gain: GainReport,
     pub elapsed_s: f64,
+    /// SmartNet (when its decoder is the one getting through): what the OSWs
+    /// named and the band plan learned from them.
+    pub smartnet: Option<SmartnetSurvey>,
+}
+
+/// What a SmartNet control channel has shown the monitor.
+#[derive(Clone, Debug, Default)]
+pub struct SmartnetSurvey {
+    /// The number this control channel broadcasts for itself.
+    pub cc_chan: Option<u16>,
+    /// Alternate control channels it names.
+    pub alt_chans: Vec<u16>,
+    /// Channel numbers granted.
+    pub channels: Vec<u16>,
+    /// Channels whose carrier was found (radio frame).
+    pub points: Vec<plan::Point>,
+    pub fit: Option<plan::Fit>,
+    /// The band plan, once two channels (the control channel counts) agree.
+    pub plan: Option<PlanConfig>,
 }
 
 impl SystemInfo {
     /// Enough to record: band plan, where the channel really is, the correction.
     pub fn ready(&self) -> bool {
-        self.idens > 0 && self.advertised_hz.is_some() && self.ppm.is_some() && !matches!(self.gain.state, GainState::Running | GainState::Waiting)
+        (self.idens > 0 || self.smartnet.as_ref().is_some_and(|s| s.plan.is_some())) && self.advertised_hz.is_some() && self.ppm.is_some() && !matches!(self.gain.state, GainState::Running | GainState::Waiting)
     }
 }
 
@@ -474,6 +503,34 @@ struct Probe {
     bank: Bank,
     est: FreqEst,
     dec: Decode,
+    sn: SnRx,
+}
+
+/// A SmartNet receiver and framer (the probes' and the monitor's).
+struct SnRx {
+    rx: sn::Fsk2,
+    framer: sn::Framer,
+    bits: Vec<sn::Bit>,
+    out: Vec<FramerOut>,
+}
+
+impl SnRx {
+    fn new(rate: f64) -> Self {
+        SnRx { rx: sn::Fsk2::new(rate), framer: sn::Framer::default(), bits: Vec::new(), out: Vec::new() }
+    }
+
+    /// Decode `iq`; each framer output with its channel-sample instant.
+    fn push(&mut self, iq: &[Complex32], mut each: impl FnMut(FramerOut, f64)) {
+        self.bits.clear();
+        self.rx.push(iq, &mut self.bits);
+        for b in &self.bits {
+            self.out.clear();
+            self.framer.push(b.soft, &mut self.out);
+            for &o in &self.out {
+                each(o, b.sample);
+            }
+        }
+    }
 }
 
 const PROBE_BANK: BankConfig = BankConfig {
@@ -549,7 +606,7 @@ impl HopScan {
             let rate = self.chz.output_rate();
             for p in peaks {
                 let (head, _, _) = self.chz.add_head(p.offset_hz, CUTOFF_HZ, 0.0);
-                self.probes.push(Probe { peak: p, head, bank: Bank::new(rate, PROBE_BANK), est: FreqEst::default(), dec: Decode::default() });
+                self.probes.push(Probe { peak: p, head, bank: Bank::new(rate, PROBE_BANK), est: FreqEst::default(), dec: Decode::default(), sn: SnRx::new(rate) });
             }
             self.decode_from = Some(self.blocks);
             return None;
@@ -559,6 +616,7 @@ impl HopScan {
         for p in &mut self.probes {
             let iq = self.chz.output(p.head).unwrap_or(&[]);
             p.est.push(iq);
+            p.sn.push(iq, |_, _| {});
             self.groups.clear();
             p.bank.push(iq, &mut self.groups);
             if done {
@@ -579,13 +637,34 @@ impl HopScan {
                 .map(|p| {
                     let kind = if p.dec.good >= 2 {
                         Kind::Control
+                    } else if p.sn.framer.good >= 3 {
+                        Kind::SmartNet
                     } else if p.dec.frames >= 3 {
                         Kind::P25
                     } else {
                         Kind::Other
                     };
                     // A decoding signal's own carrier beats the spectrum's centroid.
-                    let fine = if kind != Kind::Other { p.est.hz(rate).filter(|r| r.abs() < 3000.0).unwrap_or(0.0) } else { 0.0 };
+                    let fine = match kind {
+                        Kind::Other => 0.0,
+                        // The midpoint of the two tones.
+                        Kind::SmartNet => p.sn.rx.offset_hz() as f64,
+                        _ => p.est.hz(rate).filter(|r| r.abs() < 3000.0).unwrap_or(0.0),
+                    };
+                    if kind == Kind::SmartNet {
+                        return Candidate {
+                            freq_hz: self.center + p.peak.offset_hz + fine,
+                            band: self.band,
+                            snr_db: p.peak.snr_db,
+                            width_hz: p.peak.width_hz,
+                            kind,
+                            frames: p.sn.framer.good as u32,
+                            good: p.sn.framer.good as u32,
+                            bad: p.sn.framer.bad as u32,
+                            modulation: "2FSK",
+                            identity: Identity::default(),
+                        };
+                    }
                     Candidate {
                         freq_hz: self.center + p.peak.offset_hz + fine,
                         band: self.band,
@@ -613,6 +692,102 @@ enum GainPhase {
     Final,
 }
 
+/// The monitor's SmartNet side: OSWs decoded with the plan unknown
+/// (channel numbers for frequencies), and the plan being learned.
+struct SnMonitor {
+    rx: SnRx,
+    parser: sn::Parser,
+    finder: PlanFinder,
+    row: Vec<f32>,
+    sorted: Vec<f32>,
+    cc_votes: HashMap<u16, u32>,
+    /// System IDs: the OSW before a "this control channel" broadcast.
+    sys_votes: HashMap<u16, u32>,
+    prev: Option<sn::Osw>,
+    alt: BTreeSet<u16>,
+    grants: BTreeMap<u16, u32>,
+    msgs: Vec<Message>,
+    info: SmartnetSurvey,
+    next_fit: u64,
+}
+
+impl SnMonitor {
+    fn new(chz: &Channelizer, center: f64) -> Self {
+        let mut cells = chz.fft_size();
+        while cells > 16 && chz.fs() / (cells as f64) < 900.0 {
+            cells /= 2;
+        }
+        SnMonitor {
+            rx: SnRx::new(chz.output_rate()),
+            parser: sn::Parser::new(sn::Bandplan::Raw),
+            finder: PlanFinder::new(center, chz.fs(), cells, chz.fs() / 2.0 * USABLE),
+            row: vec![0.0; cells],
+            sorted: vec![0.0; cells],
+            cc_votes: HashMap::new(),
+            sys_votes: HashMap::new(),
+            prev: None,
+            alt: BTreeSet::new(),
+            grants: BTreeMap::new(),
+            msgs: Vec::new(),
+            info: SmartnetSurvey::default(),
+            next_fit: 0,
+        }
+    }
+
+    fn osw(&mut self, o: sn::Osw, t: f64) {
+        // This channel's own number, and its alternates.
+        if o.cmd == 0x30b && o.grp && o.addr & 0xfc00 == 0x2800 {
+            *self.cc_votes.entry(o.addr & 0x3ff).or_default() += 1;
+            if let Some(p) = self.prev.filter(|p| p.grp) {
+                *self.sys_votes.entry(p.addr).or_default() += 1;
+            }
+        } else if !o.grp && o.addr & 0xff00 == 0x1f00 && o.cmd < 0x2f8 {
+            *self.cc_votes.entry(o.cmd).or_default() += 1;
+        } else if o.cmd == 0x30b && !o.grp && o.addr & 0xfc00 == 0x6000 {
+            self.alt.insert(o.addr & 0x3ff);
+        }
+        self.prev = Some(o);
+        self.parser.osw(o, t, &mut self.msgs);
+        for m in self.msgs.drain(..) {
+            if matches!(m.kind, MessageType::Grant | MessageType::Update) {
+                let c = m.freq_hz as u16;
+                self.finder.heard(c, m.time_s);
+                *self.grants.entry(c).or_default() += 1;
+            }
+        }
+    }
+
+    /// One spectrum, scaled to its median (the noise floor), so gain steps don't count as carriers.
+    fn spectrum(&mut self, chz: &Channelizer, t: f64) {
+        chz.cell_powers(&mut self.row);
+        self.sorted.copy_from_slice(&self.row);
+        let mid = self.sorted.len() / 2;
+        let (_, m, _) = self.sorted.select_nth_unstable_by(mid, |a, b| a.total_cmp(b));
+        let m = m.max(1e-20);
+        self.row.iter_mut().for_each(|v| *v /= m);
+        self.finder.spectrum(&self.row, t);
+    }
+
+    /// Fit the plan through what's been seen, the control channel heard at `heard_hz`.
+    fn fit(&mut self, heard_hz: f64) {
+        let cc = self.cc_votes.iter().max_by_key(|(_, &n)| n).map(|(&c, _)| c);
+        let i = &mut self.info;
+        i.cc_chan = cc;
+        i.alt_chans = self.alt.iter().copied().filter(|&c| Some(c) != cc).collect();
+        i.channels = self.finder.channels();
+        i.points = self.finder.points();
+        i.fit = plan::fit(&i.points, cc.map(|c| (c, heard_hz)));
+        // Only the points on the line: an OBT inbound channel is granted with
+        // its outbound one, so it "finds" the outbound carrier, off the line.
+        let mut chans: Vec<u16> = match i.fit {
+            Some(f) => i.points.iter().filter(|p| (p.hz - f.hz(p.chan)).abs() <= (f.spacing_hz / 4.0).min(3000.0) + 1.0).map(|p| p.chan).collect(),
+            None => vec![],
+        };
+        chans.extend(cc);
+        i.plan = i.fit.map(|f| plan::plan_for(&f, cc, &chans));
+    }
+}
+
 /// The monitored control channel.
 struct Monitor {
     chz: Channelizer,
@@ -638,6 +813,7 @@ struct Monitor {
     groups: Vec<Group>,
     msgs: Vec<(Tsbk, Vec<Message>)>,
     ppm_applied: f64,
+    sn: SnMonitor,
 }
 
 impl Monitor {
@@ -645,6 +821,7 @@ impl Monitor {
         let mut chz = Channelizer::new(cfg.rate_hz, MIN_CHANNEL_RATE, 0.01);
         let (head, _, _) = chz.add_head(freq - center, CUTOFF_HZ, 0.0);
         let rate = chz.output_rate();
+        let sn = SnMonitor::new(&chz, center);
         let mut info = SystemInfo { heard_hz: freq, ..Default::default() };
         info.gain.state = if cfg.gains.is_empty() { GainState::Off } else { GainState::Waiting };
         Monitor {
@@ -671,6 +848,21 @@ impl Monitor {
             groups: Vec::new(),
             msgs: Vec::new(),
             ppm_applied: cfg.ppm,
+            sn,
+        }
+    }
+
+    /// SmartNet is what this channel is (its OSWs outnumber P25 TSBKs).
+    fn is_smartnet(&self) -> bool {
+        self.sn.rx.framer.good > self.dec.good
+    }
+
+    /// Good / bad control messages of whichever protocol it is.
+    fn counts(&self) -> (u64, u64) {
+        if self.is_smartnet() {
+            (self.sn.rx.framer.good, self.sn.rx.framer.bad)
+        } else {
+            (self.dec.good, self.dec.bad)
         }
     }
 
@@ -695,12 +887,20 @@ impl Monitor {
         if self.blocks >= self.est_from {
             self.est.push(iq);
         }
+        let t = self.seconds(self.blocks);
+        let mut outs = Vec::new();
+        self.sn.rx.push(iq, |o, _| outs.push(o));
+        for o in outs {
+            match o {
+                FramerOut::Osw(o, _) => self.sn.osw(o, t),
+                FramerOut::Bad(_) => self.sn.parser.bad(t, &mut self.sn.msgs),
+            }
+        }
         self.groups.clear();
         self.bank.push(iq, &mut self.groups);
         if flush {
             self.bank.flush(&mut self.groups);
         }
-        let t = self.seconds(self.blocks);
         for g in std::mem::take(&mut self.groups) {
             self.msgs.clear();
             self.dec.group(&g, t, &mut self.msgs);
@@ -723,8 +923,21 @@ impl Monitor {
                 }
             }
         }
+        if self.sn.rx.framer.good > 0 {
+            if self.blocks % 2 == 0 {
+                self.sn.spectrum(&self.chz, t);
+            }
+            if self.blocks >= self.sn.next_fit || flush {
+                self.sn.next_fit = self.blocks + self.blocks_for(1.0);
+                self.sn.fit(self.info.heard_hz);
+            }
+        }
         self.frequency(rate);
         self.gain_step(clip);
+        if self.is_smartnet() {
+            self.smartnet_info(t);
+            return;
+        }
         let i = &mut self.info;
         i.identity = self.dec.id.clone();
         i.good = self.dec.good;
@@ -737,6 +950,44 @@ impl Monitor {
         i.secondary = self.secondary.iter().copied().collect();
         i.adjacent = self.adjacent.values().copied().collect();
         i.voice = self.voice.values().copied().collect();
+    }
+
+    /// Fill the findings from the SmartNet side.
+    fn smartnet_info(&mut self, t: f64) {
+        let s = &self.sn;
+        let i = &mut self.info;
+        let voted = s.sys_votes.iter().max_by_key(|(_, &n)| n).map(|(&v, _)| v as u32);
+        i.identity = Identity { sys_id: voted.or(s.parser.sys_id), site: s.parser.site, ..Default::default() };
+        i.good = s.rx.framer.good;
+        i.bad = s.rx.framer.bad;
+        i.modulation = "2FSK";
+        i.snr_db = self.snr.map(|r| 10.0 * r.log10());
+        i.elapsed_s = t;
+        i.idens = 0;
+        let info = &s.info;
+        match &info.plan {
+            Some(p) => {
+                let cc = info.cc_chan;
+                i.advertised_hz = cc.and_then(|c| p.plan.rx_hz(c));
+                i.secondary = info.alt_chans.iter().filter_map(|&c| p.plan.rx_hz(c)).collect();
+                i.voice = s
+                    .grants
+                    .iter()
+                    .filter(|(&c, _)| Some(c) != cc && !info.alt_chans.contains(&c))
+                    .filter_map(|(&c, &n)| p.plan.rx_hz(c).map(|f| VoiceChannel { freq_hz: f, grants: n, tdma: false }))
+                    .collect();
+                i.bandplan = if p.name == "400_custom" {
+                    format!("{} base {:.5} MHz, {} kHz steps from channel {}", p.name, p.base_hz / 1e6, p.spacing_hz / 1e3, p.offset)
+                } else {
+                    p.name.to_string()
+                };
+            }
+            None => {
+                i.advertised_hz = None;
+                i.bandplan.clear();
+            }
+        }
+        i.smartnet = Some(info.clone());
     }
 
     fn message(&mut self, blk: &Tsbk, msgs: &[Message]) {
@@ -778,7 +1029,11 @@ impl Monitor {
     /// Carrier offset → where the channel really is → ppm; re-centre the
     /// head on it once the estimate settles.
     fn frequency(&mut self, rate: f64) {
-        let Some(res) = self.est.hz(rate) else { return };
+        let Some(mut res) = self.est.hz(rate) else { return };
+        if self.is_smartnet() {
+            // The two tones' midpoint: exact for FSK whatever the data.
+            res = self.sn.rx.rx.offset_hz() as f64;
+        }
         let avg_s = self.est.n as f64 / rate;
         let heard = self.head_hz + res;
         self.info.heard_hz = heard;
@@ -806,7 +1061,7 @@ impl Monitor {
         let now = self.blocks;
         match self.gain {
             GainPhase::Waiting => {
-                if self.dec.good >= 20 && self.seconds(now) >= 4.0 {
+                if self.counts().0 >= 20 && self.seconds(now) >= 4.0 {
                     self.info.gain.state = GainState::Running;
                     self.pending = Some(Command::Gain(self.gains[0]));
                     self.gain = GainPhase::Applying { i: 0, since: now };
@@ -820,14 +1075,15 @@ impl Monitor {
             }
             GainPhase::Settling { i, until } => {
                 if now >= until {
-                    self.gain = GainPhase::Measuring { i, until: now + self.blocks_for(1.5), snr: 0.0, n: 0, good: self.dec.good, bad: self.dec.bad, clip };
+                    let (good, bad) = self.counts();
+                    self.gain = GainPhase::Measuring { i, until: now + self.blocks_for(1.5), snr: 0.0, n: 0, good, bad, clip };
                 }
             }
             GainPhase::Measuring { i, until, snr, n, good, bad, clip: c0 } => {
                 if now < until {
                     return;
                 }
-                let (g, b) = (self.dec.good - good, self.dec.bad - bad);
+                let (g, b) = (self.counts().0.saturating_sub(good), self.counts().1.saturating_sub(bad));
                 let total = clip.1.saturating_sub(c0.1);
                 self.info.gain.steps.push(GainStep {
                     gain_db: self.gains[i],
@@ -1136,7 +1392,7 @@ impl Survey {
                 self.message = if self.candidates.iter().any(|c| c.kind != Kind::Other) {
                     "P25 signals were found, but no control channel. Scan again, or add more bands.".into()
                 } else {
-                    "No P25 control channel found. Check the antenna and gain, and add more bands.".into()
+                    "No P25 or SmartNet control channel found. Check the antenna and gain, and add more bands.".into()
                 };
             }
         }
@@ -1144,7 +1400,7 @@ impl Survey {
 
     /// The control channel worth monitoring: the best SNR among those decoding.
     pub fn best(&self) -> Option<f64> {
-        self.candidates.iter().filter(|c| c.kind == Kind::Control).max_by(|a, b| a.score().total_cmp(&b.score())).map(|c| c.freq_hz)
+        self.candidates.iter().filter(|c| matches!(c.kind, Kind::Control | Kind::SmartNet)).max_by(|a, b| a.score().total_cmp(&b.score())).map(|c| c.freq_hz)
     }
 
     pub fn stage(&self) -> Stage {

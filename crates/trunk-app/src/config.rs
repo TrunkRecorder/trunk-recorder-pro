@@ -173,7 +173,15 @@ impl System {
 
     /// The SmartNet settings, or why they don't work.
     pub fn smartnet(&self) -> Result<trunk_core::trunk::SmartnetConfig, String> {
-        let bandplan = trunk_core::smartnet::Bandplan::from_config(&self.bandplan, self.bandplan_base, self.bandplan_spacing, self.bandplan_offset, self.bandplan_high)?;
+        // Trunk Recorder configs give these in Hz or in MHz.
+        let hz = |v: f64, mhz_below: f64| if v > 0.0 && v < mhz_below { v * 1e6 } else { v };
+        let bandplan = trunk_core::smartnet::Bandplan::from_config(
+            &self.bandplan,
+            hz(self.bandplan_base, 1e5),
+            hz(self.bandplan_spacing, 1.0),
+            self.bandplan_offset,
+            hz(self.bandplan_high, 1e5),
+        )?;
         Ok(trunk_core::trunk::SmartnetConfig { bandplan, analog_default: self.default_mode.eq_ignore_ascii_case("analog") })
     }
 }

@@ -290,12 +290,13 @@ export function applySurvey(i: number, sug: SurveySuggestion, target: number | "
   let applied: SurveyApplied = { system: "", centered: false };
   updateConfig((c) => {
     const expect: SiteIdentity = { nac: sug.nac, wacn: sug.wacn, sysId: sug.sysId, rfss: sug.rfss, site: sug.site };
-    const fields = { controlChannels: sug.controlChannels, expect, voiceChannels: sug.voiceChannels, enabled: true };
+    const smartnet = sug.type === "smartnet" && sug.bandplan ? { type: "smartnet" as const, ...sug.bandplan } : { type: "p25" as const };
+    const fields = { controlChannels: sug.controlChannels, expect, voiceChannels: sug.voiceChannels, enabled: true, ...smartnet };
     let sys: System;
     if (target === "new" || !c.systems[target]) {
       // Another site of a system already here: same talkgroups.
       const sibling = c.systems.find((x) => sameSystem(x.expect, expect) && x.talkgroupsCsv);
-      sys = newSystem(c, { shortName: siteName(c, expect), ...fields, talkgroupsCsv: sibling?.talkgroupsCsv ?? "", talkgroupsName: sibling?.talkgroupsName ?? "" });
+      sys = newSystem(c, { shortName: siteName(c, expect, sug.type === "smartnet"), ...fields, talkgroupsCsv: sibling?.talkgroupsCsv ?? "", talkgroupsName: sibling?.talkgroupsName ?? "" });
       c.systems.push(sys);
     } else {
       sys = c.systems[target];

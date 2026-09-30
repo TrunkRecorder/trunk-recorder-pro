@@ -78,7 +78,17 @@ export function enabledChannels(c: Config): Channel[] {
 export function normalizeSystem(x: Partial<System>): System {
   return {
     shortName: x.shortName ?? "sys1",
-    type: "p25",
+    type: x.type === "smartnet" ? "smartnet" : "p25",
+    ...(x.type === "smartnet"
+      ? {
+          bandplan: x.bandplan ?? "800_standard",
+          ...(x.bandplanBase ? { bandplanBase: x.bandplanBase } : {}),
+          ...(x.bandplanSpacing ? { bandplanSpacing: x.bandplanSpacing } : {}),
+          ...(x.bandplanOffset ? { bandplanOffset: x.bandplanOffset } : {}),
+          ...(x.bandplanHigh ? { bandplanHigh: x.bandplanHigh } : {}),
+          ...(x.defaultMode === "analog" ? { defaultMode: "analog" as const } : {}),
+        }
+      : {}),
     enabled: x.enabled ?? true,
     controlChannels: x.controlChannels ?? [],
     modulation: x.modulation ?? "auto",
@@ -141,8 +151,23 @@ export function newSystem(c: Config, patch: Partial<System> = {}): System {
   return sys;
 }
 
+/** A SmartNet system's settings from a Trunk Recorder system (base / spacing / high in Hz or MHz). */
+function smartnetImport(sys: Record<string, unknown>): Partial<System> {
+  const hz = (v: unknown, mhzBelow: number) => (typeof v === "number" && v > 0 ? (v < mhzBelow ? Math.round(v * 1e6) : v) : undefined);
+  const out: Partial<System> = { type: "smartnet", bandplan: typeof sys.bandplan === "string" ? sys.bandplan : "800_standard" };
+  const base = hz(sys.bandplanBase, 1e5);
+  const spacing = hz(sys.bandplanSpacing, 1);
+  const high = hz(sys.bandplanHigh, 1e5);
+  if (base) out.bandplanBase = base;
+  if (spacing) out.bandplanSpacing = spacing;
+  if (high) out.bandplanHigh = high;
+  if (typeof sys.bandplanOffset === "number") out.bandplanOffset = sys.bandplanOffset;
+  return out;
+}
+
 /** A default short name for a site: "p25-<sysid>-<rfss>-<site>", or "sysN". */
-export function siteName(c: Config, id: SiteIdentity): string {
+export function siteName(c: Config, id: SiteIdentity, smartnet = false): string {
+  if (smartnet && id.sysId != null) return uniqueShortName(c, `smartnet-${id.sysId.toString(16)}`);
   if (id.sysId != null && id.site != null) return uniqueShortName(c, `p25-${id.sysId.toString(16)}-${id.rfss ?? 0}-${id.site}`);
   return uniqueShortName(c, `sys${c.systems.length + 1}`);
 }
@@ -440,9 +465,9 @@ export function importTrunkRecorderConfig(text: string, base: Config): { config:
     });
   }
   if (imported.length) cfg.sources = imported;
-  const p25 = systems.filter((x) => x.type === "p25");
+  const p25 = systems.filter((x) => x.type === "p25" || x.type === "smartnet");
   const conv = systems.filter((x) => x.type === "conventional" || x.type === "conventionalP25");
-  const skipped = systems.filter((x) => x.type !== "p25" && !conv.includes(x)).map((x) => `${String(x.shortName ?? "?")} (${String(x.type)})`);
+  const skipped = systems.filter((x) => !p25.includes(x) && !conv.includes(x)).map((x) => `${String(x.shortName ?? "?")} (${String(x.type)})`);
   if (skipped.length) notes.push(`Skipped unsupported systems: ${skipped.join(", ")}.`);
   const importedChannels: Channel[] = [];
   for (const sys of conv) {
@@ -469,12 +494,13 @@ export function importTrunkRecorderConfig(text: string, base: Config): { config:
         controlChannels: Array.isArray(sys.control_channels) ? (sys.control_channels as unknown[]).filter((v): v is number => typeof v === "number") : [],
         modulation: sys.modulation === "qpsk" || sys.modulation === "fsk4" ? sys.modulation : "auto",
         ...(typeof sys.recordUnknown === "boolean" ? { recordUnknown: sys.recordUnknown } : {}),
+        ...(sys.type === "smartnet" ? smartnetImport(sys) : {}),
       });
       cfg.systems.push(x);
       if (typeof sys.talkgroupsFile === "string") talkgroupFiles.push(`${x.shortName}: "${sys.talkgroupsFile}"`);
       if (sys.siteId !== undefined) siteIds.push(x.shortName);
     }
-    if (p25.length > 1) notes.push(`${p25.length} P25 systems imported, each with its own folder.`);
+    if (p25.length > 1) notes.push(`${p25.length} systems imported, each with its own folder.`);
     if (talkgroupFiles.length) notes.push(`Talkgroup files (${talkgroupFiles.join(", ")}): load each CSV under its system in Setup.`);
     if (siteIds.length) notes.push(`A siteId is set for ${siteIds.join(", ")}: to follow only that site, fill in its Site lock (the survey or a first run shows the site the control channel announces).`);
     // The same setting on every system there: the default here.

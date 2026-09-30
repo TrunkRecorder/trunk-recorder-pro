@@ -49,9 +49,22 @@ export interface SiteIdentity {
  * A trunked system — or one site of a multi-site system: each site recorded
  * from its own control channel is a system, with its own short name (folder).
  */
-export interface System {
+/** A SmartNet band plan, in Trunk Recorder's config names (Hz; offset a channel number). */
+export interface SmartnetBandplan {
+  /** "800_standard" | "800_reband" | "800_splinter" | "900" | "400_custom". */
+  bandplan: string;
+  bandplanBase?: number;
+  bandplanSpacing?: number;
+  bandplanOffset?: number;
+  bandplanHigh?: number;
+}
+
+export interface System extends Partial<SmartnetBandplan> {
   shortName: string;
-  type: "p25";
+  /** "smartnet": a Motorola SmartNet / SmartZone control channel (voice P25 or analog FM). */
+  type: "p25" | "smartnet";
+  /** SmartNet: the voice of a talkgroup never heard granted. */
+  defaultMode?: "digital" | "analog";
   enabled: boolean;
   controlChannels: number[];
   modulation: "auto" | "fsk4" | "qpsk";
@@ -241,7 +254,7 @@ export interface SurveyCandidate {
   band: string;
   snrDb: number;
   widthHz: number;
-  kind: "control" | "p25" | "other";
+  kind: "control" | "smartnet" | "p25" | "other";
   frames: number;
   good: number;
   bad: number;
@@ -269,10 +282,23 @@ export interface SurveyMonitor {
   gain: { state: "off" | "waiting" | "running" | "done"; steps: { gainDb: number; snrDb: number; okRatio: number; clipped: number }[]; bestDb: number | null };
   elapsedS: number;
   ready: boolean;
+  /** A SmartNet control channel: the band plan learned from where granted channels light up. */
+  smartnet: {
+    ccChan: number | null;
+    altChans: number[];
+    channels: number[];
+    points: { chan: number; hz: number; riseDb: number }[];
+    spacingHz: number | null;
+    inliers: number | null;
+    bandplan: SmartnetBandplan | null;
+  } | null;
 }
 
 /** What to put in the config. */
 export interface SurveySuggestion {
+  type: "p25" | "smartnet";
+  /** SmartNet: the learned band plan. */
+  bandplan: SmartnetBandplan | null;
   controlChannels: number[];
   ppm: number | null;
   /** As the source takes it (an RTL-SDR: whole ppm). */

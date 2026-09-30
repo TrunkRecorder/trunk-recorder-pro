@@ -19,7 +19,13 @@ platform, with no GNU Radio, OP25 or other runtime dependencies.
   follows the grant: P25 Phase 1 for digital grants, narrowband FM for analog
   (`defaultMode` for talkgroups never heard granted). Configured with Trunk
   Recorder's names (`type` "smartnet", `bandplan`, `bandplanBase`, …). On
-  WMATA's OBT system: ~90 % of OSWs where Trunk Recorder gets 40–60 %.
+  WMATA's OBT system: 90–99 % of OSWs where Trunk Recorder gets 40–60 %.
+  SmartNet systems work alongside P25 ones (each system picks its type), and
+  Trunk Recorder configs with SmartNet systems import.
+- **Find my system finds SmartNet** too, and learns its band plan from the
+  air (which carrier comes up when a channel number is granted) — on WMATA,
+  exactly Trunk Recorder's hand-made `400_custom` plan, all four control
+  channels and the voice channels, from one dongle.
 - **Conventional channels**: analog narrowband FM and P25, alongside a
   trunked system or on their own. Found by energy in the spectrum the
   channelizer already computes (an idle channel costs almost nothing), opened

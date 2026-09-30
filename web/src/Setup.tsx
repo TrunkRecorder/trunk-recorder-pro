@@ -758,6 +758,52 @@ export function siteText(id: SiteIdentity): string {
   return parts.join(" · ");
 }
 
+/** A SmartNet system's band plan (Trunk Recorder's settings) and default voice mode. */
+function SmartnetFields(props: { sys: System; edit: (fn: (x: System) => void) => void }) {
+  const { sys, edit } = props;
+  const custom = (sys.bandplan ?? "").startsWith("400");
+  const setNum = (k: "bandplanBase" | "bandplanSpacing" | "bandplanOffset" | "bandplanHigh", v: number | null) =>
+    edit((x) => {
+      if (v === null) delete x[k];
+      else x[k] = v;
+    });
+  return (
+    <>
+      <Field label="Band plan" hint="The survey learns it by listening. VHF / UHF (OBT) systems need the numbers below.">
+        <select value={custom ? "400_custom" : (sys.bandplan ?? "800_standard")} onChange={(e) => edit((x) => void (x.bandplan = e.target.value))}>
+          <option value="800_standard">800 MHz standard</option>
+          <option value="800_reband">800 MHz rebanded</option>
+          <option value="800_splinter">800 MHz splinter</option>
+          <option value="900">900 MHz</option>
+          <option value="400_custom">VHF / UHF (custom, OBT)</option>
+        </select>
+      </Field>
+      <Field label="Voice of unknown talkgroups" hint="Grants say P25 or analog; this is for talkgroups only ever seen in updates.">
+        <select value={sys.defaultMode ?? "digital"} onChange={(e) => edit((x) => void (e.target.value === "analog" ? (x.defaultMode = "analog") : delete x.defaultMode))}>
+          <option value="digital">P25</option>
+          <option value="analog">Analog FM</option>
+        </select>
+      </Field>
+      {custom && (
+        <div className="id-grid wide">
+          <Field label="Base, Hz" hint="Frequency of the offset channel">
+            <NumInput label="Band plan base" placeholder="489087500" value={sys.bandplanBase} onChange={(v) => setNum("bandplanBase", v)} />
+          </Field>
+          <Field label="Spacing, Hz">
+            <NumInput label="Band plan spacing" placeholder="25000" value={sys.bandplanSpacing} onChange={(v) => setNum("bandplanSpacing", v)} />
+          </Field>
+          <Field label="Offset (channel)">
+            <NumInput label="Band plan offset" placeholder="380" value={sys.bandplanOffset} onChange={(v) => setNum("bandplanOffset", v)} />
+          </Field>
+          <Field label="High, Hz" hint="Highest outbound channel">
+            <NumInput label="Band plan high" placeholder="496612500" value={sys.bandplanHigh} onChange={(v) => setNum("bandplanHigh", v)} />
+          </Field>
+        </div>
+      )}
+    </>
+  );
+}
+
 function SystemCard(props: { c: Config; i: number }) {
   const { c, i } = props;
   const sys = c.systems[i];
@@ -830,7 +876,21 @@ function SystemCard(props: { c: Config; i: number }) {
         <Field label="Short name" hint={dupName ? "Another system has this name — each needs its own folder" : "Folder name for this system's calls"}>
           <input value={sys.shortName} onChange={(e) => edit((x) => void (x.shortName = e.target.value.replace(/[^\w.-]/g, "")))} />
         </Field>
-        <Field label="Modulation" hint="Auto runs C4FM and CQPSK receivers side by side and keeps the best of each frame.">
+        <Field label="Type" hint={sys.type === "smartnet" ? "Motorola SmartNet / SmartZone control channel; voice is P25 or analog FM, per grant." : "P25 Phase 1 control channel (Phase 1 and 2 voice)."}>
+          <select
+            value={sys.type}
+            onChange={(e) =>
+              edit((x) => {
+                x.type = e.target.value === "smartnet" ? "smartnet" : "p25";
+                if (x.type === "smartnet" && !x.bandplan) x.bandplan = "800_reband";
+              })
+            }
+          >
+            <option value="p25">P25</option>
+            <option value="smartnet">SmartNet / SmartZone</option>
+          </select>
+        </Field>
+        <Field label={sys.type === "smartnet" ? "P25 voice modulation" : "Modulation"} hint="Auto runs C4FM and CQPSK receivers side by side and keeps the best of each frame.">
           <select value={sys.modulation} onChange={(e) => edit((x) => void (x.modulation = e.target.value as System["modulation"]))}>
             <option value="auto">Auto (both receivers)</option>
             <option value="fsk4">C4FM (fsk4)</option>
@@ -892,6 +952,7 @@ function SystemCard(props: { c: Config; i: number }) {
           </div>
           <input ref={tgRef} type="file" accept=".csv,text/csv" hidden onChange={(e) => void onTalkgroups(e.target.files?.[0])} />
         </Field>
+        {sys.type === "smartnet" && <SmartnetFields sys={sys} edit={edit} />}
         <Field label="Talkgroups not in the CSV">
           <select
             value={sys.recordUnknown === true ? "yes" : sys.recordUnknown === false ? "no" : ""}

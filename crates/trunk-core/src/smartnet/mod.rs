@@ -10,6 +10,7 @@
 
 pub mod osw;
 pub mod parser;
+pub mod plan;
 pub mod rx;
 
 pub use osw::{Framer, FramerOut, Osw};
