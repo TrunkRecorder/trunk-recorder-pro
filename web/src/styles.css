@@ -12,6 +12,12 @@
   --bad: #ff6b6b;
   --rec: #ff5a5f;
   --trace: #6cd4ff;
+  --sys-0: #3fb6ff;
+  --sys-1: #f2b84b;
+  --sys-2: #c792ea;
+  --sys-3: #3fcf8e;
+  --sys-4: #ff8f6b;
+  --sys-5: #7fdbca;
   --radius: 8px;
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
   color-scheme: dark;
@@ -31,6 +37,12 @@
     --bad: #d64545;
     --rec: #d63a3f;
     --trace: #0a7bd6;
+    --sys-0: #0a7bd6;
+    --sys-1: #b7791f;
+    --sys-2: #8b5cc4;
+    --sys-3: #16965c;
+    --sys-4: #d0582f;
+    --sys-5: #1a8f86;
     color-scheme: light;
   }
 }
@@ -234,3 +246,28 @@ td.srcs {
 .check-ok .check-mark { color: var(--ok); }
 .check-wait .check-mark { color: var(--warn); }
 .check b { font-weight: 600; margin-right: 4px; }
+
+/* several systems */
+.sys-dot { display: inline-block; width: 10px; height: 10px; border-radius: 3px; flex: none; vertical-align: baseline; margin-right: 6px; }
+.system-card { border: 1px solid var(--line); border-left: 3px solid var(--sys-color, var(--line)); border-radius: var(--radius); padding: 10px 12px; background: var(--panel-2); display: flex; flex-direction: column; gap: 10px; }
+.system-card.off { opacity: 0.65; }
+.system-card .sys-head { gap: 10px; }
+.system-card .sys-head strong { font-size: 15px; }
+.chip { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; border: 1px solid var(--line); border-radius: 999px; font-size: 12px; color: var(--muted); white-space: nowrap; }
+.chip.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, var(--line)); }
+.chip.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); }
+.chip.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, var(--line)); }
+.id-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
+.id-grid input { width: 100%; }
+@media (max-width: 640px) { .id-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+.coverage { position: relative; height: 18px; border-radius: 4px; background: var(--panel); border: 1px solid var(--line); overflow: hidden; }
+.coverage .usable { position: absolute; top: 0; bottom: 0; background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.coverage .tick { position: absolute; top: 2px; bottom: 2px; width: 2px; border-radius: 1px; transform: translateX(-1px); }
+.coverage .tick.cc { top: 0; bottom: 0; width: 4px; transform: translateX(-2px); }
+.coverage .tick.voice { opacity: 0.55; }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--muted); }
+.sys-table td.sys-name { white-space: nowrap; }
+.sys-table tr.group-head td { color: var(--muted); font-size: 12px; padding-top: 10px; border-bottom: none; }
+.sys-table tr.mismatch td { color: var(--bad); }
+.filter-row { display: flex; gap: 6px; flex-wrap: wrap; }
+.filter-row .btn.on { border-color: var(--accent); box-shadow: inset 0 -2px 0 var(--accent); }

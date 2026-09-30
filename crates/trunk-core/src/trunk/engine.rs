@@ -1,5 +1,5 @@
-//! One trunked system above the radio(s) — Trunk Recorder's
-//! monitor_messages() loop plus its recorders:
+//! Trunked systems above the radio(s) — Trunk Recorder's
+//! monitor_messages() loop plus its recorders, for each system:
 //!
 //! ```text
 //! source(s) u8 IQ → Channelizer per source
@@ -11,13 +11,16 @@
 //!   call end → Concluded (TR JSON + audio)
 //! ```
 //!
-//! Several sources (dongles) can feed one system: the control channel runs on
-//! the source that covers it, each voice channel on the source that covers its
-//! frequency. Time is the control channel's sample clock (the first source's
-//! when there is no trunked system).
+//! Several sources (dongles) feed every system: each system's control channel
+//! runs on the source that covers it, each voice channel on the source that
+//! covers its frequency. The systems share the sources and the recorder pool;
+//! each has its own control channel, band plan, talkgroups and calls, and its
+//! own time — its control channel's sample clock. Each site of a multi-site
+//! system is a system of its own (see [`SystemConfig::expect`]); calls heard
+//! on two sites are recorded by both.
 //!
 //! Conventional channels (analog FM, P25) ride the same channelizers: see
-//! [`super::conventional`]. A config may have a trunked system, conventional
+//! [`super::conventional`]. A config may have trunked systems, conventional
 //! channels, or both. Everything that happens is reported as [`Event`]s; the
 //! engine does no I/O.
 
@@ -25,7 +28,7 @@ use std::collections::HashMap;
 
 use num_complex::Complex32;
 
-use super::calls::{Call, CallConfig, CallEvent, CallId, CallManager, Reason, RecorderHost};
+use super::calls::{Call, CallConfig, CallEvent, CallId, CallIds, CallManager, Reason, RecorderHost, CONVENTIONAL};
 use super::conventional::{CallRules, ConvChannel, ConvConfig, ConvOut, Conventional};
 use super::message::{Message, MessageType, TsbkParser};
 use super::record::{call_record, ConcludeInfo};
@@ -55,23 +58,60 @@ pub struct SourceConfig {
     pub rate_hz: f64,
 }
 
+/// One trunked system — or one site of a multi-site system: each site with
+/// its own control channel is a system here, as in Trunk Recorder.
 #[derive(Clone, Debug)]
-pub struct EngineConfig {
+pub struct SystemConfig {
+    /// Folder and record name (Trunk Recorder's shortName); unique.
     pub short_name: String,
     pub control_channels: Vec<f64>,
+    pub calls: CallConfig,
+    /// Receivers for its control and voice channels (the modulation).
+    pub bank: BankConfig,
+    pub talkgroups: Talkgroups,
+    /// Only follow a control channel whose identity agrees (a field left
+    /// None matches anything) — keeps a system off a neighbour's or another
+    /// site's control channel.
+    pub expect: Identity,
+}
+
+impl Default for SystemConfig {
+    fn default() -> Self {
+        SystemConfig {
+            short_name: "sys1".into(),
+            control_channels: vec![],
+            calls: CallConfig::default(),
+            bank: BankConfig::default(),
+            talkgroups: Talkgroups::default(),
+            expect: Identity::default(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct EngineConfig {
+    /// The trunked systems (sites), in order; [`Call::system`] indexes them.
+    pub systems: Vec<SystemConfig>,
     pub sources: Vec<SourceConfig>,
     /// Seconds of air a voice channel replays from before its grant.
     pub preroll_s: f64,
+    /// Recorders shared by every system.
     pub max_recorders: usize,
     /// Keep calls with no decoded audio (encrypted, lost).
     pub keep_silent_calls: bool,
+    /// Conventional channels' call rules (timeout, encrypted).
     pub calls: CallConfig,
     /// Wall-clock epoch ms at sample-clock time 0.
     pub epoch_ms_at_zero: f64,
+    /// Receivers for conventional P25 channels.
     pub bank: BankConfig,
     /// Conventional channels, energy-detected on whichever source covers them.
     pub conventional: Vec<ConvChannel>,
     pub conv: ConvConfig,
+    /// Folder and record name of conventional calls.
+    pub conv_short_name: String,
+    /// Names for talkgroups a conventional P25 channel reports.
+    pub conv_talkgroups: Talkgroups,
     /// Keep each call's vocoder frames ([`Concluded::frames`]).
     pub capture_frames: bool,
 }
@@ -79,8 +119,7 @@ pub struct EngineConfig {
 impl Default for EngineConfig {
     fn default() -> Self {
         EngineConfig {
-            short_name: "sys1".into(),
-            control_channels: vec![],
+            systems: vec![],
             sources: vec![],
             preroll_s: 1.0,
             max_recorders: 32,
@@ -90,6 +129,8 @@ impl Default for EngineConfig {
             bank: BankConfig::default(),
             conventional: vec![],
             conv: ConvConfig::default(),
+            conv_short_name: "conv".into(),
+            conv_talkgroups: Talkgroups::default(),
             capture_frames: false,
         }
     }
@@ -100,6 +141,8 @@ pub struct Concluded {
     pub call: Call,
     /// Trunk Recorder's call JSON.
     pub json: String,
+    /// The call's system's short name (its folder).
+    pub short_name: String,
     /// `<talkgroup>-<start epoch>_<freq>[.slot]`
     pub base_name: String,
     /// 8 kHz mono in [−1, 1].
@@ -111,13 +154,17 @@ pub struct Concluded {
 
 #[derive(Clone, Debug)]
 pub enum Event {
-    ControlChannel { freq_hz: u64 },
-    Message(Message),
+    /// System `system` tuned a control channel.
+    ControlChannel { system: u16, freq_hz: u64 },
+    /// A control channel message of system `system`.
+    Message { system: u16, msg: Message },
+    /// Something worth a log line about system `system`.
+    Note { system: u16, text: String },
     CallStart(Call),
     CallUpdate(Call),
     CallEnd(Call),
     /// Live audio for a recording call.
-    Audio { call_id: CallId, talkgroup: u32, samples: Vec<f32> },
+    Audio { call_id: CallId, system: u16, talkgroup: u32, samples: Vec<f32> },
     Concluded(Concluded),
 }
 
@@ -130,8 +177,49 @@ pub struct Identity {
     pub site: Option<u32>,
 }
 
+impl Identity {
+    /// The fields both know and disagree on, e.g. "site 3 (expected 4)"; None when they agree.
+    pub fn conflict(&self, expect: &Identity) -> Option<String> {
+        let mut d = Vec::new();
+        let mut cmp = |name: &str, hex: bool, got: Option<u32>, want: Option<u32>| {
+            if let (Some(g), Some(w)) = (got, want) {
+                if g != w {
+                    d.push(if hex { format!("{name} {g:X} (expected {w:X})") } else { format!("{name} {g} (expected {w})") });
+                }
+            }
+        };
+        cmp("NAC", true, self.nac.map(u32::from), expect.nac.map(u32::from));
+        cmp("WACN", true, self.wacn, expect.wacn);
+        cmp("SysID", true, self.sys_id, expect.sys_id);
+        cmp("RFSS", false, self.rfss, expect.rfss);
+        cmp("site", false, self.site, expect.site);
+        (!d.is_empty()).then(|| d.join(", "))
+    }
+
+    /// Every field `expect` names is known here.
+    pub fn confirms(&self, expect: &Identity) -> bool {
+        (expect.nac.is_none() || self.nac.is_some())
+            && (expect.wacn.is_none() || self.wacn.is_some())
+            && (expect.sys_id.is_none() || self.sys_id.is_some())
+            && (expect.rfss.is_none() || self.rfss.is_some())
+            && (expect.site.is_none() || self.site.is_some())
+    }
+}
+
+/// A neighbouring site a control channel announces.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AdjacentSite {
+    pub sys_id: u32,
+    pub rfss: u32,
+    pub site: u32,
+    pub freq_hz: u64,
+}
+
+/// One system's state, for the interface.
 #[derive(Clone, Debug, Default)]
-pub struct Status {
+pub struct SystemStatus {
+    pub short_name: String,
+    /// Its control channel's clock.
     pub now_s: f64,
     pub control_channel_hz: Option<u64>,
     pub identity: Identity,
@@ -139,6 +227,21 @@ pub struct Status {
     pub bad: u64,
     pub modulation: &'static str,
     pub active_calls: usize,
+    pub recording: usize,
+    pub calls_concluded: u64,
+    /// The control channel is another system's / site's (see [`SystemConfig::expect`]).
+    pub mismatch: Option<String>,
+    /// Neighbouring sites its control channel announces.
+    pub adjacent: Vec<AdjacentSite>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Status {
+    /// The first source's sample clock.
+    pub now_s: f64,
+    pub systems: Vec<SystemStatus>,
+    pub active_calls: usize,
+    /// Recorders in use (trunked calls; conventional channels don't use the pool).
     pub recording: usize,
     pub channels_open: usize,
     /// Conventional channels with a head open (a signal on them now).
@@ -158,10 +261,9 @@ enum Voice {
     Tdma { rx: Cqpsk, framer: phase2::Framer, tracker: TdmaTracker, syms: Vec<Symbol>, pkts: Vec<Packet> },
 }
 
-impl Voice {
-}
-
 struct Channel {
+    /// The system whose grant opened it.
+    system: u16,
     source: usize,
     head: HeadId,
     /// Absolute input sample (of its source) of the head's first output.
@@ -177,24 +279,25 @@ struct Recording {
     recorder_num: u32,
 }
 
-/// Everything the call manager asks for (the RecorderHost), kept apart from
-/// it so both can be borrowed at once.
+/// The radio side every system shares: sources and their channelizers, the
+/// voice channels and the recorder pool. Kept apart from the systems' call
+/// managers so both can be borrowed at once.
 struct Radio {
     sources: Vec<Source>,
-    channels: HashMap<u64, Channel>,
+    /// Keyed by (system, frequency): systems never share a voice channel.
+    channels: HashMap<(u16, u64), Channel>,
     recordings: HashMap<CallId, Recording>,
     free_nums: Vec<u32>,
     next_num: u32,
     max_recorders: usize,
     preroll_s: f64,
     capture_frames: bool,
-    bank_cfg: BankConfig,
     groups: Vec<Group>,
     tout: Vec<(usize, TrackerOut)>,
-    /// Phase 2 scrambler seed (NAC, System ID, WACN), once the control channel gave it.
-    tdma_key: Option<(u32, u32, u32)>,
-    /// Audio / info produced inside start_recording (pre-roll), applied after.
-    pending: Vec<(CallId, TrackerOut)>,
+    /// Each system's Phase 2 scrambler seed (NAC, System ID, WACN), once its control channel gave it.
+    tdma_keys: Vec<Option<(u32, u32, u32)>>,
+    /// Audio / info produced by the voice channels, as (system, call, output), applied after.
+    pending: Vec<(u16, CallId, TrackerOut)>,
 }
 
 impl Radio {
@@ -204,6 +307,7 @@ impl Radio {
 
     /// Run a channel's receivers over `iq`, collecting what its tracker
     /// produced as (slot, output).
+    #[allow(clippy::too_many_arguments)]
     fn run_channel(
         ch: &mut Channel,
         iq: &[Complex32],
@@ -246,75 +350,98 @@ impl Radio {
     }
 
     /// Hand a channel's outputs to the calls on its slots.
-    fn route(ch: &Channel, tout: &mut Vec<(usize, TrackerOut)>, pending: &mut Vec<(CallId, TrackerOut)>) {
+    fn route(ch: &Channel, tout: &mut Vec<(usize, TrackerOut)>, pending: &mut Vec<(u16, CallId, TrackerOut)>) {
         for (slot, o) in tout.drain(..) {
             if let Some(id) = ch.calls[slot & 1] {
-                pending.push((id, o));
+                pending.push((ch.system, id, o));
             }
         }
     }
+
+    /// Run a channel's receivers over its head's latest output and route the result.
+    fn run_head(&mut self, key: (u16, u64), flush: bool) {
+        let Some(ch) = self.channels.get_mut(&key) else { return };
+        let s = &self.sources[ch.source];
+        let (rate, src_rate) = (s.chz.output_rate(), s.cfg.rate_hz);
+        let iq: &[Complex32] = if flush { &[] } else { s.chz.output(ch.head).unwrap_or(&[]) };
+        let tk = self.tdma_keys.get(ch.system as usize).copied().flatten();
+        self.tout.clear();
+        Self::run_channel(ch, iq, rate, src_rate, tk, &mut self.groups, &mut self.tout, flush);
+        Self::route(ch, &mut self.tout, &mut self.pending);
+    }
 }
 
-impl RecorderHost for Radio {
+/// The recorder host one system's call manager sees.
+struct SysHost<'a> {
+    radio: &'a mut Radio,
+    system: u16,
+    bank: BankConfig,
+}
+
+impl RecorderHost for SysHost<'_> {
     fn start_recording(&mut self, call: &Call) -> Result<(), Reason> {
-        let Some(src) = self.source_for(call.freq_hz as f64) else { return Err(Reason::NoSource) };
-        if self.recordings.len() >= self.max_recorders {
+        let r = &mut *self.radio;
+        let Some(src) = r.source_for(call.freq_hz as f64) else { return Err(Reason::NoSource) };
+        if r.recordings.len() >= r.max_recorders {
             return Err(Reason::NoRecorder);
         }
-        let recorder_num = self.free_nums.pop().unwrap_or_else(|| {
-            self.next_num += 1;
-            self.next_num - 1
+        let recorder_num = r.free_nums.pop().unwrap_or_else(|| {
+            r.next_num += 1;
+            r.next_num - 1
         });
-        self.recordings.insert(call.id, Recording { audio: Vec::new(), frames: CallFrames::new(self.capture_frames), recorder_num });
+        r.recordings.insert(call.id, Recording { audio: Vec::new(), frames: CallFrames::new(r.capture_frames), recorder_num });
         let slot = if call.phase2_tdma { call.tdma_slot as usize & 1 } else { 0 };
-        if let Some(ch) = self.channels.get_mut(&call.freq_hz) {
+        let key = (self.system, call.freq_hz);
+        if let Some(ch) = r.channels.get_mut(&key) {
             // A newer call on the same channel (slot) takes it over, as in Trunk Recorder.
             ch.calls[slot] = Some(call.id);
             return Ok(());
         }
-        let s = &mut self.sources[src];
+        let s = &mut r.sources[src];
         let rate = s.chz.output_rate();
-        let (head, pre, start_sample) = s.chz.add_head(call.freq_hz as f64 - s.cfg.center_hz, CHANNEL_CUTOFF_HZ, self.preroll_s);
+        let (head, pre, start_sample) = s.chz.add_head(call.freq_hz as f64 - s.cfg.center_hz, CHANNEL_CUTOFF_HZ, r.preroll_s);
         let seed = call.freq_hz as u32;
         let voice = if call.phase2_tdma {
             let mut tracker = TdmaTracker::new(seed);
-            tracker.soft = self.bank_cfg.soft;
+            tracker.soft = self.bank.soft;
             let rx = Cqpsk::new(rate, cqpsk::Options { baud: phase2::SYMBOL_RATE, ..Default::default() });
             Voice::Tdma { rx, framer: phase2::Framer::default(), tracker, syms: Vec::new(), pkts: Vec::new() }
         } else {
-            Voice::Fdma { bank: Bank::new(rate, self.bank_cfg), tracker: VoiceTracker::new(mbe::lcg(seed)) }
+            Voice::Fdma { bank: Bank::new(rate, self.bank), tracker: VoiceTracker::new(mbe::lcg(seed)) }
         };
         let mut calls = [None, None];
         calls[slot] = Some(call.id);
-        let mut ch = Channel { source: src, head, start_sample, calls, voice };
+        let mut ch = Channel { system: self.system, source: src, head, start_sample, calls, voice };
         // Pre-roll: decode the replayed air now.
-        self.tout.clear();
-        Self::run_channel(&mut ch, &pre, rate, s.cfg.rate_hz, self.tdma_key, &mut self.groups, &mut self.tout, false);
-        Self::route(&ch, &mut self.tout, &mut self.pending);
-        self.channels.insert(call.freq_hz, ch);
+        let tk = r.tdma_keys.get(self.system as usize).copied().flatten();
+        r.tout.clear();
+        Radio::run_channel(&mut ch, &pre, rate, s.cfg.rate_hz, tk, &mut r.groups, &mut r.tout, false);
+        Radio::route(&ch, &mut r.tout, &mut r.pending);
+        r.channels.insert(key, ch);
         Ok(())
     }
 
     fn stop_recording(&mut self, call: &Call) {
-        let Some(ch) = self.channels.get_mut(&call.freq_hz) else { return };
+        let key = (self.system, call.freq_hz);
+        let r = &mut *self.radio;
+        let Some(ch) = r.channels.get_mut(&key) else { return };
         for c in ch.calls.iter_mut() {
             if *c == Some(call.id) {
                 *c = None;
             }
         }
         if ch.calls.iter().all(Option::is_none) {
-            let ch = self.channels.remove(&call.freq_hz).unwrap();
-            self.sources[ch.source].chz.remove_head(ch.head);
+            let ch = r.channels.remove(&key).unwrap();
+            r.sources[ch.source].chz.remove_head(ch.head);
         }
     }
 }
 
-pub struct Engine {
-    cfg: EngineConfig,
-    radio: Radio,
+/// One trunked system: its control channel, parser (band plan) and calls.
+struct Trunk {
+    cfg: SystemConfig,
+    idx: u16,
     calls: CallManager,
-    conv: Conventional,
-    conv_out: Vec<ConvOut>,
     parser: TsbkParser,
     cc_source: usize,
     cc_head: Option<HeadId>,
@@ -330,17 +457,171 @@ pub struct Engine {
     concluded: u64,
     identity: Identity,
     nac_votes: HashMap<u16, u32>,
+    /// Why this control channel is not ours, while it isn't.
+    mismatch: Option<String>,
+    adjacent: std::collections::BTreeMap<(u32, u32), AdjacentSite>,
+}
+
+impl Trunk {
+    fn host<'a>(&self, radio: &'a mut Radio) -> SysHost<'a> {
+        SysHost { radio, system: self.idx, bank: self.cfg.bank }
+    }
+
+    fn tune(&mut self, radio: &mut Radio, index: usize, events: &mut Vec<Event>) -> Result<(), String> {
+        let list: Vec<(f64, usize)> = self.cfg.control_channels.iter().filter_map(|&f| radio.source_for(f).map(|s| (f, s))).collect();
+        if list.is_empty() {
+            return Err(format!("{}: no control channel falls inside a source's bandwidth — move the center frequency.", self.cfg.short_name));
+        }
+        self.cc_index = index % list.len();
+        let (hz, src) = list[self.cc_index];
+        if let Some(h) = self.cc_head.take() {
+            radio.sources[self.cc_source].chz.remove_head(h);
+        }
+        let retune = self.cc_hz.is_some();
+        self.cc_source = src;
+        let s = &mut radio.sources[src];
+        let (head, _, _) = s.chz.add_head(hz - s.cfg.center_hz, CHANNEL_CUTOFF_HZ, 0.0);
+        self.cc_head = Some(head);
+        self.cc_hz = Some(hz.round() as u64);
+        self.cc_start_s = self.now_s;
+        self.cc_samples = 0;
+        self.last_good_s = self.now_s;
+        self.cc_bank = Bank::new(s.chz.output_rate(), self.cfg.bank);
+        if retune {
+            // Another control channel may be another site: learn it afresh.
+            self.identity = Identity::default();
+            self.nac_votes.clear();
+            self.mismatch = None;
+            self.adjacent.clear();
+        }
+        events.push(Event::ControlChannel { system: self.idx, freq_hz: hz.round() as u64 });
+        Ok(())
+    }
+
+    /// A block ran on the control channel's source.
+    fn on_block(&mut self, radio: &mut Radio, events: &mut Vec<Event>, call_events: &mut Vec<CallEvent>) {
+        let Some(head) = self.cc_head else { return };
+        let src = self.cc_source;
+        let rate = radio.sources[src].chz.output_rate();
+        let iq = radio.sources[src].chz.output(head).map(|v| v.to_vec()).unwrap_or_default();
+        let mut groups = Vec::new();
+        self.cc_bank.push(&iq, &mut groups);
+        self.cc_samples += iq.len() as u64;
+        self.now_s = self.cc_start_s + self.cc_samples as f64 / rate;
+        self.on_groups(radio, groups, events, call_events);
+        if self.now_s - self.last_good_s > CC_HUNT_S && self.cfg.control_channels.len() > 1 {
+            let _ = self.tune(radio, self.cc_index + 1, events);
+        }
+        let mut host = self.host(radio);
+        self.calls.tick(self.now_s, &mut host, call_events);
+    }
+
+    fn on_groups(&mut self, radio: &mut Radio, groups: Vec<Group>, events: &mut Vec<Event>, call_events: &mut Vec<CallEvent>) {
+        let rate = radio.sources[self.cc_source].chz.output_rate();
+        for g in &groups {
+            let f = best_frame(g);
+            *self.nac_votes.entry(f.nid.nac).or_default() += 1;
+            self.identity.nac = self.nac_votes.iter().max_by_key(|(_, &c)| c).map(|(&n, _)| n);
+            if f.nid.duid != TSDU {
+                continue;
+            }
+            let (blocks, missing) = best_tsbks(g);
+            self.bad += missing as u64;
+            let t = self.cc_start_s + f.sample / rate;
+            for blk in &blocks {
+                self.good += 1;
+                let msgs = self.parser.parse(blk, f.nid.nac, t);
+                for m in &msgs {
+                    match m.kind {
+                        MessageType::Status => {
+                            self.identity.wacn = Some(m.wacn);
+                            self.identity.sys_id = Some(m.sys_id);
+                        }
+                        MessageType::SysId => {
+                            self.identity.sys_id = Some(m.sys_id);
+                            self.identity.rfss = Some(m.rfss);
+                            self.identity.site = Some(m.site);
+                        }
+                        MessageType::Adjacent if m.freq_hz > 0 => {
+                            self.adjacent.insert((m.rfss, m.site), AdjacentSite { sys_id: m.sys_id, rfss: m.rfss, site: m.site, freq_hz: m.freq_hz });
+                        }
+                        _ => {}
+                    }
+                }
+                let conflict = self.identity.conflict(&self.cfg.expect);
+                if conflict != self.mismatch {
+                    if let Some(c) = &conflict {
+                        let hz = self.cc_hz.unwrap_or(0) as f64 / 1e6;
+                        events.push(Event::Note { system: self.idx, text: format!("Control channel {hz:.5} MHz is not this system: {c}") });
+                    }
+                    self.mismatch = conflict;
+                }
+                events.extend(msgs.iter().cloned().map(|msg| Event::Message { system: self.idx, msg }));
+                if self.mismatch.is_some() {
+                    // Another system's (or site's) grants: not ours to follow — and
+                    // it doesn't count as a good control channel, so we hunt on.
+                    continue;
+                }
+                self.last_good_s = self.now_s;
+                if !self.identity.confirms(&self.cfg.expect) {
+                    // Not yet known to be ours (the site comes every few seconds):
+                    // hold the grants — a call still going is granted again.
+                    continue;
+                }
+                if let (Some(nac), Some(sys), Some(wacn)) = (self.identity.nac, self.identity.sys_id, self.identity.wacn) {
+                    radio.tdma_keys[self.idx as usize] = Some((nac as u32, sys, wacn));
+                }
+                let mut host = self.host(radio);
+                self.calls.handle(&msgs, &mut host, call_events);
+            }
+        }
+    }
+
+    fn status(&self, radio: &Radio) -> SystemStatus {
+        let (q, c) = self.cc_bank.frames_per_rx().iter().enumerate().fold((0, 0), |(q, c), (i, &n)| if i < 2 { (q + n, c) } else { (q, c + n) });
+        SystemStatus {
+            short_name: self.cfg.short_name.clone(),
+            now_s: self.now_s,
+            control_channel_hz: self.cc_hz,
+            identity: self.identity.clone(),
+            good: self.good,
+            bad: self.bad,
+            modulation: if q + c < 8 { "" } else if q >= c { "CQPSK" } else { "C4FM" },
+            active_calls: self.calls.calls.len(),
+            recording: self.calls.calls.iter().filter(|c| radio.recordings.contains_key(&c.id)).count(),
+            calls_concluded: self.concluded,
+            mismatch: self.mismatch.clone(),
+            adjacent: self.adjacent.values().copied().collect(),
+        }
+    }
+}
+
+pub struct Engine {
+    cfg: EngineConfig,
+    radio: Radio,
+    trunks: Vec<Trunk>,
+    conv: Conventional,
+    /// Conventional channels' ids and talkgroup names (their calls live in `conv`).
+    conv_calls: CallManager,
+    conv_out: Vec<ConvOut>,
+    conv_concluded: u64,
+    now_s: f64,
     events: Vec<Event>,
     call_events: Vec<CallEvent>,
 }
 
 impl Engine {
-    pub fn new(cfg: EngineConfig, talkgroups: Talkgroups) -> Result<Self, String> {
+    pub fn new(cfg: EngineConfig) -> Result<Self, String> {
         if cfg.sources.is_empty() {
             return Err("no sources configured".into());
         }
-        if cfg.control_channels.is_empty() && cfg.conventional.is_empty() {
+        let trunked: Vec<&SystemConfig> = cfg.systems.iter().filter(|s| !s.control_channels.is_empty()).collect();
+        if trunked.is_empty() && cfg.conventional.is_empty() {
             return Err("Add a control channel or a conventional channel.".into());
+        }
+        let mut seen = std::collections::HashSet::new();
+        if let Some(d) = cfg.systems.iter().find(|s| !seen.insert(s.short_name.as_str())) {
+            return Err(format!("Two systems are named \"{}\" — each needs its own short name.", d.short_name));
         }
         let history = cfg.preroll_s.max(cfg.conv.preroll_s).max(0.1);
         let spans: Vec<(f64, f64)> = cfg.sources.iter().map(|s| (s.center_hz, s.rate_hz)).collect();
@@ -348,66 +629,77 @@ impl Engine {
         let sources: Vec<Source> =
             cfg.sources.iter().map(|s| Source { cfg: s.clone(), chz: Channelizer::new(s.rate_hz, MIN_CHANNEL_RATE, history) }).collect();
         let rate = sources[0].chz.output_rate();
-        let mut e = Engine {
-            radio: Radio {
-                sources,
-                channels: HashMap::new(),
-                recordings: HashMap::new(),
-                free_nums: Vec::new(),
-                next_num: 0,
-                max_recorders: cfg.max_recorders,
-                preroll_s: cfg.preroll_s,
-                capture_frames: cfg.capture_frames,
-                bank_cfg: cfg.bank,
-                groups: Vec::new(),
-                tout: Vec::new(),
-                tdma_key: None,
-                pending: Vec::new(),
-            },
-            calls: CallManager::new(cfg.calls, talkgroups),
-            conv,
-            conv_out: Vec::new(),
-            parser: TsbkParser::default(),
-            cc_source: 0,
-            cc_head: None,
-            cc_bank: Bank::new(rate, cfg.bank),
-            cc_index: 0,
-            cc_hz: None,
-            cc_start_s: 0.0,
-            cc_samples: 0,
-            last_good_s: 0.0,
-            now_s: 0.0,
-            good: 0,
-            bad: 0,
-            concluded: 0,
-            identity: Identity::default(),
-            nac_votes: HashMap::new(),
-            events: Vec::new(),
-            call_events: Vec::new(),
-            cfg,
+        let ids = CallIds::default();
+        let mut radio = Radio {
+            sources,
+            channels: HashMap::new(),
+            recordings: HashMap::new(),
+            free_nums: Vec::new(),
+            next_num: 0,
+            max_recorders: cfg.max_recorders,
+            preroll_s: cfg.preroll_s,
+            capture_frames: cfg.capture_frames,
+            groups: Vec::new(),
+            tout: Vec::new(),
+            tdma_keys: vec![None; cfg.systems.len()],
+            pending: Vec::new(),
         };
-        if !e.cfg.control_channels.is_empty() {
-            e.tune_control(0)?;
+        let mut events = Vec::new();
+        let mut trunks = Vec::new();
+        for (i, sc) in cfg.systems.iter().enumerate() {
+            let mut t = Trunk {
+                idx: i as u16,
+                calls: CallManager::with_ids(sc.calls, sc.talkgroups.clone(), i as u16, ids.clone()),
+                parser: TsbkParser::default(),
+                cc_source: 0,
+                cc_head: None,
+                cc_bank: Bank::new(rate, sc.bank),
+                cc_index: 0,
+                cc_hz: None,
+                cc_start_s: 0.0,
+                cc_samples: 0,
+                last_good_s: 0.0,
+                now_s: 0.0,
+                good: 0,
+                bad: 0,
+                concluded: 0,
+                identity: Identity::default(),
+                nac_votes: HashMap::new(),
+                mismatch: None,
+                adjacent: Default::default(),
+                cfg: sc.clone(),
+            };
+            if !sc.control_channels.is_empty() {
+                t.tune(&mut radio, 0, &mut events)?;
+            }
+            trunks.push(t);
         }
-        Ok(e)
+        let conv_calls = CallManager::with_ids(cfg.calls, cfg.conv_talkgroups.clone(), CONVENTIONAL, ids);
+        Ok(Engine { radio, trunks, conv, conv_calls, conv_out: Vec::new(), conv_concluded: 0, now_s: 0.0, events, call_events: Vec::new(), cfg })
     }
 
-    /// Preload a band plan saved by [`Engine::bandplan`] (a grant heard before
-    /// the next IDEN broadcast can then be followed at once).
-    pub fn load_bandplan(&mut self, s: &str) {
-        self.parser.bandplan_from_str(s);
+    /// Preload system `system`'s band plan saved by [`Engine::bandplan`] (a
+    /// grant heard before the next IDEN broadcast can then be followed at once).
+    pub fn load_bandplan(&mut self, system: usize, s: &str) {
+        if let Some(t) = self.trunks.get_mut(system) {
+            t.parser.bandplan_from_str(s);
+        }
     }
-    pub fn bandplan(&self) -> String {
-        self.parser.bandplan_to_string()
+    pub fn bandplan(&self, system: usize) -> String {
+        self.trunks.get(system).map_or_else(String::new, |t| t.parser.bandplan_to_string())
     }
 
     pub fn sources(&self) -> &[SourceConfig] {
         &self.cfg.sources
     }
 
+    pub fn systems(&self) -> &[SystemConfig] {
+        &self.cfg.systems
+    }
+
     /// Calls in progress (recording or monitoring), trunked then conventional.
     pub fn active_calls(&self) -> Vec<Call> {
-        self.calls.calls.iter().chain(self.conv.calls()).cloned().collect()
+        self.trunks.iter().flat_map(|t| t.calls.calls.iter()).chain(self.conv.calls()).cloned().collect()
     }
 
     /// Everything that happened since the last call.
@@ -421,20 +713,15 @@ impl Engine {
     }
 
     pub fn status(&self) -> Status {
-        let (q, c) = self.cc_bank.frames_per_rx().iter().enumerate().fold((0, 0), |(q, c), (i, &n)| if i < 2 { (q + n, c) } else { (q, c + n) });
+        let systems: Vec<SystemStatus> = self.trunks.iter().filter(|t| t.cc_head.is_some()).map(|t| t.status(&self.radio)).collect();
         Status {
             now_s: self.now_s,
-            control_channel_hz: self.cc_hz,
-            identity: self.identity.clone(),
-            good: self.good,
-            bad: self.bad,
-            modulation: if q + c < 8 { "" } else if q >= c { "CQPSK" } else { "C4FM" },
-            active_calls: self.calls.calls.len() + self.conv.calls().count(),
-            // Trunked recorders only: conventional channels don't use the pool.
+            active_calls: systems.iter().map(|s| s.active_calls).sum::<usize>() + self.conv.calls().count(),
             recording: self.radio.recordings.len(),
             channels_open: self.radio.channels.len() + self.conv.open_count(),
             conventional_open: self.conv.open_count(),
-            calls_concluded: self.concluded,
+            calls_concluded: systems.iter().map(|s| s.calls_concluded).sum::<u64>() + self.conv_concluded,
+            systems,
         }
     }
 
@@ -470,20 +757,20 @@ impl Engine {
 
     /// End of input: release what the receivers still hold and end every call.
     pub fn finish(&mut self) {
-        let mut groups = Vec::new();
-        self.cc_bank.flush(&mut groups);
-        self.on_control_groups(groups);
-        let freqs: Vec<u64> = self.radio.channels.keys().copied().collect();
-        for f in freqs {
-            let ch = self.radio.channels.get_mut(&f).unwrap();
-            let src_rate = self.radio.sources[ch.source].cfg.rate_hz;
-            let rate = self.radio.sources[ch.source].chz.output_rate();
-            self.radio.tout.clear();
-            Radio::run_channel(ch, &[], rate, src_rate, self.radio.tdma_key, &mut self.radio.groups, &mut self.radio.tout, true);
-            Radio::route(ch, &mut self.radio.tout, &mut self.radio.pending);
+        for t in self.trunks.iter_mut() {
+            let mut groups = Vec::new();
+            t.cc_bank.flush(&mut groups);
+            t.on_groups(&mut self.radio, groups, &mut self.events, &mut self.call_events);
+        }
+        let keys: Vec<(u16, u64)> = self.radio.channels.keys().copied().collect();
+        for k in keys {
+            self.radio.run_head(k, true);
         }
         self.apply_pending();
-        self.calls.end_all(&mut self.radio, &mut self.call_events);
+        for t in self.trunks.iter_mut() {
+            let mut host = t.host(&mut self.radio);
+            t.calls.end_all(&mut host, &mut self.call_events);
+        }
         self.emit_call_events();
         let rules = self.call_rules();
         let mut out = std::mem::take(&mut self.conv_out);
@@ -501,7 +788,7 @@ impl Engine {
             match o {
                 ConvOut::Start(c) => self.events.push(Event::CallStart(c)),
                 ConvOut::Update(c) => self.events.push(Event::CallUpdate(c)),
-                ConvOut::Audio { call_id, talkgroup, samples } => self.events.push(Event::Audio { call_id, talkgroup, samples }),
+                ConvOut::Audio { call_id, talkgroup, samples } => self.events.push(Event::Audio { call_id, system: CONVENTIONAL, talkgroup, samples }),
                 ConvOut::End { call, audio, frames, recorder_num } => {
                     self.write_call(&call, audio, frames, recorder_num);
                     self.events.push(Event::CallEnd(call));
@@ -511,61 +798,20 @@ impl Engine {
         self.conv_out = out;
     }
 
-    fn tune_control(&mut self, index: usize) -> Result<(), String> {
-        let list: Vec<(f64, usize)> =
-            self.cfg.control_channels.iter().filter_map(|&f| self.radio.source_for(f).map(|s| (f, s))).collect();
-        if list.is_empty() {
-            return Err("No control channel falls inside a source's bandwidth — move the center frequency.".into());
-        }
-        self.cc_index = index % list.len();
-        let (hz, src) = list[self.cc_index];
-        if let Some(h) = self.cc_head.take() {
-            self.radio.sources[self.cc_source].chz.remove_head(h);
-        }
-        self.cc_source = src;
-        let s = &mut self.radio.sources[src];
-        let (head, _, _) = s.chz.add_head(hz - s.cfg.center_hz, CHANNEL_CUTOFF_HZ, 0.0);
-        self.cc_head = Some(head);
-        self.cc_hz = Some(hz.round() as u64);
-        self.cc_start_s = self.now_s;
-        self.cc_samples = 0;
-        self.last_good_s = self.now_s;
-        self.cc_bank = Bank::new(s.chz.output_rate(), self.cfg.bank);
-        self.events.push(Event::ControlChannel { freq_hz: hz.round() as u64 });
-        Ok(())
-    }
-
     fn on_block(&mut self, source: usize) {
         // Voice channels on this source.
-        let src_rate = self.radio.sources[source].cfg.rate_hz;
-        let rate = self.radio.sources[source].chz.output_rate();
-        let freqs: Vec<u64> = self.radio.channels.iter().filter(|(_, c)| c.source == source).map(|(&f, _)| f).collect();
-        for f in freqs {
-            let radio = &mut self.radio;
-            let Some(ch) = radio.channels.get_mut(&f) else { continue };
-            let Some(iq) = radio.sources[source].chz.output(ch.head) else { continue };
-            radio.tout.clear();
-            Radio::run_channel(ch, iq, rate, src_rate, radio.tdma_key, &mut radio.groups, &mut radio.tout, false);
-            Radio::route(ch, &mut radio.tout, &mut radio.pending);
+        let keys: Vec<(u16, u64)> = self.radio.channels.iter().filter(|(_, c)| c.source == source).map(|(&k, _)| k).collect();
+        for k in keys {
+            self.radio.run_head(k, false);
         }
-        // The control channel.
-        if source == self.cc_source {
-            if let Some(head) = self.cc_head {
-                let iq = self.radio.sources[source].chz.output(head).map(|v| v.to_vec()).unwrap_or_default();
-                let mut groups = Vec::new();
-                self.cc_bank.push(&iq, &mut groups);
-                self.cc_samples += iq.len() as u64;
-                self.now_s = self.cc_start_s + self.cc_samples as f64 / rate;
-                self.on_control_groups(groups);
+        // The control channels on it.
+        for i in 0..self.trunks.len() {
+            if self.trunks[i].cc_head.is_some() && self.trunks[i].cc_source == source {
+                self.trunks[i].on_block(&mut self.radio, &mut self.events, &mut self.call_events);
                 self.apply_pending();
-                if self.now_s - self.last_good_s > CC_HUNT_S && self.cfg.control_channels.len() > 1 {
-                    let _ = self.tune_control(self.cc_index + 1);
-                }
-                self.calls.tick(self.now_s, &mut self.radio, &mut self.call_events);
             }
         }
-        // No trunked system: the first source's sample clock is the time.
-        if self.cc_head.is_none() && source == 0 {
+        if source == 0 {
             let c = &self.radio.sources[0].chz;
             self.now_s = c.sample_position() as f64 / c.fs();
         }
@@ -574,67 +820,29 @@ impl Engine {
             let t = c.sample_position() as f64 / c.fs();
             let rules = self.call_rules();
             let mut out = std::mem::take(&mut self.conv_out);
-            self.conv.on_block(source, &mut self.radio.sources[source].chz, t, &mut self.calls, &rules, &mut out);
+            self.conv.on_block(source, &mut self.radio.sources[source].chz, t, &mut self.conv_calls, &rules, &mut out);
             self.emit_conv(out);
         }
         self.apply_pending();
         self.emit_call_events();
     }
 
-    fn on_control_groups(&mut self, groups: Vec<Group>) {
-        let rate = self.radio.sources[self.cc_source].chz.output_rate();
-        for g in &groups {
-            let f = best_frame(g);
-            *self.nac_votes.entry(f.nid.nac).or_default() += 1;
-            self.identity.nac = self.nac_votes.iter().max_by_key(|(_, &c)| c).map(|(&n, _)| n);
-            if f.nid.duid != TSDU {
-                continue;
-            }
-            let (blocks, missing) = best_tsbks(g);
-            self.bad += missing as u64;
-            let t = self.cc_start_s + f.sample / rate;
-            for blk in &blocks {
-                self.good += 1;
-                self.last_good_s = self.now_s;
-                let msgs = self.parser.parse(blk, f.nid.nac, t);
-                for m in &msgs {
-                    match m.kind {
-                        MessageType::Status => {
-                            self.identity.wacn = Some(m.wacn);
-                            self.identity.sys_id = Some(m.sys_id);
-                        }
-                        MessageType::SysId => {
-                            self.identity.sys_id = Some(m.sys_id);
-                            self.identity.rfss = Some(m.rfss);
-                            self.identity.site = Some(m.site);
-                        }
-                        _ => {}
-                    }
-                }
-                if let (Some(nac), Some(sys), Some(wacn)) = (self.identity.nac, self.identity.sys_id, self.identity.wacn) {
-                    self.radio.tdma_key = Some((nac as u32, sys, wacn));
-                }
-                self.calls.handle(&msgs, &mut self.radio, &mut self.call_events);
-                self.events.extend(msgs.into_iter().map(Event::Message));
-            }
-        }
-    }
-
     /// Route what the voice trackers produced to their calls.
     fn apply_pending(&mut self) {
-        for (id, o) in std::mem::take(&mut self.radio.pending) {
+        for (sys, id, o) in std::mem::take(&mut self.radio.pending) {
+            let Some(t) = self.trunks.get_mut(sys as usize) else { continue };
             match o {
                 TrackerOut::Audio(samples, frame) => {
                     let Some(rec) = self.radio.recordings.get_mut(&id) else { continue };
                     rec.audio.extend_from_slice(&samples);
                     rec.frames.push(frame);
-                    self.calls.note_audio(id, self.now_s);
-                    let tg = self.calls.calls.iter().find(|c| c.id == id).map_or(0, |c| c.talkgroup);
-                    self.events.push(Event::Audio { call_id: id, talkgroup: tg, samples });
+                    t.calls.note_audio(id, t.now_s);
+                    let tg = t.calls.calls.iter().find(|c| c.id == id).map_or(0, |c| c.talkgroup);
+                    self.events.push(Event::Audio { call_id: id, system: sys, talkgroup: tg, samples });
                 }
                 TrackerOut::Info { source, emergency, encrypted } => {
-                    let now = self.now_s;
-                    if let Some(c) = self.calls.call_mut(id) {
+                    let now = t.now_s;
+                    if let Some(c) = t.calls.call_mut(id) {
                         let mut changed = false;
                         if encrypted && !c.encrypted {
                             c.encrypted = true;
@@ -683,10 +891,20 @@ impl Engine {
         if audio.is_empty() && !self.cfg.keep_silent_calls {
             return;
         }
+        let short_name = match self.trunks.get_mut(call.system as usize) {
+            Some(t) => {
+                t.concluded += 1;
+                t.cfg.short_name.clone()
+            }
+            None => {
+                self.conv_concluded += 1;
+                self.cfg.conv_short_name.clone()
+            }
+        };
         let (json, base_name) = call_record(
             call,
             &ConcludeInfo {
-                short_name: &self.cfg.short_name,
+                short_name: &short_name,
                 epoch_ms_at_zero: self.cfg.epoch_ms_at_zero,
                 audio_seconds: audio.len() as f64 / mbe::SAMPLE_RATE as f64,
                 errors: &frames.errors,
@@ -694,8 +912,42 @@ impl Engine {
                 end_s: call.last_audio_s,
             },
         );
-        self.concluded += 1;
         let frames = frames.captured.filter(|_| !audio.is_empty()).map(|f| frames_jsonl(&f));
-        self.events.push(Event::Concluded(Concluded { call: call.clone(), json, base_name, audio, frames }));
+        self.events.push(Event::Concluded(Concluded { call: call.clone(), json, short_name, base_name, audio, frames }));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn identity_conflict_and_confirmation() {
+        let expect = Identity { nac: Some(0x443), site: Some(4), ..Default::default() };
+        let mut heard = Identity { nac: Some(0x443), ..Default::default() };
+        assert_eq!(heard.conflict(&expect), None);
+        assert!(!heard.confirms(&expect), "site not heard yet");
+        heard.site = Some(3);
+        heard.rfss = Some(1);
+        assert_eq!(heard.conflict(&expect).as_deref(), Some("site 3 (expected 4)"));
+        heard.site = Some(4);
+        assert!(heard.confirms(&expect) && heard.conflict(&expect).is_none());
+        heard.nac = Some(0x1a);
+        assert_eq!(heard.conflict(&expect).as_deref(), Some("NAC 1A (expected 443)"));
+        assert!(Identity::default().confirms(&Identity::default()));
+    }
+
+    #[test]
+    fn systems_need_their_own_names_and_share_call_ids() {
+        let src = vec![SourceConfig { center_hz: 851e6, rate_hz: 2.4e6 }];
+        let sys = |n: &str| SystemConfig { short_name: n.into(), control_channels: vec![851.0125e6], ..Default::default() };
+        let cfg = EngineConfig { systems: vec![sys("a"), sys("a")], sources: src.clone(), ..Default::default() };
+        assert!(Engine::new(cfg).err().unwrap().contains("\"a\""));
+        let cfg = EngineConfig { systems: vec![sys("a"), sys("b")], sources: src, ..Default::default() };
+        let e = Engine::new(cfg).unwrap();
+        assert_eq!(e.status().systems.len(), 2);
+        let ids = CallIds::default();
+        let (mut x, mut y) = (CallManager::with_ids(CallConfig::default(), Talkgroups::default(), 0, ids.clone()), CallManager::with_ids(CallConfig::default(), Talkgroups::default(), 1, ids));
+        assert_eq!([x.allocate_id(), y.allocate_id(), x.allocate_id()], [1, 2, 3]);
     }
 }

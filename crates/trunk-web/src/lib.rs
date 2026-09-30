@@ -40,8 +40,9 @@ fn to_js(out: &mut Vec<Output>) -> Array {
                 set(&obj, "t", "text");
                 set(&obj, "json", t);
             }
-            Output::Audio { tg, frame } => {
+            Output::Audio { system, tg, frame } => {
                 set(&obj, "t", "audio");
+                set(&obj, "system", system);
                 set(&obj, "tg", tg);
                 set(&obj, "frame", Uint8Array::from(frame.as_slice()));
             }
@@ -67,11 +68,14 @@ pub struct WebSession {
 
 #[wasm_bindgen]
 impl WebSession {
-    /// `config_json`: the interface's Config. `bandplan`: saved from a previous run.
+    /// `config_json`: the interface's Config. `bandplans_json`: `{shortName: plan}`
+    /// saved from a previous run ([`WebSession::bandplans`]).
     #[wasm_bindgen(constructor)]
-    pub fn new(config_json: &str, epoch_ms: f64, bandplan: Option<String>) -> Result<WebSession, JsError> {
+    pub fn new(config_json: &str, epoch_ms: f64, bandplans_json: Option<String>) -> Result<WebSession, JsError> {
         let cfg: Config = serde_json::from_str(config_json).map_err(|e| JsError::new(&format!("config: {e}")))?;
-        let s = Session::new(cfg, epoch_ms, bandplan.as_deref(), local_ymd).map_err(|e| JsError::new(&e))?;
+        let plans: serde_json::Map<String, serde_json::Value> = bandplans_json.and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default();
+        let plan = |name: &str| plans.get(name).and_then(|v| v.as_str()).map(str::to_string);
+        let s = Session::new(cfg, epoch_ms, &plan, local_ymd).map_err(|e| JsError::new(&e))?;
         Ok(WebSession { s, out: Vec::new() })
     }
     pub fn push(&mut self, source: usize, bytes: &[u8], dropped: f64) {
@@ -90,7 +94,7 @@ impl WebSession {
     pub fn set_want_audio(&mut self, on: bool) {
         self.s.want_audio = on;
     }
-    /// Outputs since the last poll: [{t:"text",json}|{t:"audio",tg,frame}|{t:"file",rel,wav,json,entry}].
+    /// Outputs since the last poll: [{t:"text",json}|{t:"audio",system,tg,frame}|{t:"file",rel,wav,json,entry}].
     pub fn poll(&mut self, now_ms: f64) -> Array {
         self.s.poll(now_ms, &mut self.out);
         to_js(&mut self.out)
@@ -99,8 +103,9 @@ impl WebSession {
         self.s.finish(&mut self.out);
         to_js(&mut self.out)
     }
-    pub fn bandplan(&self) -> String {
-        self.s.bandplan()
+    /// Each system's band plan, as JSON `{shortName: plan}`.
+    pub fn bandplans(&self) -> String {
+        serde_json::Value::Object(self.s.bandplans().into_iter().map(|(n, p)| (n, serde_json::Value::String(p))).collect()).to_string()
     }
 }
 

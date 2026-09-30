@@ -24,7 +24,7 @@
 
 use num_complex::Complex32;
 
-use super::calls::{Call, CallId, CallManager, CallSource};
+use super::calls::{Call, CallId, CallManager, CallSource, CONVENTIONAL};
 use super::frames::CallFrames;
 use super::talkgroups::Talkgroup;
 use super::tracker::{TrackerOut, VoiceTracker};
@@ -374,6 +374,7 @@ impl Conventional {
             let dur = audio.len() as f64 / fm::AUDIO_RATE;
             let start = air.map_or_else(|| (now_s - dur).max(o.opened_s - 0.05), |a| a.0);
             let call = Call {
+                system: CONVENTIONAL,
                 id: calls.allocate_id(),
                 talkgroup: tg,
                 freq_hz: ch.cfg.freq_hz.round() as u64,
@@ -497,7 +498,7 @@ mod tests {
             calls: CallConfig { call_timeout_s: 1.0, ..Default::default() },
             ..Default::default()
         };
-        let mut e = Engine::new(cfg, Default::default()).unwrap();
+        let mut e = Engine::new(cfg).unwrap();
         let sigma2 = 0.01f64;
         let mut rng = 0x2545_f491_4f6c_dd1du64;
         let mut u = move || {

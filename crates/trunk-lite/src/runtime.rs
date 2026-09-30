@@ -1,6 +1,6 @@
 //! A running recorder: one thread per source (RTL-SDR, USRP, Airspy or capture file) and an
 //! engine thread that decodes, writes calls to disk in Trunk Recorder's layout
-//! (`<captureDir>/<shortName>/<YYYY>/<M>/<D>/<tg>-<epoch>_<freq>.wav|json`) and
+//! (`<captureDir>/<shortName>/<YYYY>/<M>/<D>/<tg>-<epoch>_<freq>.wav|json`, a folder per system) and
 //! publishes what happens to the browser interface through the [`Hub`].
 
 use std::collections::VecDeque;
@@ -25,8 +25,8 @@ use crate::sdr::{self, RtlConfig, SourceMsg};
 /// A message for every connected browser.
 pub enum Out {
     Text(String),
-    /// Live audio (binary frame) for talkgroup `tg`.
-    Audio { tg: u32, frame: Vec<u8> },
+    /// Live audio (binary frame) for talkgroup `tg` of `system` (65535: conventional).
+    Audio { system: u16, tg: u32, frame: Vec<u8> },
 }
 
 pub type Hub = broadcast::Sender<Arc<Out>>;
@@ -105,9 +105,7 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
         return Err(p);
     }
     let epoch_ms = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_millis() as f64);
-    let bandplan_path = crate::config::config_dir().join(format!("{}.bandplan", cfg.system.short_name));
-    let saved_plan = fs::read_to_string(&bandplan_path).ok();
-    let session = Session::new(cfg.clone(), epoch_ms, saved_plan.as_deref(), local_ymd)?;
+    let session = Session::new(cfg.clone(), epoch_ms, &|name| fs::read_to_string(bandplan_path(name)).ok(), local_ymd)?;
     let stop = Arc::new(AtomicBool::new(false));
     let (tx, rx) = mpsc::sync_channel::<SourceMsg>(256);
     let centers = cfg.resolved_centers();
@@ -134,10 +132,15 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
     threads.push(
         std::thread::Builder::new()
             .name("engine".into())
-            .spawn(move || engine_thread(ctx2, cfg, session, rx, stop2, bandplan_path))
+            .spawn(move || engine_thread(ctx2, cfg, session, rx, stop2))
             .map_err(|e| e.to_string())?,
     );
     Ok(Runner { stop, threads })
+}
+
+/// Where a system's band plan is kept between runs.
+fn bandplan_path(short_name: &str) -> PathBuf {
+    crate::config::config_dir().join(format!("{short_name}.bandplan"))
 }
 
 /// Replay a capture file as a source, paced to real time or as fast as possible.
@@ -196,7 +199,7 @@ fn local_ymd(t: i64) -> (i32, u32, u32) {
     (d.year(), d.month(), d.day())
 }
 
-fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Receiver<SourceMsg>, stop: Arc<AtomicBool>, bandplan_path: PathBuf) {
+fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Receiver<SourceMsg>, stop: Arc<AtomicBool>) {
     ctx.set_phase("running", None, false);
     let dir = PathBuf::from(&cfg.recording.capture_dir);
     let t0 = Instant::now();
@@ -237,8 +240,10 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Rec
     ctx.set_phase("stopping", None, false);
     session.finish(&mut out);
     deliver(&ctx, &dir, &mut out);
-    let _ = fs::create_dir_all(bandplan_path.parent().unwrap_or(Path::new(".")));
-    let _ = fs::write(&bandplan_path, session.bandplan());
+    let _ = fs::create_dir_all(crate::config::config_dir());
+    for (name, plan) in session.bandplans() {
+        let _ = fs::write(bandplan_path(&name), plan);
+    }
     stop.store(true, Ordering::Relaxed);
     ctx.set_phase("idle", None, ended_all);
 }
@@ -250,8 +255,8 @@ fn deliver(ctx: &Ctx, dir: &Path, out: &mut Vec<Output>) {
             Output::Text(t) => {
                 let _ = ctx.hub.send(Arc::new(Out::Text(t)));
             }
-            Output::Audio { tg, frame } => {
-                let _ = ctx.hub.send(Arc::new(Out::Audio { tg, frame }));
+            Output::Audio { system, tg, frame } => {
+                let _ = ctx.hub.send(Arc::new(Out::Audio { system, tg, frame }));
             }
             Output::File { rel, wav, json, frames, entry } => {
                 let base = dir.join(&rel);

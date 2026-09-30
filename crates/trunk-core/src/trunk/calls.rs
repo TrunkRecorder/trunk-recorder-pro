@@ -1,5 +1,6 @@
 //! Trunked call lifecycle — Trunk Recorder's monitor_systems.cc
 //! (handle_call_grant / handle_call_update / manage_calls), one system.
+//! Several systems share one [`CallIds`] so call ids are unique across them.
 //!
 //! A call is (talkgroup, frequency, TDMA slot). GRANTs (and UPDATEs, with
 //! `new_call_from_update`) create calls; UPDATEs refresh them. A RECORDING
@@ -8,11 +9,32 @@
 //! MONITORING call on the first condition alone. Time is the sample clock.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 
 use super::message::{Message, MessageType};
 use super::talkgroups::{Talkgroup, Talkgroups};
 
 pub type CallId = u32;
+
+/// `Call::system` of a conventional channel's call.
+pub const CONVENTIONAL: u16 = u16::MAX;
+
+/// Hands out call ids; clones share the sequence (one per engine).
+#[derive(Clone, Debug)]
+pub struct CallIds(Arc<AtomicU32>);
+
+impl Default for CallIds {
+    fn default() -> Self {
+        CallIds(Arc::new(AtomicU32::new(1)))
+    }
+}
+
+impl CallIds {
+    pub fn next(&self) -> CallId {
+        self.0.fetch_add(1, Ordering::Relaxed)
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Reason {
@@ -44,6 +66,8 @@ pub struct CallSource {
 #[derive(Clone, Debug)]
 pub struct Call {
     pub id: CallId,
+    /// The system (index in the engine's list) that made it; [`CONVENTIONAL`] for a conventional channel.
+    pub system: u16,
     pub talkgroup: u32,
     pub freq_hz: u64,
     pub phase2_tdma: bool,
@@ -106,13 +130,20 @@ pub struct CallManager {
     pub calls: Vec<Call>,
     pub talkgroups: Talkgroups,
     pub cfg: CallConfig,
-    next_id: CallId,
+    /// Stamped on every call made here.
+    pub system: u16,
+    ids: CallIds,
     patches: HashMap<u32, PatchGroup>,
 }
 
 impl CallManager {
     pub fn new(cfg: CallConfig, talkgroups: Talkgroups) -> Self {
-        CallManager { calls: Vec::new(), talkgroups, cfg, next_id: 1, patches: HashMap::new() }
+        CallManager { calls: Vec::new(), talkgroups, cfg, system: 0, ids: CallIds::default(), patches: HashMap::new() }
+    }
+
+    /// For system `system`, drawing ids from `ids` (shared with the other systems).
+    pub fn with_ids(cfg: CallConfig, talkgroups: Talkgroups, system: u16, ids: CallIds) -> Self {
+        CallManager { system, ids, ..Self::new(cfg, talkgroups) }
     }
 
     pub fn handle(&mut self, msgs: &[Message], host: &mut dyn RecorderHost, ev: &mut Vec<CallEvent>) {
@@ -142,8 +173,7 @@ impl CallManager {
 
     /// A fresh call id (conventional channels make their own calls).
     pub fn allocate_id(&mut self) -> CallId {
-        self.next_id += 1;
-        self.next_id - 1
+        self.ids.next()
     }
 
     pub fn call_mut(&mut self, id: CallId) -> Option<&mut Call> {
@@ -237,7 +267,8 @@ impl CallManager {
         }
         let tg = self.talkgroups.get(&m.talkgroup).cloned();
         let mut c = Call {
-            id: self.next_id,
+            id: self.ids.next(),
+            system: self.system,
             talkgroup: m.talkgroup,
             freq_hz: m.freq_hz,
             phase2_tdma: m.phase2_tdma,
@@ -257,7 +288,6 @@ impl CallManager {
             sources: if m.source > 0 { vec![CallSource { src: m.source as u32, time_s: m.time_s, emergency: m.emergency }] } else { vec![] },
             talkgroup_info: tg.clone(),
         };
-        self.next_id += 1;
         // Trunk Recorder's start_recorder() gates, in its order.
         let patched_known = tg.is_none()
             && self.patches.iter().any(|(&sg, p)| {

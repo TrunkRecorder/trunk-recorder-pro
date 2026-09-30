@@ -17,6 +17,9 @@
 //!     --out calls  --short-name sys1  --talkgroups tg.csv  --bandplan file
 //!     --recorders 32  --preroll 1  --timeout 3  --epoch <unix s>
 //!     --record-encrypted  --keep-silent  --no-unknown  --capture-frames  --quiet
+//!     More systems (or sites): --system name:Hz[,Hz…][:nac=443,sysid=445,wacn=bee00,rfss=1,site=3]
+//!     (repeatable; the identity is optional — a control channel that
+//!     disagrees isn't followed). With several, calls go to <out>/<name>/.
 //!     Conventional channels (with or without --cc): --fm Hz[,Hz…]  --p25 Hz[,Hz…]
 //!     or --channels channels.csv (the channel-file format; see README)
 //!     --squelch dB (open threshold above the noise floor, default 8)
@@ -53,7 +56,7 @@ use std::fs;
 use std::path::Path;
 use std::time::Instant;
 
-use trunk_core::trunk::{parse_csv, CallConfig, ConvChannel, ConvConfig, ConvMode, Engine, EngineConfig, Event, SourceConfig};
+use trunk_core::trunk::{parse_csv, CallConfig, ConvChannel, ConvConfig, ConvMode, Engine, EngineConfig, Event, Identity, SourceConfig, SystemConfig};
 
 /// `--key value` / `--flag` arguments after the positionals.
 pub struct Args {
@@ -115,10 +118,11 @@ usage:
       Record raw IQ, like rtl_sdr.
   trunk-lite replay <capture.cu8> --center Hz --rate Hz --cc Hz[,Hz…] [--out calls] …
   trunk-lite replay --source cap.cu8,center,rate [--source …] --cc Hz …
+  trunk-lite replay <capture> … --system name:Hz[,Hz…][:nac=443,site=3] [--system …]
   trunk-lite replay <capture> --center Hz --rate Hz --fm Hz[,Hz…] --p25 Hz[,Hz…] [--squelch 8]
   trunk-lite replay <capture> --center Hz --rate Hz --channels channels.csv
       Record calls from captures instead of dongles (a trunked system from
-      --cc, conventional analog FM / P25 channels, or both).
+      --cc, more from --system, conventional analog FM / P25 channels, or both).
   trunk-lite survey [--serial S] [--bands 800,700,900,uhf,vhf,uhf-fed,t-band] [--gain dB] [--seconds 30]
   trunk-lite survey <capture> --center Hz --rate Hz
       Find a P25 system from scratch: scan for control channels, then listen
@@ -228,30 +232,43 @@ fn replay(a: &Args) {
     let talkgroups = a.get("talkgroups").map(|p| parse_csv(&fs::read_to_string(p).unwrap_or_else(|e| die(&format!("{p}: {e}"))))).unwrap_or_default();
     let quiet = a.flag("quiet");
 
+    let calls = CallConfig {
+        call_timeout_s: a.num("timeout", 3.0),
+        record_unknown: !a.flag("no-unknown"),
+        record_encrypted: a.flag("record-encrypted"),
+        ..Default::default()
+    };
+    // Trunked systems: --cc (one, named --short-name) and/or --system (repeatable).
+    let mut systems: Vec<SystemConfig> = Vec::new();
+    if !ccs.is_empty() {
+        systems.push(SystemConfig { short_name: a.get("short-name").unwrap_or("replay").into(), control_channels: ccs, calls, talkgroups: talkgroups.clone(), ..Default::default() });
+    }
+    for spec in a.all("system") {
+        systems.push(parse_system(spec, calls, &talkgroups).unwrap_or_else(|e| die(&format!("--system {spec}: {e}"))));
+    }
+    let multi = systems.len() > 1;
     let cfg = EngineConfig {
-        short_name: a.get("short-name").unwrap_or("replay").into(),
-        control_channels: ccs,
+        systems,
         sources,
         preroll_s: a.num("preroll", 1.0),
         max_recorders: a.num("recorders", 32.0) as usize,
         keep_silent_calls: a.flag("keep-silent"),
-        calls: CallConfig {
-            call_timeout_s: a.num("timeout", 3.0),
-            record_unknown: !a.flag("no-unknown"),
-            record_encrypted: a.flag("record-encrypted"),
-            ..Default::default()
-        },
+        calls,
         epoch_ms_at_zero: a.num("epoch", 0.0) * 1000.0,
         conventional,
         conv: ConvConfig { squelch_db: a.num("squelch", ConvConfig::default().squelch_db), ..Default::default() },
+        conv_talkgroups: talkgroups,
         capture_frames: a.flag("capture-frames"),
         ..Default::default()
     };
-    let mut engine = Engine::new(cfg, talkgroups).unwrap_or_else(|e| die(&e));
-    let bandplan = a.get("bandplan").map(str::to_string);
-    if let Some(p) = &bandplan {
+    let mut engine = Engine::new(cfg).unwrap_or_else(|e| die(&e));
+    // One band plan file per system (with several: <file>.<shortName>).
+    let bandplans: Vec<String> = a.get("bandplan").map_or_else(Vec::new, |p| {
+        engine.systems().iter().map(|s| if multi { format!("{p}.{}", s.short_name) } else { p.to_string() }).collect()
+    });
+    for (i, p) in bandplans.iter().enumerate() {
         if let Ok(s) = fs::read_to_string(p) {
-            engine.load_bandplan(&s);
+            engine.load_bandplan(i, &s);
         }
     }
 
@@ -279,39 +296,86 @@ fn replay(a: &Args) {
                 any = true;
             }
         }
-        written += handle_events(&mut engine, &out_dir, quiet);
+        written += handle_events(&mut engine, &out_dir, multi, quiet);
         if !any {
             break;
         }
     }
     engine.finish();
-    written += handle_events(&mut engine, &out_dir, quiet);
+    written += handle_events(&mut engine, &out_dir, multi, quiet);
     let cpu = t0.elapsed().as_secs_f64();
-    if let Some(p) = &bandplan {
-        let _ = fs::write(p, engine.bandplan());
+    for (i, p) in bandplans.iter().enumerate() {
+        let _ = fs::write(p, engine.bandplan(i));
     }
     let st = engine.status();
-    let id = &st.identity;
-    println!(
-        "\n{air_s:.1} s of air in {cpu:.2} s ({:.0}× real time). CC: {} good / {} bad TSBKs, {}, NAC {} WACN {} SysID {}. {written} call(s) written to {out_dir}/",
-        air_s / cpu,
-        st.good,
-        st.bad,
-        st.modulation,
-        id.nac.map_or("?".into(), |v| format!("{v:x}")),
-        id.wacn.map_or("?".into(), |v| format!("{v:x}")),
-        id.sys_id.map_or("?".into(), |v| format!("{v:x}")),
-    );
+    println!("\n{air_s:.1} s of air in {cpu:.2} s ({:.0}× real time). {written} call(s) written to {out_dir}/", air_s / cpu);
+    let hex = |v: Option<u32>| v.map_or("?".into(), |v| format!("{v:x}"));
+    let dec = |v: Option<u32>| v.map_or("?".into(), |v| v.to_string());
+    for s in &st.systems {
+        let id = &s.identity;
+        println!(
+            "  {}: CC {} good / {} bad TSBKs, {}, NAC {} WACN {} SysID {} RFSS {} site {}, {} call(s){}",
+            s.short_name,
+            s.good,
+            s.bad,
+            s.modulation,
+            hex(id.nac.map(u32::from)),
+            hex(id.wacn),
+            hex(id.sys_id),
+            dec(id.rfss),
+            dec(id.site),
+            s.calls_concluded,
+            s.mismatch.as_ref().map_or(String::new(), |m| format!(" — NOT FOLLOWED: {m}")),
+        );
+    }
 }
 
-fn handle_events(engine: &mut Engine, out_dir: &str, quiet: bool) -> usize {
+/// `--system name:Hz[,Hz…][:nac=443,sysid=445,wacn=bee00,rfss=1,site=3]` —
+/// NAC / SysID / WACN in hex; only a control channel with that identity is followed.
+fn parse_system(spec: &str, calls: CallConfig, talkgroups: &trunk_core::trunk::Talkgroups) -> Result<SystemConfig, String> {
+    let mut parts = spec.splitn(3, ':');
+    let name = parts.next().unwrap_or("").trim();
+    if name.is_empty() {
+        return Err("no short name".into());
+    }
+    let ccs: Vec<f64> = parts.next().unwrap_or("").split(',').map(|v| v.trim().parse::<f64>().map_err(|_| format!("bad frequency \"{v}\""))).collect::<Result<_, _>>()?;
+    let mut expect = Identity::default();
+    for kv in parts.next().unwrap_or("").split(',').filter(|s| !s.is_empty()) {
+        let (k, v) = kv.split_once('=').ok_or_else(|| format!("\"{kv}\": want key=value"))?;
+        let h = || u32::from_str_radix(v.trim(), 16).map_err(|_| format!("bad {k} \"{v}\""));
+        let d = || v.trim().parse::<u32>().map_err(|_| format!("bad {k} \"{v}\""));
+        match k.trim() {
+            "nac" => expect.nac = Some(h()? as u16),
+            "sysid" => expect.sys_id = Some(h()?),
+            "wacn" => expect.wacn = Some(h()?),
+            "rfss" => expect.rfss = Some(d()?),
+            "site" => expect.site = Some(d()?),
+            other => return Err(format!("unknown key {other} (nac, sysid, wacn, rfss, site)")),
+        }
+    }
+    Ok(SystemConfig { short_name: name.into(), control_channels: ccs, calls, talkgroups: talkgroups.clone(), expect, ..Default::default() })
+}
+
+/// "[name] " for a line about `system` when there are several; else "".
+fn sys_tag(engine: &Engine, system: u16) -> String {
+    match engine.systems().get(system as usize) {
+        Some(s) if engine.systems().len() > 1 => format!("[{}] ", s.short_name),
+        None if system == trunk_core::trunk::CONVENTIONAL && !engine.systems().is_empty() => "[conv] ".into(),
+        _ => String::new(),
+    }
+}
+
+/// Several systems: each writes to `<out>/<shortName>/`.
+fn handle_events(engine: &mut Engine, out_dir: &str, multi: bool, quiet: bool) -> usize {
     let mut written = 0;
     for ev in engine.drain_events() {
         match ev {
-            Event::ControlChannel { freq_hz } if !quiet => println!("control channel {:.4} MHz", freq_hz as f64 / 1e6),
+            Event::ControlChannel { system, freq_hz } if !quiet => println!("{}control channel {:.4} MHz", sys_tag(engine, system), freq_hz as f64 / 1e6),
+            Event::Note { system, text } => eprintln!("{}{text}", sys_tag(engine, system)),
             Event::CallStart(c) if !quiet => println!(
-                "{:7.2}s  CALL {} start TG {} {:.4} MHz{} → {}",
+                "{:7.2}s  {}CALL {} start TG {} {:.4} MHz{} → {}",
                 c.start_s,
+                sys_tag(engine, c.system),
                 c.id,
                 c.talkgroup,
                 c.freq_hz as f64 / 1e6,
@@ -320,11 +384,13 @@ fn handle_events(engine: &mut Engine, out_dir: &str, quiet: bool) -> usize {
             ),
             Event::CallEnd(c) if !quiet => {
                 let srcs: Vec<String> = c.sources.iter().map(|s| s.src.to_string()).collect();
-                println!("{:7.2}s  CALL {} end   TG {} srcs [{}]{}", c.last_update_s.max(c.last_audio_s), c.id, c.talkgroup, srcs.join(","), if c.encrypted { " ENC" } else { "" });
+                println!("{:7.2}s  {}CALL {} end   TG {} srcs [{}]{}", c.last_update_s.max(c.last_audio_s), sys_tag(engine, c.system), c.id, c.talkgroup, srcs.join(","), if c.encrypted { " ENC" } else { "" });
             }
             Event::Concluded(k) => {
                 // (Appended, not with_extension: a TDMA base name ends in ".<slot>".)
-                let base = Path::new(out_dir).join(&k.base_name).display().to_string();
+                let dir = if multi { Path::new(out_dir).join(&k.short_name) } else { Path::new(out_dir).to_path_buf() };
+                let _ = fs::create_dir_all(&dir);
+                let base = dir.join(&k.base_name).display().to_string();
                 let _ = fs::write(format!("{base}.wav"), trunk_core::wav::encode(&k.audio, 8000));
                 let _ = fs::write(format!("{base}.json"), &k.json);
                 if let Some(f) = &k.frames {

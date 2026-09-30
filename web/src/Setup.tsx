@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import {
+  activeSystems,
   AIRSPY_RATES,
-  autoCenterFor,
   channelsToCsv,
   defaultTalkgroup,
   formatFromPath,
@@ -14,13 +14,17 @@ import {
   newUsrp,
   parseChannelCsv,
   parseFreqList,
+  newSystem,
   resolvedCenters,
   SAMPLE_RATES,
+  sameSystem,
+  sourceCovering,
+  systemColor,
   USRP_RATES,
   usableHalfWidth,
 } from "./config.ts";
-import { downloadText, findRadios, refreshDevices, setChannelFile, setNotice, updateConfig, useApp, web } from "./controller.ts";
-import type { Channel, Config, Source } from "./protocol.ts";
+import { bumpEpoch, downloadText, findRadios, refreshDevices, setChannelFile, setNotice, updateConfig, useApp, web } from "./controller.ts";
+import type { Channel, Config, SiteIdentity, Source, System } from "./protocol.ts";
 import { SurveyPanel } from "./Survey.tsx";
 import { parseTalkgroupCsv } from "./talkgroups.ts";
 
@@ -137,7 +141,7 @@ function SourceCard(props: { c: Config; i: number }) {
   const { c, i } = props;
   const src = c.sources[i];
   const center = resolvedCenters(c)[i];
-  const auto = i === 0 ? autoCenterFor(c, src.rateHz) : null;
+  const auto = src.centerHz ? null : center;
   const half = usableHalfWidth(src.rateHz);
   const edit = (fn: (x: Source) => void) => updateConfig((x) => fn(x.sources[i]));
   const setKind = (kind: Source["kind"]) =>
@@ -298,7 +302,10 @@ function SourceCard(props: { c: Config; i: number }) {
               />
             </Field>
           ))}
-        <Field label="Center frequency, MHz" hint={src.centerHz ? "Manual" : auto ? `Auto: ${formatMhz(auto, 4)} MHz` : i === 0 ? "Auto — needs channels that fit one source" : "Required"}>
+        <Field
+          label="Center frequency, MHz"
+          hint={src.centerHz ? "Manual" : auto ? `Auto: ${formatMhz(auto, 4)} MHz` : "Auto — placed over a system the sources before it don't cover; set it if nothing fits"}
+        >
           <MhzInput hz={src.centerHz} placeholder={auto ? formatMhz(auto, 4) : "MHz"} onChange={(hz) => edit((x) => void (x.centerHz = hz))} />
         </Field>
         <Field
@@ -378,11 +385,48 @@ function SourceCard(props: { c: Config; i: number }) {
           </>
         )}
       </div>
-      {center ? (
-        <p className="muted small">
-          Covers {formatMhz(center - half, 3)} – {formatMhz(center + half, 3)} MHz.
-        </p>
-      ) : null}
+      {center ? <CoverageBar c={c} center={center} rateHz={src.rateHz} /> : null}
+    </div>
+  );
+}
+
+/** A source's band, with every system's control (tall) and known voice channels (short) inside it. */
+function CoverageBar(props: { c: Config; center: number; rateHz: number }) {
+  const { c, center, rateHz } = props;
+  const half = usableHalfWidth(rateHz);
+  const lo = center - rateHz / 2;
+  const pos = (hz: number) => ((hz - lo) / rateHz) * 100;
+  const inside = (hz: number) => Math.abs(hz - center) <= half;
+  const systems = activeSystems(c);
+  const ticks: { hz: number; kind: "cc" | "voice"; color: string; label: string }[] = [];
+  systems.forEach((x, k) => {
+    for (const f of x.controlChannels) if (inside(f)) ticks.push({ hz: f, kind: "cc", color: systemColor(k), label: `${x.shortName} control channel ${formatMhz(f)} MHz` });
+    for (const f of x.voiceChannels) if (inside(f)) ticks.push({ hz: f, kind: "voice", color: systemColor(k), label: `${x.shortName} voice ${formatMhz(f)} MHz` });
+  });
+  const conv = c.conventional.channels.filter((ch) => ch.enabled && inside(ch.freqHz));
+  for (const ch of conv) ticks.push({ hz: ch.freqHz, kind: "voice", color: "var(--text)", label: `conventional ${ch.name || formatMhz(ch.freqHz)}` });
+  const here = systems.map((x, k) => ({ x, k })).filter(({ x }) => x.controlChannels.some(inside) || x.voiceChannels.some(inside));
+  return (
+    <div className="stack" style={{ gap: 4 }}>
+      <div className="coverage" role="img" aria-label={`Covers ${formatMhz(center - half, 3)} to ${formatMhz(center + half, 3)} MHz`}>
+        <div className="usable" style={{ left: `${pos(center - half)}%`, width: `${(2 * half * 100) / rateHz}%` }} />
+        {ticks.map((t, k) => (
+          <span key={k} className={`tick ${t.kind}`} style={{ left: `${pos(t.hz)}%`, background: t.color }} title={t.label} />
+        ))}
+      </div>
+      <div className="legend">
+        <span className="mono">
+          {formatMhz(center - half, 3)} – {formatMhz(center + half, 3)} MHz
+        </span>
+        {here.map(({ x, k }) => (
+          <span key={x.shortName}>
+            <span className="sys-dot" style={{ background: systemColor(k) }} />
+            {x.shortName}
+          </span>
+        ))}
+        {conv.length > 0 && <span>{conv.length} conventional</span>}
+        {!here.length && !conv.length && <span>nothing configured in this range</span>}
+      </div>
     </div>
   );
 }
@@ -395,7 +439,7 @@ let nextRowId = 1;
  */
 function ConventionalPanel(props: { c: Config }) {
   const { c } = props;
-  const conv = c.conventional ?? { squelchDb: 8, channels: [] };
+  const conv = c.conventional;
   const chans = conv.channels;
   // Stable row keys (each edit clones the config; a frequency input keeps its own text).
   const ids = useRef<number[]>([]);
@@ -408,7 +452,6 @@ function ConventionalPanel(props: { c: Config }) {
   const [bulkMode, setBulkMode] = useState<Channel["mode"]>("fm");
   const edit = (fn: (x: Config["conventional"]) => void) =>
     updateConfig((x) => {
-      x.conventional ??= { squelchDb: 8, channels: [] };
       fn(x.conventional);
     });
   const editRow = (i: number, fn: (ch: Channel) => void) => edit((x) => fn(x.channels[i]));
@@ -433,7 +476,7 @@ function ConventionalPanel(props: { c: Config }) {
       setNotice(`Read ${channels.length} channel(s) from ${f.name}.${notes.length ? " " + notes.join(" ") : ""}`);
     } else setPending({ name: f.name, channels, notes });
   };
-  const exportCsv = () => downloadText(`${c.system.shortName || "channels"}-channels.csv`, channelsToCsv(chans));
+  const exportCsv = () => downloadText(`${conv.shortName || "channels"}-channels.csv`, channelsToCsv(chans));
   const enabled = chans.filter((ch) => ch.enabled).length;
   const optNum = (v: string): number | undefined => (v.trim() === "" || !Number.isFinite(Number(v)) ? undefined : Number(v));
 
@@ -534,6 +577,11 @@ function ConventionalPanel(props: { c: Config }) {
             </Field>
           ))}
         <div className="grid3">
+          {chans.length > 0 && (
+            <Field label="Short name" hint="Folder name for conventional calls">
+              <input value={conv.shortName} onChange={(e) => edit((x) => void (x.shortName = e.target.value.replace(/[^\w.-]/g, "") || "conv"))} />
+            </Field>
+          )}
           <Field label="Squelch, dB above noise" hint="For every channel without its own. Raise it if noise opens channels.">
             <input className="mono" value={conv.squelchDb} onChange={(e) => edit((x) => void (x.squelchDb = Math.max(3, Math.min(40, Number(e.target.value) || 8))))} />
           </Field>
@@ -672,47 +720,245 @@ function ConventionalPanel(props: { c: Config }) {
   );
 }
 
+/** A hex or decimal number field; empty = none. */
+function NumInput(props: { value: number | null | undefined; hex?: boolean; placeholder?: string; onChange: (v: number | null) => void; label: string }) {
+  const show = (v: number | null | undefined) => (v === null || v === undefined ? "" : props.hex ? v.toString(16).toUpperCase() : String(v));
+  const [text, setText] = useState(show(props.value));
+  useEffect(() => setText((t) => (parse(t) === (props.value ?? null) ? t : show(props.value))), [props.value]); // eslint-disable-line react-hooks/exhaustive-deps
+  function parse(t: string): number | null {
+    const v = t.trim();
+    if (!v) return null;
+    const n = props.hex ? parseInt(v, 16) : Number(v);
+    return Number.isFinite(n) && n >= 0 ? n : null;
+  }
+  return (
+    <input
+      className="mono"
+      aria-label={props.label}
+      value={text}
+      placeholder={props.placeholder ?? "any"}
+      onChange={(e) => {
+        setText(e.target.value);
+        props.onChange(parse(e.target.value));
+      }}
+    />
+  );
+}
+
+const hexText = (v: number | null | undefined) => (v === null || v === undefined ? "?" : v.toString(16).toUpperCase());
+
+/** "WACN BEE00 · SysID 445 · site 1-3" from what is known. */
+export function siteText(id: SiteIdentity): string {
+  const parts: string[] = [];
+  if (id.wacn != null) parts.push(`WACN ${hexText(id.wacn)}`);
+  if (id.sysId != null) parts.push(`SysID ${hexText(id.sysId)}`);
+  if (id.nac != null) parts.push(`NAC ${hexText(id.nac)}`);
+  if (id.site != null) parts.push(id.rfss != null ? `site ${id.rfss}-${id.site}` : `site ${id.site}`);
+  else if (id.rfss != null) parts.push(`RFSS ${id.rfss}`);
+  return parts.join(" · ");
+}
+
+function SystemCard(props: { c: Config; i: number }) {
+  const { c, i } = props;
+  const sys = c.systems[i];
+  const [ccText, setCcText] = useState(() => sys.controlChannels.map((f) => formatMhz(f)).join(", "));
+  const tgRef = useRef<HTMLInputElement>(null);
+  const edit = (fn: (x: System) => void) => updateConfig((x) => fn(x.systems[i]));
+  const setExpect = (k: keyof SiteIdentity, v: number | null) =>
+    edit((x) => {
+      x.expect = { ...x.expect };
+      if (v === null) delete x.expect[k];
+      else x.expect[k] = v;
+    });
+  const active = activeSystems(c);
+  const idx = active.indexOf(sys);
+  const color = systemColor(idx);
+  const tgCount = sys.talkgroupsCsv ? parseTalkgroupCsv(sys.talkgroupsCsv).size : 0;
+  const tgDonors = c.systems.filter((x, k) => k !== i && x.talkgroupsCsv);
+  const siblings = c.systems.filter((x, k) => k !== i && sameSystem(x.expect, sys.expect));
+  const locked = Object.values(sys.expect).some((v) => v !== null && v !== undefined);
+  const dupName = c.systems.some((x, k) => k !== i && x.shortName === sys.shortName);
+  // Where it lands on the sources.
+  const centers = resolvedCenters(c);
+  const ccOn = [...new Set(sys.controlChannels.map((f) => sourceCovering(c, centers, f)).filter((k) => k >= 0))];
+  const voiceIn = sys.voiceChannels.filter((f) => sourceCovering(c, centers, f) >= 0).length;
+
+  const onTalkgroups = async (f: File | undefined) => {
+    if (!f) return;
+    const text = await f.text();
+    const n = parseTalkgroupCsv(text).size;
+    edit((x) => {
+      x.talkgroupsCsv = text;
+      x.talkgroupsName = f.name;
+    });
+    setNotice(`Loaded ${n} talkgroups from ${f.name} into ${sys.shortName}.`);
+  };
+
+  return (
+    <div className={`system-card${sys.enabled ? "" : " off"}`} style={{ ["--sys-color" as string]: color }}>
+      <div className="row sys-head">
+        <span className="sys-dot" style={{ background: color }} />
+        <strong>{sys.shortName || "(no name)"}</strong>
+        {sys.enabled && sys.controlChannels.length > 0 ? (
+          ccOn.length ? (
+            <span className="chip ok">control channel on source {ccOn.map((k) => k + 1).join(", ")}</span>
+          ) : (
+            <span className="chip bad">no control channel inside a source</span>
+          )
+        ) : null}
+        {sys.enabled && sys.voiceChannels.length > 0 && (
+          <span className={`chip ${voiceIn === sys.voiceChannels.length ? "ok" : "warn"}`} title="Voice channels the survey saw that a source covers">
+            voice {voiceIn}/{sys.voiceChannels.length} covered
+          </span>
+        )}
+        {siblings.length > 0 && <span className="chip" title={siteText(sys.expect)}>multi-site with {siblings.map((x) => x.shortName).join(", ")}</span>}
+        <span className="spacer" />
+        <label className="toggle small">
+          <input type="checkbox" checked={sys.enabled} onChange={(e) => edit((x) => void (x.enabled = e.target.checked))} />
+          <span>Record</span>
+        </label>
+        <button
+          className="btn ghost small"
+          onClick={() => {
+            if (confirm(`Remove ${sys.shortName}? Its recordings stay on disk.`)) updateConfig((x) => void x.systems.splice(i, 1));
+          }}
+        >
+          Remove
+        </button>
+      </div>
+      <div className="grid2">
+        <Field label="Short name" hint={dupName ? "Another system has this name — each needs its own folder" : "Folder name for this system's calls"}>
+          <input value={sys.shortName} onChange={(e) => edit((x) => void (x.shortName = e.target.value.replace(/[^\w.-]/g, "")))} />
+        </Field>
+        <Field label="Modulation" hint="Auto runs C4FM and CQPSK receivers side by side and keeps the best of each frame.">
+          <select value={sys.modulation} onChange={(e) => edit((x) => void (x.modulation = e.target.value as System["modulation"]))}>
+            <option value="auto">Auto (both receivers)</option>
+            <option value="fsk4">C4FM (fsk4)</option>
+            <option value="qpsk">CQPSK / LSM simulcast (qpsk)</option>
+          </select>
+        </Field>
+        <Field label="Control channels, MHz" hint="Comma separated. The first one in range is tried first; the rest are fallbacks." wide>
+          <input
+            className="mono"
+            value={ccText}
+            placeholder="857.9875, 858.9875"
+            onChange={(e) => {
+              setCcText(e.target.value);
+              const list = parseFreqList(e.target.value);
+              edit((x) => void (x.controlChannels = list));
+            }}
+          />
+        </Field>
+        <Field label="Talkgroups" hint="Trunk Recorder's talkgroup CSV">
+          <div className="row">
+            <button className="btn" onClick={() => tgRef.current?.click()}>
+              Load CSV…
+            </button>
+            <span className="mono">{tgCount ? `${tgCount} from ${sys.talkgroupsName}` : "none"}</span>
+            {tgCount > 0 && (
+              <button
+                className="btn ghost"
+                onClick={() =>
+                  edit((x) => {
+                    x.talkgroupsCsv = "";
+                    x.talkgroupsName = "";
+                  })
+                }
+              >
+                Clear
+              </button>
+            )}
+            {tgDonors.length > 0 && (
+              <select
+                value=""
+                aria-label="Copy talkgroups from another system"
+                onChange={(e) => {
+                  const d = c.systems.find((x) => x.shortName === e.target.value);
+                  if (d)
+                    edit((x) => {
+                      x.talkgroupsCsv = d.talkgroupsCsv;
+                      x.talkgroupsName = d.talkgroupsName;
+                    });
+                }}
+              >
+                <option value="">Copy from…</option>
+                {tgDonors.map((d) => (
+                  <option key={d.shortName} value={d.shortName}>
+                    {d.shortName} ({d.talkgroupsName})
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+          <input ref={tgRef} type="file" accept=".csv,text/csv" hidden onChange={(e) => void onTalkgroups(e.target.files?.[0])} />
+        </Field>
+        <Field label="Talkgroups not in the CSV">
+          <select
+            value={sys.recordUnknown === true ? "yes" : sys.recordUnknown === false ? "no" : ""}
+            onChange={(e) =>
+              edit((x) => {
+                if (e.target.value === "") delete x.recordUnknown;
+                else x.recordUnknown = e.target.value === "yes";
+              })
+            }
+          >
+            <option value="">As in Recording ({c.recording.recordUnknown ? "record" : "skip"})</option>
+            <option value="yes">Record</option>
+            <option value="no">Skip</option>
+          </select>
+        </Field>
+      </div>
+      <details className="help">
+        <summary>
+          Site lock{locked ? <span className="muted"> — only {siteText(sys.expect)}</span> : <span className="muted"> — off (follows any control channel listed)</span>}
+        </summary>
+        <p className="muted small">
+          Follow a control channel only when it announces this identity; leave a field empty to accept any. For a multi-site system, add each site as its own system with
+          its site number here — then a control channel that hunts onto a neighbouring site is not followed. Hex for NAC, WACN and System ID; the survey fills these in.
+        </p>
+        <div className="id-grid">
+          <Field label="NAC">
+            <NumInput label="NAC" hex value={sys.expect.nac} onChange={(v) => setExpect("nac", v)} />
+          </Field>
+          <Field label="WACN">
+            <NumInput label="WACN" hex value={sys.expect.wacn} onChange={(v) => setExpect("wacn", v)} />
+          </Field>
+          <Field label="System ID">
+            <NumInput label="System ID" hex value={sys.expect.sysId} onChange={(v) => setExpect("sysId", v)} />
+          </Field>
+          <Field label="RFSS">
+            <NumInput label="RFSS" value={sys.expect.rfss} onChange={(v) => setExpect("rfss", v)} />
+          </Field>
+          <Field label="Site">
+            <NumInput label="Site" value={sys.expect.site} onChange={(v) => setExpect("site", v)} />
+          </Field>
+        </div>
+        {locked && (
+          <button className="btn ghost small" onClick={() => edit((x) => void (x.expect = {}))}>
+            Clear the lock
+          </button>
+        )}
+      </details>
+    </div>
+  );
+}
+
 export function Setup() {
   const s = useApp();
   const c = s.config;
-  const [ccText, setCcText] = useState(() => (c ? c.system.controlChannels.map((f) => formatMhz(f)).join(", ") : ""));
-  // The config arrives from the recorder after the first render.
-  const loaded = c !== null;
-  useEffect(() => {
-    if (loaded && !ccText) setCcText((s.config?.system.controlChannels ?? []).map((f) => formatMhz(f)).join(", "));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loaded]);
-  // The survey filled the config in: show its control channels.
-  useEffect(() => {
-    if (s.configEpoch) setCcText((s.config?.system.controlChannels ?? []).map((f) => formatMhz(f)).join(", "));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [s.configEpoch]);
   const importRef = useRef<HTMLInputElement>(null);
-  const tgRef = useRef<HTMLInputElement>(null);
   if (!c) return <p className="muted">Connecting to the recorder…</p>;
-  const tgCount = c.system.talkgroupsCsv ? parseTalkgroupCsv(c.system.talkgroupsCsv).size : 0;
 
   const onImport = async (f: File | undefined) => {
     if (!f) return;
     try {
       const { config, notes } = importTrunkRecorderConfig(await f.text(), c);
       updateConfig((x) => Object.assign(x, config));
-      setCcText(config.system.controlChannels.map((v) => formatMhz(v)).join(", "));
+      bumpEpoch();
       setNotice(`Imported ${f.name}.${notes.length ? " " + notes.join(" ") : ""}`);
     } catch (e) {
       setNotice(`Couldn't read ${f.name}: ${e instanceof Error ? e.message : String(e)}`);
     }
-  };
-
-  const onTalkgroups = async (f: File | undefined) => {
-    if (!f) return;
-    const text = await f.text();
-    const n = parseTalkgroupCsv(text).size;
-    updateConfig((x) => {
-      x.system.talkgroupsCsv = text;
-      x.system.talkgroupsName = f.name;
-    });
-    setNotice(`Loaded ${n} talkgroups from ${f.name}.`);
   };
 
   return (
@@ -720,62 +966,32 @@ export function Setup() {
       <SurveyPanel c={c} />
       <section className="panel">
         <header className="panel-head">
-          <h2>System</h2>
-          <button className="btn ghost" onClick={() => importRef.current?.click()}>
-            Import Trunk Recorder config…
-          </button>
+          <h2>Systems</h2>
+          <div className="row">
+            <button className="btn ghost" onClick={() => updateConfig((x) => void x.systems.push(newSystem(x)))}>
+              Add a system
+            </button>
+            <button className="btn ghost" onClick={() => importRef.current?.click()}>
+              Import Trunk Recorder config…
+            </button>
+          </div>
           <input ref={importRef} type="file" accept=".json,application/json" hidden onChange={(e) => void onImport(e.target.files?.[0])} />
         </header>
-        <div className="grid2">
-          <Field label="Short name" hint="Folder name for this system's calls">
-            <input value={c.system.shortName} onChange={(e) => updateConfig((x) => void (x.system.shortName = e.target.value.replace(/[^\w.-]/g, "") || "sys1"))} />
-          </Field>
-          <Field label="Type">
-            <select value="p25" disabled>
-              <option value="p25">P25 (Phase 1 and 2)</option>
-            </select>
-          </Field>
-          <Field label="Control channels, MHz" hint="Comma separated. The first one in range is tried first; the rest are fallbacks. Leave empty to record conventional channels only." wide>
-            <input
-              className="mono"
-              value={ccText}
-              placeholder="857.9875, 858.9875"
-              onChange={(e) => {
-                setCcText(e.target.value);
-                const list = parseFreqList(e.target.value);
-                updateConfig((x) => void (x.system.controlChannels = list));
-              }}
-            />
-          </Field>
-          <Field label="Modulation" hint="Auto runs C4FM and CQPSK receivers side by side and keeps the best of each frame.">
-            <select value={c.system.modulation} onChange={(e) => updateConfig((x) => void (x.system.modulation = e.target.value as Config["system"]["modulation"]))}>
-              <option value="auto">Auto (both receivers)</option>
-              <option value="fsk4">C4FM (fsk4)</option>
-              <option value="qpsk">CQPSK / LSM simulcast (qpsk)</option>
-            </select>
-          </Field>
-          <Field label="Talkgroups" hint="Trunk Recorder's talkgroup CSV">
-            <div className="row">
-              <button className="btn" onClick={() => tgRef.current?.click()}>
-                Load CSV…
-              </button>
-              <span className="mono">{tgCount ? `${tgCount} from ${c.system.talkgroupsName}` : "none"}</span>
-              {tgCount > 0 && (
-                <button
-                  className="btn ghost"
-                  onClick={() =>
-                    updateConfig((x) => {
-                      x.system.talkgroupsCsv = "";
-                      x.system.talkgroupsName = "";
-                    })
-                  }
-                >
-                  Clear
-                </button>
-              )}
-            </div>
-            <input ref={tgRef} type="file" accept=".csv,text/csv" hidden onChange={(e) => void onTalkgroups(e.target.files?.[0])} />
-          </Field>
+        <div className="stack">
+          {c.systems.map((_, i) => (
+            <SystemCard key={`${i}-${c.systems.length}-${s.configEpoch}`} c={c} i={i} />
+          ))}
+          {c.systems.length === 0 ? (
+            <p className="empty small">
+              No trunked system yet. <b>Find my system</b> above scans for one, or press <b>Add a system</b> and type its control channels. Conventional channels alone
+              work too.
+            </p>
+          ) : (
+            <p className="muted small">
+              Each system — or each site of a multi-site system — follows its own control channel and files its calls under its short name. They share the sources
+              and the recorders. A call heard on two sites is recorded by both.
+            </p>
+          )}
         </div>
       </section>
 
@@ -793,7 +1009,8 @@ export function Setup() {
             <SourceCard key={`${i}-${s.configEpoch}`} c={c} i={i} />
           ))}
           <p className="muted small">
-            Several dongles can cover one system: the control channel runs on whichever covers it, and each call is recorded from whichever covers its frequency.
+            Sources are shared by every system: each control channel runs on whichever source covers it, and each call is recorded from whichever covers its
+            frequency. A source left on Auto is placed over a system the sources before it don't cover.
           </p>
           <details className="help">
             <summary>Dongle not showing up?</summary>
@@ -837,7 +1054,7 @@ export function Setup() {
               <input className="mono" value={c.recording.captureDir} onChange={(e) => updateConfig((x) => void (x.recording.captureDir = e.target.value))} />
             </Field>
           )}
-          <Toggle label="Record talkgroups not in the CSV" checked={c.recording.recordUnknown} onChange={(v) => updateConfig((x) => void (x.recording.recordUnknown = v))} />
+          <Toggle label="Record talkgroups not in the CSV" hint="each system can override it" checked={c.recording.recordUnknown} onChange={(v) => updateConfig((x) => void (x.recording.recordUnknown = v))} />
           <Toggle label="Record unit-to-unit calls" checked={c.recording.recordUnitToUnit} onChange={(v) => updateConfig((x) => void (x.recording.recordUnitToUnit = v))} />
           <Toggle label="Keep calls with no audio" hint="encrypted, or nothing decoded" checked={c.recording.keepSilentCalls} onChange={(v) => updateConfig((x) => void (x.recording.keepSilentCalls = v))} />
           {!web && (
@@ -863,7 +1080,7 @@ export function Setup() {
             <Field label="Call timeout, s">
               <input className="mono" value={c.recording.callTimeoutS} onChange={(e) => updateConfig((x) => void (x.recording.callTimeoutS = Math.max(1, Number(e.target.value) || 3)))} />
             </Field>
-            <Field label="Max recorders">
+            <Field label="Max recorders" hint="Shared by every system">
               <input className="mono" value={c.recording.maxRecorders} onChange={(e) => updateConfig((x) => void (x.recording.maxRecorders = Math.max(1, Math.min(64, Number(e.target.value) || 32))))} />
             </Field>
           </div>

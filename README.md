@@ -1,7 +1,7 @@
 # Trunk Recorder Lite
 
 A lightweight, self-contained trunked-radio recorder: point one or more
-RTL-SDRs (or, optionally, USRPs and Airspys) at a **P25** system (Phase 1 and Phase 2 TDMA voice) and it follows the control channel and records
+RTL-SDRs (or, optionally, USRPs and Airspys) at one or more **P25** systems (Phase 1 and Phase 2 TDMA voice) and it follows their control channels and records
 every call it can hear as WAV + Trunk Recorder–compatible JSON. It also records
 **conventional channels** — analog FM and P25 — alongside a trunked system or
 on their own (see [Conventional channels](#conventional-channels)). It is written
@@ -77,10 +77,10 @@ CPU: about 1–2 % of a core per 2.4 MSPS.
 ## Run it
 
 ```bash
-trunk-lite          # opens http://localhost:8080 — set up the system, press Start
+trunk-lite          # opens http://localhost:8080 — set up the system(s), press Start
 ```
 
-Set the control channels and your dongle(s) in the browser, press **Start**.
+Add a system (or let **Find my system** find it), set your dongle(s) in the browser, press **Start**.
 Calls are written to the recordings folder (default `~/TrunkRecorderLite`) as
 `<system>/<year>/<month>/<day>/<talkgroup>-<epoch>_<freq>.wav|json`, Trunk
 Recorder's layout and JSON fields; the interface shows live status, a
@@ -110,6 +110,36 @@ workers don't run from `file://`. Press **Connect…** on a dongle source to pic
 it. The desktop app is the better choice for several dongles or long
 unattended runs.
 
+### Several systems and sites
+
+One recorder can follow several P25 systems at once — or several **sites** of
+one multi-site system. Each gets a card under **Systems** in Setup, with its
+own short name (its recordings folder and band plan), control channels,
+modulation and talkgroup CSV; **Record** switches one off without deleting
+it. The systems share the sources and the recorder pool: each control channel
+runs on whichever source covers it, each call on whichever source covers its
+voice channel. A source left on **Auto** is centered over a system the
+sources before it don't cover, and each source's card shows which systems'
+control (tall ticks) and voice channels (short ticks) fall inside it.
+
+A **site lock** (NAC, WACN, System ID, RFSS, site) keeps a system on the
+right control channel: a control channel that announces a different identity
+is not followed — its grants are ignored and the recorder hunts on to the
+next one listed — and the dashboard says why. Grants wait until every locked
+field has been heard (the site comes in the RFSS status broadcast, every few
+seconds). For a multi-site system, add each site as its own system locked to
+its site number; the survey fills the lock in, and the neighbouring sites a
+control channel announces can be added with one click (in the survey, and on
+the dashboard while recording). A site added next to one of the same system
+gets its talkgroups.
+
+The dashboard lists every system with its site, control channel, decode rate
+and calls, grouping sites of the same WACN / System ID; active calls, recent
+calls and the log can be filtered by system, and live listening follows the
+filter. A call heard on two sites is recorded by both (duplicate detection
+across sites is planned). Importing a Trunk Recorder config brings in all its
+P25 systems.
+
 ### Find my system
 
 Don't know the frequencies? Under **Find my system** in Setup, press **Scan**
@@ -129,11 +159,15 @@ best signal and shows what that channel announces:
 - on an RTL-SDR, the **gain**: it tries gains from 19.7 to 49.6 dB and keeps
   the lowest one within 1 dB of the best signal that doesn't clip.
 
-**Use this system** writes the control channels, the ppm, the gain and a
-center frequency that covers the most voice channels seen. It also says when
-the system spans more than one dongle can cover. Any other control channel
-the scan found can be picked with **Listen**. Everything can still be typed
-in by hand.
+**Add this system** adds it — control channels, a site lock with the
+identity it announced, the voice channels seen — and sets the ppm, the gain
+and a center frequency that covers the most voice channels seen (unless
+another system needs that source where it is). Pick **replacing …** instead
+to update a system already set up. It also says when the system spans more
+than one dongle can cover. Any other control channel the scan found can be
+picked with **Listen**, or added straight away with **Add** (with its site's
+other control channels); neighbouring sites can be added too. Everything can
+still be typed in by hand.
 
 From the command line (JSON lines of what's found, then the system):
 
@@ -207,10 +241,11 @@ tabs, decimal commas, and the byte-order mark. Rows that can't be read are
 reported by row number; a file that can't be read at all keeps the last good
 list. `trunk-lite replay … --channels channels.csv` reads the same format.
 
-A config can have a trunked system, conventional channels, or both; leave the
-control channels empty for conventional only. Every enabled channel must lie
-inside a source's bandwidth. The first source's center is placed
-automatically when the channels (and control channels) fit in one source.
+A config can have trunked systems, conventional channels, or both; with no
+system, it records conventional channels only. Every enabled channel must lie
+inside a source's bandwidth. A source's center is placed automatically when
+it is left on Auto and the channels fit. Conventional calls go to their own
+folder (**Short name** in the panel, `conv` by default).
 
 **How it works.** Channels are found by energy, like Trunk Recorder's signal
 detector, but from the spectrum the channelizer already computes for every
@@ -275,6 +310,11 @@ rtl_sdr -f 858300000 -s 2400000 -g 38.6 -n 72000000 capture.cu8        # 30 s
 ./target/release/trunk-lite replay --source a.cu8,858300000,2400000 \
     --source b.cu8,860700000,2400000 --cc 857987500 --out calls/
 
+# Several systems or sites (each to <out>/<name>/), with optional site locks
+# (NAC / System ID / WACN in hex): a control channel that disagrees isn't followed.
+./target/release/trunk-lite replay capture.cu8 --center 858300000 --rate 2400000 \
+    --system east:857987500:nac=443,site=3 --system west:858987500:site=4 --out calls/
+
 # Conventional channels (with or without --cc); talkgroup = frequency in kHz:
 ./target/release/trunk-lite replay capture.cu8 --center 154500000 --rate 2400000 \
     --fm 154430000,155100000 --p25 154725000 [--squelch 8] --out calls/
@@ -285,7 +325,8 @@ Calls are written as `<talkgroup>-<epoch>_<freq>.wav|json` with Trunk
 Recorder's JSON fields (Phase 2 TDMA calls as `…_<freq>.<slot>.wav`; the
 scrambler seed — WACN, System ID, NAC — comes from the control channel, no
 setup needed). `--bandplan` keeps the system's IDEN tables between
-runs, so a grant heard before the next IDEN broadcast can be followed at once.
+runs, so a grant heard before the next IDEN broadcast can be followed at once
+(with several systems, one file each: `<file>.<name>`).
 
 ## How it works
 
@@ -376,6 +417,9 @@ NAC 0x443, from an R820T RTL-SDR):
    shared spectrum with pre-roll~~ — done (verified on synthetic air; live
    testing pending). Next: CTCSS / DCS tones and P25 NAC matching, so
    several users of one frequency can be told apart
+9. ~~Several systems and sites at once, with site locks~~ — done (verified
+   on captures). Next: duplicate-call detection across the sites of a
+   multi-site system
 
 ## License
 

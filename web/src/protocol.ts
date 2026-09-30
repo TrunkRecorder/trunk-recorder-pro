@@ -36,18 +36,42 @@ export interface Channel {
   enabled: boolean;
 }
 
+/** A P25 site's identity (NAC, WACN, System ID are hex on the air). Absent = unknown / any. */
+export interface SiteIdentity {
+  nac?: number | null;
+  wacn?: number | null;
+  sysId?: number | null;
+  rfss?: number | null;
+  site?: number | null;
+}
+
+/**
+ * A trunked system — or one site of a multi-site system: each site recorded
+ * from its own control channel is a system, with its own short name (folder).
+ */
+export interface System {
+  shortName: string;
+  type: "p25";
+  enabled: boolean;
+  controlChannels: number[];
+  modulation: "auto" | "fsk4" | "qpsk";
+  talkgroupsCsv: string;
+  talkgroupsName: string;
+  /** Only follow a control channel with this identity (e.g. this site, not a neighbour). */
+  expect: SiteIdentity;
+  /** Voice channels the survey heard (for placing sources). */
+  voiceChannels: number[];
+  /** Record talkgroups not in its CSV; absent/null = the Recording setting. */
+  recordUnknown?: boolean | null;
+}
+
 export interface Config {
   sources: Source[];
-  system: {
-    shortName: string;
-    type: "p25";
-    controlChannels: number[];
-    modulation: "auto" | "fsk4" | "qpsk";
-    talkgroupsCsv: string;
-    talkgroupsName: string;
-  };
+  systems: System[];
   /** Energy-detected channels; `squelchDb` is the open threshold above the noise floor. */
   conventional: {
+    /** Folder / record name of conventional calls. */
+    shortName: string;
     squelchDb: number;
     /** Desktop: a CSV the channels are read from ("" = the list here). Changed with the channelFile message. */
     channelFile?: string;
@@ -84,18 +108,45 @@ export interface PhaseState {
   ended: boolean;
 }
 
-export interface EngineStatus {
+export interface Identity {
+  nac: number | null;
+  wacn: number | null;
+  sysId: number | null;
+  rfss: number | null;
+  site: number | null;
+}
+
+/** `Call.system` / `listen.system` of a conventional channel. */
+export const CONVENTIONAL = 65535;
+
+/** One running system (site). `index` is what calls and audio carry as `system`. */
+export interface SystemStatus {
+  index: number;
+  shortName: string;
   nowS: number;
   controlChannelHz: number | null;
-  identity: { nac: number | null; wacn: number | null; sysId: number | null; rfss: number | null; site: number | null };
+  identity: Identity;
   good: number;
   bad: number;
   modulation: string | null;
   activeCalls: number;
   recording: number;
+  callsConcluded: number;
+  /** The control channel is another system's / site's: why (its grants are not followed). */
+  mismatch: string | null;
+  /** Neighbouring sites its control channel announces. */
+  adjacent: { sysId: number; rfss: number; site: number; freqHz: number }[];
+}
+
+export interface EngineStatus {
+  nowS: number;
+  activeCalls: number;
+  /** Recorders in use (shared by every system). */
+  recording: number;
   channelsOpen: number;
   conventionalOpen: number;
   callsConcluded: number;
+  systems: SystemStatus[];
 }
 
 export interface SourceStatus {
@@ -112,6 +163,9 @@ export interface SourceStatus {
 
 export interface CallView {
   id: number;
+  /** SystemStatus.index; CONVENTIONAL for a conventional channel. */
+  system: number;
+  systemName: string;
   talkgroup: number;
   alphaTag: string;
   freqHz: number;
@@ -129,10 +183,13 @@ export interface LogLine {
   timeS: number;
   kind: string;
   text: string;
+  /** The system's short name, for its messages. */
+  system?: string;
 }
 
 /** Trunk Recorder's call JSON (the fields the interface shows). */
 export interface CallRecord {
+  short_name?: string;
   talkgroup: number;
   talkgroup_tag: string;
   freq: number;
@@ -228,6 +285,9 @@ export interface SurveySuggestion {
   nac: number | null;
   sysId: number | null;
   wacn: number | null;
+  rfss: number | null;
+  site: number | null;
+  voiceChannels: number[];
 }
 
 export type SurveyState =
@@ -277,7 +337,8 @@ export type ToRecorder =
   | { type: "stop" }
   | { type: "devices" }
   | { type: "findRadios" }
-  | { type: "listen"; on: boolean; talkgroup: number | null }
+  /** Live audio: on/off, optionally one system's (CONVENTIONAL: conventional channels) and/or one talkgroup's. */
+  | { type: "listen"; on: boolean; system: number | null; talkgroup: number | null }
   /** Link the conventional channels to a CSV (created from the list if new), reload it (same path), or unlink (""). */
   | { type: "channelFile"; path: string }
   /** Find a system: scan `bands` with source `source`, then monitor the best control channel. */
@@ -291,16 +352,20 @@ export type ToRecorder =
 /** Live audio: one 20 ms (or longer) chunk of a call, 8 kHz. */
 export interface AudioChunk {
   callId: number;
+  system: number;
   talkgroup: number;
   samples: Float32Array;
 }
 
-/** Binary audio frame: [1][u32 call id][u32 talkgroup][i16 samples…], little-endian. */
+/** Binary audio frame: [2][u16 system][u32 call id][u32 talkgroup][i16 samples…], little-endian (version 1 had no system). */
 export function decodeAudioFrame(buf: ArrayBuffer): AudioChunk | null {
   const v = new DataView(buf);
-  if (buf.byteLength < 9 || v.getUint8(0) !== 1) return null;
-  const n = (buf.byteLength - 9) >> 1;
+  const ver = buf.byteLength ? v.getUint8(0) : 0;
+  const head = ver === 2 ? 11 : ver === 1 ? 9 : 0;
+  if (!head || buf.byteLength < head) return null;
+  const at = ver === 2 ? 3 : 1;
+  const n = (buf.byteLength - head) >> 1;
   const samples = new Float32Array(n);
-  for (let i = 0; i < n; i++) samples[i] = v.getInt16(9 + 2 * i, true) / 32768;
-  return { callId: v.getUint32(1, true), talkgroup: v.getUint32(5, true), samples };
+  for (let i = 0; i < n; i++) samples[i] = v.getInt16(head + 2 * i, true) / 32768;
+  return { callId: v.getUint32(at, true), system: ver === 2 ? v.getUint16(1, true) : 0, talkgroup: v.getUint32(at + 4, true), samples };
 }

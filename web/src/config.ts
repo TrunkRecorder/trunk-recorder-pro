@@ -1,6 +1,6 @@
 // Config helpers for the setup form (the recorder validates again).
 
-import type { Channel, Config, Source } from "./protocol.ts";
+import type { Channel, Config, SiteIdentity, Source, System } from "./protocol.ts";
 import { splitCsvLine } from "./talkgroups.ts";
 
 export const SAMPLE_RATES = [2_400_000, 2_048_000, 2_560_000, 3_200_000, 1_920_000, 1_024_000];
@@ -9,8 +9,8 @@ export const SAMPLE_RATES = [2_400_000, 2_048_000, 2_560_000, 3_200_000, 1_920_0
 export function defaultConfig(): Config {
   return {
     sources: [newDongle()],
-    system: { shortName: "sys1", type: "p25", controlChannels: [], modulation: "auto", talkgroupsCsv: "", talkgroupsName: "" },
-    conventional: { squelchDb: 8, channels: [] },
+    systems: [],
+    conventional: { shortName: "conv", squelchDb: 8, channels: [] },
     recording: {
       captureDir: "",
       prerollS: 1,
@@ -74,15 +74,115 @@ export function enabledChannels(c: Config): Channel[] {
   return (c.conventional?.channels ?? []).filter((ch) => ch.enabled);
 }
 
-/** The frequencies the first source's automatic centre is placed over. */
-export function autoCenterFor(c: Config, rateHz: number): number | null {
-  const ccs = c.system.controlChannels;
-  return autoCenter([...ccs, ...enabledChannels(c).map((ch) => ch.freqHz)], rateHz) ?? autoCenter(ccs, rateHz);
+/** A system with defaults filled in (configs saved before a field existed). */
+export function normalizeSystem(x: Partial<System>): System {
+  return {
+    shortName: x.shortName ?? "sys1",
+    type: "p25",
+    enabled: x.enabled ?? true,
+    controlChannels: x.controlChannels ?? [],
+    modulation: x.modulation ?? "auto",
+    talkgroupsCsv: x.talkgroupsCsv ?? "",
+    talkgroupsName: x.talkgroupsName ?? "",
+    expect: x.expect ?? {},
+    voiceChannels: x.voiceChannels ?? [],
+    ...(x.recordUnknown === true || x.recordUnknown === false ? { recordUnknown: x.recordUnknown } : {}),
+  };
 }
 
-/** Each source's centre: as set, or automatic for the first (over the control and conventional channels). */
+/**
+ * A stored config in today's shape: before several systems it had one
+ * `system`, and conventional calls were filed under its name (the recorder's
+ * Config does the same — crates/trunk-app/src/config.rs).
+ */
+export function migrateConfig(raw: Record<string, unknown>): Config {
+  const base = defaultConfig();
+  const r = raw as Partial<Config> & { system?: Partial<System> };
+  const conv = { ...base.conventional, ...(r.conventional ?? {}) };
+  let systems: System[];
+  if (Array.isArray(r.systems)) systems = r.systems.map(normalizeSystem);
+  else if (r.system) {
+    if (!(r.conventional && "shortName" in r.conventional)) conv.shortName = r.system.shortName ?? "sys1";
+    const old = normalizeSystem(r.system);
+    systems = old.controlChannels.length || old.talkgroupsCsv ? [old] : [];
+  } else systems = [];
+  return {
+    sources: r.sources ?? base.sources,
+    systems,
+    conventional: conv,
+    recording: { ...base.recording, ...(r.recording ?? {}) },
+    server: { ...base.server, ...(r.server ?? {}) },
+  };
+}
+
+/** The systems being recorded, in the recorder's order (SystemStatus.index). */
+export function activeSystems(c: Config): System[] {
+  return c.systems.filter((x) => x.enabled && x.controlChannels.length > 0);
+}
+
+/** A system's color (the dashboard, waterfall and setup agree): by its place among the active systems. */
+export function systemColor(index: number): string {
+  return index < 0 || index === 65535 ? "var(--muted)" : `var(--sys-${index % 6})`;
+}
+
+/** A short name not used yet: `base`, else base2, base3… */
+export function uniqueShortName(c: Config, base: string, except?: System): string {
+  const clean = base.replace(/[^\w.-]/g, "") || "sys";
+  const taken = new Set(c.systems.filter((x) => x !== except).map((x) => x.shortName));
+  if (!taken.has(clean)) return clean;
+  const stem = clean.replace(/\d+$/, "");
+  for (let n = 2; ; n++) if (!taken.has(`${stem}${n}`)) return `${stem}${n}`;
+}
+
+/** A new system (not yet in the config), named uniquely. */
+export function newSystem(c: Config, patch: Partial<System> = {}): System {
+  const sys = normalizeSystem(patch);
+  sys.shortName = uniqueShortName(c, patch.shortName ?? `sys${c.systems.length + 1}`);
+  return sys;
+}
+
+/** A default short name for a site: "p25-<sysid>-<rfss>-<site>", or "sysN". */
+export function siteName(c: Config, id: SiteIdentity): string {
+  if (id.sysId != null && id.site != null) return uniqueShortName(c, `p25-${id.sysId.toString(16)}-${id.rfss ?? 0}-${id.site}`);
+  return uniqueShortName(c, `sys${c.systems.length + 1}`);
+}
+
+/** Sites of one system: the same WACN and System ID (both known). */
+export function sameSystem(a: SiteIdentity, b: SiteIdentity): boolean {
+  return a.wacn != null && a.sysId != null && a.wacn === b.wacn && a.sysId === b.sysId;
+}
+
+/** The system a control channel is already configured on, if any. */
+export function systemWithChannel(c: Config, hz: number): System | undefined {
+  return c.systems.find((x) => x.controlChannels.some((f) => Math.abs(f - hz) < 6_000));
+}
+
+/**
+ * Each source's centre: as set, or (0 = auto) placed over what the sources
+ * before it don't cover yet (the recorder's Config::resolved_centers).
+ */
 export function resolvedCenters(c: Config): (number | null)[] {
-  return c.sources.map((s, i) => (s.centerHz > 0 || i > 0 ? s.centerHz || null : autoCenterFor(c, s.rateHz)));
+  const groups: [number[], number[]][] = activeSystems(c).map((x) => [[...x.controlChannels, ...x.voiceChannels], x.controlChannels]);
+  const conv = enabledChannels(c)
+    .map((ch) => ch.freqHz)
+    .filter((f) => f > 0);
+  if (conv.length) groups.push([conv, conv]);
+  const centers = c.sources.map((s) => s.centerHz);
+  const covered = (f: number) => c.sources.some((s, i) => centers[i] > 0 && Math.abs(f - centers[i]) <= usableHalfWidth(s.rateHz));
+  for (let i = 0; i < c.sources.length; i++) {
+    if (centers[i] > 0) continue;
+    const open = groups.filter(([, need]) => !need.some(covered));
+    if (!open.length) break;
+    const rate = c.sources[i].rateHz;
+    centers[i] =
+      autoCenter(open.flatMap((g) => g[0]), rate) ?? autoCenter(open.flatMap((g) => g[1]), rate) ?? autoCenter(open[0][0], rate) ?? autoCenter(open[0][1], rate) ?? 0;
+  }
+  return centers.map((x) => x || null);
+}
+
+/** The source (index) whose usable band holds `hz`, or -1. */
+export function sourceCovering(c: Config, centers: (number | null)[], hz: number): number {
+  return c.sources.findIndex((s, i) => centers[i] !== null && Math.abs(hz - (centers[i] ?? 0)) <= usableHalfWidth(s.rateHz));
 }
 
 /** A conventional channel's talkgroup when none is given: its frequency in kHz. */
@@ -93,13 +193,22 @@ export function defaultTalkgroup(freqHz: number): number {
 /** Why the config can't start, or null (the recorder's Config::problem). */
 export function startProblem(c: Config): string | null {
   if (!c.sources.length) return "Add a source: a dongle or a capture file.";
-  const trunked = c.system.controlChannels.length > 0;
+  const systems = activeSystems(c);
   const channels = enabledChannels(c);
-  if (!trunked && !channels.length) return "Add a control channel (trunked system) or a conventional channel.";
+  if (!systems.length && !channels.length) return "Add a system with a control channel, or a conventional channel.";
+  const names = new Set<string>();
+  for (const x of systems) {
+    if (!x.shortName) return "Every system needs a short name.";
+    if (names.has(x.shortName)) return `Two systems are named "${x.shortName}" — each needs its own short name (its folder).`;
+    names.add(x.shortName);
+  }
   const centers = resolvedCenters(c);
-  if (centers.some((x) => !x)) return "Set a center frequency for every source (the first can be automatic when the channels fit one source).";
-  const inside = (f: number) => c.sources.some((s, i) => Math.abs(f - (centers[i] ?? 0)) <= usableHalfWidth(s.rateHz));
-  if (trunked && !c.system.controlChannels.some(inside)) return "No control channel falls inside any source's bandwidth — move a center frequency.";
+  const missing = centers.findIndex((x) => !x);
+  if (missing >= 0)
+    return `Set a center frequency for source ${missing + 1} — it couldn't be placed automatically (nothing left for it to cover, or the channels don't fit one source).`;
+  const inside = (f: number) => sourceCovering(c, centers, f) >= 0;
+  const lost = systems.find((x) => !x.controlChannels.some(inside));
+  if (lost) return `No control channel of ${lost.shortName} falls inside any source's bandwidth — move a center frequency or add a source.`;
   if (channels.some((ch) => !(ch.freqHz > 0))) return "A conventional channel has no frequency yet.";
   const outside = channels.filter((ch) => !inside(ch.freqHz)).map((ch) => formatMhz(ch.freqHz));
   if (outside.length) return `Conventional channel(s) outside every source's bandwidth: ${outside.join(", ")} MHz — move a center frequency or disable them.`;
@@ -274,8 +383,9 @@ export function formatMhz(hz: number, digits = 5): string {
 }
 
 /**
- * Import a Trunk Recorder config.json: its RTL-SDR sources (one per dongle)
- * and first P25 system. What can't be carried over is reported.
+ * Import a Trunk Recorder config.json: its sources (one per dongle / SDR),
+ * every P25 system (each site is a system here too) and its conventional
+ * channels. What can't be carried over is reported.
  */
 export function importTrunkRecorderConfig(text: string, base: Config): { config: Config; notes: string[] } {
   const j = JSON.parse(text) as Record<string, unknown>;
@@ -345,18 +455,34 @@ export function importTrunkRecorderConfig(text: string, base: Config): { config:
     }
   }
   if (importedChannels.length) {
-    cfg.conventional = { ...(cfg.conventional ?? { squelchDb: 8, channels: [] }), channels: importedChannels };
+    cfg.conventional = { ...cfg.conventional, channels: importedChannels };
     notes.push(`${importedChannels.length} conventional channel(s) imported. Squelch here is dB above the noise floor (default 8), not Trunk Recorder's absolute level.`);
   }
-  if (!p25.length && conv[0] && typeof conv[0].shortName === "string") cfg.system.shortName = conv[0].shortName;
-  if (p25.length > 1) notes.push(`${p25.length} P25 systems in the file; only the first was imported.`);
-  const sys = p25[0];
-  if (sys) {
-    if (typeof sys.shortName === "string") cfg.system.shortName = sys.shortName;
-    if (Array.isArray(sys.control_channels)) cfg.system.controlChannels = (sys.control_channels as number[]).filter((v) => typeof v === "number");
-    if (sys.modulation === "qpsk" || sys.modulation === "fsk4") cfg.system.modulation = sys.modulation;
-    if (typeof sys.talkgroupsFile === "string") notes.push(`Talkgroups file "${sys.talkgroupsFile}": load the CSV in Setup.`);
-    if (typeof sys.recordUnknown === "boolean") cfg.recording.recordUnknown = sys.recordUnknown;
+  if (conv[0] && typeof conv[0].shortName === "string") cfg.conventional.shortName = conv[0].shortName;
+  if (p25.length) {
+    const talkgroupFiles: string[] = [];
+    const siteIds: string[] = [];
+    cfg.systems = [];
+    for (const sys of p25) {
+      const x = newSystem(cfg, {
+        shortName: typeof sys.shortName === "string" ? sys.shortName : undefined,
+        controlChannels: Array.isArray(sys.control_channels) ? (sys.control_channels as unknown[]).filter((v): v is number => typeof v === "number") : [],
+        modulation: sys.modulation === "qpsk" || sys.modulation === "fsk4" ? sys.modulation : "auto",
+        ...(typeof sys.recordUnknown === "boolean" ? { recordUnknown: sys.recordUnknown } : {}),
+      });
+      cfg.systems.push(x);
+      if (typeof sys.talkgroupsFile === "string") talkgroupFiles.push(`${x.shortName}: "${sys.talkgroupsFile}"`);
+      if (sys.siteId !== undefined) siteIds.push(x.shortName);
+    }
+    if (p25.length > 1) notes.push(`${p25.length} P25 systems imported, each with its own folder.`);
+    if (talkgroupFiles.length) notes.push(`Talkgroup files (${talkgroupFiles.join(", ")}): load each CSV under its system in Setup.`);
+    if (siteIds.length) notes.push(`A siteId is set for ${siteIds.join(", ")}: to follow only that site, fill in its Site lock (the survey or a first run shows the site the control channel announces).`);
+    // The same setting on every system there: the default here.
+    const unknown = p25.map((x) => x.recordUnknown).filter((v): v is boolean => typeof v === "boolean");
+    if (unknown.length === p25.length && unknown.every((v) => v === unknown[0])) {
+      cfg.recording.recordUnknown = unknown[0];
+      for (const x of cfg.systems) delete x.recordUnknown;
+    }
   }
   if (typeof j.captureDir === "string") cfg.recording.captureDir = j.captureDir;
   if (typeof j.callTimeout === "number") cfg.recording.callTimeoutS = j.callTimeout;

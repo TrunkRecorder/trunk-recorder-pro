@@ -77,10 +77,10 @@ pub fn survey_config(cfg: &Config, req: &Request) -> Result<SurveyConfig, String
     if sc.rate_hz < 240_000.0 {
         return Err("The source's sample rate is too low to scan.".into());
     }
-    let m = cfg.system.modulation.as_str();
-    sc.bank.cqpsk = m != "fsk4";
-    sc.bank.cqpsk_eq = m != "fsk4";
-    sc.bank.c4fm = m != "qpsk";
+    // Finding systems not set up yet: every receiver (C4FM and CQPSK).
+    sc.bank.cqpsk = true;
+    sc.bank.cqpsk_eq = true;
+    sc.bank.c4fm = true;
     Ok(sc)
 }
 
@@ -213,6 +213,9 @@ impl SurveySession {
             "nac": m.identity.nac,
             "sysId": m.identity.sys_id,
             "wacn": m.identity.wacn,
+            "rfss": m.identity.rfss,
+            "site": m.identity.site,
+            "voiceChannels": voice,
         }))
     }
 }

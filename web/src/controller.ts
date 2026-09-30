@@ -16,11 +16,14 @@ import type {
   Phase,
   Radios,
   SourceStatus,
+  SiteIdentity,
   Spectrum,
   SurveyBand,
   SurveyState,
   SurveySuggestion,
+  System,
 } from "./protocol.ts";
+import { activeSystems, newSystem, resolvedCenters, sameSystem, siteName, sourceCovering, usableHalfWidth } from "./config.ts";
 import { WsTransport, type Transport } from "./transport.ts";
 import type { WorkerTransport } from "./web/workerTransport.ts";
 
@@ -49,9 +52,11 @@ export interface AppState {
   log: LogLine[];
   history: CallEntry[];
   listen: boolean;
+  /** Only play this system's calls live (SystemStatus.index, CONVENTIONAL; null = any). */
+  listenSystem: number | null;
   /** Only play this talkgroup live (null = any). */
   listenTalkgroup: number | null;
-  nowPlaying: { talkgroup: number; callId: number } | null;
+  nowPlaying: { system: number; talkgroup: number; callId: number } | null;
   /** The first-run survey, as the recorder last reported it. */
   survey: SurveyState;
   surveyBands: SurveyBand[];
@@ -82,6 +87,7 @@ let state: AppState = {
   log: [],
   history: [],
   listen: false,
+  listenSystem: null,
   listenTalkgroup: null,
   nowPlaying: null,
   survey: { stage: "idle" },
@@ -139,7 +145,7 @@ transport.onMessage = (m: FromRecorder) => {
         surveyBands: m.surveyBands ?? [],
         survey: m.survey ?? { stage: "idle" },
       });
-      if (state.listen) transport.send({ type: "listen", on: true, talkgroup: state.listenTalkgroup });
+      if (state.listen) transport.send({ type: "listen", on: true, system: state.listenSystem, talkgroup: state.listenTalkgroup });
       break;
     case "state":
       set({ phase: m.phase, error: m.error ?? state.error, ended: m.ended, ...(m.phase === "starting" ? { calls: [], log: [], status: null, sources: [], spectra: [] } : {}) });
@@ -227,6 +233,11 @@ export function downloadText(name: string, text: string, type = "text/csv"): voi
   setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
 
+/** Make the setup form re-read the config (after it was replaced from outside a field). */
+export function bumpEpoch(): void {
+  set({ configEpoch: state.configEpoch + 1 });
+}
+
 export function dismissError(): void {
   set({ error: null });
 }
@@ -262,18 +273,77 @@ export function stopSurvey(): void {
   transport.send({ type: "surveyStop" });
 }
 
-/** Put what the survey found into the config: control channels, and source `i`'s ppm, gain and centre. */
-export function applySurvey(i: number, sug: SurveySuggestion): void {
+/** What applying a survey result did to source `i`. */
+export interface SurveyApplied {
+  system: string;
+  /** The source's centre moved to cover it (false: other systems rely on where it is). */
+  centered: boolean;
+}
+
+/**
+ * Put what the survey found into the config: a system (new, or `target`
+ * replaced) with its control channels, site identity and voice channels; and
+ * source `i`'s ppm and gain, and its centre — unless another system is
+ * covered only where that source is now.
+ */
+export function applySurvey(i: number, sug: SurveySuggestion, target: number | "new"): SurveyApplied {
+  let applied: SurveyApplied = { system: "", centered: false };
   updateConfig((c) => {
-    c.system.controlChannels = sug.controlChannels;
+    const expect: SiteIdentity = { nac: sug.nac, wacn: sug.wacn, sysId: sug.sysId, rfss: sug.rfss, site: sug.site };
+    const fields = { controlChannels: sug.controlChannels, expect, voiceChannels: sug.voiceChannels, enabled: true };
+    let sys: System;
+    if (target === "new" || !c.systems[target]) {
+      // Another site of a system already here: same talkgroups.
+      const sibling = c.systems.find((x) => sameSystem(x.expect, expect) && x.talkgroupsCsv);
+      sys = newSystem(c, { shortName: siteName(c, expect), ...fields, talkgroupsCsv: sibling?.talkgroupsCsv ?? "", talkgroupsName: sibling?.talkgroupsName ?? "" });
+      c.systems.push(sys);
+    } else {
+      sys = c.systems[target];
+      Object.assign(sys, fields);
+    }
     const src = c.sources[i];
+    let centered = false;
     if (src && src.kind !== "file") {
       if (sug.ppmApply !== null) src.ppm = sug.ppmApply;
-      src.centerHz = sug.centerHz;
       if (src.kind === "rtlsdr" && sug.gainDb !== null) src.gainDb = sug.gainDb;
+      // Don't strand another system that only this source covers now.
+      const centers = resolvedCenters(c);
+      const within = (f: number) => Math.abs(f - sug.centerHz) <= usableHalfWidth(src.rateHz);
+      const stranded = activeSystems(c).some((x) => {
+        if (x === sys) return false;
+        const on = x.controlChannels.map((f) => sourceCovering(c, centers, f));
+        const onlyHere = on.includes(i) && !on.some((k) => k >= 0 && k !== i);
+        return onlyHere && !x.controlChannels.some(within);
+      });
+      if (!stranded) {
+        src.centerHz = sug.centerHz;
+        centered = true;
+      }
     }
+    applied = { system: sys.shortName, centered };
   });
   set({ configEpoch: state.configEpoch + 1 });
+  return applied;
+}
+
+/** Add a site (a neighbour the control channel announced, or a scanned control channel) as a system. */
+export function addSite(controlChannels: number[], expect: SiteIdentity): string {
+  let name = "";
+  updateConfig((c) => {
+    const sibling = c.systems.find((x) => sameSystem(x.expect, expect) || (expect.sysId != null && x.expect.sysId === expect.sysId && x.talkgroupsCsv));
+    const sys = newSystem(c, {
+      shortName: siteName(c, expect),
+      controlChannels,
+      expect,
+      modulation: sibling?.modulation ?? "auto",
+      talkgroupsCsv: sibling?.talkgroupsCsv ?? "",
+      talkgroupsName: sibling?.talkgroupsName ?? "",
+    });
+    c.systems.push(sys);
+    name = sys.shortName;
+  });
+  set({ configEpoch: state.configEpoch + 1 });
+  return name;
 }
 
 // ── run ──────────────────────────────────────────────────────────────────────
@@ -298,9 +368,10 @@ export function stop(): void {
 
 // ── live audio ───────────────────────────────────────────────────────────────
 
-export function setListen(on: boolean, talkgroup: number | null = state.listenTalkgroup): void {
-  set({ listen: on, listenTalkgroup: talkgroup });
-  transport.send({ type: "listen", on, talkgroup });
+/** Live audio on/off; optionally only one system's (null = any) and/or one talkgroup's. */
+export function setListen(on: boolean, system: number | null = state.listenSystem, talkgroup: number | null = state.listenTalkgroup): void {
+  set({ listen: on, listenSystem: system, listenTalkgroup: talkgroup });
+  transport.send({ type: "listen", on, system, talkgroup });
   if (on) player.resume();
   else {
     player.stop();
@@ -312,11 +383,12 @@ let current: { callId: number; lastMs: number } | null = null;
 
 function onAudio(a: AudioChunk): void {
   if (!state.listen) return;
+  if (state.listenSystem !== null && a.system !== state.listenSystem) return;
   if (state.listenTalkgroup !== null && a.talkgroup !== state.listenTalkgroup) return;
   const now = performance.now();
   // Scanner behaviour: stay on the current call until it has been quiet 2 s.
   if (current && current.callId !== a.callId && now - current.lastMs < 2000) return;
   current = { callId: a.callId, lastMs: now };
-  if (state.nowPlaying?.callId !== a.callId) set({ nowPlaying: { talkgroup: a.talkgroup, callId: a.callId } });
+  if (state.nowPlaying?.callId !== a.callId) set({ nowPlaying: { system: a.system, talkgroup: a.talkgroup, callId: a.callId } });
   player.enqueue(a.samples, 8000);
 }

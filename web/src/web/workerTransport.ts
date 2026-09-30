@@ -4,7 +4,7 @@
 
 import { decodeAudioFrame, type AudioChunk, type Config, type FromRecorder, type ToRecorder } from "../protocol.ts";
 import type { Transport } from "../transport.ts";
-import { defaultConfig } from "../config.ts";
+import { defaultConfig, migrateConfig } from "../config.ts";
 import type { FromWorker, ToWorker } from "./engine.worker.ts";
 import { callBlob } from "./opfs.ts";
 
@@ -13,7 +13,7 @@ const CONFIG_KEY = "trl.config.v2";
 function loadConfig(): Config {
   try {
     const raw = localStorage.getItem(CONFIG_KEY);
-    if (raw) return { ...defaultConfig(), ...(JSON.parse(raw) as Partial<Config>) } as Config;
+    if (raw) return migrateConfig(JSON.parse(raw) as Record<string, unknown>);
   } catch {
     /* storage blocked or corrupt: defaults */
   }

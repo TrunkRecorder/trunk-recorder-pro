@@ -27,6 +27,8 @@ pub enum MessageType {
     UuVGrant,
     UuVUpdate,
     CallAlert,
+    /// A neighbouring site (`sys_id`, `rfss`, `site`, its control channel `freq_hz`).
+    Adjacent,
     #[default]
     Unknown,
 }
@@ -52,6 +54,7 @@ impl MessageType {
             UuVGrant => "uu_v_grant",
             UuVUpdate => "uu_v_update",
             CallAlert => "call_alert",
+            Adjacent => "adjacent",
             Unknown => "unknown",
         }
     }
@@ -408,6 +411,8 @@ impl TsbkParser {
                 }
             }
             0x3c => {
+                m.kind = MessageType::Adjacent;
+                m.sys_id = b(56, 0xfff);
                 m.rfss = b(48, 0xff);
                 m.site = b(40, 0xff);
                 m.freq_hz = self.channel_to_hz(b(24, 0xffff));

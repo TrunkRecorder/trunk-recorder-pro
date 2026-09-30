@@ -1,12 +1,12 @@
 //! The app's configuration: which sources (RTL-SDRs, USRPs, Airspys or capture files), which
-//! trunked system and/or conventional channels, recording rules and the web server. Stored as JSON in the platform
+//! trunked systems (sites) and/or conventional channels, recording rules and the web server. Stored as JSON in the platform
 //! config folder; the browser interface reads and edits it.
 
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use trunk_core::p25::diversity::BankConfig;
-use trunk_core::trunk::{CallConfig, ConvChannel, ConvConfig, ConvMode, EngineConfig, SourceConfig, Talkgroup};
+use trunk_core::trunk::{parse_csv, CallConfig, ConvChannel, ConvConfig, ConvMode, EngineConfig, Identity, SourceConfig, SystemConfig, Talkgroup};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -117,17 +117,30 @@ impl Source {
     }
 }
 
+/// A trunked system — or one site of a multi-site system: each site you
+/// record from its own control channel is a system here (as in Trunk
+/// Recorder), with its own short name and folder.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct System {
     pub short_name: String,
     #[serde(rename = "type")]
     pub kind: String,
+    pub enabled: bool,
     pub control_channels: Vec<f64>,
     /// "auto" | "fsk4" | "qpsk"
     pub modulation: String,
     pub talkgroups_csv: String,
     pub talkgroups_name: String,
+    /// Only follow a control channel with this identity (fields left out
+    /// match anything) — e.g. this site of a multi-site system, not its
+    /// neighbour on a nearby frequency.
+    pub expect: SiteIdentity,
+    /// Voice channels the survey heard (for placing sources; informational).
+    pub voice_channels: Vec<f64>,
+    /// Record talkgroups not in its CSV; None = the Recording setting.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub record_unknown: Option<bool>,
 }
 
 impl Default for System {
@@ -135,11 +148,48 @@ impl Default for System {
         System {
             short_name: "sys1".into(),
             kind: "p25".into(),
+            enabled: true,
             control_channels: vec![],
             modulation: "auto".into(),
             talkgroups_csv: String::new(),
             talkgroups_name: String::new(),
+            expect: SiteIdentity::default(),
+            voice_channels: vec![],
+            record_unknown: None,
         }
+    }
+}
+
+impl System {
+    fn bank(&self) -> BankConfig {
+        let m = self.modulation.as_str();
+        BankConfig { cqpsk: m != "fsk4", cqpsk_eq: m != "fsk4", c4fm: m != "qpsk", ..Default::default() }
+    }
+    /// Recording it: enabled, with a control channel.
+    pub fn active(&self) -> bool {
+        self.enabled && !self.control_channels.is_empty()
+    }
+}
+
+/// A P25 site's identity. NAC, WACN and System ID are shown in hex.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SiteIdentity {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nac: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wacn: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sys_id: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rfss: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub site: Option<u32>,
+}
+
+impl SiteIdentity {
+    fn engine(&self) -> Identity {
+        Identity { nac: self.nac, wacn: self.wacn, sys_id: self.sys_id, rfss: self.rfss, site: self.site }
     }
 }
 
@@ -159,6 +209,8 @@ impl Default for System {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Conventional {
+    /// Folder and record name of its calls (Trunk Recorder's shortName).
+    pub short_name: String,
     /// Open threshold for every channel, dB above the measured noise floor.
     pub squelch_db: f64,
     /// A CSV the channels are read from, absolute or relative to the config
@@ -174,7 +226,13 @@ pub struct Conventional {
 
 impl Default for Conventional {
     fn default() -> Self {
-        Conventional { squelch_db: ConvConfig::default().squelch_db, channel_file: String::new(), channels: vec![], channel_file_status: String::new() }
+        Conventional {
+            short_name: "conv".into(),
+            squelch_db: ConvConfig::default().squelch_db,
+            channel_file: String::new(),
+            channels: vec![],
+            channel_file_status: String::new(),
+        }
     }
 }
 
@@ -295,11 +353,11 @@ impl Default for Server {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase", default)]
+#[serde(rename_all = "camelCase", from = "RawConfig")]
 pub struct Config {
     pub sources: Vec<Source>,
-    /// The trunked system (none when it has no control channels).
-    pub system: System,
+    /// The trunked systems (sites).
+    pub systems: Vec<System>,
     pub conventional: Conventional,
     pub recording: Recording,
     pub server: Server,
@@ -309,11 +367,50 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             sources: vec![Source::Rtlsdr { serial: String::new(), center_hz: 0.0, rate_hz: 2_400_000.0, gain_db: Some(38.6), ppm: 0 }],
-            system: System::default(),
+            systems: vec![],
             conventional: Conventional::default(),
             recording: Recording::default(),
             server: Server::default(),
         }
+    }
+}
+
+/// A config as stored — also as before several systems: one `system`.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct RawConfig {
+    sources: Vec<Source>,
+    systems: Option<Vec<System>>,
+    system: Option<System>,
+    conventional: Option<serde_json::Value>,
+    recording: Recording,
+    server: Server,
+}
+
+impl Default for RawConfig {
+    fn default() -> Self {
+        let c = Config::default();
+        RawConfig { sources: c.sources, systems: None, system: None, conventional: None, recording: c.recording, server: c.server }
+    }
+}
+
+impl From<RawConfig> for Config {
+    fn from(r: RawConfig) -> Config {
+        let mut conventional: Conventional = r.conventional.clone().and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
+        let systems = match (r.systems, r.system) {
+            (Some(v), _) => v,
+            (None, Some(old)) => {
+                // Conventional calls were filed under the one system's name: keep that folder.
+                let named = r.conventional.as_ref().is_some_and(|v| v.get("shortName").is_some());
+                if !named {
+                    conventional.short_name = old.short_name.clone();
+                }
+                // The old default (no control channels, no talkgroups) was no system at all.
+                if old.control_channels.is_empty() && old.talkgroups_csv.is_empty() { vec![] } else { vec![old] }
+            }
+            (None, None) => vec![],
+        };
+        Config { sources: r.sources, systems, conventional, recording: r.recording, server: r.server }
     }
 }
 
@@ -422,23 +519,45 @@ impl Config {
         self.conventional.channels.iter().filter(|c| c.enabled)
     }
 
-    /// Each source's centre: as set, or (0 = auto) placed for the first
-    /// source over the control channels and conventional channels — or the
-    /// control channels alone, if everything doesn't fit.
+    /// The systems being recorded (enabled, with a control channel), in the
+    /// engine's order — a call's `system` indexes this.
+    pub fn active_systems(&self) -> impl Iterator<Item = &System> {
+        self.systems.iter().filter(|s| s.active())
+    }
+
+    /// Each source's centre: as set, or (0 = auto) placed over what the
+    /// sources before it don't cover yet — every system (control and known
+    /// voice channels) and the conventional channels if they fit together,
+    /// else the control and conventional channels, else the first uncovered
+    /// system, else its control channels alone.
     pub fn resolved_centers(&self) -> Vec<f64> {
-        let ccs = &self.system.control_channels;
-        let all: Vec<f64> = ccs.iter().copied().chain(self.enabled_channels().map(|c| c.freq_hz)).collect();
-        self.sources
-            .iter()
-            .enumerate()
-            .map(|(i, s)| {
-                if s.center_hz() > 0.0 || i > 0 {
-                    s.center_hz()
-                } else {
-                    auto_center(&all, s.rate_hz()).or_else(|| auto_center(ccs, s.rate_hz())).unwrap_or(0.0)
-                }
-            })
-            .collect()
+        // Groups to cover: (all its channels, the ones it can't do without).
+        let mut groups: Vec<(Vec<f64>, Vec<f64>)> = self
+            .active_systems()
+            .map(|s| (s.control_channels.iter().chain(&s.voice_channels).copied().collect(), s.control_channels.clone()))
+            .collect();
+        let conv: Vec<f64> = self.enabled_channels().map(|c| c.freq_hz).filter(|&f| f > 0.0).collect();
+        if !conv.is_empty() {
+            groups.push((conv.clone(), conv));
+        }
+        let mut centers: Vec<f64> = self.sources.iter().map(|s| s.center_hz()).collect();
+        let covered = |centers: &[f64], f: f64| self.sources.iter().zip(centers).any(|(s, &c)| c > 0.0 && (f - c).abs() <= usable_half_width(s.rate_hz()));
+        for i in 0..self.sources.len() {
+            if centers[i] > 0.0 {
+                continue;
+            }
+            let open: Vec<&(Vec<f64>, Vec<f64>)> = groups.iter().filter(|(_, need)| !need.iter().any(|&f| covered(&centers, f))).collect();
+            let Some(first) = open.first() else { break };
+            let rate = self.sources[i].rate_hz();
+            let all: Vec<f64> = open.iter().flat_map(|g| g.0.iter().copied()).collect();
+            let needed: Vec<f64> = open.iter().flat_map(|g| g.1.iter().copied()).collect();
+            centers[i] = auto_center(&all, rate)
+                .or_else(|| auto_center(&needed, rate))
+                .or_else(|| auto_center(&first.0, rate))
+                .or_else(|| auto_center(&first.1, rate))
+                .unwrap_or(0.0);
+        }
+        centers
     }
 
     /// Why this config can't start, or None.
@@ -446,17 +565,31 @@ impl Config {
         if self.sources.is_empty() {
             return Some("Add a source (a dongle or a capture file).".into());
         }
-        let trunked = !self.system.control_channels.is_empty();
+        let trunked = self.active_systems().next().is_some();
         if !trunked && self.enabled_channels().next().is_none() {
-            return Some("Add a control channel (trunked system) or a conventional channel.".into());
+            return Some("Add a system with a control channel, or a conventional channel.".into());
+        }
+        let mut names = std::collections::HashSet::new();
+        for s in self.active_systems() {
+            if s.short_name.is_empty() {
+                return Some("Every system needs a short name.".into());
+            }
+            if !names.insert(s.short_name.as_str()) {
+                return Some(format!("Two systems are named \"{}\" — each needs its own short name (its folder).", s.short_name));
+            }
         }
         let centers = self.resolved_centers();
-        if centers.iter().any(|&c| c <= 0.0) {
-            return Some("Set a center frequency for every source (the first can be automatic when the channels fit one source).".into());
+        if let Some(i) = centers.iter().position(|&c| c <= 0.0) {
+            return Some(format!(
+                "Set a center frequency for source {} — it couldn't be placed automatically (nothing left for it to cover, or the channels don't fit one source).",
+                i + 1
+            ));
         }
         let inside = |f: f64| self.sources.iter().zip(&centers).any(|(s, &c)| (f - c).abs() <= usable_half_width(s.rate_hz()));
-        if trunked && !self.system.control_channels.iter().any(|&f| inside(f)) {
-            return Some("No control channel falls inside any source's bandwidth — move a center frequency.".into());
+        for s in self.active_systems() {
+            if !s.control_channels.iter().any(|&f| inside(f)) {
+                return Some(format!("No control channel of {} falls inside any source's bandwidth — move a center frequency or add a source.", s.short_name));
+            }
         }
         if self.enabled_channels().any(|c| c.freq_hz <= 0.0) {
             return Some("A conventional channel has no frequency yet.".into());
@@ -474,25 +607,43 @@ impl Config {
 
     pub fn engine_config(&self, epoch_ms: f64) -> EngineConfig {
         let centers = self.resolved_centers();
-        let m = self.system.modulation.as_str();
+        let calls = |s: Option<&System>| CallConfig {
+            call_timeout_s: self.recording.call_timeout_s,
+            record_unknown: s.and_then(|s| s.record_unknown).unwrap_or(self.recording.record_unknown),
+            record_encrypted: self.recording.record_encrypted,
+            record_unit_to_unit: self.recording.record_unit_to_unit,
+            new_call_from_update: true,
+        };
+        let systems: Vec<SystemConfig> = self
+            .active_systems()
+            .map(|s| SystemConfig {
+                short_name: s.short_name.clone(),
+                control_channels: s.control_channels.clone(),
+                calls: calls(Some(s)),
+                bank: s.bank(),
+                talkgroups: parse_csv(&s.talkgroups_csv),
+                expect: s.expect.engine(),
+            })
+            .collect();
+        // With one system, conventional P25 channels also look up its talkgroup
+        // names and use its receivers (as before there were several).
+        let (conv_talkgroups, conv_bank) = match systems.as_slice() {
+            [one] => (one.talkgroups.clone(), one.bank),
+            _ => (Default::default(), BankConfig::default()),
+        };
         EngineConfig {
-            short_name: self.system.short_name.clone(),
-            control_channels: self.system.control_channels.clone(),
+            systems,
             sources: self.sources.iter().zip(centers).map(|(s, c)| SourceConfig { center_hz: c, rate_hz: s.rate_hz() }).collect(),
             preroll_s: self.recording.preroll_s,
             max_recorders: self.recording.max_recorders,
             keep_silent_calls: self.recording.keep_silent_calls,
-            calls: CallConfig {
-                call_timeout_s: self.recording.call_timeout_s,
-                record_unknown: self.recording.record_unknown,
-                record_encrypted: self.recording.record_encrypted,
-                record_unit_to_unit: self.recording.record_unit_to_unit,
-                new_call_from_update: true,
-            },
+            calls: calls(None),
             epoch_ms_at_zero: epoch_ms,
-            bank: BankConfig { cqpsk: m != "fsk4", cqpsk_eq: m != "fsk4", c4fm: m != "qpsk", ..Default::default() },
+            bank: conv_bank,
             conventional: self.enabled_channels().map(Channel::engine_channel).collect(),
             conv: ConvConfig { squelch_db: self.conventional.squelch_db, ..Default::default() },
+            conv_short_name: self.conventional.short_name.clone(),
+            conv_talkgroups,
             capture_frames: self.recording.capture_frames,
         }
     }
@@ -548,7 +699,7 @@ mod tests {
         let center = c.resolved_centers()[0];
         assert!((center - 154_265_000.0).abs() < 100_000.0, "center {center}");
         let e = c.engine_config(0.0);
-        assert!(e.control_channels.is_empty());
+        assert!(e.systems.is_empty());
         assert_eq!(e.conventional.len(), 2);
         assert_eq!(e.conventional[0].talkgroup, 1001);
         assert_eq!(e.conventional[0].info.as_ref().unwrap().alpha_tag, "County Fire Dispatch");
@@ -560,6 +711,66 @@ mod tests {
         assert!(c.problem().unwrap().contains("center frequency"));
         c.conventional.channels.clear();
         assert!(c.problem().unwrap().contains("conventional channel"));
+    }
+
+    #[test]
+    fn single_system_config_migrates() {
+        // Before several systems: one "system", conventional calls filed under its name.
+        let c: Config = serde_json::from_str(
+            r#"{ "system": { "shortName": "county", "type": "p25", "controlChannels": [851012500], "modulation": "qpsk",
+                             "talkgroupsCsv": "", "talkgroupsName": "" },
+                 "conventional": { "squelchDb": 8, "channels": [] } }"#,
+        )
+        .unwrap();
+        assert_eq!(c.systems.len(), 1);
+        assert_eq!(c.systems[0].short_name, "county");
+        assert!(c.systems[0].enabled);
+        assert_eq!(c.systems[0].expect, SiteIdentity::default());
+        assert_eq!(c.conventional.short_name, "county");
+        // An old default (no control channels) is no system; conventional keeps its folder.
+        let c: Config = serde_json::from_str(r#"{ "system": { "shortName": "sys1", "controlChannels": [] } }"#).unwrap();
+        assert!(c.systems.is_empty());
+        assert_eq!(c.conventional.short_name, "sys1");
+        // New format round-trips.
+        let back: Config = serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
+        assert_eq!(back, c);
+        assert_eq!(Config::default().conventional.short_name, "conv");
+    }
+
+    fn system(name: &str, ccs: &[f64]) -> System {
+        System { short_name: name.into(), control_channels: ccs.to_vec(), ..Default::default() }
+    }
+
+    #[test]
+    fn several_systems_centers_and_engine_config() {
+        let rtl = || Source::Rtlsdr { serial: String::new(), center_hz: 0.0, rate_hz: 2_400_000.0, gain_db: None, ppm: 0 };
+        let mut c = Config { sources: vec![rtl(), rtl()], ..Default::default() };
+        let mut a = system("east", &[851_012_500.0]);
+        a.voice_channels = vec![851_500_000.0, 852_000_000.0];
+        a.expect = SiteIdentity { nac: Some(0x443), site: Some(3), ..Default::default() };
+        let mut b = system("west", &[771_106_250.0]);
+        b.record_unknown = Some(false);
+        c.systems = vec![a, b, System { enabled: false, ..system("off", &[460_000_000.0]) }];
+        assert_eq!(c.problem(), None);
+        // Each auto source takes a system the ones before it don't cover.
+        let centers = c.resolved_centers();
+        let hw = usable_half_width(2_400_000.0);
+        for f in [851_012_500.0, 851_500_000.0, 852_000_000.0] {
+            assert!((f - centers[0]).abs() <= hw, "{f} not in source 1 at {}", centers[0]);
+        }
+        assert!((771_106_250.0 - centers[1]).abs() <= hw, "west's CC not in source 2 at {}", centers[1]);
+        let e = c.engine_config(0.0);
+        assert_eq!(e.systems.iter().map(|s| s.short_name.as_str()).collect::<Vec<_>>(), ["east", "west"]);
+        assert_eq!(e.systems[0].expect.nac, Some(0x443));
+        assert_eq!(e.systems[0].expect.site, Some(3));
+        assert!(e.systems[0].calls.record_unknown && !e.systems[1].calls.record_unknown);
+        // One source can't hold both.
+        c.sources.pop();
+        assert!(c.problem().unwrap().contains("west"), "{:?}", c.problem());
+        // Short names are folders: unique.
+        c.sources.push(rtl());
+        c.systems[1].short_name = "east".into();
+        assert!(c.problem().unwrap().contains("east"));
     }
 
     #[test]

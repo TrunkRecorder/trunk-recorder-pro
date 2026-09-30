@@ -4,7 +4,7 @@
 //! wall clock (`now_ms`), the local date for folder names, and does the I/O.
 
 use serde_json::{json, Value};
-use trunk_core::trunk::{parse_csv, Call, Engine, Event};
+use trunk_core::trunk::{Call, Engine, Event, Identity};
 use trunk_core::Complex32;
 
 use crate::config::Config;
@@ -12,8 +12,10 @@ use crate::config::Config;
 pub enum Output {
     /// A JSON message for the interface.
     Text(String),
-    /// Live audio frame `[1][u32 call id][u32 talkgroup][i16…]` for talkgroup `tg`.
-    Audio { tg: u32, frame: Vec<u8> },
+    /// Live audio frame `[2][u16 system][u32 call id][u32 talkgroup][i16…]`
+    /// for talkgroup `tg` of `system` (an index into `status.systems`, or
+    /// 65535 for a conventional channel).
+    Audio { system: u16, tg: u32, frame: Vec<u8> },
     /// A concluded call to store at `<rel>.wav` / `<rel>.json` (relative to
     /// the recordings folder); `entry` is its history entry, also sent as a
     /// `concluded` message. `frames`: the frame capture, for
@@ -51,13 +53,17 @@ pub struct Session {
 }
 
 impl Session {
-    pub fn new(cfg: Config, epoch_ms: f64, bandplan: Option<&str>, local_ymd: LocalYmd) -> Result<Session, String> {
+    /// `bandplan`: the band plan saved for a system's short name ([`Session::bandplans`]).
+    pub fn new(cfg: Config, epoch_ms: f64, bandplan: &dyn Fn(&str) -> Option<String>, local_ymd: LocalYmd) -> Result<Session, String> {
         if let Some(p) = cfg.problem() {
             return Err(p);
         }
-        let mut engine = Engine::new(cfg.engine_config(epoch_ms), parse_csv(&cfg.system.talkgroups_csv))?;
-        if let Some(b) = bandplan {
-            engine.load_bandplan(b);
+        let mut engine = Engine::new(cfg.engine_config(epoch_ms))?;
+        let names: Vec<String> = engine.systems().iter().map(|s| s.short_name.clone()).collect();
+        for (i, n) in names.iter().enumerate() {
+            if let Some(b) = bandplan(n) {
+                engine.load_bandplan(i, &b);
+            }
         }
         let n = cfg.sources.len();
         Ok(Session {
@@ -152,9 +158,17 @@ impl Session {
         self.flush_log(out);
     }
 
-    /// The band plan, to keep for the next run.
-    pub fn bandplan(&self) -> String {
-        self.engine.bandplan()
+    /// Each system's (short name, band plan), to keep for the next run.
+    pub fn bandplans(&self) -> Vec<(String, String)> {
+        self.engine.systems().iter().enumerate().map(|(i, s)| (s.short_name.clone(), self.engine.bandplan(i))).collect()
+    }
+
+    /// A system's short name (a call's `system`; conventional channels' for [`CONVENTIONAL`]).
+    fn system_name(&self, system: u16) -> &str {
+        match self.engine.systems().get(system as usize) {
+            Some(s) => &s.short_name,
+            None => &self.cfg.conventional.short_name,
+        }
     }
 
     fn flush_log(&mut self, out: &mut Vec<Output>) {
@@ -165,28 +179,37 @@ impl Session {
 
     fn handle(&mut self, ev: Event, out: &mut Vec<Output>) {
         match ev {
-            Event::Message(m) => self.log.push(json!({ "timeS": m.time_s, "kind": m.kind.as_str(), "text": m.meta })),
-            Event::ControlChannel { freq_hz } => {
-                self.log.push(json!({ "timeS": 0, "kind": "control", "text": format!("Control channel {:.5} MHz", freq_hz as f64 / 1e6) }))
+            Event::Message { system, msg: m } => {
+                let name = self.system_name(system).to_string();
+                self.log.push(json!({ "timeS": m.time_s, "kind": m.kind.as_str(), "text": m.meta, "system": name }))
             }
-            Event::Audio { call_id, talkgroup, samples } => {
+            Event::ControlChannel { system, freq_hz } => {
+                let name = self.system_name(system).to_string();
+                self.log.push(json!({ "timeS": 0, "kind": "control", "text": format!("Control channel {:.5} MHz", freq_hz as f64 / 1e6), "system": name }))
+            }
+            Event::Note { system, text } => {
+                let name = self.system_name(system).to_string();
+                self.log.push(json!({ "timeS": self.engine.status().now_s, "kind": "error", "text": text, "system": name }))
+            }
+            Event::Audio { call_id, system, talkgroup, samples } => {
                 if !self.want_audio {
                     return;
                 }
-                let mut frame = Vec::with_capacity(9 + samples.len() * 2);
-                frame.push(1u8);
+                let mut frame = Vec::with_capacity(11 + samples.len() * 2);
+                frame.push(2u8);
+                frame.extend_from_slice(&system.to_le_bytes());
                 frame.extend_from_slice(&call_id.to_le_bytes());
                 frame.extend_from_slice(&talkgroup.to_le_bytes());
                 for s in samples {
                     frame.extend_from_slice(&((s.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes());
                 }
-                out.push(Output::Audio { tg: talkgroup, frame });
+                out.push(Output::Audio { system, tg: talkgroup, frame });
             }
             Event::Concluded(k) => {
                 // Trunk Recorder's layout: <shortName>/<year>/<month>/<day>/, local time.
                 let record: Value = serde_json::from_str(&k.json).unwrap_or(Value::Null);
                 let (y, m, d) = (self.local_ymd)(record["start_time"].as_i64().unwrap_or(0));
-                let rel = format!("{}/{y}/{m}/{d}/{}", self.cfg.system.short_name, k.base_name);
+                let rel = format!("{}/{y}/{m}/{d}/{}", k.short_name, k.base_name);
                 let entry = json!({ "path": rel, "record": record });
                 out.push(Output::File { rel, wav: trunk_core::wav::encode(&k.audio, 8000), json: k.json, frames: k.frames, entry: entry.clone() });
                 out.push(Output::Text(json!({ "type": "concluded", "entry": entry }).to_string()));
@@ -197,7 +220,6 @@ impl Session {
 
     fn status_json(&self, load: f64) -> Value {
         let st = self.engine.status();
-        let id = &st.identity;
         let sources: Vec<Value> = self
             .cfg
             .sources
@@ -211,25 +233,46 @@ impl Session {
                         "dropped": ss.dropped, "errors": ss.errors, "lastError": ss.last_error, "ended": ss.ended })
             })
             .collect();
+        let systems: Vec<Value> = st
+            .systems
+            .iter()
+            .enumerate()
+            .map(|(i, y)| {
+                json!({
+                    "index": i, "shortName": y.short_name, "nowS": y.now_s, "controlChannelHz": y.control_channel_hz,
+                    "identity": identity_json(&y.identity),
+                    "good": y.good, "bad": y.bad, "modulation": if y.modulation.is_empty() { None } else { Some(y.modulation) },
+                    "activeCalls": y.active_calls, "recording": y.recording, "callsConcluded": y.calls_concluded,
+                    "mismatch": y.mismatch,
+                    "adjacent": y.adjacent.iter().map(|a| json!({ "sysId": a.sys_id, "rfss": a.rfss, "site": a.site, "freqHz": a.freq_hz })).collect::<Vec<_>>(),
+                })
+            })
+            .collect();
         json!({
             "type": "status",
             "status": {
-                "nowS": st.now_s, "controlChannelHz": st.control_channel_hz,
-                "identity": { "nac": id.nac, "wacn": id.wacn, "sysId": id.sys_id, "rfss": id.rfss, "site": id.site },
-                "good": st.good, "bad": st.bad, "modulation": if st.modulation.is_empty() { None } else { Some(st.modulation) },
+                "nowS": st.now_s,
                 "activeCalls": st.active_calls, "recording": st.recording, "channelsOpen": st.channels_open, "conventionalOpen": st.conventional_open,
                 "callsConcluded": st.calls_concluded,
+                "systems": systems,
             },
             "sources": sources,
             "load": load,
-            "calls": self.engine.active_calls().iter().map(call_view).collect::<Vec<_>>(),
+            "calls": self.engine.active_calls().iter().map(|c| call_view(c, self.system_name(c.system))).collect::<Vec<_>>(),
         })
     }
 }
 
-fn call_view(c: &Call) -> Value {
+fn identity_json(id: &Identity) -> Value {
+    json!({ "nac": id.nac, "wacn": id.wacn, "sysId": id.sys_id, "rfss": id.rfss, "site": id.site })
+}
+
+fn call_view(c: &Call, system_name: &str) -> Value {
     json!({
         "id": c.id,
+        // (65535: a conventional channel)
+        "system": c.system,
+        "systemName": system_name,
         "talkgroup": c.talkgroup,
         "alphaTag": c.talkgroup_info.as_ref().map_or("", |t| t.alpha_tag.as_str()),
         "freqHz": c.freq_hz,

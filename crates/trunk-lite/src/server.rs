@@ -4,12 +4,12 @@
 //!
 //! Server → browser: `hello` (config, devices, phase, history), `state`,
 //! `status` (~2/s), `spectrum` (~7/s per source), `log`, `concluded`,
-//! `devices`, `error`, and audio frames `[1][u32 call id][u32 talkgroup][i16…]`
-//! (8 kHz) to connections that asked to listen.
+//! `devices`, `error`, and audio frames `[2][u16 system][u32 call id][u32
+//! talkgroup][i16…]` (8 kHz) to connections that asked to listen.
 //! `radios` (the optional USRP / Airspy drivers and their devices) comes in
 //! `hello` and answers `findRadios`, which also searches for USRPs.
 //! Browser → server: `setConfig`, `start`, `stop`, `devices`, `findRadios`,
-//! `listen {on, talkgroup}`, `quit` (stop recording, tell every browser
+//! `listen {on, system, talkgroup}`, `quit` (stop recording, tell every browser
 //! `quit`, exit). GET /api/version identifies a running instance.
 //!
 //! The first-run survey (see [`crate::survey`]): `surveyStart {source, bands,
@@ -161,17 +161,16 @@ async fn session(ctx: Arc<Ctx>, mut socket: WebSocket) {
     if socket.send(Message::Text(hello.to_string().into())).await.is_err() {
         return;
     }
-    // Live audio: off until the browser asks; optionally one talkgroup only.
-    let mut listen: Option<Option<u32>> = None;
+    // Live audio: off until the browser asks; optionally one system and/or talkgroup only.
+    let mut listen: Option<Listen> = None;
     loop {
         tokio::select! {
             msg = rx.recv() => match msg {
                 Ok(out) => {
                     let m = match &*out {
                         Out::Text(s) => Message::Text(s.clone().into()),
-                        Out::Audio { tg, frame } => match listen {
-                            Some(None) => Message::Binary(frame.clone().into()),
-                            Some(Some(want)) if want == *tg => Message::Binary(frame.clone().into()),
+                        Out::Audio { system, tg, frame } => match listen {
+                            Some(l) if l.wants(*system, *tg) => Message::Binary(frame.clone().into()),
                             _ => continue,
                         },
                     };
@@ -200,7 +199,21 @@ async fn session(ctx: Arc<Ctx>, mut socket: WebSocket) {
     }
 }
 
-async fn command(ctx: &Arc<Ctx>, v: &Value, listen: &mut Option<Option<u32>>) -> Option<Value> {
+/// Which live audio a connection wants: every call, or one system's
+/// (65535: conventional) and/or one talkgroup's.
+#[derive(Clone, Copy)]
+struct Listen {
+    system: Option<u16>,
+    talkgroup: Option<u32>,
+}
+
+impl Listen {
+    fn wants(&self, system: u16, tg: u32) -> bool {
+        self.system.is_none_or(|s| s == system) && self.talkgroup.is_none_or(|t| t == tg)
+    }
+}
+
+async fn command(ctx: &Arc<Ctx>, v: &Value, listen: &mut Option<Listen>) -> Option<Value> {
     match v["type"].as_str()? {
         "setConfig" => match serde_json::from_value::<Config>(v["config"].clone()) {
             Ok(mut c) => {
@@ -318,7 +331,8 @@ async fn command(ctx: &Arc<Ctx>, v: &Value, listen: &mut Option<Option<u32>>) ->
             None
         }
         "listen" => {
-            *listen = if v["on"].as_bool() == Some(true) { Some(v["talkgroup"].as_u64().map(|t| t as u32)) } else { None };
+            *listen = (v["on"].as_bool() == Some(true))
+                .then(|| Listen { system: v["system"].as_u64().map(|s| s as u16), talkgroup: v["talkgroup"].as_u64().map(|t| t as u32) });
             None
         }
         _ => None,

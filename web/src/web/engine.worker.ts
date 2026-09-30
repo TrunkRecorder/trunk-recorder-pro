@@ -4,7 +4,7 @@
 
 import init, { survey_bands, WebRtl, WebSession, WebSurvey } from "./pkg/trunk_web.js";
 import type { Config, FromRecorder } from "../protocol.ts";
-import { resolvedCenters } from "../config.ts";
+import { activeSystems, resolvedCenters } from "../config.ts";
 import { listCalls, readText, saveCall, writeText } from "./opfs.ts";
 
 export type ToWorker =
@@ -14,7 +14,7 @@ export type ToWorker =
   | { type: "start" }
   | { type: "stop" }
   | { type: "devices" }
-  | { type: "listen"; on: boolean; talkgroup: number | null }
+  | { type: "listen"; on: boolean; system: number | null; talkgroup: number | null }
   | { type: "surveyStart"; source: number; bands: string[]; findGain: boolean }
   | { type: "surveyListen"; freqHz: number }
   | { type: "surveyRescan" }
@@ -31,7 +31,7 @@ let session: WebSession | null = null;
 let rtls: WebRtl[] = [];
 let timer: ReturnType<typeof setInterval> | null = null;
 let running = false;
-let listen: { on: boolean; talkgroup: number | null } = { on: false, talkgroup: null };
+let listen: { on: boolean; system: number | null; talkgroup: number | null } = { on: false, system: null, talkgroup: null };
 let phase: FromRecorder & { type: "state" } = { type: "state", phase: "idle", error: null, ended: false };
 const ready = init();
 
@@ -50,11 +50,11 @@ async function devices() {
 }
 
 /** Hand the session's outputs to the page / storage. */
-function deliver(outs: { t: string; json?: string; tg?: number; frame?: Uint8Array; rel?: string; wav?: Uint8Array; entry?: string }[]): void {
+function deliver(outs: { t: string; json?: string; system?: number; tg?: number; frame?: Uint8Array; rel?: string; wav?: Uint8Array; entry?: string }[]): void {
   for (const o of outs) {
     if (o.t === "text") post(JSON.parse(o.json!) as FromRecorder);
     else if (o.t === "audio") {
-      if (listen.on && (listen.talkgroup === null || listen.talkgroup === o.tg)) {
+      if (listen.on && (listen.system === null || listen.system === o.system) && (listen.talkgroup === null || listen.talkgroup === o.tg)) {
         const buf = o.frame!.slice().buffer;
         postMessage({ audio: buf, tg: o.tg! } satisfies FromWorker, { transfer: [buf] });
       }
@@ -160,8 +160,13 @@ async function start(): Promise<void> {
   try {
     await ready;
     const cfg = config;
-    const plan = await readText(`bandplan-${cfg.system.shortName}.txt`);
-    session = new WebSession(JSON.stringify(cfg), Date.now(), plan);
+    // Each system's band plan from the last run.
+    const plans: Record<string, string> = {};
+    for (const x of activeSystems(cfg)) {
+      const p = await readText(`bandplan-${x.shortName}.txt`);
+      if (p) plans[x.shortName] = p;
+    }
+    session = new WebSession(JSON.stringify(cfg), Date.now(), JSON.stringify(plans));
     session.set_want_audio(listen.on);
     const centers = resolvedCenters(cfg);
     running = true;
@@ -238,7 +243,9 @@ async function stop(ended = false): Promise<void> {
   const s = session;
   session = null;
   deliver(s.finish());
-  if (config) await writeText(`bandplan-${config.system.shortName}.txt`, s.bandplan()).catch(() => {});
+  for (const [name, plan] of Object.entries(JSON.parse(s.bandplans()) as Record<string, string>)) {
+    await writeText(`bandplan-${name}.txt`, plan).catch(() => {});
+  }
   s.free();
   setPhase("idle", null, ended);
 }
@@ -277,7 +284,7 @@ onmessage = async (ev: MessageEvent<ToWorker>) => {
       post({ type: "devices", devices: await devices() });
       break;
     case "listen":
-      listen = { on: m.on, talkgroup: m.talkgroup };
+      listen = { on: m.on, system: m.system, talkgroup: m.talkgroup };
       session?.set_want_audio(m.on);
       break;
     case "surveyStart":

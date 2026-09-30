@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
-import { formatMhz, startProblem } from "./config.ts";
-import { dismissError, downloadCall, quitApp, setListen, setNotice, start, stop, transport, useApp, web, type AppState } from "./controller.ts";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { activeSystems, formatMhz, startProblem, systemColor, systemWithChannel } from "./config.ts";
+import { addSite, dismissError, downloadCall, quitApp, setListen, setNotice, start, stop, transport, useApp, web, type AppState } from "./controller.ts";
 import { BrowserStorage } from "./web/BrowserStorage.tsx";
-import type { CallEntry, CallView } from "./protocol.ts";
+import { CONVENTIONAL, type CallEntry, type CallView, type SystemStatus } from "./protocol.ts";
 import { Setup } from "./Setup.tsx";
-import { Waterfall } from "./Waterfall.tsx";
+import { Waterfall, type CcMark } from "./Waterfall.tsx";
 
 const hex = (v: number | null | undefined) => (v === null || v === undefined ? "—" : v.toString(16).toUpperCase());
 
@@ -25,85 +25,224 @@ function Tile(props: { label: string; value: React.ReactNode; sub?: React.ReactN
   );
 }
 
+/** One marker per control channel frequency (systems sharing one share a marker). */
+function ccMarks(systems: SystemStatus[]): CcMark[] {
+  const at = new Map<number, SystemStatus[]>();
+  for (const x of systems) if (x.controlChannelHz) at.set(x.controlChannelHz, [...(at.get(x.controlChannelHz) ?? []), x]);
+  return [...at].map(([hz, xs]) => ({ hz, label: systems.length > 1 ? xs.map((x) => x.shortName).join(" · ") : "CC", color: systemColor(xs[0].index) }));
+}
+
+/** Control channel messages per second of each system, over ≥2 s of its clock. */
+function useMsgRates(systems: SystemStatus[]): Map<number, number> {
+  const marks = useRef(new Map<number, { good: number; t: number; perS: number }>());
+  const out = new Map<number, number>();
+  for (const x of systems) {
+    const prev = marks.current.get(x.index);
+    if (!prev || x.nowS < prev.t) marks.current.set(x.index, { good: x.good, t: x.nowS, perS: 0 });
+    else if (x.nowS - prev.t >= 2) marks.current.set(x.index, { good: x.good, t: x.nowS, perS: (x.good - prev.good) / (x.nowS - prev.t) });
+    out.set(x.index, marks.current.get(x.index)!.perS);
+  }
+  return out;
+}
+
+const ccTone = (x: SystemStatus, perS: number | undefined): "ok" | "warn" | "bad" => (x.mismatch ? "bad" : (perS ?? 0) > 5 ? "ok" : (perS ?? 0) > 0 ? "warn" : "bad");
+const pctText = (x: SystemStatus) => (x.good + x.bad ? `${Math.round((100 * x.good) / (x.good + x.bad))}% decoded` : "no decodes yet");
+
 function StatusTiles({ s }: { s: AppState }) {
   const st = s.status;
-  const total = (st?.good ?? 0) + (st?.bad ?? 0);
-  const pct = total ? Math.round((100 * (st?.good ?? 0)) / total) : null;
-  const [rate, setRate] = useState<{ good: number; t: number; perS: number } | null>(null);
-  useEffect(() => {
-    if (!st) return;
-    setRate((prev) => {
-      const t = st.nowS;
-      if (!prev || t - prev.t >= 2) return { good: st.good, t, perS: prev && t > prev.t ? (st.good - prev.good) / (t - prev.t) : 0 };
-      return prev;
-    });
-  }, [st]);
-  const ccTone = !st ? undefined : rate && rate.perS > 5 ? "ok" : rate && rate.perS > 0 ? "warn" : "bad";
+  const systems = st?.systems ?? [];
+  const rates = useMsgRates(systems);
   const srcTrouble = s.sources.some((x) => x.dropped > 0 || x.errors > 0 || (!x.ended && x.rateMeasured > 0 && Math.abs(x.rateMeasured / x.rateHz - 1) > 0.05));
   const maxRecorders = s.config?.recording.maxRecorders ?? 0;
-  const trunked = (s.config?.system.controlChannels.length ?? 0) > 0;
+  const trunked = s.config ? activeSystems(s.config).length > 0 : false;
   const convCount = (s.config?.conventional?.channels ?? []).filter((c) => c.enabled).length;
+  const one = systems.length === 1 ? systems[0] : null;
   return (
-    <div className="tiles">
-      {convCount > 0 && (
+    <>
+      <div className="tiles">
+        {convCount > 0 && (
+          <Tile
+            label="Conventional"
+            value={
+              <span className="mono">
+                {st?.conventionalOpen ?? 0} <small>/ {convCount}</small>
+              </span>
+            }
+            sub="channels with a signal now"
+          />
+        )}
+        {one && (
+          <Tile
+            label="Control channel"
+            tone={ccTone(one, rates.get(one.index))}
+            value={one.controlChannelHz ? <span className="mono">{formatMhz(one.controlChannelHz)}</span> : "—"}
+            sub={
+              one.mismatch ? (
+                `not this system: ${one.mismatch}`
+              ) : (
+                <>
+                  {rates.get(one.index)?.toFixed(1) ?? "…"} msg/s · {pctText(one)} · {one.modulation ?? "detecting"}
+                </>
+              )
+            }
+          />
+        )}
+        {one && (
+          <Tile
+            label="System"
+            value={<span className="mono">{one.identity.nac != null ? `NAC ${hex(one.identity.nac)}` : "—"}</span>}
+            sub={
+              <span className="mono">
+                WACN {hex(one.identity.wacn)} · SysID {hex(one.identity.sysId)} · RFSS {one.identity.rfss ?? "—"} Site {one.identity.site ?? "—"}
+              </span>
+            }
+          />
+        )}
+        {trunked ? (
+          <Tile
+            label="Recorders"
+            value={
+              <span className="mono">
+                {st?.recording ?? 0} <small>/ {maxRecorders}</small>
+              </span>
+            }
+            sub={`${st?.activeCalls ?? 0} active calls · ${st?.callsConcluded ?? 0} saved this run${systems.length > 1 ? ` · ${systems.length} systems` : ""}`}
+          />
+        ) : (
+          <Tile label="Calls" value={<span className="mono">{st?.activeCalls ?? 0}</span>} sub={`active · ${st?.callsConcluded ?? 0} saved this run`} />
+        )}
         <Tile
-          label="Conventional"
-          value={
-            <span className="mono">
-              {st?.conventionalOpen ?? 0} <small>/ {convCount}</small>
-            </span>
-          }
-          sub="channels with a signal now"
-        />
-      )}
-      {trunked && (
-        <Tile
-          label="Control channel"
-          tone={ccTone}
-          value={st?.controlChannelHz ? <span className="mono">{formatMhz(st.controlChannelHz)}</span> : "—"}
+          label={s.sources.length > 1 ? `Radios (${s.sources.length})` : "Radio"}
+          tone={!s.sources.length ? undefined : srcTrouble ? "warn" : "ok"}
+          value={<span className="mono">{s.sources.length ? s.sources.map((x) => (x.rateMeasured / 1e6).toFixed(2)).join(" · ") + " MSPS" : "—"}</span>}
           sub={
-            st ? (
-              <>
-                {rate ? `${rate.perS.toFixed(1)} msg/s` : "…"} · {pct === null ? "no decodes yet" : `${pct}% decoded`} · {st.modulation ?? "detecting"}
-              </>
-            ) : (
-              "starting…"
-            )
+            s.sources.length
+              ? `DSP ${(s.load * 100).toFixed(1)}% of a core${s.sources.map((x) => (x.dropped ? ` · ${x.label}: ${x.dropped} samples dropped` : "") + (x.errors ? ` · ${x.label}: ${x.lastError}` : "")).join("")}`
+              : "…"
           }
         />
-      )}
-      {trunked && (
-        <Tile
-          label="System"
-          value={<span className="mono">{st?.identity.nac != null ? `NAC ${hex(st.identity.nac)}` : "—"}</span>}
-          sub={<span className="mono">WACN {hex(st?.identity.wacn)} · SysID {hex(st?.identity.sysId)} · RFSS {st?.identity.rfss ?? "—"} Site {st?.identity.site ?? "—"}</span>}
-        />
-      )}
-      {trunked ? (
-        <Tile
-          label="Recorders"
-          value={
+        <Tile label="Uptime" value={<span className="mono">{st ? clock(st.nowS) : "0:00"}</span>} sub={s.sources.every((x) => x.label.startsWith("file")) && s.sources.length ? "replaying capture" : "live"} />
+      </div>
+      {systems.length > 1 && <SystemsTable s={s} systems={systems} rates={rates} />}
+      {systems.length > 0 && <Neighbours s={s} systems={systems} />}
+    </>
+  );
+}
+
+/** "multi-site: 3 sites", or "3 systems on site 1-3" when they share one. */
+function sitesText(g: SystemStatus[]): string {
+  const sites = new Set(g.filter((x) => x.identity.site != null).map((x) => `${x.identity.rfss}-${x.identity.site}`));
+  if (sites.size > 1) return `multi-site: ${sites.size} sites${sites.size < g.length ? `, ${g.length} systems` : ""}`;
+  return `${g.length} systems${sites.size === 1 ? ` on site ${[...sites][0]}` : ""}`;
+}
+
+/** Every running system (site), sites of one system (same WACN / SysID) together. */
+function SystemsTable(props: { s: AppState; systems: SystemStatus[]; rates: Map<number, number> }) {
+  const { systems, rates } = props;
+  const key = (x: SystemStatus) => (x.identity.wacn != null && x.identity.sysId != null ? `${x.identity.wacn}/${x.identity.sysId}` : `solo-${x.index}`);
+  const groups = new Map<string, SystemStatus[]>();
+  for (const x of systems) groups.set(key(x), [...(groups.get(key(x)) ?? []), x]);
+  return (
+    <section className="panel">
+      <header className="panel-head">
+        <h2>Systems</h2>
+        <span className="muted small">
+          {systems.length} following their control channels · recorders shared ({props.s.status?.recording ?? 0} in use)
+        </span>
+      </header>
+      <div className="table-wrap">
+        <table className="calls sys-table">
+          <thead>
+            <tr>
+              <th>System</th>
+              <th>Site</th>
+              <th>Control channel</th>
+              <th>Decoding</th>
+              <th>NAC</th>
+              <th>Calls</th>
+            </tr>
+          </thead>
+          <tbody>
+            {[...groups.values()].map((g) => (
+              <Fragment key={key(g[0])}>
+                {g.length > 1 && (
+                  <tr className="group-head">
+                    <td colSpan={6}>
+                      WACN <span className="mono">{hex(g[0].identity.wacn)}</span> · SysID <span className="mono">{hex(g[0].identity.sysId)}</span> ·{" "}
+                      {sitesText(g)}
+                    </td>
+                  </tr>
+                )}
+                {g.map((x) => {
+                  const perS = rates.get(x.index);
+                  const tone = ccTone(x, perS);
+                  return (
+                    <tr key={x.index} className={x.mismatch ? "mismatch" : ""}>
+                      <td className="sys-name">
+                        <span className="sys-dot" style={{ background: systemColor(x.index) }} />
+                        <b>{x.shortName}</b>
+                      </td>
+                      <td className="mono">{x.identity.site != null ? `${x.identity.rfss ?? "?"}-${x.identity.site}` : "—"}</td>
+                      <td className="mono">
+                        <span className={`dot dot-${tone === "ok" ? "recording" : "monitoring"}`} /> {x.controlChannelHz ? formatMhz(x.controlChannelHz) : "—"}
+                        {x.mismatch && <div className="small">not this system: {x.mismatch}</div>}
+                      </td>
+                      <td className="small">
+                        <span className={`chip ${tone}`}>{perS !== undefined ? `${perS.toFixed(1)} msg/s` : "…"}</span> {pctText(x)}
+                        {x.modulation ? ` · ${x.modulation}` : ""}
+                      </td>
+                      <td className="mono">{hex(x.identity.nac)}</td>
+                      <td className="mono small">
+                        {x.activeCalls} active · {x.recording} rec · {x.callsConcluded} saved
+                      </td>
+                    </tr>
+                  );
+                })}
+              </Fragment>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+/** Neighbouring sites the control channels announce that aren't set up yet — add one to record it too (next Start). */
+function Neighbours(props: { s: AppState; systems: SystemStatus[] }) {
+  const c = props.s.config;
+  if (!c) return null;
+  const seen = new Map<string, { a: SystemStatus["adjacent"][number]; from: SystemStatus }>();
+  for (const x of props.systems)
+    for (const a of x.adjacent) {
+      const k = `${a.sysId}/${a.rfss}/${a.site}`;
+      const recorded = props.systems.some((y) => y.identity.sysId === a.sysId && y.identity.rfss === a.rfss && y.identity.site === a.site);
+      if (!recorded && !systemWithChannel(c, a.freqHz) && !seen.has(k)) seen.set(k, { a, from: x });
+    }
+  if (!seen.size) return null;
+  const add = (a: SystemStatus["adjacent"][number], from: SystemStatus) => {
+    const name = addSite([a.freqHz], { wacn: from.identity.wacn, sysId: a.sysId, rfss: a.rfss, site: a.site });
+    setNotice(`Added ${name} (site ${a.rfss}-${a.site}, ${formatMhz(a.freqHz)} MHz). It records from the next Start, if a source covers it.`);
+  };
+  return (
+    <details className="panel log">
+      <summary className="panel-head">
+        <h2>Neighbouring sites</h2>
+        <span className="muted small">{seen.size} announced, not recorded</span>
+      </summary>
+      <div className="row">
+        {[...seen.values()].map(({ a, from }) => (
+          <span key={`${a.sysId}/${a.rfss}/${a.site}`} className="chip">
             <span className="mono">
-              {st?.recording ?? 0} <small>/ {maxRecorders}</small>
+              SysID {hex(a.sysId)} · site {a.rfss}-{a.site} · {formatMhz(a.freqHz)}
             </span>
-          }
-          sub={`${st?.activeCalls ?? 0} active calls · ${st?.callsConcluded ?? 0} saved this run`}
-        />
-      ) : (
-        <Tile label="Calls" value={<span className="mono">{st?.activeCalls ?? 0}</span>} sub={`active · ${st?.callsConcluded ?? 0} saved this run`} />
-      )}
-      <Tile
-        label={s.sources.length > 1 ? `Radios (${s.sources.length})` : "Radio"}
-        tone={!s.sources.length ? undefined : srcTrouble ? "warn" : "ok"}
-        value={<span className="mono">{s.sources.length ? s.sources.map((x) => (x.rateMeasured / 1e6).toFixed(2)).join(" · ") + " MSPS" : "—"}</span>}
-        sub={
-          s.sources.length
-            ? `DSP ${(s.load * 100).toFixed(1)}% of a core${s.sources.map((x) => (x.dropped ? ` · ${x.label}: ${x.dropped} samples dropped` : "") + (x.errors ? ` · ${x.label}: ${x.lastError}` : "")).join("")}`
-            : "…"
-        }
-      />
-      <Tile label="Uptime" value={<span className="mono">{st ? clock(st.nowS) : "0:00"}</span>} sub={s.sources.every((x) => x.label.startsWith("file")) && s.sources.length ? "replaying capture" : "live"} />
-    </div>
+            <span className="muted">via {from.shortName}</span>
+            <button className="btn ghost small" onClick={() => add(a, from)}>
+              Add
+            </button>
+          </span>
+        ))}
+      </div>
+    </details>
   );
 }
 
@@ -123,26 +262,74 @@ function reasonText(c: CallView): string {
   }
 }
 
+/** The systems calls can come from: each running system, then conventional channels. */
+function systemChoices(s: AppState): { index: number; name: string }[] {
+  const out = (s.status?.systems ?? []).map((x) => ({ index: x.index, name: x.shortName }));
+  const conv = s.config && s.config.conventional.channels.some((ch) => ch.enabled);
+  if (conv && s.config) out.push({ index: CONVENTIONAL, name: s.config.conventional.shortName || "conventional" });
+  return out;
+}
+
+/** Pick one system (or all): filter chips. */
+function SystemFilter(props: { choices: { index: number; name: string }[]; value: number | null; onChange: (v: number | null) => void }) {
+  if (props.choices.length < 2) return null;
+  return (
+    <div className="filter-row" role="radiogroup" aria-label="System">
+      <button className={`btn ghost small${props.value === null ? " on" : ""}`} role="radio" aria-checked={props.value === null} onClick={() => props.onChange(null)}>
+        All
+      </button>
+      {props.choices.map((x) => (
+        <button
+          key={x.index}
+          className={`btn ghost small${props.value === x.index ? " on" : ""}`}
+          role="radio"
+          aria-checked={props.value === x.index}
+          onClick={() => props.onChange(x.index)}
+        >
+          <span className="sys-dot" style={{ background: systemColor(x.index) }} />
+          {x.name}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function ActiveCalls({ s }: { s: AppState }) {
   const now = s.status?.nowS ?? 0;
-  const calls = [...s.calls].sort((a, b) => Number(b.state === "recording") - Number(a.state === "recording") || b.startS - a.startS);
+  const choices = systemChoices(s);
+  const multi = choices.length > 1;
+  const [only, setOnly] = useState<number | null>(null);
+  const pick = (v: number | null) => {
+    setOnly(v);
+    // Live audio follows the filter.
+    if (s.listen) setListen(true, v, null);
+  };
+  const calls = [...s.calls]
+    .filter((c) => only === null || c.system === only)
+    .sort((a, b) => Number(b.state === "recording") - Number(a.state === "recording") || b.startS - a.startS);
+  const nameOf = (i: number | null) => choices.find((x) => x.index === i)?.name ?? "";
   return (
     <section className="panel">
       <header className="panel-head">
         <h2>Active calls</h2>
         <div className="row">
           <label className="toggle">
-            <input type="checkbox" checked={s.listen} onChange={(e) => setListen(e.target.checked, s.listenTalkgroup)} />
+            <input type="checkbox" checked={s.listen} onChange={(e) => setListen(e.target.checked, e.target.checked ? only : null, e.target.checked ? s.listenTalkgroup : null)} />
             <span>Listen live</span>
           </label>
-          {s.listen && s.listenTalkgroup !== null && (
-            <button className="btn ghost" onClick={() => setListen(true, null)}>
-              TG {s.listenTalkgroup} only ✕
+          {s.listen && (s.listenTalkgroup !== null || s.listenSystem !== null) && (
+            <button className="btn ghost" onClick={() => setListen(true, null, null)}>
+              {[s.listenSystem !== null && multi ? nameOf(s.listenSystem) : "", s.listenTalkgroup !== null ? `TG ${s.listenTalkgroup}` : ""].filter(Boolean).join(" ")} only ✕
             </button>
           )}
         </div>
       </header>
-      {s.nowPlaying && s.listen && <div className="now-playing">▶ TG {s.nowPlaying.talkgroup}</div>}
+      <SystemFilter choices={choices} value={only} onChange={pick} />
+      {s.nowPlaying && s.listen && (
+        <div className="now-playing">
+          ▶ {multi ? `${nameOf(s.nowPlaying.system)} · ` : ""}TG {s.nowPlaying.talkgroup}
+        </div>
+      )}
       {calls.length === 0 ? (
         <p className="empty">No calls right now.</p>
       ) : (
@@ -150,6 +337,7 @@ function ActiveCalls({ s }: { s: AppState }) {
           <table className="calls">
             <thead>
               <tr>
+                {multi && <th>System</th>}
                 <th>Talkgroup</th>
                 <th>Freq, MHz</th>
                 <th>Source</th>
@@ -161,6 +349,12 @@ function ActiveCalls({ s }: { s: AppState }) {
             <tbody>
               {calls.map((c) => (
                 <tr key={c.id} className={`st-${c.state}${c.emergency ? " emergency" : ""}`}>
+                  {multi && (
+                    <td className="sys-name">
+                      <span className="sys-dot" style={{ background: systemColor(c.system) }} />
+                      {c.systemName}
+                    </td>
+                  )}
                   <td>
                     <span className="tg">{c.talkgroup}</span>
                     {c.alphaTag && <span className="tag">{c.alphaTag}</span>}
@@ -178,7 +372,7 @@ function ActiveCalls({ s }: { s: AppState }) {
                   </td>
                   <td>
                     {c.state === "recording" && (
-                      <button className="btn ghost small" onClick={() => setListen(true, c.talkgroup)} title="Listen to this talkgroup only">
+                      <button className="btn ghost small" onClick={() => setListen(true, c.system, c.talkgroup)} title="Listen to this talkgroup only">
                         Listen
                       </button>
                     )}
@@ -192,6 +386,9 @@ function ActiveCalls({ s }: { s: AppState }) {
     </section>
   );
 }
+
+/** A recorded call's system: its record's short_name, else its folder. */
+const systemOf = (c: CallEntry) => c.record.short_name || c.path.split("/")[0] || "";
 
 function History({ s }: { s: AppState }) {
   const [playing, setPlaying] = useState<string | null>(null);
@@ -209,17 +406,38 @@ function History({ s }: { s: AppState }) {
     };
   }, [playing]);
   const [filter, setFilter] = useState("");
+  const [only, setOnly] = useState<string | null>(null);
+  const systems = useMemo(() => [...new Set(s.history.map(systemOf))].sort(), [s.history]);
   const rows = useMemo(() => {
     const f = filter.trim().toLowerCase();
-    const ok = (c: CallEntry) => String(c.record.talkgroup).includes(f) || (c.record.talkgroup_tag ?? "").toLowerCase().includes(f);
-    return f ? s.history.filter(ok) : s.history;
-  }, [s.history, filter]);
+    const ok = (c: CallEntry) =>
+      (only === null || systemOf(c) === only) && (!f || String(c.record.talkgroup).includes(f) || (c.record.talkgroup_tag ?? "").toLowerCase().includes(f));
+    return f || only !== null ? s.history.filter(ok) : s.history;
+  }, [s.history, filter, only]);
+  const multi = systems.length > 1;
+  // A system's color while it runs (its index), else none.
+  const colorOf = (name: string) => {
+    const i = s.status?.systems.find((x) => x.shortName === name)?.index;
+    return i === undefined ? "var(--line)" : systemColor(i);
+  };
 
   return (
     <section className="panel">
       <header className="panel-head">
         <h2>Recent calls</h2>
-        <input className="search" placeholder="Filter talkgroup…" value={filter} onChange={(e) => setFilter(e.target.value)} />
+        <div className="row">
+          {multi && (
+            <select value={only ?? ""} onChange={(e) => setOnly(e.target.value || null)} aria-label="System">
+              <option value="">All systems</option>
+              {systems.map((x) => (
+                <option key={x} value={x}>
+                  {x}
+                </option>
+              ))}
+            </select>
+          )}
+          <input className="search" placeholder="Filter talkgroup…" value={filter} onChange={(e) => setFilter(e.target.value)} />
+        </div>
       </header>
       {rows.length === 0 ? (
         <p className="empty">Recorded calls will appear here.</p>
@@ -229,6 +447,7 @@ function History({ s }: { s: AppState }) {
             <thead>
               <tr>
                 <th>Time</th>
+                {multi && <th>System</th>}
                 <th>Talkgroup</th>
                 <th>Length</th>
                 <th>Sources</th>
@@ -239,6 +458,12 @@ function History({ s }: { s: AppState }) {
               {rows.slice(0, 200).map((c) => (
                 <tr key={c.path} className={playing === c.path ? "playing" : ""}>
                   <td className="mono">{new Date(c.record.start_time_ms).toLocaleTimeString()}</td>
+                  {multi && (
+                    <td className="sys-name small">
+                      <span className="sys-dot" style={{ background: colorOf(systemOf(c)) }} />
+                      {systemOf(c)}
+                    </td>
+                  )}
                   <td>
                     <span className="tg">{c.record.talkgroup}</span>
                     {c.record.talkgroup_tag && <span className="tag">{c.record.talkgroup_tag}</span>}
@@ -281,7 +506,13 @@ function History({ s }: { s: AppState }) {
 
 function Log({ s }: { s: AppState }) {
   const [show, setShow] = useState<"calls" | "all">("calls");
-  const lines = show === "all" ? s.log : s.log.filter((l) => /grant|update|control|patch|status|sysid|error/.test(l.kind));
+  const [only, setOnly] = useState<number | null>(null);
+  const systems = s.status?.systems ?? [];
+  const multi = systems.length > 1;
+  const onlyName = systems.find((x) => x.index === only)?.shortName;
+  const lines = (show === "all" ? s.log : s.log.filter((l) => /grant|update|control|patch|status|sysid|adjacent|error/.test(l.kind))).filter(
+    (l) => onlyName === undefined || l.system === onlyName,
+  );
   return (
     <details className="panel log">
       <summary className="panel-head">
@@ -293,6 +524,7 @@ function Log({ s }: { s: AppState }) {
           <input type="checkbox" checked={show === "all"} onChange={(e) => setShow(e.target.checked ? "all" : "calls")} />
           <span>Show unit activity (affiliations, registrations…)</span>
         </label>
+        {multi && <SystemFilter choices={systems.map((x) => ({ index: x.index, name: x.shortName }))} value={only} onChange={setOnly} />}
       </div>
       <pre className="log-lines">
         {lines
@@ -300,7 +532,8 @@ function Log({ s }: { s: AppState }) {
           .reverse()
           .map((l, i) => (
             <div key={i} className={`k-${l.kind}`}>
-              <span className="muted">{l.timeS.toFixed(1).padStart(7)}s</span> {l.text}
+              <span className="muted">{l.timeS.toFixed(1).padStart(7)}s</span> {multi && l.system ? <span className="muted">[{l.system}] </span> : null}
+              {l.text}
             </div>
           ))}
       </pre>
@@ -386,7 +619,13 @@ export function App() {
             {s.spectra.map((sp, i) =>
               sp ? (
                 <section className="panel flush" key={i}>
-                  <Waterfall radio={sp} label={s.sources[i]?.label} ccHz={s.status?.controlChannelHz ?? null} calls={s.calls} />
+                  <Waterfall
+                    radio={sp}
+                    label={s.sources[i]?.label}
+                    ccs={ccMarks(s.status?.systems ?? [])}
+                    calls={s.calls}
+                    multi={systemChoices(s).length > 1}
+                  />
                 </section>
               ) : null,
             )}

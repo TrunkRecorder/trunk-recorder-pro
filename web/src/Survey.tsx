@@ -1,12 +1,13 @@
-// "Find my system": the first-run survey. Scan the bands for P25 control
-// channels, listen to the best one, and fill in the control channels, the
-// dongle's frequency correction, gain and centre from what it announces.
+// "Find my system": the survey. Scan the bands for P25 control channels,
+// listen to the best one, and add it as a system — control channels, site
+// identity, the dongle's frequency correction, gain and centre from what it
+// announces. Neighbouring sites it announces can be added as systems too.
 // The recorder does the work (crates/trunk-core/src/survey.rs); this shows it.
 
 import { useState } from "react";
-import { formatMhz } from "./config.ts";
-import { applySurvey, setNotice, startSurvey, stopSurvey, surveyListen, surveyRescan, useApp, web } from "./controller.ts";
-import type { Config, SurveyCandidate, SurveyIdentity, SurveyMonitor, SurveySuggestion } from "./protocol.ts";
+import { formatMhz, systemWithChannel } from "./config.ts";
+import { addSite, applySurvey, setNotice, startSurvey, stopSurvey, surveyListen, surveyRescan, useApp, web } from "./controller.ts";
+import type { Config, SiteIdentity, SurveyCandidate, SurveyIdentity, SurveyMonitor, SurveySuggestion } from "./protocol.ts";
 import { Waterfall } from "./Waterfall.tsx";
 
 const hex = (v: number | null | undefined) => (v === null || v === undefined ? "?" : v.toString(16).toUpperCase());
@@ -21,7 +22,21 @@ function idText(id: SurveyIdentity): string {
 
 const KIND: Record<SurveyCandidate["kind"], string> = { control: "Control channel", p25: "P25 (voice / data)", other: "Not P25" };
 
-function Candidates(props: { list: SurveyCandidate[]; listening: number | null; onListen?: (hz: number) => void }) {
+/** The site key of a scanned control channel: its secondaries share it. */
+const siteKey = (id: SurveyIdentity) => (id.sysId !== null && id.site !== null ? `${id.nac}/${id.sysId}/${id.rfss}/${id.site}` : null);
+
+function Candidates(props: { c: Config; list: SurveyCandidate[]; listening: number | null; onListen?: (hz: number) => void }) {
+  // Add a scanned control channel as a system — with its site's other control channels found in the scan.
+  const add = (cand: SurveyCandidate) => {
+    const key = siteKey(cand.identity);
+    const same = props.list.filter((x) => x.kind === "control" && (x === cand || (key !== null && siteKey(x.identity) === key)));
+    // (On the 6.25 kHz channel raster.)
+    const ccs = same.map((x) => Math.round((x.correctedHz ?? x.freqHz) / 6250) * 6250);
+    const id = cand.identity;
+    const expect: SiteIdentity = { nac: id.nac, sysId: id.sysId, rfss: id.rfss, site: id.site, wacn: id.wacn };
+    const name = addSite(ccs, expect);
+    setNotice(`Added ${name}: control channel${ccs.length === 1 ? "" : "s"} ${ccs.map((f) => formatMhz(f)).join(", ")} MHz. Listening to it fills in the rest (frequency correction, voice channels).`);
+  };
   const [showOther, setShowOther] = useState(false);
   const others = props.list.filter((c) => c.kind === "other").length;
   const rows = props.list.filter((c) => showOther || c.kind !== "other");
@@ -55,6 +70,17 @@ function Candidates(props: { list: SurveyCandidate[]; listening: number | null; 
                   <td className="mono small">{idText(c.identity)}</td>
                   <td className="mono small">{decoded(c)}</td>
                   <td className="actions">
+                    {c.kind === "control" &&
+                      (() => {
+                        const have = systemWithChannel(props.c, c.correctedHz ?? c.freqHz);
+                        return have ? (
+                          <span className="muted small">in {have.shortName}</span>
+                        ) : (
+                          <button className="btn ghost small" onClick={() => add(c)} title="Add this control channel (and its site's others) as a system">
+                            Add
+                          </button>
+                        );
+                      })()}
                     {c.kind === "control" && props.onListen && (
                       <button className="btn ghost small" disabled={props.listening !== null && Math.abs(props.listening - c.freqHz) < 6000} onClick={() => props.onListen?.(c.freqHz)}>
                         {props.listening !== null && Math.abs(props.listening - c.freqHz) < 6000 ? "Listening" : "Listen"}
@@ -104,18 +130,27 @@ function MonitorView(props: { m: SurveyMonitor; sug: SurveySuggestion | null; c:
   const rtl = src?.kind === "rtlsdr";
   const id = m.identity;
   const gainSteps = m.gain.steps.length;
+  // The system this is already (one of its control channels), else a new one.
+  const existing = sug ? c.systems.findIndex((x) => sug.controlChannels.some((f) => x.controlChannels.some((g) => Math.abs(f - g) < 6_000))) : -1;
+  const [picked, setTarget] = useState<number | "new" | null>(null);
+  const target = picked ?? (existing >= 0 ? existing : "new");
   const apply = () => {
     if (!sug) return;
-    applySurvey(props.source, sug);
+    const done = applySurvey(props.source, sug, target);
     stopSurvey();
     const bits = [`control channel${sug.controlChannels.length === 1 ? "" : "s"} ${mhzList(sug.controlChannels)} MHz`];
+    if (sug.site !== null) bits.push(`site lock ${sug.rfss ?? "?"}-${sug.site}`);
     if (src && src.kind !== "file") {
       if (sug.ppmApply !== null) bits.push(`correction ${sug.ppmApply > 0 ? "+" : ""}${sug.ppmApply} ppm`);
       if (rtl && sug.gainDb !== null) bits.push(`gain ${sug.gainDb} dB`);
-      bits.push(`center ${formatMhz(sug.centerHz, 4)} MHz`);
+      bits.push(done.centered ? `center ${formatMhz(sug.centerHz, 4)} MHz` : `source ${props.source + 1} left where it is (another system needs it) — give this system a source centered at ${formatMhz(sug.centerHz, 4)} MHz`);
     }
-    setNotice(`Set up: ${bits.join(", ")}. Press Start to record.`);
+    setNotice(`${target === "new" ? "Added" : "Updated"} ${done.system}: ${bits.join(", ")}. Press Start to record.`);
     props.onDone();
+  };
+  const neighbour = (a: SurveyMonitor["adjacent"][number]) => {
+    const name = addSite([a.freqHz], { wacn: id.wacn, sysId: a.sysId, rfss: a.rfss, site: a.site });
+    setNotice(`Added ${name} (site ${a.rfss}-${a.site}, control channel ${formatMhz(a.freqHz)} MHz). It needs a source that covers it.`);
   };
   return (
     <div className="stack">
@@ -175,7 +210,25 @@ function MonitorView(props: { m: SurveyMonitor; sug: SurveySuggestion | null; c:
         </Check>
         <Check state="info" label="Neighbouring sites">
           {m.adjacent.length ? (
-            <span className="mono small">{m.adjacent.map((a) => `${a.rfss}-${a.site} ${formatMhz(a.freqHz)}`).join(" · ")}</span>
+            <span className="row small">
+              {m.adjacent.map((a) => {
+                const have = systemWithChannel(c, a.freqHz);
+                return (
+                  <span key={`${a.rfss}-${a.site}`} className="chip">
+                    <span className="mono">
+                      site {a.rfss}-{a.site} · {formatMhz(a.freqHz)}
+                    </span>
+                    {have ? (
+                      <span>· in {have.shortName}</span>
+                    ) : (
+                      <button className="btn ghost small" onClick={() => neighbour(a)} title="Record this site too (as its own system)">
+                        Add
+                      </button>
+                    )}
+                  </span>
+                );
+              })}
+            </span>
           ) : (
             "none announced (yet)"
           )}
@@ -202,8 +255,16 @@ function MonitorView(props: { m: SurveyMonitor; sug: SurveySuggestion | null; c:
         <div className="banner">
           <div className="stack">
             <div>
-              <b>Ready to record.</b> This sets the control channel{sug.controlChannels.length === 1 ? "" : "s"} to{" "}
-              <span className="mono">{mhzList(sug.controlChannels)}</span> MHz
+              <b>Ready to record.</b> This {target === "new" ? "adds a system with" : `sets ${c.systems[target]?.shortName ?? "the system"}'s`} control channel
+              {sug.controlChannels.length === 1 ? "" : "s"} <span className="mono">{mhzList(sug.controlChannels)}</span> MHz
+              {sug.site !== null && (
+                <>
+                  , locked to site{" "}
+                  <span className="mono">
+                    {sug.rfss ?? "?"}-{sug.site}
+                  </span>
+                </>
+              )}
               {src && src.kind !== "file" && (
                 <>
                   {sug.ppmApply !== null && (
@@ -233,8 +294,18 @@ function MonitorView(props: { m: SurveyMonitor; sug: SurveySuggestion | null; c:
             )}
             {!m.ready && <div className="small muted">Still measuring — waiting a few more seconds gives a better result.</div>}
             <div className="row">
+              {c.systems.length > 0 && (
+                <select value={String(target)} onChange={(e) => setTarget(e.target.value === "new" ? "new" : Number(e.target.value))} aria-label="Add as, or replace">
+                  <option value="new">as a new system</option>
+                  {c.systems.map((x, k) => (
+                    <option key={k} value={k}>
+                      replacing {x.shortName}
+                    </option>
+                  ))}
+                </select>
+              )}
               <button className="btn primary" onClick={apply}>
-                Use this system
+                {target === "new" ? "Add this system" : "Update it"}
               </button>
             </div>
           </div>
@@ -249,7 +320,7 @@ export function SurveyPanel(props: { c: Config }) {
   const { c } = props;
   const sv = s.survey;
   const recording = s.phase !== "idle";
-  const [open, setOpen] = useState(() => c.system.controlChannels.length === 0);
+  const [open, setOpen] = useState(() => c.systems.length === 0);
   const [source, setSource] = useState(0);
   const [picked, setPicked] = useState<string[] | null>(null);
   const [findGain, setFindGain] = useState(true);
@@ -287,8 +358,8 @@ export function SurveyPanel(props: { c: Config }) {
         <div className="stack">
           <p className="muted small">
             Don't know the frequencies? Connect your radio and the recorder scans the public-safety bands for P25 control channels, listens to the strongest, and
-            works out the system's control channels and your radio's frequency correction — usually in a minute or two. You can still type everything in by hand
-            below.
+            works out the system's control channels, site and your radio's frequency correction — usually in a minute or two. Run it again to add more systems or
+            sites; you can still type everything in by hand below.
           </p>
           {(c.sources.length > 1 || src?.kind === "rtlsdr") && (
           <div className="grid2">
@@ -372,7 +443,7 @@ export function SurveyPanel(props: { c: Config }) {
                   {sv.stage === "monitoring" && <span className="muted small"> · {sv.monitor.elapsedS.toFixed(0)} s</span>}
                 </span>
               </div>
-              {sv.stage === "monitoring" && s.surveySpectrum && <Waterfall radio={s.surveySpectrum} label="Survey" ccHz={sv.monitor.heardHz} calls={[]} />}
+              {sv.stage === "monitoring" && s.surveySpectrum && <Waterfall radio={s.surveySpectrum} label="Survey" ccs={[{ hz: sv.monitor.heardHz, label: "CC", color: "var(--accent)" }]} calls={[]} />}
               <MonitorView m={sv.monitor} sug={sv.suggest} c={c} source={sv.source} onDone={() => setOpen(false)} />
             </>
           )}
@@ -383,7 +454,7 @@ export function SurveyPanel(props: { c: Config }) {
                 Signals found ({sv.candidates.filter((x) => x.kind === "control").length} control channel
                 {sv.candidates.filter((x) => x.kind === "control").length === 1 ? "" : "s"})
               </summary>
-              <Candidates list={sv.candidates} listening={sv.monitor?.freqHz ?? null} onListen={surveyListen} />
+              <Candidates c={c} list={sv.candidates} listening={sv.monitor?.freqHz ?? null} onListen={surveyListen} />
             </details>
           )}
         </div>

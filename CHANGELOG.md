@@ -29,9 +29,20 @@ platform, with no GNU Radio, OP25 or other runtime dependencies.
   alternate control channels, neighbouring sites and voice channels. From
   the frequency the channel announces versus where it is heard, it measures
   the radio's frequency correction (ppm); on an RTL-SDR it also picks the
-  gain. **Use this system** fills in the control channels, ppm, gain and a
-  center that covers the most voice channels seen. Also `trunk-lite survey`.
-- **Several RTL-SDRs** feeding one system, over a pure-Rust USB driver (no
+  gain. **Add this system** adds it with a site lock, and sets the ppm, gain
+  and a center that covers the most voice channels seen. Also `trunk-lite survey`.
+- **Several systems and sites at once**: each P25 system — or each site of
+  a multi-site system — follows its own control channel, with its own short
+  name (folder), band plan, talkgroups and modulation, sharing the sources
+  and recorders. A **site lock** (NAC, WACN, System ID, RFSS, site; filled in
+  by the survey) keeps each on its own control channel; neighbouring sites a
+  control channel announces can be added with one click. The dashboard
+  groups sites of one system and filters calls, history, log and live audio
+  by system; sources left on Auto are placed over the systems not yet
+  covered. Configs with one system carry over unchanged, and a Trunk
+  Recorder config's P25 systems are all imported. `trunk-lite replay
+  --system name:Hz[:nac=…,site=…]`.
+- **Several RTL-SDRs** feeding the systems, over a pure-Rust USB driver (no
   librtlsdr / libusb to install).
 - **USRP and Airspy** sources (optional): used when UHD / libairspy is
   installed, found at run time by the same binary.

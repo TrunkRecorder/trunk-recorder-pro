@@ -1,9 +1,18 @@
 // Spectrum trace + waterfall of one source's whole bandwidth, drawn from the
-// channelizer's own FFT (no extra DSP). Markers: the control channel, and every
-// active call colored by state.
+// channelizer's own FFT (no extra DSP). Markers: each system's control channel,
+// and every active call colored by state (with several systems, tagged with
+// its system's color).
 
 import { useEffect, useRef } from "react";
+import { systemColor } from "./config.ts";
 import type { CallView, Spectrum } from "./protocol.ts";
+
+/** A control channel marker. */
+export interface CcMark {
+  hz: number;
+  label: string;
+  color: string;
+}
 
 const ROWS = 160;
 
@@ -25,7 +34,7 @@ function color(t: number): [number, number, number] {
   return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f];
 }
 
-export function Waterfall(props: { radio: Spectrum | undefined; label?: string; ccHz: number | null; calls: CallView[] }) {
+export function Waterfall(props: { radio: Spectrum | undefined; label?: string; ccs: CcMark[]; calls: CallView[]; multi?: boolean }) {
   const trace = useRef<HTMLCanvasElement>(null);
   const fall = useRef<HTMLCanvasElement>(null);
   const floor = useRef<number | null>(null);
@@ -93,16 +102,21 @@ export function Waterfall(props: { radio: Spectrum | undefined; label?: string; 
         <canvas ref={trace} className="wf-trace" aria-hidden="true" />
         <canvas ref={fall} className="wf-fall" aria-label="Waterfall of the source bandwidth" />
         <div className="wf-markers">
-          {props.ccHz && inView(pos(props.ccHz)) && (
-            <span className="mk mk-cc" style={{ left: `${pos(props.ccHz)}%` }} title="Control channel">
-              <i>CC</i>
-            </span>
-          )}
+          {props.ccs
+            .filter((m) => inView(pos(m.hz)))
+            .map((m) => (
+              <span key={`${m.label}-${m.hz}`} className="mk mk-cc" style={{ left: `${pos(m.hz)}%`, borderLeftColor: m.color }} title={`Control channel ${m.label}`}>
+                <i style={{ color: m.color }}>{m.label}</i>
+              </span>
+            ))}
           {props.calls
             .filter((c) => inView(pos(c.freqHz)))
             .map((c) => (
-              <span key={c.id} className={`mk mk-${c.state}${c.encrypted ? " mk-enc" : ""}`} style={{ left: `${pos(c.freqHz)}%` }} title={`TG ${c.talkgroup}`}>
-                <i>{c.alphaTag || c.talkgroup}</i>
+              <span key={c.id} className={`mk mk-${c.state}${c.encrypted ? " mk-enc" : ""}`} style={{ left: `${pos(c.freqHz)}%` }} title={`${c.systemName} · TG ${c.talkgroup}`}>
+                <i>
+                  {props.multi && <span className="sys-dot" style={{ background: systemColor(c.system) }} />}
+                  {c.alphaTag || c.talkgroup}
+                </i>
               </span>
             ))}
         </div>
