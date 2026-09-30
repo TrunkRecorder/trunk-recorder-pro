@@ -17,6 +17,9 @@
 //!     --out calls  --short-name sys1  --talkgroups tg.csv  --bandplan file
 //!     --recorders 32  --preroll 1  --timeout 3  --epoch <unix s>
 //!     --record-encrypted  --keep-silent  --no-unknown  --capture-frames  --quiet
+//!     SmartNet: --smartnet 800_standard|800_reband|800_splinter|900|400_custom
+//!     (400_custom: --bp-base Hz --bp-spacing Hz --bp-offset N --bp-high Hz)
+//!     [--analog-default] (talkgroups never heard granted are analog FM)
 //!     Conventional channels (with or without --cc): --fm Hz[,Hz…]  --p25 Hz[,Hz…]
 //!     or --channels channels.csv (the channel-file format; see README)
 //!     --squelch dB (open threshold above the noise floor, default 8)
@@ -245,6 +248,10 @@ fn replay(a: &Args) {
         conventional,
         conv: ConvConfig { squelch_db: a.num("squelch", ConvConfig::default().squelch_db), ..Default::default() },
         capture_frames: a.flag("capture-frames"),
+        smartnet: a.get("smartnet").map(|plan| trunk_core::trunk::SmartnetConfig {
+            bandplan: tool::smartnet_bandplan(a, if plan == "1" { "800_standard" } else { plan }),
+            analog_default: a.flag("analog-default"),
+        }),
         ..Default::default()
     };
     let mut engine = Engine::new(cfg, talkgroups).unwrap_or_else(|e| die(&e));
@@ -292,6 +299,16 @@ fn replay(a: &Args) {
     }
     let st = engine.status();
     let id = &st.identity;
+    if st.modulation == "2FSK" {
+        println!(
+            "\n{air_s:.1} s of air in {cpu:.2} s ({:.0}× real time). SmartNet CC: {} good / {} lost OSWs, System {}. {written} call(s) written to {out_dir}/",
+            air_s / cpu,
+            st.good,
+            st.bad,
+            id.sys_id.map_or("?".into(), |v| format!("{v:04x}")),
+        );
+        return;
+    }
     println!(
         "\n{air_s:.1} s of air in {cpu:.2} s ({:.0}× real time). CC: {} good / {} bad TSBKs, {}, NAC {} WACN {} SysID {}. {written} call(s) written to {out_dir}/",
         air_s / cpu,
@@ -310,11 +327,12 @@ fn handle_events(engine: &mut Engine, out_dir: &str, quiet: bool) -> usize {
         match ev {
             Event::ControlChannel { freq_hz } if !quiet => println!("control channel {:.4} MHz", freq_hz as f64 / 1e6),
             Event::CallStart(c) if !quiet => println!(
-                "{:7.2}s  CALL {} start TG {} {:.4} MHz{} → {}",
+                "{:7.2}s  CALL {} start TG {} {:.4} MHz{}{} → {}",
                 c.start_s,
                 c.id,
                 c.talkgroup,
                 c.freq_hz as f64 / 1e6,
+                if c.analog { " FM" } else { "" },
                 if c.phase2_tdma { format!(" slot {}", c.tdma_slot) } else { String::new() },
                 if c.recording { "recording".into() } else { format!("monitoring ({})", c.reason.map_or("", |r| r.as_str())) }
             ),

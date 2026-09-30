@@ -84,6 +84,8 @@ pub struct Message {
     pub nac: u16,
     pub rfss: u32,
     pub site: u32,
+    /// SmartNet: the voice channel is analog FM (P25 otherwise).
+    pub analog: bool,
     pub patch: Option<Patch>,
     pub opcode: u8,
     /// Human-readable summary, as Trunk Recorder logs it.

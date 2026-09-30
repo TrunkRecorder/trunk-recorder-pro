@@ -11,6 +11,7 @@
 pub mod dsp;
 pub mod mbe;
 pub mod p25;
+pub mod smartnet;
 pub mod survey;
 pub mod tables;
 pub mod trunk;

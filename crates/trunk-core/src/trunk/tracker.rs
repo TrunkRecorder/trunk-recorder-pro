@@ -16,6 +16,8 @@ pub enum TrackerOut {
     Audio(Vec<f32>, VoiceFrame),
     /// Link control named a source / emergency, or the call turned out encrypted.
     Info { source: Option<u32>, emergency: bool, encrypted: bool },
+    /// Analog FM voice (a SmartNet analog channel): 8 kHz audio, squelched.
+    AnalogAudio(Vec<f32>),
 }
 
 /// Algorithm id when encryption is known but not which cipher.

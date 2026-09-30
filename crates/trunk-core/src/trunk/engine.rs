@@ -39,6 +39,19 @@ use crate::mbe;
 use crate::p25::diversity::{best_frame, best_tsbks, Bank, BankConfig, Group};
 use crate::p25::frame::TSDU;
 use crate::p25::phase2::{self, Packet};
+use crate::dsp::fm::{ChannelFilter, Nbfm};
+use crate::smartnet::{self, Bandplan};
+
+/// A SmartNet system (the control channels are SmartNet, not P25).
+#[derive(Clone, Debug)]
+pub struct SmartnetConfig {
+    pub bandplan: Bandplan,
+    /// Voice mode of a talkgroup whose grant was never heard: analog FM?
+    pub analog_default: bool,
+}
+
+/// Analog voice squelch: carrier this far above the noise floor, dB.
+const ANALOG_SQUELCH_DB: f64 = 6.0;
 
 /// One-sided channel filter cutoff for P25, Hz.
 const CHANNEL_CUTOFF_HZ: f64 = 7000.0;
@@ -74,6 +87,8 @@ pub struct EngineConfig {
     pub conv: ConvConfig,
     /// Keep each call's vocoder frames ([`Concluded::frames`]).
     pub capture_frames: bool,
+    /// SmartNet instead of P25 on the control channels.
+    pub smartnet: Option<SmartnetConfig>,
 }
 
 impl Default for EngineConfig {
@@ -91,6 +106,7 @@ impl Default for EngineConfig {
             conventional: vec![],
             conv: ConvConfig::default(),
             capture_frames: false,
+            smartnet: None,
         }
     }
 }
@@ -156,6 +172,8 @@ enum Voice {
     Fdma { bank: Bank, tracker: VoiceTracker },
     /// Phase 2: H-DQPSK receiver → slot framer → TDMA tracker (both slots).
     Tdma { rx: Cqpsk, framer: phase2::Framer, tracker: TdmaTracker, syms: Vec<Symbol>, pkts: Vec<Packet> },
+    /// Analog FM (SmartNet analog grants), squelched at `open` carrier power.
+    Analog { fm: Nbfm, open: f32 },
 }
 
 impl Voice {
@@ -242,6 +260,13 @@ impl Radio {
                     tracker.packet(p, t0 + p.sample / rate, tout);
                 }
             }
+            Voice::Analog { fm, open } => {
+                let mut audio = Vec::new();
+                fm.push(iq, *open, &mut audio);
+                if !audio.is_empty() {
+                    tout.push((0, TrackerOut::AnalogAudio(audio)));
+                }
+            }
         }
     }
 
@@ -276,7 +301,15 @@ impl RecorderHost for Radio {
         let rate = s.chz.output_rate();
         let (head, pre, start_sample) = s.chz.add_head(call.freq_hz as f64 - s.cfg.center_hz, CHANNEL_CUTOFF_HZ, self.preroll_s);
         let seed = call.freq_hz as u32;
-        let voice = if call.phase2_tdma {
+        let voice = if call.analog {
+            // Squelch: the noise floor under the channel, from the source's spectrum.
+            let mut prof = vec![0.0f64; 64];
+            s.chz.noise_profile(&mut prof);
+            let off = call.freq_hz as f64 - s.cfg.center_hz;
+            let slice = (((off + s.cfg.rate_hz / 2.0) / s.cfg.rate_hz * 64.0) as usize).min(63);
+            let noise = s.chz.noise_in_band(prof[slice].max(1e-30), ChannelFilter::noise_bandwidth());
+            Voice::Analog { fm: Nbfm::new(rate), open: (noise * 10f64.powf(ANALOG_SQUELCH_DB / 10.0)) as f32 }
+        } else if call.phase2_tdma {
             let mut tracker = TdmaTracker::new(seed);
             tracker.soft = self.bank_cfg.soft;
             let rx = Cqpsk::new(rate, cqpsk::Options { baud: phase2::SYMBOL_RATE, ..Default::default() });
@@ -319,6 +352,8 @@ pub struct Engine {
     cc_source: usize,
     cc_head: Option<HeadId>,
     cc_bank: Bank,
+    /// SmartNet control channel receiver (instead of `cc_bank`).
+    cc_sn: Option<smartnet::ControlChannel>,
     cc_index: usize,
     cc_hz: Option<u64>,
     cc_start_s: f64,
@@ -371,6 +406,7 @@ impl Engine {
             cc_source: 0,
             cc_head: None,
             cc_bank: Bank::new(rate, cfg.bank),
+            cc_sn: None,
             cc_index: 0,
             cc_hz: None,
             cc_start_s: 0.0,
@@ -428,7 +464,7 @@ impl Engine {
             identity: self.identity.clone(),
             good: self.good,
             bad: self.bad,
-            modulation: if q + c < 8 { "" } else if q >= c { "CQPSK" } else { "C4FM" },
+            modulation: if self.cfg.smartnet.is_some() { "2FSK" } else if q + c < 8 { "" } else if q >= c { "CQPSK" } else { "C4FM" },
             active_calls: self.calls.calls.len() + self.conv.calls().count(),
             // Trunked recorders only: conventional channels don't use the pool.
             recording: self.radio.recordings.len(),
@@ -524,13 +560,24 @@ impl Engine {
         }
         self.cc_source = src;
         let s = &mut self.radio.sources[src];
-        let (head, _, _) = s.chz.add_head(hz - s.cfg.center_hz, CHANNEL_CUTOFF_HZ, 0.0);
+        let cutoff = if self.cfg.smartnet.is_some() { smartnet::CHANNEL_CUTOFF_HZ } else { CHANNEL_CUTOFF_HZ };
+        let (head, _, _) = s.chz.add_head(hz - s.cfg.center_hz, cutoff, 0.0);
         self.cc_head = Some(head);
         self.cc_hz = Some(hz.round() as u64);
         self.cc_start_s = self.now_s;
         self.cc_samples = 0;
         self.last_good_s = self.now_s;
         self.cc_bank = Bank::new(s.chz.output_rate(), self.cfg.bank);
+        if let Some(sn) = &self.cfg.smartnet {
+            // A new parser per channel (its queue is per stream); what it learned carries over.
+            let mut p = smartnet::Parser::new(sn.bandplan.clone());
+            p.analog_default = sn.analog_default;
+            if let Some(old) = self.cc_sn.take() {
+                p.sys_id = old.parser.sys_id;
+                p.site = old.parser.site;
+            }
+            self.cc_sn = Some(smartnet::ControlChannel::new(s.chz.output_rate(), p));
+        }
         self.events.push(Event::ControlChannel { freq_hz: hz.round() as u64 });
         Ok(())
     }
@@ -552,11 +599,17 @@ impl Engine {
         if source == self.cc_source {
             if let Some(head) = self.cc_head {
                 let iq = self.radio.sources[source].chz.output(head).map(|v| v.to_vec()).unwrap_or_default();
-                let mut groups = Vec::new();
-                self.cc_bank.push(&iq, &mut groups);
-                self.cc_samples += iq.len() as u64;
-                self.now_s = self.cc_start_s + self.cc_samples as f64 / rate;
-                self.on_control_groups(groups);
+                if self.cc_sn.is_some() {
+                    self.cc_samples += iq.len() as u64;
+                    self.now_s = self.cc_start_s + self.cc_samples as f64 / rate;
+                    self.on_smartnet(&iq);
+                } else {
+                    let mut groups = Vec::new();
+                    self.cc_bank.push(&iq, &mut groups);
+                    self.cc_samples += iq.len() as u64;
+                    self.now_s = self.cc_start_s + self.cc_samples as f64 / rate;
+                    self.on_control_groups(groups);
+                }
                 self.apply_pending();
                 if self.now_s - self.last_good_s > CC_HUNT_S && self.cfg.control_channels.len() > 1 {
                     let _ = self.tune_control(self.cc_index + 1);
@@ -579,6 +632,25 @@ impl Engine {
         }
         self.apply_pending();
         self.emit_call_events();
+    }
+
+    fn on_smartnet(&mut self, iq: &[Complex32]) {
+        let Some(cc) = self.cc_sn.as_mut() else { return };
+        let (good0, bad0) = cc.counts();
+        let mut msgs = Vec::new();
+        cc.push(iq, self.cc_start_s, &mut msgs);
+        let (good, bad) = cc.counts();
+        self.good += good - good0;
+        self.bad += bad - bad0;
+        if good > good0 {
+            self.last_good_s = self.now_s;
+        }
+        self.identity.sys_id = cc.parser.sys_id;
+        self.identity.site = cc.parser.site;
+        if !msgs.is_empty() {
+            self.calls.handle(&msgs, &mut self.radio, &mut self.call_events);
+            self.events.extend(msgs.into_iter().map(Event::Message));
+        }
     }
 
     fn on_control_groups(&mut self, groups: Vec<Group>) {
@@ -628,6 +700,13 @@ impl Engine {
                     let Some(rec) = self.radio.recordings.get_mut(&id) else { continue };
                     rec.audio.extend_from_slice(&samples);
                     rec.frames.push(frame);
+                    self.calls.note_audio(id, self.now_s);
+                    let tg = self.calls.calls.iter().find(|c| c.id == id).map_or(0, |c| c.talkgroup);
+                    self.events.push(Event::Audio { call_id: id, talkgroup: tg, samples });
+                }
+                TrackerOut::AnalogAudio(samples) => {
+                    let Some(rec) = self.radio.recordings.get_mut(&id) else { continue };
+                    rec.audio.extend_from_slice(&samples);
                     self.calls.note_audio(id, self.now_s);
                     let tg = self.calls.calls.iter().find(|c| c.id == id).map_or(0, |c| c.talkgroup);
                     self.events.push(Event::Audio { call_id: id, talkgroup: tg, samples });

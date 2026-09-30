@@ -128,6 +128,41 @@ pub struct System {
     pub modulation: String,
     pub talkgroups_csv: String,
     pub talkgroups_name: String,
+    /// SmartNet (`type` "smartnet"): the band plan, as Trunk Recorder names
+    /// it — "800_standard", "800_reband", "800_splinter", "900", or
+    /// "400_custom" with the four numbers below (Hz; offset is a channel number).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub bandplan: String,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub bandplan_base: f64,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub bandplan_spacing: f64,
+    #[serde(skip_serializing_if = "is_zero_u16")]
+    pub bandplan_offset: u16,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub bandplan_high: f64,
+    /// SmartNet: voice mode of a talkgroup never heard granted — "digital" (P25) or "analog".
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub default_mode: String,
+}
+
+fn is_zero(v: &f64) -> bool {
+    *v == 0.0
+}
+fn is_zero_u16(v: &u16) -> bool {
+    *v == 0
+}
+
+impl System {
+    pub fn is_smartnet(&self) -> bool {
+        self.kind.eq_ignore_ascii_case("smartnet")
+    }
+
+    /// The SmartNet settings, or why they don't work.
+    pub fn smartnet(&self) -> Result<trunk_core::trunk::SmartnetConfig, String> {
+        let bandplan = trunk_core::smartnet::Bandplan::from_config(&self.bandplan, self.bandplan_base, self.bandplan_spacing, self.bandplan_offset, self.bandplan_high)?;
+        Ok(trunk_core::trunk::SmartnetConfig { bandplan, analog_default: self.default_mode.eq_ignore_ascii_case("analog") })
+    }
 }
 
 impl Default for System {
@@ -139,6 +174,12 @@ impl Default for System {
             modulation: "auto".into(),
             talkgroups_csv: String::new(),
             talkgroups_name: String::new(),
+            bandplan: String::new(),
+            bandplan_base: 0.0,
+            bandplan_spacing: 0.0,
+            bandplan_offset: 0,
+            bandplan_high: 0.0,
+            default_mode: String::new(),
         }
     }
 }
@@ -455,6 +496,11 @@ impl Config {
             return Some("Set a center frequency for every source (the first can be automatic when the channels fit one source).".into());
         }
         let inside = |f: f64| self.sources.iter().zip(&centers).any(|(s, &c)| (f - c).abs() <= usable_half_width(s.rate_hz()));
+        if trunked && self.system.is_smartnet() {
+            if let Err(e) = self.system.smartnet() {
+                return Some(e);
+            }
+        }
         if trunked && !self.system.control_channels.iter().any(|&f| inside(f)) {
             return Some("No control channel falls inside any source's bandwidth — move a center frequency.".into());
         }
@@ -494,6 +540,7 @@ impl Config {
             conventional: self.enabled_channels().map(Channel::engine_channel).collect(),
             conv: ConvConfig { squelch_db: self.conventional.squelch_db, ..Default::default() },
             capture_frames: self.recording.capture_frames,
+            smartnet: if self.system.is_smartnet() { self.system.smartnet().ok() } else { None },
         }
     }
 }

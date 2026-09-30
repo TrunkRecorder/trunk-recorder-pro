@@ -10,6 +10,11 @@
 //! greedy|viterbi`, `--soft none|amp`, `--softfec 0|1`, `--flywheel 0|1`,
 //! `--nidrecover 0|1`. Output: `--audio out.f32` (voice), `--iq out.cf32`.
 //!
+//! `tool smartnet <capture> --center Hz --rate Hz --cc Hz [--bandplan 400_custom
+//! --bp-base Hz --bp-spacing Hz --bp-offset N --bp-high Hz] [--osw]` — a
+//! SmartNet control channel: its messages (and with `--osw` every OSW) as
+//! JSON lines, then OSW counts and the measured carrier offset.
+//!
 //! `tool revoice <call.frames.jsonl> <out.wav> [--profile enhanced|mbelib]
 //! [--seed 1]` — vocode a call's frame capture (the recording setting
 //! "Save vocoder frames") again, e.g. with the other vocoder profile.
@@ -36,6 +41,9 @@ pub fn run(a: &Args) {
     }
     if mode == "revoice" {
         return run_revoice(a);
+    }
+    if mode == "smartnet" {
+        return run_smartnet(a);
     }
     let path = a.positional.get(1).unwrap_or_else(|| die("tool: no capture"));
     let cap = std::fs::read(path).unwrap_or_else(|e| die(&format!("{path}: {e}")));
@@ -408,5 +416,98 @@ fn run_p2(a: &Args) {
         types.join(","),
         vcw_errs as f64 / vcw.max(1) as f64,
         vcw_clean as f64 / vcw.max(1) as f64,
+    );
+}
+
+/// A SmartNet band plan from `--bandplan` and the `--bp-*` options.
+pub fn smartnet_bandplan(a: &Args, name: &str) -> trunk_core::smartnet::Bandplan {
+    trunk_core::smartnet::Bandplan::from_config(
+        name,
+        a.num("bp-base", 0.0),
+        a.num("bp-spacing", 0.0),
+        a.num("bp-offset", 0.0) as u16,
+        a.num("bp-high", 0.0),
+    )
+    .unwrap_or_else(|e| die(&e))
+}
+
+fn run_smartnet(a: &Args) {
+    use trunk_core::smartnet::{self, FramerOut, Fsk2, Framer, Parser};
+    let path = a.positional.get(1).unwrap_or_else(|| die("tool smartnet: no capture"));
+    let cap = std::fs::read(path).unwrap_or_else(|e| die(&format!("{path}: {e}")));
+    let fs = a.num("rate", 2_400_000.0);
+    let mut chz = Channelizer::new(fs, 24_000.0, 1.0);
+    let rate = chz.output_rate();
+    let (head, _, _) = chz.add_head(a.num("cc", 0.0) - a.num("center", 0.0), smartnet::CHANNEL_CUTOFF_HZ, 0.0);
+    let mut rx = Fsk2::new(rate);
+    let mut framer = Framer::default();
+    let mut parser = Parser::new(smartnet_bandplan(a, a.get("bandplan").unwrap_or("800_standard")));
+    let show_osw = a.flag("osw");
+    let stdout = std::io::stdout();
+    let mut out = BufWriter::new(stdout.lock());
+    let (mut bits, mut fout, mut msgs) = (Vec::new(), Vec::new(), Vec::new());
+    let mut n_bits = 0u64;
+    let t0 = Instant::now();
+    let mut off = 0;
+    while off < cap.len() {
+        let (used, ran) = chz.feed_u8(&cap[off..]);
+        off += used;
+        if ran {
+            bits.clear();
+            rx.push(chz.output(head).unwrap_or(&[]), &mut bits);
+            for b in &bits {
+                n_bits += 1;
+                fout.clear();
+                framer.push(b.soft, &mut fout);
+                let t = b.sample / rate;
+                for o in &fout {
+                    match *o {
+                        FramerOut::Osw(osw, _) => {
+                            if show_osw {
+                                let f = parser.bandplan().rx_hz(osw.cmd).map_or("null".into(), |f| f.to_string());
+                                let _ = writeln!(out, "{{\"t\":{t:.4},\"osw\":{{\"addr\":{},\"grp\":{},\"cmd\":\"{:03x}\",\"rx_hz\":{f}}}}}", osw.addr, osw.grp, osw.cmd);
+                            }
+                            parser.osw(osw, t, &mut msgs);
+                        }
+                        FramerOut::Bad(_) => {
+                            if show_osw {
+                                let _ = writeln!(out, "{{\"t\":{t:.4},\"bad\":true}}");
+                            }
+                            parser.bad(t, &mut msgs);
+                        }
+                    }
+                }
+                for m in msgs.drain(..) {
+                    let _ = writeln!(
+                        out,
+                        "{{\"t\":{t:.4},\"kind\":\"{}\",\"tg\":{},\"freq\":{},\"src\":{},\"analog\":{},\"enc\":{},\"meta\":{:?}}}",
+                        m.kind.as_str(),
+                        m.talkgroup,
+                        m.freq_hz,
+                        m.source,
+                        m.analog,
+                        m.encrypted,
+                        m.meta
+                    );
+                }
+            }
+        }
+        if used == 0 {
+            break;
+        }
+    }
+    let _ = out.flush();
+    let air = cap.len() as f64 / 2.0 / fs;
+    eprintln!(
+        "{air:.1} s of air in {:.2} s: {} bits, {} good OSWs ({:.1}/s of {:.1}/s), {} lost; offset {:+.0} Hz, deviation ±{:.0} Hz; system {}",
+        t0.elapsed().as_secs_f64(),
+        n_bits,
+        framer.good,
+        framer.good as f64 / air,
+        smartnet::SYMBOL_RATE / smartnet::osw::FRAME_BITS as f64,
+        framer.bad,
+        rx.offset_hz(),
+        rx.deviation_hz(),
+        parser.sys_id.map_or("?".into(), |s| format!("{s:04x}")),
     );
 }
