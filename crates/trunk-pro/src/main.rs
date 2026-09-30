@@ -49,6 +49,7 @@
 //!     manifest, or run one against calls already on disk.
 //! ```
 
+mod dmrtool;
 mod plugins;
 mod radio;
 mod runtime;
@@ -228,6 +229,7 @@ fn replay(a: &Args) {
         .into_iter()
         .map(|f| ConvChannel::new(f, ConvMode::Fm))
         .chain(hz_list("p25").into_iter().map(|f| ConvChannel::new(f, ConvMode::P25)))
+        .chain(hz_list("dmr").into_iter().map(|f| ConvChannel::new(f, ConvMode::Dmr)))
         .chain(a.get("channels").map_or_else(Vec::new, |p| {
             let text = fs::read_to_string(p).unwrap_or_else(|e| die(&format!("{p}: {e}")));
             let parsed = trunk_app::channels::parse(&text).unwrap_or_else(|e| die(&format!("{p}: {e}")));

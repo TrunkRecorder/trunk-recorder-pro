@@ -90,6 +90,8 @@ pub struct Call {
     /// Every talkgroup patched with this one while the call lasted, its own
     /// included, ascending (TR's patched_talkgroups); empty when never patched.
     pub patched_talkgroups: Vec<u32>,
+    /// DMR: the colour code the voice came with (a DMR call's slot is `tdma_slot`).
+    pub color_code: Option<u8>,
 }
 
 impl Call {
@@ -313,6 +315,7 @@ impl CallManager {
             sources: if m.source > 0 { vec![CallSource { src: m.source as u32, time_s: m.time_s, emergency: m.emergency }] } else { vec![] },
             talkgroup_info: tg.clone(),
             patched_talkgroups: self.patches.members_of(m.talkgroup),
+            color_code: None,
         };
         Self::admit(&mut c, &self.cfg, &self.talkgroups, host);
         ev.push(CallEvent::Start(c.clone()));

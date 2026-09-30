@@ -9,6 +9,8 @@
 //!     leakage from a strong neighbour doesn't make a call)
 //!   → NBFM demod → 8 kHz audio          (fm)
 //!   → receiver bank → voice tracker     (p25; talkgroup from link control)
+//!   → 4FSK → DMR framer → both slots   (dmr; a call on each slot, talkgroup
+//!                                        from link control)
 //! a call starts with the first audio (or P25 link control), ends when there
 //! has been none for the call timeout; the head closes once the carrier has
 //! been gone for CLOSE_HANG_S with no call.
@@ -28,8 +30,11 @@ use super::calls::{Call, CallId, CallManager, CallSource, CONVENTIONAL};
 use super::frames::CallFrames;
 use super::talkgroups::Talkgroup;
 use super::tracker::{TrackerOut, VoiceTracker};
+use super::frames::VoiceFrame;
+use crate::dmr::voice::{DmrVoice, VOICE_BURST_S};
+use crate::dsp::c4fm::C4fm;
 use crate::dsp::fm::{self, ChannelFilter, Nbfm};
-use crate::dsp::{Channelizer, HeadId};
+use crate::dsp::{Channelizer, HeadId, Receiver, Symbol};
 use crate::mbe;
 use crate::p25::alias::Alias;
 use crate::p25::diversity::{best_frame, Bank, BankConfig, Group};
@@ -59,6 +64,8 @@ pub enum ConvMode {
     Fm,
     /// P25 Phase 1 (C4FM or CQPSK).
     P25,
+    /// DMR (Tier II): each of the two slots records its own calls.
+    Dmr,
 }
 
 impl ConvMode {
@@ -66,6 +73,7 @@ impl ConvMode {
         match self {
             ConvMode::Fm => "fm",
             ConvMode::P25 => "p25",
+            ConvMode::Dmr => "dmr",
         }
     }
 }
@@ -124,6 +132,21 @@ enum Rx {
     Fm(Nbfm),
     /// `t0`: sample-clock time of the head's first output; `rate`: its sample rate.
     P25 { meter: ChannelFilter, bank: Bank, tracker: VoiceTracker, groups: Vec<Group>, t0: f64, rate: f64 },
+    Dmr { meter: ChannelFilter, rx: C4fm, voice: Box<DmrVoice>, syms: Vec<Symbol>, t0: f64, rate: f64 },
+}
+
+/// What one slot of an open channel heard in one run (FM and P25: slot 0 only).
+#[derive(Default)]
+struct Heard {
+    audio: Vec<f32>,
+    frames: Vec<VoiceFrame>,
+    /// (source, emergency, encrypted) from link control.
+    infos: Vec<(Option<u32>, bool, bool)>,
+    /// Air time of the first voice frame, and the end of the last (digital).
+    air: Option<(f64, f64)>,
+    /// The talkgroup the air named.
+    tg: Option<u32>,
+    color_code: Option<u8>,
 }
 
 struct Live {
@@ -141,7 +164,8 @@ struct Open {
     opened_s: f64,
     carrier_seen: bool,
     last_carrier_s: f64,
-    live: Option<Live>,
+    /// The call on each slot (FM and P25: slot 0).
+    live: [Option<Live>; 2],
 }
 
 struct Chan {
@@ -218,7 +242,7 @@ impl Conventional {
 
     /// Calls in progress.
     pub fn calls(&self) -> impl Iterator<Item = &Call> {
-        self.chans.iter().filter_map(|c| c.open.as_ref().and_then(|o| o.live.as_ref()).map(|l| &l.call))
+        self.chans.iter().filter_map(|c| c.open.as_ref()).flat_map(|o| o.live.iter().flatten().map(|l| &l.call))
     }
 
     /// After a block ran on `source` (whose clock reads `now_s`).
@@ -265,14 +289,13 @@ impl Conventional {
             Self::run(ch, &iq, now_s, meter_thr, idx as u32, calls, rules, self.cfg.max_call_s, out);
             // Wind down.
             let o = ch.open.as_mut().unwrap();
-            if let Some(l) = &o.live {
-                if now_s - l.call.last_audio_s > rules.call_timeout_s {
-                    let l = o.live.take().unwrap();
-                    Self::end(l, idx as u32, out);
+            for live in o.live.iter_mut() {
+                if live.as_ref().is_some_and(|l| now_s - l.call.last_audio_s > rules.call_timeout_s) {
+                    Self::end(live.take().unwrap(), idx as u32, out);
                 }
             }
             let o = ch.open.as_ref().unwrap();
-            if o.live.is_none() && now_s - o.last_carrier_s.max(o.opened_s) > CLOSE_HANG_S {
+            if o.live.iter().all(Option::is_none) && now_s - o.last_carrier_s.max(o.opened_s) > CLOSE_HANG_S {
                 if !o.carrier_seen {
                     // The meter never confirmed it: leakage or a spur. Wait
                     // for the band to rise further (or fall back) first.
@@ -299,8 +322,16 @@ impl Conventional {
                 t0: start_sample as f64 / chz.fs(),
                 rate,
             },
+            ConvMode::Dmr => Rx::Dmr {
+                meter: ChannelFilter::new(rate),
+                rx: C4fm::new(rate),
+                voice: Box::new(DmrVoice::new(ch.cfg.freq_hz as u32)),
+                syms: Vec::new(),
+                t0: start_sample as f64 / chz.fs(),
+                rate,
+            },
         };
-        ch.open = Some(Open { head, rx, opened_s: now_s, carrier_seen: false, last_carrier_s: now_s, live: None });
+        ch.open = Some(Open { head, rx, opened_s: now_s, carrier_seen: false, last_carrier_s: now_s, live: [None, None] });
         Self::run(ch, &pre, now_s, meter_thr, num, calls, rules, 0.0, out);
     }
 
@@ -308,37 +339,60 @@ impl Conventional {
     #[allow(clippy::too_many_arguments)]
     fn run(ch: &mut Chan, iq: &[Complex32], now_s: f64, meter_thr: f32, num: u32, calls: &mut CallManager, rules: &CallRules, max_call_s: f64, out: &mut Vec<ConvOut>) {
         let o = ch.open.as_mut().unwrap();
-        let mut audio = Vec::new();
-        let mut vframes = Vec::new();
-        let mut infos = Vec::new();
-        // P25: air time of the first frame that produced output, and the end of the last.
-        let mut air: Option<(f64, f64)> = None;
+        let mut heard: [Heard; 2] = Default::default();
         let carrier = match &mut o.rx {
-            Rx::Fm(fm) => fm.push(iq, meter_thr, &mut audio),
+            Rx::Fm(fm) => fm.push(iq, meter_thr, &mut heard[0].audio),
             Rx::P25 { meter, bank, tracker, groups, t0, rate } => {
                 let up = meter.meter(iq) > meter_thr;
                 groups.clear();
                 bank.push(iq, groups);
                 let mut tout = Vec::new();
+                let h = &mut heard[0];
                 for g in groups.iter() {
                     let t = *t0 + best_frame(g).sample / *rate;
                     let before = tout.len();
                     tracker.group(g, t, &mut tout);
                     if tout.len() > before {
                         // An LDU is 180 ms of voice.
-                        air = Some((air.map_or(t, |a| a.0), t + 0.18));
+                        h.air = Some((h.air.map_or(t, |a| a.0), t + 0.18));
                     }
                 }
                 for t in tout {
                     match t {
                         TrackerOut::Audio(a, f) => {
-                            audio.extend_from_slice(&a);
-                            vframes.push(f);
+                            h.audio.extend_from_slice(&a);
+                            h.frames.push(f);
                         }
-                        TrackerOut::Info { source, emergency, encrypted } => infos.push((source, emergency, encrypted)),
-                        TrackerOut::AnalogAudio(a) => audio.extend_from_slice(&a),
+                        TrackerOut::Info { source, emergency, encrypted } => h.infos.push((source, emergency, encrypted)),
+                        TrackerOut::AnalogAudio(a) => h.audio.extend_from_slice(&a),
                         TrackerOut::Alias(a) => out.push(ConvOut::Alias(a)),
                     }
+                }
+                h.tg = tracker.talkgroup();
+                up
+            }
+            Rx::Dmr { meter, rx, voice, syms, t0, rate } => {
+                let up = meter.meter(iq) > meter_thr;
+                syms.clear();
+                rx.push(iq, syms);
+                let mut vout = Vec::new();
+                voice.push(syms, *t0, *rate, &mut vout);
+                for v in vout {
+                    let h = &mut heard[v.slot as usize];
+                    match v.out {
+                        TrackerOut::Audio(a, f) => {
+                            h.air = Some((h.air.map_or(v.t, |a| a.0), v.t + VOICE_BURST_S));
+                            h.audio.extend_from_slice(&a);
+                            h.frames.push(f);
+                        }
+                        TrackerOut::Info { source, emergency, encrypted } => h.infos.push((source, emergency, encrypted)),
+                        TrackerOut::Alias(a) => out.push(ConvOut::Alias(a)),
+                        TrackerOut::AnalogAudio(_) => {}
+                    }
+                }
+                for (s, h) in heard.iter_mut().enumerate() {
+                    h.tg = voice.talkgroup(s as u8);
+                    h.color_code = voice.color_code(s as u8);
                 }
                 up
             }
@@ -347,26 +401,32 @@ impl Conventional {
             o.carrier_seen = true;
             o.last_carrier_s = now_s;
         }
-        if audio.is_empty() && infos.is_empty() {
+        for (slot, h) in heard.into_iter().enumerate() {
+            Self::slot_call(ch, slot, h, now_s, num, calls, rules, max_call_s, out);
+        }
+    }
+
+    /// Start, relabel, split or feed the call on one slot with what it heard.
+    #[allow(clippy::too_many_arguments)]
+    fn slot_call(ch: &mut Chan, slot: usize, h: Heard, now_s: f64, num: u32, calls: &mut CallManager, rules: &CallRules, max_call_s: f64, out: &mut Vec<ConvOut>) {
+        if h.audio.is_empty() && h.infos.is_empty() {
             return;
         }
-        // The talkgroup: P25 link control's, else the channel's.
-        let air_tg = match &o.rx {
-            Rx::P25 { tracker, .. } => tracker.talkgroup(),
-            Rx::Fm(_) => None,
-        };
+        let o = ch.open.as_mut().unwrap();
+        // The talkgroup: link control's, else the channel's.
+        let air_tg = h.tg;
         let tg = air_tg.unwrap_or(ch.cfg.talkgroup);
-        if let Some(l) = &o.live {
+        if let Some(l) = &o.live[slot] {
             let too_long = max_call_s > 0.0 && now_s - l.call.start_s > max_call_s;
             // A different talkgroup on the air is a new call; the first one
             // named just labels the call it arrived in.
             let new_tg = l.tg_from_air && air_tg.is_some_and(|t| t != l.call.talkgroup);
             if too_long || new_tg {
-                let l = o.live.take().unwrap();
+                let l = o.live[slot].take().unwrap();
                 Self::end(l, num, out);
             } else if air_tg.is_some() && !l.tg_from_air {
                 let info = Self::info_for(&ch.cfg, tg, calls);
-                let l = o.live.as_mut().unwrap();
+                let l = o.live[slot].as_mut().unwrap();
                 l.tg_from_air = true;
                 if l.call.talkgroup != tg {
                     l.call.talkgroup = tg;
@@ -375,16 +435,16 @@ impl Conventional {
                 }
             }
         }
-        if o.live.is_none() {
-            let dur = audio.len() as f64 / fm::AUDIO_RATE;
-            let start = air.map_or_else(|| (now_s - dur).max(o.opened_s - 0.05), |a| a.0);
+        if o.live[slot].is_none() {
+            let dur = h.audio.len() as f64 / fm::AUDIO_RATE;
+            let start = h.air.map_or_else(|| (now_s - dur).max(o.opened_s - 0.05), |a| a.0);
             let call = Call {
                 system: CONVENTIONAL,
                 id: calls.allocate_id(),
                 talkgroup: tg,
                 freq_hz: ch.cfg.freq_hz.round() as u64,
                 phase2_tdma: false,
-                tdma_slot: 0,
+                tdma_slot: slot as u8,
                 unit_to_unit: false,
                 recording: true,
                 reason: None,
@@ -400,15 +460,20 @@ impl Conventional {
                 sources: Vec::new(),
                 talkgroup_info: Self::info_for(&ch.cfg, tg, calls),
                 patched_talkgroups: Vec::new(),
+                color_code: h.color_code,
             };
             out.push(ConvOut::Start(call.clone()));
-            o.live = Some(Live { call, audio: Vec::new(), frames: CallFrames::new(rules.capture_frames), tg_from_air: air_tg.is_some() });
+            o.live[slot] = Some(Live { call, audio: Vec::new(), frames: CallFrames::new(rules.capture_frames), tg_from_air: air_tg.is_some() });
         }
-        let l = o.live.as_mut().unwrap();
+        let l = o.live[slot].as_mut().unwrap();
         l.call.last_update_s = now_s;
-        l.call.last_audio_s = air.map_or(now_s, |a| a.1);
+        l.call.last_audio_s = h.air.map_or(now_s, |a| a.1);
         let mut changed = false;
-        for (src, emergency, encrypted) in infos {
+        if l.call.color_code.is_none() && h.color_code.is_some() {
+            l.call.color_code = h.color_code;
+            changed = true;
+        }
+        for (src, emergency, encrypted) in h.infos {
             if encrypted && !l.call.encrypted {
                 l.call.encrypted = true;
                 changed = true;
@@ -427,12 +492,12 @@ impl Conventional {
         if changed {
             out.push(ConvOut::Update(l.call.clone()));
         }
-        if !audio.is_empty() && !(l.call.encrypted && !rules.record_encrypted) {
-            l.audio.extend_from_slice(&audio);
-            for f in vframes {
+        if !h.audio.is_empty() && !(l.call.encrypted && !rules.record_encrypted) {
+            l.audio.extend_from_slice(&h.audio);
+            for f in h.frames {
                 l.frames.push(f);
             }
-            out.push(ConvOut::Audio { call_id: l.call.id, talkgroup: l.call.talkgroup, samples: audio });
+            out.push(ConvOut::Audio { call_id: l.call.id, talkgroup: l.call.talkgroup, samples: h.audio });
         }
     }
 
@@ -461,7 +526,7 @@ impl Conventional {
                 for g in groups.iter() {
                     tracker.group(g, *t0 + best_frame(g).sample / *rate, &mut tout);
                 }
-                if let Some(l) = o.live.as_mut() {
+                if let Some(l) = o.live[0].as_mut() {
                     for t in tout {
                         if let TrackerOut::Audio(a, f) = t {
                             if !(l.call.encrypted && !rules.record_encrypted) {
@@ -473,7 +538,7 @@ impl Conventional {
                 }
             }
             let o = ch.open.take().unwrap();
-            if let Some(l) = o.live {
+            for l in o.live.into_iter().flatten() {
                 Self::end(l, idx as u32, out);
             }
         }

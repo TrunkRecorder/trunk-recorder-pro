@@ -336,6 +336,7 @@ export function parseChannelCsv(text: string): { channels: Channel[]; notes: str
     const m = at(cMode).toLowerCase();
     let mode: Channel["mode"] = "fm";
     if (["p25", "digital", "d"].includes(m)) mode = "p25";
+    else if (m === "dmr") mode = "dmr";
     else if (!["", "fm", "nfm", "analog", "a"].includes(m)) badMode.push(row);
     const ch: Channel = { freqHz, mode, name: at(cName), enabled: !["false", "no", "0", "off"].includes(at(cEnable).toLowerCase()) };
     const tgText = at(cTg);
@@ -469,17 +470,17 @@ export function importTrunkRecorderConfig(text: string, base: Config): { config:
   }
   if (imported.length) cfg.sources = imported;
   const p25 = systems.filter((x) => x.type === "p25" || x.type === "smartnet");
-  const conv = systems.filter((x) => x.type === "conventional" || x.type === "conventionalP25");
+  const conv = systems.filter((x) => x.type === "conventional" || x.type === "conventionalP25" || x.type === "conventionalDMR");
   const skipped = systems.filter((x) => !p25.includes(x) && !conv.includes(x)).map((x) => `${String(x.shortName ?? "?")} (${String(x.type)})`);
   if (skipped.length) notes.push(`Skipped unsupported systems: ${skipped.join(", ")}.`);
   const importedChannels: Channel[] = [];
   for (const sys of conv) {
-    const mode: Channel["mode"] = sys.type === "conventionalP25" ? "p25" : "fm";
+    const mode: Channel["mode"] = sys.type === "conventionalP25" ? "p25" : sys.type === "conventionalDMR" ? "dmr" : "fm";
     if (Array.isArray(sys.channels)) {
       for (const f of sys.channels as unknown[]) if (typeof f === "number" && f > 0) importedChannels.push({ freqHz: f, mode, name: "", enabled: true });
     }
     if (typeof sys.channelFile === "string") {
-      notes.push(`Channel file "${sys.channelFile}" (${mode === "p25" ? "P25" : "analog"}): load it under Conventional channels → Import CSV.`);
+      notes.push(`Channel file "${sys.channelFile}" (${mode === "p25" ? "P25" : mode === "dmr" ? "DMR" : "analog"}): load it under Conventional channels → Import CSV.`);
     }
   }
   if (importedChannels.length) {

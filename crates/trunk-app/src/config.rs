@@ -293,6 +293,8 @@ pub enum ChannelMode {
     Fm,
     /// P25 Phase 1.
     P25,
+    /// DMR (both slots).
+    Dmr,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -338,6 +340,7 @@ impl Channel {
             mode: match self.mode {
                 ChannelMode::Fm => ConvMode::Fm,
                 ChannelMode::P25 => ConvMode::P25,
+                ChannelMode::Dmr => ConvMode::Dmr,
             },
             talkgroup: tg,
             info: named.then(|| Talkgroup {

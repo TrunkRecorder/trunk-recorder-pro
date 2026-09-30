@@ -592,6 +592,7 @@ function ConventionalPanel(props: { c: Config }) {
                 <select value={bulkMode} onChange={(e) => setBulkMode(e.target.value as Channel["mode"])} aria-label="Mode for the added channels">
                   <option value="fm">Analog FM</option>
                   <option value="p25">P25</option>
+                  <option value="dmr">DMR</option>
                 </select>
                 <button
                   className="btn"
@@ -635,6 +636,7 @@ function ConventionalPanel(props: { c: Config }) {
                         <select value={ch.mode} disabled={linked} aria-label="Mode" onChange={(e) => editRow(i, (x) => void (x.mode = e.target.value as Channel["mode"]))}>
                           <option value="fm">Analog FM</option>
                           <option value="p25">P25</option>
+                          <option value="dmr">DMR</option>
                         </select>
                       </td>
                       <td>

@@ -39,6 +39,12 @@ pub fn run(a: &Args) {
     if mode == "p2" {
         return run_p2(a);
     }
+    if mode == "dmr" {
+        return crate::dmrtool::run(a);
+    }
+    if mode == "dmrscan" {
+        return crate::dmrtool::run_scan(a);
+    }
     if mode == "revoice" {
         return run_revoice(a);
     }

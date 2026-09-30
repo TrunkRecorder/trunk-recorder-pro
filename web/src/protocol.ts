@@ -26,7 +26,7 @@ export interface Radios {
 /** A conventional channel. `talkgroup` defaults to the frequency in kHz; `squelchDb` to the section's. */
 export interface Channel {
   freqHz: number;
-  mode: "fm" | "p25";
+  mode: "fm" | "p25" | "dmr";
   name: string;
   talkgroup?: number;
   description?: string;
