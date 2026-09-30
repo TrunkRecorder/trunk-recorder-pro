@@ -137,6 +137,7 @@ pub struct Variant {
     pub c4fm_only: bool,
     /// DMR: no soft combining of repeated blocks.
     pub no_combining: bool,
+    pub fsk2: smartnet::Fsk2Options,
 }
 
 /// A variant: its protocol's receiver (`base`) with `+`-joined changes.
@@ -144,19 +145,20 @@ fn variant(name: &str, kind: &str) -> Variant {
     let mut o = if kind == "dmr" { C4fmOptions::dmr() } else { C4fmOptions::default() };
     let mut c4fm_only = false;
     let mut no_combining = false;
+    let mut fsk2 = smartnet::Fsk2Options::default();
     for part in name.split('+') {
         match part {
             "base" | "" => {}
             "c4fm-only" => c4fm_only = true,
             "nocombine" => no_combining = true,
             p => {
-                if !o.set(p) {
+                if !o.set(p) && !fsk2.set(p) {
                     die(&format!("tool snr: unknown variant part \"{p}\""));
                 }
             }
         }
     }
-    Variant { name: name.into(), c4fm: o, c4fm_only, no_combining }
+    Variant { name: name.into(), c4fm: o, c4fm_only, no_combining, fsk2 }
 }
 
 /// What a decode of the channel got: each message's time (s) and content,
@@ -247,8 +249,8 @@ fn run_p25(iq: &[Complex32], rate: f64, v: &Variant) -> Count {
     n
 }
 
-fn run_smartnet(iq: &[Complex32], rate: f64, _v: &Variant) -> Count {
-    let mut rx = smartnet::Fsk2::new(rate);
+fn run_smartnet(iq: &[Complex32], rate: f64, v: &Variant) -> Count {
+    let mut rx = smartnet::Fsk2::with_options(rate, v.fsk2);
     let mut fr = smartnet::Framer::default();
     let (mut bits, mut out) = (Vec::new(), Vec::new());
     let mut n = Count::default();
