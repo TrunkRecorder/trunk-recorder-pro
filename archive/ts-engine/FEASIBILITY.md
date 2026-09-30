@@ -1,4 +1,4 @@
-# Trunk Recorder Lite — feasibility study
+# Trunk Recorder Pro — feasibility study
 
 2026-09-28, revised the same day after reviewing CyberEther and confirming that
 freq-finder decodes real signals from real dongles. The question: can Trunk
@@ -252,7 +252,7 @@ What this design adds beyond native Trunk Recorder:
 | **Uploads / CORS** | Unverified for rdio-scanner, OpenMHz and Broadcastify. | Test each; fall back to a small relay (e.g. a Cloudflare Worker). |
 | **Can't exist** | simplestream (UDP), unit_script (shell), stat_socket, TCP MQTT | Drop them; offer MQTT-over-WebSocket or a status WebSocket. |
 | **Simulcast** | LSM without an equalizer loses some TSBKs. | Same class of problem as native; compare side by side with Trunk Recorder. |
-| **Licensing** | The op25 ports are GPLv3, and freq-finder's `package.json` says ISC. | Ship Lite as GPLv3; reconcile before copying code. |
+| **Licensing** | The op25 ports are GPLv3, and freq-finder's `package.json` says ISC. | Ship Pro as GPLv3; reconcile before copying code. |
 
 ## 8. Plan
 

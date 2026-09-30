@@ -1,13 +1,13 @@
 [package]
-name = "trunk-lite"
-description = "Trunk Recorder Lite: record a P25 trunked system from SDRs, with a browser interface."
+name = "trunk-pro"
+description = "Trunk Recorder Pro: record a P25 trunked system from SDRs, with a browser interface."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
 [[bin]]
-name = "trunk-lite"
+name = "trunk-pro"
 path = "src/main.rs"
 
 [dependencies]

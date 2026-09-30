@@ -116,13 +116,13 @@ function DriverMissing(props: { kind: "usrp" | "airspy"; detail: string }) {
         <span>
           USRP support needs <b>UHD</b>, which wasn&apos;t found ({props.detail}). Install it — macOS: <code>brew install uhd</code>; Debian/Ubuntu:{" "}
           <code>sudo apt install libuhd-dev uhd-host</code>; Windows: Ettus&apos;s UHD installer — then run <code>uhd_images_downloader</code> and restart
-          Trunk Recorder Lite.
+          Trunk Recorder Pro.
         </span>
       ) : (
         <span>
           Airspy support needs <b>libairspy</b>, which wasn&apos;t found ({props.detail}). Install it — macOS: <code>brew install airspy</code>; Debian/Ubuntu:{" "}
-          <code>sudo apt install libairspy0</code>; Windows: put <code>airspy.dll</code> (from airspy-tools) next to <code>trunk-lite.exe</code> — then
-          restart Trunk Recorder Lite.
+          <code>sudo apt install libairspy0</code>; Windows: put <code>airspy.dll</code> (from airspy-tools) next to <code>trunk-pro.exe</code> — then
+          restart Trunk Recorder Pro.
         </span>
       )}
     </div>

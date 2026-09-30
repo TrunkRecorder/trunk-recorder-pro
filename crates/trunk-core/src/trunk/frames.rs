@@ -1,7 +1,7 @@
 //! Per-call vocoder frame records: the FEC error summary written to the call
 //! JSON (in intervals, so bursts stand out), and the optional frame capture —
 //! each frame's information bits and error counts as JSON lines, which
-//! `trunk-lite tool revoice` decodes again offline.
+//! `trunk-pro tool revoice` decodes again offline.
 
 use std::fmt::Write;
 

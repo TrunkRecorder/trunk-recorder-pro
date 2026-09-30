@@ -1,11 +1,11 @@
-// Phase 2 equivalence: re-decode every slot `trunk-lite tool p2 --soft none`
+// Phase 2 equivalence: re-decode every slot `trunk-pro tool p2 --soft none`
 // printed (its raw dibits) with the archived TS Phase 2 layer — descramble,
 // DUID, AMBE codeword FEC, MAC PDU — and compare field by field. With a Rust
 // audio file (`--audio x.f32 --slot N`), also run the TS AMBE+2 vocoder over
 // that slot's codewords with the same RNG (32-bit LCG seeded 1) and compare
 // sample by sample.
 //
-//   trunk-lite tool p2 cap.cu8 --center … --freq … --nac … --sysid … --wacn … --soft none [--audio rs.f32 --slot 0] > p2.jsonl
+//   trunk-pro tool p2 cap.cu8 --center … --freq … --nac … --sysid … --wacn … --soft none [--audio rs.f32 --slot 0] > p2.jsonl
 //   node --experimental-strip-types ts_p2_check.ts p2.jsonl nac sysid wacn [rs.f32 slot]
 
 import { readFileSync } from "node:fs";

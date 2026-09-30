@@ -146,7 +146,7 @@ impl PluginHost {
             }
             let hello = Hello {
                 api: API_VERSION,
-                host: HostInfo { name: "trunk-lite".into(), version: env!("CARGO_PKG_VERSION").into() },
+                host: HostInfo { name: "trunk-pro".into(), version: env!("CARGO_PKG_VERSION").into() },
                 config: s.config,
                 systems: systems.iter().map(|y| SystemInfo { config: s.systems.get(&y.short_name).cloned().unwrap_or(Value::Null), ..y.clone() }).collect(),
                 capture_dir: capture_dir.to_path_buf(),

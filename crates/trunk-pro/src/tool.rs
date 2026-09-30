@@ -1,4 +1,4 @@
-//! `trunk-lite tool cc|voice|frames` — one channel's decode as JSON lines, in
+//! `trunk-pro tool cc|voice|frames` — one channel's decode as JSON lines, in
 //! the format of research/native-bench's C++ `p25tool`, so the comparison and
 //! ground-truth scripts there run against this implementation unchanged.
 //! `tool p2` — a Phase 2 TDMA channel: every framed slot (dibits, burst type,

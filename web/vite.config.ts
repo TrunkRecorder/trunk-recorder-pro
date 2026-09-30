@@ -5,8 +5,8 @@ import { readFileSync } from "node:fs";
 const version = /^version\s*=\s*"([^"]+)"/m.exec(readFileSync(new URL("../Cargo.toml", import.meta.url), "utf8"))?.[1] ?? "dev";
 
 // `npm run dev` serves the UI on :5173 and proxies the app's API to a running
-// `trunk-lite serve` (default :8080). `npm run build` → dist/, which the
-// trunk-lite binary embeds.
+// `trunk-pro serve` (default :8080). `npm run build` → dist/, which the
+// trunk-pro binary embeds.
 //
 // `npm run build:web` → dist-web/: the standalone browser version (engine in
 // WebAssembly, run from src/web/pkg, which `npm run wasm` builds).

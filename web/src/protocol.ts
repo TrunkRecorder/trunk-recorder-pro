@@ -1,4 +1,4 @@
-// The messages between the interface and the recorder (crates/trunk-lite/src/
+// The messages between the interface and the recorder (crates/trunk-pro/src/
 // server.rs). The desktop app carries them over a WebSocket; the web build
 // will carry the same messages between the page and its engine worker.
 

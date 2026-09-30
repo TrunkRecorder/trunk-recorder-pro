@@ -2,10 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key><string>Trunk Recorder Lite</string>
-  <key>CFBundleDisplayName</key><string>Trunk Recorder Lite</string>
-  <key>CFBundleIdentifier</key><string>org.trunkrecorder.lite</string>
-  <key>CFBundleExecutable</key><string>trunk-lite</string>
+  <key>CFBundleName</key><string>Trunk Recorder Pro</string>
+  <key>CFBundleDisplayName</key><string>Trunk Recorder Pro</string>
+  <key>CFBundleIdentifier</key><string>org.trunkrecorder.pro</string>
+  <key>CFBundleExecutable</key><string>trunk-pro</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>@VERSION@</string>

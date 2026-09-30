@@ -99,7 +99,7 @@ fn api() -> Result<&'static Api, String> {
     API.get_or_init(|| {
         let names = super::candidates("libuhd.so", "libuhd.dylib", &["uhd.dll", r"C:\Program Files\UHD\bin\uhd.dll"]);
         let names: Vec<&str> = names.iter().map(String::as_str).collect();
-        let (lib, path) = super::load("TRUNK_LITE_UHD", &names, "uhd")?;
+        let (lib, path) = super::load("TRUNK_PRO_UHD", &names, "uhd")?;
         // SAFETY: the signatures are UHD's C API (uhd.h, UHD 3.15 – 4.x).
         unsafe {
             macro_rules! f {

@@ -104,7 +104,7 @@ mod tests {
     /// Every encoder this machine has makes a playable file from a WAV.
     #[test]
     fn encoders_on_this_machine() {
-        let dir = std::env::temp_dir().join(format!("trunk-lite-encode-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("trunk-pro-encode-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let wav = dir.join("tone.wav");
         let tone: Vec<f32> = (0..16000).map(|i| (i as f32 * 0.3).sin() * 0.5).collect();

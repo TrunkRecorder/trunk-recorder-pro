@@ -473,20 +473,20 @@ fn home() -> PathBuf {
     std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// `~/Library/Application Support/trunk-lite`, `%APPDATA%\trunk-lite`, or
-/// `$XDG_CONFIG_HOME/trunk-lite` (`~/.config/trunk-lite`).
+/// `~/Library/Application Support/trunk-pro`, `%APPDATA%\trunk-pro`, or
+/// `$XDG_CONFIG_HOME/trunk-pro` (`~/.config/trunk-pro`).
 pub fn config_dir() -> PathBuf {
     if cfg!(target_os = "macos") {
-        home().join("Library/Application Support/trunk-lite")
+        home().join("Library/Application Support/trunk-pro")
     } else if cfg!(windows) {
-        std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(home).join("trunk-lite")
+        std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(home).join("trunk-pro")
     } else {
-        std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|| home().join(".config")).join("trunk-lite")
+        std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|| home().join(".config")).join("trunk-pro")
     }
 }
 
 pub fn default_capture_dir() -> PathBuf {
-    home().join("TrunkRecorderLite")
+    home().join("TrunkRecorderPro")
 }
 
 impl Config {
@@ -836,7 +836,7 @@ mod tests {
 
     #[test]
     fn channel_file_link_edit_save_load_unlink() {
-        let dir = std::env::temp_dir().join(format!("trunk-lite-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("trunk-pro-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let cfg_path = dir.join("config.json");
         let mut c = Config::default();

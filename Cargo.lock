@@ -1229,7 +1229,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "trunk-lite"
+name = "trunk-pro"
 version = "0.1.0"
 dependencies = [
  "axum",

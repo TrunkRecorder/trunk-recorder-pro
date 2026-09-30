@@ -43,7 +43,7 @@ use crate::sdr;
 struct Ui;
 
 /// What `GET /api/version` answers — how a second launch recognises us.
-pub const APP_ID: &str = "trunk-lite";
+pub const APP_ID: &str = "trunk-pro";
 
 /// Serve until `quit` from a browser, Ctrl-C or SIGTERM. Recording is stopped
 /// first either way, so calls in progress are written out.
@@ -102,7 +102,7 @@ async fn static_file(uri: Uri) -> Response {
         }
         None => (
             [(header::CONTENT_TYPE, "text/html; charset=utf-8".to_string())],
-            "<h1>Trunk Recorder Lite</h1><p>The web interface wasn't built into this binary. Run <code>npm run build</code> in <code>web/</code>, then rebuild.</p>",
+            "<h1>Trunk Recorder Pro</h1><p>The web interface wasn't built into this binary. Run <code>npm run build</code> in <code>web/</code>, then rebuild.</p>",
         )
             .into_response(),
     }

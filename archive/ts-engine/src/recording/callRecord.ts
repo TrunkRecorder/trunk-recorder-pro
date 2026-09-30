@@ -1,5 +1,5 @@
 // The per-call JSON, with Trunk Recorder's field names (call_concluder.cc
-// create_call_json) so existing tooling can read it. Fields Lite can't measure
+// create_call_json) so existing tooling can read it. Fields Pro can't measure
 // yet (signal/noise, freq error, spike counts) are 0.
 
 import type { Call } from "../trunking/callManager.ts";

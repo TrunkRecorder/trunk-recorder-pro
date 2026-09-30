@@ -1,4 +1,4 @@
-//! `trunk-lite plugin …`: look at plugins, and run one against calls already
+//! `trunk-pro plugin …`: look at plugins, and run one against calls already
 //! on disk — a plugin author's test bench.
 
 use std::collections::BTreeMap;
@@ -16,7 +16,7 @@ pub fn run(a: &Args) {
     match a.positional.first().map(String::as_str) {
         Some("list") => list(a),
         Some("describe") => {
-            let exe = a.positional.get(1).unwrap_or_else(|| die("trunk-lite plugin describe <executable>"));
+            let exe = a.positional.get(1).unwrap_or_else(|| die("trunk-pro plugin describe <executable>"));
             match describe(Path::new(exe)) {
                 Ok(m) => println!("{}", serde_json::to_string_pretty(&m).unwrap_or_default()),
                 Err(e) => die(&e),
@@ -28,11 +28,11 @@ pub fn run(a: &Args) {
 }
 
 const USAGE: &str = "\
-trunk-lite plugin list [--config file.json]
+trunk-pro plugin list [--config file.json]
     The plugins in plugins.json (beside the config), and what each is.
-trunk-lite plugin describe <executable>
+trunk-pro plugin describe <executable>
     A plugin's manifest, checked.
-trunk-lite plugin run <executable | id> [<call.json | folder>…] [options]
+trunk-pro plugin run <executable | id> [<call.json | folder>…] [options]
     Run a plugin and send it calls already on disk (call.concluded), printing
     what it says; then stop it. A folder means the calls in it (the newest
     --limit, default 10). An id runs an installed plugin with its settings
@@ -69,7 +69,7 @@ fn list(a: &Args) {
 }
 
 fn run_calls(a: &Args) {
-    let target = a.positional.get(1).unwrap_or_else(|| die("trunk-lite plugin run <executable | id> [calls…]"));
+    let target = a.positional.get(1).unwrap_or_else(|| die("trunk-pro plugin run <executable | id> [calls…]"));
     let cfg_path = config_path(a);
     let cfg = crate::config::Config::load(&cfg_path);
     // An executable, or an installed plugin's id (with its settings).
@@ -86,7 +86,7 @@ fn run_calls(a: &Args) {
     // Not the plugin's real data folder: a test run mustn't leave work for the installed plugin.
     let data_dir = match a.get("data-dir") {
         Some(d) => PathBuf::from(d),
-        None => std::env::temp_dir().join(format!("trunk-lite-plugin-run-{id}")),
+        None => std::env::temp_dir().join(format!("trunk-pro-plugin-run-{id}")),
     };
     eprintln!("Data folder: {}", data_dir.display());
     let mut spec = Spec { id, exe: PathBuf::from(&entry.path), config: entry.config, systems: entry.systems, data_dir: Some(data_dir) };

@@ -1,9 +1,9 @@
 [Desktop Entry]
 Type=Application
-Name=Trunk Recorder Lite
+Name=Trunk Recorder Pro
 Comment=Record a P25 trunked radio system from RTL-SDRs
-Exec=trunk-lite
-Icon=trunk-lite
+Exec=trunk-pro
+Icon=trunk-pro
 Terminal=false
 Categories=HamRadio;Audio;Network;
 Keywords=P25;SDR;RTL-SDR;scanner;trunking;

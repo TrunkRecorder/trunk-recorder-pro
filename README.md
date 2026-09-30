@@ -1,4 +1,4 @@
-# Trunk Recorder Lite
+# Trunk Recorder Pro
 
 A lightweight, self-contained trunked-radio recorder: point one or more
 RTL-SDRs (or, optionally, USRPs and Airspys) at one or more **P25** systems (Phase 1 and Phase 2 TDMA voice) and it follows their control channels and records
@@ -17,18 +17,18 @@ WebAssembly. Phase 2 TDMA voice is decoded too (see [Roadmap](#roadmap)). The pr
 ## Install
 
 Download the package for your system from the
-[releases](https://github.com/TrunkRecorder/trunk-recorder-lite/releases)
+[releases](https://github.com/TrunkRecorder/trunk-recorder-pro/releases)
 (each is a single ~3–7 MB program with the interface built in; nothing else to
 install). `SHA256SUMS` lists their checksums.
 
-- **macOS** (11+, Apple silicon and Intel): open `trunk-lite-<version>-macos.dmg`
-  and drag **Trunk Recorder Lite** to Applications. Until releases are signed
+- **macOS** (11+, Apple silicon and Intel): open `trunk-pro-<version>-macos.dmg`
+  and drag **Trunk Recorder Pro** to Applications. Until releases are signed
   with an Apple Developer ID, macOS blocks the first launch: open it once,
   then **System Settings → Privacy & Security → Open Anyway**. The app has no
   Dock icon; it opens its interface in your browser. Open the app again to get
   back to it, and use **Quit** in the interface to stop it.
-- **Windows** (10/11, 64-bit): unzip `trunk-lite-<version>-windows-x86_64.zip`
-  and run `trunk-lite.exe`. SmartScreen may warn about an unrecognised app:
+- **Windows** (10/11, 64-bit): unzip `trunk-pro-<version>-windows-x86_64.zip`
+  and run `trunk-pro.exe`. SmartScreen may warn about an unrecognised app:
   **More info → Run anyway**. The console window is the app; closing it quits.
   Dongles need the WinUSB driver once, as for every RTL-SDR program: run
   [Zadig](https://zadig.akeo.ie), pick “Bulk-In, Interface (Interface 0)”,
@@ -38,14 +38,14 @@ install). `SHA256SUMS` lists their checksums.
   Ubuntu 20.04, RHEL 8, Raspberry Pi OS bullseye):
 
   ```bash
-  tar xzf trunk-lite-<version>-linux-x86_64.tar.gz
-  cd trunk-lite-<version>-linux-x86_64 && sudo ./install.sh
-  trunk-lite
+  tar xzf trunk-pro-<version>-linux-x86_64.tar.gz
+  cd trunk-pro-<version>-linux-x86_64 && sudo ./install.sh
+  trunk-pro
   ```
 
-  `install.sh` puts `trunk-lite` in `/usr/local/bin`, adds a udev rule so
+  `install.sh` puts `trunk-pro` in `/usr/local/bin`, adds a udev rule so
   your user can open RTL-SDRs, Airspys and USB USRPs (the kernel's DVB driver is detached
-  automatically) and a menu entry. `trunk-lite.service` in the package runs it
+  automatically) and a menu entry. `trunk-pro.service` in the package runs it
   headless as a systemd user service.
 - **Browser**, no install: see [In the browser](#in-the-browser-no-install).
 
@@ -53,19 +53,19 @@ install). `SHA256SUMS` lists their checksums.
 
 RTL-SDRs work with nothing else installed. USRPs (Ettus / NI, through UHD)
 and Airspy R2 / Mini (through libairspy) use their makers' drivers, which you
-install yourself; Trunk Recorder Lite finds them when it starts — no special
+install yourself; Trunk Recorder Pro finds them when it starts — no special
 build — and offers **USRP** and **Airspy** as source types in Setup (which
 says what is missing if a driver isn't found).
 
 | | macOS | Debian / Ubuntu / Raspberry Pi OS | Windows |
 |---|---|---|---|
 | USRP | `brew install uhd` | `sudo apt install libuhd-dev uhd-host` | Ettus's UHD installer (adds `uhd.dll` to PATH) |
-| Airspy | `brew install airspy` | `sudo apt install libairspy0` | `airspy.dll` from airspy-tools, next to `trunk-lite.exe` |
+| Airspy | `brew install airspy` | `sudo apt install libairspy0` | `airspy.dll` from airspy-tools, next to `trunk-pro.exe` |
 
 USRPs also need UHD's FPGA images once: `uhd_images_downloader` (sudo on
-Linux). `trunk-lite devices` shows which drivers were found; `trunk-lite
+Linux). `trunk-pro devices` shows which drivers were found; `trunk-pro
 devices --usrp` also searches for USRPs. A driver installed somewhere unusual
-can be named with `TRUNK_LITE_UHD=/path/to/libuhd…` / `TRUNK_LITE_AIRSPY=…`.
+can be named with `TRUNK_PRO_UHD=/path/to/libuhd…` / `TRUNK_PRO_AIRSPY=…`.
 
 Settings: a USRP takes UHD device arguments (blank = the first found,
 `serial=…`, `addr=192.168.10.2`), any sample rate its clock supports (e.g. 8
@@ -77,24 +77,24 @@ CPU: about 1–2 % of a core per 2.4 MSPS.
 ## Run it
 
 ```bash
-trunk-lite          # opens http://localhost:8080 — set up the system(s), press Start
+trunk-pro          # opens http://localhost:8080 — set up the system(s), press Start
 ```
 
 Add a system (or let **Find my system** find it), set your dongle(s) in the browser, press **Start**.
-Calls are written to the recordings folder (default `~/TrunkRecorderLite`) as
+Calls are written to the recordings folder (default `~/TrunkRecorderPro`) as
 `<system>/<year>/<month>/<day>/<talkgroup>-<epoch>_<freq>.wav|json`, Trunk
 Recorder's layout and JSON fields; the interface shows live status, a
 waterfall per dongle, active calls (listen live) and recent recordings. The
-config lives in `~/Library/Application Support/trunk-lite/` (macOS),
-`%APPDATA%\trunk-lite\` (Windows) or `~/.config/trunk-lite/` (Linux).
+config lives in `~/Library/Application Support/trunk-pro/` (macOS),
+`%APPDATA%\trunk-pro\` (Windows) or `~/.config/trunk-pro/` (Linux).
 
 On a machine that records unattended, turn on **Start recording when the app
-starts** (or run `trunk-lite --start`); Ctrl-C, SIGTERM and **Quit** all save
+starts** (or run `trunk-pro --start`); Ctrl-C, SIGTERM and **Quit** all save
 the calls in progress before exiting. `--bind 0.0.0.0` makes the interface
 reachable from other machines — it has no login, so only on a network you
 trust (or use `ssh -L 8080:localhost:8080`).
 
-`trunk-lite devices` lists radios; `trunk-lite capture out.cu8 --freq Hz
+`trunk-pro devices` lists radios; `trunk-pro capture out.cu8 --freq Hz
 --serial SN --seconds 30` records raw IQ from an RTL-SDR like `rtl_sdr`.
 Capture files can be `cu8` (rtl_sdr), `cs16` or `cf32` (GNU Radio, UHD's
 `rx_samples_to_file`).
@@ -182,9 +182,9 @@ still be typed in by hand.
 From the command line (JSON lines of what's found, then the system):
 
 ```bash
-trunk-lite survey --serial 200 --bands 800,700 --seconds 30
-trunk-lite survey --serial 91 --bands t-band --seconds 120                # e.g. a UHF SmartNet system
-trunk-lite survey capture.cu8 --center 858300000 --rate 2400000   # a capture: one look
+trunk-pro survey --serial 200 --bands 800,700 --seconds 30
+trunk-pro survey --serial 91 --bands t-band --seconds 120                # e.g. a UHF SmartNet system
+trunk-pro survey capture.cu8 --center 858300000 --rate 2400000   # a capture: one look
 ```
 
 ## Conventional channels
@@ -250,7 +250,7 @@ Detector` columns are ignored; its `Squelch` column is an absolute level and
 isn't used). Files saved by Excel in any locale work: commas, semicolons or
 tabs, decimal commas, and the byte-order mark. Rows that can't be read are
 reported by row number; a file that can't be read at all keeps the last good
-list. `trunk-lite replay … --channels channels.csv` reads the same format.
+list. `trunk-pro replay … --channels channels.csv` reads the same format.
 
 A config can have trunked systems, conventional channels, or both; with no
 system, it records conventional channels only. Every enabled channel must lie
@@ -283,7 +283,7 @@ Needs Rust 1.82+ and Node 20+ (for the interface).
 
 ```bash
 (cd web && npm ci && npm run build)     # the interface → web/dist, embedded in the binary
-cargo build --release                   # target/release/trunk-lite
+cargo build --release                   # target/release/trunk-pro
 cargo test --release
 cargo build --profile dist              # stripped, as released
 ```
@@ -294,7 +294,7 @@ version in `Cargo.toml`, with a matching section in `CHANGELOG.md`) makes CI
 publish a release.
 
 `web/`: `npm run dev` serves the interface with hot reload on :5173, talking to
-a running `trunk-lite` on :8080.
+a running `trunk-pro` on :8080.
 
 The browser version additionally needs the `wasm32-unknown-unknown` target and
 `wasm-bindgen-cli` at the version in `Cargo.lock` (0.2.129):
@@ -314,20 +314,20 @@ glibc 2.28, Windows).
 ```bash
 # Record from an rtl_sdr capture (unsigned 8-bit IQ):
 rtl_sdr -f 858300000 -s 2400000 -g 25.4 -n 72000000 capture.cu8        # 30 s
-./target/release/trunk-lite replay capture.cu8 --center 858300000 --rate 2400000 \
+./target/release/trunk-pro replay capture.cu8 --center 858300000 --rate 2400000 \
     --cc 857987500 --out calls/ [--talkgroups tg.csv] [--bandplan site.bandplan]
 
 # Several dongles on one system (control channel on either):
-./target/release/trunk-lite replay --source a.cu8,858300000,2400000 \
+./target/release/trunk-pro replay --source a.cu8,858300000,2400000 \
     --source b.cu8,860700000,2400000 --cc 857987500 --out calls/
 
 # Several systems or sites (each to <out>/<name>/), with optional site locks
 # (NAC / System ID / WACN in hex): a control channel that disagrees isn't followed.
-./target/release/trunk-lite replay capture.cu8 --center 858300000 --rate 2400000 \
+./target/release/trunk-pro replay capture.cu8 --center 858300000 --rate 2400000 \
     --system east:857987500:nac=443,site=3 --system west:858987500:site=4 --out calls/
 
 # Conventional channels (with or without --cc); talkgroup = frequency in kHz:
-./target/release/trunk-lite replay capture.cu8 --center 154500000 --rate 2400000 \
+./target/release/trunk-pro replay capture.cu8 --center 154500000 --rate 2400000 \
     --fm 154430000,155100000 --p25 154725000 [--squelch 8] --out calls/
 #   or --channels channels.csv (the channel-file format above)
 ```
@@ -362,7 +362,7 @@ receiver bank = CQPSK + CQPSK with a T/2 CMA equaliser + C4FM, best of each fram
 | `…/p25/phase2.rs` | Phase 2 TDMA: slot framer, scrambler, ISCH / DUID, AMBE codeword FEC, ESS, MAC PDUs |
 | `…/mbe/` | IMBE and AMBE+2 vocoders (mbelib + Trunk Recorder's enhanced synthesis) |
 | `…/trunk/` | TSBK parser (Trunk Recorder's `p25_parser.cc`), call manager (`monitor_systems.cc`), Phase 1 and TDMA voice trackers, conventional channels (energy detection, calls), engine (multi-source) |
-| `crates/trunk-lite` | The app: `serve` (default; source threads, engine thread, web server + WebSocket), `replay`, `capture`, `devices`, `tool` |
+| `crates/trunk-pro` | The app: `serve` (default; source threads, engine thread, web server + WebSocket), `replay`, `capture`, `devices`, `tool` |
 | `…/src/sdr.rs` | RTL-SDR over USB via `rtlsdr-nusb` (pure Rust; no libusb / librtlsdr) |
 | `…/src/radio/` | USRP (UHD's C API) and Airspy (libairspy), loaded at run time when installed |
 | `crates/trunk-app` | The app layer shared by desktop and browser: config, the conventional channel CSV (`channels.rs`), and a recording `Session` (status, spectrum, log, calls, files) |

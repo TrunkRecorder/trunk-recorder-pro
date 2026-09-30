@@ -164,8 +164,8 @@ pub fn run<P: Plugin>() {
     if stdin.is_terminal() {
         let m = P::manifest();
         eprintln!(
-            "{} {} is a Trunk Recorder Lite plugin: the recorder runs it and talks to it over stdin/stdout.\n\
-             `--describe` prints its manifest. Try it with `trunk-lite plugin run <this binary>`,\n\
+            "{} {} is a Trunk Recorder Pro plugin: the recorder runs it and talks to it over stdin/stdout.\n\
+             `--describe` prints its manifest. Try it with `trunk-pro plugin run <this binary>`,\n\
              or paste protocol lines here (a hello first).",
             m.name, m.version
         );

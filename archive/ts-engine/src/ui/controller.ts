@@ -3,7 +3,7 @@
 // read state through `useApp()` and call the actions below.
 
 import { useSyncExternalStore } from "react";
-import { autoCenter, DEFAULT_CONFIG, type LiteConfig } from "../config.ts";
+import { autoCenter, DEFAULT_CONFIG, type ProConfig } from "../config.ts";
 import { channelizerOutputRate } from "../engine/channelizer.ts";
 import { driverFor } from "../protocols/registry.ts";
 import { listCalls, type StoredCall } from "../recording/opfsStore.ts";
@@ -18,7 +18,7 @@ export interface AppState {
   phase: Phase;
   error: string | null;
   notice: string | null;
-  config: LiteConfig;
+  config: ProConfig;
   sourceKind: "usb" | "file";
   file: File | null;
   realtime: boolean;
@@ -39,11 +39,11 @@ export interface AppState {
 
 const CONFIG_KEY = "trl.config.v1";
 
-function loadConfig(): LiteConfig {
+function loadConfig(): ProConfig {
   try {
     const raw = localStorage.getItem(CONFIG_KEY);
     if (raw) {
-      const c = JSON.parse(raw) as Partial<LiteConfig>;
+      const c = JSON.parse(raw) as Partial<ProConfig>;
       return {
         source: { ...DEFAULT_CONFIG.source, ...c.source },
         system: { ...DEFAULT_CONFIG.system, ...c.system },
@@ -100,7 +100,7 @@ export function getState(): AppState {
 
 // ── config ───────────────────────────────────────────────────────────────────
 
-export function updateConfig(fn: (c: LiteConfig) => void): void {
+export function updateConfig(fn: (c: ProConfig) => void): void {
   const c = structuredClone(state.config);
   fn(c);
   try {

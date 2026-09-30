@@ -1,10 +1,10 @@
-// Trunk Recorder Lite configuration: one source, one system, recording rules.
+// Trunk Recorder Pro configuration: one source, one system, recording rules.
 // Shaped after Trunk Recorder's config.json (docs/CONFIGURE.md) so a TR config
 // can be imported, but flattened to what a single browser tab runs.
 
 import type { P25Modulation } from "./protocols/p25/controlDecoder.ts";
 
-export interface LiteConfig {
+export interface ProConfig {
   source: {
     centerHz: number;
     rateHz: number;
@@ -32,7 +32,7 @@ export interface LiteConfig {
   };
 }
 
-export const DEFAULT_CONFIG: LiteConfig = {
+export const DEFAULT_CONFIG: ProConfig = {
   source: { centerHz: 0, rateHz: 2_400_000, gainDb: 38.6, ppm: 0, serial: "" },
   system: { shortName: "sys1", type: "p25", controlChannels: [], modulation: "auto", talkgroupsCsv: "", talkgroupsName: "" },
   recording: {
@@ -87,21 +87,21 @@ export function formatMhz(hz: number, digits = 5): string {
 }
 
 export interface ImportResult {
-  config: LiteConfig;
+  config: ProConfig;
   notes: string[];
 }
 
 /**
  * Import a Trunk Recorder config.json: the first source and the first P25
- * system. Anything Lite can't do is reported, not silently dropped.
+ * system. Anything Pro can't do is reported, not silently dropped.
  */
-export function importTrunkRecorderConfig(text: string, base: LiteConfig = DEFAULT_CONFIG): ImportResult {
+export function importTrunkRecorderConfig(text: string, base: ProConfig = DEFAULT_CONFIG): ImportResult {
   const j = JSON.parse(text) as Record<string, unknown>;
   const notes: string[] = [];
-  const cfg: LiteConfig = structuredClone(base);
+  const cfg: ProConfig = structuredClone(base);
   const sources = (j.sources as Record<string, unknown>[] | undefined) ?? [];
   const systems = (j.systems as Record<string, unknown>[] | undefined) ?? [];
-  if (sources.length > 1) notes.push(`${sources.length} sources in the file; Lite uses one dongle, so only the first was imported.`);
+  if (sources.length > 1) notes.push(`${sources.length} sources in the file; Pro uses one dongle, so only the first was imported.`);
   const s = sources[0];
   if (s) {
     if (typeof s.center === "number") cfg.source.centerHz = s.center;
@@ -113,7 +113,7 @@ export function importTrunkRecorderConfig(text: string, base: LiteConfig = DEFAU
     const dev = typeof s.device === "string" ? s.device : "";
     const serial = /rtl=([^,\s]+)/.exec(dev)?.[1];
     if (serial && !/^\d$/.test(serial)) cfg.source.serial = serial;
-    if (s.driver && s.driver !== "osmosdr") notes.push(`Source driver "${String(s.driver)}" — Lite only drives RTL-SDR dongles.`);
+    if (s.driver && s.driver !== "osmosdr") notes.push(`Source driver "${String(s.driver)}" — Pro only drives RTL-SDR dongles.`);
     if (cfg.source.rateHz > 3_200_000) {
       notes.push(`Rate ${cfg.source.rateHz} is above what an RTL-SDR can do; using 2.4 MSPS.`);
       cfg.source.rateHz = 2_400_000;
@@ -121,7 +121,7 @@ export function importTrunkRecorderConfig(text: string, base: LiteConfig = DEFAU
   }
   const p25 = systems.filter((x) => x.type === "p25");
   const skipped = systems.filter((x) => x.type !== "p25").map((x) => `${String(x.shortName ?? "?")} (${String(x.type)})`);
-  if (skipped.length) notes.push(`Skipped non-P25 systems: ${skipped.join(", ")}. Lite supports P25 only for now.`);
+  if (skipped.length) notes.push(`Skipped non-P25 systems: ${skipped.join(", ")}. Pro supports P25 only for now.`);
   if (p25.length > 1) notes.push(`${p25.length} P25 systems in the file; only the first was imported.`);
   const sys = p25[0];
   if (sys) {
@@ -136,7 +136,7 @@ export function importTrunkRecorderConfig(text: string, base: LiteConfig = DEFAU
   }
   if (typeof j.callTimeout === "number") cfg.recording.callTimeoutS = j.callTimeout;
   if (typeof j.recordUUVCalls === "boolean") cfg.recording.recordUnitToUnit = j.recordUUVCalls;
-  if (Array.isArray(j.plugins) && j.plugins.length) notes.push("Plugins (uploaders, streamers) are not available in Lite yet.");
+  if (Array.isArray(j.plugins) && j.plugins.length) notes.push("Plugins (uploaders, streamers) are not available in Pro yet.");
   const out = cfg.system.controlChannels.filter((f) => Math.abs(f - cfg.source.centerHz) > usableHalfWidth(cfg.source.rateHz));
   if (out.length && cfg.source.centerHz) notes.push(`Control channel(s) ${out.map((f) => formatMhz(f)).join(", ")} MHz fall outside the source's bandwidth.`);
   return { config: cfg, notes };

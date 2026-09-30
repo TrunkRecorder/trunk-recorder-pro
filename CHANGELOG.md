@@ -54,7 +54,7 @@ platform, with no GNU Radio, OP25 or other runtime dependencies.
   the frequency the channel announces versus where it is heard, it measures
   the radio's frequency correction (ppm); on an RTL-SDR it also picks the
   gain. **Add this system** adds it with a site lock, and sets the ppm, gain
-  and a center that covers the most voice channels seen. Also `trunk-lite survey`.
+  and a center that covers the most voice channels seen. Also `trunk-pro survey`.
 - **Several systems and sites at once**: each P25 system — or each site of
   a multi-site system — follows its own control channel, with its own short
   name (folder), band plan, talkgroups and modulation, sharing the sources
@@ -64,7 +64,7 @@ platform, with no GNU Radio, OP25 or other runtime dependencies.
   groups sites of one system and filters calls, history, log and live audio
   by system; sources left on Auto are placed over the systems not yet
   covered. Configs with one system carry over unchanged, and a Trunk
-  Recorder config's P25 systems are all imported. `trunk-lite replay
+  Recorder config's P25 systems are all imported. `trunk-pro replay
   --system name:Hz[:nac=…,site=…]`.
 - **Several RTL-SDRs** feeding the systems, over a pure-Rust USB driver (no
   librtlsdr / libusb to install). New dongles start at 25.4 dB gain: higher
@@ -85,7 +85,7 @@ platform, with no GNU Radio, OP25 or other runtime dependencies.
   events rather than slowing the recorder. Settings in `plugins.json`
   beside the config. Calls are encoded to M4A once for every plugin that
   asks (ffmpeg, macOS's afconvert or fdkaac, whichever is there; WAV only
-  without one). `trunk-lite plugin list | describe | run` to look at plugins
+  without one). `trunk-pro plugin list | describe | run` to look at plugins
   and run one against recorded calls. The `trunk-recorder-plugin` crate is
   the protocol and a Rust SDK. A **Plugins** page lists them: turn each on
   or off, fill in settings drawn from what the plugin describes (its own and
@@ -93,7 +93,7 @@ platform, with no GNU Radio, OP25 or other runtime dependencies.
   its recent log, and the M4A encoder. Changes apply at once while recording.
 - **Vocoder frame capture** (setting "Save vocoder frames"): each call's
   decoded voice frames and error counts as `<call>.frames.jsonl`;
-  `trunk-lite tool revoice` vocodes one again.
+  `trunk-pro tool revoice` vocodes one again.
 - **Browser interface**: setup, live status, waterfall per dongle, active
   calls with live listening, recent recordings.
 - **Unattended use**: start recording at launch (`--start` / a setting),

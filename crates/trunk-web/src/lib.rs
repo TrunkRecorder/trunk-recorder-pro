@@ -1,4 +1,4 @@
-//! Trunk Recorder Lite in the browser. Exposes to the engine worker
+//! Trunk Recorder Pro in the browser. Exposes to the engine worker
 //! (web/src/web/engine.worker.ts):
 //!
 //! * [`WebSession`] — the shared recording session (trunk-app): feed it u8

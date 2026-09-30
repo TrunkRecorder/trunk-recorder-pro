@@ -1,8 +1,8 @@
 {
-  "name": "trunk-recorder-lite-web",
+  "name": "trunk-recorder-pro-web",
   "private": true,
   "type": "module",
-  "description": "Browser interface for Trunk Recorder Lite (embedded in the trunk-lite binary).",
+  "description": "Browser interface for Trunk Recorder Pro (embedded in the trunk-pro binary).",
   "license": "GPL-3.0-or-later",
   "scripts": {
     "dev": "vite",

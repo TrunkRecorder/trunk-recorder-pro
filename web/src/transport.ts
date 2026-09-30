@@ -1,5 +1,5 @@
 // How the interface reaches the recorder. The desktop app: a WebSocket to the
-// local trunk-lite server (reconnecting). The web build: the recorder in a Web
+// local trunk-pro server (reconnecting). The web build: the recorder in a Web
 // Worker (web/src/web/workerTransport.ts).
 
 import { decodeAudioFrame, type AudioChunk, type FromRecorder, type ToRecorder } from "./protocol.ts";

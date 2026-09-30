@@ -379,7 +379,7 @@ and mbelib's AMBE+2):
   head serves both slots' calls.
 
 **Equivalence with the TS decoder** (`ts_p2_check.ts` re-decodes the raw
-slot dibits `trunk-lite tool p2 --soft none` printed):
+slot dibits `trunk-pro tool p2 --soft none` printed):
 
 | | Compared | Mismatches |
 |---|---|---|
@@ -422,10 +422,10 @@ byte-identical audio on the DCFD captures.
 **Reproduce:**
 
 ```bash
-trunk-lite replay --source p2cc.cu8,858300000,2400000 --source p2v.cu8,770700000,2400000 --cc 857987500 --out out/
-trunk-lite tool p2 p2v.cu8 --center 770700000 --freq 770968750 --nac 0x443 --sysid 0x445 --wacn 0xbee00 --soft none --audio rs.f32 --slot 0 > p2.jsonl
+trunk-pro replay --source p2cc.cu8,858300000,2400000 --source p2v.cu8,770700000,2400000 --cc 857987500 --out out/
+trunk-pro tool p2 p2v.cu8 --center 770700000 --freq 770968750 --nac 0x443 --sysid 0x445 --wacn 0xbee00 --soft none --audio rs.f32 --slot 0 > p2.jsonl
 node --experimental-strip-types ts_p2_check.ts p2.jsonl 0x443 0x445 0xbee00 rs.f32 0
-trunk-lite tool voice p2v.cu8 --center 770700000 --freq 770968750 --iq ch.cf32 > /dev/null
+trunk-pro tool voice p2v.cu8 --center 770700000 --freq 770968750 --iq ch.cf32 > /dev/null
 node --experimental-strip-types ts_p2_rx.ts ch.cf32 37500 0x443 0x445 0xbee00
 ```
 

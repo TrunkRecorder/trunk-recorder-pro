@@ -3,7 +3,7 @@
 #   lsm_eval.sh <prefix> "<p25tool options>" ["<options>" ...]
 prefix=$1; shift
 here=${0:A:h}
-tool=(${=P25TOOL:-$here/cpp/p25tool})  # e.g. P25TOOL="../../target/release/trunk-lite tool"
+tool=(${=P25TOOL:-$here/cpp/p25tool})  # e.g. P25TOOL="../../target/release/trunk-pro tool"
 tmp=$(mktemp -d)
 freqs=($(python3 -c "import json; print(' '.join(str(c['hz']) for c in json.load(open('$prefix.truth.json'))['calls']))"))
 for opts in "$@"; do

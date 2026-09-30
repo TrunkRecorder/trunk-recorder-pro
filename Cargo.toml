@@ -1,12 +1,12 @@
 [workspace]
 resolver = "2"
-members = ["crates/trunk-core", "crates/trunk-app", "crates/trunk-lite", "crates/trunk-web", "crates/trunk-recorder-plugin"]
+members = ["crates/trunk-core", "crates/trunk-app", "crates/trunk-pro", "crates/trunk-web", "crates/trunk-recorder-plugin"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
-repository = "https://github.com/TrunkRecorder/trunk-recorder-lite"
+repository = "https://github.com/TrunkRecorder/trunk-recorder-pro"
 
 [workspace.dependencies]
 trunk-core = { path = "crates/trunk-core" }

@@ -1,4 +1,4 @@
-// Headless Trunk Recorder Lite: replay an rtl_sdr capture (unsigned 8-bit IQ)
+// Headless Trunk Recorder Pro: replay an rtl_sdr capture (unsigned 8-bit IQ)
 // through the same channelizer + trunking engine the browser runs, writing each
 // call as <base>.wav + <base>.json like Trunk Recorder does.
 //

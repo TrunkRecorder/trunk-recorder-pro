@@ -1,4 +1,4 @@
-//! The app layer shared by the desktop app (`trunk-lite`) and the web build
+//! The app layer shared by the desktop app (`trunk-pro`) and the web build
 //! (`trunk-web`): the config, conventional channel CSVs, a
 //! platform-independent recording [`Session`] and the first-run
 //! [`survey`] that finds a system.

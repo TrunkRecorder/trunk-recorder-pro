@@ -1,6 +1,6 @@
 //! Airspy R2 / Mini through libairspy, loaded at run time. Needs libairspy
 //! installed: `brew install airspy`, `apt install libairspy0`, or airspy.dll
-//! (from the airspy-tools release) next to trunk-lite.exe / on PATH on Windows.
+//! (from the airspy-tools release) next to trunk-pro.exe / on PATH on Windows.
 //! libairspy does the real-to-IQ conversion; samples arrive as float IQ at
 //! the chosen rate, centred on the tuned frequency.
 
@@ -71,7 +71,7 @@ fn api() -> Result<&'static Api, String> {
             names.push("libairspy.so".into());
         }
         let names: Vec<&str> = names.iter().map(String::as_str).collect();
-        let (lib, path) = super::load("TRUNK_LITE_AIRSPY", &names, "airspy")?;
+        let (lib, path) = super::load("TRUNK_PRO_AIRSPY", &names, "airspy")?;
         // SAFETY: the signatures are libairspy's (airspy.h, 1.0.x).
         unsafe {
             macro_rules! f {

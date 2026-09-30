@@ -1,8 +1,8 @@
 //! Radios whose drivers are vendor C libraries — USRP (UHD) and Airspy
 //! (libairspy). Nothing links against them: each library is looked for at
 //! run time, so the same binary records from RTL-SDRs out of the box and
-//! from these once their driver is installed. `TRUNK_LITE_UHD` /
-//! `TRUNK_LITE_AIRSPY` name a library file to use instead of searching.
+//! from these once their driver is installed. `TRUNK_PRO_UHD` /
+//! `TRUNK_PRO_AIRSPY` name a library file to use instead of searching.
 
 pub mod airspy;
 pub mod uhd;

@@ -150,7 +150,7 @@ pub fn describe(exe: &Path) -> Result<Manifest, String> {
         return Err(format!("{}: its manifest has no id", exe.display()));
     }
     if m.api == 0 || m.api > API_VERSION {
-        return Err(format!("{} needs plugin API {}; this recorder has {API_VERSION} — update Trunk Recorder Lite", m.id, m.api));
+        return Err(format!("{} needs plugin API {}; this recorder has {API_VERSION} — update Trunk Recorder Pro", m.id, m.api));
     }
     Ok(m)
 }

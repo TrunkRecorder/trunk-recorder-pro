@@ -1,14 +1,14 @@
-//! Trunk Recorder Lite — command line.
+//! Trunk Recorder Pro — command line.
 //!
 //! ```text
-//! trunk-lite [serve] [--config file.json] [--port 8080] [--bind 127.0.0.1] [--no-open]
+//! trunk-pro [serve] [--config file.json] [--port 8080] [--bind 127.0.0.1] [--no-open]
 //!     The app: a browser interface at http://localhost:8080 to set up, start
 //!     and watch the recorder. Calls go to the capture folder in the config.
 //!     Already running on that port? Opens the browser there and exits.
 //!     --start (or the config's server.autoStart): start recording right away.
 //!
-//! trunk-lite replay <capture.cu8> --center Hz --rate Hz --cc Hz[,Hz…] [options]
-//! trunk-lite replay --source cap1.cu8,center,rate --source cap2.cu8,center,rate --cc Hz …
+//! trunk-pro replay <capture.cu8> --center Hz --rate Hz --cc Hz[,Hz…] [options]
+//! trunk-pro replay --source cap1.cu8,center,rate --source cap2.cu8,center,rate --cc Hz …
 //!     Captures: cu8 (rtl_sdr), cs16 or cf32 (GNU Radio / UHD) — from the
 //!     extension (.cf32/.cfile/.fc32, .cs16/.sc16) or `--format`, or a 4th
 //!     --source field.
@@ -27,24 +27,24 @@
 //!     or --channels channels.csv (the channel-file format; see README)
 //!     --squelch dB (open threshold above the noise floor, default 8)
 //!
-//! trunk-lite devices [--usrp [args]]
+//! trunk-pro devices [--usrp [args]]
 //!     List RTL-SDRs and Airspys, and whether the USRP (UHD) and Airspy
 //!     drivers are installed; --usrp also searches for USRPs.
-//! trunk-lite capture <out.cu8> --freq Hz --rate Hz [--gain dB] [--ppm 0] [--serial S] [--seconds 10]
+//! trunk-pro capture <out.cu8> --freq Hz --rate Hz [--gain dB] [--ppm 0] [--serial S] [--seconds 10]
 //!     Record raw u8 IQ, like rtl_sdr.
 //!
-//! trunk-lite survey [--serial S] [--bands 800,700,…] [--gain dB | --no-gain] [--ppm 0] [--seconds 30]
-//! trunk-lite survey <capture> --center Hz --rate Hz
+//! trunk-pro survey [--serial S] [--bands 800,700,…] [--gain dB | --no-gain] [--ppm 0] [--seconds 30]
+//! trunk-pro survey <capture> --center Hz --rate Hz
 //!     Find a P25 system: scan the bands (or look at a capture), then listen
 //!     to the best control channel; JSON lines of what was found, then the
 //!     system (IDs, band plan, alternates, neighbours, voice channels, ppm).
 //!
-//! trunk-lite tool cc|voice|frames <capture.cu8> --center Hz --rate Hz (--cc Hz | --freq Hz) [options]
+//! trunk-pro tool cc|voice|frames <capture.cu8> --center Hz --rate Hz (--cc Hz | --freq Hz) [options]
 //!     One channel's decode, as JSON lines (the research/native-bench format).
-//! trunk-lite tool revoice <call.frames.jsonl> <out.wav> [--profile enhanced|mbelib]
+//! trunk-pro tool revoice <call.frames.jsonl> <out.wav> [--profile enhanced|mbelib]
 //!     Vocode a call's saved frames again.
 //!
-//! trunk-lite plugin list | describe <executable> | run <executable | id> [calls…]
+//! trunk-pro plugin list | describe <executable> | run <executable | id> [calls…]
 //!     Plugins (plugins.json beside the config): list them, show one's
 //!     manifest, or run one against calls already on disk.
 //! ```
@@ -112,47 +112,47 @@ fn die(msg: &str) -> ! {
 }
 
 const USAGE: &str = "\
-Trunk Recorder Lite — record a P25 trunked radio system from RTL-SDRs.
+Trunk Recorder Pro — record a P25 trunked radio system from RTL-SDRs.
 
 usage:
-  trunk-lite [serve] [--port 8080] [--bind 127.0.0.1] [--config file.json] [--no-open] [--start]
+  trunk-pro [serve] [--port 8080] [--bind 127.0.0.1] [--config file.json] [--no-open] [--start]
       Start the recorder and open its web interface (the default). Use
       --bind 0.0.0.0 to reach it from other machines (no authentication!).
       --start begins recording with the saved settings at once.
-  trunk-lite devices [--usrp]
+  trunk-pro devices [--usrp]
       List RTL-SDRs and Airspys (and USRPs with --usrp); shows whether the
       optional USRP (UHD) and Airspy (libairspy) drivers are installed.
-  trunk-lite capture <out.cu8> --freq Hz [--rate 2400000] [--gain dB] [--serial S] [--seconds 10]
+  trunk-pro capture <out.cu8> --freq Hz [--rate 2400000] [--gain dB] [--serial S] [--seconds 10]
       Record raw IQ, like rtl_sdr.
-  trunk-lite replay <capture.cu8> --center Hz --rate Hz --cc Hz[,Hz…] [--out calls] …
-  trunk-lite replay --source cap.cu8,center,rate [--source …] --cc Hz …
-  trunk-lite replay <capture> … --system name:Hz[,Hz…][:nac=443,site=3] [--system …]
-  trunk-lite replay <capture> --center Hz --rate Hz --fm Hz[,Hz…] --p25 Hz[,Hz…] [--squelch 8]
-  trunk-lite replay <capture> --center Hz --rate Hz --channels channels.csv
+  trunk-pro replay <capture.cu8> --center Hz --rate Hz --cc Hz[,Hz…] [--out calls] …
+  trunk-pro replay --source cap.cu8,center,rate [--source …] --cc Hz …
+  trunk-pro replay <capture> … --system name:Hz[,Hz…][:nac=443,site=3] [--system …]
+  trunk-pro replay <capture> --center Hz --rate Hz --fm Hz[,Hz…] --p25 Hz[,Hz…] [--squelch 8]
+  trunk-pro replay <capture> --center Hz --rate Hz --channels channels.csv
       Record calls from captures instead of dongles (a trunked system from
       --cc, more from --system, conventional analog FM / P25 channels, or both).
-  trunk-lite survey [--serial S] [--bands 800,700,900,uhf,vhf,uhf-fed,t-band] [--gain dB] [--seconds 30]
-  trunk-lite survey <capture> --center Hz --rate Hz
+  trunk-pro survey [--serial S] [--bands 800,700,900,uhf,vhf,uhf-fed,t-band] [--gain dB] [--seconds 30]
+  trunk-pro survey <capture> --center Hz --rate Hz
       Find a P25 system from scratch: scan for control channels, then listen
       to the best one and report its IDs, alternates, neighbours, voice
       channels and the dongle's frequency correction (ppm).
-  trunk-lite tool cc|voice|frames|p2 <capture.cu8> …
+  trunk-pro tool cc|voice|frames|p2 <capture.cu8> …
       One channel's decode as JSON lines (diagnostics).
-  trunk-lite tool revoice <call.frames.jsonl> <out.wav> [--profile enhanced|mbelib]
+  trunk-pro tool revoice <call.frames.jsonl> <out.wav> [--profile enhanced|mbelib]
       Vocode a call's saved frames (recording setting \"Save vocoder frames\") again.
-  trunk-lite plugin list | describe <executable> | run <executable | id> [calls…]
+  trunk-pro plugin list | describe <executable> | run <executable | id> [calls…]
       Plugins: list them, show one's manifest, or run one against calls
-      already on disk (`trunk-lite plugin` for the options).
-  trunk-lite --version
+      already on disk (`trunk-pro plugin` for the options).
+  trunk-pro --version
 
-Docs: https://github.com/TrunkRecorder/trunk-recorder-lite
+Docs: https://github.com/TrunkRecorder/trunk-recorder-pro
 ";
 
 fn main() {
     // Finder may pass a process serial number (-psn_…) to an app bundle.
     let argv: Vec<String> = std::env::args().skip(1).filter(|a| !a.starts_with("-psn_")).collect();
     match argv.first().map(|s| s.as_str()) {
-        Some("--version" | "-V" | "version") => println!("trunk-lite {}", env!("CARGO_PKG_VERSION")),
+        Some("--version" | "-V" | "version") => println!("trunk-pro {}", env!("CARGO_PKG_VERSION")),
         Some("--help" | "-h" | "help") => print!("{USAGE}"),
         None | Some("serve") => serve(&Args::parse(argv.get(1..).unwrap_or(&[]))),
         Some(s) if s.starts_with("--") => serve(&Args::parse(&argv)),
@@ -180,7 +180,7 @@ fn devices(a: &Args) {
     println!("USRP: {}", ui.detail);
     if ui.loaded {
         match a.get("usrp") {
-            None => println!("  (search with: trunk-lite devices --usrp)"),
+            None => println!("  (search with: trunk-pro devices --usrp)"),
             Some(args) => {
                 let args = if args == "1" { "" } else { args };
                 match radio::uhd::find(args) {
@@ -489,12 +489,12 @@ fn capture(a: &Args) {
 fn fatal(msg: &str) -> ! {
     use std::io::IsTerminal;
     if !std::io::stderr().is_terminal() {
-        let text = format!("Trunk Recorder Lite couldn't start.\n\n{msg}");
+        let text = format!("Trunk Recorder Pro couldn't start.\n\n{msg}");
         if cfg!(target_os = "macos") {
-            let script = format!("display alert \"Trunk Recorder Lite\" message {:?} as critical", text);
+            let script = format!("display alert \"Trunk Recorder Pro\" message {:?} as critical", text);
             let _ = std::process::Command::new("osascript").args(["-e", &script]).status();
         } else if cfg!(target_os = "linux") {
-            let _ = std::process::Command::new("notify-send").args(["-u", "critical", "Trunk Recorder Lite", &text]).status();
+            let _ = std::process::Command::new("notify-send").args(["-u", "critical", "Trunk Recorder Pro", &text]).status();
         }
     }
     die(msg)
@@ -519,7 +519,7 @@ fn serve(a: &Args) {
             // Launched twice (a double-click on an app that is already
             // running): show the running one.
             if already_running(addr.port()) {
-                println!("Trunk Recorder Lite is already running — {url}");
+                println!("Trunk Recorder Pro is already running — {url}");
                 if !a.flag("no-open") {
                     open_browser(&url);
                 }
@@ -543,7 +543,7 @@ fn serve(a: &Args) {
         survey_last: Mutex::new(None),
         plugins: plugins::manage::Plugins::new(&config_path, hub.clone()),
     });
-    println!("Trunk Recorder Lite {} — open {url}\nconfig: {}", env!("CARGO_PKG_VERSION"), config_path.display());
+    println!("Trunk Recorder Pro {} — open {url}\nconfig: {}", env!("CARGO_PKG_VERSION"), config_path.display());
     let auto = a.flag("start") || ctx.config.lock().unwrap().server.auto_start;
     if auto {
         let cfg = ctx.config.lock().unwrap().clone();
@@ -566,7 +566,7 @@ fn serve(a: &Args) {
     println!("Stopped.");
 }
 
-/// Is trunk-lite what answers on this port?
+/// Is trunk-pro what answers on this port?
 fn already_running(port: u16) -> bool {
     use std::io::{Read, Write};
     let Ok(mut s) = std::net::TcpStream::connect_timeout(&([127, 0, 0, 1], port).into(), std::time::Duration::from_secs(1)) else { return false };

@@ -1,6 +1,6 @@
 //! The first-run survey on this machine: one source thread (retuned through
 //! a [`Control`]) and a survey thread that drives [`SurveySession`] and
-//! publishes what it finds to the browsers. Also `trunk-lite survey`, the
+//! publishes what it finds to the browsers. Also `trunk-pro survey`, the
 //! same from the command line.
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -168,7 +168,7 @@ pub fn idle_json() -> Value {
     json!({ "type": "survey", "stage": "idle" })
 }
 
-/// `trunk-lite survey`: scan with a dongle (or look at a capture) and print
+/// `trunk-pro survey`: scan with a dongle (or look at a capture) and print
 /// what is found, then the monitored system, as JSON lines.
 pub fn cli(a: &crate::Args) {
     let mut cfg = Config::default();

@@ -3,7 +3,7 @@
 //   main ──start/stop──▶ radio worker ◀──open/close (MessagePort)── trunk worker ◀──start/stop── main
 //        ◀──stats/spectrum──              ── channel IQ via SampleRing (SAB) ──▶      ──status/calls/audio──▶ main
 
-import type { LiteConfig } from "../config.ts";
+import type { ProConfig } from "../config.ts";
 import type { SourceSettings } from "../sources/iqSource.ts";
 import type { EngineStatus } from "../trunking/trunkEngine.ts";
 import type { CallRecordJson } from "../recording/callRecord.ts";
@@ -48,7 +48,7 @@ export type TrunkToRadio =
 // ── main ⇄ trunk ─────────────────────────────────────────────────────────────
 
 export type ToTrunk =
-  | { type: "start"; config: LiteConfig; channelRate: number; epochMsAtZero: number; radioPort: MessagePort }
+  | { type: "start"; config: ProConfig; channelRate: number; epochMsAtZero: number; radioPort: MessagePort }
   | { type: "stop" };
 
 export interface CallView {

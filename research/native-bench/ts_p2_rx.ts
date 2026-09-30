@@ -1,5 +1,5 @@
 // The archived TS engine's whole Phase 2 chain (its H-DQPSK demod, framer,
-// decoder) over channel IQ (`trunk-lite tool voice --iq ch.cf32`, 37.5 kHz),
+// decoder) over channel IQ (`trunk-pro tool voice --iq ch.cf32`, 37.5 kHz),
 // for comparing receivers: slots framed, burst types, AMBE codeword FEC load.
 //
 //   node --experimental-strip-types ts_p2_rx.ts ch.cf32 rate nac sysid wacn

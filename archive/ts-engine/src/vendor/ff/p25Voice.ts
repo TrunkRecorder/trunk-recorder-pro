@@ -862,7 +862,7 @@ export class P25LiveVoice {
     this.buf = new Float32Array(2 * Math.round(fs * (LEAD_S + WINDOW_S * 3 + TAIL_S + 2)));
   }
   private readonly force: P25VoiceDemod | "auto";
-  /** Trunk Recorder Lite: how often to retry acquisition while unlocked. */
+  /** Trunk Recorder Pro: how often to retry acquisition while unlocked. */
   private readonly acquireIntervalS: number;
 
   get receiver(): P25VoiceDemod | null {

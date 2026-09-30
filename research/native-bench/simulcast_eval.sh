@@ -10,7 +10,7 @@
 # the vocoder repeats or mutes).
 cap=$1; shift
 here=${0:A:h}
-tool=(${=P25TOOL:-$here/cpp/p25tool})  # e.g. P25TOOL="../../target/release/trunk-lite tool"
+tool=(${=P25TOOL:-$here/cpp/p25tool})  # e.g. P25TOOL="../../target/release/trunk-pro tool"
 tmp=$(mktemp -d)
 common=(--fs 2400000 --center 858300000)
 for opts in "$@"; do

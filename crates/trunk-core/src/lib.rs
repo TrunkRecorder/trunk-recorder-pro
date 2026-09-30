@@ -1,4 +1,4 @@
-//! Trunk Recorder Lite core: everything between wideband IQ samples and
+//! Trunk Recorder Pro core: everything between wideband IQ samples and
 //! recorded calls, with no platform dependencies, so the same code runs in the
 //! native app and in the browser (WebAssembly).
 //!

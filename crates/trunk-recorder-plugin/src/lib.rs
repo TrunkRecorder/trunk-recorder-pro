@@ -1,4 +1,4 @@
-//! Plugins for Trunk Recorder Lite.
+//! Plugins for Trunk Recorder Pro.
 //!
 //! A plugin is a program of its own that the recorder starts, sends events to
 //! (calls starting, ending and landing on disk; radios registering; live

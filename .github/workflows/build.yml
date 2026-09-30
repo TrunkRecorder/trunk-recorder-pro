@@ -1,4 +1,4 @@
-# Test, build and package Trunk Recorder Lite for every platform. A tag v*
+# Test, build and package Trunk Recorder Pro for every platform. A tag v*
 # (matching the version in Cargo.toml) publishes a GitHub release with the
 # packages, SHA256SUMS and that version's CHANGELOG.md section as notes.
 #
@@ -75,7 +75,7 @@ jobs:
         with: { name: notices, path: pkg/THIRD-PARTY-NOTICES.txt }
       - run: packaging/package.sh browser ${{ needs.meta.outputs.version }} web/dist-web pkg
       - uses: actions/upload-artifact@v4
-        with: { name: pkg-browser, path: pkg/trunk-lite-*.zip }
+        with: { name: pkg-browser, path: pkg/trunk-pro-*.zip }
 
   test:
     runs-on: ubuntu-latest
@@ -115,10 +115,10 @@ jobs:
       - name: Build (macOS universal)
         if: matrix.kind == 'macos'
         run: |
-          cargo build --locked --profile dist -p trunk-lite --target aarch64-apple-darwin
-          cargo build --locked --profile dist -p trunk-lite --target x86_64-apple-darwin
-          lipo -create -output trunk-lite target/aarch64-apple-darwin/dist/trunk-lite target/x86_64-apple-darwin/dist/trunk-lite
-          echo "BIN=trunk-lite" >> "$GITHUB_ENV"
+          cargo build --locked --profile dist -p trunk-pro --target aarch64-apple-darwin
+          cargo build --locked --profile dist -p trunk-pro --target x86_64-apple-darwin
+          lipo -create -output trunk-pro target/aarch64-apple-darwin/dist/trunk-pro target/x86_64-apple-darwin/dist/trunk-pro
+          echo "BIN=trunk-pro" >> "$GITHUB_ENV"
 
       - name: Signing identity (when the secrets are set)
         if: matrix.kind == 'macos'
@@ -143,16 +143,16 @@ jobs:
         run: |
           pip install ziglang
           cargo install cargo-zigbuild --locked
-          cargo zigbuild --locked --profile dist -p trunk-lite --target ${{ matrix.target }}.${{ matrix.glibc }}
-          echo "BIN=target/${{ matrix.target }}/dist/trunk-lite" >> "$GITHUB_ENV"
+          cargo zigbuild --locked --profile dist -p trunk-pro --target ${{ matrix.target }}.${{ matrix.glibc }}
+          echo "BIN=target/${{ matrix.target }}/dist/trunk-pro" >> "$GITHUB_ENV"
 
       - name: Build (Windows)
         if: startsWith(matrix.kind, 'windows')
         env: { RUSTFLAGS: "-C target-feature=+crt-static" }
         shell: bash
         run: |
-          cargo build --locked --profile dist -p trunk-lite --target ${{ matrix.target }}
-          echo "BIN=target/${{ matrix.target }}/dist/trunk-lite.exe" >> "$GITHUB_ENV"
+          cargo build --locked --profile dist -p trunk-pro --target ${{ matrix.target }}
+          echo "BIN=target/${{ matrix.target }}/dist/trunk-pro.exe" >> "$GITHUB_ENV"
 
       - name: Smoke test
         if: matrix.kind != 'linux-aarch64'
@@ -173,9 +173,9 @@ jobs:
         with:
           name: pkg-${{ matrix.kind }}
           path: |
-            pkg/trunk-lite-*.dmg
-            pkg/trunk-lite-*.tar.gz
-            pkg/trunk-lite-*.zip
+            pkg/trunk-pro-*.dmg
+            pkg/trunk-pro-*.tar.gz
+            pkg/trunk-pro-*.zip
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -191,14 +191,14 @@ jobs:
         with: { pattern: pkg-*, path: dist, merge-multiple: true }
       - name: Checksums and release notes
         run: |
-          (cd dist && sha256sum trunk-lite-* > SHA256SUMS)
+          (cd dist && sha256sum trunk-pro-* > SHA256SUMS)
           # This version's section of CHANGELOG.md: from "## [<version>]" to the next "## ".
           awk -v v="## [$VERSION]" 'index($0, v) == 1 {on = 1; next} on && /^## / {exit} on' CHANGELOG.md > notes.md
-          [ -s notes.md ] || echo "Trunk Recorder Lite $VERSION" > notes.md
+          [ -s notes.md ] || echo "Trunk Recorder Pro $VERSION" > notes.md
           cat notes.md
       - uses: softprops/action-gh-release@v2
         with:
-          name: Trunk Recorder Lite ${{ env.VERSION }}
+          name: Trunk Recorder Pro ${{ env.VERSION }}
           body_path: notes.md
           prerelease: ${{ contains(env.VERSION, '-') }}
           files: dist/*

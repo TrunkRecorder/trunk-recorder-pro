@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Package a built trunk-lite binary for release.
+# Package a built trunk-pro binary for release.
 #
 #   packaging/package.sh <kind> <version> <binary> <out-dir>
 #
@@ -7,11 +7,11 @@
 #   (browser: <binary> is the built web/dist-web folder)
 #
 # Writes into <out-dir>:
-#   macos    trunk-lite-<v>-macos.dmg               Trunk Recorder Lite.app (universal)
-#            trunk-lite-<v>-macos-universal.tar.gz  the command-line binary
-#   linux-*  trunk-lite-<v>-linux-<arch>.tar.gz     binary (glibc ≥ 2.28), install.sh, udev rule, service, menu entry
-#   windows  trunk-lite-<v>-windows-x86_64.zip
-#   browser  trunk-lite-<v>-browser.zip             the WebAssembly build, for any static web server
+#   macos    trunk-pro-<v>-macos.dmg               Trunk Recorder Pro.app (universal)
+#            trunk-pro-<v>-macos-universal.tar.gz  the command-line binary
+#   linux-*  trunk-pro-<v>-linux-<arch>.tar.gz     binary (glibc ≥ 2.28), install.sh, udev rule, service, menu entry
+#   windows  trunk-pro-<v>-windows-x86_64.zip
+#   browser  trunk-pro-<v>-browser.zip             the WebAssembly build, for any static web server
 #
 # Each package carries README.md, LICENSE and THIRD-PARTY-NOTICES.txt (made by
 # scripts/third_party_notices.py if <out-dir> doesn't have one yet).
@@ -51,10 +51,10 @@ docs() { # <dir> [license name]
 
 case "$kind" in
 macos)
-  app="$work/dmg/Trunk Recorder Lite.app"
+  app="$work/dmg/Trunk Recorder Pro.app"
   mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-  cp "$bin" "$app/Contents/MacOS/trunk-lite"
-  chmod 755 "$app/Contents/MacOS/trunk-lite"
+  cp "$bin" "$app/Contents/MacOS/trunk-pro"
+  chmod 755 "$app/Contents/MacOS/trunk-pro"
   sed "s/@VERSION@/$version/g" "$root/packaging/macos/Info.plist" > "$app/Contents/Info.plist"
   cp "$root/packaging/icons/AppIcon.icns" "$app/Contents/Resources/AppIcon.icns"
   if [ -n "${MACOS_SIGN_IDENTITY:-}" ]; then
@@ -65,9 +65,9 @@ macos)
   codesign --verify --strict "$app"
   ln -s /Applications "$work/dmg/Applications"
   docs "$work/dmg"
-  dmg="$out/trunk-lite-$version-macos.dmg"
+  dmg="$out/trunk-pro-$version-macos.dmg"
   rm -f "$dmg"
-  hdiutil create -quiet -volname "Trunk Recorder Lite" -srcfolder "$work/dmg" -fs HFS+ -format UDZO -ov "$dmg"
+  hdiutil create -quiet -volname "Trunk Recorder Pro" -srcfolder "$work/dmg" -fs HFS+ -format UDZO -ov "$dmg"
   if [ -n "${MACOS_SIGN_IDENTITY:-}" ]; then
     codesign --force --timestamp --sign "$MACOS_SIGN_IDENTITY" "$dmg"
     if [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ] && [ -n "${APPLE_APP_PASSWORD:-}" ]; then
@@ -76,34 +76,34 @@ macos)
     fi
   fi
   # The command-line binary alone (servers, scripts).
-  d="$work/trunk-lite-$version-macos-universal"
+  d="$work/trunk-pro-$version-macos-universal"
   mkdir -p "$d"
-  cp "$app/Contents/MacOS/trunk-lite" "$d/"
+  cp "$app/Contents/MacOS/trunk-pro" "$d/"
   docs "$d"
-  tgz "$d" "$out/trunk-lite-$version-macos-universal.tar.gz"
+  tgz "$d" "$out/trunk-pro-$version-macos-universal.tar.gz"
   ;;
 linux-*)
-  d="$work/trunk-lite-$version-$kind"
+  d="$work/trunk-pro-$version-$kind"
   mkdir -p "$d"
-  install -m755 "$bin" "$d/trunk-lite"
+  install -m755 "$bin" "$d/trunk-pro"
   install -m755 "$root/packaging/linux/install.sh" "$d/install.sh"
-  cp "$root/packaging/linux/60-trunk-lite-rtlsdr.rules" "$root/packaging/linux/trunk-lite.service" "$root/packaging/linux/trunk-lite.desktop" "$d/"
-  cp "$root/packaging/icons/trunk-lite.png" "$d/"
+  cp "$root/packaging/linux/60-trunk-pro-rtlsdr.rules" "$root/packaging/linux/trunk-pro.service" "$root/packaging/linux/trunk-pro.desktop" "$d/"
+  cp "$root/packaging/icons/trunk-pro.png" "$d/"
   docs "$d"
-  tgz "$d" "$out/trunk-lite-$version-$kind.tar.gz"
+  tgz "$d" "$out/trunk-pro-$version-$kind.tar.gz"
   ;;
 windows-*)
-  d="$work/trunk-lite-$version-$kind"
+  d="$work/trunk-pro-$version-$kind"
   mkdir -p "$d"
-  cp "$bin" "$d/trunk-lite.exe"
+  cp "$bin" "$d/trunk-pro.exe"
   docs "$d" LICENSE.txt
-  (cd "$work" && "$py" -m zipfile -c "$out/trunk-lite-$version-$kind.zip" "$(basename "$d")")
+  (cd "$work" && "$py" -m zipfile -c "$out/trunk-pro-$version-$kind.zip" "$(basename "$d")")
   ;;
 browser)
-  d="$work/trunk-lite-$version-browser"
+  d="$work/trunk-pro-$version-browser"
   cp -R "$bin" "$d"
   docs "$d"
-  (cd "$work" && "$py" -m zipfile -c "$out/trunk-lite-$version-browser.zip" "$(basename "$d")")
+  (cd "$work" && "$py" -m zipfile -c "$out/trunk-pro-$version-browser.zip" "$(basename "$d")")
   ;;
 *)
   echo "unknown kind: $kind" >&2

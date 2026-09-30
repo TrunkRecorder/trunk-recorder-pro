@@ -1,6 +1,6 @@
 [package]
 name = "trunk-recorder-plugin"
-description = "Plugins for Trunk Recorder Lite: the wire protocol between the recorder and a plugin process, and an SDK for writing plugins in Rust."
+description = "Plugins for Trunk Recorder Pro: the wire protocol between the recorder and a plugin process, and an SDK for writing plugins in Rust."
 # The crate's version tracks the plugin API, not the app's.
 version = "0.1.0"
 edition.workspace = true

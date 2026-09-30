@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """THIRD-PARTY-NOTICES.txt for a release: every Rust crate linked into
-trunk-lite (any target) and the npm packages bundled into the web interface,
+trunk-pro (any target) and the npm packages bundled into the web interface,
 each with its license text(s) from its own sources.
 
     python3 scripts/third_party_notices.py > THIRD-PARTY-NOTICES.txt
@@ -25,7 +25,7 @@ def license_files(d: pathlib.Path):
 
 def main() -> None:
     tree = subprocess.run(
-        ["cargo", "tree", "-p", "trunk-lite", "-e", "normal", "--prefix", "none", "-f", "{p}", "--target", "all"],
+        ["cargo", "tree", "-p", "trunk-pro", "-e", "normal", "--prefix", "none", "-f", "{p}", "--target", "all"],
         cwd=ROOT, check=True, capture_output=True, text=True,
     ).stdout
     wanted = set()
@@ -37,9 +37,9 @@ def main() -> None:
     pkgs = {(p["name"], p["version"]): p for p in meta["packages"]}
 
     out = [
-        "Trunk Recorder Lite — third-party notices",
+        "Trunk Recorder Pro — third-party notices",
         "",
-        "Trunk Recorder Lite is licensed under the GNU General Public License v3.0 or",
+        "Trunk Recorder Pro is licensed under the GNU General Public License v3.0 or",
         "later (LICENSE). It contains code derived from op25 (boatbod/op25, GPLv3),",
         "Trunk Recorder (GPLv3) and mbelib (ISC; notice in",
         "crates/trunk-core/src/mbe and archive/ts-engine/src/vendor/ff/mbe/tables.ts).",

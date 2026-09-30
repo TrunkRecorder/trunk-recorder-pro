@@ -367,7 +367,7 @@ export function App() {
         <div className="brand">
           <span className="logo" aria-hidden="true" />
           <div>
-            <h1>Trunk Recorder Lite</h1>
+            <h1>Trunk Recorder Pro</h1>
             <p className="muted small">P25 trunked radio, recorded in your browser</p>
           </div>
         </div>

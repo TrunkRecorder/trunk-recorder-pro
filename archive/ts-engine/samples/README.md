@@ -1,6 +1,6 @@
 # Sample recordings
 
-17 calls (108 s of audio) recorded by Trunk Recorder Lite in Chrome, live from
+17 calls (108 s of audio) recorded by Trunk Recorder Pro in Chrome, live from
 an RTL-SDR (R820T, SN 202), 2026-09-29 07:56–08:01 local time.
 
 - System: P25 Phase 1 simulcast (CQPSK/LSM), NAC 0x443, WACN 0xBEE00,

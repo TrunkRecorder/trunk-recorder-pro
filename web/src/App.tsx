@@ -602,7 +602,7 @@ export function App() {
       <div className="app">
         <div className="quit-screen">
           <span className="logo" aria-hidden="true" />
-          <h1>Trunk Recorder Lite has quit</h1>
+          <h1>Trunk Recorder Pro has quit</h1>
           <p className="muted">Recording stopped and calls in progress were saved. You can close this tab; open the app again to start it.</p>
         </div>
       </div>
@@ -615,7 +615,7 @@ export function App() {
         <div className="brand">
           <span className="logo" aria-hidden="true" />
           <div>
-            <h1>Trunk Recorder Lite</h1>
+            <h1>Trunk Recorder Pro</h1>
             <p className="muted small">
               P25 trunked radio recorder{s.version ? ` · v${s.version}` : ""}
             </p>
@@ -657,7 +657,7 @@ export function App() {
         </div>
       </header>
 
-      {!s.connected && <div className="banner bad">Not connected to the recorder — is trunk-lite running? Retrying…</div>}
+      {!s.connected && <div className="banner bad">Not connected to the recorder — is trunk-pro running? Retrying…</div>}
       {s.error && (
         <div className="banner bad" role="alert">
           <span>{s.error}</span>
