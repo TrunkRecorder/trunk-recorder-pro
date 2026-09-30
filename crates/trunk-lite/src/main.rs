@@ -43,8 +43,13 @@
 //!     One channel's decode, as JSON lines (the research/native-bench format).
 //! trunk-lite tool revoice <call.frames.jsonl> <out.wav> [--profile enhanced|mbelib]
 //!     Vocode a call's saved frames again.
+//!
+//! trunk-lite plugin list | describe <executable> | run <executable | id> [calls…]
+//!     Plugins (plugins.json beside the config): list them, show one's
+//!     manifest, or run one against calls already on disk.
 //! ```
 
+mod plugins;
 mod radio;
 mod runtime;
 mod sdr;
@@ -135,6 +140,9 @@ usage:
       One channel's decode as JSON lines (diagnostics).
   trunk-lite tool revoice <call.frames.jsonl> <out.wav> [--profile enhanced|mbelib]
       Vocode a call's saved frames (recording setting \"Save vocoder frames\") again.
+  trunk-lite plugin list | describe <executable> | run <executable | id> [calls…]
+      Plugins: list them, show one's manifest, or run one against calls
+      already on disk (`trunk-lite plugin` for the options).
   trunk-lite --version
 
 Docs: https://github.com/TrunkRecorder/trunk-recorder-lite
@@ -153,6 +161,7 @@ fn main() {
         Some("devices") => devices(&Args::parse(&argv[1..])),
         Some("capture") => capture(&Args::parse(&argv[1..])),
         Some("survey") => survey::cli(&Args::parse(&argv[1..])),
+        Some("plugin") => plugins::cli::run(&Args::parse(&argv[1..])),
         _ => die(USAGE),
     }
 }

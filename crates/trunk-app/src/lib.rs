@@ -10,4 +10,4 @@ pub mod session;
 pub mod survey;
 
 pub use config::Config;
-pub use session::{Output, Session};
+pub use session::{Output, PluginTopics, Session};

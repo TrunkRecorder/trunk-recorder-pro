@@ -78,6 +78,16 @@ platform, with no GNU Radio, OP25 or other runtime dependencies.
   Recorder config. `error_count` is the call's FEC-corrected bit errors,
   and `errorList` breaks them down per 10 s of audio (errors, repeated or
   muted frames, worst frame) so bursts stand out.
+- **Plugins**: programs of their own that the recorder runs while it records
+  and tells what happens — calls starting, ending and landing on disk, radio
+  activity, live audio, status — over JSON lines on stdin/stdout. They only
+  watch; a plugin that crashes is restarted, and one that falls behind loses
+  events rather than slowing the recorder. Settings in `plugins.json`
+  beside the config. Calls are encoded to M4A once for every plugin that
+  asks (ffmpeg, macOS's afconvert or fdkaac, whichever is there; WAV only
+  without one). `trunk-lite plugin list | describe | run` to look at plugins
+  and run one against recorded calls. The `trunk-recorder-plugin` crate is
+  the protocol and a Rust SDK.
 - **Vocoder frame capture** (setting "Save vocoder frames"): each call's
   decoded voice frames and error counts as `<call>.frames.jsonl`;
   `trunk-lite tool revoice` vocodes one again.

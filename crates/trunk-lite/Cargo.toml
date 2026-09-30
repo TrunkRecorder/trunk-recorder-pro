@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 trunk-core.workspace = true
 trunk-app.workspace = true
+trunk-recorder-plugin.workspace = true
 serde_json.workspace = true
 rtlsdr-nusb = "0.3"
 # USRP (UHD) and Airspy (libairspy) are loaded at run time when installed.

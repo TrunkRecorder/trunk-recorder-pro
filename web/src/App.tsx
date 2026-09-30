@@ -554,7 +554,7 @@ function Log({ s }: { s: AppState }) {
   const systems = s.status?.systems ?? [];
   const multi = systems.length > 1;
   const onlyName = systems.find((x) => x.index === only)?.shortName;
-  const lines = (show === "all" ? s.log : s.log.filter((l) => /grant|update|control|patch|status|sysid|adjacent|error|alias/.test(l.kind))).filter(
+  const lines = (show === "all" ? s.log : s.log.filter((l) => /grant|update|control|patch|status|sysid|adjacent|error|alias|plugin/.test(l.kind))).filter(
     (l) => onlyName === undefined || l.system === onlyName,
   );
   return (

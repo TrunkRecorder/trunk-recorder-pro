@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/trunk-core", "crates/trunk-app", "crates/trunk-lite", "crates/trunk-web"]
+members = ["crates/trunk-core", "crates/trunk-app", "crates/trunk-lite", "crates/trunk-web", "crates/trunk-recorder-plugin"]
 
 [workspace.package]
 version = "0.1.0"
@@ -11,6 +11,7 @@ repository = "https://github.com/TrunkRecorder/trunk-recorder-lite"
 [workspace.dependencies]
 trunk-core = { path = "crates/trunk-core" }
 trunk-app = { path = "crates/trunk-app" }
+trunk-recorder-plugin = { path = "crates/trunk-recorder-plugin", default-features = false }
 rustfft = "6"
 num-complex = "0.4"
 serde = { version = "1", features = ["derive"] }

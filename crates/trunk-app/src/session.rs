@@ -4,10 +4,11 @@
 //! wall clock (`now_ms`), the local date for folder names, and does the I/O.
 
 use serde_json::{json, Value};
-use trunk_core::trunk::{Call, Engine, Event, Identity};
+use trunk_core::trunk::{Call, Engine, Event, Identity, MessageType};
 use trunk_core::Complex32;
 
 use crate::config::Config;
+use trunk_recorder_plugin::{CallInfo, HostMessage, SystemStatus as PluginSystemStatus, UnitEvent};
 
 pub enum Output {
     /// A JSON message for the interface.
@@ -20,7 +21,17 @@ pub enum Output {
     /// the recordings folder); `entry` is its history entry, also sent as a
     /// `concluded` message. `frames`: the frame capture, for
     /// `<rel>.frames.jsonl`.
-    File { rel: String, wav: Vec<u8>, json: String, frames: Option<String>, entry: Value },
+    File { rel: String, system: u16, wav: Vec<u8>, json: String, frames: Option<String>, entry: Value },
+    /// An event for plugins (only those [`Session::plugin_topics`] asks for).
+    Plugin(HostMessage),
+}
+
+/// What plugins subscribe to, so nothing else is built.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PluginTopics {
+    pub calls: bool,
+    pub units: bool,
+    pub status: bool,
 }
 
 /// Local calendar date (year, month, day) of a Unix time — Trunk Recorder's
@@ -50,6 +61,11 @@ pub struct Session {
     rate_mark: (f64, Vec<u64>),
     /// Build audio frames (skip when nobody is listening).
     pub want_audio: bool,
+    pub plugin_topics: PluginTopics,
+    /// Wall clock (Unix ms) at the engine's time 0.
+    epoch_ms: f64,
+    last_plugin_status_ms: f64,
+    plugin_good: Vec<u64>,
 }
 
 impl Session {
@@ -78,6 +94,10 @@ impl Session {
             last_spec_ms: 0.0,
             rate_mark: (0.0, vec![0; n]),
             want_audio: true,
+            plugin_topics: PluginTopics::default(),
+            epoch_ms,
+            last_plugin_status_ms: 0.0,
+            plugin_good: Vec::new(),
         })
     }
 
@@ -144,6 +164,11 @@ impl Session {
                 self.rate_mark.0 = now_ms;
             }
             self.flush_log(out);
+            if self.plugin_topics.status && now_ms - self.last_plugin_status_ms >= 5000.0 {
+                let dt = if self.last_plugin_status_ms == 0.0 { 0.0 } else { (now_ms - self.last_plugin_status_ms) / 1000.0 };
+                self.last_plugin_status_ms = now_ms;
+                out.push(Output::Plugin(HostMessage::Status(self.plugin_status(dt))));
+            }
             let load = self.busy_ms / (now_ms - start).max(1.0);
             out.push(Output::Text(self.status_json(load).to_string()));
         }
@@ -187,6 +212,54 @@ impl Session {
         }
     }
 
+    /// Unix seconds of engine time `s`.
+    fn wall(&self, s: f64) -> f64 {
+        self.epoch_ms / 1000.0 + s
+    }
+
+    fn call_info(&self, c: &Call) -> CallInfo {
+        CallInfo {
+            id: c.id,
+            system: c.system,
+            short_name: self.system_name(c.system).to_string(),
+            talkgroup: c.talkgroup,
+            talkgroup_tag: c.talkgroup_info.as_ref().map_or(String::new(), |t| t.alpha_tag.clone()),
+            freq_hz: c.freq_hz,
+            tdma_slot: c.phase2_tdma.then_some(c.tdma_slot),
+            analog: c.analog,
+            encrypted: c.encrypted,
+            emergency: c.emergency,
+            recording: c.recording,
+            reason: c.reason.map(|r| r.as_str().to_string()),
+            start_time: self.wall(c.start_s),
+            units: c.sources.iter().map(|s| s.src).collect(),
+        }
+    }
+
+    /// `dt`: seconds since the last one (0: the first).
+    fn plugin_status(&mut self, dt: f64) -> trunk_recorder_plugin::Status {
+        let st = self.engine.status();
+        self.plugin_good.resize(st.systems.len(), 0);
+        let systems = st
+            .systems
+            .iter()
+            .enumerate()
+            .map(|(i, y)| {
+                let rate = if dt > 0.0 { y.good.saturating_sub(self.plugin_good[i]) as f64 / dt } else { 0.0 };
+                self.plugin_good[i] = y.good;
+                PluginSystemStatus {
+                    index: i as u16,
+                    short_name: y.short_name.clone(),
+                    control_channel_hz: y.control_channel_hz,
+                    decode_rate: (rate * 10.0).round() / 10.0,
+                    active_calls: y.active_calls as u32,
+                    recording: y.recording as u32,
+                }
+            })
+            .collect();
+        trunk_recorder_plugin::Status { time: self.wall(st.now_s), systems }
+    }
+
     fn flush_log(&mut self, out: &mut Vec<Output>) {
         if !self.log.is_empty() {
             out.push(Output::Text(json!({ "type": "log", "lines": std::mem::take(&mut self.log) }).to_string()));
@@ -197,6 +270,15 @@ impl Session {
         match ev {
             Event::Message { system, msg: m } => {
                 let name = self.system_name(system).to_string();
+                if self.plugin_topics.units {
+                    if let Some(kind) = unit_kind(m.kind) {
+                        let talkgroup = matches!(kind, "affiliation" | "location" | "answer_request" | "call_alert").then_some(m.talkgroup);
+                        if m.source >= 0 {
+                            let e = UnitEvent { system, short_name: name.clone(), kind: kind.into(), unit: m.source as u32, talkgroup, time: self.wall(m.time_s) };
+                            out.push(Output::Plugin(HostMessage::Unit(e)));
+                        }
+                    }
+                }
                 self.log.push(json!({ "timeS": m.time_s, "kind": m.kind.as_str(), "text": m.meta, "system": name }))
             }
             Event::ControlChannel { system, freq_hz } => {
@@ -227,7 +309,7 @@ impl Session {
                 let (y, m, d) = (self.local_ymd)(record["start_time"].as_i64().unwrap_or(0));
                 let rel = format!("{}/{y}/{m}/{d}/{}", k.short_name, k.base_name);
                 let entry = json!({ "path": rel, "record": record });
-                out.push(Output::File { rel, wav: trunk_core::wav::encode(&k.audio, 8000), json: k.json, frames: k.frames, entry: entry.clone() });
+                out.push(Output::File { rel, system: k.call.system, wav: trunk_core::wav::encode(&k.audio, 8000), json: k.json, frames: k.frames, entry: entry.clone() });
                 out.push(Output::Text(json!({ "type": "concluded", "entry": entry }).to_string()));
             }
             Event::UnitAlias { system, unit, alias, talkgroup } => {
@@ -235,6 +317,8 @@ impl Session {
                 self.log.push(json!({ "timeS": self.engine.status().now_s, "kind": "alias", "text": format!("Unit {unit} is \"{alias}\" (TG {talkgroup})"), "system": name }));
                 out.push(Output::Text(json!({ "type": "unitAlias", "system": name, "unit": unit, "alias": alias }).to_string()));
             }
+            Event::CallStart(c) if self.plugin_topics.calls => out.push(Output::Plugin(HostMessage::CallStart(self.call_info(&c)))),
+            Event::CallEnd(c) if self.plugin_topics.calls => out.push(Output::Plugin(HostMessage::CallEnd(self.call_info(&c)))),
             Event::CallStart(_) | Event::CallUpdate(_) | Event::CallEnd(_) => {}
         }
     }
@@ -282,6 +366,21 @@ impl Session {
             "calls": self.engine.active_calls().iter().map(|c| call_view(c, self.system_name(c.system))).collect::<Vec<_>>(),
         })
     }
+}
+
+/// The unit events plugins hear about, by their name there.
+fn unit_kind(k: MessageType) -> Option<&'static str> {
+    Some(match k {
+        MessageType::Registration => "registration",
+        MessageType::Deregistration => "deregistration",
+        MessageType::Affiliation => "affiliation",
+        MessageType::Acknowledge => "acknowledge",
+        MessageType::Location => "location",
+        MessageType::DataGrant => "data_grant",
+        MessageType::UuAnsReq => "answer_request",
+        MessageType::CallAlert => "call_alert",
+        _ => return None,
+    })
 }
 
 fn identity_json(id: &Identity) -> Value {

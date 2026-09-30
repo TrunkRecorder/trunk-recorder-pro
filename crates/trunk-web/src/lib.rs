@@ -36,6 +36,8 @@ fn to_js(out: &mut Vec<Output>) -> Array {
     for o in out.drain(..) {
         let obj = Object::new();
         match o {
+            // (No plugins in the browser; none are asked for.)
+            Output::Plugin(_) => continue,
             Output::Text(t) => {
                 set(&obj, "t", "text");
                 set(&obj, "json", t);
