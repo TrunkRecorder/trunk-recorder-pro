@@ -13,6 +13,12 @@ platform, with no GNU Radio, OP25 or other runtime dependencies.
   on a simulcast site where op25's decoder gets 62 %.
 - **P25 Phase 2 TDMA** voice (H-DQPSK, AMBE+2), descrambled with the
   system's WACN / System ID / NAC from the control channel.
+- **Conventional channels**: analog narrowband FM and P25, alongside a
+  trunked system or on their own. Found by energy in the spectrum the
+  channelizer already computes (an idle channel costs almost nothing), opened
+  with pre-roll so transmissions start in full; per-channel mode, name,
+  talkgroup and squelch (dB above the measured noise floor); Trunk Recorder
+  channel CSV and config import.
 - **Several RTL-SDRs** feeding one system, over a pure-Rust USB driver (no
   librtlsdr / libusb to install).
 - **USRP and Airspy** sources (optional): used when UHD / libairspy is

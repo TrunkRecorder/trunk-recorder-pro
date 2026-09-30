@@ -226,6 +226,56 @@ impl Channelizer {
         out
     }
 
+    /// Mean |X|² per bin over the bins within ±`half_width_hz` of `offset_hz`
+    /// in the latest block (0 before the first). Same units as
+    /// [`Channelizer::noise_profile`]: the energy detector for a channel,
+    /// with no head running.
+    pub fn band_power(&self, offset_hz: f64, half_width_hz: f64) -> f64 {
+        if self.history_count == 0 {
+            return 0.0;
+        }
+        let n = self.n as i64;
+        let slot = ((self.block - 1) as usize % self.hist_cap) * self.n;
+        let c = (offset_hz / self.fs * self.n as f64).round() as i64;
+        let hw = ((half_width_hz / self.fs * self.n as f64).round() as i64).max(0);
+        let mut acc = 0.0f64;
+        for k in c - hw..=c + hw {
+            acc += self.spectra[slot + k.rem_euclid(n) as usize].norm_sqr() as f64;
+        }
+        acc / (2 * hw + 1) as f64
+    }
+
+    /// The latest block's noise floor, as mean noise |X|² per bin in each of
+    /// `out.len()` equal slices of the band (first slice at −fs/2). Each is
+    /// the slice's median / ln 2 — noise bins are exponential, whose median is
+    /// ln 2 × the mean — so signals filling under half a slice don't lift it,
+    /// and the profile follows the SDR's passband shape.
+    pub fn noise_profile(&self, out: &mut [f64]) {
+        if self.history_count == 0 || out.is_empty() {
+            out.fill(0.0);
+            return;
+        }
+        let n = self.n;
+        let slot = ((self.block - 1) as usize % self.hist_cap) * n;
+        let per = n / out.len();
+        let mut seg = vec![0.0f32; per];
+        for (s, o) in out.iter_mut().enumerate() {
+            for (k, v) in seg.iter_mut().enumerate() {
+                *v = self.spectra[slot + (s * per + k + n / 2) % n].norm_sqr();
+            }
+            let (_, m, _) = seg.select_nth_unstable_by(per / 2, |a, b| a.total_cmp(b));
+            *o = *m as f64 / std::f64::consts::LN_2;
+        }
+    }
+
+    /// The noise power a filter of noise bandwidth `bandwidth_hz` passes
+    /// (on a head's output, in |x|² units), given the per-bin noise from
+    /// [`Channelizer::noise_profile`]: white noise of variance σ² gives
+    /// E|X|² = N·σ² per bin, of which a band B keeps B/fs.
+    pub fn noise_in_band(&self, bin_noise: f64, bandwidth_hz: f64) -> f64 {
+        bin_noise / self.n as f64 * bandwidth_hz / self.fs
+    }
+
     fn filter_for(&mut self, cutoff_hz: f64) -> usize {
         let key = cutoff_hz.round() as i64;
         if let Some(i) = self.filters.iter().position(|(k, _)| *k == key) {
@@ -343,5 +393,65 @@ mod tests {
         let off_db = 10.0 * (p_off / cnt as f64 + 1e-30).log10();
         assert!(on_db.abs() < 0.5, "passband {on_db} dB");
         assert!(off_db < -100.0, "neighbour {off_db} dB");
+    }
+
+    fn gauss_noise(n: usize, sigma: f32) -> Vec<Complex32> {
+        let mut s = 0x9e37_79b9_7f4a_7c15u64;
+        let mut u = move || {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            ((s >> 11) as f64 + 0.5) / (1u64 << 53) as f64
+        };
+        (0..n)
+            .map(|_| {
+                // Box–Muller: complex Gaussian with E|x|² = σ².
+                let (a, b) = (u(), u());
+                let r = (-a.ln()).sqrt() as f32 * sigma;
+                Complex32::from_polar(r, (2.0 * PI * b) as f32)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn noise_floor_band_power_and_head_noise_agree() {
+        let fs = 2_400_000.0;
+        let mut c = Channelizer::new(fs, 24_000.0, 0.1);
+        let (h, _, _) = c.add_head(100_000.0, 7000.0, 0.0);
+        let mut x = gauss_noise(12288 * 40, 0.1);
+        // An on-bin tone at −300 kHz adds N²·P to one bin; over the ±5 kHz
+        // band's 69 bins that reads 1 + N·P/(69·σ²) above the floor: 20 dB.
+        let bin_noise = 0.01 * 16384.0;
+        let tone_pwr = 99.0 * 69.0 * 0.01 / 16384.0;
+        for (i, v) in x.iter_mut().enumerate() {
+            let ph = -2.0 * PI * 300_000.0 * i as f64 / fs;
+            *v += Complex32::from_polar((tone_pwr as f32).sqrt(), ph as f32);
+        }
+        let (mut floor, mut head_p, mut quiet, mut loud, mut blocks) = (0.0, 0.0, 0.0, 0.0, 0);
+        let mut prof = vec![0.0; 64];
+        let mut i = 0;
+        while i < x.len() {
+            let (used, ran) = c.feed(&x[i..]);
+            i += used;
+            if ran && c.block > 2 {
+                c.noise_profile(&mut prof);
+                floor += prof.iter().sum::<f64>() / prof.len() as f64;
+                quiet += c.band_power(500_000.0, 5000.0);
+                loud += c.band_power(-300_000.0, 5000.0);
+                let o = c.output(h).unwrap();
+                head_p += o.iter().map(|v| v.norm_sqr() as f64).sum::<f64>() / o.len() as f64;
+                blocks += 1;
+            }
+        }
+        let b = blocks as f64;
+        let (floor, quiet, loud, head_p) = (floor / b, quiet / b, loud / b, head_p / b);
+        let db = |r: f64| 10.0 * r.log10();
+        assert!(db(floor / bin_noise).abs() < 0.3, "floor vs N·σ²: {:.2} dB", db(floor / bin_noise));
+        assert!(db(quiet / floor).abs() < 0.3, "quiet band vs floor: {:.2} dB", db(quiet / floor));
+        let snr = db(loud / floor);
+        assert!((snr - 20.0).abs() < 0.5, "tone band {snr:.2} dB above floor");
+        // A 7 kHz-cutoff head passes about 14 kHz of noise.
+        let expect = c.noise_in_band(floor, 14_000.0);
+        assert!(db(head_p / expect).abs() < 0.7, "head noise vs expected: {:.2} dB", db(head_p / expect));
     }
 }

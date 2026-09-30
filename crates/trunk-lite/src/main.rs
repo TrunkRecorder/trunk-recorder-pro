@@ -17,6 +17,8 @@
 //!     --out calls  --short-name sys1  --talkgroups tg.csv  --bandplan file
 //!     --recorders 32  --preroll 1  --timeout 3  --epoch <unix s>
 //!     --record-encrypted  --keep-silent  --no-unknown  --quiet
+//!     Conventional channels (with or without --cc): --fm Hz[,Hz…]  --p25 Hz[,Hz…]
+//!     --squelch dB (open threshold above the noise floor, default 8)
 //!
 //! trunk-lite devices [--usrp [args]]
 //!     List RTL-SDRs and Airspys, and whether the USRP (UHD) and Airspy
@@ -41,7 +43,7 @@ use std::fs;
 use std::path::Path;
 use std::time::Instant;
 
-use trunk_core::trunk::{parse_csv, CallConfig, Engine, EngineConfig, Event, SourceConfig};
+use trunk_core::trunk::{parse_csv, CallConfig, ConvChannel, ConvConfig, ConvMode, Engine, EngineConfig, Event, SourceConfig};
 
 /// `--key value` / `--flag` arguments after the positionals.
 pub struct Args {
@@ -103,7 +105,9 @@ usage:
       Record raw IQ, like rtl_sdr.
   trunk-lite replay <capture.cu8> --center Hz --rate Hz --cc Hz[,Hz…] [--out calls] …
   trunk-lite replay --source cap.cu8,center,rate [--source …] --cc Hz …
-      Record calls from captures instead of dongles.
+  trunk-lite replay <capture> --center Hz --rate Hz --fm Hz[,Hz…] --p25 Hz[,Hz…] [--squelch 8]
+      Record calls from captures instead of dongles (a trunked system from
+      --cc, conventional analog FM / P25 channels, or both).
   trunk-lite tool cc|voice|frames|p2 <capture.cu8> …
       One channel's decode as JSON lines (diagnostics).
   trunk-lite --version
@@ -183,7 +187,13 @@ fn replay(a: &Args) {
     if files.is_empty() {
         die("replay: no capture given");
     }
-    let ccs: Vec<f64> = a.get("cc").unwrap_or("").split(',').filter_map(|s| s.trim().parse().ok()).collect();
+    let hz_list = |k: &str| -> Vec<f64> { a.get(k).unwrap_or("").split(',').filter_map(|s| s.trim().parse().ok()).collect() };
+    let ccs = hz_list("cc");
+    let conventional: Vec<ConvChannel> = hz_list("fm")
+        .into_iter()
+        .map(|f| ConvChannel::new(f, ConvMode::Fm))
+        .chain(hz_list("p25").into_iter().map(|f| ConvChannel::new(f, ConvMode::P25)))
+        .collect();
     let out_dir = a.get("out").unwrap_or("calls").to_string();
     fs::create_dir_all(&out_dir).unwrap_or_else(|e| die(&format!("{out_dir}: {e}")));
     let talkgroups = a.get("talkgroups").map(|p| parse_csv(&fs::read_to_string(p).unwrap_or_else(|e| die(&format!("{p}: {e}"))))).unwrap_or_default();
@@ -203,6 +213,8 @@ fn replay(a: &Args) {
             ..Default::default()
         },
         epoch_ms_at_zero: a.num("epoch", 0.0) * 1000.0,
+        conventional,
+        conv: ConvConfig { squelch_db: a.num("squelch", ConvConfig::default().squelch_db), ..Default::default() },
         ..Default::default()
     };
     let mut engine = Engine::new(cfg, talkgroups).unwrap_or_else(|e| die(&e));

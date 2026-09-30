@@ -1,12 +1,12 @@
 //! The app's configuration: which sources (RTL-SDRs, USRPs, Airspys or capture files), which
-//! system, recording rules and the web server. Stored as JSON in the platform
+//! trunked system and/or conventional channels, recording rules and the web server. Stored as JSON in the platform
 //! config folder; the browser interface reads and edits it.
 
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use trunk_core::p25::diversity::BankConfig;
-use trunk_core::trunk::{CallConfig, EngineConfig, SourceConfig};
+use trunk_core::trunk::{CallConfig, ConvChannel, ConvConfig, ConvMode, EngineConfig, SourceConfig, Talkgroup};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -143,6 +143,101 @@ impl Default for System {
     }
 }
 
+/// Conventional channels: one frequency each, found by energy detection.
+///
+/// ```json
+/// "conventional": {
+///   "squelchDb": 8,
+///   "channels": [
+///     { "freqHz": 154430000, "mode": "fm", "name": "County Fire Dispatch", "talkgroup": 1001 },
+///     { "freqHz": 460125000, "mode": "p25", "name": "PD Tac 2", "squelchDb": 12 }
+///   ]
+/// }
+/// ```
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Conventional {
+    /// Open threshold for every channel, dB above the measured noise floor.
+    pub squelch_db: f64,
+    pub channels: Vec<Channel>,
+}
+
+impl Default for Conventional {
+    fn default() -> Self {
+        Conventional { squelch_db: ConvConfig::default().squelch_db, channels: vec![] }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ChannelMode {
+    /// Analog narrowband FM.
+    #[default]
+    Fm,
+    /// P25 Phase 1.
+    P25,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Channel {
+    pub freq_hz: f64,
+    #[serde(default)]
+    pub mode: ChannelMode,
+    /// Short name (Trunk Recorder's alpha tag).
+    #[serde(default)]
+    pub name: String,
+    /// Talkgroup number the calls are filed under; default the frequency in
+    /// kHz. P25 files calls under the talkgroup the air names, when it does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub talkgroup: Option<u32>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub tag: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub group: String,
+    /// This channel's open threshold, dB above the noise floor (else the section's).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub squelch_db: Option<f64>,
+    #[serde(default = "yes")]
+    pub enabled: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+impl Channel {
+    pub fn talkgroup(&self) -> u32 {
+        self.talkgroup.unwrap_or_else(|| ConvChannel::default_talkgroup(self.freq_hz))
+    }
+
+    fn engine_channel(&self) -> ConvChannel {
+        let tg = self.talkgroup();
+        let named = !(self.name.is_empty() && self.description.is_empty() && self.tag.is_empty() && self.group.is_empty());
+        ConvChannel {
+            freq_hz: self.freq_hz,
+            mode: match self.mode {
+                ChannelMode::Fm => ConvMode::Fm,
+                ChannelMode::P25 => ConvMode::P25,
+            },
+            talkgroup: tg,
+            info: named.then(|| Talkgroup {
+                number: tg,
+                mode: if self.mode == ChannelMode::Fm { "A".into() } else { "D".into() },
+                alpha_tag: self.name.clone(),
+                description: self.description.clone(),
+                tag: self.tag.clone(),
+                group: self.group.clone(),
+                priority: 1,
+                preferred_nac: 0,
+            }),
+            squelch_db: self.squelch_db,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Recording {
@@ -190,7 +285,9 @@ impl Default for Server {
 #[serde(rename_all = "camelCase", default)]
 pub struct Config {
     pub sources: Vec<Source>,
+    /// The trunked system (none when it has no control channels).
     pub system: System,
+    pub conventional: Conventional,
     pub recording: Recording,
     pub server: Server,
 }
@@ -200,6 +297,7 @@ impl Default for Config {
         Config {
             sources: vec![Source::Rtlsdr { serial: String::new(), center_hz: 0.0, rate_hz: 2_400_000.0, gain_db: Some(38.6), ppm: 0 }],
             system: System::default(),
+            conventional: Conventional::default(),
             recording: Recording::default(),
             server: Server::default(),
         }
@@ -237,9 +335,17 @@ impl Config {
         std::fs::write(path, serde_json::to_string_pretty(self).unwrap_or_default())
     }
 
-    /// Each source's centre: as set, or (0 = auto) placed over the control
-    /// channels for the first source.
+    /// The conventional channels that are switched on.
+    pub fn enabled_channels(&self) -> impl Iterator<Item = &Channel> {
+        self.conventional.channels.iter().filter(|c| c.enabled)
+    }
+
+    /// Each source's centre: as set, or (0 = auto) placed for the first
+    /// source over the control channels and conventional channels — or the
+    /// control channels alone, if everything doesn't fit.
     pub fn resolved_centers(&self) -> Vec<f64> {
+        let ccs = &self.system.control_channels;
+        let all: Vec<f64> = ccs.iter().copied().chain(self.enabled_channels().map(|c| c.freq_hz)).collect();
         self.sources
             .iter()
             .enumerate()
@@ -247,7 +353,7 @@ impl Config {
                 if s.center_hz() > 0.0 || i > 0 {
                     s.center_hz()
                 } else {
-                    auto_center(&self.system.control_channels, s.rate_hz()).unwrap_or(0.0)
+                    auto_center(&all, s.rate_hz()).or_else(|| auto_center(ccs, s.rate_hz())).unwrap_or(0.0)
                 }
             })
             .collect()
@@ -258,18 +364,28 @@ impl Config {
         if self.sources.is_empty() {
             return Some("Add a source (a dongle or a capture file).".into());
         }
-        if self.system.control_channels.is_empty() {
-            return Some("Add at least one control channel.".into());
+        let trunked = !self.system.control_channels.is_empty();
+        if !trunked && self.enabled_channels().next().is_none() {
+            return Some("Add a control channel (trunked system) or a conventional channel.".into());
         }
         let centers = self.resolved_centers();
         if centers.iter().any(|&c| c <= 0.0) {
-            return Some("Set a center frequency for every source (the first can be automatic when the control channels fit one dongle).".into());
+            return Some("Set a center frequency for every source (the first can be automatic when the channels fit one source).".into());
         }
-        let covered = self.system.control_channels.iter().any(|&f| {
-            self.sources.iter().zip(&centers).any(|(s, &c)| (f - c).abs() <= usable_half_width(s.rate_hz()))
-        });
-        if !covered {
+        let inside = |f: f64| self.sources.iter().zip(&centers).any(|(s, &c)| (f - c).abs() <= usable_half_width(s.rate_hz()));
+        if trunked && !self.system.control_channels.iter().any(|&f| inside(f)) {
             return Some("No control channel falls inside any source's bandwidth — move a center frequency.".into());
+        }
+        if self.enabled_channels().any(|c| c.freq_hz <= 0.0) {
+            return Some("A conventional channel has no frequency yet.".into());
+        }
+        let outside: Vec<String> = self.enabled_channels().filter(|c| !inside(c.freq_hz)).map(|c| format!("{:.5}", c.freq_hz / 1e6)).collect();
+        if !outside.is_empty() {
+            return Some(format!("Conventional channel(s) outside every source's bandwidth: {} MHz — move a center frequency or disable them.", outside.join(", ")));
+        }
+        let mut seen = std::collections::HashSet::new();
+        if let Some(d) = self.enabled_channels().find(|c| !seen.insert(c.freq_hz.round() as u64)) {
+            return Some(format!("Conventional channel {:.5} MHz is listed twice.", d.freq_hz / 1e6));
         }
         None
     }
@@ -293,6 +409,8 @@ impl Config {
             },
             epoch_ms_at_zero: epoch_ms,
             bank: BankConfig { cqpsk: m != "fsk4", cqpsk_eq: m != "fsk4", c4fm: m != "qpsk", ..Default::default() },
+            conventional: self.enabled_channels().map(Channel::engine_channel).collect(),
+            conv: ConvConfig { squelch_db: self.conventional.squelch_db, ..Default::default() },
         }
     }
 }
@@ -321,4 +439,43 @@ pub fn auto_center(ccs: &[f64], rate_hz: f64) -> Option<f64> {
         step += 1;
     }
     ccs.iter().all(|f| (f - c).abs() <= half - 10_000.0).then_some(c)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn conventional_only_config() {
+        let mut c: Config = serde_json::from_str(
+            r#"{
+                "sources": [{ "kind": "rtlsdr", "serial": "", "centerHz": 0, "rateHz": 2400000, "gainDb": null, "ppm": 0 }],
+                "conventional": { "channels": [
+                    { "freqHz": 154430000, "mode": "fm", "name": "County Fire Dispatch", "talkgroup": 1001 },
+                    { "freqHz": 154100000, "mode": "p25", "squelchDb": 12 },
+                    { "freqHz": 453000000, "enabled": false }
+                ] }
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(c.conventional.squelch_db, 8.0);
+        assert_eq!(c.conventional.channels[2].mode, ChannelMode::Fm);
+        // No control channels: the centre is placed over the enabled channels.
+        assert_eq!(c.problem(), None);
+        let center = c.resolved_centers()[0];
+        assert!((center - 154_265_000.0).abs() < 100_000.0, "center {center}");
+        let e = c.engine_config(0.0);
+        assert!(e.control_channels.is_empty());
+        assert_eq!(e.conventional.len(), 2);
+        assert_eq!(e.conventional[0].talkgroup, 1001);
+        assert_eq!(e.conventional[0].info.as_ref().unwrap().alpha_tag, "County Fire Dispatch");
+        assert_eq!(e.conventional[1].talkgroup, 154100);
+        assert_eq!(e.conventional[1].squelch_db, Some(12.0));
+        assert!(e.conventional[1].info.is_none());
+        // Enabling the far channel no longer fits one dongle.
+        c.conventional.channels[2].enabled = true;
+        assert!(c.problem().unwrap().contains("center frequency"));
+        c.conventional.channels.clear();
+        assert!(c.problem().unwrap().contains("conventional channel"));
+    }
 }

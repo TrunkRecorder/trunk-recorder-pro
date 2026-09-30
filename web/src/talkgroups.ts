@@ -20,7 +20,7 @@ export function isEncryptedMode(mode: string): boolean {
 }
 
 /** RFC-4180-ish line split: commas, double-quoted fields, "" escapes. */
-function splitCsvLine(line: string): string[] {
+export function splitCsvLine(line: string): string[] {
   const out: string[] = [];
   let cur = "";
   let q = false;

@@ -44,7 +44,7 @@ pub fn call_record(call: &Call, info: &ConcludeInfo) -> (String, String) {
         "{{\"call_num\":{},\"freq\":{},\"freq_error\":0,\"signal\":0,\"noise\":0,\"source_num\":0,\"recorder_num\":{},\"tdma_slot\":{},\"phase2_tdma\":{},\
 \"start_time\":{},\"stop_time\":{},\"start_time_ms\":{},\"stop_time_ms\":{},\"emergency\":{},\"priority\":{},\"mode\":{},\"duplex\":{},\"encrypted\":{},\
 \"call_length\":{},\"call_length_ms\":{},\"talkgroup\":{},\"talkgroup_tag\":\"{}\",\"talkgroup_description\":\"{}\",\"talkgroup_group_tag\":\"{}\",\
-\"talkgroup_group\":\"{}\",\"color_code\":-1,\"audio_type\":\"digital{}\",\"short_name\":\"{}\",",
+\"talkgroup_group\":\"{}\",\"color_code\":-1,\"audio_type\":\"{}\",\"short_name\":\"{}\",",
         call.id,
         call.freq_hz,
         info.recorder_num,
@@ -66,7 +66,7 @@ pub fn call_record(call: &Call, info: &ConcludeInfo) -> (String, String) {
         t(|t| &t.description),
         t(|t| &t.tag),
         t(|t| &t.group),
-        if call.phase2_tdma { " tdma" } else { "" },
+        if call.analog { "analog" } else if call.phase2_tdma { "digital tdma" } else { "digital" },
         esc(info.short_name),
     );
     let _ = write!(

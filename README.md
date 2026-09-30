@@ -2,7 +2,9 @@
 
 A lightweight, self-contained trunked-radio recorder: point one or more
 RTL-SDRs (or, optionally, USRPs and Airspys) at a **P25** system (Phase 1 and Phase 2 TDMA voice) and it follows the control channel and records
-every call it can hear as WAV + Trunk Recorder–compatible JSON. It is written
+every call it can hear as WAV + Trunk Recorder–compatible JSON. It also records
+**conventional channels** — analog FM and P25 — alongside a trunked system or
+on their own (see [Conventional channels](#conventional-channels)). It is written
 in Rust, with no GNU Radio or OP25 dependency; a desktop build (macOS, Linux,
 Windows), a browser build and a browser-based interface for both are the goal.
 
@@ -108,6 +110,59 @@ workers don't run from `file://`. Press **Connect…** on a dongle source to pic
 it. The desktop app is the better choice for several dongles or long
 unattended runs.
 
+## Conventional channels
+
+Conventional channels are single frequencies — analog narrowband FM or P25 —
+recorded whenever something transmits on them. Add them in the browser under
+**Conventional channels** (a table, a box to paste many frequencies, or
+**Import CSV…**), or in the config file:
+
+```json
+"conventional": {
+  "squelchDb": 8,
+  "channels": [
+    { "freqHz": 154430000, "mode": "fm",  "name": "County Fire Dispatch", "talkgroup": 1001, "group": "Fire" },
+    { "freqHz": 155100000, "mode": "fm",  "name": "EMS Ops" },
+    { "freqHz": 460125000, "mode": "p25", "name": "PD Tac 2", "squelchDb": 12 },
+    { "freqHz": 453000000, "mode": "fm",  "enabled": false }
+  ]
+}
+```
+
+| Field | |
+|---|---|
+| `freqHz` | The channel frequency, in Hz (the interface takes MHz) |
+| `mode` | `fm` (analog narrowband FM, 12.5 kHz) or `p25` (P25 Phase 1, C4FM or CQPSK). Each channel has its own, so one list can mix them |
+| `name`, `description`, `tag`, `group` | Written into the call JSON (Trunk Recorder's alpha tag, description, tag, category) |
+| `talkgroup` | The number calls are filed under (file names, JSON, uploaders). Default: the frequency in kHz, e.g. 154430 — stable however you reorder the list. P25 channels use the talkgroup the radio sends, when it sends one |
+| `squelchDb` | How far above the noise floor a signal must be to open the channel, in dB. Per channel, or for all in the section (default 8). The noise floor is measured, so this doesn't depend on the dongle or gain the way Trunk Recorder's absolute squelch does |
+| `enabled` | `false` keeps a channel in the list without recording it |
+
+A config can have a trunked system, conventional channels, or both; leave the
+control channels empty for conventional only. Every enabled channel must lie
+inside a source's bandwidth. The first source's center is placed
+automatically when the channels (and control channels) fit in one source.
+
+**How it works.** Channels are found by energy, like Trunk Recorder's signal
+detector, but from the spectrum the channelizer already computes for every
+sample — so watching a channel costs almost nothing (about 0.001 % of a core
+each on an M4 Pro: 100 idle channels add about 0.1 %), and hundreds per
+source are fine. When a channel's signal rises above
+its squelch, a channel is opened *with pre-roll*, replaying the air from
+before the detection, so the start of a transmission isn't lost. A narrower
+filter then confirms the carrier, which keeps a strong neighbour's leakage
+from making calls. A call ends after the call timeout (default 3 s) with no
+signal, as in Trunk Recorder. Analog audio is de-emphasised and high-passed at
+300 Hz, which removes CTCSS tones. Tones and NACs aren't matched yet: a channel
+records whatever transmits on its frequency.
+
+**From Trunk Recorder.** **Import CSV…** reads Trunk Recorder's channel file
+(`TG Number`, `Frequency`, `Alpha Tag`, `Description`, `Tag`, `Category`,
+`Enable`); add a `Mode` column (`fm` / `p25`) to mix analog and P25 in one
+file. **Import Trunk Recorder config…** brings in `conventional` and
+`conventionalP25` systems' `channels` lists. Squelch values aren't carried
+over: Trunk Recorder's are absolute levels; here squelch is dB above the noise.
+
 ## Build
 
 Needs Rust 1.82+ and Node 20+ (for the interface).
@@ -151,6 +206,10 @@ rtl_sdr -f 858300000 -s 2400000 -g 38.6 -n 72000000 capture.cu8        # 30 s
 # Several dongles on one system (control channel on either):
 ./target/release/trunk-lite replay --source a.cu8,858300000,2400000 \
     --source b.cu8,860700000,2400000 --cc 857987500 --out calls/
+
+# Conventional channels (with or without --cc); talkgroup = frequency in kHz:
+./target/release/trunk-lite replay capture.cu8 --center 154500000 --rate 2400000 \
+    --fm 154430000,155100000 --p25 154725000 [--squelch 8] --out calls/
 ```
 
 Calls are written as `<talkgroup>-<epoch>_<freq>.wav|json` with Trunk
@@ -164,7 +223,8 @@ runs, so a grant heard before the next IDEN broadcast can be followed at once.
 ```
 source u8 IQ ─► Channelizer (one shared FFT, N channels, 1 s pre-roll history)
    ├─ control channel ─► receiver bank ─► framer ─► TSDU ─► TSBKs ─► parser ─► CallManager
-   └─ voice channels  ─► receiver bank ─► framer ─► LDUs  ─► soft FEC ─► IMBE ─► audio
+   ├─ voice channels  ─► receiver bank ─► framer ─► LDUs  ─► soft FEC ─► IMBE ─► audio
+   └─ conventional    ─► energy in the shared spectrum ─► (open with pre-roll) ─► NBFM or P25 voice
 receiver bank = CQPSK + CQPSK with a T/2 CMA equaliser + C4FM, best of each frame
 ```
 
@@ -173,13 +233,14 @@ receiver bank = CQPSK + CQPSK with a T/2 CMA equaliser + C4FM, best of each fram
 | `crates/trunk-core` | Platform-independent core (native and WebAssembly): no I/O, one dependency (`rustfft`) |
 | `…/dsp/channelizer.rs` | Overlap-save multi-head channelizer (after CyberEther's `filter_engine`), pre-roll, waterfall spectrum |
 | `…/dsp/cqpsk.rs`, `c4fm.rs` | Streaming receivers with soft bits; optional CMA equaliser |
+| `…/dsp/fm.rs` | Narrowband FM: channel filter / carrier meter, discriminator, de-emphasis, 8 kHz audio, CTCSS high-pass, squelch gate |
 | `…/p25/frame.rs` | Framer with flywheel sync and NID recovery |
 | `…/p25/tsbk.rs` | Viterbi (soft) trellis decoder + CRC — 98–99 % of TSBKs on simulcast, vs 62 % for op25's greedy decoder |
 | `…/p25/fec.rs`, `voice.rs` | Golay / Hamming (hard and soft), Reed–Solomon, IMBE framing, LC / ES / HDU / TDULC |
 | `…/p25/diversity.rs` | Receiver diversity: per-frame best of several receivers |
 | `…/p25/phase2.rs` | Phase 2 TDMA: slot framer, scrambler, ISCH / DUID, AMBE codeword FEC, ESS, MAC PDUs |
 | `…/mbe/` | IMBE and AMBE+2 vocoders (mbelib + Trunk Recorder's enhanced synthesis) |
-| `…/trunk/` | TSBK parser (Trunk Recorder's `p25_parser.cc`), call manager (`monitor_systems.cc`), Phase 1 and TDMA voice trackers, engine (multi-source) |
+| `…/trunk/` | TSBK parser (Trunk Recorder's `p25_parser.cc`), call manager (`monitor_systems.cc`), Phase 1 and TDMA voice trackers, conventional channels (energy detection, calls), engine (multi-source) |
 | `crates/trunk-lite` | The app: `serve` (default; source threads, engine thread, web server + WebSocket), `replay`, `capture`, `devices`, `tool` |
 | `…/src/sdr.rs` | RTL-SDR over USB via `rtlsdr-nusb` (pure Rust; no libusb / librtlsdr) |
 | `…/src/radio/` | USRP (UHD's C API) and Airspy (libairspy), loaded at run time when installed |
@@ -242,6 +303,10 @@ NAC 0x443, from an R820T RTL-SDR):
    verified live on a USRP B200 (8 MSPS, 0 dropped, 99.8 % of control
    messages, 4 clear calls recorded in full, 3.6 % of a core); Airspy
    streaming not yet tested on hardware
+8. ~~Conventional channels: analog NBFM and P25, energy-detected from the
+   shared spectrum with pre-roll~~ — done (verified on synthetic air; live
+   testing pending). Next: CTCSS / DCS tones and P25 NAC matching, so
+   several users of one frequency can be told apart
 
 ## License
 

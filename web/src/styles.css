@@ -132,6 +132,11 @@ main { display: flex; flex-direction: column; gap: 16px; }
 .wf-axis { display: flex; justify-content: space-between; padding: 4px 10px; font-size: 11px; color: var(--muted); }
 
 .table-wrap { overflow-x: auto; }
+.table-wrap.channels-wrap { max-height: 420px; overflow-y: auto; }
+table.channels input:not([type="checkbox"]), table.channels select { background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 4px 7px; min-width: 0; width: 100%; }
+table.channels input.narrow { width: 7em; }
+table.channels td { padding: 4px 6px; }
+.row .grow { flex: 1; min-width: 8em; }
 .table-wrap.history { max-height: 520px; overflow-y: auto; }
 table.calls { width: 100%; border-collapse: collapse; font-size: 13px; }
 table.calls th { text-align: left; font-weight: 500; color: var(--muted); font-size: 12px; padding: 4px 8px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--panel); }

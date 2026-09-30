@@ -48,6 +48,11 @@ impl VoiceTracker {
         }
     }
 
+    /// The talkgroup link control named for the current transmission.
+    pub fn talkgroup(&self) -> Option<u32> {
+        self.tgid
+    }
+
     /// A frame group at time `t` (s, sample clock).
     pub fn group(&mut self, g: &Group, t: f64, out: &mut Vec<TrackerOut>) {
         let best = best_frame(g);

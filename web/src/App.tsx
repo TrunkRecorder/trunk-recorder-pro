@@ -41,36 +41,57 @@ function StatusTiles({ s }: { s: AppState }) {
   const ccTone = !st ? undefined : rate && rate.perS > 5 ? "ok" : rate && rate.perS > 0 ? "warn" : "bad";
   const srcTrouble = s.sources.some((x) => x.dropped > 0 || x.errors > 0 || (!x.ended && x.rateMeasured > 0 && Math.abs(x.rateMeasured / x.rateHz - 1) > 0.05));
   const maxRecorders = s.config?.recording.maxRecorders ?? 0;
+  const trunked = (s.config?.system.controlChannels.length ?? 0) > 0;
+  const convCount = (s.config?.conventional?.channels ?? []).filter((c) => c.enabled).length;
   return (
     <div className="tiles">
-      <Tile
-        label="Control channel"
-        tone={ccTone}
-        value={st?.controlChannelHz ? <span className="mono">{formatMhz(st.controlChannelHz)}</span> : "—"}
-        sub={
-          st ? (
-            <>
-              {rate ? `${rate.perS.toFixed(1)} msg/s` : "…"} · {pct === null ? "no decodes yet" : `${pct}% decoded`} · {st.modulation ?? "detecting"}
-            </>
-          ) : (
-            "starting…"
-          )
-        }
-      />
-      <Tile
-        label="System"
-        value={<span className="mono">{st?.identity.nac != null ? `NAC ${hex(st.identity.nac)}` : "—"}</span>}
-        sub={<span className="mono">WACN {hex(st?.identity.wacn)} · SysID {hex(st?.identity.sysId)} · RFSS {st?.identity.rfss ?? "—"} Site {st?.identity.site ?? "—"}</span>}
-      />
-      <Tile
-        label="Recorders"
-        value={
-          <span className="mono">
-            {st?.recording ?? 0} <small>/ {maxRecorders}</small>
-          </span>
-        }
-        sub={`${st?.activeCalls ?? 0} active calls · ${st?.callsConcluded ?? 0} saved this run`}
-      />
+      {convCount > 0 && (
+        <Tile
+          label="Conventional"
+          value={
+            <span className="mono">
+              {st?.conventionalOpen ?? 0} <small>/ {convCount}</small>
+            </span>
+          }
+          sub="channels with a signal now"
+        />
+      )}
+      {trunked && (
+        <Tile
+          label="Control channel"
+          tone={ccTone}
+          value={st?.controlChannelHz ? <span className="mono">{formatMhz(st.controlChannelHz)}</span> : "—"}
+          sub={
+            st ? (
+              <>
+                {rate ? `${rate.perS.toFixed(1)} msg/s` : "…"} · {pct === null ? "no decodes yet" : `${pct}% decoded`} · {st.modulation ?? "detecting"}
+              </>
+            ) : (
+              "starting…"
+            )
+          }
+        />
+      )}
+      {trunked && (
+        <Tile
+          label="System"
+          value={<span className="mono">{st?.identity.nac != null ? `NAC ${hex(st.identity.nac)}` : "—"}</span>}
+          sub={<span className="mono">WACN {hex(st?.identity.wacn)} · SysID {hex(st?.identity.sysId)} · RFSS {st?.identity.rfss ?? "—"} Site {st?.identity.site ?? "—"}</span>}
+        />
+      )}
+      {trunked ? (
+        <Tile
+          label="Recorders"
+          value={
+            <span className="mono">
+              {st?.recording ?? 0} <small>/ {maxRecorders}</small>
+            </span>
+          }
+          sub={`${st?.activeCalls ?? 0} active calls · ${st?.callsConcluded ?? 0} saved this run`}
+        />
+      ) : (
+        <Tile label="Calls" value={<span className="mono">{st?.activeCalls ?? 0}</span>} sub={`active · ${st?.callsConcluded ?? 0} saved this run`} />
+      )}
       <Tile
         label={s.sources.length > 1 ? `Radios (${s.sources.length})` : "Radio"}
         tone={!s.sources.length ? undefined : srcTrouble ? "warn" : "ok"}
@@ -148,6 +169,7 @@ function ActiveCalls({ s }: { s: AppState }) {
                   <td className="mono">
                     {formatMhz(c.freqHz, 4)}
                     {c.slot !== null && <span className="muted"> · s{c.slot}</span>}
+                    {c.analog && <span className="muted"> · FM</span>}
                   </td>
                   <td className="mono">{c.sources.at(-1) ?? "—"}</td>
                   <td className="mono">{clock(Math.max(0, now - c.startS))}</td>

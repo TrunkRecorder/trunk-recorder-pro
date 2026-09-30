@@ -13,14 +13,20 @@
 //!
 //! Several sources (dongles) can feed one system: the control channel runs on
 //! the source that covers it, each voice channel on the source that covers its
-//! frequency. Time is the control channel's sample clock. Everything that
-//! happens is reported as [`Event`]s; the engine does no I/O.
+//! frequency. Time is the control channel's sample clock (the first source's
+//! when there is no trunked system).
+//!
+//! Conventional channels (analog FM, P25) ride the same channelizers: see
+//! [`super::conventional`]. A config may have a trunked system, conventional
+//! channels, or both. Everything that happens is reported as [`Event`]s; the
+//! engine does no I/O.
 
 use std::collections::HashMap;
 
 use num_complex::Complex32;
 
 use super::calls::{Call, CallConfig, CallEvent, CallId, CallManager, Reason, RecorderHost};
+use super::conventional::{CallRules, ConvChannel, ConvConfig, ConvOut, Conventional};
 use super::message::{Message, MessageType, TsbkParser};
 use super::record::{call_record, ConcludeInfo};
 use super::talkgroups::Talkgroups;
@@ -62,6 +68,9 @@ pub struct EngineConfig {
     /// Wall-clock epoch ms at sample-clock time 0.
     pub epoch_ms_at_zero: f64,
     pub bank: BankConfig,
+    /// Conventional channels, energy-detected on whichever source covers them.
+    pub conventional: Vec<ConvChannel>,
+    pub conv: ConvConfig,
 }
 
 impl Default for EngineConfig {
@@ -76,6 +85,8 @@ impl Default for EngineConfig {
             calls: CallConfig::default(),
             epoch_ms_at_zero: 0.0,
             bank: BankConfig::default(),
+            conventional: vec![],
+            conv: ConvConfig::default(),
         }
     }
 }
@@ -123,6 +134,8 @@ pub struct Status {
     pub active_calls: usize,
     pub recording: usize,
     pub channels_open: usize,
+    /// Conventional channels with a head open (a signal on them now).
+    pub conventional_open: usize,
     pub calls_concluded: u64,
 }
 
@@ -297,6 +310,8 @@ pub struct Engine {
     cfg: EngineConfig,
     radio: Radio,
     calls: CallManager,
+    conv: Conventional,
+    conv_out: Vec<ConvOut>,
     parser: TsbkParser,
     cc_source: usize,
     cc_head: Option<HeadId>,
@@ -321,7 +336,12 @@ impl Engine {
         if cfg.sources.is_empty() {
             return Err("no sources configured".into());
         }
-        let history = cfg.preroll_s.max(0.1);
+        if cfg.control_channels.is_empty() && cfg.conventional.is_empty() {
+            return Err("Add a control channel or a conventional channel.".into());
+        }
+        let history = cfg.preroll_s.max(cfg.conv.preroll_s).max(0.1);
+        let spans: Vec<(f64, f64)> = cfg.sources.iter().map(|s| (s.center_hz, s.rate_hz)).collect();
+        let conv = Conventional::new(&cfg.conventional, &spans, cfg.conv, cfg.bank, USABLE)?;
         let sources: Vec<Source> =
             cfg.sources.iter().map(|s| Source { cfg: s.clone(), chz: Channelizer::new(s.rate_hz, MIN_CHANNEL_RATE, history) }).collect();
         let rate = sources[0].chz.output_rate();
@@ -341,6 +361,8 @@ impl Engine {
                 pending: Vec::new(),
             },
             calls: CallManager::new(cfg.calls, talkgroups),
+            conv,
+            conv_out: Vec::new(),
             parser: TsbkParser::default(),
             cc_source: 0,
             cc_head: None,
@@ -360,7 +382,9 @@ impl Engine {
             call_events: Vec::new(),
             cfg,
         };
-        e.tune_control(0)?;
+        if !e.cfg.control_channels.is_empty() {
+            e.tune_control(0)?;
+        }
         Ok(e)
     }
 
@@ -377,9 +401,9 @@ impl Engine {
         &self.cfg.sources
     }
 
-    /// Calls in progress (recording or monitoring).
-    pub fn active_calls(&self) -> &[Call] {
-        &self.calls.calls
+    /// Calls in progress (recording or monitoring), trunked then conventional.
+    pub fn active_calls(&self) -> Vec<Call> {
+        self.calls.calls.iter().chain(self.conv.calls()).cloned().collect()
     }
 
     /// Everything that happened since the last call.
@@ -401,9 +425,11 @@ impl Engine {
             good: self.good,
             bad: self.bad,
             modulation: if q + c < 8 { "" } else if q >= c { "CQPSK" } else { "C4FM" },
-            active_calls: self.calls.calls.len(),
+            active_calls: self.calls.calls.len() + self.conv.calls().count(),
+            // Trunked recorders only: conventional channels don't use the pool.
             recording: self.radio.recordings.len(),
-            channels_open: self.radio.channels.len(),
+            channels_open: self.radio.channels.len() + self.conv.open_count(),
+            conventional_open: self.conv.open_count(),
             calls_concluded: self.concluded,
         }
     }
@@ -455,6 +481,30 @@ impl Engine {
         self.apply_pending();
         self.calls.end_all(&mut self.radio, &mut self.call_events);
         self.emit_call_events();
+        let rules = self.call_rules();
+        let mut out = std::mem::take(&mut self.conv_out);
+        self.conv.finish(&rules, &mut out);
+        self.emit_conv(out);
+    }
+
+    fn call_rules(&self) -> CallRules {
+        CallRules { call_timeout_s: self.cfg.calls.call_timeout_s, record_encrypted: self.cfg.calls.record_encrypted }
+    }
+
+    /// Report what the conventional channels did.
+    fn emit_conv(&mut self, mut out: Vec<ConvOut>) {
+        for o in out.drain(..) {
+            match o {
+                ConvOut::Start(c) => self.events.push(Event::CallStart(c)),
+                ConvOut::Update(c) => self.events.push(Event::CallUpdate(c)),
+                ConvOut::Audio { call_id, talkgroup, samples } => self.events.push(Event::Audio { call_id, talkgroup, samples }),
+                ConvOut::End { call, audio, errors, recorder_num } => {
+                    self.write_call(&call, audio, errors, recorder_num);
+                    self.events.push(Event::CallEnd(call));
+                }
+            }
+        }
+        self.conv_out = out;
     }
 
     fn tune_control(&mut self, index: usize) -> Result<(), String> {
@@ -509,6 +559,19 @@ impl Engine {
                 }
                 self.calls.tick(self.now_s, &mut self.radio, &mut self.call_events);
             }
+        }
+        // No trunked system: the first source's sample clock is the time.
+        if self.cc_head.is_none() && source == 0 {
+            let c = &self.radio.sources[0].chz;
+            self.now_s = c.sample_position() as f64 / c.fs();
+        }
+        if !self.conv.is_empty() {
+            let c = &self.radio.sources[source].chz;
+            let t = c.sample_position() as f64 / c.fs();
+            let rules = self.call_rules();
+            let mut out = std::mem::take(&mut self.conv_out);
+            self.conv.on_block(source, &mut self.radio.sources[source].chz, t, &mut self.calls, &rules, &mut out);
+            self.emit_conv(out);
         }
         self.apply_pending();
         self.emit_call_events();
@@ -604,13 +667,18 @@ impl Engine {
     fn conclude(&mut self, call: &Call) {
         let Some(rec) = self.radio.recordings.remove(&call.id) else { return };
         self.radio.free_nums.push(rec.recorder_num);
+        let errors = self.radio.channels.get(&call.freq_hz).map_or(0, |ch| ch.voice.bad_frames());
+        self.write_call(call, rec.audio, errors, rec.recorder_num);
+    }
+
+    /// A finished call's record and audio, as [`Event::Concluded`].
+    fn write_call(&mut self, call: &Call, audio: Vec<f32>, errors: u64, recorder_num: u32) {
         // An encrypted call's "audio" is at most a few frames vocoded before
         // the cipher was known: noise. Trunk Recorder keeps none either.
-        let audio = if call.encrypted { Vec::new() } else { rec.audio };
+        let audio = if call.encrypted { Vec::new() } else { audio };
         if audio.is_empty() && !self.cfg.keep_silent_calls {
             return;
         }
-        let errors = self.radio.channels.get(&call.freq_hz).map_or(0, |ch| ch.voice.bad_frames());
         let (json, base_name) = call_record(
             call,
             &ConcludeInfo {
@@ -618,7 +686,7 @@ impl Engine {
                 epoch_ms_at_zero: self.cfg.epoch_ms_at_zero,
                 audio_seconds: audio.len() as f64 / mbe::SAMPLE_RATE as f64,
                 error_count: errors,
-                recorder_num: rec.recorder_num,
+                recorder_num,
                 end_s: call.last_audio_s,
             },
         );

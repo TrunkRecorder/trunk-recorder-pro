@@ -56,6 +56,8 @@ pub struct Call {
     pub priority: u8,
     pub duplex: bool,
     pub mode: bool,
+    /// Analog voice (a conventional FM channel).
+    pub analog: bool,
     pub start_s: f64,
     pub last_update_s: f64,
     pub last_audio_s: f64,
@@ -136,6 +138,12 @@ impl CallManager {
                 _ => {}
             }
         }
+    }
+
+    /// A fresh call id (conventional channels make their own calls).
+    pub fn allocate_id(&mut self) -> CallId {
+        self.next_id += 1;
+        self.next_id - 1
     }
 
     pub fn call_mut(&mut self, id: CallId) -> Option<&mut Call> {
@@ -242,6 +250,7 @@ impl CallManager {
             priority: m.priority,
             duplex: m.duplex,
             mode: m.mode,
+            analog: false,
             start_s: m.time_s,
             last_update_s: m.time_s,
             last_audio_s: m.time_s,

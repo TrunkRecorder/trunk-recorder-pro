@@ -23,6 +23,19 @@ export interface Radios {
   airspy: DriverState;
 }
 
+/** A conventional channel. `talkgroup` defaults to the frequency in kHz; `squelchDb` to the section's. */
+export interface Channel {
+  freqHz: number;
+  mode: "fm" | "p25";
+  name: string;
+  talkgroup?: number;
+  description?: string;
+  tag?: string;
+  group?: string;
+  squelchDb?: number;
+  enabled: boolean;
+}
+
 export interface Config {
   sources: Source[];
   system: {
@@ -33,6 +46,8 @@ export interface Config {
     talkgroupsCsv: string;
     talkgroupsName: string;
   };
+  /** Energy-detected channels; `squelchDb` is the open threshold above the noise floor. */
+  conventional: { squelchDb: number; channels: Channel[] };
   recording: {
     captureDir: string;
     prerollS: number;
@@ -70,6 +85,7 @@ export interface EngineStatus {
   activeCalls: number;
   recording: number;
   channelsOpen: number;
+  conventionalOpen: number;
   callsConcluded: number;
 }
 
@@ -91,6 +107,7 @@ export interface CallView {
   alphaTag: string;
   freqHz: number;
   slot: number | null;
+  analog: boolean;
   state: "recording" | "monitoring";
   reason: "unknown_tg" | "encrypted" | "no_source" | "no_recorder" | null;
   encrypted: boolean;

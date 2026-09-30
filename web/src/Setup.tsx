@@ -1,7 +1,8 @@
 import { useEffect, useId, useRef, useState } from "react";
 import {
   AIRSPY_RATES,
-  autoCenter,
+  autoCenterFor,
+  defaultTalkgroup,
   formatFromPath,
   formatMhz,
   importTrunkRecorderConfig,
@@ -9,6 +10,7 @@ import {
   newDongle,
   newFile,
   newUsrp,
+  parseChannelCsv,
   parseFreqList,
   resolvedCenters,
   SAMPLE_RATES,
@@ -16,7 +18,7 @@ import {
   usableHalfWidth,
 } from "./config.ts";
 import { findRadios, refreshDevices, setNotice, updateConfig, useApp, web } from "./controller.ts";
-import type { Config, Source } from "./protocol.ts";
+import type { Channel, Config, Source } from "./protocol.ts";
 import { parseTalkgroupCsv } from "./talkgroups.ts";
 
 function Field(props: { label: string; hint?: string; children: React.ReactNode; wide?: boolean }) {
@@ -132,7 +134,7 @@ function SourceCard(props: { c: Config; i: number }) {
   const { c, i } = props;
   const src = c.sources[i];
   const center = resolvedCenters(c)[i];
-  const auto = i === 0 ? autoCenter(c.system.controlChannels, src.rateHz) : null;
+  const auto = i === 0 ? autoCenterFor(c, src.rateHz) : null;
   const half = usableHalfWidth(src.rateHz);
   const edit = (fn: (x: Source) => void) => updateConfig((x) => fn(x.sources[i]));
   const setKind = (kind: Source["kind"]) =>
@@ -293,7 +295,7 @@ function SourceCard(props: { c: Config; i: number }) {
               />
             </Field>
           ))}
-        <Field label="Center frequency, MHz" hint={src.centerHz ? "Manual" : auto ? `Auto: ${formatMhz(auto, 4)} MHz` : i === 0 ? "Auto — needs control channels" : "Required"}>
+        <Field label="Center frequency, MHz" hint={src.centerHz ? "Manual" : auto ? `Auto: ${formatMhz(auto, 4)} MHz` : i === 0 ? "Auto — needs channels that fit one source" : "Required"}>
           <MhzInput hz={src.centerHz} placeholder={auto ? formatMhz(auto, 4) : "MHz"} onChange={(hz) => edit((x) => void (x.centerHz = hz))} />
         </Field>
         <Field
@@ -382,6 +384,190 @@ function SourceCard(props: { c: Config; i: number }) {
   );
 }
 
+let nextRowId = 1;
+
+/** Conventional channels: a table editor, bulk add, and Trunk Recorder channel CSV import. */
+function ConventionalPanel(props: { c: Config }) {
+  const { c } = props;
+  const conv = c.conventional ?? { squelchDb: 8, channels: [] };
+  const chans = conv.channels;
+  // Stable row keys (each edit clones the config; a frequency input keeps its own text).
+  const ids = useRef<number[]>([]);
+  if (ids.current.length !== chans.length) ids.current = chans.map(() => nextRowId++);
+  const csvRef = useRef<HTMLInputElement>(null);
+  const [bulk, setBulk] = useState("");
+  const [bulkMode, setBulkMode] = useState<Channel["mode"]>("fm");
+  const edit = (fn: (x: Config["conventional"]) => void) =>
+    updateConfig((x) => {
+      x.conventional ??= { squelchDb: 8, channels: [] };
+      fn(x.conventional);
+    });
+  const editRow = (i: number, fn: (ch: Channel) => void) => edit((x) => fn(x.channels[i]));
+  const remove = (i: number) => {
+    ids.current.splice(i, 1);
+    edit((x) => void x.channels.splice(i, 1));
+  };
+  const add = (list: Channel[]) => {
+    ids.current.push(...list.map(() => nextRowId++));
+    edit((x) => void x.channels.push(...list));
+  };
+  const onCsv = async (f: File | undefined) => {
+    if (!f) return;
+    const { channels, notes } = parseChannelCsv(await f.text());
+    add(channels);
+    setNotice(`Added ${channels.length} channel(s) from ${f.name}.${notes.length ? " " + notes.join(" ") : ""}`);
+  };
+  const enabled = chans.filter((ch) => ch.enabled).length;
+  const optNum = (v: string): number | undefined => (v.trim() === "" || !Number.isFinite(Number(v)) ? undefined : Number(v));
+
+  return (
+    <section className="panel">
+      <header className="panel-head">
+        <h2>Conventional channels</h2>
+        <div className="row">
+          <button className="btn ghost" onClick={() => csvRef.current?.click()}>
+            Import CSV…
+          </button>
+          <button className="btn ghost" onClick={() => add([{ freqHz: 0, mode: bulkMode, name: "", enabled: true }])}>
+            Add a channel
+          </button>
+        </div>
+        <input ref={csvRef} type="file" accept=".csv,text/csv" hidden onChange={(e) => void onCsv(e.target.files?.[0])} />
+      </header>
+      <div className="stack">
+        <p className="muted small">
+          Analog FM or P25 channels anywhere inside a source's bandwidth, alongside a trunked system or on their own. Each is watched in the spectrum the recorder
+          already computes, so an idle channel costs almost nothing; a call starts when its signal rises above the noise floor by the squelch level.
+        </p>
+        <div className="grid3">
+          <Field label="Squelch, dB above noise" hint="For every channel without its own. Raise it if noise opens channels.">
+            <input className="mono" value={conv.squelchDb} onChange={(e) => edit((x) => void (x.squelchDb = Math.max(3, Math.min(40, Number(e.target.value) || 8))))} />
+          </Field>
+          <Field label="Add frequencies, MHz" hint="Comma or space separated" wide>
+            <div className="row">
+              <input className="mono grow" value={bulk} placeholder="154.430, 155.100, 460.125" onChange={(e) => setBulk(e.target.value)} />
+              <select value={bulkMode} onChange={(e) => setBulkMode(e.target.value as Channel["mode"])} aria-label="Mode for the added channels">
+                <option value="fm">Analog FM</option>
+                <option value="p25">P25</option>
+              </select>
+              <button
+                className="btn"
+                disabled={!parseFreqList(bulk).length}
+                onClick={() => {
+                  add(parseFreqList(bulk).map((freqHz) => ({ freqHz, mode: bulkMode, name: "", enabled: true })));
+                  setBulk("");
+                }}
+              >
+                Add
+              </button>
+            </div>
+          </Field>
+        </div>
+        {chans.length > 0 && (
+          <>
+            <div className="table-wrap channels-wrap">
+              <table className="calls channels">
+                <thead>
+                  <tr>
+                    <th title="Record this channel">On</th>
+                    <th>Frequency, MHz</th>
+                    <th>Mode</th>
+                    <th>Name</th>
+                    <th title="Calls are filed under this number; P25 uses the talkgroup on the air when there is one">Talkgroup</th>
+                    <th title="dB above the noise floor">Squelch</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {chans.map((ch, i) => (
+                    <tr key={ids.current[i]} className={ch.enabled ? "" : "st-monitoring"}>
+                      <td>
+                        <input type="checkbox" checked={ch.enabled} aria-label="Record this channel" onChange={(e) => editRow(i, (x) => void (x.enabled = e.target.checked))} />
+                      </td>
+                      <td>
+                        <MhzInput hz={ch.freqHz} onChange={(hz) => editRow(i, (x) => void (x.freqHz = hz))} />
+                      </td>
+                      <td>
+                        <select value={ch.mode} aria-label="Mode" onChange={(e) => editRow(i, (x) => void (x.mode = e.target.value as Channel["mode"]))}>
+                          <option value="fm">Analog FM</option>
+                          <option value="p25">P25</option>
+                        </select>
+                      </td>
+                      <td>
+                        <input value={ch.name} placeholder="Name" aria-label="Name" onChange={(e) => editRow(i, (x) => void (x.name = e.target.value))} />
+                      </td>
+                      <td>
+                        <input
+                          className="mono narrow"
+                          value={ch.talkgroup ?? ""}
+                          placeholder={ch.freqHz ? String(defaultTalkgroup(ch.freqHz)) : "auto"}
+                          aria-label="Talkgroup"
+                          onChange={(e) =>
+                            editRow(i, (x) => {
+                              const v = optNum(e.target.value);
+                              if (v === undefined || v <= 0) delete x.talkgroup;
+                              else x.talkgroup = Math.round(v);
+                            })
+                          }
+                        />
+                      </td>
+                      <td>
+                        <input
+                          className="mono narrow"
+                          value={ch.squelchDb ?? ""}
+                          placeholder={String(conv.squelchDb)}
+                          aria-label="Squelch, dB above noise"
+                          onChange={(e) =>
+                            editRow(i, (x) => {
+                              const v = optNum(e.target.value);
+                              if (v === undefined) delete x.squelchDb;
+                              else x.squelchDb = Math.max(3, Math.min(40, v));
+                            })
+                          }
+                        />
+                      </td>
+                      <td>
+                        <button className="btn ghost small danger" title="Remove" aria-label="Remove channel" onClick={() => remove(i)}>
+                          ×
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="row">
+              <span className="muted small">
+                {chans.length} channel{chans.length === 1 ? "" : "s"}, {enabled} on
+              </span>
+              <span className="spacer" />
+              <button
+                className="btn ghost small danger"
+                onClick={() => {
+                  if (window.confirm(`Remove all ${chans.length} conventional channels?`)) {
+                    ids.current = [];
+                    edit((x) => void (x.channels = []));
+                  }
+                }}
+              >
+                Remove all
+              </button>
+            </div>
+          </>
+        )}
+        <details className="help">
+          <summary>CSV format</summary>
+          <p className="small">
+            A header row, then one channel per row. Trunk Recorder's channel file works as is: <code>TG Number</code>, <code>Frequency</code> (MHz with a decimal
+            point, or Hz), <code>Alpha Tag</code>, <code>Description</code>, <code>Tag</code>, <code>Category</code>, <code>Enable</code>. Add a{" "}
+            <code>Mode</code> column (<code>fm</code> / <code>p25</code>) to mix analog and P25; without one, channels come in as analog FM.
+          </p>
+        </details>
+      </div>
+    </section>
+  );
+}
+
 export function Setup() {
   const s = useApp();
   const c = s.config;
@@ -439,7 +625,7 @@ export function Setup() {
               <option value="p25">P25 (Phase 1 and 2)</option>
             </select>
           </Field>
-          <Field label="Control channels, MHz" hint="Comma separated. The first one in range is tried first; the rest are fallbacks." wide>
+          <Field label="Control channels, MHz" hint="Comma separated. The first one in range is tried first; the rest are fallbacks. Leave empty to record conventional channels only." wide>
             <input
               className="mono"
               value={ccText}
@@ -482,6 +668,8 @@ export function Setup() {
           </Field>
         </div>
       </section>
+
+      <ConventionalPanel c={c} />
 
       <section className="panel">
         <header className="panel-head">

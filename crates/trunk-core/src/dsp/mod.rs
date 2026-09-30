@@ -1,8 +1,10 @@
-//! Signal processing: the shared channelizer and the P25 symbol receivers.
+//! Signal processing: the shared channelizer, the P25 symbol receivers and
+//! narrowband FM.
 
 pub mod c4fm;
 pub mod channelizer;
 pub mod cqpsk;
+pub mod fm;
 
 pub use channelizer::{Channelizer, HeadId};
 
