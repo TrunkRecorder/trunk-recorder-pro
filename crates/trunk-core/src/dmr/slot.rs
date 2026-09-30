@@ -11,7 +11,7 @@
 //! ```
 
 use super::burst::{cach, Burst, SyncKind};
-use super::fec::{self, bptc196_decode, embedded_lc_decode, pack, rs129_decode};
+use super::fec::{self, bptc196_decode, embedded_lc_decode, pack, rs129_decode, Bptc};
 use crate::p25::phase2::{decode_vcw, AmbeFrame};
 
 /// Data types of a data burst's slot type (TS 102 361-1 §9.3.6).
@@ -149,14 +149,35 @@ pub enum SlotEvent {
 pub struct SlotDecoder {
     /// Place of the last voice burst in its superframe; None outside voice.
     pos: Option<u8>,
-    /// Embedded LC fragments gathered this superframe.
-    emb: Vec<u8>,
+    /// Embedded LC fragments gathered this superframe (soft bits).
+    emb: Vec<f32>,
+    /// The embedded LC repeats every superframe of a transmission: the soft
+    /// sum of the superframes that failed, tried when one alone fails.
+    emb_acc: Option<(Vec<f32>, u32)>,
+    /// Voice LC headers, terminators, CSBKs come several in a row: the soft
+    /// sum of the failed ones of this data type.
+    data_acc: Option<(u8, Vec<f32>, u32)>,
     /// Colour code of the last good slot type / EMB.
     pub color_code: Option<u8>,
     /// Voice codewords / BPTC blocks with a bad CRC, over the slot's life.
     pub voice_frames: u64,
     pub bad_blocks: u64,
+    /// The system keys its CRCs (Motorola / Hytera restricted access): blocks
+    /// are taken on their BPTC alone. Set after [`KEYED_AFTER`] clean blocks
+    /// in a row fail their CRC; cleared by [`UNKEYED_AFTER`] that pass.
+    pub keyed: bool,
+    keyed_votes: i32,
 }
+
+/// Copies of a repeated block (or superframes of an embedded LC) summed at most.
+const MAX_COMBINED: u32 = 4;
+
+/// Blocks with a flawless BPTC and a failed CRC, in a row, that mark a keyed system.
+pub const KEYED_AFTER: i32 = 3;
+const UNKEYED_AFTER: i32 = 20;
+/// A keyed system's block is taken with at most this many BPTC corrections
+/// (the code's distance is 9).
+const KEYED_MAX_BPTC_ERRS: i32 = 3;
 
 impl SlotDecoder {
     pub fn burst(&mut self, b: &Burst, out: &mut Vec<SlotEvent>) {
@@ -215,20 +236,66 @@ impl SlotDecoder {
         match lcss {
             1 => {
                 self.emb.clear();
-                self.emb.extend(b.embedded());
+                self.emb.extend(b.embedded_soft());
             }
-            3 if !self.emb.is_empty() && self.emb.len() < 96 => self.emb.extend(b.embedded()),
+            3 if !self.emb.is_empty() && self.emb.len() < 96 => self.emb.extend(b.embedded_soft()),
             2 if self.emb.len() == 96 => {
-                self.emb.extend(b.embedded());
-                let raw: [u8; 128] = self.emb[..].try_into().unwrap();
-                self.emb.clear();
-                match embedded_lc_decode(&raw) {
-                    Some((bits, _)) => out.push(SlotEvent::Lc { lc: Lc(pack(&bits).try_into().unwrap()), from: LcFrom::Embedded }),
+                self.emb.extend(b.embedded_soft());
+                let cur = std::mem::take(&mut self.emb);
+                let keyed = self.keyed;
+                let try_lc = |soft: &[f32]| {
+                    let raw: [u8; 128] = std::array::from_fn(|i| (soft[i] > 0.0) as u8);
+                    embedded_lc_decode(&raw).filter(|&(_, _, sum_ok)| sum_ok || keyed).map(|(bits, _, _)| Lc(pack(&bits).try_into().unwrap()))
+                };
+                let lc = try_lc(&cur).or_else(|| {
+                    let (acc, n) = match self.emb_acc.take() {
+                        Some((mut acc, n)) if n < MAX_COMBINED => {
+                            for (a, c) in acc.iter_mut().zip(&cur) {
+                                *a += c;
+                            }
+                            (acc, n + 1)
+                        }
+                        _ => (cur.clone(), 1),
+                    };
+                    let lc = if n > 1 { try_lc(&acc) } else { None };
+                    self.emb_acc = Some((acc, n));
+                    lc
+                });
+                match lc {
+                    Some(lc) => {
+                        self.emb_acc = None;
+                        out.push(SlotEvent::Lc { lc, from: LcFrom::Embedded });
+                    }
                     None => self.bad_blocks += 1,
                 }
             }
             _ => self.emb.clear(),
         }
+    }
+
+    /// BPTC-decode soft bits as data type `dt` → the block, whether its own
+    /// check passed (None: it has none), and the LC it carries (LC types).
+    fn check(dt: u8, soft: &[f32]) -> (Bptc, Option<bool>, Lc) {
+        let raw: [u8; 196] = std::array::from_fn(|i| (soft[i] > 0.0) as u8);
+        let blk = bptc196_decode(&raw);
+        let (checked, lc) = match dt {
+            DT_VOICE_LC_HEADER | DT_TERMINATOR_LC => {
+                let bytes: [u8; 12] = pack(&blk.bits).try_into().unwrap();
+                let mask = if dt == DT_VOICE_LC_HEADER { fec::MASK_VOICE_LC_HEADER } else { fec::MASK_TERMINATOR_LC };
+                let mut cw = bytes;
+                cw[9] ^= (mask >> 16) as u8;
+                cw[10] ^= (mask >> 8) as u8;
+                cw[11] ^= mask as u8;
+                let ok = rs129_decode(&mut cw).is_some();
+                (Some(ok), Lc(cw[..9].try_into().unwrap()))
+            }
+            DT_CSBK => (Some(fec::crc16_ok(&blk.bits, fec::MASK_CSBK)), Lc([0; 9])),
+            DT_MBC_HEADER => (Some(fec::crc16_ok(&blk.bits, fec::MASK_MBC_HEADER)), Lc([0; 9])),
+            DT_PI_HEADER => (Some(fec::crc16_ok(&blk.bits, fec::MASK_PI)), Lc([0; 9])),
+            _ => (None, Lc([0; 9])),
+        };
+        // A CRC that passes on a block the BPTC couldn't make whole is chance.
+        (blk, checked.map(|c| c && blk.errs >= 0), lc)
     }
 
     fn data(&mut self, b: &Burst, out: &mut Vec<SlotEvent>) {
@@ -244,45 +311,75 @@ impl SlotDecoder {
             out.push(SlotEvent::Data { data_type: dt, ok: true });
             return;
         }
-        let blk = bptc196_decode(&b.info196());
+        let soft = b.info196_soft();
+        let (blk, mut checked, mut lc) = Self::check(dt, &soft);
+        if let Some(c) = checked {
+            if c {
+                self.keyed_votes = if self.keyed { self.keyed_votes - 1 } else { 0 };
+                if self.keyed_votes <= -UNKEYED_AFTER {
+                    (self.keyed, self.keyed_votes) = (false, 0);
+                }
+            } else if blk.errs == 0 {
+                self.keyed_votes = if self.keyed { 0 } else { self.keyed_votes + 1 };
+                if self.keyed_votes >= KEYED_AFTER {
+                    self.keyed = true;
+                }
+            }
+        }
+        let keyed = self.keyed;
+        let accept = |checked: Option<bool>, errs: i32| match checked {
+            Some(c) => c || (keyed && (0..=KEYED_MAX_BPTC_ERRS).contains(&errs)),
+            None => errs >= 0,
+        };
+        let mut ok = accept(checked, blk.errs);
+        let mut blk = blk;
+        if checked.is_some() {
+            if ok {
+                self.data_acc = None;
+            } else {
+                // Repeated blocks: add this one's soft bits to those that failed before it, try the sum.
+                let (acc, n) = match self.data_acc.take() {
+                    Some((d, mut acc, n)) if d == dt && n < MAX_COMBINED => {
+                        for (a, c) in acc.iter_mut().zip(&soft) {
+                            *a += c;
+                        }
+                        (acc, n + 1)
+                    }
+                    _ => (soft.to_vec(), 1),
+                };
+                // Only a real CRC / RS pass: a keyed system's sum could look clean and be wrong.
+                let (b2, c2, lc2) = Self::check(dt, &acc);
+                if n > 1 && c2 == Some(true) {
+                    (blk, checked, lc, ok) = (b2, c2, lc2, true);
+                } else {
+                    self.data_acc = Some((dt, acc, n));
+                }
+            }
+        }
         let bytes: [u8; 12] = pack(&blk.bits).try_into().unwrap();
-        let ok = match dt {
-            DT_VOICE_LC_HEADER | DT_TERMINATOR_LC => {
-                let mask = if dt == DT_VOICE_LC_HEADER { fec::MASK_VOICE_LC_HEADER } else { fec::MASK_TERMINATOR_LC };
-                let mut cw = bytes;
-                cw[9] ^= (mask >> 16) as u8;
-                cw[10] ^= (mask >> 8) as u8;
-                cw[11] ^= mask as u8;
-                let ok = rs129_decode(&mut cw).is_some();
-                if ok {
+        if ok && checked == Some(false) && matches!(dt, DT_VOICE_LC_HEADER | DT_TERMINATOR_LC) {
+            // Keyed: the RS check bytes are no use; take the LC as it came.
+            lc = Lc(bytes[..9].try_into().unwrap());
+        }
+        if matches!(dt, DT_VOICE_LC_HEADER | DT_TERMINATOR_LC) && ok {
+            // A new transmission (or its end): the embedded LC starts afresh.
+            self.emb_acc = None;
+        }
+        if ok {
+            match dt {
+                DT_VOICE_LC_HEADER | DT_TERMINATOR_LC => {
                     let from = if dt == DT_VOICE_LC_HEADER { LcFrom::Header } else { LcFrom::Terminator };
-                    out.push(SlotEvent::Lc { lc: Lc(cw[..9].try_into().unwrap()), from });
+                    out.push(SlotEvent::Lc { lc, from });
                     if dt == DT_TERMINATOR_LC {
                         self.pos = None;
                     }
                 }
-                ok
+                DT_CSBK | DT_MBC_HEADER => out.push(SlotEvent::Csbk { csbk: Csbk(bytes[..10].try_into().unwrap()), mbc: dt == DT_MBC_HEADER }),
+                DT_MBC_CONTINUATION => out.push(SlotEvent::MbcContinuation(bytes)),
+                DT_PI_HEADER => out.push(SlotEvent::Privacy { alg: bytes[0] & 7, key: bytes[2] }),
+                _ => {}
             }
-            DT_CSBK | DT_MBC_HEADER => {
-                let ok = fec::crc16_ok(&blk.bits, if dt == DT_CSBK { fec::MASK_CSBK } else { fec::MASK_MBC_HEADER });
-                if ok {
-                    out.push(SlotEvent::Csbk { csbk: Csbk(bytes[..10].try_into().unwrap()), mbc: dt == DT_MBC_HEADER });
-                }
-                ok
-            }
-            DT_MBC_CONTINUATION => {
-                out.push(SlotEvent::MbcContinuation(bytes));
-                blk.errs >= 0
-            }
-            DT_PI_HEADER => {
-                let ok = fec::crc16_ok(&blk.bits, fec::MASK_PI);
-                if ok {
-                    out.push(SlotEvent::Privacy { alg: bytes[0] & 7, key: bytes[2] });
-                }
-                ok
-            }
-            _ => blk.errs >= 0,
-        };
+        }
         if ok {
             self.color_code = Some(cc);
         } else {
@@ -327,6 +424,11 @@ impl Channel {
         let slot = self.slot_of(b);
         self.ev.clear();
         self.slots[slot as usize].burst(b, &mut self.ev);
+        // One carrier, one system: a keyed slot means both are.
+        let k = &mut self.slots;
+        if k[slot as usize].keyed != k[1 - slot as usize].keyed && k[slot as usize].keyed {
+            k[1 - slot as usize].keyed = true;
+        }
         out.extend(self.ev.drain(..).map(|e| (slot, e)));
     }
 }

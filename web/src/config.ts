@@ -77,11 +77,30 @@ export function enabledChannels(c: Config): Channel[] {
   return (c.conventional?.channels ?? []).filter((ch) => ch.enabled);
 }
 
+/** Trunk Recorder's trunked DMR settings: `lcnTable` { "<lcn>": Hz } and `channels` (candidate voice frequencies). */
+function dmrImport(sys: Record<string, unknown>): Partial<System> {
+  const out: Partial<System> = { type: "dmr" };
+  if (sys.lcnTable && typeof sys.lcnTable === "object") {
+    const t: Record<string, number> = {};
+    for (const [k, v] of Object.entries(sys.lcnTable as Record<string, unknown>)) if (typeof v === "number" && v > 0) t[k] = v;
+    if (Object.keys(t).length) out.lcnTable = t;
+  }
+  if (Array.isArray(sys.channels)) out.channels = (sys.channels as unknown[]).filter((v): v is number => typeof v === "number" && v > 0);
+  return out;
+}
+
 /** A system with defaults filled in (configs saved before a field existed). */
 export function normalizeSystem(x: Partial<System>): System {
   return {
     shortName: x.shortName ?? "sys1",
-    type: x.type === "smartnet" ? "smartnet" : "p25",
+    type: x.type === "smartnet" ? "smartnet" : x.type === "dmr" ? "dmr" : "p25",
+    ...(x.type === "dmr"
+      ? {
+          ...(x.lcnTable && Object.keys(x.lcnTable).length ? { lcnTable: x.lcnTable } : {}),
+          ...(x.channels?.length ? { channels: x.channels } : {}),
+          ...(typeof x.colorCode === "number" ? { colorCode: x.colorCode } : {}),
+        }
+      : {}),
     ...(x.type === "smartnet"
       ? {
           bandplan: x.bandplan ?? "800_standard",
@@ -469,7 +488,7 @@ export function importTrunkRecorderConfig(text: string, base: Config): { config:
     });
   }
   if (imported.length) cfg.sources = imported;
-  const p25 = systems.filter((x) => x.type === "p25" || x.type === "smartnet");
+  const p25 = systems.filter((x) => x.type === "p25" || x.type === "smartnet" || x.type === "dmr");
   const conv = systems.filter((x) => x.type === "conventional" || x.type === "conventionalP25" || x.type === "conventionalDMR");
   const skipped = systems.filter((x) => !p25.includes(x) && !conv.includes(x)).map((x) => `${String(x.shortName ?? "?")} (${String(x.type)})`);
   if (skipped.length) notes.push(`Skipped unsupported systems: ${skipped.join(", ")}.`);
@@ -499,6 +518,7 @@ export function importTrunkRecorderConfig(text: string, base: Config): { config:
         modulation: sys.modulation === "qpsk" || sys.modulation === "fsk4" ? sys.modulation : "auto",
         ...(typeof sys.recordUnknown === "boolean" ? { recordUnknown: sys.recordUnknown } : {}),
         ...(sys.type === "smartnet" ? smartnetImport(sys) : {}),
+        ...(sys.type === "dmr" ? dmrImport(sys) : {}),
       });
       cfg.systems.push(x);
       if (typeof sys.talkgroupsFile === "string") talkgroupFiles.push(`${x.shortName}: "${sys.talkgroupsFile}"`);

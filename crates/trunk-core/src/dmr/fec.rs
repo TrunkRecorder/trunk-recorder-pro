@@ -209,8 +209,9 @@ pub fn bptc196_encode(data: &[u8; 96]) -> [u8; 196] {
 // ── Embedded LC: BPTC(128,72) over bursts B–E ───────────────────────────────
 
 /// 72 LC bits from the 128 embedded bits of bursts B–E (air order, 32 per
-/// burst), or None when a row, the column parity or the checksum fails.
-pub fn embedded_lc_decode(raw: &[u8; 128]) -> Option<([u8; 72], u32)> {
+/// burst), bits corrected, and whether the 5-bit checksum agrees (a keyed
+/// system's never does); None when a row or the column parity fails.
+pub fn embedded_lc_decode(raw: &[u8; 128]) -> Option<([u8; 72], u32, bool)> {
     let mut m = [0u8; 128];
     for i in 0..127 {
         m[i] = raw[i * 8 % 127] & 1;
@@ -238,7 +239,7 @@ pub fn embedded_lc_decode(raw: &[u8; 128]) -> Option<([u8; 72], u32)> {
             sum = sum << 1 | m[r * 16 + 10] as u32;
         }
     }
-    (checksum5(&lc) == sum).then_some((lc, errs))
+    Some((lc, errs, checksum5(&lc) == sum))
 }
 
 pub fn embedded_lc_encode(lc: &[u8; 72]) -> [u8; 128] {
@@ -471,10 +472,10 @@ mod tests {
         for _ in 0..100 {
             let lc: [u8; 72] = std::array::from_fn(|_| (r() & 1) as u8);
             let mut raw = embedded_lc_encode(&lc);
-            assert_eq!(embedded_lc_decode(&raw).unwrap(), (lc, 0));
+            assert_eq!(embedded_lc_decode(&raw).unwrap(), (lc, 0, true));
             raw[(r() % 128) as usize] ^= 1;
             // One flipped bit: fixed by its row, or (row 7) caught by the column parity.
-            if let Some((got, _)) = embedded_lc_decode(&raw) {
+            if let Some((got, _, _)) = embedded_lc_decode(&raw) {
                 assert_eq!(got, lc);
             }
         }

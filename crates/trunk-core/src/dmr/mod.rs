@@ -11,10 +11,14 @@
 pub mod burst;
 pub mod fec;
 pub mod slot;
+#[cfg(test)]
+pub mod synth;
+pub mod trunking;
 pub mod voice;
 
 pub use burst::{Burst, Framer, SyncKind};
 pub use slot::{Channel, Csbk, Lc, LcFrom, SlotDecoder, SlotEvent};
+pub use trunking::{DmrConfig, Site, Variant};
 pub use voice::DmrVoice;
 
 /// One-sided channel filter cutoff, Hz (12.5 kHz channel, ±1.944 kHz deviation).

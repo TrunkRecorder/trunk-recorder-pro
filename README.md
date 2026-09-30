@@ -1,9 +1,10 @@
 # Trunk Recorder Pro
 
 A lightweight, self-contained trunked-radio recorder: point one or more
-RTL-SDRs (or, optionally, USRPs and Airspys) at one or more **P25** systems (Phase 1 and Phase 2 TDMA voice) and it follows their control channels and records
+RTL-SDRs (or, optionally, USRPs and Airspys) at one or more **P25** systems (Phase 1 and Phase 2 TDMA voice),
+**SmartNet** or **trunked DMR** systems and it follows their control channels and records
 every call it can hear as WAV + Trunk Recorder–compatible JSON. It also records
-**conventional channels** — analog FM and P25 — alongside a trunked system or
+**conventional channels** — analog FM, P25 and DMR — alongside a trunked system or
 on their own (see [Conventional channels](#conventional-channels)). It is written
 in Rust, with no GNU Radio or OP25 dependency; a desktop build (macOS, Linux,
 Windows), a browser build and a browser-based interface for both are the goal.
@@ -140,6 +141,47 @@ filter. A call heard on two sites is recorded by both (duplicate detection
 across sites is planned). Importing a Trunk Recorder config brings in all its
 P25 systems.
 
+### Trunked DMR
+
+A system of `type` `dmr` is a DMR site: Motorola Capacity Plus (and Linked
+Capacity Plus), Capacity Max, Connect Plus, or ETSI Tier III. Which one is
+found by listening. Every frequency listed is watched at once (a receiver
+costs a fraction of a percent of a core):
+
+- **Capacity Plus** has no grants: radios idle on a rest channel that moves
+  from repeater to repeater. List every repeater of the site as a control
+  channel; each call is found by its own link control (talkgroup, radio),
+  on whichever repeater and slot it is.
+- **Capacity Max, Connect Plus, Tier III** grant calls to logical channel
+  numbers. List the control channel, and the site's voice frequencies under
+  **Voice frequencies** (Trunk Recorder's `channels`). A channel's frequency
+  is learned from the air: a grant for an unknown channel, then that
+  talkgroup's link control on one of the voice frequencies a moment later,
+  ties the two together — saved like a band plan, so it is known from the
+  start next time. Tier III systems that announce their channels, or grant
+  with absolute frequencies, need no learning. Trunk Recorder's `lcnTable`
+  (`{ "101": 452275000, … }`) sets channels by hand and wins over what is
+  learned.
+
+A site's colour code is the control channel's (or `colorCode`); anything on
+another colour code, such as a neighbour on a listed frequency, is ignored.
+Each slot of a carrier records its own call (file names end in `.0` / `.1`,
+and the call JSON has the slot and `color_code`). Systems that key their
+checksums (Motorola / Hytera restricted access, as Capacity Max often does)
+are recognised, and their blocks are taken on their error correction alone.
+Encrypted calls are marked (the privacy bit or header) and not recorded,
+unless **Record encrypted calls** is on.
+
+```json
+{ "shortName": "capplus", "type": "dmr", "controlChannels": [463375000, 463750000, 464350000] }
+{ "shortName": "capmax", "type": "dmr", "controlChannels": [452175000], "channels": [452275000, 452300000],
+  "lcnTable": { "101": 452275000 } }
+```
+
+`trunk-pro tool dmrscan <capture> --center Hz --rate Hz` lists every DMR
+carrier in a capture with its colour code; `tool dmr … --freq Hz` decodes
+one (link control, CSBKs, `--bursts` for every burst, `--audio` a slot).
+
 ### Find my system
 
 Don't know the frequencies? Under **Find my system** in Setup, press **Scan**
@@ -219,9 +261,9 @@ the list:
 | Field | |
 |---|---|
 | `freqHz` | The channel frequency, in Hz (the interface takes MHz) |
-| `mode` | `fm` (analog narrowband FM, 12.5 kHz) or `p25` (P25 Phase 1, C4FM or CQPSK). Each channel has its own, so one list can mix them |
+| `mode` | `fm` (analog narrowband FM, 12.5 kHz), `p25` (P25 Phase 1, C4FM or CQPSK) or `dmr` (both slots, each recording its own calls). Each channel has its own, so one list can mix them |
 | `name`, `description`, `tag`, `group` | Written into the call JSON (Trunk Recorder's alpha tag, description, tag, category) |
-| `talkgroup` | The number calls are filed under (file names, JSON, uploaders). Default: the frequency in kHz, e.g. 154430 — stable however you reorder the list. P25 channels use the talkgroup the radio sends, when it sends one |
+| `talkgroup` | The number calls are filed under (file names, JSON, uploaders). Default: the frequency in kHz, e.g. 154430 — stable however you reorder the list. P25 and DMR channels use the talkgroup the radio sends, when it sends one |
 | `squelchDb` | How far above the noise floor a signal must be to open the channel, in dB. Per channel, or for all in the section (default 8). The noise floor is measured, so this doesn't depend on the dongle or gain the way Trunk Recorder's absolute squelch does |
 | `enabled` | `false` keeps a channel in the list without recording it |
 | `channelFile` (section) | A CSV to read the channels from instead of `channels` (desktop) |
@@ -239,7 +281,7 @@ TG Number,Frequency,Mode,Alpha Tag,Description,Tag,Category,Squelch dB,Enable
 | Column | |
 |---|---|
 | `Frequency` | MHz with a decimal point (`154.4300`), or Hz (`154430000`) |
-| `Mode` | `fm` or `p25` (also `analog` / `digital`, `A` / `D`); empty = `fm` |
+| `Mode` | `fm`, `p25` or `dmr` (also `analog` / `digital`, `A` / `D`); empty = `fm` |
 | `TG Number` | Empty = the frequency in kHz |
 | `Alpha Tag`, `Description`, `Tag`, `Category` | Names for the call JSON |
 | `Squelch dB` | dB above the noise floor, 3–40; empty = the default |

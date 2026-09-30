@@ -761,6 +761,78 @@ export function siteText(id: SiteIdentity): string {
 }
 
 /** A SmartNet system's band plan (Trunk Recorder's settings) and default voice mode. */
+/** "101=452.275, 102=452.3" ↔ { "101": 452275000, … }. */
+function lcnText(t: Record<string, number> | undefined): string {
+  return Object.entries(t ?? {})
+    .map(([k, v]) => `${k}=${(v / 1e6).toFixed(5).replace(/0+$/, "")}`)
+    .join(", ");
+}
+function parseLcn(s: string): Record<string, number> {
+  const t: Record<string, number> = {};
+  for (const part of s.split(/[,;\s]+/)) {
+    const m = /^(\d+)=(\d+(?:\.\d+)?)$/.exec(part.trim());
+    if (m) {
+      const v = Number(m[2]);
+      t[m[1]] = v < 1e5 ? Math.round(v * 1e6) : v;
+    }
+  }
+  return t;
+}
+
+function DmrFields(props: { sys: System; edit: (fn: (x: System) => void) => void }) {
+  const { sys, edit } = props;
+  const [chText, setChText] = useState(() => (sys.channels ?? []).map((f) => (f / 1e6).toFixed(5)).join(", "));
+  const [lcn, setLcn] = useState(() => lcnText(sys.lcnTable));
+  return (
+    <>
+      <Field label="Voice frequencies, MHz" hint="Tier III / Capacity Max / Connect Plus: the site's voice channels. Each grant's channel is learned from which one the talkgroup comes up on." wide>
+        <input
+          className="mono"
+          value={chText}
+          placeholder="452.275, 452.300"
+          onChange={(e) => {
+            setChText(e.target.value);
+            const list = parseFreqList(e.target.value);
+            edit((x) => {
+              if (list.length) x.channels = list;
+              else delete x.channels;
+            });
+          }}
+        />
+      </Field>
+      <Field label="Colour code" hint="Blank: the control channel's.">
+        <input
+          className="mono"
+          value={sys.colorCode ?? ""}
+          placeholder="auto"
+          onChange={(e) =>
+            edit((x) => {
+              const v = parseInt(e.target.value, 10);
+              if (v >= 0 && v <= 15) x.colorCode = v;
+              else delete x.colorCode;
+            })
+          }
+        />
+      </Field>
+      <Field label="Channel table (optional)" hint="Logical channel = MHz, e.g. 101=452.275. Wins over what is learned." wide>
+        <input
+          className="mono"
+          value={lcn}
+          placeholder="learned from the air"
+          onChange={(e) => {
+            setLcn(e.target.value);
+            const t = parseLcn(e.target.value);
+            edit((x) => {
+              if (Object.keys(t).length) x.lcnTable = t;
+              else delete x.lcnTable;
+            });
+          }}
+        />
+      </Field>
+    </>
+  );
+}
+
 function SmartnetFields(props: { sys: System; edit: (fn: (x: System) => void) => void }) {
   const { sys, edit } = props;
   const custom = (sys.bandplan ?? "").startsWith("400");
@@ -878,28 +950,46 @@ function SystemCard(props: { c: Config; i: number }) {
         <Field label="Short name" hint={dupName ? "Another system has this name — each needs its own folder" : "Folder name for this system's calls"}>
           <input value={sys.shortName} onChange={(e) => edit((x) => void (x.shortName = e.target.value.replace(/[^\w.-]/g, "")))} />
         </Field>
-        <Field label="Type" hint={sys.type === "smartnet" ? "Motorola SmartNet / SmartZone control channel; voice is P25 or analog FM, per grant." : "P25 Phase 1 control channel (Phase 1 and 2 voice)."}>
+        <Field
+          label="Type"
+          hint={
+            sys.type === "smartnet"
+              ? "Motorola SmartNet / SmartZone control channel; voice is P25 or analog FM, per grant."
+              : sys.type === "dmr"
+                ? "Trunked DMR: Capacity Plus, Capacity Max, Connect Plus or Tier III — found by listening."
+                : "P25 Phase 1 control channel (Phase 1 and 2 voice)."
+          }
+        >
           <select
             value={sys.type}
             onChange={(e) =>
               edit((x) => {
-                x.type = e.target.value === "smartnet" ? "smartnet" : "p25";
+                x.type = e.target.value === "smartnet" ? "smartnet" : e.target.value === "dmr" ? "dmr" : "p25";
                 if (x.type === "smartnet" && !x.bandplan) x.bandplan = "800_reband";
               })
             }
           >
             <option value="p25">P25</option>
             <option value="smartnet">SmartNet / SmartZone</option>
+            <option value="dmr">DMR (trunked)</option>
           </select>
         </Field>
-        <Field label={sys.type === "smartnet" ? "P25 voice modulation" : "Modulation"} hint="Auto runs C4FM and CQPSK receivers side by side and keeps the best of each frame.">
+        {sys.type !== "dmr" && <Field label={sys.type === "smartnet" ? "P25 voice modulation" : "Modulation"} hint="Auto runs C4FM and CQPSK receivers side by side and keeps the best of each frame.">
           <select value={sys.modulation} onChange={(e) => edit((x) => void (x.modulation = e.target.value as System["modulation"]))}>
             <option value="auto">Auto (both receivers)</option>
             <option value="fsk4">C4FM (fsk4)</option>
             <option value="qpsk">CQPSK / LSM simulcast (qpsk)</option>
           </select>
-        </Field>
-        <Field label="Control channels, MHz" hint="Comma separated. The first one in range is tried first; the rest are fallbacks." wide>
+        </Field>}
+        <Field
+          label={sys.type === "dmr" ? "Site frequencies, MHz" : "Control channels, MHz"}
+          hint={
+            sys.type === "dmr"
+              ? "All watched at once. Capacity Plus: every repeater of the site. Others: the control channel(s)."
+              : "Comma separated. The first one in range is tried first; the rest are fallbacks."
+          }
+          wide
+        >
           <input
             className="mono"
             value={ccText}
@@ -955,6 +1045,7 @@ function SystemCard(props: { c: Config; i: number }) {
           <input ref={tgRef} type="file" accept=".csv,text/csv" hidden onChange={(e) => void onTalkgroups(e.target.files?.[0])} />
         </Field>
         {sys.type === "smartnet" && <SmartnetFields sys={sys} edit={edit} />}
+        {sys.type === "dmr" && <DmrFields sys={sys} edit={edit} />}
         <Field label="Talkgroups not in the CSV">
           <select
             value={sys.recordUnknown === true ? "yes" : sys.recordUnknown === false ? "no" : ""}

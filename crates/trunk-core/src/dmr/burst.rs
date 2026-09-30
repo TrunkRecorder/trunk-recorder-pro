@@ -161,6 +161,17 @@ impl Burst {
         std::array::from_fn(|i| self.bit(if i < 98 { i } else { i - 98 + 166 }))
     }
 
+    /// Bit `i` as a soft value: its reliability, + for a 1, − for a 0.
+    pub fn soft(&self, i: usize) -> f32 {
+        if self.bit(i) != 0 { self.rel[i].max(1e-3) } else { -self.rel[i].max(1e-3) }
+    }
+    pub fn embedded_soft(&self) -> [f32; 32] {
+        std::array::from_fn(|i| self.soft(116 + i))
+    }
+    pub fn info196_soft(&self) -> [f32; 196] {
+        std::array::from_fn(|i| self.soft(if i < 98 { i } else { i - 98 + 166 }))
+    }
+
     /// Voice frame `k` (0..3): its 36 dibits and 72 bit reliabilities.
     pub fn voice_frame(&self, k: usize) -> ([u8; 36], [f32; 72]) {
         let at = |j: usize| match k {

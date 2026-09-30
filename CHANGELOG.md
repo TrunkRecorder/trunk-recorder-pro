@@ -22,6 +22,15 @@ platform, with no GNU Radio, OP25 or other runtime dependencies.
   WMATA's OBT system: 90–99 % of OSWs where Trunk Recorder gets 40–60 %.
   SmartNet systems work alongside P25 ones (each system picks its type), and
   Trunk Recorder configs with SmartNet systems import.
+- **DMR**: conventional channels (`mode` "dmr", each slot its own calls,
+  with the colour code) and trunked sites (`type` "dmr"): Capacity Plus and
+  Linked Capacity Plus followed by their link control on every repeater,
+  Capacity Max / Connect Plus / Tier III by their grants. Logical channel
+  frequencies are learned from the air (or Trunk Recorder's `lcnTable`);
+  keyed checksums (restricted access) are recognised. Repeated blocks and
+  embedded link control are soft-combined, which recovers most of them on a
+  weak site. Voice through the Phase 2 AMBE+2 decoder. Trunk Recorder DMR
+  configs import. `tool dmrscan` / `tool dmr` for captures.
 - **Find my system finds SmartNet** too, and learns its band plan from the
   air (which carrier comes up when a channel number is granted) — on WMATA,
   exactly Trunk Recorder's hand-made `400_custom` plan, all four control

@@ -315,7 +315,7 @@ impl CallManager {
             sources: if m.source > 0 { vec![CallSource { src: m.source as u32, time_s: m.time_s, emergency: m.emergency }] } else { vec![] },
             talkgroup_info: tg.clone(),
             patched_talkgroups: self.patches.members_of(m.talkgroup),
-            color_code: None,
+            color_code: m.color_code,
         };
         Self::admit(&mut c, &self.cfg, &self.talkgroups, host);
         ev.push(CallEvent::Start(c.clone()));

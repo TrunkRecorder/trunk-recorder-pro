@@ -61,8 +61,16 @@ export interface SmartnetBandplan {
 
 export interface System extends Partial<SmartnetBandplan> {
   shortName: string;
-  /** "smartnet": a Motorola SmartNet / SmartZone control channel (voice P25 or analog FM). */
-  type: "p25" | "smartnet";
+  /** "smartnet": a Motorola SmartNet / SmartZone control channel (voice P25 or analog FM).
+   *  "dmr": a trunked DMR site (Capacity Plus, Capacity Max, Connect Plus, Tier III); every
+   *  control channel and `channels` frequency is watched. */
+  type: "p25" | "smartnet" | "dmr";
+  /** DMR: logical channel number → frequency, Hz (Trunk Recorder's lcnTable); the rest is learned. */
+  lcnTable?: Record<string, number>;
+  /** DMR: voice frequencies to watch besides the control channels. */
+  channels?: number[];
+  /** DMR: only this colour code. */
+  colorCode?: number;
   /** SmartNet: the voice of a talkgroup never heard granted. */
   defaultMode?: "digital" | "analog";
   enabled: boolean;

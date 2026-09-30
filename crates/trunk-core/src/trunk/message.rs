@@ -90,6 +90,8 @@ pub struct Message {
     /// SmartNet: the voice channel is analog FM (P25 otherwise).
     pub analog: bool,
     pub patch: Option<Patch>,
+    /// DMR: the colour code; a DMR grant's slot is `tdma_slot`.
+    pub color_code: Option<u8>,
     pub opcode: u8,
     /// Human-readable summary, as Trunk Recorder logs it.
     pub meta: String,
