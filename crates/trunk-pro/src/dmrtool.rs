@@ -54,7 +54,7 @@ pub fn run_scan(a: &Args) {
         .map(|k| {
             let hz = k as f64 * step;
             let (head, _, _) = chz.add_head(hz - center, dmr::CHANNEL_CUTOFF_HZ, 0.0);
-            Ch { hz, head, rx: C4fm::new(rate), framer: Framer::default(), chan: dmr::Channel::default(), syncs: BTreeMap::new(), cc: BTreeMap::new(), lcs: 0, voice: 0 }
+            Ch { hz, head, rx: C4fm::dmr(rate), framer: Framer::default(), chan: dmr::Channel::default(), syncs: BTreeMap::new(), cc: BTreeMap::new(), lcs: 0, voice: 0 }
         })
         .collect();
     let t0 = Instant::now();
@@ -118,7 +118,7 @@ pub fn run(a: &Args) {
     let mut chz = Channelizer::new(fs, 24_000.0, 0.1);
     let rate = chz.output_rate();
     let (head, _, _) = chz.add_head(freq - center, dmr::CHANNEL_CUTOFF_HZ, 0.0);
-    let mut rx = C4fm::new(rate);
+    let mut rx = C4fm::dmr(rate);
     let mut framer = Framer::default();
     let mut chan = dmr::Channel::default();
     let mut vocoders = [mbe::Decoder::new(mbe::lcg(1), mbe::Profile::Enhanced), mbe::Decoder::new(mbe::lcg(2), mbe::Profile::Enhanced)];

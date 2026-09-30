@@ -13,7 +13,7 @@ use num_complex::Complex32;
 use super::frame::{Frame, Framer, FramerOptions, LDU1, LDU2, TSDU};
 use super::tsbk::{tsbk_last, tsbk_ok, trellis_viterbi, Tsbk};
 use super::voice::{decode_ldu1_lc, decode_ldu2_es, ldu_imbe, EncryptionSync, ImbeParams, LinkControl};
-use crate::dsp::c4fm::C4fm;
+use crate::dsp::c4fm::{C4fm, C4fmOptions};
 use crate::dsp::cqpsk::{self, Cqpsk};
 use crate::dsp::{Receiver, Symbol};
 
@@ -66,6 +66,11 @@ pub struct Bank {
 
 impl Bank {
     pub fn new(rate: f64, cfg: BankConfig) -> Self {
+        Self::with_c4fm(rate, cfg, C4fmOptions::default())
+    }
+
+    /// With the C4FM receiver's variant options (weak-signal comparisons).
+    pub fn with_c4fm(rate: f64, cfg: BankConfig, c4fm: C4fmOptions) -> Self {
         let mut rx = Vec::new();
         let mut add = |d: Box<dyn Receiver + Send>| rx.push(Rx { demod: d, framer: Framer::new(cfg.framer), progress: 0.0, frames: 0 });
         if cfg.cqpsk {
@@ -75,7 +80,7 @@ impl Bank {
             add(Box::new(Cqpsk::new(rate, cqpsk::Options { eq_taps: cfg.eq_taps, eq_mu: cfg.eq_mu, ..Default::default() })));
         }
         if cfg.c4fm {
-            add(Box::new(C4fm::new(rate)));
+            add(Box::new(C4fm::with_options(rate, c4fm)));
         }
         Bank {
             rx,

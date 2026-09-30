@@ -19,7 +19,89 @@ use super::{Receiver, Symbol};
 
 const BLOCK: u64 = 240;
 
+/// Receiver variants, for weak-signal comparisons (`tool snr --variant`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct C4fmOptions {
+    /// Boxcar width after the discriminator, symbols.
+    pub box_symbols: f64,
+    /// Root-raised-cosine matched filter of this roll-off instead of the boxcar.
+    pub rrc: Option<f64>,
+    /// Clamp the discriminator at this multiple of the outer rail (click suppression).
+    pub clip: Option<f32>,
+    /// Levels from the four clusters' means instead of the 2 % / 98 % quantiles
+    /// (noise widens the quantiles, so the outer threshold ends up too high).
+    pub rail_means: bool,
+}
+
+/// P25: an RRC matched filter (α 0.5) and cluster-mean levels. Against the
+/// boxcar and quantile levels, 3.6 dB less signal for half the IMBE codewords
+/// on WMATA's C4FM voice (`tool snr`); no change on simulcast, where the
+/// CQPSK receivers carry it.
+impl Default for C4fmOptions {
+    fn default() -> Self {
+        C4fmOptions { box_symbols: 0.9, rrc: Some(0.5), clip: None, rail_means: true }
+    }
+}
+
+impl C4fmOptions {
+    /// DMR: the RRC matching its transmitter's (α 0.2), cluster-mean levels —
+    /// about 6 dB better than the P25-era boxcar and quantile levels.
+    pub fn dmr() -> Self {
+        C4fmOptions { rrc: Some(0.2), ..Default::default() }
+    }
+
+    /// The first receiver (boxcar, quantile levels), for comparisons.
+    pub fn legacy() -> Self {
+        C4fmOptions { box_symbols: 0.9, rrc: None, clip: None, rail_means: false }
+    }
+
+    /// Apply one `name[=value]` setting; false if unknown.
+    pub fn set(&mut self, p: &str) -> bool {
+        let (k, v) = p.split_once('=').map_or((p, None), |(k, v)| (k, v.parse::<f64>().ok()));
+        match k {
+            "box" => {
+                self.box_symbols = v.unwrap_or(0.9);
+                self.rrc = None;
+            }
+            "quantile" => self.rail_means = false,
+            "legacy" => *self = Self::legacy(),
+            "rrc" => self.rrc = Some(v.unwrap_or(0.2)),
+            "clip" => self.clip = Some(v.unwrap_or(1.5) as f32),
+            "means" => self.rail_means = true,
+            _ => return false,
+        }
+        true
+    }
+}
+
+/// Root-raised-cosine taps (`span` symbols, `sps` samples per symbol), unit DC gain.
+fn rrc_taps(alpha: f64, sps: f64, span: usize) -> Vec<f32> {
+    let n = (span as f64 * sps).round() as usize | 1;
+    let m = (n - 1) as f64 / 2.0;
+    let mut h: Vec<f64> = (0..n)
+        .map(|i| {
+            let t = (i as f64 - m) / sps;
+            if t.abs() < 1e-9 {
+                1.0 - alpha + 4.0 * alpha / PI
+            } else if (t.abs() - 1.0 / (4.0 * alpha)).abs() < 1e-9 {
+                alpha / 2f64.sqrt() * ((1.0 + 2.0 / PI) * (PI / (4.0 * alpha)).sin() + (1.0 - 2.0 / PI) * (PI / (4.0 * alpha)).cos())
+            } else {
+                ((PI * t * (1.0 - alpha)).sin() + 4.0 * alpha * t * (PI * t * (1.0 + alpha)).cos()) / (PI * t * (1.0 - (4.0 * alpha * t).powi(2)))
+            }
+        })
+        .collect();
+    let dc: f64 = h.iter().sum();
+    for v in h.iter_mut() {
+        *v /= dc;
+    }
+    h.into_iter().map(|v| v as f32).collect()
+}
+
 pub struct C4fm {
+    opts: C4fmOptions,
+    /// Matched filter taps (None: the boxcar); its delay, samples.
+    taps: Option<Vec<f32>>,
+    delay: f64,
     fs: f64,
     sps: f64,
     boxw: usize,
@@ -43,11 +125,26 @@ pub struct C4fm {
 
 impl C4fm {
     pub fn new(fs: f64) -> Self {
+        Self::with_options(fs, C4fmOptions::default())
+    }
+
+    /// For DMR (4FSK at 4800 baud, RRC-shaped).
+    pub fn dmr(fs: f64) -> Self {
+        Self::with_options(fs, C4fmOptions::dmr())
+    }
+
+    pub fn with_options(fs: f64, opts: C4fmOptions) -> Self {
         let sps = fs / 4800.0;
+        let boxw = ((sps * opts.box_symbols).round() as usize).max(1);
+        let taps = opts.rrc.map(|a| rrc_taps(a, sps, 8));
+        let delay = taps.as_ref().map_or((boxw - 1) as f64 / 2.0, |t| (t.len() - 1) as f64 / 2.0);
         C4fm {
+            opts,
+            taps,
+            delay,
             fs,
             sps,
-            boxw: ((sps * 0.9).round() as usize).max(1),
+            boxw,
             steps: ((sps * 2.0).round() as usize).max(8),
             last: Complex32::default(),
             hist: VecDeque::new(),
@@ -132,7 +229,7 @@ impl C4fm {
                 break;
             }
             let v = self.at(t);
-            self.slice(v, t - (self.boxw - 1) as f64 / 2.0, out);
+            self.slice(v, t - self.delay, out);
             self.next_sym += 1;
         }
     }
@@ -155,6 +252,26 @@ impl C4fm {
             self.center = (q_hi + q_lo) / 2.0;
             let outer = (q_hi - q_lo) / 2.0;
             self.thr = if outer > 300.0 { outer * 2.0 / 3.0 } else { 1200.0 };
+            if self.opts.rail_means && outer > 300.0 {
+                // Refine from the clusters: a few rounds of assigning symbols to
+                // the nearest level and taking each level's mean.
+                for _ in 0..3 {
+                    let (mut s, mut n) = ([0.0f64; 4], [0u32; 4]);
+                    for &v in &self.tmp {
+                        let x = v - self.center;
+                        let k = if x >= self.thr { 3 } else if x >= 0.0 { 2 } else if x >= -self.thr { 1 } else { 0 };
+                        s[k] += v as f64;
+                        n[k] += 1;
+                    }
+                    if n.iter().any(|&c| c < 8) {
+                        break;
+                    }
+                    let m: Vec<f32> = (0..4).map(|k| (s[k] / n[k] as f64) as f32).collect();
+                    self.center = (m[0] + m[3]) / 2.0;
+                    // Thresholds halfway between the inner and outer levels.
+                    self.thr = ((m[2] + m[3]) / 2.0 - self.center + self.center - (m[0] + m[1]) / 2.0) / 2.0;
+                }
+            }
         }
         let x = v - self.center;
         let dibit = if x >= self.thr { 0b01 } else if x >= 0.0 { 0b00 } else if x >= -self.thr { 0b10 } else { 0b11 };
@@ -182,15 +299,32 @@ impl C4fm {
 impl Receiver for C4fm {
     fn push(&mut self, iq: &[Complex32], out: &mut Vec<Symbol>) {
         let k = (self.fs / (2.0 * PI)) as f32;
+        // Clicks: a noise-driven phase wrap gives a spike far outside the rails.
+        let lim = self.opts.clip.map(|c| c * (self.thr * 1.5).max(1500.0));
         for &x in iq {
-            let f = (x * self.last.conj()).arg() * k;
+            let mut f = (x * self.last.conj()).arg() * k;
             self.last = x;
-            self.hist.push_back(f);
-            self.acc += f as f64;
-            if self.hist.len() > self.boxw {
-                self.acc -= self.hist.pop_front().unwrap() as f64;
+            if let Some(l) = lim {
+                f = (f - self.center).clamp(-l, l) + self.center;
             }
-            self.y.push((self.acc / self.hist.len() as f64) as f32);
+            self.hist.push_back(f);
+            match &self.taps {
+                None => {
+                    self.acc += f as f64;
+                    if self.hist.len() > self.boxw {
+                        self.acc -= self.hist.pop_front().unwrap() as f64;
+                    }
+                    self.y.push((self.acc / self.hist.len() as f64) as f32);
+                }
+                Some(t) => {
+                    if self.hist.len() > t.len() {
+                        self.hist.pop_front();
+                    }
+                    let off = t.len() - self.hist.len();
+                    let v: f32 = self.hist.iter().zip(&t[off..]).map(|(a, b)| a * b).sum();
+                    self.y.push(v);
+                }
+            }
         }
         while ((self.y_base + self.y.len() as u64) as f64) > ((self.next_block + 1) * BLOCK) as f64 * self.sps + self.sps + 2.0 {
             self.block_phase(self.next_block);

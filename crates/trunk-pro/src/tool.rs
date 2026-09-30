@@ -42,6 +42,9 @@ pub fn run(a: &Args) {
     if mode == "dmr" {
         return crate::dmrtool::run(a);
     }
+    if mode == "snr" {
+        return crate::snrtool::run(a);
+    }
     if mode == "dmrscan" {
         return crate::dmrtool::run_scan(a);
     }

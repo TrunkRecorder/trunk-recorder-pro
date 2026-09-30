@@ -324,7 +324,7 @@ impl Conventional {
             },
             ConvMode::Dmr => Rx::Dmr {
                 meter: ChannelFilter::new(rate),
-                rx: C4fm::new(rate),
+                rx: C4fm::dmr(rate),
                 voice: Box::new(DmrVoice::new(ch.cfg.freq_hz as u32)),
                 syms: Vec::new(),
                 t0: start_sample as f64 / chz.fs(),

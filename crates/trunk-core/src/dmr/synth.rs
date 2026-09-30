@@ -177,7 +177,7 @@ mod tests {
         let d = dibits(&tx());
         let mut ph = 0.0;
         let iq = modulate(&d, 24_000.0, 0.0, 1.0, &mut ph);
-        let mut rx = C4fm::new(24_000.0);
+        let mut rx = C4fm::dmr(24_000.0);
         let mut syms = Vec::new();
         rx.push(&iq, &mut syms);
         let (mut f, mut ch) = (Framer::default(), Channel::default());

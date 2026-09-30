@@ -167,6 +167,8 @@ pub struct SlotDecoder {
     /// in a row fail their CRC; cleared by [`UNKEYED_AFTER`] that pass.
     pub keyed: bool,
     keyed_votes: i32,
+    /// Soft-combine repeated blocks and embedded LC (off: for comparisons).
+    pub no_combining: bool,
 }
 
 /// Copies of a repeated block (or superframes of an embedded LC) summed at most.
@@ -247,7 +249,11 @@ impl SlotDecoder {
                     let raw: [u8; 128] = std::array::from_fn(|i| (soft[i] > 0.0) as u8);
                     embedded_lc_decode(&raw).filter(|&(_, _, sum_ok)| sum_ok || keyed).map(|(bits, _, _)| Lc(pack(&bits).try_into().unwrap()))
                 };
+                let combine = !self.no_combining;
                 let lc = try_lc(&cur).or_else(|| {
+                    if !combine {
+                        return None;
+                    }
                     let (acc, n) = match self.emb_acc.take() {
                         Some((mut acc, n)) if n < MAX_COMBINED => {
                             for (a, c) in acc.iter_mut().zip(&cur) {
@@ -333,7 +339,7 @@ impl SlotDecoder {
         };
         let mut ok = accept(checked, blk.errs);
         let mut blk = blk;
-        if checked.is_some() {
+        if checked.is_some() && !self.no_combining {
             if ok {
                 self.data_acc = None;
             } else {

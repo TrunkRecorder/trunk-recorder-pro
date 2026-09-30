@@ -50,6 +50,7 @@
 //! ```
 
 mod dmrtool;
+mod snrtool;
 mod plugins;
 mod radio;
 mod runtime;

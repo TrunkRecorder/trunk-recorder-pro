@@ -144,7 +144,7 @@ impl Site {
             .into_iter()
             .map(|hz| Carrier {
                 hz,
-                rx: C4fm::new(rate),
+                rx: C4fm::dmr(rate),
                 framer: Framer::default(),
                 chan: Channel::default(),
                 syms: Vec::new(),

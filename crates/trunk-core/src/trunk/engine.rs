@@ -451,7 +451,7 @@ impl SysHost<'_> {
             let noise = s.chz.noise_in_band(prof[slice].max(1e-30), ChannelFilter::noise_bandwidth());
             Voice::Analog { fm: Nbfm::new(rate), open: (noise * 10f64.powf(ANALOG_SQUELCH_DB / 10.0)) as f32 }
         } else if call.color_code.is_some() {
-            Voice::Dmr { rx: C4fm::new(rate), voice: Box::new(DmrVoice::new(seed)), syms: Vec::new() }
+            Voice::Dmr { rx: C4fm::dmr(rate), voice: Box::new(DmrVoice::new(seed)), syms: Vec::new() }
         } else if call.phase2_tdma {
             let mut tracker = TdmaTracker::new(seed);
             tracker.soft = self.bank.soft;
