@@ -1,0 +1,11 @@
+[package]
+name = "trunk-core"
+description = "Trunked radio (P25) decoding and call recording: channelizer, receivers, FEC, vocoder, trunking. Platform-independent (native and WebAssembly)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rustfft.workspace = true
+num-complex.workspace = true

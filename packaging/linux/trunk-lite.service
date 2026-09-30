@@ -1,0 +1,24 @@
+# Run Trunk Recorder Lite as a background service (headless machines).
+#
+# As your user (settings in ~/.config/trunk-lite, recordings in ~/TrunkRecorderLite):
+#   mkdir -p ~/.config/systemd/user && cp trunk-lite.service ~/.config/systemd/user/
+#   systemctl --user enable --now trunk-lite
+#   sudo loginctl enable-linger "$USER"      # keep it running when logged out
+#
+# The interface listens on localhost:8080. To reach it from another machine,
+# add --bind 0.0.0.0 below (there is no login: only on a network you trust),
+# or use an SSH tunnel: ssh -L 8080:localhost:8080 <this machine>.
+# Configure it once in the browser; with "Start recording when the app starts"
+# on (or --start below), recording resumes after every restart.
+
+[Unit]
+Description=Trunk Recorder Lite
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/trunk-lite serve --no-open
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

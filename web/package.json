@@ -1,0 +1,27 @@
+{
+  "name": "trunk-recorder-lite-web",
+  "private": true,
+  "type": "module",
+  "description": "Browser interface for Trunk Recorder Lite (embedded in the trunk-lite binary).",
+  "license": "GPL-3.0-or-later",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "wasm": "cargo build -p trunk-web --target wasm32-unknown-unknown --profile dist && wasm-bindgen --target web --out-dir src/web/pkg --out-name trunk_web ../target/wasm32-unknown-unknown/dist/trunk_web.wasm",
+    "dev:web": "vite --mode web",
+    "build:web": "tsc --noEmit && vite build --mode web"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.4",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11"
+  }
+}

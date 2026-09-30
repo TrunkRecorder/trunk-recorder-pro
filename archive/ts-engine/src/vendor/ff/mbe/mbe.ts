@@ -33,7 +33,10 @@
 //       - every voiced harmonic GLIDES between frames (linear amplitude,
 //         quadratic phase) when the pitch moves < 20 %, instead of being
 //         cross-faded as two sinusoids (beaded upper harmonics);
-//       - a +3 dB presence lift from 2.2 kHz to 3.7 kHz.
+//       - a +3 dB presence lift from 2.2 kHz to 3.7 kHz;
+//       - zero-mean high-band noise on unvoiced harmonics (mbelib's adds a DC
+//         offset that thumps at every voicing change — ours, not Trunk
+//         Recorder's).
 //     Not carried over, because mbelib already does it or never had the bug:
 //     the unprotected-bits shift (our IMBE bits are verified against mbelib),
 //     a per-frame S_E (mbelib has no adaptive smoothing), the short-period
@@ -294,6 +297,12 @@ export function mbe_synthesizeSpeechf(
 ): void {
   const N = 160;
   const randPhase = () => rand() * (Math.PI * 2) - Math.PI;
+  // mbelib's high-band noise is uvrand·rand(), rand() uniform on [0, 1]: white
+  // noise PLUS a DC offset of half its peak, summed over every unvoiced
+  // harmonic above 2.7 kHz. Unvoiced frames come out shifted positive, and the
+  // offset steps each time voicing changes: a low thump on every fricative.
+  // "enhanced" keeps the same noise without the offset.
+  const uvNoise = opts ? () => rand() - 0.5 : rand;
   const uvthresholdf = 2700;
   const uvthreshold = (uvthresholdf * Math.PI) / 4000;
   // voiced/unvoiced/gain settings
@@ -368,7 +377,7 @@ export function mbe_synthesizeSpeechf(
         let C3 = 0;
         for (let i = 0; i < uvquality; i++) {
           C3 += Math.cos(cw0 * n * (l + i * uvstep - uvoffset) + rphase[i]);
-          if (cw0l > uvthreshold) C3 += (cw0l - uvthreshold) * uvrand * rand();
+          if (cw0l > uvthreshold) C3 += (cw0l - uvthreshold) * uvrand * uvNoise();
         }
         C3 = C3 * uvsine * Ws[n] * mNew[l] * qfactor;
         out[n] += C1 + C3;
@@ -381,7 +390,7 @@ export function mbe_synthesizeSpeechf(
         let C3 = 0;
         for (let i = 0; i < uvquality; i++) {
           C3 += Math.cos(pw0 * n * (l + i * uvstep - uvoffset) + rphase[i]);
-          if (pw0l > uvthreshold) C3 += (pw0l - uvthreshold) * uvrand * rand();
+          if (pw0l > uvthreshold) C3 += (pw0l - uvthreshold) * uvrand * uvNoise();
         }
         C3 = C3 * uvsine * Ws[n + N] * mOld[l] * qfactor;
         out[n] += C1 + C3;
@@ -413,13 +422,13 @@ export function mbe_synthesizeSpeechf(
         let C3 = 0;
         for (let i = 0; i < uvquality; i++) {
           C3 += Math.cos(pw0 * n * (l + i * uvstep - uvoffset) + rphase[i]);
-          if (pw0l > uvthreshold) C3 += (pw0l - uvthreshold) * uvrand * rand();
+          if (pw0l > uvthreshold) C3 += (pw0l - uvthreshold) * uvrand * uvNoise();
         }
         C3 = C3 * uvsine * Ws[n + N] * mOld[l] * qfactor;
         let C4 = 0;
         for (let i = 0; i < uvquality; i++) {
           C4 += Math.cos(cw0 * n * (l + i * uvstep - uvoffset) + rphase2[i]);
-          if (cw0l > uvthreshold) C4 += (cw0l - uvthreshold) * uvrand * rand();
+          if (cw0l > uvthreshold) C4 += (cw0l - uvthreshold) * uvrand * uvNoise();
         }
         C4 = C4 * uvsine * Ws[n] * mNew[l] * qfactor;
         out[n] += C3 + C4;

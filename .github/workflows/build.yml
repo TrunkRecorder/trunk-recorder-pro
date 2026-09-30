@@ -1,0 +1,204 @@
+# Test, build and package Trunk Recorder Lite for every platform. A tag v*
+# (matching the version in Cargo.toml) publishes a GitHub release with the
+# packages, SHA256SUMS and that version's CHANGELOG.md section as notes.
+#
+# Packages (packaging/package.sh): macOS DMG (the app) + CLI tarball,
+# Linux x86-64 / ARM64 tarballs with an installer (glibc ≥ 2.28, not static:
+# the optional USRP / Airspy drivers are loaded at run time), Windows zip,
+# and the browser (WebAssembly) build.
+#
+# macOS signing is optional. With these repository secrets the app is signed
+# with a Developer ID and the DMG notarized; without them it is signed ad hoc
+# (users confirm it once in System Settings → Privacy & Security):
+#   MACOS_CERT_P12 (base64 .p12), MACOS_CERT_PASSWORD, MACOS_SIGN_IDENTITY,
+#   APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD
+name: build
+
+on:
+  push:
+    branches: [main, rust-core]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  meta:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        name: Version (the tag, or Cargo.toml's + -dev.<commit>)
+        run: |
+          cargo_v=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            v=${GITHUB_REF_NAME#v}
+            if [[ "$v" != "$cargo_v" && "$v" != "$cargo_v"-* ]]; then
+              echo "::error::tag $GITHUB_REF_NAME doesn't match Cargo.toml version $cargo_v"
+              exit 1
+            fi
+          else
+            v="$cargo_v-dev.${GITHUB_SHA::7}"
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+  web:
+    needs: meta
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm, cache-dependency-path: web/package-lock.json }
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: wasm32-unknown-unknown }
+      - uses: Swatinem/rust-cache@v2
+        with: { key: wasm }
+      # Must match the wasm-bindgen version in Cargo.lock.
+      - uses: taiki-e/install-action@v2
+        with: { tool: wasm-bindgen@0.2.129 }
+      - run: npm ci && npm run wasm && npm run build && npm run build:web
+        working-directory: web
+      - uses: actions/upload-artifact@v4
+        with: { name: web-dist, path: web/dist }
+      - name: Third-party notices (every platform's crates + the bundled npm packages)
+        run: |
+          cargo fetch --locked
+          mkdir -p pkg && python3 scripts/third_party_notices.py > pkg/THIRD-PARTY-NOTICES.txt
+      - uses: actions/upload-artifact@v4
+        with: { name: notices, path: pkg/THIRD-PARTY-NOTICES.txt }
+      - run: packaging/package.sh browser ${{ needs.meta.outputs.version }} web/dist-web pkg
+      - uses: actions/upload-artifact@v4
+        with: { name: pkg-browser, path: pkg/trunk-lite-*.zip }
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: wasm32-unknown-unknown }
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --release --workspace --locked
+      - run: cargo check --release -p trunk-web --target wasm32-unknown-unknown --locked
+
+  build:
+    needs: [meta, web, test]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { kind: macos, os: macos-14 }
+          - { kind: linux-x86_64, os: ubuntu-latest, target: x86_64-unknown-linux-gnu, glibc: "2.28" }
+          - { kind: linux-aarch64, os: ubuntu-latest, target: aarch64-unknown-linux-gnu, glibc: "2.28" }
+          - { kind: windows-x86_64, os: windows-latest, target: x86_64-pc-windows-msvc }
+    runs-on: ${{ matrix.os }}
+    env:
+      VERSION: ${{ needs.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: web-dist, path: web/dist }
+      - uses: actions/download-artifact@v4
+        with: { name: notices, path: pkg }
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target || 'aarch64-apple-darwin,x86_64-apple-darwin' }}
+      - uses: Swatinem/rust-cache@v2
+        with: { key: "${{ matrix.kind }}" }
+
+      - name: Build (macOS universal)
+        if: matrix.kind == 'macos'
+        run: |
+          cargo build --locked --profile dist -p trunk-lite --target aarch64-apple-darwin
+          cargo build --locked --profile dist -p trunk-lite --target x86_64-apple-darwin
+          lipo -create -output trunk-lite target/aarch64-apple-darwin/dist/trunk-lite target/x86_64-apple-darwin/dist/trunk-lite
+          echo "BIN=trunk-lite" >> "$GITHUB_ENV"
+
+      - name: Signing identity (when the secrets are set)
+        if: matrix.kind == 'macos'
+        env:
+          P12: ${{ secrets.MACOS_CERT_P12 }}
+          P12_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+        run: |
+          [ -n "$P12" ] || { echo "No signing secrets: the app will be signed ad hoc."; exit 0; }
+          kc="$RUNNER_TEMP/sign.keychain-db"
+          security create-keychain -p ci "$kc"
+          security set-keychain-settings -lut 3600 "$kc"
+          security unlock-keychain -p ci "$kc"
+          echo "$P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$kc" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k ci "$kc"
+          security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
+          echo "MACOS_SIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+
+      - name: Build (Linux, against glibc ${{ matrix.glibc }} so it runs on any distribution since ~2019)
+        if: startsWith(matrix.kind, 'linux')
+        run: |
+          pip install ziglang
+          cargo install cargo-zigbuild --locked
+          cargo zigbuild --locked --profile dist -p trunk-lite --target ${{ matrix.target }}.${{ matrix.glibc }}
+          echo "BIN=target/${{ matrix.target }}/dist/trunk-lite" >> "$GITHUB_ENV"
+
+      - name: Build (Windows)
+        if: startsWith(matrix.kind, 'windows')
+        env: { RUSTFLAGS: "-C target-feature=+crt-static" }
+        shell: bash
+        run: |
+          cargo build --locked --profile dist -p trunk-lite --target ${{ matrix.target }}
+          echo "BIN=target/${{ matrix.target }}/dist/trunk-lite.exe" >> "$GITHUB_ENV"
+
+      - name: Smoke test
+        if: matrix.kind != 'linux-aarch64'
+        shell: bash
+        run: |
+          "./$BIN" --version
+          "./$BIN" --help | head -3
+
+      - name: Package
+        shell: bash
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: packaging/package.sh ${{ matrix.kind }} "$VERSION" "$BIN" pkg
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pkg-${{ matrix.kind }}
+          path: |
+            pkg/trunk-lite-*.dmg
+            pkg/trunk-lite-*.tar.gz
+            pkg/trunk-lite-*.zip
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [meta, web, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { pattern: pkg-*, path: dist, merge-multiple: true }
+      - name: Checksums and release notes
+        run: |
+          (cd dist && sha256sum trunk-lite-* > SHA256SUMS)
+          # This version's section of CHANGELOG.md: from "## [<version>]" to the next "## ".
+          awk -v v="## [$VERSION]" 'index($0, v) == 1 {on = 1; next} on && /^## / {exit} on' CHANGELOG.md > notes.md
+          [ -s notes.md ] || echo "Trunk Recorder Lite $VERSION" > notes.md
+          cat notes.md
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: Trunk Recorder Lite ${{ env.VERSION }}
+          body_path: notes.md
+          prerelease: ${{ contains(env.VERSION, '-') }}
+          files: dist/*

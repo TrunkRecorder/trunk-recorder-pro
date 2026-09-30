@@ -1,0 +1,29 @@
+[workspace]
+resolver = "2"
+members = ["crates/trunk-core", "crates/trunk-app", "crates/trunk-lite", "crates/trunk-web"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/TrunkRecorder/trunk-recorder-lite"
+
+[workspace.dependencies]
+trunk-core = { path = "crates/trunk-core" }
+trunk-app = { path = "crates/trunk-app" }
+rustfft = "6"
+num-complex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+debug = 1
+
+# Release artifacts: no debug info, stripped (`--profile dist`).
+[profile.dist]
+inherits = "release"
+debug = false
+strip = true
