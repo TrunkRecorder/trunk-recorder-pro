@@ -17,6 +17,13 @@ num-complex = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# Debug builds optimize a little: unoptimized, the DSP runs ~100x slower
+# than release (every Complex32 op, iterator step and NEON intrinsic is a
+# call plus a UB check) and can't keep up with a live dongle. opt-level 1 is
+# ~2x release and still debuggable.
+[profile.dev]
+opt-level = 1
+
 [profile.release]
 opt-level = 3
 lto = "thin"
