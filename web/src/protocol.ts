@@ -149,6 +149,14 @@ export interface SystemStatus {
   mismatch: string | null;
   /** Neighbouring sites its control channel announces. */
   adjacent: { sysId: number; rfss: number; site: number; freqHz: number }[];
+  /** Patches standing now: the supergroup, and the talkgroups patched into it. */
+  patches?: { supergroup: TalkgroupName; members: TalkgroupName[] }[];
+}
+
+/** A talkgroup and its alpha tag from the system's talkgroup file ("" when not in it). */
+export interface TalkgroupName {
+  talkgroup: number;
+  alphaTag: string;
 }
 
 export interface EngineStatus {
@@ -190,6 +198,8 @@ export interface CallView {
   emergency: boolean;
   startS: number;
   sources: number[];
+  /** The talkgroups patched with this one during the call. */
+  patched?: TalkgroupName[];
 }
 
 export interface LogLine {
@@ -214,6 +224,8 @@ export interface CallRecord {
   encrypted: number;
   /** `tag_ota`: the unit's talker alias when the call was saved. */
   srcList: { src: number; tag_ota?: string }[];
+  /** Every talkgroup patched with this one, its own included (only when patched). */
+  patched_talkgroups?: number[];
 }
 
 /** A recorded call: `path` (no extension) under the capture folder. */

@@ -73,6 +73,11 @@ pub fn call_record(call: &Call, info: &ConcludeInfo) -> (String, String) {
         if call.analog { "analog" } else if call.phase2_tdma { "digital tdma" } else { "digital" },
         esc(info.short_name),
     );
+    // Only when patched with another, as Trunk Recorder writes it.
+    if call.patched_talkgroups.len() > 1 {
+        let tgs: Vec<String> = call.patched_talkgroups.iter().map(|t| t.to_string()).collect();
+        let _ = write!(j, "\"patched_talkgroups\":[{}],", tgs.join(","));
+    }
     let _ = write!(
         j,
         "\"freqList\":[{{\"freq\":{},\"time\":{},\"pos\":0,\"len\":{},\"error_count\":{},\"spike_count\":0}}],{},\"srcList\":[",

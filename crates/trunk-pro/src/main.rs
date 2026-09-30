@@ -398,7 +398,7 @@ fn handle_events(engine: &mut Engine, out_dir: &str, multi: bool, quiet: bool) -
             Event::ControlChannel { system, freq_hz } if !quiet => println!("{}control channel {:.4} MHz", sys_tag(engine, system), freq_hz as f64 / 1e6),
             Event::Note { system, text } => eprintln!("{}{text}", sys_tag(engine, system)),
             Event::CallStart(c) if !quiet => println!(
-                "{:7.2}s  {}CALL {} start TG {} {:.4} MHz{}{} → {}",
+                "{:7.2}s  {}CALL {} start TG {} {:.4} MHz{}{}{} → {}",
                 c.start_s,
                 sys_tag(engine, c.system),
                 c.id,
@@ -406,6 +406,7 @@ fn handle_events(engine: &mut Engine, out_dir: &str, multi: bool, quiet: bool) -
                 c.freq_hz as f64 / 1e6,
                 if c.analog { " FM" } else { "" },
                 if c.phase2_tdma { format!(" slot {}", c.tdma_slot) } else { String::new() },
+                if c.patched_talkgroups.is_empty() { String::new() } else { format!(" patched {:?}", c.patched_talkgroups) },
                 if c.recording { "recording".into() } else { format!("monitoring ({})", c.reason.map_or("", |r| r.as_str())) }
             ),
             Event::UnitAlias {

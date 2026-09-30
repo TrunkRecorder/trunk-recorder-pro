@@ -31,6 +31,7 @@ use num_complex::Complex32;
 use super::calls::{Call, CallConfig, CallEvent, CallId, CallIds, CallManager, Reason, RecorderHost, CONVENTIONAL};
 use super::conventional::{CallRules, ConvChannel, ConvConfig, ConvOut, Conventional};
 use super::message::{Message, MessageType, TsbkParser};
+use super::patches;
 use super::record::{call_record, ConcludeInfo};
 use super::talkgroups::Talkgroups;
 use super::tdma::TdmaTracker;
@@ -253,6 +254,8 @@ pub struct SystemStatus {
     pub mismatch: Option<String>,
     /// Neighbouring sites its control channel announces.
     pub adjacent: Vec<AdjacentSite>,
+    /// Patches standing now: (supergroup, the talkgroups patched into it).
+    pub patches: Vec<(u32, Vec<u32>)>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -707,6 +710,7 @@ impl Trunk {
             calls_concluded: self.concluded,
             mismatch: self.mismatch.clone(),
             adjacent: self.adjacent.values().copied().collect(),
+            patches: self.calls.patches.active(),
         }
     }
 }
@@ -788,6 +792,7 @@ impl Engine {
                 units: UnitAliases::default(),
                 cfg: sc.clone(),
             };
+            t.calls.patches.hold_s = if sc.smartnet.is_some() { patches::SMARTNET_HOLD_S } else { patches::P25_HOLD_S };
             if !sc.control_channels.is_empty() {
                 t.tune(&mut radio, 0, &mut events)?;
             }

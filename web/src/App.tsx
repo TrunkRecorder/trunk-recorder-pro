@@ -3,8 +3,9 @@ import { activeSystems, formatMhz, startProblem, systemColor, systemWithChannel 
 import { addSite, dismissError, downloadCall, quitApp, setListen, setNotice, setView, start, stop, transport, useApp, web, type AppState } from "./controller.ts";
 import { PluginsPage } from "./Plugins.tsx";
 import { BrowserStorage } from "./web/BrowserStorage.tsx";
-import { CONVENTIONAL, type CallEntry, type CallView, type SystemStatus } from "./protocol.ts";
+import { CONVENTIONAL, type CallEntry, type CallView, type SystemStatus, type TalkgroupName } from "./protocol.ts";
 import { Setup } from "./Setup.tsx";
+import { parseTalkgroupCsv } from "./talkgroups.ts";
 import { Waterfall, type CcMark } from "./Waterfall.tsx";
 
 const hex = (v: number | null | undefined) => (v === null || v === undefined ? "—" : v.toString(16).toUpperCase());
@@ -140,6 +141,7 @@ function StatusTiles({ s }: { s: AppState }) {
       </div>
       {systems.length > 1 && <SystemsTable s={s} systems={systems} rates={rates} />}
       {systems.length > 0 && <Neighbours s={s} systems={systems} />}
+      {systems.length > 0 && <Patches systems={systems} />}
     </>
   );
 }
@@ -258,6 +260,42 @@ function Neighbours(props: { s: AppState; systems: SystemStatus[] }) {
         ))}
       </div>
     </details>
+  );
+}
+
+const tgText = (t: TalkgroupName) => (t.alphaTag ? `${t.alphaTag} (${t.talkgroup})` : String(t.talkgroup));
+
+/** The patches the control channels say stand now. A patched call is on its supergroup, usually not in the talkgroup file. */
+function Patches(props: { systems: SystemStatus[] }) {
+  const all = props.systems.flatMap((x) => (x.patches ?? []).map((p) => ({ p, from: x })));
+  if (!all.length) return null;
+  return (
+    <section className="panel">
+      <header className="panel-head">
+        <h2>Patches</h2>
+        <span className="muted small">{all.length} active</span>
+      </header>
+      <div className="row">
+        {all.map(({ p, from }) => (
+          <span key={`${from.index}/${p.supergroup.talkgroup}`} className="chip">
+            <span className="mono">SG {tgText(p.supergroup)}</span>
+            <span>= {p.members.map(tgText).join(" + ")}</span>
+            {props.systems.length > 1 && <span className="muted">· {from.shortName}</span>}
+          </span>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+/** Under a call's talkgroup: what's patched with it. */
+function PatchedWith({ tgs }: { tgs: TalkgroupName[] }) {
+  if (!tgs.length) return null;
+  const text = tgs.map(tgText).join(", ");
+  return (
+    <div className="patched small" title={`Patched with ${text}`}>
+      patched with {text}
+    </div>
   );
 }
 
@@ -383,6 +421,7 @@ function ActiveCalls({ s }: { s: AppState }) {
                     <span className="tg">{c.talkgroup}</span>
                     {c.alphaTag && <span className="tag">{c.alphaTag}</span>}
                     {c.emergency && <span className="badge bad">EMERG</span>}
+                    <PatchedWith tgs={c.patched ?? []} />
                   </td>
                   <td className="mono">
                     {formatMhz(c.freqHz, 4)}
@@ -432,15 +471,25 @@ function History({ s }: { s: AppState }) {
   const [filter, setFilter] = useState("");
   const [only, setOnly] = useState<string | null>(null);
   const systems = useMemo(() => [...new Set(s.history.map(systemOf))].sort(), [s.history]);
+  // Each system's talkgroup file, by short name: names for a call's patched talkgroups.
+  const files = useMemo(() => new Map((s.config?.systems ?? []).map((x) => [x.shortName, parseTalkgroupCsv(x.talkgroupsCsv)])), [s.config]);
+  const patchedWith = (c: CallEntry): TalkgroupName[] =>
+    (c.record.patched_talkgroups ?? [])
+      .filter((t) => t !== c.record.talkgroup)
+      .map((t) => ({ talkgroup: t, alphaTag: files.get(systemOf(c))?.get(t)?.alphaTag ?? "" }));
   const rows = useMemo(() => {
     const f = filter.trim().toLowerCase();
     const unitMatch = (c: CallEntry) =>
       c.record.srcList?.some((x) => String(x.src).includes(f) || (aliasOf(s, systemOf(c), x.src, x.tag_ota) ?? "").toLowerCase().includes(f));
     const ok = (c: CallEntry) =>
       (only === null || systemOf(c) === only) &&
-      (!f || String(c.record.talkgroup).includes(f) || (c.record.talkgroup_tag ?? "").toLowerCase().includes(f) || unitMatch(c));
+      (!f ||
+        String(c.record.talkgroup).includes(f) ||
+        (c.record.talkgroup_tag ?? "").toLowerCase().includes(f) ||
+        patchedWith(c).some((t) => String(t.talkgroup).includes(f) || t.alphaTag.toLowerCase().includes(f)) ||
+        unitMatch(c));
     return f || only !== null ? s.history.filter(ok) : s.history;
-  }, [s.history, s.units, filter, only]);
+  }, [s.history, s.units, filter, only, files]);
   const multi = systems.length > 1;
   // A system's color while it runs (its index), else none.
   const colorOf = (name: string) => {
@@ -495,6 +544,7 @@ function History({ s }: { s: AppState }) {
                     <span className="tg">{c.record.talkgroup}</span>
                     {c.record.talkgroup_tag && <span className="tag">{c.record.talkgroup_tag}</span>}
                     {c.record.emergency ? <span className="badge bad">EMERG</span> : null}
+                    <PatchedWith tgs={patchedWith(c)} />
                   </td>
                   <td className="mono">{(c.record.call_length_ms / 1000).toFixed(1)} s</td>
                   <Sources s={s} entry={c} />

@@ -8,11 +8,11 @@
 //! `call_timeout_s` AND its recorder has written no audio for as long; a
 //! MONITORING call on the first condition alone. Time is the sample clock.
 
-use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
 use super::message::{Message, MessageType};
+use super::patches::Patches;
 use super::talkgroups::{Talkgroup, Talkgroups};
 
 pub type CallId = u32;
@@ -87,6 +87,22 @@ pub struct Call {
     pub last_audio_s: f64,
     pub sources: Vec<CallSource>,
     pub talkgroup_info: Option<Talkgroup>,
+    /// Every talkgroup patched with this one while the call lasted, its own
+    /// included, ascending (TR's patched_talkgroups); empty when never patched.
+    pub patched_talkgroups: Vec<u32>,
+}
+
+impl Call {
+    /// Fold in the talkgroups patched with it now (`members`); true when that added any.
+    fn note_patch(&mut self, members: Vec<u32>) -> bool {
+        let n = self.patched_talkgroups.len();
+        for tg in members {
+            if let Err(i) = self.patched_talkgroups.binary_search(&tg) {
+                self.patched_talkgroups.insert(i, tg);
+            }
+        }
+        self.patched_talkgroups.len() != n
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -126,11 +142,6 @@ pub enum CallEvent {
     End(Call),
 }
 
-struct PatchGroup {
-    members: HashSet<u32>,
-    last_s: f64,
-}
-
 #[derive(Default)]
 pub struct CallManager {
     pub calls: Vec<Call>,
@@ -139,12 +150,13 @@ pub struct CallManager {
     /// Stamped on every call made here.
     pub system: u16,
     ids: CallIds,
-    patches: HashMap<u32, PatchGroup>,
+    /// The system's standing patches.
+    pub patches: Patches,
 }
 
 impl CallManager {
     pub fn new(cfg: CallConfig, talkgroups: Talkgroups) -> Self {
-        CallManager { calls: Vec::new(), talkgroups, cfg, system: 0, ids: CallIds::default(), patches: HashMap::new() }
+        CallManager { calls: Vec::new(), talkgroups, cfg, system: 0, ids: CallIds::default(), patches: Patches::default() }
     }
 
     /// For system `system`, drawing ids from `ids` (shared with the other systems).
@@ -162,14 +174,24 @@ impl CallManager {
                 MessageType::UuVUpdate if self.cfg.record_unit_to_unit => self.update(m, ev),
                 MessageType::PatchAdd => {
                     if let Some(p) = m.patch {
-                        let g = self.patches.entry(p.sg).or_insert(PatchGroup { members: HashSet::new(), last_s: m.time_s });
-                        g.members.extend(p.ga.iter().copied().filter(|&x| x != 0));
-                        g.last_s = m.time_s;
+                        if self.patches.add(&p, m.time_s) {
+                            // Calls already up on a talkgroup now patched. The
+                            // grant can come first (WMATA's does): one skipped
+                            // as unknown gets another look.
+                            for c in self.calls.iter_mut() {
+                                if c.note_patch(self.patches.members_of(c.talkgroup)) {
+                                    if c.reason == Some(Reason::UnknownTg) {
+                                        Self::admit(c, &self.cfg, &self.talkgroups, host);
+                                    }
+                                    ev.push(CallEvent::Update(c.clone()));
+                                }
+                            }
+                        }
                     }
                 }
                 MessageType::PatchDelete => {
                     if let Some(p) = m.patch {
-                        self.patches.remove(&p.sg);
+                        self.patches.delete(&p);
                     }
                 }
                 _ => {}
@@ -217,7 +239,7 @@ impl CallManager {
                 ev.push(CallEvent::End(c));
             }
         }
-        self.patches.retain(|_, p| now_s - p.last_s <= 60.0);
+        self.patches.expire(now_s);
     }
 
     /// End everything (source stopped).
@@ -232,9 +254,9 @@ impl CallManager {
         c.talkgroup == m.talkgroup && c.freq_hz == m.freq_hz && c.tdma_slot == m.tdma_slot && c.phase2_tdma == m.phase2_tdma
     }
 
-    fn refresh(c: &mut Call, m: &Message) -> bool {
+    fn refresh(c: &mut Call, m: &Message, patches: &Patches) -> bool {
         c.last_update_s = m.time_s;
-        let mut changed = false;
+        let mut changed = c.note_patch(patches.members_of(c.talkgroup));
         if m.encrypted && !c.encrypted {
             c.encrypted = true;
             changed = true;
@@ -251,7 +273,7 @@ impl CallManager {
 
     fn update(&mut self, m: &Message, ev: &mut Vec<CallEvent>) {
         for c in self.calls.iter_mut().filter(|c| Self::matches(c, m)) {
-            if Self::refresh(c, m) {
+            if Self::refresh(c, m, &self.patches) {
                 ev.push(CallEvent::Update(c.clone()));
             }
         }
@@ -262,7 +284,7 @@ impl CallManager {
             return; // channel not resolvable yet (no IDEN seen)
         }
         if let Some(c) = self.calls.iter_mut().find(|c| Self::matches(c, m)) {
-            if Self::refresh(c, m) {
+            if Self::refresh(c, m, &self.patches) {
                 ev.push(CallEvent::Update(c.clone()));
             }
             return;
@@ -290,27 +312,114 @@ impl CallManager {
             last_audio_s: m.time_s,
             sources: if m.source > 0 { vec![CallSource { src: m.source as u32, time_s: m.time_s, emergency: m.emergency }] } else { vec![] },
             talkgroup_info: tg.clone(),
+            patched_talkgroups: self.patches.members_of(m.talkgroup),
         };
-        // Trunk Recorder's start_recorder() gates, in its order.
-        let patched_known = tg.is_none()
-            && self.patches.iter().any(|(&sg, p)| {
-                (sg == m.talkgroup || p.members.contains(&m.talkgroup))
-                    && (self.talkgroups.contains_key(&sg) || p.members.iter().any(|g| self.talkgroups.contains_key(g)))
-            });
-        if tg.is_none() && !self.cfg.record_unknown && !patched_known && !self.talkgroups.is_empty() {
+        Self::admit(&mut c, &self.cfg, &self.talkgroups, host);
+        ev.push(CallEvent::Start(c.clone()));
+        self.calls.push(c);
+    }
+
+    /// Record, follow or skip a call: Trunk Recorder's start_recorder()
+    /// gates, in its order. A talkgroup not in the file is recorded while
+    /// it's patched with one that is.
+    fn admit(c: &mut Call, cfg: &CallConfig, talkgroups: &Talkgroups, host: &mut dyn RecorderHost) {
+        c.reason = None;
+        let known = c.talkgroup_info.is_some() || c.patched_talkgroups.iter().any(|g| talkgroups.contains_key(g));
+        if !known && !cfg.record_unknown && !talkgroups.is_empty() {
             c.reason = Some(Reason::UnknownTg);
-        } else if c.encrypted && !self.cfg.record_encrypted {
+        } else if c.encrypted && !cfg.record_encrypted {
             // No audio to record, but its terminators' link control is in
             // the clear: who spoke, and their talker aliases.
             c.reason = Some(Reason::Encrypted);
-            host.follow(&c);
+            host.follow(c);
         } else {
-            match host.start_recording(&c) {
+            match host.start_recording(c) {
                 Ok(()) => c.recording = true,
                 Err(r) => c.reason = Some(r),
             }
         }
-        ev.push(CallEvent::Start(c.clone()));
-        self.calls.push(c);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::trunk::message::Patch;
+    use crate::trunk::record::{call_record, ConcludeInfo};
+
+    struct Host;
+    impl RecorderHost for Host {
+        fn start_recording(&mut self, _: &Call) -> Result<(), Reason> {
+            Ok(())
+        }
+        fn stop_recording(&mut self, _: &Call) {}
+    }
+
+    fn msg(kind: MessageType, t: f64, tg: u32) -> Message {
+        Message { kind, time_s: t, talkgroup: tg, freq_hz: 851_000_000, source: 7, ..Default::default() }
+    }
+    fn patch(t: f64, sg: u32, ga: [u32; 3]) -> Message {
+        Message { kind: MessageType::PatchAdd, time_s: t, patch: Some(Patch { sg, ga }), ..Default::default() }
+    }
+    /// Talkgroup 101 is in the file; supergroups aren't.
+    fn manager() -> CallManager {
+        let tgs = [(101, Talkgroup { number: 101, alpha_tag: "Fire Disp".into(), ..Default::default() })].into_iter().collect();
+        CallManager::new(CallConfig { record_unknown: false, ..Default::default() }, tgs)
+    }
+
+    #[test]
+    fn an_unknown_supergroup_is_recorded_while_a_known_talkgroup_is_patched_in() {
+        let mut m = manager();
+        let mut ev = Vec::new();
+        m.handle(&[patch(0.0, 65001, [101, 202, 0]), msg(MessageType::Grant, 0.5, 65001)], &mut Host, &mut ev);
+        assert!(m.calls[0].recording);
+        assert_eq!(m.calls[0].patched_talkgroups, vec![101, 202, 65001]);
+
+        // Patch gone (no repeats): a new call on the supergroup isn't recorded.
+        m.tick(20.0, &mut Host, &mut ev);
+        m.handle(&[msg(MessageType::Grant, 20.0, 65001)], &mut Host, &mut ev);
+        assert_eq!(m.calls[0].reason, Some(Reason::UnknownTg));
+        assert!(m.calls[0].patched_talkgroups.is_empty());
+    }
+
+    #[test]
+    fn a_supergroup_granted_before_its_patch_is_heard_starts_recording_when_it_is() {
+        let mut m = manager();
+        let mut ev = Vec::new();
+        m.handle(&[msg(MessageType::Grant, 0.0, 32816)], &mut Host, &mut ev);
+        assert_eq!(m.calls[0].reason, Some(Reason::UnknownTg));
+        ev.clear();
+        m.handle(&[patch(0.1, 32816, [101, 0, 0])], &mut Host, &mut ev);
+        assert!(m.calls[0].recording && m.calls[0].reason.is_none());
+        assert!(matches!(&ev[..], [CallEvent::Update(c)] if c.recording));
+    }
+
+    #[test]
+    fn a_patch_heard_after_the_grant_joins_the_call_and_outlasts_it() {
+        let mut m = manager();
+        let mut ev = Vec::new();
+        m.handle(&[msg(MessageType::Grant, 0.0, 101)], &mut Host, &mut ev);
+        ev.clear();
+        m.handle(&[patch(1.0, 65001, [101, 0, 0])], &mut Host, &mut ev);
+        assert!(matches!(&ev[..], [CallEvent::Update(c)] if c.patched_talkgroups == [101, 65001]));
+        // A repeat changes nothing.
+        ev.clear();
+        m.handle(&[patch(2.0, 65001, [101, 0, 0])], &mut Host, &mut ev);
+        assert!(ev.is_empty());
+        // The patch ends before the call does: the call still says it was patched.
+        m.handle(&[Message { kind: MessageType::PatchDelete, time_s: 2.5, patch: Some(Patch { sg: 65001, ga: [0; 3] }), ..Default::default() }], &mut Host, &mut ev);
+        m.handle(&[msg(MessageType::Update, 2.5, 101)], &mut Host, &mut ev);
+        assert_eq!(m.calls[0].patched_talkgroups, vec![101, 65001]);
+    }
+
+    #[test]
+    fn the_call_json_lists_the_patch() {
+        let mut m = manager();
+        let mut ev = Vec::new();
+        m.handle(&[patch(0.0, 65001, [101, 0, 0]), msg(MessageType::Grant, 0.5, 65001), msg(MessageType::Grant, 0.5, 303)], &mut Host, &mut ev);
+        let errors = Default::default();
+        let info = ConcludeInfo { short_name: "s", epoch_ms_at_zero: 0.0, audio_seconds: 1.0, errors: &errors, recorder_num: 0, end_s: 1.0, units: None };
+        assert!(call_record(&m.calls[0], &info).0.contains("\"short_name\":\"s\",\"patched_talkgroups\":[101,65001],\"freqList\""));
+        assert!(!call_record(&m.calls[1], &info).0.contains("patched"));
     }
 }

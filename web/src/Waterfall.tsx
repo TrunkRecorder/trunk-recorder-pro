@@ -115,7 +115,7 @@ export function Waterfall(props: { radio: Spectrum | undefined; label?: string; 
               <span key={c.id} className={`mk mk-${c.state}${c.encrypted ? " mk-enc" : ""}`} style={{ left: `${pos(c.freqHz)}%` }} title={`${c.systemName} · TG ${c.talkgroup}`}>
                 <i>
                   {props.multi && <span className="sys-dot" style={{ background: systemColor(c.system) }} />}
-                  {c.alphaTag || c.talkgroup}
+                  {c.alphaTag || c.patched?.find((t) => t.alphaTag)?.alphaTag || c.talkgroup}
                 </i>
               </span>
             ))}

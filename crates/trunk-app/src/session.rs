@@ -212,6 +212,14 @@ impl Session {
         }
     }
 
+    /// Talkgroups as the interface shows them: number and alpha tag (from system `system`'s file; "" when not in it).
+    fn tg_names(&self, system: u16, tgs: impl IntoIterator<Item = u32>) -> Vec<Value> {
+        let file = self.engine.systems().get(system as usize).map(|s| &s.talkgroups);
+        tgs.into_iter()
+            .map(|tg| json!({ "talkgroup": tg, "alphaTag": file.and_then(|f| f.get(&tg)).map_or("", |t| t.alpha_tag.as_str()) }))
+            .collect()
+    }
+
     /// Unix seconds of engine time `s`.
     fn wall(&self, s: f64) -> f64 {
         self.epoch_ms / 1000.0 + s
@@ -233,6 +241,7 @@ impl Session {
             reason: c.reason.map(|r| r.as_str().to_string()),
             start_time: self.wall(c.start_s),
             units: c.sources.iter().map(|s| s.src).collect(),
+            patched_talkgroups: c.patched_talkgroups.clone(),
         }
     }
 
@@ -350,6 +359,10 @@ impl Session {
                     "activeCalls": y.active_calls, "recording": y.recording, "callsConcluded": y.calls_concluded,
                     "mismatch": y.mismatch,
                     "adjacent": y.adjacent.iter().map(|a| json!({ "sysId": a.sys_id, "rfss": a.rfss, "site": a.site, "freqHz": a.freq_hz })).collect::<Vec<_>>(),
+                    "patches": y.patches.iter().map(|(sg, members)| {
+                        let sys = self.engine.systems().iter().position(|x| x.short_name == y.short_name).unwrap_or(usize::MAX) as u16;
+                        json!({ "supergroup": self.tg_names(sys, [*sg])[0], "members": self.tg_names(sys, members.iter().copied()) })
+                    }).collect::<Vec<_>>(),
                 })
             })
             .collect();
@@ -363,7 +376,12 @@ impl Session {
             },
             "sources": sources,
             "load": load,
-            "calls": self.engine.active_calls().iter().map(|c| call_view(c, self.system_name(c.system))).collect::<Vec<_>>(),
+            "calls": self
+                .engine
+                .active_calls()
+                .iter()
+                .map(|c| call_view(c, self.system_name(c.system), self.tg_names(c.system, c.patched_talkgroups.iter().copied().filter(|&t| t != c.talkgroup))))
+                .collect::<Vec<_>>(),
         })
     }
 }
@@ -387,7 +405,8 @@ fn identity_json(id: &Identity) -> Value {
     json!({ "nac": id.nac, "wacn": id.wacn, "sysId": id.sys_id, "rfss": id.rfss, "site": id.site })
 }
 
-fn call_view(c: &Call, system_name: &str) -> Value {
+/// `patched`: the talkgroups patched with it ([`Session::tg_names`]).
+fn call_view(c: &Call, system_name: &str, patched: Vec<Value>) -> Value {
     json!({
         "id": c.id,
         // (65535: a conventional channel)
@@ -404,5 +423,6 @@ fn call_view(c: &Call, system_name: &str) -> Value {
         "emergency": c.emergency,
         "startS": c.start_s,
         "sources": c.sources.iter().map(|s| s.src).collect::<Vec<_>>(),
+        "patched": patched,
     })
 }

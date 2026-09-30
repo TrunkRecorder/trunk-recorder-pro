@@ -399,6 +399,7 @@ impl Conventional {
                 last_audio_s: now_s,
                 sources: Vec::new(),
                 talkgroup_info: Self::info_for(&ch.cfg, tg, calls),
+                patched_talkgroups: Vec::new(),
             };
             out.push(ConvOut::Start(call.clone()));
             o.live = Some(Live { call, audio: Vec::new(), frames: CallFrames::new(rules.capture_frames), tg_from_air: air_tg.is_some() });

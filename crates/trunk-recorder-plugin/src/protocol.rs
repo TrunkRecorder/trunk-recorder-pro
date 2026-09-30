@@ -190,6 +190,9 @@ pub struct CallInfo {
     pub start_time: f64,
     /// Radios heard on the call so far.
     pub units: Vec<u32>,
+    /// Talkgroups patched with this one so far, its own included, ascending;
+    /// empty when it isn't patched.
+    pub patched_talkgroups: Vec<u32>,
 }
 
 /// A recorded call whose files are on disk.
@@ -248,6 +251,10 @@ pub struct CallRecord {
     pub freq_list: Vec<FreqEntry>,
     #[serde(rename = "srcList")]
     pub src_list: Vec<SrcEntry>,
+    /// Every talkgroup patched with this one during the call, its own
+    /// included; absent (empty) when it wasn't patched with another.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub patched_talkgroups: Vec<u32>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -510,9 +517,10 @@ mod tests {
             "call_length":5,"talkgroup":101,"talkgroup_tag":"Fire Disp","audio_type":"digital","short_name":"dcfd","phase2_tdma":0,
             "freqList":[{"freq":851012500,"time":1700000000,"pos":0,"len":5,"error_count":3,"spike_count":1}],
             "srcList":[{"src":1234,"time":1700000000,"pos":0.5,"emergency":0,"signal_system":"","tag":"","tag_ota":"E1"}],
-            "color_code":-1}"#;
+            "color_code":-1,"patched_talkgroups":[101,65001]}"#;
         let c: CallRecord = serde_json::from_str(j).unwrap();
         assert!(c.encrypted && !c.emergency);
+        assert_eq!(c.patched_talkgroups, [101, 65001]);
         assert_eq!((c.error_count(), c.spike_count()), (3, 1));
         assert_eq!(c.src_list[0].tag_ota, "E1");
         assert_eq!(c.extra["color_code"], -1);
@@ -520,5 +528,8 @@ mod tests {
         let v = serde_json::to_value(&c).unwrap();
         assert_eq!(v["color_code"], -1);
         assert_eq!(v["srcList"][0]["src"], 1234);
+        assert_eq!(v["patched_talkgroups"], serde_json::json!([101, 65001]));
+        let unpatched = serde_json::to_value(CallRecord::default()).unwrap();
+        assert!(unpatched.get("patched_talkgroups").is_none());
     }
 }
