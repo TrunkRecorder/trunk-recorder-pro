@@ -14,6 +14,8 @@ import type {
   FromRecorder,
   LogLine,
   Phase,
+  PluginsList,
+  PluginValues,
   Radios,
   SourceStatus,
   SiteIdentity,
@@ -66,6 +68,16 @@ export interface AppState {
   surveySpectrum: Spectrum | null;
   /** Bumped when the config is replaced from outside the form (fields re-read it). */
   configEpoch: number;
+  /** The plugins (desktop app); null until the recorder says. */
+  plugins: PluginsList | null;
+  /** Which page is showing. */
+  view: View;
+}
+
+export type View = "recorder" | "plugins";
+
+function viewFromHash(): View {
+  return location.hash === "#plugins" ? "plugins" : "recorder";
 }
 
 let state: AppState = {
@@ -98,6 +110,8 @@ let state: AppState = {
   surveyBands: [],
   surveySpectrum: null,
   configEpoch: 0,
+  plugins: null,
+  view: viewFromHash(),
 };
 
 const listeners = new Set<() => void>();
@@ -192,6 +206,17 @@ transport.onMessage = (m: FromRecorder) => {
     case "error":
       set({ error: m.message });
       break;
+    case "notice":
+      set({ notice: m.message });
+      break;
+    case "plugins": {
+      const { type: _, ...list } = m;
+      set({ plugins: list });
+      break;
+    }
+    case "pluginRuntime":
+      if (state.plugins) set({ plugins: { ...state.plugins, plugins: state.plugins.plugins.map((p) => (p.id === m.id ? { ...p, runtime: m.runtime } : p)) } });
+      break;
     case "quit":
       player.stop();
       transport.close?.();
@@ -244,6 +269,37 @@ export function downloadText(name: string, text: string, type = "text/csv"): voi
 /** Make the setup form re-read the config (after it was replaced from outside a field). */
 export function bumpEpoch(): void {
   set({ configEpoch: state.configEpoch + 1 });
+}
+
+// ── pages ────────────────────────────────────────────────────────────────────
+
+/** Show a page (the address's #fragment follows, so back/forward and reloads work). */
+export function setView(view: View): void {
+  const hash = view === "plugins" ? "#plugins" : "";
+  if (location.hash !== hash) history.pushState(null, "", hash || location.pathname + location.search);
+  set({ view });
+}
+addEventListener("popstate", () => set({ view: viewFromHash() }));
+
+// ── plugins ──────────────────────────────────────────────────────────────────
+
+export function setPluginEnabled(id: string, enabled: boolean): void {
+  // Show it at once; the recorder's list follows.
+  if (state.plugins) set({ plugins: { ...state.plugins, plugins: state.plugins.plugins.map((p) => (p.id === id ? { ...p, enabled } : p)) } });
+  transport.send({ type: "setPlugin", id, enabled });
+}
+/** Replace a plugin's settings (its own, and for each system by short name). */
+export function savePluginSettings(id: string, config: PluginValues, systems: Record<string, PluginValues>): void {
+  transport.send({ type: "setPlugin", id, config, systems });
+}
+export function addPlugin(path: string): void {
+  transport.send({ type: "addPlugin", path });
+}
+export function removePlugin(id: string): void {
+  transport.send({ type: "removePlugin", id });
+}
+export function setPluginAudio(patch: { encoder?: string; bitrateKbps?: number }): void {
+  transport.send({ type: "setPluginAudio", ...patch });
 }
 
 export function dismissError(): void {

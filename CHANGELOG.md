@@ -87,7 +87,10 @@ platform, with no GNU Radio, OP25 or other runtime dependencies.
   asks (ffmpeg, macOS's afconvert or fdkaac, whichever is there; WAV only
   without one). `trunk-lite plugin list | describe | run` to look at plugins
   and run one against recorded calls. The `trunk-recorder-plugin` crate is
-  the protocol and a Rust SDK.
+  the protocol and a Rust SDK. A **Plugins** page lists them: turn each on
+  or off, fill in settings drawn from what the plugin describes (its own and
+  for each system), see whether it's running and how many calls it handled,
+  its recent log, and the M4A encoder. Changes apply at once while recording.
 - **Vocoder frame capture** (setting "Save vocoder frames"): each call's
   decoded voice frames and error counts as `<call>.frames.jsonl`;
   `trunk-lite tool revoice` vocodes one again.

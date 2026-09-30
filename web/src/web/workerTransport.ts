@@ -59,7 +59,9 @@ export class WorkerTransport implements Transport {
         /* not persisted; still used this session */
       }
     }
-    if (msg.type === "quit" || msg.type === "findRadios" || msg.type === "channelFile") return; // desktop-only
+    // Desktop-only (no plugins in the browser either).
+    if (msg.type === "quit" || msg.type === "findRadios" || msg.type === "channelFile") return;
+    if (msg.type === "plugins" || msg.type === "setPlugin" || msg.type === "addPlugin" || msg.type === "removePlugin" || msg.type === "setPluginAudio") return;
     if (msg.type === "start" || msg.type === "surveyStart") this.post({ type: "files", files: this.files });
     this.post(msg);
   }

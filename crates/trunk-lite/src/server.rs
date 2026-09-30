@@ -16,6 +16,10 @@
 //! findGain}`, `surveyListen {freqHz}`, `surveyRescan`, `surveyStop`; it
 //! reports `survey` snapshots (`stage` "idle" when none runs) and
 //! `surveySpectrum`. `hello` carries `surveyBands` and the latest snapshot.
+//!
+//! Plugins (see [`crate::plugins::manage`]): `plugins` follows `hello`, and
+//! answers `plugins`, `setPlugin`, `addPlugin`, `removePlugin` and
+//! `setPluginAudio`; `pluginRuntime` says how each is doing.
 
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
@@ -170,6 +174,10 @@ async fn session(ctx: Arc<Ctx>, mut socket: WebSocket) {
     if socket.send(Message::Text(hello.to_string().into())).await.is_err() {
         return;
     }
+    let plugins = plugins_json(&ctx).await;
+    if socket.send(Message::Text(plugins.to_string().into())).await.is_err() {
+        return;
+    }
     // Live audio: off until the browser asks; optionally one system and/or talkgroup only.
     let mut listen: Option<Listen> = None;
     loop {
@@ -206,6 +214,17 @@ async fn session(ctx: Arc<Ctx>, mut socket: WebSocket) {
             },
         }
     }
+}
+
+/// The `plugins` message (asking plugins who they are can take a moment).
+async fn plugins_json(ctx: &Arc<Ctx>) -> Value {
+    let ctx2 = ctx.clone();
+    tokio::task::spawn_blocking(move || {
+        let cfg = ctx2.config.lock().unwrap().clone();
+        ctx2.plugins.list_json(&cfg)
+    })
+    .await
+    .unwrap_or(Value::Null)
 }
 
 /// Which live audio a connection wants: every call, or one system's
@@ -338,6 +357,28 @@ async fn command(ctx: &Arc<Ctx>, v: &Value, listen: &mut Option<Listen>) -> Opti
             let ctx2 = ctx.clone();
             let _ = tokio::task::spawn_blocking(move || stop_survey(&ctx2)).await;
             None
+        }
+        "plugins" => Some(plugins_json(ctx).await),
+        "setPlugin" | "addPlugin" | "removePlugin" | "setPluginAudio" => {
+            let (ctx2, v) = (ctx.clone(), v.clone());
+            let r = tokio::task::spawn_blocking(move || {
+                let p = &ctx2.plugins;
+                match v["type"].as_str() {
+                    Some("setPlugin") => p.set(&v).map(|_| None),
+                    Some("addPlugin") => p.add(&v).map(Some),
+                    Some("removePlugin") => p.remove(&v).map(|_| None),
+                    _ => p.set_audio(&v).map(|_| None),
+                }
+            })
+            .await
+            .unwrap_or_else(|e| Err(e.to_string()));
+            // Everyone sees the change (or the list as it still is).
+            publish(&ctx.hub, plugins_json(ctx).await);
+            match r {
+                Ok(Some(notice)) => Some(json!({ "type": "notice", "message": notice })),
+                Ok(None) => None,
+                Err(e) => Some(json!({ "type": "error", "message": e })),
+            }
         }
         "listen" => {
             *listen = (v["on"].as_bool() == Some(true))

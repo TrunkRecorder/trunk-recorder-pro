@@ -331,6 +331,82 @@ export type SurveyState =
       suggest: SurveySuggestion | null;
     };
 
+// ── plugins (desktop app) ─────────────────────────────────────────────────────
+
+/** A plugin's settings, as JSON Schema — the subset the settings form draws (trunk-recorder-plugin's schema.rs). */
+export interface PluginSchema {
+  type?: "object" | "string" | "integer" | "number" | "boolean" | "array";
+  title?: string;
+  description?: string;
+  default?: unknown;
+  properties?: Record<string, PluginSchema>;
+  "x-order"?: string[];
+  enum?: (string | number)[];
+  "x-enum-labels"?: string[];
+  format?: string;
+  "x-secret"?: boolean;
+  "x-multiline"?: boolean;
+  minimum?: number;
+  maximum?: number;
+  items?: PluginSchema;
+}
+
+/** What a plugin says it is (`<plugin> --describe`). */
+export interface PluginManifest {
+  id: string;
+  name: string;
+  version: string;
+  description: string;
+  api: number;
+  subscribe: string[];
+  audio_formats: string[];
+  config?: PluginSchema;
+  system_config?: PluginSchema;
+  homepage?: string;
+  repository?: string;
+  authors?: string[];
+  license?: string;
+}
+
+/** How a plugin is doing while recording. */
+export interface PluginRuntime {
+  state: "off" | "starting" | "ok" | "warning" | "error";
+  message: string;
+  ok: number;
+  skipped: number;
+  failed: number;
+  lastFailure: string;
+  log: { time: number; level: "error" | "warn" | "info"; text: string }[];
+}
+
+export type PluginValues = Record<string, unknown>;
+
+export interface PluginInfo {
+  id: string;
+  enabled: boolean;
+  /** Its executable. */
+  path: string;
+  /** A build of the user's own (not installed in the plugins folder). */
+  custom: boolean;
+  /** Null when it can't be asked (see `problem`). */
+  manifest: PluginManifest | null;
+  problem: string | null;
+  config: PluginValues | null;
+  /** Its settings for each system, by short name. */
+  systems: Record<string, PluginValues>;
+  runtime: PluginRuntime;
+}
+
+export interface PluginsList {
+  /** plugins.json */
+  file: string;
+  problem?: string;
+  plugins: PluginInfo[];
+  /** Systems' short names, for settings per system. */
+  systems: string[];
+  audio: { encoder: string; bitrateKbps: number; found: string | null };
+}
+
 export type FromRecorder =
   | {
       type: "hello";
@@ -360,6 +436,9 @@ export type FromRecorder =
   | ({ type: "surveySpectrum" } & Spectrum)
   | { type: "devices"; devices: Device[] }
   | { type: "error"; message: string }
+  | { type: "notice"; message: string }
+  | ({ type: "plugins" } & PluginsList)
+  | { type: "pluginRuntime"; id: string; runtime: PluginRuntime }
   | { type: "quit" };
 
 export type ToRecorder =
@@ -378,6 +457,14 @@ export type ToRecorder =
   | { type: "surveyListen"; freqHz: number }
   | { type: "surveyRescan" }
   | { type: "surveyStop" }
+  | { type: "plugins" }
+  /** Turn a plugin on or off, or replace its settings. */
+  | { type: "setPlugin"; id: string; enabled?: boolean; config?: PluginValues; systems?: Record<string, PluginValues> }
+  /** A plugin executable on the recorder's computer (a build of the user's own). */
+  | { type: "addPlugin"; path: string }
+  /** Forget a plugin; an installed copy is deleted. */
+  | { type: "removePlugin"; id: string }
+  | { type: "setPluginAudio"; encoder?: string; bitrateKbps?: number }
   | { type: "quit" };
 
 /** Live audio: one 20 ms (or longer) chunk of a call, 8 kHz. */

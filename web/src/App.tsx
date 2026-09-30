@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { activeSystems, formatMhz, startProblem, systemColor, systemWithChannel } from "./config.ts";
-import { addSite, dismissError, downloadCall, quitApp, setListen, setNotice, start, stop, transport, useApp, web, type AppState } from "./controller.ts";
+import { addSite, dismissError, downloadCall, quitApp, setListen, setNotice, setView, start, stop, transport, useApp, web, type AppState } from "./controller.ts";
+import { PluginsPage } from "./Plugins.tsx";
 import { BrowserStorage } from "./web/BrowserStorage.tsx";
 import { CONVENTIONAL, type CallEntry, type CallView, type SystemStatus } from "./protocol.ts";
 import { Setup } from "./Setup.tsx";
@@ -585,6 +586,11 @@ function Log({ s }: { s: AppState }) {
   );
 }
 
+/** Enabled plugins that can't run or report a problem. */
+function pluginTrouble(s: AppState): number {
+  return (s.plugins?.plugins ?? []).filter((p) => p.enabled && (p.problem || p.runtime.state === "error" || p.runtime.state === "warning")).length;
+}
+
 export function App() {
   const s = useApp();
   const running = s.phase === "running" || s.phase === "starting";
@@ -615,6 +621,21 @@ export function App() {
             </p>
           </div>
         </div>
+        {!web && (
+          <nav className="tabs" aria-label="Pages">
+            <button className={s.view === "recorder" ? "on" : ""} aria-current={s.view === "recorder" ? "page" : undefined} onClick={() => setView("recorder")}>
+              Recorder
+            </button>
+            <button className={s.view === "plugins" ? "on" : ""} aria-current={s.view === "plugins" ? "page" : undefined} onClick={() => setView("plugins")}>
+              Plugins
+              {pluginTrouble(s) > 0 && (
+                <span className="tab-badge" title="A plugin needs attention">
+                  {pluginTrouble(s)}
+                </span>
+              )}
+            </button>
+          </nav>
+        )}
         <div className="row">
           <span className={`pill pill-${s.phase}`}>
             {!s.connected ? "Disconnected" : s.phase === "running" ? (liveDongle ? "Recording" : "Replaying") : s.phase === "idle" ? "Stopped" : s.phase === "starting" ? "Starting…" : "Stopping…"}
@@ -657,7 +678,9 @@ export function App() {
       {!running && problem && s.connected && !s.error && <div className="banner subtle">{problem}</div>}
 
       <main>
-        {running ? (
+        {!web && s.view === "plugins" ? (
+          <PluginsPage />
+        ) : running ? (
           <>
             <StatusTiles s={s} />
             {s.spectra.map((sp, i) =>

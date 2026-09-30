@@ -23,6 +23,7 @@
 pub mod cli;
 mod encode;
 mod host;
+pub mod manage;
 
 pub use encode::Encoder;
 pub use host::{Note, PluginHost, Spec};
@@ -75,6 +76,13 @@ impl PluginsFile {
     /// `plugins.json` beside the config file.
     pub fn path_for(config_path: &Path) -> PathBuf {
         config_path.with_file_name("plugins.json")
+    }
+
+    pub fn save(&self, path: &Path) -> std::io::Result<()> {
+        if let Some(d) = path.parent() {
+            std::fs::create_dir_all(d)?;
+        }
+        std::fs::write(path, serde_json::to_string_pretty(self).unwrap_or_default())
     }
 
     /// Missing: no plugins. Unreadable: an error (not silently none).

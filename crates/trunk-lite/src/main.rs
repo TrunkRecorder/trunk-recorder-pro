@@ -534,13 +534,14 @@ fn serve(a: &Args) {
     let ctx = Arc::new(runtime::Ctx {
         config_path: config_path.clone(),
         config: Mutex::new(cfg),
-        hub,
+        hub: hub.clone(),
         runner: Mutex::new(None),
         phase: Mutex::new(runtime::PhaseInfo { phase: "idle", error: None, ended: false }),
         history: Mutex::new(history.into_iter().collect::<VecDeque<_>>()),
         quit: tokio::sync::Notify::new(),
         survey: Mutex::new(None),
         survey_last: Mutex::new(None),
+        plugins: plugins::manage::Plugins::new(&config_path, hub.clone()),
     });
     println!("Trunk Recorder Lite {} — open {url}\nconfig: {}", env!("CARGO_PKG_VERSION"), config_path.display());
     let auto = a.flag("start") || ctx.config.lock().unwrap().server.auto_start;

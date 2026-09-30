@@ -19,7 +19,7 @@ use tokio::sync::broadcast;
 use trunk_app::{Output, Session};
 
 use crate::config::{Config, SampleFormat, Source};
-use crate::plugins::{self, PluginHost, PluginsFile};
+use crate::plugins::{self, PluginHost};
 use crate::radio::{airspy, uhd};
 use crate::sdr::{self, RtlConfig, SourceMsg};
 
@@ -65,6 +65,7 @@ pub struct Ctx {
     pub survey: Mutex<Option<crate::survey::SurveyRunner>>,
     /// Its latest snapshot, for browsers that connect meanwhile.
     pub survey_last: Mutex<Option<Value>>,
+    pub plugins: plugins::manage::Plugins,
 }
 
 impl Ctx {
@@ -108,10 +109,7 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
     let epoch_ms = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_millis() as f64);
     let mut session = Session::new(cfg.clone(), epoch_ms, &|name| fs::read_to_string(bandplan_path(name)).ok(), local_ymd)?;
     session.load_units(&|name| fs::read_to_string(units_path(name)).ok());
-    let plugins = start_plugins(&ctx, &cfg);
-    if let Some(p) = &plugins {
-        session.plugin_topics = p.topics;
-    }
+    ctx.plugins.start(plugins::systems_of(&cfg), PathBuf::from(&cfg.recording.capture_dir));
     let stop = Arc::new(AtomicBool::new(false));
     let (tx, rx) = mpsc::sync_channel::<SourceMsg>(256);
     let centers = cfg.resolved_centers();
@@ -138,38 +136,10 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
     threads.push(
         std::thread::Builder::new()
             .name("engine".into())
-            .spawn(move || engine_thread(ctx2, cfg, session, plugins, rx, stop2))
+            .spawn(move || engine_thread(ctx2, cfg, session, rx, stop2))
             .map_err(|e| e.to_string())?,
     );
     Ok(Runner { stop, threads })
-}
-
-/// The enabled plugins, running; None when there are none (or none could start).
-fn start_plugins(ctx: &Arc<Ctx>, cfg: &Config) -> Option<PluginHost> {
-    let notes = plugins::notes_to_hub(ctx.hub.clone());
-    let file = match PluginsFile::load(&PluginsFile::path_for(&ctx.config_path)) {
-        Ok(f) => f,
-        Err(e) => {
-            notes(plugins::Note::Log {
-                plugin: String::new(),
-                level: trunk_recorder_plugin::Level::Error,
-                text: e,
-            });
-            return None;
-        }
-    };
-    let specs = plugins::Spec::enabled(&file);
-    if specs.is_empty() {
-        return None;
-    }
-    let host = PluginHost::start(
-        specs,
-        &file.audio,
-        &plugins::systems_of(cfg),
-        Path::new(&cfg.recording.capture_dir),
-        notes,
-    );
-    (!host.is_empty()).then_some(host)
 }
 
 /// Where a system's band plan is kept between runs.
@@ -246,7 +216,7 @@ fn local_ymd(t: i64) -> (i32, u32, u32) {
     (d.year(), d.month(), d.day())
 }
 
-fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, mut plugins: Option<PluginHost>, rx: mpsc::Receiver<SourceMsg>, stop: Arc<AtomicBool>) {
+fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Receiver<SourceMsg>, stop: Arc<AtomicBool>) {
     ctx.set_phase("running", None, false);
     let dir = PathBuf::from(&cfg.recording.capture_dir);
     let t0 = Instant::now();
@@ -280,18 +250,20 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, mut plugins: 
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
         }
+        // (The plugins can be swapped meanwhile: their settings changed.)
+        let plugins = ctx.plugins.host.read().unwrap();
+        session.plugin_topics = plugins.as_ref().map_or(Default::default(), |p| p.topics);
         session.want_audio = ctx.hub.receiver_count() > 0 || plugins.as_ref().is_some_and(|p| p.audio);
         session.poll(now_ms(), &mut out);
         deliver(&ctx, &dir, &mut out, plugins.as_ref());
+        drop(plugins);
         save_units(&mut session);
     }
     ctx.set_phase("stopping", None, false);
     session.finish(&mut out);
-    deliver(&ctx, &dir, &mut out, plugins.as_ref());
-    if let Some(p) = plugins.as_mut() {
-        // Uploads in flight get a moment to finish.
-        p.shutdown(Duration::from_secs(10));
-    }
+    deliver(&ctx, &dir, &mut out, ctx.plugins.host.read().unwrap().as_ref());
+    // Uploads in flight get a moment to finish.
+    ctx.plugins.stop(Duration::from_secs(10));
     let _ = fs::create_dir_all(crate::config::config_dir());
     for (name, plan) in session.bandplans() {
         let _ = fs::write(bandplan_path(&name), plan);

@@ -281,3 +281,47 @@ td.unit-cell .unit, .now-playing .unit {
 .sys-table tr.mismatch td { color: var(--bad); }
 .filter-row { display: flex; gap: 6px; flex-wrap: wrap; }
 .filter-row .btn.on { border-color: var(--accent); box-shadow: inset 0 -2px 0 var(--accent); }
+
+/* pages */
+.tabs { display: inline-flex; gap: 2px; margin-right: auto; margin-left: 12px; }
+.tabs button { background: transparent; border: 0; border-radius: 6px; padding: 7px 12px; cursor: pointer; color: var(--muted); font-size: 14px; display: inline-flex; align-items: center; gap: 6px; }
+.tabs button:hover { color: var(--text); }
+.tabs button.on { color: var(--text); background: var(--panel-2); box-shadow: inset 0 -2px 0 var(--accent); }
+.tabs button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.tab-badge { min-width: 18px; padding: 0 5px; border-radius: 999px; background: var(--bad); color: var(--accent-ink); font-size: 11px; font-weight: 700; line-height: 18px; text-align: center; }
+@media (max-width: 720px) { .topbar { flex-wrap: wrap; } .tabs { order: 3; width: 100%; margin: 0; } }
+
+/* plugins */
+.plugins-page { display: flex; flex-direction: column; gap: 16px; width: 100%; max-width: 880px; margin: 0 auto; }
+.plugins-intro { margin: -4px 0 14px; max-width: 70ch; }
+.plugins-file { margin: 14px 0 0; overflow-wrap: anywhere; }
+.plugin-card { border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; background: var(--panel-2); display: flex; flex-direction: column; gap: 6px; }
+.plugin-card.off { background: transparent; }
+.plugin-card p { margin: 0; }
+.plugin-head { gap: 8px; }
+.plugin-head strong { font-size: 15px; }
+.plugin-state { font-size: 12px; }
+.plugin-desc { max-width: 70ch; }
+.plugin-meta a { color: var(--accent); }
+.plugin-actions { margin-top: 4px; }
+.plugin-last-failure { overflow-wrap: anywhere; }
+.plugin-log { width: 100%; max-height: 220px; margin-top: 4px; }
+.plugin-settings { border-top: 1px solid var(--line); margin-top: 6px; padding-top: 12px; }
+.plugin-settings h4 { margin: 4px 0 0; font-size: 13px; font-weight: 600; }
+.plugin-fields { gap: 12px; max-width: 560px; }
+.plugin-fields .field input, .plugin-fields .field select, .plugin-fields .field textarea, .add-plugin input, .plugins-page select, .plugins-page .field input { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 9px; min-width: 0; font: inherit; color: inherit; }
+.plugin-fields textarea { resize: vertical; }
+.plugin-group { border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 12px 12px; margin: 0; min-width: 0; }
+.plugin-group legend { padding: 0 6px; font-weight: 600; font-family: var(--mono); font-size: 13px; }
+.plugin-group > .field-hint { margin: 0 0 8px; }
+.secret { display: flex; gap: 6px; align-items: center; }
+.secret input { flex: 1; }
+.add-plugin { display: flex; flex-direction: column; gap: 10px; width: 100%; }
+.dot-ok { background: var(--ok); }
+.dot-warn { background: var(--warn); }
+.dot-bad { background: var(--bad); }
+.dot-off { background: transparent; box-shadow: inset 0 0 0 1.5px var(--muted); }
+.tone-ok { color: var(--ok); }
+.tone-warn, .warn-text { color: var(--warn); }
+.tone-bad, .bad-text { color: var(--bad); }
+.tone-off { color: var(--muted); }
