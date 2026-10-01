@@ -101,12 +101,56 @@ On a really weak site (Linked Cap+ on 463.375, no noise added):
   beat C4FM on a C4FM signal in noise (bank = C4FM alone, at every SNR).
   Diversity pays on simulcast, not on noise.
 
+## Prince George's County (P25 Phase 2, simulcast)
+
+System 2A8 / WACN BEE00, 700 MHz, two simulcast sites (RadioReference 6341).
+Both received here:
+
+- **North** (NAC 2A0): control channel 774.68125, about 20 dB, 1457 TSBKs in
+  40 s with 27 bad.
+- **South** (NAC 2A2): control channel 773.88125, about 15 dB.
+
+3 minutes of North, recorded on both dongles (200 at 773.85 MHz for the
+control channel, 91 at 771.30 MHz for voice), replays with 6916 good and 2
+bad TSBKs and 39 Phase 2 calls. Per voice channel:
+
+| Channel | Codewords with ≤ 1 error | FEC errors in 3 min |
+|---|---|---|
+| 770.61875 / 771.78125 | ~100 % | 0 |
+| 771.73125 | 98.9 % | 48–71 |
+| 772.88125 | 98 % | 346 |
+| 773.13125 | 87.5 % | 1922 |
+
+773.13125 is **not** weak. It is 23 dB above the noise in 37.5 kHz (28 dB in
+12.5 kHz), against 28 dB for the clean 771.78125. Its errors are spread
+evenly over time (no fading). Its spectrum is tilted: 8 dB more energy on
+the upper side, against 4 dB on 772.88125 through the same dongle.
+
+- The +930 Hz offset on both is dongle 200's crystal (~1.2 ppm). Centring
+  the channel on it changes nothing; the receiver tracks it.
+- So the errors come from a frequency-selective channel: the simulcast
+  transmitters' copies arriving at different delays.
+
+What was tried on it:
+
+- Decision-feedback differential detection: about 1 dB in added noise on
+  Phase 2 (half the codewords at 5.6 dB instead of 6.5), but no change on
+  the real channels. It slightly hurt DCFD's simulcast Phase 1 control
+  channel. Kept for Phase 2 voice only (`df_beta` 0.5).
+- The CMA equaliser: worse on 773.13125 (9 taps: 85 %, 15 taps: 77 %),
+  slightly better on 771.73125 (99.8 %).
+
+So on simulcast it is the channel, not the noise, that limits Phase 2 here.
+
 ## Next
 
-- **CQPSK** (P25 simulcast and Phase 2). It is still differential
-  detection, the one receiver not touched here. Multi-symbol differential
-  detection is the same idea as `msd` for π/4-DQPSK and typically gains
-  1–2 dB. A non-simulcast CQPSK capture is needed to measure it.
+- **Simulcast distortion on CQPSK** (Prince George's County 773.13125).
+  Options:
+  - per-burst receiver diversity for Phase 2, plain and equalised. The
+    harness prototype had a bug matching codewords across receivers, whose
+    delays differ;
+  - a decision-directed equaliser that adapts only within bursts;
+  - MLSE.
 - **MSD on simulcast in `auto` mode.** There the bank's C4FM branch runs MSD
   while CQPSK does the work (about +1 % of a core per channel). Switching it
   off when CQPSK is carrying the channel would need a per-receiver quality

@@ -1,5 +1,7 @@
 //! `trunk-pro tool snr <capture> --center Hz --rate Hz --freq Hz --kind dmr|p25|smartnet
-//! [--seconds N] [--snr 30,20,15,12,10,8,6,4] [--variant base,…] [--cutoff Hz]` —
+//! [--seconds N] [--snr 30,20,15,12,10,8,6,4] [--variant base,…] [--cutoff Hz]`
+//! (`--kind p2 --nac --sysid --wacn`: P25 Phase 2 voice; `--quality`: a real
+//! channel as it is, per variant) —
 //! weak-signal curves from a strong capture: one channel's IQ is cut out
 //! once, then decoded again and again with noise added at each SNR (signal
 //! power over the noise in 12.5 kHz). The noise is shaped by the same
@@ -140,6 +142,8 @@ pub struct Variant {
     pub fsk2: smartnet::Fsk2Options,
     /// DMR: sync errors accepted on the grid.
     pub grid_errs: Option<u32>,
+    /// P25 Phase 2 (and CQPSK generally): the receiver's settings.
+    pub cqpsk: trunk_core::dsp::cqpsk::Options,
 }
 
 /// A variant: its protocol's receiver (`base`) with `+`-joined changes.
@@ -149,12 +153,19 @@ fn variant(name: &str, kind: &str) -> Variant {
     let mut no_combining = false;
     let mut fsk2 = smartnet::Fsk2Options::default();
     let mut grid_errs = None;
+    // Phase 2 voice's receiver as the engine runs it.
+    let mut cq = trunk_core::dsp::cqpsk::Options { baud: trunk_core::p25::phase2::SYMBOL_RATE, df_beta: 0.5, ..Default::default() };
 
     for part in name.split('+') {
         match part {
             "base" | "" => {}
             "c4fm-only" => c4fm_only = true,
             "nocombine" => no_combining = true,
+            "coherent" => cq.coherent = true,
+            "noamp" => cq.soft_amplitude = false,
+            p if p.starts_with("df=") => cq.df_beta = p[3..].parse().unwrap_or(0.0),
+            p if p.starts_with("eq=") => cq.eq_taps = p[3..].parse().unwrap_or(0),
+            p if p.starts_with("mu=") => cq.eq_mu = p[3..].parse().unwrap_or(0.02),
 
             p if p.starts_with("grid=") => grid_errs = p[5..].parse().ok(),
             p => {
@@ -164,7 +175,7 @@ fn variant(name: &str, kind: &str) -> Variant {
             }
         }
     }
-    Variant { name: name.into(), c4fm: o, c4fm_only, no_combining, fsk2, grid_errs }
+    Variant { name: name.into(), c4fm: o, c4fm_only, no_combining, fsk2, grid_errs, cqpsk: cq }
 }
 
 /// What a decode of the channel got: each message's time (s) and content,
@@ -256,6 +267,40 @@ fn run_p25(iq: &[Complex32], rate: f64, v: &Variant) -> Count {
     n
 }
 
+/// P25 Phase 2 TDMA: H-DQPSK receiver → slot framer → tracker (descrambled
+/// with `key`: NAC, System ID, WACN) → AMBE codewords of both slots.
+fn run_p2(iq: &[Complex32], rate: f64, v: &Variant, key: (u32, u32, u32)) -> Count {
+    use trunk_core::dsp::cqpsk::Cqpsk;
+    use trunk_core::p25::phase2;
+    use trunk_core::trunk::tdma::TdmaTracker;
+    use trunk_core::trunk::tracker::TrackerOut;
+    let mut rx = Cqpsk::new(rate, v.cqpsk);
+    let mut fr = phase2::Framer::default();
+    let mut tr = TdmaTracker::new(1);
+    tr.set_key(key.0, key.1, key.2);
+    let (mut syms, mut pkts, mut out) = (Vec::new(), Vec::new(), Vec::new());
+    let mut n = Count::default();
+    for c in iq.chunks(4096) {
+        syms.clear();
+        pkts.clear();
+        rx.push(c, &mut syms);
+        for s in &syms {
+            fr.push(s, &mut pkts);
+        }
+        for p in &pkts {
+            out.clear();
+            let t = p.sample / rate;
+            tr.packet(p, t, &mut out);
+            for (slot, o) in out.drain(..) {
+                if let TrackerOut::Audio(_, f) = o {
+                    n.voice.push((t, format!("{slot}{}", hex(&f.bits))));
+                }
+            }
+        }
+    }
+    n
+}
+
 fn run_smartnet(iq: &[Complex32], rate: f64, v: &Variant) -> Count {
     let mut rx = smartnet::Fsk2::with_options(rate, v.fsk2);
     let mut fr = smartnet::Framer::default();
@@ -281,6 +326,9 @@ pub fn run(a: &Args) {
     if a.flag("separation") {
         return separation(a);
     }
+    if a.flag("quality") {
+        return quality(a);
+    }
     let kind = a.get("kind").unwrap_or("dmr");
     let cutoff = a.num(
         "cutoff",
@@ -294,10 +342,13 @@ pub fn run(a: &Args) {
     let variants: Vec<Variant> = a.get("variant").unwrap_or("base").split(',').map(|n| variant(n, kind)).collect();
     let (iq, rate) = channel(a, cutoff);
     let taps = lowpass(cutoff, rate, 63);
+    let hexarg = |k: &str| a.get(k).and_then(|v| u32::from_str_radix(v.trim_start_matches("0x"), 16).ok()).unwrap_or(0);
+    let key = (hexarg("nac"), hexarg("sysid"), hexarg("wacn"));
     let run = |iq: &[Complex32], v: &Variant| match kind {
         "dmr" => run_dmr(iq, rate, v),
         "p25" => run_p25(iq, rate, v),
         "smartnet" => run_smartnet(iq, rate, v),
+        "p2" => run_p2(iq, rate, v, key),
         k => die(&format!("tool snr: unknown kind {k}")),
     };
     let clean: Vec<Count> = variants.iter().map(|v| run(&iq, v)).collect();
@@ -324,6 +375,46 @@ pub fn run(a: &Args) {
             let _ = write!(line, "  {:>22}", format!("{} / {}", pct(b, c.blocks.len()), pct(vo, c.voice.len())));
         }
         println!("{line}");
+    }
+}
+
+/// `tool snr … --kind p2 --quality`: a real channel as it is, per variant —
+/// the share of AMBE codewords with ≤ 1 bit error, and MAC PDUs failing.
+pub fn quality(a: &Args) {
+    use trunk_core::dsp::cqpsk::Cqpsk;
+    use trunk_core::p25::phase2;
+    use trunk_core::trunk::tdma::TdmaTracker;
+    use trunk_core::trunk::tracker::TrackerOut;
+    let (iq, rate) = channel(a, a.num("cutoff", 7000.0));
+    let hexarg = |k: &str| a.get(k).and_then(|v| u32::from_str_radix(v.trim_start_matches("0x"), 16).ok()).unwrap_or(0);
+    for name in a.get("variant").unwrap_or("base").split(',') {
+        let v = variant(name, "p2");
+        let mut rx = Cqpsk::new(rate, v.cqpsk);
+        let mut fr = phase2::Framer::default();
+        let mut tr = TdmaTracker::new(1);
+        tr.set_key(hexarg("nac"), hexarg("sysid"), hexarg("wacn"));
+        let (mut syms, mut pkts, mut out) = (Vec::new(), Vec::new(), Vec::new());
+        let (mut n, mut clean, mut errs) = (0u64, 0u64, 0u64);
+        for c in iq.chunks(4096) {
+            syms.clear();
+            pkts.clear();
+            rx.push(c, &mut syms);
+            for s in &syms {
+                fr.push(s, &mut pkts);
+            }
+            for p in &pkts {
+                out.clear();
+                tr.packet(p, p.sample / rate, &mut out);
+                for (_, o) in out.drain(..) {
+                    if let TrackerOut::Audio(_, f) = o {
+                        n += 1;
+                        clean += (f.errs <= 1) as u64;
+                        errs += f.errs as u64;
+                    }
+                }
+            }
+        }
+        println!("{name:>16}: {n} codewords, {:.1} % with ≤ 1 error, {:.2} errors each; {} MAC PDUs", 100.0 * clean as f64 / n.max(1) as f64, errs as f64 / n.max(1) as f64, tr.mac_pdus);
     }
 }
 

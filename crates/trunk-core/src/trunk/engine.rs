@@ -455,7 +455,9 @@ impl SysHost<'_> {
         } else if call.phase2_tdma {
             let mut tracker = TdmaTracker::new(seed);
             tracker.soft = self.bank.soft;
-            let rx = Cqpsk::new(rate, cqpsk::Options { baud: phase2::SYMBOL_RATE, ..Default::default() });
+            // Decision-feedback differential detection: ~1 dB in noise on Phase 2
+            // voice (tool snr); not used on Phase 1, where simulcast didn't like it.
+            let rx = Cqpsk::new(rate, cqpsk::Options { baud: phase2::SYMBOL_RATE, df_beta: 0.5, ..Default::default() });
             Voice::Tdma { rx, framer: phase2::Framer::default(), tracker, syms: Vec::new(), pkts: Vec::new() }
         } else {
             Voice::Fdma { bank: Bank::new(rate, self.bank), tracker: VoiceTracker::new(mbe::lcg(seed)) }
