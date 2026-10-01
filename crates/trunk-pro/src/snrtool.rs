@@ -7,9 +7,9 @@
 //! see what a weaker signal would give them.
 //!
 //! Counted per SNR, as a percentage of the noiseless run: its messages decoded
-//! again, the same content within 0.2 s (dmr: CSBKs and LCs, and voice
-//! codewords with ≤ 2 bit errors; p25: TSBKs; smartnet: OSWs) — so a
-//! message decoded wrong doesn't count. Per receiver variant (see [`Variant`]).
+//! again, the same content within 0.2 s (dmr: CSBKs, LCs and AMBE codewords;
+//! p25: TSBKs and IMBE codewords; smartnet: OSWs) — so a message or codeword
+//! decoded wrong doesn't count, however sure its FEC was. Per receiver variant (see [`Variant`]).
 
 use std::f64::consts::PI;
 use std::fmt::Write as _;
@@ -138,6 +138,8 @@ pub struct Variant {
     /// DMR: no soft combining of repeated blocks.
     pub no_combining: bool,
     pub fsk2: smartnet::Fsk2Options,
+    /// DMR: sync errors accepted on the grid.
+    pub grid_errs: Option<u32>,
 }
 
 /// A variant: its protocol's receiver (`base`) with `+`-joined changes.
@@ -146,11 +148,15 @@ fn variant(name: &str, kind: &str) -> Variant {
     let mut c4fm_only = false;
     let mut no_combining = false;
     let mut fsk2 = smartnet::Fsk2Options::default();
+    let mut grid_errs = None;
+
     for part in name.split('+') {
         match part {
             "base" | "" => {}
             "c4fm-only" => c4fm_only = true,
             "nocombine" => no_combining = true,
+
+            p if p.starts_with("grid=") => grid_errs = p[5..].parse().ok(),
             p => {
                 if !o.set(p) && !fsk2.set(p) {
                     die(&format!("tool snr: unknown variant part \"{p}\""));
@@ -158,7 +164,7 @@ fn variant(name: &str, kind: &str) -> Variant {
             }
         }
     }
-    Variant { name: name.into(), c4fm: o, c4fm_only, no_combining, fsk2 }
+    Variant { name: name.into(), c4fm: o, c4fm_only, no_combining, fsk2, grid_errs }
 }
 
 /// What a decode of the channel got: each message's time (s) and content,
@@ -194,7 +200,11 @@ fn hex(b: &[u8]) -> String {
 fn run_dmr(iq: &[Complex32], rate: f64, v: &Variant) -> Count {
     let mut rx = C4fm::with_options(rate, v.c4fm);
     let (mut syms, mut bursts, mut ev) = (Vec::new(), Vec::new(), Vec::new());
+
     let (mut f, mut ch) = (Framer::default(), dmr::Channel::default());
+    if let Some(g) = v.grid_errs {
+        f.grid_errs = g;
+    }
     for s in ch.slots.iter_mut() {
         s.no_combining = v.no_combining;
     }
@@ -214,7 +224,7 @@ fn run_dmr(iq: &[Complex32], rate: f64, v: &Variant) -> Count {
                 match e {
                     SlotEvent::Csbk { csbk, .. } => n.blocks.push((t, format!("{s}c{}", hex(&csbk.0)))),
                     SlotEvent::Lc { lc, .. } => n.blocks.push((t, format!("{s}l{}", hex(&lc.0)))),
-                    SlotEvent::Voice { frame, .. } if frame.errs <= 2 => n.voice.push((t, format!("{s}{}", hex(&frame.bits)))),
+                    SlotEvent::Voice { frame, .. } => n.voice.push((t, format!("{s}{}", hex(&frame.bits)))),
                     _ => {}
                 }
             }
@@ -237,11 +247,8 @@ fn run_p25(iq: &[Complex32], rate: f64, v: &Variant) -> Count {
             if g[0].nid.duid == TSDU {
                 n.blocks.extend(best_tsbks(g).0.iter().map(|b| (t, hex(b))));
             } else if g.iter().any(|f| f.nid.duid == LDU1 || f.nid.duid == LDU2) {
-                // IMBE codewords with ≤ 2 bit errors (as for DMR's AMBE).
                 for (k, p) in best_imbe(g).iter().enumerate() {
-                    if p.errs <= 2 {
-                        n.voice.push((t + k as f64 * 0.02, format!("{:x?}", p.u)));
-                    }
+                    n.voice.push((t + k as f64 * 0.02, format!("{:x?}", p.u)));
                 }
             }
         }
@@ -271,6 +278,9 @@ fn run_smartnet(iq: &[Complex32], rate: f64, v: &Variant) -> Count {
 }
 
 pub fn run(a: &Args) {
+    if a.flag("separation") {
+        return separation(a);
+    }
     let kind = a.get("kind").unwrap_or("dmr");
     let cutoff = a.num(
         "cutoff",
@@ -314,5 +324,29 @@ pub fn run(a: &Args) {
             let _ = write!(line, "  {:>22}", format!("{} / {}", pct(b, c.blocks.len()), pct(vo, c.voice.len())));
         }
         println!("{line}");
+    }
+}
+
+/// `tool snr … --separation`: the C4FM receiver's level separation at each SNR (for the MSD gate).
+pub fn separation(a: &Args) {
+    let (iq, rate) = channel(a, a.num("cutoff", dmr::CHANNEL_CUTOFF_HZ));
+    let kind = a.get("kind").unwrap_or("dmr");
+    let clean = run_dmr(&iq, rate, &variant("base", "dmr"));
+    let s = signal_power(&iq, rate, &clean);
+    let taps = lowpass(a.num("cutoff", dmr::CHANNEL_CUTOFF_HZ), rate, 63);
+    for snr in [30.0, 20.0, 15.0, 12.0, 10.0, 8.0, 6.0, 4.0, 2.0, 0.0, -5.0, -20.0] {
+        let x = add_noise(&iq, rate, s, snr, &taps, 7);
+        let o = if kind == "dmr" { C4fmOptions::dmr() } else { C4fmOptions::default() };
+        let mut rx = C4fm::with_options(rate, C4fmOptions { msd: None, ..o });
+        let mut sep = Vec::new();
+        let mut out = Vec::new();
+        for c in x.chunks(4800) {
+            rx.push(c, &mut out);
+            if rx.separation().is_finite() {
+                sep.push(rx.separation());
+            }
+        }
+        sep.sort_by(f32::total_cmp);
+        println!("{snr:6.1} dB: separation median {:.2} (10 % {:.2}, 90 % {:.2})", sep[sep.len() / 2], sep[sep.len() / 10], sep[sep.len() * 9 / 10]);
     }
 }

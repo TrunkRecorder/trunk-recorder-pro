@@ -177,6 +177,102 @@ pub fn bptc196_decode(raw: &[u8; 196]) -> Bptc {
     Bptc { bits, errs: if clean { errs } else { -1 } }
 }
 
+/// Chase decoding of one Hamming row / column: the received bits and their
+/// reliabilities → the codeword cheapest to reach among the hard decode and
+/// those after flipping each subset of the 3 least reliable bits. None when
+/// no candidate is a codeword.
+fn hamming_chase(rows: &[u32], pbits: usize, bits: &[u8], rel: &[f32]) -> Option<Vec<u8>> {
+    let n = bits.len();
+    let mut idx: Vec<usize> = (0..n).collect();
+    idx.sort_by(|&a, &b| rel[a].total_cmp(&rel[b]));
+    let lrb = &idx[..3];
+    let mut best: Option<(f32, Vec<u8>)> = None;
+    for m in 0..8u32 {
+        let mut t = bits.to_vec();
+        for (k, &i) in lrb.iter().enumerate() {
+            if m & (1 << k) != 0 {
+                t[i] ^= 1;
+            }
+        }
+        if hamming_fix(rows, pbits, &mut t).is_none() {
+            continue;
+        }
+        let cost: f32 = (0..n).filter(|&i| t[i] != bits[i]).map(|i| rel[i]).sum();
+        if best.as_ref().is_none_or(|b| cost < b.0) {
+            best = Some((cost, t));
+        }
+    }
+    best.map(|b| b.1)
+}
+
+/// BPTC(196,96) from soft bits (sign = bit, magnitude = reliability, air
+/// order): rows and columns Chase-decoded in turn against the received
+/// reliabilities, until every row and column is a codeword. The hard
+/// decoder's result when that doesn't settle.
+pub fn bptc196_decode_soft(soft: &[f32; 196]) -> Bptc {
+    let mut m = [0u8; 196];
+    let mut rel = [0f32; 196];
+    for (i, &v) in soft.iter().enumerate() {
+        m[i * 13 % 196] = (v > 0.0) as u8;
+        rel[i * 13 % 196] = v.abs();
+    }
+    let received = m;
+    let at = |r: usize, c: usize| 1 + r * 15 + c;
+    let mut clean = false;
+    for _ in 0..4 {
+        let mut changed = false;
+        for r in 0..9 {
+            let bits: Vec<u8> = (0..15).map(|c| m[at(r, c)]).collect();
+            let w: Vec<f32> = (0..15).map(|c| rel[at(r, c)]).collect();
+            if let Some(t) = hamming_chase(&H15, 4, &bits, &w) {
+                for c in 0..15 {
+                    changed |= m[at(r, c)] != t[c];
+                    m[at(r, c)] = t[c];
+                }
+            }
+        }
+        for c in 0..15 {
+            let bits: Vec<u8> = (0..13).map(|r| m[at(r, c)]).collect();
+            let w: Vec<f32> = (0..13).map(|r| rel[at(r, c)]).collect();
+            if let Some(t) = hamming_chase(&H13, 4, &bits, &w) {
+                for r in 0..13 {
+                    changed |= m[at(r, c)] != t[r];
+                    m[at(r, c)] = t[r];
+                }
+            }
+        }
+        let ok_rows = (0..9).all(|r| {
+            let mut row: [u8; 15] = std::array::from_fn(|c| m[at(r, c)]);
+            hamming_fix(&H15, 4, &mut row) == Some(0)
+        });
+        let ok_cols = (0..15).all(|c| {
+            let mut col: [u8; 13] = std::array::from_fn(|r| m[at(r, c)]);
+            hamming_fix(&H13, 4, &mut col) == Some(0)
+        });
+        if ok_rows && ok_cols {
+            clean = true;
+            break;
+        }
+        if !changed {
+            break;
+        }
+    }
+    if !clean {
+        let raw: [u8; 196] = std::array::from_fn(|i| (soft[i] > 0.0) as u8);
+        return bptc196_decode(&raw);
+    }
+    let mut bits = [0u8; 96];
+    let mut p = 0;
+    for r in 0..9 {
+        for c in if r == 0 { 3 } else { 0 }..11 {
+            bits[p] = m[at(r, c)];
+            p += 1;
+        }
+    }
+    let errs = m.iter().zip(&received).filter(|(a, b)| a != b).count() as i32;
+    Bptc { bits, errs }
+}
+
 pub fn bptc196_encode(data: &[u8; 96]) -> [u8; 196] {
     let mut m = [0u8; 196];
     let at = |r: usize, c: usize| 1 + r * 15 + c;

@@ -11,7 +11,7 @@
 //! ```
 
 use super::burst::{cach, Burst, SyncKind};
-use super::fec::{self, bptc196_decode, embedded_lc_decode, pack, rs129_decode, Bptc};
+use super::fec::{self, bptc196_decode_soft, embedded_lc_decode, pack, rs129_decode, Bptc};
 use crate::p25::phase2::{decode_vcw, AmbeFrame};
 
 /// Data types of a data burst's slot type (TS 102 361-1 §9.3.6).
@@ -282,8 +282,8 @@ impl SlotDecoder {
     /// BPTC-decode soft bits as data type `dt` → the block, whether its own
     /// check passed (None: it has none), and the LC it carries (LC types).
     fn check(dt: u8, soft: &[f32]) -> (Bptc, Option<bool>, Lc) {
-        let raw: [u8; 196] = std::array::from_fn(|i| (soft[i] > 0.0) as u8);
-        let blk = bptc196_decode(&raw);
+        // Soft (Chase) rows and columns: ~0.4 dB on control blocks near threshold.
+        let blk = bptc196_decode_soft(soft.try_into().unwrap());
         let (checked, lc) = match dt {
             DT_VOICE_LC_HEADER | DT_TERMINATOR_LC => {
                 let bytes: [u8; 12] = pack(&blk.bits).try_into().unwrap();

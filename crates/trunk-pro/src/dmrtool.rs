@@ -15,7 +15,7 @@ use std::time::Instant;
 
 use trunk_core::dmr::slot::data_type_name;
 use trunk_core::dmr::{self, Burst, Framer, LcFrom, SlotEvent};
-use trunk_core::dsp::c4fm::C4fm;
+use trunk_core::dsp::c4fm::{C4fm, C4fmOptions};
 use trunk_core::dsp::{Channelizer, Receiver};
 use trunk_core::mbe::{self, FRAME_SAMPLES};
 
@@ -54,7 +54,8 @@ pub fn run_scan(a: &Args) {
         .map(|k| {
             let hz = k as f64 * step;
             let (head, _, _) = chz.add_head(hz - center, dmr::CHANNEL_CUTOFF_HZ, 0.0);
-            Ch { hz, head, rx: C4fm::dmr(rate), framer: Framer::default(), chan: dmr::Channel::default(), syncs: BTreeMap::new(), cc: BTreeMap::new(), lcs: 0, voice: 0 }
+            // A scan only needs syncs: no multi-symbol detection (it would cost 20×).
+            Ch { hz, head, rx: C4fm::with_options(rate, C4fmOptions { msd: None, ..C4fmOptions::dmr() }), framer: Framer::default(), chan: dmr::Channel::default(), syncs: BTreeMap::new(), cc: BTreeMap::new(), lcs: 0, voice: 0 }
         })
         .collect();
     let t0 = Instant::now();

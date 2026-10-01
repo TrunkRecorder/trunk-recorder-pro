@@ -15,9 +15,13 @@ use std::f64::consts::PI;
 
 use num_complex::Complex32;
 
+use super::msd::{Msd, Pulse};
 use super::{Receiver, Symbol};
 
 const BLOCK: u64 = 240;
+/// Level separation (step / spread) above which MSD is switched off, and below which on.
+const MSD_OFF: f32 = 11.0;
+const MSD_ON: f32 = 9.0;
 
 /// Receiver variants, for weak-signal comparisons (`tool snr --variant`).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -31,6 +35,10 @@ pub struct C4fmOptions {
     /// Levels from the four clusters' means instead of the 2 % / 98 % quantiles
     /// (noise widens the quantiles, so the outer threshold ends up too high).
     pub rail_means: bool,
+    /// Symbols per timing block (one sampling phase estimated per block).
+    pub block: u64,
+    /// Re-decide every symbol by multi-symbol detection with this transmit pulse ([`super::msd`]).
+    pub msd: Option<Pulse>,
 }
 
 /// P25: an RRC matched filter (α 0.5) and cluster-mean levels. Against the
@@ -39,7 +47,7 @@ pub struct C4fmOptions {
 /// CQPSK receivers carry it.
 impl Default for C4fmOptions {
     fn default() -> Self {
-        C4fmOptions { box_symbols: 0.9, rrc: Some(0.5), clip: None, rail_means: true }
+        C4fmOptions { box_symbols: 0.9, rrc: Some(0.5), clip: None, rail_means: true, block: BLOCK, msd: Some(Pulse::Rc(0.2)) }
     }
 }
 
@@ -47,12 +55,12 @@ impl C4fmOptions {
     /// DMR: the RRC matching its transmitter's (α 0.2), cluster-mean levels —
     /// about 6 dB better than the P25-era boxcar and quantile levels.
     pub fn dmr() -> Self {
-        C4fmOptions { rrc: Some(0.2), ..Default::default() }
+        C4fmOptions { rrc: Some(0.2), msd: Some(Pulse::Rrc(0.2)), ..Default::default() }
     }
 
     /// The first receiver (boxcar, quantile levels), for comparisons.
     pub fn legacy() -> Self {
-        C4fmOptions { box_symbols: 0.9, rrc: None, clip: None, rail_means: false }
+        C4fmOptions { box_symbols: 0.9, rrc: None, clip: None, rail_means: false, block: BLOCK, msd: None }
     }
 
     /// Apply one `name[=value]` setting; false if unknown.
@@ -68,6 +76,8 @@ impl C4fmOptions {
             "rrc" => self.rrc = Some(v.unwrap_or(0.2)),
             "clip" => self.clip = Some(v.unwrap_or(1.5) as f32),
             "means" => self.rail_means = true,
+            "nomsd" => self.msd = None,
+            "block" => self.block = v.unwrap_or(240.0) as u64,
             _ => return false,
         }
         true
@@ -99,6 +109,10 @@ fn rrc_taps(alpha: f64, sps: f64, span: usize) -> Vec<f32> {
 
 pub struct C4fm {
     opts: C4fmOptions,
+    msd: Option<Msd>,
+    msd_in: Vec<Symbol>,
+    /// Multi-symbol detection running (the signal isn't clean enough without it).
+    msd_on: bool,
     /// Matched filter taps (None: the boxcar); its delay, samples.
     taps: Option<Vec<f32>>,
     delay: f64,
@@ -120,6 +134,8 @@ pub struct C4fm {
     since_rails: u64,
     center: f32,
     thr: f32,
+    /// Level step over the symbols' spread around their levels (∞ until measured).
+    separation: f32,
     pub symbols: u64,
 }
 
@@ -129,6 +145,18 @@ impl C4fm {
     }
 
     /// For DMR (4FSK at 4800 baud, RRC-shaped).
+    /// Level step / spread of the symbols about their levels: ~10 and up,
+    /// the decisions are clean; ~1, noise.
+    pub fn separation(&self) -> f32 {
+        self.separation
+    }
+
+    /// The four symbol levels (discriminator Hz: −3, −1, +1, +3), as now estimated.
+    pub fn levels(&self) -> [f32; 4] {
+        let o = self.thr * 1.5;
+        [self.center - o, self.center - o / 3.0, self.center + o / 3.0, self.center + o]
+    }
+
     pub fn dmr(fs: f64) -> Self {
         Self::with_options(fs, C4fmOptions::dmr())
     }
@@ -140,6 +168,10 @@ impl C4fm {
         let delay = taps.as_ref().map_or((boxw - 1) as f64 / 2.0, |t| (t.len() - 1) as f64 / 2.0);
         C4fm {
             opts,
+            // DMR (RRC pulse): decision feedback; P25 (RC): the full search.
+            msd: opts.msd.map(|p| Msd::new(fs, p, opts.rrc.unwrap_or(0.5), matches!(p, Pulse::Rrc(_)))),
+            msd_in: Vec::new(),
+            msd_on: true,
             taps,
             delay,
             fs,
@@ -160,6 +192,7 @@ impl C4fm {
             since_rails: 0,
             center: 0.0,
             thr: 1200.0,
+            separation: f32::INFINITY,
             symbols: 0,
         }
     }
@@ -177,7 +210,7 @@ impl C4fm {
         for p in 0..self.steps {
             let cand = p as f64 / self.steps as f64 * self.sps;
             let mut e = 0.0f64;
-            for s in b * BLOCK..(b + 1) * BLOCK {
+            for s in b * self.opts.block..(b + 1) * self.opts.block {
                 let t = cand + s as f64 * self.sps;
                 if t < self.y_base as f64 {
                     continue;
@@ -200,9 +233,9 @@ impl C4fm {
         self.phase.push_back(ph);
     }
 
-    /// Phase at symbol s: linear between block centres (b + 0.5)·BLOCK.
+    /// Phase at symbol s: linear between block centres (b + 0.5)·block.
     fn phase_at(&self, s: u64) -> f64 {
-        let x = s as f64 / BLOCK as f64 - 0.5 - self.phase_base as f64;
+        let x = s as f64 / self.opts.block as f64 - 0.5 - self.phase_base as f64;
         if x <= 0.0 {
             return self.phase[0];
         }
@@ -218,7 +251,7 @@ impl C4fm {
             return;
         }
         // Symbols up to the centre of the newest block with a phase are final.
-        let up_to = (self.phase_base + self.phase.len() as u64 - 1) * BLOCK + BLOCK / 2;
+        let up_to = (self.phase_base + self.phase.len() as u64 - 1) * self.opts.block + self.opts.block / 2;
         while self.next_sym < up_to {
             let t = self.phase_at(self.next_sym) + self.next_sym as f64 * self.sps;
             if t < self.y_base as f64 {
@@ -241,7 +274,7 @@ impl C4fm {
             self.soft.pop_front();
         }
         self.since_rails += 1;
-        if self.since_rails >= BLOCK && self.soft.len() >= 480 {
+        if self.since_rails >= self.opts.block && self.soft.len() >= 480 {
             self.since_rails = 0;
             self.tmp.clear();
             self.tmp.extend(self.soft.iter());
@@ -267,6 +300,14 @@ impl C4fm {
                         break;
                     }
                     let m: Vec<f32> = (0..4).map(|k| (s[k] / n[k] as f64) as f32).collect();
+                    // Spread of the symbols about their levels, against the level step.
+                    let mut var = 0f64;
+                    for &v in &self.tmp {
+                        let k = (0..4).min_by(|&a, &b| (v - m[a]).abs().total_cmp(&(v - m[b]).abs())).unwrap();
+                        var += ((v - m[k]) as f64).powi(2);
+                    }
+                    let sd = (var / self.tmp.len() as f64).sqrt() as f32;
+                    self.separation = (m[3] - m[0]) / 3.0 / sd.max(1e-3);
                     self.center = (m[0] + m[3]) / 2.0;
                     // Thresholds halfway between the inner and outer levels.
                     self.thr = ((m[2] + m[3]) / 2.0 - self.center + self.center - (m[0] + m[1]) / 2.0) / 2.0;
@@ -283,13 +324,13 @@ impl C4fm {
 
     fn compact(&mut self) {
         let front = self.phase.front().copied().unwrap_or(0.0);
-        let keep_from = self.next_sym as f64 * self.sps + front - 2.0 * BLOCK as f64 * self.sps;
+        let keep_from = self.next_sym as f64 * self.sps + front - 2.0 * self.opts.block as f64 * self.sps;
         if keep_from > self.y_base as f64 + 8192.0 {
             let drop = (keep_from - self.y_base as f64) as usize;
             self.y.drain(..drop);
             self.y_base += drop as u64;
         }
-        while self.phase.len() > 4 && (self.phase_base + 2) * BLOCK + BLOCK / 2 < self.next_sym {
+        while self.phase.len() > 4 && (self.phase_base + 2) * self.opts.block + self.opts.block / 2 < self.next_sym {
             self.phase.pop_front();
             self.phase_base += 1;
         }
@@ -326,11 +367,36 @@ impl Receiver for C4fm {
                 }
             }
         }
-        while ((self.y_base + self.y.len() as u64) as f64) > ((self.next_block + 1) * BLOCK) as f64 * self.sps + self.sps + 2.0 {
+        while ((self.y_base + self.y.len() as u64) as f64) > ((self.next_block + 1) * self.opts.block) as f64 * self.sps + self.sps + 2.0 {
             self.block_phase(self.next_block);
             self.next_block += 1;
         }
-        self.emit(out);
+        // A clean signal (level step ≥ ~10 spreads, ~15 dB) needs no MSD: off
+        // above 11, on again below 9.
+        if self.msd_on && self.separation > MSD_OFF {
+            self.msd_on = false;
+            if let Some(m) = self.msd.as_mut() {
+                m.flush(out);
+            }
+        } else if !self.msd_on && self.separation < MSD_ON {
+            self.msd_on = true;
+        }
+        if !self.msd_on {
+            if let Some(m) = self.msd.as_mut() {
+                m.skip(iq.len());
+            }
+        }
+        match self.msd.as_mut().filter(|_| self.msd_on) {
+            None => self.emit(out),
+            Some(_) => {
+                let mut syms = std::mem::take(&mut self.msd_in);
+                syms.clear();
+                self.emit(&mut syms);
+                let lv = self.levels();
+                self.msd.as_mut().unwrap().push(iq, &syms, lv, out);
+                self.msd_in = syms;
+            }
+        }
         self.compact();
     }
 }

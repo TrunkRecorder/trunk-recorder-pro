@@ -5,6 +5,7 @@ pub mod c4fm;
 pub mod channelizer;
 pub mod cqpsk;
 pub mod fm;
+pub mod msd;
 
 pub use channelizer::{Channelizer, HeadId};
 

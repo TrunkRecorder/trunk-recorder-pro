@@ -103,6 +103,9 @@ pub fn match_sync(win: u64, family: Option<u8>) -> (SyncKind, u32) {
 /// the sync where the grid expects one.
 const LOCK_ERRS: u32 = 3;
 const GRID_ERRS: u32 = 7;
+/// A repeater's voice and data syncs are 24 bits apart: on the grid, up to 11
+/// errors still say which (worth ~0.3 dB near threshold, `tool snr`).
+const GRID_ERRS_BS: u32 = 11;
 /// Bursts with no sync before the framer lets go of the grid (a slot's voice
 /// superframe has one per 12 bursts).
 const UNLOCK_BURSTS: u32 = 24;
@@ -209,8 +212,9 @@ pub fn cach(c: &[u8; CACH_DIBITS]) -> (Option<Tact>, [u8; 17]) {
 }
 
 /// Cuts decided symbols into bursts, holding the 30 ms grid between syncs.
-#[derive(Default)]
 pub struct Framer {
+    /// Bits a repeater's sync may differ by where the grid expects one ([`GRID_ERRS_BS`]).
+    pub grid_errs: u32,
     buf: VecDeque<Symbol>,
     win: u64,
     n: u64,
@@ -222,6 +226,12 @@ pub struct Framer {
     since_sync: u32,
     pub bursts: u64,
     pub syncs: u64,
+}
+
+impl Default for Framer {
+    fn default() -> Self {
+        Framer { grid_errs: GRID_ERRS_BS, buf: VecDeque::new(), win: 0, n: 0, next_end: None, pending: None, family: 0, since_sync: 0, bursts: 0, syncs: 0 }
+    }
 }
 
 impl Framer {
@@ -241,7 +251,9 @@ impl Framer {
         match self.next_end {
             Some(end) if end - 54 == i => {
                 let (kind, errs) = match_sync(self.win, Some(self.family));
-                self.pending = (errs <= GRID_ERRS).then_some((kind, errs));
+                // Direct-mode syncs of different slots are only 10 apart.
+                let lim = if self.family == 0 { self.grid_errs } else { GRID_ERRS.min(self.grid_errs) };
+                self.pending = (errs <= lim).then_some((kind, errs));
             }
             _ => {
                 let (kind, errs) = match_sync(self.win, None);
