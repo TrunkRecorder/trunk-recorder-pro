@@ -310,6 +310,14 @@ inside a source's bandwidth. A source's center is placed automatically when
 it is left on Auto and the channels fit. Conventional calls go to their own
 folder (**Short name** in the panel, `conv` by default).
 
+Analog calls (conventional FM channels, and SmartNet analog grants) pick up
+the unit ID that MDC1200 and FleetSync radios send as a data burst when they
+key up or unkey. It goes in the call's `srcList` like a digital radio's:
+MDC1200 as its 16-bit ID (as Trunk Recorder writes it), FleetSync as
+fleet × 10000 + unit (fleet 101, unit 1234 → 1011234). An MDC1200 emergency
+marks the call as an emergency. There is nothing to turn on; Trunk Recorder's
+`decodeMDC` and `decodeFSync` aren't needed.
+
 **How it works.** Channels are found by energy, like Trunk Recorder's signal
 detector, but from the spectrum the channelizer already computes for every
 sample — so watching a channel costs almost nothing (about 0.001 % of a core

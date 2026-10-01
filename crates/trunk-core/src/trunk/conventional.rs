@@ -7,7 +7,8 @@
 //! SNR ≥ squelch → open a head with pre-roll (the air from before detection)
 //!   → channel filter / carrier meter (±5.5 kHz: confirms the carrier, so FFT
 //!     leakage from a strong neighbour doesn't make a call)
-//!   → NBFM demod → 8 kHz audio          (fm)
+//!   → NBFM demod → 8 kHz audio          (fm; unit IDs from MDC1200 /
+//!                                        FleetSync bursts in it)
 //!   → receiver bank → voice tracker     (p25; talkgroup from link control)
 //!   → 4FSK → DMR framer → both slots   (dmr; a call on each slot, talkgroup
 //!                                        from link control)
@@ -34,6 +35,7 @@ use super::frames::VoiceFrame;
 use crate::dmr::voice::{DmrVoice, VOICE_BURST_S};
 use crate::dsp::c4fm::C4fm;
 use crate::dsp::fm::{self, ChannelFilter, Nbfm};
+use crate::dsp::signalling::Signalling;
 use crate::dsp::{Channelizer, HeadId, Receiver, Symbol};
 use crate::mbe;
 use crate::p25::alias::Alias;
@@ -129,7 +131,7 @@ pub enum ConvOut {
 }
 
 enum Rx {
-    Fm(Nbfm),
+    Fm(Nbfm, Signalling),
     /// `t0`: sample-clock time of the head's first output; `rate`: its sample rate.
     P25 { meter: ChannelFilter, bank: Bank, tracker: VoiceTracker, groups: Vec<Group>, t0: f64, rate: f64 },
     Dmr { meter: ChannelFilter, rx: C4fm, voice: Box<DmrVoice>, syms: Vec<Symbol>, t0: f64, rate: f64 },
@@ -313,7 +315,7 @@ impl Conventional {
         let (head, pre, start_sample) = chz.add_head(ch.offset_hz, HEAD_CUTOFF_HZ, preroll_s);
         let rate = chz.output_rate();
         let rx = match ch.cfg.mode {
-            ConvMode::Fm => Rx::Fm(Nbfm::new(rate)),
+            ConvMode::Fm => Rx::Fm(Nbfm::new(rate), Signalling::default()),
             ConvMode::P25 => Rx::P25 {
                 meter: ChannelFilter::new(rate),
                 bank: Bank::new(rate, bank_cfg),
@@ -341,7 +343,14 @@ impl Conventional {
         let o = ch.open.as_mut().unwrap();
         let mut heard: [Heard; 2] = Default::default();
         let carrier = match &mut o.rx {
-            Rx::Fm(fm) => fm.push(iq, meter_thr, &mut heard[0].audio),
+            Rx::Fm(fm, ids) => {
+                let h = &mut heard[0];
+                let up = fm.push(iq, meter_thr, &mut h.audio);
+                let mut found = Vec::new();
+                ids.push(&h.audio, &mut found);
+                h.infos.extend(found.iter().map(|u| (Some(u.unit), u.emergency, false)));
+                up
+            }
             Rx::P25 { meter, bank, tracker, groups, t0, rate } => {
                 let up = meter.meter(iq) > meter_thr;
                 groups.clear();
@@ -558,9 +567,11 @@ mod tests {
         snr_db: f64,
         on: Vec<(f64, f64)>,
         ph: f64,
+        /// 8 kHz modulation from each key-up (±1: 5 kHz), then the tone.
+        audio: Vec<f32>,
     }
 
-    /// `secs` of air at `fs`: FM transmissions (1 kHz tone, 2.5 kHz deviation) in Gaussian noise.
+    /// `secs` of air at `fs`: FM transmissions (1 kHz tone, 2.5 kHz deviation, or `audio`) in Gaussian noise.
     fn run(fs: f64, secs: f64, txs: &mut [Tx], channels: Vec<ConvChannel>) -> (Vec<(Call, usize, String)>, usize) {
         let center = 155_000_000.0;
         let cfg = EngineConfig {
@@ -591,9 +602,11 @@ mod tests {
                 let mut x = Complex32::from_polar(r as f32, (2.0 * PI * b) as f32);
                 let t = (i0 + k) as f64 / fs;
                 for tx in txs.iter_mut() {
-                    let dev = 2500.0 * (2.0 * PI * 1000.0 * t).sin();
+                    let on = tx.on.iter().find(|&&(s, e)| t >= s && t < e);
+                    let i = on.map_or(usize::MAX, |&(s, _)| ((t - s) * 8000.0) as usize);
+                    let dev = tx.audio.get(i).map_or(2500.0 * (2.0 * PI * 1000.0 * t).sin(), |&a| 5000.0 * a as f64);
                     tx.ph += 2.0 * PI * (tx.offset_hz + dev) / fs;
-                    if tx.on.iter().any(|&(s, e)| t >= s && t < e) {
+                    if on.is_some() {
                         let p = sigma2 * 10_000.0 / fs * 10f64.powf(tx.snr_db / 10.0);
                         x += Complex32::from_polar(p.sqrt() as f32, tx.ph as f32);
                     }
@@ -629,11 +642,11 @@ mod tests {
         let c = 155_000_000.0;
         let mut txs = vec![
             // Two transmissions 1.5 s apart (> the 1 s call timeout): two calls.
-            Tx { offset_hz: 200_000.0, snr_db: 30.0, on: vec![(0.5, 2.5), (4.0, 5.0)], ph: 0.0 },
+            Tx { offset_hz: 200_000.0, snr_db: 30.0, on: vec![(0.5, 2.5), (4.0, 5.0)], ph: 0.0, audio: Vec::new() },
             // A weak one, 15 dB above noise.
-            Tx { offset_hz: 312_500.0, snr_db: 15.0, on: vec![(1.0, 3.0)], ph: 0.0 },
+            Tx { offset_hz: 312_500.0, snr_db: 15.0, on: vec![(1.0, 3.0)], ph: 0.0, audio: Vec::new() },
             // A very strong neighbour (not a configured channel) 12.5 kHz from channel 3.
-            Tx { offset_hz: -100_000.0, snr_db: 50.0, on: vec![(0.2, 5.5)], ph: 0.0 },
+            Tx { offset_hz: -100_000.0, snr_db: 50.0, on: vec![(0.2, 5.5)], ph: 0.0, audio: Vec::new() },
         ];
         let chans = vec![fm(c + 200_000.0, 1), fm(c + 312_500.0, 2), fm(c - 87_500.0, 3), fm(c - 400_000.0, 4)];
         let (calls, starts) = run(fs, 6.0, &mut txs, chans);
@@ -652,5 +665,24 @@ mod tests {
         assert!(by_tg(3).is_empty(), "leakage from the neighbour made a call: {:?}", by_tg(3).iter().map(|(c, n, _)| (c.start_s, c.last_audio_s, *n)).collect::<Vec<_>>());
         assert!(by_tg(4).is_empty());
         assert_eq!(starts, 3);
+    }
+
+    #[test]
+    fn fm_unit_ids_from_signalling() {
+        use crate::dsp::signalling::tests::{ffsk, fs_bits, mdc_bits, mdc_tones};
+        // MDC1200 emergency at key-up, voice, a FleetSync 2400 ID at unkey.
+        let mut audio = vec![0.0f32; 400];
+        audio.extend(ffsk(&mdc_tones(&mdc_bits(0x00, 0x80, 0x1234)), 1200.0, 1800.0, 1200.0, 0.5));
+        audio.extend((0..8000).map(|i| (2.0 * PI * 1000.0 * i as f64 / 8000.0).sin() as f32 * 0.5));
+        audio.extend(ffsk(&fs_bits(101, 1234), 1200.0, 2400.0, 2400.0, 0.5));
+        let secs = audio.len() as f64 / 8000.0;
+        let c = 155_000_000.0;
+        let mut txs = vec![Tx { offset_hz: 200_000.0, snr_db: 25.0, on: vec![(0.5, 0.5 + secs)], ph: 0.0, audio }];
+        let (calls, _) = run(2_400_000.0, 3.5, &mut txs, vec![fm(c + 200_000.0, 1)]);
+        assert_eq!(calls.len(), 1);
+        let call = &calls[0].0;
+        assert_eq!(call.sources.iter().map(|s| s.src).collect::<Vec<_>>(), vec![0x1234, 1011234]);
+        assert!(call.emergency);
+        assert!(calls[0].2.contains("\"src\":4660"), "{}", calls[0].2);
     }
 }

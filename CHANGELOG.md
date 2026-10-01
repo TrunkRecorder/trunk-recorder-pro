@@ -66,6 +66,10 @@ platform, with no GNU Radio, OP25 or other runtime dependencies.
   interface (with CSV import and export), in the config, or in a linked CSV
   channel file to edit in a spreadsheet; Trunk Recorder's channel file and
   config import.
+- **Unit IDs on analog calls**: MDC1200 and FleetSync (1200 and 2400 baud)
+  bursts are decoded from the audio of analog calls, conventional and
+  SmartNet, into `srcList`; an MDC1200 emergency flags the call. Always on,
+  at about 0.02 % of a core per analog call being recorded.
 - **Find my system**: a first-run survey for people who don't know their
   frequencies. It scans the land-mobile bands (800 / 700 / 900 MHz, UHF,
   VHF, optionally UHF federal and T-band) for carriers that never key down,

@@ -21,7 +21,7 @@ pub const AUDIO_RATE: f64 = 8000.0;
 pub const CHANNEL_HALF_BW: f64 = 5500.0;
 /// Peak deviation mapped to full scale ±1 (before de-emphasis gain), Hz.
 const FULL_SCALE_DEV: f64 = 5000.0;
-const DEEMPH_TAU: f64 = 750e-6;
+pub const DEEMPH_TAU: f64 = 750e-6;
 /// Carrier power smoothing, s.
 const POWER_TAU: f64 = 0.010;
 /// Gate ramp, s.

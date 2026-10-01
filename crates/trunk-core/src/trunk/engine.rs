@@ -46,6 +46,7 @@ use crate::p25::diversity::{best_frame, best_tsbks, Bank, BankConfig, Group};
 use crate::p25::frame::TSDU;
 use crate::p25::phase2::{self, Packet};
 use crate::dsp::fm::{ChannelFilter, Nbfm};
+use crate::dsp::signalling::Signalling;
 use crate::smartnet::{self, Bandplan};
 use crate::dmr::{self, DmrConfig, DmrVoice};
 use crate::dsp::c4fm::C4fm;
@@ -289,8 +290,9 @@ enum Voice {
     Fdma { bank: Bank, tracker: VoiceTracker },
     /// Phase 2: H-DQPSK receiver → slot framer → TDMA tracker (both slots).
     Tdma { rx: Cqpsk, framer: phase2::Framer, tracker: TdmaTracker, syms: Vec<Symbol>, pkts: Vec<Packet> },
-    /// Analog FM (SmartNet analog grants), squelched at `open` carrier power.
-    Analog { fm: Nbfm, open: f32 },
+    /// Analog FM (SmartNet analog grants), squelched at `open` carrier
+    /// power; unit IDs from MDC1200 / FleetSync bursts.
+    Analog { fm: Nbfm, open: f32, ids: Signalling },
     /// DMR: 4FSK receiver → framer → both slots.
     Dmr { rx: C4fm, voice: Box<DmrVoice>, syms: Vec<Symbol> },
 }
@@ -389,9 +391,14 @@ impl Radio {
                 voice.push(syms, t0, rate, &mut vout);
                 tout.extend(vout.into_iter().map(|o| (o.slot as usize, o.out)));
             }
-            Voice::Analog { fm, open } => {
+            Voice::Analog { fm, open, ids } => {
                 let mut audio = Vec::new();
                 fm.push(iq, *open, &mut audio);
+                let mut found = Vec::new();
+                ids.push(&audio, &mut found);
+                for u in found {
+                    tout.push((0, TrackerOut::Info { source: Some(u.unit), emergency: u.emergency, encrypted: false }));
+                }
                 if !audio.is_empty() {
                     tout.push((0, TrackerOut::AnalogAudio(audio)));
                 }
@@ -451,7 +458,7 @@ impl SysHost<'_> {
             let off = call.freq_hz as f64 - s.cfg.center_hz;
             let slice = (((off + s.cfg.rate_hz / 2.0) / s.cfg.rate_hz * 64.0) as usize).min(63);
             let noise = s.chz.noise_in_band(prof[slice].max(1e-30), ChannelFilter::noise_bandwidth());
-            Voice::Analog { fm: Nbfm::new(rate), open: (noise * 10f64.powf(ANALOG_SQUELCH_DB / 10.0)) as f32 }
+            Voice::Analog { fm: Nbfm::new(rate), open: (noise * 10f64.powf(ANALOG_SQUELCH_DB / 10.0)) as f32, ids: Signalling::default() }
         } else if call.color_code.is_some() {
             Voice::Dmr { rx: C4fm::dmr(rate), voice: Box::new(DmrVoice::new(seed)), syms: Vec::new() }
         } else if call.phase2_tdma {

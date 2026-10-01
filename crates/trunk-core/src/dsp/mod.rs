@@ -6,6 +6,7 @@ pub mod channelizer;
 pub mod cqpsk;
 pub mod fm;
 pub mod msd;
+pub mod signalling;
 
 pub use channelizer::{Channelizer, HeadId};
 
