@@ -152,6 +152,17 @@ pub(crate) fn units_path(short_name: &str) -> PathBuf {
     crate::config::config_dir().join(format!("{short_name}.units.csv"))
 }
 
+/// Save the band plans that changed since `saved` (what was last written).
+fn save_bandplans(session: &Session, saved: &mut std::collections::HashMap<String, String>) {
+    for (name, plan) in session.bandplans() {
+        if !plan.is_empty() && saved.get(&name) != Some(&plan) {
+            let _ = fs::create_dir_all(crate::config::config_dir());
+            let _ = fs::write(bandplan_path(&name), &plan);
+            saved.insert(name, plan);
+        }
+    }
+}
+
 /// Save the talker aliases systems learned since the last save.
 fn save_units(session: &mut Session) {
     for (name, csv) in session.units_changed() {
@@ -223,6 +234,9 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Rec
     let now_ms = || t0.elapsed().as_secs_f64() * 1000.0;
     let mut out = Vec::new();
     let mut ended_all = false;
+    // Band plans (and DMR channel tables) as last saved: learned ones survive a crash or kill too.
+    let mut saved_plans: std::collections::HashMap<String, String> = Default::default();
+    let mut plans_at = Instant::now();
     loop {
         if stop.load(Ordering::Relaxed) {
             break;
@@ -258,6 +272,10 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Rec
         deliver(&ctx, &dir, &mut out, plugins.as_ref());
         drop(plugins);
         save_units(&mut session);
+        if plans_at.elapsed() >= Duration::from_secs(10) {
+            plans_at = Instant::now();
+            save_bandplans(&session, &mut saved_plans);
+        }
     }
     ctx.set_phase("stopping", None, false);
     session.finish(&mut out);

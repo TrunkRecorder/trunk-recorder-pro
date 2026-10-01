@@ -155,6 +155,7 @@ impl SurveySession {
                     "freqHz": c.freq_hz.round(), "correctedHz": s.corrected(c.freq_hz).map(f64::round), "band": c.band, "snrDb": (c.snr_db * 10.0).round() / 10.0,
                     "widthHz": c.width_hz.round(), "kind": c.kind.as_str(), "frames": c.frames, "good": c.good, "bad": c.bad,
                     "modulation": c.modulation, "identity": id(&c.identity),
+                    "dmr": c.dmr.map(|d| json!({ "variant": d.variant.map(|v| v.name()), "colorCode": d.color_code })),
                 })
             })
             .collect();

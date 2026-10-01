@@ -111,6 +111,7 @@ pub fn parse(text: &str) -> Result<Parsed, String> {
         let mode = match at(c_mode).to_lowercase().as_str() {
             "" | "fm" | "nfm" | "analog" | "a" => ChannelMode::Fm,
             "p25" | "digital" | "d" => ChannelMode::P25,
+            "dmr" => ChannelMode::Dmr,
             _ => {
                 bad_mode.push(row);
                 ChannelMode::Fm
@@ -200,6 +201,7 @@ pub fn write(channels: &[Channel]) -> String {
             match c.mode {
                 ChannelMode::Fm => "fm".into(),
                 ChannelMode::P25 => "p25".into(),
+                ChannelMode::Dmr => "dmr".into(),
             },
             cell(&c.name),
             cell(&c.description),

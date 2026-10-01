@@ -411,6 +411,23 @@ export function addSite(controlChannels: number[], expect: SiteIdentity): string
   return name;
 }
 
+/** A trunked DMR site the scan found: its control / rest channel and colour code. */
+export function addDmrSite(freqHz: number, colorCode: number | null): string {
+  let name = "";
+  updateConfig((c) => {
+    const sys = newSystem(c, {
+      shortName: colorCode === null ? "dmr" : `dmr-cc${colorCode}`,
+      type: "dmr",
+      controlChannels: [freqHz],
+      ...(colorCode === null ? {} : { colorCode }),
+    });
+    c.systems.push(sys);
+    name = sys.shortName;
+  });
+  set({ configEpoch: state.configEpoch + 1 });
+  return name;
+}
+
 // ── run ──────────────────────────────────────────────────────────────────────
 
 export function start(): void {

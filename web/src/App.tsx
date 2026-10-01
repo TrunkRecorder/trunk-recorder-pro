@@ -3,7 +3,7 @@ import { activeSystems, formatMhz, startProblem, systemColor, systemWithChannel 
 import { addSite, dismissError, downloadCall, quitApp, setListen, setNotice, setView, start, stop, transport, useApp, web, type AppState } from "./controller.ts";
 import { PluginsPage } from "./Plugins.tsx";
 import { BrowserStorage } from "./web/BrowserStorage.tsx";
-import { CONVENTIONAL, type CallEntry, type CallView, type SystemStatus, type TalkgroupName } from "./protocol.ts";
+import { CONVENTIONAL, type CallEntry, type CallView, type DmrSiteStatus, type SystemStatus, type TalkgroupName } from "./protocol.ts";
 import { Setup } from "./Setup.tsx";
 import { parseTalkgroupCsv } from "./talkgroups.ts";
 import { Waterfall, type CcMark } from "./Waterfall.tsx";
@@ -89,7 +89,7 @@ function StatusTiles({ s }: { s: AppState }) {
         )}
         {one && (
           <Tile
-            label="Control channel"
+            label={one.dmr?.variant === "DMR Capacity Plus" ? "Rest channel" : "Control channel"}
             tone={ccTone(one, rates.get(one.index))}
             value={one.controlChannelHz ? <span className="mono">{formatMhz(one.controlChannelHz)}</span> : "—"}
             sub={
@@ -103,7 +103,14 @@ function StatusTiles({ s }: { s: AppState }) {
             }
           />
         )}
-        {one && (
+        {one && one.dmr && (
+          <Tile
+            label="System"
+            value={<span>{one.dmr.variant?.replace(/^DMR /, "") ?? "DMR"}</span>}
+            sub={<span className="mono">{dmrText(one.dmr)}</span>}
+          />
+        )}
+        {one && !one.dmr && (
           <Tile
             label="System"
             value={<span className="mono">{one.identity.nac != null ? `NAC ${hex(one.identity.nac)}` : "—"}</span>}
@@ -142,6 +149,7 @@ function StatusTiles({ s }: { s: AppState }) {
       {systems.length > 1 && <SystemsTable s={s} systems={systems} rates={rates} />}
       {systems.length > 0 && <Neighbours s={s} systems={systems} />}
       {systems.length > 0 && <Patches systems={systems} />}
+      {systems.some((x) => x.dmr) && <DmrSites systems={systems} />}
     </>
   );
 }
@@ -199,7 +207,9 @@ function SystemsTable(props: { s: AppState; systems: SystemStatus[]; rates: Map<
                         <span className="sys-dot" style={{ background: systemColor(x.index) }} />
                         <b>{x.shortName}</b>
                       </td>
-                      <td className="mono">{x.identity.site != null ? `${x.identity.rfss ?? "?"}-${x.identity.site}` : "—"}</td>
+                      <td className={x.dmr ? "small" : "mono"}>
+                        {x.dmr ? (x.dmr.variant?.replace(/^DMR /, "") ?? "DMR") : x.identity.site != null ? `${x.identity.rfss ?? "?"}-${x.identity.site}` : "—"}
+                      </td>
                       <td className="mono">
                         <span className={`dot dot-${tone === "ok" ? "recording" : "monitoring"}`} /> {x.controlChannelHz ? formatMhz(x.controlChannelHz) : "—"}
                         {x.mismatch && <div className="small">not this system: {x.mismatch}</div>}
@@ -208,7 +218,7 @@ function SystemsTable(props: { s: AppState; systems: SystemStatus[]; rates: Map<
                         <span className={`chip ${tone}`}>{perS !== undefined ? `${perS.toFixed(1)} msg/s` : "…"}</span> {pctText(x)}
                         {x.modulation ? ` · ${x.modulation}` : ""}
                       </td>
-                      <td className="mono">{hex(x.identity.nac)}</td>
+                      <td className="mono">{x.dmr ? (x.dmr.colorCode != null ? `CC ${x.dmr.colorCode}` : "CC ?") : hex(x.identity.nac)}</td>
                       <td className="mono small">
                         {x.activeCalls} active · {x.recording} rec · {x.callsConcluded} saved
                       </td>
@@ -284,6 +294,90 @@ function Patches(props: { systems: SystemStatus[] }) {
           </span>
         ))}
       </div>
+    </section>
+  );
+}
+
+/** "CC 14 · rest LSN 2 (463.3750) · keyed". */
+function dmrText(d: DmrSiteStatus): string {
+  const parts = [d.colorCode != null ? `CC ${d.colorCode}` : "CC ?"];
+  if (d.rest) parts.push(`rest LSN ${d.rest.lsn}${d.rest.freqHz ? ` (${formatMhz(d.rest.freqHz)})` : ""}`);
+  if (d.keyed) parts.push("keyed");
+  return parts.join(" · ");
+}
+
+/** Each DMR site: its frequencies (which carries control, each slot's call now) and its channel table. */
+function DmrSites(props: { systems: SystemStatus[] }) {
+  const sites = props.systems.filter((x) => x.dmr);
+  return (
+    <section className="panel">
+      <header className="panel-head">
+        <h2>DMR</h2>
+        <span className="muted small">every listed frequency is watched; the channel table is learned from the air</span>
+      </header>
+      {sites.map((x) => {
+        const d = x.dmr!;
+        const slot = (s: { talkgroup: TalkgroupName; source: number } | null | undefined) =>
+          s ? (
+            <span>
+              {tgText(s.talkgroup)}
+              {s.source ? <span className="muted"> · {s.source}</span> : null}
+            </span>
+          ) : (
+            <span className="muted">—</span>
+          );
+        return (
+          <div key={x.index} className="stack">
+            <div className="row small">
+              {props.systems.length > 1 && <b>{x.shortName}</b>}
+              <span>{d.variant ?? "kind not known yet"}</span>
+              <span className="mono">{dmrText(d)}</span>
+            </div>
+            <div className="table-wrap">
+              <table className="calls">
+                <thead>
+                  <tr>
+                    <th>MHz</th>
+                    <th>Channel</th>
+                    <th>Slot 1</th>
+                    <th>Slot 2</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {d.carriers.map((c) => {
+                    const lcn = d.channels.find((e) => e.freqHz === c.freqHz);
+                    return (
+                      <tr key={c.freqHz}>
+                        <td className="mono">
+                          {formatMhz(c.freqHz)}
+                          {c.control && <span className="chip ok small">{d.variant === "DMR Capacity Plus" ? "rest" : "control"}</span>}
+                          {c.colorCode != null && d.colorCode != null && c.colorCode !== d.colorCode && <span className="chip warn small">CC {c.colorCode}</span>}
+                        </td>
+                        <td className="mono small">{lcn ? `${lcn.lcn}${lcn.configured ? "" : " (learned)"}` : "—"}</td>
+                        <td className="small">{slot(c.slots[0])}</td>
+                        <td className="small">{slot(c.slots[1])}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            {d.channels.some((e) => !d.carriers.some((c) => c.freqHz === e.freqHz)) && (
+              <div className="row small">
+                <span className="muted">Also in the channel table:</span>
+                {d.channels
+                  .filter((e) => !d.carriers.some((c) => c.freqHz === e.freqHz))
+                  .map((e) => (
+                    <span key={e.lcn} className="chip mono">
+                      {e.lcn} → {formatMhz(e.freqHz)}
+                      {e.configured ? "" : " (learned)"}
+                    </span>
+                  ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
     </section>
   );
 }
@@ -667,7 +761,7 @@ export function App() {
           <div>
             <h1>Trunk Recorder Pro</h1>
             <p className="muted small">
-              P25 trunked radio recorder{s.version ? ` · v${s.version}` : ""}
+              P25, SmartNet and DMR recorder{s.version ? ` · v${s.version}` : ""}
             </p>
           </div>
         </div>

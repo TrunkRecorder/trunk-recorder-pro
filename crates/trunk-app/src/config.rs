@@ -157,6 +157,17 @@ pub struct System {
     /// SmartNet: voice mode of a talkgroup never heard granted — "digital" (P25) or "analog".
     #[serde(skip_serializing_if = "String::is_empty")]
     pub default_mode: String,
+    /// DMR (`type` "dmr"): logical channel number → frequency, Hz (Trunk
+    /// Recorder's `lcnTable`); channels left out are learned from the air.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub lcn_table: std::collections::BTreeMap<String, f64>,
+    /// DMR: voice frequencies to watch besides the control channels (Trunk
+    /// Recorder's `channels`; Capacity Plus: every repeater of the site).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub channels: Vec<f64>,
+    /// DMR: only this colour code.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color_code: Option<u8>,
 }
 
 fn is_zero(v: &f64) -> bool {
@@ -169,6 +180,19 @@ fn is_zero_u16(v: &u16) -> bool {
 impl System {
     pub fn is_smartnet(&self) -> bool {
         self.kind.eq_ignore_ascii_case("smartnet")
+    }
+    pub fn is_dmr(&self) -> bool {
+        self.kind.eq_ignore_ascii_case("dmr")
+    }
+
+    /// The DMR settings; Trunk Recorder configs give frequencies in Hz or MHz.
+    pub fn dmr(&self) -> trunk_core::dmr::DmrConfig {
+        let hz = |v: f64| if v > 0.0 && v < 1e5 { v * 1e6 } else { v };
+        trunk_core::dmr::DmrConfig {
+            lcn_table: self.lcn_table.iter().filter_map(|(k, &v)| Some((k.trim().parse().ok()?, hz(v).round() as u64))).collect(),
+            channels: self.channels.iter().map(|&v| hz(v)).collect(),
+            color_code: self.color_code,
+        }
     }
 
     /// The SmartNet settings, or why they don't work.
@@ -205,6 +229,9 @@ impl Default for System {
             bandplan_offset: 0,
             bandplan_high: 0.0,
             default_mode: String::new(),
+            lcn_table: Default::default(),
+            channels: vec![],
+            color_code: None,
         }
     }
 }
@@ -293,6 +320,8 @@ pub enum ChannelMode {
     Fm,
     /// P25 Phase 1.
     P25,
+    /// DMR (both slots).
+    Dmr,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -338,6 +367,7 @@ impl Channel {
             mode: match self.mode {
                 ChannelMode::Fm => ConvMode::Fm,
                 ChannelMode::P25 => ConvMode::P25,
+                ChannelMode::Dmr => ConvMode::Dmr,
             },
             talkgroup: tg,
             info: named.then(|| Talkgroup {
@@ -589,7 +619,12 @@ impl Config {
         // Groups to cover: (all its channels, the ones it can't do without).
         let mut groups: Vec<(Vec<f64>, Vec<f64>)> = self
             .active_systems()
-            .map(|s| (s.control_channels.iter().chain(&s.voice_channels).copied().collect(), s.control_channels.clone()))
+            .map(|s| {
+                // A DMR site's watched frequencies are all needed.
+                let dmr: Vec<f64> = if s.is_dmr() { s.dmr().channels } else { vec![] };
+                let need: Vec<f64> = s.control_channels.iter().chain(&dmr).copied().collect();
+                (need.iter().chain(&s.voice_channels).copied().collect(), need)
+            })
             .collect();
         let conv: Vec<f64> = self.enabled_channels().map(|c| c.freq_hz).filter(|&f| f > 0.0).collect();
         if !conv.is_empty() {
@@ -647,6 +682,12 @@ impl Config {
                     return Some(format!("{}: {e}", s.short_name));
                 }
             }
+            if s.is_dmr() {
+                let out: Vec<String> = s.control_channels.iter().chain(&s.dmr().channels).filter(|&&f| !inside(f)).map(|f| format!("{:.5}", f / 1e6)).collect();
+                if !out.is_empty() {
+                    return Some(format!("{}: DMR frequencies outside every source's bandwidth: {} MHz — move a center frequency or add a source.", s.short_name, out.join(", ")));
+                }
+            }
             if !s.control_channels.iter().any(|&f| inside(f)) {
                 return Some(format!("No control channel of {} falls inside any source's bandwidth — move a center frequency or add a source.", s.short_name));
             }
@@ -684,6 +725,7 @@ impl Config {
                 talkgroups: parse_csv(&s.talkgroups_csv),
                 expect: s.expect.engine(),
                 smartnet: if s.is_smartnet() { s.smartnet().ok() } else { None },
+                dmr: s.is_dmr().then(|| s.dmr()),
             })
             .collect();
         // With one system, conventional P25 channels also look up its talkgroup
@@ -796,6 +838,22 @@ mod tests {
         let back: Config = serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
         assert_eq!(back, c);
         assert_eq!(Config::default().conventional.short_name, "conv");
+    }
+
+    #[test]
+    fn dmr_system_takes_trunk_recorders_lcn_table() {
+        // Trunk Recorder's keys; frequencies in MHz or Hz.
+        let s: System = serde_json::from_str(
+            r#"{ "shortName": "capmax", "type": "dmr", "controlChannels": [452175000],
+                 "lcnTable": { "101": 452.275, "102": 452300000 }, "channels": [452.275], "colorCode": 0 }"#,
+        )
+        .unwrap();
+        assert!(s.is_dmr());
+        let d = s.dmr();
+        assert_eq!(d.lcn_table.into_iter().collect::<Vec<_>>(), [(101, 452_275_000), (102, 452_300_000)]);
+        assert_eq!((d.channels, d.color_code), (vec![452_275_000.0], Some(0)));
+        let back: System = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back, s);
     }
 
     fn system(name: &str, ccs: &[f64]) -> System {

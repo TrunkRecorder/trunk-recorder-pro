@@ -26,7 +26,7 @@ export interface Radios {
 /** A conventional channel. `talkgroup` defaults to the frequency in kHz; `squelchDb` to the section's. */
 export interface Channel {
   freqHz: number;
-  mode: "fm" | "p25";
+  mode: "fm" | "p25" | "dmr";
   name: string;
   talkgroup?: number;
   description?: string;
@@ -61,8 +61,16 @@ export interface SmartnetBandplan {
 
 export interface System extends Partial<SmartnetBandplan> {
   shortName: string;
-  /** "smartnet": a Motorola SmartNet / SmartZone control channel (voice P25 or analog FM). */
-  type: "p25" | "smartnet";
+  /** "smartnet": a Motorola SmartNet / SmartZone control channel (voice P25 or analog FM).
+   *  "dmr": a trunked DMR site (Capacity Plus, Capacity Max, Connect Plus, Tier III); every
+   *  control channel and `channels` frequency is watched. */
+  type: "p25" | "smartnet" | "dmr";
+  /** DMR: logical channel number → frequency, Hz (Trunk Recorder's lcnTable); the rest is learned. */
+  lcnTable?: Record<string, number>;
+  /** DMR: voice frequencies to watch besides the control channels. */
+  channels?: number[];
+  /** DMR: only this colour code. */
+  colorCode?: number;
   /** SmartNet: the voice of a talkgroup never heard granted. */
   defaultMode?: "digital" | "analog";
   enabled: boolean;
@@ -151,6 +159,22 @@ export interface SystemStatus {
   adjacent: { sysId: number; rfss: number; site: number; freqHz: number }[];
   /** Patches standing now: the supergroup, and the talkgroups patched into it. */
   patches?: { supergroup: TalkgroupName; members: TalkgroupName[] }[];
+  /** A trunked DMR site. */
+  dmr?: DmrSiteStatus | null;
+}
+
+export interface DmrSiteStatus {
+  /** "DMR Capacity Plus" | "DMR Capacity Max" | "DMR Connect Plus" | "DMR Tier III" | null (not known yet). */
+  variant: string | null;
+  colorCode: number | null;
+  /** Capacity Plus: the rest channel's logical slot number, and its frequency once known. */
+  rest: { lsn: number; freqHz: number | null } | null;
+  /** Keyed CRCs (restricted access). */
+  keyed: boolean;
+  /** Logical channel → frequency: from the config, or learned from the air. */
+  channels: { lcn: number; freqHz: number; configured: boolean }[];
+  /** Every watched frequency: sending control blocks, and each slot's call now. */
+  carriers: { freqHz: number; control: boolean; colorCode: number | null; slots: ({ talkgroup: TalkgroupName; source: number } | null)[] }[];
 }
 
 /** A talkgroup and its alpha tag from the system's talkgroup file ("" when not in it). */
@@ -267,12 +291,14 @@ export interface SurveyCandidate {
   band: string;
   snrDb: number;
   widthHz: number;
-  kind: "control" | "smartnet" | "p25" | "other";
+  kind: "control" | "smartnet" | "p25" | "dmrControl" | "dmr" | "other";
   frames: number;
   good: number;
   bad: number;
   modulation: string;
   identity: SurveyIdentity;
+  /** DMR: the trunking its control blocks are ("DMR Capacity Plus", …) and its colour code. */
+  dmr?: { variant: string | null; colorCode: number | null } | null;
 }
 
 export interface SurveyMonitor {

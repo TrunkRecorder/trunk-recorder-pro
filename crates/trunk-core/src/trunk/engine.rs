@@ -47,6 +47,8 @@ use crate::p25::frame::TSDU;
 use crate::p25::phase2::{self, Packet};
 use crate::dsp::fm::{ChannelFilter, Nbfm};
 use crate::smartnet::{self, Bandplan};
+use crate::dmr::{self, DmrConfig, DmrVoice};
+use crate::dsp::c4fm::C4fm;
 
 /// A SmartNet system (its control channels are SmartNet, not P25).
 #[derive(Clone, Debug)]
@@ -91,6 +93,8 @@ pub struct SystemConfig {
     pub expect: Identity,
     /// SmartNet instead of P25 on the control channels (voice: P25 or FM per grant).
     pub smartnet: Option<SmartnetConfig>,
+    /// Trunked DMR instead: every control channel (and [`DmrConfig::channels`]) is watched.
+    pub dmr: Option<DmrConfig>,
 }
 
 impl Default for SystemConfig {
@@ -103,6 +107,7 @@ impl Default for SystemConfig {
             talkgroups: Talkgroups::default(),
             expect: Identity::default(),
             smartnet: None,
+            dmr: None,
         }
     }
 }
@@ -256,6 +261,8 @@ pub struct SystemStatus {
     pub adjacent: Vec<AdjacentSite>,
     /// Patches standing now: (supergroup, the talkgroups patched into it).
     pub patches: Vec<(u32, Vec<u32>)>,
+    /// A trunked DMR site: its kind, rest channel, channel table, carriers.
+    pub dmr: Option<dmr::SiteStatus>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -284,6 +291,8 @@ enum Voice {
     Tdma { rx: Cqpsk, framer: phase2::Framer, tracker: TdmaTracker, syms: Vec<Symbol>, pkts: Vec<Packet> },
     /// Analog FM (SmartNet analog grants), squelched at `open` carrier power.
     Analog { fm: Nbfm, open: f32 },
+    /// DMR: 4FSK receiver → framer → both slots.
+    Dmr { rx: C4fm, voice: Box<DmrVoice>, syms: Vec<Symbol> },
 }
 
 struct Channel {
@@ -371,6 +380,15 @@ impl Radio {
                     tracker.packet(p, t0 + p.sample / rate, tout);
                 }
             }
+            Voice::Dmr { rx, voice, syms } => {
+                // Vocode only the slots somebody is recording.
+                voice.vocode = [ch.calls[0].is_some(), ch.calls[1].is_some()];
+                syms.clear();
+                rx.push(iq, syms);
+                let mut vout = Vec::new();
+                voice.push(syms, t0, rate, &mut vout);
+                tout.extend(vout.into_iter().map(|o| (o.slot as usize, o.out)));
+            }
             Voice::Analog { fm, open } => {
                 let mut audio = Vec::new();
                 fm.push(iq, *open, &mut audio);
@@ -415,7 +433,7 @@ impl SysHost<'_> {
     /// already open takes its slot over, as in Trunk Recorder).
     fn open_channel(&mut self, call: &Call, src: usize) {
         let r = &mut *self.radio;
-        let slot = if call.phase2_tdma { call.tdma_slot as usize & 1 } else { 0 };
+        let slot = if call.phase2_tdma || call.color_code.is_some() { call.tdma_slot as usize & 1 } else { 0 };
         let key = (self.system, call.freq_hz);
         if let Some(ch) = r.channels.get_mut(&key) {
             ch.calls[slot] = Some(call.id);
@@ -423,7 +441,8 @@ impl SysHost<'_> {
         }
         let s = &mut r.sources[src];
         let rate = s.chz.output_rate();
-        let (head, pre, start_sample) = s.chz.add_head(call.freq_hz as f64 - s.cfg.center_hz, CHANNEL_CUTOFF_HZ, r.preroll_s);
+        let cutoff = if call.color_code.is_some() { dmr::CHANNEL_CUTOFF_HZ } else { CHANNEL_CUTOFF_HZ };
+        let (head, pre, start_sample) = s.chz.add_head(call.freq_hz as f64 - s.cfg.center_hz, cutoff, r.preroll_s);
         let seed = call.freq_hz as u32;
         let voice = if call.analog {
             // Squelch: the noise floor under the channel, from the source's spectrum.
@@ -433,10 +452,14 @@ impl SysHost<'_> {
             let slice = (((off + s.cfg.rate_hz / 2.0) / s.cfg.rate_hz * 64.0) as usize).min(63);
             let noise = s.chz.noise_in_band(prof[slice].max(1e-30), ChannelFilter::noise_bandwidth());
             Voice::Analog { fm: Nbfm::new(rate), open: (noise * 10f64.powf(ANALOG_SQUELCH_DB / 10.0)) as f32 }
+        } else if call.color_code.is_some() {
+            Voice::Dmr { rx: C4fm::dmr(rate), voice: Box::new(DmrVoice::new(seed)), syms: Vec::new() }
         } else if call.phase2_tdma {
             let mut tracker = TdmaTracker::new(seed);
             tracker.soft = self.bank.soft;
-            let rx = Cqpsk::new(rate, cqpsk::Options { baud: phase2::SYMBOL_RATE, ..Default::default() });
+            // Decision-feedback differential detection: ~1 dB in noise on Phase 2
+            // voice (tool snr); not used on Phase 1, where simulcast didn't like it.
+            let rx = Cqpsk::new(rate, cqpsk::Options { baud: phase2::SYMBOL_RATE, df_beta: 0.5, ..Default::default() });
             Voice::Tdma { rx, framer: phase2::Framer::default(), tracker, syms: Vec::new(), pkts: Vec::new() }
         } else {
             Voice::Fdma { bank: Bank::new(rate, self.bank), tracker: VoiceTracker::new(mbe::lcg(seed)) }
@@ -534,6 +557,14 @@ struct Trunk {
     adjacent: std::collections::BTreeMap<(u32, u32), AdjacentSite>,
     /// Its radios' talker aliases.
     units: UnitAliases,
+    /// Trunked DMR: the site and where its carriers are.
+    dmr: Option<DmrWatch>,
+}
+
+/// A DMR site's carriers: each on (source, head, first sample of the head).
+struct DmrWatch {
+    site: dmr::Site,
+    heads: Vec<(usize, HeadId, u64)>,
 }
 
 impl Trunk {
@@ -576,6 +607,69 @@ impl Trunk {
         }
         events.push(Event::ControlChannel { system: self.idx, freq_hz: hz.round() as u64 });
         Ok(())
+    }
+
+    /// Watch every carrier of a DMR site: heads on the sources that cover them.
+    fn watch_dmr(&mut self, radio: &mut Radio, dc: &DmrConfig, events: &mut Vec<Event>) -> Result<(), String> {
+        let rate = radio.sources[0].chz.output_rate();
+        let site = dmr::Site::new(&self.cfg.control_channels, rate, dc.clone());
+        let mut heads = Vec::new();
+        let mut outside = Vec::new();
+        for c in &site.carriers {
+            let Some(src) = radio.source_for(c.hz as f64) else {
+                outside.push(format!("{:.5}", c.hz as f64 / 1e6));
+                continue;
+            };
+            let s = &mut radio.sources[src];
+            let (head, _, start) = s.chz.add_head(c.hz as f64 - s.cfg.center_hz, dmr::CHANNEL_CUTOFF_HZ, 0.0);
+            heads.push((src, head, start));
+        }
+        if !outside.is_empty() {
+            return Err(format!("{}: DMR frequencies outside every source's bandwidth: {} MHz — move a center frequency.", self.cfg.short_name, outside.join(", ")));
+        }
+        self.cc_source = heads[0].0;
+        self.cc_head = Some(heads[0].1);
+        self.dmr = Some(DmrWatch { site, heads });
+        events.push(Event::Note { system: self.idx, text: format!("Watching {} DMR frequencies", self.cfg.control_channels.len() + dc.channels.len()) });
+        Ok(())
+    }
+
+    /// A block ran on `source`: the DMR site's carriers on it.
+    fn on_block_dmr(&mut self, radio: &mut Radio, source: usize, events: &mut Vec<Event>, call_events: &mut Vec<CallEvent>) {
+        let Some(DmrWatch { site, heads }) = self.dmr.as_mut() else { return };
+        if !heads.iter().any(|h| h.0 == source) {
+            return;
+        }
+        let s = &radio.sources[source];
+        let (rate, fs) = (s.chz.output_rate(), s.cfg.rate_hz);
+        let mut msgs = Vec::new();
+        for (i, &(src, head, start)) in heads.iter().enumerate() {
+            if src != source {
+                continue;
+            }
+            let iq = radio.sources[src].chz.output(head).map(|v| v.to_vec()).unwrap_or_default();
+            site.push(i, &iq, start as f64 / fs, rate, &mut msgs);
+        }
+        let c = &radio.sources[source].chz;
+        self.now_s = self.now_s.max(c.sample_position() as f64 / c.fs());
+        for text in site.take_notes() {
+            events.push(Event::Note { system: self.idx, text });
+        }
+        let cc = site.control_hz();
+        if let Some(hz) = cc.filter(|&h| Some(h) != self.cc_hz) {
+            self.cc_hz = Some(hz);
+            events.push(Event::ControlChannel { system: self.idx, freq_hz: hz });
+        }
+        // Blocks (CSBKs, link control) decoded and lost, on every carrier.
+        self.good = site.carriers.iter().flat_map(|c| c.chan.slots.iter()).map(|s| s.good_blocks).sum();
+        self.bad = site.carriers.iter().flat_map(|c| c.chan.slots.iter()).map(|s| s.bad_blocks).sum();
+        if cc.is_some() || !msgs.is_empty() {
+            self.last_good_s = self.now_s;
+        }
+        events.extend(msgs.iter().cloned().map(|msg| Event::Message { system: self.idx, msg }));
+        let mut host = self.host(radio);
+        self.calls.handle(&msgs, &mut host, call_events);
+        self.calls.tick(self.now_s, &mut host, call_events);
     }
 
     /// A block ran on the control channel's source.
@@ -704,13 +798,14 @@ impl Trunk {
             identity: self.identity.clone(),
             good: self.good,
             bad: self.bad,
-            modulation: if self.cc_sn.is_some() { "2FSK" } else if q + c < 8 { "" } else if q >= c { "CQPSK" } else { "C4FM" },
+            modulation: if let Some(DmrWatch { site, .. }) = &self.dmr { site.variant.map_or("DMR", |v| v.name()) } else if self.cc_sn.is_some() { "2FSK" } else if q + c < 8 { "" } else if q >= c { "CQPSK" } else { "C4FM" },
             active_calls: self.calls.calls.len(),
             recording: self.calls.calls.iter().filter(|c| radio.recordings.contains_key(&c.id)).count(),
             calls_concluded: self.concluded,
             mismatch: self.mismatch.clone(),
             adjacent: self.adjacent.values().copied().collect(),
             patches: self.calls.patches.active(),
+            dmr: self.dmr.as_ref().map(|w| w.site.status()),
         }
     }
 }
@@ -790,10 +885,15 @@ impl Engine {
                 mismatch: None,
                 adjacent: Default::default(),
                 units: UnitAliases::default(),
+                dmr: None,
                 cfg: sc.clone(),
             };
             t.calls.patches.hold_s = if sc.smartnet.is_some() { patches::SMARTNET_HOLD_S } else { patches::P25_HOLD_S };
-            if !sc.control_channels.is_empty() {
+            if let Some(dc) = &sc.dmr {
+                if !sc.control_channels.is_empty() || !dc.channels.is_empty() {
+                    t.watch_dmr(&mut radio, dc, &mut events)?;
+                }
+            } else if !sc.control_channels.is_empty() {
                 t.tune(&mut radio, 0, &mut events)?;
             }
             trunks.push(t);
@@ -818,11 +918,18 @@ impl Engine {
     /// grant heard before the next IDEN broadcast can then be followed at once).
     pub fn load_bandplan(&mut self, system: usize, s: &str) {
         if let Some(t) = self.trunks.get_mut(system) {
-            t.parser.bandplan_from_str(s);
+            match t.dmr.as_mut() {
+                Some(w) => w.site.map_from_str(s),
+                None => t.parser.bandplan_from_str(s),
+            }
         }
     }
+    /// A system's band plan to save: P25's IDEN tables; DMR's logical channel → frequency table.
     pub fn bandplan(&self, system: usize) -> String {
-        self.trunks.get(system).map_or_else(String::new, |t| t.parser.bandplan_to_string())
+        self.trunks.get(system).map_or_else(String::new, |t| match &t.dmr {
+            Some(w) => w.site.map_to_string(),
+            None => t.parser.bandplan_to_string(),
+        })
     }
 
     /// The trunked system conventional channels share talker aliases with:
@@ -1050,7 +1157,10 @@ impl Engine {
         }
         // The control channels on it.
         for i in 0..self.trunks.len() {
-            if self.trunks[i].cc_head.is_some() && self.trunks[i].cc_source == source {
+            if self.trunks[i].dmr.is_some() {
+                self.trunks[i].on_block_dmr(&mut self.radio, source, &mut self.events, &mut self.call_events);
+                self.apply_pending();
+            } else if self.trunks[i].cc_head.is_some() && self.trunks[i].cc_source == source {
                 self.trunks[i].on_block(&mut self.radio, &mut self.events, &mut self.call_events);
                 self.apply_pending();
             }

@@ -49,6 +49,8 @@
 //!     manifest, or run one against calls already on disk.
 //! ```
 
+mod dmrtool;
+mod snrtool;
 mod plugins;
 mod radio;
 mod runtime;
@@ -228,6 +230,7 @@ fn replay(a: &Args) {
         .into_iter()
         .map(|f| ConvChannel::new(f, ConvMode::Fm))
         .chain(hz_list("p25").into_iter().map(|f| ConvChannel::new(f, ConvMode::P25)))
+        .chain(hz_list("dmr").into_iter().map(|f| ConvChannel::new(f, ConvMode::Dmr)))
         .chain(a.get("channels").map_or_else(Vec::new, |p| {
             let text = fs::read_to_string(p).unwrap_or_else(|e| die(&format!("{p}: {e}")));
             let parsed = trunk_app::channels::parse(&text).unwrap_or_else(|e| die(&format!("{p}: {e}")));
@@ -264,6 +267,18 @@ fn replay(a: &Args) {
             calls,
             talkgroups: talkgroups.clone(),
             smartnet,
+            // --dmr-trunk: the --cc frequencies are a DMR site's; --dmr-channels
+            // more voice frequencies to watch; --lcn 101=452275000,… its channel table.
+            dmr: a.flag("dmr-trunk").then(|| trunk_core::dmr::DmrConfig {
+                channels: hz_list("dmr-channels"),
+                lcn_table: a
+                    .get("lcn")
+                    .unwrap_or("")
+                    .split(',')
+                    .filter_map(|e| e.split_once('=').and_then(|(l, h)| Some((l.trim().parse().ok()?, h.trim().parse::<f64>().ok()? as u64))))
+                    .collect(),
+                color_code: a.get("color-code").and_then(|v| v.parse().ok()),
+            }),
             ..Default::default()
         });
     }
@@ -320,13 +335,13 @@ fn replay(a: &Args) {
                 any = true;
             }
         }
-        written += handle_events(&mut engine, &out_dir, multi, quiet);
+        written += handle_events(&mut engine, &out_dir, multi, quiet, a.flag("messages"));
         if !any {
             break;
         }
     }
     engine.finish();
-    written += handle_events(&mut engine, &out_dir, multi, quiet);
+    written += handle_events(&mut engine, &out_dir, multi, quiet, a.flag("messages"));
     let cpu = t0.elapsed().as_secs_f64();
     for (i, p) in bandplans.iter().enumerate() {
         let _ = fs::write(p, engine.bandplan(i));
@@ -391,12 +406,13 @@ fn sys_tag(engine: &Engine, system: u16) -> String {
 }
 
 /// Several systems: each writes to `<out>/<shortName>/`.
-fn handle_events(engine: &mut Engine, out_dir: &str, multi: bool, quiet: bool) -> usize {
+fn handle_events(engine: &mut Engine, out_dir: &str, multi: bool, quiet: bool, messages: bool) -> usize {
     let mut written = 0;
     for ev in engine.drain_events() {
         match ev {
             Event::ControlChannel { system, freq_hz } if !quiet => println!("{}control channel {:.4} MHz", sys_tag(engine, system), freq_hz as f64 / 1e6),
             Event::Note { system, text } => eprintln!("{}{text}", sys_tag(engine, system)),
+            Event::Message { system, msg } if messages => println!("{:7.2}s  {}{} {}", msg.time_s, sys_tag(engine, system), msg.kind.as_str(), msg.meta),
             Event::CallStart(c) if !quiet => println!(
                 "{:7.2}s  {}CALL {} start TG {} {:.4} MHz{}{}{} → {}",
                 c.start_s,

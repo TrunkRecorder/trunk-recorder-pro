@@ -22,6 +22,27 @@ platform, with no GNU Radio, OP25 or other runtime dependencies.
   WMATA's OBT system: 90–99 % of OSWs where Trunk Recorder gets 40–60 %.
   SmartNet systems work alongside P25 ones (each system picks its type), and
   Trunk Recorder configs with SmartNet systems import.
+- **DMR**: conventional channels (`mode` "dmr", each slot its own calls,
+  with the colour code) and trunked sites (`type` "dmr"): Capacity Plus and
+  Linked Capacity Plus followed by their link control on every repeater,
+  Capacity Max / Connect Plus / Tier III by their grants. Logical channel
+  frequencies are learned from the air (or Trunk Recorder's `lcnTable`);
+  keyed checksums (restricted access) are recognised. Repeated blocks and
+  embedded link control are soft-combined, which recovers most of them on a
+  weak site. Voice through the Phase 2 AMBE+2 decoder. Trunk Recorder DMR
+  configs import. `tool dmrscan` / `tool dmr` for captures.
+- **DMR in Find my system and the dashboard**: the scan recognises trunked
+  DMR sites (kind and colour code) and adds them; Business UHF / VHF bands.
+  The dashboard shows a DMR site's rest channel, watched frequencies with
+  each slot's call, and its channel table. Simplex / talkaround DMR (a
+  mobile's bursts, nothing between them) is received: the 4FSK receiver
+  leaves quiet stretches out of its timing and levels.
+- **Weak signals**: the C4FM receiver (P25 C4FM and DMR) has a matched
+  filter, takes its levels from the symbol clusters, and re-decides
+  symbols by multi-symbol detection below the discriminator's threshold;
+  SmartNet decides by tone energies. Half the codewords decoded at about
+  6 dB less signal on P25 C4FM voice, 8 dB on DMR voice, 1.7 dB on
+  SmartNet (`tool snr`, which measures it; see research/weak-signal.md).
 - **Find my system finds SmartNet** too, and learns its band plan from the
   air (which carrier comes up when a channel number is granted) — on WMATA,
   exactly Trunk Recorder's hand-made `400_custom` plan, all four control

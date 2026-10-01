@@ -77,11 +77,30 @@ export function enabledChannels(c: Config): Channel[] {
   return (c.conventional?.channels ?? []).filter((ch) => ch.enabled);
 }
 
+/** Trunk Recorder's trunked DMR settings: `lcnTable` { "<lcn>": Hz } and `channels` (candidate voice frequencies). */
+function dmrImport(sys: Record<string, unknown>): Partial<System> {
+  const out: Partial<System> = { type: "dmr" };
+  if (sys.lcnTable && typeof sys.lcnTable === "object") {
+    const t: Record<string, number> = {};
+    for (const [k, v] of Object.entries(sys.lcnTable as Record<string, unknown>)) if (typeof v === "number" && v > 0) t[k] = v;
+    if (Object.keys(t).length) out.lcnTable = t;
+  }
+  if (Array.isArray(sys.channels)) out.channels = (sys.channels as unknown[]).filter((v): v is number => typeof v === "number" && v > 0);
+  return out;
+}
+
 /** A system with defaults filled in (configs saved before a field existed). */
 export function normalizeSystem(x: Partial<System>): System {
   return {
     shortName: x.shortName ?? "sys1",
-    type: x.type === "smartnet" ? "smartnet" : "p25",
+    type: x.type === "smartnet" ? "smartnet" : x.type === "dmr" ? "dmr" : "p25",
+    ...(x.type === "dmr"
+      ? {
+          ...(x.lcnTable && Object.keys(x.lcnTable).length ? { lcnTable: x.lcnTable } : {}),
+          ...(x.channels?.length ? { channels: x.channels } : {}),
+          ...(typeof x.colorCode === "number" ? { colorCode: x.colorCode } : {}),
+        }
+      : {}),
     ...(x.type === "smartnet"
       ? {
           bandplan: x.bandplan ?? "800_standard",
@@ -182,7 +201,7 @@ export function sameSystem(a: SiteIdentity, b: SiteIdentity): boolean {
 
 /** The system a control channel is already configured on, if any. */
 export function systemWithChannel(c: Config, hz: number): System | undefined {
-  return c.systems.find((x) => x.controlChannels.some((f) => Math.abs(f - hz) < 6_000));
+  return c.systems.find((x) => [...x.controlChannels, ...(x.channels ?? [])].some((f) => Math.abs(f - hz) < 6_000));
 }
 
 /**
@@ -190,7 +209,11 @@ export function systemWithChannel(c: Config, hz: number): System | undefined {
  * before it don't cover yet (the recorder's Config::resolved_centers).
  */
 export function resolvedCenters(c: Config): (number | null)[] {
-  const groups: [number[], number[]][] = activeSystems(c).map((x) => [[...x.controlChannels, ...x.voiceChannels], x.controlChannels]);
+  // A DMR site's watched frequencies are all needed (as Config::resolved_centers).
+  const groups: [number[], number[]][] = activeSystems(c).map((x) => {
+    const need = [...x.controlChannels, ...(x.type === "dmr" ? (x.channels ?? []) : [])];
+    return [[...need, ...x.voiceChannels], need];
+  });
   const conv = enabledChannels(c)
     .map((ch) => ch.freqHz)
     .filter((f) => f > 0);
@@ -336,6 +359,7 @@ export function parseChannelCsv(text: string): { channels: Channel[]; notes: str
     const m = at(cMode).toLowerCase();
     let mode: Channel["mode"] = "fm";
     if (["p25", "digital", "d"].includes(m)) mode = "p25";
+    else if (m === "dmr") mode = "dmr";
     else if (!["", "fm", "nfm", "analog", "a"].includes(m)) badMode.push(row);
     const ch: Channel = { freqHz, mode, name: at(cName), enabled: !["false", "no", "0", "off"].includes(at(cEnable).toLowerCase()) };
     const tgText = at(cTg);
@@ -468,18 +492,18 @@ export function importTrunkRecorderConfig(text: string, base: Config): { config:
     });
   }
   if (imported.length) cfg.sources = imported;
-  const p25 = systems.filter((x) => x.type === "p25" || x.type === "smartnet");
-  const conv = systems.filter((x) => x.type === "conventional" || x.type === "conventionalP25");
+  const p25 = systems.filter((x) => x.type === "p25" || x.type === "smartnet" || x.type === "dmr");
+  const conv = systems.filter((x) => x.type === "conventional" || x.type === "conventionalP25" || x.type === "conventionalDMR");
   const skipped = systems.filter((x) => !p25.includes(x) && !conv.includes(x)).map((x) => `${String(x.shortName ?? "?")} (${String(x.type)})`);
   if (skipped.length) notes.push(`Skipped unsupported systems: ${skipped.join(", ")}.`);
   const importedChannels: Channel[] = [];
   for (const sys of conv) {
-    const mode: Channel["mode"] = sys.type === "conventionalP25" ? "p25" : "fm";
+    const mode: Channel["mode"] = sys.type === "conventionalP25" ? "p25" : sys.type === "conventionalDMR" ? "dmr" : "fm";
     if (Array.isArray(sys.channels)) {
       for (const f of sys.channels as unknown[]) if (typeof f === "number" && f > 0) importedChannels.push({ freqHz: f, mode, name: "", enabled: true });
     }
     if (typeof sys.channelFile === "string") {
-      notes.push(`Channel file "${sys.channelFile}" (${mode === "p25" ? "P25" : "analog"}): load it under Conventional channels → Import CSV.`);
+      notes.push(`Channel file "${sys.channelFile}" (${mode === "p25" ? "P25" : mode === "dmr" ? "DMR" : "analog"}): load it under Conventional channels → Import CSV.`);
     }
   }
   if (importedChannels.length) {
@@ -498,6 +522,7 @@ export function importTrunkRecorderConfig(text: string, base: Config): { config:
         modulation: sys.modulation === "qpsk" || sys.modulation === "fsk4" ? sys.modulation : "auto",
         ...(typeof sys.recordUnknown === "boolean" ? { recordUnknown: sys.recordUnknown } : {}),
         ...(sys.type === "smartnet" ? smartnetImport(sys) : {}),
+        ...(sys.type === "dmr" ? dmrImport(sys) : {}),
       });
       cfg.systems.push(x);
       if (typeof sys.talkgroupsFile === "string") talkgroupFiles.push(`${x.shortName}: "${sys.talkgroupsFile}"`);

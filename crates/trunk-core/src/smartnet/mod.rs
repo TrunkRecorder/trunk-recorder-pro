@@ -15,7 +15,7 @@ pub mod rx;
 
 pub use osw::{Framer, FramerOut, Osw};
 pub use parser::{Bandplan, Parser};
-pub use rx::{Bit, Fsk2, SYMBOL_RATE};
+pub use rx::{Bit, Fsk2, Fsk2Options, SYMBOL_RATE};
 
 use num_complex::Complex32;
 

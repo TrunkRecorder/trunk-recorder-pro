@@ -31,13 +31,17 @@ pub struct Options {
     /// detection. Worse than differential on the simulcast tested so far.
     pub coherent: bool,
     pub pll_kp: f32,
+    /// Decision-feedback differential detection: the reference is past
+    /// symbols, each turned on by its decided step, averaged with this
+    /// forgetting factor (0 = plain differential detection).
+    pub df_beta: f32,
     /// Symbol rate: 4800 (Phase 1) or 6000 (Phase 2 H-DQPSK).
     pub baud: f64,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Options { eq_taps: 0, eq_mu: 0.02, soft_amplitude: true, coherent: false, pll_kp: 0.04, baud: 4800.0 }
+        Options { eq_taps: 0, eq_mu: 0.02, soft_amplitude: true, coherent: false, pll_kp: 0.04, baud: 4800.0, df_beta: 0.0 }
     }
 }
 
@@ -305,9 +309,7 @@ impl Cqpsk {
             self.prev_p = p;
             d
         } else {
-            let d = s * self.dprev.conj();
-            self.dprev = s;
-            d
+            s * self.dprev.conj()
         };
         let m = d.norm();
         if m > 0.0 && !self.opt.coherent {
@@ -320,6 +322,13 @@ impl Cqpsk {
         let r = d * Complex32::from_polar(1.0, -theta);
         // +45° = 00, +135° = 01, −45° = 10, −135° = 11 (P25's +1 +3 −1 −3).
         let dib = if r.im >= 0.0 { if r.re > 0.0 { 0b00 } else { 0b01 } } else if r.re > 0.0 { 0b10 } else { 0b11 };
+        if !self.opt.coherent {
+            // The next reference: this symbol, plus the old reference turned on
+            // by the step just decided (and the residual turn).
+            let b = self.opt.df_beta;
+            let step = [PI32 / 4.0, 3.0 * PI32 / 4.0, -PI32 / 4.0, -3.0 * PI32 / 4.0][dib as usize];
+            self.dprev = s * (1.0 - b) + self.dprev * Complex32::from_polar(b, step + theta);
+        }
         self.symbols += 1;
         // hi bit = (im < 0), lo bit = (re ≤ 0): the reliabilities are |im|, |re|.
         let amp_norm = if self.opt.coherent { 1.0 } else if self.power > 0.0 { 1.0 / self.power } else { 1.0 };
