@@ -144,9 +144,37 @@ through both paths: a conventional DMR channel, and a trunked site.
   is recorded from its link control. A repeater that isn't listed isn't
   heard, though the busy list says it exists: say so on the dashboard.
 - Hytera XPT, and Capacity Max's other messages (registration, data).
-- The dashboard shows a DMR site as a control channel. Show the variant, the
-  rest channel and the learned channel table.
-- Mobile / direct mode (simplex): bursty, so the C4FM receiver's rails and
-  timing, set over ~0.5 s, see noise between bursts. Not tested.
+- Done: the dashboard shows the variant, colour code, rest channel, watched
+  carriers with each slot's call, and the channel table; Find my system
+  detects DMR sites; Business UHF / VHF bands.
+- Mobile / direct mode (simplex): done for the receiver and the slots (see
+  below), tested on synthetic signals; no simplex was on the air in four
+  minutes of repeater inputs (468.2 MHz, at night) to test it live.
 - Only one colour code or slot per channel (a config field), talker alias,
   GPS.
+
+## Simplex (mobile-sourced bursts)
+
+A mobile sends one slot's bursts, 30 ms on and 30 ms off, with no CACH.
+What it took:
+
+- **Power gating in the 4FSK receiver.**
+  - A window is bursty when its peak power is ≥13 dB over its floor (a
+    continuous carrier, even a noisy one, never is).
+  - Samples below the geometric middle of peak and floor are quiet. The
+    discriminator feeds the filter the carrier centre there, so gap noise
+    doesn't ring into the burst edges. Quiet samples are left out of the
+    timing; quiet symbols get no reliability.
+  - When the channel turns bursty, the level history's noise is dropped and
+    pending blocks' timing is recomputed. While bursty, levels come only
+    from the steady middles of bursts (within 3 dB of the peak).
+  - The first version gated against the plain peak. It cost 3–4 points at
+    6 dB on a continuous carrier, because noise dips look like gaps. The
+    peak-over-floor test fixed that.
+- **Slots by parity.** With no CACH, a mobile's bursts are tied to its last
+  sync: even offsets are its slot, odd offsets the other. All-quiet bursts
+  are dropped.
+- **Test:** `dmr::synth` with `mobile: true` (MS syncs, carrier off between
+  bursts, noise before the transmission) through the engine's conventional
+  path records the whole call (108/108 voice codewords). DMR control and
+  voice, P25 C4FM voice and DCFD all decode as before.

@@ -178,6 +178,16 @@ unless **Record encrypted calls** is on.
   "lcnTable": { "101": 452275000 } }
 ```
 
+**Find my system** finds trunked DMR sites too (pick the Business UHF / VHF
+bands to look where most are) and adds one with its colour code. The
+dashboard shows a DMR site's kind, colour code and rest channel, each
+watched frequency with the call on each slot, and the channel table
+(configured or learned).
+
+Conventional DMR channels also record radios talking to each other directly
+(simplex / talkaround): one slot's bursts with nothing on the air between
+them.
+
 `trunk-pro tool dmrscan <capture> --center Hz --rate Hz` lists every DMR
 carrier in a capture with its colour code; `tool dmr … --freq Hz` decodes
 one (link control, CSBKs, `--bursts` for every burst, `--audio` a slot).

@@ -23,6 +23,9 @@ pub struct Tx {
     pub idle_after: usize,
     /// CSBKs (10 bytes, before CRC) sent in place of the other slot's idle bursts.
     pub csbks: Vec<[u8; 10]>,
+    /// A mobile (simplex / talkaround): MS syncs, no CACH, nothing on the air
+    /// between its bursts and before / after the transmission.
+    pub mobile: bool,
 }
 
 fn lc_bytes(tg: u32, src: u32) -> [u8; 9] {
@@ -34,8 +37,12 @@ fn bits_to_dibits(bits: &[u8]) -> Vec<u8> {
     bits.chunks(2).map(|c| c[0] << 1 | c[1]).collect()
 }
 
-/// A data burst: 196 info bits, slot type, BS data sync.
+/// A data burst: 196 info bits, slot type, data sync (BS, or MS for a mobile).
 fn data_burst(cc: u8, dt: u8, info: &[u8; 196]) -> [u8; BURST_DIBITS] {
+    data_burst_sync(cc, dt, info, SyncKind::BsData)
+}
+
+fn data_burst_sync(cc: u8, dt: u8, info: &[u8; 196], sync: SyncKind) -> [u8; BURST_DIBITS] {
     let st = golay20_encode((cc as u32) << 4 | dt as u32);
     let mut bits = [0u8; 264];
     bits[..98].copy_from_slice(&info[..98]);
@@ -45,17 +52,17 @@ fn data_burst(cc: u8, dt: u8, info: &[u8; 196]) -> [u8; BURST_DIBITS] {
     }
     bits[166..].copy_from_slice(&info[98..]);
     let mut d: [u8; BURST_DIBITS] = bits_to_dibits(&bits).try_into().unwrap();
-    d[54..78].copy_from_slice(&sync_dibits(SyncKind::BsData));
+    d[54..78].copy_from_slice(&sync_dibits(sync));
     d
 }
 
-fn lc_burst(cc: u8, dt: u8, lc: &[u8; 9]) -> [u8; BURST_DIBITS] {
+fn lc_burst(cc: u8, dt: u8, lc: &[u8; 9], sync: SyncKind) -> [u8; BURST_DIBITS] {
     let mask = if dt == DT_VOICE_LC_HEADER { MASK_VOICE_LC_HEADER } else { MASK_TERMINATOR_LC };
     let p = rs129_parity(lc);
     let mut bytes = lc.to_vec();
     bytes.extend([p[0] ^ (mask >> 16) as u8, p[1] ^ (mask >> 8) as u8, p[2] ^ mask as u8]);
     let bits: [u8; 96] = unpack(&bytes).try_into().unwrap();
-    data_burst(cc, dt, &bptc196_encode(&bits))
+    data_burst_sync(cc, dt, &bptc196_encode(&bits), sync)
 }
 
 pub fn csbk_burst(cc: u8, csbk: &[u8; 10]) -> [u8; BURST_DIBITS] {
@@ -78,14 +85,14 @@ fn ambe_dibits(u: &[u8; 49]) -> [u8; 36] {
 }
 
 /// Voice burst `pos` (0 = A … 5 = F) of a superframe, carrying `frames`.
-fn voice_burst(cc: u8, pos: usize, frames: &[[u8; 36]; 3], emb_lc: &[u8; 128]) -> [u8; BURST_DIBITS] {
+fn voice_burst(cc: u8, pos: usize, frames: &[[u8; 36]; 3], emb_lc: &[u8; 128], vsync: SyncKind) -> [u8; BURST_DIBITS] {
     let mut d = [0u8; BURST_DIBITS];
     d[..36].copy_from_slice(&frames[0]);
     d[36..54].copy_from_slice(&frames[1][..18]);
     d[78..96].copy_from_slice(&frames[1][18..]);
     d[96..].copy_from_slice(&frames[2]);
     if pos == 0 {
-        d[54..78].copy_from_slice(&sync_dibits(SyncKind::BsVoice));
+        d[54..78].copy_from_slice(&sync_dibits(vsync));
         return d;
     }
     let lcss = [0, 1, 3, 3, 2, 0][pos];
@@ -104,12 +111,21 @@ fn voice_burst(cc: u8, pos: usize, frames: &[[u8; 36]; 3], emb_lc: &[u8; 128]) -
 
 /// The transmission's dibits, both slots interleaved, CACH before each burst.
 pub fn dibits(tx: &Tx) -> Vec<u8> {
+    dibits_on(tx).0
+}
+
+/// … and, per dibit, whether anything is on the air (a mobile is off between
+/// its bursts and before / after the transmission).
+pub fn dibits_on(tx: &Tx) -> (Vec<u8>, Vec<bool>) {
+    let (vsync, dsync) = if tx.mobile { (SyncKind::MsVoice, SyncKind::MsData) } else { (SyncKind::BsVoice, SyncKind::BsData) };
     let lc = lc_bytes(tx.talkgroup, tx.source);
     let emb_lc = embedded_lc_encode(&unpack(&lc).try_into().unwrap());
     let idle = data_burst(tx.cc, DT_IDLE, &[0; 196]);
     // The voice slot's bursts, in order.
-    let mut ours: Vec<[u8; BURST_DIBITS]> = vec![idle; tx.idle_before];
-    ours.extend([lc_burst(tx.cc, DT_VOICE_LC_HEADER, &lc); 3]);
+    // (None: nothing sent — a mobile has no idle bursts.)
+    let gap = if tx.mobile { None } else { Some(idle) };
+    let mut ours: Vec<Option<[u8; BURST_DIBITS]>> = vec![gap; tx.idle_before];
+    ours.extend([Some(lc_burst(tx.cc, DT_VOICE_LC_HEADER, &lc, dsync)); 3]);
     let mut x = 0x1234_5678u32;
     for _ in 0..tx.superframes {
         for pos in 0..6 {
@@ -120,29 +136,60 @@ pub fn dibits(tx: &Tx) -> Vec<u8> {
                 });
                 ambe_dibits(&u)
             });
-            ours.push(voice_burst(tx.cc, pos, &frames, &emb_lc));
+            ours.push(Some(voice_burst(tx.cc, pos, &frames, &emb_lc, vsync)));
         }
     }
-    ours.extend([lc_burst(tx.cc, DT_TERMINATOR_LC, &lc); 3]);
-    ours.extend(vec![idle; tx.idle_after]);
-    let mut out = Vec::new();
+    ours.extend([Some(lc_burst(tx.cc, DT_TERMINATOR_LC, &lc, dsync)); 3]);
+    ours.extend(vec![gap; tx.idle_after]);
+    let (mut out, mut on) = (Vec::new(), Vec::new());
     let mut csbks = tx.csbks.iter().cycle();
+    let mut x = 0x2468_ace1u32;
+    let mut junk = |n: usize| -> Vec<u8> {
+        (0..n)
+            .map(|_| {
+                x = x.wrapping_mul(1664525).wrapping_add(1013904223);
+                (x >> 30) as u8
+            })
+            .collect()
+    };
     for b in &ours {
         for s in 0..2u8 {
+            if tx.mobile {
+                // Guard time, then our burst or nothing.
+                out.extend(junk(12));
+                on.extend([false; 12]);
+                match (s == tx.slot, b) {
+                    (true, Some(b)) => {
+                        out.extend(b);
+                        on.extend([true; BURST_DIBITS]);
+                    }
+                    _ => {
+                        out.extend(junk(BURST_DIBITS));
+                        on.extend([false; BURST_DIBITS]);
+                    }
+                }
+                continue;
+            }
             out.extend(cach_dibits(s));
             if s == tx.slot {
-                out.extend(b);
+                out.extend(b.unwrap());
             } else {
                 let other = csbks.next().map_or(idle, |c| csbk_burst(tx.cc, c));
                 out.extend(other);
             }
+            on.extend([true; 144]);
         }
     }
-    out
+    (out, on)
 }
 
 /// 4FSK at `fs`, `offset_hz` from the centre: ±648 / ±1944 Hz, 4800 baud.
 pub fn modulate(dibits: &[u8], fs: f64, offset_hz: f64, amp: f32, phase: &mut f64) -> Vec<Complex32> {
+    modulate_on(dibits, None, fs, offset_hz, amp, phase)
+}
+
+/// … with the carrier off where `on` says so.
+pub fn modulate_on(dibits: &[u8], on: Option<&[bool]>, fs: f64, offset_hz: f64, amp: f32, phase: &mut f64) -> Vec<Complex32> {
     let n = (dibits.len() as f64 / 4800.0 * fs) as usize;
     (0..n)
         .map(|i| {
@@ -154,7 +201,9 @@ pub fn modulate(dibits: &[u8], fs: f64, offset_hz: f64, amp: f32, phase: &mut f6
                 _ => -3.0,
             } * 648.0;
             *phase += 2.0 * std::f64::consts::PI * (offset_hz + dev) / fs;
-            Complex32::from_polar(amp, *phase as f32)
+            let k = ((i as f64 / fs * 4800.0) as usize).min(dibits.len() - 1);
+            let a = if on.is_none_or(|o| o[k]) { amp } else { 0.0 };
+            Complex32::from_polar(a, *phase as f32)
         })
         .collect()
 }
@@ -169,7 +218,7 @@ mod tests {
     use crate::trunk::{Engine, EngineConfig, Event, SourceConfig, SystemConfig};
 
     fn tx() -> Tx {
-        Tx { cc: 5, slot: 1, talkgroup: 4321, source: 98765, superframes: 6, idle_before: 20, idle_after: 20, csbks: vec![] }
+        Tx { cc: 5, slot: 1, talkgroup: 4321, source: 98765, superframes: 6, idle_before: 20, idle_after: 20, csbks: vec![], mobile: false }
     }
 
     #[test]
@@ -179,7 +228,13 @@ mod tests {
         let iq = modulate(&d, 24_000.0, 0.0, 1.0, &mut ph);
         let mut rx = C4fm::dmr(24_000.0);
         let mut syms = Vec::new();
-        rx.push(&iq, &mut syms);
+        for (k, c) in iq.chunks(2400).enumerate() {
+            rx.push(c, &mut syms);
+            if k % 2 == 0 {
+                let l = rx.levels();
+                eprintln!("t {:.1} levels {:?} sep {:.1}", k as f64 * 0.1, l.map(|v| v.round()), rx.separation());
+            }
+        }
         let (mut f, mut ch) = (Framer::default(), Channel::default());
         let mut bursts = Vec::new();
         for s in &syms {
@@ -209,9 +264,13 @@ mod tests {
     }
 
     fn wideband(fs: f64, offset: f64) -> Vec<Complex32> {
-        let d = dibits(&tx());
+        wideband_of(&tx(), fs, offset)
+    }
+
+    fn wideband_of(t: &Tx, fs: f64, offset: f64) -> Vec<Complex32> {
+        let (d, on) = dibits_on(t);
         let mut ph = 0.0;
-        let mut iq = modulate(&d, fs, offset, 0.3, &mut ph);
+        let mut iq = modulate_on(&d, Some(&on), fs, offset, 0.3, &mut ph);
         let mut x = 0x9e37_79b9u32;
         for v in iq.iter_mut() {
             x = x.wrapping_mul(1664525).wrapping_add(1013904223);
@@ -241,6 +300,26 @@ mod tests {
         let secs = done[0].audio.len() as f64 / 8000.0;
         assert!((secs - 6.0 * 0.36).abs() < 0.2, "{secs:.2} s of audio");
         assert!(done[0].base_name.ends_with("_460050000.1") && done[0].json.contains("\"color_code\":5"), "{} {}", done[0].base_name, done[0].json);
+    }
+
+    #[test]
+    fn a_mobile_in_simplex_is_recorded() {
+        // Bursts on one slot only, nothing on the air between them: talkaround.
+        let (fs, center, freq) = (1_200_000.0, 460_000_000.0, 460_050_000.0);
+        let t = Tx { mobile: true, slot: 0, ..tx() };
+        let iq = wideband_of(&t, fs, freq - center);
+        let cfg = EngineConfig {
+            sources: vec![SourceConfig { center_hz: center, rate_hz: fs }],
+            conventional: vec![ConvChannel::new(freq, ConvMode::Dmr)],
+            ..Default::default()
+        };
+        let done = run(cfg, &iq);
+        assert_eq!(done.len(), 1, "{:?}", done.iter().map(|k| (&k.call.talkgroup, k.audio.len())).collect::<Vec<_>>());
+        let c = &done[0].call;
+        assert_eq!((c.talkgroup, c.color_code), (4321, Some(5)));
+        assert_eq!(c.sources.iter().map(|s| s.src).collect::<Vec<_>>(), [98765]);
+        let secs = done[0].audio.len() as f64 / 8000.0;
+        assert!((secs - 6.0 * 0.36).abs() < 0.2, "{secs:.2} s of audio");
     }
 
     #[test]

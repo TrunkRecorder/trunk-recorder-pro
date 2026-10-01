@@ -31,6 +31,12 @@ platform, with no GNU Radio, OP25 or other runtime dependencies.
   embedded link control are soft-combined, which recovers most of them on a
   weak site. Voice through the Phase 2 AMBE+2 decoder. Trunk Recorder DMR
   configs import. `tool dmrscan` / `tool dmr` for captures.
+- **DMR in Find my system and the dashboard**: the scan recognises trunked
+  DMR sites (kind and colour code) and adds them; Business UHF / VHF bands.
+  The dashboard shows a DMR site's rest channel, watched frequencies with
+  each slot's call, and its channel table. Simplex / talkaround DMR (a
+  mobile's bursts, nothing between them) is received: the 4FSK receiver
+  leaves quiet stretches out of its timing and levels.
 - **Weak signals**: the C4FM receiver (P25 C4FM and DMR) has a matched
   filter, takes its levels from the symbol clusters, and re-decides
   symbols by multi-symbol detection below the discriminator's threshold;

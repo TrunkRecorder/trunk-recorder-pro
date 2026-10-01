@@ -409,15 +409,36 @@ pub struct Channel {
     /// Bursts whose CACH didn't decode (the slot was inferred).
     pub tact_errors: u64,
     ev: Vec<SlotEvent>,
+    /// Bursts seen (the framer hands every grid position over, sync or not).
+    n: u64,
+    /// A mobile's (or direct mode's) last sync: (burst count, slot). It sends
+    /// every other burst, and has no CACH to say so.
+    anchor: Option<(u64, u8)>,
+    /// Bursts with nothing on the air (all reliabilities zero), dropped.
+    pub quiet_bursts: u64,
 }
+
+/// A mobile's bursts are tied to its last sync for this many bursts (a voice
+/// superframe brings a sync every 12).
+const ANCHOR_BURSTS: u64 = 26;
 
 impl Channel {
     /// Which slot `b` is: a repeater's CACH says; a direct-mode sync says;
     /// otherwise the other slot from the last burst's (they alternate).
     pub fn slot_of(&mut self, b: &Burst) -> u8 {
+        // A mobile: its bursts every other position from its last sync.
+        let by_anchor = self.anchor.filter(|a| self.n - a.0 < ANCHOR_BURSTS).map(|(at, s)| if (self.n - at) % 2 == 0 { s } else { 1 - s });
         let slot = match b.sync {
-            Some(SyncKind::DirectVoice(s)) | Some(SyncKind::DirectData(s)) => s,
-            Some(SyncKind::MsVoice) | Some(SyncKind::MsData) | Some(SyncKind::MsRc) => self.last_slot,
+            Some(SyncKind::DirectVoice(s)) | Some(SyncKind::DirectData(s)) => {
+                self.anchor = Some((self.n, s));
+                s
+            }
+            Some(SyncKind::MsVoice) | Some(SyncKind::MsData) | Some(SyncKind::MsRc) => {
+                let s = by_anchor.unwrap_or(0);
+                self.anchor = Some((self.n, s));
+                s
+            }
+            None if by_anchor.is_some() => by_anchor.unwrap(),
             _ => match cach(&b.cach).0 {
                 Some(t) => t.slot,
                 None => {
@@ -432,6 +453,16 @@ impl Channel {
 
     pub fn burst(&mut self, b: &Burst, out: &mut Vec<(u8, SlotEvent)>) {
         let slot = self.slot_of(b);
+        self.n += 1;
+        if b.rel.iter().all(|&r| r == 0.0) {
+            // Nothing on the air (a mobile's other slot): nothing to decode.
+            self.quiet_bursts += 1;
+            return;
+        }
+        if b.sync.is_some_and(|k| k.is_bs()) {
+            // A repeater after all: its CACH names the slots.
+            self.anchor = None;
+        }
         self.ev.clear();
         self.slots[slot as usize].burst(b, &mut self.ev);
         // One carrier, one system: a keyed slot means both are.
