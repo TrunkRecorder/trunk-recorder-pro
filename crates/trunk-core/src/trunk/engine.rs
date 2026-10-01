@@ -40,6 +40,7 @@ use super::tracker::{TrackerOut, VoiceTracker};
 use super::units::{UnitAlias, UnitAliases};
 use crate::dsp::cqpsk::{self, Cqpsk};
 use crate::dsp::{Channelizer, HeadId, Receiver, Symbol};
+use crate::loudness;
 use crate::mbe;
 use crate::p25::alias::Alias;
 use crate::p25::diversity::{best_frame, best_tsbks, Bank, BankConfig, Group};
@@ -139,6 +140,8 @@ pub struct EngineConfig {
     pub conv_talkgroups: Talkgroups,
     /// Keep each call's vocoder frames ([`Concluded::frames`]).
     pub capture_frames: bool,
+    /// Bring each call's speech to one level ([`crate::loudness`]).
+    pub normalize_audio: bool,
 }
 
 impl Default for EngineConfig {
@@ -157,6 +160,7 @@ impl Default for EngineConfig {
             conv_short_name: "conv".into(),
             conv_talkgroups: Talkgroups::default(),
             capture_frames: false,
+            normalize_audio: true,
         }
     }
 }
@@ -1268,9 +1272,12 @@ impl Engine {
     fn write_call(&mut self, call: &Call, audio: Vec<f32>, frames: CallFrames, recorder_num: u32) {
         // An encrypted call's "audio" is at most a few frames vocoded before
         // the cipher was known: noise. Trunk Recorder keeps none either.
-        let audio = if call.encrypted { Vec::new() } else { audio };
+        let mut audio = if call.encrypted { Vec::new() } else { audio };
         if audio.is_empty() && !self.cfg.keep_silent_calls {
             return;
+        }
+        if self.cfg.normalize_audio {
+            loudness::normalize(&mut audio, mbe::SAMPLE_RATE);
         }
         let short_name = match self.trunks.get_mut(call.system as usize) {
             Some(t) => {

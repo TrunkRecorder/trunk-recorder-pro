@@ -429,6 +429,8 @@ pub struct Recording {
     pub keep_silent_calls: bool,
     /// Save each call's vocoder frames next to its audio, for diagnosis.
     pub capture_frames: bool,
+    /// Bring every call's speech to the same loudness (as Trunk Recorder's uploads were).
+    pub normalize_audio: bool,
 }
 
 impl Default for Recording {
@@ -443,6 +445,7 @@ impl Default for Recording {
             record_unit_to_unit: true,
             keep_silent_calls: false,
             capture_frames: false,
+            normalize_audio: true,
         }
     }
 }
@@ -783,6 +786,7 @@ impl Config {
             conv_short_name: self.conventional.short_name.clone(),
             conv_talkgroups,
             capture_frames: self.recording.capture_frames,
+            normalize_audio: self.recording.normalize_audio,
         }
     }
 }

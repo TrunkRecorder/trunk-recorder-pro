@@ -14,3 +14,9 @@ web/node_modules/
 web/dist/
 web/dist-web/
 web/src/web/pkg/
+
+# WMATA deployment: binaries and the OpenMHz key
+/wmata/bin/
+/wmata/plugins.json
+/wmata/logs/
+wmata
