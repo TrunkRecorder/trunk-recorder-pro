@@ -173,6 +173,11 @@ impl Site {
         }
     }
 
+    /// Bursts carrier `idx` has framed with a sync, so far.
+    pub fn syncs(&self, idx: usize) -> u64 {
+        self.carriers[idx].framer.syncs
+    }
+
     /// Notes worth a log line since the last call (channels learned, …).
     pub fn take_notes(&mut self) -> Vec<String> {
         std::mem::take(&mut self.notes)

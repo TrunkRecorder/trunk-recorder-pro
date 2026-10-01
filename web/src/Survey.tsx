@@ -1,4 +1,4 @@
-// "Find my system": the survey. Scan the bands for P25 and SmartNet control channels,
+// "Find my system": the survey. Scan the bands for P25, SmartNet and trunked DMR control channels,
 // listen to the best one, and add it as a system — control channels, site
 // identity, the dongle's frequency correction, gain and centre from what it
 // announces. Neighbouring sites it announces can be added as systems too.
@@ -8,7 +8,7 @@
 
 import { useState } from "react";
 import { formatMhz, systemWithChannel } from "./config.ts";
-import { addSite, applySurvey, setNotice, startSurvey, stopSurvey, surveyListen, surveyRescan, useApp, web } from "./controller.ts";
+import { addDmrSite, addSite, applySurvey, setNotice, startSurvey, stopSurvey, surveyListen, surveyRescan, useApp, web } from "./controller.ts";
 import type { Config, SiteIdentity, SurveyCandidate, SurveyIdentity, SurveyMonitor, SurveySuggestion } from "./protocol.ts";
 import { Waterfall } from "./Waterfall.tsx";
 
@@ -22,7 +22,14 @@ function idText(id: SurveyIdentity): string {
   return parts.join(" · ");
 }
 
-const KIND: Record<SurveyCandidate["kind"], string> = { control: "Control channel", smartnet: "SmartNet control channel", p25: "P25 (voice / data)", other: "Not P25 or SmartNet" };
+const KIND: Record<SurveyCandidate["kind"], string> = {
+  control: "Control channel",
+  smartnet: "SmartNet control channel",
+  dmrControl: "DMR control / rest channel",
+  p25: "P25 (voice / data)",
+  dmr: "DMR (conventional / data)",
+  other: "Not P25, SmartNet or DMR",
+};
 const isControl = (c: SurveyCandidate) => c.kind === "control" || c.kind === "smartnet";
 
 /** The site key of a scanned control channel: its secondaries share it. */
@@ -39,6 +46,18 @@ function Candidates(props: { c: Config; list: SurveyCandidate[]; listening: numb
     const expect: SiteIdentity = { nac: id.nac, sysId: id.sysId, rfss: id.rfss, site: id.site, wacn: id.wacn };
     const name = addSite(ccs, expect);
     setNotice(`Added ${name}: control channel${ccs.length === 1 ? "" : "s"} ${ccs.map((f) => formatMhz(f)).join(", ")} MHz. Listening to it fills in the rest (frequency correction, voice channels).`);
+  };
+  const addDmr = (cand: SurveyCandidate) => {
+    const hz = Math.round((cand.correctedHz ?? cand.freqHz) / 6250) * 6250;
+    const cc = cand.dmr?.colorCode ?? null;
+    const name = addDmrSite(hz, cc);
+    const plus = cand.dmr?.variant === "DMR Capacity Plus";
+    setNotice(
+      `Added ${name}: ${cand.dmr?.variant ?? "DMR"} on ${formatMhz(hz)} MHz${cc === null ? "" : `, colour code ${cc}`}. ` +
+        (plus
+          ? "Capacity Plus: add the site's other repeaters under Site frequencies — only the rest channel shows in a scan."
+          : "Add the site's voice frequencies under Voice frequencies; which channel is which is learned from the air."),
+    );
   };
   const [showOther, setShowOther] = useState(false);
   const others = props.list.filter((c) => c.kind === "other").length;
@@ -70,7 +89,9 @@ function Candidates(props: { c: Config; list: SurveyCandidate[]; listening: numb
                     {KIND[c.kind]}
                     {c.modulation && <span className="tag">{c.modulation}</span>}
                   </td>
-                  <td className="mono small">{idText(c.identity)}</td>
+                  <td className="mono small">
+                    {c.dmr ? [c.dmr.variant?.replace(/^DMR /, ""), c.dmr.colorCode !== null ? `CC ${c.dmr.colorCode}` : null].filter(Boolean).join(" · ") : idText(c.identity)}
+                  </td>
                   <td className="mono small">{decoded(c)}</td>
                   <td className="actions">
                     {c.kind === "control" &&
@@ -80,6 +101,17 @@ function Candidates(props: { c: Config; list: SurveyCandidate[]; listening: numb
                           <span className="muted small">in {have.shortName}</span>
                         ) : (
                           <button className="btn ghost small" onClick={() => add(c)} title="Add this control channel (and its site's others) as a system">
+                            Add
+                          </button>
+                        );
+                      })()}
+                    {c.kind === "dmrControl" &&
+                      (() => {
+                        const have = systemWithChannel(props.c, c.freqHz);
+                        return have ? (
+                          <span className="muted small">in {have.shortName}</span>
+                        ) : (
+                          <button className="btn ghost small" onClick={() => addDmr(c)} title="Add this DMR site as a system">
                             Add
                           </button>
                         );
@@ -103,7 +135,7 @@ function Candidates(props: { c: Config; list: SurveyCandidate[]; listening: numb
         <label className="toggle small">
           <input type="checkbox" checked={showOther} onChange={(e) => setShowOther(e.target.checked)} />
           <span>
-            Show {others} other continuous signal{others === 1 ? "" : "s"} (not P25 or SmartNet: other trunking systems, data)
+            Show {others} other continuous signal{others === 1 ? "" : "s"} (not P25, SmartNet or DMR: other trunking systems, data)
           </span>
         </label>
       )}
@@ -401,7 +433,8 @@ export function SurveyPanel(props: { c: Config }) {
           <p className="muted small">
             Don't know the frequencies? Connect your radio and the recorder scans the public-safety bands for P25 control channels, listens to the strongest, and
             works out the system's control channels, site and your radio's frequency correction — usually in a minute or two. Run it again to add more systems or
-            sites; you can still type everything in by hand below.
+            sites; you can still type everything in by hand below. Trunked DMR sites (Capacity Plus, Capacity Max, Connect Plus, Tier III) show up too, with
+            their colour code — add the business bands to look where most of them are.
           </p>
           {(c.sources.length > 1 || src?.kind === "rtlsdr") && (
           <div className="grid2">

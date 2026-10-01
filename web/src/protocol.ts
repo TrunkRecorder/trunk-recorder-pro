@@ -275,12 +275,14 @@ export interface SurveyCandidate {
   band: string;
   snrDb: number;
   widthHz: number;
-  kind: "control" | "smartnet" | "p25" | "other";
+  kind: "control" | "smartnet" | "p25" | "dmrControl" | "dmr" | "other";
   frames: number;
   good: number;
   bad: number;
   modulation: string;
   identity: SurveyIdentity;
+  /** DMR: the trunking its control blocks are ("DMR Capacity Plus", …) and its colour code. */
+  dmr?: { variant: string | null; colorCode: number | null } | null;
 }
 
 export interface SurveyMonitor {

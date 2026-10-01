@@ -1,6 +1,8 @@
-//! Finding a P25 or SmartNet system with nothing configured: sweep the
-//! land-mobile bands for carriers that never key down (a control channel
-//! transmits all the time), check each with the P25 and SmartNet receivers,
+//! Finding a P25, SmartNet or trunked DMR system with nothing configured:
+//! sweep the land-mobile bands for carriers that never key down (a control
+//! channel transmits all the time), check each with the P25, SmartNet and
+//! DMR receivers (a DMR control or rest channel says which kind of trunking
+//! its blocks are; DMR sites aren't monitored further),
 //! then sit on the best one and
 //! learn the system from its broadcasts — band plan, identity, alternate
 //! control channels, neighbouring sites, the voice channels it grants — and
@@ -79,6 +81,10 @@ pub const BANDS: &[Band] = &[
     Band { id: "uhf", label: "UHF", lo_hz: 450.0e6, hi_hz: 470.0e6, default_on: true },
     Band { id: "vhf", label: "VHF", lo_hz: 136.0e6, hi_hz: 174.0e6, default_on: true },
     Band { id: "uhf-fed", label: "UHF federal", lo_hz: 380.0e6, hi_hz: 420.0e6, default_on: false },
+    // Business / industrial (where DMR systems mostly are): inside UHF and VHF,
+    // listed on their own for a scan of just them. Overlaps are scanned once.
+    Band { id: "biz-uhf", label: "Business UHF", lo_hz: 451.0e6, hi_hz: 470.0e6, default_on: false },
+    Band { id: "biz-vhf", label: "Business VHF", lo_hz: 150.8e6, hi_hz: 174.0e6, default_on: false },
     Band { id: "t-band", label: "T-band", lo_hz: 470.0e6, hi_hz: 512.0e6, default_on: false },
 ];
 
@@ -133,8 +139,12 @@ pub enum Command {
 pub enum Kind {
     /// A continuous signal that isn't P25 (another trunking type, data, …).
     Other,
+    /// DMR bursts but no trunking control blocks (a conventional repeater, data).
+    Dmr,
     /// P25 frames but no control messages (a voice channel, conventional P25).
     P25,
+    /// A trunked DMR control or rest channel ([`Candidate::dmr`] says which kind).
+    DmrControl,
     /// A SmartNet / SmartZone control channel (CRC-valid OSWs).
     SmartNet,
     /// A P25 control channel.
@@ -145,7 +155,9 @@ impl Kind {
     pub fn as_str(self) -> &'static str {
         match self {
             Kind::Other => "other",
+            Kind::Dmr => "dmr",
             Kind::P25 => "p25",
+            Kind::DmrControl => "dmrControl",
             Kind::SmartNet => "smartnet",
             Kind::Control => "control",
         }
@@ -164,9 +176,17 @@ pub struct Candidate {
     pub frames: u32,
     pub good: u32,
     pub bad: u32,
-    /// "C4FM" | "CQPSK" | "2FSK" (SmartNet) | "".
+    /// "C4FM" | "CQPSK" | "2FSK" (SmartNet) | "4FSK" (DMR) | "".
     pub modulation: &'static str,
     pub identity: Identity,
+    /// DMR: the trunking kind its blocks are, and its colour code.
+    pub dmr: Option<DmrFound>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DmrFound {
+    pub variant: Option<crate::dmr::Variant>,
+    pub color_code: Option<u8>,
 }
 
 impl Candidate {
@@ -504,6 +524,9 @@ struct Probe {
     est: FreqEst,
     dec: Decode,
     sn: SnRx,
+    /// The DMR side: one carrier's site decoder (what trunking it is, if any).
+    dmr: crate::dmr::Site,
+    dmr_samples: u64,
 }
 
 /// A SmartNet receiver and framer (the probes' and the monitor's).
@@ -606,7 +629,8 @@ impl HopScan {
             let rate = self.chz.output_rate();
             for p in peaks {
                 let (head, _, _) = self.chz.add_head(p.offset_hz, CUTOFF_HZ, 0.0);
-                self.probes.push(Probe { peak: p, head, bank: Bank::new(rate, PROBE_BANK), est: FreqEst::default(), dec: Decode::default(), sn: SnRx::new(rate) });
+                let dmr = crate::dmr::Site::new(&[self.center + p.offset_hz], rate, Default::default());
+                self.probes.push(Probe { peak: p, head, bank: Bank::new(rate, PROBE_BANK), est: FreqEst::default(), dec: Decode::default(), sn: SnRx::new(rate), dmr, dmr_samples: 0 });
             }
             self.decode_from = Some(self.blocks);
             return None;
@@ -617,6 +641,9 @@ impl HopScan {
             let iq = self.chz.output(p.head).unwrap_or(&[]);
             p.est.push(iq);
             p.sn.push(iq, |_, _| {});
+            let mut dm = Vec::new();
+            p.dmr.push(0, iq, 0.0, rate, &mut dm);
+            p.dmr_samples += iq.len() as u64;
             self.groups.clear();
             p.bank.push(iq, &mut self.groups);
             if done {
@@ -635,15 +662,37 @@ impl HopScan {
             self.probes
                 .iter()
                 .map(|p| {
+                    // DMR: a continuous carrier frames ~33 bursts a second, most with a sync.
+                    let dmr_syncs = p.dmr.syncs(0);
                     let kind = if p.dec.good >= 2 {
                         Kind::Control
                     } else if p.sn.framer.good >= 3 {
                         Kind::SmartNet
+                    } else if p.dmr.variant.is_some() && dmr_syncs >= 6 {
+                        Kind::DmrControl
                     } else if p.dec.frames >= 3 {
                         Kind::P25
+                    } else if dmr_syncs >= 6 {
+                        Kind::Dmr
                     } else {
                         Kind::Other
                     };
+                    if matches!(kind, Kind::Dmr | Kind::DmrControl) {
+                        let cc = p.dmr.color_code.or(p.dmr.carriers[0].chan.slots.iter().find_map(|s| s.color_code));
+                        return Candidate {
+                            freq_hz: self.center + p.peak.offset_hz,
+                            band: self.band,
+                            snr_db: p.peak.snr_db,
+                            width_hz: p.peak.width_hz,
+                            kind,
+                            frames: dmr_syncs as u32,
+                            good: 0,
+                            bad: 0,
+                            modulation: "4FSK",
+                            identity: Identity::default(),
+                            dmr: Some(DmrFound { variant: p.dmr.variant, color_code: cc }),
+                        };
+                    }
                     // A decoding signal's own carrier beats the spectrum's centroid.
                     let fine = match kind {
                         Kind::Other => 0.0,
@@ -663,6 +712,7 @@ impl HopScan {
                             bad: p.sn.framer.bad as u32,
                             modulation: "2FSK",
                             identity: Identity::default(),
+                            dmr: None,
                         };
                     }
                     Candidate {
@@ -676,6 +726,7 @@ impl HopScan {
                         bad: p.dec.bad as u32,
                         modulation: modulation(&labels, &p.bank.frames_per_rx()),
                         identity: p.dec.id.clone(),
+                        dmr: None,
                     }
                 })
                 .collect(),
@@ -1133,8 +1184,20 @@ fn plan(bands: &[String], rate: f64, range: (f64, f64)) -> Vec<Hop> {
     let step = span - 25_000.0;
     let round = |f: f64| (f / 1000.0).round() * 1000.0;
     let mut hops = Vec::new();
+    // Overlapping bands (business UHF inside UHF, …) are scanned once: each
+    // band's range less what the bands before it cover.
+    let mut done: Vec<(f64, f64)> = Vec::new();
+    let mut ranges: Vec<(f64, f64, &'static str)> = Vec::new();
     for b in BANDS.iter().filter(|b| bands.iter().any(|id| id == b.id)) {
-        let (lo, hi) = (b.lo_hz.max(range.0), b.hi_hz.min(range.1));
+        let mut parts = vec![(b.lo_hz.max(range.0), b.hi_hz.min(range.1))];
+        for &(dl, dh) in &done {
+            parts = parts.into_iter().flat_map(|(l, h)| [(l, h.min(dl)), (l.max(dh), h)]).filter(|&(l, h)| h > l).collect();
+        }
+        done.push((b.lo_hz, b.hi_hz));
+        ranges.extend(parts.into_iter().map(|(l, h)| (l, h, b.id)));
+    }
+    for (lo, hi, id) in ranges {
+        let b = Band { id, ..BANDS[0] };
         if hi <= lo {
             continue;
         }
@@ -1389,8 +1452,11 @@ impl Survey {
             None => {
                 self.stage = Stage::Done;
                 self.work = Work::None;
-                self.message = if self.candidates.iter().any(|c| c.kind != Kind::Other) {
-                    "P25 signals were found, but no control channel. Scan again, or add more bands.".into()
+                let dmr = self.candidates.iter().filter(|c| c.kind == Kind::DmrControl).count();
+                self.message = if dmr > 0 {
+                    format!("Found {dmr} trunked DMR control / rest channel(s) — add one below. No P25 or SmartNet control channel.")
+                } else if self.candidates.iter().any(|c| c.kind != Kind::Other) {
+                    "P25 or DMR signals were found, but no control channel. Scan again, or add more bands.".into()
                 } else {
                     "No P25 or SmartNet control channel found. Check the antenna and gain, and add more bands.".into()
                 };
@@ -1550,6 +1616,18 @@ mod tests {
         assert!(hops.iter().filter(|h| h.band == "800").count() <= 10);
         // A radio that can't reach a band skips it.
         assert!(plan(&["800".into()], rate, (24e6, 500e6)).is_empty());
+    }
+
+    #[test]
+    fn overlapping_bands_are_scanned_once() {
+        let rate = 2_400_000.0;
+        let uhf = plan(&["uhf".into()], rate, (24e6, 1766e6));
+        let both = plan(&["uhf".into(), "biz-uhf".into()], rate, (24e6, 1766e6));
+        assert_eq!(both.len(), uhf.len());
+        // Business alone covers its own range.
+        let biz = plan(&["biz-uhf".into()], rate, (24e6, 1766e6));
+        assert!(!biz.is_empty() && biz.iter().all(|h| h.band == "biz-uhf"));
+        assert!(biz.len() <= uhf.len());
     }
 
     #[test]

@@ -201,7 +201,7 @@ export function sameSystem(a: SiteIdentity, b: SiteIdentity): boolean {
 
 /** The system a control channel is already configured on, if any. */
 export function systemWithChannel(c: Config, hz: number): System | undefined {
-  return c.systems.find((x) => x.controlChannels.some((f) => Math.abs(f - hz) < 6_000));
+  return c.systems.find((x) => [...x.controlChannels, ...(x.channels ?? [])].some((f) => Math.abs(f - hz) < 6_000));
 }
 
 /**
@@ -209,7 +209,11 @@ export function systemWithChannel(c: Config, hz: number): System | undefined {
  * before it don't cover yet (the recorder's Config::resolved_centers).
  */
 export function resolvedCenters(c: Config): (number | null)[] {
-  const groups: [number[], number[]][] = activeSystems(c).map((x) => [[...x.controlChannels, ...x.voiceChannels], x.controlChannels]);
+  // A DMR site's watched frequencies are all needed (as Config::resolved_centers).
+  const groups: [number[], number[]][] = activeSystems(c).map((x) => {
+    const need = [...x.controlChannels, ...(x.type === "dmr" ? (x.channels ?? []) : [])];
+    return [[...need, ...x.voiceChannels], need];
+  });
   const conv = enabledChannels(c)
     .map((ch) => ch.freqHz)
     .filter((f) => f > 0);
