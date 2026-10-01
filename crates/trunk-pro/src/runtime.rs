@@ -109,6 +109,7 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
     let epoch_ms = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_millis() as f64);
     let mut session = Session::new(cfg.clone(), epoch_ms, &|name| fs::read_to_string(bandplan_path(name)).ok(), local_ymd)?;
     session.load_units(&|name| fs::read_to_string(units_path(name)).ok());
+    session.load_heard(&fs::read_to_string(heard_path(&cfg)).unwrap_or_default());
     ctx.plugins.start(plugins::systems_of(&cfg), PathBuf::from(&cfg.recording.capture_dir));
     let stop = Arc::new(AtomicBool::new(false));
     let (tx, rx) = mpsc::sync_channel::<SourceMsg>(256);
@@ -163,11 +164,21 @@ fn save_bandplans(session: &Session, saved: &mut std::collections::HashMap<Strin
     }
 }
 
-/// Save the talker aliases systems learned since the last save.
+/// Where the codes conventional frequencies carried are kept ([`trunk_app::heard`]).
+pub(crate) fn heard_path(cfg: &trunk_app::Config) -> PathBuf {
+    crate::config::config_dir().join(Session::heard_file(cfg))
+}
+
+/// Save the talker aliases systems learned, and the codes conventional
+/// frequencies carried, since the last save.
 fn save_units(session: &mut Session) {
     for (name, csv) in session.units_changed() {
         let _ = fs::create_dir_all(crate::config::config_dir());
         let _ = fs::write(units_path(&name), csv);
+    }
+    if let Some(json) = session.heard_unsaved() {
+        let _ = fs::create_dir_all(crate::config::config_dir());
+        let _ = fs::write(heard_path(session.config()), json);
     }
 }
 

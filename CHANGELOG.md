@@ -70,6 +70,25 @@ platform, with no GNU Radio, OP25 or other runtime dependencies.
   bursts are decoded from the audio of analog calls, conventional and
   SmartNet, into `srcList`; an MDC1200 emergency flags the call. Always on,
   at about 0.02 % of a core per analog call being recorded.
+- **Tones on analog calls**: the CTCSS tone (all 51) or DCS code (all 112,
+  either polarity) each conventional FM call carries is identified and
+  written to the call JSON as Trunk Recorder's `tone_detected` /
+  `tone_confidence`, and shown in the call list.
+- **Tones on conventional channels**: an analog channel's Tone (typed as
+  RadioReference or Trunk Recorder write it: `151.4 PL`, `023 DPL`, `D023N`)
+  records only transmissions carrying it. Several rows on one frequency
+  split it by tone, each filed under its own talkgroup (numbered for you);
+  a row with no tone takes the rest. Transmissions are held until their tone
+  is known, so nothing is cut off. Trunk Recorder's channel file `Tone`
+  column reads as is.
+- **NAC and colour code on conventional channels**: the same Tone column
+  takes a P25 NAC (`293 NAC`, `$293`) or DMR colour code, slot and
+  talkgroup (RadioReference's `CC1 TS2 TG201`), so P25 users of one
+  frequency are told apart by NAC and a DMR repeater's traffic picked by
+  slot and talkgroup.
+- **Heard codes**: under each conventional frequency, the tones, NACs and
+  colour codes it has carried (recorded calls and transmissions no row
+  took), kept between runs, each with an **Add** that makes a row for it.
 - **Find my system**: a first-run survey for people who don't know their
   frequencies. It scans the land-mobile bands (800 / 700 / 900 MHz, UHF,
   VHF, optionally UHF federal and T-band) for carriers that never key down,

@@ -4,7 +4,10 @@
 //! wall clock (`now_ms`), the local date for folder names, and does the I/O.
 
 use serde_json::{json, Value};
-use trunk_core::trunk::{Call, Engine, Event, Identity, MessageType};
+use trunk_core::trunk::{heard_code, Call, Engine, Event, Identity, MessageType};
+
+use crate::heard::HeardCodes;
+use trunk_core::dsp::tones::Tone;
 use trunk_core::Complex32;
 
 use crate::config::Config;
@@ -66,6 +69,8 @@ pub struct Session {
     epoch_ms: f64,
     last_plugin_status_ms: f64,
     plugin_good: Vec<u64>,
+    /// The codes conventional frequencies carried ([`crate::heard`]).
+    heard: HeardCodes,
 }
 
 impl Session {
@@ -98,6 +103,7 @@ impl Session {
             epoch_ms,
             last_plugin_status_ms: 0.0,
             plugin_good: Vec::new(),
+            heard: HeardCodes::default(),
         })
     }
 
@@ -164,6 +170,9 @@ impl Session {
                 self.rate_mark.0 = now_ms;
             }
             self.flush_log(out);
+            if self.heard.take_unshown() {
+                out.push(Output::Text(json!({ "type": "heard", "heard": self.heard.json() }).to_string()));
+            }
             if self.plugin_topics.status && now_ms - self.last_plugin_status_ms >= 5000.0 {
                 let dt = if self.last_plugin_status_ms == 0.0 { 0.0 } else { (now_ms - self.last_plugin_status_ms) / 1000.0 };
                 self.last_plugin_status_ms = now_ms;
@@ -197,6 +206,23 @@ impl Session {
     /// since the last call, to save.
     pub fn units_changed(&mut self) -> Vec<(String, String)> {
         self.engine.units_changed()
+    }
+
+    /// Preload the codes conventional frequencies carried before (what
+    /// [`Session::heard_unsaved`] gave, saved as [`Session::heard_file`]).
+    pub fn load_heard(&mut self, json: &str) {
+        self.heard = HeardCodes::load(json);
+    }
+
+    /// The codes conventional frequencies carried, as JSON to save, when
+    /// they changed since the last call.
+    pub fn heard_unsaved(&mut self) -> Option<String> {
+        self.heard.take_unsaved()
+    }
+
+    /// The file name (beside the config) the codes are kept in.
+    pub fn heard_file(cfg: &Config) -> String {
+        format!("{}.heard.json", cfg.conventional.short_name)
     }
 
     /// Each system's (short name, band plan), to keep for the next run.
@@ -312,7 +338,14 @@ impl Session {
                 }
                 out.push(Output::Audio { system, tg: talkgroup, frame });
             }
+            Event::ConvSkipped { freq_hz, code } => {
+                let ms = self.wall(self.engine.status().now_s) * 1000.0;
+                self.heard.note(freq_hz, &code, false, ms);
+            }
             Event::Concluded(k) => {
+                if let Some(code) = heard_code(&k.call) {
+                    self.heard.note(k.call.freq_hz, &code, true, self.wall(k.call.start_s) * 1000.0);
+                }
                 // Trunk Recorder's layout: <shortName>/<year>/<month>/<day>/, local time.
                 let record: Value = serde_json::from_str(&k.json).unwrap_or(Value::Null);
                 let (y, m, d) = (self.local_ymd)(record["start_time"].as_i64().unwrap_or(0));
@@ -431,6 +464,11 @@ fn call_view(c: &Call, system_name: &str, patched: Vec<Value>) -> Value {
         "freqHz": c.freq_hz,
         "slot": if c.phase2_tdma { Some(c.tdma_slot) } else { None },
         "analog": c.analog,
+        // "151.4 Hz" or "D023N".
+        "tone": c.tone.map(|h| match h.tone {
+            Tone::Ctcss(_) => format!("{} Hz", h.tone),
+            Tone::Dcs(..) => h.tone.to_string(),
+        }),
         "state": if c.recording { "recording" } else { "monitoring" },
         "reason": c.reason.map(|r| r.as_str()),
         "encrypted": c.encrypted,

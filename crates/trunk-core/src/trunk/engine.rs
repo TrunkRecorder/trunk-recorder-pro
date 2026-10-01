@@ -193,6 +193,9 @@ pub enum Event {
     /// System `system` heard a radio's talker alias it didn't know (or knew by another name).
     UnitAlias { system: u16, unit: u32, alias: String, talkgroup: u32 },
     Concluded(Concluded),
+    /// A conventional transmission no channel row took (it had another
+    /// code, or none where every row has one): its frequency and code.
+    ConvSkipped { freq_hz: u64, code: String },
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -1151,6 +1154,7 @@ impl Engine {
                     self.events.push(Event::CallEnd(call));
                 }
                 ConvOut::Alias(a) => self.learn_alias(CONVENTIONAL, a, None),
+                ConvOut::Skipped { freq_hz, code } => self.events.push(Event::ConvSkipped { freq_hz, code }),
             }
         }
         self.conv_out = out;

@@ -2,6 +2,7 @@
 
 import type { Channel, Config, SiteIdentity, Source, System } from "./protocol.ts";
 import { splitCsvLine } from "./talkgroups.ts";
+import { dmrTalkgroup, parseAccess, sameTone } from "./tones.ts";
 
 /** A new RTL-SDR's gain, dB (higher overloads its front end near strong transmitters). */
 export const RTL_DEFAULT_GAIN_DB = 25.4;
@@ -241,6 +242,49 @@ export function defaultTalkgroup(freqHz: number): number {
   return Math.round(freqHz / 1000);
 }
 
+const sameFreq = (a: number, b: number) => Math.abs(a - b) < 1;
+
+/**
+ * Each channel's talkgroup: its own; else a DMR row's talkgroup in its Tone;
+ * else by its place among the rows on its frequency — the frequency in kHz,
+ * then that with a digit (154325, 1543251 …). The recorder's channel_talkgroups.
+ */
+export function channelTalkgroups(channels: Channel[]): number[] {
+  return channels.map((c, i) => {
+    if (c.talkgroup !== undefined) return c.talkgroup;
+    const air = c.mode === "dmr" ? dmrTalkgroup(c.tone) : undefined;
+    if (air !== undefined) return air;
+    const k = channels.slice(0, i).filter((o) => sameFreq(o.freqHz, c.freqHz)).length;
+    return k === 0 ? defaultTalkgroup(c.freqHz) : defaultTalkgroup(c.freqHz) * 10 + k;
+  });
+}
+
+/** A talkgroup for another row on `freqHz`: the first of 1543251, 1543252 … no row uses. */
+export function nextTalkgroup(channels: Channel[], freqHz: number): number {
+  const used = new Set(channelTalkgroups(channels));
+  let k = 1;
+  while (used.has(defaultTalkgroup(freqHz) * 10 + k)) k++;
+  return defaultTalkgroup(freqHz) * 10 + k;
+}
+
+/** Why rows on one frequency can't run together, or null (the recorder's check_channels). */
+function rowsProblem(rows: Channel[]): string | null {
+  const mhz = formatMhz(rows[0].freqHz);
+  if (rows.some((r) => r.mode !== rows[0].mode)) return `Conventional channel ${mhz} MHz is listed with different modes — rows sharing a frequency need the same one.`;
+  const what = { fm: "tone", p25: "NAC", dmr: "colour code, slot or talkgroup" }[rows[0].mode];
+  const tones = rows.map((r) => {
+    const t = parseAccess(r.mode, r.tone ?? "");
+    return "tone" in t ? t.tone : "";
+  });
+  for (let i = 0; i < tones.length; i++)
+    for (let j = 0; j < i; j++) {
+      if (!tones[i] && !tones[j]) return `Conventional channel ${mhz} MHz is listed twice without a ${what} — give each row its own (one may have none).`;
+      if (tones[i] && tones[j] && sameTone(tones[j], tones[i]))
+        return `Conventional channel ${mhz} MHz has two rows for ${tones[i] === tones[j] ? tones[i] : `${tones[j]} and ${tones[i]} (the same signal)`}.`;
+    }
+  return null;
+}
+
 /** Why the config can't start, or null (the recorder's Config::problem). */
 export function startProblem(c: Config): string | null {
   if (!c.sources.length) return "Add a source: a dongle or a capture file.";
@@ -263,9 +307,17 @@ export function startProblem(c: Config): string | null {
   if (channels.some((ch) => !(ch.freqHz > 0))) return "A conventional channel has no frequency yet.";
   const outside = channels.filter((ch) => !inside(ch.freqHz)).map((ch) => formatMhz(ch.freqHz));
   if (outside.length) return `Conventional channel(s) outside every source's bandwidth: ${outside.join(", ")} MHz — move a center frequency or disable them.`;
-  const seen = new Set<number>();
-  const dup = channels.find((ch) => (seen.has(Math.round(ch.freqHz)) ? true : (seen.add(Math.round(ch.freqHz)), false)));
-  if (dup) return `Conventional channel ${formatMhz(dup.freqHz)} MHz is listed twice.`;
+  for (const ch of channels) {
+    const t = parseAccess(ch.mode, ch.tone ?? "");
+    if ("error" in t) return `Conventional channel ${formatMhz(ch.freqHz)} MHz: ${t.error}.`;
+  }
+  const done: number[] = [];
+  for (const ch of channels) {
+    if (done.some((f) => sameFreq(f, ch.freqHz))) continue;
+    done.push(ch.freqHz);
+    const p = rowsProblem(channels.filter((o) => sameFreq(o.freqHz, ch.freqHz)));
+    if (p) return p;
+  }
   if (c.sources.some((s) => s.kind === "file" && !s.path)) return "Choose the capture file to replay.";
   return null;
 }
@@ -274,7 +326,7 @@ export function startProblem(c: Config): string | null {
 // recorder's channel file (crates/trunk-app/src/channels.rs) — keep them together.
 
 /** The columns channelsToCsv writes. */
-export const CHANNEL_CSV_HEADER = "TG Number,Frequency,Mode,Alpha Tag,Description,Tag,Category,Squelch dB,Enable";
+export const CHANNEL_CSV_HEADER = "TG Number,Frequency,Tone,Mode,Alpha Tag,Description,Tag,Category,Squelch dB,Enable";
 
 /** RFC-4180-ish split on `delim`. */
 function splitOn(line: string, delim: string): string[] {
@@ -347,7 +399,8 @@ export function parseChannelCsv(text: string): { channels: Channel[]; notes: str
   const badMode: number[] = [];
   const badTg: number[] = [];
   const badSq: number[] = [];
-  let toned = 0;
+  const badTone: string[] = [];
+  let search = false;
   for (const { row, l } of lines.slice(1)) {
     const f = splitOn(l, delim);
     const at = (i: number) => (i >= 0 ? f[i] ?? "" : "");
@@ -357,8 +410,12 @@ export function parseChannelCsv(text: string): { channels: Channel[]; notes: str
       continue;
     }
     const m = at(cMode).toLowerCase();
+    const raw = at(cTone);
     let mode: Channel["mode"] = "fm";
-    if (["p25", "digital", "d"].includes(m)) mode = "p25";
+    // No Mode: a NAC means P25, a colour code DMR.
+    if (!m && (/NAC/i.test(raw) || raw.startsWith("$"))) mode = "p25";
+    else if (!m && /^CC/i.test(raw)) mode = "dmr";
+    else if (["p25", "digital", "d"].includes(m)) mode = "p25";
     else if (m === "dmr") mode = "dmr";
     else if (!["", "fm", "nfm", "analog", "a"].includes(m)) badMode.push(row);
     const ch: Channel = { freqHz, mode, name: at(cName), enabled: !["false", "no", "0", "off"].includes(at(cEnable).toLowerCase()) };
@@ -377,7 +434,10 @@ export function parseChannelCsv(text: string): { channels: Channel[]; notes: str
     if (at(cDesc)) ch.description = at(cDesc);
     if (at(cTag)) ch.tag = at(cTag);
     if (at(cGroup)) ch.group = at(cGroup);
-    if (Number(at(cTone)) > 0) toned++;
+    search ||= raw.toLowerCase() === "s";
+    const t = parseAccess(mode, raw);
+    if ("error" in t) badTone.push(`row ${row}: ${t.error}`);
+    else if (t.tone) ch.tone = t.tone;
     channels.push(ch);
   }
   const notes: string[] = [];
@@ -385,7 +445,8 @@ export function parseChannelCsv(text: string): { channels: Channel[]; notes: str
   if (badMode.length) notes.push(`Row(s) ${rowsList(badMode)}: unknown Mode (use fm or p25) — read as fm.`);
   if (badTg.length) notes.push(`Row(s) ${rowsList(badTg)}: TG Number isn't a positive whole number — using the default.`);
   if (badSq.length) notes.push(`Row(s) ${rowsList(badSq)}: Squelch dB must be 3–40 (dB above the noise) — using the default.`);
-  if (toned) notes.push(`${toned} channel(s) have a Tone: tones aren't matched yet, so they record whatever is on the frequency.`);
+  if (badTone.length) notes.push(`Tone not read (the row records any): ${badTone.join("; ")}.`);
+  if (search) notes.push("Tone S (search) needs no setting here: every analog call's tone is identified and written to its JSON.");
   if (cTrSq >= 0 && cSq < 0) notes.push("The Squelch column (Trunk Recorder's absolute level) was not read: use Squelch dB, in dB above the noise floor.");
   return { channels, notes };
 }
@@ -407,6 +468,7 @@ export function channelsToCsv(channels: Channel[]): string {
     [
       c.talkgroup ?? "",
       mhzCell(c.freqHz),
+      csvCell(c.tone),
       c.mode,
       csvCell(c.name),
       csvCell(c.description),

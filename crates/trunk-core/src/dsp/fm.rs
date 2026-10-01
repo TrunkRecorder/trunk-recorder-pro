@@ -3,7 +3,8 @@
 //! ```text
 //! channel IQ → ChannelFilter (±5.5 kHz; also the carrier power meter)
 //!   → discriminator → de-emphasis (750 µs, unity at 1 kHz)
-//!   → audio low-pass + resample to 8 kHz → 300 Hz high-pass (drops CTCSS)
+//!   → audio low-pass + resample to 8 kHz → 300 Hz high-pass (drops CTCSS;
+//!     `push_low` also hands over the audio before it, for tones::ToneDetector)
 //!   → squelch gate (carrier power vs a threshold, held 30 ms before it
 //!     opens — a neighbour keying up splatters for an instant — 10 ms ramps)
 //! ```
@@ -200,6 +201,12 @@ impl Nbfm {
     /// while the carrier meter reads above `open_power`. Returns true if the
     /// carrier was up at any point.
     pub fn push(&mut self, iq: &[Complex32], open_power: f32, out: &mut Vec<f32>) -> bool {
+        self.push_low(iq, open_power, out, None)
+    }
+
+    /// [`Nbfm::push`], also appending to `low` each output sample as it was
+    /// before the high-pass and the gate's ramp (CTCSS and DCS still in it).
+    pub fn push_low(&mut self, iq: &[Complex32], open_power: f32, out: &mut Vec<f32>, mut low: Option<&mut Vec<f32>>) -> bool {
         let mut carrier = false;
         let taps = self.audio_taps.len() as u64;
         for &x in iq {
@@ -222,6 +229,7 @@ impl Nbfm {
                     let a = self.fir_at(i0);
                     let b = self.fir_at(i0 + 1);
                     let mut s = a + (b - a) * f;
+                    let raw = s;
                     for h in &mut self.hpf {
                         s = h.step(s);
                     }
@@ -229,6 +237,9 @@ impl Nbfm {
                     self.gate = if self.gate < target { (self.gate + self.ramp).min(1.0) } else { (self.gate - self.ramp).max(0.0) };
                     if self.gate > 0.0 {
                         out.push(s * self.gate);
+                        if let Some(l) = low.as_deref_mut() {
+                            l.push(raw);
+                        }
                     }
                 }
                 self.t_next += self.step;

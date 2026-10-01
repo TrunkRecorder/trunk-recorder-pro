@@ -115,6 +115,15 @@ impl WebSession {
     pub fn units_changed(&mut self) -> String {
         serde_json::Value::Object(self.s.units_changed().into_iter().map(|(n, c)| (n, serde_json::Value::String(c))).collect()).to_string()
     }
+    /// Preload the codes conventional frequencies carried (what
+    /// [`WebSession::heard_unsaved`] gave on an earlier run).
+    pub fn load_heard(&mut self, json: &str) {
+        self.s.load_heard(json);
+    }
+    /// Those codes as JSON to save, when they changed since the last call.
+    pub fn heard_unsaved(&mut self) -> Option<String> {
+        self.s.heard_unsaved()
+    }
     /// Each system's band plan, as JSON `{shortName: plan}`.
     pub fn bandplans(&self) -> String {
         serde_json::Value::Object(self.s.bandplans().into_iter().map(|(n, p)| (n, serde_json::Value::String(p))).collect()).to_string()

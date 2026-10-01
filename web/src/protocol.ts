@@ -29,6 +29,8 @@ export interface Channel {
   mode: "fm" | "p25" | "dmr";
   name: string;
   talkgroup?: number;
+  /** FM: the CTCSS tone or DCS code it records, Trunk Recorder's form ("151.4", "D023N"); absent / "": any. */
+  tone?: string;
   description?: string;
   tag?: string;
   group?: string;
@@ -216,6 +218,8 @@ export interface CallView {
   freqHz: number;
   slot: number | null;
   analog: boolean;
+  /** Conventional FM: the CTCSS tone ("151.4 Hz") or DCS code ("D023N") heard. */
+  tone?: string | null;
   state: "recording" | "monitoring";
   reason: "unknown_tg" | "encrypted" | "no_source" | "no_recorder" | null;
   encrypted: boolean;
@@ -445,6 +449,16 @@ export interface PluginsList {
   audio: { encoder: string; bitrateKbps: number; found: string | null };
 }
 
+/** A code a conventional frequency carried (crates/trunk-app/src/heard.rs), in a row's Tone form ("" = none). */
+export interface HeardCode {
+  code: string;
+  /** Calls recorded with it. */
+  calls: number;
+  /** Transmissions no row took. */
+  skipped: number;
+  lastMs: number;
+}
+
 export type FromRecorder =
   | {
       type: "hello";
@@ -457,6 +471,8 @@ export type FromRecorder =
       history: CallEntry[];
       /** Each system's radios' talker aliases, as saved: short name → unitTagsOTA CSV. */
       units?: Record<string, string>;
+      /** The codes each conventional frequency (Hz, as a string) carried, as saved. */
+      heard?: Record<string, HeardCode[]>;
       radios?: Radios;
       surveyBands?: SurveyBand[];
       survey?: { type: "survey" } & SurveyState;
@@ -470,6 +486,7 @@ export type FromRecorder =
   | { type: "concluded"; entry: CallEntry }
   /** A radio's talker alias, newly heard on system `system` (its short name). */
   | { type: "unitAlias"; system: string; unit: number; alias: string }
+  | { type: "heard"; heard: Record<string, HeardCode[]> }
   | ({ type: "survey" } & SurveyState)
   | ({ type: "surveySpectrum" } & Spectrum)
   | { type: "devices"; devices: Device[] }

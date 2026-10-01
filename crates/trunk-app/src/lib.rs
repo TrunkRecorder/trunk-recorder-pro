@@ -5,6 +5,7 @@
 
 pub mod channels;
 pub mod config;
+pub mod heard;
 pub mod samples;
 pub mod session;
 pub mod survey;

@@ -520,7 +520,7 @@ function ActiveCalls({ s }: { s: AppState }) {
                   <td className="mono">
                     {formatMhz(c.freqHz, 4)}
                     {c.slot !== null && <span className="muted"> · s{c.slot}</span>}
-                    {c.analog && <span className="muted"> · FM</span>}
+                    {c.analog && <span className="muted"> · FM{c.tone ? ` ${c.tone}` : ""}</span>}
                   </td>
                   <td className="unit-cell">{c.sources.length ? <Unit id={c.sources.at(-1)!} alias={aliasOf(s, c.systemName, c.sources.at(-1)!)} /> : "—"}</td>
                   <td className="mono">{clock(Math.max(0, now - c.startS))}</td>

@@ -3,7 +3,7 @@
 // server, so the interface is identical. Calls are stored in OPFS.
 
 import init, { survey_bands, WebRtl, WebSession, WebSurvey } from "./pkg/trunk_web.js";
-import type { Config, FromRecorder } from "../protocol.ts";
+import type { Config, FromRecorder, HeardCode } from "../protocol.ts";
 import { activeSystems, resolvedCenters } from "../config.ts";
 import { listCalls, readText, saveCall, writeText } from "./opfs.ts";
 
@@ -163,6 +163,22 @@ async function savedUnits(cfg: Config): Promise<Record<string, string>> {
   return units;
 }
 
+/** The codes conventional frequencies carried (trunk-app heard.rs), kept per conventional short name. */
+const heardFile = (cfg: Config) => `heard-${cfg.conventional.shortName}.json`;
+
+async function savedHeard(cfg: Config): Promise<Record<string, HeardCode[]>> {
+  try {
+    return JSON.parse((await readText(heardFile(cfg))) ?? "{}");
+  } catch {
+    return {};
+  }
+}
+
+async function saveHeard(s: WebSession, cfg: Config): Promise<void> {
+  const json = s.heard_unsaved();
+  if (json) await writeText(heardFile(cfg), json).catch(() => {});
+}
+
 async function saveUnits(changed: string): Promise<void> {
   if (changed === "{}") return;
   for (const [name, csv] of Object.entries(JSON.parse(changed) as Record<string, string>)) {
@@ -185,6 +201,7 @@ async function start(): Promise<void> {
     }
     session = new WebSession(JSON.stringify(cfg), Date.now(), JSON.stringify(plans));
     session.load_units(JSON.stringify(await savedUnits(cfg)));
+    session.load_heard((await readText(heardFile(cfg))) ?? "");
     session.set_want_audio(listen.on);
     const centers = resolvedCenters(cfg);
     running = true;
@@ -208,6 +225,7 @@ async function start(): Promise<void> {
       if (!session) return;
       deliver(session.poll(performance.now()));
       void saveUnits(session.units_changed());
+      void saveHeard(session, cfg);
     }, 50);
     setPhase("running");
   } catch (e) {
@@ -264,6 +282,7 @@ async function stop(ended = false): Promise<void> {
   session = null;
   deliver(s.finish());
   await saveUnits(s.units_changed());
+  if (config) await saveHeard(s, config);
   for (const [name, plan] of Object.entries(JSON.parse(s.bandplans()) as Record<string, string>)) {
     await writeText(`bandplan-${name}.txt`, plan).catch(() => {});
   }
@@ -286,6 +305,7 @@ onmessage = async (ev: MessageEvent<ToWorker>) => {
         phase,
         history: await listCalls(300),
         units: await savedUnits(m.config),
+        heard: await savedHeard(m.config),
         surveyBands: await ready.then(() => JSON.parse(survey_bands())).catch(() => []),
         survey: { type: "survey", stage: "idle" },
       });

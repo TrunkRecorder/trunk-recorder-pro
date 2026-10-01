@@ -1,9 +1,9 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { Fragment, useEffect, useId, useRef, useState } from "react";
 import {
   activeSystems,
   AIRSPY_RATES,
   channelsToCsv,
-  defaultTalkgroup,
+  channelTalkgroups,
   formatFromPath,
   formatMhz,
   importTrunkRecorderConfig,
@@ -12,6 +12,7 @@ import {
   newDongle,
   newFile,
   newUsrp,
+  nextTalkgroup,
   parseChannelCsv,
   parseFreqList,
   newSystem,
@@ -24,9 +25,10 @@ import {
   usableHalfWidth,
 } from "./config.ts";
 import { bumpEpoch, downloadText, findRadios, refreshDevices, setChannelFile, setNotice, updateConfig, useApp, web } from "./controller.ts";
-import type { Channel, Config, SiteIdentity, Source, System } from "./protocol.ts";
+import type { Channel, Config, HeardCode, SiteIdentity, Source, System } from "./protocol.ts";
 import { SurveyPanel } from "./Survey.tsx";
 import { parseTalkgroupCsv } from "./talkgroups.ts";
+import { parseAccess, sameTone } from "./tones.ts";
 
 function Field(props: { label: string; hint?: string; children: React.ReactNode; wide?: boolean }) {
   return (
@@ -63,6 +65,93 @@ function MhzInput(props: { hz: number; placeholder?: string; onChange: (hz: numb
         props.onChange(parseFreqList(e.target.value)[0] ?? 0);
       }}
     />
+  );
+}
+
+const TONE_HINT = {
+  fm: { placeholder: "any", title: "CTCSS tone or DCS code, as RadioReference shows it (151.4 PL, 023 DPL) or D023N. Empty: any tone." },
+  p25: { placeholder: "any NAC", title: "P25 NAC, hex (293, 293 NAC, $293). Empty: any NAC." },
+  dmr: { placeholder: "any CC", title: "DMR colour code, and optionally slot and talkgroup, as RadioReference shows it (CC1 TS2 TG201). Empty: any." },
+};
+
+/** A channel's code (CTCSS / DCS, NAC, colour code): kept as typed, tidied when left. */
+function ToneInput(props: { mode: Channel["mode"]; tone: string; disabled?: boolean; onChange: (tone: string) => void }) {
+  const [text, setText] = useState(props.tone);
+  const parsed = parseAccess(props.mode, text);
+  const error = "error" in parsed ? parsed.error : null;
+  return (
+    <input
+      className={`mono narrow${error ? " invalid" : ""}`}
+      disabled={props.disabled}
+      value={text}
+      placeholder={TONE_HINT[props.mode].placeholder}
+      aria-label="Tone"
+      aria-invalid={!!error}
+      title={error ?? TONE_HINT[props.mode].title}
+      onChange={(e) => {
+        setText(e.target.value);
+        props.onChange(e.target.value.trim());
+      }}
+      onBlur={() => {
+        if ("tone" in parsed) {
+          setText(parsed.tone);
+          props.onChange(parsed.tone);
+        }
+      }}
+    />
+  );
+}
+
+const NONE_LABEL = { fm: "no tone", p25: "no NAC", dmr: "no code" };
+const SHOWN_CODES = 8;
+
+/**
+ * Under a frequency's rows: the codes it has carried (tones, NACs, colour
+ * codes), most heard first, each with an Add that makes a row for it — the
+ * way to find a frequency's codes without knowing them.
+ */
+function HeardRow(props: { rows: Channel[]; heard: HeardCode[]; linked: boolean; onAdd: (code: string) => void }) {
+  const mode = props.rows[0].mode;
+  // Only what this mode's Tone can say.
+  const codes = props.heard.filter((h) => {
+    const p = parseAccess(mode, h.code);
+    return "tone" in p && p.tone === h.code;
+  });
+  if (!codes.length) return null;
+  const listed = (code: string) => props.rows.some((r) => (code ? !!r.tone && sameTone(r.tone, code) : !r.tone));
+  const label = (code: string) => (!code ? NONE_LABEL[mode] : mode === "fm" && /^\d/.test(code) ? `${code} Hz` : code);
+  const shown = codes.slice(0, SHOWN_CODES);
+  return (
+    <tr className="heard-row">
+      <td />
+      <td colSpan={7}>
+        <span className="muted small">Heard:</span>
+        {shown.map((h) => (
+          <span key={h.code} className="heard-code" title={`Last heard ${new Date(h.lastMs).toLocaleString()}`}>
+            <span className="mono">{label(h.code)}</span>
+            <span className="muted small">
+              {" "}
+              {h.calls ? `${h.calls} call${h.calls === 1 ? "" : "s"}` : ""}
+              {h.calls && h.skipped ? ", " : ""}
+              {h.skipped ? `${h.skipped} not recorded` : ""}
+            </span>
+            {listed(h.code) ? (
+              <span className="muted small" title="A row on this frequency has it">
+                {" "}
+                ✓
+              </span>
+            ) : (
+              !props.linked && (
+                <button className="btn ghost small" title={`Add a row for ${label(h.code)} on this frequency`} onClick={() => props.onAdd(h.code)}>
+                  Add
+                </button>
+              )
+            )}
+          </span>
+        ))}
+        {codes.length > SHOWN_CODES && <span className="muted small">and {codes.length - SHOWN_CODES} more</span>}
+      </td>
+    </tr>
   );
 }
 
@@ -459,6 +548,23 @@ function ConventionalPanel(props: { c: Config }) {
     ids.current.splice(i, 1);
     edit((x) => void x.channels.splice(i, 1));
   };
+  const heard = useApp().heard;
+  /** The last row on row i's frequency. */
+  const lastOfFreq = (i: number) => chans.reduce((at, o, k) => (Math.abs(o.freqHz - chans[i].freqHz) < 1 ? Math.max(at, k) : at), i);
+  /** Another row on row i's frequency (after the last of them), for another tone — `tone` when it is known. */
+  const addTone = (i: number, tone = "") => {
+    const ch = chans[i];
+    const at = lastOfFreq(i);
+    const row: Channel = { freqHz: ch.freqHz, mode: ch.mode, name: "", enabled: true, tone };
+    // A DMR code naming a talkgroup files under it; others get the next free number.
+    if (!(ch.mode === "dmr" && /\bTG \d/.test(tone))) row.talkgroup = nextTalkgroup(chans, ch.freqHz);
+    if (!tone) delete row.tone;
+    if (ch.squelchDb !== undefined) row.squelchDb = ch.squelchDb;
+    ids.current.splice(at + 1, 0, nextRowId++);
+    edit((x) => void x.channels.splice(at + 1, 0, row));
+  };
+  const talkgroups = channelTalkgroups(chans);
+  const shared = (i: number) => chans.some((o, k) => k !== i && Math.abs(o.freqHz - chans[i].freqHz) < 1);
   const add = (list: Channel[]) => {
     ids.current.push(...list.map(() => nextRowId++));
     edit((x) => void x.channels.push(...list));
@@ -617,6 +723,9 @@ function ConventionalPanel(props: { c: Config }) {
                     <th title="Record this channel">On</th>
                     <th>Frequency, MHz</th>
                     <th>Mode</th>
+                    <th title="Analog: CTCSS tone or DCS code. P25: NAC. DMR: colour code (and slot, talkgroup). Record only transmissions carrying it; several rows on one frequency split it, a row with none takes the rest.">
+                      Tone
+                    </th>
                     <th>Name</th>
                     <th title="Calls are filed under this number; P25 uses the talkgroup on the air when there is one">Talkgroup</th>
                     <th title="dB above the noise floor">Squelch</th>
@@ -625,7 +734,8 @@ function ConventionalPanel(props: { c: Config }) {
                 </thead>
                 <tbody>
                   {chans.map((ch, i) => (
-                    <tr key={ids.current[i]} className={ch.enabled ? "" : "st-monitoring"}>
+                    <Fragment key={ids.current[i]}>
+                    <tr className={`${ch.enabled ? "" : "st-monitoring"}${shared(i) ? " shared-freq" : ""}`}>
                       <td>
                         <input type="checkbox" disabled={linked} checked={ch.enabled} aria-label="Record this channel" onChange={(e) => editRow(i, (x) => void (x.enabled = e.target.checked))} />
                       </td>
@@ -640,6 +750,20 @@ function ConventionalPanel(props: { c: Config }) {
                         </select>
                       </td>
                       <td>
+                        <ToneInput
+                          key={ch.mode}
+                          mode={ch.mode}
+                          tone={ch.tone ?? ""}
+                          disabled={linked}
+                          onChange={(t) =>
+                            editRow(i, (x) => {
+                              if (t) x.tone = t;
+                              else delete x.tone;
+                            })
+                          }
+                        />
+                      </td>
+                      <td>
                         <input value={ch.name} disabled={linked} placeholder="Name" aria-label="Name" onChange={(e) => editRow(i, (x) => void (x.name = e.target.value))} />
                       </td>
                       <td>
@@ -647,7 +771,7 @@ function ConventionalPanel(props: { c: Config }) {
                           className="mono narrow"
                           disabled={linked}
                           value={ch.talkgroup ?? ""}
-                          placeholder={ch.freqHz ? String(defaultTalkgroup(ch.freqHz)) : "auto"}
+                          placeholder={ch.freqHz ? String(talkgroups[i]) : "auto"}
                           aria-label="Talkgroup"
                           onChange={(e) =>
                             editRow(i, (x) => {
@@ -676,12 +800,33 @@ function ConventionalPanel(props: { c: Config }) {
                       </td>
                       <td>
                         {!linked && (
+                          <span className="row-actions">
+                            {ch.freqHz > 0 && (
+                              <button
+                                className="btn ghost small"
+                                title={`Add a row on this frequency for another ${{ fm: "tone", p25: "NAC", dmr: "colour code or talkgroup" }[ch.mode]} (another user sharing it)`}
+                                aria-label="Add a row on this frequency"
+                                onClick={() => addTone(i)}
+                              >
+                                {{ fm: "+ tone", p25: "+ NAC", dmr: "+ code" }[ch.mode]}
+                              </button>
+                            )}
                             <button className="btn ghost small danger" title="Remove" aria-label="Remove channel" onClick={() => remove(i)}>
                               ×
                             </button>
-                          )}
+                          </span>
+                        )}
                         </td>
                       </tr>
+                      {lastOfFreq(i) === i && heard[String(Math.round(ch.freqHz))] && (
+                        <HeardRow
+                          rows={chans.filter((o) => Math.abs(o.freqHz - ch.freqHz) < 1)}
+                          heard={heard[String(Math.round(ch.freqHz))]}
+                          linked={linked}
+                          onAdd={(code) => addTone(i, code)}
+                        />
+                      )}
+                    </Fragment>
                     ))}
                   </tbody>
                 </table>

@@ -166,6 +166,8 @@ async fn session(ctx: Arc<Ctx>, mut socket: WebSocket) {
             "phase": ctx.phase.lock().unwrap().to_json(),
             "history": history,
             "units": units,
+            // The codes conventional frequencies carried, as saved.
+            "heard": std::fs::read_to_string(crate::runtime::heard_path(&config)).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).unwrap_or(json!({})),
             "radios": radios,
             "surveyBands": trunk_app::survey::bands_json(),
             "survey": ctx.survey_last.lock().unwrap().clone().unwrap_or_else(crate::survey::idle_json),

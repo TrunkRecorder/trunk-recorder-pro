@@ -14,7 +14,7 @@ pub mod tracker;
 pub mod units;
 
 pub use calls::{Call, CallConfig, CallId, CONVENTIONAL};
-pub use conventional::{ConvChannel, ConvConfig, ConvMode};
+pub use conventional::{check_channels, heard_code, Access, ConvChannel, ConvConfig, ConvMode};
 pub use engine::{AdjacentSite, Concluded, Engine, EngineConfig, Event, Identity, SmartnetConfig, SourceConfig, Status, SystemConfig, SystemStatus};
 pub use message::{Message, MessageType, Patch, TsbkParser};
 pub use patches::Patches;

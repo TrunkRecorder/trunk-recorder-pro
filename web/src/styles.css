@@ -148,6 +148,11 @@ main { display: flex; flex-direction: column; gap: 16px; }
 table.channels input:not([type="checkbox"]), table.channels select { background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 4px 7px; min-width: 0; width: 100%; }
 table.channels input.narrow { width: 7em; }
 table.channels td { padding: 4px 6px; }
+table.channels input.invalid { border-color: var(--bad); }
+table.channels tr.shared-freq td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+table.channels .row-actions { display: inline-flex; gap: 4px; white-space: nowrap; }
+table.channels tr.heard-row td { padding-top: 0; border-top: none; }
+table.channels .heard-code { display: inline-flex; align-items: center; gap: 4px; margin-left: 10px; white-space: nowrap; }
 .row .grow { flex: 1; min-width: 8em; }
 .table-wrap.history { max-height: 520px; overflow-y: auto; }
 table.calls { width: 100%; border-collapse: collapse; font-size: 13px; }

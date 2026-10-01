@@ -3,7 +3,8 @@
 
 use std::fmt::Write;
 
-use super::calls::Call;
+use super::calls::{Call, CONVENTIONAL};
+use crate::dsp::tones::Tone;
 use super::frames::FrameErrors;
 use super::units::UnitAliases;
 
@@ -48,7 +49,8 @@ pub fn call_record(call: &Call, info: &ConcludeInfo) -> (String, String) {
         "{{\"call_num\":{},\"freq\":{},\"freq_error\":0,\"signal\":0,\"noise\":0,\"source_num\":0,\"recorder_num\":{},\"tdma_slot\":{},\"phase2_tdma\":{},\
 \"start_time\":{},\"stop_time\":{},\"start_time_ms\":{},\"stop_time_ms\":{},\"emergency\":{},\"priority\":{},\"mode\":{},\"duplex\":{},\"encrypted\":{},\
 \"call_length\":{},\"call_length_ms\":{},\"talkgroup\":{},\"talkgroup_tag\":\"{}\",\"talkgroup_description\":\"{}\",\"talkgroup_group_tag\":\"{}\",\
-\"talkgroup_group\":\"{}\",\"color_code\":{},\"audio_type\":\"{}\",\"short_name\":\"{}\",",
+\"talkgroup_group\":\"{}\",\"color_code\":{},\"tone_mode\":\"{}\",\"tone_detected\":\"{}\",\"tone_confidence\":{:.3},\
+\"audio_type\":\"{}\",\"short_name\":\"{}\",",
         call.id,
         call.freq_hz,
         info.recorder_num,
@@ -71,6 +73,15 @@ pub fn call_record(call: &Call, info: &ConcludeInfo) -> (String, String) {
         t(|t| &t.tag),
         t(|t| &t.group),
         call.color_code.map_or(-1, i32::from),
+        // Trunk Recorder's (PR #1137) tone fields; "search": identified, not matched.
+        match call.tone_set {
+            Some(Tone::Ctcss(_)) => "ctcss",
+            Some(Tone::Dcs(..)) => "dcs",
+            None if call.analog && call.system == CONVENTIONAL => "search",
+            None => "off",
+        },
+        call.tone.map_or(String::new(), |t| t.tone.to_string()),
+        call.tone.map_or(0.0, |t| t.confidence),
         if call.analog { "analog" } else if call.phase2_tdma { "digital tdma" } else { "digital" },
         esc(info.short_name),
     );

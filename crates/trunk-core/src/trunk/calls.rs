@@ -14,6 +14,7 @@ use std::sync::Arc;
 use super::message::{Message, MessageType};
 use super::patches::Patches;
 use super::talkgroups::{Talkgroup, Talkgroups};
+use crate::dsp::tones::{Tone, ToneHeard};
 
 pub type CallId = u32;
 
@@ -92,6 +93,12 @@ pub struct Call {
     pub patched_talkgroups: Vec<u32>,
     /// DMR: the colour code the voice came with (a DMR call's slot is `tdma_slot`).
     pub color_code: Option<u8>,
+    /// Conventional P25: the NAC its frames carried.
+    pub nac: Option<u16>,
+    /// Conventional FM: the CTCSS tone or DCS code it carried.
+    pub tone: Option<ToneHeard>,
+    /// Conventional FM: the tone its channel row records (None: any).
+    pub tone_set: Option<Tone>,
 }
 
 impl Call {
@@ -316,6 +323,9 @@ impl CallManager {
             talkgroup_info: tg.clone(),
             patched_talkgroups: self.patches.members_of(m.talkgroup),
             color_code: m.color_code,
+            nac: None,
+            tone: None,
+            tone_set: None,
         };
         Self::admit(&mut c, &self.cfg, &self.talkgroups, host);
         ev.push(CallEvent::Start(c.clone()));

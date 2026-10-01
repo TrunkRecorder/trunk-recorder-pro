@@ -261,8 +261,12 @@ the list:
   "squelchDb": 8,
   "channels": [
     { "freqHz": 154430000, "mode": "fm",  "name": "County Fire Dispatch", "talkgroup": 1001, "group": "Fire" },
-    { "freqHz": 155100000, "mode": "fm",  "name": "EMS Ops" },
-    { "freqHz": 460125000, "mode": "p25", "name": "PD Tac 2", "squelchDb": 12 },
+    { "freqHz": 155100000, "mode": "fm",  "name": "EMS Ops", "tone": "151.4" },
+    { "freqHz": 154325000, "mode": "fm",  "name": "County A Fire", "tone": "D223N" },
+    { "freqHz": 154325000, "mode": "fm",  "name": "County B Fire", "tone": "118.8" },
+    { "freqHz": 154325000, "mode": "fm",  "name": "County other" },
+    { "freqHz": 460125000, "mode": "p25", "name": "PD Tac 2", "squelchDb": 12, "tone": "NAC 293" },
+    { "freqHz": 452100000, "mode": "dmr", "name": "Ops", "tone": "CC 1 TS 2 TG 201" },
     { "freqHz": 453000000, "mode": "fm",  "enabled": false }
   ]
 }
@@ -273,7 +277,8 @@ the list:
 | `freqHz` | The channel frequency, in Hz (the interface takes MHz) |
 | `mode` | `fm` (analog narrowband FM, 12.5 kHz), `p25` (P25 Phase 1, C4FM or CQPSK) or `dmr` (both slots, each recording its own calls). Each channel has its own, so one list can mix them |
 | `name`, `description`, `tag`, `group` | Written into the call JSON (Trunk Recorder's alpha tag, description, tag, category) |
-| `talkgroup` | The number calls are filed under (file names, JSON, uploaders). Default: the frequency in kHz, e.g. 154430 — stable however you reorder the list. P25 and DMR channels use the talkgroup the radio sends, when it sends one |
+| `talkgroup` | The number calls are filed under (file names, JSON, uploaders). Default: the frequency in kHz, e.g. 154430 — stable however you reorder the list; further rows on the same frequency get that with a digit added (1543251, 1543252 …). P25 and DMR channels use the talkgroup the radio sends, when it sends one |
+| `tone` | Record only transmissions carrying this code: analog's CTCSS tone (`151.4`) or DCS code (`D023N`), P25's NAC (`NAC 293`), DMR's colour code, slot and talkgroup (`CC 1 TS 2 TG 201`). Empty: any. See [Tones](#tones-several-users-of-one-frequency) |
 | `squelchDb` | How far above the noise floor a signal must be to open the channel, in dB. Per channel, or for all in the section (default 8). The noise floor is measured, so this doesn't depend on the dongle or gain the way Trunk Recorder's absolute squelch does |
 | `enabled` | `false` keeps a channel in the list without recording it |
 | `channelFile` (section) | A CSV to read the channels from instead of `channels` (desktop) |
@@ -281,25 +286,26 @@ the list:
 The CSV has a header row, then one channel per row; columns in any order:
 
 ```csv
-TG Number,Frequency,Mode,Alpha Tag,Description,Tag,Category,Squelch dB,Enable
-1001,154.4300,fm,County Fire Dispatch,,,Fire,,true
-,155.1000,fm,EMS Ops,,,,,true
-,460.1250,p25,PD Tac 2,,,,12,true
-,453.0000,fm,,,,,,false
+TG Number,Frequency,Tone,Mode,Alpha Tag,Description,Tag,Category,Squelch dB,Enable
+1001,154.4300,,fm,County Fire Dispatch,,,Fire,,true
+,155.1000,151.4,fm,EMS Ops,,,,,true
+,460.1250,,p25,PD Tac 2,,,,12,true
+,453.0000,,fm,,,,,,false
 ```
 
 | Column | |
 |---|---|
 | `Frequency` | MHz with a decimal point (`154.4300`), or Hz (`154430000`) |
 | `Mode` | `fm`, `p25` or `dmr` (also `analog` / `digital`, `A` / `D`); empty = `fm` |
-| `TG Number` | Empty = the frequency in kHz |
+| `TG Number` | Empty = the frequency in kHz (further rows on that frequency: with a digit added) |
+| `Tone` | The code the row records, as Trunk Recorder or RadioReference write it (`151.4 PL`, `023 DPL`, `293 NAC`, `CC1 TS2 TG201`); empty = any. With no `Mode`, a NAC means `p25` and a colour code `dmr` |
 | `Alpha Tag`, `Description`, `Tag`, `Category` | Names for the call JSON |
 | `Squelch dB` | dB above the noise floor, 3–40; empty = the default |
 | `Enable` | `false` (or `no`, `0`) = off; empty = on |
 
-Trunk Recorder's channel file reads as is (its `Tone`, `Comment` and `Signal
-Detector` columns are ignored; its `Squelch` column is an absolute level and
-isn't used). Files saved by Excel in any locale work: commas, semicolons or
+Trunk Recorder's channel file reads as is, `Tone` included (its `Comment` and
+`Signal Detector` columns are ignored; its `Squelch` column is an absolute
+level and isn't used). Files saved by Excel in any locale work: commas, semicolons or
 tabs, decimal commas, and the byte-order mark. Rows that can't be read are
 reported by row number; a file that can't be read at all keeps the last good
 list. `trunk-pro replay … --channels channels.csv` reads the same format.
@@ -309,6 +315,65 @@ system, it records conventional channels only. Every enabled channel must lie
 inside a source's bandwidth. A source's center is placed automatically when
 it is left on Auto and the channels fit. Conventional calls go to their own
 folder (**Short name** in the panel, `conv` by default).
+
+### Tones: several users of one frequency
+
+Analog radios often share a frequency, each agency keyed with its own
+sub-audible CTCSS tone or DCS code so its radios hear only its own traffic.
+Give an analog channel a **Tone** and it records only transmissions carrying
+it. Type it as RadioReference or Trunk Recorder shows it: `151.4`,
+`151.4 PL`, `D023N` or `023 DPL` all work, and it is tidied to `151.4` /
+`D023N`. A mistake is pointed out (`151.5 Hz isn't a standard CTCSS tone —
+151.4?`).
+
+Digital channels have the same idea, in the same column:
+
+| Mode | Code | Typed as | Shown as |
+|---|---|---|---|
+| Analog | CTCSS tone or DCS code | `151.4 PL`, `PL 151.4`, `023 DPL`, `D023` | `151.4`, `D023N` |
+| P25 | NAC | `293`, `293 NAC`, `$293`, `0x293` (`F7E` = any) | `NAC 293` |
+| DMR | colour code, and optionally slot and talkgroup | `CC1`, `1`, `CC1 TS2 TG201`, `CC 1 TG 201 SL 2` | `CC 1 TS 2 TG 201` |
+
+To split a shared frequency, list it once per code: **+ tone** (**+ NAC**,
+**+ code**) on a row adds another on the same frequency, with its own
+talkgroup number filled in.
+
+| Rows on 154.325 MHz | A transmission with D223N | with 118.8 | with another tone, or none |
+|---|---|---|---|
+| one, no tone | that row | that row | that row |
+| D223N, 118.8 | the D223N row | the 118.8 row | not recorded |
+| D223N, 118.8, and one with no tone | the D223N row | the 118.8 row | the row with no tone |
+
+So a channel listed with no code records everything, as before; only rows
+with codes leave anything out.
+
+- **Analog:** each transmission is held until its tone is known (a few
+  tenths of a second; up to a second for one with none), so nothing is cut
+  off, and two agencies keying one after the other make two calls. DCS codes
+  that are the same signal on the air (D023N and D047I) count as one.
+- **P25:** every frame carries the NAC, so nothing is held. A lone row with
+  a NAC only filters: calls keep the talkgroup the radio sends. With several
+  rows on the frequency, each row's calls are filed under its own talkgroup,
+  because conventional radios mostly send one that says little (often 1).
+- **DMR:** each slot on its own. The most specific row that fits wins (`CC1
+  TS2 TG201` over `CC1`), and calls keep the talkgroup on the air; the row
+  gives the names. A row whose code names a talkgroup is filed under it.
+
+Every analog call's tone is identified whether or not one is set, and shown
+in the call list. The call JSON gets Trunk Recorder's fields: `tone_mode`
+(`ctcss` / `dcs` when the row has a tone, `search` when it hasn't),
+`tone_detected` and `tone_confidence`.
+
+**Not sure of a frequency's codes?** List it with none and let it record for
+a while. Under its rows the channel table shows what it carried, most heard
+first: *Heard: 151.4 Hz 42 calls [Add] · D023N 3 calls [Add] · no tone 5
+calls*. **Add** makes a row for that code (with its own talkgroup). The list
+counts transmissions that no row records too ("2 not recorded"), so you can
+see what tones are leaving out. It is kept between runs (on the desktop in
+`<conventional short name>.heard.json` next to the config; in the browser
+version, in its own storage). Trunk Recorder
+doesn't match NACs or colour codes; its channel file's `Tone` column (CTCSS
+and, with its PR #1137, DCS) reads as is.
 
 Analog calls (conventional FM channels, and SmartNet analog grants) pick up
 the unit ID that MDC1200 and FleetSync radios send as a data burst when they
@@ -328,8 +393,11 @@ before the detection, so the start of a transmission isn't lost. A narrower
 filter then confirms the carrier, which keeps a strong neighbour's leakage
 from making calls. A call ends after the call timeout (default 3 s) with no
 signal, as in Trunk Recorder. Analog audio is de-emphasised and high-passed at
-300 Hz, which removes CTCSS tones. Tones and NACs aren't matched yet: a channel
-records whatever transmits on its frequency.
+300 Hz, which removes CTCSS tones from what you hear. Each analog call's CTCSS
+tone or DCS code is identified from the audio below that and written to the
+call JSON (`tone_detected`, e.g. `151.4` or `D023N`, with `tone_confidence`)
+and shown in the call list. A channel with a tone records only what carries
+it; see [Tones](#tones-several-users-of-one-frequency).
 
 **From Trunk Recorder.** **Import CSV…** (or a channel file) reads Trunk
 Recorder's channel file; add a `Mode` column to mix analog and P25 in one
@@ -415,6 +483,7 @@ receiver bank = CQPSK + CQPSK with a T/2 CMA equaliser + C4FM, best of each fram
 | `…/dsp/channelizer.rs` | Overlap-save multi-head channelizer (after CyberEther's `filter_engine`), pre-roll, waterfall spectrum |
 | `…/dsp/cqpsk.rs`, `c4fm.rs` | Streaming receivers with soft bits; optional CMA equaliser |
 | `…/dsp/fm.rs` | Narrowband FM: channel filter / carrier meter, discriminator, de-emphasis, 8 kHz audio, CTCSS high-pass, squelch gate |
+| `…/dsp/tones.rs`, `signalling.rs` | Analog calls: which CTCSS tone / DCS code they carry; MDC1200 / FleetSync unit IDs |
 | `…/p25/frame.rs` | Framer with flywheel sync and NID recovery |
 | `…/p25/tsbk.rs` | Viterbi (soft) trellis decoder + CRC — 98–99 % of TSBKs on simulcast, vs 62 % for op25's greedy decoder |
 | `…/p25/fec.rs`, `voice.rs` | Golay / Hamming (hard and soft), Reed–Solomon, IMBE framing, LC / ES / HDU / TDULC |

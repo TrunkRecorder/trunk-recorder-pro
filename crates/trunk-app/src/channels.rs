@@ -3,16 +3,25 @@
 //! rules are in web/src/config.ts — keep them together).
 //!
 //! ```text
-//! TG Number,Frequency,Mode,Alpha Tag,Description,Tag,Category,Squelch dB,Enable
-//! 1001,154.4300,fm,County Fire Dispatch,,Fire Dispatch,Fire,,true
-//! ,460.1250,p25,PD Tac 2,,Law Tac,Police,12,true
+//! TG Number,Frequency,Tone,Mode,Alpha Tag,Description,Tag,Category,Squelch dB,Enable
+//! 1001,154.4300,,fm,County Fire Dispatch,,Fire Dispatch,Fire,,true
+//! ,154.3250,D223N,fm,County A Fire,,,Fire,,true
+//! ,154.3250,151.4,fm,County B Fire,,,Fire,,true
+//! ,460.1250,,p25,PD Tac 2,,Law Tac,Police,12,true
 //! ```
 //!
 //! - A header row names the columns, in any order, any case. Trunk Recorder's
 //!   channel file reads as is; `Mode` and `Squelch dB` are additions.
 //! - `Frequency`: MHz when it has a decimal point (and is under 10 000), else Hz.
 //! - `Mode`: `fm` / `analog` / `A`, or `p25` / `digital` / `D`; empty = fm.
-//! - `TG Number`: empty = the frequency in kHz.
+//! - `TG Number`: empty = the frequency in kHz (further rows on the same
+//!   frequency: that and a digit, 1543251, 1543252 …).
+//! - `Tone`: the code the row records, as Trunk Recorder or RadioReference
+//!   write it — FM's CTCSS tone or DCS code (`151.4`, `151.4 PL`, `D023N`,
+//!   `023 DPL`), P25's NAC (`293 NAC`, `$293`), DMR's colour code, slot and
+//!   talkgroup (`CC1`, `CC1 TS2 TG201`); empty = any. Rows sharing a
+//!   frequency split it by code (one may have none: the rest). With no
+//!   `Mode`, a NAC means p25 and a colour code dmr.
 //! - `Squelch dB`: dB above the noise floor; empty = the section's. Trunk
 //!   Recorder's `Squelch` column is an absolute level and is not read.
 //! - `Enable`: `false` / `no` / `0` switches a channel off; empty = on.
@@ -21,9 +30,10 @@
 //!   writes them in some locales. Blank rows and `#` comments are skipped.
 
 use crate::config::{Channel, ChannelMode};
+use trunk_core::trunk::{Access, ConvMode};
 
 /// The columns [`write`] produces.
-pub const HEADER: &str = "TG Number,Frequency,Mode,Alpha Tag,Description,Tag,Category,Squelch dB,Enable";
+pub const HEADER: &str = "TG Number,Frequency,Tone,Mode,Alpha Tag,Description,Tag,Category,Squelch dB,Enable";
 
 /// What a CSV held: its channels and anything worth telling the user.
 #[derive(Debug, Default)]
@@ -100,7 +110,8 @@ pub fn parse(text: &str) -> Result<Parsed, String> {
     let c_tone = col(&["tone"]);
 
     let mut out = Parsed::default();
-    let (mut bad_freq, mut bad_mode, mut bad_tg, mut bad_sq, mut toned) = (vec![], vec![], vec![], vec![], 0);
+    let (mut bad_freq, mut bad_mode, mut bad_tg, mut bad_sq) = (vec![], vec![], vec![], vec![]);
+    let (mut bad_tone, mut search) = (vec![], false);
     for &(row, line) in &lines[1..] {
         let f = split(line, delim);
         let at = |c: Option<usize>| c.and_then(|i| f.get(i)).map(String::as_str).unwrap_or("");
@@ -108,7 +119,10 @@ pub fn parse(text: &str) -> Result<Parsed, String> {
             bad_freq.push(row);
             continue;
         };
+        let raw = at(c_tone);
         let mode = match at(c_mode).to_lowercase().as_str() {
+            "" if raw.to_uppercase().contains("NAC") || raw.starts_with('$') => ChannelMode::P25,
+            "" if raw.to_uppercase().starts_with("CC") => ChannelMode::Dmr,
             "" | "fm" | "nfm" | "analog" | "a" => ChannelMode::Fm,
             "p25" | "digital" | "d" => ChannelMode::P25,
             "dmr" => ChannelMode::Dmr,
@@ -138,9 +152,19 @@ pub fn parse(text: &str) -> Result<Parsed, String> {
             },
         };
         let enabled = !matches!(at(c_enable).to_lowercase().as_str(), "false" | "no" | "0" | "off");
-        if at(c_tone).parse::<f64>().is_ok_and(|v| v > 0.0) {
-            toned += 1;
-        }
+        search |= raw.eq_ignore_ascii_case("s");
+        let conv = match mode {
+            ChannelMode::Fm => ConvMode::Fm,
+            ChannelMode::P25 => ConvMode::P25,
+            ChannelMode::Dmr => ConvMode::Dmr,
+        };
+        let tone = match Access::parse(conv, raw) {
+            Ok(a) => a.map_or(String::new(), |a| a.to_string()),
+            Err(e) => {
+                bad_tone.push(format!("row {row}: {e}"));
+                String::new()
+            }
+        };
         out.channels.push(Channel {
             freq_hz,
             mode,
@@ -150,6 +174,7 @@ pub fn parse(text: &str) -> Result<Parsed, String> {
             tag: at(c_tag).to_string(),
             group: at(c_group).to_string(),
             squelch_db,
+            tone,
             enabled,
         });
     }
@@ -165,8 +190,11 @@ pub fn parse(text: &str) -> Result<Parsed, String> {
     if !bad_sq.is_empty() {
         out.notes.push(format!("Row(s) {}: Squelch dB must be 3–40 (dB above the noise) — using the default.", rows_list(&bad_sq)));
     }
-    if toned > 0 {
-        out.notes.push(format!("{toned} channel(s) have a Tone: tones aren't matched yet, so they record whatever is on the frequency."));
+    if !bad_tone.is_empty() {
+        out.notes.push(format!("Tone not read (the row records any): {}.", bad_tone.join("; ")));
+    }
+    if search {
+        out.notes.push("Tone S (search) needs no setting here: every analog call's tone is identified and written to its JSON.".into());
     }
     if c_tr_sq.is_some() && c_sq.is_none() {
         out.notes.push("The Squelch column (Trunk Recorder's absolute level) was not read: use Squelch dB, in dB above the noise floor.".into());
@@ -198,6 +226,7 @@ pub fn write(channels: &[Channel]) -> String {
         let row = [
             c.talkgroup.map_or(String::new(), |t| t.to_string()),
             mhz(c.freq_hz),
+            cell(&c.tone),
             match c.mode {
                 ChannelMode::Fm => "fm".into(),
                 ChannelMode::P25 => "p25".into(),
@@ -226,17 +255,26 @@ mod tests {
             "TG Number,Frequency,Tone,Alpha Tag,Description,Tag,Category,Enable,Signal Detector,Squelch\n\
              300,462275000,94.8,Town A Police,Town A Police Dispatch,Police,Town A,,false,\n\
              325,462.2875,151.4,Town B DPW,\"Trash, Recycling\",DPW,Town B,false,,-50\n\
-             ,oops,,,,,,,,\n",
+             ,oops,,,,,,,,\n\
+             326,462.2875,023 DPL,Town C,,,,,,\n\
+             327,462.2875,S,Town D,,,,,,\n\
+             328,462.3,151.5,Town E,,,,,,\n\
+             329,460.5,293 NAC,PD North,,,,,,\n\
+             330,452.1,CC1 TS2 TG201,Ops,,,,,,\n",
         )
         .unwrap();
-        assert_eq!(p.channels.len(), 2);
+        assert_eq!(p.channels.len(), 7);
+        let tones: Vec<&str> = p.channels.iter().map(|c| c.tone.as_str()).collect();
+        assert_eq!(tones, ["94.8", "151.4", "D023N", "", "", "NAC 293", "CC 1 TS 2 TG 201"]);
+        assert_eq!((p.channels[5].mode, p.channels[6].mode), (ChannelMode::P25, ChannelMode::Dmr));
         let (a, b) = (&p.channels[0], &p.channels[1]);
         assert_eq!((a.freq_hz, a.talkgroup, a.mode, a.enabled), (462_275_000.0, Some(300), ChannelMode::Fm, true));
         assert_eq!(a.name, "Town A Police");
         assert_eq!((b.freq_hz, b.enabled, b.description.as_str()), (462_287_500.0, false, "Trash, Recycling"));
         let notes = p.notes.join(" ");
         assert!(notes.contains("row(s) 4"), "{notes}");
-        assert!(notes.contains("2 channel(s) have a Tone"), "{notes}");
+        assert!(notes.contains("row 7: 151.5 Hz isn't a standard CTCSS tone — 151.4?"), "{notes}");
+        assert!(notes.contains("Tone S (search)"), "{notes}");
         assert!(notes.contains("Squelch column"), "{notes}");
     }
 
@@ -252,6 +290,7 @@ mod tests {
                 tag: String::new(),
                 group: "Fire".into(),
                 squelch_db: Some(10.5),
+                tone: "D023N".into(),
                 enabled: true,
             },
             Channel {
@@ -263,12 +302,13 @@ mod tests {
                 tag: String::new(),
                 group: String::new(),
                 squelch_db: None,
+                tone: String::new(),
                 enabled: false,
             },
         ];
         let csv = write(&chans);
-        assert!(csv.contains("1001,154.43125,fm,\"Fire, Main\""), "{csv}");
-        assert!(csv.contains(",460.1250,p25,PD Tac,"), "{csv}");
+        assert!(csv.contains("1001,154.43125,D023N,fm,\"Fire, Main\""), "{csv}");
+        assert!(csv.contains(",460.1250,,p25,PD Tac,"), "{csv}");
         let back = parse(&csv).unwrap();
         assert_eq!(back.channels, chans);
         assert!(back.notes.is_empty(), "{:?}", back.notes);

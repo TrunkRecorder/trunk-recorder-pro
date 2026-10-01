@@ -5,6 +5,7 @@
 import { useSyncExternalStore } from "react";
 import { LivePlayer } from "./livePlayer.ts";
 import type {
+  HeardCode,
   AudioChunk,
   CallEntry,
   CallView,
@@ -56,6 +57,8 @@ export interface AppState {
   history: CallEntry[];
   /** Each system's radios' talker aliases, by short name. */
   units: Record<string, UnitAliases>;
+  /** The codes each conventional frequency (Hz, as a string) carried. */
+  heard: Record<string, HeardCode[]>;
   listen: boolean;
   /** Only play this system's calls live (SystemStatus.index, CONVENTIONAL; null = any). */
   listenSystem: number | null;
@@ -102,6 +105,7 @@ let state: AppState = {
   log: [],
   history: [],
   units: {},
+  heard: {},
   listen: false,
   listenSystem: null,
   listenTalkgroup: null,
@@ -156,6 +160,7 @@ transport.onMessage = (m: FromRecorder) => {
         config: m.config,
         devices: m.devices,
         history: m.history,
+        heard: m.heard ?? {},
         units: Object.fromEntries(Object.entries(m.units ?? {}).map(([name, csv]) => [name, parseUnitsCsv(csv)])),
         radios: m.radios ?? null,
         phase: m.phase.phase,
@@ -187,6 +192,9 @@ transport.onMessage = (m: FromRecorder) => {
       break;
     case "concluded":
       set({ history: [m.entry, ...state.history].slice(0, 500) });
+      break;
+    case "heard":
+      set({ heard: m.heard });
       break;
     case "unitAlias":
       set({ units: { ...state.units, [m.system]: { ...state.units[m.system], [m.unit]: m.alias } } });

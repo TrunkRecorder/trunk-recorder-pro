@@ -303,6 +303,42 @@ mod tests {
     }
 
     #[test]
+    fn rows_pick_dmr_calls_by_colour_code_slot_and_talkgroup() {
+        use crate::trunk::{Access, Talkgroup};
+        // The air: CC 5, slot 2 (tdma_slot 1), TG 4321.
+        let (fs, center, freq) = (1_200_000.0, 460_000_000.0, 460_050_000.0);
+        let iq = wideband(fs, freq - center);
+        let row = |code: &str, tg: u32, name: &str| ConvChannel {
+            access: Access::parse(ConvMode::Dmr, code).unwrap(),
+            talkgroup: tg,
+            info: Some(Talkgroup { number: tg, alpha_tag: name.into(), ..Default::default() }),
+            ..ConvChannel::new(freq, ConvMode::Dmr)
+        };
+        let calls = |rows: Vec<ConvChannel>| {
+            let cfg = EngineConfig { sources: vec![SourceConfig { center_hz: center, rate_hz: fs }], conventional: rows, ..Default::default() };
+            run(cfg, &iq).into_iter().map(|k| (k.call.talkgroup, k.call.talkgroup_info.map(|t| t.alpha_tag))).collect::<Vec<_>>()
+        };
+        // The most specific row that fits wins; the talkgroup stays the air's.
+        let rows = vec![row("CC5", 1, "Repeater"), row("CC5 TS2 TG4321", 4321, "Ops"), row("CC5 TS1", 2, "Slot 1"), row("", 3, "Other")];
+        assert_eq!(calls(rows), [(4321, Some("Ops".to_string()))]);
+        // Only the colour code: the row's names for the air's talkgroup.
+        assert_eq!(calls(vec![row("CC 5", 1, "Repeater")]), [(4321, Some("Repeater".to_string()))]);
+        // Nothing fits, no row without a code: not recorded, reported once.
+        let rows = vec![row("CC3", 1, "A"), row("CC5 TS1", 2, "B"), row("CC5 TG 999", 3, "C")];
+        assert!(calls(rows.clone()).is_empty());
+        let cfg = EngineConfig { sources: vec![SourceConfig { center_hz: center, rate_hz: fs }], conventional: rows, ..Default::default() };
+        let mut e = Engine::new(cfg).unwrap();
+        for c in iq.chunks(8192) {
+            e.push_iq(0, c);
+        }
+        e.finish();
+        let skipped: Vec<String> = e.drain_events().into_iter().filter_map(|ev| if let Event::ConvSkipped { code, .. } = ev { Some(code) } else { None }).collect();
+        assert_eq!(skipped, ["CC 5 TS 2 TG 4321"]);
+        // … with one: it takes the rest.
+        assert_eq!(calls(vec![row("CC3", 1, "A"), row("", 3, "Other")]), [(4321, Some("Other".to_string()))]);
+    }
+
+    #[test]
     fn a_mobile_in_simplex_is_recorded() {
         // Bursts on one slot only, nothing on the air between them: talkaround.
         let (fs, center, freq) = (1_200_000.0, 460_000_000.0, 460_050_000.0);
