@@ -12,7 +12,6 @@ the fork in `~/Projects/Trunk Recorder/source`.
 | DMR | Conventional DMR, plus a DMR trunking parser in the fork (`dmr_parser.cc`, `dmr_trunking.cc`, `dmr_recorder`) | None: P25, SmartNet, and conventional FM and P25 only |
 | Upload and output plugins | Broadcastify Calls, Rdio Scanner, OpenMHz, simplestream / streamer (live audio over UDP/TCP), stat_socket (status to a server), unit_script, `uploadScript` | Plugins for OpenMHz, Broadcastify Calls, Rdio Scanner, simplestream and `uploadScript` (as the upload-script plugin). Not ported: stat_socket, unit_script, and streamer (gRPC; Trunk Recorder doesn't build it) |
 | Talkgroup priority | Higher-priority talkgroups take a recorder when all are busy | Priority column read but unused; a full pool gives `no_recorder` |
-| Duplicate calls across sites | `multiSite` drops the same call heard on several sites | Every site's copy is saved (on the roadmap) |
 
 ## Smaller gaps
 
@@ -42,7 +41,7 @@ the fork in `~/Projects/Trunk Recorder/source`.
 ## Suggested order
 
 1. ~~Broadcastify and Rdio Scanner plugins~~ (done, with simplestream and upload-script).
-2. Duplicate detection across sites.
+2. ~~Duplicate detection across sites~~ (done: every copy is recorded and the best kept; see the README).
 3. Talkgroup priority when recorders run out.
 4. CTCSS/DCS/NAC matching on conventional channels.
 5. DMR: the largest job.

@@ -86,6 +86,9 @@ export interface System extends Partial<SmartnetBandplan> {
   voiceChannels: number[];
   /** Record talkgroups not in its CSV; absent/null = the Recording setting. */
   recordUnknown?: boolean | null;
+  /** Multi-site: sites with one group are one system (a call on several is saved once).
+   *  Absent: grouped by what the control channels say (P25 WACN + System ID, SmartNet System ID). */
+  siteGroup?: string;
 }
 
 export interface Config {
@@ -113,6 +116,8 @@ export interface Config {
     keepSilentCalls: boolean;
     /** Save each call's vocoder frames (<call>.frames.jsonl) for diagnosis. */
     captureFrames: boolean;
+    /** A call heard on several sites of one system: save the best copy only. */
+    dropDuplicateCalls: boolean;
   };
   server: { bind: string; port: number; autoStart: boolean };
 }
@@ -163,6 +168,8 @@ export interface SystemStatus {
   patches?: { supergroup: TalkgroupName; members: TalkgroupName[] }[];
   /** A trunked DMR site. */
   dmr?: DmrSiteStatus | null;
+  /** Multi-site: the system it is a site of ("p25:bee00.1a2", "group:<name>"), once known. */
+  siteGroup?: string | null;
 }
 
 export interface DmrSiteStatus {
@@ -228,6 +235,8 @@ export interface CallView {
   sources: number[];
   /** The talkgroups patched with this one during the call. */
   patched?: TalkgroupName[];
+  /** Multi-site: the other sites carrying this call (one copy is saved). */
+  alsoOn?: string[];
 }
 
 export interface LogLine {

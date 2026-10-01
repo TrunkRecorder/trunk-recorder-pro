@@ -6,6 +6,7 @@ pub mod conventional;
 pub mod engine;
 pub mod frames;
 pub mod message;
+pub mod multisite;
 pub mod patches;
 pub mod record;
 pub mod talkgroups;

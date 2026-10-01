@@ -359,6 +359,17 @@ impl Session {
                 self.log.push(json!({ "timeS": self.engine.status().now_s, "kind": "alias", "text": format!("Unit {unit} is \"{alias}\" (TG {talkgroup})"), "system": name }));
                 out.push(Output::Text(json!({ "type": "unitAlias", "system": name, "unit": unit, "alias": alias }).to_string()));
             }
+            Event::Duplicate { call, kept } => {
+                let tag = call.talkgroup_info.as_ref().map_or(String::new(), |t| format!(" {}", t.alpha_tag));
+                let text = format!(
+                    "TG {}{tag} was heard on {} and {}: saved {}'s copy",
+                    call.talkgroup,
+                    self.system_name(kept.system),
+                    self.system_name(call.system),
+                    self.system_name(kept.system)
+                );
+                self.log.push(json!({ "timeS": call.start_s, "kind": "duplicate", "text": text, "system": self.system_name(call.system) }));
+            }
             Event::CallStart(c) if self.plugin_topics.calls => out.push(Output::Plugin(HostMessage::CallStart(self.call_info(&c)))),
             Event::CallEnd(c) if self.plugin_topics.calls => out.push(Output::Plugin(HostMessage::CallEnd(self.call_info(&c)))),
             Event::CallStart(_) | Event::CallUpdate(_) | Event::CallEnd(_) => {}
@@ -427,7 +438,14 @@ impl Session {
                 .engine
                 .active_calls()
                 .iter()
-                .map(|c| call_view(c, self.system_name(c.system), self.tg_names(c.system, c.patched_talkgroups.iter().copied().filter(|&t| t != c.talkgroup))))
+                .map(|c| {
+                    let mut v = call_view(c, self.system_name(c.system), self.tg_names(c.system, c.patched_talkgroups.iter().copied().filter(|&t| t != c.talkgroup)));
+                    let twins: Vec<&str> = self.engine.twins(c.id).iter().map(|&(_, sys)| self.system_name(sys)).collect();
+                    if !twins.is_empty() {
+                        v["alsoOn"] = json!(twins);
+                    }
+                    v
+                })
                 .collect::<Vec<_>>(),
         })
     }

@@ -17,7 +17,7 @@
 //!     --out calls  --short-name sys1  --talkgroups tg.csv  --bandplan file
 //!     --recorders 32  --preroll 1  --timeout 3  --epoch <unix s>
 //!     --record-encrypted  --keep-silent  --no-unknown  --capture-frames  --quiet
-//!     More systems (or sites): --system name:Hz[,Hz…][:nac=443,sysid=445,wacn=bee00,rfss=1,site=3]
+//!     More systems (or sites): --system name:Hz[,Hz…][:nac=443,sysid=445,wacn=bee00,rfss=1,site=3,group=name]
 //!     (repeatable; the identity is optional — a control channel that
 //!     disagrees isn't followed). With several, calls go to <out>/<name>/.
 //!     SmartNet: --smartnet 800_standard|800_reband|800_splinter|900|400_custom
@@ -370,7 +370,7 @@ fn replay(a: &Args) {
     }
 }
 
-/// `--system name:Hz[,Hz…][:nac=443,sysid=445,wacn=bee00,rfss=1,site=3]` —
+/// `--system name:Hz[,Hz…][:nac=443,sysid=445,wacn=bee00,rfss=1,site=3,group=name]` —
 /// NAC / SysID / WACN in hex; only a control channel with that identity is followed.
 fn parse_system(spec: &str, calls: CallConfig, talkgroups: &trunk_core::trunk::Talkgroups) -> Result<SystemConfig, String> {
     let mut parts = spec.splitn(3, ':');
@@ -380,6 +380,7 @@ fn parse_system(spec: &str, calls: CallConfig, talkgroups: &trunk_core::trunk::T
     }
     let ccs: Vec<f64> = parts.next().unwrap_or("").split(',').map(|v| v.trim().parse::<f64>().map_err(|_| format!("bad frequency \"{v}\""))).collect::<Result<_, _>>()?;
     let mut expect = Identity::default();
+    let mut site_group = String::new();
     for kv in parts.next().unwrap_or("").split(',').filter(|s| !s.is_empty()) {
         let (k, v) = kv.split_once('=').ok_or_else(|| format!("\"{kv}\": want key=value"))?;
         let h = || u32::from_str_radix(v.trim(), 16).map_err(|_| format!("bad {k} \"{v}\""));
@@ -390,10 +391,11 @@ fn parse_system(spec: &str, calls: CallConfig, talkgroups: &trunk_core::trunk::T
             "wacn" => expect.wacn = Some(h()?),
             "rfss" => expect.rfss = Some(d()?),
             "site" => expect.site = Some(d()?),
-            other => return Err(format!("unknown key {other} (nac, sysid, wacn, rfss, site)")),
+            "group" => site_group = v.trim().into(),
+            other => return Err(format!("unknown key {other} (nac, sysid, wacn, rfss, site, group)")),
         }
     }
-    Ok(SystemConfig { short_name: name.into(), control_channels: ccs, calls, talkgroups: talkgroups.clone(), expect, ..Default::default() })
+    Ok(SystemConfig { short_name: name.into(), control_channels: ccs, calls, talkgroups: talkgroups.clone(), expect, site_group, ..Default::default() })
 }
 
 /// "[name] " for a line about `system` when there are several; else "".
@@ -439,6 +441,9 @@ fn handle_events(engine: &mut Engine, out_dir: &str, multi: bool, quiet: bool, m
             Event::CallEnd(c) if !quiet => {
                 let srcs: Vec<String> = c.sources.iter().map(|s| s.src.to_string()).collect();
                 println!("{:7.2}s  {}CALL {} end   TG {} srcs [{}]{}", c.last_update_s.max(c.last_audio_s), sys_tag(engine, c.system), c.id, c.talkgroup, srcs.join(","), if c.encrypted { " ENC" } else { "" });
+            }
+            Event::Duplicate { call, kept } if !quiet => {
+                println!("         {}CALL {} TG {} not saved: a copy of {}CALL {}", sys_tag(engine, call.system), call.id, call.talkgroup, sys_tag(engine, kept.system), kept.id)
             }
             Event::Concluded(k) => {
                 // (Appended, not with_extension: a TDMA base name ends in ".<slot>".)

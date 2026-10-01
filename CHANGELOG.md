@@ -110,6 +110,17 @@ platform, with no GNU Radio, OP25 or other runtime dependencies.
   covered. Configs with one system carry over unchanged, and a Trunk
   Recorder config's P25 systems are all imported. `trunk-pro replay
   --system name:Hz[:nac=…,site=…]`.
+- **Calls heard on several sites are saved once** (Trunk Recorder's
+  `multiSite`). Sites are grouped into systems automatically, by the WACN /
+  System ID (P25) or System ID (SmartNet) their control channels announce;
+  a `siteGroup` name groups DMR sites or ISSI-linked systems. Where Trunk
+  Recorder records only the first site's grant, every copy is recorded here,
+  and the one decoded most cleanly is kept, so a site fading mid-call
+  doesn't cost the call. The talkgroup CSV's **Preferred Site** (or Trunk
+  Recorder's **Preferred NAC**) wins when its copy is nearly as good. Live
+  audio plays one copy; the dashboard shows "also on …". On by default
+  (`recording.dropDuplicateCalls`). Trunk Recorder imports keep their
+  multi-site settings. `--system …:group=name` for replays.
 - **Several RTL-SDRs** feeding the systems, over a pure-Rust USB driver (no
   librtlsdr / libusb to install). New dongles start at 25.4 dB gain: higher
   gains overload the front end near strong 800 MHz transmitters (about 3x

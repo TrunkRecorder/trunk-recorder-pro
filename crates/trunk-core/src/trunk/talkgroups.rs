@@ -1,7 +1,8 @@
 //! Trunk Recorder talkgroup CSV (trunk-recorder/talkgroups.cc): the headed
 //! format (first column "Decimal"; columns Decimal, Hex, Mode, Alpha Tag,
-//! Description, Tag, Category, Priority, Preferred NAC in any order) or the
-//! legacy headerless one: Decimal,Hex,Mode,Alpha Tag,Description,Tag,Group[,Priority].
+//! Description, Tag, Category, Priority, Preferred NAC, Preferred Site in
+//! any order) or the legacy headerless one:
+//! Decimal,Hex,Mode,Alpha Tag,Description,Tag,Group[,Priority].
 
 use std::collections::HashMap;
 
@@ -14,7 +15,11 @@ pub struct Talkgroup {
     pub tag: String,
     pub group: String,
     pub priority: i32,
+    /// Multi-site: the site whose copy of a call to keep, as Trunk Recorder
+    /// writes it — its NAC, or RFSS and site as `RRRRssss` (1 and 23: 10023).
     pub preferred_nac: u32,
+    /// Multi-site: the same by the site's short name.
+    pub preferred_site: String,
 }
 
 impl Talkgroup {
@@ -83,6 +88,7 @@ pub fn parse_csv(text: &str) -> Talkgroups {
                 group: s("Category", 6),
                 priority: get("Priority", 7).and_then(|v| v.parse().ok()).unwrap_or(1),
                 preferred_nac: get("Preferred NAC", 99).and_then(|v| v.parse().ok()).unwrap_or(0),
+                preferred_site: s("Preferred Site", 99),
             },
         );
     }
@@ -98,6 +104,9 @@ mod tests {
         let h = parse_csv("Decimal,Hex,Alpha Tag,Mode,Description,Tag,Category\n101,65,\"Fire, Dispatch\",D,Main,Fire,County\n");
         assert_eq!(h[&101].alpha_tag, "Fire, Dispatch");
         assert_eq!(h[&101].mode, "D");
+        let p = parse_csv("Decimal,Alpha Tag,Preferred NAC,Preferred Site\n101,Disp,10023,\n102,Tac,,dcfd-east\n");
+        assert_eq!((p[&101].preferred_nac, p[&101].preferred_site.as_str()), (10023, ""));
+        assert_eq!((p[&102].preferred_nac, p[&102].preferred_site.as_str()), (0, "dcfd-east"));
         let l = parse_csv("202,ca,E,Police,Tac 2,Law,City,3\n");
         assert!(l[&202].encrypted_mode());
         assert_eq!(l[&202].priority, 3);

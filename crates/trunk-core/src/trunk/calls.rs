@@ -64,7 +64,7 @@ pub struct CallSource {
     pub emergency: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Call {
     pub id: CallId,
     /// The system (index in the engine's list) that made it; [`CONVENTIONAL`] for a conventional channel.

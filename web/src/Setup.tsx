@@ -18,7 +18,7 @@ import {
   newSystem,
   resolvedCenters,
   SAMPLE_RATES,
-  sameSystem,
+  siteSiblings,
   sourceCovering,
   systemColor,
   USRP_RATES,
@@ -1040,7 +1040,7 @@ function SystemCard(props: { c: Config; i: number }) {
   const color = systemColor(idx);
   const tgCount = sys.talkgroupsCsv ? parseTalkgroupCsv(sys.talkgroupsCsv).size : 0;
   const tgDonors = c.systems.filter((x, k) => k !== i && x.talkgroupsCsv);
-  const siblings = c.systems.filter((x, k) => k !== i && sameSystem(x.expect, sys.expect));
+  const siblings = siteSiblings(c, sys);
   const locked = Object.values(sys.expect).some((v) => v !== null && v !== undefined);
   const dupName = c.systems.some((x, k) => k !== i && x.shortName === sys.shortName);
   // Where it lands on the sources.
@@ -1076,7 +1076,14 @@ function SystemCard(props: { c: Config; i: number }) {
             voice {voiceIn}/{sys.voiceChannels.length} covered
           </span>
         )}
-        {siblings.length > 0 && <span className="chip" title={siteText(sys.expect)}>multi-site with {siblings.map((x) => x.shortName).join(", ")}</span>}
+        {siblings.length > 0 && (
+          <span
+            className="chip"
+            title={`${sys.siteGroup?.trim() ? `Site group "${sys.siteGroup.trim()}"` : siteText(sys.expect)} — ${c.recording.dropDuplicateCalls ? "a call heard on several sites is saved once" : "every site's copy of a call is saved (Recording)"}`}
+          >
+            multi-site with {siblings.map((x) => x.shortName).join(", ")}
+          </span>
+        )}
         <span className="spacer" />
         <label className="toggle small">
           <input type="checkbox" checked={sys.enabled} onChange={(e) => edit((x) => void (x.enabled = e.target.checked))} />
@@ -1205,6 +1212,25 @@ function SystemCard(props: { c: Config; i: number }) {
             <option value="yes">Record</option>
             <option value="no">Skip</option>
           </select>
+        </Field>
+        <Field
+          label="Site group"
+          hint={
+            sys.type === "dmr"
+              ? "DMR sites of one system: give them the same name, and a call heard on several is saved once."
+              : "Sites of one system are found from the air (WACN + System ID). Name a group only to join systems linked by ISSI, or a unique one to keep this site apart."
+          }
+        >
+          <input
+            value={sys.siteGroup ?? ""}
+            placeholder={sys.type === "dmr" ? "none" : "from the air"}
+            onChange={(e) =>
+              edit((x) => {
+                if (e.target.value.trim()) x.siteGroup = e.target.value;
+                else delete x.siteGroup;
+              })
+            }
+          />
         </Field>
       </div>
       <details className="help">
@@ -1356,6 +1382,12 @@ export function Setup() {
           <Toggle label="Record talkgroups not in the CSV" hint="each system can override it" checked={c.recording.recordUnknown} onChange={(v) => updateConfig((x) => void (x.recording.recordUnknown = v))} />
           <Toggle label="Record unit-to-unit calls" checked={c.recording.recordUnitToUnit} onChange={(v) => updateConfig((x) => void (x.recording.recordUnitToUnit = v))} />
           <Toggle label="Keep calls with no audio" hint="encrypted, or nothing decoded" checked={c.recording.keepSilentCalls} onChange={(v) => updateConfig((x) => void (x.recording.keepSilentCalls = v))} />
+          <Toggle
+            label="Save a call heard on several sites once"
+            hint="each site's copy is recorded and the cleanest kept — or the talkgroup file's Preferred Site, when it is nearly as good"
+            checked={c.recording.dropDuplicateCalls ?? true}
+            onChange={(v) => updateConfig((x) => void (x.recording.dropDuplicateCalls = v))}
+          />
           {!web && (
             <Toggle
               label="Save vocoder frames"

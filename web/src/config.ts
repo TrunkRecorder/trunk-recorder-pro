@@ -25,6 +25,7 @@ export function defaultConfig(): Config {
       recordUnitToUnit: true,
       keepSilentCalls: false,
       captureFrames: false,
+      dropDuplicateCalls: true,
     },
     server: { bind: "127.0.0.1", port: 8080, autoStart: false },
   };
@@ -120,6 +121,7 @@ export function normalizeSystem(x: Partial<System>): System {
     expect: x.expect ?? {},
     voiceChannels: x.voiceChannels ?? [],
     ...(x.recordUnknown === true || x.recordUnknown === false ? { recordUnknown: x.recordUnknown } : {}),
+    ...(x.siteGroup?.trim() ? { siteGroup: x.siteGroup } : {}),
   };
 }
 
@@ -198,6 +200,12 @@ export function siteName(c: Config, id: SiteIdentity, smartnet = false): string 
 /** Sites of one system: the same WACN and System ID (both known). */
 export function sameSystem(a: SiteIdentity, b: SiteIdentity): boolean {
   return a.wacn != null && a.sysId != null && a.wacn === b.wacn && a.sysId === b.sysId;
+}
+
+/** Other sites of `sys`'s system as configured: the same site group, or (none named) the same site lock WACN / System ID. */
+export function siteSiblings(c: Config, sys: System): System[] {
+  const group = sys.siteGroup?.trim();
+  return c.systems.filter((x) => x !== sys && (group ? x.siteGroup?.trim() === group : !x.siteGroup?.trim() && x.type === sys.type && sameSystem(x.expect, sys.expect)));
 }
 
 /** The system a control channel is already configured on, if any. */
@@ -576,8 +584,16 @@ export function importTrunkRecorderConfig(text: string, base: Config): { config:
   if (p25.length) {
     const talkgroupFiles: string[] = [];
     const siteIds: string[] = [];
+    // Trunk Recorder drops duplicates only among systems with multiSite on;
+    // its multiSiteSystemName is a site group here (else grouped from the air).
+    const multi = p25.filter((x) => x.multiSite === true);
+    const isolated: string[] = [];
     cfg.systems = [];
     for (const sys of p25) {
+      const msName = typeof sys.multiSiteSystemName === "string" ? sys.multiSiteSystemName.trim() : "";
+      const ownName = typeof sys.shortName === "string" ? sys.shortName : "";
+      const siteGroup = sys.multiSite === true ? msName : multi.length && ownName ? ownName : "";
+      if (sys.multiSite !== true && siteGroup) isolated.push(ownName);
       const x = newSystem(cfg, {
         shortName: typeof sys.shortName === "string" ? sys.shortName : undefined,
         controlChannels: Array.isArray(sys.control_channels) ? (sys.control_channels as unknown[]).filter((v): v is number => typeof v === "number") : [],
@@ -585,6 +601,7 @@ export function importTrunkRecorderConfig(text: string, base: Config): { config:
         ...(typeof sys.recordUnknown === "boolean" ? { recordUnknown: sys.recordUnknown } : {}),
         ...(sys.type === "smartnet" ? smartnetImport(sys) : {}),
         ...(sys.type === "dmr" ? dmrImport(sys) : {}),
+        ...(siteGroup ? { siteGroup } : {}),
       });
       cfg.systems.push(x);
       if (typeof sys.talkgroupsFile === "string") talkgroupFiles.push(`${x.shortName}: "${sys.talkgroupsFile}"`);
@@ -592,6 +609,9 @@ export function importTrunkRecorderConfig(text: string, base: Config): { config:
     }
     if (p25.length > 1) notes.push(`${p25.length} systems imported, each with its own folder.`);
     if (talkgroupFiles.length) notes.push(`Talkgroup files (${talkgroupFiles.join(", ")}): load each CSV under its system in Setup.`);
+    if (multi.length && isolated.length) notes.push(`multiSite was off for ${isolated.join(", ")}: each has a site group of its own, so every call there is saved.`);
+    if (!multi.length && p25.length > 1)
+      notes.push("A call heard on several sites of one system is now saved once (Trunk Recorder's multiSite was off) — switch it off under Recording to keep every copy.");
     if (siteIds.length) notes.push(`A siteId is set for ${siteIds.join(", ")}: to follow only that site, fill in its Site lock (the survey or a first run shows the site the control channel announces).`);
     // The same setting on every system there: the default here.
     const unknown = p25.map((x) => x.recordUnknown).filter((v): v is boolean => typeof v === "boolean");

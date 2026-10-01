@@ -168,6 +168,13 @@ pub struct System {
     /// DMR: only this colour code.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub color_code: Option<u8>,
+    /// Multi-site: sites with the same group are one system, and a call
+    /// heard on several of them is saved once (see `Recording::drop_duplicate_calls`).
+    /// Empty: grouped by what the control channels say — P25 WACN and System
+    /// ID, SmartNet System ID. Name a group for DMR sites, systems linked by
+    /// ISSI, or to keep a site out of its system's group.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub site_group: String,
 }
 
 fn is_zero(v: &f64) -> bool {
@@ -232,6 +239,7 @@ impl Default for System {
             lcn_table: Default::default(),
             channels: vec![],
             color_code: None,
+            site_group: String::new(),
         }
     }
 }
@@ -409,6 +417,7 @@ impl Channel {
                 group: self.group.clone(),
                 priority: 1,
                 preferred_nac: 0,
+                preferred_site: String::new(),
             }),
             squelch_db: self.squelch_db,
             access: self.parsed_access().ok().flatten(),
@@ -431,6 +440,10 @@ pub struct Recording {
     pub capture_frames: bool,
     /// Bring every call's speech to the same loudness (as Trunk Recorder's uploads were).
     pub normalize_audio: bool,
+    /// A call heard on several sites of one system: save only the best copy
+    /// (each is recorded; the one decoded most cleanly, or the talkgroup's
+    /// preferred site, is kept). Trunk Recorder's multiSite.
+    pub drop_duplicate_calls: bool,
 }
 
 impl Default for Recording {
@@ -446,6 +459,7 @@ impl Default for Recording {
             keep_silent_calls: false,
             capture_frames: false,
             normalize_audio: true,
+            drop_duplicate_calls: true,
         }
     }
 }
@@ -764,6 +778,7 @@ impl Config {
                 expect: s.expect.engine(),
                 smartnet: if s.is_smartnet() { s.smartnet().ok() } else { None },
                 dmr: s.is_dmr().then(|| s.dmr()),
+                site_group: s.site_group.trim().to_string(),
             })
             .collect();
         // With one system, conventional P25 channels also look up its talkgroup
@@ -787,6 +802,7 @@ impl Config {
             conv_talkgroups,
             capture_frames: self.recording.capture_frames,
             normalize_audio: self.recording.normalize_audio,
+            drop_duplicates: self.recording.drop_duplicate_calls,
         }
     }
 }
@@ -880,6 +896,21 @@ mod tests {
     }
 
     #[test]
+    fn site_groups_and_duplicates() {
+        // Older configs: duplicates dropped, groups from the air.
+        let c: Config = serde_json::from_str(r#"{ "systems": [{ "shortName": "a", "controlChannels": [851012500] }], "recording": { "preroll_s": 1 } }"#).unwrap();
+        assert!(c.recording.drop_duplicate_calls);
+        assert!(!serde_json::to_string(&c.systems[0]).unwrap().contains("siteGroup"));
+        let c: Config = serde_json::from_str(
+            r#"{ "systems": [{ "shortName": "a", "controlChannels": [851012500], "siteGroup": " capmax " }], "recording": { "dropDuplicateCalls": false } }"#,
+        )
+        .unwrap();
+        let e = c.engine_config(0.0);
+        assert!(!e.drop_duplicates);
+        assert_eq!(e.systems[0].site_group, "capmax");
+    }
+
+    #[test]
     fn dmr_system_takes_trunk_recorders_lcn_table() {
         // Trunk Recorder's keys; frequencies in MHz or Hz.
         let s: System = serde_json::from_str(
@@ -922,6 +953,7 @@ mod tests {
         assert_eq!(e.systems[0].expect.nac, Some(0x443));
         assert_eq!(e.systems[0].expect.site, Some(3));
         assert!(e.systems[0].calls.record_unknown && !e.systems[1].calls.record_unknown);
+        assert!(e.drop_duplicates && e.systems[0].site_group.is_empty());
         // One source can't hold both.
         c.sources.pop();
         assert!(c.problem().unwrap().contains("west"), "{:?}", c.problem());

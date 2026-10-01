@@ -137,9 +137,38 @@ gets its talkgroups.
 The dashboard lists every system with its site, control channel, decode rate
 and calls, grouping sites of the same WACN / System ID; active calls, recent
 calls and the log can be filtered by system, and live listening follows the
-filter. A call heard on two sites is recorded by both (duplicate detection
-across sites is planned). Importing a Trunk Recorder config brings in all its
-P25 systems.
+filter. Importing a Trunk Recorder config brings in all its P25 systems.
+
+#### Calls heard on several sites
+
+A call on a multi-site system is usually granted on every site with radios
+on its talkgroup. It is saved once. Each site's copy is recorded, and when
+the last one ends the best copy is kept: the one with the most cleanly
+decoded audio. A site that fades mid-call, or whose voice channel no source
+covers, doesn't cost you the call. Live listening plays one copy, and the
+dashboard shows "also on …" under a call that other sites carry. **Save a
+call heard on several sites once** under Recording switches this off (every
+copy saved, each in its site's folder).
+
+Sites are grouped into systems by what their control channels say: P25 by
+WACN and System ID, SmartNet by System ID. Two systems following the same
+site are not grouped. A **Site group** name on a system overrides that:
+
+```json
+{ "shortName": "capmax-north", "type": "dmr", "siteGroup": "capmax", … },
+{ "shortName": "capmax-south", "type": "dmr", "siteGroup": "capmax", … }
+```
+
+Give DMR sites a group name (they don't announce a system identity). Give
+two systems linked by ISSI the same name too. A name of its own keeps a
+site out of its system's group.
+
+To prefer a site for a talkgroup, add a **Preferred Site** column (the
+site's short name) to the talkgroup CSV. Trunk Recorder's **Preferred NAC**
+column also works: a NAC, or RFSS and site as `RRRRssss`. The preferred
+site's copy is kept when it holds at least 90 % of the best copy's clean
+audio. Importing a Trunk Recorder config turns `multiSiteSystemName` into
+site groups.
 
 ### Trunked DMR
 
@@ -558,8 +587,8 @@ NAC 0x443, from an R820T RTL-SDR):
    testing pending). Next: CTCSS / DCS tones and P25 NAC matching, so
    several users of one frequency can be told apart
 9. ~~Several systems and sites at once, with site locks~~ — done (verified
-   on captures). Next: duplicate-call detection across the sites of a
-   multi-site system
+   on captures), with duplicate calls across sites saved once (best copy
+   kept)
 
 ## License
 

@@ -164,7 +164,7 @@ function sitesText(g: SystemStatus[]): string {
 /** Every running system (site), sites of one system (same WACN / SysID) together. */
 function SystemsTable(props: { s: AppState; systems: SystemStatus[]; rates: Map<number, number> }) {
   const { systems, rates } = props;
-  const key = (x: SystemStatus) => (x.identity.wacn != null && x.identity.sysId != null ? `${x.identity.wacn}/${x.identity.sysId}` : `solo-${x.index}`);
+  const key = (x: SystemStatus) => x.siteGroup ?? (x.identity.wacn != null && x.identity.sysId != null ? `${x.identity.wacn}/${x.identity.sysId}` : `solo-${x.index}`);
   const groups = new Map<string, SystemStatus[]>();
   for (const x of systems) groups.set(key(x), [...(groups.get(key(x)) ?? []), x]);
   return (
@@ -193,8 +193,16 @@ function SystemsTable(props: { s: AppState; systems: SystemStatus[]; rates: Map<
                 {g.length > 1 && (
                   <tr className="group-head">
                     <td colSpan={6}>
-                      WACN <span className="mono">{hex(g[0].identity.wacn)}</span> · SysID <span className="mono">{hex(g[0].identity.sysId)}</span> ·{" "}
-                      {sitesText(g)}
+                      {g[0].siteGroup?.startsWith("group:") ? (
+                        <>
+                          Site group <b>{g[0].siteGroup.slice(6)}</b>
+                        </>
+                      ) : (
+                        <>
+                          WACN <span className="mono">{hex(g[0].identity.wacn)}</span> · SysID <span className="mono">{hex(g[0].identity.sysId)}</span>
+                        </>
+                      )}{" "}
+                      · {sitesText(g)}
                     </td>
                   </tr>
                 )}
@@ -516,6 +524,11 @@ function ActiveCalls({ s }: { s: AppState }) {
                     {c.alphaTag && <span className="tag">{c.alphaTag}</span>}
                     {c.emergency && <span className="badge bad">EMERG</span>}
                     <PatchedWith tgs={c.patched ?? []} />
+                    {c.alsoOn?.length ? (
+                      <div className="patched small" title="The same call on other sites of this system: the best copy is saved">
+                        also on {c.alsoOn.join(", ")}
+                      </div>
+                    ) : null}
                   </td>
                   <td className="mono">
                     {formatMhz(c.freqHz, 4)}
@@ -529,7 +542,8 @@ function ActiveCalls({ s }: { s: AppState }) {
                   </td>
                   <td>
                     {c.state === "recording" && (
-                      <button className="btn ghost small" onClick={() => setListen(true, c.system, c.talkgroup)} title="Listen to this talkgroup only">
+                      // Heard on several sites: one copy plays, from whichever site has it.
+                      <button className="btn ghost small" onClick={() => setListen(true, c.alsoOn?.length ? null : c.system, c.talkgroup)} title="Listen to this talkgroup only">
                         Listen
                       </button>
                     )}
@@ -699,7 +713,7 @@ function Log({ s }: { s: AppState }) {
   const systems = s.status?.systems ?? [];
   const multi = systems.length > 1;
   const onlyName = systems.find((x) => x.index === only)?.shortName;
-  const lines = (show === "all" ? s.log : s.log.filter((l) => /grant|update|control|patch|status|sysid|adjacent|error|alias|plugin/.test(l.kind))).filter(
+  const lines = (show === "all" ? s.log : s.log.filter((l) => /grant|update|control|patch|status|sysid|adjacent|error|alias|plugin|duplicate/.test(l.kind))).filter(
     (l) => onlyName === undefined || l.system === onlyName,
   );
   return (
