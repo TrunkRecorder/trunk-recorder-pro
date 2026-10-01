@@ -159,8 +159,9 @@ pub struct SlotDecoder {
     data_acc: Option<(u8, Vec<f32>, u32)>,
     /// Colour code of the last good slot type / EMB.
     pub color_code: Option<u8>,
-    /// Voice codewords / BPTC blocks with a bad CRC, over the slot's life.
+    /// Voice codewords / BPTC blocks decoded / with a bad CRC, over the slot's life.
     pub voice_frames: u64,
+    pub good_blocks: u64,
     pub bad_blocks: u64,
     /// The system keys its CRCs (Motorola / Hytera restricted access): blocks
     /// are taken on their BPTC alone. Set after [`KEYED_AFTER`] clean blocks
@@ -388,6 +389,9 @@ impl SlotDecoder {
         }
         if ok {
             self.color_code = Some(cc);
+            if checked.is_some() {
+                self.good_blocks += 1;
+            }
         } else {
             self.bad_blocks += 1;
         }

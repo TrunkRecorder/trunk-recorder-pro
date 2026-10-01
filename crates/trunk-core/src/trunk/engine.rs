@@ -261,6 +261,8 @@ pub struct SystemStatus {
     pub adjacent: Vec<AdjacentSite>,
     /// Patches standing now: (supergroup, the talkgroups patched into it).
     pub patches: Vec<(u32, Vec<u32>)>,
+    /// A trunked DMR site: its kind, rest channel, channel table, carriers.
+    pub dmr: Option<dmr::SiteStatus>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -658,7 +660,8 @@ impl Trunk {
             self.cc_hz = Some(hz);
             events.push(Event::ControlChannel { system: self.idx, freq_hz: hz });
         }
-        self.good += msgs.len() as u64;
+        // Blocks (CSBKs, link control) decoded and lost, on every carrier.
+        self.good = site.carriers.iter().flat_map(|c| c.chan.slots.iter()).map(|s| s.good_blocks).sum();
         self.bad = site.carriers.iter().flat_map(|c| c.chan.slots.iter()).map(|s| s.bad_blocks).sum();
         if cc.is_some() || !msgs.is_empty() {
             self.last_good_s = self.now_s;
@@ -802,6 +805,7 @@ impl Trunk {
             mismatch: self.mismatch.clone(),
             adjacent: self.adjacent.values().copied().collect(),
             patches: self.calls.patches.active(),
+            dmr: self.dmr.as_ref().map(|w| w.site.status()),
         }
     }
 }

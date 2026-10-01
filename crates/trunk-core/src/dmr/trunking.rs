@@ -73,6 +73,39 @@ pub struct DmrConfig {
     pub color_code: Option<u8>,
 }
 
+/// A DMR site, for the dashboard ([`Site::status`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SiteStatus {
+    pub variant: Option<Variant>,
+    pub color_code: Option<u8>,
+    /// Capacity Plus: the rest channel (logical slot number, frequency; 0 = not known yet).
+    pub rest: Option<(u32, u64)>,
+    /// Keyed CRCs (restricted access).
+    pub keyed: bool,
+    /// Logical channel → frequency, configured or learned.
+    pub channels: Vec<ChannelEntry>,
+    /// Every watched frequency.
+    pub carriers: Vec<CarrierStatus>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ChannelEntry {
+    pub lcn: u32,
+    pub hz: u64,
+    /// From the config's table (else learned from the air).
+    pub configured: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CarrierStatus {
+    pub hz: u64,
+    /// Sending control blocks now (the control or rest channel).
+    pub control: bool,
+    pub color_code: Option<u8>,
+    /// Each slot's call now: (talkgroup, radio; 0 = not named yet).
+    pub slots: [Option<(u32, u32)>; 2],
+}
+
 /// Capacity Plus / Connect Plus logical slot number → (logical channel, slot).
 pub fn lsn(n: u32) -> (u32, u8) {
     ((n.max(1) - 1) / 2 + 1, ((n.max(1) - 1) % 2) as u8)
@@ -171,6 +204,25 @@ impl Site {
             now_s: 0.0,
             recent_status: Vec::new(),
         }
+    }
+
+    /// For the dashboard: what the site looks like now.
+    pub fn status(&self) -> SiteStatus {
+        let mut channels: Vec<ChannelEntry> = self.cfg.lcn_table.iter().map(|(&lcn, &hz)| ChannelEntry { lcn, hz, configured: true }).collect();
+        channels.extend(self.learned.iter().filter(|(l, _)| !self.cfg.lcn_table.contains_key(l)).map(|(&lcn, &hz)| ChannelEntry { lcn, hz, configured: false }));
+        channels.sort_by_key(|c| c.lcn);
+        let carriers = self
+            .carriers
+            .iter()
+            .map(|c| CarrierStatus {
+                hz: c.hz,
+                control: self.now_s - c.control_s < CONTROL_HOLD_S,
+                color_code: c.chan.slots.iter().find_map(|s| s.color_code),
+                // A slot's call: its link control in the last few seconds.
+                slots: std::array::from_fn(|i| c.last[i].filter(|l| self.now_s - l.2 < 3.0).map(|l| (l.0, l.1))),
+            })
+            .collect();
+        SiteStatus { variant: self.variant, color_code: self.color_code, rest: self.rest, keyed: self.keyed, channels, carriers }
     }
 
     /// Bursts carrier `idx` has framed with a sync, so far.
@@ -399,7 +451,7 @@ impl Site {
         out.push(m);
     }
 
-    fn status(&self, idx: usize, slot: u8, meta: String, t: f64, out: &mut Vec<Message>) {
+    fn status_msg(&self, idx: usize, slot: u8, meta: String, t: f64, out: &mut Vec<Message>) {
         let mut m = self.base(idx, slot, MessageType::Status, t);
         m.freq_hz = self.carriers[idx].hz;
         m.meta = meta;
@@ -524,7 +576,7 @@ impl Site {
             return;
         }
         self.recent_status.push((meta.clone(), t));
-        self.status(idx, slot, meta, t, out);
+        self.status_msg(idx, slot, meta, t, out);
     }
 }
 

@@ -9,7 +9,7 @@ fn main() {
         let mut res = winresource::WindowsResource::new();
         res.set_icon("../../packaging/icons/trunk-pro.ico");
         res.set("ProductName", "Trunk Recorder Pro");
-        res.set("FileDescription", "Trunk Recorder Pro — P25 trunked radio recorder");
+        res.set("FileDescription", "Trunk Recorder Pro — P25, SmartNet and DMR recorder");
         res.set("LegalCopyright", "GPL-3.0-or-later");
         if let Err(e) = res.compile() {
             println!("cargo:warning=no Windows resources (icon, version info): {e}");

@@ -363,6 +363,20 @@ impl Session {
                         let sys = self.engine.systems().iter().position(|x| x.short_name == y.short_name).unwrap_or(usize::MAX) as u16;
                         json!({ "supergroup": self.tg_names(sys, [*sg])[0], "members": self.tg_names(sys, members.iter().copied()) })
                     }).collect::<Vec<_>>(),
+                    "dmr": y.dmr.as_ref().map(|d| {
+                        let sys = self.engine.systems().iter().position(|x| x.short_name == y.short_name).unwrap_or(usize::MAX) as u16;
+                        json!({
+                            "variant": d.variant.map(|v| v.name()),
+                            "colorCode": d.color_code,
+                            "rest": d.rest.map(|(lsn, hz)| json!({ "lsn": lsn, "freqHz": if hz > 0 { Some(hz) } else { None } })),
+                            "keyed": d.keyed,
+                            "channels": d.channels.iter().map(|c| json!({ "lcn": c.lcn, "freqHz": c.hz, "configured": c.configured })).collect::<Vec<_>>(),
+                            "carriers": d.carriers.iter().map(|c| json!({
+                                "freqHz": c.hz, "control": c.control, "colorCode": c.color_code,
+                                "slots": c.slots.iter().map(|s| s.map(|(tg, src)| json!({ "talkgroup": self.tg_names(sys, [tg])[0], "source": src }))).collect::<Vec<_>>(),
+                            })).collect::<Vec<_>>(),
+                        })
+                    }),
                 })
             })
             .collect();

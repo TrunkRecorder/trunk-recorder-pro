@@ -159,6 +159,22 @@ export interface SystemStatus {
   adjacent: { sysId: number; rfss: number; site: number; freqHz: number }[];
   /** Patches standing now: the supergroup, and the talkgroups patched into it. */
   patches?: { supergroup: TalkgroupName; members: TalkgroupName[] }[];
+  /** A trunked DMR site. */
+  dmr?: DmrSiteStatus | null;
+}
+
+export interface DmrSiteStatus {
+  /** "DMR Capacity Plus" | "DMR Capacity Max" | "DMR Connect Plus" | "DMR Tier III" | null (not known yet). */
+  variant: string | null;
+  colorCode: number | null;
+  /** Capacity Plus: the rest channel's logical slot number, and its frequency once known. */
+  rest: { lsn: number; freqHz: number | null } | null;
+  /** Keyed CRCs (restricted access). */
+  keyed: boolean;
+  /** Logical channel → frequency: from the config, or learned from the air. */
+  channels: { lcn: number; freqHz: number; configured: boolean }[];
+  /** Every watched frequency: sending control blocks, and each slot's call now. */
+  carriers: { freqHz: number; control: boolean; colorCode: number | null; slots: ({ talkgroup: TalkgroupName; source: number } | null)[] }[];
 }
 
 /** A talkgroup and its alpha tag from the system's talkgroup file ("" when not in it). */
