@@ -31,6 +31,12 @@ platform, with no GNU Radio, OP25 or other runtime dependencies.
   embedded link control are soft-combined, which recovers most of them on a
   weak site. Voice through the Phase 2 AMBE+2 decoder. Trunk Recorder DMR
   configs import. `tool dmrscan` / `tool dmr` for captures.
+- **Weak signals**: the C4FM receiver (P25 C4FM and DMR) has a matched
+  filter, takes its levels from the symbol clusters, and re-decides
+  symbols by multi-symbol detection below the discriminator's threshold;
+  SmartNet decides by tone energies. Half the codewords decoded at about
+  6 dB less signal on P25 C4FM voice, 8 dB on DMR voice, 1.7 dB on
+  SmartNet (`tool snr`, which measures it; see research/weak-signal.md).
 - **Find my system finds SmartNet** too, and learns its band plan from the
   air (which carrier comes up when a channel number is granted) — on WMATA,
   exactly Trunk Recorder's hand-made `400_custom` plan, all four control
