@@ -30,6 +30,8 @@
 //! }
 //! ```
 
+#[cfg(feature = "sdk")]
+pub mod filter;
 mod multipart;
 pub mod protocol;
 #[cfg(feature = "sdk")]
@@ -40,6 +42,8 @@ pub mod schema;
 mod sdk;
 #[cfg(feature = "sdk")]
 pub mod testing;
+#[cfg(feature = "sdk")]
+pub use filter::TalkgroupFilter;
 #[cfg(feature = "sdk")]
 pub use queue::{Attempt, CallQueue, QueueOptions};
 

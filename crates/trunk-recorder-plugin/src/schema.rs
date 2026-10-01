@@ -8,6 +8,7 @@
 //! - `"type": "boolean"` — a switch
 //! - `"enum": [...]` — a menu (`"x-enum-labels"`, when given, are what it shows)
 //! - `"type": "array"` of strings or numbers — a list
+//! - `"type": "array"` of objects — a list of groups, added and removed one by one
 //! - `"type": "object"` — a group of the above
 //!
 //! Fields are shown in `x-order` (the struct's order, added by [`normalize`]).

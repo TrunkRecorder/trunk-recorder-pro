@@ -52,6 +52,35 @@ function SchemaField(props: { name: string; schema: PluginSchema; value: unknown
       </fieldset>
     );
   }
+  if (f.type === "array" && f.items?.type === "object") {
+    const items = (Array.isArray(value) ? value : []) as PluginValues[];
+    const itemLabel = f.items.title ?? "Item";
+    const set = (next: PluginValues[]) => onChange(next.length ? next : undefined);
+    return (
+      <fieldset className="plugin-group">
+        <legend>{label}</legend>
+        {hint && <p className="field-hint">{hint}</p>}
+        <div className="stack">
+          {items.map((item, i) => (
+            <fieldset className="plugin-group" key={i}>
+              <legend>
+                {itemLabel} {i + 1}
+              </legend>
+              <SchemaFields schema={f.items} values={item ?? {}} onChange={(v) => set(items.map((x, j) => (j === i ? v : x)))} id={`${id}-${i}`} />
+              <button type="button" className="btn ghost small" onClick={() => set(items.filter((_, j) => j !== i))}>
+                Remove {itemLabel.toLowerCase()} {i + 1}
+              </button>
+            </fieldset>
+          ))}
+          <div>
+            <button type="button" className="btn small" onClick={() => set([...items, {}])}>
+              Add {itemLabel.toLowerCase()}
+            </button>
+          </div>
+        </div>
+      </fieldset>
+    );
+  }
   if (f.type === "boolean") {
     const on = typeof value === "boolean" ? value : f.default === true;
     return (
