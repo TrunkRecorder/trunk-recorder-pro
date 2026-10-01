@@ -150,6 +150,8 @@ pub struct EngineConfig {
     pub normalize_audio: bool,
     /// Save a call heard on several sites of one system once ([`super::multisite`]).
     pub drop_duplicates: bool,
+    /// The IMBE vocoder for P25 Phase 1 voice, trunked and conventional.
+    pub vocoder: mbe::Profile,
 }
 
 impl Default for EngineConfig {
@@ -170,6 +172,7 @@ impl Default for EngineConfig {
             capture_frames: false,
             normalize_audio: true,
             drop_duplicates: true,
+            vocoder: mbe::Profile::Enhanced,
         }
     }
 }
@@ -348,6 +351,7 @@ struct Radio {
     max_recorders: usize,
     preroll_s: f64,
     capture_frames: bool,
+    vocoder: mbe::Profile,
     groups: Vec<Group>,
     tout: Vec<(usize, TrackerOut)>,
     /// Each system's Phase 2 scrambler seed (NAC, System ID, WACN), once its control channel gave it.
@@ -460,6 +464,7 @@ impl SysHost<'_> {
     /// already open takes its slot over, as in Trunk Recorder).
     fn open_channel(&mut self, call: &Call, src: usize) {
         let r = &mut *self.radio;
+        let vocoder = r.vocoder;
         let slot = if call.phase2_tdma || call.color_code.is_some() { call.tdma_slot as usize & 1 } else { 0 };
         let key = (self.system, call.freq_hz);
         if let Some(ch) = r.channels.get_mut(&key) {
@@ -489,7 +494,7 @@ impl SysHost<'_> {
             let rx = Cqpsk::new(rate, cqpsk::Options { baud: phase2::SYMBOL_RATE, df_beta: 0.5, ..Default::default() });
             Voice::Tdma { rx, framer: phase2::Framer::default(), tracker, syms: Vec::new(), pkts: Vec::new() }
         } else {
-            Voice::Fdma { bank: Bank::new(rate, self.bank), tracker: VoiceTracker::new(mbe::lcg(seed)) }
+            Voice::Fdma { bank: Bank::new(rate, self.bank), tracker: VoiceTracker::new(mbe::lcg(seed), vocoder) }
         };
         let mut calls = [None, None];
         calls[slot] = Some(call.id);
@@ -896,7 +901,7 @@ impl Engine {
         }
         let history = cfg.preroll_s.max(cfg.conv.preroll_s).max(0.1);
         let spans: Vec<(f64, f64)> = cfg.sources.iter().map(|s| (s.center_hz, s.rate_hz)).collect();
-        let conv = Conventional::new(&cfg.conventional, &spans, cfg.conv, cfg.bank, USABLE)?;
+        let conv = Conventional::new(&cfg.conventional, &spans, ConvConfig { vocoder: cfg.vocoder, ..cfg.conv }, cfg.bank, USABLE)?;
         let sources: Vec<Source> =
             cfg.sources.iter().map(|s| Source { cfg: s.clone(), chz: Channelizer::new(s.rate_hz, MIN_CHANNEL_RATE, history) }).collect();
         let rate = sources[0].chz.output_rate();
@@ -910,6 +915,7 @@ impl Engine {
             max_recorders: cfg.max_recorders,
             preroll_s: cfg.preroll_s,
             capture_frames: cfg.capture_frames,
+            vocoder: cfg.vocoder,
             groups: Vec::new(),
             tout: Vec::new(),
             tdma_keys: vec![None; cfg.systems.len()],

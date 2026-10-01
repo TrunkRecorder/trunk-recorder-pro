@@ -1388,6 +1388,14 @@ export function Setup() {
             checked={c.recording.dropDuplicateCalls ?? true}
             onChange={(v) => updateConfig((x) => void (x.recording.dropDuplicateCalls = v))}
           />
+          <Toggle label="Even out call loudness" hint="brings every call's speech to the same level, as Trunk Recorder's uploads were" checked={c.recording.normalizeAudio ?? true} onChange={(v) => updateConfig((x) => void (x.recording.normalizeAudio = v))} />
+          <Field label="P25 voice decoder" hint="Fixed-point sounds the most natural on most systems; Enhanced is Trunk Recorder's float decoder.">
+            <select value={c.recording.vocoder ?? "fixed"} onChange={(e) => updateConfig((x) => void (x.recording.vocoder = e.target.value as "fixed" | "enhanced" | "mbelib"))}>
+              <option value="fixed">Fixed-point</option>
+              <option value="enhanced">Enhanced</option>
+              <option value="mbelib">mbelib</option>
+            </select>
+          </Field>
           {!web && (
             <Toggle
               label="Save vocoder frames"

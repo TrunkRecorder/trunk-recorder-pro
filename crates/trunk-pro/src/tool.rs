@@ -15,9 +15,11 @@
 //! SmartNet control channel: its messages (and with `--osw` every OSW) as
 //! JSON lines, then OSW counts and the measured carrier offset.
 //!
-//! `tool revoice <call.frames.jsonl> <out.wav> [--profile enhanced|mbelib]
-//! [--seed 1]` — vocode a call's frame capture (the recording setting
-//! "Save vocoder frames") again, e.g. with the other vocoder profile.
+//! `tool revoice <call.frames.jsonl> <out.wav> [--profile enhanced|fixed|mbelib]
+//! [--seed 1] [--hard-fec] [--s16]` — vocode a call's frame capture (the
+//! recording setting "Save vocoder frames") again, e.g. with another vocoder
+//! profile; `--hard-fec` uses TIA's repeat thresholds, `--s16` writes raw
+//! 16-bit samples at the vocoder's own scale instead of a WAV.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -274,9 +276,15 @@ fn run_revoice(a: &Args) {
     use trunk_core::trunk::frames::hex_bits;
     let path = a.positional.get(1).unwrap_or_else(|| die("tool revoice <call.frames.jsonl> <out.wav>"));
     let out = a.positional.get(2).unwrap_or_else(|| die("tool revoice: no output .wav"));
-    let mbelib = a.get("profile") == Some("mbelib");
-    let profile = if mbelib { mbe::Profile::Mbelib } else { mbe::Profile::Enhanced };
+    let profile = a.get("profile").map_or(mbe::Profile::Enhanced, |p| mbe::Profile::from_name(p).unwrap_or_else(|| die("tool revoice: --profile enhanced|fixed|mbelib")));
+    let mbelib = profile == mbe::Profile::Mbelib;
     let mut dec = mbe::Decoder::new(mbe::lcg(a.num("seed", 1.0) as u32), profile);
+    if a.flag("hard-fec") {
+        dec.hard_fec();
+    }
+    // --s16: raw 16-bit samples at the vocoder's own scale (mbelib's ×7), no limiter.
+    let s16 = a.flag("s16");
+    let mut pcm: Vec<i16> = Vec::new();
     let text = std::fs::read_to_string(path).unwrap_or_else(|e| die(&format!("{path}: {e}")));
     let (mut audio, mut kinds, mut differ) = (Vec::new(), BTreeMap::<String, u32>::new(), 0u32);
     fn not_frame<T>(path: &str, n: usize) -> T {
@@ -303,6 +311,9 @@ fn run_revoice(a: &Args) {
         let name = format!("{kind:?}").to_lowercase();
         differ += (f["out"].as_str() != Some(name.as_str())) as u32;
         *kinds.entry(name).or_default() += 1;
+        if s16 {
+            pcm.extend(buf.iter().map(|&v| (7.0 * v as f64).round().clamp(-32768.0, 32767.0) as i16));
+        }
         if mbelib {
             mbe::to_unit(&mut buf);
         } else {
@@ -310,7 +321,8 @@ fn run_revoice(a: &Args) {
         }
         audio.extend_from_slice(&buf);
     }
-    std::fs::write(out, trunk_core::wav::encode(&audio, mbe::SAMPLE_RATE)).unwrap_or_else(|e| die(&format!("{out}: {e}")));
+    let bytes = if s16 { pcm.iter().flat_map(|v| v.to_le_bytes()).collect() } else { trunk_core::wav::encode(&audio, mbe::SAMPLE_RATE) };
+    std::fs::write(out, bytes).unwrap_or_else(|e| die(&format!("{out}: {e}")));
     eprintln!("{} frames ({:.2} s) → {out}: {kinds:?}; {differ} decoded differently from the recording", audio.len() / FRAME_SAMPLES, audio.len() as f64 / mbe::SAMPLE_RATE as f64);
 }
 

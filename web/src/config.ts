@@ -26,6 +26,8 @@ export function defaultConfig(): Config {
       keepSilentCalls: false,
       captureFrames: false,
       dropDuplicateCalls: true,
+      normalizeAudio: true,
+      vocoder: "fixed",
     },
     server: { bind: "127.0.0.1", port: 8080, autoStart: false },
   };

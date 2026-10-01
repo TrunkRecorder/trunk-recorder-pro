@@ -2,7 +2,11 @@
 //! mbelib 1.3.0 (ISC) with Trunk Recorder's "enhanced" synthesis and
 //! TIA-102.BABA-A §7.7/§7.8 error concealment. Double precision throughout;
 //! the RNG is injectable so output can be compared sample by sample with the
-//! reference implementations.
+//! reference implementations. IMBE can also go through Pavel Yazev's
+//! fixed-point decoder ([`fixed`], [`Profile::Fixed`]).
+
+pub mod fixed;
+mod fixed_tables;
 
 use std::f64::consts::{E, PI};
 use std::sync::Arc;
@@ -717,6 +721,31 @@ pub enum Profile {
     /// Trunk Recorder's synthesis + TIA concealment, with repeat thresholds
     /// for soft-decision FEC unless [`Decoder::hard_fec`] (the default).
     Enhanced,
+    /// IMBE through Pavel Yazev's fixed-point decoder ([`fixed`], Trunk
+    /// Recorder's `softVocoder: false`), with the same concealment rules and
+    /// thresholds as `Enhanced`; AMBE as `Enhanced`. Listeners on WMATA found
+    /// it the most natural-sounding (tools/vocoder-shootout).
+    Fixed,
+}
+
+impl Profile {
+    /// "enhanced", "fixed" or "mbelib".
+    pub fn from_name(name: &str) -> Option<Profile> {
+        match name.to_ascii_lowercase().as_str() {
+            "enhanced" => Some(Profile::Enhanced),
+            "fixed" | "fixed-point" => Some(Profile::Fixed),
+            "mbelib" => Some(Profile::Mbelib),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Profile::Enhanced => "enhanced",
+            Profile::Fixed => "fixed",
+            Profile::Mbelib => "mbelib",
+        }
+    }
 }
 
 /// One vocoder stream (a P25 Phase 1 call, or one Phase 2 timeslot). Frames
@@ -736,6 +765,8 @@ pub struct Decoder {
     /// ET ≥ `repeat_et` + 40·ER.
     repeat_e0: u32,
     repeat_et: f64,
+    /// The fixed-point IMBE decoder ([`Profile::Fixed`]).
+    fixed: Option<Box<fixed::FixedImbe>>,
 }
 
 /// Repeat thresholds for soft-decision FEC counts (the default). A soft
@@ -762,6 +793,7 @@ impl Decoder {
             se: 0.0,
             repeat_e0: SOFT_REPEAT.0,
             repeat_et: SOFT_REPEAT.1,
+            fixed: (profile == Profile::Fixed).then(|| Box::new(fixed::FixedImbe::new())),
         };
         d.reset();
         d
@@ -777,12 +809,28 @@ impl Decoder {
         self.uv.reset();
         self.er = 0.0;
         self.se = 10000.0;
+        if let Some(f) = self.fixed.as_mut() {
+            f.reset();
+        }
     }
 
     /// 88 information bits → 160 samples at mbelib's float scale (apply
     /// [`to_limited`] or [`to_unit`] for [−1, 1]). `e0`/`et`: FEC errors in u0 / in total;
     /// `erased`: the frame is known lost.
     pub fn imbe(&mut self, d: &[u8; 88], e0: u32, et: u32, erased: bool, out: &mut [f32; FRAME_SAMPLES]) -> Kind {
+        if let Some(f) = self.fixed.as_mut() {
+            let mut s = [0i16; FRAME_SAMPLES];
+            let r = f.decode_checked(&fixed::frame_vector(d), e0, et, erased, self.repeat_e0, self.repeat_et as f32, &mut s);
+            // Back to mbelib's float scale (to_limited / to_unit multiply by 7).
+            for (o, &v) in out.iter_mut().zip(s.iter()) {
+                *o = v as f32 * (32768.0 / 7.0 / 32768.0);
+            }
+            return match r {
+                fixed::Out::Voice => Kind::Voice,
+                fixed::Out::Repeat => Kind::Repeat,
+                fixed::Out::Muted => Kind::Muted,
+            };
+        }
         if self.profile == Profile::Mbelib {
             let errs2 = if erased { 99 } else { et };
             let ok = decode_imbe4400_parms(d, &mut self.cur, &mut self.prev);
@@ -834,7 +882,7 @@ impl Decoder {
     /// Phase 2's thresholds alone). "Enhanced" fades where mbelib cuts to
     /// silence and resets: past 3 repeats, and on tone / erasure frames.
     pub fn ambe(&mut self, d: &[u8; 49], errs: u32, out: &mut [f32; FRAME_SAMPLES]) -> Kind {
-        let enhanced = self.profile == Profile::Enhanced;
+        let enhanced = self.profile != Profile::Mbelib;
         let r = decode_ambe2450_parms(d, &mut self.cur, &mut self.prev);
         let mut kind = Kind::Voice;
         match r {

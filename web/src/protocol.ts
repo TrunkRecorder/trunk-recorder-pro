@@ -118,6 +118,10 @@ export interface Config {
     captureFrames: boolean;
     /** A call heard on several sites of one system: save the best copy only. */
     dropDuplicateCalls: boolean;
+    /** Bring every call's speech to the same loudness. */
+    normalizeAudio: boolean;
+    /** IMBE vocoder for P25 Phase 1 voice. */
+    vocoder: "fixed" | "enhanced" | "mbelib";
   };
   server: { bind: string; port: number; autoStart: boolean };
 }

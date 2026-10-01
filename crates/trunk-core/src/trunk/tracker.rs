@@ -43,9 +43,9 @@ pub struct VoiceTracker {
 }
 
 impl VoiceTracker {
-    pub fn new(rng: mbe::Rng) -> Self {
+    pub fn new(rng: mbe::Rng, vocoder: mbe::Profile) -> Self {
         VoiceTracker {
-            dec: mbe::Decoder::new(rng, mbe::Profile::Enhanced),
+            dec: mbe::Decoder::new(rng, vocoder),
             active: false,
             encrypted: false,
             algid: ALGID_CLEAR as i32,

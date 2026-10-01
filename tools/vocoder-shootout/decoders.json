@@ -1,0 +1,135 @@
+{
+  "_comment": "Each decoder turns {in} (a .frames.jsonl of IMBE frames) into {out}, 8 kHz mono, as a WAV (\"output\": \"wav\") or raw 16-bit samples (\"s16\"). Placeholders: {in} {out} {trunk_pro} {harness} {python} {here}. \"needs\" names what must be available; decoders whose needs are missing are skipped. Order is the order on the listening page; \"default\": false leaves a decoder out unless --decoders names it.",
+  "decoders": {
+    "trunk-pro": {
+      "label": "Trunk Recorder Pro, enhanced",
+      "note": "trunk-pro's enhanced profile: Trunk Recorder's float synthesis rebuilt in Rust, with soft-decision FEC repeat thresholds.",
+      "cmd": [
+        "{trunk_pro}",
+        "tool",
+        "revoice",
+        "{in}",
+        "{out}",
+        "--profile",
+        "enhanced"
+      ],
+      "output": "wav",
+      "needs": [
+        "trunk_pro"
+      ]
+    },
+    "trunk-pro-fixed": {
+      "label": "Trunk Recorder Pro, fixed-point",
+      "note": "trunk-pro's fixed-point profile (its default since October 2026): a Rust port of Pavel Yazev's decoder, sample-identical to TR fixed-point with the same thresholds.",
+      "cmd": [
+        "{trunk_pro}",
+        "tool",
+        "revoice",
+        "{in}",
+        "{out}",
+        "--profile",
+        "fixed"
+      ],
+      "output": "wav",
+      "needs": [
+        "trunk_pro"
+      ],
+      "default": false
+    },
+    "tr-float": {
+      "label": "TR float",
+      "note": "Trunk Recorder's float decoder (softVocoder: true) with its September 2026 synthesis changes, default settings.",
+      "cmd": [
+        "{harness}",
+        "float",
+        "{in}",
+        "{out}"
+      ],
+      "output": "s16",
+      "needs": [
+        "harness"
+      ]
+    },
+    "tr-fixed": {
+      "label": "TR fixed-point",
+      "note": "Pavel Yazev's 2009 fixed-point port of the TIA reference decoder; stock Trunk Recorder's default (softVocoder: false).",
+      "cmd": [
+        "{harness}",
+        "fixed",
+        "{in}",
+        "{out}"
+      ],
+      "output": "s16",
+      "needs": [
+        "harness"
+      ]
+    },
+    "mbelib": {
+      "label": "mbelib",
+      "note": "The classic open decoder behind DSD and older tools (trunk-pro's mbelib profile).",
+      "cmd": [
+        "{trunk_pro}",
+        "tool",
+        "revoice",
+        "{in}",
+        "{out}",
+        "--profile",
+        "mbelib"
+      ],
+      "output": "wav",
+      "needs": [
+        "trunk_pro"
+      ]
+    },
+    "blip25": {
+      "label": "blip25",
+      "note": "blip25-mbe, an MIT-licensed Rust decoder that follows the IMBE spec with no post-processing.",
+      "cmd": [
+        "{python}",
+        "{here}/decoders/blip25_decode.py",
+        "{in}",
+        "{out}"
+      ],
+      "output": "s16",
+      "needs": [
+        "blip25"
+      ]
+    },
+    "tr-air": {
+      "label": "TR float + air",
+      "note": "TR float with up to half of each voiced harmonic above 2 kHz rendered as noise (aper_max 0.5), for over-voiced encoders.",
+      "cmd": [
+        "{harness}",
+        "float",
+        "{in}",
+        "{out}",
+        "aper_max=0.5"
+      ],
+      "output": "s16",
+      "needs": [
+        "harness"
+      ]
+    },
+    "tr-stock": {
+      "label": "TR float, stock synthesis",
+      "note": "TR float with the September synthesis changes turned off: linear phase, TIA interpolation and unvoiced noise, no presence lift.",
+      "cmd": [
+        "{harness}",
+        "float",
+        "{in}",
+        "{out}",
+        "phase_c_env=0",
+        "phase_w_rand=0",
+        "interp_max_l=8",
+        "interp_pitch_tol=0.1",
+        "uv_synth_mode=0",
+        "hf_lift_db=0"
+      ],
+      "output": "s16",
+      "needs": [
+        "harness"
+      ],
+      "default": false
+    }
+  }
+}

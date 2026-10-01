@@ -444,6 +444,10 @@ pub struct Recording {
     /// (each is recorded; the one decoded most cleanly, or the talkgroup's
     /// preferred site, is kept). Trunk Recorder's multiSite.
     pub drop_duplicate_calls: bool,
+    /// IMBE vocoder for P25 Phase 1 voice: "fixed" (Pavel Yazev's fixed-point
+    /// decoder, Trunk Recorder's softVocoder false), "enhanced" (TR's float
+    /// synthesis) or "mbelib".
+    pub vocoder: String,
 }
 
 impl Default for Recording {
@@ -460,6 +464,7 @@ impl Default for Recording {
             capture_frames: false,
             normalize_audio: true,
             drop_duplicate_calls: true,
+            vocoder: "fixed".into(),
         }
     }
 }
@@ -803,6 +808,7 @@ impl Config {
             capture_frames: self.recording.capture_frames,
             normalize_audio: self.recording.normalize_audio,
             drop_duplicates: self.recording.drop_duplicate_calls,
+            vocoder: trunk_core::mbe::Profile::from_name(&self.recording.vocoder).unwrap_or(trunk_core::mbe::Profile::Fixed),
         }
     }
 }

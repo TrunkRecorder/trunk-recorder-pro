@@ -1,0 +1,249 @@
+<title>__TITLE__</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Atkinson+Hyperlegible:wght@400;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: one narrow column of clip cards, like a station platform board; each card a strip of decoder keys over a shared transport. */
+:root {
+  --ground: #eef1f4;
+  --panel: #ffffff;
+  --ink: #17202b;
+  --muted: #5b6876;
+  --rule: #d5dbe2;
+  --accent: #1f5fae;
+  --accent-ink: #ffffff;
+  --key: #e4e9ef;
+  --key-on: #17202b;
+  --key-on-ink: #ffffff;
+  --pick: #b7791f;
+  --s1: #1f5fae; --s2: #c2410c; --s3: #0f8a5f; --s4: #b7791f; --s5: #7c3aed; --s6: #be185d;
+  --f-display: "Barlow Condensed", "Arial Narrow", "Helvetica Neue", sans-serif;
+  --f-body: "Atkinson Hyperlegible", "Segoe UI", system-ui, sans-serif;
+  --f-mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground: #0f141a; --panel: #18202a; --ink: #e8edf2; --muted: #9aa8b6; --rule: #2a3542;
+    --accent: #6aa7ef; --accent-ink: #0f141a; --key: #222c38; --key-on: #e8edf2; --key-on-ink: #0f141a; --pick: #e0a84a;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --ground: #0f141a; --panel: #18202a; --ink: #e8edf2; --muted: #9aa8b6; --rule: #2a3542;
+  --accent: #6aa7ef; --accent-ink: #0f141a; --key: #222c38; --key-on: #e8edf2; --key-on-ink: #0f141a; --pick: #e0a84a;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--ground); color: var(--ink); font: 16px/1.55 var(--f-body); margin: 0; padding-inline: 16px; padding-block: 28px 56px; }
+.wrap { max-width: 760px; margin: 0 auto; display: grid; gap: 22px; }
+h1 { font: 700 2.4rem/1.05 var(--f-display); letter-spacing: 0.01em; margin: 0; text-wrap: balance; }
+h2 { font: 600 1.45rem/1.15 var(--f-display); margin: 0; text-wrap: balance; }
+p { margin: 0; max-width: 65ch; }
+.lede { color: var(--muted); }
+.controls { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; }
+.switch { display: inline-flex; align-items: center; gap: 8px; font-weight: 700; cursor: pointer; }
+.switch input { width: 18px; height: 18px; accent-color: var(--accent); }
+.hint { font-size: 0.88rem; color: var(--muted); }
+.card { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; overflow: hidden; display: grid; }
+.lines { display: flex; height: 6px; }
+.lines span { flex: 1; }
+.card-body { padding: 16px 18px 18px; display: grid; gap: 14px; }
+.meta { display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: baseline; }
+.meta .desc { color: var(--muted); font-size: 0.92rem; }
+.tag { font: 600 0.78rem/1 var(--f-mono); color: var(--muted); letter-spacing: 0.02em; }
+.keys { display: grid; grid-template-columns: repeat(var(--cols, 6), minmax(0, 1fr)); gap: 8px; }
+@media (max-width: 560px) { .keys { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+.key { position: relative; border: 0; border-radius: 4px; background: var(--key); color: var(--ink); padding: 10px 6px; cursor: pointer;
+  font: 700 1.25rem/1 var(--f-display); letter-spacing: 0.04em; min-height: 54px; display: grid; place-items: center; text-align: center; }
+.key small { display: block; font: 400 0.72rem/1.2 var(--f-body); letter-spacing: 0; margin-top: 4px; }
+.key[aria-pressed="true"] { background: var(--key-on); color: var(--key-on-ink); }
+.key:focus-visible, .pick:focus-visible, .play:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.key .star { position: absolute; top: 3px; right: 5px; font-size: 0.8rem; color: var(--pick); }
+.transport { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.play { border: 0; border-radius: 4px; background: var(--accent); color: var(--accent-ink); font: 700 1rem/1 var(--f-display); letter-spacing: 0.06em;
+  text-transform: uppercase; padding: 10px 16px; cursor: pointer; min-width: 84px; }
+.bar { flex: 1; min-width: 140px; height: 8px; background: var(--key); border-radius: 4px; position: relative; cursor: pointer; }
+.bar i { position: absolute; inset: 0 auto 0 0; background: var(--accent); border-radius: 4px; width: 0; }
+.time { font: 400 0.85rem/1 var(--f-mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+.pick { border: 1px solid var(--rule); background: transparent; color: var(--ink); border-radius: 4px; padding: 8px 12px; cursor: pointer; font: 700 0.9rem/1 var(--f-body); }
+.pick[aria-pressed="true"] { border-color: var(--pick); color: var(--pick); }
+.now { font-size: 0.9rem; color: var(--muted); min-height: 1.4em; }
+.legend { display: grid; gap: 10px; }
+.legend dl { display: grid; grid-template-columns: max-content 1fr; gap: 8px 16px; margin: 0; }
+.legend dt { font: 700 1rem/1.4 var(--f-display); letter-spacing: 0.02em; }
+.legend dd { margin: 0; color: var(--muted); font-size: 0.93rem; }
+.scores { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 0.92rem; }
+th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--rule); }
+th { font: 600 0.95rem/1.2 var(--f-display); letter-spacing: 0.03em; color: var(--muted); }
+td.num { font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+.picks { font-weight: 700; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<main class="wrap">
+  <header style="display:grid;gap:10px">
+    <h1 id="title"></h1>
+    <p class="lede" id="lede"></p>
+  </header>
+
+  <div class="controls">
+    <label class="switch"><input type="checkbox" id="reveal"> Show decoder names</label>
+    <span class="hint">Keys are shuffled per call while names are hidden. Mark the least robotic one in each call, then reveal.</span>
+  </div>
+
+  <section id="clips" class="wrap" style="gap:18px"></section>
+
+  <section class="card"><div class="card-body legend">
+    <h2>Your picks</h2>
+    <p class="picks" id="picks">No picks yet.</p>
+  </div></section>
+
+  <section class="card"><div class="card-body legend">
+    <h2>The decoders</h2>
+    <dl id="legend"></dl>
+  </div></section>
+
+  <section class="card" id="score-card" hidden><div class="card-body" style="gap:12px">
+    <h2>What a speech-quality model hears</h2>
+    <p class="lede" id="score-lede"></p>
+    <div class="scores"><table>
+      <thead><tr><th>Decoder</th><th>Signal</th><th>Background</th><th>Overall</th></tr></thead>
+      <tbody id="scores"></tbody>
+    </table></div>
+  </div></section>
+
+  <section class="card" id="voicing-card" hidden><div class="card-body" style="gap:12px">
+    <h2>What the radios sent</h2>
+    <p class="lede">These come from the encoded speech parameters, so they are the same whichever decoder plays them. Speech built from fully voiced frames, every harmonic a pure tone, tends to sound buzzy whatever the decoder.</p>
+    <div class="scores"><table><tbody id="voicing"></tbody></table></div>
+  </div></section>
+</main>
+
+<script>
+const DATA = __DATA__;
+const DECODERS = DATA.decoders;
+const KEYS = Object.keys(DECODERS);
+const LETTERS = "ABCDEFGHIJKLMNOP".split("");
+const STRIPES = ["--s1", "--s2", "--s3", "--s4", "--s5", "--s6"];
+document.getElementById("title").textContent = DATA.title;
+document.getElementById("lede").textContent = `${DATA.clips.length} calls, each decoded from the exact same IMBE bits by ${KEYS.length} vocoders. Levels are matched` +
+  (DATA.mime === "audio/mp4" ? " and every clip is AAC at 16 kHz, the way OpenMHz receives it." : ".") + " Switch decoders while a clip plays; playback continues from the same moment.";
+
+const ns = "vs-" + [...DATA.title + KEYS.join()].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7);
+const store = {
+  get(k, d) { try { const v = localStorage.getItem(ns + k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem(ns + k, JSON.stringify(v)); } catch (e) {} },
+};
+let seed = store.get("seed", null);
+if (seed === null) { seed = Math.floor(Math.random() * 1e9); store.set("seed", seed); }
+function rng(s) { return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; }; }
+const picks = store.get("picks", {});
+const revealBox = document.getElementById("reveal");
+revealBox.checked = store.get("reveal", false);
+
+function toUrl(b64) {
+  const bin = atob(b64); const u = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+  return URL.createObjectURL(new Blob([u], { type: DATA.mime }));
+}
+const fmt = t => (isFinite(t) ? t : 0).toFixed(1) + " s";
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+const players = [];
+DATA.clips.forEach((clip, ci) => {
+  const r = rng(seed + ci * 7919);
+  const order = KEYS.filter(k => clip.audio[k]);
+  for (let i = order.length - 1; i > 0; i--) { const j = Math.floor(r() * (i + 1)); [order[i], order[j]] = [order[j], order[i]]; }
+  const urls = Object.fromEntries(order.map(k => [k, toUrl(clip.audio[k])]));
+  const card = document.createElement("article");
+  card.className = "card";
+  card.innerHTML = `
+    <div class="lines"><span style="background:var(${STRIPES[ci % STRIPES.length]})"></span></div>
+    <div class="card-body">
+      <div class="meta"><h2>${esc(clip.name)}</h2><span class="desc">${esc(clip.desc || "")}</span><span class="tag">${esc([clip.tag, clip.seconds + " s"].filter(Boolean).join(" · "))}</span></div>
+      <div class="keys" role="group" aria-label="Decoder for ${esc(clip.name)}"></div>
+      <div class="transport">
+        <button class="play" id="play-${ci}">Play</button>
+        <div class="bar" role="slider" aria-label="Position" aria-valuemin="0" aria-valuemax="${clip.seconds}" tabindex="0"><i></i></div>
+        <span class="time">0.0 s</span>
+        <button class="pick" id="pick-${ci}" aria-pressed="false">Least robotic</button>
+      </div>
+      <p class="now" id="now-${ci}"></p>
+    </div>`;
+  card.querySelector(".keys").style.setProperty("--cols", Math.min(order.length, 6));
+  document.getElementById("clips").appendChild(card);
+  const audio = new Audio(); audio.preload = "auto";
+  const st = { clip, order, urls, audio, cur: order[0], keys: [] };
+  players.push(st);
+  const keysEl = card.querySelector(".keys");
+  order.forEach((k, i) => {
+    const b = document.createElement("button");
+    b.className = "key"; b.type = "button"; b.dataset.k = k; b.dataset.letter = LETTERS[i];
+    b.addEventListener("click", () => select(st, k));
+    keysEl.appendChild(b); st.keys.push(b);
+  });
+  const playBtn = card.querySelector(".play"), bar = card.querySelector(".bar"), fill = bar.querySelector("i"), time = card.querySelector(".time");
+  playBtn.addEventListener("click", () => { if (audio.paused) { stopOthers(st); audio.play(); } else audio.pause(); });
+  audio.addEventListener("play", () => playBtn.textContent = "Pause");
+  audio.addEventListener("pause", () => playBtn.textContent = "Play");
+  audio.addEventListener("timeupdate", () => { const d = audio.duration || clip.seconds; fill.style.width = (100 * audio.currentTime / d) + "%"; time.textContent = fmt(audio.currentTime); });
+  bar.addEventListener("click", e => { const rc = bar.getBoundingClientRect(); audio.currentTime = (audio.duration || clip.seconds) * (e.clientX - rc.left) / rc.width; });
+  bar.addEventListener("keydown", e => { if (e.key === "ArrowRight") audio.currentTime += 0.5; if (e.key === "ArrowLeft") audio.currentTime -= 0.5; });
+  card.querySelector(".pick").addEventListener("click", () => {
+    if (picks[clip.id] === st.cur) delete picks[clip.id]; else picks[clip.id] = st.cur;
+    store.set("picks", picks); render();
+  });
+  audio.src = urls[st.cur];
+});
+
+function stopOthers(st) { players.forEach(p => { if (p !== st) p.audio.pause(); }); }
+function select(st, k) {
+  const a = st.audio, t = a.currentTime, playing = !a.paused;
+  st.cur = k; a.src = st.urls[k];
+  a.addEventListener("loadedmetadata", () => { a.currentTime = Math.min(t, a.duration || t); if (playing) { stopOthers(st); a.play(); } }, { once: true });
+  render();
+}
+function render() {
+  const reveal = revealBox.checked;
+  players.forEach((st, ci) => {
+    st.keys.forEach(b => {
+      const k = b.dataset.k;
+      b.setAttribute("aria-pressed", String(k === st.cur));
+      b.innerHTML = reveal ? `${b.dataset.letter}<small>${esc(DECODERS[k].name)}</small>` : b.dataset.letter;
+      if (picks[st.clip.id] === k) b.insertAdjacentHTML("beforeend", '<span class="star" aria-label="your pick">★</span>');
+    });
+    document.getElementById("pick-" + ci).setAttribute("aria-pressed", String(picks[st.clip.id] === st.cur));
+    document.getElementById("now-" + ci).textContent = reveal ? `Playing: ${DECODERS[st.cur].name}. ${DECODERS[st.cur].note}` : `Playing: decoder ${LETTERS[st.order.indexOf(st.cur)]}.`;
+  });
+  const made = players.filter(st => picks[st.clip.id]);
+  const el = document.getElementById("picks");
+  if (!made.length) el.textContent = "No picks yet. Mark one decoder per call with Least robotic.";
+  else if (!reveal) el.textContent = `${made.length} of ${players.length} calls picked. Turn on decoder names to see which ones you chose.`;
+  else el.textContent = made.map(st => `${st.clip.name}: ${DECODERS[picks[st.clip.id]].name}`).join(" · ");
+}
+document.getElementById("legend").innerHTML = KEYS.map(k => `<dt>${esc(DECODERS[k].name)}</dt><dd>${esc(DECODERS[k].note)}</dd>`).join("");
+revealBox.addEventListener("change", () => { store.set("reveal", revealBox.checked); render(); });
+
+const scored = KEYS.filter(k => DECODERS[k].dns);
+if (scored.length) {
+  document.getElementById("score-card").hidden = false;
+  const o = scored.map(k => DECODERS[k].dns[2]);
+  document.getElementById("score-lede").textContent = `DNSMOS (Microsoft's no-reference speech quality predictor, 1–5) on ${DATA.calls} whole calls, level-matched. ` +
+    `Overall scores span ${(Math.max(...o) - Math.min(...o)).toFixed(2)}; differences under about 0.1 are within what the model can resolve.`;
+  document.getElementById("scores").innerHTML = scored.sort((a, b) => DECODERS[b].dns[2] - DECODERS[a].dns[2])
+    .map(k => `<tr><td>${esc(DECODERS[k].name)}</td>${DECODERS[k].dns.map(v => `<td class="num">${v.toFixed(2)}</td>`).join("")}</tr>`).join("");
+}
+if (DATA.voicing) {
+  const v = DATA.voicing;
+  document.getElementById("voicing-card").hidden = false;
+  document.getElementById("voicing").innerHTML = [
+    ["Speech frames", v.speech_frames.toLocaleString()],
+    ["Fully voiced frames", (100 * v.fully_voiced).toFixed(0) + " %  (a modern P25 fleet: about 11 %)"],
+    ["Voiced harmonics above 2 kHz", (100 * v.above_2k_voiced).toFixed(0) + " %"],
+    ["Mean pitch", v.mean_f0_hz.toFixed(0) + " Hz"],
+  ].map(([a, b]) => `<tr><th>${a}</th><td class="num">${b}</td></tr>`).join("");
+}
+render();
+</script>

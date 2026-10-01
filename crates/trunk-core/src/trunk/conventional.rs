@@ -254,11 +254,13 @@ pub struct ConvConfig {
     pub preroll_s: f64,
     /// A call longer than this is concluded and a new one started (0: never), s.
     pub max_call_s: f64,
+    /// The IMBE vocoder for P25 channels.
+    pub vocoder: mbe::Profile,
 }
 
 impl Default for ConvConfig {
     fn default() -> Self {
-        ConvConfig { squelch_db: 8.0, preroll_s: 0.3, max_call_s: 600.0 }
+        ConvConfig { squelch_db: 8.0, preroll_s: 0.3, max_call_s: 600.0, vocoder: mbe::Profile::Enhanced }
     }
 }
 
@@ -540,7 +542,7 @@ impl Conventional {
                     ch.bar_db = base;
                 }
                 if snr_db >= ch.bar_db {
-                    Self::open(ch, chz, now_s, self.cfg.preroll_s, self.bank_cfg, meter_thr, idx as u32, calls, rules, out);
+                    Self::open(ch, chz, now_s, self.cfg.preroll_s, self.bank_cfg, self.cfg.vocoder, meter_thr, idx as u32, calls, rules, out);
                 }
                 continue;
             }
@@ -568,7 +570,7 @@ impl Conventional {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn open(ch: &mut Chan, chz: &mut Channelizer, now_s: f64, preroll_s: f64, bank_cfg: BankConfig, meter_thr: f32, num: u32, calls: &mut CallManager, rules: &CallRules, out: &mut Vec<ConvOut>) {
+    fn open(ch: &mut Chan, chz: &mut Channelizer, now_s: f64, preroll_s: f64, bank_cfg: BankConfig, vocoder: mbe::Profile, meter_thr: f32, num: u32, calls: &mut CallManager, rules: &CallRules, out: &mut Vec<ConvOut>) {
         let (head, pre, start_sample) = chz.add_head(ch.offset_hz, HEAD_CUTOFF_HZ, preroll_s);
         let rate = chz.output_rate();
         let rx = match ch.cfg.mode {
@@ -576,7 +578,7 @@ impl Conventional {
             ConvMode::P25 => Rx::P25 {
                 meter: ChannelFilter::new(rate),
                 bank: Bank::new(rate, bank_cfg),
-                tracker: VoiceTracker::new(mbe::lcg(ch.cfg.freq_hz as u32)),
+                tracker: VoiceTracker::new(mbe::lcg(ch.cfg.freq_hz as u32), vocoder),
                 groups: Vec::new(),
                 t0: start_sample as f64 / chz.fs(),
                 rate,
