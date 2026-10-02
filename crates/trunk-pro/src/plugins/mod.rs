@@ -164,7 +164,7 @@ pub fn systems_of(cfg: &crate::config::Config) -> Vec<trunk_recorder_plugin::Sys
         .map(|(i, s)| trunk_recorder_plugin::SystemInfo {
             index: i as u16,
             short_name: s.short_name.clone(),
-            kind: if s.is_smartnet() { "smartnet" } else { "p25" }.into(),
+            kind: if s.is_smartnet() { "smartnet" } else if s.is_dmr() { "dmr" } else { "p25" }.into(),
             config: Value::Null,
         })
         .collect();

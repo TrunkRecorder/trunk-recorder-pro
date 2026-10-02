@@ -168,7 +168,6 @@ impl CallQueue {
         if left.is_empty() {
             return;
         }
-        let left = left;
         match &self.opts.save_to {
             Some(path) => match save(path, &left) {
                 Ok(()) => self.host.info(format!("{} {}(s) saved for next time", left.len(), self.opts.noun)),

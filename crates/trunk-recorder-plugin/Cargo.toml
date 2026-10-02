@@ -7,6 +7,11 @@ edition.workspace = true
 # Permissive, so a plugin can be licensed however its author likes.
 license = "MIT OR Apache-2.0"
 repository.workspace = true
+homepage = "https://github.com/TrunkRecorder/trunk-plugin-template"
+documentation = "https://docs.rs/trunk-recorder-plugin"
+readme = "README.md"
+keywords = ["trunk-recorder", "radio", "scanner", "p25", "plugin"]
+categories = ["development-tools", "multimedia::audio"]
 
 [features]
 default = ["sdk"]

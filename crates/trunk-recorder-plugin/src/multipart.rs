@@ -63,7 +63,7 @@ fn quote(s: &str) -> String {
     s.replace('"', "%22").replace(['\r', '\n'], " ")
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "sdk"))]
 mod tests {
     use super::*;
     use crate::testing::Request;

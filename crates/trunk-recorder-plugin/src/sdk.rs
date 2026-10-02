@@ -66,7 +66,7 @@ impl<C, S> Setup<C, S> {
     pub fn system_named(&self, short_name: &str) -> Option<&System<S>> {
         self.systems.iter().find(|s| s.short_name == short_name)
     }
-    /// Whether `call.concluded` will carry `format` ([`format`]).
+    /// Whether `call.concluded` will carry `format` ([`format`](mod@format)).
     pub fn has_format(&self, format: &str) -> bool {
         self.audio_formats.iter().any(|f| f == format)
     }
@@ -76,7 +76,7 @@ impl<C, S> Setup<C, S> {
 pub struct System<S> {
     pub index: u16,
     pub short_name: String,
-    /// "p25" | "smartnet" | "conventional"
+    /// "p25" | "smartnet" | "dmr" | "conventional"
     pub kind: String,
     pub config: Option<S>,
 }

@@ -61,7 +61,7 @@ pub struct Manifest {
     pub api: u32,
     /// Topics ([`topic`]) to receive. Nothing else is sent — or even built.
     pub subscribe: Vec<String>,
-    /// Extra audio formats ([`format`]) for `call.concluded`. The recorder
+    /// Extra audio formats ([`format`](mod@format)) for `call.concluded`. The recorder
     /// encodes each call once for every plugin that asks, when it can.
     pub audio_formats: Vec<String>,
     /// JSON Schema of the plugin's settings (an object), for the settings form.
@@ -158,7 +158,7 @@ pub struct SystemInfo {
     pub index: u16,
     /// The system's short name: its folder, and what users know it by.
     pub short_name: String,
-    /// "p25" | "smartnet" | "conventional"
+    /// "p25" | "smartnet" | "dmr" | "conventional"
     pub kind: String,
     /// The plugin's settings for this system (see [`Manifest::system_config`]);
     /// null when the user left them empty.
