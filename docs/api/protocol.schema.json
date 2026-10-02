@@ -3,6 +3,48 @@
   "title": "Trunk Recorder Pro interface protocol",
   "description": "The JSON messages on the WebSocket /api/ws. FromRecorder: server → client; ToRecorder: client → server. Generated from web/src/protocol.ts — see docs/api/README.md.",
   "definitions": {
+    "Access": {
+      "type": "object",
+      "properties": {
+        "user": {
+          "type": "string",
+          "description": "\"\" when there are no accounts."
+        },
+        "role": {
+          "$ref": "#/definitions/Role"
+        },
+        "accounts": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "user",
+        "role",
+        "accounts"
+      ],
+      "additionalProperties": false
+    },
+    "Account": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "role": {
+          "$ref": "#/definitions/Role"
+        },
+        "sessions": {
+          "type": "number",
+          "description": "Logged-in sessions."
+        }
+      },
+      "required": [
+        "name",
+        "role",
+        "sessions"
+      ],
+      "additionalProperties": false
+    },
     "AirspyGainMode": {
       "type": "string",
       "enum": [
@@ -1100,6 +1142,10 @@
                   ]
                 }
               ]
+            },
+            "access": {
+              "$ref": "#/definitions/Access",
+              "description": "Who this connection is (desktop app); `accounts` false: none yet, this computer only."
             }
           },
           "required": [
@@ -1128,6 +1174,39 @@
           "required": [
             "type",
             "radios"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "accounts"
+            },
+            "accounts": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/Account"
+              }
+            }
+          },
+          "required": [
+            "type",
+            "accounts"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "loggedOut"
+            }
+          },
+          "required": [
+            "type"
           ],
           "additionalProperties": false
         },
@@ -2541,6 +2620,13 @@
         }
       },
       "additionalProperties": false
+    },
+    "Role": {
+      "type": "string",
+      "enum": [
+        "admin",
+        "viewer"
+      ]
     },
     "SampleFormat": {
       "type": "string",
@@ -4277,6 +4363,124 @@
           },
           "required": [
             "type"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "accounts"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "addAccount"
+            },
+            "name": {
+              "type": "string"
+            },
+            "role": {
+              "$ref": "#/definitions/Role"
+            },
+            "password": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "name",
+            "role",
+            "password"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "removeAccount"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "name"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "setAccountRole"
+            },
+            "name": {
+              "type": "string"
+            },
+            "role": {
+              "$ref": "#/definitions/Role"
+            }
+          },
+          "required": [
+            "type",
+            "name",
+            "role"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "setAccountPassword"
+            },
+            "name": {
+              "type": "string"
+            },
+            "password": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "name",
+            "password"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "changePassword"
+            },
+            "old": {
+              "type": "string"
+            },
+            "password": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "old",
+            "password"
           ],
           "additionalProperties": false
         }

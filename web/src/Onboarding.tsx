@@ -2298,5 +2298,6 @@ const IconClock = () => icon(<><circle className="ln" cx="16" cy="16" r="12" /><
 const IconCopy = () => icon(<><rect className="ln" x="10" y="10" width="16" height="18" rx="2" /><path className="ln" d="M6 22 V6 a2 2 0 0 1 2 -2 h12" /><path className="acs" d="M14 16 h8 M14 21 h6" /></>);
 const IconFile = () => icon(<><path className="ln" d="M8 3 h11 l6 6 v20 h-17 z M19 3 v6 h6" /><path className="acs" d="M12 16 h9 M12 21 h9" /></>);
 export const IconPuzzle = () => icon(<><path className="ln" d="M6 9 h6 a3 3 0 1 1 6 0 h6 v6 a3 3 0 1 0 0 6 v6 h-18 z" /><circle className="ac" cx="12" cy="20" r="2" /></>);
+export const IconPeople = () => icon(<><circle className="ln" cx="12" cy="11" r="4" /><path className="ln" d="M4 26 a8 8 0 0 1 16 0" /><circle className="ac" cx="22" cy="12" r="3" /><path className="acs" d="M21 19 a7 7 0 0 1 8 7" /></>);
 export const IconUpload = () => icon(<><path className="ln" d="M6 22 v5 h20 v-5" /><path className="acs" d="M16 21 V5 M10 11 l6 -6 l6 6" /></>);
 const IconTagSmall = () => icon(<><path className="ln" d="M4 6 h12 l12 10 l-12 10 h-12 z" /><circle className="ac" cx="10" cy="16" r="2" /></>);

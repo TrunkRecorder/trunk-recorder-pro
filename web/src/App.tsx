@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { activeSystems, enabledChannels, formatMhz, startProblem, systemColor, systemWithChannel } from "./config.ts";
-import { addSite, closeGuide, dismissError, openGuide, downloadCall, pluginOn, quitApp, setListen, setNotice, setView, start, stop, transport, useApp, web, type AppState } from "./controller.ts";
+import { addSite, closeGuide, dismissError, openGuide, downloadCall, pluginOn, quitApp, readOnly, setListen, setNotice, setView, start, stop, transport, useApp, web, type AppState } from "./controller.ts";
+import { UserMenu } from "./Accounts.tsx";
 import { guideWanted, SetupGuide } from "./Onboarding.tsx";
 import { PluginsPage } from "./Plugins.tsx";
 import { BrowserStorage } from "./web/BrowserStorage.tsx";
@@ -730,7 +731,7 @@ function History({ s }: { s: AppState }) {
       <footer className="panel-foot muted small">
         {web ? (
           <BrowserStorage />
-        ) : s.config ? (
+        ) : s.config?.recording.captureDir ? (
           <span>
             Saved to <span className="mono">{s.config.recording.captureDir}</span>
           </span>
@@ -807,10 +808,12 @@ export function App() {
   const running = s.phase === "running" || s.phase === "starting";
   const problem = s.config ? startProblem(s.config) : "Connecting to the recorder…";
   const liveDongle = s.config?.sources.some((x) => x.kind === "rtlsdr") ?? false;
+  // A viewer watches: no setup, plugins, start or stop.
+  const ro = readOnly(s);
   // The setup guide: offered once, when the recorder first reports an empty config.
   const offered = useRef(false);
   useEffect(() => {
-    if (offered.current || !s.config || !s.connected) return;
+    if (offered.current || !s.config || !s.connected || ro) return;
     offered.current = true;
     if (s.phase === "idle" && guideWanted(s.config)) openGuide("start");
   }, [s.config, s.connected]);
@@ -840,7 +843,7 @@ export function App() {
             </p>
           </div>
         </div>
-        {!web && (
+        {!web && !ro && (
           <nav className="tabs" aria-label="Pages">
             <button className={s.view === "recorder" ? "on" : ""} aria-current={s.view === "recorder" ? "page" : undefined} onClick={() => setView("recorder")}>
               Recorder
@@ -856,7 +859,7 @@ export function App() {
           </nav>
         )}
         <div className="row">
-          {!running && s.connected && (
+          {!running && s.connected && !ro && (
             <button className="btn ghost" onClick={() => openGuide("start")} title="Step-by-step setup for a new system">
               Setup guide
             </button>
@@ -864,7 +867,7 @@ export function App() {
           <span className={`pill pill-${s.phase}`}>
             {!s.connected ? "Disconnected" : s.phase === "running" ? (liveDongle ? "Recording" : "Replaying") : s.phase === "idle" ? "Stopped" : s.phase === "starting" ? "Starting…" : "Stopping…"}
           </span>
-          {running ? (
+          {ro ? null : running ? (
             <button className="btn primary" onClick={stop}>
               Stop
             </button>
@@ -873,11 +876,12 @@ export function App() {
               Start
             </button>
           )}
-          {!web && s.connected && (
+          {!web && s.connected && !ro && (
             <button className="btn ghost" onClick={quitApp} title="Stop recording and quit the app">
               Quit
             </button>
           )}
+          {!web && <UserMenu />}
         </div>
       </header>
 
@@ -899,10 +903,11 @@ export function App() {
         </div>
       )}
       {s.ended && s.phase === "idle" && <div className="banner">Replay finished.</div>}
-      {!running && problem && s.connected && !s.error && <div className="banner subtle">{problem}</div>}
+      {!running && problem && s.connected && !s.error && !ro && <div className="banner subtle">{problem}</div>}
+      {ro && !running && s.connected && <div className="banner subtle">The recorder is stopped.</div>}
 
       <main>
-        {!web && s.view === "plugins" ? (
+        {!web && s.view === "plugins" && !ro ? (
           <PluginsPage />
         ) : running ? (
           <>
@@ -926,6 +931,8 @@ export function App() {
             </div>
             <Log s={s} />
           </>
+        ) : ro ? (
+          <History s={s} />
         ) : (
           <div className="columns setup-cols">
             <Setup />

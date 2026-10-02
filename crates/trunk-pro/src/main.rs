@@ -59,6 +59,7 @@
 //!     run one against calls already on disk.
 //! ```
 
+mod auth;
 mod dmrtool;
 mod logging;
 mod snrtool;
@@ -133,11 +134,14 @@ Trunk Recorder Pro — record a P25 trunked radio system from RTL-SDRs.
 usage:
   trunk-pro [serve] [--port 8080] [--bind 127.0.0.1] [--config file.json] [--no-open] [--start] [--ui folder]
       Start the recorder and open its web interface (the default). Use
-      --bind 0.0.0.0 to reach it from other machines (no authentication!).
+      --bind 0.0.0.0 to reach it from other machines: they need an account.
       --ui serves your own interface (a folder with an index.html) at /;
       the built-in one stays at /builtin/. See /api/docs.
       --start begins recording with the saved settings at once.
       --log-level debug: more in the log (stderr; files and syslog as set up).
+  trunk-pro account list | add <name> [--role admin|viewer] | remove <name> | role <name> <role> | passwd <name>
+      Accounts for the web interface: admins change things, viewers watch.
+      With none, only this computer can open it.
   trunk-pro devices [--usrp]
       List RTL-SDRs, Airspys and SoapySDR devices (and USRPs with --usrp);
       shows whether the optional USRP (UHD), Airspy (libairspy) and SoapySDR
@@ -183,6 +187,7 @@ fn main() {
         Some("capture") => capture(&Args::parse(&argv[1..])),
         Some("survey") => survey::cli(&Args::parse(&argv[1..])),
         Some("plugin") => plugins::cli::run(&Args::parse(&argv[1..])),
+        Some("account") => auth::cli(&Args::parse(&argv[1..])),
         _ => die(USAGE),
     }
 }
@@ -638,6 +643,7 @@ fn serve(a: &Args) {
         survey_last: Mutex::new(None),
         plugins: plugins::manage::Plugins::new(hub.clone()),
         home_dir,
+        accounts: auth::Accounts::load(auth::Accounts::path_for(&config_path)),
     });
     {
         let c = ctx.config.lock().unwrap();
@@ -647,6 +653,11 @@ fn serve(a: &Args) {
         log::info!("Capture Directory: {}", c.recording.capture_dir);
         let dir = if l.dir.is_empty() { config_path.parent().unwrap_or(Path::new(".")).join("logs") } else { config_path.parent().unwrap_or(Path::new(".")).join(&l.dir) };
         log::info!("Log Level: {} · Log to File: {}{} · System log: {}", level.unwrap_or(l.level).as_str(), l.file, if l.file { format!(" ({})", dir.display()) } else { String::new() }, l.syslog);
+        if let Some(p) = ctx.accounts.problem() {
+            log::error!("Accounts: {p}");
+        } else if ctx.accounts.is_open() && !addr.ip().is_loopback() {
+            log::warn!("No accounts yet: only this computer can open the interface. Make an admin account (Setup → Accounts, or `trunk-pro account add <name>`) to let others in.");
+        }
     }
     let auto = a.flag("start") || ctx.config.lock().unwrap().server.auto_start;
     if auto {

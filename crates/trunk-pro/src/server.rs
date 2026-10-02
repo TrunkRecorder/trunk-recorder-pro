@@ -21,20 +21,30 @@
 //!
 //! Every request passes [`guard`]: pages from other sites are refused unless
 //! listed in `server.allowedOrigins`.
+//!
+//! Accounts (see [`crate::auth`]): POST /api/login `{username, password}` sets
+//! the session cookie, POST /api/logout ends it, GET /api/whoami says who's
+//! logged in, and POST /api/setup makes the first admin (this computer only,
+//! while there are no accounts). The WebSocket, /calls/, /api/interfaces and
+//! /ui/ need a login. Viewers get the config without plugin settings and can
+//! only `listen` and `changePassword`; admins also have `accounts`,
+//! `addAccount`, `removeAccount`, `setAccountRole` and `setAccountPassword`.
 
+use std::net::SocketAddr;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Path as UrlPath, Request, State};
-use axum::http::{header, HeaderValue, StatusCode, Uri};
+use axum::extract::{ConnectInfo, Path as UrlPath, Request, State};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode, Uri};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Redirect, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::Router;
 use rust_embed::RustEmbed;
 use serde_json::{json, Value};
 
+use crate::auth::{LoginError, Role, Who};
 use crate::config::Config;
 use crate::runtime::{self, publish, Ctx, Out};
 use crate::sdr;
@@ -63,6 +73,10 @@ pub async fn serve(ctx: Arc<Ctx>, listener: std::net::TcpListener) -> std::io::R
     let app = Router::new()
         .route("/api/ws", get(ws))
         .route("/api/version", get(|| async { axum::Json(json!({ "app": APP_ID, "version": env!("CARGO_PKG_VERSION") })) }))
+        .route("/api/login", post(login))
+        .route("/api/logout", post(logout))
+        .route("/api/whoami", get(whoami))
+        .route("/api/setup", post(setup))
         .route("/api/docs", get(|| async { api_file("README.md") }))
         .route("/api/schema", get(|| async { api_file("protocol.schema.json") }))
         .route("/api/protocol.ts", get(|| async { ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], PROTOCOL).into_response() }))
@@ -101,7 +115,7 @@ pub async fn serve(ctx: Arc<Ctx>, listener: std::net::TcpListener) -> std::io::R
         // Let the sessions deliver it before the connections close.
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     };
-    axum::serve(listener, app).with_graceful_shutdown(shutdown).await
+    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).with_graceful_shutdown(shutdown).await
 }
 
 /// SIGHUP: reopen the log file (logrotate moved it).
@@ -326,7 +340,10 @@ fn mime_of(path: &str) -> String {
 }
 
 /// The interfaces: `GET /api/interfaces`.
-async fn interfaces_json(State(ctx): State<Arc<Ctx>>) -> Response {
+async fn interfaces_json(State(ctx): State<Arc<Ctx>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap) -> Response {
+    if who(&ctx, &headers, peer).is_none() {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
     axum::Json(interfaces_list(&ctx)).into_response()
 }
 
@@ -359,7 +376,11 @@ fn interfaces_list(ctx: &Ctx) -> Value {
 }
 
 /// `/ui/`: the interfaces, the examples and the docs, as links.
-async fn ui_index(State(ctx): State<Arc<Ctx>>) -> Response {
+async fn ui_index(State(ctx): State<Arc<Ctx>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap) -> Response {
+    // It shows folders on this computer: log in (on the built-in interface) first.
+    if who(&ctx, &headers, peer).is_none() {
+        return Redirect::to("/builtin/").into_response();
+    }
     let v = interfaces_list(&ctx);
     let mut rows = String::from("<li><a href=\"/builtin/\">Trunk Recorder Pro</a> <span>the built-in interface</span></li>");
     for i in v["interfaces"].as_array().into_iter().flatten() {
@@ -412,7 +433,10 @@ fn percent_decode(s: &str) -> Option<String> {
 }
 
 /// A recorded file, confined to the capture folder.
-async fn call_file(State(ctx): State<Arc<Ctx>>, UrlPath(path): UrlPath<String>) -> Response {
+async fn call_file(State(ctx): State<Arc<Ctx>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap, UrlPath(path): UrlPath<String>) -> Response {
+    if who(&ctx, &headers, peer).is_none() {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
     let dir = PathBuf::from(&ctx.config.lock().unwrap().recording.capture_dir);
     let rel = Path::new(&path);
     if rel.components().any(|c| !matches!(c, Component::Normal(_))) {
@@ -427,8 +451,232 @@ async fn call_file(State(ctx): State<Arc<Ctx>>, UrlPath(path): UrlPath<String>) 
     }
 }
 
-async fn ws(State(ctx): State<Arc<Ctx>>, up: WebSocketUpgrade) -> Response {
-    up.on_upgrade(move |socket| session(ctx, socket))
+async fn ws(State(ctx): State<Arc<Ctx>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap, up: WebSocketUpgrade) -> Response {
+    // (Pages from other sites were refused by `guard`.)
+    let Some(who) = who(&ctx, &headers, peer) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    up.on_upgrade(move |socket| session(ctx, socket, who))
+}
+
+// ─── Accounts ──────────────────────────────────────────────────────────────
+
+const COOKIE: &str = "trpro_session";
+
+/// Who sent `headers` from `peer` (None: nobody we let in).
+fn who(ctx: &Ctx, headers: &HeaderMap, peer: SocketAddr) -> Option<Who> {
+    ctx.accounts.who(peer.ip(), session_token(headers).as_deref())
+}
+
+fn session_token(headers: &HeaderMap) -> Option<String> {
+    headers.get_all(header::COOKIE).iter().filter_map(|v| v.to_str().ok()).flat_map(|v| v.split(';')).find_map(|c| {
+        let (k, v) = c.trim().split_once('=')?;
+        (k == COOKIE && !v.is_empty()).then(|| v.to_string())
+    })
+}
+
+/// An Origin header, when there is one, names the host the request went to.
+fn same_origin(headers: &HeaderMap) -> bool {
+    let Some(origin) = headers.get(header::ORIGIN).and_then(|o| o.to_str().ok()) else { return true };
+    let host = headers.get(header::HOST).and_then(|h| h.to_str().ok()).unwrap_or("");
+    origin.split_once("://").map(|(_, h)| h) == Some(host)
+}
+
+/// A JSON body, refused unless it's sent as JSON (a form on another site can't).
+fn json_body(headers: &HeaderMap, body: &[u8]) -> Option<Value> {
+    let ct = headers.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("");
+    if !ct.starts_with("application/json") {
+        return None;
+    }
+    serde_json::from_slice(body).ok()
+}
+
+fn who_json(ctx: &Ctx, who: Option<&Who>, local: bool) -> Value {
+    json!({
+        "user": who.map(|w| w.user.clone()),
+        "role": who.map(|w| w.role.as_str()),
+        // No accounts yet: this computer may make the first one.
+        "setup": ctx.accounts.is_open(),
+        "local": local,
+        "problem": ctx.accounts.problem(),
+    })
+}
+
+async fn whoami(State(ctx): State<Arc<Ctx>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap) -> Response {
+    let w = who(&ctx, &headers, peer);
+    let code = if w.is_some() { StatusCode::OK } else { StatusCode::UNAUTHORIZED };
+    (code, axum::Json(who_json(&ctx, w.as_ref(), peer.ip().is_loopback()))).into_response()
+}
+
+fn session_cookie(token: &str, max_age: i64) -> String {
+    format!("{COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={max_age}")
+}
+
+async fn login(State(ctx): State<Arc<Ctx>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap, body: axum::body::Bytes) -> Response {
+    let Some(v) = json_body(&headers, &body) else {
+        return StatusCode::UNSUPPORTED_MEDIA_TYPE.into_response();
+    };
+    let (name, password) = (v["username"].as_str().unwrap_or("").to_string(), v["password"].as_str().unwrap_or("").to_string());
+    let ctx2 = ctx.clone();
+    let r = tokio::task::spawn_blocking(move || ctx2.accounts.login(&name, &password, peer.ip())).await;
+    match r {
+        Ok(Ok((token, w))) => {
+            let mut res = axum::Json(who_json(&ctx, Some(&w), peer.ip().is_loopback())).into_response();
+            if let Ok(c) = session_cookie(&token, 30 * 24 * 3600).parse() {
+                res.headers_mut().insert(header::SET_COOKIE, c);
+            }
+            res
+        }
+        Ok(Err(LoginError::Wait(s))) => {
+            (StatusCode::TOO_MANY_REQUESTS, [(header::RETRY_AFTER, s.to_string())], axum::Json(json!({ "error": format!("Too many wrong passwords. Try again in {} minutes.", s.div_ceil(60)) })))
+                .into_response()
+        }
+        _ => (StatusCode::UNAUTHORIZED, axum::Json(json!({ "error": "Wrong name or password." }))).into_response(),
+    }
+}
+
+async fn logout(State(ctx): State<Arc<Ctx>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap) -> Response {
+    if let Some(w) = who(&ctx, &headers, peer) {
+        ctx.accounts.logout(&w);
+    }
+    let mut res = StatusCode::NO_CONTENT.into_response();
+    if let Ok(c) = session_cookie("", 0).parse() {
+        res.headers_mut().insert(header::SET_COOKIE, c);
+    }
+    res
+}
+
+/// The first admin account: only from this computer, only while there are none.
+async fn setup(State(ctx): State<Arc<Ctx>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap, body: axum::body::Bytes) -> Response {
+    let Some(v) = json_body(&headers, &body) else {
+        return StatusCode::UNSUPPORTED_MEDIA_TYPE.into_response();
+    };
+    if !peer.ip().is_loopback() || !ctx.accounts.is_open() || !same_origin(&headers) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let (name, password) = (v["username"].as_str().unwrap_or("").to_string(), v["password"].as_str().unwrap_or("").to_string());
+    let ctx2 = ctx.clone();
+    let r = tokio::task::spawn_blocking(move || {
+        ctx2.accounts.add(&name, Role::Admin, &password)?;
+        ctx2.accounts.login(&name, &password, peer.ip()).map_err(|_| "Couldn't log in".to_string())
+    })
+    .await
+    .unwrap_or_else(|e| Err(e.to_string()));
+    match r {
+        Ok((token, w)) => {
+            let mut res = axum::Json(who_json(&ctx, Some(&w), true)).into_response();
+            if let Ok(c) = session_cookie(&token, 30 * 24 * 3600).parse() {
+                res.headers_mut().insert(header::SET_COOKIE, c);
+            }
+            res
+        }
+        Err(e) => (StatusCode::BAD_REQUEST, axum::Json(json!({ "error": e }))).into_response(),
+    }
+}
+
+/// The config as a viewer sees it: no plugin settings (keys, passwords) or paths.
+fn redact_config(mut c: Value) -> Value {
+    if let Some(p) = c.get_mut("plugins").and_then(Value::as_object_mut) {
+        for e in p.values_mut() {
+            if let Some(e) = e.as_object_mut() {
+                e.remove("settings");
+                e.remove("path");
+            }
+        }
+    }
+    for key in ["systems", "conventional"] {
+        for s in c[key].as_array_mut().into_iter().flatten() {
+            if let Some(s) = s.as_object_mut() {
+                s.remove("plugins");
+            }
+        }
+    }
+    if let Some(r) = c.get_mut("recording").and_then(Value::as_object_mut) {
+        r.insert("captureDir".into(), json!(""));
+    }
+    c
+}
+
+/// A message on its way to a viewer: the config and plugin list redacted.
+fn for_viewer(text: &str) -> Option<String> {
+    if !text.contains(r#""type":"config""#) && !text.contains(r#""type":"plugins""#) && !text.contains(r#""type":"hello""#) {
+        return None;
+    }
+    let mut v: Value = serde_json::from_str(text).ok()?;
+    match v["type"].as_str() {
+        Some("config") | Some("hello") => {
+            let c = v["config"].take();
+            v["config"] = redact_config(c);
+            if let Some(o) = v.as_object_mut() {
+                o.remove("configPath");
+            }
+        }
+        Some("plugins") => {
+            for p in v["plugins"].as_array_mut().into_iter().flatten() {
+                if let Some(p) = p.as_object_mut() {
+                    // Paths and problems (which quote them) are for admins.
+                    p.remove("path");
+                    p.remove("unlistedFrom");
+                    if p.get("problem").is_some_and(|x| !x.is_null()) {
+                        p.insert("problem".into(), json!("unavailable"));
+                    }
+                }
+            }
+        }
+        _ => return None,
+    }
+    Some(v.to_string())
+}
+
+/// The `accounts` message.
+fn accounts_json(ctx: &Ctx) -> Value {
+    let list: Vec<Value> = ctx.accounts.list().into_iter().map(|(name, role, sessions)| json!({ "name": name, "role": role.as_str(), "sessions": sessions })).collect();
+    json!({ "type": "accounts", "accounts": list })
+}
+
+/// Commands a viewer may send.
+fn viewer_may(kind: &str) -> bool {
+    matches!(kind, "listen" | "plugins" | "changePassword")
+}
+
+/// Account commands (`who` is an admin, except for `changePassword`).
+async fn account_command(ctx: &Arc<Ctx>, v: &Value, who: &Who) -> Option<Value> {
+    let kind = v["type"].as_str()?.to_string();
+    if kind == "accounts" {
+        return Some(accounts_json(ctx));
+    }
+    let (ctx2, v, who) = (ctx.clone(), v.clone(), who.clone());
+    let r = tokio::task::spawn_blocking(move || {
+        let a = &ctx2.accounts;
+        let s = |k: &str| v[k].as_str().unwrap_or("").to_string();
+        match kind.as_str() {
+            "addAccount" => a.add(&s("name"), Role::parse(&s("role")).ok_or("A role is admin or viewer.")?, &s("password")),
+            "removeAccount" => a.remove(&s("name")),
+            "setAccountRole" => a.set_role(&s("name"), Role::parse(&s("role")).ok_or("A role is admin or viewer.")?),
+            "setAccountPassword" => a.set_password(&s("name"), &s("password"), if s("name") == who.user { who.session.as_deref() } else { None }),
+            "changePassword" => {
+                if who.user.is_empty() {
+                    return Err("There are no accounts yet.".into());
+                }
+                if !a.check(&who.user, &s("old")) {
+                    return Err("The current password isn't right.".into());
+                }
+                a.set_password(&who.user, &s("password"), who.session.as_deref())
+            }
+            _ => Ok(()),
+        }
+        .map(|_| kind)
+    })
+    .await
+    .unwrap_or_else(|e| Err(e.to_string()));
+    match r {
+        Ok(kind) => {
+            // Everyone's list changes; the first account ends this computer's open access.
+            publish(&ctx.hub, accounts_json(ctx));
+            Some(json!({ "type": "notice", "message": if kind == "changePassword" { "Password changed." } else { "Saved." } }))
+        }
+        Err(e) => Some(json!({ "type": "error", "message": e })),
+    }
 }
 
 /// End a running survey (frees its radio) and tell the browsers.
@@ -561,17 +809,28 @@ pub(crate) fn hello_json(ctx: &Ctx, radios: Value) -> Value {
     })
 }
 
-async fn session(ctx: Arc<Ctx>, mut socket: WebSocket) {
+async fn session(ctx: Arc<Ctx>, mut socket: WebSocket, who: Who) {
+    let viewer = who.role == Role::Viewer;
     let mut rx = ctx.hub.subscribe();
     let radios = tokio::task::spawn_blocking(|| crate::radio::radios_json(false)).await.unwrap_or(Value::Null);
-    let hello = hello_json(&ctx, radios);
-    if socket.send(Message::Text(hello.to_string().into())).await.is_err() {
+    let mut hello = hello_json(&ctx, radios);
+    hello["access"] = json!({ "user": who.user, "role": who.role.as_str(), "accounts": !ctx.accounts.is_open() });
+    let out = |v: Value| {
+        let t = v.to_string();
+        if viewer {
+            for_viewer(&t).unwrap_or(t)
+        } else {
+            t
+        }
+    };
+    if socket.send(Message::Text(out(hello).into())).await.is_err() {
         return;
     }
-    let plugins = plugins_json(&ctx).await;
-    if socket.send(Message::Text(plugins.to_string().into())).await.is_err() {
+    if socket.send(Message::Text(out(plugins_json(&ctx).await).into())).await.is_err() {
         return;
     }
+    // A session that's been logged out, removed or changed is closed.
+    let mut check = tokio::time::interval(std::time::Duration::from_secs(10));
     // Live audio: off until the browser asks; optionally one system and/or talkgroup only.
     let mut listen: Option<Listen> = None;
     loop {
@@ -579,6 +838,11 @@ async fn session(ctx: Arc<Ctx>, mut socket: WebSocket) {
             msg = rx.recv() => match msg {
                 Ok(out) => {
                     let m = match &*out {
+                        Out::Text(s) if viewer => match for_viewer(s) {
+                            Some(r) => Message::Text(r.into()),
+                            None if s.contains(r#""type":"accounts""#) => continue,
+                            None => Message::Text(s.clone().into()),
+                        },
                         Out::Text(s) => Message::Text(s.clone().into()),
                         Out::Audio { system, tg, frame } => match listen {
                             Some(l) if l.wants(*system, *tg) => Message::Binary(frame.clone().into()),
@@ -594,11 +858,36 @@ async fn session(ctx: Arc<Ctx>, mut socket: WebSocket) {
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(_) => return,
             },
+            _ = check.tick() => {
+                if !ctx.accounts.still(&who) {
+                    let _ = socket.send(Message::Text(json!({ "type": "loggedOut" }).to_string().into())).await;
+                    let _ = socket.send(Message::Close(None)).await;
+                    return;
+                }
+            },
             msg = socket.recv() => match msg {
                 Some(Ok(Message::Text(t))) => {
                     let Ok(v) = serde_json::from_str::<Value>(&t) else { continue };
-                    if let Some(reply) = command(&ctx, &v, &mut listen).await {
-                        if socket.send(Message::Text(reply.to_string().into())).await.is_err() {
+                    let kind = v["type"].as_str().unwrap_or("");
+                    if !ctx.accounts.still(&who) {
+                        let _ = socket.send(Message::Text(json!({ "type": "loggedOut" }).to_string().into())).await;
+                        return;
+                    }
+                    let reply = if viewer && !viewer_may(kind) {
+                        Some(json!({ "type": "error", "message": "Your account can watch, not change things: ask an admin." }))
+                    } else if matches!(kind, "accounts" | "addAccount" | "removeAccount" | "setAccountRole" | "setAccountPassword" | "changePassword") {
+                        account_command(&ctx, &v, &who).await
+                    } else if kind == "plugins" && viewer {
+                        Some(Value::String(out(plugins_json(&ctx).await)))
+                    } else {
+                        command(&ctx, &v, &mut listen).await
+                    };
+                    if let Some(reply) = reply {
+                        let text = match reply {
+                            Value::String(t) => t,
+                            r => r.to_string(),
+                        };
+                        if socket.send(Message::Text(text.into())).await.is_err() {
                             return;
                         }
                     }

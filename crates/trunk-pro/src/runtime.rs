@@ -68,6 +68,7 @@ pub struct Ctx {
     pub plugins: plugins::manage::Plugins,
     /// `--ui <folder>`: the interface / shows, over `server.home`.
     pub home_dir: Option<PathBuf>,
+    pub accounts: crate::auth::Accounts,
 }
 
 impl Ctx {

@@ -100,8 +100,28 @@ The log goes to stderr in Trunk Recorder's format (and, as Setup → Recording
 more. On a machine that records unattended, turn on **Start recording when the app
 starts** (or run `trunk-pro --start`); Ctrl-C, SIGTERM and **Quit** all save
 the calls in progress before exiting. `--bind 0.0.0.0` makes the interface
-reachable from other machines — it has no login, so only on a network you
-trust (or use `ssh -L 8080:localhost:8080`).
+reachable from other machines.
+
+### Accounts
+
+With no accounts, only the recorder's own computer can open the interface.
+To let others in, make an admin account in **Setup → Accounts** (or
+`trunk-pro account add <name>`), then add accounts for the others:
+
+| Role | Can |
+| ---- | --- |
+| Admin | Everything: setup, plugins, start and stop, accounts |
+| Viewer | Watch live status and calls, listen, play recordings. Plugin settings, file paths and accounts are hidden. |
+
+Accounts are kept in `accounts.json` beside the config, readable by its owner
+only; passwords are stored as salted PBKDF2-HMAC-SHA256 hashes. A login lasts
+30 days of disuse. Ten wrong passwords from one address make it wait 15
+minutes. `trunk-pro account list | add | remove | role | passwd` manages
+accounts from the command line, for example on a headless machine or to get
+back in after forgetting a password.
+
+The interface has no HTTPS of its own: to reach it over the internet, put it
+behind a reverse proxy that adds HTTPS (or use `ssh -L 8080:localhost:8080`).
 
 **Interfaces of your own** (a scanner page, a wall display, a dashboard)
 can do everything the built-in one does: see [docs/api](docs/api/README.md)

@@ -34,7 +34,8 @@ import {
 import { currentView, dismissTodo, downloadText, findRadios, openGuide, refreshDevices, setChannelFile, setNotice, setSetupTab, setView, updateConfig, useApp, web, type SetupTab } from "./controller.ts";
 import { InterfacesPanel } from "./Interfaces.tsx";
 import { M4aSettings, PluginSetupPanel, renameSystemRefs, SystemPluginSettings } from "./Plugins.tsx";
-import { IconAntenna, IconDongle, IconFolder, IconPuzzle, IconTower } from "./Onboarding.tsx";
+import { AccountsPanel } from "./Accounts.tsx";
+import { IconAntenna, IconDongle, IconFolder, IconPeople, IconPuzzle, IconTower } from "./Onboarding.tsx";
 import type { AirspyGainMode, Channel, Config, Conventional, HeardCode, LogSettings, Recording, RecordingOverride, RecordingRules, SiteIdentity, SoapyState, Source, System, UnitNames } from "./protocol.ts";
 import { SurveyPanel } from "./Survey.tsx";
 import { parseTalkgroupCsv } from "./talkgroups.ts";
@@ -2115,6 +2116,7 @@ const TABS: { id: SetupTab; label: string; icon: () => React.ReactNode }[] = [
   { id: "radios", label: "Radios", icon: IconDongle },
   { id: "recording", label: "Recording", icon: IconFolder },
   { id: "plugins", label: "Plugins", icon: IconPuzzle },
+  { id: "accounts", label: "Accounts", icon: IconPeople },
 ];
 
 /** The setup page's tabs: how many of each, and what an import left to do there. */
@@ -2127,10 +2129,11 @@ function SetupTabs(props: { c: Config; tab: SetupTab }) {
     radios: props.c.sources.length,
     recording: null,
     plugins: s.plugins ? s.plugins.plugins.length : null,
+    accounts: s.accounts && s.access?.accounts ? s.accounts.length : null,
   };
   return (
     <nav className="setup-tabs" role="tablist" aria-label="Setup">
-      {TABS.filter((t) => t.id !== "plugins" || !web).map((t) => {
+      {TABS.filter((t) => (t.id !== "plugins" && t.id !== "accounts") || !web).map((t) => {
         const todo = todos.filter((x) => tabOf(x.target) === t.id).length;
         return (
           <button key={t.id} role="tab" aria-selected={props.tab === t.id} className={props.tab === t.id ? "on" : ""} onClick={() => setSetupTab(t.id)}>
@@ -2304,6 +2307,7 @@ export function Setup() {
       {tab === "recording" && !web && <InterfacesPanel />}
 
       {tab === "plugins" && !web && <PluginSetupPanel />}
+      {tab === "accounts" && !web && <AccountsPanel />}
     </div>
   );
 }

@@ -69,6 +69,8 @@ export class WorkerTransport implements Transport {
       msg.type === "installPlugin"
     )
       return;
+    // Accounts are the desktop app's (the browser build is one person's).
+    if (msg.type === "accounts" || msg.type === "addAccount" || msg.type === "removeAccount" || msg.type === "setAccountRole" || msg.type === "setAccountPassword" || msg.type === "changePassword") return;
     if (msg.type === "start" || msg.type === "surveyStart") this.post({ type: "files", files: this.files });
     this.post(msg);
   }

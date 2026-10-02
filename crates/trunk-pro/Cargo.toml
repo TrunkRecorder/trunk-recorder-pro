@@ -33,6 +33,8 @@ log = { version = "0.4", features = ["std"] }
 # over rustls so builds still cross-compile; checksums; .tar.gz and .zip.
 ureq = "3"
 sha2 = "0.11"
+# Account salts and session tokens (auth.rs).
+getrandom = "0.3"
 flate2 = "1"
 tar = "0.4"
 zip = { version = "8", default-features = false, features = ["deflate-flate2"] }

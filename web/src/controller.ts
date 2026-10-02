@@ -5,6 +5,8 @@
 import { useSyncExternalStore } from "react";
 import { LivePlayer } from "./livePlayer.ts";
 import type {
+  Access,
+  Account,
   HeardCode,
   AudioChunk,
   CallEntry,
@@ -22,6 +24,7 @@ import type {
   PluginStore,
   PluginValues,
   Radios,
+  Role,
   SourceStatus,
   SiteIdentity,
   Spectrum,
@@ -95,9 +98,13 @@ export interface AppState {
   todo: ImportTodo[];
   /** The setup page's tab. */
   setupTab: SetupTab;
+  /** Who this is (desktop app); null in the web build. */
+  access: Access | null;
+  /** The accounts, when an admin has asked. */
+  accounts: Account[] | null;
 }
 
-export type SetupTab = "systems" | "conventional" | "radios" | "recording" | "plugins";
+export type SetupTab = "systems" | "conventional" | "radios" | "recording" | "plugins" | "accounts";
 
 export type View = "recorder" | "plugins";
 
@@ -150,6 +157,8 @@ let state: AppState = {
   guide: null,
   todo: loadTodo(),
   setupTab: loadSetupTab(),
+  access: null,
+  accounts: null,
 };
 
 const listeners = new Set<() => void>();
@@ -202,6 +211,7 @@ transport.onMessage = (m: FromRecorder) => {
         ended: m.phase.ended,
         surveyBands: m.surveyBands ?? [],
         survey: m.survey ?? { stage: "idle" },
+        access: m.access ?? null,
       });
       if (state.listen) transport.send({ type: "listen", on: true, system: state.listenSystem, talkgroup: state.listenTalkgroup });
       break;
@@ -288,6 +298,13 @@ transport.onMessage = (m: FromRecorder) => {
       set({ pluginInstalls: installs });
       break;
     }
+    case "accounts":
+      set({ accounts: m.accounts });
+      break;
+    case "loggedOut":
+      transport.close?.();
+      location.reload();
+      break;
     case "quit":
       player.stop();
       transport.close?.();
@@ -295,6 +312,37 @@ transport.onMessage = (m: FromRecorder) => {
       break;
   }
 };
+
+// ── accounts ─────────────────────────────────────────────────────────────────
+
+/** Only watching: no setup, plugins, start or stop. */
+export function readOnly(s: AppState): boolean {
+  return s.access?.role === "viewer";
+}
+
+export function fetchAccounts(): void {
+  transport.send({ type: "accounts" });
+}
+export function addAccount(name: string, role: Role, password: string): void {
+  transport.send({ type: "addAccount", name, role, password });
+}
+export function removeAccount(name: string): void {
+  transport.send({ type: "removeAccount", name });
+}
+export function setAccountRole(name: string, role: Role): void {
+  transport.send({ type: "setAccountRole", name, role });
+}
+export function setAccountPassword(name: string, password: string): void {
+  transport.send({ type: "setAccountPassword", name, password });
+}
+export function changePassword(old: string, password: string): void {
+  transport.send({ type: "changePassword", old, password });
+}
+export async function logOut(): Promise<void> {
+  await fetch("/api/logout", { method: "POST" }).catch(() => {});
+  transport.close?.();
+  location.reload();
+}
 
 // ── config ───────────────────────────────────────────────────────────────────
 
@@ -477,7 +525,7 @@ export function closeGuide(): void {
 function loadSetupTab(): SetupTab {
   try {
     const t = localStorage.getItem(TAB_KEY);
-    if (t === "systems" || t === "conventional" || t === "radios" || t === "recording" || t === "plugins") return t;
+    if (t === "systems" || t === "conventional" || t === "radios" || t === "recording" || t === "plugins" || t === "accounts") return t;
   } catch {
     // Not remembered.
   }

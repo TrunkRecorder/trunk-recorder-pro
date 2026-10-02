@@ -49,6 +49,8 @@ export class WsTransport implements Transport {
       this.ws = null;
       if (this.closed) return;
       this.onConnection(false);
+      // Refused or logged out (not just disconnected): back to the login page.
+      fetch("/api/whoami").then((r) => r.status === 401 && location.reload(), () => {});
       setTimeout(() => this.connect(), this.retryMs);
       this.retryMs = Math.min(5000, this.retryMs * 2);
     };

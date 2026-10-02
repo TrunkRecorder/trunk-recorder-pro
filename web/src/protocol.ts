@@ -772,8 +772,14 @@ export type FromRecorder =
       radios?: Radios;
       surveyBands?: SurveyBand[];
       survey?: { type: "survey" } & SurveyState;
+      /** Who this connection is (desktop app); `accounts` false: none yet, this computer only. */
+      access?: Access;
     }
   | { type: "radios"; radios: Radios }
+  /** The accounts (admins only). */
+  | { type: "accounts"; accounts: Account[] }
+  /** This session was logged out, removed or changed: log in again. */
+  | { type: "loggedOut" }
   | ({ type: "state" } & PhaseState)
   | { type: "config"; config: Config }
   | { type: "status"; status: EngineStatus; sources: SourceStatus[]; load: number; calls: CallView[] }
@@ -833,7 +839,41 @@ export type ToRecorder =
   | { type: "installPlugin"; id: string }
   /** Install a plugin from a GitHub release that isn't in the registry (its latest, or `tag`). */
   | { type: "installPlugin"; repository: string; tag?: string }
-  | { type: "quit" };
+  | { type: "quit" }
+  /** Accounts (admins): the list, and changes to it. */
+  | { type: "accounts" }
+  | { type: "addAccount"; name: string; role: Role; password: string }
+  | { type: "removeAccount"; name: string }
+  | { type: "setAccountRole"; name: string; role: Role }
+  | { type: "setAccountPassword"; name: string; password: string }
+  /** Anyone: their own password. */
+  | { type: "changePassword"; old: string; password: string };
+
+export type Role = "admin" | "viewer";
+
+export interface Access {
+  /** "" when there are no accounts. */
+  user: string;
+  role: Role;
+  accounts: boolean;
+}
+
+export interface Account {
+  name: string;
+  role: Role;
+  /** Logged-in sessions. */
+  sessions: number;
+}
+
+/** GET /api/whoami */
+export interface WhoAmI {
+  user: string | null;
+  role: Role | null;
+  /** No accounts yet: this computer may make the first one. */
+  setup: boolean;
+  local: boolean;
+  problem: string | null;
+}
 
 /** Live audio: one 20 ms (or longer) chunk of a call, 8 kHz. */
 export interface AudioChunk {
