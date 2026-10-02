@@ -157,7 +157,10 @@ impl Bank {
 
     /// How far above the channel the carrier is, Hz, from whichever receiver measures it.
     pub fn offset_hz(&self) -> Option<f32> {
-        self.rx.iter().find_map(|r| r.demod.offset_hz())
+        self.rx.iter().find_map(|r| match &r.demod {
+            Demod::Cqpsk(c) => c.offset_hz(),
+            Demod::Other(d) => d.offset_hz(),
+        })
     }
 
     /// Frames found per receiver (CQPSK, CQPSK + EQ, C4FM, as configured).
