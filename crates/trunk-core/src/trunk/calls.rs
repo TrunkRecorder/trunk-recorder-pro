@@ -39,6 +39,8 @@ impl CallIds {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Reason {
+    /// Marked Ignore in the talkgroup file.
+    Ignored,
     UnknownTg,
     Encrypted,
     NoSource,
@@ -48,6 +50,7 @@ pub enum Reason {
 impl Reason {
     pub fn as_str(self) -> &'static str {
         match self {
+            Reason::Ignored => "ignored",
             Reason::UnknownTg => "unknown_tg",
             Reason::Encrypted => "encrypted",
             Reason::NoSource => "no_source",
@@ -122,11 +125,14 @@ pub struct CallConfig {
     pub record_encrypted: bool,
     pub record_unit_to_unit: bool,
     pub new_call_from_update: bool,
+    /// A recorded call this long is saved and a new one carries on from
+    /// where it ended (Trunk Recorder's maxDuration); 0 = no limit.
+    pub max_call_s: f64,
 }
 
 impl Default for CallConfig {
     fn default() -> Self {
-        CallConfig { call_timeout_s: 3.0, record_unknown: true, record_encrypted: false, record_unit_to_unit: true, new_call_from_update: true }
+        CallConfig { call_timeout_s: 3.0, record_unknown: true, record_encrypted: false, record_unit_to_unit: true, new_call_from_update: true, max_call_s: 0.0 }
     }
 }
 
@@ -233,9 +239,11 @@ impl CallManager {
         true
     }
 
-    /// Advance the clock: end calls that have gone quiet.
+    /// Advance the clock: end calls that have gone quiet, and split those
+    /// past the length limit.
     pub fn tick(&mut self, now_s: f64, host: &mut dyn RecorderHost, ev: &mut Vec<CallEvent>) {
         let t = self.cfg.call_timeout_s;
+        let max = self.cfg.max_call_s;
         let mut i = self.calls.len();
         while i > 0 {
             i -= 1;
@@ -246,9 +254,35 @@ impl CallManager {
                 let c = self.calls.remove(i);
                 host.stop_recording(&c);
                 ev.push(CallEvent::End(c));
+            } else if max > 0.0 && c.recording && now_s - c.start_s >= max {
+                self.split(i, now_s, host, ev);
             }
         }
         self.patches.expire(now_s);
+    }
+
+    /// End call `i` and carry on in a new one on the same channel: the new
+    /// call takes the voice channel over first, so it stays open and nothing
+    /// is lost or replayed between the two.
+    fn split(&mut self, i: usize, now_s: f64, host: &mut dyn RecorderHost, ev: &mut Vec<CallEvent>) {
+        let old = &self.calls[i];
+        let mut c = Call {
+            id: self.ids.next(),
+            recording: false,
+            reason: None,
+            start_s: now_s,
+            last_update_s: old.last_update_s.max(now_s),
+            last_audio_s: now_s,
+            // The one talking now carries on.
+            sources: old.sources.last().map(|s| CallSource { time_s: now_s, ..s.clone() }).into_iter().collect(),
+            ..old.clone()
+        };
+        Self::admit(&mut c, &self.cfg, &self.talkgroups, host);
+        let old = self.calls.remove(i);
+        host.stop_recording(&old);
+        ev.push(CallEvent::End(old));
+        ev.push(CallEvent::Start(c.clone()));
+        self.calls.push(c);
     }
 
     /// End everything (source stopped).
@@ -338,7 +372,9 @@ impl CallManager {
     fn admit(c: &mut Call, cfg: &CallConfig, talkgroups: &Talkgroups, host: &mut dyn RecorderHost) {
         c.reason = None;
         let known = c.talkgroup_info.is_some() || c.patched_talkgroups.iter().any(|g| talkgroups.contains_key(g));
-        if !known && !cfg.record_unknown && !talkgroups.is_empty() {
+        if c.talkgroup_info.as_ref().is_some_and(|t| t.ignore) {
+            c.reason = Some(Reason::Ignored);
+        } else if !known && !cfg.record_unknown && !talkgroups.is_empty() {
             c.reason = Some(Reason::UnknownTg);
         } else if c.encrypted && !cfg.record_encrypted {
             // No audio to record, but its terminators' link control is in
@@ -426,12 +462,38 @@ mod tests {
     }
 
     #[test]
+    fn a_call_past_the_length_limit_carries_on_in_a_new_one() {
+        let mut m = CallManager::new(CallConfig { max_call_s: 10.0, ..Default::default() }, Talkgroups::default());
+        let mut ev = Vec::new();
+        m.handle(&[msg(MessageType::Grant, 0.0, 101)], &mut Host, &mut ev);
+        for k in 1..=12 {
+            m.handle(&[msg(MessageType::Update, k as f64, 101)], &mut Host, &mut ev);
+            m.note_audio(m.calls[0].id, k as f64);
+            m.tick(k as f64, &mut Host, &mut ev);
+        }
+        let ends: Vec<(CallId, f64)> = ev.iter().filter_map(|e| if let CallEvent::End(c) = e { Some((c.id, c.start_s)) } else { None }).collect();
+        assert_eq!(ends, [(1, 0.0)]);
+        assert_eq!((m.calls.len(), m.calls[0].id, m.calls[0].start_s), (1, 2, 10.0));
+        assert!(m.calls[0].recording && m.calls[0].sources[0].src == 7);
+    }
+
+    #[test]
+    fn an_ignored_talkgroup_is_not_recorded() {
+        let tgs = [(101, Talkgroup { number: 101, ignore: true, ..Default::default() })].into_iter().collect();
+        let mut m = CallManager::new(CallConfig::default(), tgs);
+        let mut ev = Vec::new();
+        m.handle(&[msg(MessageType::Grant, 0.0, 101), msg(MessageType::Grant, 0.0, 102)], &mut Host, &mut ev);
+        assert_eq!((m.calls[0].recording, m.calls[0].reason), (false, Some(Reason::Ignored)));
+        assert!(m.calls[1].recording, "talkgroups not in the file are as before");
+    }
+
+    #[test]
     fn the_call_json_lists_the_patch() {
         let mut m = manager();
         let mut ev = Vec::new();
         m.handle(&[patch(0.0, 65001, [101, 0, 0]), msg(MessageType::Grant, 0.5, 65001), msg(MessageType::Grant, 0.5, 303)], &mut Host, &mut ev);
         let errors = Default::default();
-        let info = ConcludeInfo { short_name: "s", epoch_ms_at_zero: 0.0, audio_seconds: 1.0, errors: &errors, recorder_num: 0, end_s: 1.0, units: None };
+        let info = ConcludeInfo { short_name: "s", epoch_ms_at_zero: 0.0, audio_seconds: 1.0, errors: &errors, recorder_num: 0, end_s: 1.0, units: None, unit_tags: None, freq_error_hz: 0, reception: Default::default() };
         assert!(call_record(&m.calls[0], &info).0.contains("\"short_name\":\"s\",\"patched_talkgroups\":[101,65001],\"freqList\""));
         assert!(!call_record(&m.calls[1], &info).0.contains("patched"));
     }

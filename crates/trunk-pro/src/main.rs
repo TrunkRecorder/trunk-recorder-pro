@@ -6,6 +6,9 @@
 //!     and watch the recorder. Calls go to the capture folder in the config.
 //!     Already running on that port? Opens the browser there and exits.
 //!     --start (or the config's server.autoStart): start recording right away.
+//!     --log-level trace|debug|info|warning|error|fatal: over the config's
+//!     log.level. The log goes to stderr (and files / syslog as the config's
+//!     `log` section says), in Trunk Recorder's format.
 //!
 //! trunk-pro replay <capture.cu8> --center Hz --rate Hz --cc Hz[,Hz…] [options]
 //! trunk-pro replay --source cap1.cu8,center,rate --source cap2.cu8,center,rate --cc Hz …
@@ -17,6 +20,9 @@
 //!     --out calls  --short-name sys1  --talkgroups tg.csv  --bandplan file
 //!     --recorders 32  --preroll 1  --timeout 3  --epoch <unix s>
 //!     --record-encrypted  --keep-silent  --no-unknown  --capture-frames  --quiet
+//!     --min-call s  --max-call s  --min-transmission s (drop short calls, split long
+//!     ones, leave out short transmissions)  --auto-tune (correct the sources'
+//!     frequency error as measured on the control channels; reported either way)
 //!     More systems (or sites): --system name:Hz[,Hz…][:nac=443,sysid=445,wacn=bee00,rfss=1,site=3,group=name]
 //!     (repeatable; the identity is optional — a control channel that
 //!     disagrees isn't followed). With several, calls go to <out>/<name>/.
@@ -52,6 +58,7 @@
 //! ```
 
 mod dmrtool;
+mod logging;
 mod snrtool;
 mod plugins;
 mod radio;
@@ -68,7 +75,7 @@ use std::fs;
 use std::path::Path;
 use std::time::Instant;
 
-use trunk_core::trunk::{parse_csv, CallConfig, ConvChannel, ConvConfig, ConvMode, Engine, EngineConfig, Event, Identity, SourceConfig, SystemConfig};
+use trunk_core::trunk::{parse_csv, CallConfig, ConvChannel, ConvConfig, ConvMode, Engine, EngineConfig, Event, Identity, SaveRules, SourceConfig, SystemConfig};
 
 /// `--key value` / `--flag` arguments after the positionals.
 pub struct Args {
@@ -123,6 +130,7 @@ usage:
       Start the recorder and open its web interface (the default). Use
       --bind 0.0.0.0 to reach it from other machines (no authentication!).
       --start begins recording with the saved settings at once.
+      --log-level debug: more in the log (stderr; files and syslog as set up).
   trunk-pro devices [--usrp]
       List RTL-SDRs, Airspys and SoapySDR devices (and USRPs with --usrp);
       shows whether the optional USRP (UHD), Airspy (libairspy) and SoapySDR
@@ -237,12 +245,12 @@ fn replay(a: &Args) {
         }
         files.push(f[0].to_string());
         formats.push(format_of(f[0], f.get(3).copied()));
-        sources.push(SourceConfig { center_hz: f[1].parse().unwrap_or(0.0), rate_hz: f[2].parse().unwrap_or(2_400_000.0) });
+        sources.push(SourceConfig { center_hz: f[1].parse().unwrap_or(0.0), rate_hz: f[2].parse().unwrap_or(2_400_000.0), auto_tune: a.flag("auto-tune") });
     }
     if let Some(p) = a.positional.first() {
         files.push(p.clone());
         formats.push(format_of(p, None));
-        sources.push(SourceConfig { center_hz: a.num("center", 0.0), rate_hz: a.num("rate", 2_400_000.0) });
+        sources.push(SourceConfig { center_hz: a.num("center", 0.0), rate_hz: a.num("rate", 2_400_000.0), auto_tune: a.flag("auto-tune") });
     }
     if files.is_empty() {
         die("replay: no capture given");
@@ -274,6 +282,13 @@ fn replay(a: &Args) {
         call_timeout_s: a.num("timeout", 3.0),
         record_unknown: !a.flag("no-unknown"),
         record_encrypted: a.flag("record-encrypted"),
+        max_call_s: a.num("max-call", 0.0),
+        ..Default::default()
+    };
+    let save = SaveRules {
+        keep_silent: a.flag("keep-silent"),
+        min_call_s: a.num("min-call", 0.0),
+        min_transmission_s: a.num("min-transmission", 0.0),
         ..Default::default()
     };
     // Trunked systems: --cc (one, named --short-name) and/or --system (repeatable).
@@ -288,6 +303,7 @@ fn replay(a: &Args) {
             short_name: a.get("short-name").unwrap_or("replay").into(),
             control_channels: ccs,
             calls,
+            save,
             talkgroups: talkgroups.clone(),
             smartnet,
             // --dmr-trunk: the --cc frequencies are a DMR site's; --dmr-channels
@@ -306,7 +322,8 @@ fn replay(a: &Args) {
         });
     }
     for spec in a.all("system") {
-        systems.push(parse_system(spec, calls, &talkgroups).unwrap_or_else(|e| die(&format!("--system {spec}: {e}"))));
+        let sys = parse_system(spec, calls, &talkgroups).unwrap_or_else(|e| die(&format!("--system {spec}: {e}")));
+        systems.push(SystemConfig { save, ..sys });
     }
     let multi = systems.len() > 1;
     let cfg = EngineConfig {
@@ -314,8 +331,8 @@ fn replay(a: &Args) {
         sources,
         preroll_s: a.num("preroll", 1.0),
         max_recorders: a.num("recorders", 32.0) as usize,
-        keep_silent_calls: a.flag("keep-silent"),
         calls,
+        conv_save: save,
         epoch_ms_at_zero: a.num("epoch", 0.0) * 1000.0,
         conventional,
         conv: ConvConfig { squelch_db: a.num("squelch", ConvConfig::default().squelch_db), ..Default::default() },
@@ -390,6 +407,11 @@ fn replay(a: &Args) {
             s.calls_concluded,
             s.mismatch.as_ref().map_or(String::new(), |m| format!(" — NOT FOLLOWED: {m}")),
         );
+    }
+    for (i, t) in st.sources.iter().enumerate() {
+        if let Some(e) = t.error_ppm {
+            println!("  source {}: frequency error {e:+.2} ppm, corrected by {:+.2} ppm", i + 1, t.applied_ppm);
+        }
     }
 }
 
@@ -549,10 +571,9 @@ fn serve(a: &Args) {
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
     let config_path = a.get("config").map(std::path::PathBuf::from).unwrap_or_else(|| config::config_dir().join("config.json"));
-    if let Some(said) = plugins::migrate(&config_path) {
-        println!("{said}");
-    }
-    let mut cfg = config::Config::load(&config_path);
+    let mut cfg = config::Config::load(&config_path).unwrap_or_else(|e| fatal(&e));
+    let level = a.get("log-level").map(|l| trunk_app::log::Level::parse(l).unwrap_or_else(|| fatal(&format!("--log-level {l}: trace, debug, info, warning, error or fatal"))));
+    logging::init(&cfg.log, config_path.parent().unwrap_or(Path::new(".")), level);
     if let Some(p) = a.get("port").and_then(|p| p.parse().ok()) {
         cfg.server.port = p;
     }
@@ -567,7 +588,7 @@ fn serve(a: &Args) {
             // Launched twice (a double-click on an app that is already
             // running): show the running one.
             if already_running(addr.port()) {
-                println!("Trunk Recorder Pro is already running — {url}");
+                log::info!("Trunk Recorder Pro is already running — {url}");
                 if !a.flag("no-open") {
                     open_browser(&url);
                 }
@@ -591,7 +612,15 @@ fn serve(a: &Args) {
         survey_last: Mutex::new(None),
         plugins: plugins::manage::Plugins::new(hub.clone()),
     });
-    println!("Trunk Recorder Pro {} — open {url}\nconfig: {}", env!("CARGO_PKG_VERSION"), config_path.display());
+    {
+        let c = ctx.config.lock().unwrap();
+        let l = &c.log;
+        log::info!("Trunk Recorder Pro {} — open {url}", env!("CARGO_PKG_VERSION"));
+        log::info!("Using Config file: {}", config_path.display());
+        log::info!("Capture Directory: {}", c.recording.capture_dir);
+        let dir = if l.dir.is_empty() { config_path.parent().unwrap_or(Path::new(".")).join("logs") } else { config_path.parent().unwrap_or(Path::new(".")).join(&l.dir) };
+        log::info!("Log Level: {} · Log to File: {}{} · System log: {}", level.unwrap_or(l.level).as_str(), l.file, if l.file { format!(" ({})", dir.display()) } else { String::new() }, l.syslog);
+    }
     let auto = a.flag("start") || ctx.config.lock().unwrap().server.auto_start;
     if auto {
         let cfg = ctx.config.lock().unwrap().clone();
@@ -599,7 +628,7 @@ fn serve(a: &Args) {
         match runtime::start(ctx.clone(), cfg) {
             Ok(r) => *ctx.runner.lock().unwrap() = Some(r),
             Err(e) => {
-                eprintln!("not started: {e}");
+                log::error!("Not started: {e}");
                 ctx.set_phase("idle", Some(e), false);
             }
         }
@@ -611,7 +640,7 @@ fn serve(a: &Args) {
     if let Err(e) = rt.block_on(server::serve(ctx.clone(), listener)) {
         fatal(&format!("web server on {addr}: {e}"));
     }
-    println!("Stopped.");
+    log::info!("Cleaning up & Exiting...");
 }
 
 /// Is trunk-pro what answers on this port?

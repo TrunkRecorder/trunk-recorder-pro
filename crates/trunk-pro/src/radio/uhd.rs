@@ -75,6 +75,8 @@ struct Api {
     get_rx_rate: unsafe extern "C" fn(Handle, usize, *mut f64) -> Err,
     set_rx_freq: unsafe extern "C" fn(Handle, *mut TuneRequest, usize, *mut TuneResult) -> Err,
     set_rx_gain: unsafe extern "C" fn(Handle, f64, usize, *const c_char) -> Err,
+    /// Not in every UHD (nor on every device).
+    set_rx_agc: Option<unsafe extern "C" fn(Handle, bool, usize) -> Err>,
     set_rx_antenna: unsafe extern "C" fn(Handle, *const c_char, usize) -> Err,
     rx_streamer_make: unsafe extern "C" fn(*mut Handle) -> Err,
     rx_streamer_free: unsafe extern "C" fn(*mut Handle) -> Err,
@@ -121,6 +123,7 @@ fn api() -> Result<&'static Api, String> {
                 get_rx_rate: f!("uhd_usrp_get_rx_rate"),
                 set_rx_freq: f!("uhd_usrp_set_rx_freq"),
                 set_rx_gain: f!("uhd_usrp_set_rx_gain"),
+                set_rx_agc: lib.get(b"uhd_usrp_set_rx_agc\0").ok().map(|s| *s),
                 set_rx_antenna: f!("uhd_usrp_set_rx_antenna"),
                 rx_streamer_make: f!("uhd_rx_streamer_make"),
                 rx_streamer_free: f!("uhd_rx_streamer_free"),
@@ -206,6 +209,8 @@ pub struct UsrpConfig {
     pub center_hz: f64,
     pub rate_hz: f64,
     pub gain_db: f64,
+    /// The device's AGC (B200 / B210, E3xx) instead of `gain_db`.
+    pub agc: bool,
     pub antenna: String,
     pub ppm: f64,
 }
@@ -275,7 +280,16 @@ fn stream_once(source: usize, cfg: &UsrpConfig, tx: &SyncSender<SourceMsg>, stop
             let ant = CString::new(cfg.antenna.as_str()).map_err(|e| e.to_string())?;
             check(a, "set antenna", (a.set_rx_antenna)(s.usrp, ant.as_ptr(), 0))?;
         }
-        check(a, "set gain", (a.set_rx_gain)(s.usrp, cfg.gain_db, 0, c"".as_ptr()))?;
+        if cfg.agc {
+            let Some(agc) = a.set_rx_agc else { return Err("this UHD has no AGC: set a gain instead".into()) };
+            check(a, "AGC", agc(s.usrp, true, 0))?;
+        } else {
+            if let Some(agc) = a.set_rx_agc {
+                // (Devices without one say so: nothing to turn off.)
+                agc(s.usrp, false, 0);
+            }
+            check(a, "set gain", (a.set_rx_gain)(s.usrp, cfg.gain_db, 0, c"".as_ptr()))?;
+        }
         // A reference off by `ppm` makes a requested f come out at f·(1+ppm).
         let mut req = TuneRequest {
             target_freq: cfg.center_hz / (1.0 + cfg.ppm * 1e-6),

@@ -4,18 +4,44 @@
 
 export type SampleFormat = "cu8" | "cs16" | "cf32";
 
-export type Source =
-  | { kind: "rtlsdr"; serial: string; centerHz: number; rateHz: number; gainDb: number | null; ppm: number }
-  /** USRP through UHD (desktop app, UHD installed). `args` "" = first found. */
-  | { kind: "usrp"; args: string; centerHz: number; rateHz: number; gainDb: number; antenna: string; ppm: number }
-  /** Airspy R2 / Mini through libairspy (desktop app). `gain`: linearity step 0–21. */
-  | { kind: "airspy"; serial: string; centerHz: number; rateHz: number; gain: number; biasTee: boolean; ppm: number }
+/**
+ * A radio, or a capture to replay. Every kind may have `autoTune`: correct its
+ * channels for the frequency error measured on the control channels (Trunk
+ * Recorder's autoTune); the error is measured and shown either way.
+ */
+export type Source = (
+  /** `agc`: the tuner's AGC instead of `gainDb`. */
+  | { kind: "rtlsdr"; serial: string; centerHz: number; rateHz: number; gainDb: number; agc: boolean; ppm: number }
+  /** USRP through UHD (desktop app, UHD installed). `args` "" = first found; `agc` the device's AGC (B200/B210). */
+  | { kind: "usrp"; args: string; centerHz: number; rateHz: number; gainDb: number; agc: boolean; antenna: string; ppm: number }
+  /**
+   * Airspy R2 / Mini through libairspy (desktop app). `gain`: a 0–21 step of the linearity or sensitivity
+   * table (`gainMode`); "manual": each stage, LNA 0–14, mixer 0–15, VGA 0–15, with `agc` the Airspy's own on LNA and mixer.
+   */
+  | {
+      kind: "airspy";
+      serial: string;
+      centerHz: number;
+      rateHz: number;
+      gainMode: AirspyGainMode;
+      gain: number;
+      lnaGain: number;
+      mixerGain: number;
+      vgaGain: number;
+      agc: boolean;
+      biasTee: boolean;
+      ppm: number;
+    }
   /**
    * Any SDR with a SoapySDR module (desktop app). `args` "" = first found ("driver=hackrf,serial=…");
-   * `gainDb` null = AGC; `gains` per element ("LNA=32,VGA=20"); `settings` device settings ("biastee=true").
+   * `agc` the device's AGC; else `gainDb` overall (null: left as it is), then each stage in `gains`
+   * (HackRF LNA / VGA / AMP …); `settings` device settings ("biastee=true").
    */
-  | { kind: "soapy"; args: string; centerHz: number; rateHz: number; gainDb: number | null; gains: string; antenna: string; settings: string; ppm: number }
-  | { kind: "file"; path: string; centerHz: number; rateHz: number; realtime: boolean; format?: SampleFormat };
+  | { kind: "soapy"; args: string; centerHz: number; rateHz: number; agc: boolean; gainDb: number | null; gains: Record<string, number>; antenna: string; settings: string; ppm: number }
+  | { kind: "file"; path: string; centerHz: number; rateHz: number; realtime: boolean; format?: SampleFormat }
+) & { autoTune?: boolean };
+
+export type AirspyGainMode = "linearity" | "sensitivity" | "manual";
 
 /** An optional driver (desktop app) and what it found; `devices` null = not searched. */
 export interface DriverState {
@@ -106,8 +132,10 @@ export interface System extends Partial<SmartnetBandplan> {
   expect: SiteIdentity;
   /** Voice channels the survey heard (for placing sources). */
   voiceChannels: number[];
-  /** Record talkgroups not in its CSV; absent/null = the Recording setting. */
-  recordUnknown?: boolean | null;
+  /** Its own recording rules; each left out is the Recording tab's. */
+  recording?: RecordingOverride;
+  /** Names for its radios (Trunk Recorder's unitTagsFile and unitTagsMode). */
+  unitNames?: UnitNames;
   /** Multi-site: sites with one group are one system (a call on several is saved once).
    *  Absent: grouped by what the control channels say (P25 WACN + System ID, SmartNet System ID). */
   siteGroup?: string;
@@ -122,6 +150,84 @@ export interface PluginSetup {
   settings?: PluginValues;
   /** Run this executable instead of the installed plugin (a build of the user's own). */
   path?: string;
+}
+
+/** The settings each system can set again for itself (crates/trunk-app/src/config.rs RecordingOverride). */
+export interface RecordingRules {
+  /** A call ends this long after its last grant or audio, s. */
+  callTimeoutS: number;
+  /** Talkgroups not in the talkgroup file. */
+  recordUnknown: boolean;
+  recordEncrypted: boolean;
+  recordUnitToUnit: boolean;
+  /** Keep calls with no audio (encrypted, nothing decoded). */
+  keepSilentCalls: boolean;
+  /** Drop calls with less audio than this, s; 0 = keep all (Trunk Recorder's minDuration). */
+  minCallS: number;
+  /** Save a call this long and carry on in a new one, s; 0 = no limit (maxDuration). */
+  maxCallS: number;
+  /** Leave out transmissions shorter than this, s; 0 = keep all (minTransmissionDuration). */
+  minTransmissionS: number;
+  /** Bring every call's speech to the same loudness. */
+  normalizeAudio: boolean;
+  /** Then raise or lower digital / analog calls, dB (digitalLevels / analogLevels). */
+  digitalLevelDb: number;
+  analogLevelDb: number;
+  /** Desktop: also keep an .m4a of every call (compressWav). */
+  compressWav: boolean;
+  /** Desktop: keep the audio once every upload plugin has handled the call (audioArchive). */
+  audioArchive: boolean;
+  /** Desktop: keep the call's JSON then (callLog). */
+  callLog: boolean;
+  /** Desktop: when an upload failed, keep the files anyway (archiveFilesOnFailure). */
+  archiveFilesOnFailure: boolean;
+  /** Where calls go under the recordings folder ("" = <short name>/<year>/<month>/<day>/). */
+  filenameFormat: string;
+}
+
+export type RecordingOverride = Partial<RecordingRules>;
+
+/**
+ * Names for a system's radios: Trunk Recorder's unitTagsFile, kept as text
+ * (headerless `unit,name`; a unit between slashes is a regular expression,
+ * `/^1(\d{3})$/,Engine $1`), and unitTagsMode: "user" (these first, then the
+ * aliases heard; the default), "ota" (the aliases first), "user_only", "none".
+ */
+export interface UnitNames {
+  csv?: string;
+  name?: string;
+  mode?: "" | "user" | "ota" | "user_only" | "none";
+}
+
+/** The log (desktop app), with Trunk Recorder's options (crates/trunk-app/src/config.rs LogSettings). */
+export interface LogSettings {
+  level: "trace" | "debug" | "info" | "warning" | "error" | "fatal";
+  console: boolean;
+  file: boolean;
+  /** "" = logs/ beside the config. */
+  dir: string;
+  syslogFriendly: boolean;
+  syslog: boolean;
+  /** "" (colour on a terminal) | "console" | "logfile" | "all" | "none". */
+  color: string;
+  frequencyFormat: "exp" | "mhz" | "hz";
+  talkgroupDisplayFormat: "id" | "id_tag" | "tag_id";
+  statusAsString: boolean;
+  controlWarnRate: number;
+}
+
+export interface Recording extends RecordingRules {
+  captureDir: string;
+  prerollS: number;
+  maxRecorders: number;
+  /** Save each call's vocoder frames (<call>.frames.jsonl) for diagnosis. */
+  captureFrames: boolean;
+  /** A call heard on several sites of one system: save the best copy only. */
+  dropDuplicateCalls: boolean;
+  /** IMBE vocoder for P25 Phase 1 voice. */
+  vocoder: "fixed" | "enhanced" | "mbelib";
+  /** M4A for the plugins that upload it, and for compressWav (desktop app). */
+  m4a?: { encoder: string; bitrateKbps: number };
 }
 
 export interface Config {
@@ -139,30 +245,16 @@ export interface Config {
     channelFileStatus?: string;
     /** Plugins' settings for the conventional channels (one more system to them), by plugin id. */
     plugins?: Record<string, PluginValues>;
+    /** Their own recording rules; each left out is the Recording tab's. */
+    recording?: RecordingOverride;
+    unitNames?: UnitNames;
   };
-  recording: {
-    captureDir: string;
-    prerollS: number;
-    maxRecorders: number;
-    callTimeoutS: number;
-    recordUnknown: boolean;
-    recordEncrypted: boolean;
-    recordUnitToUnit: boolean;
-    keepSilentCalls: boolean;
-    /** Save each call's vocoder frames (<call>.frames.jsonl) for diagnosis. */
-    captureFrames: boolean;
-    /** A call heard on several sites of one system: save the best copy only. */
-    dropDuplicateCalls: boolean;
-    /** Bring every call's speech to the same loudness. */
-    normalizeAudio: boolean;
-    /** IMBE vocoder for P25 Phase 1 voice. */
-    vocoder: "fixed" | "enhanced" | "mbelib";
-    /** M4A for the plugins that upload it (desktop app). */
-    m4a?: { encoder: string; bitrateKbps: number };
-  };
+  recording: Recording;
   server: { bind: string; port: number; autoStart: boolean };
   /** The plugins, by id (desktop app). Their settings for each system are in the system. */
   plugins?: Record<string, PluginSetup>;
+  /** The log (desktop app). */
+  log?: LogSettings;
 }
 
 export interface Device {
@@ -258,6 +350,10 @@ export interface SourceStatus {
   errors: number;
   lastError: string | null;
   ended: boolean;
+  /** Its frequency error as measured on the control channels, ppm (+: signals come in high); null until measured. */
+  errorPpm?: number | null;
+  /** The correction autoTune applies now, ppm. */
+  tunePpm?: number;
 }
 
 export interface CallView {
@@ -273,7 +369,7 @@ export interface CallView {
   /** Conventional FM: the CTCSS tone ("151.4 Hz") or DCS code ("D023N") heard. */
   tone?: string | null;
   state: "recording" | "monitoring";
-  reason: "unknown_tg" | "encrypted" | "no_source" | "no_recorder" | null;
+  reason: "ignored" | "unknown_tg" | "encrypted" | "no_source" | "no_recorder" | null;
   encrypted: boolean;
   emergency: boolean;
   startS: number;
@@ -304,8 +400,13 @@ export interface CallRecord {
   call_length_ms: number;
   emergency: number;
   encrypted: number;
-  /** `tag_ota`: the unit's talker alias when the call was saved. */
-  srcList: { src: number; tag_ota?: string }[];
+  /** `tag`: the unit's name (the unit names file or the alias heard, by the system's mode); `tag_ota`: the alias heard. */
+  srcList: { src: number; tag?: string; tag_ota?: string }[];
+  /** Reception: the channel's level and the noise under it (dBFS), their difference (dB), and the share of voice frames decoded cleanly (digital). */
+  signal?: number | null;
+  noise?: number | null;
+  snr?: number | null;
+  clean_voice_pct?: number | null;
   /** Every talkgroup patched with this one, its own included (only when patched). */
   patched_talkgroups?: number[];
 }

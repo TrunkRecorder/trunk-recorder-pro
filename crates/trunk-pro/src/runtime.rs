@@ -13,13 +13,13 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use chrono::{Datelike, Local, TimeZone};
+use chrono::{Local, Offset, TimeZone};
 use serde_json::{json, Value};
 use tokio::sync::broadcast;
 use trunk_app::{Output, Session};
 
-use crate::config::{Config, SampleFormat, Source};
-use crate::plugins::{self, PluginHost};
+use crate::config::{AirspyGain, Config, SampleFormat, Source};
+use crate::plugins::{self, FileRules, PluginHost};
 use crate::radio::{airspy, soapy, uhd};
 use crate::sdr::{self, RtlConfig, SourceMsg};
 
@@ -107,7 +107,7 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
         return Err(p);
     }
     let epoch_ms = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_millis() as f64);
-    let mut session = Session::new(cfg.clone(), epoch_ms, &|name| fs::read_to_string(bandplan_path(name)).ok(), local_ymd)?;
+    let mut session = Session::new(cfg.clone(), epoch_ms, &|name| fs::read_to_string(bandplan_path(name)).ok(), local_offset)?;
     session.load_units(&|name| fs::read_to_string(units_path(name)).ok());
     session.load_heard(&fs::read_to_string(heard_path(&cfg)).unwrap_or_default());
     ctx.plugins.start(&cfg);
@@ -120,17 +120,19 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
         let src = src.clone();
         let center = *center;
         threads.push(std::thread::Builder::new().name(format!("source-{i}")).spawn(move || match src {
-            Source::Rtlsdr { serial, rate_hz, gain_db, ppm, .. } => {
-                sdr::run(i, RtlConfig { serial, center_hz: center as u64, rate_hz: rate_hz as u32, gain_db, ppm }, tx, stop)
+            Source::Rtlsdr { serial, rate_hz, gain_db, agc, ppm, .. } => {
+                sdr::run(i, RtlConfig { serial, center_hz: center as u64, rate_hz: rate_hz as u32, gain_db: (!agc).then_some(gain_db), ppm }, tx, stop)
             }
-            Source::Usrp { args, rate_hz, gain_db, antenna, ppm, .. } => {
-                uhd::run(i, uhd::UsrpConfig { args, center_hz: center, rate_hz, gain_db, antenna, ppm }, tx, stop)
+            Source::Usrp { args, rate_hz, gain_db, agc, antenna, ppm, .. } => {
+                uhd::run(i, uhd::UsrpConfig { args, center_hz: center, rate_hz, gain_db, agc, antenna, ppm }, tx, stop)
             }
-            Source::Airspy { serial, rate_hz, gain, bias_tee, ppm, .. } => {
+            Source::Airspy { serial, rate_hz, gain_mode, gain, lna_gain, mixer_gain, vga_gain, agc, bias_tee, ppm, .. } => {
+                let gain = airspy_gain(gain_mode, gain, lna_gain, mixer_gain, vga_gain, agc);
                 airspy::run(i, airspy::AirspyConfig { serial, center_hz: center, rate_hz, gain, bias_tee, ppm }, tx, stop)
             }
-            Source::Soapy { args, rate_hz, gain_db, gains, antenna, settings, ppm, .. } => {
-                soapy::run(i, soapy::SoapyConfig { args, center_hz: center, rate_hz, gain_db, gains, antenna, settings, ppm }, tx, stop)
+            Source::Soapy { args, rate_hz, agc, gain_db, gains, antenna, settings, ppm, .. } => {
+                let gains = gains.into_iter().collect();
+                soapy::run(i, soapy::SoapyConfig { args, center_hz: center, rate_hz, agc, gain_db, gains, antenna, settings, ppm }, tx, stop)
             }
             Source::File { path, rate_hz, realtime, format, .. } => run_file(i, &path, rate_hz, realtime, format, tx, stop),
         }).map_err(|e| e.to_string())?);
@@ -236,14 +238,38 @@ fn read_full(f: &mut fs::File, buf: &mut [u8]) -> usize {
     n
 }
 
-fn local_ymd(t: i64) -> (i32, u32, u32) {
-    let d = Local.timestamp_opt(t, 0).single().unwrap_or_else(Local::now);
-    (d.year(), d.month(), d.day())
+/// An Airspy's gain settings, as its driver takes them.
+pub fn airspy_gain(mode: AirspyGain, gain: u8, lna: u8, mixer: u8, vga: u8, agc: bool) -> airspy::AirspyGain {
+    match mode {
+        AirspyGain::Manual if agc => airspy::AirspyGain::Agc { vga },
+        AirspyGain::Manual => airspy::AirspyGain::Manual { lna, mixer, vga },
+        AirspyGain::Sensitivity => airspy::AirspyGain::Sensitivity(gain),
+        AirspyGain::Linearity => airspy::AirspyGain::Linearity(gain),
+    }
+}
+
+fn local_offset(t: i64) -> i32 {
+    Local.timestamp_opt(t, 0).single().unwrap_or_else(Local::now).offset().fix().local_minus_utc()
 }
 
 fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Receiver<SourceMsg>, stop: Arc<AtomicBool>) {
     ctx.set_phase("running", None, false);
     let dir = PathBuf::from(&cfg.recording.capture_dir);
+    // Each system's file rules (by the engine's system index), and the conventional channels'.
+    let systems: Vec<FileRules> = cfg.active_systems().map(|s| FileRules::of(&cfg.recording_for(Some(s)))).collect();
+    let conv = FileRules::of(&cfg.recording_for(None));
+    let rules = move |system: u16| systems.get(system as usize).copied().unwrap_or(conv);
+    let (fin_tx, fin_rx) = mpsc::sync_channel::<Finish>(1024);
+    let finisher = {
+        let (ctx, dir, m4a) = (ctx.clone(), dir.clone(), cfg.recording.m4a.clone());
+        std::thread::Builder::new().name("finish".into()).spawn(move || finish_calls(&ctx, &dir, fin_rx, &m4a)).expect("thread")
+    };
+    let fin = |rel: String, system: u16, json: String| {
+        if let Err(mpsc::TrySendError::Full(f)) = fin_tx.try_send(Finish { rel, system, json, rules: rules(system) }) {
+            // (Behind on encoding: this one goes out without its M4A rather than holding the engine up.)
+            finish_one(&ctx, &dir, Finish { rules: FileRules { compress_wav: false, ..f.rules }, ..f }, None);
+        }
+    };
     let t0 = Instant::now();
     let now_ms = || t0.elapsed().as_secs_f64() * 1000.0;
     let mut out = Vec::new();
@@ -283,7 +309,7 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Rec
         session.plugin_topics = plugins.as_ref().map_or(Default::default(), |p| p.topics);
         session.want_audio = ctx.hub.receiver_count() > 0 || plugins.as_ref().is_some_and(|p| p.audio);
         session.poll(now_ms(), &mut out);
-        deliver(&ctx, &dir, &mut out, plugins.as_ref());
+        deliver(&ctx, &dir, &mut out, plugins.as_ref(), &fin);
         drop(plugins);
         save_units(&mut session);
         if plans_at.elapsed() >= Duration::from_secs(10) {
@@ -293,7 +319,9 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Rec
     }
     ctx.set_phase("stopping", None, false);
     session.finish(&mut out);
-    deliver(&ctx, &dir, &mut out, ctx.plugins.host.read().unwrap().as_ref());
+    deliver(&ctx, &dir, &mut out, ctx.plugins.host.read().unwrap().as_ref(), &fin);
+    drop(fin_tx);
+    let _ = finisher.join();
     // Uploads in flight get a moment to finish.
     ctx.plugins.stop(Duration::from_secs(10));
     let _ = fs::create_dir_all(crate::config::config_dir());
@@ -305,8 +333,54 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Rec
     ctx.set_phase("idle", None, ended_all);
 }
 
+/// A call written, for [`finish_calls`].
+struct Finish {
+    rel: String,
+    system: u16,
+    json: String,
+    rules: FileRules,
+}
+
+/// After a call's files are written: its .m4a (compressWav), then to the
+/// plugins, whose results settle what's kept ([`crate::plugins::Archive`]).
+fn finish_calls(ctx: &Ctx, dir: &Path, rx: mpsc::Receiver<Finish>, m4a: &crate::config::M4a) {
+    let encoder = plugins::Encoder::find(&m4a.encoder).map(|e| (e, m4a.bitrate_kbps.clamp(8, 320)));
+    let mut warned = false;
+    for f in rx {
+        if f.rules.compress_wav && encoder.is_none() && !std::mem::replace(&mut warned, true) {
+            let text = if m4a.encoder == "none" { "M4A encoding is off: calls are kept as WAV only" } else { "No M4A encoder found (install ffmpeg): calls are kept as WAV only" };
+            log::warn!("{text}");
+            publish(&ctx.hub, json!({ "type": "log", "lines": [{ "timeS": 0, "kind": "error", "text": text }] }));
+        }
+        finish_one(ctx, dir, f, encoder.as_ref());
+    }
+}
+
+fn finish_one(ctx: &Ctx, dir: &Path, f: Finish, encoder: Option<&(plugins::Encoder, u32)>) {
+    let base = dir.join(&f.rel);
+    let m4a = match encoder.filter(|_| f.rules.compress_wav) {
+        Some((e, kbps)) => {
+            let (wav, out) = (PathBuf::from(format!("{}.wav", base.display())), PathBuf::from(format!("{}.m4a", base.display())));
+            match e.m4a(&wav, &out, *kbps) {
+                Ok(()) => Some(out),
+                Err(err) => {
+                    log::error!("M4A of {}: {err}", f.rel);
+                    publish(&ctx.hub, json!({ "type": "log", "lines": [{ "timeS": 0, "kind": "error", "text": format!("M4A of {}: {err}", f.rel) }] }));
+                    None
+                }
+            }
+        }
+        None => None,
+    };
+    let host = ctx.plugins.host.read().unwrap();
+    ctx.plugins.archive.expect(&f.rel, host.as_ref().map_or(0, |h| h.call_takers()), f.rules, &base);
+    if let Some(h) = host.as_ref() {
+        h.concluded(f.system, &f.rel, &f.json, m4a);
+    }
+}
+
 /// Write call files, keep history, forward everything to the browsers and plugins.
-fn deliver(ctx: &Ctx, dir: &Path, out: &mut Vec<Output>, plugins: Option<&PluginHost>) {
+fn deliver(ctx: &Ctx, dir: &Path, out: &mut Vec<Output>, plugins: Option<&PluginHost>, finish: &dyn Fn(String, u16, String)) {
     for o in out.drain(..) {
         match o {
             Output::Text(t) => {
@@ -323,6 +397,7 @@ fn deliver(ctx: &Ctx, dir: &Path, out: &mut Vec<Output>, plugins: Option<&Plugin
                     p.event(&m);
                 }
             }
+            Output::Log(r) => crate::logging::record(&r),
             Output::File { rel, system, wav, json, frames, entry } => {
                 let base = dir.join(&rel);
                 if let Some(d) = base.parent() {
@@ -332,9 +407,10 @@ fn deliver(ctx: &Ctx, dir: &Path, out: &mut Vec<Output>, plugins: Option<&Plugin
                     && fs::write(format!("{}.json", base.display()), &json).is_ok()
                     && frames.is_none_or(|f| fs::write(format!("{}.frames.jsonl", base.display()), f).is_ok());
                 if !ok {
+                    log::error!("Couldn't write {}", base.display());
                     publish(&ctx.hub, json!({ "type": "log", "lines": [{ "timeS": 0, "kind": "error", "text": format!("couldn't write {}", base.display()) }] }));
-                } else if let Some(p) = plugins {
-                    p.concluded(system, &rel, &json);
+                } else {
+                    finish(rel.clone(), system, json);
                 }
                 let mut h = ctx.history.lock().unwrap();
                 h.push_front(entry);

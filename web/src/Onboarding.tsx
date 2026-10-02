@@ -1967,6 +1967,17 @@ function ImportReview(props: { s: AppState; c: Config; loaded: Loaded; onBack: (
             );
           })}
           {named
+            .filter((n) => n.kind === "units" && missing(n.file))
+            .map((n) => (
+              <li key={n.file} className="warn">
+                <span className="ob-row-main">
+                  <b>Unit names for {n.system}</b>
+                  <span className="ob-quiet">{n.file}</span>
+                </span>
+                <FilePick label="Not found" onFile={(f) => void addFile(n.file, f)} />
+              </li>
+            ))}
+          {named
             .filter((n) => n.kind === "channels")
             .map((n) => (
               <li key={n.file} className={missing(n.file) ? "warn" : "ok"}>

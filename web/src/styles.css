@@ -736,3 +736,16 @@ input.ob-picker-path:hover, input.ob-picker-path:focus { border-color: var(--lin
 .no-webusb li { margin-bottom: 6px; }
 .no-webusb p.muted { font-size: 14px; margin: 0; }
 .ob-more-title { margin: 0 0 14px; font-size: 17px; font-weight: 550; color: var(--text); text-transform: none; letter-spacing: 0; }
+
+/* Setup: call rules, a system's recording override, source gain stages. */
+.rule-group h3 { margin: 4px 0 8px; font-size: 13px; font-weight: 600; color: var(--text); }
+.rule-group + .rule-group { border-top: 1px solid var(--line); padding-top: 12px; }
+.help.override { margin-top: 10px; }
+.help.override > .grid3 { margin-top: 8px; }
+.field select.overridden, .field input.overridden { border-color: var(--accent); }
+.field input.narrow { width: 6em; }
+.field input.invalid { border-color: var(--bad); }
+.toggle.disabled { opacity: 0.5; cursor: default; }
+.stage { display: inline-flex; align-items: center; gap: 4px; padding: 2px 4px 2px 8px; border: 1px solid var(--line); border-radius: 6px; }
+.help.wide { grid-column: 1 / -1; }
+.snr.ok { color: var(--ok); } .snr.warn { color: var(--warn); } .snr.bad { color: var(--bad); }

@@ -57,12 +57,14 @@ pub async fn serve(ctx: Arc<Ctx>, listener: std::net::TcpListener) -> std::io::R
         .route("/calls/{*path}", get(call_file))
         .fallback(static_file)
         .with_state(ctx.clone());
+    #[cfg(unix)]
+    tokio::spawn(reopen_log_on_hangup());
     let ctx2 = ctx.clone();
     let shutdown = async move {
         tokio::select! {
             _ = ctx2.quit.notified() => {}
-            _ = tokio::signal::ctrl_c() => {}
-            _ = terminate() => {}
+            _ = tokio::signal::ctrl_c() => log::info!("Caught an Exit Signal..."),
+            _ = terminate() => log::info!("Caught an Exit Signal..."),
         }
         let ctx3 = ctx2.clone();
         let _ = tokio::task::spawn_blocking(move || {
@@ -77,6 +79,16 @@ pub async fn serve(ctx: Arc<Ctx>, listener: std::net::TcpListener) -> std::io::R
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     };
     axum::serve(listener, app).with_graceful_shutdown(shutdown).await
+}
+
+/// SIGHUP: reopen the log file (logrotate moved it).
+#[cfg(unix)]
+async fn reopen_log_on_hangup() {
+    let Ok(mut s) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()) else { return };
+    while s.recv().await.is_some() {
+        crate::logging::reopen();
+        log::info!("Received SIGHUP signal - log file reopened");
+    }
 }
 
 #[cfg(unix)]
@@ -360,6 +372,9 @@ async fn command(ctx: &Arc<Ctx>, v: &Value, listen: &mut Option<Listen>) -> Opti
                 let _ = c.load_channel_file(&ctx.config_path);
                 let saved = c.save(&ctx.config_path);
                 let old = std::mem::replace(&mut *ctx.config.lock().unwrap(), c.clone());
+                if old.log != c.log {
+                    crate::logging::configure(&c.log, ctx.config_path.parent().unwrap_or(std::path::Path::new(".")));
+                }
                 publish(&ctx.hub, json!({ "type": "config", "config": c }));
                 // Plugins' settings changed while recording: they restart with them.
                 if crate::plugins::changed(&old, &c) {

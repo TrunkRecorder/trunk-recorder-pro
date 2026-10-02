@@ -143,7 +143,7 @@ mod tests {
                 smartnet: Some(SmartnetConfig { bandplan, analog_default: false }),
                 ..Default::default()
             }],
-            sources: vec![SourceConfig { center_hz: center, rate_hz: fs }],
+            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false }],
             ..Default::default()
         };
         let mut e = Engine::new(cfg).unwrap();

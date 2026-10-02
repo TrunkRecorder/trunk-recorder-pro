@@ -27,6 +27,13 @@ export function openTodos(s: AppState): OpenTodo[] {
           out.push({ item, target: `tg-${item.system}`, title: `Talkgroups for ${item.system}`, text: `“${item.file}” wasn't found. Load it to name the talkgroups.` });
         break;
       }
+      case "units": {
+        const sys = c.systems.find((x) => x.shortName === item.system);
+        const names = sys?.unitNames ?? (c.conventional.shortName === item.system ? c.conventional.unitNames : undefined);
+        if (!names?.csv)
+          out.push({ item, target: `units-${item.system}`, title: `Unit names for ${item.system}`, text: `“${item.file}” (unitTagsFile) wasn't found. Load it to name the radios.` });
+        break;
+      }
       case "channels":
         if (!c.conventional.channelFile && c.conventional.channels.length <= item.had)
           out.push({ item, target: "channels", title: "Conventional channels", text: `“${item.file}” wasn't found. Link it here, or bring it in with Import CSV.` });

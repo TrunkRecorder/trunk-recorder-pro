@@ -27,6 +27,8 @@ axum = { version = "0.8", features = ["ws"] }
 rust-embed = "8"
 mime_guess = "2"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# The `log` facade: messages anywhere in the app go to the logger (logging.rs).
+log = { version = "0.4", features = ["std"] }
 # The plugin store (plugins/store.rs): the registry and release downloads,
 # over rustls so builds still cross-compile; checksums; .tar.gz and .zip.
 ureq = "3"

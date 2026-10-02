@@ -1,51 +1,224 @@
 # Trunk Recorder features not in Trunk Recorder Pro
 
-September 2026. Found by listing the settings Trunk Recorder's config reader
-accepts (`config.cc`, `setup_systems.cc`), plus its recorders, decoders and
-plugins, then searching this repo for each one. The Trunk Recorder source is
-the fork in `~/Projects/Trunk Recorder/source`.
+Re-evaluated 2 October 2026. Method: every key Trunk Recorder's config reader
+takes (`config.cc`: global, source, system, `audio_postprocess`, plugins),
+its recorders, decoders and plugins (`plugins/`, `docs/Plugins.md`), each
+searched for in this repo (`crates/`, `web/src`, the `trunk-plugin-*` repos).
+The Trunk Recorder source is the fork in `~/Projects/Trunk Recorder/source`.
 
 ## Major gaps
 
-| Feature | Trunk Recorder | Trunk Recorder Pro |
-|---|---|---|
-| DMR | Conventional DMR, plus a DMR trunking parser in the fork (`dmr_parser.cc`, `dmr_trunking.cc`, `dmr_recorder`) | None: P25, SmartNet, and conventional FM and P25 only |
-| Upload and output plugins | Broadcastify Calls, Rdio Scanner, OpenMHz, simplestream / streamer (live audio over UDP/TCP), stat_socket (status to a server), unit_script, `uploadScript` | Plugins for OpenMHz, Broadcastify Calls, Rdio Scanner, simplestream and `uploadScript` (as the upload-script plugin). Not ported: stat_socket, unit_script, and streamer (gRPC; Trunk Recorder doesn't build it) |
-| Talkgroup priority | Higher-priority talkgroups take a recorder when all are busy | Priority column read but unused; a full pool gives `no_recorder` |
+None left open. The three that were here are decided:
+
+- **Talkgroup priority**: not needed for running out of recorders (a pool
+  of 32 costs little CPU here). Its other use, never recording a talkgroup,
+  is the new **Ignore** column (below).
+- **One file per transmission** (`conversationMode: false`): researched,
+  left out for now (below).
+- **stat_socket, unit_script, streamer** and the community plugins
+  (MQTT, Prometheus, decode-rate and daily logs): **won't be ported**.
+  The plugin protocol's `status` and `unit` topics are there if someone
+  writes one.
 
 ## Smaller gaps
 
 **Recording rules**
-- `minDuration`, `maxDuration` and `minTransmissionDuration` filters. The app only has "keep silent calls".
-- `conversationMode: false`: each transmission saved as its own file.
-- `hideEncrypted` and `hideUnknownTalkgroups`: log-only settings.
+- `hideEncrypted`, `hideUnknownTalkgroups` (log only).
+- `newCallFromUpdate`: in the engine, always on; not a setting.
+- Several conventional systems, each with its own short name, rules and
+  upload keys: here there is one conventional section. The importer merges
+  them and takes the first one's rules.
+- Preferred site by SmartNet `multiSiteSystemNumber`: only Preferred NAC
+  (as a NAC or RRRRssss) and Preferred Site (short name) are matched.
 
-**Files and archive**
-- `compressWav`: the app writes WAV only; M4A is made only for plugins.
-- `audioArchive: false`, `archiveFilesOnFailure`, `filenameFormat`, `callLog`, and automatic deletion of old files.
-- The call JSON writes `signal`, `noise` and `freq_error` as 0 instead of measuring them.
+**Files and output**
+- `audio_postprocess`: loudness here is our own normalisation. Missing:
+  high-pass, low-pass and band-reject filters, `ffmpeg_filter`, the
+  loudnorm targets, and `outputRawAudio` (an unprocessed copy).
+- Call JSON: `source_num` and `spike_count` are 0; `freqList` has one
+  entry; `srcList`'s `signal_system` is empty.
+- `compressBitrate` per system: the M4A bitrate is one setting for all.
+- Defaults differ: Trunk Recorder's `compressWav` is on by default, here
+  off. An imported config that relied on the default gets no M4A files.
 
 **Names and tables**
-- A user-supplied unit names file (`unitTagsFile`, with regex modes). The app keeps only talker aliases learned over the air.
-- `talkgroupDisplayFormat`, `customFrequencyTableFile` and `lcnTable`.
+- `customFrequencyTableFile` (P25).
 
 **Analog signalling**
-- Star (GE, 400 bps PSK) and TPS (P25 frames in analog audio) unit IDs. MDC1200 and FleetSync are done (see below).
-- FleetSync II's interleaved ECC framing: only plain FleetSync blocks are read.
+- Star (`decodeStar`) and TPS (`decodeTPS`): researched, left out (below).
+- FleetSync II's interleaved ECC framing: only plain FleetSync is read.
 
-**Debugging and hardware**
-- Per-call IQ recording (`sigmfRecorders`, `conventionalSIGMF`) and `debugRecorder`. The app has only whole-band `trunk-pro capture`.
-- Radios: Trunk Recorder uses osmosdr and SoapySDR (HackRF, SDRplay, bladeRF, LimeSDR and more). The app supports RTL-SDR, USRP and Airspy.
-- Per-source `digitalLevels`, `analogLevels`, AGC and `autoTune`, and per-model gain stages (LNA, VGA, mixer).
+**Radios and DSP**
+- The `iio` driver (PlutoSDR and similar, natively; through SoapySDR it works).
+- `sigmf` file sources, `iqType`, and `repeat` (loop a capture).
+- A source's `enabled` switch.
+- `deemphasisTau`: fixed at 750 µs.
+- AutoTune is measured on P25 and SmartNet control channels only, and not
+  applied to conventional channels.
+
+**Debugging — left out for now** (not clear anyone uses them)
+- Per-call IQ (`sigmfRecorders`, `conventionalSIGMF`) and `debugRecorder`.
+  Here: whole-band `trunk-pro capture`, vocoder-frame capture per call, and
+  `trunk-pro tool`.
+- `silenceFrames` (undocumented; not checked what it does).
+
+**Logging**
+- Windows has no system log here (console and files only).
+
+## Won't be added
+
+- Plugins: stat_socket, unit_script, streamer, and the community ones
+  (MQTT status, Prometheus, decode-rate logger, daily log).
+- Talkgroup priority as a recorder-shortage rule (Ignore covers priority −1).
+
+## Deliberately different
+
+- Recorder counts per source (`digitalRecorders`, `analogRecorders`,
+  `dmrRecorders`): one shared pool, `maxRecorders`.
+- `squelch` in dBFS and `signalDetectorThreshold`: squelch here is dB above
+  the measured noise floor, per section and per channel.
+- GNU Radio knobs: `qpskGainMu`, `qpskCostasLoopBw`, `filterWidth`, `maxDev`.
+- `tempDir`: there are no temporary transmission files.
+- `controlRetuneLimit`: the next control channel is tried after 5 s, always.
+- `softVocoder`: replaced by the P25 voice decoder choice.
+- `multiSite` / `multiSiteSystemName`: replaced by site groups; every
+  site's copy is recorded and the best kept.
+- `decodeMDC` / `decodeFSync`: always on.
+- `error` (Hz): imported as ppm. osmosdr device strings become RTL-SDR,
+  Airspy or SoapySDR sources.
+- Plugins are separate programs from a registry, not C++ libraries.
+- The call JSON's `signal` and `noise` are dBFS here (Trunk Recorder's
+  are labelled dBm but come from the GNU Radio blocks' own scale).
+
+## Closed since the September list
+
+- **DMR**: conventional and trunked (Capacity Plus, Connect Plus, Tier III,
+  Capacity Max), with `lcnTable`.
+- **Plugins**: OpenMHz, Broadcastify Calls, Rdio Scanner, simplestream,
+  upload-script, with talkgroup allow / deny and Broadcastify's OTA aliases.
+- **SoapySDR** sources: HackRF, SDRplay, bladeRF, LimeSDR and the rest.
+- **Duplicate calls across sites**: every copy recorded, the best kept.
+- **CTCSS, DCS, NAC and colour code** on conventional channels (below).
+- **Call rules** (October): `minDuration`, `maxDuration`,
+  `minTransmissionDuration`, `digitalLevels` / `analogLevels` (as dB),
+  `compressWav`, `audioArchive`, `callLog`, `archiveFilesOnFailure`,
+  `filenameFormat`. Each is set on the Recording tab and may be set again
+  per system (and for the conventional channels) under Recording override.
+  `digitalLevels` and `analogLevels` are system settings in Trunk Recorder
+  too (`config.cc`), not source settings as the September list said.
+- **Sources** (October): `agc` on every kind; the Airspy's sensitivity mode
+  and its LNA / mixer / VGA stages; SoapySDR gain stages one by one;
+  `autoTune`; the call JSON's `freq_error`.
+- **Ignore** (October): an `Ignore` column in the talkgroup file (`true`,
+  `yes`, `1`, `x`) marks talkgroups never to record; Trunk Recorder's
+  priority −1 counts too. Such calls show "ignored" and aren't followed.
+  The system card says how many are ignored.
+- **Unit names** (October): Trunk Recorder's `unitTagsFile` (`unit,name`
+  lines; `/regex/,Name $1` patterns with groups, as boost's `$1` / `\1`)
+  and `unitTagsMode` (user first, OTA first, user only, none), per system
+  and for the conventional channels; loaded into the config. The call
+  JSON's `srcList` `tag` is the name by the mode, `tag_ota` the alias
+  heard; the interface names radios the same way. Imported with a Trunk
+  Recorder config (a missing file is a to-do).
+- **Reception** (October), on every saved call:
+  - `signal`: the channel's power while it carried the call's voice, dBFS;
+  - `noise`: the noise floor under the channel (from the source's
+    spectrum), dBFS;
+  - `snr`: their difference, dB;
+  - `clean_voice_pct`: the share of voice frames decoded cleanly (not
+    repeated, muted or lost), digital calls only.
+
+  With `error_count` (bit errors FEC corrected) and `errorList`, that says
+  how strong the call was and how well it decoded. On the DCFD capture the
+  trunked calls read 26–30 dB SNR, the same voice channel set up as a
+  conventional channel 27–28 dB. The call list shows the SNR (green from
+  20 dB, amber from 10), with the levels and the clean share on hover.
+- **Logging** (October): Trunk Recorder's line format,
+  `[2026-10-02 10:43:53.822506] (info)   [dcfd]	1C	TG:       3747	Freq: 859.037500 MHz	Concluding Recorded Call - …`,
+  with its options: `logLevel`, `consoleLog`, `logFile` / `logDir`
+  (daily and 100 MB files, Trunk Recorder's names), `syslogFriendly` (one
+  file for logrotate; SIGHUP reopens it), `logColor` (and `NO_COLOR`),
+  `frequencyFormat`, `talkgroupDisplayFormat`, `statusAsString`,
+  `controlWarnRate`; plus `syslog` (the C library's syslog(3): journald /
+  rsyslog, macOS's unified log) and `--log-level`. The console is stderr,
+  so it can be redirected apart from anything else. Every 200 s a status
+  summary, as Trunk Recorder's: active calls and their states, recorders,
+  decode rates. Set in the config's `log` section, or Setup → Recording →
+  Log, applied at once. Imported from a Trunk Recorder config.
+
+  How it is built: the session describes what happened as data
+  (`trunk-app/src/log.rs`: a level, the system, the call, and what — a
+  recording started, a call saved with its reception, a decode rate…); one
+  function words it (`line`, with the format options); the desktop's
+  logger (`trunk-pro/src/logging.rs`) stamps the time and sends it where
+  the settings say. Messages from elsewhere in the app use the `log`
+  crate's macros and reach the same logger. Nothing that logs knows about
+  formats or destinations.
+- **Wrong in the September list**: "automatic deletion of old files" isn't
+  a Trunk Recorder feature (no retention keys in `config.cc`).
+
+## conversationMode: researched, left out
+
+**In Trunk Recorder today it does nothing.** `config.cc` reads
+`conversationMode` (default true) and the system stores it, but nothing
+calls `get_conversation_mode()` (checked: `call_impl.cc` defines it, no
+caller in `trunk-recorder/` or `plugins/`). Since 2021 every call has been
+its transmissions joined into one file whatever the setting. A real
+implementation exists only on the unmerged branch `dev/conversation`
+(May 2025, +115 / −28 lines in 7 files): the call concluder makes one call
+per transmission, each with its own times and file, and uploads each.
+
+**Who asked**: Broadcastify's owner (issue #326, 2020, still open: separate
+clips per transmission make duplicate handling across nodes easier), and a
+handful of users (#813, #385). Importing `conversationMode: false` today
+behaves exactly like Trunk Recorder: one file per call.
+
+**What it would take here**: little. Transmissions are already marked in
+each call's audio (`record.rs` `Transmissions`, the same marks
+`minTransmissionDuration` uses), and multi-site dedupe works on whole calls
+first. `write_call` would cut the audio at the marks and save each piece as
+a call (its own start time, the radios that spoke in it, a new call number;
+the first keeps the original). About 150–200 lines in 5 files, a system
+setting (and a per-talkgroup override, as the branch has), no CPU cost.
+What grows is files and uploads: every piece is a WAV, a JSON and an
+upload to each plugin, 3–10 times as many on a dispatch talkgroup. Risks:
+quick back-and-forth can merge (the boundary is a 0.5 s gap in the audio;
+a change of talker could split too), and file names need milliseconds.
+
+**Decision**: leave it out. Trunk Recorder itself never shipped it; add it
+when an upload service or a user asks.
+
+## Star and TPS: researched, left out
+
+**Star** is GE-Star ANI: a unit ID sent on legacy GE / Ericsson / M/A-COM
+conventional analog radios (400 bps PSK on a 1600 Hz carrier, an 80-bit
+block with a complement check and CRC-6). Trunk Recorder's decoder is
+Matthew Kaufman's, 618 lines, **GPL-2.0-only**, so it can't be copied into
+this GPL-3.0-or-later code. No Trunk Recorder issue reports anyone decoding
+it; it appears only in configs that turn every decoder on. Writing one here
+from the format: about 200–250 lines with tests, negligible CPU, but the
+bit order, polarity and ID formats can't be confirmed without a recording
+from a real radio.
+
+**TPS** is Motorola's Tactical Public Safety (FDNY fireground): analog FM
+voice with a P25 C4FM ID burst. Trunk Recorder's decoder (455 lines) feeds
+its de-emphasised 16 kHz audio straight into OP25's slicer with no symbol
+timing recovery or level scaling, so it **probably doesn't work**; its
+issues (#894, #928) are crashes and log spam from people with no TPS signal
+nearby, and nobody reports a decode. Here it would reuse the C4FM receiver
+and P25 framing on the FM discriminator's output before de-emphasis (about
+100–150 lines, one more C4FM demodulator per open analog channel), but it
+can't be tested without a real fireground capture.
+
+**Decision**: leave both out. Star if someone sends a recording; TPS if
+someone near NYC sends a fireground capture.
 
 ## Suggested order
 
-1. ~~Broadcastify and Rdio Scanner plugins~~ (done, with simplestream and upload-script).
-2. ~~Duplicate detection across sites~~ (done: every copy is recorded and the best kept; see the README).
-3. Talkgroup priority when recorders run out.
-4. CTCSS/DCS/NAC matching on conventional channels.
-5. DMR: the largest job.
-
+1. Several conventional systems (each its own short name, rules, upload keys).
+2. `audio_postprocess` filters and `outputRawAudio`, if anyone misses them.
+3. AutoTune for conventional channels.
+4. The `iio` driver (PlutoSDR) natively.
 
 ## Patching (now done, not yet committed)
 

@@ -202,3 +202,19 @@ jobs:
           body_path: notes.md
           prerelease: ${{ contains(env.VERSION, '-') }}
           files: dist/*
+      # Tell trunkrecorder.pro to rebuild with this release (its download links and /app/).
+      # Needs SITE_DEPLOY_TOKEN: a fine-grained token with Contents: read and write on
+      # TrunkRecorder/trunk-recorder-pro-site. Without it the site still finds the
+      # release, within the hour.
+      - name: Update trunkrecorder.pro
+        if: ${{ !contains(env.VERSION, '-') }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.SITE_DEPLOY_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "No SITE_DEPLOY_TOKEN: trunkrecorder.pro picks up v$VERSION at its next hourly check."
+            exit 0
+          fi
+          gh api repos/TrunkRecorder/trunk-recorder-pro-site/dispatches \
+            -f event_type=app-release -f "client_payload[tag]=v$VERSION"

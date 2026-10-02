@@ -1,6 +1,6 @@
 // Config helpers for the setup form (the recorder validates again).
 
-import type { Channel, Config, SiteIdentity, Source, System } from "./protocol.ts";
+import type { Channel, Config, LogSettings, RecordingOverride, SiteIdentity, Source, System, UnitNames } from "./protocol.ts";
 import { splitCsvLine } from "./talkgroups.ts";
 import { dmrTalkgroup, parseAccess, sameTone } from "./tones.ts";
 
@@ -24,12 +24,40 @@ export function defaultConfig(): Config {
       recordEncrypted: false,
       recordUnitToUnit: true,
       keepSilentCalls: false,
+      minCallS: 0,
+      maxCallS: 0,
+      minTransmissionS: 0,
       captureFrames: false,
       dropDuplicateCalls: true,
       normalizeAudio: true,
+      digitalLevelDb: 0,
+      analogLevelDb: 0,
+      compressWav: false,
+      audioArchive: true,
+      callLog: true,
+      archiveFilesOnFailure: true,
+      filenameFormat: "",
       vocoder: "fixed",
     },
     server: { bind: "127.0.0.1", port: 8080, autoStart: false },
+    log: defaultLog(),
+  };
+}
+
+/** The log's defaults (the recorder's LogSettings). */
+export function defaultLog(): LogSettings {
+  return {
+    level: "info",
+    console: true,
+    file: false,
+    dir: "",
+    syslogFriendly: false,
+    syslog: false,
+    color: "",
+    frequencyFormat: "mhz",
+    talkgroupDisplayFormat: "id",
+    statusAsString: true,
+    controlWarnRate: 10,
   };
 }
 
@@ -39,18 +67,18 @@ export const USRP_RATES = [2_400_000, 4_000_000, 5_000_000, 6_400_000, 8_000_000
 export const AIRSPY_RATES = [10_000_000, 6_000_000, 3_000_000, 2_500_000];
 
 export function newDongle(): Source {
-  return { kind: "rtlsdr", serial: "", centerHz: 0, rateHz: 2_400_000, gainDb: RTL_DEFAULT_GAIN_DB, ppm: 0 };
+  return { kind: "rtlsdr", serial: "", centerHz: 0, rateHz: 2_400_000, gainDb: RTL_DEFAULT_GAIN_DB, agc: false, ppm: 0 };
 }
 export function newUsrp(): Source {
-  return { kind: "usrp", args: "", centerHz: 0, rateHz: 8_000_000, gainDb: 40, antenna: "", ppm: 0 };
+  return { kind: "usrp", args: "", centerHz: 0, rateHz: 8_000_000, gainDb: 40, agc: false, antenna: "", ppm: 0 };
 }
 export function newAirspy(): Source {
-  return { kind: "airspy", serial: "", centerHz: 0, rateHz: 6_000_000, gain: 14, biasTee: false, ppm: 0 };
+  return { kind: "airspy", serial: "", centerHz: 0, rateHz: 6_000_000, gainMode: "linearity", gain: 14, lnaGain: 10, mixerGain: 10, vgaGain: 10, agc: false, biasTee: false, ppm: 0 };
 }
 /** Offered for SoapySDR devices; any rate the device takes can be typed. */
 export const SOAPY_RATES = [2_000_000, 2_400_000, 2_500_000, 3_000_000, 6_000_000, 8_000_000, 10_000_000];
 export function newSoapy(): Source {
-  return { kind: "soapy", args: "", centerHz: 0, rateHz: 8_000_000, gainDb: null, gains: "", antenna: "", settings: "", ppm: 0 };
+  return { kind: "soapy", args: "", centerHz: 0, rateHz: 8_000_000, agc: true, gainDb: null, gains: {}, antenna: "", settings: "", ppm: 0 };
 }
 export function newFile(): Source {
   return { kind: "file", path: "", centerHz: 0, rateHz: 2_400_000, realtime: true, format: "cu8" };
@@ -128,34 +156,45 @@ export function normalizeSystem(x: Partial<System>): System {
     talkgroupsName: x.talkgroupsName ?? "",
     expect: x.expect ?? {},
     voiceChannels: x.voiceChannels ?? [],
-    ...(x.recordUnknown === true || x.recordUnknown === false ? { recordUnknown: x.recordUnknown } : {}),
+    ...(x.recording && Object.keys(x.recording).length ? { recording: x.recording } : {}),
+    ...(x.unitNames && (x.unitNames.csv || x.unitNames.mode) ? { unitNames: x.unitNames } : {}),
     ...(x.siteGroup?.trim() ? { siteGroup: x.siteGroup } : {}),
   };
 }
 
-/**
- * A stored config in today's shape: before several systems it had one
- * `system`, and conventional calls were filed under its name (the recorder's
- * Config does the same — crates/trunk-app/src/config.rs).
- */
-export function migrateConfig(raw: Record<string, unknown>): Config {
+/** A config stored by this browser, with any setting it lacks at its default. */
+export function storedConfig(raw: Partial<Config>): Config {
   const base = defaultConfig();
-  const r = raw as Partial<Config> & { system?: Partial<System> };
-  const conv = { ...base.conventional, ...(r.conventional ?? {}) };
-  let systems: System[];
-  if (Array.isArray(r.systems)) systems = r.systems.map(normalizeSystem);
-  else if (r.system) {
-    if (!(r.conventional && "shortName" in r.conventional)) conv.shortName = r.system.shortName ?? "sys1";
-    const old = normalizeSystem(r.system);
-    systems = old.controlChannels.length || old.talkgroupsCsv ? [old] : [];
-  } else systems = [];
   return {
-    sources: r.sources ?? base.sources,
-    systems,
-    conventional: conv,
-    recording: { ...base.recording, ...(r.recording ?? {}) },
-    server: { ...base.server, ...(r.server ?? {}) },
+    ...base,
+    ...raw,
+    systems: (raw.systems ?? []).map(normalizeSystem),
+    conventional: { ...base.conventional, ...(raw.conventional ?? {}) },
+    recording: { ...base.recording, ...(raw.recording ?? {}) },
+    server: { ...base.server, ...(raw.server ?? {}) },
+    log: { ...defaultLog(), ...(raw.log ?? {}) },
   };
+}
+
+/**
+ * Why a filename format can't be used, or null (the recorder's filename::problem).
+ * Tokens: crates/trunk-app/src/filename.rs.
+ */
+export const FILENAME_TOKENS = [
+  "talkgroup", "talkgroup_tag", "talkgroup_alpha_tag", "talkgroup_description", "talkgroup_group", "talkgroup_display", "short_name", "freq", "freq_mhz",
+  "call_num", "tdma_slot", "sys_num", "epoch", "source_num", "recorder_num", "audio_type", "emergency", "encrypted", "priority", "signal", "noise", "color_code",
+];
+export function filenameProblem(format: string): string | null {
+  const unknown: string[] = [];
+  let rest = format;
+  for (let open = rest.indexOf("{"); open >= 0; open = rest.indexOf("{")) {
+    const close = rest.indexOf("}", open);
+    if (close < 0) return "A { has no closing }.";
+    const t = rest.slice(open + 1, close);
+    if (!t.startsWith("time:") && !t.startsWith("ztime:") && !FILENAME_TOKENS.includes(t)) unknown.push(`{${t}}`);
+    rest = rest.slice(close + 1);
+  }
+  return unknown.length ? `Unknown token${unknown.length === 1 ? "" : "s"}: ${unknown.join(", ")}.` : null;
 }
 
 /** The systems being recorded, in the recorder's order (SystemStatus.index). */
@@ -553,6 +592,8 @@ export function osmosdrToSoapy(dev: string): string | null {
 export type ImportTodo =
   /** Its talkgroup file wasn't loaded. */
   | { kind: "talkgroups"; system: string; file: string }
+  /** Its unit names file (unitTagsFile) wasn't loaded. */
+  | { kind: "units"; system: string; file: string }
   /** A conventional channel file wasn't loaded; `had` channels were imported without it. */
   | { kind: "channels"; file: string; had: number }
   /** Trunk Recorder's siteId: a Site lock to fill in. */
@@ -647,13 +688,55 @@ function trPlugins(j: Record<string, unknown>, names: Map<string, string>, impor
   return { plugins: [...out.values()], other };
 }
 
+/** A Trunk Recorder system's unitTagsFile (from `files`, else a to-do) and unitTagsMode. */
+function trUnitNames(sys: Record<string, unknown>, files: Record<string, string>, shortName: string, todo: ImportTodo[]): UnitNames | undefined {
+  const out: UnitNames = {};
+  const mode = sys.unitTagsMode;
+  if (mode === "ota" || mode === "user_only" || mode === "none") out.mode = mode;
+  if (typeof sys.unitTagsFile === "string" && sys.unitTagsFile) {
+    const csv = files[sys.unitTagsFile];
+    if (csv === undefined) todo.push({ kind: "units", system: shortName, file: sys.unitTagsFile });
+    else {
+      out.csv = csv;
+      out.name = baseName(sys.unitTagsFile);
+    }
+  }
+  return out.csv || out.mode ? out : undefined;
+}
+
+/**
+ * A Trunk Recorder system's recording settings, as a system's own here. Its
+ * digitalLevels / analogLevels (×1 and ×8 by default) become dB from those.
+ */
+function trRecording(sys: Record<string, unknown>): RecordingOverride {
+  const o: RecordingOverride = {};
+  const num = (k: string) => (typeof sys[k] === "number" ? (sys[k] as number) : undefined);
+  const bool = (k: string) => (typeof sys[k] === "boolean" ? (sys[k] as boolean) : undefined);
+  const set = <K extends keyof RecordingOverride>(k: K, v: RecordingOverride[K] | undefined) => {
+    if (v !== undefined) o[k] = v;
+  };
+  set("recordUnknown", bool("recordUnknown"));
+  set("minCallS", num("minDuration"));
+  set("maxCallS", num("maxDuration"));
+  set("minTransmissionS", num("minTransmissionDuration"));
+  set("compressWav", bool("compressWav"));
+  set("audioArchive", bool("audioArchive"));
+  set("callLog", bool("callLog"));
+  const db = (x: number | undefined, base: number) => (x && x > 0 && x !== base ? Math.round(20 * Math.log10(x / base) * 10) / 10 : undefined);
+  set("digitalLevelDb", db(num("digitalLevels"), 1));
+  set("analogLevelDb", db(num("analogLevels"), 8));
+  if (typeof sys.filenameFormat === "string" && sys.filenameFormat.trim()) o.filenameFormat = sys.filenameFormat.trim();
+  return o;
+}
+
 /** The talkgroup and channel files a Trunk Recorder config.json names, as it names them. */
-export function trConfigFiles(text: string): { file: string; kind: "talkgroups" | "channels"; system: string }[] {
+export function trConfigFiles(text: string): { file: string; kind: "talkgroups" | "channels" | "units"; system: string }[] {
   const j = JSON.parse(text) as { systems?: Record<string, unknown>[] };
-  const out: { file: string; kind: "talkgroups" | "channels"; system: string }[] = [];
+  const out: { file: string; kind: "talkgroups" | "channels" | "units"; system: string }[] = [];
   for (const sys of j.systems ?? []) {
     const name = typeof sys.shortName === "string" ? sys.shortName : "";
     if (typeof sys.talkgroupsFile === "string" && sys.talkgroupsFile) out.push({ file: sys.talkgroupsFile, kind: "talkgroups", system: name });
+    if (typeof sys.unitTagsFile === "string" && sys.unitTagsFile) out.push({ file: sys.unitTagsFile, kind: "units", system: name });
     if (typeof sys.channelFile === "string" && sys.channelFile) out.push({ file: sys.channelFile, kind: "channels", system: name });
   }
   return out;
@@ -690,6 +773,9 @@ export function importTrunkRecorderConfig(
     // Trunk Recorder's "error" is a fixed offset in Hz; here it is ppm.
     const ppm = typeof s.ppm === "number" ? s.ppm : typeof s.error === "number" && center ? Math.round((s.error / center) * 1e6 * 100) / 100 : 0;
     const gain = typeof s.gain === "number" ? s.gain : undefined;
+    const agc = s.agc === true;
+    const autoTune = s.autoTune === true ? { autoTune: true } : {};
+    const stage = (v: unknown) => (typeof v === "number" ? v : undefined);
     if (s.driver === "usrp") {
       imported.push({
         kind: "usrp",
@@ -697,8 +783,10 @@ export function importTrunkRecorderConfig(
         centerHz: center,
         rateHz: typeof s.rate === "number" ? s.rate : 8_000_000,
         gainDb: gain ?? 40,
+        agc,
         antenna: typeof s.antenna === "string" ? s.antenna : "",
         ppm,
+        ...autoTune,
       });
       notes.push("USRP source imported: it needs UHD installed on this computer.");
       continue;
@@ -709,20 +797,21 @@ export function importTrunkRecorderConfig(
     }
     const soapyArgs = osmosdrToSoapy(dev);
     if (soapyArgs !== null) {
-      const gains = Object.entries({ IF: s.ifGain, BB: s.bbGain, MIX: s.mixGain, LNA: s.lnaGain, TIA: s.tiaGain, PGA: s.pgaGain, AMP: s.ampGain, VGA: s.vgaGain, VGA1: s.vga1Gain, VGA2: s.vga2Gain, ...(s.gainSettings as Record<string, unknown> | undefined) })
-        .filter(([, v]) => typeof v === "number" && v !== 0)
-        .map(([k, v]) => `${k}=${String(v)}`)
-        .join(",");
+      const gains: Record<string, number> = {};
+      const stages = { IF: s.ifGain, BB: s.bbGain, MIX: s.mixGain, LNA: s.lnaGain, TIA: s.tiaGain, PGA: s.pgaGain, AMP: s.ampGain, VGA: s.vgaGain, VGA1: s.vga1Gain, VGA2: s.vga2Gain };
+      for (const [k, v] of Object.entries({ ...stages, ...(s.gainSettings as Record<string, unknown> | undefined) })) if (typeof v === "number" && v !== 0) gains[k] = v;
       imported.push({
         kind: "soapy",
         args: soapyArgs,
         centerHz: center,
         rateHz: typeof s.rate === "number" ? s.rate : 8_000_000,
-        gainDb: s.agc === true || gain === undefined ? null : gain,
+        agc: agc || (gain === undefined && !Object.keys(gains).length),
+        gainDb: gain ?? null,
         gains,
         antenna: typeof s.antenna === "string" ? s.antenna : "",
         settings: "",
         ppm,
+        ...autoTune,
       });
       notes.push(`"${dev}" imported as a SoapySDR source (${soapyArgs || "first found"}): it needs SoapySDR and the device's module installed on this computer.`);
       continue;
@@ -730,8 +819,30 @@ export function importTrunkRecorderConfig(
     if (/airspy/.test(dev)) {
       const sn = /airspy=(0x)?([0-9a-fA-F]{8,16})/.exec(dev)?.[2] ?? "";
       const rate = typeof s.rate === "number" && AIRSPY_RATES.includes(s.rate) ? s.rate : 6_000_000;
-      imported.push({ kind: "airspy", serial: sn.toUpperCase(), centerHz: center, rateHz: rate, gain: Math.max(0, Math.min(21, Math.round(gain ?? 14))), biasTee: /bias=1/.test(dev), ppm });
-      notes.push("Airspy source imported (gain as the linearity step 0–21): it needs libairspy installed on this computer.");
+      // Trunk Recorder sets the Airspy's stages by name (LNA, MIX, IF = VGA); else one overall gain, read here as the linearity step.
+      const lna = stage(s.lnaGain) ?? stage((s.gainSettings as Record<string, unknown> | undefined)?.LNA);
+      const mix = stage(s.mixGain) ?? stage((s.gainSettings as Record<string, unknown> | undefined)?.MIX);
+      const vga = stage(s.ifGain) ?? stage(s.vgaGain) ?? stage((s.gainSettings as Record<string, unknown> | undefined)?.IF);
+      const manual = lna !== undefined || mix !== undefined || vga !== undefined;
+      const clamp = (v: number | undefined, max: number) => Math.max(0, Math.min(max, Math.round(v ?? 10)));
+      imported.push({
+        kind: "airspy",
+        serial: sn.toUpperCase(),
+        centerHz: center,
+        rateHz: rate,
+        gainMode: manual || agc ? "manual" : "linearity",
+        gain: Math.max(0, Math.min(21, Math.round(gain ?? 14))),
+        lnaGain: clamp(lna, 14),
+        mixerGain: clamp(mix, 15),
+        vgaGain: clamp(vga, 15),
+        agc,
+        biasTee: /bias=1/.test(dev),
+        ppm,
+        ...autoTune,
+      });
+      notes.push(
+        `Airspy source imported (${manual ? "its LNA, mixer and VGA stages" : agc ? "AGC" : "gain as the linearity step 0–21"}): it needs libairspy installed on this computer.`,
+      );
       continue;
     }
     const serial = /rtl=([^,\s]+)/.exec(dev)?.[1] ?? "";
@@ -745,8 +856,10 @@ export function importTrunkRecorderConfig(
       serial: /^\d$/.test(serial) ? "" : serial,
       centerHz: center,
       rateHz: rate,
-      gainDb: s.agc === true ? null : gain ?? RTL_DEFAULT_GAIN_DB,
+      gainDb: gain ?? RTL_DEFAULT_GAIN_DB,
+      agc,
       ppm: Math.round(ppm),
+      ...autoTune,
     });
   }
   if (imported.length) cfg.sources = imported;
@@ -795,7 +908,7 @@ export function importTrunkRecorderConfig(
         shortName: typeof sys.shortName === "string" ? sys.shortName : undefined,
         controlChannels: Array.isArray(sys.control_channels) ? (sys.control_channels as unknown[]).filter((v): v is number => typeof v === "number") : [],
         modulation: sys.modulation === "qpsk" || sys.modulation === "fsk4" ? sys.modulation : "auto",
-        ...(typeof sys.recordUnknown === "boolean" ? { recordUnknown: sys.recordUnknown } : {}),
+        ...(Object.keys(trRecording(sys)).length ? { recording: trRecording(sys) } : {}),
         ...(sys.type === "smartnet" ? smartnetImport(sys) : {}),
         ...(sys.type === "dmr" ? dmrImport(sys) : {}),
         ...(siteGroup ? { siteGroup } : {}),
@@ -812,21 +925,59 @@ export function importTrunkRecorderConfig(
         }
       }
       if (sys.siteId !== undefined && sys.siteId !== null && sys.siteId !== "") todo.push({ kind: "siteLock", system: x.shortName, siteId: String(sys.siteId) });
+      const units = trUnitNames(sys, files, x.shortName, todo);
+      if (units) x.unitNames = units;
     }
     if (p25.length > 1) notes.push(`${p25.length} systems imported, each with its own folder.`);
     if (multi.length && isolated.length) notes.push(`multiSite was off for ${isolated.join(", ")}: each has a site group of its own, so every call there is saved.`);
     if (!multi.length && p25.length > 1)
       notes.push("A call heard on several sites of one system is now saved once (Trunk Recorder's multiSite was off) — switch it off under Recording to keep every copy.");
-    // The same setting on every system there: the default here.
-    const unknown = p25.map((x) => x.recordUnknown).filter((v): v is boolean => typeof v === "boolean");
-    if (unknown.length === p25.length && unknown.every((v) => v === unknown[0])) {
-      cfg.recording.recordUnknown = unknown[0];
-      for (const x of cfg.systems) delete x.recordUnknown;
+  }
+  // The conventional channels' rules: Trunk Recorder's first conventional system's.
+  if (conv[0] && Object.keys(trRecording(conv[0])).length) cfg.conventional.recording = trRecording(conv[0]);
+  // A setting the same on every system there is the Recording tab's here; the rest stay each system's own.
+  const owners = [...cfg.systems.map((x) => x as { recording?: RecordingOverride }), ...(importedChannels.length ? [cfg.conventional] : [])];
+  if (owners.length) {
+    const keys = new Set(owners.flatMap((o) => Object.keys(o.recording ?? {}))) as Set<keyof RecordingOverride>;
+    for (const k of keys) {
+      const vals = owners.map((o) => o.recording?.[k]);
+      if (vals.every((v) => v !== undefined && v === vals[0])) {
+        (cfg.recording as unknown as Record<string, unknown>)[k] = vals[0];
+        for (const o of owners) delete o.recording?.[k];
+      }
     }
+    for (const o of owners) if (o.recording && !Object.keys(o.recording).length) delete o.recording;
   }
   if (typeof j.captureDir === "string") cfg.recording.captureDir = j.captureDir;
   if (typeof j.callTimeout === "number") cfg.recording.callTimeoutS = j.callTimeout;
   if (typeof j.recordUUVCalls === "boolean") cfg.recording.recordUnitToUnit = j.recordUUVCalls;
+  if (typeof j.archiveFilesOnFailure === "boolean") cfg.recording.archiveFilesOnFailure = j.archiveFilesOnFailure;
+  if (conv[0]) {
+    const units = trUnitNames(conv[0], files, cfg.conventional.shortName, todo);
+    if (units) cfg.conventional.unitNames = units;
+  }
+  // The log: Trunk Recorder's keys at the top (its talkgroupDisplayFormat is a system's: the first one's).
+  const log: LogSettings = { ...defaultLog(), ...(cfg.log ?? {}) };
+  const levels = ["trace", "debug", "info", "warning", "error", "fatal"];
+  if (typeof j.logLevel === "string" && levels.includes(j.logLevel)) log.level = j.logLevel as LogSettings["level"];
+  if (typeof j.consoleLog === "boolean") log.console = j.consoleLog;
+  if (typeof j.logFile === "boolean") log.file = j.logFile;
+  if (typeof j.logDir === "string") log.dir = j.logDir;
+  if (typeof j.syslogFriendly === "boolean") log.syslogFriendly = j.syslogFriendly;
+  if (typeof j.logColor === "string" && ["all", "console", "logfile", "none"].includes(j.logColor)) log.color = j.logColor;
+  if (j.frequencyFormat === "exp" || j.frequencyFormat === "mhz" || j.frequencyFormat === "hz") log.frequencyFormat = j.frequencyFormat;
+  if (typeof j.statusAsString === "boolean") log.statusAsString = j.statusAsString;
+  if (typeof j.controlWarnRate === "number") log.controlWarnRate = j.controlWarnRate;
+  const tgFormat = systems.map((x) => x.talkgroupDisplayFormat).find((v) => v === "id" || v === "id_tag" || v === "tag_id");
+  if (tgFormat) log.talkgroupDisplayFormat = tgFormat as LogSettings["talkgroupDisplayFormat"];
+  if (log.file && log.dir && !log.dir.startsWith("/")) notes.push(`The log folder "${log.dir}" is now next to the config file.`);
+  cfg.log = log;
+  // An instance-level format is every system's that has none of its own.
+  if (typeof j.filenameFormat === "string" && j.filenameFormat.trim()) {
+    const own = cfg.systems.filter((x) => x.recording?.filenameFormat !== undefined).length;
+    if (own < cfg.systems.length || !cfg.systems.length) cfg.recording.filenameFormat = j.filenameFormat.trim();
+  }
+  if (systems.some((x) => x.conversationMode === false)) notes.push("conversationMode off (one file per transmission) isn't supported: each call is one file.");
   const { plugins, other } = trPlugins(j, names, systemNames);
   if (other.length) todo.push({ kind: "plugins", names: other });
   return { config: cfg, notes, todo, plugins };

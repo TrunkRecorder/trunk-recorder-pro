@@ -234,21 +234,28 @@ impl PluginHost {
         self.shared.dispatch(topic::AUDIO, &line(&HostMessage::Audio(chunk)));
     }
 
+    /// The plugins that take concluded calls (each reports on every one).
+    pub fn call_takers(&self) -> usize {
+        self.shared.plugins.iter().filter(|p| p.manifest.subscribes(topic::CALL_CONCLUDED)).count()
+    }
+
     /// A call whose files are written (`rel`: relative to the capture folder,
-    /// no extension; `json`: its call JSON).
-    pub fn concluded(&self, system: u16, rel: &str, json: &str) {
-        if !self.shared.plugins.iter().any(|p| p.manifest.subscribes(topic::CALL_CONCLUDED)) {
+    /// no extension; `json`: its call JSON; `m4a`: its .m4a, when one was made).
+    pub fn concluded(&self, system: u16, rel: &str, json: &str, m4a: Option<PathBuf>) {
+        if self.call_takers() == 0 {
             return;
         }
         let base = self.capture_dir.join(rel);
         let record: CallRecord = serde_json::from_str(json).unwrap_or_default();
+        let made = m4a.is_some();
         let call = ConcludedCall {
             path: rel.to_string(),
             system,
             call: record,
-            files: CallFiles { json: with_ext(&base, "json"), wav: with_ext(&base, "wav"), m4a: None },
+            files: CallFiles { json: with_ext(&base, "json"), wav: with_ext(&base, "wav"), m4a },
         };
         match &self.encode_tx {
+            _ if made => self.shared.dispatch(topic::CALL_CONCLUDED, &line(&HostMessage::CallConcluded(call))),
             Some(tx) => {
                 if let Err(TrySendError::Full(job) | TrySendError::Disconnected(job)) = tx.try_send(EncodeJob { call }) {
                     self.shared.note_log("", Level::Warn, "M4A encoding is behind: a call goes out as WAV only");

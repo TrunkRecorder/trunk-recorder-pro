@@ -24,7 +24,7 @@ use trunk_recorder_plugin::{Level, Manifest, Outcome, State, SystemInfo};
 
 use super::host::Notes;
 use super::store::{self, Catalog};
-use super::{describe, executable, plugins_dir, Encoder, Note, PluginHost, Spec};
+use super::{describe, executable, plugins_dir, Archive, Encoder, Note, PluginHost, Spec};
 use crate::config::{Config, PluginSetup};
 use crate::runtime::{publish, Hub};
 
@@ -71,6 +71,8 @@ type Described = (Option<SystemTime>, Result<Manifest, String>);
 pub struct Plugins {
     /// The plugins running while recording.
     pub host: RwLock<Option<PluginHost>>,
+    /// Calls whose files wait on the plugins' results.
+    pub archive: Arc<Archive>,
     /// What the running recording's plugins were started with, to restart them.
     env: Mutex<Option<(Vec<SystemInfo>, PathBuf)>>,
     runtime: Arc<Mutex<BTreeMap<String, Runtime>>>,
@@ -87,6 +89,7 @@ impl Plugins {
     pub fn new(hub: Hub) -> Plugins {
         Plugins {
             host: RwLock::new(None),
+            archive: Arc::default(),
             env: Mutex::new(None),
             runtime: Arc::new(Mutex::new(BTreeMap::new())),
             manifests: Mutex::new(HashMap::new()),
@@ -223,9 +226,12 @@ impl Plugins {
 
     /// What plugins say, as log lines, runtime updates and results for the interface.
     fn notes(&self) -> Notes {
-        let (hub, runtime) = (self.hub.clone(), self.runtime.clone());
+        let (hub, runtime, archive) = (self.hub.clone(), self.runtime.clone(), self.archive.clone());
         let log = super::notes_to_hub(hub.clone());
         Arc::new(move |n: Note| {
+            if let Note::Result { path, outcome, .. } = &n {
+                archive.result(path, *outcome);
+            }
             let id = match &n {
                 Note::Log { plugin, .. } | Note::State { plugin, .. } | Note::Result { plugin, .. } => plugin.clone(),
             };

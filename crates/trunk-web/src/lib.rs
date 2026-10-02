@@ -22,9 +22,9 @@ use trunk_app::{Config, Output, Session};
 use trunk_core::survey::Command;
 use wasm_bindgen::prelude::*;
 
-fn local_ymd(t: i64) -> (i32, u32, u32) {
+fn local_offset(t: i64) -> i32 {
     let d = js_sys::Date::new(&JsValue::from_f64(t as f64 * 1000.0));
-    (d.get_full_year() as i32, d.get_month() + 1, d.get_date())
+    -(d.get_timezone_offset() as i32) * 60
 }
 
 #[wasm_bindgen]
@@ -56,7 +56,7 @@ fn to_js(out: &mut Vec<Output>) -> Array {
         let obj = Object::new();
         match o {
             // (No plugins in the browser; none are asked for.)
-            Output::Plugin(_) => continue,
+            Output::Plugin(_) | Output::Log(_) => continue,
             Output::Text(t) => {
                 set(&obj, "t", "text");
                 set(&obj, "json", t);
@@ -96,7 +96,7 @@ impl WebSession {
         let cfg: Config = serde_json::from_str(config_json).map_err(|e| JsError::new(&format!("config: {e}")))?;
         let plans: serde_json::Map<String, serde_json::Value> = bandplans_json.and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default();
         let plan = |name: &str| plans.get(name).and_then(|v| v.as_str()).map(str::to_string);
-        let s = Session::new(cfg, epoch_ms, &plan, local_ymd).map_err(|e| JsError::new(&e))?;
+        let s = Session::new(cfg, epoch_ms, &plan, local_offset).map_err(|e| JsError::new(&e))?;
         Ok(WebSession { s, out: Vec::new() })
     }
     pub fn push(&mut self, source: usize, bytes: &[u8], dropped: f64) {

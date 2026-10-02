@@ -73,6 +73,13 @@ impl FrameErrors {
         i.bad_frames += f.bad() as u32;
     }
 
+    /// The share of voice frames decoded cleanly (not repeated, muted or
+    /// lost), 0–1; None with no frames (analog).
+    pub fn clean_share(&self) -> Option<f64> {
+        let (n, bad) = self.intervals.iter().fold((0u64, 0u64), |(n, b), i| (n + i.frames as u64, b + i.bad_frames as u64));
+        (n > 0).then(|| (n - bad) as f64 / n as f64)
+    }
+
     pub fn total_errors(&self) -> u64 {
         self.intervals.iter().map(|i| i.errors).sum()
     }

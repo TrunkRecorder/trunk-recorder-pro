@@ -3,6 +3,9 @@
 //! Description, Tag, Category, Priority, Preferred NAC, Preferred Site in
 //! any order) or the legacy headerless one:
 //! Decimal,Hex,Mode,Alpha Tag,Description,Tag,Group[,Priority].
+//!
+//! An `Ignore` column (this app's) marks talkgroups never to record (`true`,
+//! `yes`, `1`, `x`); so does Trunk Recorder's priority −1.
 
 use std::collections::HashMap;
 
@@ -20,6 +23,8 @@ pub struct Talkgroup {
     pub preferred_nac: u32,
     /// Multi-site: the same by the site's short name.
     pub preferred_site: String,
+    /// Never record it (the Ignore column, or priority −1).
+    pub ignore: bool,
 }
 
 impl Talkgroup {
@@ -77,6 +82,8 @@ pub fn parse_csv(text: &str) -> Talkgroups {
         };
         let Some(number) = get("Decimal", 0).and_then(|s| s.parse::<u32>().ok()) else { continue };
         let s = |name: &str, legacy: usize| get(name, legacy).unwrap_or("").to_string();
+        let priority = get("Priority", 7).and_then(|v| v.parse().ok()).unwrap_or(1);
+        let marked = get("Ignore", 99).is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "true" | "yes" | "y" | "1" | "x" | "ignore"));
         out.insert(
             number,
             Talkgroup {
@@ -86,9 +93,10 @@ pub fn parse_csv(text: &str) -> Talkgroups {
                 description: s("Description", 4),
                 tag: s("Tag", 5),
                 group: s("Category", 6),
-                priority: get("Priority", 7).and_then(|v| v.parse().ok()).unwrap_or(1),
+                priority,
                 preferred_nac: get("Preferred NAC", 99).and_then(|v| v.parse().ok()).unwrap_or(0),
                 preferred_site: s("Preferred Site", 99),
+                ignore: marked || priority < 0,
             },
         );
     }
@@ -107,6 +115,9 @@ mod tests {
         let p = parse_csv("Decimal,Alpha Tag,Preferred NAC,Preferred Site\n101,Disp,10023,\n102,Tac,,dcfd-east\n");
         assert_eq!((p[&101].preferred_nac, p[&101].preferred_site.as_str()), (10023, ""));
         assert_eq!((p[&102].preferred_nac, p[&102].preferred_site.as_str()), (0, "dcfd-east"));
+        let i = parse_csv("Decimal,Alpha Tag,Ignore\n101,Disp,\n102,Data,yes\n103,Tac,X\n");
+        assert_eq!([i[&101].ignore, i[&102].ignore, i[&103].ignore], [false, true, true]);
+        assert!(parse_csv("Decimal,Alpha Tag,Priority\n104,Old,-1\n")[&104].ignore);
         let l = parse_csv("202,ca,E,Police,Tac 2,Law,City,3\n");
         assert!(l[&202].encrypted_mode());
         assert_eq!(l[&202].priority, 3);

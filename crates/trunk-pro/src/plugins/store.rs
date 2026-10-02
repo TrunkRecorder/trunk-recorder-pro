@@ -342,15 +342,6 @@ pub fn unlisted_from(id: &str) -> Option<String> {
     (!i.reviewed && !i.repository.is_empty()).then_some(i.repository)
 }
 
-/// Note that installed plugin `id` came from `repository`, not the registry.
-pub fn note_unlisted(id: &str, repository: &str) {
-    let dir = plugins_dir().join(id);
-    if dir.is_dir() {
-        let note = Installed { repository: repository.to_string(), version: String::new(), reviewed: false };
-        let _ = std::fs::write(dir.join(INSTALLED), serde_json::to_string_pretty(&note).unwrap_or_default());
-    }
-}
-
 /// Removed when dropped: what's left of a failed (or finished) install.
 struct Staging(PathBuf);
 

@@ -131,6 +131,11 @@ impl Bank {
         self.release(true, out);
     }
 
+    /// How far above the channel the carrier is, Hz, from whichever receiver measures it.
+    pub fn offset_hz(&self) -> Option<f32> {
+        self.rx.iter().find_map(|r| r.demod.offset_hz())
+    }
+
     /// Frames found per receiver (CQPSK, CQPSK + EQ, C4FM, as configured).
     pub fn frames_per_rx(&self) -> Vec<u64> {
         self.rx.iter().map(|r| r.frames).collect()

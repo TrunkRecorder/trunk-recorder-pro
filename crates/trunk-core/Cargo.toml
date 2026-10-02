@@ -9,3 +9,4 @@ repository.workspace = true
 [dependencies]
 rustfft.workspace = true
 num-complex.workspace = true
+regex-lite = "0.1"

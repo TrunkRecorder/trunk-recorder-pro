@@ -57,6 +57,12 @@ pub struct Held {
     pub audio: Vec<f32>,
     pub frames: CallFrames,
     pub recorder_num: u32,
+    /// Where each transmission starts in `audio`.
+    pub tx: super::record::Transmissions,
+    /// How far off its channel the voice came in, Hz.
+    pub freq_error_hz: Option<f64>,
+    /// How strong it came in.
+    pub reception: super::record::Reception,
 }
 
 impl Held {
@@ -212,7 +218,7 @@ mod tests {
             let kind = if k < good { Kind::Voice } else { Kind::Repeat };
             frames.push(VoiceFrame { codec: Codec::Imbe, bits: vec![0; 88], e0: 0, errs, erased: false, kind });
         }
-        Held { call: call(id, system, id as f64 * 0.1), audio: vec![0.1; (good + bad) * FRAME_SAMPLES], frames, recorder_num: 0 }
+        Held { call: call(id, system, id as f64 * 0.1), audio: vec![0.1; (good + bad) * FRAME_SAMPLES], frames, recorder_num: 0, tx: Default::default(), freq_error_hz: None, reception: Default::default() }
     }
 
     #[test]

@@ -519,13 +519,13 @@ export function M4aSettings() {
   return (
     <section className="panel" aria-labelledby="m4a-title">
       <header className="panel-head">
-        <h2 id="m4a-title">M4A audio for plugins</h2>
+        <h2 id="m4a-title">M4A audio</h2>
         {found ? <span className="chip ok">{found}</span> : <span className={`chip ${wanted.length ? "bad" : ""}`}>{a.encoder === "none" ? "off" : "no encoder found"}</span>}
       </header>
       <div className="stack">
         <p className="muted small">
-          Some plugins upload calls as M4A, which is about a tenth the size of WAV. The recorder encodes each call once for all of them, with an encoder already on this
-          computer.{" "}
+          M4A is about a tenth the size of WAV. Some plugins upload it, and <b>Also save an M4A</b> (Call rules) keeps one of every call. The recorder encodes each
+          call once, with an encoder already on this computer.{" "}
           {wanted.length > 0 && !found && (
             <span className="bad-text">
               {wanted.map((p) => p.manifest!.name).join(", ")} {wanted.length > 1 ? "need" : "needs"} it: install ffmpeg.

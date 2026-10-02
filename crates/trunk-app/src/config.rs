@@ -7,17 +7,33 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use trunk_core::p25::diversity::BankConfig;
-use trunk_core::trunk::{check_channels, Access, parse_csv, CallConfig, ConvChannel, ConvConfig, ConvMode, EngineConfig, Identity, SourceConfig, SystemConfig, Talkgroup};
+use trunk_core::trunk::{
+    check_channels, Access, parse_csv, CallConfig, ConvChannel, ConvConfig, ConvMode, EngineConfig, Identity, SaveRules, SourceConfig, SystemConfig, Talkgroup, UnitTags,
+    UnitTagsMode,
+};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Source {
-    /// An RTL-SDR dongle. `serial` "" = the first free one; `center_hz` 0 = auto.
+    /// An RTL-SDR dongle. `serial` "" = the first free one; `center_hz` 0 =
+    /// auto. `agc`: the tuner's AGC instead of `gain_db`.
     #[serde(rename_all = "camelCase")]
-    Rtlsdr { serial: String, center_hz: f64, rate_hz: f64, gain_db: Option<f32>, ppm: i32 },
+    Rtlsdr {
+        serial: String,
+        center_hz: f64,
+        rate_hz: f64,
+        #[serde(default = "rtl_gain")]
+        gain_db: f32,
+        #[serde(default)]
+        agc: bool,
+        ppm: i32,
+        #[serde(default)]
+        auto_tune: bool,
+    },
     /// A USRP through UHD (installed separately; loaded at run time).
     /// `args`: UHD device arguments, "" = the first found ("serial=…",
-    /// "type=b200", "addr=192.168.10.2"). `antenna` "" = the device's default.
+    /// "type=b200", "addr=192.168.10.2"). `antenna` "" = the device's
+    /// default. `agc`: the device's AGC (B200 / B210 / E3xx) instead of `gain_db`.
     #[serde(rename_all = "camelCase")]
     Usrp {
         #[serde(default)]
@@ -27,30 +43,49 @@ pub enum Source {
         #[serde(default)]
         gain_db: f64,
         #[serde(default)]
+        agc: bool,
+        #[serde(default)]
         antenna: String,
         #[serde(default)]
         ppm: f64,
+        #[serde(default)]
+        auto_tune: bool,
     },
     /// An Airspy R2 / Mini through libairspy (installed separately; loaded
-    /// at run time). `serial` hex, "" = the first; `gain` the linearity gain
-    /// step 0..21.
+    /// at run time). `serial` hex, "" = the first. Gain: a 0..21 step of
+    /// libairspy's linearity or sensitivity tables, or (`gain_mode` "manual")
+    /// its three stages; `agc` hands the LNA and mixer stages to the Airspy's AGC.
     #[serde(rename_all = "camelCase")]
     Airspy {
         #[serde(default)]
         serial: String,
         center_hz: f64,
         rate_hz: f64,
+        #[serde(default)]
+        gain_mode: AirspyGain,
         #[serde(default = "airspy_gain")]
         gain: u8,
+        /// Manual: LNA 0..14, mixer 0..15, VGA (IF) 0..15.
+        #[serde(default = "airspy_stage")]
+        lna_gain: u8,
+        #[serde(default = "airspy_stage")]
+        mixer_gain: u8,
+        #[serde(default = "airspy_stage")]
+        vga_gain: u8,
+        #[serde(default)]
+        agc: bool,
         #[serde(default)]
         bias_tee: bool,
         #[serde(default)]
         ppm: f64,
+        #[serde(default)]
+        auto_tune: bool,
     },
     /// Any SDR with a SoapySDR module (SoapySDR installed separately; loaded
     /// at run time). `args`: device arguments, "" = the first found
-    /// ("driver=hackrf", "driver=sdrplay,serial=…"). `gain_db` None with no
-    /// `gains` = the device's AGC; `gains` per-element gains applied after it ("LNA=32,VGA=20");
+    /// ("driver=hackrf", "driver=sdrplay,serial=…"). `agc`: the device's AGC;
+    /// else `gain_db` overall (None: left as the device has it), then each
+    /// stage in `gains` (HackRF LNA / VGA / AMP, SDRplay IFGR / RFGR, …);
     /// `settings` device settings ("biastee=true"); `antenna` "" = the default.
     #[serde(rename_all = "camelCase")]
     Soapy {
@@ -59,15 +94,19 @@ pub enum Source {
         center_hz: f64,
         rate_hz: f64,
         #[serde(default)]
+        agc: bool,
+        #[serde(default)]
         gain_db: Option<f64>,
         #[serde(default)]
-        gains: String,
+        gains: BTreeMap<String, f64>,
         #[serde(default)]
         antenna: String,
         #[serde(default)]
         settings: String,
         #[serde(default)]
         ppm: f64,
+        #[serde(default)]
+        auto_tune: bool,
     },
     /// A capture on this machine: `format` "cu8" (rtl_sdr), "cs16" or "cf32"
     /// (GNU Radio / UHD complex float).
@@ -79,11 +118,30 @@ pub enum Source {
         realtime: bool,
         #[serde(default)]
         format: SampleFormat,
+        #[serde(default)]
+        auto_tune: bool,
     },
 }
 
+/// How an Airspy's gain is set: libairspy's linearity or sensitivity
+/// tables (one 0..21 step for all three stages), or each stage by hand.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum AirspyGain {
+    #[default]
+    Linearity,
+    Sensitivity,
+    Manual,
+}
+
+fn rtl_gain() -> f32 {
+    RTL_DEFAULT_GAIN_DB
+}
 fn airspy_gain() -> u8 {
     14
+}
+fn airspy_stage() -> u8 {
+    10
 }
 
 /// Sample format of a capture file.
@@ -129,6 +187,11 @@ impl Source {
             Source::Rtlsdr { rate_hz, .. } | Source::Usrp { rate_hz, .. } | Source::Airspy { rate_hz, .. } | Source::Soapy { rate_hz, .. } | Source::File { rate_hz, .. } => *rate_hz,
         }
     }
+    pub fn auto_tune(&self) -> bool {
+        match self {
+            Source::Rtlsdr { auto_tune, .. } | Source::Usrp { auto_tune, .. } | Source::Airspy { auto_tune, .. } | Source::Soapy { auto_tune, .. } | Source::File { auto_tune, .. } => *auto_tune,
+        }
+    }
     /// For the interface: "RTL-SDR SN 200", "USRP serial=…", "file x.cu8".
     pub fn label(&self) -> String {
         match self {
@@ -159,15 +222,18 @@ pub struct System {
     pub modulation: String,
     pub talkgroups_csv: String,
     pub talkgroups_name: String,
+    /// Its own names for its radios (Trunk Recorder's unitTagsFile, kept here as text): see [`UnitNames`].
+    #[serde(skip_serializing_if = "UnitNames::is_empty")]
+    pub unit_names: UnitNames,
     /// Only follow a control channel with this identity (fields left out
     /// match anything) — e.g. this site of a multi-site system, not its
     /// neighbour on a nearby frequency.
     pub expect: SiteIdentity,
     /// Voice channels the survey heard (for placing sources; informational).
     pub voice_channels: Vec<f64>,
-    /// Record talkgroups not in its CSV; None = the Recording setting.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub record_unknown: Option<bool>,
+    /// Its own recording rules; what's left out is as in [`Config::recording`].
+    #[serde(skip_serializing_if = "RecordingOverride::is_empty")]
+    pub recording: RecordingOverride,
     /// SmartNet (`type` "smartnet"): the band plan, as Trunk Recorder names
     /// it — "800_standard", "800_reband", "800_splinter", "900", or
     /// "400_custom" with the four numbers below (Hz; offset is a channel number).
@@ -259,9 +325,10 @@ impl Default for System {
             modulation: "auto".into(),
             talkgroups_csv: String::new(),
             talkgroups_name: String::new(),
+            unit_names: UnitNames::default(),
             expect: SiteIdentity::default(),
             voice_channels: vec![],
-            record_unknown: None,
+            recording: RecordingOverride::default(),
             bandplan: String::new(),
             bandplan_base: 0.0,
             bandplan_spacing: 0.0,
@@ -343,6 +410,37 @@ pub struct Conventional {
     /// plugins they're one more system).
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub plugins: BTreeMap<String, serde_json::Value>,
+    /// Their own recording rules; what's left out is as in [`Config::recording`].
+    #[serde(skip_serializing_if = "RecordingOverride::is_empty")]
+    pub recording: RecordingOverride,
+    /// Names for the radios heard on them.
+    #[serde(skip_serializing_if = "UnitNames::is_empty")]
+    pub unit_names: UnitNames,
+}
+
+/// Names for a system's radios: Trunk Recorder's unitTagsFile (headerless
+/// `unit,name` lines; a unit between slashes is a regular expression) and
+/// unitTagsMode: "user" (these first, then the talker aliases heard),
+/// "ota" (the aliases first), "user_only" or "none".
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct UnitNames {
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub csv: String,
+    /// The file it came from.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub mode: String,
+}
+
+impl UnitNames {
+    pub fn is_empty(&self) -> bool {
+        *self == UnitNames::default()
+    }
+    fn engine(&self) -> UnitTags {
+        UnitTags::parse_csv(&self.csv, UnitTagsMode::from_name(&self.mode)).0
+    }
 }
 
 impl Default for Conventional {
@@ -354,6 +452,8 @@ impl Default for Conventional {
             channels: vec![],
             channel_file_status: String::new(),
             plugins: BTreeMap::new(),
+            recording: RecordingOverride::default(),
+            unit_names: UnitNames::default(),
         }
     }
 }
@@ -456,6 +556,7 @@ impl Channel {
                 priority: 1,
                 preferred_nac: 0,
                 preferred_site: String::new(),
+                ignore: false,
             }),
             squelch_db: self.squelch_db,
             access: self.parsed_access().ok().flatten(),
@@ -463,21 +564,55 @@ impl Channel {
     }
 }
 
+/// How calls are recorded and saved. The settings marked "per system" can
+/// be set again on each system (and the conventional channels): see
+/// [`RecordingOverride`].
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Recording {
     pub capture_dir: String,
     pub preroll_s: f64,
     pub max_recorders: usize,
+    /// Per system: a call ends this long after its last grant or audio.
     pub call_timeout_s: f64,
+    /// Per system: talkgroups not in the talkgroup file.
     pub record_unknown: bool,
+    /// Per system.
     pub record_encrypted: bool,
+    /// Per system.
     pub record_unit_to_unit: bool,
+    /// Per system: keep calls with no audio (encrypted, nothing decoded).
     pub keep_silent_calls: bool,
+    /// Per system: drop calls with less audio than this, s; 0 = keep all
+    /// (Trunk Recorder's minDuration).
+    pub min_call_s: f64,
+    /// Per system: save a call this long and carry on in a new one, s; 0 =
+    /// no limit (maxDuration).
+    pub max_call_s: f64,
+    /// Per system: leave out transmissions shorter than this, s; 0 = keep
+    /// all (minTransmissionDuration).
+    pub min_transmission_s: f64,
     /// Save each call's vocoder frames next to its audio, for diagnosis.
     pub capture_frames: bool,
-    /// Bring every call's speech to the same loudness (as Trunk Recorder's uploads were).
+    /// Per system: bring every call's speech to the same loudness (as
+    /// Trunk Recorder's uploads were).
     pub normalize_audio: bool,
+    /// Per system: then raise or lower digital / analog calls by this much,
+    /// dB (Trunk Recorder's digitalLevels / analogLevels).
+    pub digital_level_db: f64,
+    pub analog_level_db: f64,
+    /// Per system: also keep an .m4a of every call (Trunk Recorder's compressWav).
+    pub compress_wav: bool,
+    /// Per system: keep the audio once every upload plugin has handled the
+    /// call (audioArchive); off, it's deleted then.
+    pub audio_archive: bool,
+    /// Per system: keep the call's JSON then (callLog).
+    pub call_log: bool,
+    /// Per system: when an upload failed, keep the files anyway (archiveFilesOnFailure).
+    pub archive_files_on_failure: bool,
+    /// Per system: where calls go under the recordings folder, and their
+    /// names ([`crate::filename`]); empty = `<short name>/<year>/<month>/<day>/<talkgroup>-<epoch>_<freq>`.
+    pub filename_format: String,
     /// A call heard on several sites of one system: save only the best copy
     /// (each is recorded; the one decoded most cleanly, or the talkgroup's
     /// preferred site, is kept). Trunk Recorder's multiSite.
@@ -529,11 +664,102 @@ impl Default for Recording {
             record_encrypted: false,
             record_unit_to_unit: true,
             keep_silent_calls: false,
+            min_call_s: 0.0,
+            max_call_s: 0.0,
+            min_transmission_s: 0.0,
             capture_frames: false,
             normalize_audio: true,
+            digital_level_db: 0.0,
+            analog_level_db: 0.0,
+            compress_wav: false,
+            audio_archive: true,
+            call_log: true,
+            archive_files_on_failure: true,
+            filename_format: String::new(),
             drop_duplicate_calls: true,
             vocoder: "fixed".into(),
             m4a: M4a::default(),
+        }
+    }
+}
+
+/// One system's own recording rules (or the conventional channels'): each
+/// left out is as in [`Recording`].
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct RecordingOverride {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub call_timeout_s: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub record_unknown: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub record_encrypted: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub record_unit_to_unit: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keep_silent_calls: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_call_s: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_call_s: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_transmission_s: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub normalize_audio: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub digital_level_db: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub analog_level_db: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compress_wav: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audio_archive: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub call_log: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archive_files_on_failure: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filename_format: Option<String>,
+}
+
+impl RecordingOverride {
+    pub fn is_empty(&self) -> bool {
+        *self == RecordingOverride::default()
+    }
+}
+
+impl Recording {
+    /// These settings with a system's own on top.
+    pub fn with(&self, o: &RecordingOverride) -> Recording {
+        let mut r = self.clone();
+        macro_rules! take {
+            ($($f:ident),*) => { $( if let Some(v) = &o.$f { r.$f = v.clone(); } )* };
+        }
+        take!(call_timeout_s, record_unknown, record_encrypted, record_unit_to_unit, keep_silent_calls, min_call_s, max_call_s, min_transmission_s);
+        take!(normalize_audio, digital_level_db, analog_level_db, compress_wav, audio_archive, call_log, archive_files_on_failure, filename_format);
+        r
+    }
+
+    /// What the engine does with a finished call.
+    fn save_rules(&self) -> SaveRules {
+        SaveRules {
+            keep_silent: self.keep_silent_calls,
+            min_call_s: self.min_call_s.max(0.0),
+            min_transmission_s: self.min_transmission_s.max(0.0),
+            normalize: self.normalize_audio,
+            digital_gain_db: self.digital_level_db.clamp(-40.0, 40.0) as f32,
+            analog_gain_db: self.analog_level_db.clamp(-40.0, 40.0) as f32,
+        }
+    }
+
+    fn call_config(&self) -> CallConfig {
+        CallConfig {
+            call_timeout_s: self.call_timeout_s,
+            record_unknown: self.record_unknown,
+            record_encrypted: self.record_encrypted,
+            record_unit_to_unit: self.record_unit_to_unit,
+            new_call_from_update: true,
+            max_call_s: self.max_call_s.max(0.0),
         }
     }
 }
@@ -560,7 +786,7 @@ impl Default for Server {
 pub const RTL_DEFAULT_GAIN_DB: f32 = 25.4;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase", from = "RawConfig")]
+#[serde(rename_all = "camelCase", default)]
 pub struct Config {
     pub sources: Vec<Source>,
     /// The trunked systems (sites).
@@ -571,58 +797,75 @@ pub struct Config {
     /// The plugins, by id: on or off, and their settings for the whole recorder.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub plugins: BTreeMap<String, PluginSetup>,
+    /// The log: how much, where to, and how lines read.
+    pub log: LogSettings,
+}
+
+/// The log (desktop app), with Trunk Recorder's options: `logLevel`,
+/// `consoleLog`, `logFile`, `logDir`, `syslogFriendly`, `logColor`,
+/// `frequencyFormat`, `talkgroupDisplayFormat`, `statusAsString`,
+/// `controlWarnRate` — and `syslog`, the system log too.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct LogSettings {
+    pub level: crate::log::Level,
+    /// To the console (stderr).
+    pub console: bool,
+    /// To files in `dir`: a new one each day and at 100 MB, as Trunk Recorder names them.
+    pub file: bool,
+    /// Absolute, or relative to the config file's folder; empty = `logs` there.
+    pub dir: String,
+    /// One file, `trunk-pro.log`, appended to and never rotated here (for
+    /// logrotate: SIGHUP reopens it).
+    pub syslog_friendly: bool,
+    /// To the system log too (syslog; Linux and macOS).
+    pub syslog: bool,
+    /// ANSI colour: "console", "logfile", "all" or "none"; empty = the
+    /// console's when it is a terminal and NO_COLOR isn't set.
+    pub color: String,
+    pub frequency_format: crate::log::FrequencyFormat,
+    pub talkgroup_display_format: crate::log::TalkgroupFormat,
+    pub status_as_string: bool,
+    /// A control channel decoding fewer messages a second than this is
+    /// logged as an error; −1 logs the rate always.
+    pub control_warn_rate: f64,
+}
+
+impl Default for LogSettings {
+    fn default() -> Self {
+        LogSettings {
+            level: crate::log::Level::Info,
+            console: true,
+            file: false,
+            dir: String::new(),
+            syslog_friendly: false,
+            syslog: false,
+            color: String::new(),
+            frequency_format: Default::default(),
+            talkgroup_display_format: Default::default(),
+            status_as_string: true,
+            control_warn_rate: 10.0,
+        }
+    }
+}
+
+impl LogSettings {
+    pub fn format(&self) -> crate::log::Format {
+        crate::log::Format { frequency: self.frequency_format, talkgroup: self.talkgroup_display_format, status_as_string: self.status_as_string }
+    }
 }
 
 impl Default for Config {
     fn default() -> Self {
         Config {
-            sources: vec![Source::Rtlsdr { serial: String::new(), center_hz: 0.0, rate_hz: 2_400_000.0, gain_db: Some(RTL_DEFAULT_GAIN_DB), ppm: 0 }],
+            sources: vec![Source::Rtlsdr { serial: String::new(), center_hz: 0.0, rate_hz: 2_400_000.0, gain_db: RTL_DEFAULT_GAIN_DB, agc: false, ppm: 0, auto_tune: false }],
             systems: vec![],
             conventional: Conventional::default(),
             recording: Recording::default(),
             server: Server::default(),
             plugins: BTreeMap::new(),
+            log: LogSettings::default(),
         }
-    }
-}
-
-/// A config as stored — also as before several systems: one `system`.
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-struct RawConfig {
-    sources: Vec<Source>,
-    systems: Option<Vec<System>>,
-    system: Option<System>,
-    conventional: Option<serde_json::Value>,
-    recording: Recording,
-    server: Server,
-    plugins: BTreeMap<String, PluginSetup>,
-}
-
-impl Default for RawConfig {
-    fn default() -> Self {
-        let c = Config::default();
-        RawConfig { sources: c.sources, systems: None, system: None, conventional: None, recording: c.recording, server: c.server, plugins: c.plugins }
-    }
-}
-
-impl From<RawConfig> for Config {
-    fn from(r: RawConfig) -> Config {
-        let mut conventional: Conventional = r.conventional.clone().and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
-        let systems = match (r.systems, r.system) {
-            (Some(v), _) => v,
-            (None, Some(old)) => {
-                // Conventional calls were filed under the one system's name: keep that folder.
-                let named = r.conventional.as_ref().is_some_and(|v| v.get("shortName").is_some());
-                if !named {
-                    conventional.short_name = old.short_name.clone();
-                }
-                // The old default (no control channels, no talkgroups) was no system at all.
-                if old.control_channels.is_empty() && old.talkgroups_csv.is_empty() { vec![] } else { vec![old] }
-            }
-            (None, None) => vec![],
-        };
-        Config { sources: r.sources, systems, conventional, recording: r.recording, server: r.server, plugins: r.plugins }
     }
 }
 
@@ -648,12 +891,17 @@ pub fn default_capture_dir() -> PathBuf {
 }
 
 impl Config {
-    /// The config at `path` (defaults if missing or unreadable), with a
-    /// linked channel file read in.
-    pub fn load(path: &Path) -> Config {
-        let mut c: Config = std::fs::read_to_string(path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+    /// The config at `path`, with a linked channel file read in; the
+    /// defaults when there's no file yet. A file that isn't a config is an
+    /// error, not the defaults (which would be saved over it).
+    pub fn load(path: &Path) -> Result<Config, String> {
+        let mut c: Config = match std::fs::read_to_string(path) {
+            Ok(s) => serde_json::from_str(&s).map_err(|e| format!("{}: not a config this version reads ({e})", path.display()))?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Config::default(),
+            Err(e) => return Err(format!("{}: {e}", path.display())),
+        };
         let _ = c.load_channel_file(path);
-        c
+        Ok(c)
     }
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
         if let Some(d) = path.parent() {
@@ -838,21 +1086,22 @@ impl Config {
         check_channels(&self.engine_channels()).err()
     }
 
+    /// System `s`'s recording rules (None: the conventional channels').
+    pub fn recording_for(&self, s: Option<&System>) -> Recording {
+        self.recording.with(s.map_or(&self.conventional.recording, |s| &s.recording))
+    }
+
     pub fn engine_config(&self, epoch_ms: f64) -> EngineConfig {
         let centers = self.resolved_centers();
-        let calls = |s: Option<&System>| CallConfig {
-            call_timeout_s: self.recording.call_timeout_s,
-            record_unknown: s.and_then(|s| s.record_unknown).unwrap_or(self.recording.record_unknown),
-            record_encrypted: self.recording.record_encrypted,
-            record_unit_to_unit: self.recording.record_unit_to_unit,
-            new_call_from_update: true,
-        };
+        let conv = self.recording_for(None);
         let systems: Vec<SystemConfig> = self
             .active_systems()
             .map(|s| SystemConfig {
                 short_name: s.short_name.clone(),
                 control_channels: s.control_channels.clone(),
-                calls: calls(Some(s)),
+                calls: self.recording_for(Some(s)).call_config(),
+                save: self.recording_for(Some(s)).save_rules(),
+                unit_tags: s.unit_names.engine(),
                 bank: s.bank(),
                 talkgroups: parse_csv(&s.talkgroups_csv),
                 expect: s.expect.engine(),
@@ -862,26 +1111,27 @@ impl Config {
             })
             .collect();
         // With one system, conventional P25 channels also look up its talkgroup
-        // names and use its receivers (as before there were several).
+        // names and use its receivers.
         let (conv_talkgroups, conv_bank) = match systems.as_slice() {
             [one] => (one.talkgroups.clone(), one.bank),
             _ => (Default::default(), BankConfig::default()),
         };
         EngineConfig {
             systems,
-            sources: self.sources.iter().zip(centers).map(|(s, c)| SourceConfig { center_hz: c, rate_hz: s.rate_hz() }).collect(),
+            sources: self.sources.iter().zip(centers).map(|(s, c)| SourceConfig { center_hz: c, rate_hz: s.rate_hz(), auto_tune: s.auto_tune() }).collect(),
             preroll_s: self.recording.preroll_s,
             max_recorders: self.recording.max_recorders,
-            keep_silent_calls: self.recording.keep_silent_calls,
-            calls: calls(None),
+            calls: conv.call_config(),
+            conv_save: conv.save_rules(),
+            conv_unit_tags: self.conventional.unit_names.engine(),
             epoch_ms_at_zero: epoch_ms,
             bank: conv_bank,
             conventional: self.engine_channels(),
-            conv: ConvConfig { squelch_db: self.conventional.squelch_db, ..Default::default() },
+            // A carrier stuck on still ends somewhere.
+            conv: ConvConfig { squelch_db: self.conventional.squelch_db, max_call_s: if conv.max_call_s > 0.0 { conv.max_call_s } else { ConvConfig::default().max_call_s }, ..Default::default() },
             conv_short_name: self.conventional.short_name.clone(),
             conv_talkgroups,
             capture_frames: self.recording.capture_frames,
-            normalize_audio: self.recording.normalize_audio,
             drop_duplicates: self.recording.drop_duplicate_calls,
             vocoder: trunk_core::mbe::Profile::from_name(&self.recording.vocoder).unwrap_or(trunk_core::mbe::Profile::Fixed),
         }
@@ -922,7 +1172,7 @@ mod tests {
     fn conventional_only_config() {
         let mut c: Config = serde_json::from_str(
             r#"{
-                "sources": [{ "kind": "rtlsdr", "serial": "", "centerHz": 0, "rateHz": 2400000, "gainDb": null, "ppm": 0 }],
+                "sources": [{ "kind": "rtlsdr", "serial": "", "centerHz": 0, "rateHz": 2400000, "agc": true, "ppm": 0 }],
                 "conventional": { "channels": [
                     { "freqHz": 154430000, "mode": "fm", "name": "County Fire Dispatch", "talkgroup": 1001 },
                     { "freqHz": 154100000, "mode": "p25", "squelchDb": 12 },
@@ -950,30 +1200,6 @@ mod tests {
         assert!(c.problem().unwrap().contains("center frequency"));
         c.conventional.channels.clear();
         assert!(c.problem().unwrap().contains("conventional channel"));
-    }
-
-    #[test]
-    fn single_system_config_migrates() {
-        // Before several systems: one "system", conventional calls filed under its name.
-        let c: Config = serde_json::from_str(
-            r#"{ "system": { "shortName": "county", "type": "p25", "controlChannels": [851012500], "modulation": "qpsk",
-                             "talkgroupsCsv": "", "talkgroupsName": "" },
-                 "conventional": { "squelchDb": 8, "channels": [] } }"#,
-        )
-        .unwrap();
-        assert_eq!(c.systems.len(), 1);
-        assert_eq!(c.systems[0].short_name, "county");
-        assert!(c.systems[0].enabled);
-        assert_eq!(c.systems[0].expect, SiteIdentity::default());
-        assert_eq!(c.conventional.short_name, "county");
-        // An old default (no control channels) is no system; conventional keeps its folder.
-        let c: Config = serde_json::from_str(r#"{ "system": { "shortName": "sys1", "controlChannels": [] } }"#).unwrap();
-        assert!(c.systems.is_empty());
-        assert_eq!(c.conventional.short_name, "sys1");
-        // New format round-trips.
-        let back: Config = serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
-        assert_eq!(back, c);
-        assert_eq!(Config::default().conventional.short_name, "conv");
     }
 
     #[test]
@@ -1013,13 +1239,14 @@ mod tests {
 
     #[test]
     fn several_systems_centers_and_engine_config() {
-        let rtl = || Source::Rtlsdr { serial: String::new(), center_hz: 0.0, rate_hz: 2_400_000.0, gain_db: None, ppm: 0 };
+        let rtl = || Source::Rtlsdr { serial: String::new(), center_hz: 0.0, rate_hz: 2_400_000.0, gain_db: 30.0, agc: false, ppm: 0, auto_tune: false };
         let mut c = Config { sources: vec![rtl(), rtl()], ..Default::default() };
         let mut a = system("east", &[851_012_500.0]);
         a.voice_channels = vec![851_500_000.0, 852_000_000.0];
         a.expect = SiteIdentity { nac: Some(0x443), site: Some(3), ..Default::default() };
         let mut b = system("west", &[771_106_250.0]);
-        b.record_unknown = Some(false);
+        b.recording.record_unknown = Some(false);
+        b.recording.min_call_s = Some(2.0);
         c.systems = vec![a, b, System { enabled: false, ..system("off", &[460_000_000.0]) }];
         assert_eq!(c.problem(), None);
         // Each auto source takes a system the ones before it don't cover.
@@ -1034,6 +1261,10 @@ mod tests {
         assert_eq!(e.systems[0].expect.nac, Some(0x443));
         assert_eq!(e.systems[0].expect.site, Some(3));
         assert!(e.systems[0].calls.record_unknown && !e.systems[1].calls.record_unknown);
+        assert_eq!((e.systems[0].save.min_call_s, e.systems[1].save.min_call_s), (0.0, 2.0));
+        let saved = serde_json::to_string(&c.systems[1]).unwrap();
+        assert!(saved.contains(r#""recording":{"recordUnknown":false,"minCallS":2.0}"#), "{saved}");
+        assert!(!serde_json::to_string(&c.systems[0]).unwrap().contains("recording"));
         assert!(e.drop_duplicates && e.systems[0].site_group.is_empty());
         // One source can't hold both.
         c.sources.pop();
@@ -1108,7 +1339,7 @@ mod tests {
         c.save(&cfg_path).unwrap();
         let saved = std::fs::read_to_string(&cfg_path).unwrap();
         assert!(saved.contains("\"channelFile\": \"channels.csv\"") && saved.contains("\"channels\": []"), "{saved}");
-        assert_eq!(Config::load(&cfg_path).conventional.channels.len(), 2);
+        assert_eq!(Config::load(&cfg_path).unwrap().conventional.channels.len(), 2);
         // A broken file keeps the last good list and says why.
         std::fs::write(&file, "Name\nx\n").unwrap();
         assert!(c.load_channel_file(&cfg_path).unwrap_err().contains("No Frequency column"));
@@ -1116,7 +1347,7 @@ mod tests {
         // Unlinking keeps the channels in the config.
         c.link_channel_file(&cfg_path, "").unwrap();
         c.save(&cfg_path).unwrap();
-        assert_eq!(Config::load(&cfg_path).conventional.channels.len(), 2);
+        assert_eq!(Config::load(&cfg_path).unwrap().conventional.channels.len(), 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

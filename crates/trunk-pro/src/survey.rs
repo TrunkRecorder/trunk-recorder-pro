@@ -50,17 +50,19 @@ fn spawn_source(src: &Source, i: usize, center: f64, tx: mpsc::SyncSender<Source
     std::thread::Builder::new()
         .name(format!("survey-source-{i}"))
         .spawn(move || match src {
-            Source::Rtlsdr { serial, rate_hz, gain_db, ppm, .. } => {
-                sdr::run_with(i, RtlConfig { serial, center_hz: center as u64, rate_hz: rate_hz as u32, gain_db, ppm }, tx, stop, Some(ctl))
+            Source::Rtlsdr { serial, rate_hz, gain_db, agc, ppm, .. } => {
+                sdr::run_with(i, RtlConfig { serial, center_hz: center as u64, rate_hz: rate_hz as u32, gain_db: (!agc).then_some(gain_db), ppm }, tx, stop, Some(ctl))
             }
-            Source::Usrp { args, rate_hz, gain_db, antenna, ppm, .. } => {
-                uhd::run_with(i, uhd::UsrpConfig { args, center_hz: center, rate_hz, gain_db, antenna, ppm }, tx, stop, Some(ctl))
+            Source::Usrp { args, rate_hz, gain_db, agc, antenna, ppm, .. } => {
+                uhd::run_with(i, uhd::UsrpConfig { args, center_hz: center, rate_hz, gain_db, agc, antenna, ppm }, tx, stop, Some(ctl))
             }
-            Source::Airspy { serial, rate_hz, gain, bias_tee, ppm, .. } => {
+            Source::Airspy { serial, rate_hz, gain_mode, gain, lna_gain, mixer_gain, vga_gain, agc, bias_tee, ppm, .. } => {
+                let gain = runtime::airspy_gain(gain_mode, gain, lna_gain, mixer_gain, vga_gain, agc);
                 airspy::run_with(i, airspy::AirspyConfig { serial, center_hz: center, rate_hz, gain, bias_tee, ppm }, tx, stop, Some(ctl))
             }
-            Source::Soapy { args, rate_hz, gain_db, gains, antenna, settings, ppm, .. } => {
-                soapy::run_with(i, soapy::SoapyConfig { args, center_hz: center, rate_hz, gain_db, gains, antenna, settings, ppm }, tx, stop, Some(ctl))
+            Source::Soapy { args, rate_hz, agc, gain_db, gains, antenna, settings, ppm, .. } => {
+                let gains = gains.into_iter().collect();
+                soapy::run_with(i, soapy::SoapyConfig { args, center_hz: center, rate_hz, agc, gain_db, gains, antenna, settings, ppm }, tx, stop, Some(ctl))
             }
             // A capture can't be tuned: the survey looks at its one centre.
             Source::File { path, rate_hz, realtime, format, .. } => runtime::run_file(i, &path, rate_hz, realtime, format, tx, stop),
@@ -183,14 +185,16 @@ pub fn cli(a: &crate::Args) {
             Some(_) => crate::config::SampleFormat::Cu8,
             None => crate::config::SampleFormat::from_path(path),
         };
-        cfg.sources = vec![Source::File { path: path.clone(), center_hz: a.num("center", 0.0), rate_hz: rate, realtime: false, format }];
+        cfg.sources = vec![Source::File { path: path.clone(), center_hz: a.num("center", 0.0), rate_hz: rate, realtime: false, format, auto_tune: false }];
     } else {
         cfg.sources = vec![Source::Rtlsdr {
             serial: a.get("serial").unwrap_or("").into(),
             center_hz: 0.0,
             rate_hz: rate,
-            gain_db: a.get("gain").and_then(|g| g.parse().ok()),
+            gain_db: a.get("gain").and_then(|g| g.parse().ok()).unwrap_or(crate::config::RTL_DEFAULT_GAIN_DB),
+            agc: a.get("gain").is_none(),
             ppm: a.num("ppm", 0.0) as i32,
+            auto_tune: false,
         }];
     }
     let bands = a.get("bands").map(|b| json!(b.split(',').collect::<Vec<_>>())).unwrap_or(Value::Null);

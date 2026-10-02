@@ -52,6 +52,12 @@ struct Api {
     set_sample_type: unsafe extern "C" fn(Dev, c_int) -> c_int,
     set_freq: unsafe extern "C" fn(Dev, u32) -> c_int,
     set_linearity_gain: unsafe extern "C" fn(Dev, u8) -> c_int,
+    set_sensitivity_gain: unsafe extern "C" fn(Dev, u8) -> c_int,
+    set_lna_gain: unsafe extern "C" fn(Dev, u8) -> c_int,
+    set_mixer_gain: unsafe extern "C" fn(Dev, u8) -> c_int,
+    set_vga_gain: unsafe extern "C" fn(Dev, u8) -> c_int,
+    set_lna_agc: unsafe extern "C" fn(Dev, u8) -> c_int,
+    set_mixer_agc: unsafe extern "C" fn(Dev, u8) -> c_int,
     set_rf_bias: unsafe extern "C" fn(Dev, u8) -> c_int,
     start_rx: unsafe extern "C" fn(Dev, Callback, *mut c_void) -> c_int,
     stop_rx: unsafe extern "C" fn(Dev) -> c_int,
@@ -90,6 +96,12 @@ fn api() -> Result<&'static Api, String> {
                 set_sample_type: f!("airspy_set_sample_type"),
                 set_freq: f!("airspy_set_freq"),
                 set_linearity_gain: f!("airspy_set_linearity_gain"),
+                set_sensitivity_gain: f!("airspy_set_sensitivity_gain"),
+                set_lna_gain: f!("airspy_set_lna_gain"),
+                set_mixer_gain: f!("airspy_set_mixer_gain"),
+                set_vga_gain: f!("airspy_set_vga_gain"),
+                set_lna_agc: f!("airspy_set_lna_agc"),
+                set_mixer_agc: f!("airspy_set_mixer_agc"),
                 set_rf_bias: f!("airspy_set_rf_bias"),
                 start_rx: f!("airspy_start_rx"),
                 stop_rx: f!("airspy_stop_rx"),
@@ -139,9 +151,22 @@ pub struct AirspyConfig {
     pub serial: String,
     pub center_hz: f64,
     pub rate_hz: f64,
-    pub gain: u8,
+    pub gain: AirspyGain,
     pub bias_tee: bool,
     pub ppm: f64,
+}
+
+/// How its gain is set.
+#[derive(Clone, Copy, Debug)]
+pub enum AirspyGain {
+    /// libairspy's linearity table, step 0..21.
+    Linearity(u8),
+    /// Its sensitivity table, step 0..21.
+    Sensitivity(u8),
+    /// Each stage: LNA 0..14, mixer 0..15, VGA 0..15.
+    Manual { lna: u8, mixer: u8, vga: u8 },
+    /// The Airspy's AGC on the LNA and mixer; the VGA as given.
+    Agc { vga: u8 },
 }
 
 pub fn run(source: usize, cfg: AirspyConfig, tx: SyncSender<SourceMsg>, stop: Arc<AtomicBool>) {
@@ -232,7 +257,22 @@ fn stream_once(source: usize, cfg: &AirspyConfig, tx: &SyncSender<SourceMsg>, st
         }
         check(a, "sample rate", (a.set_samplerate)(d.dev, want))?;
         check(a, "tune", (a.set_freq)(d.dev, (cfg.center_hz / (1.0 + cfg.ppm * 1e-6)).round() as u32))?;
-        check(a, "gain", (a.set_linearity_gain)(d.dev, cfg.gain.min(21)))?;
+        match cfg.gain {
+            AirspyGain::Linearity(g) => check(a, "gain", (a.set_linearity_gain)(d.dev, g.min(21)))?,
+            AirspyGain::Sensitivity(g) => check(a, "gain", (a.set_sensitivity_gain)(d.dev, g.min(21)))?,
+            AirspyGain::Manual { lna, mixer, vga } => {
+                check(a, "LNA AGC off", (a.set_lna_agc)(d.dev, 0))?;
+                check(a, "mixer AGC off", (a.set_mixer_agc)(d.dev, 0))?;
+                check(a, "LNA gain", (a.set_lna_gain)(d.dev, lna.min(14)))?;
+                check(a, "mixer gain", (a.set_mixer_gain)(d.dev, mixer.min(15)))?;
+                check(a, "VGA gain", (a.set_vga_gain)(d.dev, vga.min(15)))?;
+            }
+            AirspyGain::Agc { vga } => {
+                check(a, "LNA AGC", (a.set_lna_agc)(d.dev, 1))?;
+                check(a, "mixer AGC", (a.set_mixer_agc)(d.dev, 1))?;
+                check(a, "VGA gain", (a.set_vga_gain)(d.dev, vga.min(15)))?;
+            }
+        }
         check(a, "bias-T", (a.set_rf_bias)(d.dev, cfg.bias_tee as u8))?;
         let ctx = Box::new(Ctx { source, tx: tx.clone(), stop: stop.clone(), closed: AtomicBool::new(false), dropped: AtomicU64::new(0) });
         let ctx_ptr = &*ctx as *const Ctx as *mut c_void;

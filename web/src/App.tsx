@@ -4,9 +4,10 @@ import { addSite, closeGuide, dismissError, openGuide, downloadCall, pluginOn, q
 import { guideWanted, SetupGuide } from "./Onboarding.tsx";
 import { PluginsPage } from "./Plugins.tsx";
 import { BrowserStorage } from "./web/BrowserStorage.tsx";
-import { CONVENTIONAL, type CallEntry, type CallView, type DmrSiteStatus, type SystemStatus, type TalkgroupName } from "./protocol.ts";
+import { CONVENTIONAL, type CallEntry, type CallView, type DmrSiteStatus, type SourceStatus, type SystemStatus, type TalkgroupName } from "./protocol.ts";
 import { Setup } from "./Setup.tsx";
 import { parseTalkgroupCsv } from "./talkgroups.ts";
+import { unitName } from "./units.ts";
 import { Waterfall, type CcMark } from "./Waterfall.tsx";
 
 const hex = (v: number | null | undefined) => (v === null || v === undefined ? "—" : v.toString(16).toUpperCase());
@@ -60,7 +61,41 @@ function Unit({ id, alias }: { id: number; alias: string | undefined }) {
 }
 
 /** A unit's alias on a system: as learned, else as the call record saved it. */
-const aliasOf = (s: AppState, system: string, id: number, saved?: string) => s.units[system]?.[id] || saved || undefined;
+/**
+ * A unit's name, by its system's unit names mode: the unit names file's, the
+ * talker alias heard (live, or `saved` with the call), as the recorder picks
+ * a call's `tag`.
+ */
+const aliasOf = (s: AppState, system: string, id: number, saved?: string) => {
+  const c = s.config;
+  const names = c?.systems.find((x) => x.shortName === system)?.unitNames ?? (c?.conventional.shortName === system ? c.conventional.unitNames : undefined);
+  const heard = () => s.units[system]?.[id] || saved || undefined;
+  const user = () => (names?.csv ? unitName(names.csv, id) : undefined);
+  switch (names?.mode || "user") {
+    case "ota":
+      return heard() ?? user();
+    case "user_only":
+      return user();
+    case "none":
+      return undefined;
+    default:
+      return user() ?? heard();
+  }
+};
+
+/** A saved call's reception: the SNR, with the levels and clean share on hover. */
+function Reception({ r }: { r: CallEntry["record"] }) {
+  if (r.snr === undefined || r.snr === null) return <td className="muted">—</td>;
+  const tone = r.snr >= 20 ? "ok" : r.snr >= 10 ? "warn" : "bad";
+  const clean = r.clean_voice_pct ?? null;
+  const title = `Signal ${r.signal?.toFixed(1)} dBFS, noise ${r.noise?.toFixed(1)} dBFS${clean !== null ? `, ${clean.toFixed(1)} % of voice frames decoded cleanly` : ""}`;
+  return (
+    <td className="mono" title={title}>
+      <span className={`snr ${tone}`}>{r.snr.toFixed(0)} dB</span>
+      {clean !== null && clean < 99.5 && <span className="muted small"> · {clean.toFixed(0)} %</span>}
+    </td>
+  );
+}
 
 const ccTone = (x: SystemStatus, perS: number | undefined): "ok" | "warn" | "bad" => (x.mismatch ? "bad" : (perS ?? 0) > 5 ? "ok" : (perS ?? 0) > 0 ? "warn" : "bad");
 const pctText = (x: SystemStatus) => (x.good + x.bad ? `${Math.round((100 * x.good) / (x.good + x.bad))}% decoded` : "no decodes yet");
@@ -141,7 +176,7 @@ function StatusTiles({ s }: { s: AppState }) {
           value={<span className="mono">{s.sources.length ? s.sources.map((x) => (x.rateMeasured / 1e6).toFixed(2)).join(" · ") + " MSPS" : "—"}</span>}
           sub={
             s.sources.length
-              ? `DSP ${(s.load * 100).toFixed(1)}% of a core${s.sources.map((x) => (x.dropped ? ` · ${x.label}: ${x.dropped} samples dropped` : "") + (x.errors ? ` · ${x.label}: ${x.lastError}` : "")).join("")}`
+              ? `DSP ${(s.load * 100).toFixed(1)}% of a core${s.sources.map((x) => (x.dropped ? ` · ${x.label}: ${x.dropped} samples dropped` : "") + (x.errors ? ` · ${x.label}: ${x.lastError}` : "") + tuneText(x)).join("")}`
               : "…"
           }
         />
@@ -153,6 +188,13 @@ function StatusTiles({ s }: { s: AppState }) {
       {systems.some((x) => x.dmr) && <DmrSites systems={systems} />}
     </>
   );
+}
+
+/** A source's frequency error as its control channels show it (and autoTune's correction). */
+function tuneText(x: SourceStatus): string {
+  if (x.errorPpm === null || x.errorPpm === undefined) return "";
+  const ppm = (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(2)} ppm`;
+  return ` · ${x.label}: off by ${ppm(x.errorPpm)}${x.tunePpm ? `, AutoTune ${ppm(x.tunePpm)}` : ""}`;
 }
 
 /** "multi-site: 3 sites", or "3 systems on site 1-3" when they share one. */
@@ -413,6 +455,8 @@ function reasonText(c: CallView): string {
       return "no free recorder";
     case "unknown_tg":
       return "not in talkgroup list";
+    case "ignored":
+      return "ignored (talkgroup list)";
     default:
       return "monitoring";
   }
@@ -635,6 +679,7 @@ function History({ s }: { s: AppState }) {
                 {multi && <th>System</th>}
                 <th>Talkgroup</th>
                 <th>Length</th>
+                <th title="Signal over noise; hover for the levels and the share of voice decoded cleanly">Reception</th>
                 <th>Sources</th>
                 <th />
               </tr>
@@ -661,6 +706,7 @@ function History({ s }: { s: AppState }) {
                     <PatchedWith tgs={patchedWith(c)} />
                   </td>
                   <td className="mono">{(c.record.call_length_ms / 1000).toFixed(1)} s</td>
+                  <Reception r={c.record} />
                   <Sources s={s} entry={c} />
                   <td className="actions">
                     <button className="btn ghost small" onClick={() => setPlaying(c.path)}>
@@ -697,7 +743,7 @@ function History({ s }: { s: AppState }) {
 function Sources({ s, entry }: { s: AppState; entry: CallEntry }) {
   const system = systemOf(entry);
   const seen = new Map<number, string | undefined>();
-  for (const x of entry.record.srcList ?? []) if (!seen.has(x.src)) seen.set(x.src, aliasOf(s, system, x.src, x.tag_ota));
+  for (const x of entry.record.srcList ?? []) if (!seen.has(x.src)) seen.set(x.src, aliasOf(s, system, x.src, x.tag || x.tag_ota));
   const units = [...seen];
   return (
     <td className="srcs" title={units.map(([id, alias]) => (alias ? `${alias} (${id})` : String(id))).join(", ")}>

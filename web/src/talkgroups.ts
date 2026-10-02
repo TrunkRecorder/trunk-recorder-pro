@@ -12,6 +12,8 @@ export interface Talkgroup {
   group: string;
   priority: number;
   preferredNac: number;
+  /** Never record it: the Ignore column, or Trunk Recorder's priority −1. */
+  ignore?: boolean;
 }
 
 /** Mode letters Trunk Recorder treats as "encrypted, don't record". */
@@ -69,6 +71,7 @@ export function parseTalkgroupCsv(text: string): Map<number, Talkgroup> {
       group: get("Category", 6) ?? "",
       priority: int(get("Priority", 7), 1),
       preferredNac: int(get("Preferred NAC", 99), 0),
+      ignore: /^(true|yes|y|1|x|ignore)$/i.test((get("Ignore", 99) ?? "").trim()) || int(get("Priority", 7), 1) < 0,
     });
   }
   return out;

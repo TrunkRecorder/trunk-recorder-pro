@@ -72,7 +72,10 @@ Settings: a USRP takes UHD device arguments (blank = the first found,
 `serial=…`, `addr=192.168.10.2`), any sample rate its clock supports (e.g. 8
 MSPS covers ~7 MHz), a gain in dB and an antenna (e.g. `RX2`, `TX/RX`).
 An Airspy runs at 10 or 2.5 MSPS (R2) or 6 or 3 MSPS (Mini), with a
-linearity gain step of 0–21 and an optional bias-T. Wider sources cost more
+linearity or sensitivity gain step of 0–21, or its LNA (0–14), mixer and VGA
+(0–15) stages set by hand (the LNA and mixer optionally by its AGC), and an
+optional bias-T. Every radio has an AGC switch and **AutoTune**, which
+corrects for the frequency error its control channels show. Wider sources cost more
 CPU: about 1–2 % of a core per 2.4 MSPS.
 
 ## Run it
@@ -84,12 +87,15 @@ trunk-pro          # opens http://localhost:8080 — set up the system(s), press
 Add a system (or let **Find my system** find it), set your dongle(s) in the browser, press **Start**.
 Calls are written to the recordings folder (default `~/TrunkRecorderPro`) as
 `<system>/<year>/<month>/<day>/<talkgroup>-<epoch>_<freq>.wav|json`, Trunk
-Recorder's layout and JSON fields; the interface shows live status, a
+Recorder's layout and JSON fields (or as **Folders and file names** says,
+with Trunk Recorder's `filenameFormat` tokens); the interface shows live status, a
 waterfall per dongle, active calls (listen live) and recent recordings. The
 config lives in `~/Library/Application Support/trunk-pro/` (macOS),
 `%APPDATA%\trunk-pro\` (Windows) or `~/.config/trunk-pro/` (Linux).
 
-On a machine that records unattended, turn on **Start recording when the app
+The log goes to stderr in Trunk Recorder's format (and, as Setup → Recording
+→ Log says, to daily files and the system log); `--log-level debug` for
+more. On a machine that records unattended, turn on **Start recording when the app
 starts** (or run `trunk-pro --start`); Ctrl-C, SIGTERM and **Quit** all save
 the calls in progress before exiting. `--bind 0.0.0.0` makes the interface
 reachable from other machines — it has no login, so only on a network you

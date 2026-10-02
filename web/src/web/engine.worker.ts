@@ -92,7 +92,7 @@ async function surveyStart(req: { source: number; bands: string[]; findGain: boo
     surveyTimer = setInterval(surveyPoll, 100);
     if (src.kind === "rtlsdr") {
       const first = s.command() as { tune?: number } | undefined;
-      const rtl = await WebRtl.open(src.serial, first?.tune ?? src.centerHz, src.rateHz, src.gainDb ?? undefined, src.ppm);
+      const rtl = await WebRtl.open(src.serial, first?.tune ?? src.centerHz, src.rateHz, src.agc ? undefined : src.gainDb, src.ppm);
       surveyRtl = rtl;
       s.tuned(first?.tune ?? src.centerHz);
       void pumpSurveyRtl(s, rtl);
@@ -209,7 +209,7 @@ async function start(): Promise<void> {
     for (let i = 0; i < cfg.sources.length; i++) {
       const s = cfg.sources[i];
       if (s.kind === "rtlsdr") {
-        const rtl = await WebRtl.open(s.serial, centers[i] ?? s.centerHz, s.rateHz, s.gainDb ?? undefined, s.ppm);
+        const rtl = await WebRtl.open(s.serial, centers[i] ?? s.centerHz, s.rateHz, s.agc ? undefined : s.gainDb, s.ppm);
         rtls.push(rtl);
         void pumpRtl(i, rtl);
       } else if (s.kind === "usrp" || s.kind === "airspy" || s.kind === "soapy") {

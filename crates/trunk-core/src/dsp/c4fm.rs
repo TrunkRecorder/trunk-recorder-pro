@@ -458,6 +458,12 @@ impl C4fm {
 }
 
 impl Receiver for C4fm {
+    /// The symbol levels' centre: the discriminator reads the carrier's
+    /// offset there. Only once the levels are clean.
+    fn offset_hz(&self) -> Option<f32> {
+        (self.symbols > 2400 && self.separation > 4.0 && self.separation.is_finite()).then_some(self.center)
+    }
+
     fn push(&mut self, iq: &[Complex32], out: &mut Vec<Symbol>) {
         let k = (self.fs / (2.0 * PI)) as f32;
         // Clicks: a noise-driven phase wrap gives a spike far outside the rails.

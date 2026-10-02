@@ -105,9 +105,134 @@ impl UnitAliases {
     }
 }
 
+/// Which names a unit gets: Trunk Recorder's unitTagsMode.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum UnitTagsMode {
+    /// The unit names file first, then the talker aliases heard ("user").
+    #[default]
+    UserFirst,
+    /// The aliases heard first ("ota").
+    OtaFirst,
+    /// Only the unit names file ("user_only").
+    UserOnly,
+    /// No names ("none").
+    None,
+}
+
+impl UnitTagsMode {
+    pub fn from_name(s: &str) -> UnitTagsMode {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "ota" => UnitTagsMode::OtaFirst,
+            "user_only" => UnitTagsMode::UserOnly,
+            "none" => UnitTagsMode::None,
+            _ => UnitTagsMode::UserFirst,
+        }
+    }
+}
+
+/// A system's own names for its radios — Trunk Recorder's unitTagsFile:
+/// headerless CSV `unit,name`, `#` comments. The unit is a number, or a
+/// regular expression between slashes whose groups the name can use:
+/// `/^1(\d{3})$/,Engine $1` names 1123 "Engine 123". The first match wins.
+#[derive(Clone, Debug, Default)]
+pub struct UnitTags {
+    tags: Vec<(regex_lite::Regex, String)>,
+    pub mode: UnitTagsMode,
+}
+
+impl UnitTags {
+    /// The names in `text`, and the patterns that aren't regular expressions.
+    pub fn parse_csv(text: &str, mode: UnitTagsMode) -> (UnitTags, Vec<String>) {
+        let mut tags = Vec::new();
+        let mut bad = Vec::new();
+        for line in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
+            let f = split_csv_line(line);
+            let (Some(pat), Some(name)) = (f.first().map(|s| s.trim()), f.get(1).map(|s| s.trim())) else { continue };
+            if pat.is_empty() || name.is_empty() {
+                continue;
+            }
+            let re = match pat.strip_prefix('/').and_then(|p| p.strip_suffix('/')) {
+                Some(r) => r.to_string(),
+                None => format!("^{}$", regex_lite::escape(pat)),
+            };
+            match regex_lite::Regex::new(&re) {
+                // Trunk Recorder's (boost's) replacements: $1 and \1 alike.
+                Ok(r) => tags.push((r, sed_groups(name))),
+                Err(_) => bad.push(pat.to_string()),
+            }
+        }
+        (UnitTags { tags, mode }, bad)
+    }
+
+    pub fn len(&self) -> usize {
+        self.tags.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.tags.is_empty()
+    }
+
+    /// The name the file gives `unit`.
+    pub fn user(&self, unit: u32) -> Option<String> {
+        let id = unit.to_string();
+        self.tags.iter().find(|(r, _)| r.is_match(&id)).map(|(r, name)| r.replace(&id, name.as_str()).into_owned())
+    }
+
+    /// A unit's name by the mode (Trunk Recorder's `tag` in srcList): the
+    /// file's or the alias heard, whichever comes first. No unit names
+    /// file: the alias heard.
+    pub fn name(tags: Option<&UnitTags>, heard: Option<&UnitAliases>, unit: u32) -> Option<String> {
+        let ota = || heard.and_then(|h| h.get(unit)).map(str::to_string);
+        let Some(t) = tags else { return ota() };
+        let user = || t.user(unit);
+        match t.mode {
+            UnitTagsMode::UserFirst => user().or_else(ota),
+            UnitTagsMode::OtaFirst => ota().or_else(user),
+            UnitTagsMode::UserOnly => user(),
+            UnitTagsMode::None => None,
+        }
+    }
+}
+
+/// `\1` → `${1}` (and `$1` → `${1}`, so a letter after it isn't read as part of the group's name).
+fn sed_groups(s: &str) -> String {
+    let mut out = String::new();
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if (c == '\\' || c == '$') && chars.peek().is_some_and(|d| d.is_ascii_digit()) {
+            let mut n = String::new();
+            while let Some(d) = chars.peek().filter(|d| d.is_ascii_digit()) {
+                n.push(*d);
+                chars.next();
+            }
+            out.push_str(&format!("${{{n}}}"));
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unit_names_file() {
+        let (t, bad) = UnitTags::parse_csv("# names\n1234,Engine 12\n/^7(\\d{3})$/,Medic $1\n/^8(\\d)(\\d)$/,Car \\2-\\1x\n/[/,broken\n", UnitTagsMode::UserFirst);
+        assert_eq!((t.len(), bad), (3, vec!["/[/".to_string()]));
+        assert_eq!(t.user(1234).as_deref(), Some("Engine 12"));
+        assert_eq!(t.user(12345), None, "a plain number matches only itself");
+        assert_eq!(t.user(7042).as_deref(), Some("Medic 042"));
+        assert_eq!(t.user(812).as_deref(), Some("Car 2-1x"));
+        let heard = UnitAliases::parse_csv("1234,E12 CAPT,,1,,,\n555,HEARD,,1,,,\n");
+        assert_eq!(UnitTags::name(Some(&t), Some(&heard), 1234).as_deref(), Some("Engine 12"));
+        assert_eq!(UnitTags::name(Some(&t), Some(&heard), 555).as_deref(), Some("HEARD"));
+        let ota = UnitTags { mode: UnitTagsMode::OtaFirst, ..t.clone() };
+        assert_eq!(UnitTags::name(Some(&ota), Some(&heard), 1234).as_deref(), Some("E12 CAPT"));
+        let only = UnitTags { mode: UnitTagsMode::UserOnly, ..t.clone() };
+        assert_eq!(UnitTags::name(Some(&only), Some(&heard), 555), None);
+        assert_eq!(UnitTags::name(None, Some(&heard), 555).as_deref(), Some("HEARD"));
+    }
 
     #[test]
     fn newest_wins_and_round_trips() {

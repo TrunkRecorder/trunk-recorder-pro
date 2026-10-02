@@ -6,6 +6,8 @@
 use serde_json::{json, Value};
 use trunk_core::trunk::{heard_code, Call, Engine, Event, Identity, MessageType};
 
+use crate::filename;
+use crate::log::{Body, CallState, CallTag, Level, Record};
 use crate::heard::HeardCodes;
 use trunk_core::dsp::tones::Tone;
 use trunk_core::Complex32;
@@ -27,7 +29,14 @@ pub enum Output {
     File { rel: String, system: u16, wav: Vec<u8>, json: String, frames: Option<String>, entry: Value },
     /// An event for plugins (only those [`Session::plugin_topics`] asks for).
     Plugin(HostMessage),
+    /// A line for the log (the platform's logger formats and routes it).
+    Log(Record),
 }
+
+/// Trunk Recorder's status summary comes this often (engine time), s.
+const STATUS_EVERY_S: f64 = 200.0;
+/// The control channel decode rate is checked over this long, s.
+const RATE_EVERY_S: f64 = 10.0;
 
 /// What plugins subscribe to, so nothing else is built.
 #[derive(Clone, Copy, Debug, Default)]
@@ -37,9 +46,9 @@ pub struct PluginTopics {
     pub status: bool,
 }
 
-/// Local calendar date (year, month, day) of a Unix time — Trunk Recorder's
-/// folders are in local time, which only the platform knows.
-pub type LocalYmd = fn(i64) -> (i32, u32, u32);
+/// Local time's offset from UTC at a Unix time, s (east positive) — Trunk
+/// Recorder's folders are in local time, which only the platform knows.
+pub type LocalOffset = fn(i64) -> i32;
 
 #[derive(Default, Clone)]
 struct SourceStats {
@@ -56,7 +65,9 @@ pub struct Session {
     engine: Engine,
     stats: Vec<SourceStats>,
     log: Vec<Value>,
-    local_ymd: LocalYmd,
+    /// Log records not yet handed out.
+    records: Vec<Record>,
+    local_offset: LocalOffset,
     busy_ms: f64,
     start_ms: Option<f64>,
     last_status_ms: f64,
@@ -71,11 +82,14 @@ pub struct Session {
     plugin_good: Vec<u64>,
     /// The codes conventional frequencies carried ([`crate::heard`]).
     heard: HeardCodes,
+    /// Each system's control messages counted at (its time, the count), for the decode rate.
+    rate_at: Vec<(f64, u64)>,
+    next_status_s: f64,
 }
 
 impl Session {
     /// `bandplan`: the band plan saved for a system's short name ([`Session::bandplans`]).
-    pub fn new(cfg: Config, epoch_ms: f64, bandplan: &dyn Fn(&str) -> Option<String>, local_ymd: LocalYmd) -> Result<Session, String> {
+    pub fn new(cfg: Config, epoch_ms: f64, bandplan: &dyn Fn(&str) -> Option<String>, local_offset: LocalOffset) -> Result<Session, String> {
         if let Some(p) = cfg.problem() {
             return Err(p);
         }
@@ -92,7 +106,8 @@ impl Session {
             engine,
             stats: vec![SourceStats::default(); n],
             log: Vec::new(),
-            local_ymd,
+            records: Vec::new(),
+            local_offset,
             busy_ms: 0.0,
             start_ms: None,
             last_status_ms: 0.0,
@@ -104,6 +119,8 @@ impl Session {
             last_plugin_status_ms: 0.0,
             plugin_good: Vec::new(),
             heard: HeardCodes::default(),
+            rate_at: Vec::new(),
+            next_status_s: STATUS_EVERY_S,
         })
     }
 
@@ -137,6 +154,7 @@ impl Session {
         s.errors += 1;
         s.last_error = Some(error.to_string());
         self.log.push(json!({ "timeS": self.engine.status().now_s, "kind": "error", "text": format!("source {source}: {error}") }));
+        self.records.push(Record::text(Level::Error, None, format!("Source {source}: {error}")));
     }
 
     /// A finite source ran out; true when all have.
@@ -152,6 +170,8 @@ impl Session {
         for ev in self.engine.drain_events() {
             self.handle(ev, out);
         }
+        self.log_rates_and_status(out);
+        out.extend(self.records.drain(..).map(Output::Log));
         if now_ms - self.last_spec_ms >= 150.0 {
             self.last_spec_ms = now_ms;
             for (i, s) in self.engine.sources().iter().enumerate() {
@@ -189,6 +209,7 @@ impl Session {
         for ev in self.engine.drain_events() {
             self.handle(ev, out);
         }
+        out.extend(self.records.drain(..).map(Output::Log));
         self.flush_log(out);
     }
 
@@ -231,6 +252,11 @@ impl Session {
     }
 
     /// A system's short name (a call's `system`; conventional channels' for [`CONVENTIONAL`]).
+    /// The config of system `system` (an engine index; None: conventional).
+    fn system_config(&self, system: u16) -> Option<&crate::config::System> {
+        self.cfg.active_systems().nth(system as usize)
+    }
+
     fn system_name(&self, system: u16) -> &str {
         match self.engine.systems().get(system as usize) {
             Some(s) => &s.short_name,
@@ -249,6 +275,61 @@ impl Session {
     /// Unix seconds of engine time `s`.
     fn wall(&self, s: f64) -> f64 {
         self.epoch_ms / 1000.0 + s
+    }
+
+    /// The log header for a call.
+    fn call_tag(c: &Call) -> CallTag {
+        CallTag {
+            num: c.id as u64,
+            talkgroup: c.talkgroup,
+            tag: c.talkgroup_info.as_ref().map_or(String::new(), |t| t.alpha_tag.clone()),
+            encrypted: c.encrypted,
+            freq_hz: c.freq_hz as f64,
+        }
+    }
+
+    fn call_record(&self, level: Level, c: &Call, body: Body) -> Record {
+        Record { level, system: Some(self.system_name(c.system).to_string()), call: Some(Self::call_tag(c)), body }
+    }
+
+    /// Trunk Recorder's control channel decode rate check, and its status summary.
+    fn log_rates_and_status(&mut self, _out: &mut [Output]) {
+        let st = self.engine.status();
+        let warn = self.cfg.log.control_warn_rate;
+        self.rate_at.resize(st.systems.len(), (f64::NAN, 0));
+        for (i, y) in st.systems.iter().enumerate() {
+            let (t0, n0) = self.rate_at[i];
+            if t0.is_nan() || y.now_s < t0 {
+                self.rate_at[i] = (y.now_s, y.good);
+                continue;
+            }
+            if y.now_s - t0 < RATE_EVERY_S {
+                continue;
+            }
+            let per_s = y.good.saturating_sub(n0) as f64 / (y.now_s - t0);
+            self.rate_at[i] = (y.now_s, y.good);
+            let level = if per_s < warn { Level::Error } else if warn == -1.0 { Level::Info } else { continue };
+            let body = Body::DecodeRate { freq_hz: y.control_channel_hz.map(|f| f as f64), per_s, count: y.good - n0 };
+            self.records.push(Record { level, system: Some(y.short_name.clone()), call: None, body });
+        }
+        if st.now_s < self.next_status_s {
+            return;
+        }
+        self.next_status_s = st.now_s + STATUS_EVERY_S;
+        let calls = self.engine.active_calls();
+        self.records.push(Record::text(Level::Info, None, format!("Active Calls: {}", calls.len())));
+        for c in &calls {
+            let state = if c.recording { CallState::Recording } else { CallState::Monitoring(c.reason.map_or("", |r| r.as_str())) };
+            let r = self.call_record(Level::Info, c, Body::State { elapsed_s: (st.now_s - c.start_s).max(0.0), state });
+            self.records.push(r);
+        }
+        self.records.push(Record::text(Level::Info, None, format!("Recorders: {} recording, {} channels open", st.recording, st.channels_open)));
+        self.records.push(Record::text(Level::Info, None, "Control Channel Decode Rates:"));
+        for y in &st.systems {
+            let freq = y.control_channel_hz.map_or("-".to_string(), |f| self.cfg.log.format().freq(f as f64));
+            let rate = if y.now_s > 0.0 { y.good as f64 / y.now_s } else { 0.0 };
+            self.records.push(Record::text(Level::Info, Some(&y.short_name), format!("{freq}\t{rate:.1} msg/sec")));
+        }
     }
 
     fn call_info(&self, c: &Call) -> CallInfo {
@@ -314,14 +395,17 @@ impl Session {
                         }
                     }
                 }
+                self.records.push(Record::text(Level::Trace, Some(&name), m.meta.clone()));
                 self.log.push(json!({ "timeS": m.time_s, "kind": m.kind.as_str(), "text": m.meta, "system": name }))
             }
             Event::ControlChannel { system, freq_hz } => {
                 let name = self.system_name(system).to_string();
+                self.records.push(Record { level: Level::Info, system: Some(name.clone()), call: None, body: Body::ControlChannel { freq_hz: freq_hz as f64 } });
                 self.log.push(json!({ "timeS": 0, "kind": "control", "text": format!("Control channel {:.5} MHz", freq_hz as f64 / 1e6), "system": name }))
             }
             Event::Note { system, text } => {
                 let name = self.system_name(system).to_string();
+                self.records.push(Record::text(Level::Warning, Some(&name), text.clone()));
                 self.log.push(json!({ "timeS": self.engine.status().now_s, "kind": "error", "text": text, "system": name }))
             }
             Event::Audio { call_id, system, talkgroup, samples } => {
@@ -346,16 +430,27 @@ impl Session {
                 if let Some(code) = heard_code(&k.call) {
                     self.heard.note(k.call.freq_hz, &code, true, self.wall(k.call.start_s) * 1000.0);
                 }
-                // Trunk Recorder's layout: <shortName>/<year>/<month>/<day>/, local time.
+                // Trunk Recorder's layout: <shortName>/<year>/<month>/<day>/, local time; or the system's filename format.
                 let record: Value = serde_json::from_str(&k.json).unwrap_or(Value::Null);
-                let (y, m, d) = (self.local_ymd)(record["start_time"].as_i64().unwrap_or(0));
-                let rel = format!("{}/{y}/{m}/{d}/{}", k.short_name, k.base_name);
+                let start = record["start_time"].as_i64().unwrap_or(0);
+                let offset = (self.local_offset)(start);
+                let format = self.cfg.recording_for(self.system_config(k.call.system)).filename_format;
+                let rel = if format.trim().is_empty() {
+                    filename::default_path(&k.short_name, &k.base_name, start, offset)
+                } else {
+                    filename::render(&format, &record, k.call.system, offset)
+                };
                 let entry = json!({ "path": rel, "record": record });
                 out.push(Output::File { rel, system: k.call.system, wav: trunk_core::wav::encode(&k.audio, 8000), json: k.json, frames: k.frames, entry: entry.clone() });
                 out.push(Output::Text(json!({ "type": "concluded", "entry": entry }).to_string()));
+                let f = |key: &str| record[key].as_f64();
+                let body = Body::Concluded { length_s: k.audio.len() as f64 / 8000.0, signal_db: f("signal"), noise_db: f("noise"), snr_db: f("snr"), clean_pct: f("clean_voice_pct") };
+                let r = self.call_record(Level::Info, &k.call, body);
+                self.records.push(r);
             }
             Event::UnitAlias { system, unit, alias, talkgroup } => {
                 let name = self.system_name(system).to_string();
+                self.records.push(Record::text(Level::Info, Some(&name), format!("Unit {unit} is \"{alias}\" (TG {talkgroup})")));
                 self.log.push(json!({ "timeS": self.engine.status().now_s, "kind": "alias", "text": format!("Unit {unit} is \"{alias}\" (TG {talkgroup})"), "system": name }));
                 out.push(Output::Text(json!({ "type": "unitAlias", "system": name, "unit": unit, "alias": alias }).to_string()));
             }
@@ -368,11 +463,41 @@ impl Session {
                     self.system_name(call.system),
                     self.system_name(kept.system)
                 );
+                self.records.push(Record::text(Level::Info, Some(self.system_name(call.system)), text.clone()));
                 self.log.push(json!({ "timeS": call.start_s, "kind": "duplicate", "text": text, "system": self.system_name(call.system) }));
             }
-            Event::CallStart(c) if self.plugin_topics.calls => out.push(Output::Plugin(HostMessage::CallStart(self.call_info(&c)))),
-            Event::CallEnd(c) if self.plugin_topics.calls => out.push(Output::Plugin(HostMessage::CallEnd(self.call_info(&c)))),
-            Event::CallStart(_) | Event::CallUpdate(_) | Event::CallEnd(_) => {}
+            Event::CallStart(c) => {
+                let r = match c.reason {
+                    _ if c.recording => {
+                        let kind = if c.analog { "Analog" } else if c.color_code.is_some() { "DMR" } else if c.phase2_tdma { "P25 Phase 2" } else { "P25" };
+                        let slot = (c.phase2_tdma || c.color_code.is_some()).then_some(c.tdma_slot);
+                        self.call_record(Level::Info, &c, Body::Recording { kind, slot })
+                    }
+                    Some(why) => {
+                        let level = match why.as_str() {
+                            "no_source" => Level::Error,
+                            "no_recorder" => Level::Warning,
+                            _ => Level::Info,
+                        };
+                        self.call_record(level, &c, Body::NotRecording(why.as_str()))
+                    }
+                    None => self.call_record(Level::Debug, &c, Body::Text("Following (not recorded)".into())),
+                };
+                self.records.push(r);
+                if self.plugin_topics.calls {
+                    out.push(Output::Plugin(HostMessage::CallStart(self.call_info(&c))));
+                }
+            }
+            Event::NotSaved(c) => {
+                let r = self.call_record(Level::Info, &c, Body::Dropped);
+                self.records.push(r);
+            }
+            Event::CallEnd(c) => {
+                if self.plugin_topics.calls {
+                    out.push(Output::Plugin(HostMessage::CallEnd(self.call_info(&c))));
+                }
+            }
+            Event::CallUpdate(_) => {}
         }
     }
 
@@ -387,8 +512,10 @@ impl Session {
             .enumerate()
             .map(|(i, ((s, sc), ss))| {
                 let label = s.label();
+                let tune = st.sources.get(i).copied().unwrap_or_default();
                 json!({ "index": i, "label": label, "centerHz": sc.center_hz, "rateHz": sc.rate_hz, "rateMeasured": ss.rate_measured,
-                        "dropped": ss.dropped, "errors": ss.errors, "lastError": ss.last_error, "ended": ss.ended })
+                        "dropped": ss.dropped, "errors": ss.errors, "lastError": ss.last_error, "ended": ss.ended,
+                        "errorPpm": tune.error_ppm, "tunePpm": tune.applied_ppm })
             })
             .collect();
         let systems: Vec<Value> = st

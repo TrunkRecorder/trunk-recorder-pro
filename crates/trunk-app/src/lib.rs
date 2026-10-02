@@ -5,7 +5,9 @@
 
 pub mod channels;
 pub mod config;
+pub mod filename;
 pub mod heard;
+pub mod log;
 pub mod samples;
 pub mod session;
 pub mod survey;

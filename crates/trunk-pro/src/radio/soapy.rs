@@ -354,10 +354,12 @@ pub struct SoapyConfig {
     pub args: String,
     pub center_hz: f64,
     pub rate_hz: f64,
-    /// Overall gain; None (and no `gains`) = the device's AGC.
+    /// The device's AGC instead of the gains below.
+    pub agc: bool,
+    /// Overall gain; None = left as the device has it.
     pub gain_db: Option<f64>,
-    /// Per-element gains after the overall one: "LNA=32,VGA=20".
-    pub gains: String,
+    /// Each gain stage's after the overall one: LNA 32, VGA 20.
+    pub gains: Vec<(String, f64)>,
     pub antenna: String,
     /// Device settings: "biastee=true".
     pub settings: String,
@@ -462,17 +464,24 @@ fn stream_once(source: usize, cfg: &SoapyConfig, tx: &SyncSender<SourceMsg>, sto
             let (ck, cv) = (CString::new(k.as_str()).map_err(|e| e.to_string())?, CString::new(v.as_str()).map_err(|e| e.to_string())?);
             check(a, &format!("setting {k}"), (a.write_setting)(d.dev, ck.as_ptr(), cv.as_ptr()))?;
         }
-        // AGC only with no gain set at all: SDRplay ignores element gains while it's on.
-        let elements = pairs(&cfg.gains);
-        match cfg.gain_db {
-            Some(g) => d.gain(g)?,
-            None if (a.has_gain_mode)(d.dev, RX, 0) => check(a, "AGC", (a.set_gain_mode)(d.dev, RX, 0, elements.is_empty()))?,
-            None => {}
-        }
-        for (k, v) in elements {
-            let db: f64 = v.parse().map_err(|_| format!("gain {k}={v}: not a number"))?;
-            let ck = CString::new(k.as_str()).map_err(|e| e.to_string())?;
-            check(a, &format!("gain {k}"), (a.set_gain_element)(d.dev, RX, 0, ck.as_ptr(), db))?;
+        // AGC or the gains, not both: SDRplay ignores stage gains while its AGC is on.
+        let has_agc = (a.has_gain_mode)(d.dev, RX, 0);
+        if cfg.agc {
+            if !has_agc {
+                return Err("this device has no AGC: set a gain instead".into());
+            }
+            check(a, "AGC", (a.set_gain_mode)(d.dev, RX, 0, true))?;
+        } else {
+            if has_agc {
+                check(a, "AGC off", (a.set_gain_mode)(d.dev, RX, 0, false))?;
+            }
+            if let Some(g) = cfg.gain_db {
+                d.gain(g)?;
+            }
+            for (k, db) in &cfg.gains {
+                let ck = CString::new(k.as_str()).map_err(|e| e.to_string())?;
+                check(a, &format!("gain {k}"), (a.set_gain_element)(d.dev, RX, 0, ck.as_ptr(), *db))?;
+            }
         }
         d.tune(cfg.center_hz, cfg.ppm)?;
 

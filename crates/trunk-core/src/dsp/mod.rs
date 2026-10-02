@@ -26,4 +26,9 @@ pub struct Symbol {
 /// A symbol receiver: channel IQ in, decided symbols out.
 pub trait Receiver {
     fn push(&mut self, iq: &[crate::Complex32], out: &mut Vec<Symbol>);
+    /// How far above the channel's centre the carrier is, Hz, when the
+    /// receiver can tell (None while it hasn't locked onto a clean signal).
+    fn offset_hz(&self) -> Option<f32> {
+        None
+    }
 }

@@ -559,7 +559,10 @@ export function applySurvey(i: number, sug: SurveySuggestion, target: number | "
     let centered = false;
     if (src && src.kind !== "file") {
       if (sug.ppmApply !== null) src.ppm = sug.ppmApply;
-      if (src.kind === "rtlsdr" && sug.gainDb !== null) src.gainDb = sug.gainDb;
+      if (src.kind === "rtlsdr" && sug.gainDb !== null) {
+        src.gainDb = sug.gainDb;
+        src.agc = false;
+      }
       // Don't strand another system that only this source covers now.
       const centers = resolvedCenters(c);
       const within = (f: number) => Math.abs(f - sug.centerHz) <= usableHalfWidth(src.rateHz);

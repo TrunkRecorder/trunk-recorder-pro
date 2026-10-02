@@ -44,6 +44,7 @@ use num_complex::Complex32;
 
 use super::calls::{Call, CallId, CallManager, CallSource, CONVENTIONAL};
 use super::frames::CallFrames;
+use super::record::{Reception, Transmissions};
 use super::talkgroups::Talkgroup;
 use super::tracker::{TrackerOut, VoiceTracker};
 use super::frames::VoiceFrame;
@@ -269,7 +270,7 @@ pub enum ConvOut {
     Start(Call),
     Update(Call),
     Audio { call_id: CallId, talkgroup: u32, samples: Vec<f32> },
-    End { call: Call, audio: Vec<f32>, frames: CallFrames, recorder_num: u32 },
+    End { call: Call, audio: Vec<f32>, frames: CallFrames, recorder_num: u32, tx: Transmissions, reception: Reception },
     /// A radio's talker alias, heard on a P25 channel.
     Alias(Alias),
     /// A transmission no row took, and the code it carried (as a row's
@@ -345,6 +346,10 @@ struct Live {
     audio: Vec<f32>,
     /// P25: the vocoder frames behind `audio`.
     frames: CallFrames,
+    /// Where each transmission starts in `audio`.
+    tx: Transmissions,
+    /// How strong it came in.
+    reception: Reception,
     /// The talkgroup came from P25 link control (not the channel's default).
     tg_from_air: bool,
     /// FM: what tone the call carries.
@@ -548,6 +553,16 @@ impl Conventional {
             }
             let Some(iq) = chz.output(ch.open.as_ref().unwrap().head).map(|v| v.to_vec()) else { continue };
             Self::run(ch, &iq, now_s, meter_thr, idx as u32, calls, rules, self.cfg.max_call_s, out);
+            // Reception: the channel's power while its carrier is up, against the floor (both as a channel's head would see them).
+            if snr_db >= base {
+                let (sig, noise) = (chz.noise_in_band(ch.power, ChannelFilter::noise_bandwidth()), chz.noise_in_band(floor, ChannelFilter::noise_bandwidth()));
+                for l in ch.open.as_mut().unwrap().live.iter_mut().flatten() {
+                    if now_s - l.call.last_audio_s < 0.5 {
+                        l.reception.signal(sig);
+                        l.reception.noise(noise);
+                    }
+                }
+            }
             // Wind down.
             let o = ch.open.as_mut().unwrap();
             for live in o.live.iter_mut() {
@@ -856,7 +871,7 @@ impl Conventional {
                 },
             };
             out.push(ConvOut::Start(call.clone()));
-            o.live[slot] = Some(Live { call, audio: Vec::new(), frames: CallFrames::new(rules.capture_frames), tg_from_air: air_tg.is_some(), tones: (ch.cfg.mode == ConvMode::Fm).then(Box::default) });
+            o.live[slot] = Some(Live { call, audio: Vec::new(), frames: CallFrames::new(rules.capture_frames), tx: Transmissions::default(), reception: Reception::default(), tg_from_air: air_tg.is_some(), tones: (ch.cfg.mode == ConvMode::Fm).then(Box::default) });
         }
         let l = o.live[slot].as_mut().unwrap();
         l.call.last_update_s = now_s;
@@ -896,6 +911,7 @@ impl Conventional {
             out.push(ConvOut::Update(l.call.clone()));
         }
         if !h.audio.is_empty() && !(l.call.encrypted && !rules.record_encrypted) {
+            l.tx.note(l.audio.len(), now_s);
             l.audio.extend_from_slice(&h.audio);
             for f in h.frames {
                 l.frames.push(f);
@@ -916,7 +932,7 @@ impl Conventional {
     }
 
     fn end(l: Live, num: u32, out: &mut Vec<ConvOut>) {
-        out.push(ConvOut::End { call: l.call, audio: l.audio, frames: l.frames, recorder_num: num });
+        out.push(ConvOut::End { call: l.call, audio: l.audio, frames: l.frames, recorder_num: num, tx: l.tx, reception: l.reception });
     }
 
     /// End of input: flush the receivers and end every call.
@@ -971,7 +987,7 @@ mod tests {
     fn run(fs: f64, secs: f64, txs: &mut [Tx], channels: Vec<ConvChannel>) -> (Vec<(Call, usize, String)>, usize, Vec<(u64, String)>) {
         let center = 155_000_000.0;
         let cfg = EngineConfig {
-            sources: vec![SourceConfig { center_hz: center, rate_hz: fs }],
+            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false }],
             conventional: channels,
             calls: CallConfig { call_timeout_s: 1.0, ..Default::default() },
             ..Default::default()
