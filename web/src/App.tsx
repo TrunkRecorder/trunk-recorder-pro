@@ -14,6 +14,9 @@ import { parseTalkgroupCsv } from "./talkgroups.ts";
 import { unitName } from "./units.ts";
 import { Waterfall, type CcMark } from "./Waterfall.tsx";
 
+/** Sources this wide (Hz) get a whole row for their waterfall; narrower ones share a row two by two. */
+const WIDE_SOURCE_HZ = 5e6;
+
 const hex = (v: number | null | undefined) => (v === null || v === undefined ? "—" : v.toString(16).toUpperCase());
 
 function clock(s: number): string {
@@ -917,19 +920,21 @@ export function App() {
         ) : running ? (
           <>
             <StatusTiles s={s} />
-            {s.spectra.map((sp, i) =>
-              sp ? (
-                <section className="panel flush" key={i}>
-                  <Waterfall
-                    radio={sp}
-                    label={s.sources[i]?.label}
-                    ccs={ccMarks(s.status?.systems ?? [])}
-                    calls={s.calls}
-                    multi={systemChoices(s).length > 1}
-                  />
-                </section>
-              ) : null,
-            )}
+            <div className="waterfalls">
+              {s.spectra.map((sp, i) =>
+                sp ? (
+                  <section className={`panel flush${sp.rateHz >= WIDE_SOURCE_HZ ? " wide" : ""}`} key={i}>
+                    <Waterfall
+                      radio={sp}
+                      label={s.sources[i]?.label}
+                      ccs={ccMarks(s.status?.systems ?? [])}
+                      calls={s.calls}
+                      multi={systemChoices(s).length > 1}
+                    />
+                  </section>
+                ) : null,
+              )}
+            </div>
             <div className="columns">
               <ActiveCalls s={s} />
               <History s={s} />

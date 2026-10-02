@@ -123,6 +123,11 @@ main { display: flex; flex-direction: column; gap: 16px; }
 .columns { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
 .setup-cols { grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr); }
 @media (max-width: 960px) { .columns, .setup-cols { grid-template-columns: minmax(0, 1fr); } }
+/* Waterfalls: narrow sources two to a row, wide ones (and phones) a row each. */
+.waterfalls { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+.waterfalls > .wide { grid-column: 1 / -1; }
+.mk.mk-left i { left: auto; right: 3px; }
+@media (max-width: 960px) { .waterfalls { grid-template-columns: minmax(0, 1fr); } }
 
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; min-width: 0; }
 .panel.flush { padding: 0; overflow: hidden; }
