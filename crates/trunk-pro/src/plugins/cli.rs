@@ -1,5 +1,6 @@
-//! `trunk-pro plugin …`: look at plugins, and run one against calls already
-//! on disk — a plugin author's test bench.
+//! `trunk-pro plugin …`: find plugins in the registry and install them, look
+//! at the installed ones, and run one against calls already on disk — a
+//! plugin author's test bench.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -9,7 +10,8 @@ use std::time::Duration;
 use serde_json::Value;
 use trunk_recorder_plugin::{Level, Outcome, State, SystemInfo};
 
-use super::{describe, executable, AudioSettings, Note, PluginEntry, PluginHost, PluginsFile, Spec};
+use super::store::{self, Listing};
+use super::{describe, executable, plugins_dir, AudioSettings, Note, PluginEntry, PluginHost, PluginsFile, Spec};
 use crate::{die, Args};
 
 pub fn run(a: &Args) {
@@ -23,11 +25,26 @@ pub fn run(a: &Args) {
             }
         }
         Some("run") => run_calls(a),
+        Some("search") => search(a),
+        Some("install") => install(a),
+        Some("update") => update(a),
+        Some("uninstall") => uninstall(a),
         _ => die(USAGE),
     }
 }
 
 const USAGE: &str = "\
+trunk-pro plugin search [text]
+    The plugins in the registry (github.com/TrunkRecorder/plugins), or those
+    whose name or description has <text>.
+trunk-pro plugin install <id | GitHub repository> [--tag v1.2.0]
+    Install a plugin from the registry, or the release of one that isn't in it
+    (its latest, or --tag): https://github.com/<owner>/<repo>. It's installed
+    off; turn it on on the Plugins page.
+trunk-pro plugin update [id…]
+    Install newer versions of installed plugins (all of them, or these).
+trunk-pro plugin uninstall <id>
+    Remove a plugin and forget its settings. Its data folder is kept.
 trunk-pro plugin list [--config file.json]
     The plugins in plugins.json (beside the config), and what each is.
 trunk-pro plugin describe <executable>
@@ -66,6 +83,168 @@ fn list(a: &Args) {
     }
     let enc = super::Encoder::find(&file.audio.encoder);
     println!("M4A encoder ({}): {}", file.audio.encoder, enc.as_ref().map_or("none found (install ffmpeg)", |e| e.name()));
+}
+
+fn plugins_path(a: &Args) -> PathBuf {
+    PluginsFile::path_for(&config_path(a))
+}
+
+/// The installed plugin's version, if it's installed and answers.
+fn installed_version(id: &str) -> Option<String> {
+    let exe = executable(id, &PluginEntry::default());
+    exe.is_file().then(|| describe(&exe).ok().map(|m| m.version)).flatten()
+}
+
+fn say_source(cat: &store::Catalog) {
+    match cat.source {
+        "registry" => {}
+        "saved" => eprintln!("(The registry couldn't be reached: {}. Using the list fetched before.)", cat.problem.as_deref().unwrap_or("")),
+        _ => eprintln!("(The registry couldn't be reached: {}. Using the list built into this version.)", cat.problem.as_deref().unwrap_or("")),
+    }
+}
+
+fn search(a: &Args) {
+    let text = a.positional.get(1).map(|t| t.to_lowercase()).unwrap_or_default();
+    let cat = store::catalog();
+    say_source(&cat);
+    let found: Vec<&Listing> = cat.index.plugins.iter().filter(|l| [&l.id, &l.name, &l.description].iter().any(|f| f.to_lowercase().contains(&text))).collect();
+    if found.is_empty() {
+        println!("No plugins{}.", if text.is_empty() { String::new() } else { format!(" match {text:?}") });
+    }
+    for l in found {
+        let status = match (installed_version(&l.id), l.unavailable()) {
+            (Some(v), _) if store::newer(&l.version, &v) => format!("installed {v}, update available"),
+            (Some(v), _) => format!("installed {v}"),
+            (None, Some(why)) => why,
+            (None, None) => String::new(),
+        };
+        println!("{} {} [{}]{}\n    {}\n    {}", l.id, l.version, l.tier, if status.is_empty() { String::new() } else { format!(" — {status}") }, l.description, l.repository);
+    }
+}
+
+/// The listing to install for `what`: an id in the registry, or a GitHub repository.
+fn listing_for(what: &str, tag: Option<&str>, cat: &store::Catalog) -> Listing {
+    if !what.contains('/') {
+        return cat.find(what).cloned().unwrap_or_else(|| die(&format!("{what} isn't in the plugin registry (`trunk-pro plugin search`)")));
+    }
+    let l = store::release_listing(what, tag).unwrap_or_else(|e| die(&e));
+    if let Some(listed) = cat.find(&l.id) {
+        if !listed.repository.eq_ignore_ascii_case(&l.repository) {
+            die(&format!("{} is the id of {} in the plugin registry ({}): `trunk-pro plugin install {}`", l.id, listed.name, listed.repository, l.id));
+        }
+    }
+    eprintln!("{} {} isn't from the plugin registry: nobody has reviewed it. Install it only if you trust {}.", l.name, l.version, l.repository);
+    l
+}
+
+/// Install `l` and note it in plugins.json; returns false when it failed.
+fn install_listing(a: &Args, l: &Listing) -> bool {
+    let path = plugins_path(a);
+    let mut file = PluginsFile::load(&path).unwrap_or_else(|e| die(&e));
+    if let Some(e) = file.plugins.get(&l.id) {
+        if !e.path.is_empty() {
+            eprintln!("{} is your build at {}: `trunk-pro plugin uninstall {}` first.", l.id, e.path, l.id);
+            return false;
+        }
+    }
+    let before = installed_version(&l.id);
+    match store::install(l, &|stage| eprintln!("  {stage}…")) {
+        Ok(_) => {}
+        Err(e) => {
+            eprintln!("{e}");
+            return false;
+        }
+    }
+    file.plugins.entry(l.id.clone()).or_default().unlisted_from = if l.tier == "unlisted" { l.repository.clone() } else { String::new() };
+    file.save(&path).unwrap_or_else(|e| die(&format!("{}: {e}", path.display())));
+    match before {
+        Some(old) if store::newer(&l.version, &old) => println!("Updated {} from {old} to {}.", l.name, l.version),
+        Some(old) if old != l.version => println!("Installed {} {} in place of {old}.", l.name, l.version),
+        Some(_) => println!("Reinstalled {} {}.", l.name, l.version),
+        None => println!("Installed {} {} in {}. Set it up and turn it on on the Plugins page.", l.name, l.version, plugins_dir().join(&l.id).display()),
+    }
+    true
+}
+
+fn install(a: &Args) {
+    let what = a.positional.get(1).unwrap_or_else(|| die("trunk-pro plugin install <id | GitHub repository> [--tag v1.2.0]"));
+    let cat = store::catalog();
+    say_source(&cat);
+    let l = listing_for(what, a.get("tag"), &cat);
+    if !install_listing(a, &l) {
+        std::process::exit(1);
+    }
+}
+
+fn update(a: &Args) {
+    let file = PluginsFile::load(&plugins_path(a)).unwrap_or_else(|e| die(&e));
+    let mut ids: Vec<String> = a.positional.iter().skip(1).cloned().collect();
+    if ids.is_empty() {
+        // Every installed plugin (not builds of your own).
+        ids = std::fs::read_dir(plugins_dir()).into_iter().flatten().flatten().map(|d| d.file_name().to_string_lossy().to_string()).filter(|id| installed_version(id).is_some()).collect();
+        ids.sort();
+    }
+    let cat = store::catalog();
+    say_source(&cat);
+    let mut failed = false;
+    for id in &ids {
+        let entry = file.plugins.get(id).cloned().unwrap_or_default();
+        if !entry.path.is_empty() {
+            println!("{id}: your build ({}), not updated", entry.path);
+            continue;
+        }
+        let Some(have) = installed_version(id) else {
+            println!("{id}: not installed");
+            continue;
+        };
+        // From the registry, or from the repository it came from.
+        let latest = if entry.unlisted_from.is_empty() {
+            match cat.find(id) {
+                Some(l) => l.clone(),
+                None => {
+                    println!("{id} {have}: not in the registry");
+                    continue;
+                }
+            }
+        } else {
+            match store::release_listing(&entry.unlisted_from, None) {
+                Ok(l) => l,
+                Err(e) => {
+                    println!("{id} {have}: {e}");
+                    continue;
+                }
+            }
+        };
+        if !store::newer(&latest.version, &have) {
+            println!("{id} {have}: up to date");
+            continue;
+        }
+        println!("{id}: {have} → {}", latest.version);
+        failed |= !install_listing(a, &latest);
+    }
+    if failed {
+        std::process::exit(1);
+    }
+}
+
+fn uninstall(a: &Args) {
+    let id = a.positional.get(1).unwrap_or_else(|| die("trunk-pro plugin uninstall <id>"));
+    if !store::valid_id(id) {
+        die(&format!("{id:?} isn't a plugin id"));
+    }
+    let path = plugins_path(a);
+    let mut file = PluginsFile::load(&path).unwrap_or_else(|e| die(&e));
+    let entry = file.plugins.remove(id);
+    let dir = plugins_dir().join(id);
+    let custom = entry.as_ref().is_some_and(|e| !e.path.is_empty());
+    if entry.is_none() && !dir.is_dir() {
+        die(&format!("{id} isn't installed"));
+    }
+    if !custom && dir.is_dir() {
+        std::fs::remove_dir_all(&dir).unwrap_or_else(|e| die(&format!("Couldn't delete {}: {e}", dir.display())));
+    }
+    file.save(&path).unwrap_or_else(|e| die(&format!("{}: {e}", path.display())));
+    println!("{id} {}. Its data folder, {}, is kept.", if custom { "removed (your build isn't touched)" } else { "uninstalled" }, super::data_dir(id).display());
 }
 
 fn run_calls(a: &Args) {

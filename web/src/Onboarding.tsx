@@ -770,8 +770,8 @@ function ScanStep(props: { s: AppState; c: Config; found: Found | null; onFound:
             </div>
           </div>
         )}
-        <details className="ob-more">
-          <summary>Choose which bands to scan</summary>
+        <div className="ob-more">
+          <h3 className="ob-more-title">Bands to scan</h3>
           <div className="ob-chips">
             {s.surveyBands.map((b) => (
               <button
@@ -787,7 +787,7 @@ function ScanStep(props: { s: AppState; c: Config; found: Found | null; onFound:
               </button>
             ))}
           </div>
-        </details>
+        </div>
         {unsupported && <div className="ob-note bad">This radio needs the desktop app to scan.</div>}
         <div className="ob-center-actions">
           <button className="ob-btn primary big" disabled={!s.connected || s.phase !== "idle" || unsupported || !picked.length || !s.surveyBands.length} onClick={scan}>
@@ -922,7 +922,7 @@ function ScanStep(props: { s: AppState; c: Config; found: Found | null; onFound:
             <IconAntenna /> Put the antenna near a window, or higher up.
           </li>
           <li>
-            <IconTower /> Try more bands — open “Choose which bands to scan”.
+            <IconTower /> Try more bands — press Back and tick more of them.
           </li>
           <li>
             <IconQuestion /> Look up your county&apos;s systems on RadioReference.com and enter the control channel yourself.
@@ -2282,5 +2282,6 @@ const IconDrive = () => icon(<><rect className="ln" x="3" y="10" width="26" heig
 const IconClock = () => icon(<><circle className="ln" cx="16" cy="16" r="12" /><path className="acs" d="M16 9 v7 l5 3" /></>);
 const IconCopy = () => icon(<><rect className="ln" x="10" y="10" width="16" height="18" rx="2" /><path className="ln" d="M6 22 V6 a2 2 0 0 1 2 -2 h12" /><path className="acs" d="M14 16 h8 M14 21 h6" /></>);
 const IconFile = () => icon(<><path className="ln" d="M8 3 h11 l6 6 v20 h-17 z M19 3 v6 h6" /><path className="acs" d="M12 16 h9 M12 21 h9" /></>);
-const IconUpload = () => icon(<><path className="ln" d="M6 22 v5 h20 v-5" /><path className="acs" d="M16 21 V5 M10 11 l6 -6 l6 6" /></>);
+export const IconPuzzle = () => icon(<><path className="ln" d="M6 9 h6 a3 3 0 1 1 6 0 h6 v6 a3 3 0 1 0 0 6 v6 h-18 z" /><circle className="ac" cx="12" cy="20" r="2" /></>);
+export const IconUpload = () => icon(<><path className="ln" d="M6 22 v5 h20 v-5" /><path className="acs" d="M16 21 V5 M10 11 l6 -6 l6 6" /></>);
 const IconTagSmall = () => icon(<><path className="ln" d="M4 6 h12 l12 10 l-12 10 h-12 z" /><circle className="ac" cx="10" cy="16" r="2" /></>);

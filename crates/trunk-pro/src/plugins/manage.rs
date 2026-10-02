@@ -5,19 +5,25 @@
 //!
 //! Browser → server: `plugins` (the list), `setPlugin {id, enabled?, config?,
 //! systems?}`, `addPlugin {path}`, `removePlugin {id}`, `setPluginAudio
-//! {encoder, bitrateKbps}`. Server → browser: `plugins`, `pluginRuntime {id,
-//! runtime}`, and `pluginResult` for each call a plugin handled.
+//! {encoder, bitrateKbps}`, `pluginStore {refresh?}` (the registry's list),
+//! `installPlugin {id}` (from the registry; also an update) or `installPlugin
+//! {repository, tag?}` (a GitHub release that isn't in it). Server → browser:
+//! `plugins`, `pluginRuntime {id, runtime}`, `pluginResult` for each call a
+//! plugin handled, `pluginStore`, and `pluginInstall {key, id, stage,
+//! message?}` as an install goes ("finding", "downloading", "checking",
+//! "installing", then "done" or "failed").
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use serde_json::{json, Value};
 use trunk_recorder_plugin::{Level, Manifest, Outcome, State, SystemInfo};
 
 use super::host::Notes;
+use super::store::{self, Catalog};
 use super::{describe, executable, plugins_dir, Encoder, Note, PluginEntry, PluginHost, PluginsFile, Spec};
 use crate::runtime::{publish, Hub};
 
@@ -52,6 +58,10 @@ pub struct LogEntry {
 }
 
 const LOG_LINES: usize = 50;
+/// How long the registry's list is used before it's fetched again; sooner
+/// when it couldn't be fetched.
+const STORE_FRESH: Duration = Duration::from_secs(15 * 60);
+const STORE_RETRY: Duration = Duration::from_secs(60);
 
 /// An executable's modification time, and what `--describe` said then.
 type Described = (Option<SystemTime>, Result<Manifest, String>);
@@ -69,6 +79,10 @@ pub struct Plugins {
     manifests: Mutex<HashMap<PathBuf, Described>>,
     /// One change to plugins.json at a time.
     edit: Mutex<()>,
+    /// The registry's list, and when it was got.
+    store: Mutex<Option<(Instant, Catalog)>>,
+    /// Installs under way, by their key (the id, or the repository asked for).
+    installing: Mutex<BTreeSet<String>>,
     hub: Hub,
 }
 
@@ -81,6 +95,8 @@ impl Plugins {
             runtime: Arc::new(Mutex::new(BTreeMap::new())),
             manifests: Mutex::new(HashMap::new()),
             edit: Mutex::new(()),
+            store: Mutex::new(None),
+            installing: Mutex::new(BTreeSet::new()),
             hub,
         }
     }
@@ -133,6 +149,8 @@ impl Plugins {
                     "path": exe,
                     // A build of the user's own (not installed in the plugins folder).
                     "custom": !e.path.is_empty(),
+                    // Installed from this GitHub repository, not the registry.
+                    "unlistedFrom": e.unlisted_from,
                     "manifest": manifest,
                     "problem": problem,
                     "config": e.config,
@@ -337,6 +355,95 @@ impl Plugins {
         })?;
         self.runtime.lock().unwrap().remove(&id);
         Ok(())
+    }
+
+    /// The registry's list: fetched again when it's old, or when `refresh`.
+    pub fn catalog(&self, refresh: bool) -> Catalog {
+        let mut c = self.store.lock().unwrap();
+        if let Some((t, cat)) = c.as_ref() {
+            let fresh = if cat.source == "registry" { STORE_FRESH } else { STORE_RETRY };
+            if !refresh && t.elapsed() < fresh {
+                return cat.clone();
+            }
+        }
+        let cat = store::catalog();
+        *c = Some((Instant::now(), cat.clone()));
+        cat
+    }
+
+    /// The `pluginStore` message.
+    pub fn store_json(&self, refresh: bool) -> Value {
+        let cat = self.catalog(refresh);
+        let plugins: Vec<Value> = cat
+            .index
+            .plugins
+            .iter()
+            .map(|l| {
+                let mut v = serde_json::to_value(l).unwrap_or_default();
+                v["unavailable"] = json!(l.unavailable());
+                v
+            })
+            .collect();
+        json!({ "type": "pluginStore", "source": cat.source, "fetched": cat.fetched, "problem": cat.problem, "target": store::target(), "plugins": plugins })
+    }
+
+    /// `installPlugin {id}` or `installPlugin {repository, tag?}`. Says how
+    /// it goes in `pluginInstall` messages, to everyone; blocks until done.
+    pub fn install(&self, v: &Value) {
+        let key = v["id"].as_str().or(v["repository"].as_str()).unwrap_or_default().trim().to_string();
+        let say = |id: &str, stage: &str, message: Option<&str>| publish(&self.hub, json!({ "type": "pluginInstall", "key": key, "id": id, "stage": stage, "message": message }));
+        if !self.installing.lock().unwrap().insert(key.clone()) {
+            return say("", "failed", Some("That's being installed already."));
+        }
+        let mut id = String::new();
+        let r = self.install_one(v, &mut id, &|id, stage| say(id, stage, None));
+        self.installing.lock().unwrap().remove(&key);
+        match r {
+            Ok(notice) => say(&id, "done", Some(&notice)),
+            Err(e) => say(&id, "failed", Some(&e)),
+        }
+    }
+
+    fn install_one(&self, v: &Value, id_out: &mut String, stage: &dyn Fn(&str, &'static str)) -> Result<String, String> {
+        stage("", "finding");
+        let listing = match v["id"].as_str() {
+            Some(id) => self.catalog(false).find(id).cloned().ok_or_else(|| format!("{id} isn't in the plugin registry"))?,
+            None => {
+                let repo = v["repository"].as_str().map(str::trim).filter(|r| !r.is_empty()).ok_or("Which plugin? Its GitHub repository, or its release's page.")?;
+                let l = store::release_listing(repo, v["tag"].as_str())?;
+                // A listed plugin's id is its own.
+                if let Some(listed) = self.catalog(false).find(&l.id) {
+                    if !listed.repository.eq_ignore_ascii_case(&l.repository) {
+                        return Err(format!("{} is the id of {} in the plugin registry ({}). Install that one from the list.", l.id, listed.name, listed.repository));
+                    }
+                }
+                l
+            }
+        };
+        let id = listing.id.clone();
+        *id_out = id.clone();
+        if let Some(e) = PluginsFile::load(&self.file_path)?.plugins.get(&id) {
+            if !e.path.is_empty() {
+                return Err(format!("{} is your build at {}: remove it from the list first.", id, e.path));
+            }
+        }
+        let exe = executable(&id, &PluginEntry::default());
+        let before = self.manifest(&exe).ok().map(|m| m.version);
+        store::install(&listing, &|s| stage(&id, s))?;
+        self.manifests.lock().unwrap().remove(&exe);
+        let unlisted = if listing.tier == "unlisted" { listing.repository.clone() } else { String::new() };
+        // Saved (so it's listed with its settings), and restarted if it's running.
+        self.change(|file| {
+            file.plugins.entry(id.clone()).or_default().unlisted_from = unlisted;
+            Ok(())
+        })?;
+        let (name, version) = (&listing.name, &listing.version);
+        Ok(match before {
+            Some(old) if store::newer(version, &old) => format!("Updated {name} from {old} to {version}."),
+            Some(old) if &old != version => format!("Installed {name} {version} in place of {old}."),
+            Some(_) => format!("Reinstalled {name} {version}."),
+            None => format!("Installed {name} {version}. Check its settings, then turn it on."),
+        })
     }
 
     /// `setPluginAudio {encoder, bitrateKbps}`

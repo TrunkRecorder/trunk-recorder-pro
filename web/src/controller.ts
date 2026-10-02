@@ -16,7 +16,9 @@ import type {
   FromRecorder,
   LogLine,
   Phase,
+  PluginInstall,
   PluginsList,
+  PluginStore,
   PluginValues,
   Radios,
   SourceStatus,
@@ -74,6 +76,12 @@ export interface AppState {
   configEpoch: number;
   /** The plugins (desktop app); null until the recorder says. */
   plugins: PluginsList | null;
+  /** The plugin registry's list; null until asked for. */
+  pluginStore: PluginStore | null;
+  /** Installs under way, by what was asked for (an id, or a repository). */
+  pluginInstalls: Record<string, PluginInstall>;
+  /** A plugin this browser just installed: its settings open. */
+  pluginJustInstalled: string | null;
   /** Which page is showing. */
   view: View;
   /** The folder the folder picker last listed (desktop app). */
@@ -132,6 +140,9 @@ let state: AppState = {
   surveySpectrum: null,
   configEpoch: 0,
   plugins: null,
+  pluginStore: null,
+  pluginInstalls: {},
+  pluginJustInstalled: null,
   view: viewFromHash(),
   dir: null,
   trConfig: null,
@@ -255,6 +266,27 @@ transport.onMessage = (m: FromRecorder) => {
     case "pluginRuntime":
       if (state.plugins) set({ plugins: { ...state.plugins, plugins: state.plugins.plugins.map((p) => (p.id === m.id ? { ...p, runtime: m.runtime } : p)) } });
       break;
+    case "pluginStore": {
+      const { type: _, ...store } = m;
+      set({ pluginStore: store });
+      break;
+    }
+    case "pluginInstall": {
+      const { type: _, ...inst } = m;
+      const installs = { ...state.pluginInstalls };
+      if (inst.stage === "done" || inst.stage === "failed") {
+        delete installs[inst.key];
+        // Only the browser that asked says how it went.
+        if (askedInstalls.delete(inst.key)) {
+          // A new plugin's settings open (not an update's: the list still has it).
+          const fresh = !!inst.id && !state.plugins?.plugins.some((p) => p.id === inst.id);
+          if (inst.stage === "done") set({ notice: inst.message, pluginJustInstalled: fresh ? inst.id : null });
+          else set({ error: inst.message });
+        }
+      } else installs[inst.key] = inst;
+      set({ pluginInstalls: installs });
+      break;
+    }
     case "quit":
       player.stop();
       transport.close?.();
@@ -338,6 +370,28 @@ export function removePlugin(id: string): void {
 }
 export function setPluginAudio(patch: { encoder?: string; bitrateKbps?: number }): void {
   transport.send({ type: "setPluginAudio", ...patch });
+}
+/** The registry's list (fetched again now with `refresh`). */
+export function fetchPluginStore(refresh = false): void {
+  transport.send({ type: "pluginStore", refresh });
+}
+/** Installs this browser asked for: it says how they went. */
+const askedInstalls = new Set<string>();
+/** Install (or update) a plugin from the registry. */
+export function installPlugin(id: string): void {
+  askedInstalls.add(id);
+  set({ pluginInstalls: { ...state.pluginInstalls, [id]: { key: id, id, stage: "finding", message: null } } });
+  transport.send({ type: "installPlugin", id });
+}
+/** Install a plugin from a GitHub release that isn't in the registry. */
+export function installPluginFrom(repository: string, tag?: string): void {
+  const key = repository.trim();
+  askedInstalls.add(key);
+  set({ pluginInstalls: { ...state.pluginInstalls, [key]: { key, id: "", stage: "finding", message: null } } });
+  transport.send({ type: "installPlugin", repository: key, ...(tag?.trim() ? { tag: tag.trim() } : {}) });
+}
+export function settingsOpened(): void {
+  set({ pluginJustInstalled: null });
 }
 
 export function dismissError(): void {

@@ -7,7 +7,7 @@
 // The recorder does the work (crates/trunk-core/src/survey.rs); this shows it.
 
 import { useState } from "react";
-import { formatMhz, systemWithChannel } from "./config.ts";
+import { formatGain, formatMhz, systemWithChannel } from "./config.ts";
 import { addDmrSite, addSite, applySurvey, setNotice, startSurvey, stopSurvey, surveyListen, surveyRescan, useApp, web } from "./controller.ts";
 import type { Config, SiteIdentity, SurveyCandidate, SurveyIdentity, SurveyMonitor, SurveySuggestion } from "./protocol.ts";
 import { Waterfall } from "./Waterfall.tsx";
@@ -204,7 +204,7 @@ function MonitorView(props: { m: SurveyMonitor; sug: SurveySuggestion | null; c:
     if (sug.site !== null) bits.push(`site lock ${sug.rfss ?? "?"}-${sug.site}`);
     if (src && src.kind !== "file") {
       if (sug.ppmApply !== null) bits.push(`correction ${sug.ppmApply > 0 ? "+" : ""}${sug.ppmApply} ppm`);
-      if (rtl && sug.gainDb !== null) bits.push(`gain ${sug.gainDb} dB`);
+      if (rtl && sug.gainDb !== null) bits.push(`gain ${formatGain(sug.gainDb)} dB`);
       bits.push(done.centered ? `center ${formatMhz(sug.centerHz, 4)} MHz` : `source ${props.source + 1} left where it is (another system needs it) — give this system a source centered at ${formatMhz(sug.centerHz, 4)} MHz`);
     }
     setNotice(`${target === "new" ? "Added" : "Updated"} ${done.system}: ${bits.join(", ")}. Press Start to record.`);
@@ -272,7 +272,7 @@ function MonitorView(props: { m: SurveyMonitor; sug: SurveySuggestion | null; c:
           <Check state={m.gain.state === "done" ? "ok" : "wait"} label="Gain">
             {m.gain.state === "done"
               ? m.gain.bestDb !== null
-                ? `${m.gain.bestDb} dB is the lowest with the best signal (tried ${gainSteps})`
+                ? `${formatGain(m.gain.bestDb)} dB is the lowest with the best signal (tried ${gainSteps})`
                 : "couldn't pick one; keeping the current setting"
               : m.gain.state === "running"
                 ? `trying settings… (${gainSteps} done)`
@@ -351,7 +351,7 @@ function MonitorView(props: { m: SurveyMonitor; sug: SurveySuggestion | null; c:
                       ppm
                     </>
                   )}
-                  {rtl && sug.gainDb !== null && <>, gain to {sug.gainDb} dB</>}
+                  {rtl && sug.gainDb !== null && <>, gain to {formatGain(sug.gainDb)} dB</>}
                   , and its center to <span className="mono">{formatMhz(sug.centerHz, 4)}</span> MHz
                 </>
               )}

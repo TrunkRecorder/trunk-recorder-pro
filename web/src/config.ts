@@ -512,6 +512,11 @@ export function formatMhz(hz: number, digits = 5): string {
   return (hz / 1e6).toFixed(digits);
 }
 
+/** A gain in dB to a tenth, for display (an RTL-SDR step is an f32: 33.799999…). */
+export function formatGain(db: number): string {
+  return String(Math.round(db * 10) / 10);
+}
+
 /** osmosdr device strings → SoapySDR's driver names, for radios with no source of their own here. */
 const OSMOSDR_DRIVERS: Record<string, string> = {
   hackrf: "hackrf",

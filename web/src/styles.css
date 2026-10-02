@@ -324,6 +324,12 @@ td.unit-cell .unit, .now-playing .unit {
 .secret { display: flex; gap: 6px; align-items: center; }
 .secret input { flex: 1; }
 .add-plugin { display: flex; flex-direction: column; gap: 10px; width: 100%; }
+.store-card { background: transparent; }
+.store-card .plugin-head > .chip, .store-card .plugin-head > .btn, .store-card .plugin-head > .small { flex: none; }
+.install-stage { font-style: italic; }
+.system-plugins { border-top: 1px solid var(--line); margin-top: 12px; padding-top: 12px; gap: 12px; }
+.system-plugins h4 { margin: 0; font-size: 13px; font-weight: 600; }
+.plugins-page input[type="search"] { max-width: 420px; }
 .dot-ok { background: var(--ok); }
 .dot-warn { background: var(--warn); }
 .dot-bad { background: var(--bad); }
@@ -662,3 +668,67 @@ input.ob-picker-path:hover, input.ob-picker-path:focus { border-color: var(--lin
 .setup .toggle input { flex: none; }
 .setup table.channels td:nth-child(2) input { min-width: 112px; }
 .setup table.channels input.narrow { width: 5em; }
+
+/* ── the Plugins page, in the setup guide's style ── */
+.plugins-page { max-width: 960px; gap: 22px; font-size: 15px; line-height: 1.5; }
+.plugins-page .panel { border-radius: 18px; padding: 24px 26px; }
+.plugins-page .panel-head { margin-bottom: 14px; }
+.plugins-page .panel-head h2 { font-size: 22px; font-weight: 650; letter-spacing: -0.01em; text-transform: none; color: var(--text); }
+.plugins-page .plugins-intro { font-size: 15px; margin: 0 0 20px; }
+.plugins-page .muted.small, .plugins-page .small, .plugins-page .field-hint { font-size: 13.5px; }
+.plugins-page .stack { gap: 16px; }
+.plugins-page .field { gap: 6px; }
+.plugins-page .field-label { font-size: 14px; font-weight: 600; color: var(--text); }
+.plugins-page .field input, .plugins-page .field select, .plugins-page .field textarea, .plugins-page select, .plugin-fields .field input, .plugin-fields .field select, .plugin-fields .field textarea, .add-plugin input { font-size: 15px; padding: 9px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--text); }
+.plugins-page .grid2 { gap: 18px 24px; }
+.plugins-page .btn { border-radius: 10px; padding: 8px 16px; font-weight: 550; }
+.plugins-page .btn.primary { padding: 9px 22px; }
+.plugins-page .btn.small { padding: 4px 11px; font-size: 13px; border-radius: 8px; }
+.plugins-page .chip { padding: 3px 12px; font-size: 13px; border: 0; background: color-mix(in srgb, var(--muted) 14%, transparent); }
+.plugins-page .chip.ok { background: color-mix(in srgb, var(--ok) 13%, transparent); }
+.plugins-page .chip.bad { background: color-mix(in srgb, var(--bad) 13%, transparent); }
+.plugins-page .empty { font-size: 15px; }
+
+.plugins-page .plugin-card { border-radius: 16px; padding: 20px 22px; gap: 10px; background: var(--panel-2); }
+.plugins-page .plugin-card.off { background: transparent; }
+.plugin-head { display: flex; align-items: center; gap: 16px; }
+.plugin-title { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.plugins-page .plugin-head strong { font-size: 18px; font-weight: 650; }
+.plugin-icon { display: grid; place-items: center; flex: none; width: 48px; height: 48px; border-radius: 14px; background: color-mix(in srgb, var(--muted) 12%, transparent); }
+.plugin-icon .icon { width: 28px; height: 28px; }
+.plugin-icon.tone-ok { background: color-mix(in srgb, var(--ok) 14%, transparent); }
+.plugin-icon.tone-warn { background: color-mix(in srgb, var(--warn) 16%, transparent); }
+.plugin-icon.tone-bad { background: color-mix(in srgb, var(--bad) 14%, transparent); }
+.plugins-page .plugin-state { align-self: flex-start; padding: 2px 11px; border-radius: 999px; font-size: 13px; font-weight: 550; background: color-mix(in srgb, currentColor 13%, transparent); }
+.plugins-page .plugin-desc { font-size: 15px; color: var(--text); }
+.plugins-page .plugin-meta { margin-top: -2px; }
+.plugins-page .plugin-actions { margin-top: 6px; padding-top: 14px; border-top: 1px solid var(--line); }
+.plugins-page .plugin-settings { margin-top: 8px; padding-top: 18px; }
+.plugins-page .plugin-settings h4 { font-size: 15px; margin: 6px 0 0; }
+.plugins-page .plugin-fields { gap: 16px; max-width: 620px; }
+.plugins-page .plugin-group { border-radius: 14px; padding: 12px 18px 18px; background: var(--bg); }
+.plugins-page .plugin-group legend { font-size: 14px; padding: 0 8px; }
+.plugins-page .plugin-log { border-radius: 12px; }
+
+/* An on/off switch (a checkbox underneath). */
+.switch { display: inline-flex; align-items: center; gap: 10px; cursor: pointer; font-weight: 550; flex: none; }
+.switch input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.switch-track { position: relative; width: 46px; height: 26px; border-radius: 999px; background: var(--line); transition: background 0.15s; }
+.switch-track::after { content: ""; position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgb(0 0 0 / 0.3); transition: transform 0.15s; }
+.switch input:checked + .switch-track { background: var(--accent); }
+.switch input:checked + .switch-track::after { transform: translateX(20px); }
+.switch input:focus-visible + .switch-track { outline: 3px solid color-mix(in srgb, var(--accent) 60%, transparent); outline-offset: 2px; }
+.switch input:disabled + .switch-track { opacity: 0.45; }
+.switch:has(input:disabled) { cursor: not-allowed; }
+@media (prefers-reduced-motion: reduce) { .switch-track, .switch-track::after { transition: none; } }
+
+/* Browser version, opened where there's no WebUSB. */
+.no-webusb { min-height: 100vh; display: grid; place-items: center; padding: 24px 16px; }
+.no-webusb .panel { max-width: 560px; padding: 28px 30px; border-radius: 18px; font-size: 15px; line-height: 1.55; }
+.no-webusb .brand { margin-bottom: 22px; }
+.no-webusb h2 { font-size: 20px; font-weight: 650; text-transform: none; letter-spacing: -0.01em; color: var(--text); margin-bottom: 10px; }
+.no-webusb p { margin: 0 0 12px; }
+.no-webusb ul { margin: 0 0 14px; padding-left: 20px; }
+.no-webusb li { margin-bottom: 6px; }
+.no-webusb p.muted { font-size: 14px; margin: 0; }
+.ob-more-title { margin: 0 0 14px; font-size: 17px; font-weight: 550; color: var(--text); text-transform: none; letter-spacing: 0; }

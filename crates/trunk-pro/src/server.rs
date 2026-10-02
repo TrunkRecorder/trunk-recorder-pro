@@ -456,6 +456,21 @@ async fn command(ctx: &Arc<Ctx>, v: &Value, listen: &mut Option<Listen>) -> Opti
             tokio::task::spawn_blocking(move || dir_json(&path)).await.ok()
         }
         "plugins" => Some(plugins_json(ctx).await),
+        "pluginStore" => {
+            let (ctx2, refresh) = (ctx.clone(), v["refresh"].as_bool() == Some(true));
+            tokio::task::spawn_blocking(move || ctx2.plugins.store_json(refresh)).await.ok()
+        }
+        // In the background: it takes a while, and this connection should
+        // hear how it goes (pluginInstall), as everyone does.
+        "installPlugin" => {
+            let (ctx2, v) = (ctx.clone(), v.clone());
+            tokio::spawn(async move {
+                let ctx3 = ctx2.clone();
+                let _ = tokio::task::spawn_blocking(move || ctx3.plugins.install(&v)).await;
+                publish(&ctx2.hub, plugins_json(&ctx2).await);
+            });
+            None
+        }
         "setPlugin" | "addPlugin" | "removePlugin" | "setPluginAudio" => {
             let (ctx2, v) = (ctx.clone(), v.clone());
             let r = tokio::task::spawn_blocking(move || {

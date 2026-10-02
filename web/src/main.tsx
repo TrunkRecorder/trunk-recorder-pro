@@ -1,10 +1,19 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import { App } from "./App.tsx";
 import "./styles.css";
 
-createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    <App />
-  </StrictMode>,
-);
+const root = createRoot(document.getElementById("root")!);
+
+// The browser version can't do anything without WebUSB; say so up front
+// instead of loading the app (which starts the engine worker).
+const unsupported = import.meta.env.MODE === "web" ? await import("./web/NoWebUsb.tsx") : null;
+if (unsupported && !unsupported.hasWebUsb()) {
+  root.render(<unsupported.NoWebUsb />);
+} else {
+  const { App } = await import("./App.tsx");
+  root.render(
+    <StrictMode>
+      <App />
+    </StrictMode>,
+  );
+}

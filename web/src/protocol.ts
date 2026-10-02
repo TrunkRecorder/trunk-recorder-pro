@@ -467,6 +467,8 @@ export interface PluginInfo {
   path: string;
   /** A build of the user's own (not installed in the plugins folder). */
   custom: boolean;
+  /** The GitHub repository it was installed from, when that wasn't the registry (nobody reviewed it). */
+  unlistedFrom?: string;
   /** Null when it can't be asked (see `problem`). */
   manifest: PluginManifest | null;
   problem: string | null;
@@ -484,6 +486,45 @@ export interface PluginsList {
   /** Systems' short names, for settings per system. */
   systems: string[];
   audio: { encoder: string; bitrateKbps: number; found: string | null };
+}
+
+/** A plugin in the registry (crates/trunk-pro/src/plugins/store.rs): one release of it, pinned. */
+export interface StoreListing {
+  id: string;
+  name: string;
+  description: string;
+  repository: string;
+  homepage?: string;
+  license: string;
+  tier: "official" | "community" | "unlisted";
+  version: string;
+  api: number;
+  tag: string;
+  commit: string;
+  /** Why this recorder can't install it (no build for this computer, a newer plugin API); null when it can. */
+  unavailable: string | null;
+}
+
+/** The registry's list, and where it came from. */
+export interface PluginStore {
+  /** "registry": just fetched; "saved": fetched before (the registry couldn't be reached); "built-in": this version's copy. */
+  source: "registry" | "saved" | "built-in";
+  /** When it was fetched, Unix seconds. */
+  fetched: number | null;
+  /** Why the registry couldn't be reached. */
+  problem: string | null;
+  /** This computer's release target, e.g. universal-apple-darwin. */
+  target: string | null;
+  plugins: StoreListing[];
+}
+
+/** An install as it goes. `key` is what was asked for: an id, or a repository. */
+export interface PluginInstall {
+  key: string;
+  /** The plugin's id, once known. */
+  id: string;
+  stage: "finding" | "downloading" | "checking" | "installing" | "done" | "failed";
+  message: string | null;
 }
 
 /** A code a conventional frequency carried (crates/trunk-app/src/heard.rs), in a row's Tone form ("" = none). */
@@ -547,6 +588,8 @@ export type FromRecorder =
   | { type: "notice"; message: string }
   | ({ type: "plugins" } & PluginsList)
   | { type: "pluginRuntime"; id: string; runtime: PluginRuntime }
+  | ({ type: "pluginStore" } & PluginStore)
+  | ({ type: "pluginInstall" } & PluginInstall)
   | { type: "quit" };
 
 export type ToRecorder =
@@ -577,6 +620,12 @@ export type ToRecorder =
   /** Forget a plugin; an installed copy is deleted. */
   | { type: "removePlugin"; id: string }
   | { type: "setPluginAudio"; encoder?: string; bitrateKbps?: number }
+  /** The registry's list; `refresh` fetches it again now. */
+  | { type: "pluginStore"; refresh?: boolean }
+  /** Install (or update) a plugin from the registry. */
+  | { type: "installPlugin"; id: string }
+  /** Install a plugin from a GitHub release that isn't in the registry (its latest, or `tag`). */
+  | { type: "installPlugin"; repository: string; tag?: string }
   | { type: "quit" };
 
 /** Live audio: one 20 ms (or longer) chunk of a call, 8 kHz. */

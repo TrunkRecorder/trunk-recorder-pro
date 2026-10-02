@@ -17,13 +17,15 @@
 //! ```
 //!
 //! An installed plugin is `<config dir>/plugins/<id>/<id>` (`.exe` on
-//! Windows); `"path"` in its entry runs another executable instead (a build
-//! of your own). Each gets `<config dir>/plugin-data/<id>/` for its state.
+//! Windows), put there by the plugin store ([`store`]) or by hand; `"path"`
+//! in its entry runs another executable instead (a build of your own). Each
+//! gets `<config dir>/plugin-data/<id>/` for its state.
 
 pub mod cli;
 mod encode;
 mod host;
 pub mod manage;
+pub mod store;
 
 pub use encode::Encoder;
 pub use host::{Note, PluginHost, Spec};
@@ -70,6 +72,10 @@ pub struct PluginEntry {
     pub config: Value,
     /// Its settings for each system, by short name.
     pub systems: BTreeMap<String, Value>,
+    /// The GitHub repository it was installed from when that wasn't the
+    /// registry: nobody reviewed it.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub unlisted_from: String,
 }
 
 impl PluginsFile {
@@ -108,8 +114,16 @@ pub fn executable(id: &str, entry: &PluginEntry) -> PathBuf {
     if !entry.path.is_empty() {
         return PathBuf::from(&entry.path);
     }
-    let name = if cfg!(windows) { format!("{id}.exe") } else { id.to_string() };
-    plugins_dir().join(id).join(name)
+    plugins_dir().join(id).join(executable_name(id))
+}
+
+/// `<id>`, or `<id>.exe` on Windows.
+pub fn executable_name(id: &str) -> String {
+    if cfg!(windows) {
+        format!("{id}.exe")
+    } else {
+        id.to_string()
+    }
 }
 
 /// Ask an executable for its manifest (`--describe`), and check that this

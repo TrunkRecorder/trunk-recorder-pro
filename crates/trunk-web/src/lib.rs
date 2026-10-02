@@ -12,7 +12,7 @@
 //! dist` with `-C target-feature=+simd128`, then `wasm-bindgen --target web`
 //! (see web/package.json `build:wasm`).
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use js_sys::{Array, Object, Reflect, Uint8Array};
@@ -25,6 +25,25 @@ use wasm_bindgen::prelude::*;
 fn local_ymd(t: i64) -> (i32, u32, u32) {
     let d = js_sys::Date::new(&JsValue::from_f64(t as f64 * 1000.0));
     (d.get_full_year() as i32, d.get_month() + 1, d.get_date())
+}
+
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = console, js_name = error)]
+    fn console_error(s: &str);
+    #[wasm_bindgen(js_name = setTimeout)]
+    fn set_timeout(f: &js_sys::Function, ms: i32);
+}
+
+/// A panic aborts as "unreachable"; say what it was first.
+#[wasm_bindgen(start)]
+fn start() {
+    std::panic::set_hook(Box::new(|info| console_error(&format!("trunk-web panicked: {info}"))));
+}
+
+async fn sleep_ms(ms: i32) {
+    let p = js_sys::Promise::new(&mut |resolve, _| set_timeout(&resolve, ms));
+    let _ = wasm_bindgen_futures::JsFuture::from(p).await;
 }
 
 fn set(o: &Object, k: &str, v: impl Into<JsValue>) {
@@ -193,15 +212,22 @@ impl WebSurvey {
     }
 }
 
+/// The driver keeps this many USB transfers in flight.
+const IN_FLIGHT: usize = 8;
+
 struct Rtl {
     dev: Device<RawIq>,
     rx: RxStream<RawIq>,
+    /// Blocks still to drop after a retune: queued before it.
+    stale: usize,
 }
 
 /// An RTL-SDR over WebUSB. Methods return promises; call them one at a time.
 #[wasm_bindgen]
 pub struct WebRtl {
     inner: Rc<RefCell<Option<Rtl>>>,
+    /// Set by `close`: a pending `next` hands the device back at its next block.
+    closing: Rc<Cell<bool>>,
 }
 
 fn err(e: impl std::fmt::Display) -> JsValue {
@@ -234,37 +260,44 @@ impl WebRtl {
         let dev = b.open().await.map_err(err)?;
         let mut rx = dev.rx_stream().map_err(err)?;
         rx.start().await.map_err(err)?;
-        Ok(WebRtl { inner: Rc::new(RefCell::new(Some(Rtl { dev, rx }))) })
+        Ok(WebRtl { inner: Rc::new(RefCell::new(Some(Rtl { dev, rx, stale: 0 }))), closing: Rc::new(Cell::new(false)) })
     }
 
     /// The next block: {bytes: Uint8Array, dropped} (undefined when closed).
     pub fn next(&self) -> js_sys::Promise {
         let inner = self.inner.clone();
+        let closing = self.closing.clone();
         wasm_bindgen_futures::future_to_promise(async move {
             let mut g = inner.borrow_mut();
             let Some(r) = g.as_mut() else { return Ok(JsValue::UNDEFINED) };
-            match r.rx.next_block(None).await.map_err(err)? {
-                Some(b) => {
-                    let o = Object::new();
-                    set(&o, "bytes", Uint8Array::from(b.raw_bytes()));
-                    set(&o, "dropped", b.dropped_samples() as f64);
-                    Ok(o.into())
+            loop {
+                let Some(b) = r.rx.next_block(None).await.map_err(err)? else { return Ok(JsValue::UNDEFINED) };
+                if closing.get() {
+                    return Ok(JsValue::UNDEFINED);
                 }
-                None => Ok(JsValue::UNDEFINED),
+                if r.stale > 0 {
+                    r.stale -= 1;
+                    continue;
+                }
+                let o = Object::new();
+                set(&o, "bytes", Uint8Array::from(b.raw_bytes()));
+                set(&o, "dropped", b.dropped_samples() as f64);
+                return Ok(o.into());
             }
         })
     }
 
-    /// Retune (the stream is stopped meanwhile, so no queued block is from
-    /// the old frequency); resolves to the centre actually tuned.
+    /// Retune while streaming, dropping the blocks already queued (from the
+    /// old frequency); resolves to the centre actually tuned. Not stop/start:
+    /// WebUSB can't cancel the queued transfers, and after the device's FIFO
+    /// reset they never complete, so the stream would stall.
     pub fn retune(&self, center_hz: f64) -> js_sys::Promise {
         let inner = self.inner.clone();
         wasm_bindgen_futures::future_to_promise(async move {
             let mut g = inner.borrow_mut();
             let Some(r) = g.as_mut() else { return Err(err("closed")) };
-            r.rx.stop().await.map_err(err)?;
             r.dev.set_frequency_hz(center_hz.round() as u64).await.map_err(err)?;
-            r.rx.start().await.map_err(err)?;
+            r.stale = IN_FLIGHT;
             Ok(JsValue::from_f64(r.dev.actual_frequency_hz() as f64))
         })
     }
@@ -280,11 +313,21 @@ impl WebRtl {
         })
     }
 
+    /// Close; a `next` (or retune) still pending holds the device until it
+    /// resolves (WebUSB can't cancel it), so wait for that, up to 2 s.
     pub fn close(&self) -> js_sys::Promise {
         let inner = self.inner.clone();
+        self.closing.set(true);
         wasm_bindgen_futures::future_to_promise(async move {
-            let taken = inner.borrow_mut().take();
-            if let Some(Rtl { mut dev, rx }) = taken {
+            let mut taken = None;
+            for _ in 0..200 {
+                if let Ok(mut g) = inner.try_borrow_mut() {
+                    taken = g.take();
+                    break;
+                }
+                sleep_ms(10).await;
+            }
+            if let Some(Rtl { mut dev, rx, .. }) = taken {
                 let _ = rx.close().await;
                 let _ = dev.shutdown().await;
             }

@@ -5,6 +5,7 @@ import {
   channelsToCsv,
   channelTalkgroups,
   formatFromPath,
+  formatGain,
   formatMhz,
   mhzCell,
   newAirspy,
@@ -26,6 +27,7 @@ import {
   usableHalfWidth,
 } from "./config.ts";
 import { dismissTodo, downloadText, findRadios, openGuide, refreshDevices, setChannelFile, setNotice, setSetupTab, setView, updateConfig, useApp, web, type SetupTab } from "./controller.ts";
+import { SystemPluginSettings } from "./Plugins.tsx";
 import { IconAntenna, IconDongle, IconFolder, IconTower } from "./Onboarding.tsx";
 import type { Channel, Config, HeardCode, SiteIdentity, SoapyState, Source, System } from "./protocol.ts";
 import { SurveyPanel } from "./Survey.tsx";
@@ -131,6 +133,26 @@ function MhzInput(props: { hz: number; placeholder?: string; onChange: (hz: numb
       onChange={(e) => {
         setText(e.target.value);
         props.onChange(parseFreqList(e.target.value)[0] ?? 0);
+      }}
+    />
+  );
+}
+
+/** A gain in dB, shown to a tenth (the value kept may be longer); the user's text while typing. Blank = null. */
+function GainInput(props: { value: number | null; placeholder?: string; onChange: (db: number | null) => void }) {
+  const [text, setText] = useState<string | null>(null);
+  const shown = props.value === null ? "" : formatGain(props.value);
+  return (
+    <input
+      className="mono"
+      value={text ?? shown}
+      placeholder={props.placeholder}
+      onFocus={() => setText(shown)}
+      onBlur={() => setText(null)}
+      onChange={(e) => {
+        setText(e.target.value);
+        const v = e.target.value.trim();
+        props.onChange(v === "" ? null : Number(v));
       }}
     />
   );
@@ -569,15 +591,7 @@ function SourceCard(props: { c: Config; i: number }) {
         {src.kind === "rtlsdr" && (
           <>
             <Field label="Gain, dB" hint="Blank = tuner AGC">
-              <input
-                className="mono"
-                value={src.gainDb ?? ""}
-                placeholder="AGC"
-                onChange={(e) => {
-                  const v = e.target.value.trim();
-                  edit((x) => x.kind === "rtlsdr" && void (x.gainDb = v === "" ? null : Number(v)));
-                }}
-              />
+              <GainInput value={src.gainDb} placeholder="AGC" onChange={(v) => edit((x) => x.kind === "rtlsdr" && void (x.gainDb = v))} />
             </Field>
             <Field label="Frequency correction, ppm">
               <input className="mono" value={src.ppm} onChange={(e) => edit((x) => x.kind === "rtlsdr" && void (x.ppm = Number(e.target.value) || 0))} />
@@ -587,7 +601,7 @@ function SourceCard(props: { c: Config; i: number }) {
         {src.kind === "usrp" && (
           <>
             <Field label="Gain, dB" hint="B200/B210: 0–76">
-              <input className="mono" value={src.gainDb} onChange={(e) => edit((x) => x.kind === "usrp" && void (x.gainDb = Number(e.target.value) || 0))} />
+              <GainInput value={src.gainDb} onChange={(v) => edit((x) => x.kind === "usrp" && void (x.gainDb = v || 0))} />
             </Field>
             <Field label="Antenna" hint="Blank = the device's default (e.g. RX2, TX/RX)">
               <input className="mono" value={src.antenna} placeholder="default" onChange={(e) => edit((x) => x.kind === "usrp" && void (x.antenna = e.target.value.trim()))} />
@@ -619,15 +633,7 @@ function SourceCard(props: { c: Config; i: number }) {
         {src.kind === "soapy" && (
           <>
             <Field label="Gain, dB" hint="Overall; blank = the device's AGC (unless element gains are set)">
-              <input
-                className="mono"
-                value={src.gainDb ?? ""}
-                placeholder="AGC"
-                onChange={(e) => {
-                  const v = e.target.value.trim();
-                  edit((x) => x.kind === "soapy" && void (x.gainDb = v === "" ? null : Number(v)));
-                }}
-              />
+              <GainInput value={src.gainDb} placeholder="AGC" onChange={(v) => edit((x) => x.kind === "soapy" && void (x.gainDb = v))} />
             </Field>
             <Field label="Element gains" hint="Applied after the overall gain — HackRF: LNA, VGA, AMP; SDRplay: IFGR, RFGR; Lime: LNA, TIA, PGA">
               <input className="mono" value={src.gains} placeholder="LNA=32,VGA=20" onChange={(e) => edit((x) => x.kind === "soapy" && void (x.gains = e.target.value))} />
@@ -1039,6 +1045,7 @@ function ConventionalPanel(props: { c: Config }) {
             </div>
           </>
         )}
+        {chans.length > 0 && <SystemPluginSettings shortName={conv.shortName} />}
         <details className="help">
           <summary>CSV format</summary>
           <p className="small">
@@ -1426,6 +1433,7 @@ function SystemCard(props: { c: Config; i: number }) {
           />
         </Field>
       </div>
+      <SystemPluginSettings shortName={sys.shortName} />
       <details className={`help${need(`site-${sys.shortName}`) ? " needs" : ""}`} id={`need-site-${sys.shortName}`} open={need(`site-${sys.shortName}`) ? true : undefined}>
         <summary>
           Site lock{locked ? <span className="muted"> — only {siteText(sys.expect)}</span> : <span className="muted"> — off (follows any control channel listed)</span>}

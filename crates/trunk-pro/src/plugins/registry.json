@@ -1,0 +1,158 @@
+{
+  "format": 1,
+  "plugins": [
+    {
+      "id": "broadcastify",
+      "name": "Broadcastify Calls",
+      "description": "Uploads recorded calls to Broadcastify Calls.",
+      "repository": "https://github.com/TrunkRecorder/trunk-plugin-broadcastify",
+      "homepage": "https://www.broadcastify.com/calls/",
+      "license": "GPL-3.0-or-later",
+      "tier": "official",
+      "version": "0.1.0",
+      "api": 1,
+      "tag": "v0.1.0",
+      "commit": "058245b8b4e546c2ece69b163758b20d37c2d00a",
+      "assets": {
+        "x86_64-unknown-linux-gnu": {
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-broadcastify/releases/download/v0.1.0/broadcastify-0.1.0-x86_64-unknown-linux-gnu.tar.gz",
+          "sha256": "aaabc23cb714a09b1aa061eb6348b206f0242e29566cb6ff895ded56222cd78d"
+        },
+        "aarch64-unknown-linux-gnu": {
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-broadcastify/releases/download/v0.1.0/broadcastify-0.1.0-aarch64-unknown-linux-gnu.tar.gz",
+          "sha256": "864255f61b33f9e19621b76d22f07f3301763339253fdff2a6f448bdc3f3fa93"
+        },
+        "universal-apple-darwin": {
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-broadcastify/releases/download/v0.1.0/broadcastify-0.1.0-universal-apple-darwin.tar.gz",
+          "sha256": "f9ad5bc87b04bba9b1c0418f776c241b22aadcb15f0c0da3a19c63f0c55dec3c"
+        },
+        "x86_64-pc-windows-msvc": {
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-broadcastify/releases/download/v0.1.0/broadcastify-0.1.0-x86_64-pc-windows-msvc.zip",
+          "sha256": "1589071c076a8e94c34dcaedcc3189e8f942c0bfa4f60dc6e1f6450d301ba69b"
+        }
+      }
+    },
+    {
+      "id": "openmhz",
+      "name": "OpenMHz",
+      "description": "Uploads recorded calls to OpenMHz.",
+      "repository": "https://github.com/TrunkRecorder/trunk-plugin-openmhz",
+      "homepage": "https://openmhz.com",
+      "license": "GPL-3.0-or-later",
+      "tier": "official",
+      "version": "0.1.1",
+      "api": 1,
+      "tag": "v0.1.1",
+      "commit": "669ea2d10b193728b82276ec9ed77c81118f164f",
+      "assets": {
+        "x86_64-unknown-linux-gnu": {
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-openmhz/releases/download/v0.1.1/openmhz-0.1.1-x86_64-unknown-linux-gnu.tar.gz",
+          "sha256": "74c54539dbdff742ac0a498ac443aff5509a5c7c7fb769c90f09043ab83fe60a"
+        },
+        "aarch64-unknown-linux-gnu": {
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-openmhz/releases/download/v0.1.1/openmhz-0.1.1-aarch64-unknown-linux-gnu.tar.gz",
+          "sha256": "96cbf7d4f2df168ff4682d2ae7b2a76eacbbe477ef8d14cb0c1484f9bde1307c"
+        },
+        "universal-apple-darwin": {
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-openmhz/releases/download/v0.1.1/openmhz-0.1.1-universal-apple-darwin.tar.gz",
+          "sha256": "502985116ed245cb959b57f6812e7cab5df51153030969ebaa901c01965a53a6"
+        },
+        "x86_64-pc-windows-msvc": {
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-openmhz/releases/download/v0.1.1/openmhz-0.1.1-x86_64-pc-windows-msvc.zip",
+          "sha256": "bab2a25948c8b755eb46d018ad773ac58bfbe6fd494eca01ff0a73b514848a4b"
+        }
+      }
+    },
+    {
+      "id": "rdioscanner",
+      "name": "Rdio Scanner",
+      "description": "Uploads recorded calls to an Rdio Scanner server.",
+      "repository": "https://github.com/TrunkRecorder/trunk-plugin-rdioscanner",
+      "homepage": "https://github.com/chuot/rdio-scanner",
+      "license": "GPL-3.0-or-later",
+      "tier": "official",
+      "version": "0.1.0",
+      "api": 1,
+      "tag": "v0.1.0",
+      "commit": "79ba994bfca5af6f2bf7b1e9110304c1b1976f9f",
+      "assets": {
+        "x86_64-unknown-linux-gnu": {
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-rdioscanner/releases/download/v0.1.0/rdioscanner-0.1.0-x86_64-unknown-linux-gnu.tar.gz",
+          "sha256": "03b1b720a7fbb9e7097e445b4dd8ec83a55504e5c75e0978fd2f599add6b3ae1"
+        },
+        "aarch64-unknown-linux-gnu": {
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-rdioscanner/releases/download/v0.1.0/rdioscanner-0.1.0-aarch64-unknown-linux-gnu.tar.gz",
+          "sha256": "de9ea45165e9d01a431419a2df54dae175a1a8054d186bdf566446f5500870bf"
+        },
+        "universal-apple-darwin": {
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-rdioscanner/releases/download/v0.1.0/rdioscanner-0.1.0-universal-apple-darwin.tar.gz",
+          "sha256": "b39cbb4d11e48d19e8dd82cdb07ebe80b2c11847e834d5f69ca9f6a31327b2f4"
+        },
+        "x86_64-pc-windows-msvc": {
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-rdioscanner/releases/download/v0.1.0/rdioscanner-0.1.0-x86_64-pc-windows-msvc.zip",
+          "sha256": "3a7539dc8c9cb40a19a1ba64b2f7e42143cd8c232042c2fb13bed4d724fa0482"
+        }
+      }
+    },
+    {
+      "id": "simplestream",
+      "name": "simplestream",
+      "description": "Streams the audio of calls as they're recorded to other programs, over UDP or TCP.",
+      "repository": "https://github.com/TrunkRecorder/trunk-plugin-simplestream",
+      "license": "GPL-3.0-or-later",
+      "tier": "official",
+      "version": "0.1.0",
+      "api": 1,
+      "tag": "v0.1.0",
+      "commit": "84b006ba7e2dcb8bc7b6b87e86ace34b27e44d3e",
+      "assets": {
+        "x86_64-unknown-linux-gnu": {
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-simplestream/releases/download/v0.1.0/simplestream-0.1.0-x86_64-unknown-linux-gnu.tar.gz",
+          "sha256": "ea8fcb7e1ced31ac071d46044aca7abee9814a789a622ee635d6bcaa5e88f13d"
+        },
+        "aarch64-unknown-linux-gnu": {
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-simplestream/releases/download/v0.1.0/simplestream-0.1.0-aarch64-unknown-linux-gnu.tar.gz",
+          "sha256": "8698daa4610b0c55b7733bf1a7a34b3753c62ea527a2c79f3c01d5f2cf05b1ec"
+        },
+        "universal-apple-darwin": {
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-simplestream/releases/download/v0.1.0/simplestream-0.1.0-universal-apple-darwin.tar.gz",
+          "sha256": "c71447e1bf397f3744e77fa3b0c2ed4422b627ec7e6f000c3d6a6a717ef99cb6"
+        },
+        "x86_64-pc-windows-msvc": {
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-simplestream/releases/download/v0.1.0/simplestream-0.1.0-x86_64-pc-windows-msvc.zip",
+          "sha256": "db87663c1d7720d76e80f01deb82c783ef358d166a9c6a76a49a95391c68c066"
+        }
+      }
+    },
+    {
+      "id": "upload-script",
+      "name": "Upload script",
+      "description": "Runs a script of yours on each recorded call, as Trunk Recorder's uploadScript does.",
+      "repository": "https://github.com/TrunkRecorder/trunk-plugin-upload-script",
+      "license": "GPL-3.0-or-later",
+      "tier": "official",
+      "version": "0.1.0",
+      "api": 1,
+      "tag": "v0.1.0",
+      "commit": "fe4fc083398352f491b53be59fdf14f14c6e51a8",
+      "assets": {
+        "x86_64-unknown-linux-gnu": {
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-upload-script/releases/download/v0.1.0/upload-script-0.1.0-x86_64-unknown-linux-gnu.tar.gz",
+          "sha256": "3d9ccb1b9b6dc3ad8dc78d06aa7d65f3bb250ba6eea3d1d0584f51f2df98cf60"
+        },
+        "aarch64-unknown-linux-gnu": {
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-upload-script/releases/download/v0.1.0/upload-script-0.1.0-aarch64-unknown-linux-gnu.tar.gz",
+          "sha256": "04b8a48d22b59ca2d0b465703588d10e4abd0b62fe8f3c290a541e72b0f16901"
+        },
+        "universal-apple-darwin": {
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-upload-script/releases/download/v0.1.0/upload-script-0.1.0-universal-apple-darwin.tar.gz",
+          "sha256": "cb7445d667b5dc5ef96e33b423e2a51f4edc3afff5276bcc397f8c751dec00ec"
+        },
+        "x86_64-pc-windows-msvc": {
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-upload-script/releases/download/v0.1.0/upload-script-0.1.0-x86_64-pc-windows-msvc.zip",
+          "sha256": "e8302c4527363d31654177cc2acd25371c9e9de098e8774ed3c5aa124445b6f3"
+        }
+      }
+    }
+  ]
+}
