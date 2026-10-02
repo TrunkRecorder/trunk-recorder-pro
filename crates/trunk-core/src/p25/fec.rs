@@ -120,11 +120,23 @@ pub fn hamming15_decode_soft(r: u32, w: &[f32]) -> Fec {
         return Fec { data: r >> 4, errs: 0, cost: 0.0 };
     }
     let cws = CW.get_or_init(|| (0..2048).map(|d| hamming15_encode(d) as u16).collect());
+    // Every codeword's cost as [`weight`] sums it (differing bits from the
+    // LSB up; adding 0.0 for the others changes nothing), without branches so
+    // the codewords go through in SIMD lanes. The first lowest cost wins.
+    let wb: [f32; 15] = std::array::from_fn(|b| w[14 - b]);
+    let mut cost = [0f32; 2048];
+    for (c, &cw) in cost.iter_mut().zip(cws) {
+        let d = cw as u32 ^ r;
+        let mut s = 0.0f32;
+        for (b, &x) in wb.iter().enumerate() {
+            s += if d >> b & 1 != 0 { x } else { 0.0 };
+        }
+        *c = s;
+    }
     let (mut best, mut best_d) = (f32::INFINITY, 0u32);
-    for (d, &c) in cws.iter().enumerate() {
-        let cost = weight(c as u32 ^ r, w, 15);
-        if cost < best {
-            best = cost;
+    for (d, &c) in cost.iter().enumerate() {
+        if c < best {
+            best = c;
             best_d = d as u32;
         }
     }
@@ -317,4 +329,36 @@ pub fn rs_decode_erasures(cw: &mut [u8; 63], nroots: usize, erasures: &[usize], 
         cw[p] ^= gdiv(num, den) as u8;
     }
     locs.len() as i32
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hamming15_soft_matches_brute_force() {
+        let mut s = 0x9e37_79b9_7f4a_7c15u64;
+        let mut rnd = move || {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            s
+        };
+        for k in 0..20000 {
+            let r = rnd() as u32 & 0x7fff;
+            // Real-valued reliabilities, and (every 4th) whole ones with ties.
+            let w: Vec<f32> = (0..15).map(|_| if k % 4 == 0 { (rnd() % 3) as f32 } else { (rnd() % 1_000_000) as f32 * 1e-6 }).collect();
+            let got = hamming15_decode_soft(r, &w);
+            let (mut best, mut best_d) = (f32::INFINITY, 0u32);
+            for d in 0..2048 {
+                let cost = weight(hamming15_encode(d) ^ r, &w, 15);
+                if cost < best {
+                    best = cost;
+                    best_d = d;
+                }
+            }
+            let want = if hamming15_syn(r) == 0 { (r >> 4, 0.0) } else { (best_d, best) };
+            assert_eq!((got.data, got.cost.to_bits()), (want.0, want.1.to_bits()), "r {r:#x} w {w:?}");
+        }
+    }
 }

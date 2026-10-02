@@ -47,6 +47,7 @@ pub struct Channelizer {
     scratch_fwd: Vec<Complex32>,
     scratch_inv: Vec<Complex32>,
     x: Vec<Complex32>,
+    fft_out: Vec<Complex32>,
     hist: Vec<Complex32>,
     spectra: Vec<Complex32>,
     hist_cap: usize,
@@ -92,11 +93,12 @@ impl Channelizer {
             l,
             decim,
             output_rate: fs / decim as f64,
-            scratch_fwd: vec![Complex32::default(); fwd.get_inplace_scratch_len()],
+            scratch_fwd: vec![Complex32::default(); fwd.get_outofplace_scratch_len()],
             scratch_inv: vec![Complex32::default(); inv.get_inplace_scratch_len()],
             fwd,
             inv,
             x: vec![Complex32::default(); n],
+            fft_out: vec![Complex32::default(); n],
             hist: vec![Complex32::default(); p - 1],
             spectra: vec![Complex32::default(); hist_cap * n],
             hist_cap,
@@ -339,9 +341,12 @@ impl Channelizer {
         // Overlap-save: the first P−1 samples are the previous block's tail.
         self.x[..p1].copy_from_slice(&self.hist);
         self.hist.copy_from_slice(&self.x[n - p1..]);
-        self.fwd.process_with_scratch(&mut self.x, &mut self.scratch_fwd);
+        // Out of place (x is refilled before the next block), then one
+        // sequential copy into the history ring: the FFT's scattered writes
+        // stay in cache, the ring (megabytes) is only streamed to.
+        self.fwd.process_outofplace_with_scratch(&mut self.x, &mut self.fft_out, &mut self.scratch_fwd);
         let slot = (self.block as usize % self.hist_cap) * n;
-        self.spectra[slot..slot + n].copy_from_slice(&self.x);
+        self.spectra[slot..slot + n].copy_from_slice(&self.fft_out);
         if self.history_count < self.hist_cap {
             self.history_count += 1;
         }
