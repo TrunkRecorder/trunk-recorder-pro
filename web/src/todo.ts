@@ -7,7 +7,7 @@ import type { AppState } from "./controller.ts";
 
 export interface OpenTodo {
   item: ImportTodo;
-  /** The setup field it belongs to: its element is `need-<target>`; "plugins" and "plugin-<id>" are on the Plugins page. */
+  /** The setup field it belongs to: its element is `need-<target>`; "plugins" and "plugin-<id>" are on Setup's Plugins tab. */
   target: string;
   title: string;
   text: string;
@@ -72,7 +72,7 @@ export function openTodos(s: AppState): OpenTodo[] {
       case "plugin": {
         const p = s.plugins?.plugins.find((x) => x.id === item.id);
         // The web build has no plugins; the list arrives a moment after connecting.
-        if (!s.plugins || (p && !p.problem && p.enabled)) break;
+        if (!s.plugins || (p && !p.problem && s.config?.plugins?.[item.id]?.enabled)) break;
         out.push({
           item,
           target: `plugin-${item.id}`,
@@ -80,7 +80,7 @@ export function openTodos(s: AppState): OpenTodo[] {
           text:
             p && !p.problem
               ? "Its settings came over. Turn it on to start uploading."
-              : `Its settings came over. Add the ${item.name} plugin with “Add from a file…” on the Plugins page, then turn it on.`,
+              : `Its settings came over. Install ${item.name} on the Plugins page, then turn it on here.`,
         });
         break;
       }

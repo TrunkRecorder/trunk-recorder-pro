@@ -96,7 +96,7 @@ export interface AppState {
   setupTab: SetupTab;
 }
 
-export type SetupTab = "systems" | "conventional" | "radios" | "recording";
+export type SetupTab = "systems" | "conventional" | "radios" | "recording" | "plugins";
 
 export type View = "recorder" | "plugins";
 
@@ -344,6 +344,11 @@ export function bumpEpoch(): void {
 // ── pages ────────────────────────────────────────────────────────────────────
 
 /** Show a page (the address's #fragment follows, so back/forward and reloads work). */
+/** The page showing (outside React). */
+export function currentView(): View {
+  return state.view;
+}
+
 export function setView(view: View): void {
   const hash = view === "plugins" ? "#plugins" : "";
   if (location.hash !== hash) history.pushState(null, "", hash || location.pathname + location.search);
@@ -353,14 +358,46 @@ addEventListener("popstate", () => set({ view: viewFromHash() }));
 
 // ── plugins ──────────────────────────────────────────────────────────────────
 
-export function setPluginEnabled(id: string, enabled: boolean): void {
-  // Show it at once; the recorder's list follows.
-  if (state.plugins) set({ plugins: { ...state.plugins, plugins: state.plugins.plugins.map((p) => (p.id === id ? { ...p, enabled } : p)) } });
-  transport.send({ type: "setPlugin", id, enabled });
+// Plugins are set up in the config: on or off and their settings for the
+// whole recorder in `plugins`, their settings for each system in the system.
+
+/** Whether plugin `id` is on (in the config). */
+export function pluginOn(c: Config | null, id: string): boolean {
+  return !!c?.plugins?.[id]?.enabled;
 }
-/** Replace a plugin's settings (its own, and for each system by short name). */
-export function savePluginSettings(id: string, config: PluginValues, systems: Record<string, PluginValues>): void {
-  transport.send({ type: "setPlugin", id, config, systems });
+
+/** Settings with nothing in them: nothing to keep. */
+function blank(v: PluginValues | undefined): boolean {
+  return !v || Object.values(v).every((x) => x === undefined || x === null || x === "" || (Array.isArray(x) && x.length === 0));
+}
+
+export function setPluginEnabled(id: string, enabled: boolean): void {
+  updateConfig((x) => {
+    const all = (x.plugins ??= {});
+    all[id] = { ...(all[id] ?? { enabled: false }), enabled };
+  });
+}
+/** A plugin's settings for the whole recorder. */
+export function setPluginSettings(id: string, settings: PluginValues): void {
+  updateConfig((x) => {
+    const all = (x.plugins ??= {});
+    const p = { ...(all[id] ?? { enabled: false }) };
+    if (blank(settings)) delete p.settings;
+    else p.settings = settings;
+    all[id] = p;
+  });
+}
+/** A plugin's settings for one system (its index), or for the conventional channels. */
+export function setSystemPluginSettings(system: number | "conventional", id: string, values: PluginValues): void {
+  updateConfig((x) => {
+    const sys = system === "conventional" ? x.conventional : x.systems[system];
+    if (!sys) return;
+    const all = { ...(sys.plugins ?? {}) };
+    if (blank(values)) delete all[id];
+    else all[id] = values;
+    if (Object.keys(all).length) sys.plugins = all;
+    else delete sys.plugins;
+  });
 }
 export function addPlugin(path: string): void {
   transport.send({ type: "addPlugin", path });
@@ -368,8 +405,9 @@ export function addPlugin(path: string): void {
 export function removePlugin(id: string): void {
   transport.send({ type: "removePlugin", id });
 }
-export function setPluginAudio(patch: { encoder?: string; bitrateKbps?: number }): void {
-  transport.send({ type: "setPluginAudio", ...patch });
+/** M4A for the plugins that upload it. */
+export function setM4a(patch: { encoder?: string; bitrateKbps?: number }): void {
+  updateConfig((x) => void (x.recording.m4a = { ...(x.recording.m4a ?? { encoder: "auto", bitrateKbps: 32 }), ...patch }));
 }
 /** The registry's list (fetched again now with `refresh`). */
 export function fetchPluginStore(refresh = false): void {
@@ -430,7 +468,7 @@ export function closeGuide(): void {
 function loadSetupTab(): SetupTab {
   try {
     const t = localStorage.getItem(TAB_KEY);
-    if (t === "systems" || t === "conventional" || t === "radios" || t === "recording") return t;
+    if (t === "systems" || t === "conventional" || t === "radios" || t === "recording" || t === "plugins") return t;
   } catch {
     // Not remembered.
   }

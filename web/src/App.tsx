@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { activeSystems, formatMhz, startProblem, systemColor, systemWithChannel } from "./config.ts";
-import { addSite, closeGuide, dismissError, openGuide, downloadCall, quitApp, setListen, setNotice, setView, start, stop, transport, useApp, web, type AppState } from "./controller.ts";
+import { addSite, closeGuide, dismissError, openGuide, downloadCall, pluginOn, quitApp, setListen, setNotice, setView, start, stop, transport, useApp, web, type AppState } from "./controller.ts";
 import { guideWanted, SetupGuide } from "./Onboarding.tsx";
 import { PluginsPage } from "./Plugins.tsx";
 import { BrowserStorage } from "./web/BrowserStorage.tsx";
@@ -752,7 +752,7 @@ function Log({ s }: { s: AppState }) {
 
 /** Enabled plugins that can't run or report a problem. */
 function pluginTrouble(s: AppState): number {
-  return (s.plugins?.plugins ?? []).filter((p) => p.enabled && (p.problem || p.runtime.state === "error" || p.runtime.state === "warning")).length;
+  return (s.plugins?.plugins ?? []).filter((p) => pluginOn(s.config, p.id) && (p.problem || p.runtime.state === "error" || p.runtime.state === "warning")).length;
 }
 
 export function App() {

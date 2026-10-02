@@ -111,6 +111,17 @@ export interface System extends Partial<SmartnetBandplan> {
   /** Multi-site: sites with one group are one system (a call on several is saved once).
    *  Absent: grouped by what the control channels say (P25 WACN + System ID, SmartNet System ID). */
   siteGroup?: string;
+  /** Plugins' settings for this system, by plugin id (each plugin's `system_config` schema). */
+  plugins?: Record<string, PluginValues>;
+}
+
+/** A plugin, as the config has it: on or off, and its settings for the whole recorder. */
+export interface PluginSetup {
+  enabled: boolean;
+  /** As its `config` schema describes them. */
+  settings?: PluginValues;
+  /** Run this executable instead of the installed plugin (a build of the user's own). */
+  path?: string;
 }
 
 export interface Config {
@@ -126,6 +137,8 @@ export interface Config {
     channels: Channel[];
     /** How the channel file last read (from the recorder). */
     channelFileStatus?: string;
+    /** Plugins' settings for the conventional channels (one more system to them), by plugin id. */
+    plugins?: Record<string, PluginValues>;
   };
   recording: {
     captureDir: string;
@@ -144,8 +157,12 @@ export interface Config {
     normalizeAudio: boolean;
     /** IMBE vocoder for P25 Phase 1 voice. */
     vocoder: "fixed" | "enhanced" | "mbelib";
+    /** M4A for the plugins that upload it (desktop app). */
+    m4a?: { encoder: string; bitrateKbps: number };
   };
   server: { bind: string; port: number; autoStart: boolean };
+  /** The plugins, by id (desktop app). Their settings for each system are in the system. */
+  plugins?: Record<string, PluginSetup>;
 }
 
 export interface Device {
@@ -428,6 +445,12 @@ export interface PluginSchema {
   minimum?: number;
   maximum?: number;
   items?: PluginSchema;
+  /** Fields that have to be filled in (of an object). */
+  required?: string[];
+  /** This field has to be filled in (as the plugin marked it; SDK 0.1.0 leaves it on the field). */
+  "x-required"?: boolean;
+  /** A system's short name: drawn as a menu of the systems. */
+  "x-system"?: boolean;
 }
 
 /** What a plugin says it is (`<plugin> --describe`). */
@@ -460,9 +483,9 @@ export interface PluginRuntime {
 
 export type PluginValues = Record<string, unknown>;
 
+/** An installed plugin (or one the config names), and what it is. Whether it's on, and its settings, are in the config. */
 export interface PluginInfo {
   id: string;
-  enabled: boolean;
   /** Its executable. */
   path: string;
   /** A build of the user's own (not installed in the plugins folder). */
@@ -472,20 +495,13 @@ export interface PluginInfo {
   /** Null when it can't be asked (see `problem`). */
   manifest: PluginManifest | null;
   problem: string | null;
-  config: PluginValues | null;
-  /** Its settings for each system, by short name. */
-  systems: Record<string, PluginValues>;
   runtime: PluginRuntime;
 }
 
 export interface PluginsList {
-  /** plugins.json */
-  file: string;
-  problem?: string;
   plugins: PluginInfo[];
-  /** Systems' short names, for settings per system. */
-  systems: string[];
-  audio: { encoder: string; bitrateKbps: number; found: string | null };
+  /** The M4A encoder found for the config's choice (null: none). */
+  encoderFound: string | null;
 }
 
 /** A plugin in the registry (crates/trunk-pro/src/plugins/store.rs): one release of it, pinned. */
@@ -613,13 +629,10 @@ export type ToRecorder =
   | { type: "surveyRescan" }
   | { type: "surveyStop" }
   | { type: "plugins" }
-  /** Turn a plugin on or off, or replace its settings. */
-  | { type: "setPlugin"; id: string; enabled?: boolean; config?: PluginValues; systems?: Record<string, PluginValues> }
-  /** A plugin executable on the recorder's computer (a build of the user's own). */
+  /** A plugin executable on the recorder's computer (a build of the user's own); it's added to the config. */
   | { type: "addPlugin"; path: string }
-  /** Forget a plugin; an installed copy is deleted. */
+  /** Forget a plugin (in the config too); an installed copy is deleted. */
   | { type: "removePlugin"; id: string }
-  | { type: "setPluginAudio"; encoder?: string; bitrateKbps?: number }
   /** The registry's list; `refresh` fetches it again now. */
   | { type: "pluginStore"; refresh?: boolean }
   /** Install (or update) a plugin from the registry. */

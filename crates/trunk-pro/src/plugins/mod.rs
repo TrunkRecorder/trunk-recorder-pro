@@ -1,18 +1,14 @@
 //! Plugins: programs of their own that the recorder runs while it records and
 //! tells what happens (see the `trunk-recorder-plugin` crate for the protocol).
 //!
-//! Their settings are kept in `plugins.json` next to the config:
+//! They're set up in the config: on or off and their settings for the whole
+//! recorder at the top, their settings for each system in that system.
 //!
 //! ```json
 //! {
-//!   "audio": { "encoder": "auto", "bitrateKbps": 32 },
-//!   "plugins": {
-//!     "openmhz": {
-//!       "enabled": true,
-//!       "config": { "server": "https://api.openmhz.com" },
-//!       "systems": { "dcfd": { "apiKey": "…" } }
-//!     }
-//!   }
+//!   "plugins": { "openmhz": { "enabled": true, "settings": { "server": "https://api.openmhz.com" } } },
+//!   "systems": [{ "shortName": "dcfd", …, "plugins": { "openmhz": { "apiKey": "…" } } }],
+//!   "recording": { …, "m4a": { "encoder": "auto", "bitrateKbps": 32 } }
 //! }
 //! ```
 //!
@@ -20,6 +16,9 @@
 //! Windows), put there by the plugin store ([`store`]) or by hand; `"path"`
 //! in its entry runs another executable instead (a build of your own). Each
 //! gets `<config dir>/plugin-data/<id>/` for its state.
+//!
+//! Before, they were set up in `plugins.json` beside the config: [`migrate`]
+//! moves that into the config once.
 
 pub mod cli;
 mod encode;
@@ -36,69 +35,113 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::Value;
 use trunk_recorder_plugin::{Manifest, API_VERSION};
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+use crate::config::{Config, PluginSetup};
+
+/// The M4A settings (the config's `recording.m4a`).
+pub type AudioSettings = crate::config::M4a;
+
+/// `plugins.json`, where plugins were set up before they moved into the config.
+#[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
-pub struct PluginsFile {
-    pub audio: AudioSettings,
-    pub plugins: BTreeMap<String, PluginEntry>,
+struct LegacyFile {
+    audio: Option<AudioSettings>,
+    plugins: BTreeMap<String, LegacyEntry>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
-pub struct AudioSettings {
-    /// "auto" | "ffmpeg" | "afconvert" | "fdkaac" | "none"
-    pub encoder: String,
-    pub bitrate_kbps: u32,
+struct LegacyEntry {
+    enabled: bool,
+    path: String,
+    config: Value,
+    systems: BTreeMap<String, Value>,
+    unlisted_from: String,
 }
 
-impl Default for AudioSettings {
-    fn default() -> Self {
-        AudioSettings { encoder: "auto".into(), bitrate_kbps: 32 }
-    }
-}
-
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct PluginEntry {
-    pub enabled: bool,
-    /// Run this executable instead of the installed one.
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub path: String,
-    /// The plugin's settings.
-    pub config: Value,
-    /// Its settings for each system, by short name.
-    pub systems: BTreeMap<String, Value>,
-    /// The GitHub repository it was installed from when that wasn't the
-    /// registry: nobody reviewed it.
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub unlisted_from: String,
-}
-
-impl PluginsFile {
-    /// `plugins.json` beside the config file.
-    pub fn path_for(config_path: &Path) -> PathBuf {
-        config_path.with_file_name("plugins.json")
-    }
-
-    pub fn save(&self, path: &Path) -> std::io::Result<()> {
-        if let Some(d) = path.parent() {
-            std::fs::create_dir_all(d)?;
+/// Move `plugins.json` (beside `config_path`) into the config, once: what the
+/// config already has wins. The file is kept as `plugins.json.migrated`.
+/// Returns what happened, for the log.
+pub fn migrate(config_path: &Path) -> Option<String> {
+    let old = config_path.with_file_name("plugins.json");
+    let text = std::fs::read_to_string(&old).ok()?;
+    let legacy: LegacyFile = match serde_json::from_str(&text) {
+        Ok(l) => l,
+        Err(e) => return Some(format!("{} isn't readable ({e}); its plugin settings weren't moved into the config", old.display())),
+    };
+    let mut cfg = Config::load(config_path);
+    let mut lost = Vec::new();
+    for (id, e) in legacy.plugins {
+        let top = cfg.plugins.entry(id.clone()).or_insert_with(|| PluginSetup { enabled: e.enabled, ..Default::default() });
+        if top.settings.is_null() && !e.config.is_null() {
+            top.settings = e.config;
         }
-        std::fs::write(path, serde_json::to_string_pretty(self).unwrap_or_default())
-    }
-
-    /// Missing: no plugins. Unreadable: an error (not silently none).
-    pub fn load(path: &Path) -> Result<PluginsFile, String> {
-        match std::fs::read_to_string(path) {
-            Ok(s) => serde_json::from_str(&s).map_err(|e| format!("{}: {e}", path.display())),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(PluginsFile::default()),
-            Err(e) => Err(format!("{}: {e}", path.display())),
+        if top.path.is_empty() {
+            top.path = e.path;
+        }
+        for (name, v) in e.systems {
+            let slot = if let Some(s) = cfg.systems.iter_mut().find(|s| s.short_name == name) {
+                &mut s.plugins
+            } else if cfg.conventional.short_name == name {
+                &mut cfg.conventional.plugins
+            } else {
+                lost.push(format!("{id} for {name}"));
+                continue;
+            };
+            slot.entry(id.clone()).or_insert(v);
+        }
+        if !e.unlisted_from.is_empty() {
+            store::note_unlisted(&id, &e.unlisted_from);
         }
     }
+    if let Some(a) = legacy.audio {
+        if cfg.recording.m4a == AudioSettings::default() {
+            cfg.recording.m4a = a;
+        }
+    }
+    if let Err(e) = cfg.save(config_path) {
+        return Some(format!("Couldn't move plugins.json into {}: {e}", config_path.display()));
+    }
+    let _ = std::fs::rename(&old, old.with_extension("json.migrated"));
+    let mut said = format!("Plugin settings moved from {} into {}", old.display(), config_path.display());
+    if !lost.is_empty() {
+        said += &format!(" (no system by those names any more, left out: {})", lost.join(", "));
+    }
+    Some(said)
+}
+
+/// Plugin `id`'s settings for each system that has some, by short name
+/// (the conventional channels too, when there are any).
+pub fn system_settings(cfg: &Config, id: &str) -> BTreeMap<String, Value> {
+    let mut m: BTreeMap<String, Value> = cfg.systems.iter().filter_map(|s| Some((s.short_name.clone(), s.plugins.get(id)?.clone()))).collect();
+    if !cfg.conventional.channels.is_empty() {
+        if let Some(v) = cfg.conventional.plugins.get(id) {
+            m.insert(cfg.conventional.short_name.clone(), v.clone());
+        }
+    }
+    m
+}
+
+/// Forget plugin `id`: its entry and its settings for every system.
+pub fn forget(cfg: &mut Config, id: &str) {
+    cfg.plugins.remove(id);
+    for s in &mut cfg.systems {
+        s.plugins.remove(id);
+    }
+    cfg.conventional.plugins.remove(id);
+}
+
+/// Whether going from `a` to `b` changes what plugins run with.
+pub fn changed(a: &Config, b: &Config) -> bool {
+    let per_system = |c: &Config| -> Vec<(String, BTreeMap<String, Value>)> {
+        let mut v: Vec<_> = c.systems.iter().map(|s| (s.short_name.clone(), s.plugins.clone())).collect();
+        v.push((c.conventional.short_name.clone(), c.conventional.plugins.clone()));
+        v
+    };
+    a.plugins != b.plugins || a.recording.m4a != b.recording.m4a || per_system(a) != per_system(b)
 }
 
 pub fn plugins_dir() -> PathBuf {
@@ -110,9 +153,9 @@ pub fn data_dir(id: &str) -> PathBuf {
 }
 
 /// The executable of plugin `id`.
-pub fn executable(id: &str, entry: &PluginEntry) -> PathBuf {
-    if !entry.path.is_empty() {
-        return PathBuf::from(&entry.path);
+pub fn executable(id: &str, setup: &PluginSetup) -> PathBuf {
+    if !setup.path.is_empty() {
+        return PathBuf::from(&setup.path);
     }
     plugins_dir().join(id).join(executable_name(id))
 }
@@ -224,4 +267,58 @@ pub fn notes_to_hub(hub: crate::runtime::Hub) -> host::Notes {
             crate::runtime::publish(&hub, json!({ "type": "pluginResult", "id": plugin, "path": path, "outcome": outcome, "message": message, "url": url }));
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn plugins_json_moves_into_the_config() {
+        let dir = std::env::temp_dir().join(format!("trunk-pro-migrate-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let config_path = dir.join("config.json");
+        std::fs::write(
+            &config_path,
+            json!({ "systems": [{ "shortName": "dcfd" }], "conventional": { "shortName": "conv" },
+                    "plugins": { "broadcastify": { "enabled": true, "settings": { "server": "mine" } } } })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("plugins.json"),
+            json!({
+                "audio": { "encoder": "ffmpeg", "bitrateKbps": 48 },
+                "plugins": {
+                    "openmhz": { "enabled": true, "config": { "server": "s" }, "systems": { "dcfd": { "apiKey": "k" }, "conv": { "apiKey": "c" }, "gone": { "apiKey": "x" } } },
+                    "broadcastify": { "enabled": false, "config": { "server": "theirs" }, "systems": { "dcfd": { "apiKey": "b" } } },
+                    "mine": { "enabled": false, "path": "/builds/mine" }
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let said = migrate(&config_path).unwrap();
+        assert!(said.contains("openmhz for gone"), "{said}");
+        let c = Config::load(&config_path);
+        assert_eq!(c.plugins["openmhz"], PluginSetup { enabled: true, settings: json!({ "server": "s" }), path: String::new() });
+        // What the config had wins.
+        assert!(c.plugins["broadcastify"].enabled);
+        assert_eq!(c.plugins["broadcastify"].settings, json!({ "server": "mine" }));
+        assert_eq!(c.plugins["mine"].path, "/builds/mine");
+        assert_eq!(c.systems[0].plugins["openmhz"], json!({ "apiKey": "k" }));
+        assert_eq!(c.systems[0].plugins["broadcastify"], json!({ "apiKey": "b" }));
+        assert_eq!(c.conventional.plugins["openmhz"], json!({ "apiKey": "c" }));
+        assert_eq!((c.recording.m4a.encoder.as_str(), c.recording.m4a.bitrate_kbps), ("ffmpeg", 48));
+        assert!(!dir.join("plugins.json").exists() && dir.join("plugins.json.migrated").exists());
+        // Once.
+        assert!(migrate(&config_path).is_none());
+        // And what plugins get from it.
+        let specs = Spec::enabled(&c);
+        assert_eq!(specs.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["broadcastify", "openmhz"]);
+        assert_eq!(specs[1].systems.get("dcfd"), Some(&json!({ "apiKey": "k" })));
+        assert!(!specs[1].systems.contains_key("conv"), "no conventional channels, so no conventional system");
+    }
 }

@@ -317,8 +317,38 @@ pub fn install(l: &Listing, progress: &dyn Fn(&'static str)) -> Result<Manifest,
     if m.id != l.id || m.version != l.version {
         return Err(format!("The download says it's {} {}, not {} {}: not installed", m.id, m.version, l.id, l.version));
     }
+    let note = Installed { repository: l.repository.clone(), version: l.version.clone(), reviewed: l.tier != "unlisted" };
+    let _ = std::fs::write(root.join(INSTALLED), serde_json::to_string_pretty(&note).unwrap_or_default());
     put_in_place(&root, &dir.join(&l.id))?;
     Ok(m)
+}
+
+/// Where an installed plugin came from, kept beside it.
+const INSTALLED: &str = ".install.json";
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct Installed {
+    repository: String,
+    version: String,
+    /// From the registry (false: a GitHub release nobody reviewed).
+    reviewed: bool,
+}
+
+/// The repository an installed plugin came from, when that wasn't the registry.
+pub fn unlisted_from(id: &str) -> Option<String> {
+    let text = std::fs::read_to_string(plugins_dir().join(id).join(INSTALLED)).ok()?;
+    let i: Installed = serde_json::from_str(&text).ok()?;
+    (!i.reviewed && !i.repository.is_empty()).then_some(i.repository)
+}
+
+/// Note that installed plugin `id` came from `repository`, not the registry.
+pub fn note_unlisted(id: &str, repository: &str) {
+    let dir = plugins_dir().join(id);
+    if dir.is_dir() {
+        let note = Installed { repository: repository.to_string(), version: String::new(), reviewed: false };
+        let _ = std::fs::write(dir.join(INSTALLED), serde_json::to_string_pretty(&note).unwrap_or_default());
+    }
 }
 
 /// Removed when dropped: what's left of a failed (or finished) install.

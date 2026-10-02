@@ -570,7 +570,7 @@ export type ImportTodo =
   /** No source covers any of the system's control channels. */
   | { kind: "coverage"; system: string };
 
-/** A plugin's settings brought over from Trunk Recorder: as the Plugins page keeps them, by plugin id. */
+/** A plugin's settings brought over from Trunk Recorder, by plugin id: for the whole recorder, and for each system by short name. */
 export interface PluginImport {
   id: string;
   name: string;

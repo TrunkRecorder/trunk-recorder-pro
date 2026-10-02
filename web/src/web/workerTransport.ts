@@ -63,10 +63,8 @@ export class WorkerTransport implements Transport {
     if (msg.type === "quit" || msg.type === "findRadios" || msg.type === "channelFile" || msg.type === "listDir" || msg.type === "readTrConfig") return;
     if (
       msg.type === "plugins" ||
-      msg.type === "setPlugin" ||
       msg.type === "addPlugin" ||
       msg.type === "removePlugin" ||
-      msg.type === "setPluginAudio" ||
       msg.type === "pluginStore" ||
       msg.type === "installPlugin"
     )

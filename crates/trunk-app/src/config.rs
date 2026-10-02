@@ -2,6 +2,7 @@
 //! trunked systems (sites) and/or conventional channels, recording rules and the web server. Stored as JSON in the platform
 //! config folder; the browser interface reads and edits it.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -186,7 +187,7 @@ pub struct System {
     /// DMR (`type` "dmr"): logical channel number → frequency, Hz (Trunk
     /// Recorder's `lcnTable`); channels left out are learned from the air.
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    pub lcn_table: std::collections::BTreeMap<String, f64>,
+    pub lcn_table: BTreeMap<String, f64>,
     /// DMR: voice frequencies to watch besides the control channels (Trunk
     /// Recorder's `channels`; Capacity Plus: every repeater of the site).
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -201,6 +202,10 @@ pub struct System {
     /// ISSI, or to keep a site out of its system's group.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub site_group: String,
+    /// Plugins' settings for this system, by plugin id (as each plugin's
+    /// `system_config` schema describes them).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub plugins: BTreeMap<String, serde_json::Value>,
 }
 
 fn is_zero(v: &f64) -> bool {
@@ -267,6 +272,7 @@ impl Default for System {
             channels: vec![],
             color_code: None,
             site_group: String::new(),
+            plugins: BTreeMap::new(),
         }
     }
 }
@@ -333,6 +339,10 @@ pub struct Conventional {
     /// How the channel file last read, for the interface (not saved).
     #[serde(skip_deserializing)]
     pub channel_file_status: String,
+    /// Plugins' settings for the conventional channels, by plugin id (to
+    /// plugins they're one more system).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub plugins: BTreeMap<String, serde_json::Value>,
 }
 
 impl Default for Conventional {
@@ -343,6 +353,7 @@ impl Default for Conventional {
             channel_file: String::new(),
             channels: vec![],
             channel_file_status: String::new(),
+            plugins: BTreeMap::new(),
         }
     }
 }
@@ -475,6 +486,36 @@ pub struct Recording {
     /// decoder, Trunk Recorder's softVocoder false), "enhanced" (TR's float
     /// synthesis) or "mbelib".
     pub vocoder: String,
+    /// M4A for the plugins that upload it, encoded once per call.
+    pub m4a: M4a,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct M4a {
+    /// "auto" | "ffmpeg" | "afconvert" | "fdkaac" | "none"
+    pub encoder: String,
+    pub bitrate_kbps: u32,
+}
+
+impl Default for M4a {
+    fn default() -> Self {
+        M4a { encoder: "auto".into(), bitrate_kbps: 32 }
+    }
+}
+
+/// A plugin, as the config has it: on or off, and its settings for the whole
+/// recorder. Its settings for each system are in that system's `plugins`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PluginSetup {
+    pub enabled: bool,
+    /// Its settings, as its `config` schema describes them.
+    #[serde(skip_serializing_if = "serde_json::Value::is_null")]
+    pub settings: serde_json::Value,
+    /// Run this executable instead of the installed plugin (a build of your own).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub path: String,
 }
 
 impl Default for Recording {
@@ -492,6 +533,7 @@ impl Default for Recording {
             normalize_audio: true,
             drop_duplicate_calls: true,
             vocoder: "fixed".into(),
+            m4a: M4a::default(),
         }
     }
 }
@@ -526,6 +568,9 @@ pub struct Config {
     pub conventional: Conventional,
     pub recording: Recording,
     pub server: Server,
+    /// The plugins, by id: on or off, and their settings for the whole recorder.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub plugins: BTreeMap<String, PluginSetup>,
 }
 
 impl Default for Config {
@@ -536,6 +581,7 @@ impl Default for Config {
             conventional: Conventional::default(),
             recording: Recording::default(),
             server: Server::default(),
+            plugins: BTreeMap::new(),
         }
     }
 }
@@ -550,12 +596,13 @@ struct RawConfig {
     conventional: Option<serde_json::Value>,
     recording: Recording,
     server: Server,
+    plugins: BTreeMap<String, PluginSetup>,
 }
 
 impl Default for RawConfig {
     fn default() -> Self {
         let c = Config::default();
-        RawConfig { sources: c.sources, systems: None, system: None, conventional: None, recording: c.recording, server: c.server }
+        RawConfig { sources: c.sources, systems: None, system: None, conventional: None, recording: c.recording, server: c.server, plugins: c.plugins }
     }
 }
 
@@ -575,7 +622,7 @@ impl From<RawConfig> for Config {
             }
             (None, None) => vec![],
         };
-        Config { sources: r.sources, systems, conventional, recording: r.recording, server: r.server }
+        Config { sources: r.sources, systems, conventional, recording: r.recording, server: r.server, plugins: r.plugins }
     }
 }
 

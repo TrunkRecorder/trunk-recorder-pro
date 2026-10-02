@@ -1,11 +1,11 @@
-//! Plugins as the interface sees them: what's installed and configured
+//! Plugins as the interface sees them: what's installed and what each is
 //! (`plugins` messages), how each is doing while recording (`pluginRuntime`),
-//! and changes from the Plugins page — saved to `plugins.json` and, while
-//! recording, applied at once by swapping in a new [`PluginHost`].
+//! installing and removing them. Their settings are in the config (see
+//! [`super`]); when a saved config changes them while recording, the server
+//! calls [`Plugins::reload`], which swaps in a new [`PluginHost`].
 //!
-//! Browser → server: `plugins` (the list), `setPlugin {id, enabled?, config?,
-//! systems?}`, `addPlugin {path}`, `removePlugin {id}`, `setPluginAudio
-//! {encoder, bitrateKbps}`, `pluginStore {refresh?}` (the registry's list),
+//! Browser → server: `plugins` (the list), `addPlugin {path}`, `removePlugin
+//! {id}` (the server forgets it in the config), `pluginStore {refresh?}` (the registry's list),
 //! `installPlugin {id}` (from the registry; also an update) or `installPlugin
 //! {repository, tag?}` (a GitHub release that isn't in it). Server → browser:
 //! `plugins`, `pluginRuntime {id, runtime}`, `pluginResult` for each call a
@@ -24,7 +24,8 @@ use trunk_recorder_plugin::{Level, Manifest, Outcome, State, SystemInfo};
 
 use super::host::Notes;
 use super::store::{self, Catalog};
-use super::{describe, executable, plugins_dir, Encoder, Note, PluginEntry, PluginHost, PluginsFile, Spec};
+use super::{describe, executable, plugins_dir, Encoder, Note, PluginHost, Spec};
+use crate::config::{Config, PluginSetup};
 use crate::runtime::{publish, Hub};
 
 /// How a plugin is doing, for the interface.
@@ -68,8 +69,6 @@ type Described = (Option<SystemTime>, Result<Manifest, String>);
 
 /// The plugins' part of the app's shared state.
 pub struct Plugins {
-    /// plugins.json
-    pub file_path: PathBuf,
     /// The plugins running while recording.
     pub host: RwLock<Option<PluginHost>>,
     /// What the running recording's plugins were started with, to restart them.
@@ -77,8 +76,6 @@ pub struct Plugins {
     runtime: Arc<Mutex<BTreeMap<String, Runtime>>>,
     /// Manifests by executable (and its modification time): `--describe` runs once per build.
     manifests: Mutex<HashMap<PathBuf, Described>>,
-    /// One change to plugins.json at a time.
-    edit: Mutex<()>,
     /// The registry's list, and when it was got.
     store: Mutex<Option<(Instant, Catalog)>>,
     /// Installs under way, by their key (the id, or the repository asked for).
@@ -87,33 +84,30 @@ pub struct Plugins {
 }
 
 impl Plugins {
-    pub fn new(config_path: &Path, hub: Hub) -> Plugins {
+    pub fn new(hub: Hub) -> Plugins {
         Plugins {
-            file_path: PluginsFile::path_for(config_path),
             host: RwLock::new(None),
             env: Mutex::new(None),
             runtime: Arc::new(Mutex::new(BTreeMap::new())),
             manifests: Mutex::new(HashMap::new()),
-            edit: Mutex::new(()),
             store: Mutex::new(None),
             installing: Mutex::new(BTreeSet::new()),
             hub,
         }
     }
 
-    /// The installed plugins (in the plugins folder) and those plugins.json names.
-    fn entries(&self) -> Result<(PluginsFile, BTreeMap<String, PluginEntry>), String> {
-        let file = PluginsFile::load(&self.file_path)?;
-        let mut all = file.plugins.clone();
+    /// The installed plugins (in the plugins folder) and those the config names.
+    fn entries(cfg: &Config) -> BTreeMap<String, PluginSetup> {
+        let mut all = cfg.plugins.clone();
         if let Ok(rd) = std::fs::read_dir(plugins_dir()) {
             for d in rd.flatten() {
                 let id = d.file_name().to_string_lossy().to_string();
-                if executable(&id, &PluginEntry::default()).is_file() {
+                if store::valid_id(&id) && executable(&id, &PluginSetup::default()).is_file() {
                     all.entry(id).or_default();
                 }
             }
         }
-        Ok((file, all))
+        all
     }
 
     fn manifest(&self, exe: &Path) -> Result<Manifest, String> {
@@ -128,12 +122,10 @@ impl Plugins {
         m
     }
 
-    /// The `plugins` message.
-    pub fn list_json(&self, cfg: &crate::config::Config) -> Value {
-        let (file, all) = match self.entries() {
-            Ok(x) => x,
-            Err(e) => return json!({ "type": "plugins", "file": self.file_path, "problem": e, "plugins": [], "systems": [], "audio": {} }),
-        };
+    /// The `plugins` message: what's installed and what each is. (Their
+    /// settings are in the config.)
+    pub fn list_json(&self, cfg: &Config) -> Value {
+        let all = Self::entries(cfg);
         let runtime = self.runtime.lock().unwrap().clone();
         let plugins: Vec<Value> = all
             .iter()
@@ -145,35 +137,25 @@ impl Plugins {
                 };
                 json!({
                     "id": id,
-                    "enabled": e.enabled,
                     "path": exe,
                     // A build of the user's own (not installed in the plugins folder).
                     "custom": !e.path.is_empty(),
                     // Installed from this GitHub repository, not the registry.
-                    "unlistedFrom": e.unlisted_from,
+                    "unlistedFrom": if e.path.is_empty() { store::unlisted_from(id) } else { None },
                     "manifest": manifest,
                     "problem": problem,
-                    "config": e.config,
-                    "systems": e.systems,
                     "runtime": runtime.get(id).cloned().unwrap_or_default(),
                 })
             })
             .collect();
-        let systems: Vec<String> = super::systems_of(cfg).into_iter().map(|s| s.short_name).collect();
-        let found = Encoder::find(&file.audio.encoder).map(|e| e.name());
-        json!({
-            "type": "plugins",
-            "file": self.file_path,
-            "plugins": plugins,
-            "systems": systems,
-            "audio": { "encoder": file.audio.encoder, "bitrateKbps": file.audio.bitrate_kbps, "found": found },
-        })
+        let found = Encoder::find(&cfg.recording.m4a.encoder).map(|e| e.name());
+        json!({ "type": "plugins", "plugins": plugins, "encoderFound": found })
     }
 
-    /// Start the enabled plugins for a recording.
-    pub fn start(&self, systems: Vec<SystemInfo>, capture_dir: PathBuf) {
-        *self.env.lock().unwrap() = Some((systems, capture_dir));
-        let host = self.new_host(true);
+    /// Start the config's enabled plugins for a recording.
+    pub fn start(&self, cfg: &Config) {
+        *self.env.lock().unwrap() = Some((super::systems_of(cfg), PathBuf::from(&cfg.recording.capture_dir)));
+        let host = self.new_host(cfg, true);
         *self.host.write().unwrap() = host;
     }
 
@@ -195,13 +177,13 @@ impl Plugins {
         self.publish_all_runtime();
     }
 
-    /// While recording: restart the plugins with plugins.json as it is now.
-    /// The old ones finish in the background.
-    fn reload(&self) {
+    /// While recording: restart the plugins with `cfg`'s settings. The old
+    /// ones finish in the background.
+    pub fn reload(&self, cfg: &Config) {
         if self.env.lock().unwrap().is_none() {
             return;
         }
-        let new = self.new_host(false);
+        let new = self.new_host(cfg, false);
         let old = std::mem::replace(&mut *self.host.write().unwrap(), new);
         if let Some(mut h) = old {
             std::thread::spawn(move || h.shutdown(Duration::from_secs(10)));
@@ -209,20 +191,13 @@ impl Plugins {
     }
 
     /// `fresh`: a new recording (counts start over); else a restart within one.
-    fn new_host(&self, fresh: bool) -> Option<PluginHost> {
+    fn new_host(&self, cfg: &Config, fresh: bool) -> Option<PluginHost> {
         let (systems, capture_dir) = self.env.lock().unwrap().clone()?;
         let notes = self.notes();
-        let file = match PluginsFile::load(&self.file_path) {
-            Ok(f) => f,
-            Err(e) => {
-                notes(Note::Log { plugin: String::new(), level: Level::Error, text: e });
-                return None;
-            }
-        };
-        let specs = Spec::enabled(&file);
+        let specs = Spec::enabled(cfg);
         {
             let mut rt = self.runtime.lock().unwrap();
-            for (id, e) in &file.plugins {
+            for (id, e) in &cfg.plugins {
                 let r = rt.entry(id.clone()).or_default();
                 if fresh {
                     *r = Runtime { log: std::mem::take(&mut r.log), ..Default::default() };
@@ -235,7 +210,7 @@ impl Plugins {
         if specs.is_empty() {
             return None;
         }
-        let host = PluginHost::start(specs, &file.audio, &systems, &capture_dir, notes);
+        let host = PluginHost::start(specs, &cfg.recording.m4a, &systems, &capture_dir, notes);
         (!host.is_empty()).then_some(host)
     }
 
@@ -289,72 +264,38 @@ impl Plugins {
         })
     }
 
-    /// Change plugins.json with `f`, save it, and apply it if recording.
-    fn change(&self, f: impl FnOnce(&mut PluginsFile) -> Result<(), String>) -> Result<(), String> {
-        let _one = self.edit.lock().unwrap();
-        let mut file = PluginsFile::load(&self.file_path)?;
-        f(&mut file)?;
-        file.save(&self.file_path).map_err(|e| format!("Couldn't save {}: {e}", self.file_path.display()))?;
-        self.reload();
-        Ok(())
-    }
-
-    /// `setPlugin {id, enabled?, config?, systems?}`
-    pub fn set(&self, v: &Value) -> Result<(), String> {
-        let id = v["id"].as_str().ok_or("no plugin id")?.to_string();
-        self.change(|file| {
-            let e = file.plugins.entry(id).or_default();
-            if let Some(b) = v["enabled"].as_bool() {
-                e.enabled = b;
-            }
-            if v.get("config").is_some() {
-                e.config = v["config"].clone();
-            }
-            if let Some(s) = v["systems"].as_object() {
-                e.systems = s.iter().filter(|(_, c)| !is_empty(c)).map(|(k, c)| (k.clone(), c.clone())).collect();
-            }
-            Ok(())
-        })
-    }
-
     /// `addPlugin {path}`: a plugin executable of the user's own (a build).
-    pub fn add(&self, v: &Value) -> Result<String, String> {
+    /// Returns its id and path, for the server to put in the config, and a notice.
+    pub fn add(&self, v: &Value, cfg: &Config) -> Result<(String, PathBuf, String), String> {
         let path = v["path"].as_str().map(str::trim).filter(|p| !p.is_empty()).ok_or("Which executable?")?;
         let path = PathBuf::from(shellexpand_home(path));
         let path = std::fs::canonicalize(&path).map_err(|e| format!("{}: {e}", path.display()))?;
         self.manifests.lock().unwrap().remove(&path);
         let m = self.manifest(&path)?;
         let id = m.id.clone();
-        self.change(|file| {
-            if let Some(e) = file.plugins.get(&id) {
-                if executable(&id, e) != path {
-                    return Err(format!("There's already a plugin called {id} ({})", executable(&id, e).display()));
-                }
-            }
-            file.plugins.entry(id.clone()).or_default().path = path.display().to_string();
-            Ok(())
-        })?;
-        Ok(format!("Added {} {}. Check its settings, then turn it on.", m.name, m.version))
+        let existing = executable(&id, cfg.plugins.get(&id).unwrap_or(&PluginSetup::default()));
+        if existing.is_file() && existing != path {
+            return Err(format!("There's already a plugin called {id} ({})", existing.display()));
+        }
+        Ok((id, path, format!("Added {} {}. Set it up, then turn it on.", m.name, m.version)))
     }
 
-    /// `removePlugin {id}`: forget it; an installed copy is deleted too. Its data folder stays.
-    pub fn remove(&self, v: &Value) -> Result<(), String> {
+    /// `removePlugin {id}`: an installed copy is deleted (a build of the
+    /// user's own isn't). Its data folder stays. The server then forgets it
+    /// in the config; returns its id.
+    pub fn remove(&self, v: &Value, cfg: &Config) -> Result<String, String> {
         let id = v["id"].as_str().ok_or("no plugin id")?.to_string();
-        if id.is_empty() || id.contains(['/', '\\', '.']) {
+        if !store::valid_id(&id) {
             return Err(format!("bad plugin id {id:?}"));
         }
-        self.change(|file| {
-            let e = file.plugins.remove(&id).unwrap_or_default();
-            if e.path.is_empty() {
-                let dir = plugins_dir().join(&id);
-                if dir.is_dir() {
-                    std::fs::remove_dir_all(&dir).map_err(|err| format!("Couldn't delete {}: {err}", dir.display()))?;
-                }
+        if cfg.plugins.get(&id).is_none_or(|p| p.path.is_empty()) {
+            let dir = plugins_dir().join(&id);
+            if dir.is_dir() {
+                std::fs::remove_dir_all(&dir).map_err(|err| format!("Couldn't delete {}: {err}", dir.display()))?;
             }
-            Ok(())
-        })?;
+        }
         self.runtime.lock().unwrap().remove(&id);
-        Ok(())
+        Ok(id)
     }
 
     /// The registry's list: fetched again when it's old, or when `refresh`.
@@ -389,14 +330,16 @@ impl Plugins {
 
     /// `installPlugin {id}` or `installPlugin {repository, tag?}`. Says how
     /// it goes in `pluginInstall` messages, to everyone; blocks until done.
-    pub fn install(&self, v: &Value) {
+    /// A new plugin is off (nothing in the config changes); after an update
+    /// the server reloads the plugins, so a running one restarts with it.
+    pub fn install(&self, v: &Value, cfg: &Config) {
         let key = v["id"].as_str().or(v["repository"].as_str()).unwrap_or_default().trim().to_string();
         let say = |id: &str, stage: &str, message: Option<&str>| publish(&self.hub, json!({ "type": "pluginInstall", "key": key, "id": id, "stage": stage, "message": message }));
         if !self.installing.lock().unwrap().insert(key.clone()) {
             return say("", "failed", Some("That's being installed already."));
         }
         let mut id = String::new();
-        let r = self.install_one(v, &mut id, &|id, stage| say(id, stage, None));
+        let r = self.install_one(v, cfg, &mut id, &|id, stage| say(id, stage, None));
         self.installing.lock().unwrap().remove(&key);
         match r {
             Ok(notice) => say(&id, "done", Some(&notice)),
@@ -404,7 +347,7 @@ impl Plugins {
         }
     }
 
-    fn install_one(&self, v: &Value, id_out: &mut String, stage: &dyn Fn(&str, &'static str)) -> Result<String, String> {
+    fn install_one(&self, v: &Value, cfg: &Config, id_out: &mut String, stage: &dyn Fn(&str, &'static str)) -> Result<String, String> {
         stage("", "finding");
         let listing = match v["id"].as_str() {
             Some(id) => self.catalog(false).find(id).cloned().ok_or_else(|| format!("{id} isn't in the plugin registry"))?,
@@ -422,54 +365,22 @@ impl Plugins {
         };
         let id = listing.id.clone();
         *id_out = id.clone();
-        if let Some(e) = PluginsFile::load(&self.file_path)?.plugins.get(&id) {
+        if let Some(e) = cfg.plugins.get(&id) {
             if !e.path.is_empty() {
                 return Err(format!("{} is your build at {}: remove it from the list first.", id, e.path));
             }
         }
-        let exe = executable(&id, &PluginEntry::default());
+        let exe = executable(&id, &PluginSetup::default());
         let before = self.manifest(&exe).ok().map(|m| m.version);
         store::install(&listing, &|s| stage(&id, s))?;
         self.manifests.lock().unwrap().remove(&exe);
-        let unlisted = if listing.tier == "unlisted" { listing.repository.clone() } else { String::new() };
-        // Saved (so it's listed with its settings), and restarted if it's running.
-        self.change(|file| {
-            file.plugins.entry(id.clone()).or_default().unlisted_from = unlisted;
-            Ok(())
-        })?;
         let (name, version) = (&listing.name, &listing.version);
         Ok(match before {
             Some(old) if store::newer(version, &old) => format!("Updated {name} from {old} to {version}."),
             Some(old) if &old != version => format!("Installed {name} {version} in place of {old}."),
             Some(_) => format!("Reinstalled {name} {version}."),
-            None => format!("Installed {name} {version}. Check its settings, then turn it on."),
+            None => format!("Installed {name} {version}. Set it up, then turn it on."),
         })
-    }
-
-    /// `setPluginAudio {encoder, bitrateKbps}`
-    pub fn set_audio(&self, v: &Value) -> Result<(), String> {
-        self.change(|file| {
-            if let Some(e) = v["encoder"].as_str() {
-                if !["auto", "ffmpeg", "afconvert", "fdkaac", "none"].contains(&e) {
-                    return Err(format!("unknown encoder {e}"));
-                }
-                file.audio.encoder = e.to_string();
-            }
-            if let Some(k) = v["bitrateKbps"].as_u64() {
-                file.audio.bitrate_kbps = (k as u32).clamp(8, 320);
-            }
-            Ok(())
-        })
-    }
-}
-
-/// Settings left entirely empty (don't keep `{}` or `{"apiKey": ""}` around).
-fn is_empty(v: &Value) -> bool {
-    match v {
-        Value::Null => true,
-        Value::String(s) => s.is_empty(),
-        Value::Object(o) => o.values().all(is_empty),
-        _ => false,
     }
 }
 

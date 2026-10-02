@@ -26,9 +26,9 @@ import {
   USRP_RATES,
   usableHalfWidth,
 } from "./config.ts";
-import { dismissTodo, downloadText, findRadios, openGuide, refreshDevices, setChannelFile, setNotice, setSetupTab, setView, updateConfig, useApp, web, type SetupTab } from "./controller.ts";
-import { SystemPluginSettings } from "./Plugins.tsx";
-import { IconAntenna, IconDongle, IconFolder, IconTower } from "./Onboarding.tsx";
+import { currentView, dismissTodo, downloadText, findRadios, openGuide, refreshDevices, setChannelFile, setNotice, setSetupTab, setView, updateConfig, useApp, web, type SetupTab } from "./controller.ts";
+import { M4aSettings, PluginSetupPanel, renameSystemRefs, SystemPluginSettings } from "./Plugins.tsx";
+import { IconAntenna, IconDongle, IconFolder, IconPuzzle, IconTower } from "./Onboarding.tsx";
 import type { Channel, Config, HeardCode, SiteIdentity, SoapyState, Source, System } from "./protocol.ts";
 import { SurveyPanel } from "./Survey.tsx";
 import { parseTalkgroupCsv } from "./talkgroups.ts";
@@ -55,21 +55,23 @@ function useNeed(): (target: string) => string | undefined {
 
 /** The setup tab a to-do's field is on. */
 function tabOf(target: string): SetupTab {
-  return target.startsWith("src-") ? "radios" : target === "channels" || target === "squelch" ? "conventional" : "systems";
+  if (target.startsWith("plugin")) return "plugins";
+  return target.startsWith("src-") ? "radios" : target === "channels" || target === "squelch" || target === "conv-plugins" ? "conventional" : "systems";
 }
 
-/** Show a to-do's field: switch to its tab, scroll to it and flash it (on the Plugins page for a plugin). */
-function showTodo(target: string): void {
-  if (target.startsWith("plugin")) {
-    setView("plugins");
-    // Once the page is drawn.
-    return void setTimeout(() => document.getElementById(`need-${target}`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 100);
+/** Show a setup field (`need-<target>`): switch to its page and tab, scroll to it and flash it. */
+export function showTodo(target: string, tries = 0): void {
+  if (currentView() !== "recorder") {
+    setView("recorder");
+    return void setTimeout(() => showTodo(target, tries), 60);
   }
   if (currentTab() !== tabOf(target)) {
     setSetupTab(tabOf(target));
-    return void setTimeout(() => showTodo(target), 60);
+    return void setTimeout(() => showTodo(target, tries), 60);
   }
   const el = document.getElementById(`need-${target}`);
+  // Not drawn yet (a plugin just installed, say): a moment more.
+  if (!el && tries < 30) return void setTimeout(() => showTodo(target, tries + 1), 100);
   if (el instanceof HTMLDetailsElement) el.open = true;
   el?.scrollIntoView({ behavior: "smooth", block: "center" });
   el?.classList.remove("flash");
@@ -719,6 +721,7 @@ let nextRowId = 1;
 function ConventionalPanel(props: { c: Config }) {
   const { c } = props;
   const need = useNeed();
+  const plugins = useApp().plugins?.plugins ?? [];
   const conv = c.conventional;
   const chans = conv.channels;
   // Stable row keys (each edit clones the config; a frequency input keeps its own text).
@@ -878,7 +881,16 @@ function ConventionalPanel(props: { c: Config }) {
         <div className="grid3">
           {chans.length > 0 && (
             <Field label="Short name" hint="Folder name for conventional calls">
-              <input value={conv.shortName} onChange={(e) => edit((x) => void (x.shortName = e.target.value.replace(/[^\w.-]/g, "") || "conv"))} />
+              <input
+                value={conv.shortName}
+                onChange={(e) => {
+                  const to = e.target.value.replace(/[^\w.-]/g, "") || "conv";
+                  updateConfig((x) => {
+                    renameSystemRefs(x, x.conventional.shortName, to, plugins);
+                    x.conventional.shortName = to;
+                  });
+                }}
+              />
             </Field>
           )}
           <Field needs={need("squelch")} anchor="squelch" label="Squelch, dB above noise" hint="For every channel without its own. Raise it if noise opens channels.">
@@ -1045,7 +1057,7 @@ function ConventionalPanel(props: { c: Config }) {
             </div>
           </>
         )}
-        {chans.length > 0 && <SystemPluginSettings shortName={conv.shortName} />}
+        {chans.length > 0 && <SystemPluginSettings system="conventional" />}
         <details className="help">
           <summary>CSV format</summary>
           <p className="small">
@@ -1223,6 +1235,7 @@ function SystemCard(props: { c: Config; i: number }) {
   const [ccText, setCcText] = useState(() => sys.controlChannels.map((f) => formatMhz(f)).join(", "));
   const tgRef = useRef<HTMLInputElement>(null);
   const need = useNeed();
+  const plugins = useApp().plugins?.plugins ?? [];
   const edit = (fn: (x: System) => void) => updateConfig((x) => fn(x.systems[i]));
   const setExpect = (k: keyof SiteIdentity, v: number | null) =>
     edit((x) => {
@@ -1255,7 +1268,7 @@ function SystemCard(props: { c: Config; i: number }) {
   };
 
   return (
-    <div className={`system-card${sys.enabled ? "" : " off"}`} style={{ ["--sys-color" as string]: color }}>
+    <div className={`system-card${sys.enabled ? "" : " off"}`} style={{ ["--sys-color" as string]: color }} id={`need-sys-${sys.shortName}`}>
       <div className="row sys-head">
         <span className="sys-dot" style={{ background: color }} />
         <strong>{sys.shortName || "(no name)"}</strong>
@@ -1295,7 +1308,17 @@ function SystemCard(props: { c: Config; i: number }) {
       </div>
       <div className="grid2">
         <Field label="Short name" hint={dupName ? "Another system has this name — each needs its own folder" : "Folder name for this system's calls"}>
-          <input value={sys.shortName} onChange={(e) => edit((x) => void (x.shortName = e.target.value.replace(/[^\w.-]/g, "")))} />
+          <input
+            value={sys.shortName}
+            onChange={(e) => {
+              const to = e.target.value.replace(/[^\w.-]/g, "");
+              // Plugin settings that name it follow it.
+              updateConfig((x) => {
+                renameSystemRefs(x, x.systems[i].shortName, to, plugins);
+                x.systems[i].shortName = to;
+              });
+            }}
+          />
         </Field>
         <Field label="Name" hint="What people call it; the short name is its folder">
           <input value={sys.name ?? ""} placeholder="County Public Safety" onChange={(e) => edit((x) => void (x.name = e.target.value))} />
@@ -1433,7 +1456,7 @@ function SystemCard(props: { c: Config; i: number }) {
           />
         </Field>
       </div>
-      <SystemPluginSettings shortName={sys.shortName} />
+      <SystemPluginSettings system={i} />
       <details className={`help${need(`site-${sys.shortName}`) ? " needs" : ""}`} id={`need-site-${sys.shortName}`} open={need(`site-${sys.shortName}`) ? true : undefined}>
         <summary>
           Site lock{locked ? <span className="muted"> — only {siteText(sys.expect)}</span> : <span className="muted"> — off (follows any control channel listed)</span>}
@@ -1483,21 +1506,24 @@ const TABS: { id: SetupTab; label: string; icon: () => React.ReactNode }[] = [
   { id: "conventional", label: "Conventional", icon: IconAntenna },
   { id: "radios", label: "Radios", icon: IconDongle },
   { id: "recording", label: "Recording", icon: IconFolder },
+  { id: "plugins", label: "Plugins", icon: IconPuzzle },
 ];
 
 /** The setup page's tabs: how many of each, and what an import left to do there. */
 function SetupTabs(props: { c: Config; tab: SetupTab }) {
-  const todos = openTodos(useApp());
+  const s = useApp();
+  const todos = openTodos(s);
   const count: Record<SetupTab, number | null> = {
     systems: props.c.systems.length,
     conventional: props.c.conventional.channels.length,
     radios: props.c.sources.length,
     recording: null,
+    plugins: s.plugins ? s.plugins.plugins.length : null,
   };
   return (
     <nav className="setup-tabs" role="tablist" aria-label="Setup">
-      {TABS.map((t) => {
-        const todo = todos.filter((x) => !x.target.startsWith("plugin") && tabOf(x.target) === t.id).length;
+      {TABS.filter((t) => t.id !== "plugins" || !web).map((t) => {
+        const todo = todos.filter((x) => tabOf(x.target) === t.id).length;
         return (
           <button key={t.id} role="tab" aria-selected={props.tab === t.id} className={props.tab === t.id ? "on" : ""} onClick={() => setSetupTab(t.id)}>
             <t.icon />
@@ -1670,6 +1696,9 @@ export function Setup() {
         </div>
       </section>
       )}
+      {tab === "recording" && !web && <M4aSettings />}
+
+      {tab === "plugins" && !web && <PluginSetupPanel />}
     </div>
   );
 }

@@ -11,6 +11,15 @@
 //! - `"type": "array"` of objects — a list of groups, added and removed one by one
 //! - `"type": "object"` — a group of the above
 //!
+//! Two more, for a field of either:
+//! - `"x-system": true` on a string — a menu of the recorder's systems (by
+//!   short name); the recorder updates it when a system is renamed
+//! - `"x-required": true` — the field has to be filled in: until it is, the
+//!   recorder shows the plugin, or that system, as not set up. ([`normalize`]
+//!   moves these into the object's `required` list; `#[schemars(required)]`
+//!   doesn't work on a `#[serde(default)]` struct, so mark them this way:
+//!   `#[schemars(extend("x-required" = true))]`.)
+//!
 //! Fields are shown in `x-order` (the struct's order, added by [`normalize`]).
 //! Each may have a `title` (else the key, spelled out), a `description`
 //! (help under the field) and a `default` — which `schemars` only writes
@@ -138,6 +147,23 @@ pub fn normalize(v: &mut Value) {
             _ => {}
         }
     }
+    // `"x-required": true` on a field → the object's `required` list.
+    if let Some(Value::Object(props)) = o.get_mut("properties") {
+        let marked: Vec<String> = props
+            .iter_mut()
+            .filter_map(|(k, f)| f.as_object_mut()?.remove("x-required").filter(|v| v == &Value::Bool(true)).map(|_| k.clone()))
+            .collect();
+        if !marked.is_empty() {
+            let req = o.entry("required").or_insert_with(|| Value::Array(vec![]));
+            if let Value::Array(r) = req {
+                for k in marked {
+                    if !r.contains(&Value::String(k.clone())) {
+                        r.push(Value::String(k));
+                    }
+                }
+            }
+        }
+    }
     // A config struct with `#[serde(default)]` needs nothing: drop an empty list.
     if o.get("required").and_then(Value::as_array).is_some_and(|r| r.is_empty()) {
         o.remove("required");
@@ -195,6 +221,37 @@ mod tests {
         Fast,
         /// Slow and steady
         Slow,
+    }
+
+    #[derive(Serialize, Deserialize, JsonSchema, Default)]
+    #[serde(rename_all = "camelCase", default)]
+    #[allow(dead_code)]
+    struct Marked {
+        /// Server
+        #[schemars(extend("x-required" = true))]
+        server: String,
+        streams: Vec<Stream>,
+    }
+
+    #[derive(Serialize, Deserialize, JsonSchema, Default)]
+    #[serde(rename_all = "camelCase", default)]
+    #[allow(dead_code)]
+    struct Stream {
+        /// System
+        #[schemars(extend("x-system" = true, "x-required" = true))]
+        short_name: String,
+        port: u16,
+    }
+
+    #[test]
+    fn required_and_system_fields_come_through() {
+        let s = schema_for::<Marked>();
+        assert_eq!(s["required"], json!(["server"]));
+        let item = &s["properties"]["streams"]["items"];
+        assert_eq!(item["properties"]["shortName"]["x-system"], true);
+        assert_eq!(item["required"], json!(["shortName"]));
+        assert!(item["properties"]["shortName"].get("x-required").is_none());
+        assert!(item.get("required").is_some() && s["properties"]["streams"].get("required").is_none());
     }
 
     #[test]

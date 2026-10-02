@@ -549,6 +549,9 @@ fn serve(a: &Args) {
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
     let config_path = a.get("config").map(std::path::PathBuf::from).unwrap_or_else(|| config::config_dir().join("config.json"));
+    if let Some(said) = plugins::migrate(&config_path) {
+        println!("{said}");
+    }
     let mut cfg = config::Config::load(&config_path);
     if let Some(p) = a.get("port").and_then(|p| p.parse().ok()) {
         cfg.server.port = p;
@@ -586,7 +589,7 @@ fn serve(a: &Args) {
         quit: tokio::sync::Notify::new(),
         survey: Mutex::new(None),
         survey_last: Mutex::new(None),
-        plugins: plugins::manage::Plugins::new(&config_path, hub.clone()),
+        plugins: plugins::manage::Plugins::new(hub.clone()),
     });
     println!("Trunk Recorder Pro {} — open {url}\nconfig: {}", env!("CARGO_PKG_VERSION"), config_path.display());
     let auto = a.flag("start") || ctx.config.lock().unwrap().server.auto_start;

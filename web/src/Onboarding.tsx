@@ -15,8 +15,6 @@ import {
   listDir,
   readTrConfig,
   refreshDevices,
-  savePluginSettings,
-  setPluginEnabled,
   setTodo,
   start,
   startSurvey,
@@ -1869,7 +1867,21 @@ function ImportReview(props: { s: AppState; c: Config; loaded: Loaded; onBack: (
   };
 
   const apply = () => {
-    updateConfig((x) => Object.assign(x, cfg));
+    updateConfig((x) => {
+      const plugins = { ...x.plugins };
+      Object.assign(x, cfg);
+      if (web) return;
+      // Uploaders and streamers: their settings, kept beside any already there; those installed are turned on.
+      for (const p of result.plugins) {
+        const had = plugins[p.id] ?? { enabled: false };
+        plugins[p.id] = { ...had, enabled: had.enabled || installed(p.id), ...(Object.keys(p.config).length ? { settings: { ...had.settings, ...p.config } } : {}) };
+        for (const [name, values] of Object.entries(p.systems)) {
+          const sys = x.systems.find((y) => y.shortName === name) ?? (x.conventional.shortName === name ? x.conventional : null);
+          if (sys) sys.plugins = { ...sys.plugins, [p.id]: { ...sys.plugins?.[p.id], ...values } };
+        }
+      }
+      x.plugins = plugins;
+    });
     bumpEpoch();
     // Radios that aren't ready yet join what's left to do.
     const radios: ImportTodo[] = cfg.sources.flatMap((src, index): ImportTodo[] => {
@@ -1877,14 +1889,6 @@ function ImportReview(props: { s: AppState; c: Config; loaded: Loaded; onBack: (
       if ((src.kind === "usrp" || src.kind === "airspy" || src.kind === "soapy") && sourceState(src, s).tone === "bad") return [{ kind: "driver", index, driver: src.kind }];
       return [];
     });
-    // Uploaders and streamers: their settings (kept beside any already there); those installed are turned on.
-    if (!web) {
-      for (const p of result.plugins) {
-        const have = s.plugins?.plugins.find((x) => x.id === p.id);
-        savePluginSettings(p.id, { ...(have?.config ?? {}), ...p.config }, { ...have?.systems, ...p.systems });
-        if (installed(p.id)) setPluginEnabled(p.id, true);
-      }
-    }
     const plugins: ImportTodo[] = web ? [] : result.plugins.map((p) => ({ kind: "plugin", id: p.id, name: s.plugins?.plugins.find((x) => x.id === p.id)?.manifest?.name ?? p.name }));
     const coverage: ImportTodo[] = cfg.systems.filter(unheard).map((x) => ({ kind: "coverage", system: x.shortName }));
     setTodo([...result.todo, ...radios, ...coverage, ...plugins]);

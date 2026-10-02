@@ -23,7 +23,7 @@ use trunk_recorder_plugin::{
     SystemInfo, API_VERSION, EXIT_CONFIG,
 };
 
-use super::{describe, executable, Encoder, PluginsFile};
+use super::{describe, executable, Encoder};
 
 /// What the plugins are up to, for the interface (or the terminal).
 #[derive(Clone, Debug)]
@@ -87,12 +87,12 @@ pub struct Spec {
 }
 
 impl Spec {
-    /// The enabled plugins of `file`.
-    pub fn enabled(file: &PluginsFile) -> Vec<Spec> {
-        file.plugins
+    /// The config's enabled plugins.
+    pub fn enabled(cfg: &crate::config::Config) -> Vec<Spec> {
+        cfg.plugins
             .iter()
-            .filter(|(_, e)| e.enabled)
-            .map(|(id, e)| Spec { id: id.clone(), exe: executable(id, e), config: e.config.clone(), systems: e.systems.clone(), data_dir: None })
+            .filter(|(_, p)| p.enabled)
+            .map(|(id, p)| Spec { id: id.clone(), exe: executable(id, p), config: p.settings.clone(), systems: super::system_settings(cfg, id), data_dir: None })
             .collect()
     }
 }

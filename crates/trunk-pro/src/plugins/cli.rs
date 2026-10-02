@@ -11,7 +11,8 @@ use serde_json::Value;
 use trunk_recorder_plugin::{Level, Outcome, State, SystemInfo};
 
 use super::store::{self, Listing};
-use super::{describe, executable, plugins_dir, AudioSettings, Note, PluginEntry, PluginHost, PluginsFile, Spec};
+use super::{describe, executable, plugins_dir, AudioSettings, Note, PluginHost, Spec};
+use crate::config::{Config, PluginSetup};
 use crate::{die, Args};
 
 pub fn run(a: &Args) {
@@ -46,7 +47,7 @@ trunk-pro plugin update [id…]
 trunk-pro plugin uninstall <id>
     Remove a plugin and forget its settings. Its data folder is kept.
 trunk-pro plugin list [--config file.json]
-    The plugins in plugins.json (beside the config), and what each is.
+    The installed plugins and those the config names, and what each is.
 trunk-pro plugin describe <executable>
     A plugin's manifest, checked.
 trunk-pro plugin run <executable | id> [<call.json | folder>…] [options]
@@ -66,14 +67,36 @@ fn config_path(a: &Args) -> PathBuf {
     a.get("config").map(PathBuf::from).unwrap_or_else(|| crate::config::config_dir().join("config.json"))
 }
 
+/// The config, with plugins.json moved into it first if it's still there.
+fn load_config(a: &Args) -> (PathBuf, Config) {
+    let path = config_path(a);
+    if let Some(said) = super::migrate(&path) {
+        eprintln!("{said}");
+    }
+    let cfg = Config::load(&path);
+    (path, cfg)
+}
+
+/// The config's plugins and the installed ones.
+fn all_plugins(cfg: &Config) -> BTreeMap<String, PluginSetup> {
+    let mut all = cfg.plugins.clone();
+    for d in std::fs::read_dir(plugins_dir()).into_iter().flatten().flatten() {
+        let id = d.file_name().to_string_lossy().to_string();
+        if store::valid_id(&id) && executable(&id, &PluginSetup::default()).is_file() {
+            all.entry(id).or_default();
+        }
+    }
+    all
+}
+
 fn list(a: &Args) {
-    let path = PluginsFile::path_for(&config_path(a));
-    let file = PluginsFile::load(&path).unwrap_or_else(|e| die(&e));
+    let (path, cfg) = load_config(a);
     println!("{}", path.display());
-    if file.plugins.is_empty() {
+    let all = all_plugins(&cfg);
+    if all.is_empty() {
         println!("  (no plugins)");
     }
-    for (id, e) in &file.plugins {
+    for (id, e) in &all {
         let exe = executable(id, e);
         let what = match describe(&exe) {
             Ok(m) => format!("{} {} — subscribes to {}", m.name, m.version, m.subscribe.join(", ")),
@@ -81,17 +104,13 @@ fn list(a: &Args) {
         };
         println!("  {id} [{}] {}\n    {what}", if e.enabled { "on" } else { "off" }, exe.display());
     }
-    let enc = super::Encoder::find(&file.audio.encoder);
-    println!("M4A encoder ({}): {}", file.audio.encoder, enc.as_ref().map_or("none found (install ffmpeg)", |e| e.name()));
-}
-
-fn plugins_path(a: &Args) -> PathBuf {
-    PluginsFile::path_for(&config_path(a))
+    let enc = super::Encoder::find(&cfg.recording.m4a.encoder);
+    println!("M4A encoder ({}): {}", cfg.recording.m4a.encoder, enc.as_ref().map_or("none found (install ffmpeg)", |e| e.name()));
 }
 
 /// The installed plugin's version, if it's installed and answers.
 fn installed_version(id: &str) -> Option<String> {
-    let exe = executable(id, &PluginEntry::default());
+    let exe = executable(id, &PluginSetup::default());
     exe.is_file().then(|| describe(&exe).ok().map(|m| m.version)).flatten()
 }
 
@@ -137,11 +156,9 @@ fn listing_for(what: &str, tag: Option<&str>, cat: &store::Catalog) -> Listing {
     l
 }
 
-/// Install `l` and note it in plugins.json; returns false when it failed.
-fn install_listing(a: &Args, l: &Listing) -> bool {
-    let path = plugins_path(a);
-    let mut file = PluginsFile::load(&path).unwrap_or_else(|e| die(&e));
-    if let Some(e) = file.plugins.get(&l.id) {
+/// Install `l`; returns false when it failed.
+fn install_listing(cfg: &Config, l: &Listing) -> bool {
+    if let Some(e) = cfg.plugins.get(&l.id) {
         if !e.path.is_empty() {
             eprintln!("{} is your build at {}: `trunk-pro plugin uninstall {}` first.", l.id, e.path, l.id);
             return false;
@@ -155,8 +172,6 @@ fn install_listing(a: &Args, l: &Listing) -> bool {
             return false;
         }
     }
-    file.plugins.entry(l.id.clone()).or_default().unlisted_from = if l.tier == "unlisted" { l.repository.clone() } else { String::new() };
-    file.save(&path).unwrap_or_else(|e| die(&format!("{}: {e}", path.display())));
     match before {
         Some(old) if store::newer(&l.version, &old) => println!("Updated {} from {old} to {}.", l.name, l.version),
         Some(old) if old != l.version => println!("Installed {} {} in place of {old}.", l.name, l.version),
@@ -171,13 +186,14 @@ fn install(a: &Args) {
     let cat = store::catalog();
     say_source(&cat);
     let l = listing_for(what, a.get("tag"), &cat);
-    if !install_listing(a, &l) {
+    let (_, cfg) = load_config(a);
+    if !install_listing(&cfg, &l) {
         std::process::exit(1);
     }
 }
 
 fn update(a: &Args) {
-    let file = PluginsFile::load(&plugins_path(a)).unwrap_or_else(|e| die(&e));
+    let (_, cfg) = load_config(a);
     let mut ids: Vec<String> = a.positional.iter().skip(1).cloned().collect();
     if ids.is_empty() {
         // Every installed plugin (not builds of your own).
@@ -188,7 +204,7 @@ fn update(a: &Args) {
     say_source(&cat);
     let mut failed = false;
     for id in &ids {
-        let entry = file.plugins.get(id).cloned().unwrap_or_default();
+        let entry = cfg.plugins.get(id).cloned().unwrap_or_default();
         if !entry.path.is_empty() {
             println!("{id}: your build ({}), not updated", entry.path);
             continue;
@@ -198,7 +214,8 @@ fn update(a: &Args) {
             continue;
         };
         // From the registry, or from the repository it came from.
-        let latest = if entry.unlisted_from.is_empty() {
+        let unlisted = store::unlisted_from(id);
+        let latest = if unlisted.is_none() {
             match cat.find(id) {
                 Some(l) => l.clone(),
                 None => {
@@ -207,7 +224,7 @@ fn update(a: &Args) {
                 }
             }
         } else {
-            match store::release_listing(&entry.unlisted_from, None) {
+            match store::release_listing(unlisted.as_deref().unwrap_or_default(), None) {
                 Ok(l) => l,
                 Err(e) => {
                     println!("{id} {have}: {e}");
@@ -220,7 +237,7 @@ fn update(a: &Args) {
             continue;
         }
         println!("{id}: {have} → {}", latest.version);
-        failed |= !install_listing(a, &latest);
+        failed |= !install_listing(&cfg, &latest);
     }
     if failed {
         std::process::exit(1);
@@ -232,9 +249,8 @@ fn uninstall(a: &Args) {
     if !store::valid_id(id) {
         die(&format!("{id:?} isn't a plugin id"));
     }
-    let path = plugins_path(a);
-    let mut file = PluginsFile::load(&path).unwrap_or_else(|e| die(&e));
-    let entry = file.plugins.remove(id);
+    let (path, mut cfg) = load_config(a);
+    let entry = cfg.plugins.get(id).cloned();
     let dir = plugins_dir().join(id);
     let custom = entry.as_ref().is_some_and(|e| !e.path.is_empty());
     if entry.is_none() && !dir.is_dir() {
@@ -243,23 +259,22 @@ fn uninstall(a: &Args) {
     if !custom && dir.is_dir() {
         std::fs::remove_dir_all(&dir).unwrap_or_else(|e| die(&format!("Couldn't delete {}: {e}", dir.display())));
     }
-    file.save(&path).unwrap_or_else(|e| die(&format!("{}: {e}", path.display())));
+    super::forget(&mut cfg, id);
+    cfg.save(&path).unwrap_or_else(|e| die(&format!("{}: {e}", path.display())));
     println!("{id} {}. Its data folder, {}, is kept.", if custom { "removed (your build isn't touched)" } else { "uninstalled" }, super::data_dir(id).display());
 }
 
 fn run_calls(a: &Args) {
     let target = a.positional.get(1).unwrap_or_else(|| die("trunk-pro plugin run <executable | id> [calls…]"));
-    let cfg_path = config_path(a);
-    let cfg = crate::config::Config::load(&cfg_path);
-    // An executable, or an installed plugin's id (with its settings).
-    let (id, entry) = if Path::new(target).is_file() {
+    let (_, cfg) = load_config(a);
+    // An executable, or an installed plugin's id (with its settings from the config).
+    let (id, exe, config, systems) = if Path::new(target).is_file() {
         let m = describe(Path::new(target)).unwrap_or_else(|e| die(&e));
-        (m.id, PluginEntry { enabled: true, path: target.clone(), ..Default::default() })
+        (m.id, PathBuf::from(target), Value::Null, BTreeMap::new())
     } else {
-        let file = PluginsFile::load(&PluginsFile::path_for(&cfg_path)).unwrap_or_else(|e| die(&e));
-        match file.plugins.get(target) {
-            Some(e) => (target.clone(), PluginEntry { path: executable(target, e).display().to_string(), ..e.clone() }),
-            None => die(&format!("{target}: no such file, and no plugin by that id in plugins.json")),
+        match all_plugins(&cfg).get(target) {
+            Some(e) => (target.clone(), executable(target, e), e.settings.clone(), super::system_settings(&cfg, target)),
+            None => die(&format!("{target}: no such file, and no plugin by that id")),
         }
     };
     // Not the plugin's real data folder: a test run mustn't leave work for the installed plugin.
@@ -268,7 +283,7 @@ fn run_calls(a: &Args) {
         None => std::env::temp_dir().join(format!("trunk-pro-plugin-run-{id}")),
     };
     eprintln!("Data folder: {}", data_dir.display());
-    let mut spec = Spec { id, exe: PathBuf::from(&entry.path), config: entry.config, systems: entry.systems, data_dir: Some(data_dir) };
+    let mut spec = Spec { id, exe, config, systems, data_dir: Some(data_dir) };
     if let Some(s) = a.get("settings") {
         let v: Value = std::fs::read_to_string(s).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_else(|| die(&format!("{s}: not JSON")));
         spec.config = v.get("config").cloned().unwrap_or(Value::Null);

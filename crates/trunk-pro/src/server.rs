@@ -305,6 +305,25 @@ async fn session(ctx: Arc<Ctx>, mut socket: WebSocket) {
     }
 }
 
+/// Change the config on the recorder's side (a plugin added or removed):
+/// saved, sent to every browser, and the plugins restarted if it changes them.
+fn edit_config(ctx: &Ctx, f: impl FnOnce(&mut crate::config::Config)) -> Result<(), String> {
+    let mut cfg = ctx.config.lock().unwrap();
+    let old = cfg.clone();
+    f(&mut cfg);
+    if *cfg == old {
+        return Ok(());
+    }
+    cfg.save(&ctx.config_path).map_err(|e| format!("Couldn't save the config: {e}"))?;
+    let c = cfg.clone();
+    drop(cfg);
+    publish(&ctx.hub, json!({ "type": "config", "config": c }));
+    if crate::plugins::changed(&old, &c) {
+        ctx.plugins.reload(&c);
+    }
+    Ok(())
+}
+
 /// The `plugins` message (asking plugins who they are can take a moment).
 async fn plugins_json(ctx: &Arc<Ctx>) -> Value {
     let ctx2 = ctx.clone();
@@ -340,8 +359,13 @@ async fn command(ctx: &Arc<Ctx>, v: &Value, listen: &mut Option<Listen>) -> Opti
                 c.conventional.channel_file = ctx.config.lock().unwrap().conventional.channel_file.clone();
                 let _ = c.load_channel_file(&ctx.config_path);
                 let saved = c.save(&ctx.config_path);
-                *ctx.config.lock().unwrap() = c.clone();
+                let old = std::mem::replace(&mut *ctx.config.lock().unwrap(), c.clone());
                 publish(&ctx.hub, json!({ "type": "config", "config": c }));
+                // Plugins' settings changed while recording: they restart with them.
+                if crate::plugins::changed(&old, &c) {
+                    let ctx2 = ctx.clone();
+                    let _ = tokio::task::spawn_blocking(move || ctx2.plugins.reload(&c)).await;
+                }
                 saved.err().map(|e| json!({ "type": "error", "message": format!("Couldn't save the config: {e}") }))
             }
             Err(e) => Some(json!({ "type": "error", "message": format!("Bad config: {e}") })),
@@ -466,20 +490,30 @@ async fn command(ctx: &Arc<Ctx>, v: &Value, listen: &mut Option<Listen>) -> Opti
             let (ctx2, v) = (ctx.clone(), v.clone());
             tokio::spawn(async move {
                 let ctx3 = ctx2.clone();
-                let _ = tokio::task::spawn_blocking(move || ctx3.plugins.install(&v)).await;
+                let _ = tokio::task::spawn_blocking(move || {
+                    let cfg = ctx3.config.lock().unwrap().clone();
+                    ctx3.plugins.install(&v, &cfg);
+                    // An update of a running plugin: it restarts with the new version.
+                    let cfg = ctx3.config.lock().unwrap().clone();
+                    ctx3.plugins.reload(&cfg);
+                })
+                .await;
                 publish(&ctx2.hub, plugins_json(&ctx2).await);
             });
             None
         }
-        "setPlugin" | "addPlugin" | "removePlugin" | "setPluginAudio" => {
+        "addPlugin" | "removePlugin" => {
             let (ctx2, v) = (ctx.clone(), v.clone());
             let r = tokio::task::spawn_blocking(move || {
-                let p = &ctx2.plugins;
-                match v["type"].as_str() {
-                    Some("setPlugin") => p.set(&v).map(|_| None),
-                    Some("addPlugin") => p.add(&v).map(Some),
-                    Some("removePlugin") => p.remove(&v).map(|_| None),
-                    _ => p.set_audio(&v).map(|_| None),
+                let cfg = ctx2.config.lock().unwrap().clone();
+                if v["type"] == "addPlugin" {
+                    let (id, path, notice) = ctx2.plugins.add(&v, &cfg)?;
+                    edit_config(&ctx2, |c| c.plugins.entry(id).or_default().path = path.display().to_string())?;
+                    Ok(Some(notice))
+                } else {
+                    let id = ctx2.plugins.remove(&v, &cfg)?;
+                    edit_config(&ctx2, |c| crate::plugins::forget(c, &id))?;
+                    Ok(None)
                 }
             })
             .await
