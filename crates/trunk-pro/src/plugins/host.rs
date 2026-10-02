@@ -76,7 +76,7 @@ pub struct PluginHost {
     done: bool,
 }
 
-/// A plugin to run: what `plugins.json` says, resolved.
+/// A plugin to run: what the config says of it (its `plugins` entry and each system's settings), resolved.
 pub struct Spec {
     pub id: String,
     pub exe: PathBuf,

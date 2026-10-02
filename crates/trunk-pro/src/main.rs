@@ -52,7 +52,7 @@
 //!     Vocode a call's saved frames again.
 //!
 //! trunk-pro plugin search | install | update | uninstall | list | describe | run …
-//!     Plugins (plugins.json beside the config): find them in the registry,
+//!     Plugins (set up in the config's `plugins`, and each system's): find them in the registry,
 //!     install, update and uninstall them, list them, show one's manifest, or
 //!     run one against calls already on disk.
 //! ```

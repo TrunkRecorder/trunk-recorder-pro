@@ -54,7 +54,7 @@ trunk-pro plugin run <executable | id> [<call.json | folder>…] [options]
     Run a plugin and send it calls already on disk (call.concluded), printing
     what it says; then stop it. A folder means the calls in it (the newest
     --limit, default 10). An id runs an installed plugin with its settings
-    from plugins.json.
+    from the config (its `plugins` entry and each system's).
     --settings file.json   its settings: {\"config\": {…}, \"systems\": {\"<shortName>\": {…}}}
     --capture-dir dir      the calls' capture folder (default: the config's)
     --encoder auto|ffmpeg|afconvert|fdkaac|none   for M4A (default auto)
