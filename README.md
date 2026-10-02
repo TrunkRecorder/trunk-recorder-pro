@@ -120,6 +120,40 @@ minutes. `trunk-pro account list | add | remove | role | passwd` manages
 accounts from the command line, for example on a headless machine or to get
 back in after forgetting a password.
 
+### Stats
+
+The **Stats** page shows, for each system, since the recorder started or over
+the last 24 hours, 7 days, 30 days or all time:
+
+- calls recorded and heard, audio, encrypted and emergency calls
+- the control channel's decode rate and the active calls
+- calls and bit error rate per hour, for the system or one channel, talkgroup or radio
+- each channel's calls and audio quality, the busiest talkgroups, and the
+  talkgroups and radios with the most decoder errors
+- **Affiliations:** every radio and talkgroup heard, when, and how often. A
+  radio and a talkgroup are linked whenever they meet: on a call, when the radio
+  joins the talkgroup, or when it reports its location for it. Click a radio to
+  see its talkgroups and how each met; click one of those to go to that
+  talkgroup and its radios, and so on (Back retraces the steps). Radios show as
+  active, idle or off, from their registrations. Searchable, with a JSON export.
+
+The System menu also offers each multi-site system's sites together ("site-a +
+site-b (all sites)"): every figure added up across its sites, and in
+Affiliations each radio and talkgroup once, with the sites it was heard on, so a
+radio's movements between sites show. Sites belong together as the recorder
+reports them while recording (the same WACN and System ID, or a site group), or
+as the config groups them.
+
+Bit error rate is the share of received voice bits the FEC had to correct
+(P25 Phase 1 carries 144 coded bits per frame, Phase 2 and DMR 72): under 1%
+sounds clean, 1–2% is audible, over 2% is degraded. Errors on one channel,
+whatever talks on it, point at the site's setup or interference; errors that
+follow a talkgroup or radio were already in the signal as received. Bad frames
+are those the vocoder repeated or muted.
+
+Everything is kept in `stats.db` beside the config (SQLite, readable by its
+owner only), with a daily copy in `stats.db.bak`.
+
 The interface has no HTTPS of its own: to reach it over the internet, put it
 behind a reverse proxy that adds HTTPS (or use `ssh -L 8080:localhost:8080`).
 

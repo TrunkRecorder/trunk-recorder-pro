@@ -7,6 +7,14 @@ import { LivePlayer } from "./livePlayer.ts";
 import type {
   Access,
   Account,
+  AffiliationLink,
+  AffiliationRow,
+  AffiliationView,
+  HistoryKind,
+  StatsSummary,
+  StatsTarget,
+  StatsTable,
+  StatsWindow,
   HeardCode,
   AudioChunk,
   CallEntry,
@@ -102,14 +110,19 @@ export interface AppState {
   access: Access | null;
   /** The accounts, when an admin has asked. */
   accounts: Account[] | null;
+  /** The statistics last asked for. */
+  stats: StatsSummary | null;
+  statsHistory: { system: string; kind: HistoryKind; id: number; window: StatsWindow; hours: StatsTable } | null;
+  affiliations: { system: string; view: AffiliationView; search: string; id: number | null; offset: number; total: number; rows: AffiliationRow[] } | null;
+  affiliationLinks: { system: string; view: AffiliationView; id: number; rows: AffiliationLink[] } | null;
 }
 
 export type SetupTab = "systems" | "conventional" | "radios" | "recording" | "plugins" | "accounts";
 
-export type View = "recorder" | "plugins";
+export type View = "recorder" | "stats" | "plugins";
 
 function viewFromHash(): View {
-  return location.hash === "#plugins" ? "plugins" : "recorder";
+  return location.hash === "#plugins" ? "plugins" : location.hash === "#stats" ? "stats" : "recorder";
 }
 
 // Remembered in this browser (read while the state below is built, so declared first).
@@ -159,6 +172,10 @@ let state: AppState = {
   setupTab: loadSetupTab(),
   access: null,
   accounts: null,
+  stats: null,
+  statsHistory: null,
+  affiliations: null,
+  affiliationLinks: null,
 };
 
 const listeners = new Set<() => void>();
@@ -301,6 +318,29 @@ transport.onMessage = (m: FromRecorder) => {
     case "accounts":
       set({ accounts: m.accounts });
       break;
+    case "stats": {
+      const { type: _, ...stats } = m;
+      set({ stats });
+      break;
+    }
+    case "statsHistory": {
+      const { type: _, ...h } = m;
+      set({ statsHistory: h });
+      break;
+    }
+    case "affiliations": {
+      const { type: _, ...a } = m;
+      // A later page adds to the list; a new search or view starts it again.
+      const prev = state.affiliations;
+      const more = prev && a.offset > 0 && prev.system === a.system && prev.view === a.view && prev.search === a.search && prev.id === a.id;
+      set({ affiliations: more ? { ...a, rows: [...prev.rows, ...a.rows] } : a });
+      break;
+    }
+    case "affiliationLinks": {
+      const { type: _, ...l } = m;
+      set({ affiliationLinks: l });
+      break;
+    }
     case "loggedOut":
       transport.close?.();
       location.reload();
@@ -338,6 +378,25 @@ export function setAccountPassword(name: string, password: string): void {
 export function changePassword(old: string, password: string): void {
   transport.send({ type: "changePassword", old, password });
 }
+// ── statistics ───────────────────────────────────────────────────────────────
+
+export function fetchStats(t: StatsTarget, window: StatsWindow): void {
+  transport.send({ type: "stats", system: t.key, systems: t.systems, window });
+}
+export function fetchStatsHistory(t: StatsTarget, kind: HistoryKind, id: number, window: StatsWindow): void {
+  transport.send({ type: "statsHistory", system: t.key, systems: t.systems, kind, id, window });
+}
+export function clearStatsHistory(): void {
+  set({ statsHistory: null });
+}
+/** A page of radios or talkgroups; or, with `id`, just that one. */
+export function fetchAffiliations(t: StatsTarget, view: AffiliationView, search: string, offset = 0, id: number | null = null): void {
+  transport.send({ type: "affiliations", system: t.key, systems: t.systems, view, search, offset, limit: 200, ...(id === null ? {} : { id }) });
+}
+export function fetchAffiliationLinks(t: StatsTarget, view: AffiliationView, id: number): void {
+  transport.send({ type: "affiliationLinks", system: t.key, systems: t.systems, view, id });
+}
+
 export async function logOut(): Promise<void> {
   await fetch("/api/logout", { method: "POST" }).catch(() => {});
   transport.close?.();
@@ -407,7 +466,7 @@ export function currentView(): View {
 }
 
 export function setView(view: View): void {
-  const hash = view === "plugins" ? "#plugins" : "";
+  const hash = view === "plugins" ? "#plugins" : view === "stats" ? "#stats" : "";
   if (location.hash !== hash) history.pushState(null, "", hash || location.pathname + location.search);
   set({ view });
 }

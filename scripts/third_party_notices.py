@@ -16,7 +16,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 LICENSE_NAMES = ("LICENSE", "LICENCE", "COPYING", "NOTICE", "UNLICENSE", "COPYRIGHT")
 # The web interface's runtime dependencies (what Vite bundles into dist/).
-NPM = ["react", "react-dom", "scheduler"]
+NPM = ["react", "react-dom", "scheduler", "uplot"]
 
 
 def license_files(d: pathlib.Path):

@@ -77,6 +77,7 @@ pub async fn serve(ctx: Arc<Ctx>, listener: std::net::TcpListener) -> std::io::R
         .route("/api/logout", post(logout))
         .route("/api/whoami", get(whoami))
         .route("/api/setup", post(setup))
+        .route("/api/stats/export", get(stats_export))
         .route("/api/docs", get(|| async { api_file("README.md") }))
         .route("/api/schema", get(|| async { api_file("protocol.schema.json") }))
         .route("/api/protocol.ts", get(|| async { ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], PROTOCOL).into_response() }))
@@ -636,7 +637,7 @@ fn accounts_json(ctx: &Ctx) -> Value {
 
 /// Commands a viewer may send.
 fn viewer_may(kind: &str) -> bool {
-    matches!(kind, "listen" | "plugins" | "changePassword")
+    matches!(kind, "listen" | "plugins" | "changePassword" | "stats" | "statsHistory" | "affiliations" | "affiliationLinks")
 }
 
 /// Account commands (`who` is an admin, except for `changePassword`).
@@ -678,6 +679,88 @@ async fn account_command(ctx: &Arc<Ctx>, v: &Value, who: &Who) -> Option<Value> 
         Err(e) => Some(json!({ "type": "error", "message": e })),
     }
 }
+
+/// Statistics queries (read-only; anyone logged in).
+async fn stats_command(ctx: &Arc<Ctx>, v: &Value) -> Option<Value> {
+    let (ctx2, v) = (ctx.clone(), v.clone());
+    let r = tokio::task::spawn_blocking(move || {
+        let st = &ctx2.stats;
+        let s = |k: &str| v[k].as_str().unwrap_or("").to_string();
+        let window = Some(s("window")).filter(|w| !w.is_empty()).unwrap_or_else(|| "24h".into());
+        // `systems`: one, or a multi-site system's sites; `system` names them in the answer.
+        let key = s("system");
+        let systems: Vec<String> = match v["systems"].as_array() {
+            Some(a) => a.iter().filter_map(|x| x.as_str().map(String::from)).collect(),
+            None => vec![key.clone()],
+        };
+        match v["type"].as_str().unwrap_or("") {
+            "stats" => st.summary(&key, &systems, &window).map(|mut j| {
+                j["dropped"] = json!(st.dropped());
+                j
+            }),
+            "statsHistory" => st.history(&key, &systems, &s("kind"), v["id"].as_i64().unwrap_or(0), &window),
+            "affiliations" => {
+                let (view, search) = (s("view"), s("search"));
+                let page = crate::stats::AffiliationPage { view: &view, search: &search, id: v["id"].as_i64(), offset: v["offset"].as_i64().unwrap_or(0), limit: v["limit"].as_i64().unwrap_or(200) };
+                st.affiliations(&key, &systems, &page)
+            }
+            "affiliationLinks" => st.links(&key, &systems, &s("view"), v["id"].as_i64().unwrap_or(0)),
+            _ => Err("unknown".into()),
+        }
+    })
+    .await
+    .unwrap_or_else(|e| Err(e.to_string()));
+    Some(r.unwrap_or_else(|e| json!({ "type": "error", "message": format!("Statistics: {e}") })))
+}
+
+/// Everything known about a system's (or several sites') radios, talkgroups and affiliations, as a JSON download.
+async fn stats_export(State(ctx): State<Arc<Ctx>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap, uri: Uri) -> Response {
+    if who(&ctx, &headers, peer).is_none() {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    // ?system=a, or ?system=a&system=b for a multi-site system's sites.
+    let systems: Vec<String> = uri.query().unwrap_or("").split('&').filter_map(|kv| kv.strip_prefix("system=")).map(query_decode).collect();
+    let name = systems.join("+");
+    let ctx2 = ctx.clone();
+    match tokio::task::spawn_blocking(move || ctx2.stats.export(&systems)).await {
+        Ok(Ok(v)) => {
+            let name: String = name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
+            (
+                [(header::CONTENT_TYPE, "application/json".to_string()), (header::CONTENT_DISPOSITION, format!("attachment; filename=\"{name}-affiliations.json\""))],
+                v.to_string(),
+            )
+                .into_response()
+        }
+        Ok(Err(e)) => (StatusCode::SERVICE_UNAVAILABLE, e).into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+/// A query value: "%20" and "+" → " "; a bad escape is kept as it is.
+fn query_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let hex = |i: usize| b.get(i).and_then(|&c| (c as char).to_digit(16));
+    let mut o = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        match (b[i], hex(i + 1), hex(i + 2)) {
+            (b'%', Some(h), Some(l)) => {
+                o.push((h * 16 + l) as u8);
+                i += 3;
+            }
+            (b'+', ..) => {
+                o.push(b' ');
+                i += 1;
+            }
+            (c, ..) => {
+                o.push(c);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&o).into_owned()
+}
+
 
 /// End a running survey (frees its radio) and tell the browsers.
 fn stop_survey(ctx: &Ctx) {
@@ -877,6 +960,8 @@ async fn session(ctx: Arc<Ctx>, mut socket: WebSocket, who: Who) {
                         Some(json!({ "type": "error", "message": "Your account can watch, not change things: ask an admin." }))
                     } else if matches!(kind, "accounts" | "addAccount" | "removeAccount" | "setAccountRole" | "setAccountPassword" | "changePassword") {
                         account_command(&ctx, &v, &who).await
+                    } else if matches!(kind, "stats" | "statsHistory" | "affiliations" | "affiliationLinks") {
+                        stats_command(&ctx, &v).await
                     } else if kind == "plugins" && viewer {
                         Some(Value::String(out(plugins_json(&ctx).await)))
                     } else {
@@ -1134,7 +1219,7 @@ async fn command(ctx: &Arc<Ctx>, v: &Value, listen: &mut Option<Listen>) -> Opti
 
 #[cfg(test)]
 mod tests {
-    use super::{admit, folder_file, interface_path, percent_decode};
+    use super::*;
     use axum::http::{header, StatusCode, Uri};
     use std::path::Path;
 
@@ -1224,5 +1309,30 @@ mod tests {
         // A reverse proxy that passes its own Host, its origin listed.
         let proxied = vec!["https://radio.example.com".to_string()];
         assert_eq!(admit(true, Some("radio.example.com"), Some("https://radio.example.com"), &proxied), Ok(false));
+    }
+
+    #[test]
+    fn query_values_decode() {
+        assert_eq!(query_decode("clmrn-I"), "clmrn-I");
+        assert_eq!(query_decode("a%20b+c%2Fd"), "a b c/d");
+        assert_eq!(query_decode("bad%zz%4"), "bad%zz%4");
+    }
+
+    #[test]
+    fn viewers_get_no_secrets() {
+        let hello = json!({ "type": "hello", "configPath": "/x/config.json", "config": {
+            "plugins": { "mqtt": { "enabled": true, "path": "/x/mqtt", "settings": { "password": "p" } } },
+            "systems": [{ "shortName": "s", "plugins": { "openmhz": { "apiKey": "k" } } }],
+            "conventional": [{ "shortName": "c", "plugins": { "openmhz": { "apiKey": "k2" } } }],
+            "recording": { "captureDir": "/x/calls" } } });
+        let out = for_viewer(&hello.to_string()).unwrap();
+        for secret in ["\"p\"", "\"k\"", "k2", "/x/"] {
+            assert!(!out.contains(secret), "{secret} in {out}");
+        }
+        assert!(out.contains("\"enabled\":true"));
+        let plugins = json!({ "type": "plugins", "plugins": [{ "id": "a", "path": "/x/a", "problem": "/x/a isn't there", "unlistedFrom": "x/y" }] });
+        let out = for_viewer(&plugins.to_string()).unwrap();
+        assert!(!out.contains("/x/") && out.contains("unavailable"));
+        assert!(for_viewer(r#"{"type":"status","x":1}"#).is_none());
     }
 }

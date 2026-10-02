@@ -63,6 +63,7 @@ mod auth;
 mod dmrtool;
 mod logging;
 mod snrtool;
+mod stats;
 mod plugins;
 mod radio;
 mod runtime;
@@ -644,6 +645,7 @@ fn serve(a: &Args) {
         plugins: plugins::manage::Plugins::new(hub.clone()),
         home_dir,
         accounts: auth::Accounts::load(auth::Accounts::path_for(&config_path)),
+        stats: stats::Stats::open(stats::Stats::path_for(&config_path)),
     });
     {
         let c = ctx.config.lock().unwrap();
@@ -657,6 +659,9 @@ fn serve(a: &Args) {
             log::error!("Accounts: {p}");
         } else if ctx.accounts.is_open() && !addr.ip().is_loopback() {
             log::warn!("No accounts yet: only this computer can open the interface. Make an admin account (Setup → Accounts, or `trunk-pro account add <name>`) to let others in.");
+        }
+        if let Some(p) = ctx.stats.problem() {
+            log::error!("{p}");
         }
     }
     let auto = a.flag("start") || ctx.config.lock().unwrap().server.auto_start;
@@ -678,6 +683,8 @@ fn serve(a: &Args) {
     if let Err(e) = rt.block_on(server::serve(ctx.clone(), listener)) {
         fatal(&format!("web server on {addr}: {e}"));
     }
+    // Recording has stopped: what's pending is written.
+    ctx.stats.close();
     log::info!("Cleaning up & Exiting...");
 }
 

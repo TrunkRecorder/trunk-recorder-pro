@@ -7,6 +7,8 @@ import { PluginsPage } from "./Plugins.tsx";
 import { BrowserStorage } from "./web/BrowserStorage.tsx";
 import { conventionalSystem, type CallEntry, type CallView, type DmrSiteStatus, type SourceStatus, type SystemStatus, type TalkgroupName } from "./protocol.ts";
 import { Setup } from "./Setup.tsx";
+import { StatsPage } from "./Stats.tsx";
+import { Tile } from "./Tile.tsx";
 import { parseTalkgroupCsv } from "./talkgroups.ts";
 import { unitName } from "./units.ts";
 import { Waterfall, type CcMark } from "./Waterfall.tsx";
@@ -18,16 +20,6 @@ function clock(s: number): string {
   const m = Math.floor((s % 3600) / 60);
   const ss = Math.floor(s % 60);
   return h ? `${h}:${String(m).padStart(2, "0")}:${String(ss).padStart(2, "0")}` : `${m}:${String(ss).padStart(2, "0")}`;
-}
-
-function Tile(props: { label: string; value: React.ReactNode; sub?: React.ReactNode; tone?: "ok" | "warn" | "bad" }) {
-  return (
-    <div className={`tile${props.tone ? ` tone-${props.tone}` : ""}`}>
-      <div className="tile-label">{props.label}</div>
-      <div className="tile-value">{props.value}</div>
-      {props.sub && <div className="tile-sub">{props.sub}</div>}
-    </div>
-  );
 }
 
 /** One marker per control channel frequency (systems sharing one share a marker). */
@@ -843,11 +835,15 @@ export function App() {
             </p>
           </div>
         </div>
-        {!web && !ro && (
+        {!web && (
           <nav className="tabs" aria-label="Pages">
             <button className={s.view === "recorder" ? "on" : ""} aria-current={s.view === "recorder" ? "page" : undefined} onClick={() => setView("recorder")}>
               Recorder
             </button>
+            <button className={s.view === "stats" ? "on" : ""} aria-current={s.view === "stats" ? "page" : undefined} onClick={() => setView("stats")}>
+              Stats
+            </button>
+            {!ro && (
             <button className={s.view === "plugins" ? "on" : ""} aria-current={s.view === "plugins" ? "page" : undefined} onClick={() => setView("plugins")}>
               Plugins
               {pluginTrouble(s) > 0 && (
@@ -856,6 +852,7 @@ export function App() {
                 </span>
               )}
             </button>
+            )}
           </nav>
         )}
         <div className="row">
@@ -909,6 +906,8 @@ export function App() {
       <main>
         {!web && s.view === "plugins" && !ro ? (
           <PluginsPage />
+        ) : !web && s.view === "stats" ? (
+          <StatsPage />
         ) : running ? (
           <>
             <StatusTiles s={s} />

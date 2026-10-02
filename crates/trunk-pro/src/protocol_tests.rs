@@ -170,6 +170,7 @@ fn ctx(cfg: Config, dir: &Path) -> Arc<crate::runtime::Ctx> {
         plugins: crate::plugins::manage::Plugins::new(hub),
         home_dir: None,
         accounts: crate::auth::Accounts::load(dir.join("accounts.json")),
+        stats: crate::stats::Stats::open(dir.join("stats.db")),
     })
 }
 
@@ -268,11 +269,11 @@ fn sent_types() -> BTreeSet<String> {
     found
 }
 
-/// The types the server's `command` and `account_command` answer.
+/// The types the server's `command`, `account_command` and `stats_command` answer.
 fn handled_types() -> BTreeSet<String> {
     let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/server.rs")).unwrap();
     let mut found = BTreeSet::new();
-    for f in ["async fn command(", "async fn account_command("] {
+    for f in ["async fn command(", "async fn account_command(", "async fn stats_command("] {
         let body = &text[text.find(f).unwrap()..];
         let body = &body[..body.find("\n}\n").unwrap()];
         for line in body.lines().map(str::trim) {
