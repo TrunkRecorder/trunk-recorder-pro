@@ -102,6 +102,10 @@ starts** (or run `trunk-pro --start`); Ctrl-C, SIGTERM and **Quit** all save
 the calls in progress before exiting. `--bind 0.0.0.0` makes the interface
 reachable from other machines.
 
+The menu at the top right picks the interface's theme in that browser:
+Automatic (the system's light or dark), Dark, Light, Nostromo, Classic or Hot
+Dog Stand.
+
 ### Accounts
 
 With no accounts, only the recorder's own computer can open the interface.

@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
+import { useTheme } from "./theme.ts";
 
 export interface ChartSeries {
   label: string;
@@ -48,6 +49,8 @@ export function TimeChart(props: {
   const plot = useRef<uPlot | null>(null);
   const { x, ys, series } = props;
   const height = props.height ?? 200;
+  // Colours are read when the chart is made: a new theme makes it again.
+  const { epoch } = useTheme();
 
   useEffect(() => {
     const el = box.current;
@@ -107,7 +110,7 @@ export function TimeChart(props: {
     };
     // The chart is rebuilt when what it shows changes shape; new data alone is set below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [series.map((s) => s.label + s.color + (s.right ?? "")).join("|"), height, props.leftLabel, props.rightLabel, props.pad]);
+  }, [series.map((s) => s.label + s.color + (s.right ?? "")).join("|"), height, props.leftLabel, props.rightLabel, props.pad, epoch]);
 
   useEffect(() => {
     plot.current?.setData([x, ...ys] as uPlot.AlignedData);

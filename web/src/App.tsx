@@ -882,7 +882,7 @@ export function App() {
               Quit
             </button>
           )}
-          {!web && <UserMenu />}
+          <UserMenu />
         </div>
       </header>
 

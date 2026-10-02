@@ -4,6 +4,7 @@
 import { useEffect, useState } from "react";
 import { addAccount, changePassword, fetchAccounts, logOut, removeAccount, setAccountPassword, setAccountRole, setNotice, useApp } from "./controller.ts";
 import type { Role } from "./protocol.ts";
+import { setTheme, THEMES, useTheme } from "./theme.ts";
 
 const MIN_PASSWORD = 8;
 
@@ -207,49 +208,70 @@ function FirstAdmin() {
   );
 }
 
-/** Who's logged in, with their password and Log out (when there are accounts). */
+/** The top bar's menu: the theme, and with accounts, who's logged in, their password and Log out. */
 export function UserMenu() {
   const s = useApp();
+  const { theme } = useTheme();
   const [old, setOld] = useState("");
   const [password, setPassword] = useState("");
   const [again, setAgain] = useState("");
-  if (!s.access?.accounts) return null;
+  const accounts = !!s.access?.accounts;
   const ok = old && password.length >= MIN_PASSWORD && password === again;
   return (
     <details className="user-menu">
-      <summary className="btn ghost" title="Your account">
-        {s.access.user}
-        <span className="muted small"> · {s.access.role}</span>
+      <summary className="btn ghost" title={accounts ? "Your account and the theme" : "Theme"}>
+        {accounts ? (
+          <>
+            {s.access!.user}
+            <span className="muted small"> · {s.access!.role}</span>
+          </>
+        ) : (
+          "Theme"
+        )}
       </summary>
       <div className="menu stack">
-        <form
-          className="stack"
-          onSubmit={(e) => {
-            e.preventDefault();
-            changePassword(old, password);
-            setOld("");
-            setPassword("");
-            setAgain("");
-            setNotice(null);
-          }}
-        >
-          <strong>Change your password</strong>
-          <input type="password" autoComplete="current-password" placeholder="Current password" value={old} onChange={(e) => setOld(e.target.value)} />
-          <input
-            type="password"
-            autoComplete="new-password"
-            placeholder={`New (${MIN_PASSWORD}+ characters)`}
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-          />
-          <input type="password" autoComplete="new-password" placeholder="New, again" value={again} onChange={(e) => setAgain(e.target.value)} />
-          <button className="btn small" disabled={!ok}>
-            Change
-          </button>
-        </form>
-        <button className="btn ghost" onClick={logOut}>
-          Log out
-        </button>
+        <label className="field">
+          <span className="field-label">Theme (this browser)</span>
+          <select value={theme} onChange={(e) => setTheme(e.target.value)}>
+            {THEMES.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        {accounts && (
+          <>
+            <form
+              className="stack"
+              onSubmit={(e) => {
+                e.preventDefault();
+                changePassword(old, password);
+                setOld("");
+                setPassword("");
+                setAgain("");
+                setNotice(null);
+              }}
+            >
+              <strong>Change your password</strong>
+              <input type="password" autoComplete="current-password" placeholder="Current password" value={old} onChange={(e) => setOld(e.target.value)} />
+              <input
+                type="password"
+                autoComplete="new-password"
+                placeholder={`New (${MIN_PASSWORD}+ characters)`}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+              <input type="password" autoComplete="new-password" placeholder="New, again" value={again} onChange={(e) => setAgain(e.target.value)} />
+              <button className="btn small" disabled={!ok}>
+                Change
+              </button>
+            </form>
+            <button className="btn ghost" onClick={logOut}>
+              Log out
+            </button>
+          </>
+        )}
       </div>
     </details>
   );

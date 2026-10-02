@@ -46,6 +46,41 @@
     color-scheme: light;
   }
 }
+/* Themes chosen in the browser (theme.ts); none set = the system's light or dark. */
+:root[data-theme="dark"] {
+  --bg: #0d1117; --panel: #151b23; --panel-2: #1b2330; --line: #273142; --text: #e6edf3; --muted: #8b98a9;
+  --accent: #3fb6ff; --accent-ink: #04121c; --ok: #3fcf8e; --warn: #f2b84b; --bad: #ff6b6b; --rec: #ff5a5f; --trace: #6cd4ff;
+  --sys-0: #3fb6ff; --sys-1: #f2b84b; --sys-2: #c792ea; --sys-3: #3fcf8e; --sys-4: #ff8f6b; --sys-5: #7fdbca;
+  color-scheme: dark;
+}
+:root[data-theme="light"] {
+  --bg: #f5f7fa; --panel: #ffffff; --panel-2: #f0f3f7; --line: #dbe1e8; --text: #17202b; --muted: #5d6b7c;
+  --accent: #0a7bd6; --accent-ink: #ffffff; --ok: #16965c; --warn: #b7791f; --bad: #d64545; --rec: #d63a3f; --trace: #0a7bd6;
+  --sys-0: #0a7bd6; --sys-1: #b7791f; --sys-2: #8b5cc4; --sys-3: #16965c; --sys-4: #d0582f; --sys-5: #1a8f86;
+  color-scheme: light;
+}
+/* Nostromo (tr-web's default) */
+:root[data-theme="nostromo"] {
+  --bg: #282e33; --panel: #2e363d; --panel-2: #21272b; --line: #34404a; --text: #fdfae9; --muted: #bebeb4;
+  --accent: #e75d57; --accent-ink: #fdfae9; --ok: #87d68a; --warn: #f6e78a; --bad: #fd5a91; --rec: #e75d57; --trace: #81d9c3;
+  --sys-0: #6b9dd0; --sys-1: #ffa55b; --sys-2: #aa97d3; --sys-3: #87d68a; --sys-4: #fd5a91; --sys-5: #81d9c3;
+  color-scheme: dark;
+}
+/* Classic (tr-web's first colours) */
+:root[data-theme="classic"] {
+  --bg: #1a1a2e; --panel: #16213e; --panel-2: #0f3460; --line: #2a2a4e; --text: #eaeaea; --muted: #b8b8b8;
+  --accent: #e94560; --accent-ink: #ffffff; --ok: #00d26a; --warn: #ffc107; --bad: #ff6b6b; --rec: #e94560; --trace: #5dade2;
+  --sys-0: #5dade2; --sys-1: #ffc107; --sys-2: #9b59b6; --sys-3: #00d26a; --sys-4: #e67e22; --sys-5: #1abc9c;
+  color-scheme: dark;
+}
+/* Hot Dog Stand (Windows 3.1) */
+:root[data-theme="hotdog"] {
+  --bg: #ff0000; --panel: #ff0000; --panel-2: #000000; --line: #000000; --text: #ffff00; --muted: #000000;
+  --accent: #000000; --accent-ink: #ffff00; --ok: #00ff00; --warn: #ffff00; --bad: #000000; --rec: #ffff00; --trace: #ffff00;
+  --sys-0: #ffff00; --sys-1: #000000; --sys-2: #ff00ff; --sys-3: #00ff00; --sys-4: #0000ff; --sys-5: #00ffff;
+  color-scheme: dark;
+}
+
 * { box-sizing: border-box; }
 html, body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
 h1, h2 { margin: 0; font-weight: 600; }
@@ -823,3 +858,5 @@ input.ob-picker-path:hover, input.ob-picker-path:focus { border-color: var(--lin
 /* The first thing in its cell lines up with the column. */
 .omni-badge:first-child { margin-left: 0; }
 .omni-emergency td { background: color-mix(in srgb, var(--bad) 8%, transparent); }
+
+.menu select { background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; color: inherit; font: inherit; }

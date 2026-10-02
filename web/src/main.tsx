@@ -1,6 +1,8 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
+// The chosen theme, before anything is drawn.
+import "./theme.ts";
 
 const root = createRoot(document.getElementById("root")!);
 
