@@ -276,15 +276,21 @@ trunk-pro survey capture.cu8 --center 858300000 --rate 2400000   # a capture: on
 
 ## Conventional channels
 
-Conventional channels are single frequencies — analog narrowband FM or P25 —
-recorded whenever something transmits on them. There are three ways to keep
-the list:
+Conventional channels are single frequencies — analog narrowband FM, P25 or
+DMR — recorded whenever something transmits on them. They are grouped in
+**conventional systems**, as in Trunk Recorder: each has its own short name
+(the folder its calls go to), squelch, channel list or channel file, unit
+names, upload settings and Recording override, and is switched on or off as
+a whole. A frequency belongs to one system. To plugins each is a system of
+its own (numbered 65535, 65534, …), so each can have its own upload keys.
+There are three ways to keep a system's list:
 
-- **In the browser**, under **Conventional channels**: a table, a box to paste
+- **In the browser**, on the **Conventional** tab (**Add a conventional
+  system**, then in its panel): a table, a box to paste
   many frequencies, **Import CSV…** (replace the list or add to it) and
   **Export CSV**.
 - **In a spreadsheet** (desktop app): under *Channel file*, enter a path such as
-  `channels.csv` and press **Use this file**. A new file is created from the
+  `fire-channels.csv` and press **Use this file**; each system can have its own. A new file is created from the
   current list; from then on the channels are read from it — edit it in Excel,
   Numbers or LibreOffice, then press **Reload** (recording also re-reads it
   every time it starts). Relative paths are next to the config file.
@@ -292,7 +298,8 @@ the list:
 - **In the config file**, as JSON:
 
 ```json
-"conventional": {
+"conventional": [{
+  "shortName": "county",
   "squelchDb": 8,
   "channels": [
     { "freqHz": 154430000, "mode": "fm",  "name": "County Fire Dispatch", "talkgroup": 1001, "group": "Fire" },
@@ -304,7 +311,11 @@ the list:
     { "freqHz": 452100000, "mode": "dmr", "name": "Ops", "tone": "CC 1 TS 2 TG 201" },
     { "freqHz": 453000000, "mode": "fm",  "enabled": false }
   ]
-}
+}, {
+  "shortName": "pd",
+  "channelFile": "pd-channels.csv",
+  "recording": { "minCallS": 2 }
+}]
 ```
 
 | Field | |
@@ -314,9 +325,11 @@ the list:
 | `name`, `description`, `tag`, `group` | Written into the call JSON (Trunk Recorder's alpha tag, description, tag, category) |
 | `talkgroup` | The number calls are filed under (file names, JSON, uploaders). Default: the frequency in kHz, e.g. 154430 — stable however you reorder the list; further rows on the same frequency get that with a digit added (1543251, 1543252 …). P25 and DMR channels use the talkgroup the radio sends, when it sends one |
 | `tone` | Record only transmissions carrying this code: analog's CTCSS tone (`151.4`) or DCS code (`D023N`), P25's NAC (`NAC 293`), DMR's colour code, slot and talkgroup (`CC 1 TS 2 TG 201`). Empty: any. See [Tones](#tones-several-users-of-one-frequency) |
-| `squelchDb` | How far above the noise floor a signal must be to open the channel, in dB. Per channel, or for all in the section (default 8). The noise floor is measured, so this doesn't depend on the dongle or gain the way Trunk Recorder's absolute squelch does |
-| `enabled` | `false` keeps a channel in the list without recording it |
-| `channelFile` (section) | A CSV to read the channels from instead of `channels` (desktop) |
+| `squelchDb` | How far above the noise floor a signal must be to open the channel, in dB. Per channel, or for all in the system (default 8). The noise floor is measured, so this doesn't depend on the dongle or gain the way Trunk Recorder's absolute squelch does |
+| `enabled` | `false` keeps a channel (or, on the system, the whole system) without recording it |
+| `shortName`, `name` (system) | Its folder and record name; what people call it |
+| `channelFile` (system) | A CSV to read its channels from instead of `channels` (desktop) |
+| `recording`, `unitNames`, `plugins` (system) | Its own recording rules, unit names and plugin settings |
 
 The CSV has a header row, then one channel per row; columns in any order:
 
@@ -348,8 +361,8 @@ list. `trunk-pro replay … --channels channels.csv` reads the same format.
 A config can have trunked systems, conventional channels, or both; with no
 system, it records conventional channels only. Every enabled channel must lie
 inside a source's bandwidth. A source's center is placed automatically when
-it is left on Auto and the channels fit. Conventional calls go to their own
-folder (**Short name** in the panel, `conv` by default).
+it is left on Auto and the channels fit. Each conventional system's calls go
+to its own folder (its **Short name**).
 
 ### Tones: several users of one frequency
 
@@ -405,7 +418,7 @@ first: *Heard: 151.4 Hz 42 calls [Add] · D023N 3 calls [Add] · no tone 5
 calls*. **Add** makes a row for that code (with its own talkgroup). The list
 counts transmissions that no row records too ("2 not recorded"), so you can
 see what tones are leaving out. It is kept between runs (on the desktop in
-`<conventional short name>.heard.json` next to the config; in the browser
+`conventional.heard.json` next to the config; in the browser
 version, in its own storage). Trunk Recorder
 doesn't match NACs or colour codes; its channel file's `Tone` column (CTCSS
 and, with its PR #1137, DCS) reads as is.
@@ -436,8 +449,9 @@ it; see [Tones](#tones-several-users-of-one-frequency).
 
 **From Trunk Recorder.** **Import CSV…** (or a channel file) reads Trunk
 Recorder's channel file; add a `Mode` column to mix analog and P25 in one
-file. **Import Trunk Recorder config…** brings in `conventional` and
-`conventionalP25` systems' `channels` lists. Squelch values aren't carried
+file. **Import Trunk Recorder config…** brings in each `conventional`,
+`conventionalP25` and `conventionalDMR` system as a conventional system here,
+with its short name, `channels` or channel file, rules and unit names. Squelch values aren't carried
 over: Trunk Recorder's are absolute levels; here squelch is dB above the noise.
 
 ## Build

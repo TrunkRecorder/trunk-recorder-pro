@@ -92,16 +92,20 @@ impl Runner {
 
 /// Start recording with `cfg`. The engine thread reports the phase.
 pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
-    // A linked channel file is read afresh, so a spreadsheet's edits apply.
-    if !cfg.conventional.channel_file.is_empty() {
-        let r = cfg.load_channel_file(&ctx.config_path);
+    // Linked channel files are read afresh, so a spreadsheet's edits apply.
+    if cfg.conventional.iter().any(|v| !v.channel_file.is_empty()) {
+        let errors: Vec<String> = (0..cfg.conventional.len()).filter_map(|k| cfg.load_channel_file(k, &ctx.config_path).err()).collect();
         let mut shared = ctx.config.lock().unwrap();
-        if shared.conventional.channel_file == cfg.conventional.channel_file {
-            shared.conventional.channels = cfg.conventional.channels.clone();
-            shared.conventional.channel_file_status = cfg.conventional.channel_file_status.clone();
-            publish(&ctx.hub, serde_json::json!({ "type": "config", "config": &*shared }));
+        for (mine, read) in shared.conventional.iter_mut().zip(&cfg.conventional) {
+            if !read.channel_file.is_empty() && mine.channel_file == read.channel_file {
+                mine.channels = read.channels.clone();
+                mine.channel_file_status = read.channel_file_status.clone();
+            }
         }
-        r?;
+        publish(&ctx.hub, serde_json::json!({ "type": "config", "config": &*shared }));
+        if let Some(e) = errors.into_iter().next() {
+            return Err(e);
+        }
     }
     if let Some(p) = cfg.problem() {
         return Err(p);
@@ -255,10 +259,11 @@ fn local_offset(t: i64) -> i32 {
 fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Receiver<SourceMsg>, stop: Arc<AtomicBool>) {
     ctx.set_phase("running", None, false);
     let dir = PathBuf::from(&cfg.recording.capture_dir);
-    // Each system's file rules (by the engine's system index), and the conventional channels'.
-    let systems: Vec<FileRules> = cfg.active_systems().map(|s| FileRules::of(&cfg.recording_for(Some(s)))).collect();
-    let conv = FileRules::of(&cfg.recording_for(None));
-    let rules = move |system: u16| systems.get(system as usize).copied().unwrap_or(conv);
+    // Each system's file rules, by a call's `system` (trunked or conventional).
+    let rules = {
+        let cfg = cfg.clone();
+        move |system: u16| FileRules::of(&cfg.recording_of(system))
+    };
     let (fin_tx, fin_rx) = mpsc::sync_channel::<Finish>(1024);
     let finisher = {
         let (ctx, dir, m4a) = (ctx.clone(), dir.clone(), cfg.recording.m4a.clone());

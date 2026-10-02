@@ -304,7 +304,7 @@ fn run_calls(a: &Args) {
         let v: Value = serde_json::from_str(j).unwrap_or_default();
         let name = v["short_name"].as_str().unwrap_or("").to_string();
         if !systems.iter().any(|s| s.short_name == name) {
-            let index = systems.iter().filter(|s| s.index != trunk_recorder_plugin::CONVENTIONAL).count() as u16;
+            let index = systems.iter().filter(|s| trunk_core::trunk::conventional_index(s.index).is_none()).count() as u16;
             systems.push(SystemInfo { index, short_name: name, kind: "p25".into(), config: Value::Null });
         }
     }

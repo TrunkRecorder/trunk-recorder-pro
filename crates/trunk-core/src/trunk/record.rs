@@ -3,7 +3,7 @@
 
 use std::fmt::Write;
 
-use super::calls::{Call, CONVENTIONAL};
+use super::calls::{conventional_index, Call};
 use crate::dsp::tones::Tone;
 use super::frames::FrameErrors;
 use super::units::{UnitAliases, UnitTags};
@@ -171,7 +171,7 @@ pub fn call_record(call: &Call, info: &ConcludeInfo) -> (String, String) {
         match call.tone_set {
             Some(Tone::Ctcss(_)) => "ctcss",
             Some(Tone::Dcs(..)) => "dcs",
-            None if call.analog && call.system == CONVENTIONAL => "search",
+            None if call.analog && conventional_index(call.system).is_some() => "search",
             None => "off",
         },
         call.tone.map_or(String::new(), |t| t.tone.to_string()),

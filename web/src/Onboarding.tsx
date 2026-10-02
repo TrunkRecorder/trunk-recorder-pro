@@ -1857,7 +1857,7 @@ function ImportReview(props: { s: AppState; c: Config; loaded: Loaded; onBack: (
   const addFile = async (name: string, f: File | undefined) => {
     if (f) setFiles({ ...files, [name]: await f.text() });
   };
-  const convCount = cfg.conventional.channels.length;
+  const convCount = cfg.conventional.reduce((n, v) => n + v.channels.length, 0);
   // Systems whose control channel no radio hears (as the radios stand, swaps included).
   const centers = resolvedCenters(cfg);
   const unheard = (x: System) => x.enabled && x.controlChannels.length > 0 && !x.controlChannels.some((f) => sourceCovering(cfg, centers, f) >= 0);
@@ -1876,7 +1876,7 @@ function ImportReview(props: { s: AppState; c: Config; loaded: Loaded; onBack: (
         const had = plugins[p.id] ?? { enabled: false };
         plugins[p.id] = { ...had, enabled: had.enabled || installed(p.id), ...(Object.keys(p.config).length ? { settings: { ...had.settings, ...p.config } } : {}) };
         for (const [name, values] of Object.entries(p.systems)) {
-          const sys = x.systems.find((y) => y.shortName === name) ?? (x.conventional.shortName === name ? x.conventional : null);
+          const sys = x.systems.find((y) => y.shortName === name) ?? x.conventional.find((y) => y.shortName === name);
           if (sys) sys.plugins = { ...sys.plugins, [p.id]: { ...sys.plugins?.[p.id], ...values } };
         }
       }

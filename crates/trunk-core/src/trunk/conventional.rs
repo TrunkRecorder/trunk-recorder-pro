@@ -42,7 +42,7 @@
 
 use num_complex::Complex32;
 
-use super::calls::{Call, CallId, CallManager, CallSource, CONVENTIONAL};
+use super::calls::{conventional_index, conventional_system, Call, CallId, CallManager, CallSource};
 use super::frames::CallFrames;
 use super::record::{Reception, Transmissions};
 use super::talkgroups::Talkgroup;
@@ -112,6 +112,9 @@ pub struct ConvChannel {
     /// Record only transmissions carrying this code (None: any — or, beside
     /// rows with codes on the frequency, the rest).
     pub access: Option<Access>,
+    /// The conventional system it belongs to (from 0): its rules, its calls'
+    /// [`Call::system`] ([`conventional_system`]).
+    pub system: usize,
 }
 
 /// How a row picks its transmissions out of a frequency's (the channel's
@@ -232,7 +235,7 @@ impl ConvChannel {
     /// A channel filed under its default talkgroup: the frequency in kHz
     /// (154.430 MHz → 154430), stable however the list is ordered.
     pub fn new(freq_hz: f64, mode: ConvMode) -> Self {
-        ConvChannel { freq_hz, mode, talkgroup: Self::default_talkgroup(freq_hz), info: None, squelch_db: None, access: None }
+        ConvChannel { freq_hz, mode, talkgroup: Self::default_talkgroup(freq_hz), info: None, squelch_db: None, access: None, system: 0 }
     }
 
     pub fn default_talkgroup(freq_hz: f64) -> u32 {
@@ -253,26 +256,27 @@ pub struct ConvConfig {
     pub squelch_db: f64,
     /// Air replayed from before detection, s (capped by the engine's history).
     pub preroll_s: f64,
-    /// A call longer than this is concluded and a new one started (0: never), s.
-    pub max_call_s: f64,
     /// The IMBE vocoder for P25 channels.
     pub vocoder: mbe::Profile,
 }
 
 impl Default for ConvConfig {
     fn default() -> Self {
-        ConvConfig { squelch_db: 8.0, preroll_s: 0.3, max_call_s: 600.0, vocoder: mbe::Profile::Enhanced }
+        ConvConfig { squelch_db: 8.0, preroll_s: 0.3, vocoder: mbe::Profile::Enhanced }
     }
 }
+
+/// A carrier stuck on still ends a call this long, s (with no length limit set).
+pub const STUCK_CALL_S: f64 = 600.0;
 
 /// What the conventional channels did, for the engine to report.
 pub enum ConvOut {
     Start(Call),
     Update(Call),
-    Audio { call_id: CallId, talkgroup: u32, samples: Vec<f32> },
+    Audio { call_id: CallId, system: u16, talkgroup: u32, samples: Vec<f32> },
     End { call: Call, audio: Vec<f32>, frames: CallFrames, recorder_num: u32, tx: Transmissions, reception: Reception },
-    /// A radio's talker alias, heard on a P25 channel.
-    Alias(Alias),
+    /// A radio's talker alias, heard on a P25 channel of conventional system `.0` ([`Call::system`]).
+    Alias(u16, Alias),
     /// A transmission no row took, and the code it carried (as a row's
     /// Tone would say it; "" for none).
     Skipped { freq_hz: u64, code: String },
@@ -282,9 +286,7 @@ pub enum ConvOut {
 /// CTCSS / DCS heard ("" for none), the NAC, or the DMR colour code, slot
 /// and talkgroup — for finding a frequency's codes. None for a trunked call.
 pub fn heard_code(call: &Call) -> Option<String> {
-    if call.system != CONVENTIONAL {
-        return None;
-    }
+    conventional_index(call.system)?;
     if call.analog {
         return Some(call.tone.map_or(String::new(), |h| h.tone.to_string()));
     }
@@ -415,6 +417,8 @@ pub fn check_channels(channels: &[ConvChannel]) -> Result<(), String> {
 /// What the calls need from the engine's configuration.
 pub struct CallRules {
     pub call_timeout_s: f64,
+    /// A call longer than this is concluded and a new one started (0: never), s.
+    pub max_call_s: f64,
     pub record_encrypted: bool,
     /// Keep each call's vocoder frames (see [`super::frames`]).
     pub capture_frames: bool,
@@ -472,6 +476,9 @@ impl Conventional {
 
     fn check_rows(rows: &[ConvChannel]) -> Result<(), String> {
         let mhz = format!("{:.5}", rows[0].freq_hz / 1e6);
+        if rows.iter().any(|r| r.system != rows[0].system) {
+            return Err(format!("Conventional channel {mhz} MHz is in two conventional systems — a frequency belongs to one."));
+        }
         if rows.iter().any(|r| r.mode != rows[0].mode) {
             return Err(format!("Conventional channel {mhz} MHz is listed with different modes — rows sharing a frequency need the same one."));
         }
@@ -512,7 +519,8 @@ impl Conventional {
     }
 
     /// After a block ran on `source` (whose clock reads `now_s`).
-    pub fn on_block(&mut self, source: usize, chz: &mut Channelizer, now_s: f64, calls: &mut CallManager, rules: &CallRules, out: &mut Vec<ConvOut>) {
+    /// `calls` and `rules`: each conventional system's (a channel's `system` indexes them).
+    pub fn on_block(&mut self, source: usize, chz: &mut Channelizer, now_s: f64, calls: &mut [CallManager], rules: &[CallRules], out: &mut Vec<ConvOut>) {
         if !self.chans.iter().any(|c| c.source == source) {
             return;
         }
@@ -535,6 +543,7 @@ impl Conventional {
             if ch.source != source {
                 continue;
             }
+            let (calls, rules) = (&mut calls[ch.cfg.system], &rules[ch.cfg.system]);
             let floor = self.floors[source].slices[ch.slice].max(1e-30);
             let bp = chz.band_power(ch.offset_hz, DETECT_HALF_BW);
             ch.power = if ch.power == 0.0 { bp } else { ch.power + a * (bp - ch.power) };
@@ -552,7 +561,8 @@ impl Conventional {
                 continue;
             }
             let Some(iq) = chz.output(ch.open.as_ref().unwrap().head).map(|v| v.to_vec()) else { continue };
-            Self::run(ch, &iq, now_s, meter_thr, idx as u32, calls, rules, self.cfg.max_call_s, out);
+            let max_call_s = if rules.max_call_s > 0.0 { rules.max_call_s } else { STUCK_CALL_S };
+            Self::run(ch, &iq, now_s, meter_thr, idx as u32, calls, rules, max_call_s, out);
             // Reception: the channel's power while its carrier is up, against the floor (both as a channel's head would see them).
             if snr_db >= base {
                 let (sig, noise) = (chz.noise_in_band(ch.power, ChannelFilter::noise_bandwidth()), chz.noise_in_band(floor, ChannelFilter::noise_bandwidth()));
@@ -654,7 +664,7 @@ impl Conventional {
                         }
                         TrackerOut::Info { source, emergency, encrypted } => h.infos.push((source, emergency, encrypted)),
                         TrackerOut::AnalogAudio(a) => h.audio.extend_from_slice(&a),
-                        TrackerOut::Alias(a) => out.push(ConvOut::Alias(a)),
+                        TrackerOut::Alias(a) => out.push(ConvOut::Alias(conventional_system(ch.cfg.system), a)),
                     }
                 }
                 h.tg = tracker.talkgroup();
@@ -675,7 +685,7 @@ impl Conventional {
                             h.frames.push(f);
                         }
                         TrackerOut::Info { source, emergency, encrypted } => h.infos.push((source, emergency, encrypted)),
-                        TrackerOut::Alias(a) => out.push(ConvOut::Alias(a)),
+                        TrackerOut::Alias(a) => out.push(ConvOut::Alias(conventional_system(ch.cfg.system), a)),
                         TrackerOut::AnalogAudio(_) => {}
                     }
                 }
@@ -841,7 +851,7 @@ impl Conventional {
             let dur = h.audio.len() as f64 / fm::AUDIO_RATE;
             let start = h.air.map_or_else(|| (now_s - dur).max(o.opened_s - 0.05), |a| a.0);
             let call = Call {
-                system: CONVENTIONAL,
+                system: conventional_system(ch.cfg.system),
                 id: calls.allocate_id(),
                 talkgroup: tg,
                 freq_hz: ch.cfg.freq_hz.round() as u64,
@@ -916,7 +926,7 @@ impl Conventional {
             for f in h.frames {
                 l.frames.push(f);
             }
-            out.push(ConvOut::Audio { call_id: l.call.id, talkgroup: l.call.talkgroup, samples: h.audio });
+            out.push(ConvOut::Audio { call_id: l.call.id, system: l.call.system, talkgroup: l.call.talkgroup, samples: h.audio });
         }
     }
 
@@ -936,8 +946,9 @@ impl Conventional {
     }
 
     /// End of input: flush the receivers and end every call.
-    pub fn finish(&mut self, rules: &CallRules, out: &mut Vec<ConvOut>) {
+    pub fn finish(&mut self, rules: &[CallRules], out: &mut Vec<ConvOut>) {
         for (idx, ch) in self.chans.iter_mut().enumerate() {
+            let rules = &rules[ch.cfg.system];
             let Some(o) = ch.open.as_mut() else { continue };
             if let Rx::P25 { bank, tracker, groups, t0, rate, .. } = &mut o.rx {
                 groups.clear();
@@ -969,7 +980,7 @@ impl Conventional {
 mod tests {
     use super::*;
     use crate::trunk::engine::{Engine, EngineConfig, Event, SourceConfig};
-    use crate::trunk::CallConfig;
+    use crate::trunk::{CallConfig, CONVENTIONAL};
     use std::f64::consts::PI;
 
     struct Tx {
@@ -984,12 +995,23 @@ mod tests {
 
     /// `secs` of air at `fs`: FM transmissions (1 kHz tone, 2.5 kHz deviation, or `audio`) in Gaussian noise.
     /// (concluded calls, call starts, (frequency, code) of transmissions no row took).
-    fn run(fs: f64, secs: f64, txs: &mut [Tx], channels: Vec<ConvChannel>) -> (Vec<(Call, usize, String)>, usize, Vec<(u64, String)>) {
+    /// (concluded calls with their audio length and JSON, call starts, (frequency, code) of transmissions no row took).
+    type Run = (Vec<(Call, usize, String)>, usize, Vec<(u64, String)>);
+
+    fn run(fs: f64, secs: f64, txs: &mut [Tx], channels: Vec<ConvChannel>) -> Run {
+        run_systems(fs, secs, txs, channels, vec![conv_system("conv")])
+    }
+
+    fn conv_system(name: &str) -> crate::trunk::ConvSystem {
+        crate::trunk::ConvSystem { short_name: name.into(), calls: CallConfig { call_timeout_s: 1.0, ..Default::default() }, ..Default::default() }
+    }
+
+    fn run_systems(fs: f64, secs: f64, txs: &mut [Tx], channels: Vec<ConvChannel>, conv_systems: Vec<crate::trunk::ConvSystem>) -> Run {
         let center = 155_000_000.0;
         let cfg = EngineConfig {
             sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false }],
             conventional: channels,
-            calls: CallConfig { call_timeout_s: 1.0, ..Default::default() },
+            conv_systems,
             ..Default::default()
         };
         let mut e = Engine::new(cfg).unwrap();
@@ -1046,7 +1068,29 @@ mod tests {
     }
 
     fn fm(freq_hz: f64, tg: u32) -> ConvChannel {
-        ConvChannel { freq_hz, mode: ConvMode::Fm, talkgroup: tg, info: None, squelch_db: None, access: None }
+        ConvChannel { freq_hz, mode: ConvMode::Fm, talkgroup: tg, info: None, squelch_db: None, access: None, system: 0 }
+    }
+
+    #[test]
+    fn conventional_systems_keep_their_own_names_and_rules() {
+        let (fs, c) = (2_400_000.0, 155_000_000.0);
+        let mut txs = vec![
+            Tx { offset_hz: 200_000.0, snr_db: 30.0, on: vec![(0.5, 2.5)], ph: 0.0, audio: Vec::new() },
+            Tx { offset_hz: 312_500.0, snr_db: 30.0, on: vec![(0.5, 2.5)], ph: 0.0, audio: Vec::new() },
+            Tx { offset_hz: -200_000.0, snr_db: 30.0, on: vec![(0.5, 2.5)], ph: 0.0, audio: Vec::new() },
+        ];
+        let police = ConvChannel { system: 1, ..fm(c + 312_500.0, 2) };
+        let ems = ConvChannel { system: 2, ..fm(c - 200_000.0, 3) };
+        // EMS keeps only calls of 3 s and more.
+        let mut strict = conv_system("ems");
+        strict.save.min_call_s = 3.0;
+        let (calls, _, _) = run_systems(fs, 3.5, &mut txs, vec![fm(c + 200_000.0, 1), police, ems], vec![conv_system("fire"), conv_system("police"), strict]);
+        let mut got: Vec<(u32, u16, bool)> = calls.iter().map(|(k, _, j)| (k.talkgroup, k.system, j.contains(r#""short_name":"fire""#) || j.contains(r#""short_name":"police""#))).collect();
+        got.sort();
+        assert_eq!(got, [(1, CONVENTIONAL, true), (2, CONVENTIONAL - 1, true)], "EMS's 2 s call is under its minimum");
+        assert!(calls.iter().any(|(k, _, j)| k.talkgroup == 2 && j.contains(r#""short_name":"police""#)));
+        assert_eq!(conventional_index(CONVENTIONAL - 1), Some(1));
+        assert_eq!(conventional_index(3), None);
     }
 
     #[test]

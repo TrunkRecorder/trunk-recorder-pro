@@ -25,9 +25,6 @@ None left open. The three that were here are decided:
 **Recording rules**
 - `hideEncrypted`, `hideUnknownTalkgroups` (log only).
 - `newCallFromUpdate`: in the engine, always on; not a setting.
-- Several conventional systems, each with its own short name, rules and
-  upload keys: here there is one conventional section. The importer merges
-  them and takes the first one's rules.
 - Preferred site by SmartNet `multiSiteSystemNumber`: only Preferred NAC
   (as a NAC or RRRRssss) and Preferred Site (short name) are matched.
 
@@ -154,6 +151,13 @@ None left open. The three that were here are decided:
   the settings say. Messages from elsewhere in the app use the `log`
   crate's macros and reach the same logger. Nothing that logs knows about
   formats or destinations.
+- **Several conventional systems** (October): `conventional` is a list;
+  each system has its own short name, channels or channel file, squelch,
+  Recording override, unit names and plugin settings, and calls numbered
+  65535, 65534, … (`conventional_system`), so plugins see each as a system
+  with its own settings. A frequency belongs to one system. The Trunk
+  Recorder importer makes one per conventional system instead of merging
+  them.
 - **Wrong in the September list**: "automatic deletion of old files" isn't
   a Trunk Recorder feature (no retention keys in `config.cc`).
 
@@ -215,10 +219,9 @@ someone near NYC sends a fireground capture.
 
 ## Suggested order
 
-1. Several conventional systems (each its own short name, rules, upload keys).
-2. `audio_postprocess` filters and `outputRawAudio`, if anyone misses them.
-3. AutoTune for conventional channels.
-4. The `iio` driver (PlutoSDR) natively.
+1. `audio_postprocess` filters and `outputRawAudio`, if anyone misses them.
+2. AutoTune for conventional channels.
+3. The `iio` driver (PlutoSDR) natively.
 
 ## Patching (now done, not yet committed)
 

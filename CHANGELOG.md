@@ -156,6 +156,10 @@ platform, with no GNU Radio, OP25 or other runtime dependencies.
   (`filenameFormat`, Trunk Recorder's tokens and time formats). An imported
   Trunk Recorder config brings these over: a setting the same on every
   system becomes the Recording tab's, the rest each system's own.
+- **Several conventional systems**, as in Trunk Recorder: each with its own
+  short name (folder), channels or channel file, squelch, Recording
+  override, unit names and plugin settings (its own upload keys), switched
+  on or off as a whole. Imported one for one from a Trunk Recorder config.
 - **Ignore** column in the talkgroup file (`true`, `yes`, `1`, `x`; or
   Trunk Recorder's priority −1): those talkgroups are never recorded.
 - **Unit names** (Trunk Recorder's `unitTagsFile` and `unitTagsMode`):

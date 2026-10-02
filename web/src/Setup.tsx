@@ -5,6 +5,7 @@ import {
   channelsToCsv,
   channelTalkgroups,
   defaultLog,
+  enabledChannels,
   FILENAME_TOKENS,
   filenameProblem,
   formatFromPath,
@@ -12,6 +13,7 @@ import {
   formatMhz,
   mhzCell,
   newAirspy,
+  newConventional,
   newDongle,
   newFile,
   newSoapy,
@@ -32,7 +34,7 @@ import {
 import { currentView, dismissTodo, downloadText, findRadios, openGuide, refreshDevices, setChannelFile, setNotice, setSetupTab, setView, updateConfig, useApp, web, type SetupTab } from "./controller.ts";
 import { M4aSettings, PluginSetupPanel, renameSystemRefs, SystemPluginSettings } from "./Plugins.tsx";
 import { IconAntenna, IconDongle, IconFolder, IconPuzzle, IconTower } from "./Onboarding.tsx";
-import type { AirspyGainMode, Channel, Config, HeardCode, LogSettings, Recording, RecordingOverride, RecordingRules, SiteIdentity, SoapyState, Source, System, UnitNames } from "./protocol.ts";
+import type { AirspyGainMode, Channel, Config, Conventional, HeardCode, LogSettings, Recording, RecordingOverride, RecordingRules, SiteIdentity, SoapyState, Source, System, UnitNames } from "./protocol.ts";
 import { SurveyPanel } from "./Survey.tsx";
 import { parseTalkgroupCsv } from "./talkgroups.ts";
 import { unitNameCount } from "./units.ts";
@@ -60,7 +62,8 @@ function useNeed(): (target: string) => string | undefined {
 /** The setup tab a to-do's field is on. */
 function tabOf(target: string): SetupTab {
   if (target.startsWith("plugin")) return "plugins";
-  return target.startsWith("src-") ? "radios" : target === "channels" || target === "squelch" || target === "conv-plugins" ? "conventional" : "systems";
+  if (target.startsWith("src-")) return "radios";
+  return /^(channels|squelch|convplug|convunits|conv)-/.test(target) ? "conventional" : "systems";
 }
 
 /** Show a setup field (`need-<target>`): switch to its page and tab, scroll to it and flash it. */
@@ -854,7 +857,7 @@ function CoverageBar(props: { c: Config; center: number; rateHz: number }) {
     for (const f of x.controlChannels) if (inside(f)) ticks.push({ hz: f, kind: "cc", color: systemColor(k), label: `${x.shortName} control channel ${formatMhz(f)} MHz` });
     for (const f of x.voiceChannels) if (inside(f)) ticks.push({ hz: f, kind: "voice", color: systemColor(k), label: `${x.shortName} voice ${formatMhz(f)} MHz` });
   });
-  const conv = c.conventional.channels.filter((ch) => ch.enabled && inside(ch.freqHz));
+  const conv = enabledChannels(c).filter((ch) => inside(ch.freqHz));
   for (const ch of conv) ticks.push({ hz: ch.freqHz, kind: "voice", color: "var(--text)", label: `conventional ${ch.name || formatMhz(ch.freqHz)}` });
   const here = systems.map((x, k) => ({ x, k })).filter(({ x }) => x.controlChannels.some(inside) || x.voiceChannels.some(inside));
   return (
@@ -885,27 +888,59 @@ function CoverageBar(props: { c: Config; center: number; rateHz: number }) {
 let nextRowId = 1;
 
 /**
- * Conventional channels: a table editor, bulk add, CSV import / export, and
- * (desktop) a linked CSV file to edit in a spreadsheet instead.
+ * The Conventional tab: each conventional system — its own short name,
+ * channels (or channel file), squelch, names, uploads and recording rules.
  */
-function ConventionalPanel(props: { c: Config }) {
+function ConventionalTab(props: { c: Config }) {
   const { c } = props;
+  const s = useApp();
+  return (
+    <>
+      {c.conventional.map((_, k) => (
+        <ConventionalPanel key={`${k}-${c.conventional.length}-${s.configEpoch}`} c={c} k={k} />
+      ))}
+      <section className="panel">
+        <div className="row">
+          <p className="muted small grow">
+            {c.conventional.length
+              ? "Each conventional system files its calls under its own short name, with its own channels (or channel file), rules and upload settings — like a Trunk Recorder conventional system. A frequency belongs to one."
+              : "No conventional channels yet. Add a conventional system for analog FM, P25 or DMR channels anywhere inside a source's bandwidth."}{" "}
+            Each channel is watched in the spectrum the recorder already computes, so an idle one costs almost nothing; a call starts when its signal rises above
+            the noise floor by the squelch level.
+          </p>
+          <button className="btn" onClick={() => updateConfig((x) => void x.conventional.push(newConventional(x)))}>
+            Add a conventional system
+          </button>
+        </div>
+      </section>
+    </>
+  );
+}
+
+/**
+ * One conventional system: a table editor, bulk add, CSV import / export,
+ * and (desktop) a linked CSV file to edit in a spreadsheet instead.
+ */
+function ConventionalPanel(props: { c: Config; k: number }) {
+  const { c, k } = props;
   const need = useNeed();
   const plugins = useApp().plugins?.plugins ?? [];
-  const conv = c.conventional;
+  const conv = c.conventional[k];
   const chans = conv.channels;
+  const name = conv.shortName;
+  const dupName = c.conventional.some((x, j) => j !== k && x.shortName === name);
   // Stable row keys (each edit clones the config; a frequency input keeps its own text).
   const ids = useRef<number[]>([]);
   if (ids.current.length !== chans.length) ids.current = chans.map(() => nextRowId++);
   const csvRef = useRef<HTMLInputElement>(null);
   const [bulk, setBulk] = useState("");
   const [pending, setPending] = useState<{ name: string; channels: Channel[]; notes: string[] } | null>(null);
-  const [filePath, setFilePath] = useState("channels.csv");
+  const [filePath, setFilePath] = useState(`${conv.shortName || "conv"}-channels.csv`);
   const linked = !web && !!conv.channelFile;
   const [bulkMode, setBulkMode] = useState<Channel["mode"]>("fm");
-  const edit = (fn: (x: Config["conventional"]) => void) =>
+  const edit = (fn: (x: Conventional) => void) =>
     updateConfig((x) => {
-      fn(x.conventional);
+      fn(x.conventional[k]);
     });
   const editRow = (i: number, fn: (ch: Channel) => void) => edit((x) => fn(x.channels[i]));
   const remove = (i: number) => {
@@ -951,10 +986,25 @@ function ConventionalPanel(props: { c: Config }) {
   const optNum = (v: string): number | undefined => (v.trim() === "" || !Number.isFinite(Number(v)) ? undefined : Number(v));
 
   return (
-    <section className="panel">
+    <section className={`panel${conv.enabled ? "" : " off"}`} id={`need-conv-${name}`}>
       <header className="panel-head">
-        <h2>Conventional channels</h2>
+        <h2>
+          {conv.name?.trim() || name || "(no name)"} <span className="muted small">{chans.length} channel{chans.length === 1 ? "" : "s"}</span>
+        </h2>
         <div className="row">
+          <label className="toggle small">
+            <input type="checkbox" checked={conv.enabled} onChange={(e) => edit((x) => void (x.enabled = e.target.checked))} />
+            <span>Record</span>
+          </label>
+          <button
+            className="btn ghost"
+            onClick={() => {
+              if (window.confirm(`Remove ${name || "this conventional system"} and its ${chans.length} channel${chans.length === 1 ? "" : "s"}? Its recordings stay on disk.`))
+                updateConfig((x) => void x.conventional.splice(k, 1));
+            }}
+          >
+            Remove
+          </button>
           {!linked && (
             <button className="btn ghost" onClick={() => csvRef.current?.click()}>
               Import CSV…
@@ -981,10 +1031,6 @@ function ConventionalPanel(props: { c: Config }) {
         />
       </header>
       <div className="stack">
-        <p className="muted small">
-          Analog FM or P25 channels anywhere inside a source's bandwidth, alongside a trunked system or on their own. Each is watched in the spectrum the recorder
-          already computes, so an idle channel costs almost nothing; a call starts when its signal rises above the noise floor by the squelch level.
-        </p>
         {pending && (
           <div className="banner">
             <div>
@@ -1024,46 +1070,47 @@ function ConventionalPanel(props: { c: Config }) {
               </div>
               {conv.channelFileStatus && <div className="small mono">{conv.channelFileStatus}</div>}
               <div className="row">
-                <button className="btn" onClick={() => setChannelFile(conv.channelFile ?? "")}>
+                <button className="btn" onClick={() => setChannelFile(k, conv.channelFile ?? "")}>
                   Reload
                 </button>
-                <button className="btn ghost" onClick={() => setChannelFile("")} title="Keep the channels here, in the app's settings, and stop reading the file">
+                <button className="btn ghost" onClick={() => setChannelFile(k, "")} title="Keep the channels here, in the app's settings, and stop reading the file">
                   Unlink
                 </button>
               </div>
             </div>
           ) : (
             <Field
-              needs={need("channels")}
-              anchor="channels"
+              needs={need(`channels-${name}`)}
+              anchor={`channels-${name}`}
               label="Channel file (optional)"
               hint="Keep the channels in a CSV on the recorder's computer and edit them in Excel, Numbers or LibreOffice. Relative paths are next to the config file. A new file is created from this list."
               wide
             >
               <div className="row">
                 <input className="mono grow" value={filePath} placeholder="channels.csv" onChange={(e) => setFilePath(e.target.value)} />
-                <button className="btn" disabled={!filePath.trim()} onClick={() => setChannelFile(filePath.trim())}>
+                <button className="btn" disabled={!filePath.trim()} onClick={() => setChannelFile(k, filePath.trim())}>
                   Use this file
                 </button>
               </div>
             </Field>
           ))}
         <div className="grid3">
-          {chans.length > 0 && (
-            <Field label="Short name" hint="Folder name for conventional calls">
-              <input
-                value={conv.shortName}
-                onChange={(e) => {
-                  const to = e.target.value.replace(/[^\w.-]/g, "") || "conv";
-                  updateConfig((x) => {
-                    renameSystemRefs(x, x.conventional.shortName, to, plugins);
-                    x.conventional.shortName = to;
-                  });
-                }}
-              />
-            </Field>
-          )}
-          <Field needs={need("squelch")} anchor="squelch" label="Squelch, dB above noise" hint="For every channel without its own. Raise it if noise opens channels.">
+          <Field label="Short name" hint={dupName ? "Another conventional system has this name — each needs its own folder" : "Folder name for its calls"}>
+            <input
+              value={conv.shortName}
+              onChange={(e) => {
+                const to = e.target.value.replace(/[^\w.-]/g, "");
+                updateConfig((x) => {
+                  renameSystemRefs(x, x.conventional[k].shortName, to, plugins);
+                  x.conventional[k].shortName = to;
+                });
+              }}
+            />
+          </Field>
+          <Field label="Name" hint="What people call it; the short name is its folder">
+            <input value={conv.name ?? ""} placeholder="County Fire" onChange={(e) => edit((x) => void (e.target.value ? (x.name = e.target.value) : delete x.name))} />
+          </Field>
+          <Field needs={need(`squelch-${name}`)} anchor={`squelch-${name}`} label="Squelch, dB above noise" hint="For every channel without its own. Raise it if noise opens channels.">
             <input className="mono" value={conv.squelchDb} onChange={(e) => edit((x) => void (x.squelchDb = Math.max(3, Math.min(40, Number(e.target.value) || 8))))} />
           </Field>
           {!linked && (
@@ -1231,8 +1278,8 @@ function ConventionalPanel(props: { c: Config }) {
           <div className="grid2">
             <UnitNamesField
               value={conv.unitNames}
-              anchor={`units-${conv.shortName}`}
-              needs={need(`units-${conv.shortName}`)}
+              anchor={`convunits-${name}`}
+              needs={need(`convunits-${name}`)}
               onChange={(u) =>
                 edit((x) => {
                   if (u) x.unitNames = u;
@@ -1242,7 +1289,7 @@ function ConventionalPanel(props: { c: Config }) {
             />
           </div>
         )}
-        {chans.length > 0 && <SystemPluginSettings system="conventional" />}
+        {chans.length > 0 && <SystemPluginSettings system={{ conv: k }} />}
         {chans.length > 0 && (
           <RecordingOverridePanel
             c={c}
@@ -2075,7 +2122,7 @@ function SetupTabs(props: { c: Config; tab: SetupTab }) {
   const todos = openTodos(s);
   const count: Record<SetupTab, number | null> = {
     systems: props.c.systems.length,
-    conventional: props.c.conventional.channels.length,
+    conventional: props.c.conventional.reduce((n, v) => n + v.channels.length, 0),
     radios: props.c.sources.length,
     recording: null,
     plugins: s.plugins ? s.plugins.plugins.length : null,
@@ -2147,7 +2194,7 @@ export function Setup() {
       </>
       )}
 
-      {tab === "conventional" && <ConventionalPanel c={c} />}
+      {tab === "conventional" && <ConventionalTab c={c} />}
 
       {tab === "radios" && (
       <section className="panel">

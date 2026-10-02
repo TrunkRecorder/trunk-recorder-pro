@@ -242,8 +242,8 @@ impl Session {
     }
 
     /// The file name (beside the config) the codes are kept in.
-    pub fn heard_file(cfg: &Config) -> String {
-        format!("{}.heard.json", cfg.conventional.short_name)
+    pub fn heard_file(_cfg: &Config) -> String {
+        "conventional.heard.json".into()
     }
 
     /// Each system's (short name, band plan), to keep for the next run.
@@ -251,17 +251,9 @@ impl Session {
         self.engine.systems().iter().enumerate().map(|(i, s)| (s.short_name.clone(), self.engine.bandplan(i))).collect()
     }
 
-    /// A system's short name (a call's `system`; conventional channels' for [`CONVENTIONAL`]).
-    /// The config of system `system` (an engine index; None: conventional).
-    fn system_config(&self, system: u16) -> Option<&crate::config::System> {
-        self.cfg.active_systems().nth(system as usize)
-    }
-
+    /// A system's short name (a call's `system`: a trunked or a conventional system's).
     fn system_name(&self, system: u16) -> &str {
-        match self.engine.systems().get(system as usize) {
-            Some(s) => &s.short_name,
-            None => &self.cfg.conventional.short_name,
-        }
+        self.cfg.short_name_of(system).unwrap_or("conv")
     }
 
     /// Talkgroups as the interface shows them: number and alpha tag (from system `system`'s file; "" when not in it).
@@ -434,7 +426,7 @@ impl Session {
                 let record: Value = serde_json::from_str(&k.json).unwrap_or(Value::Null);
                 let start = record["start_time"].as_i64().unwrap_or(0);
                 let offset = (self.local_offset)(start);
-                let format = self.cfg.recording_for(self.system_config(k.call.system)).filename_format;
+                let format = self.cfg.recording_of(k.call.system).filename_format;
                 let rel = if format.trim().is_empty() {
                     filename::default_path(&k.short_name, &k.base_name, start, offset)
                 } else {

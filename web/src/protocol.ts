@@ -230,25 +230,37 @@ export interface Recording extends RecordingRules {
   m4a?: { encoder: string; bitrateKbps: number };
 }
 
+/**
+ * A conventional system (Trunk Recorder's conventional / conventionalP25 /
+ * conventionalDMR): energy-detected channels with their own short name,
+ * squelch, channel file, recording rules, unit names and upload settings.
+ * A frequency belongs to one system.
+ */
+export interface Conventional {
+  /** Folder / record name of its calls. */
+  shortName: string;
+  /** What people call it; the short name is its folder. */
+  name?: string;
+  enabled: boolean;
+  /** Open threshold above the noise floor, dB (each channel may have its own). */
+  squelchDb: number;
+  /** Desktop: a CSV the channels are read from ("" = the list here). Changed with the channelFile message. */
+  channelFile?: string;
+  channels: Channel[];
+  /** How the channel file last read (from the recorder). */
+  channelFileStatus?: string;
+  /** Plugins' settings for it (one more system to them), by plugin id. */
+  plugins?: Record<string, PluginValues>;
+  /** Its own recording rules; each left out is the Recording tab's. */
+  recording?: RecordingOverride;
+  unitNames?: UnitNames;
+}
+
 export interface Config {
   sources: Source[];
   systems: System[];
-  /** Energy-detected channels; `squelchDb` is the open threshold above the noise floor. */
-  conventional: {
-    /** Folder / record name of conventional calls. */
-    shortName: string;
-    squelchDb: number;
-    /** Desktop: a CSV the channels are read from ("" = the list here). Changed with the channelFile message. */
-    channelFile?: string;
-    channels: Channel[];
-    /** How the channel file last read (from the recorder). */
-    channelFileStatus?: string;
-    /** Plugins' settings for the conventional channels (one more system to them), by plugin id. */
-    plugins?: Record<string, PluginValues>;
-    /** Their own recording rules; each left out is the Recording tab's. */
-    recording?: RecordingOverride;
-    unitNames?: UnitNames;
-  };
+  /** The conventional systems; the k-th's calls carry `system` conventionalSystem(k). */
+  conventional: Conventional[];
   recording: Recording;
   server: { bind: string; port: number; autoStart: boolean };
   /** The plugins, by id (desktop app). Their settings for each system are in the system. */
@@ -281,8 +293,12 @@ export interface Identity {
   site: number | null;
 }
 
-/** `Call.system` / `listen.system` of a conventional channel. */
+/** `Call.system` / `listen.system` of the first conventional system; the next count down from it. */
 export const CONVENTIONAL = 65535;
+/** The `system` of conventional system `k`. */
+export const conventionalSystem = (k: number) => CONVENTIONAL - k;
+/** Which conventional system a `system` is, or null for a trunked one. */
+export const conventionalIndex = (system: number): number | null => (system > CONVENTIONAL - 256 && system <= CONVENTIONAL ? CONVENTIONAL - system : null);
 
 /** One running system (site). `index` is what calls and audio carry as `system`. */
 export interface SystemStatus {
@@ -722,7 +738,7 @@ export type ToRecorder =
   /** Live audio: on/off, optionally one system's (CONVENTIONAL: conventional channels) and/or one talkgroup's. */
   | { type: "listen"; on: boolean; system: number | null; talkgroup: number | null }
   /** Link the conventional channels to a CSV (created from the list if new), reload it (same path), or unlink (""). */
-  | { type: "channelFile"; path: string }
+  | { type: "channelFile"; index: number; path: string }
   /** Find a system: scan `bands` with source `source`, then monitor the best control channel. */
   | { type: "surveyStart"; source: number; bands: string[]; findGain: boolean }
   /** Stop scanning and monitor this signal (as heard). */

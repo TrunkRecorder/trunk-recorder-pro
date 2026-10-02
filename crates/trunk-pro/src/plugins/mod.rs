@@ -46,9 +46,9 @@ pub type AudioSettings = crate::config::M4a;
 /// (the conventional channels too, when there are any).
 pub fn system_settings(cfg: &Config, id: &str) -> BTreeMap<String, Value> {
     let mut m: BTreeMap<String, Value> = cfg.systems.iter().filter_map(|s| Some((s.short_name.clone(), s.plugins.get(id)?.clone()))).collect();
-    if !cfg.conventional.channels.is_empty() {
-        if let Some(v) = cfg.conventional.plugins.get(id) {
-            m.insert(cfg.conventional.short_name.clone(), v.clone());
+    for c in cfg.conventional.iter().filter(|c| !c.channels.is_empty()) {
+        if let Some(v) = c.plugins.get(id) {
+            m.insert(c.short_name.clone(), v.clone());
         }
     }
     m
@@ -60,14 +60,16 @@ pub fn forget(cfg: &mut Config, id: &str) {
     for s in &mut cfg.systems {
         s.plugins.remove(id);
     }
-    cfg.conventional.plugins.remove(id);
+    for c in &mut cfg.conventional {
+        c.plugins.remove(id);
+    }
 }
 
 /// Whether going from `a` to `b` changes what plugins run with.
 pub fn changed(a: &Config, b: &Config) -> bool {
     let per_system = |c: &Config| -> Vec<(String, BTreeMap<String, Value>)> {
         let mut v: Vec<_> = c.systems.iter().map(|s| (s.short_name.clone(), s.plugins.clone())).collect();
-        v.push((c.conventional.short_name.clone(), c.conventional.plugins.clone()));
+        v.extend(c.conventional.iter().map(|x| (x.short_name.clone(), x.plugins.clone())));
         v
     };
     a.plugins != b.plugins || a.recording.m4a != b.recording.m4a || per_system(a) != per_system(b)
@@ -154,10 +156,10 @@ pub fn systems_of(cfg: &crate::config::Config) -> Vec<trunk_recorder_plugin::Sys
             config: Value::Null,
         })
         .collect();
-    if !cfg.conventional.channels.is_empty() {
+    for (k, c) in cfg.conventional.iter().enumerate().filter(|(_, c)| !c.channels.is_empty()) {
         v.push(trunk_recorder_plugin::SystemInfo {
-            index: trunk_recorder_plugin::CONVENTIONAL,
-            short_name: cfg.conventional.short_name.clone(),
+            index: trunk_core::trunk::conventional_system(k),
+            short_name: c.short_name.clone(),
             kind: "conventional".into(),
             config: Value::Null,
         });
@@ -209,7 +211,7 @@ mod tests {
     fn what_plugins_get_from_the_config() {
         let c: Config = serde_json::from_value(json!({
             "systems": [{ "shortName": "dcfd", "plugins": { "openmhz": { "apiKey": "k" } } }, { "shortName": "wmata" }],
-            "conventional": { "shortName": "conv", "plugins": { "openmhz": { "apiKey": "c" } } },
+            "conventional": [{ "shortName": "conv", "plugins": { "openmhz": { "apiKey": "c" } } }],
             "plugins": {
                 "openmhz": { "enabled": true, "settings": { "server": "s" } },
                 "mine": { "enabled": false, "path": "/builds/mine" }
@@ -225,7 +227,7 @@ mod tests {
         assert_eq!(executable("mine", &c.plugins["mine"]), PathBuf::from("/builds/mine"));
         let mut gone = c.clone();
         forget(&mut gone, "openmhz");
-        assert!(!gone.plugins.contains_key("openmhz") && gone.systems[0].plugins.is_empty() && gone.conventional.plugins.is_empty());
+        assert!(!gone.plugins.contains_key("openmhz") && gone.systems[0].plugins.is_empty() && gone.conventional[0].plugins.is_empty());
         assert!(changed(&c, &gone) && !changed(&c, &c.clone()));
     }
 }

@@ -76,7 +76,7 @@ use std::io::Read;
 use std::path::Path;
 use std::time::Instant;
 
-use trunk_core::trunk::{parse_csv, CallConfig, ConvChannel, ConvConfig, ConvMode, Engine, EngineConfig, Event, Identity, SaveRules, SourceConfig, SystemConfig};
+use trunk_core::trunk::{parse_csv, CallConfig, ConvChannel, ConvConfig, ConvMode, ConvSystem, Engine, EngineConfig, Event, Identity, SaveRules, SourceConfig, SystemConfig};
 
 /// `--key value` / `--flag` arguments after the positionals.
 pub struct Args {
@@ -270,7 +270,7 @@ fn replay(a: &Args) {
                 eprintln!("{p}: {n}");
             }
             let mut cfg = config::Config::default();
-            cfg.conventional.channels = parsed.channels;
+            cfg.conventional = vec![config::Conventional { channels: parsed.channels, ..Default::default() }];
             cfg.engine_config(0.0).conventional
         }))
         .collect();
@@ -332,12 +332,10 @@ fn replay(a: &Args) {
         sources,
         preroll_s: a.num("preroll", 1.0),
         max_recorders: a.num("recorders", 32.0) as usize,
-        calls,
-        conv_save: save,
+        conv_systems: vec![ConvSystem { short_name: "conv".into(), calls, save, talkgroups, ..Default::default() }],
         epoch_ms_at_zero: a.num("epoch", 0.0) * 1000.0,
         conventional,
         conv: ConvConfig { squelch_db: a.num("squelch", ConvConfig::default().squelch_db), ..Default::default() },
-        conv_talkgroups: talkgroups,
         capture_frames: a.flag("capture-frames"),
         ..Default::default()
     };
@@ -460,7 +458,7 @@ fn parse_system(spec: &str, calls: CallConfig, talkgroups: &trunk_core::trunk::T
 fn sys_tag(engine: &Engine, system: u16) -> String {
     match engine.systems().get(system as usize) {
         Some(s) if engine.systems().len() > 1 => format!("[{}] ", s.short_name),
-        None if system == trunk_core::trunk::CONVENTIONAL && !engine.systems().is_empty() => "[conv] ".into(),
+        None if trunk_core::trunk::conventional_index(system).is_some() && !engine.systems().is_empty() => "[conv] ".into(),
         _ => String::new(),
     }
 }

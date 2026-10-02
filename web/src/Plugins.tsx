@@ -23,8 +23,10 @@ import {
   setSystemPluginSettings,
   settingsOpened,
   setView,
+  systemAt,
   useApp,
   type AppState,
+  type SystemRef,
 } from "./controller.ts";
 import { IconPuzzle, IconUpload, IconWave } from "./Onboarding.tsx";
 import { showTodo } from "./Setup.tsx";
@@ -121,14 +123,16 @@ function systemSetUp(m: PluginManifest, values: PluginValues | undefined, inheri
   return fieldsOf(m.system_config).some(([k]) => !emptyValue(values?.[k]) || !emptyValue(inherited?.[k]));
 }
 
-/** The systems plugins can be set up for: index (or "conventional") and short name. */
-function systemsOf(c: Config): { at: number | "conventional"; name: string; values: (id: string) => PluginValues | undefined }[] {
-  const out: { at: number | "conventional"; name: string; values: (id: string) => PluginValues | undefined }[] = c.systems.map((x, i) => ({
+/** The systems plugins can be set up for: where each is, and its short name (conventional ones with channels). */
+function systemsOf(c: Config): { at: SystemRef; name: string; values: (id: string) => PluginValues | undefined }[] {
+  const out: { at: SystemRef; name: string; values: (id: string) => PluginValues | undefined }[] = c.systems.map((x, i) => ({
     at: i,
     name: x.shortName,
     values: (id: string) => x.plugins?.[id],
   }));
-  if (c.conventional.channels.length) out.push({ at: "conventional", name: c.conventional.shortName, values: (id) => c.conventional.plugins?.[id] });
+  c.conventional.forEach((v, k) => {
+    if (v.channels.length) out.push({ at: { conv: k }, name: v.shortName, values: (id) => v.plugins?.[id] });
+  });
   return out;
 }
 
@@ -147,7 +151,7 @@ export function renameSystemRefs(x: Config, from: string, to: string, plugins: P
   for (const p of plugins) {
     if (!p.manifest) continue;
     walk(p.manifest.config, x.plugins?.[p.id]?.settings);
-    for (const sys of [...x.systems, x.conventional]) walk(p.manifest.system_config, sys.plugins?.[p.id]);
+    for (const sys of [...x.systems, ...x.conventional]) walk(p.manifest.system_config, sys.plugins?.[p.id]);
   }
 }
 
@@ -356,15 +360,15 @@ function SchemaFields(props: { schema: PluginSchema | undefined; values: PluginV
 
 /** On a system's card in Setup: its settings for each plugin that's on and
  * takes some (an upload service's key for this system, say). */
-export function SystemPluginSettings(props: { system: number | "conventional" }) {
+export function SystemPluginSettings(props: { system: SystemRef }) {
   const s = useApp();
   const c = s.config;
   if (!c || !s.plugins) return null;
-  const sys = props.system === "conventional" ? c.conventional : c.systems[props.system];
+  const sys = systemAt(c, props.system);
   const plugins = s.plugins.plugins.filter((p) => pluginOn(c, p.id) && p.manifest && hasFields(p.manifest.system_config));
   if (!sys || !sys.shortName || plugins.length === 0) return null;
   return (
-    <div className="system-plugins stack" id={props.system === "conventional" ? "need-conv-plugins" : `need-sysplug-${sys.shortName}`}>
+    <div className="system-plugins stack" id={typeof props.system === "number" ? `need-sysplug-${sys.shortName}` : `need-convplug-${sys.shortName}`}>
       <h4>Plugins</h4>
       {plugins.map((p) => {
         const m = p.manifest!;
@@ -460,7 +464,7 @@ function PluginSetupCard(props: { p: PluginInfo; c: Config }) {
                   key={x.name}
                   className={`chip ${ok ? "ok" : "warn"}`}
                   title={ok ? `Set up for ${x.name}` : `Not set up for ${x.name} yet`}
-                  onClick={() => showTodo(x.at === "conventional" ? "conv-plugins" : `sysplug-${x.name}`)}
+                  onClick={() => showTodo(typeof x.at === "number" ? `sysplug-${x.name}` : `convplug-${x.name}`)}
                 >
                   {ok ? "✓" : "!"} {x.name}
                 </button>

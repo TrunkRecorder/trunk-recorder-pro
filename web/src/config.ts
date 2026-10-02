@@ -1,6 +1,6 @@
 // Config helpers for the setup form (the recorder validates again).
 
-import type { Channel, Config, LogSettings, RecordingOverride, SiteIdentity, Source, System, UnitNames } from "./protocol.ts";
+import type { Channel, Config, Conventional, LogSettings, RecordingOverride, SiteIdentity, Source, System, UnitNames } from "./protocol.ts";
 import { splitCsvLine } from "./talkgroups.ts";
 import { dmrTalkgroup, parseAccess, sameTone } from "./tones.ts";
 
@@ -14,7 +14,7 @@ export function defaultConfig(): Config {
   return {
     sources: [newDongle()],
     systems: [],
-    conventional: { shortName: "conv", squelchDb: 8, channels: [] },
+    conventional: [],
     recording: {
       captureDir: "",
       prerollS: 1,
@@ -109,9 +109,28 @@ export function autoCenter(controlChannels: number[], rateHz: number): number | 
   return controlChannels.every((f) => Math.abs(f - c) <= half - 10_000) ? c : null;
 }
 
-/** The conventional channels that are switched on. */
+/** The conventional channels being recorded: switched on, in a system that is. */
 export function enabledChannels(c: Config): Channel[] {
-  return (c.conventional?.channels ?? []).filter((ch) => ch.enabled);
+  return (c.conventional ?? []).filter((v) => v.enabled).flatMap((v) => v.channels.filter((ch) => ch.enabled));
+}
+
+/** A conventional system with its defaults filled in. */
+export function normalizeConventional(x: Partial<Conventional>): Conventional {
+  return { shortName: "conv", enabled: true, squelchDb: 8, channels: [], ...x };
+}
+
+/** A new conventional system (not yet in the config), named uniquely: conv, conv2… */
+export function newConventional(c: Config, patch: Partial<Conventional> = {}): Conventional {
+  const taken = new Set(c.conventional.map((x) => x.shortName));
+  const base = (patch.shortName ?? "conv").replace(/[^\w.-]/g, "") || "conv";
+  let name = base;
+  for (let n = 2; taken.has(name); n++) name = `${base.replace(/\d+$/, "")}${n}`;
+  return normalizeConventional({ ...patch, shortName: name });
+}
+
+/** The conventional system with this short name. */
+export function conventionalNamed(c: Config, shortName: string): Conventional | undefined {
+  return c.conventional.find((x) => x.shortName === shortName);
 }
 
 /** Trunk Recorder's trunked DMR settings: `lcnTable` { "<lcn>": Hz } and `channels` (candidate voice frequencies). */
@@ -169,7 +188,7 @@ export function storedConfig(raw: Partial<Config>): Config {
     ...base,
     ...raw,
     systems: (raw.systems ?? []).map(normalizeSystem),
-    conventional: { ...base.conventional, ...(raw.conventional ?? {}) },
+    conventional: Array.isArray(raw.conventional) ? raw.conventional.map(normalizeConventional) : [],
     recording: { ...base.recording, ...(raw.recording ?? {}) },
     server: { ...base.server, ...(raw.server ?? {}) },
     log: { ...defaultLog(), ...(raw.log ?? {}) },
@@ -204,7 +223,8 @@ export function activeSystems(c: Config): System[] {
 
 /** A system's color (the dashboard, waterfall and setup agree): by its place among the active systems. */
 export function systemColor(index: number): string {
-  return index < 0 || index === 65535 ? "var(--muted)" : `var(--sys-${index % 6})`;
+  // Conventional systems (65535 and down) are muted.
+  return index < 0 || index > 65535 - 256 ? "var(--muted)" : `var(--sys-${index % 6})`;
 }
 
 /** A short name not used yet: `base`, else base2, base3… */
@@ -270,10 +290,10 @@ export function resolvedCenters(c: Config): (number | null)[] {
     const need = [...x.controlChannels, ...(x.type === "dmr" ? (x.channels ?? []) : [])];
     return [[...need, ...x.voiceChannels], need];
   });
-  const conv = enabledChannels(c)
-    .map((ch) => ch.freqHz)
-    .filter((f) => f > 0);
-  if (conv.length) groups.push([conv, conv]);
+  for (const v of c.conventional.filter((x) => x.enabled)) {
+    const conv = v.channels.filter((ch) => ch.enabled && ch.freqHz > 0).map((ch) => ch.freqHz);
+    if (conv.length) groups.push([conv, conv]);
+  }
   const centers = c.sources.map((s) => s.centerHz);
   const covered = (f: number) => c.sources.some((s, i) => centers[i] > 0 && Math.abs(f - centers[i]) <= usableHalfWidth(s.rateHz));
   for (let i = 0; i < c.sources.length; i++) {
@@ -359,6 +379,19 @@ export function startProblem(c: Config): string | null {
   const inside = (f: number) => sourceCovering(c, centers, f) >= 0;
   const lost = systems.find((x) => !x.controlChannels.some(inside));
   if (lost) return `No control channel of ${lost.shortName} falls inside any source's bandwidth — move a center frequency or add a source.`;
+  const convNames = new Set<string>();
+  for (const v of c.conventional.filter((x) => x.enabled)) {
+    if (!v.shortName) return "Every conventional system needs a short name.";
+    if (convNames.has(v.shortName)) return `Two conventional systems are named "${v.shortName}" — each needs its own short name (its folder).`;
+    convNames.add(v.shortName);
+  }
+  const owner: [number, string][] = [];
+  for (const v of c.conventional.filter((x) => x.enabled))
+    for (const ch of v.channels.filter((x) => x.enabled)) {
+      const other = owner.find(([f, o]) => sameFreq(f, ch.freqHz) && o !== v.shortName);
+      if (other) return `Conventional channel ${formatMhz(ch.freqHz)} MHz is in both ${other[1]} and ${v.shortName} — a frequency belongs to one conventional system.`;
+      owner.push([ch.freqHz, v.shortName]);
+    }
   if (channels.some((ch) => !(ch.freqHz > 0))) return "A conventional channel has no frequency yet.";
   const outside = channels.filter((ch) => !inside(ch.freqHz)).map((ch) => formatMhz(ch.freqHz));
   if (outside.length) return `Conventional channel(s) outside every source's bandwidth: ${outside.join(", ")} MHz — move a center frequency or disable them.`;
@@ -594,16 +627,16 @@ export type ImportTodo =
   | { kind: "talkgroups"; system: string; file: string }
   /** Its unit names file (unitTagsFile) wasn't loaded. */
   | { kind: "units"; system: string; file: string }
-  /** A conventional channel file wasn't loaded; `had` channels were imported without it. */
-  | { kind: "channels"; file: string; had: number }
+  /** A conventional system's channel file wasn't loaded; `had` channels were imported without it. */
+  | { kind: "channels"; system: string; file: string; had: number }
   /** Trunk Recorder's siteId: a Site lock to fill in. */
   | { kind: "siteLock"; system: string; siteId: string }
   /** An RTL-SDR that wasn't free when imported (`serial` as configured). */
   | { kind: "source"; index: number; serial: string }
   /** A source whose driver isn't installed here. */
   | { kind: "driver"; index: number; driver: "usrp" | "airspy" | "soapy" }
-  /** Conventional squelch means something else here. */
-  | { kind: "squelch" }
+  /** Conventional squelch means something else here (a conventional system's). */
+  | { kind: "squelch"; system: string }
   /** Trunk Recorder plugins with no counterpart here. */
   | { kind: "plugins"; names: string[] }
   /** A plugin whose settings came over: to add (install) and turn on. */
@@ -867,32 +900,36 @@ export function importTrunkRecorderConfig(
   const conv = systems.filter((x) => x.type === "conventional" || x.type === "conventionalP25" || x.type === "conventionalDMR");
   const skipped = systems.filter((x) => !p25.includes(x) && !conv.includes(x)).map((x) => `${String(x.shortName ?? "?")} (${String(x.type)})`);
   if (skipped.length) notes.push(`Skipped unsupported systems: ${skipped.join(", ")}.`);
-  const importedChannels: Channel[] = [];
+  // Each conventional system is one here: its channels (listed, or its channel file), short name and rules.
+  cfg.conventional = [];
   for (const sys of conv) {
     const mode: Channel["mode"] = sys.type === "conventionalP25" ? "p25" : sys.type === "conventionalDMR" ? "dmr" : "fm";
+    const channels: Channel[] = [];
     if (Array.isArray(sys.channels)) {
-      for (const f of sys.channels as unknown[]) if (typeof f === "number" && f > 0) importedChannels.push({ freqHz: f, mode, name: "", enabled: true });
+      for (const f of sys.channels as unknown[]) if (typeof f === "number" && f > 0) channels.push({ freqHz: f, mode, name: "", enabled: true });
     }
+    const x = newConventional(cfg, { shortName: typeof sys.shortName === "string" ? sys.shortName : undefined, ...(sys.enabled === false ? { enabled: false } : {}) });
     if (typeof sys.channelFile === "string" && sys.channelFile) {
       const csv = files[sys.channelFile];
       const read = csv === undefined ? null : parseChannelCsv(csv);
-      if (!read || read.error) todo.push({ kind: "channels", file: sys.channelFile, had: importedChannels.length });
+      if (!read || read.error) todo.push({ kind: "channels", system: x.shortName, file: sys.channelFile, had: channels.length });
       else {
         // A file with no Mode column is its system's kind.
         const moded = /(^|[,;\t])\s*"?mode"?\s*([,;\t]|$)/im.test(csv!.split(/\r?\n/, 1)[0] ?? "");
-        importedChannels.push(...read.channels.map((ch) => (moded ? ch : { ...ch, mode })));
+        channels.push(...read.channels.map((ch) => (moded ? ch : { ...ch, mode })));
       }
     }
+    x.channels = channels;
+    const own = trRecording(sys);
+    if (Object.keys(own).length) x.recording = own;
+    const units = trUnitNames(sys, files, x.shortName, todo);
+    if (units) x.unitNames = units;
+    cfg.conventional.push(x);
+    if (channels.length) todo.push({ kind: "squelch", system: x.shortName });
+    systemNames.set(sys, x.shortName);
+    if (typeof sys.shortName === "string" && !names.has(sys.shortName)) names.set(sys.shortName, x.shortName);
   }
-  if (importedChannels.length) {
-    cfg.conventional = { ...cfg.conventional, channels: importedChannels };
-    todo.push({ kind: "squelch" });
-  }
-  if (conv[0] && typeof conv[0].shortName === "string") cfg.conventional.shortName = conv[0].shortName;
-  for (const x of conv) {
-    systemNames.set(x, cfg.conventional.shortName);
-    if (typeof x.shortName === "string" && !names.has(x.shortName)) names.set(x.shortName, cfg.conventional.shortName);
-  }
+  if (conv.length > 1) notes.push(`${conv.length} conventional systems imported, each with its own folder and channels.`);
   if (p25.length) {
     // Trunk Recorder drops duplicates only among systems with multiSite on;
     // its multiSiteSystemName is a site group here (else grouped from the air).
@@ -933,10 +970,8 @@ export function importTrunkRecorderConfig(
     if (!multi.length && p25.length > 1)
       notes.push("A call heard on several sites of one system is now saved once (Trunk Recorder's multiSite was off) — switch it off under Recording to keep every copy.");
   }
-  // The conventional channels' rules: Trunk Recorder's first conventional system's.
-  if (conv[0] && Object.keys(trRecording(conv[0])).length) cfg.conventional.recording = trRecording(conv[0]);
   // A setting the same on every system there is the Recording tab's here; the rest stay each system's own.
-  const owners = [...cfg.systems.map((x) => x as { recording?: RecordingOverride }), ...(importedChannels.length ? [cfg.conventional] : [])];
+  const owners = [...cfg.systems.map((x) => x as { recording?: RecordingOverride }), ...cfg.conventional];
   if (owners.length) {
     const keys = new Set(owners.flatMap((o) => Object.keys(o.recording ?? {}))) as Set<keyof RecordingOverride>;
     for (const k of keys) {
@@ -952,10 +987,6 @@ export function importTrunkRecorderConfig(
   if (typeof j.callTimeout === "number") cfg.recording.callTimeoutS = j.callTimeout;
   if (typeof j.recordUUVCalls === "boolean") cfg.recording.recordUnitToUnit = j.recordUUVCalls;
   if (typeof j.archiveFilesOnFailure === "boolean") cfg.recording.archiveFilesOnFailure = j.archiveFilesOnFailure;
-  if (conv[0]) {
-    const units = trUnitNames(conv[0], files, cfg.conventional.shortName, todo);
-    if (units) cfg.conventional.unitNames = units;
-  }
   // The log: Trunk Recorder's keys at the top (its talkgroupDisplayFormat is a system's: the first one's).
   const log: LogSettings = { ...defaultLog(), ...(cfg.log ?? {}) };
   const levels = ["trace", "debug", "info", "warning", "error", "fatal"];

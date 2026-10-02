@@ -156,15 +156,15 @@ async function surveyStop(tell = true): Promise<void> {
 /** Each system's radios' talker aliases (Trunk Recorder's unitTagsOTA CSV), as saved. */
 async function savedUnits(cfg: Config): Promise<Record<string, string>> {
   const units: Record<string, string> = {};
-  for (const name of new Set([...cfg.systems.map((x) => x.shortName), cfg.conventional.shortName])) {
+  for (const name of new Set([...cfg.systems.map((x) => x.shortName), ...cfg.conventional.map((x) => x.shortName)])) {
     const csv = await readText(`units-${name}.csv`);
     if (csv) units[name] = csv;
   }
   return units;
 }
 
-/** The codes conventional frequencies carried (trunk-app heard.rs), kept per conventional short name. */
-const heardFile = (cfg: Config) => `heard-${cfg.conventional.shortName}.json`;
+/** The codes conventional frequencies carried (trunk-app heard.rs). */
+const heardFile = (_cfg: Config) => "heard-conventional.json";
 
 async function savedHeard(cfg: Config): Promise<Record<string, HeardCode[]>> {
   try {

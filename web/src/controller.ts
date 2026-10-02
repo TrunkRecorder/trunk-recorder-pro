@@ -10,6 +10,7 @@ import type {
   CallEntry,
   CallView,
   Config,
+  Conventional,
   Device,
   DirListing,
   EngineStatus,
@@ -320,10 +321,18 @@ function flushConfig(): void {
   }
 }
 
-/** Link the conventional channels to a CSV file on the recorder's computer, reload it, or unlink (""). */
-export function setChannelFile(path: string): void {
+/** Link conventional system `index`'s channels to a CSV file on the recorder's computer, reload it, or unlink (""). */
+export function setChannelFile(index: number, path: string): void {
   flushConfig();
-  transport.send({ type: "channelFile", path });
+  transport.send({ type: "channelFile", index, path });
+}
+
+/** A system: a trunked one by its place in `systems`, or conventional system `conv`. */
+export type SystemRef = number | { conv: number };
+
+/** The system a ref names. */
+export function systemAt(c: Config, at: SystemRef): System | Conventional | undefined {
+  return typeof at === "number" ? c.systems[at] : c.conventional[at.conv];
 }
 
 /** Save text as a file through the browser. */
@@ -387,10 +396,10 @@ export function setPluginSettings(id: string, settings: PluginValues): void {
     all[id] = p;
   });
 }
-/** A plugin's settings for one system (its index), or for the conventional channels. */
-export function setSystemPluginSettings(system: number | "conventional", id: string, values: PluginValues): void {
+/** A plugin's settings for one system, trunked or conventional. */
+export function setSystemPluginSettings(system: SystemRef, id: string, values: PluginValues): void {
   updateConfig((x) => {
-    const sys = system === "conventional" ? x.conventional : x.systems[system];
+    const sys = systemAt(x, system);
     if (!sys) return;
     const all = { ...(sys.plugins ?? {}) };
     if (blank(values)) delete all[id];

@@ -18,8 +18,22 @@ use crate::dsp::tones::{Tone, ToneHeard};
 
 pub type CallId = u32;
 
-/// `Call::system` of a conventional channel's call.
+/// `Call::system` of the first conventional system's calls; the next ones
+/// count down from it (see [`conventional_system`]).
 pub const CONVENTIONAL: u16 = u16::MAX;
+/// At most this many conventional systems.
+pub const MAX_CONVENTIONAL: usize = 256;
+
+/// The `Call::system` of conventional system `k` (from 0).
+pub fn conventional_system(k: usize) -> u16 {
+    CONVENTIONAL - k.min(MAX_CONVENTIONAL - 1) as u16
+}
+
+/// Which conventional system a `Call::system` is, or None for a trunked one.
+pub fn conventional_index(system: u16) -> Option<usize> {
+    let k = (CONVENTIONAL - system) as usize;
+    (k < MAX_CONVENTIONAL).then_some(k)
+}
 
 /// Hands out call ids; clones share the sequence (one per engine).
 #[derive(Clone, Debug)]
@@ -70,7 +84,8 @@ pub struct CallSource {
 #[derive(Clone, Debug, Default)]
 pub struct Call {
     pub id: CallId,
-    /// The system (index in the engine's list) that made it; [`CONVENTIONAL`] for a conventional channel.
+    /// The system (index in the engine's list) that made it; a conventional
+    /// system's counts down from [`CONVENTIONAL`] ([`conventional_index`]).
     pub system: u16,
     pub talkgroup: u32,
     pub freq_hz: u64,

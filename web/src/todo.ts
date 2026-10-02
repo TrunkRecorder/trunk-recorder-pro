@@ -29,15 +29,23 @@ export function openTodos(s: AppState): OpenTodo[] {
       }
       case "units": {
         const sys = c.systems.find((x) => x.shortName === item.system);
-        const names = sys?.unitNames ?? (c.conventional.shortName === item.system ? c.conventional.unitNames : undefined);
+        const conv = c.conventional.find((x) => x.shortName === item.system);
+        const names = sys?.unitNames ?? conv?.unitNames;
         if (!names?.csv)
-          out.push({ item, target: `units-${item.system}`, title: `Unit names for ${item.system}`, text: `“${item.file}” (unitTagsFile) wasn't found. Load it to name the radios.` });
+          out.push({
+            item,
+            target: sys || !conv ? `units-${item.system}` : `convunits-${item.system}`,
+            title: `Unit names for ${item.system}`,
+            text: `“${item.file}” (unitTagsFile) wasn't found. Load it to name the radios.`,
+          });
         break;
       }
-      case "channels":
-        if (!c.conventional.channelFile && c.conventional.channels.length <= item.had)
-          out.push({ item, target: "channels", title: "Conventional channels", text: `“${item.file}” wasn't found. Link it here, or bring it in with Import CSV.` });
+      case "channels": {
+        const v = c.conventional.find((x) => x.shortName === item.system);
+        if (v && !v.channelFile && v.channels.length <= item.had)
+          out.push({ item, target: `channels-${item.system}`, title: `Channels for ${item.system}`, text: `“${item.file}” wasn't found. Link it here, or bring it in with Import CSV.` });
         break;
+      }
       case "siteLock": {
         const sys = c.systems.find((x) => x.shortName === item.system);
         if (sys && sys.expect.site == null)
@@ -70,8 +78,8 @@ export function openTodos(s: AppState): OpenTodo[] {
         break;
       }
       case "squelch":
-        if (c.conventional.channels.length)
-          out.push({ item, target: "squelch", title: "Squelch", text: "Here it's how far above the noise a channel must rise (default 8 dB), not Trunk Recorder's level. Check it once recording." });
+        if (c.conventional.find((x) => x.shortName === item.system)?.channels.length)
+          out.push({ item, target: `squelch-${item.system}`, title: `Squelch for ${item.system}`, text: "Here it's how far above the noise a channel must rise (default 8 dB), not Trunk Recorder's level. Check it once recording." });
         break;
       case "plugins":
         out.push({ item, target: "plugins", title: "Other plugins", text: `Trunk Recorder used ${item.names.join(", ")}, which has nothing like it here yet.` });

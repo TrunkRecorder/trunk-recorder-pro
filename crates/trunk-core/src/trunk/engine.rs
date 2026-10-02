@@ -29,7 +29,7 @@ use std::collections::{HashMap, VecDeque};
 
 use num_complex::Complex32;
 
-use super::calls::{Call, CallConfig, CallEvent, CallId, CallIds, CallManager, Reason, RecorderHost, CONVENTIONAL};
+use super::calls::{conventional_index, conventional_system, Call, CallConfig, CallEvent, CallId, CallIds, CallManager, Reason, RecorderHost, MAX_CONVENTIONAL};
 use super::conventional::{CallRules, ConvChannel, ConvConfig, ConvOut, Conventional};
 use super::message::{Message, MessageType, TsbkParser};
 use super::multisite::{self, Ended, Held, MultiSite, SiteKey};
@@ -161,11 +161,9 @@ pub struct EngineConfig {
     pub preroll_s: f64,
     /// Recorders shared by every system.
     pub max_recorders: usize,
-    /// Conventional channels' call rules (timeout, encrypted, length) and what is saved of them.
-    pub calls: CallConfig,
-    pub conv_save: SaveRules,
-    /// The conventional channels' names for their radios.
-    pub conv_unit_tags: UnitTags,
+    /// The conventional systems: each its own short name, rules and names
+    /// (a conventional channel's `system` indexes them).
+    pub conv_systems: Vec<ConvSystem>,
     /// Wall-clock epoch ms at sample-clock time 0.
     pub epoch_ms_at_zero: f64,
     /// Receivers for conventional P25 channels.
@@ -173,10 +171,6 @@ pub struct EngineConfig {
     /// Conventional channels, energy-detected on whichever source covers them.
     pub conventional: Vec<ConvChannel>,
     pub conv: ConvConfig,
-    /// Folder and record name of conventional calls.
-    pub conv_short_name: String,
-    /// Names for talkgroups a conventional P25 channel reports.
-    pub conv_talkgroups: Talkgroups,
     /// Keep each call's vocoder frames ([`Concluded::frames`]).
     pub capture_frames: bool,
     /// Save a call heard on several sites of one system once ([`super::multisite`]).
@@ -192,19 +186,35 @@ impl Default for EngineConfig {
             sources: vec![],
             preroll_s: 1.0,
             max_recorders: 32,
-            calls: CallConfig::default(),
-            conv_save: SaveRules::default(),
-            conv_unit_tags: UnitTags::default(),
+            conv_systems: vec![],
             epoch_ms_at_zero: 0.0,
             bank: BankConfig::default(),
             conventional: vec![],
             conv: ConvConfig::default(),
-            conv_short_name: "conv".into(),
-            conv_talkgroups: Talkgroups::default(),
             capture_frames: false,
             drop_duplicates: true,
             vocoder: mbe::Profile::Enhanced,
         }
+    }
+}
+
+/// A conventional system: a set of conventional channels with their own
+/// short name (folder), call rules and names.
+#[derive(Clone, Debug)]
+pub struct ConvSystem {
+    pub short_name: String,
+    /// Call rules: timeout, encrypted, length (`max_call_s`).
+    pub calls: CallConfig,
+    pub save: SaveRules,
+    /// Names for talkgroups its P25 / DMR channels report.
+    pub talkgroups: Talkgroups,
+    /// Its names for its radios.
+    pub unit_tags: UnitTags,
+}
+
+impl Default for ConvSystem {
+    fn default() -> Self {
+        ConvSystem { short_name: "conv".into(), calls: CallConfig::default(), save: SaveRules::default(), talkgroups: Talkgroups::default(), unit_tags: UnitTags::default() }
     }
 }
 
@@ -1031,11 +1041,12 @@ pub struct Engine {
     trunks: Vec<Trunk>,
     conv: Conventional,
     /// Conventional channels' ids and talkgroup names (their calls live in `conv`).
-    conv_calls: CallManager,
+    /// Each conventional system's ids and talkgroup names (their calls live in `conv`).
+    conv_calls: Vec<CallManager>,
     conv_out: Vec<ConvOut>,
     conv_concluded: u64,
     /// Conventional channels' radios' talker aliases (unless a trunked system has their short name: then its).
-    conv_units: UnitAliases,
+    conv_units: Vec<UnitAliases>,
     /// Copies of one call on several sites.
     multisite: MultiSite,
     now_s: f64,
@@ -1044,7 +1055,15 @@ pub struct Engine {
 }
 
 impl Engine {
-    pub fn new(cfg: EngineConfig) -> Result<Self, String> {
+    pub fn new(mut cfg: EngineConfig) -> Result<Self, String> {
+        // Every conventional channel's system exists (a default one if none was given).
+        let need = cfg.conventional.iter().map(|c| c.system + 1).max().unwrap_or(0);
+        if need > MAX_CONVENTIONAL {
+            return Err(format!("At most {MAX_CONVENTIONAL} conventional systems."));
+        }
+        while cfg.conv_systems.len() < need {
+            cfg.conv_systems.push(ConvSystem::default());
+        }
         if cfg.sources.is_empty() {
             return Err("no sources configured".into());
         }
@@ -1119,7 +1138,8 @@ impl Engine {
             }
             trunks.push(t);
         }
-        let conv_calls = CallManager::with_ids(cfg.calls, cfg.conv_talkgroups.clone(), CONVENTIONAL, ids);
+        let conv_calls = cfg.conv_systems.iter().enumerate().map(|(k, c)| CallManager::with_ids(c.calls, c.talkgroups.clone(), conventional_system(k), ids.clone())).collect();
+        let conv_units = vec![UnitAliases::default(); cfg.conv_systems.len()];
         Ok(Engine {
             radio,
             trunks,
@@ -1127,7 +1147,7 @@ impl Engine {
             conv_calls,
             conv_out: Vec::new(),
             conv_concluded: 0,
-            conv_units: UnitAliases::default(),
+            conv_units,
             multisite: MultiSite::default(),
             now_s: 0.0,
             events,
@@ -1154,35 +1174,32 @@ impl Engine {
         })
     }
 
-    /// The trunked system conventional channels share talker aliases with:
-    /// the one with their short name.
-    fn conv_units_owner(&self) -> Option<usize> {
-        self.trunks
-            .iter()
-            .position(|t| t.cfg.short_name == self.cfg.conv_short_name)
+    /// The trunked system conventional system `k` shares talker aliases
+    /// with: the one with its short name.
+    fn conv_units_owner(&self, k: usize) -> Option<usize> {
+        let name = &self.cfg.conv_systems.get(k)?.short_name;
+        self.trunks.iter().position(|t| &t.cfg.short_name == name)
     }
 
-    /// The talker alias table of `system` (a call's), [`CONVENTIONAL`] included.
+    /// Where `system`'s (a call's) talker aliases are kept: a trunked system's, or a conventional system's own.
+    fn units_slot(&self, system: u16) -> Result<usize, usize> {
+        match conventional_index(system) {
+            Some(k) => self.conv_units_owner(k).ok_or(k),
+            None => Ok(system as usize),
+        }
+    }
+
+    /// The talker alias table of `system` (a call's).
     fn units(&self, system: u16) -> Option<&UnitAliases> {
-        let i = if system == CONVENTIONAL {
-            self.conv_units_owner()
-        } else {
-            Some(system as usize)
-        };
-        match i {
-            Some(i) => self.trunks.get(i).map(|t| &t.units),
-            None => Some(&self.conv_units),
+        match self.units_slot(system) {
+            Ok(i) => self.trunks.get(i).map(|t| &t.units),
+            Err(k) => self.conv_units.get(k),
         }
     }
     fn units_mut(&mut self, system: u16) -> Option<&mut UnitAliases> {
-        let i = if system == CONVENTIONAL {
-            self.conv_units_owner()
-        } else {
-            Some(system as usize)
-        };
-        match i {
-            Some(i) => self.trunks.get_mut(i).map(|t| &mut t.units),
-            None => Some(&mut self.conv_units),
+        match self.units_slot(system) {
+            Ok(i) => self.trunks.get_mut(i).map(|t| &mut t.units),
+            Err(k) => self.conv_units.get_mut(k),
         }
     }
 
@@ -1194,8 +1211,10 @@ impl Engine {
             .iter()
             .map(|t| t.cfg.short_name.clone())
             .collect();
-        if !self.cfg.conventional.is_empty() && self.conv_units_owner().is_none() {
-            n.push(self.cfg.conv_short_name.clone());
+        for (k, c) in self.cfg.conv_systems.iter().enumerate() {
+            if self.cfg.conventional.iter().any(|ch| ch.system == k) && self.conv_units_owner(k).is_none() {
+                n.push(c.short_name.clone());
+            }
         }
         n
     }
@@ -1207,8 +1226,8 @@ impl Engine {
             .position(|t| t.cfg.short_name == short_name)
         {
             self.trunks[i].units = UnitAliases::parse_csv(csv);
-        } else if short_name == self.cfg.conv_short_name {
-            self.conv_units = UnitAliases::parse_csv(csv);
+        } else if let Some(k) = self.cfg.conv_systems.iter().position(|c| c.short_name == short_name) {
+            self.conv_units[k] = UnitAliases::parse_csv(csv);
         }
     }
     /// (short name, CSV) of each talker alias table that learned something since the last call.
@@ -1222,8 +1241,10 @@ impl Engine {
                     .then(|| (t.cfg.short_name.clone(), t.units.to_csv()))
             })
             .collect();
-        if self.conv_units.take_changed() {
-            out.push((self.cfg.conv_short_name.clone(), self.conv_units.to_csv()));
+        for (k, u) in self.conv_units.iter_mut().enumerate() {
+            if u.take_changed() {
+                out.push((self.cfg.conv_systems[k].short_name.clone(), u.to_csv()));
+            }
         }
         out
     }
@@ -1351,8 +1372,18 @@ impl Engine {
         self.emit_conv(out);
     }
 
-    fn call_rules(&self) -> CallRules {
-        CallRules { call_timeout_s: self.cfg.calls.call_timeout_s, record_encrypted: self.cfg.calls.record_encrypted, capture_frames: self.cfg.capture_frames }
+    /// Each conventional system's call rules.
+    fn call_rules(&self) -> Vec<CallRules> {
+        self.cfg
+            .conv_systems
+            .iter()
+            .map(|c| CallRules {
+                call_timeout_s: c.calls.call_timeout_s,
+                max_call_s: c.calls.max_call_s,
+                record_encrypted: c.calls.record_encrypted,
+                capture_frames: self.cfg.capture_frames,
+            })
+            .collect()
     }
 
     /// Report what the conventional channels did.
@@ -1361,12 +1392,12 @@ impl Engine {
             match o {
                 ConvOut::Start(c) => self.events.push(Event::CallStart(c)),
                 ConvOut::Update(c) => self.events.push(Event::CallUpdate(c)),
-                ConvOut::Audio { call_id, talkgroup, samples } => self.events.push(Event::Audio { call_id, system: CONVENTIONAL, talkgroup, samples }),
+                ConvOut::Audio { call_id, system, talkgroup, samples } => self.events.push(Event::Audio { call_id, system, talkgroup, samples }),
                 ConvOut::End { call, audio, frames, recorder_num, tx, reception } => {
                     self.write_call(Held { call: call.clone(), audio, frames, recorder_num, tx, reception, freq_error_hz: None });
                     self.events.push(Event::CallEnd(call));
                 }
-                ConvOut::Alias(a) => self.learn_alias(CONVENTIONAL, a, None),
+                ConvOut::Alias(system, a) => self.learn_alias(system, a, None),
                 ConvOut::Skipped { freq_hz, code } => self.events.push(Event::ConvSkipped { freq_hz, code }),
             }
         }
@@ -1532,7 +1563,8 @@ impl Engine {
     fn write_call(&mut self, h: Held) -> bool {
         let Held { call, audio, frames, recorder_num, tx, reception, freq_error_hz } = h;
         let call = &call;
-        let rules = self.trunks.get(call.system as usize).map_or(self.cfg.conv_save, |t| t.cfg.save);
+        let conv = conventional_index(call.system).and_then(|k| self.cfg.conv_systems.get(k));
+        let rules = conv.map_or_else(|| self.trunks.get(call.system as usize).map_or(SaveRules::default(), |t| t.cfg.save), |c| c.save);
         // An encrypted call's "audio" is at most a few frames vocoded before
         // the cipher was known: noise. Trunk Recorder keeps none either.
         let mut audio = if call.encrypted { Vec::new() } else { audio };
@@ -1557,7 +1589,7 @@ impl Engine {
             }
             None => {
                 self.conv_concluded += 1;
-                self.cfg.conv_short_name.clone()
+                conv.map_or_else(|| "conv".to_string(), |c| c.short_name.clone())
             }
         };
         let (json, base_name) = call_record(
@@ -1570,7 +1602,10 @@ impl Engine {
                 recorder_num,
                 end_s: call.last_audio_s,
                 units: self.units(call.system),
-                unit_tags: Some(self.trunks.get(call.system as usize).map_or(&self.cfg.conv_unit_tags, |t| &t.cfg.unit_tags)).filter(|t| !t.is_empty() || t.mode != Default::default()),
+                unit_tags: conv
+                    .map(|c| &c.unit_tags)
+                    .or_else(|| self.trunks.get(call.system as usize).map(|t| &t.cfg.unit_tags))
+                    .filter(|t| !t.is_empty() || t.mode != Default::default()),
                 reception,
                 freq_error_hz: freq_error_hz.map_or(0, |e| e.round() as i32),
             },

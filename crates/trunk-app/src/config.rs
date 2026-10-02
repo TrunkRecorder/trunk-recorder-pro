@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use trunk_core::p25::diversity::BankConfig;
 use trunk_core::trunk::{
-    check_channels, Access, parse_csv, CallConfig, ConvChannel, ConvConfig, ConvMode, EngineConfig, Identity, SaveRules, SourceConfig, SystemConfig, Talkgroup, UnitTags,
-    UnitTagsMode,
+    check_channels, conventional_index, Access, parse_csv, CallConfig, ConvChannel, ConvConfig, ConvMode, ConvSystem, EngineConfig, Identity, SaveRules, SourceConfig,
+    SystemConfig, Talkgroup, UnitTags, UnitTagsMode, MAX_CONVENTIONAL,
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -377,24 +377,30 @@ impl SiteIdentity {
     }
 }
 
-/// Conventional channels: one frequency each, found by energy detection.
-/// Either listed here, or kept in a CSV file (`channelFile`, desktop) to edit
-/// in a spreadsheet — see [`crate::channels`] for its columns.
+/// A conventional system (Trunk Recorder's `conventional`, `conventionalP25`
+/// and `conventionalDMR` systems): channels of one frequency each, found by
+/// energy detection, with their own short name (folder), call rules, unit
+/// names and upload settings. Either listed here, or kept in a CSV file of
+/// its own (`channelFile`, desktop) to edit in a spreadsheet — see
+/// [`crate::channels`] for its columns. A frequency belongs to one system.
 ///
 /// ```json
-/// "conventional": {
-///   "squelchDb": 8,
-///   "channels": [
-///     { "freqHz": 154430000, "mode": "fm", "name": "County Fire Dispatch", "talkgroup": 1001 },
-///     { "freqHz": 460125000, "mode": "p25", "name": "PD Tac 2", "squelchDb": 12 }
-///   ]
-/// }
+/// "conventional": [
+///   { "shortName": "fire", "squelchDb": 8, "channels": [
+///       { "freqHz": 154430000, "mode": "fm", "name": "County Fire Dispatch", "talkgroup": 1001 } ] },
+///   { "shortName": "police", "channelFile": "police.csv" }
+/// ]
 /// ```
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Conventional {
     /// Folder and record name of its calls (Trunk Recorder's shortName).
     pub short_name: String,
+    /// What people call it ("County Fire"); the short name is its folder.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    /// Record it.
+    pub enabled: bool,
     /// Open threshold for every channel, dB above the measured noise floor.
     pub squelch_db: f64,
     /// A CSV the channels are read from, absolute or relative to the config
@@ -447,6 +453,8 @@ impl Default for Conventional {
     fn default() -> Self {
         Conventional {
             short_name: "conv".into(),
+            name: String::new(),
+            enabled: true,
             squelch_db: ConvConfig::default().squelch_db,
             channel_file: String::new(),
             channels: vec![],
@@ -560,6 +568,7 @@ impl Channel {
             }),
             squelch_db: self.squelch_db,
             access: self.parsed_access().ok().flatten(),
+            system: 0,
         }
     }
 }
@@ -791,7 +800,9 @@ pub struct Config {
     pub sources: Vec<Source>,
     /// The trunked systems (sites).
     pub systems: Vec<System>,
-    pub conventional: Conventional,
+    /// The conventional systems; the `k`th's calls are numbered
+    /// [`trunk_core::trunk::conventional_system`]`(k)`.
+    pub conventional: Vec<Conventional>,
     pub recording: Recording,
     pub server: Server,
     /// The plugins, by id: on or off, and their settings for the whole recorder.
@@ -860,7 +871,7 @@ impl Default for Config {
         Config {
             sources: vec![Source::Rtlsdr { serial: String::new(), center_hz: 0.0, rate_hz: 2_400_000.0, gain_db: RTL_DEFAULT_GAIN_DB, agc: false, ppm: 0, auto_tune: false }],
             systems: vec![],
-            conventional: Conventional::default(),
+            conventional: vec![],
             recording: Recording::default(),
             server: Server::default(),
             plugins: BTreeMap::new(),
@@ -900,7 +911,7 @@ impl Config {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Config::default(),
             Err(e) => return Err(format!("{}: {e}", path.display())),
         };
-        let _ = c.load_channel_file(path);
+        c.load_channel_files(path);
         Ok(c)
     }
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
@@ -908,18 +919,20 @@ impl Config {
             std::fs::create_dir_all(d)?;
         }
         let mut c = self.clone();
-        c.conventional.channel_file_status.clear();
-        if !c.conventional.channel_file.is_empty() {
-            // The file holds them.
-            c.conventional.channels.clear();
+        for v in &mut c.conventional {
+            v.channel_file_status.clear();
+            if !v.channel_file.is_empty() {
+                // The file holds them.
+                v.channels.clear();
+            }
         }
         std::fs::write(path, serde_json::to_string_pretty(&c).unwrap_or_default())
     }
 
-    /// The linked channel file's location (relative paths from the config
-    /// file's folder), or None.
-    pub fn channel_file_path(&self, config_path: &Path) -> Option<PathBuf> {
-        let f = self.conventional.channel_file.trim();
+    /// Conventional system `k`'s linked channel file's location (relative
+    /// paths from the config file's folder), or None.
+    pub fn channel_file_path(&self, k: usize, config_path: &Path) -> Option<PathBuf> {
+        let f = self.conventional.get(k)?.channel_file.trim();
         if f.is_empty() {
             return None;
         }
@@ -927,62 +940,83 @@ impl Config {
         Some(if p.is_absolute() { p } else { config_path.parent().unwrap_or(Path::new(".")).join(p) })
     }
 
-    /// Read the linked channel file into `conventional.channels` (a no-op
-    /// when none is linked). On an error the channels are left as they were;
-    /// either way `channel_file_status` says what happened.
-    pub fn load_channel_file(&mut self, config_path: &Path) -> Result<(), String> {
-        let Some(p) = self.channel_file_path(config_path) else {
-            self.conventional.channel_file_status.clear();
+    /// Read every conventional system's linked channel file (errors are in
+    /// each one's `channel_file_status`).
+    pub fn load_channel_files(&mut self, config_path: &Path) {
+        for k in 0..self.conventional.len() {
+            let _ = self.load_channel_file(k, config_path);
+        }
+    }
+
+    /// Read conventional system `k`'s linked channel file into its
+    /// `channels` (a no-op when none is linked). On an error the channels
+    /// are left as they were; either way `channel_file_status` says what happened.
+    pub fn load_channel_file(&mut self, k: usize, config_path: &Path) -> Result<(), String> {
+        let path = self.channel_file_path(k, config_path);
+        let Some(v) = self.conventional.get_mut(k) else { return Err(format!("No conventional system {}", k + 1)) };
+        let Some(p) = path else {
+            v.channel_file_status.clear();
             return Ok(());
         };
         let r = std::fs::read_to_string(&p).map_err(|e| e.to_string()).and_then(|t| crate::channels::parse(&t));
         match r {
             Ok(parsed) => {
                 let n = parsed.channels.len();
-                self.conventional.channels = parsed.channels;
-                self.conventional.channel_file_status =
-                    format!("{n} channel{} read.{}", if n == 1 { "" } else { "s" }, parsed.notes.iter().map(|x| format!(" {x}")).collect::<String>());
+                v.channels = parsed.channels;
+                v.channel_file_status = format!("{n} channel{} read.{}", if n == 1 { "" } else { "s" }, parsed.notes.iter().map(|x| format!(" {x}")).collect::<String>());
                 Ok(())
             }
             Err(e) => {
                 let msg = format!("Channel file {}: {e}", p.display());
-                self.conventional.channel_file_status = msg.clone();
+                v.channel_file_status = msg.clone();
                 Err(msg)
             }
         }
     }
 
-    /// Link the channels to a CSV at `path` (created from the current list
-    /// if it doesn't exist yet), or unlink with "" — the channels then stay
-    /// in the config, as last read.
-    pub fn link_channel_file(&mut self, config_path: &Path, path: &str) -> Result<(), String> {
-        let old = std::mem::replace(&mut self.conventional.channel_file, path.trim().to_string());
-        let Some(p) = self.channel_file_path(config_path) else {
-            self.conventional.channel_file_status.clear();
+    /// Link conventional system `k`'s channels to a CSV at `path` (created
+    /// from its current list if it doesn't exist yet), or unlink with "" —
+    /// the channels then stay in the config, as last read.
+    pub fn link_channel_file(&mut self, k: usize, config_path: &Path, path: &str) -> Result<(), String> {
+        let Some(v) = self.conventional.get_mut(k) else { return Err(format!("No conventional system {}", k + 1)) };
+        let old = std::mem::replace(&mut v.channel_file, path.trim().to_string());
+        let Some(p) = self.channel_file_path(k, config_path) else {
+            self.conventional[k].channel_file_status.clear();
             return Ok(());
         };
         if !p.exists() {
-            let made = p.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::write(&p, crate::channels::write(&self.conventional.channels)));
+            let made = p.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::write(&p, crate::channels::write(&self.conventional[k].channels)));
             if let Err(e) = made {
-                self.conventional.channel_file = old;
+                self.conventional[k].channel_file = old;
                 return Err(format!("Couldn't create {}: {e}", p.display()));
             }
         }
-        if let Err(e) = self.load_channel_file(config_path) {
-            self.conventional.channel_file = old;
+        if let Err(e) = self.load_channel_file(k, config_path) {
+            self.conventional[k].channel_file = old;
             return Err(e);
         }
         Ok(())
     }
 
-    /// The conventional channels that are switched on.
+    /// The conventional channels being recorded: switched on, in a system that is.
     pub fn enabled_channels(&self) -> impl Iterator<Item = &Channel> {
-        self.conventional.channels.iter().filter(|c| c.enabled)
+        self.conventional.iter().filter(|v| v.enabled).flat_map(|v| v.channels.iter().filter(|c| c.enabled))
     }
 
+    /// The engine's conventional channels: each with its system's number,
+    /// and its system's squelch unless it has its own.
     fn engine_channels(&self) -> Vec<ConvChannel> {
-        let chans = &self.conventional.channels;
-        chans.iter().zip(channel_talkgroups(chans)).filter(|(c, _)| c.enabled).map(|(c, tg)| c.engine_channel(tg)).collect()
+        let mut out = Vec::new();
+        for (k, v) in self.conventional.iter().enumerate().filter(|(_, v)| v.enabled) {
+            let tgs = channel_talkgroups(&v.channels);
+            for (c, tg) in v.channels.iter().zip(tgs).filter(|(c, _)| c.enabled) {
+                let mut e = c.engine_channel(tg);
+                e.system = k;
+                e.squelch_db = Some(e.squelch_db.unwrap_or(v.squelch_db));
+                out.push(e);
+            }
+        }
+        out
     }
 
     /// The systems being recorded (enabled, with a control channel), in the
@@ -1007,9 +1041,11 @@ impl Config {
                 (need.iter().chain(&s.voice_channels).copied().collect(), need)
             })
             .collect();
-        let conv: Vec<f64> = self.enabled_channels().map(|c| c.freq_hz).filter(|&f| f > 0.0).collect();
-        if !conv.is_empty() {
-            groups.push((conv.clone(), conv));
+        for v in self.conventional.iter().filter(|v| v.enabled) {
+            let conv: Vec<f64> = v.channels.iter().filter(|c| c.enabled).map(|c| c.freq_hz).filter(|&f| f > 0.0).collect();
+            if !conv.is_empty() {
+                groups.push((conv.clone(), conv));
+            }
         }
         let mut centers: Vec<f64> = self.sources.iter().map(|s| s.center_hz()).collect();
         let covered = |centers: &[f64], f: f64| self.sources.iter().zip(centers).any(|(s, &c)| c > 0.0 && (f - c).abs() <= usable_half_width(s.rate_hz()));
@@ -1073,6 +1109,28 @@ impl Config {
                 return Some(format!("No control channel of {} falls inside any source's bandwidth — move a center frequency or add a source.", s.short_name));
             }
         }
+        let mut conv_names = std::collections::HashSet::new();
+        for v in self.conventional.iter().filter(|v| v.enabled) {
+            if v.short_name.is_empty() {
+                return Some("Every conventional system needs a short name.".into());
+            }
+            if !conv_names.insert(v.short_name.as_str()) {
+                return Some(format!("Two conventional systems are named \"{}\" — each needs its own short name (its folder).", v.short_name));
+            }
+        }
+        if self.conventional.len() > MAX_CONVENTIONAL {
+            return Some(format!("At most {MAX_CONVENTIONAL} conventional systems."));
+        }
+        // A frequency belongs to one conventional system.
+        let mut owner: Vec<(f64, &str)> = Vec::new();
+        for v in self.conventional.iter().filter(|v| v.enabled) {
+            for c in v.channels.iter().filter(|c| c.enabled) {
+                if let Some((_, other)) = owner.iter().find(|(f, o)| (f - c.freq_hz).abs() < 1.0 && *o != v.short_name) {
+                    return Some(format!("Conventional channel {:.5} MHz is in both {other} and {} — a frequency belongs to one conventional system.", c.freq_hz / 1e6, v.short_name));
+                }
+                owner.push((c.freq_hz, &v.short_name));
+            }
+        }
         if self.enabled_channels().any(|c| c.freq_hz <= 0.0) {
             return Some("A conventional channel has no frequency yet.".into());
         }
@@ -1087,20 +1145,33 @@ impl Config {
     }
 
     /// System `s`'s recording rules (None: the conventional channels').
-    pub fn recording_for(&self, s: Option<&System>) -> Recording {
-        self.recording.with(s.map_or(&self.conventional.recording, |s| &s.recording))
+    /// The recording rules of the system a call's `system` names: a trunked
+    /// system's (by the engine's order) or a conventional system's.
+    pub fn recording_of(&self, system: u16) -> Recording {
+        let own = match conventional_index(system) {
+            Some(k) => self.conventional.get(k).map(|v| &v.recording),
+            None => self.active_systems().nth(system as usize).map(|s| &s.recording),
+        };
+        own.map_or_else(|| self.recording.clone(), |o| self.recording.with(o))
+    }
+
+    /// The short name of the system a call's `system` names.
+    pub fn short_name_of(&self, system: u16) -> Option<&str> {
+        match conventional_index(system) {
+            Some(k) => self.conventional.get(k).map(|v| v.short_name.as_str()),
+            None => self.active_systems().nth(system as usize).map(|s| s.short_name.as_str()),
+        }
     }
 
     pub fn engine_config(&self, epoch_ms: f64) -> EngineConfig {
         let centers = self.resolved_centers();
-        let conv = self.recording_for(None);
         let systems: Vec<SystemConfig> = self
             .active_systems()
             .map(|s| SystemConfig {
                 short_name: s.short_name.clone(),
                 control_channels: s.control_channels.clone(),
-                calls: self.recording_for(Some(s)).call_config(),
-                save: self.recording_for(Some(s)).save_rules(),
+                calls: self.recording.with(&s.recording).call_config(),
+                save: self.recording.with(&s.recording).save_rules(),
                 unit_tags: s.unit_names.engine(),
                 bank: s.bank(),
                 talkgroups: parse_csv(&s.talkgroups_csv),
@@ -1110,27 +1181,38 @@ impl Config {
                 site_group: s.site_group.trim().to_string(),
             })
             .collect();
-        // With one system, conventional P25 channels also look up its talkgroup
-        // names and use its receivers.
-        let (conv_talkgroups, conv_bank) = match systems.as_slice() {
-            [one] => (one.talkgroups.clone(), one.bank),
-            _ => (Default::default(), BankConfig::default()),
+        // A conventional system's P25 / DMR channels look up the talkgroup names
+        // of the trunked system with its short name — or of the only one.
+        // With one trunked system, they use its receivers too.
+        let conv_bank = match systems.as_slice() {
+            [one] => one.bank,
+            _ => BankConfig::default(),
         };
+        let conv_systems: Vec<ConvSystem> = self
+            .conventional
+            .iter()
+            .map(|v| {
+                let r = self.recording.with(&v.recording);
+                let named = systems.iter().find(|s| s.short_name == v.short_name).or(if systems.len() == 1 { systems.first() } else { None });
+                ConvSystem {
+                    short_name: v.short_name.clone(),
+                    calls: r.call_config(),
+                    save: r.save_rules(),
+                    talkgroups: named.map(|s| s.talkgroups.clone()).unwrap_or_default(),
+                    unit_tags: v.unit_names.engine(),
+                }
+            })
+            .collect();
         EngineConfig {
             systems,
             sources: self.sources.iter().zip(centers).map(|(s, c)| SourceConfig { center_hz: c, rate_hz: s.rate_hz(), auto_tune: s.auto_tune() }).collect(),
             preroll_s: self.recording.preroll_s,
             max_recorders: self.recording.max_recorders,
-            calls: conv.call_config(),
-            conv_save: conv.save_rules(),
-            conv_unit_tags: self.conventional.unit_names.engine(),
+            conv_systems,
             epoch_ms_at_zero: epoch_ms,
             bank: conv_bank,
             conventional: self.engine_channels(),
-            // A carrier stuck on still ends somewhere.
-            conv: ConvConfig { squelch_db: self.conventional.squelch_db, max_call_s: if conv.max_call_s > 0.0 { conv.max_call_s } else { ConvConfig::default().max_call_s }, ..Default::default() },
-            conv_short_name: self.conventional.short_name.clone(),
-            conv_talkgroups,
+            conv: ConvConfig::default(),
             capture_frames: self.recording.capture_frames,
             drop_duplicates: self.recording.drop_duplicate_calls,
             vocoder: trunk_core::mbe::Profile::from_name(&self.recording.vocoder).unwrap_or(trunk_core::mbe::Profile::Fixed),
@@ -1173,16 +1255,16 @@ mod tests {
         let mut c: Config = serde_json::from_str(
             r#"{
                 "sources": [{ "kind": "rtlsdr", "serial": "", "centerHz": 0, "rateHz": 2400000, "agc": true, "ppm": 0 }],
-                "conventional": { "channels": [
+                "conventional": [{ "channels": [
                     { "freqHz": 154430000, "mode": "fm", "name": "County Fire Dispatch", "talkgroup": 1001 },
                     { "freqHz": 154100000, "mode": "p25", "squelchDb": 12 },
                     { "freqHz": 453000000, "enabled": false }
-                ] }
+                ] }]
             }"#,
         )
         .unwrap();
-        assert_eq!(c.conventional.squelch_db, 8.0);
-        assert_eq!(c.conventional.channels[2].mode, ChannelMode::Fm);
+        assert_eq!(c.conventional[0].squelch_db, 8.0);
+        assert_eq!(c.conventional[0].channels[2].mode, ChannelMode::Fm);
         // No control channels: the centre is placed over the enabled channels.
         assert_eq!(c.problem(), None);
         let center = c.resolved_centers()[0];
@@ -1196,10 +1278,37 @@ mod tests {
         assert_eq!(e.conventional[1].squelch_db, Some(12.0));
         assert!(e.conventional[1].info.is_none());
         // Enabling the far channel no longer fits one dongle.
-        c.conventional.channels[2].enabled = true;
+        c.conventional[0].channels[2].enabled = true;
         assert!(c.problem().unwrap().contains("center frequency"));
-        c.conventional.channels.clear();
+        c.conventional[0].channels.clear();
         assert!(c.problem().unwrap().contains("conventional channel"));
+    }
+
+    #[test]
+    fn several_conventional_systems() {
+        let mut c: Config = serde_json::from_str(
+            r#"{
+                "sources": [{ "kind": "rtlsdr", "serial": "", "centerHz": 0, "rateHz": 2400000, "agc": true, "ppm": 0 }],
+                "conventional": [
+                    { "shortName": "fire", "squelchDb": 10, "channels": [{ "freqHz": 154430000, "mode": "fm" }] },
+                    { "shortName": "police", "recording": { "minCallS": 2 }, "channels": [{ "freqHz": 154100000, "mode": "fm", "squelchDb": 14 }] },
+                    { "shortName": "off", "enabled": false, "channels": [{ "freqHz": 154200000 }] }
+                ]
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(c.problem(), None);
+        let e = c.engine_config(0.0);
+        assert_eq!(e.conventional.iter().map(|x| (x.system, x.squelch_db)).collect::<Vec<_>>(), [(0, Some(10.0)), (1, Some(14.0))]);
+        assert_eq!(e.conv_systems.iter().map(|x| (x.short_name.as_str(), x.save.min_call_s)).collect::<Vec<_>>(), [("fire", 0.0), ("police", 2.0), ("off", 0.0)]);
+        assert_eq!(c.short_name_of(trunk_core::trunk::conventional_system(1)), Some("police"));
+        assert_eq!(c.recording_of(trunk_core::trunk::conventional_system(1)).min_call_s, 2.0);
+        // One frequency, two systems: an error naming both.
+        c.conventional[1].channels[0].freq_hz = 154_430_000.0;
+        assert!(c.problem().unwrap().contains("both fire and police"), "{:?}", c.problem());
+        c.conventional[1].channels[0].freq_hz = 154_100_000.0;
+        c.conventional[1].short_name = "fire".into();
+        assert!(c.problem().unwrap().contains("Two conventional systems"));
     }
 
     #[test]
@@ -1289,19 +1398,19 @@ mod tests {
             tone: tone.into(),
             enabled: true,
         };
-        let mut c = Config::default();
-        c.conventional.channels = vec![row("", None), row("D023N", None), row("151.4", Some(500)), row("94.8", None)];
+        let mut c = Config { conventional: vec![Conventional::default()], ..Default::default() };
+        c.conventional[0].channels = vec![row("", None), row("D023N", None), row("151.4", Some(500)), row("94.8", None)];
         assert_eq!(c.problem(), None);
         let e = c.engine_channels();
         assert_eq!(e.iter().map(|x| x.talkgroup).collect::<Vec<_>>(), vec![154325, 1543251, 500, 1543253]);
         assert_eq!(e[1].access, Some(Access::Tone(trunk_core::dsp::tones::Tone::Dcs(23, false))));
-        c.conventional.channels.push(row("D047I", None));
+        c.conventional[0].channels.push(row("D047I", None));
         assert_eq!(c.problem().as_deref(), Some("Conventional channel 154.32500 MHz has two rows for D023N and D047I (the same signal)."));
-        c.conventional.channels.pop();
-        c.conventional.channels.push(row("", None));
+        c.conventional[0].channels.pop();
+        c.conventional[0].channels.push(row("", None));
         assert!(c.problem().unwrap().contains("listed twice without a tone"));
-        c.conventional.channels.pop();
-        c.conventional.channels.push(row("151.5", None));
+        c.conventional[0].channels.pop();
+        c.conventional[0].channels.push(row("151.5", None));
         assert_eq!(c.problem().as_deref(), Some("Conventional channel 154.32500 MHz: 151.5 Hz isn't a standard CTCSS tone — 151.4?."));
     }
 
@@ -1310,8 +1419,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("trunk-pro-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let cfg_path = dir.join("config.json");
-        let mut c = Config::default();
-        c.conventional.channels = vec![Channel {
+        let mut c = Config { conventional: vec![Conventional::default()], ..Default::default() };
+        c.conventional[0].channels = vec![Channel {
             freq_hz: 154_430_000.0,
             mode: ChannelMode::Fm,
             name: "Fire".into(),
@@ -1324,7 +1433,7 @@ mod tests {
             enabled: true,
         }];
         // Linking a new path writes the current list there.
-        c.link_channel_file(&cfg_path, "channels.csv").unwrap();
+        c.link_channel_file(0, &cfg_path, "channels.csv").unwrap();
         let file = dir.join("channels.csv");
         assert!(std::fs::read_to_string(&file).unwrap().contains("154.4300,,fm,Fire"));
         // Edited in a spreadsheet: re-read.
@@ -1332,22 +1441,22 @@ mod tests {
 154.4300,fm,Fire
 460.125,p25,PD
 ").unwrap();
-        c.load_channel_file(&cfg_path).unwrap();
-        assert_eq!(c.conventional.channels.len(), 2);
-        assert_eq!(c.conventional.channel_file_status, "2 channels read.");
+        c.load_channel_file(0, &cfg_path).unwrap();
+        assert_eq!(c.conventional[0].channels.len(), 2);
+        assert_eq!(c.conventional[0].channel_file_status, "2 channels read.");
         // Saved without the list; loading reads the file again.
         c.save(&cfg_path).unwrap();
         let saved = std::fs::read_to_string(&cfg_path).unwrap();
         assert!(saved.contains("\"channelFile\": \"channels.csv\"") && saved.contains("\"channels\": []"), "{saved}");
-        assert_eq!(Config::load(&cfg_path).unwrap().conventional.channels.len(), 2);
+        assert_eq!(Config::load(&cfg_path).unwrap().conventional[0].channels.len(), 2);
         // A broken file keeps the last good list and says why.
         std::fs::write(&file, "Name\nx\n").unwrap();
-        assert!(c.load_channel_file(&cfg_path).unwrap_err().contains("No Frequency column"));
-        assert_eq!(c.conventional.channels.len(), 2);
+        assert!(c.load_channel_file(0, &cfg_path).unwrap_err().contains("No Frequency column"));
+        assert_eq!(c.conventional[0].channels.len(), 2);
         // Unlinking keeps the channels in the config.
-        c.link_channel_file(&cfg_path, "").unwrap();
+        c.link_channel_file(0, &cfg_path, "").unwrap();
         c.save(&cfg_path).unwrap();
-        assert_eq!(Config::load(&cfg_path).unwrap().conventional.channels.len(), 2);
+        assert_eq!(Config::load(&cfg_path).unwrap().conventional[0].channels.len(), 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

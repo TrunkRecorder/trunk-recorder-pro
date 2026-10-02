@@ -1,10 +1,10 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
-import { activeSystems, formatMhz, startProblem, systemColor, systemWithChannel } from "./config.ts";
+import { activeSystems, enabledChannels, formatMhz, startProblem, systemColor, systemWithChannel } from "./config.ts";
 import { addSite, closeGuide, dismissError, openGuide, downloadCall, pluginOn, quitApp, setListen, setNotice, setView, start, stop, transport, useApp, web, type AppState } from "./controller.ts";
 import { guideWanted, SetupGuide } from "./Onboarding.tsx";
 import { PluginsPage } from "./Plugins.tsx";
 import { BrowserStorage } from "./web/BrowserStorage.tsx";
-import { CONVENTIONAL, type CallEntry, type CallView, type DmrSiteStatus, type SourceStatus, type SystemStatus, type TalkgroupName } from "./protocol.ts";
+import { conventionalSystem, type CallEntry, type CallView, type DmrSiteStatus, type SourceStatus, type SystemStatus, type TalkgroupName } from "./protocol.ts";
 import { Setup } from "./Setup.tsx";
 import { parseTalkgroupCsv } from "./talkgroups.ts";
 import { unitName } from "./units.ts";
@@ -68,7 +68,7 @@ function Unit({ id, alias }: { id: number; alias: string | undefined }) {
  */
 const aliasOf = (s: AppState, system: string, id: number, saved?: string) => {
   const c = s.config;
-  const names = c?.systems.find((x) => x.shortName === system)?.unitNames ?? (c?.conventional.shortName === system ? c.conventional.unitNames : undefined);
+  const names = c?.systems.find((x) => x.shortName === system)?.unitNames ?? c?.conventional.find((x) => x.shortName === system)?.unitNames;
   const heard = () => s.units[system]?.[id] || saved || undefined;
   const user = () => (names?.csv ? unitName(names.csv, id) : undefined);
   switch (names?.mode || "user") {
@@ -107,7 +107,7 @@ function StatusTiles({ s }: { s: AppState }) {
   const srcTrouble = s.sources.some((x) => x.dropped > 0 || x.errors > 0 || (!x.ended && x.rateMeasured > 0 && Math.abs(x.rateMeasured / x.rateHz - 1) > 0.05));
   const maxRecorders = s.config?.recording.maxRecorders ?? 0;
   const trunked = s.config ? activeSystems(s.config).length > 0 : false;
-  const convCount = (s.config?.conventional?.channels ?? []).filter((c) => c.enabled).length;
+  const convCount = s.config ? enabledChannels(s.config).length : 0;
   const one = systems.length === 1 ? systems[0] : null;
   return (
     <>
@@ -465,8 +465,9 @@ function reasonText(c: CallView): string {
 /** The systems calls can come from: each running system, then conventional channels. */
 function systemChoices(s: AppState): { index: number; name: string }[] {
   const out = (s.status?.systems ?? []).map((x) => ({ index: x.index, name: x.shortName }));
-  const conv = s.config && s.config.conventional.channels.some((ch) => ch.enabled);
-  if (conv && s.config) out.push({ index: CONVENTIONAL, name: s.config.conventional.shortName || "conventional" });
+  s.config?.conventional.forEach((v, k) => {
+    if (v.enabled && v.channels.some((ch) => ch.enabled)) out.push({ index: conventionalSystem(k), name: v.shortName || "conventional" });
+  });
   return out;
 }
 

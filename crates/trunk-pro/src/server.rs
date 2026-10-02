@@ -252,7 +252,7 @@ async fn session(ctx: Arc<Ctx>, mut socket: WebSocket) {
             .systems
             .iter()
             .map(|s| &s.short_name)
-            .chain([&config.conventional.short_name])
+            .chain(config.conventional.iter().map(|c| &c.short_name))
             .filter_map(|n| std::fs::read_to_string(crate::runtime::units_path(n)).ok().map(|csv| (n.clone(), Value::String(csv))))
             .collect();
         json!({
@@ -365,11 +365,10 @@ async fn command(ctx: &Arc<Ctx>, v: &Value, listen: &mut Option<Listen>) -> Opti
     match v["type"].as_str()? {
         "setConfig" => match serde_json::from_value::<Config>(v["config"].clone()) {
             Ok(mut c) => {
-                // The channel file is linked with "channelFile", not here; while
-                // linked, the channels are the file's (re-read: a spreadsheet may
-                // have changed it).
-                c.conventional.channel_file = ctx.config.lock().unwrap().conventional.channel_file.clone();
-                let _ = c.load_channel_file(&ctx.config_path);
+                // While linked, a conventional system's channels are its file's
+                // (re-read: a spreadsheet may have changed it). Files are linked
+                // with "channelFile".
+                c.load_channel_files(&ctx.config_path);
                 let saved = c.save(&ctx.config_path);
                 let old = std::mem::replace(&mut *ctx.config.lock().unwrap(), c.clone());
                 if old.log != c.log {
@@ -385,13 +384,14 @@ async fn command(ctx: &Arc<Ctx>, v: &Value, listen: &mut Option<Listen>) -> Opti
             }
             Err(e) => Some(json!({ "type": "error", "message": format!("Bad config: {e}") })),
         },
-        // Link the conventional channels to a CSV (created from the list if
-        // new), reload it (the same path again), or unlink ("").
+        // Link conventional system `index`'s channels to a CSV (created from
+        // its list if new), reload it (the same path again), or unlink ("").
         "channelFile" => {
             let path = v["path"].as_str().unwrap_or("").to_string();
+            let k = v["index"].as_u64().unwrap_or(0) as usize;
             let mut c = ctx.config.lock().unwrap().clone();
-            let r = c.link_channel_file(&ctx.config_path, &path);
-            if r.is_ok() || !c.conventional.channel_file.is_empty() {
+            let r = c.link_channel_file(k, &ctx.config_path, &path);
+            if r.is_ok() || c.conventional.get(k).is_some_and(|x| !x.channel_file.is_empty()) {
                 let saved = c.save(&ctx.config_path);
                 *ctx.config.lock().unwrap() = c.clone();
                 publish(&ctx.hub, json!({ "type": "config", "config": c }));
