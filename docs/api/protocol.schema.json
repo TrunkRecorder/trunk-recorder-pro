@@ -1326,6 +1326,26 @@
         },
         {
           "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "trunk"
+            },
+            "messages": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/TrunkMessage"
+              }
+            }
+          },
+          "required": [
+            "type",
+            "messages"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
           "additionalProperties": false,
           "properties": {
             "system": {
@@ -5131,6 +5151,55 @@
           "additionalProperties": false
         }
       ]
+    },
+    "TrunkMessage": {
+      "type": "object",
+      "properties": {
+        "time": {
+          "type": "number",
+          "description": "Unix seconds."
+        },
+        "system": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "description": "\"grant\", \"affiliation\", \"registration\", \"deregistration\", \"acknowledge\", \"location\", \"data_grant\", \"uu_ans_req\", \"uu_v_grant\", \"call_alert\", \"status\", \"sysid\", \"control_channel\", \"patch_add\", \"patch_delete\", \"adjacent\" …"
+        },
+        "unit": {
+          "type": "number"
+        },
+        "talkgroup": {
+          "type": "number"
+        },
+        "freqHz": {
+          "type": "number"
+        },
+        "slot": {
+          "type": "number"
+        },
+        "encrypted": {
+          "type": "boolean"
+        },
+        "emergency": {
+          "type": "boolean"
+        },
+        "site": {
+          "type": "string",
+          "description": "\"rfss-site\""
+        },
+        "text": {
+          "type": "string",
+          "description": "For kinds the fields don't describe (status, sysid, patches, neighbours)."
+        }
+      },
+      "required": [
+        "time",
+        "system",
+        "kind"
+      ],
+      "additionalProperties": false,
+      "description": "A control channel message, for the trunking view."
     },
     "UnitNames": {
       "type": "object",

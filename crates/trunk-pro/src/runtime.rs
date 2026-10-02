@@ -323,6 +323,7 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Rec
         }
         session.plugin_topics = topics;
         session.want_audio = ctx.hub.receiver_count() > 0 || plugins.as_ref().is_some_and(|p| p.audio);
+        session.want_trunk = ctx.hub.receiver_count() > 0;
         session.poll(now_ms(), &mut out);
         deliver(&ctx, &dir, &mut out, plugins.as_ref(), &fin);
         drop(plugins);

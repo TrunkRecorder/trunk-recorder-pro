@@ -7,6 +7,7 @@ import { PluginsPage } from "./Plugins.tsx";
 import { BrowserStorage } from "./web/BrowserStorage.tsx";
 import { conventionalSystem, type CallEntry, type CallView, type DmrSiteStatus, type SourceStatus, type SystemStatus, type TalkgroupName } from "./protocol.ts";
 import { Setup } from "./Setup.tsx";
+import { OmnitrunkerPage } from "./Omnitrunker.tsx";
 import { StatsPage } from "./Stats.tsx";
 import { Tile } from "./Tile.tsx";
 import { parseTalkgroupCsv } from "./talkgroups.ts";
@@ -840,6 +841,9 @@ export function App() {
             <button className={s.view === "recorder" ? "on" : ""} aria-current={s.view === "recorder" ? "page" : undefined} onClick={() => setView("recorder")}>
               Recorder
             </button>
+            <button className={s.view === "omnitrunker" ? "on" : ""} aria-current={s.view === "omnitrunker" ? "page" : undefined} onClick={() => setView("omnitrunker")}>
+              Omnitrunker
+            </button>
             <button className={s.view === "stats" ? "on" : ""} aria-current={s.view === "stats" ? "page" : undefined} onClick={() => setView("stats")}>
               Stats
             </button>
@@ -908,6 +912,8 @@ export function App() {
           <PluginsPage />
         ) : !web && s.view === "stats" ? (
           <StatsPage />
+        ) : !web && s.view === "omnitrunker" ? (
+          <OmnitrunkerPage />
         ) : running ? (
           <>
             <StatusTiles s={s} />

@@ -778,6 +778,8 @@ export type FromRecorder =
   | { type: "radios"; radios: Radios }
   /** The accounts (admins only). */
   | { type: "accounts"; accounts: Account[] }
+  /** Control channel messages since the last batch (grant updates left out). */
+  | { type: "trunk"; messages: TrunkMessage[] }
   | ({ type: "stats" } & StatsSummary)
   | { type: "statsHistory"; system: string; kind: HistoryKind; id: number; window: StatsWindow; hours: StatsTable }
   | { type: "affiliations"; system: string; view: AffiliationView; search: string; id: number | null; offset: number; total: number; rows: AffiliationRow[] }
@@ -858,6 +860,25 @@ export type ToRecorder =
   /** A page of radios or talkgroups, or (`id`) just that one. */
   | { type: "affiliations"; system: string; systems: string[]; view: AffiliationView; search: string; offset: number; limit: number; id?: number }
   | { type: "affiliationLinks"; system: string; systems: string[]; view: AffiliationView; id: number };
+
+/** A control channel message, for the trunking view. */
+export interface TrunkMessage {
+  /** Unix seconds. */
+  time: number;
+  system: string;
+  /** "grant", "affiliation", "registration", "deregistration", "acknowledge", "location", "data_grant", "uu_ans_req", "uu_v_grant", "call_alert", "status", "sysid", "control_channel", "patch_add", "patch_delete", "adjacent" … */
+  kind: string;
+  unit?: number;
+  talkgroup?: number;
+  freqHz?: number;
+  slot?: number;
+  encrypted?: boolean;
+  emergency?: boolean;
+  /** "rfss-site" */
+  site?: string;
+  /** For kinds the fields don't describe (status, sysid, patches, neighbours). */
+  text?: string;
+}
 
 /** "restart": since the recorder started. */
 export type StatsWindow = "restart" | "24h" | "7d" | "30d" | "all";

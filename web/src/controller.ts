@@ -8,6 +8,7 @@ import type {
   Access,
   Account,
   AffiliationLink,
+  TrunkMessage,
   AffiliationRow,
   AffiliationView,
   HistoryKind,
@@ -110,6 +111,8 @@ export interface AppState {
   access: Access | null;
   /** The accounts, when an admin has asked. */
   accounts: Account[] | null;
+  /** Control channel messages, newest last (the trunking view's buffer). */
+  trunk: TrunkMessage[];
   /** The statistics last asked for. */
   stats: StatsSummary | null;
   statsHistory: { system: string; kind: HistoryKind; id: number; window: StatsWindow; hours: StatsTable } | null;
@@ -119,10 +122,11 @@ export interface AppState {
 
 export type SetupTab = "systems" | "conventional" | "radios" | "recording" | "plugins" | "accounts";
 
-export type View = "recorder" | "stats" | "plugins";
+export type View = "recorder" | "stats" | "omnitrunker" | "plugins";
 
 function viewFromHash(): View {
-  return location.hash === "#plugins" ? "plugins" : location.hash === "#stats" ? "stats" : "recorder";
+  const h = location.hash.slice(1);
+  return h === "plugins" || h === "stats" || h === "omnitrunker" ? h : "recorder";
 }
 
 // Remembered in this browser (read while the state below is built, so declared first).
@@ -172,6 +176,7 @@ let state: AppState = {
   setupTab: loadSetupTab(),
   access: null,
   accounts: null,
+  trunk: [],
   stats: null,
   statsHistory: null,
   affiliations: null,
@@ -318,6 +323,11 @@ transport.onMessage = (m: FromRecorder) => {
     case "accounts":
       set({ accounts: m.accounts });
       break;
+    case "trunk": {
+      const fresh = m.messages.filter(firstHeard);
+      if (fresh.length) set({ trunk: [...state.trunk, ...fresh].slice(-TRUNK_KEPT) });
+      break;
+    }
     case "stats": {
       const { type: _, ...stats } = m;
       set({ stats });
@@ -378,6 +388,30 @@ export function setAccountPassword(name: string, password: string): void {
 export function changePassword(old: string, password: string): void {
   transport.send({ type: "changePassword", old, password });
 }
+// ── trunking view ────────────────────────────────────────────────────────────
+
+/** Control channel messages kept in this browser. */
+export const TRUNK_KEPT = 2000;
+
+// The control channel repeats a message (each grant several times): a repeat
+// within this long is left out.
+const REPEAT_S = 3;
+const lastHeard = new Map<string, number>();
+
+function firstHeard(m: TrunkMessage): boolean {
+  const key = `${m.system}|${m.kind}|${m.unit ?? ""}|${m.talkgroup ?? ""}|${m.freqHz ?? ""}|${m.slot ?? ""}|${m.text ?? ""}`;
+  const prev = lastHeard.get(key);
+  lastHeard.set(key, m.time);
+  if (lastHeard.size > 5000) {
+    for (const [k, t] of lastHeard) if (m.time - t > REPEAT_S) lastHeard.delete(k);
+  }
+  return prev === undefined || m.time - prev > REPEAT_S;
+}
+
+export function clearTrunk(): void {
+  set({ trunk: [] });
+}
+
 // ── statistics ───────────────────────────────────────────────────────────────
 
 export function fetchStats(t: StatsTarget, window: StatsWindow): void {
@@ -466,7 +500,7 @@ export function currentView(): View {
 }
 
 export function setView(view: View): void {
-  const hash = view === "plugins" ? "#plugins" : view === "stats" ? "#stats" : "";
+  const hash = view === "recorder" ? "" : `#${view}`;
   if (location.hash !== hash) history.pushState(null, "", hash || location.pathname + location.search);
   set({ view });
 }

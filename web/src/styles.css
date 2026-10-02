@@ -802,3 +802,24 @@ input.ob-picker-path:hover, input.ob-picker-path:focus { border-color: var(--lin
 .chart .u-legend { font-size: 12px; color: var(--muted); }
 .chart .u-legend .u-marker { border-radius: 2px; }
 .stats .table-scroll > .btn { margin-top: 10px; }
+
+/* Omnitrunker */
+.omni-controls { gap: 8px; flex-wrap: wrap; }
+.omni-controls select { background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; color: inherit; font: inherit; font-size: 13px; }
+.omni-messages { max-height: 70vh; overflow-y: auto; }
+.omni-messages thead th { position: sticky; top: 0; background: var(--panel); z-index: 1; }
+.omni-table td { font-size: 13px; }
+.omni-kind { display: inline-block; padding: 1px 7px; border-radius: 4px; font-size: 12px; font-weight: 600; background: var(--panel-2); color: var(--muted); }
+.omni-kind-grant, .omni-kind-uu_v_grant { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
+.omni-kind-affiliation { background: color-mix(in srgb, var(--sys-2) 18%, transparent); color: var(--sys-2); }
+.omni-kind-registration { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
+.omni-kind-deregistration { background: color-mix(in srgb, var(--sys-4) 18%, transparent); color: var(--sys-4); }
+.omni-kind-location { background: color-mix(in srgb, var(--sys-5) 18%, transparent); color: var(--sys-5); }
+.omni-kind-patch_add, .omni-kind-patch_delete, .omni-kind-call_alert { background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); }
+.omni-badge { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+.omni-badge.enc { background: color-mix(in srgb, var(--warn) 20%, transparent); color: var(--warn); }
+.omni-badge.emer { background: color-mix(in srgb, var(--bad) 22%, transparent); color: var(--bad); }
+.omni-badge.rec { background: color-mix(in srgb, var(--rec) 18%, transparent); color: var(--rec); }
+/* The first thing in its cell lines up with the column. */
+.omni-badge:first-child { margin-left: 0; }
+.omni-emergency td { background: color-mix(in srgb, var(--bad) 8%, transparent); }

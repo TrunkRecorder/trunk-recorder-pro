@@ -154,6 +154,14 @@ are those the vocoder repeated or muted.
 Everything is kept in `stats.db` beside the config (SQLite, readable by its
 owner only), with a daily copy in `stats.db.bak`.
 
+### Omnitrunker
+
+The **Omnitrunker** page shows the voice channels in use (talkgroup, the radio
+talking, how long, FDMA or TDMA slot, encrypted) and the control channels'
+messages as they're decoded: grants, affiliations, registrations, patches and
+so on, with talkgroup and radio names. It shows radio activity at first; the
+site's own broadcasts (neighbours, system ID, status) are a choice away.
+
 The interface has no HTTPS of its own: to reach it over the internet, put it
 behind a reverse proxy that adds HTTPS (or use `ssh -L 8080:localhost:8080`).
 
