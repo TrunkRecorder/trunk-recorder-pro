@@ -39,8 +39,14 @@ impl Default for BankConfig {
     }
 }
 
+/// CQPSK receivers are kept as such so they can share a matched filter.
+enum Demod {
+    Cqpsk(Box<Cqpsk>),
+    Other(Box<dyn Receiver + Send>),
+}
+
 struct Rx {
-    demod: Box<dyn Receiver + Send>,
+    demod: Demod,
     framer: Framer,
     /// Sample instant of the latest symbol.
     progress: f64,
@@ -61,6 +67,8 @@ pub struct Bank {
     last_released: Option<f64>,
     syms: Vec<Symbol>,
     new_frames: Vec<Frame>,
+    /// The lead CQPSK receiver's matched filter output for this push.
+    filtered: [Vec<f32>; 2],
     pub groups: u64,
 }
 
@@ -72,15 +80,15 @@ impl Bank {
     /// With the C4FM receiver's variant options (weak-signal comparisons).
     pub fn with_c4fm(rate: f64, cfg: BankConfig, c4fm: C4fmOptions) -> Self {
         let mut rx = Vec::new();
-        let mut add = |d: Box<dyn Receiver + Send>| rx.push(Rx { demod: d, framer: Framer::new(cfg.framer), progress: 0.0, frames: 0 });
+        let mut add = |d: Demod| rx.push(Rx { demod: d, framer: Framer::new(cfg.framer), progress: 0.0, frames: 0 });
         if cfg.cqpsk {
-            add(Box::new(Cqpsk::new(rate, cqpsk::Options::default())));
+            add(Demod::Cqpsk(Box::new(Cqpsk::new(rate, cqpsk::Options::default()))));
         }
         if cfg.cqpsk_eq {
-            add(Box::new(Cqpsk::new(rate, cqpsk::Options { eq_taps: cfg.eq_taps, eq_mu: cfg.eq_mu, ..Default::default() })));
+            add(Demod::Cqpsk(Box::new(Cqpsk::new(rate, cqpsk::Options { eq_taps: cfg.eq_taps, eq_mu: cfg.eq_mu, ..Default::default() }))));
         }
         if cfg.c4fm {
-            add(Box::new(C4fm::with_options(rate, c4fm)));
+            add(Demod::Other(Box::new(C4fm::with_options(rate, c4fm))));
         }
         Bank {
             rx,
@@ -93,15 +101,31 @@ impl Bank {
             last_released: None,
             syms: Vec::new(),
             new_frames: Vec::new(),
+            filtered: Default::default(),
             groups: 0,
         }
     }
 
     /// Feed channel IQ; groups that are complete are appended to `out`, in time order.
     pub fn push(&mut self, iq: &[Complex32], out: &mut Vec<Group>) {
-        for r in &mut self.rx {
+        // The first CQPSK receiver's matched filter output serves the others
+        // that filter the same way (it is most of their work).
+        let mut lead: Option<usize> = None;
+        for i in 0..self.rx.len() {
+            let (before, rest) = self.rx.split_at_mut(i);
+            let r = &mut rest[0];
             self.syms.clear();
-            r.demod.push(iq, &mut self.syms);
+            match &mut r.demod {
+                Demod::Cqpsk(c) => match lead.map(|j| &before[j].demod) {
+                    Some(Demod::Cqpsk(l)) if l.same_front(c) => c.push_filtered(&self.filtered[0], &self.filtered[1], &mut self.syms),
+                    Some(_) => c.push(iq, &mut self.syms),
+                    None => {
+                        c.push_sharing(iq, &mut self.filtered, &mut self.syms);
+                        lead = Some(i);
+                    }
+                },
+                Demod::Other(d) => d.push(iq, &mut self.syms),
+            }
             if let Some(s) = self.syms.last() {
                 r.progress = s.sample;
             }

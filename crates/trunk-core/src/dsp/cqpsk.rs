@@ -354,8 +354,37 @@ impl Cqpsk {
     }
 }
 
-impl Receiver for Cqpsk {
-    fn push(&mut self, iq: &[Complex32], out: &mut Vec<Symbol>) {
+impl Cqpsk {
+    /// Whether `other` filters the same way (sample rate, symbol rate):
+    /// given the same IQ, its matched filter output is this one's.
+    pub fn same_front(&self, other: &Cqpsk) -> bool {
+        self.sps == other.sps && self.taps == other.taps
+    }
+
+    /// [`Receiver::push`], also handing the matched filter output for `iq`
+    /// to `share` (replacing what it held), for [`Cqpsk::push_filtered`].
+    pub fn push_sharing(&mut self, iq: &[Complex32], share: &mut [Vec<f32>; 2], out: &mut Vec<Symbol>) {
+        self.front(iq);
+        let at = self.yi.len() - iq.len();
+        for (s, y) in share.iter_mut().zip([&self.yi, &self.yq]) {
+            s.clear();
+            s.extend_from_slice(&y[at..]);
+        }
+        self.gardner(out);
+    }
+
+    /// As [`Receiver::push`], but taking the matched filter output from a
+    /// receiver with the [`Cqpsk::same_front`] that was pushed the same IQ
+    /// ([`Cqpsk::push_sharing`]) instead of filtering again. (A receiver
+    /// must be fed one way only: this one's own front end stands still.)
+    pub fn push_filtered(&mut self, yi: &[f32], yq: &[f32], out: &mut Vec<Symbol>) {
+        self.yi.extend_from_slice(yi);
+        self.yq.extend_from_slice(yq);
+        self.gardner(out);
+    }
+
+    /// Steps 1–3: carrier, derotation, matched filter → yi / yq.
+    fn front(&mut self, iq: &[Complex32]) {
         let n = iq.len();
         // 1. Carrier offset: smoothed power-weighted mean phase increment.
         let (mut br, mut bi) = (0.0f64, 0.0f64);
@@ -388,6 +417,12 @@ impl Receiver for Cqpsk {
         }
         self.xi.drain(..n);
         self.xq.drain(..n);
+    }
+}
+
+impl Receiver for Cqpsk {
+    fn push(&mut self, iq: &[Complex32], out: &mut Vec<Symbol>) {
+        self.front(iq);
         // 4. Timing and detection.
         self.gardner(out);
     }

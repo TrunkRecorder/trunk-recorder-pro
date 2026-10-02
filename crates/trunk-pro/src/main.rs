@@ -72,6 +72,7 @@ pub use trunk_app::config;
 
 use std::collections::HashMap;
 use std::fs;
+use std::io::Read;
 use std::path::Path;
 use std::time::Instant;
 
@@ -351,9 +352,19 @@ fn replay(a: &Args) {
         }
     }
 
-    let data: Vec<Vec<u8>> = files.iter().map(|f| fs::read(f).unwrap_or_else(|e| die(&format!("{f}: {e}")))).collect();
+    // Streamed from disk, not read whole: a long capture is gigabytes (a
+    // small Raspberry Pi has 1–2 GB of memory).
+    let mut data: Vec<(fs::File, usize)> = files
+        .iter()
+        .map(|f| {
+            let h = fs::File::open(f).unwrap_or_else(|e| die(&format!("{f}: {e}")));
+            let len = h.metadata().map(|m| m.len() as usize).unwrap_or_else(|e| die(&format!("{f}: {e}")));
+            (h, len)
+        })
+        .collect();
     let rate0 = engine.sources()[0].rate_hz;
-    let air_s = (data[0].len() / formats[0].bytes_per_sample()) as f64 / rate0;
+    let air_s = (data[0].1 / formats[0].bytes_per_sample()) as f64 / rate0;
+    let mut buf = Vec::new();
     let t0 = Instant::now();
     // Interleave the sources in ~13.6 ms chunks (rtl_sdr's 32768-sample transfers
     // at 2.4 MSPS), so their clocks advance together as they would live.
@@ -362,14 +373,16 @@ fn replay(a: &Args) {
     let mut written = 0;
     loop {
         let mut any = false;
-        for (i, d) in data.iter().enumerate() {
+        for (i, (file, len)) in data.iter_mut().enumerate() {
             let bps = formats[i].bytes_per_sample();
             let n = ((engine.sources()[i].rate_hz * chunk_s) as usize) * bps;
-            let end = (pos[i] + n).min(d.len() - d.len() % bps);
+            let end = (pos[i] + n).min(*len - *len % bps);
             if pos[i] < end {
+                buf.resize(end - pos[i], 0);
+                file.read_exact(&mut buf).unwrap_or_else(|e| die(&format!("{}: {e}", files[i])));
                 match formats[i] {
-                    config::SampleFormat::Cu8 => engine.push_u8(i, &d[pos[i]..end]),
-                    f => engine.push_iq(i, &trunk_app::samples::to_iq(f, &d[pos[i]..end])),
+                    config::SampleFormat::Cu8 => engine.push_u8(i, &buf),
+                    f => engine.push_iq(i, &trunk_app::samples::to_iq(f, &buf)),
                 }
                 pos[i] = end;
                 any = true;

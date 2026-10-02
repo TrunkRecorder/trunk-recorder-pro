@@ -133,6 +133,10 @@ pub struct C4fm {
     steps: usize,
     last: Complex32,
     hist: VecDeque<f32>,
+    /// Matched filter input (with taps): the last taps−1 samples already
+    /// filtered (`fx_done` of them), then those waiting for [`C4fm::filter`].
+    fx: Vec<f32>,
+    fx_done: usize,
     acc: f64,
     y: Vec<f32>,
     y_base: u64,
@@ -209,6 +213,8 @@ impl C4fm {
             steps: ((sps * 2.0).round() as usize).max(8),
             last: Complex32::default(),
             hist: VecDeque::new(),
+            fx: Vec::new(),
+            fx_done: 0,
             acc: 0.0,
             y: Vec::new(),
             y_base: 0,
@@ -457,6 +463,42 @@ impl C4fm {
     }
 }
 
+impl C4fm {
+    /// Matched filter (with taps) over the samples waiting in `fx`, onto `y`:
+    /// each output Σ x·tap from the oldest sample, as a plain sum would
+    /// (from −0.0, unfused), so the result is exact — but eight outputs at
+    /// a time, one per SIMD lane, instead of one long dependent chain.
+    fn filter(&mut self) {
+        let Some(t) = &self.taps else { return };
+        let (tl, x) = (t.len(), &self.fx);
+        let mut j = self.fx_done;
+        // Until there are taps−1 samples before it, an output sums fewer.
+        while j < x.len() && j + 1 < tl {
+            let off = tl - (j + 1);
+            self.y.push(x[..=j].iter().zip(&t[off..]).map(|(a, b)| a * b).sum());
+            j += 1;
+        }
+        const W: usize = 8;
+        while j + W <= x.len() {
+            let mut acc = [-0.0f32; W];
+            for (k, &tk) in t.iter().enumerate() {
+                let xs = &x[j + 1 + k - tl..][..W];
+                for l in 0..W {
+                    acc[l] += xs[l] * tk;
+                }
+            }
+            self.y.extend_from_slice(&acc);
+            j += W;
+        }
+        for j in j..x.len() {
+            self.y.push(x[j + 1 - tl..=j].iter().zip(t).map(|(a, b)| a * b).sum());
+        }
+        let keep = (tl - 1).min(x.len());
+        self.fx.drain(..x.len() - keep);
+        self.fx_done = keep;
+    }
+}
+
 impl Receiver for C4fm {
     /// The symbol levels' centre: the discriminator reads the carrier's
     /// offset there. Only once the levels are clean.
@@ -488,6 +530,8 @@ impl Receiver for C4fm {
                 self.floor = self.floors.iter().copied().fold(f32::INFINITY, f32::min);
                 let bursty = self.peak > BURSTY * self.floor;
                 if bursty && !self.bursty {
+                    // (It re-times blocks from the filtered signal so far.)
+                    self.filter();
                     self.burst_began();
                 }
                 self.bursty = bursty;
@@ -506,25 +550,18 @@ impl Receiver for C4fm {
             if self.is_quiet(self.env) {
                 f = self.center;
             }
-            self.hist.push_back(f);
-            match &self.taps {
-                None => {
-                    self.acc += f as f64;
-                    if self.hist.len() > self.boxw {
-                        self.acc -= self.hist.pop_front().unwrap() as f64;
-                    }
-                    self.y.push((self.acc / self.hist.len() as f64) as f32);
-                }
-                Some(t) => {
-                    if self.hist.len() > t.len() {
-                        self.hist.pop_front();
-                    }
-                    let off = t.len() - self.hist.len();
-                    let v: f32 = self.hist.iter().zip(&t[off..]).map(|(a, b)| a * b).sum();
-                    self.y.push(v);
-                }
+            if self.taps.is_some() {
+                self.fx.push(f);
+                continue;
             }
+            self.hist.push_back(f);
+            self.acc += f as f64;
+            if self.hist.len() > self.boxw {
+                self.acc -= self.hist.pop_front().unwrap() as f64;
+            }
+            self.y.push((self.acc / self.hist.len() as f64) as f32);
         }
+        self.filter();
         while ((self.y_base + self.y.len() as u64) as f64) > ((self.next_block + 1) * self.opts.block) as f64 * self.sps + self.sps + 2.0 {
             self.block_phase(self.next_block);
             self.next_block += 1;
