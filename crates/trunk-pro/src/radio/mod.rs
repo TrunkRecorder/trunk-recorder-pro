@@ -1,10 +1,12 @@
-//! Radios whose drivers are vendor C libraries — USRP (UHD) and Airspy
-//! (libairspy). Nothing links against them: each library is looked for at
-//! run time, so the same binary records from RTL-SDRs out of the box and
-//! from these once their driver is installed. `TRUNK_PRO_UHD` /
-//! `TRUNK_PRO_AIRSPY` name a library file to use instead of searching.
+//! Radios whose drivers are vendor C libraries — USRP (UHD), Airspy
+//! (libairspy) and anything with a SoapySDR module. Nothing links against
+//! them: each library is looked for at run time, so the same binary records
+//! from RTL-SDRs out of the box and from these once their driver is
+//! installed. `TRUNK_PRO_UHD` / `TRUNK_PRO_AIRSPY` / `TRUNK_PRO_SOAPY` name a
+//! library file to use instead of searching.
 
 pub mod airspy;
+pub mod soapy;
 pub mod uhd;
 
 use std::path::PathBuf;
@@ -13,12 +15,19 @@ use libloading::Library;
 
 /// Open the first library that loads: `env` if set, else each candidate
 /// name (the system's search path), else versioned files in the usual
-/// install folders (`lib<stem>.so.<version>`, highest first).
-pub fn load(env: &str, names: &[&str], stem: &str) -> Result<(Library, String), String> {
-    fn try_one(p: &str) -> Result<Library, String> {
+/// install folders (`lib<stem>.so.<version>`, highest first). `global`: its
+/// symbols resolve the plug-ins it loads itself (SoapySDR's modules).
+pub fn load(env: &str, names: &[&str], stem: &str, global: bool) -> Result<(Library, String), String> {
+    let try_one = |p: &str| -> Result<Library, String> {
         // SAFETY: loading a vendor driver runs its initialisers; that is the point.
+        #[cfg(unix)]
+        if global {
+            use libloading::os::unix::{Library as Unix, RTLD_GLOBAL, RTLD_NOW};
+            return unsafe { Unix::open(Some(p), RTLD_NOW | RTLD_GLOBAL) }.map(Library::from).map_err(|e| e.to_string());
+        }
+        let _ = global;
         unsafe { Library::new(p) }.map_err(|e| e.to_string())
-    }
+    };
     if let Ok(p) = std::env::var(env) {
         return try_one(&p).map(|l| (l, p.clone())).map_err(|e| format!("{env}={p}: {e}"));
     }
@@ -75,21 +84,24 @@ pub fn candidates(unix_name: &str, mac_name: &str, win_names: &[&'static str]) -
 }
 
 /// Drivers and the devices found through them, for the interface:
-/// `{usrp: {available, detail, devices}, airspy: {…}}`. USRPs are searched
-/// only with `find_usrp` (a device search can take seconds).
-pub fn radios_json(find_usrp: bool) -> serde_json::Value {
+/// `{usrp: {available, detail, devices}, airspy: {…}, soapy: {…, modules}}`.
+/// USRPs and SoapySDR devices are searched only with `search` (a device
+/// search can take seconds).
+pub fn radios_json(search: bool) -> serde_json::Value {
     let u = uhd::info();
-    let usrp_devices: serde_json::Value = if find_usrp && u.loaded {
+    let mut uj = u.json();
+    uj["devices"] = if search && u.loaded {
         match uhd::find("") {
             Ok(v) => v.iter().map(|s| serde_json::json!({ "args": usrp_args(s), "label": usrp_label(s) })).collect(),
-            Err(e) => return serde_json::json!({ "usrp": { "available": true, "detail": e, "devices": [] }, "airspy": airspy_json() }),
+            Err(e) => {
+                uj["detail"] = serde_json::json!(e);
+                serde_json::json!([])
+            }
         }
     } else {
         serde_json::Value::Null
     };
-    let mut uj = u.json();
-    uj["devices"] = usrp_devices;
-    serde_json::json!({ "usrp": uj, "airspy": airspy_json() })
+    serde_json::json!({ "usrp": uj, "airspy": airspy_json(), "soapy": soapy::json(search) })
 }
 
 fn airspy_json() -> serde_json::Value {

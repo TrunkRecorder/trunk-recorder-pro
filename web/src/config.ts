@@ -47,6 +47,11 @@ export function newUsrp(): Source {
 export function newAirspy(): Source {
   return { kind: "airspy", serial: "", centerHz: 0, rateHz: 6_000_000, gain: 14, biasTee: false, ppm: 0 };
 }
+/** Offered for SoapySDR devices; any rate the device takes can be typed. */
+export const SOAPY_RATES = [2_000_000, 2_400_000, 2_500_000, 3_000_000, 6_000_000, 8_000_000, 10_000_000];
+export function newSoapy(): Source {
+  return { kind: "soapy", args: "", centerHz: 0, rateHz: 8_000_000, gainDb: null, gains: "", antenna: "", settings: "", ppm: 0 };
+}
 export function newFile(): Source {
   return { kind: "file", path: "", centerHz: 0, rateHz: 2_400_000, realtime: true, format: "cu8" };
 }
@@ -97,6 +102,7 @@ function dmrImport(sys: Record<string, unknown>): Partial<System> {
 export function normalizeSystem(x: Partial<System>): System {
   return {
     shortName: x.shortName ?? "sys1",
+    ...(x.name?.trim() ? { name: x.name } : {}),
     type: x.type === "smartnet" ? "smartnet" : x.type === "dmr" ? "dmr" : "p25",
     ...(x.type === "dmr"
       ? {
@@ -506,14 +512,169 @@ export function formatMhz(hz: number, digits = 5): string {
   return (hz / 1e6).toFixed(digits);
 }
 
+/** osmosdr device strings → SoapySDR's driver names, for radios with no source of their own here. */
+const OSMOSDR_DRIVERS: Record<string, string> = {
+  hackrf: "hackrf",
+  bladerf: "bladerf",
+  airspyhf: "airspyhf",
+  lime: "lime",
+  limesdr: "lime",
+  sdrplay: "sdrplay",
+  plutosdr: "plutosdr",
+  redpitaya: "redpitaya",
+  xtrx: "xtrx",
+};
+
+/**
+ * A Trunk Recorder osmosdr device string → SoapySDR device arguments, or null
+ * when it's a radio with its own source (rtl=, airspy=, uhd). "soapy=0,driver=sdrplay"
+ * keeps its arguments; "hackrf=0" → "driver=hackrf"; "hackrf=0000000000000000a06063c8"
+ * → "driver=hackrf,serial=…". Other osmosdr options (bias=1, buffers=…) are left out.
+ */
+export function osmosdrToSoapy(dev: string): string | null {
+  const parts = dev.split(",").map((p) => p.trim()).filter(Boolean);
+  const [key, value = ""] = (parts[0] ?? "").split("=");
+  if (key.toLowerCase() === "soapy") return parts.slice(1).join(",");
+  const driver = OSMOSDR_DRIVERS[key.toLowerCase()];
+  if (!driver) return null;
+  // A small number is osmosdr's device index; anything longer is a serial.
+  return /^\d{1,2}$/.test(value) || value === "" ? `driver=${driver}` : `driver=${driver},serial=${value}`;
+}
+
+/**
+ * Something an import couldn't finish, for the user to (the setup form
+ * highlights it until it's done). Systems are named by short name.
+ */
+export type ImportTodo =
+  /** Its talkgroup file wasn't loaded. */
+  | { kind: "talkgroups"; system: string; file: string }
+  /** A conventional channel file wasn't loaded; `had` channels were imported without it. */
+  | { kind: "channels"; file: string; had: number }
+  /** Trunk Recorder's siteId: a Site lock to fill in. */
+  | { kind: "siteLock"; system: string; siteId: string }
+  /** An RTL-SDR that wasn't free when imported (`serial` as configured). */
+  | { kind: "source"; index: number; serial: string }
+  /** A source whose driver isn't installed here. */
+  | { kind: "driver"; index: number; driver: "usrp" | "airspy" | "soapy" }
+  /** Conventional squelch means something else here. */
+  | { kind: "squelch" }
+  /** Trunk Recorder plugins with no counterpart here. */
+  | { kind: "plugins"; names: string[] }
+  /** A plugin whose settings came over: to add (install) and turn on. */
+  | { kind: "plugin"; id: string; name: string }
+  /** No source covers any of the system's control channels. */
+  | { kind: "coverage"; system: string };
+
+/** A plugin's settings brought over from Trunk Recorder: as the Plugins page keeps them, by plugin id. */
+export interface PluginImport {
+  id: string;
+  name: string;
+  config: Record<string, unknown>;
+  /** By short name, as imported. */
+  systems: Record<string, Record<string, unknown>>;
+}
+
+/**
+ * Trunk Recorder's uploaders and streamers, as this app's plugins: OpenMHz
+ * and Broadcastify keys on the systems (and their servers at the top),
+ * uploadScript, and the rdioscanner, openmhz, broadcastify and simplestream
+ * entries of `plugins`. `names`: Trunk Recorder short name → short name here;
+ * `imported`: each of its systems → its short name here (keys follow the system, even renamed).
+ * Plugins with nothing like them here come back in `other`.
+ */
+function trPlugins(j: Record<string, unknown>, names: Map<string, string>, imported: Map<unknown, string>): { plugins: PluginImport[]; other: string[] } {
+  const out = new Map<string, PluginImport>();
+  const other: string[] = [];
+  const plugin = (id: string, name: string) => out.get(id) ?? out.set(id, { id, name, config: {}, systems: {} }).get(id)!;
+  const str = (v: unknown) => (typeof v === "string" ? v.trim() : typeof v === "number" ? String(v) : "");
+  const num = (v: unknown) => (typeof v === "number" ? v : typeof v === "string" && /^\d+$/.test(v.trim()) ? Number(v) : undefined);
+  const short = (v: unknown) => names.get(str(v)) ?? str(v);
+  /** A system's settings, leaving out the empty ones. */
+  const forSystem = (p: PluginImport, sys: unknown, values: Record<string, unknown>, name = short(sys)) => {
+    const kept = Object.fromEntries(Object.entries(values).filter(([, v]) => v !== undefined && v !== ""));
+    if (name && Object.keys(kept).length) p.systems[name] = { ...p.systems[name], ...kept };
+  };
+  const list = <T,>(v: unknown) => (Array.isArray(v) ? (v as T[]) : []);
+  // Built in to Trunk Recorder: keys on each system, servers at the top.
+  for (const sys of list<Record<string, unknown>>(j.systems)) {
+    const here = imported.get(sys);
+    if (here === undefined) continue;
+    if (str(sys.apiKey)) forSystem(plugin("openmhz", "OpenMHz"), null, { apiKey: str(sys.apiKey), systemName: str(sys.openmhzSystemId) }, here);
+    if (str(sys.broadcastifyApiKey)) forSystem(plugin("broadcastify", "Broadcastify Calls"), null, { apiKey: str(sys.broadcastifyApiKey), systemId: num(sys.broadcastifySystemId) }, here);
+    if (str(sys.uploadScript)) forSystem(plugin("upload-script", "Upload script"), null, { script: str(sys.uploadScript) }, here);
+  }
+  if (out.has("openmhz") && str(j.uploadServer)) plugin("openmhz", "OpenMHz").config.server = str(j.uploadServer);
+  if (out.has("broadcastify")) {
+    const b = plugin("broadcastify", "Broadcastify Calls");
+    if (str(j.broadcastifyCallsServer)) b.config.server = str(j.broadcastifyCallsServer);
+    if (j.broadcastifySslVerifyDisable === true) b.config.skipCertificateCheck = true;
+  }
+  for (const pl of list<Record<string, unknown>>(j.plugins)) {
+    const what = `${str(pl.name)} ${str(pl.library)}`.toLowerCase();
+    if (pl.enabled === false) continue;
+    const systems = list<Record<string, unknown>>(pl.systems);
+    if (/rdio/.test(what)) {
+      const p = plugin("rdioscanner", "Rdio Scanner");
+      if (str(pl.server)) p.config.server = str(pl.server);
+      for (const x of systems) forSystem(p, x.shortName, { apiKey: str(x.apiKey), systemId: num(x.systemId) });
+    } else if (/openmhz/.test(what)) {
+      const p = plugin("openmhz", "OpenMHz");
+      if (str(pl.server ?? pl.uploadServer)) p.config.server = str(pl.server ?? pl.uploadServer);
+      for (const x of systems) forSystem(p, x.shortName, { apiKey: str(x.apiKey), systemName: str(x.openmhzSystemId) });
+    } else if (/broadcastify/.test(what)) {
+      const p = plugin("broadcastify", "Broadcastify Calls");
+      if (str(pl.broadcastifyCallsServer ?? pl.server)) p.config.server = str(pl.broadcastifyCallsServer ?? pl.server);
+      if (pl.broadcastifySslVerifyDisable === true) p.config.skipCertificateCheck = true;
+      for (const x of systems) forSystem(p, x.shortName, { apiKey: str(x.apiKey ?? x.broadcastifyApiKey), systemId: num(x.systemId ?? x.broadcastifySystemId) });
+    } else if (/simplestream/.test(what)) {
+      const streams = list<Record<string, unknown>>(pl.streams).map((st) => ({
+        url: str(st.url) || `${st.useTCP === true ? "tcp" : "udp"}://${str(st.address) || "127.0.0.1"}:${num(st.port) ?? 9123}`,
+        TGID: num(st.TGID) ?? 0,
+        shortName: st.shortName ? short(st.shortName) : "",
+        sendTGID: st.sendTGID === true,
+        sendJSON: st.sendJSON === true,
+        sendCallStart: st.sendCallStart === true,
+        sendCallEnd: st.sendCallEnd === true,
+      }));
+      if (streams.length) plugin("simplestream", "Simple stream").config.streams = streams;
+    } else other.push(str(pl.name) || str(pl.library).replace(/^lib|\.(so|dylib|dll)$/g, "") || "plugin");
+  }
+  return { plugins: [...out.values()], other };
+}
+
+/** The talkgroup and channel files a Trunk Recorder config.json names, as it names them. */
+export function trConfigFiles(text: string): { file: string; kind: "talkgroups" | "channels"; system: string }[] {
+  const j = JSON.parse(text) as { systems?: Record<string, unknown>[] };
+  const out: { file: string; kind: "talkgroups" | "channels"; system: string }[] = [];
+  for (const sys of j.systems ?? []) {
+    const name = typeof sys.shortName === "string" ? sys.shortName : "";
+    if (typeof sys.talkgroupsFile === "string" && sys.talkgroupsFile) out.push({ file: sys.talkgroupsFile, kind: "talkgroups", system: name });
+    if (typeof sys.channelFile === "string" && sys.channelFile) out.push({ file: sys.channelFile, kind: "channels", system: name });
+  }
+  return out;
+}
+
+/** "talkgroups/dc.csv" → "dc.csv". */
+const baseName = (path: string) => path.split(/[\\/]/).pop() ?? path;
+
 /**
  * Import a Trunk Recorder config.json: its sources (one per dongle / SDR),
  * every P25 system (each site is a system here too) and its conventional
- * channels. What can't be carried over is reported.
+ * channels — with the talkgroup and channel files it names, from `files`
+ * (by the name the config gives). What couldn't be finished is in `todo`;
+ * `notes` say what changed meaning on the way.
  */
-export function importTrunkRecorderConfig(text: string, base: Config): { config: Config; notes: string[] } {
+export function importTrunkRecorderConfig(
+  text: string,
+  base: Config,
+  files: Record<string, string> = {},
+): { config: Config; notes: string[]; todo: ImportTodo[]; plugins: PluginImport[] } {
   const j = JSON.parse(text) as Record<string, unknown>;
   const notes: string[] = [];
+  const todo: ImportTodo[] = [];
+  // Trunk Recorder short name → the one here (made unique; the first system of a name), and each system → its name here.
+  const names = new Map<string, string>();
+  const systemNames = new Map<unknown, string>();
   const cfg: Config = structuredClone(base);
   const sources = (j.sources as Record<string, unknown>[] | undefined) ?? [];
   const systems = (j.systems as Record<string, unknown>[] | undefined) ?? [];
@@ -539,6 +700,26 @@ export function importTrunkRecorderConfig(text: string, base: Config): { config:
     }
     if (s.driver && s.driver !== "osmosdr") {
       notes.push(`Source driver "${String(s.driver)}" skipped — not supported.`);
+      continue;
+    }
+    const soapyArgs = osmosdrToSoapy(dev);
+    if (soapyArgs !== null) {
+      const gains = Object.entries({ IF: s.ifGain, BB: s.bbGain, MIX: s.mixGain, LNA: s.lnaGain, TIA: s.tiaGain, PGA: s.pgaGain, AMP: s.ampGain, VGA: s.vgaGain, VGA1: s.vga1Gain, VGA2: s.vga2Gain, ...(s.gainSettings as Record<string, unknown> | undefined) })
+        .filter(([, v]) => typeof v === "number" && v !== 0)
+        .map(([k, v]) => `${k}=${String(v)}`)
+        .join(",");
+      imported.push({
+        kind: "soapy",
+        args: soapyArgs,
+        centerHz: center,
+        rateHz: typeof s.rate === "number" ? s.rate : 8_000_000,
+        gainDb: s.agc === true || gain === undefined ? null : gain,
+        gains,
+        antenna: typeof s.antenna === "string" ? s.antenna : "",
+        settings: "",
+        ppm,
+      });
+      notes.push(`"${dev}" imported as a SoapySDR source (${soapyArgs || "first found"}): it needs SoapySDR and the device's module installed on this computer.`);
       continue;
     }
     if (/airspy/.test(dev)) {
@@ -574,18 +755,27 @@ export function importTrunkRecorderConfig(text: string, base: Config): { config:
     if (Array.isArray(sys.channels)) {
       for (const f of sys.channels as unknown[]) if (typeof f === "number" && f > 0) importedChannels.push({ freqHz: f, mode, name: "", enabled: true });
     }
-    if (typeof sys.channelFile === "string") {
-      notes.push(`Channel file "${sys.channelFile}" (${mode === "p25" ? "P25" : mode === "dmr" ? "DMR" : "analog"}): load it under Conventional channels → Import CSV.`);
+    if (typeof sys.channelFile === "string" && sys.channelFile) {
+      const csv = files[sys.channelFile];
+      const read = csv === undefined ? null : parseChannelCsv(csv);
+      if (!read || read.error) todo.push({ kind: "channels", file: sys.channelFile, had: importedChannels.length });
+      else {
+        // A file with no Mode column is its system's kind.
+        const moded = /(^|[,;\t])\s*"?mode"?\s*([,;\t]|$)/im.test(csv!.split(/\r?\n/, 1)[0] ?? "");
+        importedChannels.push(...read.channels.map((ch) => (moded ? ch : { ...ch, mode })));
+      }
     }
   }
   if (importedChannels.length) {
     cfg.conventional = { ...cfg.conventional, channels: importedChannels };
-    notes.push(`${importedChannels.length} conventional channel(s) imported. Squelch here is dB above the noise floor (default 8), not Trunk Recorder's absolute level.`);
+    todo.push({ kind: "squelch" });
   }
   if (conv[0] && typeof conv[0].shortName === "string") cfg.conventional.shortName = conv[0].shortName;
+  for (const x of conv) {
+    systemNames.set(x, cfg.conventional.shortName);
+    if (typeof x.shortName === "string" && !names.has(x.shortName)) names.set(x.shortName, cfg.conventional.shortName);
+  }
   if (p25.length) {
-    const talkgroupFiles: string[] = [];
-    const siteIds: string[] = [];
     // Trunk Recorder drops duplicates only among systems with multiSite on;
     // its multiSiteSystemName is a site group here (else grouped from the air).
     const multi = p25.filter((x) => x.multiSite === true);
@@ -606,15 +796,22 @@ export function importTrunkRecorderConfig(text: string, base: Config): { config:
         ...(siteGroup ? { siteGroup } : {}),
       });
       cfg.systems.push(x);
-      if (typeof sys.talkgroupsFile === "string") talkgroupFiles.push(`${x.shortName}: "${sys.talkgroupsFile}"`);
-      if (sys.siteId !== undefined) siteIds.push(x.shortName);
+      systemNames.set(sys, x.shortName);
+      if (ownName && !names.has(ownName)) names.set(ownName, x.shortName);
+      if (typeof sys.talkgroupsFile === "string" && sys.talkgroupsFile) {
+        const csv = files[sys.talkgroupsFile];
+        if (csv === undefined) todo.push({ kind: "talkgroups", system: x.shortName, file: sys.talkgroupsFile });
+        else {
+          x.talkgroupsCsv = csv;
+          x.talkgroupsName = baseName(sys.talkgroupsFile);
+        }
+      }
+      if (sys.siteId !== undefined && sys.siteId !== null && sys.siteId !== "") todo.push({ kind: "siteLock", system: x.shortName, siteId: String(sys.siteId) });
     }
     if (p25.length > 1) notes.push(`${p25.length} systems imported, each with its own folder.`);
-    if (talkgroupFiles.length) notes.push(`Talkgroup files (${talkgroupFiles.join(", ")}): load each CSV under its system in Setup.`);
     if (multi.length && isolated.length) notes.push(`multiSite was off for ${isolated.join(", ")}: each has a site group of its own, so every call there is saved.`);
     if (!multi.length && p25.length > 1)
       notes.push("A call heard on several sites of one system is now saved once (Trunk Recorder's multiSite was off) — switch it off under Recording to keep every copy.");
-    if (siteIds.length) notes.push(`A siteId is set for ${siteIds.join(", ")}: to follow only that site, fill in its Site lock (the survey or a first run shows the site the control channel announces).`);
     // The same setting on every system there: the default here.
     const unknown = p25.map((x) => x.recordUnknown).filter((v): v is boolean => typeof v === "boolean");
     if (unknown.length === p25.length && unknown.every((v) => v === unknown[0])) {
@@ -625,6 +822,7 @@ export function importTrunkRecorderConfig(text: string, base: Config): { config:
   if (typeof j.captureDir === "string") cfg.recording.captureDir = j.captureDir;
   if (typeof j.callTimeout === "number") cfg.recording.callTimeoutS = j.callTimeout;
   if (typeof j.recordUUVCalls === "boolean") cfg.recording.recordUnitToUnit = j.recordUUVCalls;
-  if (Array.isArray(j.plugins) && j.plugins.length) notes.push("Plugins (uploaders, streamers) aren't available yet.");
-  return { config: cfg, notes };
+  const { plugins, other } = trPlugins(j, names, systemNames);
+  if (other.length) todo.push({ kind: "plugins", names: other });
+  return { config: cfg, notes, todo, plugins };
 }

@@ -1,4 +1,4 @@
-//! A running recorder: one thread per source (RTL-SDR, USRP, Airspy or capture file) and an
+//! A running recorder: one thread per source (RTL-SDR, USRP, Airspy, SoapySDR or capture file) and an
 //! engine thread that decodes, writes calls to disk in Trunk Recorder's layout
 //! (`<captureDir>/<shortName>/<YYYY>/<M>/<D>/<tg>-<epoch>_<freq>.wav|json`, a folder per system) and
 //! publishes what happens to the browser interface through the [`Hub`].
@@ -20,7 +20,7 @@ use trunk_app::{Output, Session};
 
 use crate::config::{Config, SampleFormat, Source};
 use crate::plugins::{self, PluginHost};
-use crate::radio::{airspy, uhd};
+use crate::radio::{airspy, soapy, uhd};
 use crate::sdr::{self, RtlConfig, SourceMsg};
 
 /// A message for every connected browser.
@@ -128,6 +128,9 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
             }
             Source::Airspy { serial, rate_hz, gain, bias_tee, ppm, .. } => {
                 airspy::run(i, airspy::AirspyConfig { serial, center_hz: center, rate_hz, gain, bias_tee, ppm }, tx, stop)
+            }
+            Source::Soapy { args, rate_hz, gain_db, gains, antenna, settings, ppm, .. } => {
+                soapy::run(i, soapy::SoapyConfig { args, center_hz: center, rate_hz, gain_db, gains, antenna, settings, ppm }, tx, stop)
             }
             Source::File { path, rate_hz, realtime, format, .. } => run_file(i, &path, rate_hz, realtime, format, tx, stop),
         }).map_err(|e| e.to_string())?);

@@ -18,22 +18,49 @@ pub struct RtlConfig {
     pub ppm: i32,
 }
 
-/// Attached dongles, for the browser: [{serial, product, index}].
+/// Attached dongles, for the browser: [{serial, product, index, busy}].
+/// `busy`: why it can't be opened now (another program has it), or null.
 pub fn devices() -> Vec<serde_json::Value> {
+    let usb: Vec<nusb::DeviceInfo> = nusb::list_devices().wait().map(|v| v.collect()).unwrap_or_default();
     Device::list()
         .wait()
         .map(|v| {
             v.iter()
                 .map(|d| {
+                    // The same USB device: by serial, else by place among its model's.
+                    let same: Vec<&nusb::DeviceInfo> = usb.iter().filter(|u| u.vendor_id() == d.vid && u.product_id() == d.pid).collect();
+                    let nth = v.iter().filter(|o| o.vid == d.vid && o.pid == d.pid).position(|o| o.index == d.index).unwrap_or(0);
+                    let info = match &d.serial {
+                        Some(sn) => same.iter().find(|u| u.serial_number() == Some(sn.as_str())).copied(),
+                        None => same.get(nth).copied(),
+                    };
                     serde_json::json!({
                         "index": d.index,
                         "serial": d.serial.clone().unwrap_or_default(),
                         "product": d.product.clone().unwrap_or_else(|| "RTL-SDR".into()),
+                        "busy": info.and_then(busy),
                     })
                 })
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Why a dongle can't be opened now, or None: claim its interface and let it
+/// go. Nothing is seized — another program's claim makes this fail (macOS
+/// opens without seizing; Linux detaches kernel drivers such as the DVB one,
+/// as opening it to record does, but never usbfs, i.e. another program).
+fn busy(info: &nusb::DeviceInfo) -> Option<String> {
+    let why = |e: nusb::Error| match e.kind() {
+        nusb::ErrorKind::Busy => "in use by another program".to_string(),
+        nusb::ErrorKind::PermissionDenied => "no permission to open it".to_string(),
+        _ => format!("can't be opened ({e})"),
+    };
+    let dev = match info.open().wait() {
+        Ok(d) => d,
+        Err(e) => return Some(why(e)),
+    };
+    dev.detach_and_claim_interface(0).wait().err().map(why)
 }
 
 /// What a source thread reports.

@@ -28,8 +28,9 @@
 //!     --squelch dB (open threshold above the noise floor, default 8)
 //!
 //! trunk-pro devices [--usrp [args]]
-//!     List RTL-SDRs and Airspys, and whether the USRP (UHD) and Airspy
-//!     drivers are installed; --usrp also searches for USRPs.
+//!     List RTL-SDRs, Airspys and SoapySDR devices, whether the USRP (UHD),
+//!     Airspy and SoapySDR drivers are installed, and SoapySDR's modules;
+//!     --usrp also searches for USRPs.
 //! trunk-pro capture <out.cu8> --freq Hz --rate Hz [--gain dB] [--ppm 0] [--serial S] [--seconds 10]
 //!     Record raw u8 IQ, like rtl_sdr.
 //!
@@ -122,8 +123,9 @@ usage:
       --bind 0.0.0.0 to reach it from other machines (no authentication!).
       --start begins recording with the saved settings at once.
   trunk-pro devices [--usrp]
-      List RTL-SDRs and Airspys (and USRPs with --usrp); shows whether the
-      optional USRP (UHD) and Airspy (libairspy) drivers are installed.
+      List RTL-SDRs, Airspys and SoapySDR devices (and USRPs with --usrp);
+      shows whether the optional USRP (UHD), Airspy (libairspy) and SoapySDR
+      drivers are installed, and which SoapySDR modules.
   trunk-pro capture <out.cu8> --freq Hz [--rate 2400000] [--gain dB] [--serial S] [--seconds 10]
       Record raw IQ, like rtl_sdr.
   trunk-pro replay <capture.cu8> --center Hz --rate Hz --cc Hz[,Hz…] [--out calls] …
@@ -191,6 +193,25 @@ fn devices(a: &Args) {
                     Err(e) => println!("  {e}"),
                 }
             }
+        }
+    }
+    let si = radio::soapy::info();
+    println!("SoapySDR: {}", si.detail);
+    if si.loaded {
+        match radio::soapy::modules() {
+            None => println!("  modules: (this SoapySDR can't list them)"),
+            Some(m) if m.is_empty() => println!("  no modules installed (looked in {})", radio::soapy::search_paths().join(", ")),
+            Some(m) => {
+                for m in m {
+                    let state = if m.error.is_empty() { format!("drivers: {}", m.drivers.join(", ")) } else { format!("FAILED: {}", m.error) };
+                    println!("  module {} {} · {state}", m.name, m.version);
+                }
+            }
+        }
+        match radio::soapy::find() {
+            Ok(v) if v.is_empty() => println!("  no devices found"),
+            Ok(v) => v.iter().for_each(|d| println!("  {} · {}", d["label"].as_str().unwrap_or(""), d["args"].as_str().unwrap_or(""))),
+            Err(e) => println!("  {e}"),
         }
     }
 }

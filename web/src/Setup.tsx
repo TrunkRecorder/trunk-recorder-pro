@@ -6,11 +6,11 @@ import {
   channelTalkgroups,
   formatFromPath,
   formatMhz,
-  importTrunkRecorderConfig,
   mhzCell,
   newAirspy,
   newDongle,
   newFile,
+  newSoapy,
   newUsrp,
   nextTalkgroup,
   parseChannelCsv,
@@ -19,24 +19,92 @@ import {
   resolvedCenters,
   SAMPLE_RATES,
   siteSiblings,
+  SOAPY_RATES,
   sourceCovering,
   systemColor,
   USRP_RATES,
   usableHalfWidth,
 } from "./config.ts";
-import { bumpEpoch, downloadText, findRadios, refreshDevices, setChannelFile, setNotice, updateConfig, useApp, web } from "./controller.ts";
-import type { Channel, Config, HeardCode, SiteIdentity, Source, System } from "./protocol.ts";
+import { dismissTodo, downloadText, findRadios, openGuide, refreshDevices, setChannelFile, setNotice, setSetupTab, setView, updateConfig, useApp, web, type SetupTab } from "./controller.ts";
+import { IconAntenna, IconDongle, IconFolder, IconTower } from "./Onboarding.tsx";
+import type { Channel, Config, HeardCode, SiteIdentity, SoapyState, Source, System } from "./protocol.ts";
 import { SurveyPanel } from "./Survey.tsx";
 import { parseTalkgroupCsv } from "./talkgroups.ts";
+import { openTodos } from "./todo.ts";
 import { parseAccess, sameTone } from "./tones.ts";
 
-function Field(props: { label: string; hint?: string; children: React.ReactNode; wide?: boolean }) {
+/** `needs`: what an import left to fill in here (highlighted); `anchor`: its place, for the to-do list's Show. */
+function Field(props: { label: string; hint?: string; children: React.ReactNode; wide?: boolean; needs?: string; anchor?: string }) {
   return (
-    <label className={`field${props.wide ? " wide" : ""}`}>
+    <label className={`field${props.wide ? " wide" : ""}${props.needs ? " needs" : ""}`} id={props.anchor && `need-${props.anchor}`}>
       <span className="field-label">{props.label}</span>
       {props.children}
+      {props.needs && <span className="field-needs">{props.needs}</span>}
       {props.hint && <span className="field-hint">{props.hint}</span>}
     </label>
+  );
+}
+
+/** What an import left to do at a setup field (see todo.ts), or undefined. */
+function useNeed(): (target: string) => string | undefined {
+  const todos = openTodos(useApp());
+  return (target) => todos.find((t) => t.target === target)?.text;
+}
+
+/** The setup tab a to-do's field is on. */
+function tabOf(target: string): SetupTab {
+  return target.startsWith("src-") ? "radios" : target === "channels" || target === "squelch" ? "conventional" : "systems";
+}
+
+/** Show a to-do's field: switch to its tab, scroll to it and flash it (on the Plugins page for a plugin). */
+function showTodo(target: string): void {
+  if (target.startsWith("plugin")) {
+    setView("plugins");
+    // Once the page is drawn.
+    return void setTimeout(() => document.getElementById(`need-${target}`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 100);
+  }
+  if (currentTab() !== tabOf(target)) {
+    setSetupTab(tabOf(target));
+    return void setTimeout(() => showTodo(target), 60);
+  }
+  const el = document.getElementById(`need-${target}`);
+  if (el instanceof HTMLDetailsElement) el.open = true;
+  el?.scrollIntoView({ behavior: "smooth", block: "center" });
+  el?.classList.remove("flash");
+  void el?.offsetWidth;
+  el?.classList.add("flash");
+}
+
+/** What a Trunk Recorder import left to finish; each closes once its field is filled in. */
+function TodoPanel() {
+  const todos = openTodos(useApp());
+  if (!todos.length) return null;
+  return (
+    <section className="panel todo-panel">
+      <header className="panel-head">
+        <h2>Finish bringing over Trunk Recorder</h2>
+        <span className="muted small">{todos.length} left · highlighted below</span>
+      </header>
+      <ul className="todo-list">
+        {todos.map((t, k) => (
+          <li key={k}>
+            <span className="todo-mark" aria-hidden="true" />
+            <div className="todo-text">
+              <b>{t.title}</b>
+              <span className="muted small">{t.text}</span>
+            </div>
+            <div className="row">
+              <button className="btn small" onClick={() => showTodo(t.target)}>
+                {t.target.startsWith("plugin") ? "Open Plugins" : "Show"}
+              </button>
+              <button className="btn ghost small" onClick={() => dismissTodo(t.item)} title="Leave it as it is">
+                Dismiss
+              </button>
+            </div>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 
@@ -198,10 +266,16 @@ function RateInput(props: { hz: number; options: number[]; onChange: (hz: number
 }
 
 /** Why an optional driver can't be used, and how to install it. */
-function DriverMissing(props: { kind: "usrp" | "airspy"; detail: string }) {
+function DriverMissing(props: { kind: "usrp" | "airspy" | "soapy"; detail: string }) {
   return (
     <div className="banner bad small wide">
-      {props.kind === "usrp" ? (
+      {props.kind === "soapy" ? (
+        <span>
+          SoapySDR support needs <b>SoapySDR</b> and your radio&apos;s module, which weren&apos;t found ({props.detail}). Install them — macOS:{" "}
+          <code>brew install soapysdr soapyhackrf</code>; Debian/Ubuntu: <code>sudo apt install soapysdr0.8-module-all</code>; Windows: PothosSDR or
+          radioconda — then restart Trunk Recorder Pro.
+        </span>
+      ) : props.kind === "usrp" ? (
         <span>
           USRP support needs <b>UHD</b>, which wasn&apos;t found ({props.detail}). Install it — macOS: <code>brew install uhd</code>; Debian/Ubuntu:{" "}
           <code>sudo apt install libuhd-dev uhd-host</code>; Windows: Ettus&apos;s UHD installer — then run <code>uhd_images_downloader</code> and restart
@@ -218,10 +292,52 @@ function DriverMissing(props: { kind: "usrp" | "airspy"; detail: string }) {
   );
 }
 
+/**
+ * SoapySDR's installed modules (one per device family): what each can open, or
+ * why it didn't load. A module installed since start shows up on Find.
+ */
+function SoapyModules(props: { soapy: SoapyState }) {
+  const { modules, searchPaths } = props.soapy;
+  if (modules === undefined) return null;
+  const failed = (modules ?? []).filter((m) => m.error);
+  return (
+    <div className="field wide">
+      <span className="field-label">SoapySDR modules</span>
+      {modules === null ? (
+        <span className="muted small">This SoapySDR (0.7) can&apos;t list its modules — run SoapySDRUtil --info to see them.</span>
+      ) : modules.length === 0 ? (
+        <span className="warn small">
+          None installed{searchPaths?.length ? ` (looked in ${searchPaths.join(", ")})` : ""} — SoapySDR can&apos;t open any radio without one.
+        </span>
+      ) : (
+        <div className="row">
+          {modules.map((m) => (
+            <span key={m.path} className={`chip ${m.error ? "bad" : "ok"}`} title={m.error || m.path}>
+              {m.error ? "✕" : "✓"} {m.name}
+              {m.version && <span className="muted">{m.version}</span>}
+              {!m.error && m.drivers.some((d) => d !== m.name) && <span className="muted">· driver={m.drivers.join(", ")}</span>}
+            </span>
+          ))}
+        </div>
+      )}
+      {failed.map((m) => (
+        <span key={m.path} className="warn small">
+          {m.name} didn&apos;t load: {m.error}
+        </span>
+      ))}
+      <span className="field-hint">
+        One module per radio family — macOS: <code>brew install soapyhackrf</code> (others in the pothosware/pothos tap); Debian/Ubuntu:{" "}
+        <code>sudo apt install soapysdr0.8-module-hackrf</code> or <code>soapysdr0.8-module-all</code>. Then press Find.
+      </span>
+    </div>
+  );
+}
+
 const KINDS: { kind: Source["kind"]; label: string; desktop?: boolean }[] = [
   { kind: "rtlsdr", label: "RTL-SDR" },
   { kind: "usrp", label: "USRP", desktop: true },
   { kind: "airspy", label: "Airspy", desktop: true },
+  { kind: "soapy", label: "SoapySDR", desktop: true },
   { kind: "file", label: "Capture file" },
 ];
 
@@ -236,16 +352,18 @@ function SourceCard(props: { c: Config; i: number }) {
   const setKind = (kind: Source["kind"]) =>
     updateConfig((x) => {
       const old = x.sources[i];
-      const fresh = kind === "rtlsdr" ? newDongle() : kind === "usrp" ? newUsrp() : kind === "airspy" ? newAirspy() : newFile();
+      const fresh = kind === "rtlsdr" ? newDongle() : kind === "usrp" ? newUsrp() : kind === "airspy" ? newAirspy() : kind === "soapy" ? newSoapy() : newFile();
       x.sources[i] = { ...fresh, centerHz: old.centerHz } as Source;
     });
   const fileRef = useRef<HTMLInputElement>(null);
   const others = c.sources.filter((_, k) => k !== i);
-  const used = new Set(others.map((x) => (x.kind === "rtlsdr" ? `r:${x.serial}` : x.kind === "airspy" ? `a:${x.serial}` : x.kind === "usrp" ? `u:${x.args}` : "")));
+  const used = new Set(others.map((x) => (x.kind === "rtlsdr" ? `r:${x.serial}` : x.kind === "airspy" ? `a:${x.serial}` : x.kind === "usrp" ? `u:${x.args}` : x.kind === "soapy" ? `s:${x.args}` : "")));
   const radios = s.radios;
+  const needs = useNeed()(`src-${i}`);
 
   return (
-    <div className="source-card">
+    <div className={`source-card${needs ? " needs" : ""}`} id={`need-src-${i}`}>
+      {needs && <div className="field-needs">{needs}</div>}
       <div className="row source-head">
         <strong>Source {i + 1}</strong>
         <div className="seg small" role="radiogroup" aria-label={`Source ${i + 1} kind`}>
@@ -354,6 +472,45 @@ function SourceCard(props: { c: Config; i: number }) {
               </div>
             </Field>
           ))}
+        {src.kind === "soapy" &&
+          (radios?.soapy && !radios.soapy.available ? (
+            <DriverMissing kind="soapy" detail={radios.soapy.detail} />
+          ) : (
+            <>
+              <Field
+                label="Device"
+                hint={
+                  !radios?.soapy || radios.soapy.devices === null
+                    ? `${radios?.soapy?.detail ?? "SoapySDR"} · press Find to search, or type device arguments (blank = first found)`
+                    : radios.soapy.devices.length
+                      ? radios.soapy.detail
+                      : "None found — check the cable and that its module is installed, or type device arguments (e.g. driver=hackrf)"
+                }
+              >
+                <div className="row">
+                  <input
+                    className="mono"
+                    list={`soapy-${i}`}
+                    value={src.args}
+                    placeholder="first found"
+                    onChange={(e) => edit((x) => x.kind === "soapy" && void (x.args = e.target.value))}
+                  />
+                  <datalist id={`soapy-${i}`}>
+                    {(radios?.soapy?.devices ?? []).map((d) => (
+                      <option key={d.args} value={d.args} disabled={used.has(`s:${d.args}`)}>
+                        {d.label}
+                        {used.has(`s:${d.args}`) ? " (in use)" : ""}
+                      </option>
+                    ))}
+                  </datalist>
+                  <button className="btn ghost small" disabled={s.findingRadios} onClick={findRadios}>
+                    {s.findingRadios ? "Searching…" : "Find"}
+                  </button>
+                </div>
+              </Field>
+              {radios?.soapy && <SoapyModules soapy={radios.soapy} />}
+            </>
+          ))}
         {src.kind === "file" &&
           (web ? (
             <Field label="Capture file" hint="rtl_sdr output (unsigned 8-bit IQ). The browser forgets the choice on reload." wide>
@@ -399,13 +556,13 @@ function SourceCard(props: { c: Config; i: number }) {
         </Field>
         <Field
           label="Sample rate"
-          hint={src.kind === "usrp" ? "MSPS; wider covers more channels, costs more CPU" : src.kind === "airspy" ? "R2: 10 or 2.5; Mini: 6 or 3 (10 on newer firmware)" : undefined}
+          hint={src.kind === "usrp" ? "MSPS; wider covers more channels, costs more CPU" : src.kind === "airspy" ? "R2: 10 or 2.5; Mini: 6 or 3 (10 on newer firmware)" : src.kind === "soapy" ? "MSPS; one the device supports (the error lists them)" : undefined}
         >
           <RateInput
             key={src.kind}
             hz={src.rateHz}
-            free={src.kind === "usrp" || (src.kind === "file" && !web)}
-            options={src.kind === "usrp" ? USRP_RATES : src.kind === "airspy" ? AIRSPY_RATES : src.kind === "file" ? [...SAMPLE_RATES, 8_000_000, 10_000_000] : SAMPLE_RATES}
+            free={src.kind === "usrp" || src.kind === "soapy" || (src.kind === "file" && !web)}
+            options={src.kind === "usrp" ? USRP_RATES : src.kind === "airspy" ? AIRSPY_RATES : src.kind === "soapy" ? SOAPY_RATES : src.kind === "file" ? [...SAMPLE_RATES, 8_000_000, 10_000_000] : SAMPLE_RATES}
             onChange={(hz) => edit((x) => void (x.rateHz = hz))}
           />
         </Field>
@@ -457,6 +614,33 @@ function SourceCard(props: { c: Config; i: number }) {
               <input className="mono" value={src.ppm} onChange={(e) => edit((x) => x.kind === "airspy" && void (x.ppm = Number(e.target.value) || 0))} />
             </Field>
             <Toggle label="Bias-T" hint="powers an LNA over the antenna cable" checked={src.biasTee} onChange={(v) => edit((x) => x.kind === "airspy" && void (x.biasTee = v))} />
+          </>
+        )}
+        {src.kind === "soapy" && (
+          <>
+            <Field label="Gain, dB" hint="Overall; blank = the device's AGC (unless element gains are set)">
+              <input
+                className="mono"
+                value={src.gainDb ?? ""}
+                placeholder="AGC"
+                onChange={(e) => {
+                  const v = e.target.value.trim();
+                  edit((x) => x.kind === "soapy" && void (x.gainDb = v === "" ? null : Number(v)));
+                }}
+              />
+            </Field>
+            <Field label="Element gains" hint="Applied after the overall gain — HackRF: LNA, VGA, AMP; SDRplay: IFGR, RFGR; Lime: LNA, TIA, PGA">
+              <input className="mono" value={src.gains} placeholder="LNA=32,VGA=20" onChange={(e) => edit((x) => x.kind === "soapy" && void (x.gains = e.target.value))} />
+            </Field>
+            <Field label="Antenna" hint="Blank = the device's default">
+              <input className="mono" value={src.antenna} placeholder="default" onChange={(e) => edit((x) => x.kind === "soapy" && void (x.antenna = e.target.value.trim()))} />
+            </Field>
+            <Field label="Device settings" hint="key=value pairs the module offers, e.g. biastee=true (SoapySDRUtil --probe lists them)">
+              <input className="mono" value={src.settings} placeholder="none" onChange={(e) => edit((x) => x.kind === "soapy" && void (x.settings = e.target.value))} />
+            </Field>
+            <Field label="Frequency correction, ppm">
+              <input className="mono" value={src.ppm} onChange={(e) => edit((x) => x.kind === "soapy" && void (x.ppm = Number(e.target.value) || 0))} />
+            </Field>
           </>
         )}
         {src.kind === "file" && (
@@ -528,6 +712,7 @@ let nextRowId = 1;
  */
 function ConventionalPanel(props: { c: Config }) {
   const { c } = props;
+  const need = useNeed();
   const conv = c.conventional;
   const chans = conv.channels;
   // Stable row keys (each edit clones the config; a frequency input keeps its own text).
@@ -670,6 +855,8 @@ function ConventionalPanel(props: { c: Config }) {
             </div>
           ) : (
             <Field
+              needs={need("channels")}
+              anchor="channels"
               label="Channel file (optional)"
               hint="Keep the channels in a CSV on the recorder's computer and edit them in Excel, Numbers or LibreOffice. Relative paths are next to the config file. A new file is created from this list."
               wide
@@ -688,7 +875,7 @@ function ConventionalPanel(props: { c: Config }) {
               <input value={conv.shortName} onChange={(e) => edit((x) => void (x.shortName = e.target.value.replace(/[^\w.-]/g, "") || "conv"))} />
             </Field>
           )}
-          <Field label="Squelch, dB above noise" hint="For every channel without its own. Raise it if noise opens channels.">
+          <Field needs={need("squelch")} anchor="squelch" label="Squelch, dB above noise" hint="For every channel without its own. Raise it if noise opens channels.">
             <input className="mono" value={conv.squelchDb} onChange={(e) => edit((x) => void (x.squelchDb = Math.max(3, Math.min(40, Number(e.target.value) || 8))))} />
           </Field>
           {!linked && (
@@ -1028,6 +1215,7 @@ function SystemCard(props: { c: Config; i: number }) {
   const sys = c.systems[i];
   const [ccText, setCcText] = useState(() => sys.controlChannels.map((f) => formatMhz(f)).join(", "));
   const tgRef = useRef<HTMLInputElement>(null);
+  const need = useNeed();
   const edit = (fn: (x: System) => void) => updateConfig((x) => fn(x.systems[i]));
   const setExpect = (k: keyof SiteIdentity, v: number | null) =>
     edit((x) => {
@@ -1102,6 +1290,9 @@ function SystemCard(props: { c: Config; i: number }) {
         <Field label="Short name" hint={dupName ? "Another system has this name — each needs its own folder" : "Folder name for this system's calls"}>
           <input value={sys.shortName} onChange={(e) => edit((x) => void (x.shortName = e.target.value.replace(/[^\w.-]/g, "")))} />
         </Field>
+        <Field label="Name" hint="What people call it; the short name is its folder">
+          <input value={sys.name ?? ""} placeholder="County Public Safety" onChange={(e) => edit((x) => void (x.name = e.target.value))} />
+        </Field>
         <Field
           label="Type"
           hint={
@@ -1134,6 +1325,8 @@ function SystemCard(props: { c: Config; i: number }) {
           </select>
         </Field>}
         <Field
+          needs={need(`cc-${sys.shortName}`)}
+          anchor={`cc-${sys.shortName}`}
           label={sys.type === "dmr" ? "Site frequencies, MHz" : "Control channels, MHz"}
           hint={
             sys.type === "dmr"
@@ -1153,7 +1346,7 @@ function SystemCard(props: { c: Config; i: number }) {
             }}
           />
         </Field>
-        <Field label="Talkgroups" hint="Trunk Recorder's talkgroup CSV">
+        <Field label="Talkgroups" hint="Trunk Recorder's talkgroup CSV" needs={need(`tg-${sys.shortName}`)} anchor={`tg-${sys.shortName}`}>
           <div className="row">
             <button className="btn" onClick={() => tgRef.current?.click()}>
               Load CSV…
@@ -1233,11 +1426,16 @@ function SystemCard(props: { c: Config; i: number }) {
           />
         </Field>
       </div>
-      <details className="help">
+      <details className={`help${need(`site-${sys.shortName}`) ? " needs" : ""}`} id={`need-site-${sys.shortName}`} open={need(`site-${sys.shortName}`) ? true : undefined}>
         <summary>
           Site lock{locked ? <span className="muted"> — only {siteText(sys.expect)}</span> : <span className="muted"> — off (follows any control channel listed)</span>}
         </summary>
         <p className="muted small">
+          {need(`site-${sys.shortName}`) && (
+            <>
+              <span className="field-needs">{need(`site-${sys.shortName}`)}</span>{" "}
+            </>
+          )}
           Follow a control channel only when it announces this identity; leave a field empty to accept any. For a multi-site system, add each site as its own system with
           its site number here — then a control channel that hunts onto a neighbouring site is not followed. Hex for NAC, WACN and System ID; the survey fills these in.
         </p>
@@ -1268,26 +1466,60 @@ function SystemCard(props: { c: Config; i: number }) {
   );
 }
 
+/** The tab showing now (for showTodo, outside React). */
+let shownTab: SetupTab = "systems";
+const currentTab = () => shownTab;
+
+const TABS: { id: SetupTab; label: string; icon: () => React.ReactNode }[] = [
+  { id: "systems", label: "Systems", icon: IconTower },
+  { id: "conventional", label: "Conventional", icon: IconAntenna },
+  { id: "radios", label: "Radios", icon: IconDongle },
+  { id: "recording", label: "Recording", icon: IconFolder },
+];
+
+/** The setup page's tabs: how many of each, and what an import left to do there. */
+function SetupTabs(props: { c: Config; tab: SetupTab }) {
+  const todos = openTodos(useApp());
+  const count: Record<SetupTab, number | null> = {
+    systems: props.c.systems.length,
+    conventional: props.c.conventional.channels.length,
+    radios: props.c.sources.length,
+    recording: null,
+  };
+  return (
+    <nav className="setup-tabs" role="tablist" aria-label="Setup">
+      {TABS.map((t) => {
+        const todo = todos.filter((x) => !x.target.startsWith("plugin") && tabOf(x.target) === t.id).length;
+        return (
+          <button key={t.id} role="tab" aria-selected={props.tab === t.id} className={props.tab === t.id ? "on" : ""} onClick={() => setSetupTab(t.id)}>
+            <t.icon />
+            <span>{t.label}</span>
+            {count[t.id] !== null && <span className="tab-count">{count[t.id]}</span>}
+            {todo > 0 && (
+              <span className="tab-todo" title={`${todo} to finish here`}>
+                {todo}
+              </span>
+            )}
+          </button>
+        );
+      })}
+    </nav>
+  );
+}
+
 export function Setup() {
   const s = useApp();
   const c = s.config;
-  const importRef = useRef<HTMLInputElement>(null);
+  const tab = s.setupTab;
+  shownTab = tab;
   if (!c) return <p className="muted">Connecting to the recorder…</p>;
-
-  const onImport = async (f: File | undefined) => {
-    if (!f) return;
-    try {
-      const { config, notes } = importTrunkRecorderConfig(await f.text(), c);
-      updateConfig((x) => Object.assign(x, config));
-      bumpEpoch();
-      setNotice(`Imported ${f.name}.${notes.length ? " " + notes.join(" ") : ""}`);
-    } catch (e) {
-      setNotice(`Couldn't read ${f.name}: ${e instanceof Error ? e.message : String(e)}`);
-    }
-  };
 
   return (
     <div className="setup">
+      <TodoPanel />
+      <SetupTabs c={c} tab={tab} />
+      {tab === "systems" && (
+      <>
       <SurveyPanel c={c} />
       <section className="panel">
         <header className="panel-head">
@@ -1296,11 +1528,10 @@ export function Setup() {
             <button className="btn ghost" onClick={() => updateConfig((x) => void x.systems.push(newSystem(x)))}>
               Add a system
             </button>
-            <button className="btn ghost" onClick={() => importRef.current?.click()}>
+            <button className="btn ghost" onClick={() => openGuide("import")}>
               Import Trunk Recorder config…
             </button>
           </div>
-          <input ref={importRef} type="file" accept=".json,application/json" hidden onChange={(e) => void onImport(e.target.files?.[0])} />
         </header>
         <div className="stack">
           {c.systems.map((_, i) => (
@@ -1319,12 +1550,15 @@ export function Setup() {
           )}
         </div>
       </section>
+      </>
+      )}
 
-      <ConventionalPanel c={c} />
+      {tab === "conventional" && <ConventionalPanel c={c} />}
 
+      {tab === "radios" && (
       <section className="panel">
         <header className="panel-head">
-          <h2>Sources</h2>
+          <h2>Radios</h2>
           <button className="btn ghost" onClick={() => updateConfig((x) => void x.sources.push(newDongle()))}>
             Add a source
           </button>
@@ -1366,7 +1600,9 @@ export function Setup() {
           </details>
         </div>
       </section>
+      )}
 
+      {tab === "recording" && (
       <section className="panel">
         <header className="panel-head">
           <h2>Recording</h2>
@@ -1425,6 +1661,7 @@ export function Setup() {
           </div>
         </div>
       </section>
+      )}
     </div>
   );
 }

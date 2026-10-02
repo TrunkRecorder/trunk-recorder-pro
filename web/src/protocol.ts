@@ -10,6 +10,11 @@ export type Source =
   | { kind: "usrp"; args: string; centerHz: number; rateHz: number; gainDb: number; antenna: string; ppm: number }
   /** Airspy R2 / Mini through libairspy (desktop app). `gain`: linearity step 0–21. */
   | { kind: "airspy"; serial: string; centerHz: number; rateHz: number; gain: number; biasTee: boolean; ppm: number }
+  /**
+   * Any SDR with a SoapySDR module (desktop app). `args` "" = first found ("driver=hackrf,serial=…");
+   * `gainDb` null = AGC; `gains` per element ("LNA=32,VGA=20"); `settings` device settings ("biastee=true").
+   */
+  | { kind: "soapy"; args: string; centerHz: number; rateHz: number; gainDb: number | null; gains: string; antenna: string; settings: string; ppm: number }
   | { kind: "file"; path: string; centerHz: number; rateHz: number; realtime: boolean; format?: SampleFormat };
 
 /** An optional driver (desktop app) and what it found; `devices` null = not searched. */
@@ -18,9 +23,24 @@ export interface DriverState {
   detail: string;
   devices: { args?: string; serial?: string; label: string }[] | null;
 }
+/** A SoapySDR module (one per device family): the drivers it registered, or why it didn't load. */
+export interface SoapyModule {
+  name: string;
+  path: string;
+  version: string;
+  drivers: string[];
+  error: string;
+}
+/** SoapySDR and its modules; `modules` null = this SoapySDR (0.7) can't list them. */
+export interface SoapyState extends DriverState {
+  modules?: SoapyModule[] | null;
+  searchPaths?: string[];
+  devices: { args: string; label: string; driver: string }[] | null;
+}
 export interface Radios {
   usrp: DriverState;
   airspy: DriverState;
+  soapy?: SoapyState;
 }
 
 /** A conventional channel. `talkgroup` defaults to the frequency in kHz; `squelchDb` to the section's. */
@@ -63,6 +83,8 @@ export interface SmartnetBandplan {
 
 export interface System extends Partial<SmartnetBandplan> {
   shortName: string;
+  /** What people call it ("County Public Safety"); the short name is its folder. */
+  name?: string;
   /** "smartnet": a Motorola SmartNet / SmartZone control channel (voice P25 or analog FM).
    *  "dmr": a trunked DMR site (Capacity Plus, Capacity Max, Connect Plus, Tier III); every
    *  control channel and `channels` frequency is watched. */
@@ -130,6 +152,8 @@ export interface Device {
   index: number;
   serial: string;
   product: string;
+  /** Why it can't be opened now (another program has it); absent / null = free. */
+  busy?: string | null;
 }
 
 export type Phase = "idle" | "starting" | "running" | "stopping";
@@ -472,6 +496,18 @@ export interface HeardCode {
   lastMs: number;
 }
 
+/** A folder on the recorder's computer and its subfolders; `parent` null at the top. */
+export interface DirListing {
+  path: string;
+  parent: string | null;
+  dirs: string[];
+  /** Its .json files. */
+  files?: string[];
+  home: string;
+  sep: string;
+  error: string | null;
+}
+
 export type FromRecorder =
   | {
       type: "hello";
@@ -503,6 +539,10 @@ export type FromRecorder =
   | ({ type: "survey" } & SurveyState)
   | ({ type: "surveySpectrum" } & Spectrum)
   | { type: "devices"; devices: Device[] }
+  /** A folder on the recorder's computer (answers listDir). */
+  | ({ type: "dir" } & DirListing)
+  /** A Trunk Recorder config.json and the talkgroup / channel files it names, by the name it gives (answers readTrConfig). */
+  | { type: "trConfig"; path: string; text?: string; files?: Record<string, string>; error: string | null }
   | { type: "error"; message: string }
   | { type: "notice"; message: string }
   | ({ type: "plugins" } & PluginsList)
@@ -515,6 +555,10 @@ export type ToRecorder =
   | { type: "stop" }
   | { type: "devices" }
   | { type: "findRadios" }
+  /** A folder's subfolders, for the folder picker ("" = the home folder). */
+  | { type: "listDir"; path: string }
+  /** A Trunk Recorder config.json (or a folder with one), with the files it names. */
+  | { type: "readTrConfig"; path: string }
   /** Live audio: on/off, optionally one system's (CONVENTIONAL: conventional channels) and/or one talkgroup's. */
   | { type: "listen"; on: boolean; system: number | null; talkgroup: number | null }
   /** Link the conventional channels to a CSV (created from the list if new), reload it (same path), or unlink (""). */

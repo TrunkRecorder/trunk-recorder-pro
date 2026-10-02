@@ -6,8 +6,9 @@
 //! `status` (~2/s), `spectrum` (~7/s per source), `log`, `concluded`,
 //! `devices`, `error`, and audio frames `[2][u16 system][u32 call id][u32
 //! talkgroup][i16…]` (8 kHz) to connections that asked to listen.
-//! `radios` (the optional USRP / Airspy drivers and their devices) comes in
-//! `hello` and answers `findRadios`, which also searches for USRPs.
+//! `radios` (the optional USRP / Airspy / SoapySDR drivers, SoapySDR's modules
+//! and the devices) comes in `hello` and answers `findRadios`, which also
+//! searches for USRPs and SoapySDR devices.
 //! Browser → server: `setConfig`, `start`, `stop`, `devices`, `findRadios`,
 //! `listen {on, system, talkgroup}`, `quit` (stop recording, tell every browser
 //! `quit`, exit). GET /api/version identifies a running instance.
@@ -140,6 +141,92 @@ fn stop_survey(ctx: &Ctx) {
 
 fn devices_json() -> Value {
     json!({ "type": "devices", "devices": sdr::devices() })
+}
+
+/// The `dir` message, for the interface's folder picker: a folder on this
+/// computer, its subfolders and its .json files (a Trunk Recorder config to
+/// import); "" = the home folder. A path that doesn't exist yet lists the
+/// nearest folder above it that does.
+fn dir_json(path: &str) -> Value {
+    let home = trunk_app::config::home();
+    let want = if path.trim().is_empty() { home.clone() } else { PathBuf::from(path.trim()) };
+    let mut at = want.as_path();
+    while !at.is_dir() {
+        match at.parent() {
+            Some(p) if !p.as_os_str().is_empty() => at = p,
+            _ => {
+                at = home.as_path();
+                break;
+            }
+        }
+    }
+    let at = at.canonicalize().unwrap_or_else(|_| at.to_path_buf());
+    let (mut dirs, mut files, mut error) = (vec![], vec![], None);
+    match std::fs::read_dir(&at) {
+        Ok(rd) => {
+            for e in rd.filter_map(|e| e.ok()) {
+                let Ok(name) = e.file_name().into_string() else { continue };
+                if name.starts_with('.') {
+                    continue;
+                }
+                if e.file_type().is_ok_and(|t| t.is_dir()) {
+                    dirs.push(name);
+                } else if name.to_lowercase().ends_with(".json") {
+                    files.push(name);
+                }
+            }
+        }
+        Err(e) => error = Some(e.to_string()),
+    }
+    dirs.sort_by_key(|n| n.to_lowercase());
+    files.sort_by_key(|n| n.to_lowercase());
+    json!({
+        "type": "dir",
+        "path": at.display().to_string(),
+        "parent": at.parent().map(|p| p.display().to_string()),
+        "dirs": dirs,
+        "files": files,
+        "home": home.display().to_string(),
+        "sep": std::path::MAIN_SEPARATOR.to_string(),
+        "error": error,
+    })
+}
+
+/// The `trConfig` message: a Trunk Recorder config.json (the file, or a folder
+/// holding one) with the talkgroup and channel files it names, read here so
+/// the browser imports them in one go. A name resolves beside the config (as
+/// Trunk Recorder run from its folder does), else by its file name there.
+fn tr_config_json(path: &str) -> Value {
+    let p = PathBuf::from(path.trim());
+    let file = if p.is_dir() { p.join("config.json") } else { p };
+    let shown = file.display().to_string();
+    let fail = |e: String| json!({ "type": "trConfig", "path": shown, "error": e });
+    let text = match std::fs::read_to_string(&file) {
+        Ok(t) => t,
+        Err(e) => return fail(format!("Couldn't read {shown}: {e}")),
+    };
+    let j: Value = match serde_json::from_str(&text) {
+        Ok(j) => j,
+        Err(e) => return fail(format!("{shown} isn't a Trunk Recorder config: {e}")),
+    };
+    if !j["systems"].is_array() && !j["sources"].is_array() {
+        return fail(format!("{shown} has no systems or sources — is it a Trunk Recorder config?"));
+    }
+    let dir = file.parent().map(Path::to_path_buf).unwrap_or_default();
+    let mut files = serde_json::Map::new();
+    for sys in j["systems"].as_array().into_iter().flatten() {
+        for key in ["talkgroupsFile", "channelFile"] {
+            let Some(name) = sys[key].as_str().filter(|n| !n.is_empty()) else { continue };
+            let named = Path::new(name);
+            let tries = [if named.is_absolute() { named.to_path_buf() } else { dir.join(named) }, dir.join(named.file_name().unwrap_or_default())];
+            // A talkgroup file is small; anything huge is not one.
+            let read = tries.iter().find_map(|t| std::fs::metadata(t).ok().filter(|m| m.is_file() && m.len() < 8 << 20).and_then(|_| std::fs::read_to_string(t).ok()));
+            if let Some(t) = read {
+                files.insert(name.to_string(), Value::String(t));
+            }
+        }
+    }
+    json!({ "type": "trConfig", "path": shown, "text": text, "files": files, "error": null })
 }
 
 async fn session(ctx: Arc<Ctx>, mut socket: WebSocket) {
@@ -359,6 +446,14 @@ async fn command(ctx: &Arc<Ctx>, v: &Value, listen: &mut Option<Listen>) -> Opti
             let ctx2 = ctx.clone();
             let _ = tokio::task::spawn_blocking(move || stop_survey(&ctx2)).await;
             None
+        }
+        "readTrConfig" => {
+            let path = v["path"].as_str().unwrap_or("").to_string();
+            tokio::task::spawn_blocking(move || tr_config_json(&path)).await.ok()
+        }
+        "listDir" => {
+            let path = v["path"].as_str().unwrap_or("").to_string();
+            tokio::task::spawn_blocking(move || dir_json(&path)).await.ok()
         }
         "plugins" => Some(plugins_json(ctx).await),
         "setPlugin" | "addPlugin" | "removePlugin" | "setPluginAudio" => {

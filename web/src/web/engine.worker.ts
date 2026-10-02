@@ -85,7 +85,7 @@ async function surveyStart(req: { source: number; bands: string[]; findGain: boo
     await ready;
     const src = config.sources[req.source];
     if (!src) throw new Error("No such source.");
-    if (src.kind === "usrp" || src.kind === "airspy") throw new Error("USRP and Airspy need the desktop app.");
+    if (src.kind === "usrp" || src.kind === "airspy" || src.kind === "soapy") throw new Error("USRP, Airspy and SoapySDR need the desktop app.");
     const s = new WebSurvey(JSON.stringify(config), JSON.stringify(req));
     survey = s;
     surveying = true;
@@ -212,8 +212,8 @@ async function start(): Promise<void> {
         const rtl = await WebRtl.open(s.serial, centers[i] ?? s.centerHz, s.rateHz, s.gainDb ?? undefined, s.ppm);
         rtls.push(rtl);
         void pumpRtl(i, rtl);
-      } else if (s.kind === "usrp" || s.kind === "airspy") {
-        throw new Error(`Source ${i + 1}: USRP and Airspy need the desktop app.`);
+      } else if (s.kind === "usrp" || s.kind === "airspy" || s.kind === "soapy") {
+        throw new Error(`Source ${i + 1}: USRP, Airspy and SoapySDR need the desktop app.`);
       } else {
         if (s.format && s.format !== "cu8") throw new Error(`Source ${i + 1}: the browser version reads rtl_sdr (cu8) captures only.`);
         const f = files[i];

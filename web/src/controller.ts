@@ -11,6 +11,7 @@ import type {
   CallView,
   Config,
   Device,
+  DirListing,
   EngineStatus,
   FromRecorder,
   LogLine,
@@ -26,7 +27,7 @@ import type {
   SurveySuggestion,
   System,
 } from "./protocol.ts";
-import { activeSystems, newSystem, resolvedCenters, sameSystem, siteName, sourceCovering, usableHalfWidth } from "./config.ts";
+import { type ImportTodo, activeSystems, newSystem, resolvedCenters, sameSystem, siteName, sourceCovering, usableHalfWidth } from "./config.ts";
 import { WsTransport, type Transport } from "./transport.ts";
 import { parseUnitsCsv, type UnitAliases } from "./units.ts";
 import type { WorkerTransport } from "./web/workerTransport.ts";
@@ -75,13 +76,29 @@ export interface AppState {
   plugins: PluginsList | null;
   /** Which page is showing. */
   view: View;
+  /** The folder the folder picker last listed (desktop app). */
+  dir: DirListing | null;
+  /** The Trunk Recorder config last read from the recorder's computer. */
+  trConfig: Extract<FromRecorder, { type: "trConfig" }> | null;
+  /** The setup guide, when open: a first setup, or bringing over a Trunk Recorder config. */
+  guide: "start" | "import" | null;
+  /** What an import left to finish (highlighted in setup until done or dismissed). */
+  todo: ImportTodo[];
+  /** The setup page's tab. */
+  setupTab: SetupTab;
 }
+
+export type SetupTab = "systems" | "conventional" | "radios" | "recording";
 
 export type View = "recorder" | "plugins";
 
 function viewFromHash(): View {
   return location.hash === "#plugins" ? "plugins" : "recorder";
 }
+
+// Remembered in this browser (read while the state below is built, so declared first).
+const TAB_KEY = "trp.setupTab";
+const TODO_KEY = "trp.importTodo";
 
 let state: AppState = {
   connected: false,
@@ -116,6 +133,11 @@ let state: AppState = {
   configEpoch: 0,
   plugins: null,
   view: viewFromHash(),
+  dir: null,
+  trConfig: null,
+  guide: null,
+  todo: loadTodo(),
+  setupTab: loadSetupTab(),
 };
 
 const listeners = new Set<() => void>();
@@ -211,6 +233,14 @@ transport.onMessage = (m: FromRecorder) => {
     case "radios":
       set({ radios: m.radios, findingRadios: false });
       break;
+    case "trConfig":
+      set({ trConfig: m });
+      break;
+    case "dir": {
+      const { type: _, ...dir } = m;
+      set({ dir });
+      break;
+    }
     case "error":
       set({ error: m.message });
       break;
@@ -322,10 +352,69 @@ export function forgetHistory(): void {
 export function refreshDevices(): void {
   transport.send({ type: "devices" });
 }
-/** Search for USRPs (and re-list Airspys); a USRP search can take seconds. */
+/** Search for USRPs and SoapySDR devices (and re-list Airspys and SoapySDR modules); a search can take seconds. */
 export function findRadios(): void {
   set({ findingRadios: true });
   transport.send({ type: "findRadios" });
+}
+
+/** Read a Trunk Recorder config.json (or a folder with one) and the files it names; the answer lands in `trConfig`. */
+export function readTrConfig(path: string): void {
+  set({ trConfig: null });
+  transport.send({ type: "readTrConfig", path });
+}
+
+// ── the setup guide and what an import left to do ────────────────────────────
+
+export function openGuide(mode: "start" | "import"): void {
+  set({ guide: mode, trConfig: null });
+}
+export function closeGuide(): void {
+  set({ guide: null });
+}
+
+function loadSetupTab(): SetupTab {
+  try {
+    const t = localStorage.getItem(TAB_KEY);
+    if (t === "systems" || t === "conventional" || t === "radios" || t === "recording") return t;
+  } catch {
+    // Not remembered.
+  }
+  return "systems";
+}
+/** Show a tab of the setup page (remembered in this browser). */
+export function setSetupTab(setupTab: SetupTab): void {
+  set({ setupTab });
+  try {
+    localStorage.setItem(TAB_KEY, setupTab);
+  } catch {
+    // Not remembered.
+  }
+}
+
+function loadTodo(): ImportTodo[] {
+  try {
+    return JSON.parse(localStorage.getItem(TODO_KEY) ?? "[]") as ImportTodo[];
+  } catch {
+    return [];
+  }
+}
+/** Replace what's left to do (an import), or drop one item (done, or dismissed). */
+export function setTodo(todo: ImportTodo[]): void {
+  set({ todo });
+  try {
+    localStorage.setItem(TODO_KEY, JSON.stringify(todo));
+  } catch {
+    // Kept for this session only.
+  }
+}
+export function dismissTodo(item: ImportTodo): void {
+  setTodo(state.todo.filter((t) => t !== item));
+}
+
+/** List a folder on the recorder's computer ("" = the home folder); the answer lands in `dir`. */
+export function listDir(path: string): void {
+  transport.send({ type: "listDir", path });
 }
 
 // ── first-run survey ─────────────────────────────────────────────────────────

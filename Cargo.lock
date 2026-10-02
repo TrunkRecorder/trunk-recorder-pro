@@ -1237,6 +1237,7 @@ dependencies = [
  "libloading",
  "mime_guess",
  "num-complex",
+ "nusb",
  "rtlsdr-nusb",
  "rust-embed",
  "serde",

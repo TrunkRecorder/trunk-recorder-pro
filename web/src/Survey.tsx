@@ -401,7 +401,7 @@ export function SurveyPanel(props: { c: Config }) {
   const bands = picked ?? s.surveyBands.filter((b) => b.defaultOn).map((b) => b.id);
   const src = c.sources[Math.min(source, c.sources.length - 1)];
   const active = sv.stage !== "idle";
-  const unsupported = web && (src?.kind === "usrp" || src?.kind === "airspy");
+  const unsupported = web && (src?.kind === "usrp" || src?.kind === "airspy" || src?.kind === "soapy");
   const bandLabel = (id: string) => s.surveyBands.find((b) => b.id === id)?.label ?? id;
 
   if (!s.surveyBands.length) return null;
@@ -444,7 +444,7 @@ export function SurveyPanel(props: { c: Config }) {
                 <select value={source} onChange={(e) => setSource(Number(e.target.value))}>
                   {c.sources.map((x, i) => (
                     <option key={i} value={i}>
-                      Source {i + 1} ({x.kind === "rtlsdr" ? "RTL-SDR" : x.kind === "usrp" ? "USRP" : x.kind === "airspy" ? "Airspy" : "capture file"})
+                      Source {i + 1} ({x.kind === "rtlsdr" ? "RTL-SDR" : x.kind === "usrp" ? "USRP" : x.kind === "airspy" ? "Airspy" : x.kind === "soapy" ? "SoapySDR" : "capture file"})
                     </option>
                   ))}
                 </select>
@@ -479,7 +479,7 @@ export function SurveyPanel(props: { c: Config }) {
               ))}
             </fieldset>
           )}
-          {unsupported && <p className="warn small">USRP and Airspy need the desktop app.</p>}
+          {unsupported && <p className="warn small">USRP, Airspy and SoapySDR need the desktop app.</p>}
           <div className="row">
             <button
               className="btn primary"

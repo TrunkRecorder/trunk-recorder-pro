@@ -66,6 +66,13 @@ pub fn survey_config(cfg: &Config, req: &Request) -> Result<SurveyConfig, String
             sc.tune_range_hz = (24e6, 1800e6);
             sc.settle_s = 0.2;
         }
+        // The device's range isn't known here: the widest any module offers; a
+        // tune it refuses shows as a source error.
+        Source::Soapy { ppm, .. } => {
+            sc.ppm = *ppm;
+            sc.tune_range_hz = (1e6, 6e9);
+            sc.settle_s = 0.2;
+        }
         Source::File { .. } => {
             let c = cfg.resolved_centers().get(req.source).copied().unwrap_or(0.0);
             if c <= 0.0 {

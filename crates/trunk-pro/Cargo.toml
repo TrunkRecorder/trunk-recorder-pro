@@ -16,6 +16,8 @@ trunk-app.workspace = true
 trunk-recorder-plugin.workspace = true
 serde_json.workspace = true
 rtlsdr-nusb = "0.3"
+# Asking whether a dongle is free (sdr::devices): the version rtlsdr-nusb uses.
+nusb = "0.2"
 # USRP (UHD) and Airspy (libairspy) are loaded at run time when installed.
 libloading = "0.8"
 num-complex.workspace = true

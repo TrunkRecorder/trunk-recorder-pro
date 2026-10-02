@@ -1,4 +1,4 @@
-//! The app's configuration: which sources (RTL-SDRs, USRPs, Airspys or capture files), which
+//! The app's configuration: which sources (RTL-SDRs, USRPs, Airspys, SoapySDR devices or capture files), which
 //! trunked systems (sites) and/or conventional channels, recording rules and the web server. Stored as JSON in the platform
 //! config folder; the browser interface reads and edits it.
 
@@ -43,6 +43,28 @@ pub enum Source {
         gain: u8,
         #[serde(default)]
         bias_tee: bool,
+        #[serde(default)]
+        ppm: f64,
+    },
+    /// Any SDR with a SoapySDR module (SoapySDR installed separately; loaded
+    /// at run time). `args`: device arguments, "" = the first found
+    /// ("driver=hackrf", "driver=sdrplay,serial=…"). `gain_db` None with no
+    /// `gains` = the device's AGC; `gains` per-element gains applied after it ("LNA=32,VGA=20");
+    /// `settings` device settings ("biastee=true"); `antenna` "" = the default.
+    #[serde(rename_all = "camelCase")]
+    Soapy {
+        #[serde(default)]
+        args: String,
+        center_hz: f64,
+        rate_hz: f64,
+        #[serde(default)]
+        gain_db: Option<f64>,
+        #[serde(default)]
+        gains: String,
+        #[serde(default)]
+        antenna: String,
+        #[serde(default)]
+        settings: String,
         #[serde(default)]
         ppm: f64,
     },
@@ -98,12 +120,12 @@ impl SampleFormat {
 impl Source {
     pub fn center_hz(&self) -> f64 {
         match self {
-            Source::Rtlsdr { center_hz, .. } | Source::Usrp { center_hz, .. } | Source::Airspy { center_hz, .. } | Source::File { center_hz, .. } => *center_hz,
+            Source::Rtlsdr { center_hz, .. } | Source::Usrp { center_hz, .. } | Source::Airspy { center_hz, .. } | Source::Soapy { center_hz, .. } | Source::File { center_hz, .. } => *center_hz,
         }
     }
     pub fn rate_hz(&self) -> f64 {
         match self {
-            Source::Rtlsdr { rate_hz, .. } | Source::Usrp { rate_hz, .. } | Source::Airspy { rate_hz, .. } | Source::File { rate_hz, .. } => *rate_hz,
+            Source::Rtlsdr { rate_hz, .. } | Source::Usrp { rate_hz, .. } | Source::Airspy { rate_hz, .. } | Source::Soapy { rate_hz, .. } | Source::File { rate_hz, .. } => *rate_hz,
         }
     }
     /// For the interface: "RTL-SDR SN 200", "USRP serial=…", "file x.cu8".
@@ -112,6 +134,7 @@ impl Source {
             Source::Rtlsdr { serial, .. } => format!("RTL-SDR {}", if serial.is_empty() { "(first)".into() } else { format!("SN {serial}") }),
             Source::Usrp { args, .. } => format!("USRP {}", if args.is_empty() { "(first)" } else { args }),
             Source::Airspy { serial, .. } => format!("Airspy {}", if serial.is_empty() { "(first)".into() } else { format!("SN {serial}") }),
+            Source::Soapy { args, .. } => format!("SoapySDR {}", if args.is_empty() { "(first)" } else { args }),
             Source::File { path, .. } => format!("file {}", path.rsplit(['/', '\\']).next().unwrap_or(path)),
         }
     }
@@ -124,6 +147,9 @@ impl Source {
 #[serde(rename_all = "camelCase", default)]
 pub struct System {
     pub short_name: String,
+    /// What people call it ("County Public Safety"); the short name is its folder.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub name: String,
     #[serde(rename = "type")]
     pub kind: String,
     pub enabled: bool,
@@ -221,6 +247,7 @@ impl Default for System {
     fn default() -> Self {
         System {
             short_name: "sys1".into(),
+            name: String::new(),
             kind: "p25".into(),
             enabled: true,
             control_channels: vec![],
@@ -552,7 +579,8 @@ impl From<RawConfig> for Config {
     }
 }
 
-fn home() -> PathBuf {
+/// The user's home folder.
+pub fn home() -> PathBuf {
     std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."))
 }
 

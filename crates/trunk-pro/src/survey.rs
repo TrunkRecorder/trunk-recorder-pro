@@ -15,7 +15,7 @@ use trunk_app::Output;
 use trunk_core::survey::{Command, Stage};
 
 use crate::config::{Config, Source};
-use crate::radio::{airspy, uhd};
+use crate::radio::{airspy, soapy, uhd};
 use crate::runtime::{self, Ctx};
 use crate::sdr::{self, Control, RtlConfig, SourceMsg};
 
@@ -58,6 +58,9 @@ fn spawn_source(src: &Source, i: usize, center: f64, tx: mpsc::SyncSender<Source
             }
             Source::Airspy { serial, rate_hz, gain, bias_tee, ppm, .. } => {
                 airspy::run_with(i, airspy::AirspyConfig { serial, center_hz: center, rate_hz, gain, bias_tee, ppm }, tx, stop, Some(ctl))
+            }
+            Source::Soapy { args, rate_hz, gain_db, gains, antenna, settings, ppm, .. } => {
+                soapy::run_with(i, soapy::SoapyConfig { args, center_hz: center, rate_hz, gain_db, gains, antenna, settings, ppm }, tx, stop, Some(ctl))
             }
             // A capture can't be tuned: the survey looks at its one centre.
             Source::File { path, rate_hz, realtime, format, .. } => runtime::run_file(i, &path, rate_hz, realtime, format, tx, stop),

@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { activeSystems, formatMhz, startProblem, systemColor, systemWithChannel } from "./config.ts";
-import { addSite, dismissError, downloadCall, quitApp, setListen, setNotice, setView, start, stop, transport, useApp, web, type AppState } from "./controller.ts";
+import { addSite, closeGuide, dismissError, openGuide, downloadCall, quitApp, setListen, setNotice, setView, start, stop, transport, useApp, web, type AppState } from "./controller.ts";
+import { guideWanted, SetupGuide } from "./Onboarding.tsx";
 import { PluginsPage } from "./Plugins.tsx";
 import { BrowserStorage } from "./web/BrowserStorage.tsx";
 import { CONVENTIONAL, type CallEntry, type CallView, type DmrSiteStatus, type SystemStatus, type TalkgroupName } from "./protocol.ts";
@@ -649,8 +650,13 @@ function History({ s }: { s: AppState }) {
                     </td>
                   )}
                   <td>
-                    <span className="tg">{c.record.talkgroup}</span>
-                    {c.record.talkgroup_tag && <span className="tag">{c.record.talkgroup_tag}</span>}
+                    {c.record.talkgroup_tag ? (
+                      <span className="tg-name" title={`Talkgroup ${c.record.talkgroup}`}>
+                        {c.record.talkgroup_tag}
+                      </span>
+                    ) : (
+                      <span className="tg">{c.record.talkgroup}</span>
+                    )}
                     {c.record.emergency ? <span className="badge bad">EMERG</span> : null}
                     <PatchedWith tgs={patchedWith(c)} />
                   </td>
@@ -754,6 +760,13 @@ export function App() {
   const running = s.phase === "running" || s.phase === "starting";
   const problem = s.config ? startProblem(s.config) : "Connecting to the recorder…";
   const liveDongle = s.config?.sources.some((x) => x.kind === "rtlsdr") ?? false;
+  // The setup guide: offered once, when the recorder first reports an empty config.
+  const offered = useRef(false);
+  useEffect(() => {
+    if (offered.current || !s.config || !s.connected) return;
+    offered.current = true;
+    if (s.phase === "idle" && guideWanted(s.config)) openGuide("start");
+  }, [s.config, s.connected]);
 
   if (s.quit) {
     return (
@@ -769,6 +782,7 @@ export function App() {
 
   return (
     <div className="app">
+      {s.guide && <SetupGuide key={s.guide} mode={s.guide} onClose={closeGuide} />}
       <header className="topbar">
         <div className="brand">
           <span className="logo" aria-hidden="true" />
@@ -795,6 +809,11 @@ export function App() {
           </nav>
         )}
         <div className="row">
+          {!running && s.connected && (
+            <button className="btn ghost" onClick={() => openGuide("start")} title="Step-by-step setup for a new system">
+              Setup guide
+            </button>
+          )}
           <span className={`pill pill-${s.phase}`}>
             {!s.connected ? "Disconnected" : s.phase === "running" ? (liveDongle ? "Recording" : "Replaying") : s.phase === "idle" ? "Stopped" : s.phase === "starting" ? "Starting…" : "Stopping…"}
           </span>

@@ -47,5 +47,7 @@ mod tests {
         assert!(matches!(c.sources[0], crate::config::Source::File { format: SampleFormat::Cu8, .. }));
         let c: crate::Config = serde_json::from_str(r#"{"sources":[{"kind":"airspy","centerHz":1,"rateHz":6000000}]}"#).unwrap();
         assert!(matches!(c.sources[0], crate::config::Source::Airspy { gain: 14, .. }));
+        let c: crate::Config = serde_json::from_str(r#"{"sources":[{"kind":"soapy","centerHz":1,"rateHz":8000000}]}"#).unwrap();
+        assert!(matches!(&c.sources[0], crate::config::Source::Soapy { args, gain_db: None, .. } if args.is_empty()));
     }
 }

@@ -71,7 +71,7 @@ fn api() -> Result<&'static Api, String> {
             names.push("libairspy.so".into());
         }
         let names: Vec<&str> = names.iter().map(String::as_str).collect();
-        let (lib, path) = super::load("TRUNK_PRO_AIRSPY", &names, "airspy")?;
+        let (lib, path) = super::load("TRUNK_PRO_AIRSPY", &names, "airspy", false)?;
         // SAFETY: the signatures are libairspy's (airspy.h, 1.0.x).
         unsafe {
             macro_rules! f {

@@ -6,6 +6,7 @@
 
 import { useEffect, useState } from "react";
 import { addPlugin, removePlugin, savePluginSettings, setPluginAudio, setPluginEnabled, useApp, type AppState } from "./controller.ts";
+import { openTodos } from "./todo.ts";
 import type { PluginInfo, PluginSchema, PluginValues, PluginsList } from "./protocol.ts";
 
 /** "apiKey" → "Api key": a label for a field the plugin didn't title. */
@@ -278,9 +279,12 @@ function PluginCard(props: { p: PluginInfo; systems: string[]; recording: boolea
   const message = p.problem ?? (p.enabled && r.message && r.message !== "running" ? r.message : "");
   const counted = r.ok + r.skipped + r.failed > 0;
   const needsM4a = m?.audio_formats.includes("m4a");
+  // Its settings came over from Trunk Recorder, and it isn't running yet.
+  const imported = openTodos(useApp()).find((t) => t.target === `plugin-${p.id}`);
 
   return (
-    <article className={`plugin-card${p.enabled ? "" : " off"}`} aria-labelledby={`pn-${p.id}`}>
+    <article className={`plugin-card${p.enabled ? "" : " off"}${imported ? " needs" : ""}`} aria-labelledby={`pn-${p.id}`} id={`need-plugin-${p.id}`}>
+      {imported && <div className="field-needs">{imported.text}</div>}
       <div className="row plugin-head">
         <span className={`dot dot-${st.tone}`} aria-hidden="true" />
         <strong id={`pn-${p.id}`}>{m?.name ?? p.id}</strong>

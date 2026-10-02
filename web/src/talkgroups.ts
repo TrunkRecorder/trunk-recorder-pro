@@ -73,3 +73,80 @@ export function parseTalkgroupCsv(text: string): Map<number, Talkgroup> {
   }
   return out;
 }
+
+/** Mode letters RadioReference's talkgroup tables use (Trunk Recorder's too). */
+const RR_MODE = /^(A|D|T|E|M|DE|TE|DM|AE)$/i;
+
+/**
+ * A Mode cell: "D", or the letter with RadioReference's encryption badge
+ * after it ("D ENC") — Trunk Recorder's encrypted modes (DE / TE / E), which
+ * it doesn't record. Null when it isn't a mode.
+ */
+function rrMode(cell: string): string | null {
+  const [base = "", ...badges] = cell.split(/\s+/);
+  if (!RR_MODE.test(base)) return null;
+  const mode = base.toUpperCase();
+  if (!badges.some((b) => /^enc/i.test(b)) || mode.endsWith("E")) return mode;
+  return mode === "D" ? "DE" : mode === "T" ? "TE" : "E";
+}
+
+/**
+ * A talkgroup table copied from RadioReference's web page (free to view, no
+ * subscription): rows of DEC, HEX, Mode, Alpha Tag, Description, Tag — tab
+ * separated when copied from a browser, else two or more spaces. A line with
+ * no talkgroup number before a run of rows is the category heading they fall
+ * under ("Metro County Fire"). The column header line is skipped.
+ *
+ * The page's badges come along: "ONLINE" after a number breaks the row in
+ * two ("167" / "ONLINE<tab>0a7<tab>D…"), and "ENC" follows the mode ("D ENC").
+ */
+export function parseRadioReferencePaste(text: string): Talkgroup[] {
+  const out: Talkgroup[] = [];
+  const seen = new Set<number>();
+  let category = "";
+  // A number on a line of its own: the rest of its row is on the next line, after its badge.
+  let pending: string | null = null;
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    let f = (raw.includes("\t") ? raw.split("\t") : line.split(/\s{2,}/)).map((x) => x.trim()).filter(Boolean);
+    if (pending !== null) {
+      const num = pending;
+      pending = null;
+      if (f.length > 1 && !/^\d+\b/.test(f[0])) f = [num, ...f.slice(1)];
+      else out.push(row(Number(num), [], category));
+    }
+    if (/^dec\b/i.test(f[0] ?? "")) continue;
+    // A badge in the number's cell ("167 ONLINE").
+    const num = /^(\d+)(\s+[A-Za-z].*)?$/.exec(f[0] ?? "");
+    if (!num) {
+      // A heading: a category name, not a sentence of help text.
+      if (f.length === 1 && line.length <= 60) category = line;
+      continue;
+    }
+    if (f.length === 1) {
+      pending = num[1];
+      continue;
+    }
+    out.push(row(Number(num[1]), f.slice(1), category));
+  }
+  if (pending !== null) out.push(row(Number(pending), [], category));
+  return out.filter((t) => !seen.has(t.number) && !!seen.add(t.number));
+}
+
+/** A talkgroup from the cells after its number: HEX (optional), Mode, Alpha Tag, Description, Tag. */
+function row(number: number, f: string[], group: string): Talkgroup {
+  let k = 0;
+  // The HEX column, when copied (it is the same number).
+  if (f[k] && /^[0-9a-f]+$/i.test(f[k]) && Number.parseInt(f[k], 16) === number) k++;
+  const m = f[k] ? rrMode(f[k]) : null;
+  if (m) k++;
+  return { number, mode: m ?? "D", alphaTag: f[k] ?? "", description: f[k + 1] ?? "", tag: f[k + 2] ?? "", group, priority: 1, preferredNac: 0 };
+}
+
+/** Talkgroups as Trunk Recorder's headed talkgroup CSV. */
+export function talkgroupsToCsv(tgs: Talkgroup[]): string {
+  const cell = (v: string) => (/[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
+  const rows = tgs.map((t) => [String(t.number), t.number.toString(16), t.alphaTag, t.mode, t.description, t.tag, t.group].map(cell).join(","));
+  return ["Decimal,Hex,Alpha Tag,Mode,Description,Tag,Category", ...rows].join("\n") + "\n";
+}
