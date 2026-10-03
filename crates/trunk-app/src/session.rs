@@ -4,7 +4,7 @@
 //! wall clock (`now_ms`), the local date for folder names, and does the I/O.
 
 use serde_json::{json, Value};
-use trunk_core::trunk::{heard_code, Call, Engine, Event, Identity, MessageType};
+use trunk_core::trunk::{heard_code, Call, Engine, Event, Identity, Message, MessageType};
 
 use crate::filename;
 use crate::log::{Body, CallState, CallTag, Level, Record};
@@ -75,6 +75,9 @@ pub struct Session {
     rate_mark: (f64, Vec<u64>),
     /// Build audio frames (skip when nobody is listening).
     pub want_audio: bool,
+    /// Send control channel messages as `trunk` batches (someone is watching).
+    pub want_trunk: bool,
+    trunk: Vec<Value>,
     pub plugin_topics: PluginTopics,
     /// Wall clock (Unix ms) at the engine's time 0.
     epoch_ms: f64,
@@ -114,6 +117,8 @@ impl Session {
             last_spec_ms: 0.0,
             rate_mark: (0.0, vec![0; n]),
             want_audio: true,
+            want_trunk: false,
+            trunk: Vec::new(),
             plugin_topics: PluginTopics::default(),
             epoch_ms,
             last_plugin_status_ms: 0.0,
@@ -372,6 +377,9 @@ impl Session {
         if !self.log.is_empty() {
             out.push(Output::Text(json!({ "type": "log", "lines": std::mem::take(&mut self.log) }).to_string()));
         }
+        if !self.trunk.is_empty() {
+            out.push(Output::Text(json!({ "type": "trunk", "messages": std::mem::take(&mut self.trunk) }).to_string()));
+        }
     }
 
     fn handle(&mut self, ev: Event, out: &mut Vec<Output>) {
@@ -386,6 +394,10 @@ impl Session {
                             out.push(Output::Plugin(HostMessage::Unit(e)));
                         }
                     }
+                }
+                // (Grant updates repeat every second of every call: left out.)
+                if self.want_trunk && !matches!(m.kind, MessageType::Update | MessageType::Unknown) && self.trunk.len() < MAX_TRUNK_BATCH {
+                    self.trunk.push(trunk_json(&name, &m, self.wall(m.time_s)));
                 }
                 self.records.push(Record::text(Level::Trace, Some(&name), m.meta.clone()));
                 self.log.push(json!({ "timeS": m.time_s, "kind": m.kind.as_str(), "text": m.meta, "system": name }))
@@ -571,6 +583,44 @@ impl Session {
 }
 
 /// The unit events plugins hear about, by their name there.
+/// Control channel messages kept for one `trunk` batch (half a second).
+const MAX_TRUNK_BATCH: usize = 2000;
+
+/// A control channel message for the interface's trunking view: only the
+/// fields it carries.
+fn trunk_json(system: &str, m: &Message, time: f64) -> Value {
+    let mut o = serde_json::Map::new();
+    o.insert("time".into(), json!((time * 10.0).round() / 10.0));
+    o.insert("system".into(), json!(system));
+    o.insert("kind".into(), json!(m.kind.as_str()));
+    if m.source >= 0 {
+        o.insert("unit".into(), json!(m.source));
+    }
+    if m.talkgroup > 0 {
+        o.insert("talkgroup".into(), json!(m.talkgroup));
+    }
+    if m.freq_hz > 0 {
+        o.insert("freqHz".into(), json!(m.freq_hz));
+    }
+    if m.phase2_tdma {
+        o.insert("slot".into(), json!(m.tdma_slot));
+    }
+    if m.encrypted {
+        o.insert("encrypted".into(), json!(true));
+    }
+    if m.emergency {
+        o.insert("emergency".into(), json!(true));
+    }
+    if m.rfss > 0 || m.site > 0 {
+        o.insert("site".into(), json!(format!("{}-{}", m.rfss, m.site)));
+    }
+    // What the fields above don't say.
+    if matches!(m.kind, MessageType::Status | MessageType::SysId | MessageType::ControlChannel | MessageType::PatchAdd | MessageType::PatchDelete | MessageType::Adjacent | MessageType::CallAlert) {
+        o.insert("text".into(), json!(m.meta));
+    }
+    Value::Object(o)
+}
+
 fn unit_kind(k: MessageType) -> Option<&'static str> {
     Some(match k {
         MessageType::Registration => "registration",

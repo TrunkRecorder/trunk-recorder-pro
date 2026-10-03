@@ -5,6 +5,17 @@
 import { useSyncExternalStore } from "react";
 import { LivePlayer } from "./livePlayer.ts";
 import type {
+  Access,
+  Account,
+  AffiliationLink,
+  TrunkMessage,
+  AffiliationRow,
+  AffiliationView,
+  HistoryKind,
+  StatsSummary,
+  StatsTarget,
+  StatsTable,
+  StatsWindow,
   HeardCode,
   AudioChunk,
   CallEntry,
@@ -22,6 +33,7 @@ import type {
   PluginStore,
   PluginValues,
   Radios,
+  Role,
   SourceStatus,
   SiteIdentity,
   Spectrum,
@@ -95,14 +107,26 @@ export interface AppState {
   todo: ImportTodo[];
   /** The setup page's tab. */
   setupTab: SetupTab;
+  /** Who this is (desktop app); null in the web build. */
+  access: Access | null;
+  /** The accounts, when an admin has asked. */
+  accounts: Account[] | null;
+  /** Control channel messages, newest last (the trunking view's buffer). */
+  trunk: TrunkMessage[];
+  /** The statistics last asked for. */
+  stats: StatsSummary | null;
+  statsHistory: { system: string; kind: HistoryKind; id: number; window: StatsWindow; hours: StatsTable } | null;
+  affiliations: { system: string; view: AffiliationView; search: string; id: number | null; offset: number; total: number; rows: AffiliationRow[] } | null;
+  affiliationLinks: { system: string; view: AffiliationView; id: number; rows: AffiliationLink[] } | null;
 }
 
-export type SetupTab = "systems" | "conventional" | "radios" | "recording" | "plugins";
+export type SetupTab = "systems" | "conventional" | "radios" | "recording" | "plugins" | "accounts";
 
-export type View = "recorder" | "plugins";
+export type View = "recorder" | "stats" | "omnitrunker" | "plugins";
 
 function viewFromHash(): View {
-  return location.hash === "#plugins" ? "plugins" : "recorder";
+  const h = location.hash.slice(1);
+  return h === "plugins" || h === "stats" || h === "omnitrunker" ? h : "recorder";
 }
 
 // Remembered in this browser (read while the state below is built, so declared first).
@@ -150,6 +174,13 @@ let state: AppState = {
   guide: null,
   todo: loadTodo(),
   setupTab: loadSetupTab(),
+  access: null,
+  accounts: null,
+  trunk: [],
+  stats: null,
+  statsHistory: null,
+  affiliations: null,
+  affiliationLinks: null,
 };
 
 const listeners = new Set<() => void>();
@@ -202,6 +233,7 @@ transport.onMessage = (m: FromRecorder) => {
         ended: m.phase.ended,
         surveyBands: m.surveyBands ?? [],
         survey: m.survey ?? { stage: "idle" },
+        access: m.access ?? null,
       });
       if (state.listen) transport.send({ type: "listen", on: true, system: state.listenSystem, talkgroup: state.listenTalkgroup });
       break;
@@ -288,6 +320,41 @@ transport.onMessage = (m: FromRecorder) => {
       set({ pluginInstalls: installs });
       break;
     }
+    case "accounts":
+      set({ accounts: m.accounts });
+      break;
+    case "trunk": {
+      const fresh = m.messages.filter(firstHeard);
+      if (fresh.length) set({ trunk: [...state.trunk, ...fresh].slice(-TRUNK_KEPT) });
+      break;
+    }
+    case "stats": {
+      const { type: _, ...stats } = m;
+      set({ stats });
+      break;
+    }
+    case "statsHistory": {
+      const { type: _, ...h } = m;
+      set({ statsHistory: h });
+      break;
+    }
+    case "affiliations": {
+      const { type: _, ...a } = m;
+      // A later page adds to the list; a new search or view starts it again.
+      const prev = state.affiliations;
+      const more = prev && a.offset > 0 && prev.system === a.system && prev.view === a.view && prev.search === a.search && prev.id === a.id;
+      set({ affiliations: more ? { ...a, rows: [...prev.rows, ...a.rows] } : a });
+      break;
+    }
+    case "affiliationLinks": {
+      const { type: _, ...l } = m;
+      set({ affiliationLinks: l });
+      break;
+    }
+    case "loggedOut":
+      transport.close?.();
+      location.reload();
+      break;
     case "quit":
       player.stop();
       transport.close?.();
@@ -295,6 +362,80 @@ transport.onMessage = (m: FromRecorder) => {
       break;
   }
 };
+
+// ── accounts ─────────────────────────────────────────────────────────────────
+
+/** Only watching: no setup, plugins, start or stop. */
+export function readOnly(s: AppState): boolean {
+  return s.access?.role === "viewer";
+}
+
+export function fetchAccounts(): void {
+  transport.send({ type: "accounts" });
+}
+export function addAccount(name: string, role: Role, password: string): void {
+  transport.send({ type: "addAccount", name, role, password });
+}
+export function removeAccount(name: string): void {
+  transport.send({ type: "removeAccount", name });
+}
+export function setAccountRole(name: string, role: Role): void {
+  transport.send({ type: "setAccountRole", name, role });
+}
+export function setAccountPassword(name: string, password: string): void {
+  transport.send({ type: "setAccountPassword", name, password });
+}
+export function changePassword(old: string, password: string): void {
+  transport.send({ type: "changePassword", old, password });
+}
+// ── trunking view ────────────────────────────────────────────────────────────
+
+/** Control channel messages kept in this browser. */
+export const TRUNK_KEPT = 2000;
+
+// The control channel repeats a message (each grant several times): a repeat
+// within this long is left out.
+const REPEAT_S = 3;
+const lastHeard = new Map<string, number>();
+
+function firstHeard(m: TrunkMessage): boolean {
+  const key = `${m.system}|${m.kind}|${m.unit ?? ""}|${m.talkgroup ?? ""}|${m.freqHz ?? ""}|${m.slot ?? ""}|${m.text ?? ""}`;
+  const prev = lastHeard.get(key);
+  lastHeard.set(key, m.time);
+  if (lastHeard.size > 5000) {
+    for (const [k, t] of lastHeard) if (m.time - t > REPEAT_S) lastHeard.delete(k);
+  }
+  return prev === undefined || m.time - prev > REPEAT_S;
+}
+
+export function clearTrunk(): void {
+  set({ trunk: [] });
+}
+
+// ── statistics ───────────────────────────────────────────────────────────────
+
+export function fetchStats(t: StatsTarget, window: StatsWindow): void {
+  transport.send({ type: "stats", system: t.key, systems: t.systems, window });
+}
+export function fetchStatsHistory(t: StatsTarget, kind: HistoryKind, id: number, window: StatsWindow): void {
+  transport.send({ type: "statsHistory", system: t.key, systems: t.systems, kind, id, window });
+}
+export function clearStatsHistory(): void {
+  set({ statsHistory: null });
+}
+/** A page of radios or talkgroups; or, with `id`, just that one. */
+export function fetchAffiliations(t: StatsTarget, view: AffiliationView, search: string, offset = 0, id: number | null = null): void {
+  transport.send({ type: "affiliations", system: t.key, systems: t.systems, view, search, offset, limit: 200, ...(id === null ? {} : { id }) });
+}
+export function fetchAffiliationLinks(t: StatsTarget, view: AffiliationView, id: number): void {
+  transport.send({ type: "affiliationLinks", system: t.key, systems: t.systems, view, id });
+}
+
+export async function logOut(): Promise<void> {
+  await fetch("/api/logout", { method: "POST" }).catch(() => {});
+  transport.close?.();
+  location.reload();
+}
 
 // ── config ───────────────────────────────────────────────────────────────────
 
@@ -359,7 +500,7 @@ export function currentView(): View {
 }
 
 export function setView(view: View): void {
-  const hash = view === "plugins" ? "#plugins" : "";
+  const hash = view === "recorder" ? "" : `#${view}`;
   if (location.hash !== hash) history.pushState(null, "", hash || location.pathname + location.search);
   set({ view });
 }
@@ -477,7 +618,7 @@ export function closeGuide(): void {
 function loadSetupTab(): SetupTab {
   try {
     const t = localStorage.getItem(TAB_KEY);
-    if (t === "systems" || t === "conventional" || t === "radios" || t === "recording" || t === "plugins") return t;
+    if (t === "systems" || t === "conventional" || t === "radios" || t === "recording" || t === "plugins" || t === "accounts") return t;
   } catch {
     // Not remembered.
   }

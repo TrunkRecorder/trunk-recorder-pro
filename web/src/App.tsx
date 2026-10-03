@@ -1,13 +1,18 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { activeSystems, enabledChannels, formatMhz, startProblem, systemColor, systemWithChannel } from "./config.ts";
-import { addSite, closeGuide, dismissError, openGuide, downloadCall, pluginOn, quitApp, setListen, setNotice, setView, start, stop, transport, useApp, web, type AppState } from "./controller.ts";
+import { addSite, closeGuide, dismissError, openGuide, downloadCall, pluginOn, quitApp, readOnly, setListen, setNotice, setView, start, stop, transport, useApp, web, type AppState } from "./controller.ts";
+import { UserMenu } from "./Accounts.tsx";
 import { guideWanted, SetupGuide } from "./Onboarding.tsx";
 import { PluginsPage } from "./Plugins.tsx";
 import { BrowserStorage } from "./web/BrowserStorage.tsx";
 import { conventionalSystem, type CallEntry, type CallView, type DmrSiteStatus, type SourceStatus, type SystemStatus, type TalkgroupName } from "./protocol.ts";
 import { Setup } from "./Setup.tsx";
+import { OmnitrunkerPage } from "./Omnitrunker.tsx";
+import { StatsPage } from "./Stats.tsx";
+import { Tile } from "./Tile.tsx";
 import { parseTalkgroupCsv } from "./talkgroups.ts";
 import { unitName } from "./units.ts";
+import { fullRows } from "./layout.ts";
 import { Waterfall, type CcMark } from "./Waterfall.tsx";
 
 const hex = (v: number | null | undefined) => (v === null || v === undefined ? "—" : v.toString(16).toUpperCase());
@@ -17,16 +22,6 @@ function clock(s: number): string {
   const m = Math.floor((s % 3600) / 60);
   const ss = Math.floor(s % 60);
   return h ? `${h}:${String(m).padStart(2, "0")}:${String(ss).padStart(2, "0")}` : `${m}:${String(ss).padStart(2, "0")}`;
-}
-
-function Tile(props: { label: string; value: React.ReactNode; sub?: React.ReactNode; tone?: "ok" | "warn" | "bad" }) {
-  return (
-    <div className={`tile${props.tone ? ` tone-${props.tone}` : ""}`}>
-      <div className="tile-label">{props.label}</div>
-      <div className="tile-value">{props.value}</div>
-      {props.sub && <div className="tile-sub">{props.sub}</div>}
-    </div>
-  );
 }
 
 /** One marker per control channel frequency (systems sharing one share a marker). */
@@ -730,7 +725,7 @@ function History({ s }: { s: AppState }) {
       <footer className="panel-foot muted small">
         {web ? (
           <BrowserStorage />
-        ) : s.config ? (
+        ) : s.config?.recording.captureDir ? (
           <span>
             Saved to <span className="mono">{s.config.recording.captureDir}</span>
           </span>
@@ -807,10 +802,14 @@ export function App() {
   const running = s.phase === "running" || s.phase === "starting";
   const problem = s.config ? startProblem(s.config) : "Connecting to the recorder…";
   const liveDongle = s.config?.sources.some((x) => x.kind === "rtlsdr") ?? false;
+  // A viewer watches: no setup, plugins, start or stop.
+  const ro = readOnly(s);
+  // Which waterfalls take a whole row.
+  const fullRow = fullRows(s.spectra.map((x) => x?.rateHz ?? null));
   // The setup guide: offered once, when the recorder first reports an empty config.
   const offered = useRef(false);
   useEffect(() => {
-    if (offered.current || !s.config || !s.connected) return;
+    if (offered.current || !s.config || !s.connected || ro) return;
     offered.current = true;
     if (s.phase === "idle" && guideWanted(s.config)) openGuide("start");
   }, [s.config, s.connected]);
@@ -845,6 +844,13 @@ export function App() {
             <button className={s.view === "recorder" ? "on" : ""} aria-current={s.view === "recorder" ? "page" : undefined} onClick={() => setView("recorder")}>
               Recorder
             </button>
+            <button className={s.view === "omnitrunker" ? "on" : ""} aria-current={s.view === "omnitrunker" ? "page" : undefined} onClick={() => setView("omnitrunker")}>
+              Omnitrunker
+            </button>
+            <button className={s.view === "stats" ? "on" : ""} aria-current={s.view === "stats" ? "page" : undefined} onClick={() => setView("stats")}>
+              Stats
+            </button>
+            {!ro && (
             <button className={s.view === "plugins" ? "on" : ""} aria-current={s.view === "plugins" ? "page" : undefined} onClick={() => setView("plugins")}>
               Plugins
               {pluginTrouble(s) > 0 && (
@@ -853,10 +859,11 @@ export function App() {
                 </span>
               )}
             </button>
+            )}
           </nav>
         )}
         <div className="row">
-          {!running && s.connected && (
+          {!running && s.connected && !ro && (
             <button className="btn ghost" onClick={() => openGuide("start")} title="Step-by-step setup for a new system">
               Setup guide
             </button>
@@ -864,7 +871,7 @@ export function App() {
           <span className={`pill pill-${s.phase}`}>
             {!s.connected ? "Disconnected" : s.phase === "running" ? (liveDongle ? "Recording" : "Replaying") : s.phase === "idle" ? "Stopped" : s.phase === "starting" ? "Starting…" : "Stopping…"}
           </span>
-          {running ? (
+          {ro ? null : running ? (
             <button className="btn primary" onClick={stop}>
               Stop
             </button>
@@ -873,11 +880,12 @@ export function App() {
               Start
             </button>
           )}
-          {!web && s.connected && (
+          {!web && s.connected && !ro && (
             <button className="btn ghost" onClick={quitApp} title="Stop recording and quit the app">
               Quit
             </button>
           )}
+          <UserMenu />
         </div>
       </header>
 
@@ -899,33 +907,42 @@ export function App() {
         </div>
       )}
       {s.ended && s.phase === "idle" && <div className="banner">Replay finished.</div>}
-      {!running && problem && s.connected && !s.error && <div className="banner subtle">{problem}</div>}
+      {!running && problem && s.connected && !s.error && !ro && <div className="banner subtle">{problem}</div>}
+      {ro && !running && s.connected && <div className="banner subtle">The recorder is stopped.</div>}
 
       <main>
-        {!web && s.view === "plugins" ? (
+        {!web && s.view === "plugins" && !ro ? (
           <PluginsPage />
+        ) : !web && s.view === "stats" ? (
+          <StatsPage />
+        ) : !web && s.view === "omnitrunker" ? (
+          <OmnitrunkerPage />
         ) : running ? (
           <>
             <StatusTiles s={s} />
-            {s.spectra.map((sp, i) =>
-              sp ? (
-                <section className="panel flush" key={i}>
-                  <Waterfall
-                    radio={sp}
-                    label={s.sources[i]?.label}
-                    ccs={ccMarks(s.status?.systems ?? [])}
-                    calls={s.calls}
-                    multi={systemChoices(s).length > 1}
-                  />
-                </section>
-              ) : null,
-            )}
+            <div className="waterfalls">
+              {s.spectra.map((sp, i) =>
+                sp ? (
+                  <section className={`panel flush${fullRow[i] ? " wide" : ""}`} key={i}>
+                    <Waterfall
+                      radio={sp}
+                      label={s.sources[i]?.label}
+                      ccs={ccMarks(s.status?.systems ?? [])}
+                      calls={s.calls}
+                      multi={systemChoices(s).length > 1}
+                    />
+                  </section>
+                ) : null,
+              )}
+            </div>
             <div className="columns">
               <ActiveCalls s={s} />
               <History s={s} />
             </div>
             <Log s={s} />
           </>
+        ) : ro ? (
+          <History s={s} />
         ) : (
           <div className="columns setup-cols">
             <Setup />

@@ -772,8 +772,20 @@ export type FromRecorder =
       radios?: Radios;
       surveyBands?: SurveyBand[];
       survey?: { type: "survey" } & SurveyState;
+      /** Who this connection is (desktop app); `accounts` false: none yet, this computer only. */
+      access?: Access;
     }
   | { type: "radios"; radios: Radios }
+  /** The accounts (admins only). */
+  | { type: "accounts"; accounts: Account[] }
+  /** Control channel messages since the last batch (grant updates left out). */
+  | { type: "trunk"; messages: TrunkMessage[] }
+  | ({ type: "stats" } & StatsSummary)
+  | { type: "statsHistory"; system: string; kind: HistoryKind; id: number; window: StatsWindow; hours: StatsTable }
+  | { type: "affiliations"; system: string; view: AffiliationView; search: string; id: number | null; offset: number; total: number; rows: AffiliationRow[] }
+  | { type: "affiliationLinks"; system: string; view: AffiliationView; id: number; rows: AffiliationLink[] }
+  /** This session was logged out, removed or changed: log in again. */
+  | { type: "loggedOut" }
   | ({ type: "state" } & PhaseState)
   | { type: "config"; config: Config }
   | { type: "status"; status: EngineStatus; sources: SourceStatus[]; load: number; calls: CallView[] }
@@ -833,7 +845,159 @@ export type ToRecorder =
   | { type: "installPlugin"; id: string }
   /** Install a plugin from a GitHub release that isn't in the registry (its latest, or `tag`). */
   | { type: "installPlugin"; repository: string; tag?: string }
-  | { type: "quit" };
+  | { type: "quit" }
+  /** Accounts (admins): the list, and changes to it. */
+  | { type: "accounts" }
+  | { type: "addAccount"; name: string; role: Role; password: string }
+  | { type: "removeAccount"; name: string }
+  | { type: "setAccountRole"; name: string; role: Role }
+  | { type: "setAccountPassword"; name: string; password: string }
+  /** Anyone: their own password. */
+  | { type: "changePassword"; old: string; password: string }
+  /** Statistics (anyone logged in), of `systems`: one, or a multi-site system's sites. `system` names them in the answer. */
+  | { type: "stats"; system: string; systems: string[]; window: StatsWindow }
+  | { type: "statsHistory"; system: string; systems: string[]; kind: HistoryKind; id: number; window: StatsWindow }
+  /** A page of radios or talkgroups, or (`id`) just that one. */
+  | { type: "affiliations"; system: string; systems: string[]; view: AffiliationView; search: string; offset: number; limit: number; id?: number }
+  | { type: "affiliationLinks"; system: string; systems: string[]; view: AffiliationView; id: number };
+
+/** A control channel message, for the trunking view. */
+export interface TrunkMessage {
+  /** Unix seconds. */
+  time: number;
+  system: string;
+  /** "grant", "affiliation", "registration", "deregistration", "acknowledge", "location", "data_grant", "uu_ans_req", "uu_v_grant", "call_alert", "status", "sysid", "control_channel", "patch_add", "patch_delete", "adjacent" … */
+  kind: string;
+  unit?: number;
+  talkgroup?: number;
+  freqHz?: number;
+  slot?: number;
+  encrypted?: boolean;
+  emergency?: boolean;
+  /** "rfss-site" */
+  site?: string;
+  /** For kinds the fields don't describe (status, sysid, patches, neighbours). */
+  text?: string;
+}
+
+/** "restart": since the recorder started. */
+export type StatsWindow = "restart" | "24h" | "7d" | "30d" | "all";
+export type HistoryKind = "system" | "freq" | "talkgroup" | "unit";
+export type AffiliationView = "units" | "talkgroups";
+
+/** What statistics are of: a system, or the sites of a multi-site system together. */
+export interface StatsTarget {
+  /** Names it in requests and answers. */
+  key: string;
+  label: string;
+  systems: string[];
+}
+
+/** Recorded calls and their audio quality: a channel, talkgroup or radio over a window. */
+export interface StatRow {
+  freq?: number;
+  talkgroup?: number;
+  unit?: number;
+  alias: string;
+  calls: number;
+  seconds: number;
+  /** Vocoder frames. */
+  frames: number;
+  /** Bit errors the FEC corrected. */
+  errors: number;
+  /** Frames repeated or muted. */
+  badFrames: number;
+  /** Coded voice bits received (bit error rate = errors / codedBits). */
+  codedBits: number;
+  /** Channel grants (calls heard, recorded or not). */
+  grants: number;
+}
+
+/** A table: column names and rows of numbers. */
+export interface StatsTable {
+  columns: string[];
+  rows: number[][];
+}
+
+export interface StatsSummary {
+  system: string;
+  window: StatsWindow;
+  /** Unix seconds the window starts. */
+  since: number;
+  totals: Omit<StatRow, "alias"> & { encrypted: number; emergency: number; notRecorded: number };
+  channels: StatRow[];
+  talkgroups: StatRow[];
+  topErrors: { talkgroups: StatRow[]; units: StatRow[] };
+  /** Decode rate and active calls: [t, decode, min, max, active, recording] per `bucket` seconds. */
+  rates: StatsTable & { bucket: number };
+  /** Per hour: [hour, calls, seconds, frames, errors, badFrames, codedBits, grants]. */
+  hours: StatsTable;
+  /** Events the statistics writer couldn't keep up with. */
+  dropped: number;
+}
+
+export interface AffiliationRow {
+  unit?: number;
+  talkgroup?: number;
+  alias: string;
+  firstSeen: number;
+  lastSeen: number;
+  calls: number;
+  affiliations: number;
+  /** Units: the talkgroup it was last on. */
+  lastTalkgroup?: number | null;
+  registrations?: number;
+  /** Units: on or off as last heard (null: never said). */
+  registered?: boolean | null;
+  /** Units: how many talkgroups it has met (called on, joined or reported a location for). */
+  talkgroups?: number;
+  /** Talkgroups: seconds recorded, and radios that have met it. */
+  seconds?: number;
+  units?: number;
+  /** The sites it was heard on. */
+  sites: string[];
+}
+
+/** A unit's talkgroup, or a talkgroup's unit. */
+export interface AffiliationLink {
+  id: number;
+  alias: string;
+  firstSeen: number;
+  lastSeen: number;
+  /** Times together on a call, joined, and a location was reported; `count` is all three. */
+  voice: number;
+  affiliations: number;
+  locations: number;
+  count: number;
+  /** The sites they met on. */
+  sites: string[];
+}
+
+export type Role = "admin" | "viewer";
+
+export interface Access {
+  /** "" when there are no accounts. */
+  user: string;
+  role: Role;
+  accounts: boolean;
+}
+
+export interface Account {
+  name: string;
+  role: Role;
+  /** Logged-in sessions. */
+  sessions: number;
+}
+
+/** GET /api/whoami */
+export interface WhoAmI {
+  user: string | null;
+  role: Role | null;
+  /** No accounts yet: this computer may make the first one. */
+  setup: boolean;
+  local: boolean;
+  problem: string | null;
+}
 
 /** Live audio: one 20 ms (or longer) chunk of a call, 8 kHz. */
 export interface AudioChunk {

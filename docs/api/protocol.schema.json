@@ -3,6 +3,175 @@
   "title": "Trunk Recorder Pro interface protocol",
   "description": "The JSON messages on the WebSocket /api/ws. FromRecorder: server → client; ToRecorder: client → server. Generated from web/src/protocol.ts — see docs/api/README.md.",
   "definitions": {
+    "Access": {
+      "type": "object",
+      "properties": {
+        "user": {
+          "type": "string",
+          "description": "\"\" when there are no accounts."
+        },
+        "role": {
+          "$ref": "#/definitions/Role"
+        },
+        "accounts": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "user",
+        "role",
+        "accounts"
+      ],
+      "additionalProperties": false
+    },
+    "Account": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "role": {
+          "$ref": "#/definitions/Role"
+        },
+        "sessions": {
+          "type": "number",
+          "description": "Logged-in sessions."
+        }
+      },
+      "required": [
+        "name",
+        "role",
+        "sessions"
+      ],
+      "additionalProperties": false
+    },
+    "AffiliationLink": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "number"
+        },
+        "alias": {
+          "type": "string"
+        },
+        "firstSeen": {
+          "type": "number"
+        },
+        "lastSeen": {
+          "type": "number"
+        },
+        "voice": {
+          "type": "number",
+          "description": "Times together on a call, joined, and a location was reported; `count` is all three."
+        },
+        "affiliations": {
+          "type": "number"
+        },
+        "locations": {
+          "type": "number"
+        },
+        "count": {
+          "type": "number"
+        },
+        "sites": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The sites they met on."
+        }
+      },
+      "required": [
+        "id",
+        "alias",
+        "firstSeen",
+        "lastSeen",
+        "voice",
+        "affiliations",
+        "locations",
+        "count",
+        "sites"
+      ],
+      "additionalProperties": false,
+      "description": "A unit's talkgroup, or a talkgroup's unit."
+    },
+    "AffiliationRow": {
+      "type": "object",
+      "properties": {
+        "unit": {
+          "type": "number"
+        },
+        "talkgroup": {
+          "type": "number"
+        },
+        "alias": {
+          "type": "string"
+        },
+        "firstSeen": {
+          "type": "number"
+        },
+        "lastSeen": {
+          "type": "number"
+        },
+        "calls": {
+          "type": "number"
+        },
+        "affiliations": {
+          "type": "number"
+        },
+        "lastTalkgroup": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Units: the talkgroup it was last on."
+        },
+        "registrations": {
+          "type": "number"
+        },
+        "registered": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Units: on or off as last heard (null: never said)."
+        },
+        "talkgroups": {
+          "type": "number",
+          "description": "Units: how many talkgroups it has met (called on, joined or reported a location for)."
+        },
+        "seconds": {
+          "type": "number",
+          "description": "Talkgroups: seconds recorded, and radios that have met it."
+        },
+        "units": {
+          "type": "number"
+        },
+        "sites": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The sites it was heard on."
+        }
+      },
+      "required": [
+        "alias",
+        "firstSeen",
+        "lastSeen",
+        "calls",
+        "affiliations",
+        "sites"
+      ],
+      "additionalProperties": false
+    },
+    "AffiliationView": {
+      "type": "string",
+      "enum": [
+        "units",
+        "talkgroups"
+      ]
+    },
     "AirspyGainMode": {
       "type": "string",
       "enum": [
@@ -1100,6 +1269,10 @@
                   ]
                 }
               ]
+            },
+            "access": {
+              "$ref": "#/definitions/Access",
+              "description": "Who this connection is (desktop app); `accounts` false: none yet, this computer only."
             }
           },
           "required": [
@@ -1128,6 +1301,338 @@
           "required": [
             "type",
             "radios"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "accounts"
+            },
+            "accounts": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/Account"
+              }
+            }
+          },
+          "required": [
+            "type",
+            "accounts"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "trunk"
+            },
+            "messages": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/TrunkMessage"
+              }
+            }
+          },
+          "required": [
+            "type",
+            "messages"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "system": {
+              "type": "string"
+            },
+            "window": {
+              "$ref": "#/definitions/StatsWindow"
+            },
+            "since": {
+              "type": "number",
+              "description": "Unix seconds the window starts."
+            },
+            "totals": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "encrypted": {
+                  "type": "number"
+                },
+                "emergency": {
+                  "type": "number"
+                },
+                "notRecorded": {
+                  "type": "number"
+                },
+                "freq": {
+                  "type": "number"
+                },
+                "talkgroup": {
+                  "type": "number"
+                },
+                "unit": {
+                  "type": "number"
+                },
+                "calls": {
+                  "type": "number"
+                },
+                "seconds": {
+                  "type": "number"
+                },
+                "frames": {
+                  "type": "number",
+                  "description": "Vocoder frames."
+                },
+                "errors": {
+                  "type": "number",
+                  "description": "Bit errors the FEC corrected."
+                },
+                "badFrames": {
+                  "type": "number",
+                  "description": "Frames repeated or muted."
+                },
+                "codedBits": {
+                  "type": "number",
+                  "description": "Coded voice bits received (bit error rate = errors / codedBits)."
+                },
+                "grants": {
+                  "type": "number",
+                  "description": "Channel grants (calls heard, recorded or not)."
+                }
+              },
+              "required": [
+                "badFrames",
+                "calls",
+                "codedBits",
+                "emergency",
+                "encrypted",
+                "errors",
+                "frames",
+                "grants",
+                "notRecorded",
+                "seconds"
+              ]
+            },
+            "channels": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/StatRow"
+              }
+            },
+            "talkgroups": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/StatRow"
+              }
+            },
+            "topErrors": {
+              "type": "object",
+              "properties": {
+                "talkgroups": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/definitions/StatRow"
+                  }
+                },
+                "units": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/definitions/StatRow"
+                  }
+                }
+              },
+              "required": [
+                "talkgroups",
+                "units"
+              ],
+              "additionalProperties": false
+            },
+            "rates": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "bucket": {
+                  "type": "number"
+                },
+                "columns": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "rows": {
+                  "type": "array",
+                  "items": {
+                    "type": "array",
+                    "items": {
+                      "type": "number"
+                    }
+                  }
+                }
+              },
+              "required": [
+                "bucket",
+                "columns",
+                "rows"
+              ],
+              "description": "Decode rate and active calls: [t, decode, min, max, active, recording] per `bucket` seconds."
+            },
+            "hours": {
+              "$ref": "#/definitions/StatsTable",
+              "description": "Per hour: [hour, calls, seconds, frames, errors, badFrames, codedBits, grants]."
+            },
+            "dropped": {
+              "type": "number",
+              "description": "Events the statistics writer couldn't keep up with."
+            },
+            "type": {
+              "type": "string",
+              "const": "stats"
+            }
+          },
+          "required": [
+            "channels",
+            "dropped",
+            "hours",
+            "rates",
+            "since",
+            "system",
+            "talkgroups",
+            "topErrors",
+            "totals",
+            "type",
+            "window"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "statsHistory"
+            },
+            "system": {
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/definitions/HistoryKind"
+            },
+            "id": {
+              "type": "number"
+            },
+            "window": {
+              "$ref": "#/definitions/StatsWindow"
+            },
+            "hours": {
+              "$ref": "#/definitions/StatsTable"
+            }
+          },
+          "required": [
+            "type",
+            "system",
+            "kind",
+            "id",
+            "window",
+            "hours"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "affiliations"
+            },
+            "system": {
+              "type": "string"
+            },
+            "view": {
+              "$ref": "#/definitions/AffiliationView"
+            },
+            "search": {
+              "type": "string"
+            },
+            "id": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "offset": {
+              "type": "number"
+            },
+            "total": {
+              "type": "number"
+            },
+            "rows": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/AffiliationRow"
+              }
+            }
+          },
+          "required": [
+            "type",
+            "system",
+            "view",
+            "search",
+            "id",
+            "offset",
+            "total",
+            "rows"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "affiliationLinks"
+            },
+            "system": {
+              "type": "string"
+            },
+            "view": {
+              "$ref": "#/definitions/AffiliationView"
+            },
+            "id": {
+              "type": "number"
+            },
+            "rows": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/AffiliationLink"
+              }
+            }
+          },
+          "required": [
+            "type",
+            "system",
+            "view",
+            "id",
+            "rows"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "loggedOut"
+            }
+          },
+          "required": [
+            "type"
           ],
           "additionalProperties": false
         },
@@ -1877,6 +2382,15 @@
       "additionalProperties": false,
       "description": "A code a conventional frequency carried (crates/trunk-app/src/heard.rs), in a row's Tone form (\"\" = none)."
     },
+    "HistoryKind": {
+      "type": "string",
+      "enum": [
+        "system",
+        "freq",
+        "talkgroup",
+        "unit"
+      ]
+    },
     "Identity": {
       "type": "object",
       "properties": {
@@ -2542,6 +3056,13 @@
       },
       "additionalProperties": false
     },
+    "Role": {
+      "type": "string",
+      "enum": [
+        "admin",
+        "viewer"
+      ]
+    },
     "SampleFormat": {
       "type": "string",
       "enum": [
@@ -3011,6 +3532,98 @@
         "ended"
       ],
       "additionalProperties": false
+    },
+    "StatRow": {
+      "type": "object",
+      "properties": {
+        "freq": {
+          "type": "number"
+        },
+        "talkgroup": {
+          "type": "number"
+        },
+        "unit": {
+          "type": "number"
+        },
+        "alias": {
+          "type": "string"
+        },
+        "calls": {
+          "type": "number"
+        },
+        "seconds": {
+          "type": "number"
+        },
+        "frames": {
+          "type": "number",
+          "description": "Vocoder frames."
+        },
+        "errors": {
+          "type": "number",
+          "description": "Bit errors the FEC corrected."
+        },
+        "badFrames": {
+          "type": "number",
+          "description": "Frames repeated or muted."
+        },
+        "codedBits": {
+          "type": "number",
+          "description": "Coded voice bits received (bit error rate = errors / codedBits)."
+        },
+        "grants": {
+          "type": "number",
+          "description": "Channel grants (calls heard, recorded or not)."
+        }
+      },
+      "required": [
+        "alias",
+        "calls",
+        "seconds",
+        "frames",
+        "errors",
+        "badFrames",
+        "codedBits",
+        "grants"
+      ],
+      "additionalProperties": false,
+      "description": "Recorded calls and their audio quality: a channel, talkgroup or radio over a window."
+    },
+    "StatsTable": {
+      "type": "object",
+      "properties": {
+        "columns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "rows": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
+          }
+        }
+      },
+      "required": [
+        "columns",
+        "rows"
+      ],
+      "additionalProperties": false,
+      "description": "A table: column names and rows of numbers."
+    },
+    "StatsWindow": {
+      "type": "string",
+      "enum": [
+        "restart",
+        "24h",
+        "7d",
+        "30d",
+        "all"
+      ],
+      "description": "\"restart\": since the recorder started."
     },
     "StoreListing": {
       "type": "object",
@@ -4279,8 +4892,314 @@
             "type"
           ],
           "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "accounts"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "addAccount"
+            },
+            "name": {
+              "type": "string"
+            },
+            "role": {
+              "$ref": "#/definitions/Role"
+            },
+            "password": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "name",
+            "role",
+            "password"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "removeAccount"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "name"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "setAccountRole"
+            },
+            "name": {
+              "type": "string"
+            },
+            "role": {
+              "$ref": "#/definitions/Role"
+            }
+          },
+          "required": [
+            "type",
+            "name",
+            "role"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "setAccountPassword"
+            },
+            "name": {
+              "type": "string"
+            },
+            "password": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "name",
+            "password"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "changePassword"
+            },
+            "old": {
+              "type": "string"
+            },
+            "password": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "old",
+            "password"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "stats"
+            },
+            "system": {
+              "type": "string"
+            },
+            "systems": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "window": {
+              "$ref": "#/definitions/StatsWindow"
+            }
+          },
+          "required": [
+            "type",
+            "system",
+            "systems",
+            "window"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "statsHistory"
+            },
+            "system": {
+              "type": "string"
+            },
+            "systems": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "kind": {
+              "$ref": "#/definitions/HistoryKind"
+            },
+            "id": {
+              "type": "number"
+            },
+            "window": {
+              "$ref": "#/definitions/StatsWindow"
+            }
+          },
+          "required": [
+            "type",
+            "system",
+            "systems",
+            "kind",
+            "id",
+            "window"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "affiliations"
+            },
+            "system": {
+              "type": "string"
+            },
+            "systems": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "view": {
+              "$ref": "#/definitions/AffiliationView"
+            },
+            "search": {
+              "type": "string"
+            },
+            "offset": {
+              "type": "number"
+            },
+            "limit": {
+              "type": "number"
+            },
+            "id": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "system",
+            "systems",
+            "view",
+            "search",
+            "offset",
+            "limit"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "affiliationLinks"
+            },
+            "system": {
+              "type": "string"
+            },
+            "systems": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "view": {
+              "$ref": "#/definitions/AffiliationView"
+            },
+            "id": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "system",
+            "systems",
+            "view",
+            "id"
+          ],
+          "additionalProperties": false
         }
       ]
+    },
+    "TrunkMessage": {
+      "type": "object",
+      "properties": {
+        "time": {
+          "type": "number",
+          "description": "Unix seconds."
+        },
+        "system": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "description": "\"grant\", \"affiliation\", \"registration\", \"deregistration\", \"acknowledge\", \"location\", \"data_grant\", \"uu_ans_req\", \"uu_v_grant\", \"call_alert\", \"status\", \"sysid\", \"control_channel\", \"patch_add\", \"patch_delete\", \"adjacent\" …"
+        },
+        "unit": {
+          "type": "number"
+        },
+        "talkgroup": {
+          "type": "number"
+        },
+        "freqHz": {
+          "type": "number"
+        },
+        "slot": {
+          "type": "number"
+        },
+        "encrypted": {
+          "type": "boolean"
+        },
+        "emergency": {
+          "type": "boolean"
+        },
+        "site": {
+          "type": "string",
+          "description": "\"rfss-site\""
+        },
+        "text": {
+          "type": "string",
+          "description": "For kinds the fields don't describe (status, sysid, patches, neighbours)."
+        }
+      },
+      "required": [
+        "time",
+        "system",
+        "kind"
+      ],
+      "additionalProperties": false,
+      "description": "A control channel message, for the trunking view."
     },
     "UnitNames": {
       "type": "object",

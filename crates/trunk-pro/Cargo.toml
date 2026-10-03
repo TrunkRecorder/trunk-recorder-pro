@@ -33,6 +33,10 @@ log = { version = "0.4", features = ["std"] }
 # over rustls so builds still cross-compile; checksums; .tar.gz and .zip.
 ureq = "3"
 sha2 = "0.11"
+# Account salts and session tokens (auth.rs).
+getrandom = "0.3"
+# Stats (stats/): SQLite, compiled in, so nothing to install.
+rusqlite = { version = "0.37", features = ["bundled"] }
 flate2 = "1"
 tar = "0.4"
 zip = { version = "8", default-features = false, features = ["deflate-flate2"] }

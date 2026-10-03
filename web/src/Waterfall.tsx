@@ -95,6 +95,8 @@ export function Waterfall(props: { radio: Spectrum | undefined; label?: string; 
 
   const pos = (hz: number) => (radio ? ((hz - radio.centerHz) / radio.rateHz + 0.5) * 100 : -100);
   const inView = (p: number) => p >= 0 && p <= 100;
+  // Near the right edge a label goes on the line's left, so it isn't cut off.
+  const side = (p: number) => (p > 80 ? " mk-left" : "");
 
   return (
     <div className="waterfall">
@@ -105,14 +107,14 @@ export function Waterfall(props: { radio: Spectrum | undefined; label?: string; 
           {props.ccs
             .filter((m) => inView(pos(m.hz)))
             .map((m) => (
-              <span key={`${m.label}-${m.hz}`} className="mk mk-cc" style={{ left: `${pos(m.hz)}%`, borderLeftColor: m.color }} title={`Control channel ${m.label}`}>
+              <span key={`${m.label}-${m.hz}`} className={`mk mk-cc${side(pos(m.hz))}`} style={{ left: `${pos(m.hz)}%`, borderLeftColor: m.color }} title={`Control channel ${m.label}`}>
                 <i style={{ color: m.color }}>{m.label}</i>
               </span>
             ))}
           {props.calls
             .filter((c) => inView(pos(c.freqHz)))
             .map((c) => (
-              <span key={c.id} className={`mk mk-${c.state}${c.encrypted ? " mk-enc" : ""}`} style={{ left: `${pos(c.freqHz)}%` }} title={`${c.systemName} · TG ${c.talkgroup}`}>
+              <span key={c.id} className={`mk mk-${c.state}${c.encrypted ? " mk-enc" : ""}${side(pos(c.freqHz))}`} style={{ left: `${pos(c.freqHz)}%` }} title={`${c.systemName} · TG ${c.talkgroup}`}>
                 <i>
                   {props.multi && <span className="sys-dot" style={{ background: systemColor(c.system) }} />}
                   {c.alphaTag || c.patched?.find((t) => t.alphaTag)?.alphaTag || c.talkgroup}

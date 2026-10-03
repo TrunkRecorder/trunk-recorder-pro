@@ -169,6 +169,8 @@ fn ctx(cfg: Config, dir: &Path) -> Arc<crate::runtime::Ctx> {
         survey_last: Mutex::new(None),
         plugins: crate::plugins::manage::Plugins::new(hub),
         home_dir: None,
+        accounts: crate::auth::Accounts::load(dir.join("accounts.json")),
+        stats: crate::stats::Stats::open(dir.join("stats.db")),
     })
 }
 
@@ -267,19 +269,25 @@ fn sent_types() -> BTreeSet<String> {
     found
 }
 
-/// The types the server's `command` answers.
+/// The types the server's `command`, `account_command` and `stats_command` answer.
 fn handled_types() -> BTreeSet<String> {
     let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/server.rs")).unwrap();
-    let body = &text[text.find("async fn command(").unwrap()..];
-    let body = &body[..body.find("\n}\n").unwrap()];
     let mut found = BTreeSet::new();
-    for line in body.lines().map(str::trim) {
-        let Some(arm) = line.split_once(" =>").map(|(a, _)| a) else { continue };
-        if !arm.starts_with('"') {
-            continue;
-        }
-        for name in arm.split('|').map(|n| n.trim().trim_matches('"')) {
-            found.insert(name.to_string());
+    for f in ["async fn command(", "async fn account_command(", "async fn stats_command("] {
+        let body = &text[text.find(f).unwrap()..];
+        let body = &body[..body.find("\n}\n").unwrap()];
+        for line in body.lines().map(str::trim) {
+            if let Some(name) = line.strip_prefix("if kind == \"").and_then(|r| r.split_once('"')).map(|(n, _)| n) {
+                found.insert(name.to_string());
+                continue;
+            }
+            let Some(arm) = line.split_once(" =>").map(|(a, _)| a) else { continue };
+            if !arm.starts_with('"') {
+                continue;
+            }
+            for name in arm.split('|').map(|n| n.trim().trim_matches('"')) {
+                found.insert(name.to_string());
+            }
         }
     }
     found

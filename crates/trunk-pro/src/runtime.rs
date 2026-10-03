@@ -68,6 +68,8 @@ pub struct Ctx {
     pub plugins: plugins::manage::Plugins,
     /// `--ui <folder>`: the interface / shows, over `server.home`.
     pub home_dir: Option<PathBuf>,
+    pub accounts: crate::auth::Accounts,
+    pub stats: crate::stats::Stats,
 }
 
 impl Ctx {
@@ -313,8 +315,15 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Rec
         }
         // (The plugins can be swapped meanwhile: their settings changed.)
         let plugins = ctx.plugins.host.read().unwrap();
-        session.plugin_topics = plugins.as_ref().map_or(Default::default(), |p| p.topics);
+        let mut topics: trunk_app::PluginTopics = plugins.as_ref().map_or(Default::default(), |p| p.topics);
+        if ctx.stats.wants() {
+            topics.calls = true;
+            topics.units = true;
+            topics.status = true;
+        }
+        session.plugin_topics = topics;
         session.want_audio = ctx.hub.receiver_count() > 0 || plugins.as_ref().is_some_and(|p| p.audio);
+        session.want_trunk = ctx.hub.receiver_count() > 0;
         session.poll(now_ms(), &mut out);
         deliver(&ctx, &dir, &mut out, plugins.as_ref(), &fin);
         drop(plugins);
@@ -400,6 +409,7 @@ fn deliver(ctx: &Ctx, dir: &Path, out: &mut Vec<Output>, plugins: Option<&Plugin
                 let _ = ctx.hub.send(Arc::new(Out::Audio { system, tg, frame }));
             }
             Output::Plugin(m) => {
+                ctx.stats.event(&m);
                 if let Some(p) = plugins {
                     p.event(&m);
                 }
@@ -413,6 +423,7 @@ fn deliver(ctx: &Ctx, dir: &Path, out: &mut Vec<Output>, plugins: Option<&Plugin
                 let ok = fs::write(format!("{}.wav", base.display()), wav).is_ok()
                     && fs::write(format!("{}.json", base.display()), &json).is_ok()
                     && frames.is_none_or(|f| fs::write(format!("{}.frames.jsonl", base.display()), f).is_ok());
+                ctx.stats.concluded(&json);
                 if !ok {
                     log::error!("Couldn't write {}", base.display());
                     publish(&ctx.hub, json!({ "type": "log", "lines": [{ "timeS": 0, "kind": "error", "text": format!("couldn't write {}", base.display()) }] }));
