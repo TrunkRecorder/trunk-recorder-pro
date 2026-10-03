@@ -3,7 +3,88 @@
 Each version's section is its GitHub release notes (CI copies the section
 under `## [<version>]` when the tag `v<version>` is pushed).
 
-## [0.1.0] — unreleased
+## [0.1.1] — 2026-10-02
+
+- **Faster on Raspberry Pi**: about half the CPU for the same output (the
+  C4FM multi-symbol detector, Hamming soft decoding and the CQPSK receivers
+  vectorised and shared). On a Raspberry Pi 5 recording a P25 site from one
+  RTL-SDR: 5 % of a core with one call, under 1 point more for each further
+  call; Trunk Recorder needs 4–6× as much (`docs/performance.md`).
+- **Gain control per radio**: an AGC switch on every kind (RTL-SDR tuner,
+  USRP, Airspy, SoapySDR); the Airspy's linearity or sensitivity step, or
+  its LNA, mixer and VGA stages by hand; a SoapySDR device's gain stages
+  (HackRF LNA / VGA / AMP, SDRplay IFGR / RFGR, …) one by one. Trunk
+  Recorder's `agc`, `lnaGain`, `mixGain`, `ifGain` and `gainSettings` import.
+- **AutoTune** (Trunk Recorder's `autoTune`, per source): each source's
+  frequency error is measured on its P25 and SmartNet control channels and
+  shown on the dashboard, with the ppm that would remove it; switched on,
+  new voice channels open at the corrected frequency and a P25 control
+  channel more than 150 Hz off is reopened (at most every 200 s). On the
+  DCFD capture with the source set 1 kHz off: +1.31 ppm measured, every
+  call's voice within 30 Hz of the 1.14 kHz expected. The call JSON's
+  `freq_error` is now measured too (the voice's offset, averaged over the
+  call).
+- **Call rules for every system, and each system's own**: the Recording
+  tab's call rules apply everywhere unless a system (or the conventional
+  channels) sets its own under **Recording override**. New ones, after
+  Trunk Recorder's: shortest call (`minDuration`), shortest transmission
+  (`minTransmissionDuration`, key-ups and data bursts left out), longest
+  call (`maxDuration`: saved in parts, nothing lost or repeated between
+  them), digital and analog levels in dB (`digitalLevels` /
+  `analogLevels`), an .m4a of every call (`compressWav`), audio and JSON
+  deleted once every upload plugin has had the call (`audioArchive`,
+  `callLog`, kept when an upload failed: `archiveFilesOnFailure`; a call no
+  plugin takes is always kept), and folders and file names
+  (`filenameFormat`, Trunk Recorder's tokens and time formats). An imported
+  Trunk Recorder config brings these over: a setting the same on every
+  system becomes the Recording tab's, the rest each system's own.
+- **Several conventional systems**, as in Trunk Recorder: each with its own
+  short name (folder), channels or channel file, squelch, Recording
+  override, unit names and plugin settings (its own upload keys), switched
+  on or off as a whole. Imported one for one from a Trunk Recorder config.
+- **Ignore** column in the talkgroup file (`true`, `yes`, `1`, `x`; or
+  Trunk Recorder's priority −1): those talkgroups are never recorded.
+- **Unit names** (Trunk Recorder's `unitTagsFile` and `unitTagsMode`):
+  `unit,name` lines or `/regex/,Name $1` patterns, per system; the call
+  JSON's `srcList` `tag` and the interface use them.
+- **Reception on every call**: the call JSON's `signal` and `noise` (dBFS),
+  `snr` (dB) and `clean_voice_pct` (voice frames decoded cleanly); the call
+  list shows the SNR.
+- **A log, as Trunk Recorder's**: its line format and options (`logLevel`,
+  `consoleLog`, `logFile` / `logDir`, `syslogFriendly`, `logColor`,
+  `frequencyFormat`, `talkgroupDisplayFormat`, `statusAsString`,
+  `controlWarnRate`), to stderr, daily files and the system log (syslog),
+  with a status summary every 200 s. `--log-level` on the command line.
+- **Plugin store**: the Plugins page installs, updates and removes plugins
+  from the [plugin registry](https://github.com/TrunkRecorder/plugins),
+  each download checked against the registry's SHA-256, and shows how
+  each is running: calls handled, status, recent log. A plugin that isn't
+  listed can be installed from its GitHub release, marked as not reviewed.
+  `trunk-pro plugin search | install | update | uninstall` from the
+  command line, and `list | describe | run` to try one against recorded
+  calls.
+- **Plugins set up in Setup**, in the config like everything else: a
+  Plugins tab to turn each on and fill in its settings, and each system's
+  card has its settings for every plugin that's on (an OpenMHz key, say).
+  Settings are drawn from what the plugin describes; while recording,
+  changes restart the plugins at once. Trunk Recorder's uploaders and their keys
+  come over with an imported config.
+- The built-in plugin list: OpenMHz 0.1.2, Broadcastify, Rdio Scanner and
+  simplestream 0.1.1.
+- **Interfaces of your own**: the WebSocket and call files the built-in
+  interface uses, documented for developers (`docs/api/README.md`, served at
+  `/api/docs`) and for an LLM building one (`/api/llms.txt`), with
+  `client.js` (connection, state, live-audio player; `/api/client.js`),
+  four examples (`/api/examples/`), the protocol's TypeScript types
+  (`/api/protocol.ts`) and its JSON Schema (`/api/schema`, checked against
+  what the recorder sends). The recorder serves any number of them — folders
+  in `server.interfaces` (Setup → Recording → Interfaces) at
+  `/ui/<name>/`, one of them at `/` if `server.home` says so, or
+  `--ui <folder>` for one run — with the built-in interface always at
+  `/builtin/`. Web pages from other sites are refused unless listed in
+  `server.allowedOrigins`.
+
+## [0.1.0] — 2026-10-02
 
 The first release of the Rust rewrite: one self-contained program per
 platform, with no GNU Radio, OP25 or other runtime dependencies.
@@ -127,52 +208,7 @@ platform, with no GNU Radio, OP25 or other runtime dependencies.
   the voice-frame errors at 38.6 dB).
 - **USRP and Airspy** sources (optional): used when UHD / libairspy is
   installed, found at run time by the same binary.
-- **Gain control per radio**: an AGC switch on every kind (RTL-SDR tuner,
-  USRP, Airspy, SoapySDR); the Airspy's linearity or sensitivity step, or
-  its LNA, mixer and VGA stages by hand; a SoapySDR device's gain stages
-  (HackRF LNA / VGA / AMP, SDRplay IFGR / RFGR, …) one by one. Trunk
-  Recorder's `agc`, `lnaGain`, `mixGain`, `ifGain` and `gainSettings` import.
-- **AutoTune** (Trunk Recorder's `autoTune`, per source): each source's
-  frequency error is measured on its P25 and SmartNet control channels and
-  shown on the dashboard, with the ppm that would remove it; switched on,
-  new voice channels open at the corrected frequency and a P25 control
-  channel more than 150 Hz off is reopened (at most every 200 s). On the
-  DCFD capture with the source set 1 kHz off: +1.31 ppm measured, every
-  call's voice within 30 Hz of the 1.14 kHz expected. The call JSON's
-  `freq_error` is now measured too (the voice's offset, averaged over the
-  call).
 - Captures in `cu8`, `cs16` or `cf32` (GNU Radio / UHD) formats.
-- **Call rules for every system, and each system's own**: the Recording
-  tab's call rules apply everywhere unless a system (or the conventional
-  channels) sets its own under **Recording override**. New ones, after
-  Trunk Recorder's: shortest call (`minDuration`), shortest transmission
-  (`minTransmissionDuration`, key-ups and data bursts left out), longest
-  call (`maxDuration`: saved in parts, nothing lost or repeated between
-  them), digital and analog levels in dB (`digitalLevels` /
-  `analogLevels`), an .m4a of every call (`compressWav`), audio and JSON
-  deleted once every upload plugin has had the call (`audioArchive`,
-  `callLog`, kept when an upload failed: `archiveFilesOnFailure`; a call no
-  plugin takes is always kept), and folders and file names
-  (`filenameFormat`, Trunk Recorder's tokens and time formats). An imported
-  Trunk Recorder config brings these over: a setting the same on every
-  system becomes the Recording tab's, the rest each system's own.
-- **Several conventional systems**, as in Trunk Recorder: each with its own
-  short name (folder), channels or channel file, squelch, Recording
-  override, unit names and plugin settings (its own upload keys), switched
-  on or off as a whole. Imported one for one from a Trunk Recorder config.
-- **Ignore** column in the talkgroup file (`true`, `yes`, `1`, `x`; or
-  Trunk Recorder's priority −1): those talkgroups are never recorded.
-- **Unit names** (Trunk Recorder's `unitTagsFile` and `unitTagsMode`):
-  `unit,name` lines or `/regex/,Name $1` patterns, per system; the call
-  JSON's `srcList` `tag` and the interface use them.
-- **Reception on every call**: the call JSON's `signal` and `noise` (dBFS),
-  `snr` (dB) and `clean_voice_pct` (voice frames decoded cleanly); the call
-  list shows the SNR.
-- **A log, as Trunk Recorder's**: its line format and options (`logLevel`,
-  `consoleLog`, `logFile` / `logDir`, `syslogFriendly`, `logColor`,
-  `frequencyFormat`, `talkgroupDisplayFormat`, `statusAsString`,
-  `controlWarnRate`), to stderr, daily files and the system log (syslog),
-  with a status summary every 200 s. `--log-level` on the command line.
 - **Trunk Recorder–compatible output**: WAV + call JSON in Trunk Recorder's
   folder layout and field names; talkgroup CSV import; import of a Trunk
   Recorder config. `error_count` is the call's FEC-corrected bit errors,
@@ -182,41 +218,20 @@ platform, with no GNU Radio, OP25 or other runtime dependencies.
   and tells what happens — calls starting, ending and landing on disk, radio
   activity, live audio, status — over JSON lines on stdin/stdout. They only
   watch; a plugin that crashes is restarted, and one that falls behind loses
-  events rather than slowing the recorder. Calls are encoded to M4A once
-  for every plugin that asks (ffmpeg, macOS's afconvert or fdkaac, whichever
-  is there; WAV only without one). The `trunk-recorder-plugin` crate is the
-  protocol and a Rust SDK.
-  - **Plugin store**: the Plugins page installs, updates and removes plugins
-    from the [plugin registry](https://github.com/TrunkRecorder/plugins),
-    each download checked against the registry's SHA-256, and shows how
-    each is running: calls handled, status, recent log. A plugin that isn't
-    listed can be installed from its GitHub release, marked as not reviewed.
-    `trunk-pro plugin search | install | update | uninstall` from the
-    command line, and `list | describe | run` to try one against recorded
-    calls.
-  - **Set up in Setup**, in the config like everything else: a Plugins tab
-    to turn each on and fill in its settings, and each system's card has
-    its settings for every plugin that's on (an OpenMHz key, say). Settings
-    are drawn from what the plugin describes; while recording, changes
-    restart the plugins at once. Trunk Recorder's uploaders and their keys
-    come over with an imported config.
+  events rather than slowing the recorder. Settings in `plugins.json`
+  beside the config. Calls are encoded to M4A once for every plugin that
+  asks (ffmpeg, macOS's afconvert or fdkaac, whichever is there; WAV only
+  without one). `trunk-pro plugin list | describe | run` to look at plugins
+  and run one against recorded calls. The `trunk-recorder-plugin` crate is
+  the protocol and a Rust SDK. A **Plugins** page lists them: turn each on
+  or off, fill in settings drawn from what the plugin describes (its own and
+  for each system), see whether it's running and how many calls it handled,
+  its recent log, and the M4A encoder. Changes apply at once while recording.
 - **Vocoder frame capture** (setting "Save vocoder frames"): each call's
   decoded voice frames and error counts as `<call>.frames.jsonl`;
   `trunk-pro tool revoice` vocodes one again.
 - **Browser interface**: setup, live status, waterfall per dongle, active
   calls with live listening, recent recordings.
-- **Interfaces of your own**: the WebSocket and call files the built-in
-  interface uses, documented for developers (`docs/api/README.md`, served at
-  `/api/docs`) and for an LLM building one (`/api/llms.txt`), with
-  `client.js` (connection, state, live-audio player; `/api/client.js`),
-  four examples (`/api/examples/`), the protocol's TypeScript types
-  (`/api/protocol.ts`) and its JSON Schema (`/api/schema`, checked against
-  what the recorder sends). The recorder serves any number of them — folders
-  in `server.interfaces` (Setup → Recording → Interfaces) at
-  `/ui/<name>/`, one of them at `/` if `server.home` says so, or
-  `--ui <folder>` for one run — with the built-in interface always at
-  `/builtin/`. Web pages from other sites are refused unless listed in
-  `server.allowedOrigins`.
 - **Unattended use**: start recording at launch (`--start` / a setting),
   Ctrl-C / SIGTERM / Quit save calls in progress, a systemd service file;
   opening the app again shows the running instance.

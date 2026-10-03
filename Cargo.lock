@@ -1699,7 +1699,7 @@ dependencies = [
 
 [[package]]
 name = "trunk-app"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -1709,7 +1709,7 @@ dependencies = [
 
 [[package]]
 name = "trunk-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "num-complex",
  "regex-lite",
@@ -1718,7 +1718,7 @@ dependencies = [
 
 [[package]]
 name = "trunk-pro"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "axum",
  "chrono",
@@ -1755,7 +1755,7 @@ dependencies = [
 
 [[package]]
 name = "trunk-web"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "js-sys",
  "rtlsdr-nusb",
