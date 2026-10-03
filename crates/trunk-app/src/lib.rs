@@ -10,6 +10,7 @@ pub mod heard;
 pub mod log;
 pub mod samples;
 pub mod session;
+pub mod stats;
 pub mod survey;
 
 pub use config::Config;

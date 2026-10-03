@@ -59,6 +59,16 @@ impl Output {
             })
             .collect()
     }
+    /// Every metrics report, in order.
+    pub fn metrics(&self) -> Vec<Metrics> {
+        self.messages
+            .iter()
+            .filter_map(|m| match m {
+                PluginMessage::Metrics(x) => Some(x.clone()),
+                _ => None,
+            })
+            .collect()
+    }
     /// The last status it reported.
     pub fn status(&self) -> Option<(State, String)> {
         self.messages.iter().rev().find_map(|m| match m {

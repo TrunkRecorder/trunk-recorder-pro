@@ -308,8 +308,13 @@ change.
   source trouble.
 - `poll(now_ms, &mut Vec<Output>)` drains the engine's events and turns them
   into `Output`s:
-  - `Output::Text` carries interface messages: `status` every 500 ms,
-    `spectrum` every 150 ms, `log`, `unitAlias`, `heard`.
+  - `Output::Text` carries interface messages for everyone: `status` every
+    500 ms, `stats` every second, `unitAlias`, `heard`, `monitorEvent`.
+  - `Output::Topic` carries the costly ones, made only while someone watches
+    their topic (`set_topics`): `spectrum` every 150 ms (`spectrum:<i>`),
+    control channel `log` lines (`log`), `rfDetail` / `decodeDetail`.
+  - `Output::Rollup` carries a minute of the dashboard's series for the
+    history (see [Measurements](#measurements)).
   - `Output::Audio` carries live audio frames `[2][u16 system][u32 call
     id][u32 talkgroup][i16…]`, built only when `want_audio` is set.
   - `Output::File` carries a call to store: relative path from
@@ -324,6 +329,36 @@ change.
 - Persistence hooks: `bandplans()`, `units_changed()`, `heard_unsaved()` hand
   back text to save, and `new` / `load_units` / `load_heard` take it back next
   run. The platform decides where these files live.
+
+### Measurements
+
+What the dashboard shows is measured by dedicated parts, kept out of the
+decoding code:
+
+```text
+DSP parts (Bank, SmartNet CC, Engine) ── metrics::Instrumented::report ──┐
+stats::SampleMeter (headroom, clipping, on the sample path, 1 in 16) ────┤
+stats Tally (calls, airtime, reasons, voice errors, from events) ────────┴─► stats::Aggregator
+                                                                               ├─► `stats` (1/s)
+                                                                               └─► Rollup (1/min) ─► History (a week in memory) + stats/*.jsonl
+session events ─► Stats::observe ─► stats::Registry (talkgroups, radios, affiliations, pairs, frequencies) ─► radioQuery
+                               └─► stats::Monitor ─► Watcher (alert rules: the hook; none yet) + the event feed
+```
+
+- **`trunk-core/src/metrics.rs`**: the `Sink` / `Instrumented` traits. A
+  part keeps plain counters and current values in its own fields and lists
+  them when asked, about once a second (`cc/good`, `cc/sep`, …). Running
+  totals become rates in the aggregator; nothing on the sample path changes.
+- **`trunk-app/src/stats/`**: `Aggregator` (rates, per-minute avg/min/max),
+  `History` (a minute grid per series, queries downsampled), `Registry`
+  (bounded maps per system, saved as JSON), `Monitor` (events), and `Stats`,
+  the facade `Session` holds: `observe(event)`, `meter(source)`, `tick()`.
+- **`trunk-pro`**: `statstore.rs` appends rollups to daily files (gzipped
+  after the day, deleted after 8) and reads them back at startup;
+  `monitor.rs` samples the computer (`platform.rs`: sysinfo, cgroup limits,
+  container detection, TCP connectivity checks) and the plugins into their
+  own aggregator every 2 s; `Ctx.shared` holds the registry and monitor so
+  they outlive recordings.
 
 ### 7. The desktop process (`trunk-pro`)
 

@@ -20,7 +20,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use serde_json::{json, Value};
-use trunk_recorder_plugin::{Level, Manifest, Outcome, State, SystemInfo};
+use trunk_core::metrics::{key_part, Sink};
+use trunk_recorder_plugin::{Level, Manifest, Metrics, Outcome, State, SystemInfo};
 
 use super::host::Notes;
 use super::store::{self, Catalog};
@@ -42,11 +43,75 @@ pub struct Runtime {
     pub last_failure: String,
     /// Its recent log lines.
     pub log: VecDeque<LogEntry>,
+    /// What it last said of its work (queue, timing, services), if it says.
+    pub metrics: Option<Metrics>,
+    /// Unix s of its last result, last success, last failure.
+    pub last_result: Option<f64>,
+    pub last_ok: Option<f64>,
+    pub last_fail: Option<f64>,
+    /// Its process: restarts, events dropped (it fell behind), up for (s).
+    pub restarts: u64,
+    pub dropped: u64,
+    pub uptime_s: Option<f64>,
+    /// Results per minute, the last hour: (minute start, Unix s; [ok, skipped, failed]).
+    pub minutes: VecDeque<(i64, [u32; 3])>,
 }
 
 impl Default for Runtime {
     fn default() -> Self {
-        Runtime { state: "off", message: String::new(), ok: 0, skipped: 0, failed: 0, last_failure: String::new(), log: VecDeque::new() }
+        Runtime {
+            state: "off",
+            message: String::new(),
+            ok: 0,
+            skipped: 0,
+            failed: 0,
+            last_failure: String::new(),
+            log: VecDeque::new(),
+            metrics: None,
+            last_result: None,
+            last_ok: None,
+            last_fail: None,
+            restarts: 0,
+            dropped: 0,
+            uptime_s: None,
+            minutes: VecDeque::new(),
+        }
+    }
+}
+
+impl Runtime {
+    fn count(&mut self, outcome: Outcome) {
+        let t = now();
+        self.last_result = Some(t);
+        let m = (t as i64).div_euclid(60) * 60;
+        if self.minutes.back().is_none_or(|b| b.0 != m) {
+            self.minutes.push_back((m, [0; 3]));
+            while self.minutes.front().is_some_and(|f| f.0 <= m - 3600) {
+                self.minutes.pop_front();
+            }
+        }
+        let b = &mut self.minutes.back_mut().unwrap().1;
+        match outcome {
+            Outcome::Ok => {
+                b[0] += 1;
+                self.last_ok = Some(t);
+            }
+            Outcome::Skipped => b[1] += 1,
+            Outcome::Failed => {
+                b[2] += 1;
+                self.last_fail = Some(t);
+            }
+        }
+    }
+
+    /// For the dashboard's series: 0 ok, 1 warning, 2 error (off: nothing).
+    fn state_code(&self) -> Option<f64> {
+        match self.state {
+            "ok" | "starting" => Some(0.0),
+            "warning" => Some(1.0),
+            "error" => Some(2.0),
+            _ => None,
+        }
     }
 }
 
@@ -83,11 +148,14 @@ pub struct Plugins {
     /// Installs under way, by their key (the id, or the repository asked for).
     installing: Mutex<BTreeSet<String>>,
     hub: Hub,
+    /// Where health changes go as events (the dashboard's feed, alert watchers).
+    monitor: Arc<trunk_app::stats::Shared>,
 }
 
 impl Plugins {
-    pub fn new(hub: Hub) -> Plugins {
+    pub fn new(hub: Hub, monitor: Arc<trunk_app::stats::Shared>) -> Plugins {
         Plugins {
+            monitor,
             host: RwLock::new(None),
             archive: Arc::default(),
             env: Mutex::new(None),
@@ -217,6 +285,43 @@ impl Plugins {
         (!host.is_empty()).then_some(host)
     }
 
+    /// Each plugin's figures into the dashboard's series (`plg/<id>/…`), with
+    /// its process's restarts, drops and uptime folded into its runtime.
+    pub fn report(&self, sink: &mut dyn Sink) {
+        let procs = self.host.read().unwrap().as_ref().map(|h| h.process_stats()).unwrap_or_default();
+        let mut rt = self.runtime.lock().unwrap();
+        for p in procs {
+            let r = rt.entry(p.id.clone()).or_default();
+            (r.restarts, r.dropped, r.uptime_s) = (p.restarts, p.dropped, p.uptime_s);
+        }
+        for (id, r) in rt.iter() {
+            let k = format!("plg/{}", key_part(id));
+            let Some(code) = r.state_code() else { continue };
+            sink.gauge(&format!("{k}/state"), code);
+            sink.counter(&format!("{k}/ok"), r.ok);
+            sink.counter(&format!("{k}/skipped"), r.skipped);
+            sink.counter(&format!("{k}/failed"), r.failed);
+            sink.counter(&format!("{k}/dropped"), r.dropped);
+            sink.counter(&format!("{k}/restarts"), r.restarts);
+            if let Some(m) = &r.metrics {
+                if let Some(q) = m.queued {
+                    sink.gauge(&format!("{k}/queued"), q as f64);
+                }
+                if let Some(l) = m.latency_ms {
+                    sink.gauge(&format!("{k}/latency"), l);
+                }
+                if let Some(b) = m.bytes_sent {
+                    sink.counter(&format!("{k}/bytes"), b);
+                }
+            }
+        }
+    }
+
+    /// Every plugin's runtime (for a dashboard that just connected).
+    pub fn runtime_json(&self) -> Value {
+        json!(*self.runtime.lock().unwrap())
+    }
+
     fn publish_all_runtime(&self) {
         let rt = self.runtime.lock().unwrap().clone();
         for (id, r) in rt {
@@ -226,14 +331,14 @@ impl Plugins {
 
     /// What plugins say, as log lines, runtime updates and results for the interface.
     fn notes(&self) -> Notes {
-        let (hub, runtime, archive) = (self.hub.clone(), self.runtime.clone(), self.archive.clone());
+        let (hub, runtime, archive, monitor) = (self.hub.clone(), self.runtime.clone(), self.archive.clone(), self.monitor.clone());
         let log = super::notes_to_hub(hub.clone());
         Arc::new(move |n: Note| {
             if let Note::Result { path, outcome, .. } = &n {
                 archive.result(path, *outcome);
             }
             let id = match &n {
-                Note::Log { plugin, .. } | Note::State { plugin, .. } | Note::Result { plugin, .. } => plugin.clone(),
+                Note::Log { plugin, .. } | Note::State { plugin, .. } | Note::Result { plugin, .. } | Note::Metrics { plugin, .. } => plugin.clone(),
             };
             if !id.is_empty() {
                 let mut rt = runtime.lock().unwrap();
@@ -248,21 +353,33 @@ impl Plugins {
                         }
                     }
                     Note::State { state, message, .. } => {
+                        let was = r.state;
                         r.state = match state {
                             State::Ok => "ok",
                             State::Warning => "warning",
                             State::Error => "error",
                         };
                         r.message = message.clone();
-                    }
-                    Note::Result { outcome, message, path, .. } => match outcome {
-                        Outcome::Ok => r.ok += 1,
-                        Outcome::Skipped => r.skipped += 1,
-                        Outcome::Failed => {
-                            r.failed += 1;
-                            r.last_failure = format!("{path}: {message}");
+                        // A change of health is an event (not every "ok" of a starting plugin).
+                        if was != r.state && !(was == "starting" || was == "off") || r.state == "error" && was != "error" {
+                            let e = trunk_app::stats::MonitorEvent::PluginHealth { plugin: id.clone(), state: r.state.to_string(), message: message.clone() };
+                            if let Some(v) = monitor.emit(now(), e) {
+                                publish(&hub, v);
+                            }
                         }
-                    },
+                    }
+                    Note::Result { outcome, message, path, .. } => {
+                        r.count(*outcome);
+                        match outcome {
+                            Outcome::Ok => r.ok += 1,
+                            Outcome::Skipped => r.skipped += 1,
+                            Outcome::Failed => {
+                                r.failed += 1;
+                                r.last_failure = format!("{path}: {message}");
+                            }
+                        }
+                    }
+                    Note::Metrics { metrics, .. } => r.metrics = Some(metrics.clone()),
                 }
                 publish(&hub, json!({ "type": "pluginRuntime", "id": id, "runtime": r }));
             }

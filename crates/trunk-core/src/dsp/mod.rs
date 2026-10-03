@@ -31,4 +31,9 @@ pub trait Receiver {
     fn offset_hz(&self) -> Option<f32> {
         None
     }
+    /// How cleanly the symbols come out, when the receiver can tell: level
+    /// step over spread (~10 and up clean, ~1 noise). For the dashboard.
+    fn quality(&self) -> Option<f32> {
+        None
+    }
 }

@@ -13,6 +13,8 @@ use trunk_core::dsp::tones::Tone;
 use trunk_core::Complex32;
 
 use crate::config::{Config, Source};
+use crate::stats::{Rollup, Shared, Stats, Topics};
+use std::sync::Arc;
 use trunk_recorder_plugin::{CallInfo, HostMessage, SystemStatus as PluginSystemStatus, UnitEvent};
 
 pub enum Output {
@@ -32,6 +34,10 @@ pub enum Output {
     Plugin(HostMessage),
     /// A line for the log (the platform's logger formats and routes it).
     Log(Record),
+    /// A JSON message only for interfaces watching `topic` ([`crate::stats::Topics`]).
+    Topic { topic: String, text: String },
+    /// A minute of the dashboard's series, for the history (and its files).
+    Rollup(Rollup),
 }
 
 /// Trunk Recorder's status summary comes this often (engine time), s.
@@ -42,6 +48,8 @@ const RATE_EVERY_S: f64 = 10.0;
 /// place ([`Engine::push_gap`]), so time goes on: calls on it end, and its
 /// clock stays in step with the others'. ms of wall clock.
 const QUIET_MS: f64 = 1000.0;
+/// A source's last error is shown this long after it, s.
+const ERROR_SHOWN_S: f64 = 300.0;
 /// The most silence fed for one gap, s: a driver's count of samples lost.
 const MAX_GAP_S: f64 = 10.0;
 /// A source's clock is measured against the wall clock over this long:
@@ -71,6 +79,8 @@ struct SourceStats {
     dropped: u64,
     errors: u64,
     last_error: Option<String>,
+    /// When it came, Unix s (the error is shown for [`ERROR_SHOWN_S`]).
+    last_error_s: f64,
     rate_measured: f64,
     ended: bool,
     /// Pushed to since the last poll.
@@ -106,6 +116,8 @@ pub struct Session {
     cfg: Config,
     engine: Engine,
     stats: Vec<SourceStats>,
+    /// The dashboard's measurements ([`crate::stats`]).
+    meas: Stats,
     log: Vec<Value>,
     /// Log records not yet handed out.
     records: Vec<Record>,
@@ -150,7 +162,9 @@ impl Session {
             .iter()
             .map(|s| SourceStats { clock: ClockFit { live: !matches!(s, Source::File { realtime: false, .. }), ..Default::default() }, ..Default::default() })
             .collect();
+        let meas = Stats::new(&cfg, Shared::new(), local_offset);
         Ok(Session {
+            meas,
             cfg,
             engine,
             stats,
@@ -178,11 +192,57 @@ impl Session {
         &self.cfg
     }
 
+    /// Use `shared` (the platform's, outliving sessions) for the radio
+    /// registry and the event monitor, instead of this session's own.
+    pub fn attach(&mut self, shared: Arc<Shared>) {
+        self.meas = Stats::new(&self.cfg, shared, self.local_offset);
+    }
+
+    /// The registry and monitor this session feeds.
+    pub fn shared(&self) -> Arc<Shared> {
+        self.meas.shared().clone()
+    }
+
+    /// What the connected interfaces watch: costly outputs are made for these only.
+    pub fn set_topics(&mut self, topics: Topics) {
+        self.meas.topics = topics;
+    }
+
+    /// A system's talkgroup file changed (an Ignore flag set from the
+    /// dashboard): calls from now on go by it.
+    pub fn set_talkgroups(&mut self, short_name: &str, csv: &str) -> bool {
+        self.engine.set_talkgroups(short_name, trunk_core::trunk::parse_csv(csv))
+    }
+
+    /// A radio's talker alias on the system named `short_name`.
+    pub fn unit_alias(&self, short_name: &str, unit: u32) -> Option<String> {
+        let sys = match self.engine.systems().iter().position(|s| s.short_name == short_name) {
+            Some(i) => i as u16,
+            None => trunk_core::trunk::conventional_system(self.cfg.conventional.iter().position(|c| c.short_name == short_name)?),
+        };
+        self.engine.unit_alias(sys, unit).map(str::to_string)
+    }
+
+    /// `radioQuery` against the registry this session feeds, with names
+    /// from its talkgroup files and the aliases it knows (`now`: Unix s).
+    pub fn radio_query(&self, q: &Value, now: i64) -> Value {
+        let tables = crate::stats::talkgroup_tables(&self.cfg);
+        let tg = |sys: &str, t: u32| crate::stats::tg_info(&tables, sys, t);
+        let unit = |sys: &str, u: u32| self.unit_alias(sys, u);
+        let names = crate::stats::Names { tg: &tg, unit: &unit };
+        let mut out = self.meas.shared().radio.lock().unwrap().query(q, now, &names);
+        out["type"] = json!("radioResult");
+        out["id"] = q["id"].clone();
+        out
+    }
+
+
     /// Raw u8 IQ from `source`; `dropped`: samples the driver knows it lost
     /// before these (fed as silence, so time keeps up).
     pub fn push(&mut self, source: usize, bytes: &[u8], dropped: u64) {
         self.gap(source, dropped);
         self.engine.push_u8(source, bytes);
+        self.meas.meter(source).u8(bytes);
         let s = &mut self.stats[source];
         s.samples += bytes.len() as u64 / 2;
         s.clock.samples += bytes.len() as u64 / 2;
@@ -193,6 +253,7 @@ impl Session {
     pub fn push_iq(&mut self, source: usize, iq: &[Complex32], dropped: u64) {
         self.gap(source, dropped);
         self.engine.push_iq(source, iq);
+        self.meas.meter(source).iq(iq);
         let s = &mut self.stats[source];
         s.samples += iq.len() as u64;
         s.clock.samples += iq.len() as u64;
@@ -205,6 +266,7 @@ impl Session {
             return;
         }
         self.stats[source].dropped += dropped;
+        self.meas.meter(source).dropped += dropped;
         let most = (MAX_GAP_S * self.engine.sources()[source].rate_hz) as u64;
         self.engine.push_gap(source, dropped.min(most));
         self.stats[source].clock.samples += dropped.min(most);
@@ -275,9 +337,11 @@ impl Session {
     }
 
     pub fn source_error(&mut self, source: usize, error: &str) {
+        self.meas.meter(source).errors += 1;
         let s = &mut self.stats[source];
         s.errors += 1;
         s.last_error = Some(error.to_string());
+        s.last_error_s = self.meas.now();
         self.log.push(json!({ "timeS": self.engine.status().now_s, "kind": "error", "text": format!("source {source}: {error}") }));
         self.records.push(Record::text(Level::Error, None, format!("Source {source}: {error}")));
     }
@@ -298,6 +362,7 @@ impl Session {
         let dt = (now_ms - self.last_poll_ms.unwrap_or(now_ms)).max(0.0) / 1000.0;
         self.last_poll_ms = Some(now_ms);
         self.steer_clocks(now_ms, dt);
+        self.meas.set_now(now_ms / 1000.0);
         self.fill_quiet(now_ms);
         for ev in self.engine.drain_events() {
             self.handle(ev, out);
@@ -306,10 +371,20 @@ impl Session {
         out.extend(self.records.drain(..).map(Output::Log));
         if now_ms - self.last_spec_ms >= 150.0 {
             self.last_spec_ms = now_ms;
+            // Only for sources someone has a waterfall open on.
             for (i, s) in self.engine.sources().iter().enumerate() {
+                let topic = format!("spectrum:{i}");
+                if !self.meas.topics.has(&topic) {
+                    continue;
+                }
                 let bins: Vec<f32> = self.engine.spectrum(i, 512).iter().map(|v| (v * 10.0).round() / 10.0).collect();
-                out.push(Output::Text(json!({ "type": "spectrum", "source": i, "centerHz": s.center_hz, "rateHz": s.rate_hz, "bins": bins }).to_string()));
+                out.push(Output::Topic { topic, text: json!({ "type": "spectrum", "source": i, "centerHz": s.center_hz, "rateHz": s.rate_hz, "bins": bins }).to_string() });
             }
+        }
+        {
+            let cfg = &self.cfg;
+            let name = |sys: u16| cfg.short_name_of(sys).unwrap_or("conv").to_string();
+            self.meas.tick(now_ms, self.busy_ms, &self.engine, &name, out);
         }
         if now_ms - self.last_status_ms >= 500.0 {
             self.last_status_ms = now_ms;
@@ -503,11 +578,21 @@ impl Session {
 
     fn flush_log(&mut self, out: &mut Vec<Output>) {
         if !self.log.is_empty() {
-            out.push(Output::Text(json!({ "type": "log", "lines": std::mem::take(&mut self.log) }).to_string()));
+            let text = json!({ "type": "log", "lines": std::mem::take(&mut self.log) }).to_string();
+            out.push(Output::Topic { topic: "log".into(), text });
         }
     }
 
+    /// The control channel log's lines are made only while someone shows it.
+    fn logging(&self) -> bool {
+        self.meas.topics.has("log")
+    }
+
     fn handle(&mut self, ev: Event, out: &mut Vec<Output>) {
+        if let Some(sys) = event_system(&ev) {
+            let name = self.system_name(sys).to_string();
+            self.meas.observe(&ev, &name, &self.engine, out);
+        }
         match ev {
             Event::Message { system, msg: m } => {
                 let name = self.system_name(system).to_string();
@@ -521,7 +606,9 @@ impl Session {
                     }
                 }
                 self.records.push(Record::text(Level::Trace, Some(&name), m.meta.clone()));
-                self.log.push(json!({ "timeS": m.time_s, "kind": m.kind.as_str(), "text": m.meta, "system": name }))
+                if self.logging() {
+                    self.log.push(json!({ "timeS": m.time_s, "kind": m.kind.as_str(), "text": m.meta, "system": name }))
+                }
             }
             Event::ControlChannel { system, freq_hz } => {
                 let name = self.system_name(system).to_string();
@@ -637,8 +724,10 @@ impl Session {
             .map(|(i, ((s, sc), ss))| {
                 let label = s.label();
                 let tune = st.sources.get(i).copied().unwrap_or_default();
+                // An error long past isn't news (its count stays).
+                let recent = ss.last_error.as_ref().filter(|_| ss.last_error_s == 0.0 || self.meas.now() - ss.last_error_s < ERROR_SHOWN_S);
                 json!({ "index": i, "label": label, "centerHz": sc.center_hz, "rateHz": sc.rate_hz, "rateMeasured": ss.rate_measured,
-                        "dropped": ss.dropped, "errors": ss.errors, "lastError": ss.last_error, "ended": ss.ended,
+                        "dropped": ss.dropped, "errors": ss.errors, "lastError": recent, "lastErrorS": recent.filter(|_| ss.last_error_s > 0.0).map(|_| ss.last_error_s.round()), "ended": ss.ended,
                         "errorPpm": tune.error_ppm, "tunePpm": tune.applied_ppm })
             })
             .collect();
@@ -697,6 +786,17 @@ impl Session {
                 })
                 .collect::<Vec<_>>(),
         })
+    }
+}
+
+/// The system an event is about, for the dashboard's measurements (only the events they use).
+fn event_system(ev: &Event) -> Option<u16> {
+    match ev {
+        Event::Message { system, .. } => Some(*system),
+        Event::CallStart(c) | Event::CallEnd(c) | Event::NotSaved(c) => Some(c.system),
+        Event::Concluded(k) => Some(k.call.system),
+        Event::Duplicate { call, .. } => Some(call.system),
+        _ => None,
     }
 }
 

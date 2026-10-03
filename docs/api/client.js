@@ -36,7 +36,7 @@ export function decodeAudioFrame(buf) {
  *
  * State (read it, don't change it): connected, version, config, phase
  * ({ phase, error, ended }), status (EngineStatus), sources, calls (on the
- * air now), history (recorded calls, newest first), log, unitCsv, aliases,
+ * air now), history (recorded calls, newest first), log (after subscribe(["log"])), unitCsv, aliases,
  * error, exited (the recorder quit; it keeps trying to reconnect).
  */
 export class TrunkClient {
@@ -75,6 +75,7 @@ export class TrunkClient {
 
     this._handlers = new Map();
     this._listen = null;
+    this._topics = [];
     this._ws = null;
     this._queue = [];
     this._retryMs = 500;
@@ -114,6 +115,17 @@ export class TrunkClient {
    * short name), listen(false) none.
    * Kept across reconnects. Chunks come to on("audio", …).
    */
+  /**
+   * Costly messages come only when asked for, while you show them:
+   * subscribe(["log", "spectrum:0"]) — the control channel log, a radio's
+   * waterfall (also "rf:<source>", "decode:<shortName>", "platform").
+   * Replaces the last; kept across reconnects. subscribe([]) stops them.
+   */
+  subscribe(topics) {
+    this._topics = [...topics];
+    this.send({ type: "subscribe", topics: this._topics });
+  }
+
   listen(filter = {}) {
     this._listen = filter === false ? null : { system: filter.system ?? null, talkgroup: filter.talkgroup ?? null };
     this.send({ type: "listen", on: !!this._listen, system: this._listen?.system ?? null, talkgroup: this._listen?.talkgroup ?? null });
@@ -242,6 +254,7 @@ export class TrunkClient {
         }
         // Listening is per connection: ask again.
         if (this._listen) this.send({ type: "listen", on: true, ...this._listen });
+        if (this._topics.length) this.send({ type: "subscribe", topics: this._topics });
         break;
       case "state":
         this.phase = { phase: m.phase, error: m.error, ended: m.ended };

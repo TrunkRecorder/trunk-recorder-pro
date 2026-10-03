@@ -23,6 +23,7 @@ use super::message::{Message, MessageType, TsbkParser};
 use super::patches;
 use super::voice::VoiceParams;
 use crate::dmr;
+use crate::metrics::{Instrumented, Sink};
 use crate::p25::diversity::{best_frame, best_tsbks, Bank, BankConfig, Group};
 use crate::p25::frame::TSDU;
 use crate::smartnet;
@@ -131,6 +132,9 @@ pub trait ControlChannel: Send {
     fn load_bandplan(&mut self, _s: &str) {}
     /// What the dashboard shows of it beyond what every system shows.
     fn status(&self) -> ProtocolStatus;
+    /// Its receivers' measurements for the dashboard's history (framing,
+    /// eye opening, deviation…; see [`crate::metrics`]). Default: none.
+    fn report(&self, _sink: &mut dyn Sink) {}
 }
 
 /// The control channel for system `cfg`; `rate` is a channel's sample rate.
@@ -207,6 +211,9 @@ impl P25 {
 impl ControlChannel for P25 {
     fn name(&self) -> &'static str {
         "P25"
+    }
+    fn report(&self, sink: &mut dyn Sink) {
+        self.bank.report(sink);
     }
     fn plan(&self) -> CarrierPlan {
         CarrierPlan::Hunt { cutoff_hz: P25_CUTOFF_HZ }
@@ -287,6 +294,11 @@ struct Smartnet {
 impl ControlChannel for Smartnet {
     fn name(&self) -> &'static str {
         "SmartNet"
+    }
+    fn report(&self, sink: &mut dyn Sink) {
+        if let Some(cc) = &self.cc {
+            cc.report(sink);
+        }
     }
     fn plan(&self) -> CarrierPlan {
         CarrierPlan::Hunt { cutoff_hz: smartnet::CHANNEL_CUTOFF_HZ }

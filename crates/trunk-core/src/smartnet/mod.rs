@@ -54,6 +54,11 @@ impl ControlChannel {
         self.rx.offset_hz()
     }
 
+    /// Tone separation / 2 the receiver measures, Hz (SmartNet's nominal is ~±2.4 kHz).
+    pub fn deviation_hz(&self) -> f32 {
+        self.rx.deviation_hz()
+    }
+
     /// `iq` from the channel's head; `t0` is the sample-clock time of the
     /// head's first output sample.
     pub fn push(&mut self, iq: &[Complex32], t0: f64, out: &mut Vec<Message>) {
@@ -72,6 +77,17 @@ impl ControlChannel {
         }
     }
 }
+
+/// The OSW framer's view, for the dashboard: whether it holds sync, and the
+/// 2FSK receiver's carrier offset and deviation.
+impl crate::metrics::Instrumented for ControlChannel {
+    fn report(&self, sink: &mut dyn crate::metrics::Sink) {
+        sink.gauge("inSync", self.in_sync() as u8 as f64);
+        sink.gauge("offset", self.offset_hz() as f64);
+        sink.gauge("deviation", self.deviation_hz() as f64);
+    }
+}
+
 
 #[cfg(test)]
 mod tests {

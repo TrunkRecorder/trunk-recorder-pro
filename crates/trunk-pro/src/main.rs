@@ -61,13 +61,16 @@
 
 mod dmrtool;
 mod logging;
+mod monitor;
 mod paths;
+mod platform;
 mod snrtool;
 mod plugins;
 mod radio;
 mod runtime;
 mod sdr;
 mod server;
+mod statstore;
 #[cfg(test)]
 mod protocol_tests;
 mod survey;
@@ -631,6 +634,11 @@ fn serve(a: &Args) {
         d
     });
     let (hub, _) = tokio::sync::broadcast::channel(4096);
+    // The dashboard's measurements: the radio registry (from earlier runs) and a week of history.
+    let shared = trunk_app::stats::Shared::new();
+    runtime::load_registry(&shared);
+    let series = Arc::new(Mutex::new(trunk_app::stats::History::default()));
+    let store = statstore::Store::start(paths::data_dir().join("stats"), series.clone());
     let ctx = Arc::new(runtime::Ctx {
         config_path: config_path.clone(),
         config: Mutex::new(cfg),
@@ -642,9 +650,17 @@ fn serve(a: &Args) {
         quit: tokio::sync::Notify::new(),
         survey: Mutex::new(None),
         survey_last: Mutex::new(None),
-        plugins: plugins::manage::Plugins::new(hub.clone()),
+        plugins: plugins::manage::Plugins::new(hub.clone(), shared.clone()),
         home_dir,
+        shared,
+        series,
+        store,
+        topics: Mutex::new(Default::default()),
+        topics_gen: std::sync::atomic::AtomicU64::new(0),
+        engine_cmds: Mutex::new(Vec::new()),
+        host_last: Mutex::new(None),
     });
+    monitor::start(ctx.clone());
     {
         let c = ctx.config.lock().unwrap();
         let l = &c.log;
@@ -673,6 +689,7 @@ fn serve(a: &Args) {
     if let Err(e) = rt.block_on(server::serve(ctx.clone(), listener)) {
         fatal(&format!("web server on {addr}: {e}"));
     }
+    runtime::save_registry(&ctx.shared);
     log::info!("Cleaning up & Exiting...");
 }
 

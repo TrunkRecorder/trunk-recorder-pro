@@ -506,6 +506,10 @@ impl Receiver for C4fm {
         (self.symbols > 2400 && self.separation > 4.0 && self.separation.is_finite()).then_some(self.center)
     }
 
+    fn quality(&self) -> Option<f32> {
+        (self.symbols > 2400 && self.separation.is_finite()).then_some(self.separation)
+    }
+
     fn push(&mut self, iq: &[Complex32], out: &mut Vec<Symbol>) {
         let k = (self.fs / (2.0 * PI)) as f32;
         // Clicks: a noise-driven phase wrap gives a spike far outside the rails.

@@ -130,6 +130,12 @@ impl Host {
         self.send(&PluginMessage::Status { state, message: message.into() });
     }
 
+    /// How the plugin's work is going (see [`Metrics`]): queue, timing,
+    /// the services it talks to. At most every few seconds.
+    pub fn metrics(&self, m: &Metrics) {
+        self.send(&PluginMessage::Metrics(m.clone()));
+    }
+
     /// What became of a concluded call.
     pub fn call_result(&self, path: &str, outcome: Outcome, message: impl Into<String>, url: impl Into<String>) {
         self.send(&PluginMessage::CallResult { path: path.to_string(), outcome, message: message.into(), url: url.into() });

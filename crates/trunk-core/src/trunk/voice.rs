@@ -27,6 +27,7 @@ use crate::dsp::fm::Nbfm;
 use crate::dsp::signalling::Signalling;
 use crate::dsp::{Receiver, Symbol};
 use crate::mbe;
+use crate::metrics::{Instrumented, Sink};
 use crate::p25::alias::Alias;
 use crate::p25::diversity::{best_frame, Bank, BankConfig, Group};
 use crate::p25::phase2::{self, Packet};
@@ -155,6 +156,9 @@ pub trait VoiceDecoder: Send {
     fn carrier(&self) -> Option<bool> {
         None
     }
+    /// Its receivers' measurements for the dashboard (the eye opening as
+    /// `sep`; see [`crate::metrics`]). Default: none.
+    fn report(&self, _sink: &mut dyn Sink) {}
 }
 
 /// Make the decoder for `spec.kind`.
@@ -218,6 +222,9 @@ impl P25Fdma {
 impl VoiceDecoder for P25Fdma {
     fn kind(&self) -> VoiceKind {
         VoiceKind::Fdma
+    }
+    fn report(&self, sink: &mut dyn Sink) {
+        self.bank.report(sink);
     }
     fn push(&mut self, iq: &[Complex32], out: &mut Vec<VoiceOut>) {
         (self.nac, self.air) = (None, None);
@@ -291,6 +298,11 @@ struct Dmr {
 impl VoiceDecoder for Dmr {
     fn kind(&self) -> VoiceKind {
         VoiceKind::Dmr
+    }
+    fn report(&self, sink: &mut dyn Sink) {
+        if let Some(q) = self.rx.quality() {
+            sink.gauge("sep", q as f64);
+        }
     }
     fn push(&mut self, iq: &[Complex32], out: &mut Vec<VoiceOut>) {
         self.air = [None; 2];

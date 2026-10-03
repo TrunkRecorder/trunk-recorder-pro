@@ -3,6 +3,45 @@
 Each version's section is its GitHub release notes (CI copies the section
 under `## [<version>]` when the tag `v<version>` is pushed).
 
+## [Unreleased]
+
+- **A dashboard for running the recorder**, in place of the single page:
+  - **Overview**: every system at a glance — today's calls, airtime and
+    audio, recorders in use, calls missed; a card per system with its
+    control channel's rate against its usual, what's on the air, and voice
+    quality by frequency; the sources, the computer, the plugins, and what
+    happened lately.
+  - **RF**: each source's noise floor, headroom and clipping, frequency
+    error against the control channels, dropped samples; the band with
+    every channel's level above the floor; the waterfall on demand; a week
+    of history.
+  - **Decode**: control channel messages decoded and lost, the receiver's
+    eye opening, P25 framing misses, voice frames lost — per frequency, with
+    hints when a pattern points at the RF (a common offset: the source's
+    ppm; a bad channel at a band edge).
+  - **Radio system**: talkgroups by hour (new, unknown, encrypted, ignored —
+    and an Ignore switch that takes effect at once), radios with their
+    affiliations and who they talk with, call lengths, what happened to
+    calls; a page per talkgroup and per radio.
+  - **Plugins**: each plugin's results minute by minute, queue, upload time,
+    the services it talks to, restarts.
+  - **Platform**: CPU (all, and the recorder's), memory pressure, disks and
+    the days of recordings left, internet reachability minute by minute —
+    container limits respected, what a platform can't tell shown as such.
+- **History**: a week of one-minute figures kept in `<data>/stats/`, and the
+  radio registry (talkgroups, radios, frequencies heard) in `<data>/radio/`.
+- **Events**: control channel lost / regained, a talkgroup or radio heard for
+  the first time, a source dropping samples or clipping, a plugin's health
+  changing, the internet going down, a disk filling — in the dashboard, and
+  through the `Watcher` hook alert rules will use.
+- **API**: `subscribe` (`spectrum` and the control channel `log` now come only
+  to connections that ask), `stats`, `host`, `rfDetail`, `decodeDetail`,
+  `monitorEvent`, `statsQuery`, `radioQuery` (docs/api).
+- **Plugin SDK 0.2**: `metrics` messages (`Host::metrics`); `CallQueue`
+  reports its queue, upload time and the service's state by itself.
+- Talkgroup file changes (an Ignore flag, a tag) apply while recording.
+- A source's last error is shown for 5 minutes after it.
+
 ## [0.1.1] — 2026-10-02
 
 - **Faster on Raspberry Pi**: about half the CPU for the same output (the

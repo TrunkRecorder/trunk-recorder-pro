@@ -183,6 +183,8 @@ pub fn notes_to_hub(hub: crate::runtime::Hub) -> host::Notes {
             }
             crate::runtime::publish(&hub, json!({ "type": "pluginResult", "id": plugin, "path": path, "outcome": outcome, "message": message, "url": url }));
         }
+        // (In the plugin's pluginRuntime.)
+        Note::Metrics { .. } => {}
     })
 }
 

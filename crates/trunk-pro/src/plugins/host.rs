@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 use trunk_app::PluginTopics;
 use trunk_recorder_plugin::{
-    format, topic, AudioChunk, CallFiles, CallRecord, ConcludedCall, Hello, HostInfo, HostMessage, Level, Manifest, Outcome, PluginMessage, Shutdown, State,
+    format, topic, AudioChunk, CallFiles, CallRecord, ConcludedCall, Hello, HostInfo, HostMessage, Level, Manifest, Metrics, Outcome, PluginMessage, Shutdown, State,
     SystemInfo, API_VERSION, EXIT_CONFIG,
 };
 
@@ -31,6 +31,20 @@ pub enum Note {
     Log { plugin: String, level: Level, text: String },
     State { plugin: String, state: State, message: String },
     Result { plugin: String, path: String, outcome: Outcome, message: String, url: String },
+    /// Its figures (queue, timing, the services it talks to).
+    Metrics { plugin: String, metrics: Metrics },
+}
+
+/// A plugin's process as the host sees it.
+#[derive(Clone, Debug, Default)]
+pub struct ProcessStats {
+    pub id: String,
+    /// Events it was too far behind to be given.
+    pub dropped: u64,
+    /// Times it was started again after exiting.
+    pub restarts: u64,
+    /// Since it was last started, s (None: not running).
+    pub uptime_s: Option<f64>,
 }
 
 pub type Notes = Arc<dyn Fn(Note) + Send + Sync>;
@@ -50,6 +64,8 @@ struct Plugin {
     child: Mutex<Option<Child>>,
     dropped: AtomicU64,
     last_drop_note: Mutex<Option<Instant>>,
+    restarts: AtomicU64,
+    started: Mutex<Option<Instant>>,
 }
 
 struct Shared {
@@ -167,6 +183,8 @@ impl PluginHost {
                 child: Mutex::new(None),
                 dropped: AtomicU64::new(0),
                 last_drop_note: Mutex::new(None),
+                restarts: AtomicU64::new(0),
+                started: Mutex::new(None),
             });
         }
         let shared = Arc::new(Shared { plugins, stopping: AtomicBool::new(false), notes });
@@ -195,6 +213,20 @@ impl PluginHost {
             None => (None, Vec::new()),
         };
         PluginHost { shared, capture_dir: capture_dir.to_path_buf(), encoder, encode_tx, encoders, supervisors, topics, audio: live_audio, done: false }
+    }
+
+    /// Each plugin's process: drops, restarts, uptime.
+    pub fn process_stats(&self) -> Vec<ProcessStats> {
+        self.shared
+            .plugins
+            .iter()
+            .map(|p| ProcessStats {
+                id: p.id.clone(),
+                dropped: p.dropped.load(Ordering::Relaxed),
+                restarts: p.restarts.load(Ordering::Relaxed),
+                uptime_s: p.started.lock().unwrap().map(|t| t.elapsed().as_secs_f64()),
+            })
+            .collect()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -371,6 +403,7 @@ fn supervise(sh: &Shared, i: usize, mut rx: Receiver<Arc<str>>) {
         let started = Instant::now();
         let (exit, back) = run_once(sh, p, rx);
         rx = back;
+        *p.started.lock().unwrap() = None;
         let stopping = sh.stopping.load(Ordering::Relaxed);
         match exit {
             _ if stopping => return,
@@ -398,6 +431,7 @@ fn supervise(sh: &Shared, i: usize, mut rx: Receiver<Arc<str>>) {
         if sh.stopping.load(Ordering::Relaxed) {
             return;
         }
+        p.restarts.fetch_add(1, Ordering::Relaxed);
         backoff = (backoff * 2).min(Duration::from_secs(60));
     }
 }
@@ -418,6 +452,7 @@ fn run_once(sh: &Shared, p: &Plugin, rx: Receiver<Arc<str>>) -> (Result<Ended, S
     };
     let (mut stdin, stdout, stderr) = (child.stdin.take().unwrap(), child.stdout.take().unwrap(), child.stderr.take().unwrap());
     *p.child.lock().unwrap() = Some(child);
+    *p.started.lock().unwrap() = Some(Instant::now());
     let dead = Arc::new(AtomicBool::new(false));
     let hello = p.hello.clone();
     let dead2 = dead.clone();
@@ -454,6 +489,7 @@ fn run_once(sh: &Shared, p: &Plugin, rx: Receiver<Arc<str>>) -> (Result<Ended, S
             Ok(PluginMessage::Log { level, message }) => Note::Log { plugin: p.id.clone(), level, text: message },
             Ok(PluginMessage::Status { state, message }) => Note::State { plugin: p.id.clone(), state, message },
             Ok(PluginMessage::CallResult { path, outcome, message, url }) => Note::Result { plugin: p.id.clone(), path, outcome, message, url },
+            Ok(PluginMessage::Metrics(metrics)) => Note::Metrics { plugin: p.id.clone(), metrics },
             Ok(PluginMessage::Unknown) => continue,
             // Not the protocol (a stray print): keep it as a log line.
             Err(_) => Note::Log { plugin: p.id.clone(), level: Level::Info, text: l },

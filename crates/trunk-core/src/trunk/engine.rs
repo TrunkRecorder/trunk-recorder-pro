@@ -44,6 +44,7 @@ use super::control::{self, CarrierPlan, ControlChannel, Protocol, ProtocolStatus
 use super::voice::{self, VoiceDecoder, VoiceKind, VoiceParams, VoiceSpec};
 use crate::dsp::{Channelizer, HeadId};
 use crate::mbe;
+use crate::metrics::{self, Scoped, Sink};
 use crate::p25::alias::Alias;
 use crate::p25::diversity::BankConfig;
 use crate::dsp::fm::ChannelFilter;
@@ -267,6 +268,49 @@ pub struct Status {
     pub calls_concluded: u64,
     /// Each source's frequency error, as measured and as corrected.
     pub sources: Vec<SourceTune>,
+}
+
+/// One channel the engine listens to, as the dashboard shows it ([`Engine::channels`]).
+#[derive(Clone, Debug)]
+pub struct ChannelSnapshot {
+    /// The system it is for (a conventional channel's: its conventional system's number).
+    pub system: u16,
+    pub freq_hz: u64,
+    pub source: usize,
+    /// "control" | "voice" | "carrier" (a DMR site's) | "conventional"
+    pub kind: &'static str,
+    /// The power in the channel and the noise floor under it, dBFS per FFT bin.
+    pub power_db: f64,
+    pub noise_db: f64,
+    /// How far above the channel the carrier is, Hz, when a receiver can tell.
+    pub offset_hz: Option<f32>,
+    /// The receiver's eye opening (C4FM / DMR 4FSK; see [`crate::dsp::Receiver::quality`]).
+    pub quality: Option<f32>,
+    /// Calls on it now.
+    pub calls: usize,
+}
+
+/// Noise profile slices per source for the dashboard.
+const PROFILE_SLICES: usize = 64;
+/// Half the width a channel's power is measured over, Hz.
+const CC_HALF_HZ: f64 = 3000.0;
+
+/// The noise floor under `hz` from source `s`'s profile `p` (|X|² per bin).
+fn slice_at(p: &[f64], s: &Source, hz: f64) -> f64 {
+    let off = hz - s.cfg.center_hz;
+    let i = ((off + s.cfg.rate_hz / 2.0) / s.cfg.rate_hz * p.len() as f64).floor().clamp(0.0, p.len() as f64 - 1.0) as usize;
+    p[i]
+}
+
+/// Picks the receiver quality out of a report.
+struct Quality(Option<f32>);
+impl Sink for Quality {
+    fn counter(&mut self, _: &str, _: u64) {}
+    fn gauge(&mut self, name: &str, value: f64) {
+        if name == "sep" {
+            self.0 = Some(value as f32);
+        }
+    }
 }
 
 /// A source's frequency error (Trunk Recorder's autoTune report).
@@ -1035,6 +1079,153 @@ impl Engine {
     /// Power spectrum (dBFS, fft-shifted) of a source's latest block — for the waterfall.
     pub fn spectrum(&self, source: usize, bins: usize) -> Vec<f32> {
         self.radio.sources.get(source).map_or_else(Vec::new, |s| s.chz.power_spectrum(bins))
+    }
+
+    /// A source's noise floor across its band in `slices` equal slices
+    /// (first at −fs/2), dBFS per FFT bin — the waterfall's floor.
+    pub fn noise_profile(&self, source: usize, slices: usize) -> Vec<f64> {
+        let Some(s) = self.radio.sources.get(source) else { return Vec::new() };
+        let mut p = vec![0.0f64; slices];
+        s.chz.noise_profile(&mut p);
+        p.iter().map(|&v| metrics::bin_dbfs(v, s.chz.fft_size())).collect()
+    }
+
+    /// Every channel listened to now — control channels, voice channels,
+    /// conventional channels — with its power and the floor under it. About
+    /// a millisecond's work: for the dashboard, once a second at most.
+    pub fn channels(&self) -> Vec<ChannelSnapshot> {
+        let profiles: Vec<Vec<f64>> = self
+            .radio
+            .sources
+            .iter()
+            .map(|s| {
+                let mut p = vec![0.0f64; PROFILE_SLICES];
+                s.chz.noise_profile(&mut p);
+                p
+            })
+            .collect();
+        let snap = |system: u16, hz: f64, src: usize, kind: &'static str, half_hz: f64| {
+            let s = &self.radio.sources[src];
+            let n = s.chz.fft_size();
+            ChannelSnapshot {
+                system,
+                freq_hz: hz.round() as u64,
+                source: src,
+                kind,
+                power_db: metrics::bin_dbfs(s.chz.band_power(s.offset(hz), half_hz), n),
+                noise_db: metrics::bin_dbfs(slice_at(&profiles[src], s, hz), n),
+                offset_hz: None,
+                quality: None,
+                calls: 0,
+            }
+        };
+        let mut out = Vec::new();
+        for t in &self.trunks {
+            // Watching every carrier (a DMR site): each, the control one marked.
+            if let CarrierPlan::Watch { carriers, .. } = t.cc.plan() {
+                for (&hz, &(src, _, _)) in carriers.iter().zip(&t.carriers) {
+                    out.push(snap(t.idx, hz, src, if Some(hz.round() as u64) == t.cc_hz { "control" } else { "carrier" }, CC_HALF_HZ));
+                }
+                continue;
+            }
+            let Some(hz) = t.cc_hz.filter(|_| t.cc_head.is_some()) else { continue };
+            let mut x = snap(t.idx, hz as f64, t.cc_source, "control", CC_HALF_HZ);
+            x.offset_hz = t.cc.offset_hz();
+            let mut q = Quality(None);
+            t.cc.report(&mut q);
+            x.quality = q.0;
+            out.push(x);
+        }
+        for ch in self.radio.channels.values() {
+            let mut x = snap(ch.system, ch.freq_hz, ch.source, "voice", CC_HALF_HZ);
+            x.calls = ch.calls.iter().flatten().count();
+            x.offset_hz = ch.voice.offset_hz();
+            let mut q = Quality(None);
+            ch.voice.report(&mut q);
+            x.quality = q.0;
+            out.push(x);
+        }
+        for c in &self.cfg.conventional {
+            if let Some(src) = self.radio.source_for(c.freq_hz) {
+                let mut x = snap(conventional_system(c.system), c.freq_hz, src, "conventional", CC_HALF_HZ);
+                x.calls = self.conv.calls().filter(|k| (k.freq_hz as f64 - c.freq_hz).abs() < 1.0).count();
+                out.push(x);
+            }
+        }
+        out.sort_by_key(|c| c.freq_hz);
+        out.dedup_by_key(|c| (c.freq_hz, c.system));
+        out
+    }
+
+    /// What the engine has measured, for the dashboard's history: per source
+    /// (named by `source_names`) its noise floor and frequency error; per
+    /// trunked system its control channel's decoding and demodulation, and
+    /// its calls now. See [`crate::metrics`].
+    pub fn report(&self, source_names: &[String], sink: &mut dyn Sink) {
+        for (i, s) in self.radio.sources.iter().enumerate() {
+            let name = source_names.get(i).cloned().unwrap_or_else(|| i.to_string());
+            let mut k = Scoped::new(sink, format!("src/{}", metrics::key_part(&name)));
+            let mut p = vec![0.0f64; PROFILE_SLICES];
+            s.chz.noise_profile(&mut p);
+            p.sort_by(|a, b| a.total_cmp(b));
+            if s.chz.sample_position() > 0 {
+                k.gauge("noise", metrics::bin_dbfs(p[p.len() / 2], s.chz.fft_size()));
+            }
+            if let Some(e) = s.error_ppm() {
+                k.gauge("ppm", e);
+            }
+            k.gauge("tune", s.tune_ppm);
+        }
+        for t in &self.trunks {
+            let mut k = Scoped::new(sink, format!("sys/{}", metrics::key_part(&t.cfg.short_name)));
+            k.gauge("active", t.calls.calls.len() as f64);
+            k.gauge("recording", t.calls.calls.iter().filter(|c| self.radio.recordings.contains_key(&c.id)).count() as f64);
+            if !t.running() {
+                continue;
+            }
+            let mut cc = Scoped::new(&mut k, "cc");
+            cc.counter("good", t.good);
+            cc.counter("bad", t.bad);
+            cc.gauge("locked", (t.now_s - t.last_good_s < 2.0 && t.mismatch.is_none()) as u8 as f64);
+            // What its protocol measures (framing, eye opening, deviation…).
+            t.cc.report(&mut cc);
+            // A hunted control channel's level above the floor under it.
+            if let Some(hz) = t.cc_hz.filter(|_| t.cc_head.is_some()) {
+                let s = &self.radio.sources[t.cc_source];
+                let n = s.chz.fft_size();
+                let mut p = vec![0.0f64; PROFILE_SLICES];
+                s.chz.noise_profile(&mut p);
+                let (sig, noise) = (metrics::bin_dbfs(s.chz.band_power(s.offset(hz as f64), CC_HALF_HZ), n), metrics::bin_dbfs(slice_at(&p, s, hz as f64), n));
+                if s.chz.sample_position() > 0 {
+                    cc.gauge("signal", sig);
+                    cc.gauge("noise", noise);
+                    cc.gauge("snr", sig - noise);
+                }
+            }
+        }
+        sink.gauge("eng/recording", self.radio.recordings.len() as f64);
+        sink.gauge("eng/channels", (self.radio.channels.len() + self.conv.open_count()) as f64);
+        sink.gauge("eng/recorders", self.radio.max_recorders as f64);
+    }
+
+    /// Replace the talkgroup table of the system named `short_name` (trunked
+    /// or conventional) while recording: calls from now on go by it (an
+    /// Ignore flag set, a tag fixed). False when there's no such system.
+    pub fn set_talkgroups(&mut self, short_name: &str, talkgroups: Talkgroups) -> bool {
+        if let Some(t) = self.trunks.iter_mut().find(|t| t.cfg.short_name == short_name) {
+            t.cfg.talkgroups = talkgroups.clone();
+            t.calls.talkgroups = talkgroups.clone();
+            if let Some(c) = self.cfg.systems.iter_mut().find(|c| c.short_name == short_name) {
+                c.talkgroups = talkgroups;
+            }
+            return true;
+        }
+        if let Some(k) = self.cfg.conv_systems.iter().position(|c| c.short_name == short_name) {
+            self.conv_calls[k].talkgroups = talkgroups.clone();
+            self.cfg.conv_systems[k].talkgroups = talkgroups;
+            return true;
+        }
+        false
     }
 
     pub fn status(&self) -> Status {
