@@ -812,8 +812,8 @@ export type ToRecorder =
   | { type: "listDir"; path: string }
   /** A Trunk Recorder config.json (or a folder with one), with the files it names. */
   | { type: "readTrConfig"; path: string }
-  /** Live audio: on/off, optionally one system's (CONVENTIONAL: conventional channels) and/or one talkgroup's. */
-  | { type: "listen"; on: boolean; system: number | null; talkgroup: number | null }
+  /** Live audio: on/off, optionally one system's (its short name) and/or one talkgroup's. */
+  | { type: "listen"; on: boolean; system: string | null; talkgroup: number | null }
   /** Link the conventional channels to a CSV (created from the list if new), reload it (same path), or unlink (""). */
   | { type: "channelFile"; index: number; path: string }
   /** Find a system: scan `bands` with source `source`, then monitor the best control channel. */
@@ -838,6 +838,7 @@ export type ToRecorder =
 /** Live audio: one 20 ms (or longer) chunk of a call, 8 kHz. */
 export interface AudioChunk {
   callId: number;
+  /** The system's number this run (SystemStatus.index, or conventionalSystem(k)): map it to its short name. */
   system: number;
   talkgroup: number;
   samples: Float32Array;

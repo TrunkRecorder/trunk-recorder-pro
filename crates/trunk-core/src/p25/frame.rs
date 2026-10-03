@@ -351,7 +351,9 @@ impl Framer {
         if !(self.active && self.pos < 48) {
             let e = (self.sr ^ SYNC).count_ones();
             let ei = (self.sr ^ SYNC ^ INV).count_ones();
-            let strict = e <= 4 || ei <= 4;
+            // (Not before a whole sync's 24 symbols have come: the register's
+            // empty top would pass for the sync's leading dibits.)
+            let strict = n >= 23 && (e <= 4 || ei <= 4);
             let fly = !strict
                 && self.opt.flywheel
                 && self.expecting
@@ -507,6 +509,21 @@ mod tests {
                     assert_eq!((got.nac, got.duid), (nac, d));
                 }
             }
+        }
+    }
+
+    /// A receiver whose first symbols land inside a frame sync: the tail
+    /// of a sync isn't taken for one (it read before the stream's start).
+    #[test]
+    fn a_sync_cut_by_the_stream_start_is_not_a_sync() {
+        for skip in 1..=4 {
+            let mut fr = Framer::new(FramerOptions::default());
+            let mut frames = Vec::new();
+            for k in skip..24 {
+                let dibit = ((SYNC >> (2 * (23 - k))) & 3) as u8;
+                fr.push(&Symbol { dibit, sample: k as f64, rel_hi: 1.0, rel_lo: 1.0 }, &mut frames);
+            }
+            assert_eq!(fr.stats.syncs, 0, "{skip} symbols cut");
         }
     }
 }

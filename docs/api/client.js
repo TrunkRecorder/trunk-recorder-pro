@@ -110,7 +110,8 @@ export class TrunkClient {
 
   /**
    * Live audio on this connection: listen() every call, listen({ talkgroup })
-   * one talkgroup's, listen({ system, talkgroup }), listen(false) none.
+   * one talkgroup's, listen({ system, talkgroup }) one system's (`system`: its
+   * short name), listen(false) none.
    * Kept across reconnects. Chunks come to on("audio", …).
    */
   listen(filter = {}) {

@@ -26,8 +26,9 @@ use crate::sdr::{self, RtlConfig, SourceMsg};
 /// A message for every connected browser.
 pub enum Out {
     Text(String),
-    /// Live audio (binary frame) for talkgroup `tg` of `system` (65535: conventional).
-    Audio { system: u16, tg: u32, frame: Vec<u8> },
+    /// Live audio (binary frame) for talkgroup `tg` of the system with short
+    /// name `short_name` (the frame carries the system's number this run).
+    Audio { short_name: String, tg: u32, frame: Vec<u8> },
 }
 
 pub type Hub = broadcast::Sender<Arc<Out>>;
@@ -56,6 +57,10 @@ pub struct Ctx {
     pub config: Mutex<Config>,
     pub hub: Hub,
     pub runner: Mutex<Option<Runner>>,
+    /// Held through a start, stop, survey start or quit, so two never
+    /// interleave (two Starts at once would leave a recorder nothing stops);
+    /// true once quitting, when nothing may start any more.
+    pub lifecycle: Mutex<bool>,
     pub phase: Mutex<PhaseInfo>,
     /// Recently concluded calls (newest first), as sent to the browser.
     pub history: Mutex<VecDeque<Value>>,
@@ -84,6 +89,11 @@ pub struct Runner {
 }
 
 impl Runner {
+    /// The engine has stopped by itself (every capture file ended).
+    pub fn finished(&self) -> bool {
+        self.threads.last().is_some_and(|t| t.is_finished())
+    }
+
     pub fn stop(self) {
         self.stop.store(true, Ordering::Relaxed);
         for t in self.threads {
@@ -156,20 +166,20 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
 
 /// Where a system's band plan is kept between runs.
 fn bandplan_path(short_name: &str) -> PathBuf {
-    crate::config::config_dir().join(format!("{short_name}.bandplan"))
+    crate::paths::data_dir().join(format!("{short_name}.bandplan"))
 }
 
 /// Where a system's radios' talker aliases are kept (Trunk Recorder's unitTagsOTA CSV).
 pub(crate) fn units_path(short_name: &str) -> PathBuf {
-    crate::config::config_dir().join(format!("{short_name}.units.csv"))
+    crate::paths::data_dir().join(format!("{short_name}.units.csv"))
 }
 
 /// Save the band plans that changed since `saved` (what was last written).
 fn save_bandplans(session: &Session, saved: &mut std::collections::HashMap<String, String>) {
     for (name, plan) in session.bandplans() {
         if !plan.is_empty() && saved.get(&name) != Some(&plan) {
-            let _ = fs::create_dir_all(crate::config::config_dir());
-            let _ = fs::write(bandplan_path(&name), &plan);
+            let _ = fs::create_dir_all(crate::paths::data_dir());
+            let _ = trunk_app::config::write_atomic(&bandplan_path(&name), &plan);
             saved.insert(name, plan);
         }
     }
@@ -177,19 +187,19 @@ fn save_bandplans(session: &Session, saved: &mut std::collections::HashMap<Strin
 
 /// Where the codes conventional frequencies carried are kept ([`trunk_app::heard`]).
 pub(crate) fn heard_path(cfg: &trunk_app::Config) -> PathBuf {
-    crate::config::config_dir().join(Session::heard_file(cfg))
+    crate::paths::data_dir().join(Session::heard_file(cfg))
 }
 
 /// Save the talker aliases systems learned, and the codes conventional
 /// frequencies carried, since the last save.
 fn save_units(session: &mut Session) {
     for (name, csv) in session.units_changed() {
-        let _ = fs::create_dir_all(crate::config::config_dir());
-        let _ = fs::write(units_path(&name), csv);
+        let _ = fs::create_dir_all(crate::paths::data_dir());
+        let _ = trunk_app::config::write_atomic(&units_path(&name), csv);
     }
     if let Some(json) = session.heard_unsaved() {
-        let _ = fs::create_dir_all(crate::config::config_dir());
-        let _ = fs::write(heard_path(session.config()), json);
+        let _ = fs::create_dir_all(crate::paths::data_dir());
+        let _ = trunk_app::config::write_atomic(&heard_path(session.config()), json);
     }
 }
 
@@ -271,10 +281,11 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Rec
         let (ctx, dir, m4a) = (ctx.clone(), dir.clone(), cfg.recording.m4a.clone());
         std::thread::Builder::new().name("finish".into()).spawn(move || finish_calls(&ctx, &dir, fin_rx, &m4a)).expect("thread")
     };
-    let fin = |rel: String, system: u16, json: String| {
-        if let Err(mpsc::TrySendError::Full(f)) = fin_tx.try_send(Finish { rel, system, json, rules: rules(system) }) {
-            // (Behind on encoding: this one goes out without its M4A rather than holding the engine up.)
-            finish_one(&ctx, &dir, Finish { rules: FileRules { compress_wav: false, ..f.rules }, ..f }, None);
+    // Calls are written on the finish thread, so a slow disk doesn't hold up decoding.
+    let fin = |f: Finish, plugins: Option<&PluginHost>| {
+        if let Err(mpsc::TrySendError::Full(f)) = fin_tx.try_send(f) {
+            // (Behind on writing or encoding: this one is written here, without its M4A, rather than waiting.)
+            finish_one(&ctx, &dir, Finish { rules: FileRules { compress_wav: false, ..f.rules }, ..f }, None, plugins);
         }
     };
     let t0 = Instant::now();
@@ -316,7 +327,7 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Rec
         session.plugin_topics = plugins.as_ref().map_or(Default::default(), |p| p.topics);
         session.want_audio = ctx.hub.receiver_count() > 0 || plugins.as_ref().is_some_and(|p| p.audio);
         session.poll(now_ms(), &mut out);
-        deliver(&ctx, &dir, &mut out, plugins.as_ref(), &fin);
+        deliver(&ctx, &mut out, plugins.as_ref(), &rules, &fin);
         drop(plugins);
         save_units(&mut session);
         if plans_at.elapsed() >= Duration::from_secs(10) {
@@ -326,30 +337,35 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Rec
     }
     ctx.set_phase("stopping", None, false);
     session.finish(&mut out);
-    deliver(&ctx, &dir, &mut out, ctx.plugins.host.read().unwrap().as_ref(), &fin);
+    deliver(&ctx, &mut out, ctx.plugins.host.read().unwrap().as_ref(), &rules, &fin);
     drop(fin_tx);
     let _ = finisher.join();
     // Uploads in flight get a moment to finish.
     ctx.plugins.stop(Duration::from_secs(10));
-    let _ = fs::create_dir_all(crate::config::config_dir());
+    let _ = fs::create_dir_all(crate::paths::data_dir());
     for (name, plan) in session.bandplans() {
-        let _ = fs::write(bandplan_path(&name), plan);
+        let _ = trunk_app::config::write_atomic(&bandplan_path(&name), plan);
     }
     save_units(&mut session);
     stop.store(true, Ordering::Relaxed);
     ctx.set_phase("idle", None, ended_all);
 }
 
-/// A call written, for [`finish_calls`].
+/// A concluded call, for [`finish_calls`] to store.
 struct Finish {
     rel: String,
     system: u16,
+    wav: Vec<u8>,
     json: String,
+    frames: Option<String>,
+    /// Its history entry (`{path, record}`).
+    entry: Value,
     rules: FileRules,
 }
 
-/// After a call's files are written: its .m4a (compressWav), then to the
-/// plugins, whose results settle what's kept ([`crate::plugins::Archive`]).
+/// Each call: its files, then (once they're on disk) the `concluded`
+/// message and history, its .m4a (compressWav), and the plugins, whose
+/// results settle what's kept ([`crate::plugins::Archive`]).
 fn finish_calls(ctx: &Ctx, dir: &Path, rx: mpsc::Receiver<Finish>, m4a: &crate::config::M4a) {
     let encoder = plugins::Encoder::find(&m4a.encoder).map(|e| (e, m4a.bitrate_kbps.clamp(8, 320)));
     let mut warned = false;
@@ -359,12 +375,32 @@ fn finish_calls(ctx: &Ctx, dir: &Path, rx: mpsc::Receiver<Finish>, m4a: &crate::
             log::warn!("{text}");
             publish(&ctx.hub, json!({ "type": "log", "lines": [{ "timeS": 0, "kind": "error", "text": text }] }));
         }
-        finish_one(ctx, dir, f, encoder.as_ref());
+        let host = ctx.plugins.host.read().unwrap();
+        finish_one(ctx, dir, f, encoder.as_ref(), host.as_ref());
     }
 }
 
-fn finish_one(ctx: &Ctx, dir: &Path, f: Finish, encoder: Option<&(plugins::Encoder, u32)>) {
+/// `host`: the plugins, as the caller already holds them (taking the lock
+/// again on the engine thread could deadlock with a plugin reload waiting).
+fn finish_one(ctx: &Ctx, dir: &Path, f: Finish, encoder: Option<&(plugins::Encoder, u32)>, host: Option<&PluginHost>) {
     let base = dir.join(&f.rel);
+    if let Some(d) = base.parent() {
+        let _ = fs::create_dir_all(d);
+    }
+    let ok = fs::write(format!("{}.wav", base.display()), &f.wav).is_ok()
+        && fs::write(format!("{}.json", base.display()), &f.json).is_ok()
+        && f.frames.as_ref().is_none_or(|fr| fs::write(format!("{}.frames.jsonl", base.display()), fr).is_ok());
+    if !ok {
+        log::error!("Couldn't write {}", base.display());
+        publish(&ctx.hub, json!({ "type": "log", "lines": [{ "timeS": 0, "kind": "error", "text": format!("couldn't write {}", base.display()) }] }));
+        return;
+    }
+    publish(&ctx.hub, json!({ "type": "concluded", "entry": &f.entry }));
+    {
+        let mut h = ctx.history.lock().unwrap();
+        h.push_front(f.entry);
+        h.truncate(500);
+    }
     let m4a = match encoder.filter(|_| f.rules.compress_wav) {
         Some((e, kbps)) => {
             let (wav, out) = (PathBuf::from(format!("{}.wav", base.display())), PathBuf::from(format!("{}.m4a", base.display())));
@@ -379,25 +415,24 @@ fn finish_one(ctx: &Ctx, dir: &Path, f: Finish, encoder: Option<&(plugins::Encod
         }
         None => None,
     };
-    let host = ctx.plugins.host.read().unwrap();
-    ctx.plugins.archive.expect(&f.rel, host.as_ref().map_or(0, |h| h.call_takers()), f.rules, &base);
-    if let Some(h) = host.as_ref() {
+    ctx.plugins.archive.expect(&f.rel, host.map_or(0, |h| h.call_takers()), f.rules, &base);
+    if let Some(h) = host {
         h.concluded(f.system, &f.rel, &f.json, m4a);
     }
 }
 
-/// Write call files, keep history, forward everything to the browsers and plugins.
-fn deliver(ctx: &Ctx, dir: &Path, out: &mut Vec<Output>, plugins: Option<&PluginHost>, finish: &dyn Fn(String, u16, String)) {
+/// Forward everything to the browsers and plugins; calls go to be stored.
+fn deliver(ctx: &Ctx, out: &mut Vec<Output>, plugins: Option<&PluginHost>, rules: &dyn Fn(u16) -> FileRules, finish: &dyn Fn(Finish, Option<&PluginHost>)) {
     for o in out.drain(..) {
         match o {
             Output::Text(t) => {
                 let _ = ctx.hub.send(Arc::new(Out::Text(t)));
             }
-            Output::Audio { system, tg, frame } => {
+            Output::Audio { short_name, tg, frame, .. } => {
                 if let Some(p) = plugins {
                     p.audio_frame(&frame);
                 }
-                let _ = ctx.hub.send(Arc::new(Out::Audio { system, tg, frame }));
+                let _ = ctx.hub.send(Arc::new(Out::Audio { short_name, tg, frame }));
             }
             Output::Plugin(m) => {
                 if let Some(p) = plugins {
@@ -405,24 +440,7 @@ fn deliver(ctx: &Ctx, dir: &Path, out: &mut Vec<Output>, plugins: Option<&Plugin
                 }
             }
             Output::Log(r) => crate::logging::record(&r),
-            Output::File { rel, system, wav, json, frames, entry } => {
-                let base = dir.join(&rel);
-                if let Some(d) = base.parent() {
-                    let _ = fs::create_dir_all(d);
-                }
-                let ok = fs::write(format!("{}.wav", base.display()), wav).is_ok()
-                    && fs::write(format!("{}.json", base.display()), &json).is_ok()
-                    && frames.is_none_or(|f| fs::write(format!("{}.frames.jsonl", base.display()), f).is_ok());
-                if !ok {
-                    log::error!("Couldn't write {}", base.display());
-                    publish(&ctx.hub, json!({ "type": "log", "lines": [{ "timeS": 0, "kind": "error", "text": format!("couldn't write {}", base.display()) }] }));
-                } else {
-                    finish(rel.clone(), system, json);
-                }
-                let mut h = ctx.history.lock().unwrap();
-                h.push_front(entry);
-                h.truncate(500);
-            }
+            Output::File { rel, system, wav, json, frames, entry } => finish(Finish { rel, system, wav, json, frames, entry, rules: rules(system) }, plugins),
         }
     }
 }

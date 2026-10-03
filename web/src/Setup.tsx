@@ -855,8 +855,8 @@ function CoverageBar(props: { c: Config; center: number; rateHz: number }) {
   const systems = activeSystems(c);
   const ticks: { hz: number; kind: "cc" | "voice"; color: string; label: string }[] = [];
   systems.forEach((x, k) => {
-    for (const f of x.controlChannels) if (inside(f)) ticks.push({ hz: f, kind: "cc", color: systemColor(k), label: `${x.shortName} control channel ${formatMhz(f)} MHz` });
-    for (const f of x.voiceChannels) if (inside(f)) ticks.push({ hz: f, kind: "voice", color: systemColor(k), label: `${x.shortName} voice ${formatMhz(f)} MHz` });
+    for (const f of x.controlChannels) if (inside(f)) ticks.push({ hz: f, kind: "cc", color: systemColor(c, x.shortName), label: `${x.shortName} control channel ${formatMhz(f)} MHz` });
+    for (const f of x.voiceChannels) if (inside(f)) ticks.push({ hz: f, kind: "voice", color: systemColor(c, x.shortName), label: `${x.shortName} voice ${formatMhz(f)} MHz` });
   });
   const conv = enabledChannels(c).filter((ch) => inside(ch.freqHz));
   for (const ch of conv) ticks.push({ hz: ch.freqHz, kind: "voice", color: "var(--text)", label: `conventional ${ch.name || formatMhz(ch.freqHz)}` });
@@ -875,7 +875,7 @@ function CoverageBar(props: { c: Config; center: number; rateHz: number }) {
         </span>
         {here.map(({ x, k }) => (
           <span key={x.shortName}>
-            <span className="sys-dot" style={{ background: systemColor(k) }} />
+            <span className="sys-dot" style={{ background: systemColor(c, x.shortName) }} />
             {x.shortName}
           </span>
         ))}
@@ -1489,9 +1489,7 @@ function SystemCard(props: { c: Config; i: number }) {
       if (v === null) delete x.expect[k];
       else x.expect[k] = v;
     });
-  const active = activeSystems(c);
-  const idx = active.indexOf(sys);
-  const color = systemColor(idx);
+  const color = systemColor(c, sys.shortName);
   const tgs = sys.talkgroupsCsv ? parseTalkgroupCsv(sys.talkgroupsCsv) : new Map();
   const tgCount = tgs.size;
   const ignored = [...tgs.values()].filter((t) => t.ignore).length;

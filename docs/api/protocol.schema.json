@@ -4056,7 +4056,7 @@
             },
             "system": {
               "type": [
-                "number",
+                "string",
                 "null"
               ]
             },

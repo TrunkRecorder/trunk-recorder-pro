@@ -42,16 +42,10 @@ use crate::config::{Config, PluginSetup};
 /// The M4A settings (the config's `recording.m4a`).
 pub type AudioSettings = crate::config::M4a;
 
-/// Plugin `id`'s settings for each system that has some, by short name
-/// (the conventional channels too, when there are any).
+/// Plugin `id`'s settings for each system calls can come from that has
+/// some, by short name (every system's own: [`Config::name_problem`]).
 pub fn system_settings(cfg: &Config, id: &str) -> BTreeMap<String, Value> {
-    let mut m: BTreeMap<String, Value> = cfg.systems.iter().filter_map(|s| Some((s.short_name.clone(), s.plugins.get(id)?.clone()))).collect();
-    for c in cfg.conventional.iter().filter(|c| !c.channels.is_empty()) {
-        if let Some(v) = c.plugins.get(id) {
-            m.insert(c.short_name.clone(), v.clone());
-        }
-    }
-    m
+    cfg.call_systems().into_iter().filter_map(|s| Some((s.short_name.to_string(), s.plugins.get(id)?.clone()))).collect()
 }
 
 /// Forget plugin `id`: its entry and its settings for every system.
@@ -76,11 +70,11 @@ pub fn changed(a: &Config, b: &Config) -> bool {
 }
 
 pub fn plugins_dir() -> PathBuf {
-    crate::config::config_dir().join("plugins")
+    crate::paths::data_dir().join("plugins")
 }
 
 pub fn data_dir(id: &str) -> PathBuf {
-    crate::config::config_dir().join("plugin-data").join(id)
+    crate::paths::data_dir().join("plugin-data").join(id)
 }
 
 /// The executable of plugin `id`.
@@ -137,7 +131,13 @@ pub fn describe(exe: &Path) -> Result<Manifest, String> {
     if m.id.is_empty() {
         return Err(format!("{}: its manifest has no id", exe.display()));
     }
-    if m.api == 0 || m.api > API_VERSION {
+    // The host speaks API_VERSION only. Plugins built for an older API are
+    // accepted because there is only one so far: when API_VERSION goes up,
+    // the host must speak each plugin's own `api` (or refuse older ones here).
+    if m.api == 0 {
+        return Err(format!("{}: its manifest doesn't say which plugin API it speaks (\"api\"; this recorder has {API_VERSION})", m.id));
+    }
+    if m.api > API_VERSION {
         return Err(format!("{} needs plugin API {}; this recorder has {API_VERSION} — update Trunk Recorder Pro", m.id, m.api));
     }
     Ok(m)
@@ -145,26 +145,10 @@ pub fn describe(exe: &Path) -> Result<Manifest, String> {
 
 /// Every system calls can come from, as plugins know them (settings not filled in).
 pub fn systems_of(cfg: &crate::config::Config) -> Vec<trunk_recorder_plugin::SystemInfo> {
-    let mut v: Vec<trunk_recorder_plugin::SystemInfo> = cfg
-        .systems
-        .iter()
-        .enumerate()
-        .map(|(i, s)| trunk_recorder_plugin::SystemInfo {
-            index: i as u16,
-            short_name: s.short_name.clone(),
-            kind: if s.is_smartnet() { "smartnet" } else if s.is_dmr() { "dmr" } else { "p25" }.into(),
-            config: Value::Null,
-        })
-        .collect();
-    for (k, c) in cfg.conventional.iter().enumerate().filter(|(_, c)| !c.channels.is_empty()) {
-        v.push(trunk_recorder_plugin::SystemInfo {
-            index: trunk_core::trunk::conventional_system(k),
-            short_name: c.short_name.clone(),
-            kind: "conventional".into(),
-            config: Value::Null,
-        });
-    }
-    v
+    cfg.call_systems()
+        .into_iter()
+        .map(|s| trunk_recorder_plugin::SystemInfo { index: s.index, short_name: s.short_name.to_string(), kind: s.kind.into(), config: Value::Null })
+        .collect()
 }
 
 /// Plugin notes as interface messages: log lines, and `pluginState` /
@@ -210,7 +194,10 @@ mod tests {
     #[test]
     fn what_plugins_get_from_the_config() {
         let c: Config = serde_json::from_value(json!({
-            "systems": [{ "shortName": "dcfd", "plugins": { "openmhz": { "apiKey": "k" } } }, { "shortName": "wmata" }],
+            "systems": [
+                { "shortName": "dcfd", "controlChannels": [857987500], "plugins": { "openmhz": { "apiKey": "k" } } },
+                { "shortName": "wmata", "controlChannels": [489087500] }
+            ],
             "conventional": [{ "shortName": "conv", "plugins": { "openmhz": { "apiKey": "c" } } }],
             "plugins": {
                 "openmhz": { "enabled": true, "settings": { "server": "s" } },
@@ -222,12 +209,37 @@ mod tests {
         assert_eq!(specs.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["openmhz"]);
         assert_eq!(specs[0].config, json!({ "server": "s" }));
         assert_eq!(specs[0].systems.get("dcfd"), Some(&json!({ "apiKey": "k" })));
-        assert!(!specs[0].systems.contains_key("wmata"));
-        assert!(!specs[0].systems.contains_key("conv"), "no conventional channels, so no conventional system");
+        assert!(!specs[0].systems.contains_key("wmata"), "wmata has no settings");
+        assert_eq!(specs[0].systems.len(), 1, "no conventional channels, so no conventional system");
         assert_eq!(executable("mine", &c.plugins["mine"]), PathBuf::from("/builds/mine"));
         let mut gone = c.clone();
         forget(&mut gone, "openmhz");
         assert!(!gone.plugins.contains_key("openmhz") && gone.systems[0].plugins.is_empty() && gone.conventional[0].plugins.is_empty());
         assert!(changed(&c, &gone) && !changed(&c, &c.clone()));
+    }
+
+    /// Plugins know systems by short name; the number events carry is the
+    /// one calls carry. A system that isn't recorded (disabled, or no
+    /// control channel) isn't one of them.
+    #[test]
+    fn plugins_know_systems_by_short_name() {
+        let c: Config = serde_json::from_value(json!({
+            "systems": [
+                { "shortName": "old", "enabled": false, "controlChannels": [851000000], "plugins": { "openmhz": { "apiKey": "old" } } },
+                { "shortName": "draft", "plugins": { "openmhz": { "apiKey": "draft" } } },
+                { "shortName": "dcfd", "controlChannels": [857987500], "plugins": { "openmhz": { "apiKey": "dcfd" } } }
+            ],
+            "conventional": [{ "shortName": "county", "channels": [{ "freqHz": 154430000 }], "plugins": { "openmhz": { "apiKey": "conv" } } }],
+            "plugins": { "openmhz": { "enabled": true } }
+        }))
+        .unwrap();
+        let systems = systems_of(&c);
+        let conv = trunk_core::trunk::conventional_system(0);
+        assert_eq!(systems.iter().map(|s| (s.index, s.short_name.as_str(), s.kind.as_str())).collect::<Vec<_>>(), [(0, "dcfd", "p25"), (conv, "county", "conventional")]);
+        assert_eq!(c.engine_config(0.0).systems[0].short_name, "dcfd", "the engine numbers dcfd 0 too");
+        let specs = Spec::enabled(&c);
+        assert_eq!(specs[0].systems.get("dcfd"), Some(&json!({ "apiKey": "dcfd" })));
+        assert_eq!(specs[0].systems.get("county"), Some(&json!({ "apiKey": "conv" })));
+        assert_eq!(specs[0].systems.len(), 2);
     }
 }

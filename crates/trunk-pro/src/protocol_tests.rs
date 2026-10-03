@@ -62,8 +62,11 @@ fn check_all(direction: &str, msgs: &[Value]) {
 
 fn texts(out: &mut Vec<Output>, into: &mut Vec<Value>) {
     for o in out.drain(..) {
-        if let Output::Text(t) = o {
-            into.push(serde_json::from_str(&t).unwrap());
+        match o {
+            Output::Text(t) => into.push(serde_json::from_str(&t).unwrap()),
+            // Stored, a call is announced as the platform does it (runtime::finish_one).
+            Output::File { entry, .. } => into.push(json!({ "type": "concluded", "entry": entry })),
+            _ => {}
         }
     }
 }
@@ -162,6 +165,7 @@ fn ctx(cfg: Config, dir: &Path) -> Arc<crate::runtime::Ctx> {
         config: Mutex::new(cfg),
         hub: hub.clone(),
         runner: Mutex::new(None),
+        lifecycle: Mutex::new(false),
         phase: Mutex::new(crate::runtime::PhaseInfo { phase: "idle", error: None, ended: false }),
         history: Mutex::new(VecDeque::new()),
         quit: tokio::sync::Notify::new(),

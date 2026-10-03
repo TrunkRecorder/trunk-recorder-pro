@@ -4,7 +4,7 @@ import { addSite, closeGuide, dismissError, openGuide, downloadCall, pluginOn, q
 import { guideWanted, SetupGuide } from "./Onboarding.tsx";
 import { PluginsPage } from "./Plugins.tsx";
 import { BrowserStorage } from "./web/BrowserStorage.tsx";
-import { conventionalSystem, type CallEntry, type CallView, type DmrSiteStatus, type SourceStatus, type SystemStatus, type TalkgroupName } from "./protocol.ts";
+import { type CallEntry, type Config, type CallView, type DmrSiteStatus, type SourceStatus, type SystemStatus, type TalkgroupName } from "./protocol.ts";
 import { Setup } from "./Setup.tsx";
 import { parseTalkgroupCsv } from "./talkgroups.ts";
 import { unitName } from "./units.ts";
@@ -30,21 +30,21 @@ function Tile(props: { label: string; value: React.ReactNode; sub?: React.ReactN
 }
 
 /** One marker per control channel frequency (systems sharing one share a marker). */
-function ccMarks(systems: SystemStatus[]): CcMark[] {
+function ccMarks(c: Config | null, systems: SystemStatus[]): CcMark[] {
   const at = new Map<number, SystemStatus[]>();
   for (const x of systems) if (x.controlChannelHz) at.set(x.controlChannelHz, [...(at.get(x.controlChannelHz) ?? []), x]);
-  return [...at].map(([hz, xs]) => ({ hz, label: systems.length > 1 ? xs.map((x) => x.shortName).join(" · ") : "CC", color: systemColor(xs[0].index) }));
+  return [...at].map(([hz, xs]) => ({ hz, label: systems.length > 1 ? xs.map((x) => x.shortName).join(" · ") : "CC", color: systemColor(c, xs[0].shortName) }));
 }
 
-/** Control channel messages per second of each system, over ≥2 s of its clock. */
-function useMsgRates(systems: SystemStatus[]): Map<number, number> {
-  const marks = useRef(new Map<number, { good: number; t: number; perS: number }>());
-  const out = new Map<number, number>();
+/** Control channel messages per second of each system (by short name), over ≥2 s of its clock. */
+function useMsgRates(systems: SystemStatus[]): Map<string, number> {
+  const marks = useRef(new Map<string, { good: number; t: number; perS: number }>());
+  const out = new Map<string, number>();
   for (const x of systems) {
-    const prev = marks.current.get(x.index);
-    if (!prev || x.nowS < prev.t) marks.current.set(x.index, { good: x.good, t: x.nowS, perS: 0 });
-    else if (x.nowS - prev.t >= 2) marks.current.set(x.index, { good: x.good, t: x.nowS, perS: (x.good - prev.good) / (x.nowS - prev.t) });
-    out.set(x.index, marks.current.get(x.index)!.perS);
+    const prev = marks.current.get(x.shortName);
+    if (!prev || x.nowS < prev.t) marks.current.set(x.shortName, { good: x.good, t: x.nowS, perS: 0 });
+    else if (x.nowS - prev.t >= 2) marks.current.set(x.shortName, { good: x.good, t: x.nowS, perS: (x.good - prev.good) / (x.nowS - prev.t) });
+    out.set(x.shortName, marks.current.get(x.shortName)!.perS);
   }
   return out;
 }
@@ -126,14 +126,14 @@ function StatusTiles({ s }: { s: AppState }) {
         {one && (
           <Tile
             label={one.dmr?.variant === "DMR Capacity Plus" ? "Rest channel" : "Control channel"}
-            tone={ccTone(one, rates.get(one.index))}
+            tone={ccTone(one, rates.get(one.shortName))}
             value={one.controlChannelHz ? <span className="mono">{formatMhz(one.controlChannelHz)}</span> : "—"}
             sub={
               one.mismatch ? (
                 `not this system: ${one.mismatch}`
               ) : (
                 <>
-                  {rates.get(one.index)?.toFixed(1) ?? "…"} msg/s · {pctText(one)} · {one.modulation ?? "detecting"}
+                  {rates.get(one.shortName)?.toFixed(1) ?? "…"} msg/s · {pctText(one)} · {one.modulation ?? "detecting"}
                 </>
               )
             }
@@ -205,9 +205,9 @@ function sitesText(g: SystemStatus[]): string {
 }
 
 /** Every running system (site), sites of one system (same WACN / SysID) together. */
-function SystemsTable(props: { s: AppState; systems: SystemStatus[]; rates: Map<number, number> }) {
+function SystemsTable(props: { s: AppState; systems: SystemStatus[]; rates: Map<string, number> }) {
   const { systems, rates } = props;
-  const key = (x: SystemStatus) => x.siteGroup ?? (x.identity.wacn != null && x.identity.sysId != null ? `${x.identity.wacn}/${x.identity.sysId}` : `solo-${x.index}`);
+  const key = (x: SystemStatus) => x.siteGroup ?? (x.identity.wacn != null && x.identity.sysId != null ? `${x.identity.wacn}/${x.identity.sysId}` : `solo-${x.shortName}`);
   const groups = new Map<string, SystemStatus[]>();
   for (const x of systems) groups.set(key(x), [...(groups.get(key(x)) ?? []), x]);
   return (
@@ -250,12 +250,12 @@ function SystemsTable(props: { s: AppState; systems: SystemStatus[]; rates: Map<
                   </tr>
                 )}
                 {g.map((x) => {
-                  const perS = rates.get(x.index);
+                  const perS = rates.get(x.shortName);
                   const tone = ccTone(x, perS);
                   return (
-                    <tr key={x.index} className={x.mismatch ? "mismatch" : ""}>
+                    <tr key={x.shortName} className={x.mismatch ? "mismatch" : ""}>
                       <td className="sys-name">
-                        <span className="sys-dot" style={{ background: systemColor(x.index) }} />
+                        <span className="sys-dot" style={{ background: systemColor(props.s.config, x.shortName) }} />
                         <b>{x.shortName}</b>
                       </td>
                       <td className={x.dmr ? "small" : "mono"}>
@@ -338,7 +338,7 @@ function Patches(props: { systems: SystemStatus[] }) {
       </header>
       <div className="row">
         {all.map(({ p, from }) => (
-          <span key={`${from.index}/${p.supergroup.talkgroup}`} className="chip">
+          <span key={`${from.shortName}/${p.supergroup.talkgroup}`} className="chip">
             <span className="mono">SG {tgText(p.supergroup)}</span>
             <span>= {p.members.map(tgText).join(" + ")}</span>
             {props.systems.length > 1 && <span className="muted">· {from.shortName}</span>}
@@ -378,7 +378,7 @@ function DmrSites(props: { systems: SystemStatus[] }) {
             <span className="muted">—</span>
           );
         return (
-          <div key={x.index} className="stack">
+          <div key={x.shortName} className="stack">
             <div className="row small">
               {props.systems.length > 1 && <b>{x.shortName}</b>}
               <span>{d.variant ?? "kind not known yet"}</span>
@@ -462,33 +462,31 @@ function reasonText(c: CallView): string {
   }
 }
 
-/** The systems calls can come from: each running system, then conventional channels. */
-function systemChoices(s: AppState): { index: number; name: string }[] {
-  const out = (s.status?.systems ?? []).map((x) => ({ index: x.index, name: x.shortName }));
-  s.config?.conventional.forEach((v, k) => {
-    if (v.enabled && v.channels.some((ch) => ch.enabled)) out.push({ index: conventionalSystem(k), name: v.shortName || "conventional" });
-  });
+/** The systems calls can come from, by short name: each running system, then the conventional ones. */
+function systemChoices(s: AppState): string[] {
+  const out = (s.status?.systems ?? []).map((x) => x.shortName);
+  for (const v of s.config?.conventional ?? []) if (v.enabled && v.channels.some((ch) => ch.enabled)) out.push(v.shortName);
   return out;
 }
 
-/** Pick one system (or all): filter chips. */
-function SystemFilter(props: { choices: { index: number; name: string }[]; value: number | null; onChange: (v: number | null) => void }) {
+/** Pick one system (or all), by short name: filter chips. */
+function SystemFilter(props: { s: AppState; choices: string[]; value: string | null; onChange: (v: string | null) => void }) {
   if (props.choices.length < 2) return null;
   return (
     <div className="filter-row" role="radiogroup" aria-label="System">
       <button className={`btn ghost small${props.value === null ? " on" : ""}`} role="radio" aria-checked={props.value === null} onClick={() => props.onChange(null)}>
         All
       </button>
-      {props.choices.map((x) => (
+      {props.choices.map((name) => (
         <button
-          key={x.index}
-          className={`btn ghost small${props.value === x.index ? " on" : ""}`}
+          key={name}
+          className={`btn ghost small${props.value === name ? " on" : ""}`}
           role="radio"
-          aria-checked={props.value === x.index}
-          onClick={() => props.onChange(x.index)}
+          aria-checked={props.value === name}
+          onClick={() => props.onChange(name)}
         >
-          <span className="sys-dot" style={{ background: systemColor(x.index) }} />
-          {x.name}
+          <span className="sys-dot" style={{ background: systemColor(props.s.config, name) }} />
+          {name}
         </button>
       ))}
     </div>
@@ -499,16 +497,15 @@ function ActiveCalls({ s }: { s: AppState }) {
   const now = s.status?.nowS ?? 0;
   const choices = systemChoices(s);
   const multi = choices.length > 1;
-  const [only, setOnly] = useState<number | null>(null);
-  const pick = (v: number | null) => {
+  const [only, setOnly] = useState<string | null>(null);
+  const pick = (v: string | null) => {
     setOnly(v);
     // Live audio follows the filter.
     if (s.listen) setListen(true, v, null);
   };
   const calls = [...s.calls]
-    .filter((c) => only === null || c.system === only)
+    .filter((c) => only === null || c.systemName === only)
     .sort((a, b) => Number(b.state === "recording") - Number(a.state === "recording") || b.startS - a.startS);
-  const nameOf = (i: number | null) => choices.find((x) => x.index === i)?.name ?? "";
   const playingCall = s.nowPlaying && s.calls.find((c) => c.id === s.nowPlaying?.callId);
   const talkerId = playingCall?.sources.at(-1);
   const talker = playingCall && talkerId !== undefined ? { id: talkerId, alias: aliasOf(s, playingCall.systemName, talkerId) } : null;
@@ -523,15 +520,15 @@ function ActiveCalls({ s }: { s: AppState }) {
           </label>
           {s.listen && (s.listenTalkgroup !== null || s.listenSystem !== null) && (
             <button className="btn ghost" onClick={() => setListen(true, null, null)}>
-              {[s.listenSystem !== null && multi ? nameOf(s.listenSystem) : "", s.listenTalkgroup !== null ? `TG ${s.listenTalkgroup}` : ""].filter(Boolean).join(" ")} only ✕
+              {[s.listenSystem !== null && multi ? s.listenSystem : "", s.listenTalkgroup !== null ? `TG ${s.listenTalkgroup}` : ""].filter(Boolean).join(" ")} only ✕
             </button>
           )}
         </div>
       </header>
-      <SystemFilter choices={choices} value={only} onChange={pick} />
+      <SystemFilter s={s} choices={choices} value={only} onChange={pick} />
       {s.nowPlaying && s.listen && (
         <div className="now-playing">
-          ▶ {multi ? `${nameOf(s.nowPlaying.system)} · ` : ""}TG {s.nowPlaying.talkgroup}
+          ▶ {multi ? `${s.nowPlaying.system} · ` : ""}TG {s.nowPlaying.talkgroup}
           {talker && (
             <>
               {" · "}
@@ -561,7 +558,7 @@ function ActiveCalls({ s }: { s: AppState }) {
                 <tr key={c.id} className={`st-${c.state}${c.emergency ? " emergency" : ""}`}>
                   {multi && (
                     <td className="sys-name">
-                      <span className="sys-dot" style={{ background: systemColor(c.system) }} />
+                      <span className="sys-dot" style={{ background: systemColor(s.config, c.systemName) }} />
                       {c.systemName}
                     </td>
                   )}
@@ -589,7 +586,7 @@ function ActiveCalls({ s }: { s: AppState }) {
                   <td>
                     {c.state === "recording" && (
                       // Heard on several sites: one copy plays, from whichever site has it.
-                      <button className="btn ghost small" onClick={() => setListen(true, c.alsoOn?.length ? null : c.system, c.talkgroup)} title="Listen to this talkgroup only">
+                      <button className="btn ghost small" onClick={() => setListen(true, c.alsoOn?.length ? null : c.systemName, c.talkgroup)} title="Listen to this talkgroup only">
                         Listen
                       </button>
                     )}
@@ -645,11 +642,7 @@ function History({ s }: { s: AppState }) {
     return f || only !== null ? s.history.filter(ok) : s.history;
   }, [s.history, s.units, filter, only, files]);
   const multi = systems.length > 1;
-  // A system's color while it runs (its index), else none.
-  const colorOf = (name: string) => {
-    const i = s.status?.systems.find((x) => x.shortName === name)?.index;
-    return i === undefined ? "var(--line)" : systemColor(i);
-  };
+  const colorOf = (name: string) => systemColor(s.config, name);
 
   return (
     <section className="panel">
@@ -762,12 +755,11 @@ function Sources({ s, entry }: { s: AppState; entry: CallEntry }) {
 
 function Log({ s }: { s: AppState }) {
   const [show, setShow] = useState<"calls" | "all">("calls");
-  const [only, setOnly] = useState<number | null>(null);
+  const [only, setOnly] = useState<string | null>(null);
   const systems = s.status?.systems ?? [];
   const multi = systems.length > 1;
-  const onlyName = systems.find((x) => x.index === only)?.shortName;
   const lines = (show === "all" ? s.log : s.log.filter((l) => /grant|update|control|patch|status|sysid|adjacent|error|alias|plugin|duplicate/.test(l.kind))).filter(
-    (l) => onlyName === undefined || l.system === onlyName,
+    (l) => only === null || l.system === only,
   );
   return (
     <details className="panel log">
@@ -780,7 +772,7 @@ function Log({ s }: { s: AppState }) {
           <input type="checkbox" checked={show === "all"} onChange={(e) => setShow(e.target.checked ? "all" : "calls")} />
           <span>Show unit activity (affiliations, registrations…)</span>
         </label>
-        {multi && <SystemFilter choices={systems.map((x) => ({ index: x.index, name: x.shortName }))} value={only} onChange={setOnly} />}
+        {multi && <SystemFilter s={s} choices={systems.map((x) => x.shortName)} value={only} onChange={setOnly} />}
       </div>
       <pre className="log-lines">
         {lines
@@ -913,9 +905,10 @@ export function App() {
                   <Waterfall
                     radio={sp}
                     label={s.sources[i]?.label}
-                    ccs={ccMarks(s.status?.systems ?? [])}
+                    ccs={ccMarks(s.config, s.status?.systems ?? [])}
                     calls={s.calls}
                     multi={systemChoices(s).length > 1}
+                    colorOf={(name) => systemColor(s.config, name)}
                   />
                 </section>
               ) : null,

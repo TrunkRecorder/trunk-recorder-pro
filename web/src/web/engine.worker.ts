@@ -14,7 +14,7 @@ export type ToWorker =
   | { type: "start" }
   | { type: "stop" }
   | { type: "devices" }
-  | { type: "listen"; on: boolean; system: number | null; talkgroup: number | null }
+  | { type: "listen"; on: boolean; system: string | null; talkgroup: number | null }
   | { type: "surveyStart"; source: number; bands: string[]; findGain: boolean }
   | { type: "surveyListen"; freqHz: number }
   | { type: "surveyRescan" }
@@ -31,7 +31,8 @@ let session: WebSession | null = null;
 let rtls: WebRtl[] = [];
 let timer: ReturnType<typeof setInterval> | null = null;
 let running = false;
-let listen: { on: boolean; system: number | null; talkgroup: number | null } = { on: false, system: null, talkgroup: null };
+/** `system`: a short name. */
+let listen: { on: boolean; system: string | null; talkgroup: number | null } = { on: false, system: null, talkgroup: null };
 let phase: FromRecorder & { type: "state" } = { type: "state", phase: "idle", error: null, ended: false };
 const ready = init();
 
@@ -50,17 +51,20 @@ async function devices() {
 }
 
 /** Hand the session's outputs to the page / storage. */
-function deliver(outs: { t: string; json?: string; system?: number; tg?: number; frame?: Uint8Array; rel?: string; wav?: Uint8Array; entry?: string }[]): void {
+function deliver(outs: { t: string; json?: string; system?: number; shortName?: string; tg?: number; frame?: Uint8Array; rel?: string; wav?: Uint8Array; entry?: string }[]): void {
   for (const o of outs) {
     if (o.t === "text") post(JSON.parse(o.json!) as FromRecorder);
     else if (o.t === "audio") {
-      if (listen.on && (listen.system === null || listen.system === o.system) && (listen.talkgroup === null || listen.talkgroup === o.tg)) {
+      if (listen.on && (listen.system === null || listen.system === o.shortName) && (listen.talkgroup === null || listen.talkgroup === o.tg)) {
         const buf = o.frame!.slice().buffer;
         postMessage({ audio: buf, tg: o.tg! } satisfies FromWorker, { transfer: [buf] });
       }
     } else if (o.t === "file") {
-      void saveCall(o.rel!, o.wav!, o.json!, JSON.parse(o.entry!)).catch((e) =>
-        post({ type: "log", lines: [{ timeS: 0, kind: "error", text: `couldn't store ${o.rel}: ${e instanceof Error ? e.message : String(e)}` }] }),
+      // Announced once it's stored, as the desktop app does.
+      const entry = JSON.parse(o.entry!);
+      void saveCall(o.rel!, o.wav!, o.json!, entry).then(
+        () => post({ type: "concluded", entry }),
+        (e) => post({ type: "log", lines: [{ timeS: 0, kind: "error", text: `couldn't store ${o.rel}: ${e instanceof Error ? e.message : String(e)}` }] }),
       );
     }
   }

@@ -91,6 +91,8 @@ pub async fn serve(ctx: Arc<Ctx>, listener: std::net::TcpListener) -> std::io::R
         }
         let ctx3 = ctx2.clone();
         let _ = tokio::task::spawn_blocking(move || {
+            let mut quitting = ctx3.lifecycle.lock().unwrap();
+            *quitting = true;
             stop_survey(&ctx3);
             if let Some(r) = ctx3.runner.lock().unwrap().take() {
                 r.stop();
@@ -580,8 +582,8 @@ async fn session(ctx: Arc<Ctx>, mut socket: WebSocket) {
                 Ok(out) => {
                     let m = match &*out {
                         Out::Text(s) => Message::Text(s.clone().into()),
-                        Out::Audio { system, tg, frame } => match listen {
-                            Some(l) if l.wants(*system, *tg) => Message::Binary(frame.clone().into()),
+                        Out::Audio { short_name, tg, frame } => match &listen {
+                            Some(l) if l.wants(short_name, *tg) => Message::Binary(frame.clone().into()),
                             _ => continue,
                         },
                     };
@@ -642,15 +644,19 @@ async fn plugins_json(ctx: &Arc<Ctx>) -> Value {
 
 /// Which live audio a connection wants: every call, or one system's
 /// (65535: conventional) and/or one talkgroup's.
-#[derive(Clone, Copy)]
+/// What live audio a connection asked for: one system's (by short name)
+/// and / or one talkgroup's, or everything.
 struct Listen {
-    system: Option<u16>,
+    system: Option<String>,
     talkgroup: Option<u32>,
 }
 
 impl Listen {
-    fn wants(&self, system: u16, tg: u32) -> bool {
-        self.system.is_none_or(|s| s == system) && self.talkgroup.is_none_or(|t| t == tg)
+    fn from_json(v: &Value) -> Listen {
+        Listen { system: v["system"].as_str().map(String::from), talkgroup: v["talkgroup"].as_u64().map(|t| t as u32) }
+    }
+    fn wants(&self, short_name: &str, tg: u32) -> bool {
+        self.system.as_deref().is_none_or(|s| s == short_name) && self.talkgroup.is_none_or(|t| t == tg)
     }
 }
 
@@ -698,6 +704,10 @@ async fn command(ctx: &Arc<Ctx>, v: &Value, listen: &mut Option<Listen>) -> Opti
             let cfg = ctx.config.lock().unwrap().clone();
             let ctx2 = ctx.clone();
             let r = tokio::task::spawn_blocking(move || {
+                let quitting = ctx2.lifecycle.lock().unwrap();
+                if *quitting {
+                    return None;
+                }
                 stop_survey(&ctx2);
                 if let Some(old) = ctx2.runner.lock().unwrap().take() {
                     old.stop();
@@ -722,6 +732,7 @@ async fn command(ctx: &Arc<Ctx>, v: &Value, listen: &mut Option<Listen>) -> Opti
         "stop" => {
             let ctx2 = ctx.clone();
             let _ = tokio::task::spawn_blocking(move || {
+                let _held = ctx2.lifecycle.lock().unwrap();
                 if let Some(r) = ctx2.runner.lock().unwrap().take() {
                     r.stop();
                 }
@@ -745,8 +756,21 @@ async fn command(ctx: &Arc<Ctx>, v: &Value, listen: &mut Option<Listen>) -> Opti
             let req = trunk_app::survey::Request::from_json(v);
             let ctx2 = ctx.clone();
             let r = tokio::task::spawn_blocking(move || {
-                if ctx2.runner.lock().unwrap().is_some() {
-                    return Some("Stop recording first — the scan needs the radio to itself.".to_string());
+                let quitting = ctx2.lifecycle.lock().unwrap();
+                if *quitting {
+                    return None;
+                }
+                {
+                    let mut runner = ctx2.runner.lock().unwrap();
+                    match runner.take() {
+                        // (Its capture files ended: nothing is recording.)
+                        Some(r) if r.finished() => r.stop(),
+                        Some(r) => {
+                            *runner = Some(r);
+                            return Some("Stop recording first — the scan needs the radio to itself.".to_string());
+                        }
+                        None => {}
+                    }
                 }
                 stop_survey(&ctx2);
                 match crate::survey::start(ctx2.clone(), cfg, req) {
@@ -835,8 +859,7 @@ async fn command(ctx: &Arc<Ctx>, v: &Value, listen: &mut Option<Listen>) -> Opti
             }
         }
         "listen" => {
-            *listen = (v["on"].as_bool() == Some(true))
-                .then(|| Listen { system: v["system"].as_u64().map(|s| s as u16), talkgroup: v["talkgroup"].as_u64().map(|t| t as u32) });
+            *listen = (v["on"].as_bool() == Some(true)).then(|| Listen::from_json(v));
             None
         }
         _ => None,
@@ -845,7 +868,8 @@ async fn command(ctx: &Arc<Ctx>, v: &Value, listen: &mut Option<Listen>) -> Opti
 
 #[cfg(test)]
 mod tests {
-    use super::{admit, folder_file, interface_path, percent_decode};
+    use super::{admit, folder_file, interface_path, percent_decode, Listen};
+    use serde_json::json;
     use axum::http::{header, StatusCode, Uri};
     use std::path::Path;
 
@@ -935,5 +959,15 @@ mod tests {
         // A reverse proxy that passes its own Host, its origin listed.
         let proxied = vec!["https://radio.example.com".to_string()];
         assert_eq!(admit(true, Some("radio.example.com"), Some("https://radio.example.com"), &proxied), Ok(false));
+    }
+
+    /// Live audio is asked for by a system's short name.
+    #[test]
+    fn listening_by_short_name() {
+        let l = Listen::from_json(&json!({ "on": true, "system": "dcfd", "talkgroup": null }));
+        assert!(l.wants("dcfd", 101) && !l.wants("wmata", 101));
+        let l = Listen::from_json(&json!({ "on": true, "system": "wmata", "talkgroup": 101 }));
+        assert!(l.wants("wmata", 101) && !l.wants("wmata", 102) && !l.wants("dcfd", 101));
+        assert!(Listen::from_json(&json!({ "system": null, "talkgroup": null })).wants("conv", 7));
     }
 }

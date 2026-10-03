@@ -272,6 +272,10 @@ pub struct System {
     /// `system_config` schema describes them).
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub plugins: BTreeMap<String, serde_json::Value>,
+    /// Keys this version doesn't know (a newer version's, a hand edit's):
+    /// kept, and saved back as they were.
+    #[serde(flatten)]
+    pub other: BTreeMap<String, serde_json::Value>,
 }
 
 fn is_zero(v: &f64) -> bool {
@@ -317,6 +321,7 @@ impl System {
 impl Default for System {
     fn default() -> Self {
         System {
+            other: BTreeMap::new(),
             short_name: "sys1".into(),
             name: String::new(),
             kind: "p25".into(),
@@ -409,8 +414,9 @@ pub struct Conventional {
     pub channel_file: String,
     /// The channels (while a channel file is linked: its contents, not saved here).
     pub channels: Vec<Channel>,
-    /// How the channel file last read, for the interface (not saved).
-    #[serde(skip_deserializing)]
+    /// How the channel file last read, for the interface (not saved: every
+    /// read of the file sets it, and saving clears it).
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub channel_file_status: String,
     /// Plugins' settings for the conventional channels, by plugin id (to
     /// plugins they're one more system).
@@ -422,6 +428,10 @@ pub struct Conventional {
     /// Names for the radios heard on them.
     #[serde(skip_serializing_if = "UnitNames::is_empty")]
     pub unit_names: UnitNames,
+    /// Keys this version doesn't know (a newer version's, a hand edit's):
+    /// kept, and saved back as they were.
+    #[serde(flatten)]
+    pub other: BTreeMap<String, serde_json::Value>,
 }
 
 /// Names for a system's radios: Trunk Recorder's unitTagsFile (headerless
@@ -452,6 +462,7 @@ impl UnitNames {
 impl Default for Conventional {
     fn default() -> Self {
         Conventional {
+            other: BTreeMap::new(),
             short_name: "conv".into(),
             name: String::new(),
             enabled: true,
@@ -632,6 +643,10 @@ pub struct Recording {
     pub vocoder: String,
     /// M4A for the plugins that upload it, encoded once per call.
     pub m4a: M4a,
+    /// Keys this version doesn't know (a newer version's, a hand edit's):
+    /// kept, and saved back as they were.
+    #[serde(flatten)]
+    pub other: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -665,6 +680,7 @@ pub struct PluginSetup {
 impl Default for Recording {
     fn default() -> Self {
         Recording {
+            other: BTreeMap::new(),
             capture_dir: default_capture_dir().display().to_string(),
             preroll_s: 1.0,
             max_recorders: 32,
@@ -790,11 +806,15 @@ pub struct Server {
     /// What / shows: "" the built-in interface, else an interface's name.
     /// The built-in one is at /builtin/ either way.
     pub home: String,
+    /// Keys this version doesn't know (a newer version's, a hand edit's):
+    /// kept, and saved back as they were.
+    #[serde(flatten)]
+    pub other: BTreeMap<String, serde_json::Value>,
 }
 
 impl Default for Server {
     fn default() -> Self {
-        Server { bind: "127.0.0.1".into(), port: 8080, auto_start: false, allowed_origins: vec![], interfaces: vec![], home: String::new() }
+        Server { bind: "127.0.0.1".into(), port: 8080, auto_start: false, allowed_origins: vec![], interfaces: vec![], home: String::new(), other: BTreeMap::new() }
     }
 }
 
@@ -825,6 +845,18 @@ impl Interface {
 /// that 23–28 dB did.
 pub const RTL_DEFAULT_GAIN_DB: f32 = 25.4;
 
+/// A system calls can come from ([`Config::call_systems`]).
+#[derive(Clone, Copy, Debug)]
+pub struct CallSystem<'a> {
+    /// The number its calls carry (`Call::system`).
+    pub index: u16,
+    pub short_name: &'a str,
+    /// "p25", "smartnet", "dmr" or "conventional".
+    pub kind: &'static str,
+    /// Its plugin settings, by plugin id.
+    pub plugins: &'a BTreeMap<String, serde_json::Value>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Config {
@@ -841,6 +873,10 @@ pub struct Config {
     pub plugins: BTreeMap<String, PluginSetup>,
     /// The log: how much, where to, and how lines read.
     pub log: LogSettings,
+    /// Keys this version doesn't know (a newer version's, a hand edit's):
+    /// kept, and saved back as they were.
+    #[serde(flatten)]
+    pub other: BTreeMap<String, serde_json::Value>,
 }
 
 /// The log (desktop app), with Trunk Recorder's options: `logLevel`,
@@ -871,11 +907,16 @@ pub struct LogSettings {
     /// A control channel decoding fewer messages a second than this is
     /// logged as an error; −1 logs the rate always.
     pub control_warn_rate: f64,
+    /// Keys this version doesn't know (a newer version's, a hand edit's):
+    /// kept, and saved back as they were.
+    #[serde(flatten)]
+    pub other: BTreeMap<String, serde_json::Value>,
 }
 
 impl Default for LogSettings {
     fn default() -> Self {
         LogSettings {
+            other: BTreeMap::new(),
             level: crate::log::Level::Info,
             console: true,
             file: false,
@@ -900,6 +941,7 @@ impl LogSettings {
 impl Default for Config {
     fn default() -> Self {
         Config {
+            other: BTreeMap::new(),
             sources: vec![Source::Rtlsdr { serial: String::new(), center_hz: 0.0, rate_hz: 2_400_000.0, gain_db: RTL_DEFAULT_GAIN_DB, agc: false, ppm: 0, auto_tune: false }],
             systems: vec![],
             conventional: vec![],
@@ -925,6 +967,26 @@ pub fn config_dir() -> PathBuf {
         std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(home).join("trunk-pro")
     } else {
         std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|| home().join(".config")).join("trunk-pro")
+    }
+}
+
+/// Write `data` to `path` so that a crash or power cut leaves the old file
+/// or the new one, never part of either: into a temporary file beside it,
+/// flushed to disk, then renamed over it.
+pub fn write_atomic(path: &Path, data: impl AsRef<[u8]>) -> std::io::Result<()> {
+    use std::io::Write;
+    let name = path.file_name().map_or_else(|| "file".into(), |n| n.to_string_lossy().into_owned());
+    let tmp = path.with_file_name(format!(".{name}.tmp"));
+    let written = std::fs::File::create(&tmp).and_then(|mut f| {
+        f.write_all(data.as_ref())?;
+        f.sync_all()
+    });
+    match written.and_then(|_| std::fs::rename(&tmp, path)) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e)
+        }
     }
 }
 
@@ -957,7 +1019,7 @@ impl Config {
                 v.channels.clear();
             }
         }
-        std::fs::write(path, serde_json::to_string_pretty(&c).unwrap_or_default())
+        write_atomic(path, serde_json::to_string_pretty(&c).unwrap_or_default())
     }
 
     /// Conventional system `k`'s linked channel file's location (relative
@@ -1098,6 +1160,23 @@ impl Config {
         centers
     }
 
+    /// A short name is a system's identity — its folder, its band plan and
+    /// talker aliases, its plugin settings — so every system, trunked or
+    /// conventional, on or off, has one of its own.
+    pub fn name_problem(&self) -> Option<String> {
+        let mut names = std::collections::HashSet::new();
+        let all = self.systems.iter().map(|s| s.short_name.as_str()).chain(self.conventional.iter().map(|v| v.short_name.as_str()));
+        for n in all {
+            if n.trim().is_empty() {
+                return Some("Every system needs a short name.".into());
+            }
+            if !names.insert(n) {
+                return Some(format!("Two systems are named \"{n}\" — each needs a short name of its own (it is its folder, and how plugins know it)."));
+            }
+        }
+        None
+    }
+
     /// Why this config can't start, or None.
     pub fn problem(&self) -> Option<String> {
         if self.sources.is_empty() {
@@ -1107,14 +1186,8 @@ impl Config {
         if !trunked && self.enabled_channels().next().is_none() {
             return Some("Add a system with a control channel, or a conventional channel.".into());
         }
-        let mut names = std::collections::HashSet::new();
-        for s in self.active_systems() {
-            if s.short_name.is_empty() {
-                return Some("Every system needs a short name.".into());
-            }
-            if !names.insert(s.short_name.as_str()) {
-                return Some(format!("Two systems are named \"{}\" — each needs its own short name (its folder).", s.short_name));
-            }
+        if let Some(p) = self.name_problem() {
+            return Some(p);
         }
         let centers = self.resolved_centers();
         if let Some(i) = centers.iter().position(|&c| c <= 0.0) {
@@ -1138,15 +1211,6 @@ impl Config {
             }
             if !s.control_channels.iter().any(|&f| inside(f)) {
                 return Some(format!("No control channel of {} falls inside any source's bandwidth — move a center frequency or add a source.", s.short_name));
-            }
-        }
-        let mut conv_names = std::collections::HashSet::new();
-        for v in self.conventional.iter().filter(|v| v.enabled) {
-            if v.short_name.is_empty() {
-                return Some("Every conventional system needs a short name.".into());
-            }
-            if !conv_names.insert(v.short_name.as_str()) {
-                return Some(format!("Two conventional systems are named \"{}\" — each needs its own short name (its folder).", v.short_name));
             }
         }
         if self.conventional.len() > MAX_CONVENTIONAL {
@@ -1186,6 +1250,28 @@ impl Config {
         own.map_or_else(|| self.recording.clone(), |o| self.recording.with(o))
     }
 
+    /// Every system a call can come from, numbered as calls number them
+    /// (`Call::system`): the active trunked systems in the engine's order,
+    /// then each enabled conventional system with channels (65535 − its
+    /// position). The one place that number is worked out for a config —
+    /// plugins, status and the interface all go by it.
+    pub fn call_systems(&self) -> Vec<CallSystem<'_>> {
+        let mut v: Vec<CallSystem> = self
+            .active_systems()
+            .enumerate()
+            .map(|(i, s)| CallSystem {
+                index: i as u16,
+                short_name: &s.short_name,
+                kind: if s.is_smartnet() { "smartnet" } else if s.is_dmr() { "dmr" } else { "p25" },
+                plugins: &s.plugins,
+            })
+            .collect();
+        for (k, c) in self.conventional.iter().enumerate().filter(|(_, c)| c.enabled && !c.channels.is_empty()) {
+            v.push(CallSystem { index: trunk_core::trunk::conventional_system(k), short_name: &c.short_name, kind: "conventional", plugins: &c.plugins });
+        }
+        v
+    }
+
     /// The short name of the system a call's `system` names.
     pub fn short_name_of(&self, system: u16) -> Option<&str> {
         match conventional_index(system) {
@@ -1213,8 +1299,8 @@ impl Config {
             })
             .collect();
         // A conventional system's P25 / DMR channels look up the talkgroup names
-        // of the trunked system with its short name — or of the only one.
-        // With one trunked system, they use its receivers too.
+        // of the only trunked system, when there is just one (its channels'
+        // own names come from the channel list). They use its receivers too.
         let conv_bank = match systems.as_slice() {
             [one] => one.bank,
             _ => BankConfig::default(),
@@ -1224,7 +1310,7 @@ impl Config {
             .iter()
             .map(|v| {
                 let r = self.recording.with(&v.recording);
-                let named = systems.iter().find(|s| s.short_name == v.short_name).or(if systems.len() == 1 { systems.first() } else { None });
+                let named = if systems.len() == 1 { systems.first() } else { None };
                 ConvSystem {
                     short_name: v.short_name.clone(),
                     calls: r.call_config(),
@@ -1339,7 +1425,15 @@ mod tests {
         assert!(c.problem().unwrap().contains("both fire and police"), "{:?}", c.problem());
         c.conventional[1].channels[0].freq_hz = 154_100_000.0;
         c.conventional[1].short_name = "fire".into();
-        assert!(c.problem().unwrap().contains("Two conventional systems"));
+        assert!(c.problem().unwrap().contains("Two systems are named \"fire\""));
+        // A short name is a system's own: not a trunked system's either, nor a switched-off one's.
+        c.conventional[1].short_name = "off".into();
+        assert!(c.problem().unwrap().contains("Two systems are named \"off\""));
+        c.conventional[1].short_name = "police".into();
+        c.systems.push(System { short_name: "police".into(), ..Default::default() });
+        assert!(c.problem().unwrap().contains("Two systems are named \"police\""));
+        c.systems[0].short_name = "county".into();
+        assert_eq!(c.problem(), None);
     }
 
     #[test]
@@ -1489,5 +1583,25 @@ mod tests {
         c.save(&cfg_path).unwrap();
         assert_eq!(Config::load(&cfg_path).unwrap().conventional[0].channels.len(), 2);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Keys this version doesn't know are saved back as they were (the
+    /// interface saves the whole config on every change).
+    #[test]
+    fn unknown_keys_survive_a_save() {
+        let text = r#"{ "systems": [{ "shortName": "a", "controlChannels": [851012500], "futureKey": [1, 2] }],
+                        "conventional": [{ "shortName": "c", "note": "mine" }],
+                        "recording": { "newRule": true }, "server": { "tls": { "cert": "x" } }, "log": { "rotate": 7 },
+                        "multisite": { "window": 3 } }"#;
+        let c: Config = serde_json::from_str(text).unwrap();
+        let back = serde_json::to_value(&c).unwrap();
+        assert_eq!(back["systems"][0]["futureKey"], serde_json::json!([1, 2]));
+        assert_eq!(back["conventional"][0]["note"], "mine");
+        assert_eq!(back["recording"]["newRule"], true);
+        assert_eq!(back["server"]["tls"]["cert"], "x");
+        assert_eq!(back["log"]["rotate"], 7);
+        assert_eq!(back["multisite"]["window"], 3);
+        assert_eq!(serde_json::from_value::<Config>(back.clone()).unwrap(), c);
+        assert!(back["conventional"][0].get("channelFileStatus").is_none(), "an empty status isn't written");
     }
 }

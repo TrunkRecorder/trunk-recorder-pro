@@ -520,12 +520,15 @@ impl Conventional {
 
     /// After a block ran on `source` (whose clock reads `now_s`).
     /// `calls` and `rules`: each conventional system's (a channel's `system` indexes them).
-    pub fn on_block(&mut self, source: usize, chz: &mut Channelizer, now_s: f64, calls: &mut [CallManager], rules: &[CallRules], out: &mut Vec<ConvOut>) {
+    /// `gap`: the block is silence standing in for samples that never came
+    /// ([`super::Engine::push_gap`]): calls open run on, nothing new opens,
+    /// and the noise floor is left as it was.
+    pub fn on_block(&mut self, source: usize, chz: &mut Channelizer, now_s: f64, gap: bool, calls: &mut [CallManager], rules: &[CallRules], out: &mut Vec<ConvOut>) {
         if !self.chans.iter().any(|c| c.source == source) {
             return;
         }
         let fl = &mut self.floors[source];
-        if now_s >= fl.next_s {
+        if now_s >= fl.next_s && !gap {
             chz.noise_profile(&mut fl.scratch);
             if fl.primed {
                 for (s, v) in fl.slices.iter_mut().zip(&fl.scratch) {
@@ -547,7 +550,7 @@ impl Conventional {
             let floor = self.floors[source].slices[ch.slice].max(1e-30);
             let bp = chz.band_power(ch.offset_hz, DETECT_HALF_BW);
             ch.power = if ch.power == 0.0 { bp } else { ch.power + a * (bp - ch.power) };
-            let snr_db = 10.0 * (ch.power / floor).log10();
+            let snr_db = if gap { f64::NEG_INFINITY } else { 10.0 * (ch.power / floor).log10() };
             let base = ch.base_db(dflt);
             let meter_thr = (chz.noise_in_band(floor, ChannelFilter::noise_bandwidth()) * 10f64.powf((base - CLOSE_BELOW_DB).max(3.0) / 10.0)) as f32;
             if ch.open.is_none() {
@@ -1007,6 +1010,12 @@ mod tests {
     }
 
     fn run_systems(fs: f64, secs: f64, txs: &mut [Tx], channels: Vec<ConvChannel>, conv_systems: Vec<crate::trunk::ConvSystem>) -> Run {
+        run_gapped(fs, secs, txs, channels, conv_systems, None)
+    }
+
+    /// [`run_systems`], with `gap` = (air time, seconds): that long of
+    /// samples that never came ([`Engine::push_gap`]) at that point of the air.
+    fn run_gapped(fs: f64, secs: f64, txs: &mut [Tx], channels: Vec<ConvChannel>, conv_systems: Vec<crate::trunk::ConvSystem>, mut gap: Option<(f64, f64)>) -> Run {
         let center = 155_000_000.0;
         let cfg = EngineConfig {
             sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false }],
@@ -1049,6 +1058,10 @@ mod tests {
             }
             e.push_iq(0, &buf[..n]);
             i0 += n;
+            if let Some((_, len)) = gap.filter(|&(at, _)| i0 as f64 / fs >= at) {
+                e.push_gap(0, (len * fs) as u64);
+                gap = None;
+            }
             for ev in e.drain_events() {
                 match ev {
                     Event::Concluded(k) => out.push((k.call, k.audio.len(), k.json)),
@@ -1122,6 +1135,26 @@ mod tests {
         assert!(by_tg(3).is_empty(), "leakage from the neighbour made a call: {:?}", by_tg(3).iter().map(|(c, n, _)| (c.start_s, c.last_audio_s, *n)).collect::<Vec<_>>());
         assert!(by_tg(4).is_empty());
         assert_eq!(starts, 3);
+    }
+
+    /// The radio goes quiet for 5 s in the middle of a transmission: time
+    /// goes on through the gap, so the call ends then (its 1 s timeout), the
+    /// rest of the transmission is a call of its own at the right time, and
+    /// the noise when the radio comes back opens nothing.
+    #[test]
+    fn a_gap_in_the_samples_moves_time_on() {
+        let fs = 2_400_000.0;
+        let c = 155_000_000.0;
+        let mut txs = vec![Tx { offset_hz: 200_000.0, snr_db: 30.0, on: vec![(0.5, 2.0)], ph: 0.0, audio: Vec::new() }];
+        let chans = vec![fm(c + 200_000.0, 1), fm(c + 312_500.0, 2), fm(c - 400_000.0, 3)];
+        let (calls, starts, _) = run_gapped(fs, 4.0, &mut txs, chans, vec![conv_system("conv")], Some((1.2, 5.0)));
+        let got: Vec<(u32, f64, f64)> = calls.iter().map(|(c, n, _)| (c.talkgroup, c.start_s, *n as f64 / 8000.0)).collect();
+        assert_eq!(starts, 2, "calls: {got:?}");
+        assert!(got.iter().all(|&(tg, _, _)| tg == 1), "the gap opened another channel: {got:?}");
+        let (first, second) = (got[0], got[1]);
+        assert!((first.1 - 0.5).abs() < 0.1 && (first.2 - 0.7).abs() < 0.2, "first call: {first:?}");
+        // Air time 1.2 s + 5 s of gap.
+        assert!((second.1 - 6.2).abs() < 0.2 && (second.2 - 0.8).abs() < 0.2, "second call: {second:?}");
     }
 
     #[test]

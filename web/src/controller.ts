@@ -4,6 +4,7 @@
 
 import { useSyncExternalStore } from "react";
 import { LivePlayer } from "./livePlayer.ts";
+import { conventionalIndex } from "./protocol.ts";
 import type {
   HeardCode,
   AudioChunk,
@@ -64,11 +65,12 @@ export interface AppState {
   /** The codes each conventional frequency (Hz, as a string) carried. */
   heard: Record<string, HeardCode[]>;
   listen: boolean;
-  /** Only play this system's calls live (SystemStatus.index, CONVENTIONAL; null = any). */
-  listenSystem: number | null;
+  /** Only play this system's calls live (its short name; null = any). */
+  listenSystem: string | null;
   /** Only play this talkgroup live (null = any). */
   listenTalkgroup: number | null;
-  nowPlaying: { system: number; talkgroup: number; callId: number } | null;
+  /** The call playing live; `system` is its system's short name. */
+  nowPlaying: { system: string; talkgroup: number; callId: number } | null;
   /** The first-run survey, as the recorder last reported it. */
   survey: SurveyState;
   surveyBands: SurveyBand[];
@@ -651,8 +653,18 @@ export function stop(): void {
 
 // ── live audio ───────────────────────────────────────────────────────────────
 
-/** Live audio on/off; optionally only one system's (null = any) and/or one talkgroup's. */
-export function setListen(on: boolean, system: number | null = state.listenSystem, talkgroup: number | null = state.listenTalkgroup): void {
+/**
+ * The short name of the system a call or audio frame names by number (its
+ * number this run: SystemStatus.index, or conventionalSystem(k)); "" if unknown.
+ */
+export function systemNameOf(s: AppState, system: number): string {
+  const k = conventionalIndex(system);
+  if (k !== null) return s.config?.conventional[k]?.shortName ?? "";
+  return s.status?.systems.find((x) => x.index === system)?.shortName ?? "";
+}
+
+/** Live audio on/off; optionally only one system's (its short name; null = any) and/or one talkgroup's. */
+export function setListen(on: boolean, system: string | null = state.listenSystem, talkgroup: number | null = state.listenTalkgroup): void {
   set({ listen: on, listenSystem: system, listenTalkgroup: talkgroup });
   transport.send({ type: "listen", on, system, talkgroup });
   if (on) player.resume();
@@ -666,12 +678,13 @@ let current: { callId: number; lastMs: number } | null = null;
 
 function onAudio(a: AudioChunk): void {
   if (!state.listen) return;
-  if (state.listenSystem !== null && a.system !== state.listenSystem) return;
+  const name = systemNameOf(state, a.system);
+  if (state.listenSystem !== null && name !== state.listenSystem) return;
   if (state.listenTalkgroup !== null && a.talkgroup !== state.listenTalkgroup) return;
   const now = performance.now();
   // Scanner behaviour: stay on the current call until it has been quiet 2 s.
   if (current && current.callId !== a.callId && now - current.lastMs < 2000) return;
   current = { callId: a.callId, lastMs: now };
-  if (state.nowPlaying?.callId !== a.callId) set({ nowPlaying: { system: a.system, talkgroup: a.talkgroup, callId: a.callId } });
+  if (state.nowPlaying?.callId !== a.callId) set({ nowPlaying: { system: name, talkgroup: a.talkgroup, callId: a.callId } });
   player.enqueue(a.samples, 8000);
 }

@@ -4,7 +4,6 @@
 // its system's color).
 
 import { useEffect, useRef } from "react";
-import { systemColor } from "./config.ts";
 import type { CallView, Spectrum } from "./protocol.ts";
 
 /** A control channel marker. */
@@ -34,7 +33,8 @@ function color(t: number): [number, number, number] {
   return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f];
 }
 
-export function Waterfall(props: { radio: Spectrum | undefined; label?: string; ccs: CcMark[]; calls: CallView[]; multi?: boolean }) {
+/** `colorOf`: a system's colour, by short name (for calls' markers). */
+export function Waterfall(props: { radio: Spectrum | undefined; label?: string; ccs: CcMark[]; calls: CallView[]; multi?: boolean; colorOf?: (shortName: string) => string }) {
   const trace = useRef<HTMLCanvasElement>(null);
   const fall = useRef<HTMLCanvasElement>(null);
   const floor = useRef<number | null>(null);
@@ -114,7 +114,7 @@ export function Waterfall(props: { radio: Spectrum | undefined; label?: string; 
             .map((c) => (
               <span key={c.id} className={`mk mk-${c.state}${c.encrypted ? " mk-enc" : ""}`} style={{ left: `${pos(c.freqHz)}%` }} title={`${c.systemName} · TG ${c.talkgroup}`}>
                 <i>
-                  {props.multi && <span className="sys-dot" style={{ background: systemColor(c.system) }} />}
+                  {props.multi && <span className="sys-dot" style={{ background: props.colorOf?.(c.systemName) ?? "var(--line)" }} />}
                   {c.alphaTag || c.patched?.find((t) => t.alphaTag)?.alphaTag || c.talkgroup}
                 </i>
               </span>

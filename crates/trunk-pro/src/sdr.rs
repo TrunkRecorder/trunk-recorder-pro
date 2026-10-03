@@ -18,6 +18,9 @@ pub struct RtlConfig {
     pub ppm: i32,
 }
 
+/// Opening a dongle whose tuner rtlsdr-nusb doesn't drive (only R820T / R828D).
+pub const UNSUPPORTED_TUNER: &str = "its tuner isn't supported natively (only R820T / R828D; not E4000, FC0012, FC0013 or FC2580) — add it as a SoapySDR source with device arguments driver=rtlsdr instead (needs SoapySDR's RTL-SDR module)";
+
 /// Attached dongles, for the browser: [{serial, product, index, busy}].
 /// `busy`: why it can't be opened now (another program has it), or null.
 pub fn devices() -> Vec<serde_json::Value> {
@@ -118,7 +121,14 @@ fn stream_once(source: usize, cfg: &RtlConfig, tx: &SyncSender<SourceMsg>, stop:
     if !cfg.serial.is_empty() {
         b = b.serial(cfg.serial.clone());
     }
-    let mut dev = b.open().wait().map_err(|e| format!("open RTL-SDR {}: {e}", if cfg.serial.is_empty() { "(first)" } else { &cfg.serial }))?;
+    let mut dev = b.open().wait().map_err(|e| {
+        let name = if cfg.serial.is_empty() { "(first)" } else { &cfg.serial };
+        if matches!(e, rtlsdr_nusb::Error::UnsupportedTuner) {
+            format!("open RTL-SDR {name}: {UNSUPPORTED_TUNER}")
+        } else {
+            format!("open RTL-SDR {name}: {e}")
+        }
+    })?;
     let mut rx = dev.rx_stream().map_err(|e| e.to_string())?;
     rx.start().wait().map_err(|e| e.to_string())?;
     let result = loop {

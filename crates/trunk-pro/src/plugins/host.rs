@@ -81,6 +81,7 @@ pub struct Spec {
     pub id: String,
     pub exe: PathBuf,
     pub config: Value,
+    /// Its settings for each system, by short name.
     pub systems: BTreeMap<String, Value>,
     /// Its data folder (None: the usual, in the config folder).
     pub data_dir: Option<PathBuf>,

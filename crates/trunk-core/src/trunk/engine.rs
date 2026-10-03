@@ -309,6 +309,10 @@ pub struct AdjacentSite {
 /// One system's state, for the interface.
 #[derive(Clone, Debug, Default)]
 pub struct SystemStatus {
+    /// The number its calls carry (`Call::system`). Systems without a
+    /// control channel are left out of [`Status::systems`], so this isn't
+    /// always the position there.
+    pub system: u16,
     pub short_name: String,
     /// Its control channel's clock.
     pub now_s: f64,
@@ -374,6 +378,8 @@ struct Source {
     errors: VecDeque<f64>,
     /// The correction new channels get, ppm.
     tune_ppm: f64,
+    /// Being fed silence for samples that never came ([`Engine::push_gap`]).
+    in_gap: bool,
 }
 
 impl Source {
@@ -408,6 +414,40 @@ enum Voice {
     Analog { fm: Nbfm, open: f32, ids: Signalling },
     /// DMR: 4FSK receiver → framer → both slots.
     Dmr { rx: C4fm, voice: Box<DmrVoice>, syms: Vec<Symbol> },
+}
+
+/// Which voice path a call needs.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum VoiceKind {
+    Fdma,
+    Tdma,
+    Analog,
+    Dmr,
+}
+
+impl VoiceKind {
+    fn of(call: &Call) -> VoiceKind {
+        if call.analog {
+            VoiceKind::Analog
+        } else if call.color_code.is_some() {
+            VoiceKind::Dmr
+        } else if call.phase2_tdma {
+            VoiceKind::Tdma
+        } else {
+            VoiceKind::Fdma
+        }
+    }
+}
+
+impl Voice {
+    fn kind(&self) -> VoiceKind {
+        match self {
+            Voice::Fdma { .. } => VoiceKind::Fdma,
+            Voice::Tdma { .. } => VoiceKind::Tdma,
+            Voice::Analog { .. } => VoiceKind::Analog,
+            Voice::Dmr { .. } => VoiceKind::Dmr,
+        }
+    }
 }
 
 struct Channel {
@@ -589,11 +629,20 @@ impl SysHost<'_> {
     fn open_channel(&mut self, call: &Call, src: usize) {
         let r = &mut *self.radio;
         let vocoder = r.vocoder;
-        let slot = if call.phase2_tdma || call.color_code.is_some() { call.tdma_slot as usize & 1 } else { 0 };
+        let kind = VoiceKind::of(call);
+        let slot = if matches!(kind, VoiceKind::Tdma | VoiceKind::Dmr) { call.tdma_slot as usize & 1 } else { 0 };
         let key = (self.system, call.freq_hz);
         if let Some(ch) = r.channels.get_mut(&key) {
-            ch.calls[slot] = Some(call.id);
-            return;
+            if ch.voice.kind() == kind {
+                ch.calls[slot] = Some(call.id);
+                return;
+            }
+            // The frequency carries another kind of call now (P25 Dynamic
+            // Dual Mode: Phase 1 then Phase 2; SmartNet: analog then
+            // digital): a channel of that kind instead. The calls on the old
+            // one are over; they end when their timeout comes.
+            let old = r.channels.remove(&key).unwrap();
+            r.sources[old.source].chz.remove_head(old.head);
         }
         let s = &mut r.sources[src];
         let rate = s.chz.output_rate();
@@ -607,19 +656,18 @@ impl SysHost<'_> {
         let off = call.freq_hz as f64 - s.cfg.center_hz;
         let slice = (((off + s.cfg.rate_hz / 2.0) / s.cfg.rate_hz * 64.0) as usize).min(63);
         let noise = s.chz.noise_in_band(prof[slice].max(1e-30), ChannelFilter::noise_bandwidth());
-        let voice = if call.analog {
-            Voice::Analog { fm: Nbfm::new(rate), open: (noise * 10f64.powf(ANALOG_SQUELCH_DB / 10.0)) as f32, ids: Signalling::default() }
-        } else if call.color_code.is_some() {
-            Voice::Dmr { rx: C4fm::dmr(rate), voice: Box::new(DmrVoice::new(seed)), syms: Vec::new() }
-        } else if call.phase2_tdma {
-            let mut tracker = TdmaTracker::new(seed);
-            tracker.soft = self.bank.soft;
-            // Decision-feedback differential detection: ~1 dB in noise on Phase 2
-            // voice (tool snr); not used on Phase 1, where simulcast didn't like it.
-            let rx = Cqpsk::new(rate, cqpsk::Options { baud: phase2::SYMBOL_RATE, df_beta: 0.5, ..Default::default() });
-            Voice::Tdma { rx, framer: phase2::Framer::default(), tracker, syms: Vec::new(), pkts: Vec::new() }
-        } else {
-            Voice::Fdma { bank: Bank::new(rate, self.bank), tracker: VoiceTracker::new(mbe::lcg(seed), vocoder) }
+        let voice = match kind {
+            VoiceKind::Analog => Voice::Analog { fm: Nbfm::new(rate), open: (noise * 10f64.powf(ANALOG_SQUELCH_DB / 10.0)) as f32, ids: Signalling::default() },
+            VoiceKind::Dmr => Voice::Dmr { rx: C4fm::dmr(rate), voice: Box::new(DmrVoice::new(seed)), syms: Vec::new() },
+            VoiceKind::Tdma => {
+                let mut tracker = TdmaTracker::new(seed);
+                tracker.soft = self.bank.soft;
+                // Decision-feedback differential detection: ~1 dB in noise on Phase 2
+                // voice (tool snr); not used on Phase 1, where simulcast didn't like it.
+                let rx = Cqpsk::new(rate, cqpsk::Options { baud: phase2::SYMBOL_RATE, df_beta: 0.5, ..Default::default() });
+                Voice::Tdma { rx, framer: phase2::Framer::default(), tracker, syms: Vec::new(), pkts: Vec::new() }
+            }
+            VoiceKind::Fdma => Voice::Fdma { bank: Bank::new(rate, self.bank), tracker: VoiceTracker::new(mbe::lcg(seed), vocoder) },
         };
         let mut calls = [None, None];
         calls[slot] = Some(call.id);
@@ -1016,6 +1064,7 @@ impl Trunk {
     fn status(&self, radio: &Radio) -> SystemStatus {
         let (q, c) = self.cc_bank.frames_per_rx().iter().enumerate().fold((0, 0), |(q, c), (i, &n)| if i < 2 { (q + n, c) } else { (q, c + n) });
         SystemStatus {
+            system: self.idx,
             short_name: self.cfg.short_name.clone(),
             now_s: self.now_s,
             control_channel_hz: self.cc_hz,
@@ -1040,12 +1089,11 @@ pub struct Engine {
     radio: Radio,
     trunks: Vec<Trunk>,
     conv: Conventional,
-    /// Conventional channels' ids and talkgroup names (their calls live in `conv`).
     /// Each conventional system's ids and talkgroup names (their calls live in `conv`).
     conv_calls: Vec<CallManager>,
     conv_out: Vec<ConvOut>,
     conv_concluded: u64,
-    /// Conventional channels' radios' talker aliases (unless a trunked system has their short name: then its).
+    /// Each conventional system's radios' talker aliases.
     conv_units: Vec<UnitAliases>,
     /// Copies of one call on several sites.
     multisite: MultiSite,
@@ -1071,15 +1119,17 @@ impl Engine {
         if trunked.is_empty() && cfg.conventional.is_empty() {
             return Err("Add a control channel or a conventional channel.".into());
         }
+        // A short name is a system's identity (its folder, its talker aliases, its plugin settings).
         let mut seen = std::collections::HashSet::new();
-        if let Some(d) = cfg.systems.iter().find(|s| !seen.insert(s.short_name.as_str())) {
-            return Err(format!("Two systems are named \"{}\" — each needs its own short name.", d.short_name));
+        let conv_names = cfg.conv_systems.iter().enumerate().filter(|(k, _)| cfg.conventional.iter().any(|c| c.system == *k)).map(|(_, c)| c.short_name.as_str());
+        if let Some(d) = cfg.systems.iter().map(|s| s.short_name.as_str()).chain(conv_names).find(|n| !seen.insert(*n)) {
+            return Err(format!("Two systems are named \"{d}\" — each needs its own short name."));
         }
         let history = cfg.preroll_s.max(cfg.conv.preroll_s).max(0.1);
         let spans: Vec<(f64, f64)> = cfg.sources.iter().map(|s| (s.center_hz, s.rate_hz)).collect();
         let conv = Conventional::new(&cfg.conventional, &spans, ConvConfig { vocoder: cfg.vocoder, ..cfg.conv }, cfg.bank, USABLE)?;
         let sources: Vec<Source> =
-            cfg.sources.iter().map(|s| Source { cfg: s.clone(), chz: Channelizer::new(s.rate_hz, MIN_CHANNEL_RATE, history), errors: VecDeque::new(), tune_ppm: 0.0 }).collect();
+            cfg.sources.iter().map(|s| Source { cfg: s.clone(), chz: Channelizer::new(s.rate_hz, MIN_CHANNEL_RATE, history), errors: VecDeque::new(), tune_ppm: 0.0, in_gap: false }).collect();
         let rate = sources[0].chz.output_rate();
         let ids = CallIds::default();
         let mut radio = Radio {
@@ -1174,17 +1224,10 @@ impl Engine {
         })
     }
 
-    /// The trunked system conventional system `k` shares talker aliases
-    /// with: the one with its short name.
-    fn conv_units_owner(&self, k: usize) -> Option<usize> {
-        let name = &self.cfg.conv_systems.get(k)?.short_name;
-        self.trunks.iter().position(|t| &t.cfg.short_name == name)
-    }
-
-    /// Where `system`'s (a call's) talker aliases are kept: a trunked system's, or a conventional system's own.
+    /// Where `system`'s (a call's) talker aliases are kept: a trunked system's, or a conventional system's.
     fn units_slot(&self, system: u16) -> Result<usize, usize> {
         match conventional_index(system) {
-            Some(k) => self.conv_units_owner(k).ok_or(k),
+            Some(k) => Err(k),
             None => Ok(system as usize),
         }
     }
@@ -1204,7 +1247,7 @@ impl Engine {
     }
 
     /// The short names that keep a talker alias table: each trunked system's,
-    /// and the conventional channels' when they have their own.
+    /// and each conventional system's that has channels.
     pub fn unit_table_names(&self) -> Vec<String> {
         let mut n: Vec<String> = self
             .trunks
@@ -1212,7 +1255,7 @@ impl Engine {
             .map(|t| t.cfg.short_name.clone())
             .collect();
         for (k, c) in self.cfg.conv_systems.iter().enumerate() {
-            if self.cfg.conventional.iter().any(|ch| ch.system == k) && self.conv_units_owner(k).is_none() {
+            if self.cfg.conventional.iter().any(|ch| ch.system == k) {
                 n.push(c.short_name.clone());
             }
         }
@@ -1349,6 +1392,34 @@ impl Engine {
         }
     }
 
+    /// `n` samples of `source` that never arrived — the driver dropped them,
+    /// or the radio went quiet (unplugged, wedged) — fed as silence. Every
+    /// clock here is a sample count, so this is what keeps a source's clock,
+    /// and with it call times, timeouts and the matching of calls across
+    /// sources, in step with the air. Conventional channels neither learn
+    /// their noise floor from the silence nor open on it.
+    pub fn push_gap(&mut self, source: usize, n: u64) {
+        const CHUNK: u64 = 32768;
+        // Faint noise (about −80 dBFS) rather than zeros: receivers' gain
+        // control and equalisers see a signal of the kind they always idle on.
+        let mut x = 0x9e37_79b9_7f4a_7c15u64 ^ n;
+        let mut rnd = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            (x >> 40) as f32 / (1u64 << 24) as f32 - 0.5
+        };
+        let quiet: Vec<Complex32> = (0..n.min(CHUNK)).map(|_| Complex32::new(rnd(), rnd()) * 2e-4).collect();
+        self.radio.sources[source].in_gap = true;
+        let mut left = n;
+        while left > 0 {
+            let k = left.min(CHUNK) as usize;
+            self.push_iq(source, &quiet[..k]);
+            left -= k as u64;
+        }
+        self.radio.sources[source].in_gap = false;
+    }
+
     /// End of input: release what the receivers still hold and end every call.
     pub fn finish(&mut self) {
         for t in self.trunks.iter_mut() {
@@ -1429,7 +1500,8 @@ impl Engine {
             let t = c.sample_position() as f64 / c.fs();
             let rules = self.call_rules();
             let mut out = std::mem::take(&mut self.conv_out);
-            self.conv.on_block(source, &mut self.radio.sources[source].chz, t, &mut self.conv_calls, &rules, &mut out);
+            let gap = self.radio.sources[source].in_gap;
+            self.conv.on_block(source, &mut self.radio.sources[source].chz, t, gap, &mut self.conv_calls, &rules, &mut out);
             self.emit_conv(out);
         }
         self.apply_pending();
@@ -1690,6 +1762,37 @@ mod tests {
             e.emit_call_events();
         }
         (e.drain_events(), ids)
+    }
+
+    /// A frequency that carried a Phase 1 call is granted for Phase 2 (P25
+    /// Dynamic Dual Mode) before that call has timed out: the new call gets
+    /// a Phase 2 channel, not the Phase 1 one.
+    #[test]
+    fn a_frequency_changing_mode_gets_a_channel_of_the_new_kind() {
+        let cfg = EngineConfig {
+            systems: vec![SystemConfig { short_name: "ddm".into(), control_channels: vec![851.0125e6], ..Default::default() }],
+            sources: vec![SourceConfig { center_hz: 851e6, rate_hz: 2.4e6, auto_tune: false }],
+            ..Default::default()
+        };
+        let mut e = Engine::new(cfg).unwrap();
+        let f = 851_500_000;
+        fn grant(e: &mut Engine, f: u64, t: f64, tg: u32, phase2: bool, slot: u8) {
+            let Engine { trunks, radio, call_events, .. } = e;
+            let mut host = trunks[0].host(radio);
+            let m = Message { kind: MessageType::Grant, time_s: t, talkgroup: tg, freq_hz: f, phase2_tdma: phase2, tdma_slot: slot, ..Default::default() };
+            trunks[0].calls.handle(&[m], &mut host, call_events);
+        }
+        grant(&mut e, f, 0.0, 101, false, 0);
+        assert_eq!(e.radio.channels[&(0, f)].voice.kind(), VoiceKind::Fdma);
+        grant(&mut e, f, 1.0, 202, true, 1);
+        let ch = &e.radio.channels[&(0, f)];
+        assert_eq!(ch.voice.kind(), VoiceKind::Tdma);
+        let tg202 = e.trunks[0].calls.calls.iter().find(|c| c.talkgroup == 202).unwrap().id;
+        assert_eq!(ch.calls, [None, Some(tg202)]);
+        // The same kind again shares it, on its own slot.
+        grant(&mut e, f, 1.5, 303, true, 0);
+        assert_eq!(e.radio.channels.len(), 1);
+        assert!(e.radio.channels[&(0, f)].calls.iter().all(Option::is_some));
     }
 
     fn saved(ev: &[Event]) -> Vec<CallId> {

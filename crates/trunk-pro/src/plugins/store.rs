@@ -118,7 +118,7 @@ impl Catalog {
 }
 
 fn cache_path() -> PathBuf {
-    crate::config::config_dir().join("plugin-registry.json")
+    crate::paths::data_dir().join("plugin-registry.json")
 }
 
 fn parse_index(text: &str) -> Result<Index, String> {
@@ -136,8 +136,8 @@ pub fn catalog() -> Catalog {
         parse_index(&text).map(|i| (text, i))
     }) {
         Ok((text, index)) => {
-            let _ = std::fs::create_dir_all(crate::config::config_dir());
-            let _ = std::fs::write(cache_path(), text);
+            let _ = std::fs::create_dir_all(crate::paths::data_dir());
+            let _ = crate::config::write_atomic(&cache_path(), text);
             return Catalog { index, source: "registry", fetched: Some(now()), problem: None };
         }
         Err(e) => e,

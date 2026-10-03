@@ -117,7 +117,7 @@ new TrunkClient({ server?, secure?, historyLimit? })
   rec.start() / rec.stop()           start / stop recording
   rec.listen()                       live audio of every call
   rec.listen({ talkgroup })          one talkgroup's
-  rec.listen({ system, talkgroup })  one system's talkgroup's
+  rec.listen({ system, talkgroup })  one system's (its short name) talkgroup's
   rec.listen(false)                  none
                                      (kept across reconnects; one filter per connection)
   rec.setConfig((c) => { … })        change a copy of the config; the whole config is sent

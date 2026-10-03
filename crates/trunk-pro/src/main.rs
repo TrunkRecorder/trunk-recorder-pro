@@ -61,6 +61,7 @@
 
 mod dmrtool;
 mod logging;
+mod paths;
 mod snrtool;
 mod plugins;
 mod radio;
@@ -128,7 +129,8 @@ fn die(msg: &str) -> ! {
 }
 
 const USAGE: &str = "\
-Trunk Recorder Pro — record a P25 trunked radio system from RTL-SDRs.
+Trunk Recorder Pro — record P25, SmartNet and DMR trunked systems and
+conventional channels from SDRs.
 
 usage:
   trunk-pro [serve] [--port 8080] [--bind 127.0.0.1] [--config file.json] [--no-open] [--start] [--ui folder]
@@ -247,7 +249,7 @@ fn replay(a: &Args) {
     };
     for s in a.all("source") {
         let f: Vec<&str> = s.split(',').collect();
-        if f.len() != 3 {
+        if !(3..=4).contains(&f.len()) {
             die("--source wants file,center,rate[,cu8|cs16|cf32]");
         }
         files.push(f[0].to_string());
@@ -587,7 +589,8 @@ fn fatal(msg: &str) -> ! {
 fn serve(a: &Args) {
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
-    let config_path = a.get("config").map(std::path::PathBuf::from).unwrap_or_else(|| config::config_dir().join("config.json"));
+    let config_path = paths::config_path(a.get("config"));
+    paths::init(&config_path);
     let mut cfg = config::Config::load(&config_path).unwrap_or_else(|e| fatal(&e));
     let level = a.get("log-level").map(|l| trunk_app::log::Level::parse(l).unwrap_or_else(|| fatal(&format!("--log-level {l}: trace, debug, info, warning, error or fatal"))));
     logging::init(&cfg.log, config_path.parent().unwrap_or(Path::new(".")), level);
@@ -631,6 +634,7 @@ fn serve(a: &Args) {
         config: Mutex::new(cfg),
         hub: hub.clone(),
         runner: Mutex::new(None),
+        lifecycle: Mutex::new(false),
         phase: Mutex::new(runtime::PhaseInfo { phase: "idle", error: None, ended: false }),
         history: Mutex::new(history.into_iter().collect::<VecDeque<_>>()),
         quit: tokio::sync::Notify::new(),

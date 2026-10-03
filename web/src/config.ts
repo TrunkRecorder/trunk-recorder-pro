@@ -121,11 +121,7 @@ export function normalizeConventional(x: Partial<Conventional>): Conventional {
 
 /** A new conventional system (not yet in the config), named uniquely: conv, conv2… */
 export function newConventional(c: Config, patch: Partial<Conventional> = {}): Conventional {
-  const taken = new Set(c.conventional.map((x) => x.shortName));
-  const base = (patch.shortName ?? "conv").replace(/[^\w.-]/g, "") || "conv";
-  let name = base;
-  for (let n = 2; taken.has(name); n++) name = `${base.replace(/\d+$/, "")}${n}`;
-  return normalizeConventional({ ...patch, shortName: name });
+  return normalizeConventional({ ...patch, shortName: uniqueShortName(c, patch.shortName ?? "conv") });
 }
 
 /** The conventional system with this short name. */
@@ -222,15 +218,25 @@ export function activeSystems(c: Config): System[] {
 }
 
 /** A system's color (the dashboard, waterfall and setup agree): by its place among the active systems. */
-export function systemColor(index: number): string {
-  // Conventional systems (65535 and down) are muted.
-  return index < 0 || index > 65535 - 256 ? "var(--muted)" : `var(--sys-${index % 6})`;
+/**
+ * A system's colour, by short name: its place among the trunked systems in
+ * the config, so it's the same in Setup, on the dashboard and on the
+ * waterfall. Conventional systems are muted; a name not in the config, a line.
+ */
+export function systemColor(c: Config | null | undefined, name: string): string {
+  const k = c?.systems.findIndex((x) => x.shortName === name) ?? -1;
+  if (k >= 0) return `var(--sys-${k % 6})`;
+  return c?.conventional.some((x) => x.shortName === name) ? "var(--muted)" : "var(--line)";
 }
 
-/** A short name not used yet: `base`, else base2, base3… */
-export function uniqueShortName(c: Config, base: string, except?: System): string {
+/**
+ * A short name no system uses yet, trunked or conventional: `base`, else
+ * base2, base3… A short name is a system's identity (its folder, how plugins
+ * know it), so no two share one.
+ */
+export function uniqueShortName(c: Config, base: string, except?: System | Conventional): string {
   const clean = base.replace(/[^\w.-]/g, "") || "sys";
-  const taken = new Set(c.systems.filter((x) => x !== except).map((x) => x.shortName));
+  const taken = new Set([...c.systems, ...c.conventional].filter((x) => x !== except).map((x) => x.shortName));
   if (!taken.has(clean)) return clean;
   const stem = clean.replace(/\d+$/, "");
   for (let n = 2; ; n++) if (!taken.has(`${stem}${n}`)) return `${stem}${n}`;
@@ -360,18 +366,25 @@ function rowsProblem(rows: Channel[]): string | null {
   return null;
 }
 
+/** Two systems sharing a short name, or one without (the recorder's Config::name_problem): every system, on or off. */
+export function nameProblem(c: Config): string | null {
+  const names = new Set<string>();
+  for (const x of [...c.systems, ...c.conventional]) {
+    if (!x.shortName.trim()) return "Every system needs a short name.";
+    if (names.has(x.shortName)) return `Two systems are named "${x.shortName}" — each needs a short name of its own (it is its folder, and how plugins know it).`;
+    names.add(x.shortName);
+  }
+  return null;
+}
+
 /** Why the config can't start, or null (the recorder's Config::problem). */
 export function startProblem(c: Config): string | null {
   if (!c.sources.length) return "Add a source: a dongle or a capture file.";
   const systems = activeSystems(c);
   const channels = enabledChannels(c);
   if (!systems.length && !channels.length) return "Add a system with a control channel, or a conventional channel.";
-  const names = new Set<string>();
-  for (const x of systems) {
-    if (!x.shortName) return "Every system needs a short name.";
-    if (names.has(x.shortName)) return `Two systems are named "${x.shortName}" — each needs its own short name (its folder).`;
-    names.add(x.shortName);
-  }
+  const named = nameProblem(c);
+  if (named) return named;
   const centers = resolvedCenters(c);
   const missing = centers.findIndex((x) => !x);
   if (missing >= 0)
@@ -379,12 +392,6 @@ export function startProblem(c: Config): string | null {
   const inside = (f: number) => sourceCovering(c, centers, f) >= 0;
   const lost = systems.find((x) => !x.controlChannels.some(inside));
   if (lost) return `No control channel of ${lost.shortName} falls inside any source's bandwidth — move a center frequency or add a source.`;
-  const convNames = new Set<string>();
-  for (const v of c.conventional.filter((x) => x.enabled)) {
-    if (!v.shortName) return "Every conventional system needs a short name.";
-    if (convNames.has(v.shortName)) return `Two conventional systems are named "${v.shortName}" — each needs its own short name (its folder).`;
-    convNames.add(v.shortName);
-  }
   const owner: [number, string][] = [];
   for (const v of c.conventional.filter((x) => x.enabled))
     for (const ch of v.channels.filter((x) => x.enabled)) {

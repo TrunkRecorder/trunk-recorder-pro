@@ -6,14 +6,26 @@ RTL-SDRs (or, optionally, USRPs and Airspys) at one or more **P25** systems (Pha
 every call it can hear as WAV + Trunk Recorder–compatible JSON. It also records
 **conventional channels** — analog FM, P25 and DMR — alongside a trunked system or
 on their own (see [Conventional channels](#conventional-channels)). It is written
-in Rust, with no GNU Radio or OP25 dependency; a desktop build (macOS, Linux,
-Windows), a browser build and a browser-based interface for both are the goal.
+in Rust, with no GNU Radio or OP25 dependency, and runs as a desktop app
+(macOS, Linux, Windows) or in the browser, with the same browser-based
+interface for both. [Plugins](#plugins) upload calls to OpenMHz, Broadcastify
+and Rdio Scanner, stream them, or run a script of yours.
 
-**Status:** the desktop app works end to end — live RTL-SDR input (one or
-several dongles), decoding, recording, and a browser interface — on macOS,
-with builds for Linux and Windows. The browser version runs the same engine as
-WebAssembly. Phase 2 TDMA voice is decoded too (see [Roadmap](#roadmap)). The previous TypeScript/browser implementation lives in
+**Status:** the desktop app works end to end — live input from one or several
+radios, decoding, recording, and the browser interface. It has been tested
+live on macOS and on Linux (a Raspberry Pi 5), and builds for Windows. The
+browser version runs the same engine as WebAssembly. The previous
+TypeScript/browser implementation lives in
 [`archive/ts-engine`](archive/ts-engine) and serves as a reference.
+
+More documentation:
+- [docs/configuration.md](docs/configuration.md): every setting in the
+  config file.
+- [docs/architecture.md](docs/architecture.md): how it works, from SDR to
+  audio file.
+- [docs/api](docs/api/README.md): building interfaces of your own.
+- [docs/performance.md](docs/performance.md): CPU use against Trunk
+  Recorder.
 
 ## Install
 
@@ -50,23 +62,30 @@ install). `SHA256SUMS` lists their checksums.
   headless as a systemd user service.
 - **Browser**, no install: see [In the browser](#in-the-browser-no-install).
 
-### USRP and Airspy (optional)
+### USRP, Airspy and SoapySDR (optional)
 
-RTL-SDRs work with nothing else installed. USRPs (Ettus / NI, through UHD)
-and Airspy R2 / Mini (through libairspy) use their makers' drivers, which you
-install yourself; Trunk Recorder Pro finds them when it starts — no special
-build — and offers **USRP** and **Airspy** as source types in Setup (which
-says what is missing if a driver isn't found).
+RTL-SDRs work with nothing else installed. Other radios use their makers'
+drivers, which you install yourself:
+
+- USRPs (Ettus / NI), through UHD;
+- Airspy R2 / Mini, through libairspy;
+- anything with a SoapySDR module: HackRF, SDRplay, LimeSDR, older RTL-SDRs…
+
+Trunk Recorder Pro finds the drivers when it starts, with no special build,
+and offers **USRP**, **Airspy** and **SoapySDR** as source types in Setup.
+Setup says what is missing if a driver isn't found.
 
 | | macOS | Debian / Ubuntu / Raspberry Pi OS | Windows |
 |---|---|---|---|
 | USRP | `brew install uhd` | `sudo apt install libuhd-dev uhd-host` | Ettus's UHD installer (adds `uhd.dll` to PATH) |
 | Airspy | `brew install airspy` | `sudo apt install libairspy0` | `airspy.dll` from airspy-tools, next to `trunk-pro.exe` |
+| SoapySDR | `brew install soapysdr` and the device's module (e.g. `soapyhackrf`) | `sudo apt install libsoapysdr0.8` and the device's module (e.g. `soapysdr0.8-module-hackrf`) | PothosSDR |
 
 USRPs also need UHD's FPGA images once: `uhd_images_downloader` (sudo on
 Linux). `trunk-pro devices` shows which drivers were found; `trunk-pro
 devices --usrp` also searches for USRPs. A driver installed somewhere unusual
-can be named with `TRUNK_PRO_UHD=/path/to/libuhd…` / `TRUNK_PRO_AIRSPY=…`.
+can be named with `TRUNK_PRO_UHD=/path/to/libuhd…`, `TRUNK_PRO_AIRSPY=…` or
+`TRUNK_PRO_SOAPY=…`.
 
 Settings: a USRP takes UHD device arguments (blank = the first found,
 `serial=…`, `addr=192.168.10.2`), any sample rate its clock supports (e.g. 8
@@ -74,7 +93,19 @@ MSPS covers ~7 MHz), a gain in dB and an antenna (e.g. `RX2`, `TX/RX`).
 An Airspy runs at 10 or 2.5 MSPS (R2) or 6 or 3 MSPS (Mini), with a
 linearity or sensitivity gain step of 0–21, or its LNA (0–14), mixer and VGA
 (0–15) stages set by hand (the LNA and mixer optionally by its AGC), and an
-optional bias-T. Every radio has an AGC switch and **AutoTune**, which
+optional bias-T. A SoapySDR source takes device arguments
+(`driver=hackrf`, `driver=sdrplay,serial=…`), its gain stages one by one,
+an antenna and device settings (`biastee=true`).
+
+RTL-SDRs are driven natively only with an R820T / R828D tuner (nearly every
+dongle sold today, RTL-SDR Blog V3 / V4 included). Older E4000, FC0012,
+FC0013 and FC2580 dongles work through SoapySDR instead: install its RTL-SDR
+module (`brew install soapyrtlsdr`, `sudo apt install
+soapysdr0.8-module-rtlsdr`) and add a **SoapySDR** source with device
+arguments `driver=rtlsdr` (`driver=rtlsdr,serial=…` to pick one). Desktop app
+only; the browser build can't use them.
+
+Every radio has an AGC switch and **AutoTune**, which
 corrects for the frequency error its control channels show. Wider sources cost more
 CPU: about 5 % of a Raspberry Pi 5 core for one RTL-SDR at 2.4 MSPS; on an
 Apple M4 Pro about 12 % of a core for a USRP at 8 MSPS and 8 % for two RTL-SDRs
@@ -94,6 +125,9 @@ with Trunk Recorder's `filenameFormat` tokens); the interface shows live status,
 waterfall per dongle, active calls (listen live) and recent recordings. The
 config lives in `~/Library/Application Support/trunk-pro/` (macOS),
 `%APPDATA%\trunk-pro\` (Windows) or `~/.config/trunk-pro/` (Linux).
+`--config <file>` uses another one; what the recorder learns and installs
+(band plans, talker aliases, plugins) is kept beside it. Every setting is
+described in [docs/configuration.md](docs/configuration.md).
 
 The log goes to stderr in Trunk Recorder's format (and, as Setup → Recording
 → Log says, to daily files and the system log); `--log-level debug` for
@@ -114,7 +148,9 @@ including runnable examples.
 `trunk-pro devices` lists radios; `trunk-pro capture out.cu8 --freq Hz
 --serial SN --seconds 30` records raw IQ from an RTL-SDR like `rtl_sdr`.
 Capture files can be `cu8` (rtl_sdr), `cs16` or `cf32` (GNU Radio, UHD's
-`rx_samples_to_file`).
+`rx_samples_to_file`). `trunk-pro --help` lists every command, including the
+`tool` diagnostics (`cc`, `voice`, `frames`, `p2`, `snr`, `smartnet`, `dmr`,
+`dmrscan`, `revoice`). SIGHUP reopens the log file (for logrotate).
 
 ### In the browser (no install)
 
@@ -129,8 +165,8 @@ unattended runs.
 
 ### Several systems and sites
 
-One recorder can follow several P25 systems at once — or several **sites** of
-one multi-site system. Each gets a card under **Systems** in Setup, with its
+One recorder can follow several systems at once (P25, SmartNet and DMR, in
+any mix), or several **sites** of one multi-site system. Each gets a card under **Systems** in Setup, with its
 own short name (its recordings folder and band plan), control channels,
 modulation and talkgroup CSV; **Record** switches one off without deleting
 it. The systems share the sources and the recorder pool: each control channel
@@ -153,7 +189,8 @@ gets its talkgroups.
 The dashboard lists every system with its site, control channel, decode rate
 and calls, grouping sites of the same WACN / System ID; active calls, recent
 calls and the log can be filtered by system, and live listening follows the
-filter. Importing a Trunk Recorder config brings in all its P25 systems.
+filter. Importing a Trunk Recorder config brings in all its P25, SmartNet and
+DMR systems, and its conventional ones.
 
 #### Calls heard on several sites
 
@@ -215,7 +252,8 @@ and the call JSON has the slot and `color_code`). Systems that key their
 checksums (Motorola / Hytera restricted access, as Capacity Max often does)
 are recognised, and their blocks are taken on their error correction alone.
 Encrypted calls are marked (the privacy bit or header) and not recorded,
-unless **Record encrypted calls** is on.
+unless the config's `recording.recordEncrypted` is `true` (there is no
+switch for it in the interface yet).
 
 ```json
 { "shortName": "capplus", "type": "dmr", "controlChannels": [463375000, 463750000, 464350000] }
@@ -464,9 +502,51 @@ file. **Import Trunk Recorder config…** brings in each `conventional`,
 with its short name, `channels` or channel file, rules and unit names. Squelch values aren't carried
 over: Trunk Recorder's are absolute levels; here squelch is dB above the noise.
 
+## Plugins
+
+Plugins are programs of their own that the recorder runs while it records
+and tells what happens (calls starting, ending and saved; radio activity;
+live audio; status). They only watch: nothing a plugin does changes what is
+recorded, a plugin that crashes is restarted, and one that falls behind
+misses events rather than slowing the recorder. The published ones, from the
+[plugin registry](https://github.com/TrunkRecorder/plugins):
+
+| Plugin | |
+|---|---|
+| `openmhz` | Uploads calls to OpenMHz |
+| `broadcastify` | Uploads calls to Broadcastify Calls |
+| `rdioscanner` | Uploads calls to an Rdio Scanner server |
+| `simplestream` | Streams calls' audio to other programs over UDP or TCP |
+| `upload-script` | Runs a script of yours on each call, as Trunk Recorder's `uploadScript` |
+
+**Plugins** in the interface installs, updates and removes them (each
+download checked against the registry's SHA-256), turns them on and off, and
+shows settings forms drawn from what each plugin describes: its own settings
+and each system's (e.g. an upload key per system). Changes apply at once,
+even while recording. Calls are encoded to M4A once for every plugin that
+wants it (ffmpeg, macOS's afconvert or fdkaac, whichever is there).
+Importing a Trunk Recorder config carries its OpenMHz, Broadcastify, Rdio
+Scanner, simplestream and `uploadScript` settings over.
+
+From the command line:
+
+```bash
+trunk-pro plugin search                 # what the registry has
+trunk-pro plugin install openmhz        # install (or update) one
+trunk-pro plugin list                   # what's installed, and what each is
+trunk-pro plugin run openmhz ~/TrunkRecorderPro/dcfd   # try one on calls already recorded
+```
+
+Their settings live in the config's `plugins` and each system's `plugins`
+([docs/configuration.md](docs/configuration.md#plugins)). To write one, start
+from the [plugin template](https://github.com/TrunkRecorder/trunk-plugin-template):
+the protocol is JSON lines over stdin / stdout, and the
+[`trunk-recorder-plugin`](crates/trunk-recorder-plugin) crate is a Rust SDK
+for it.
+
 ## Build
 
-Needs Rust 1.82+ and Node 20+ (for the interface).
+Needs Rust 1.88+ and Node 20+ (for the interface).
 
 ```bash
 (cd web && npm ci && npm run build)     # the interface → web/dist, embedded in the binary
@@ -529,18 +609,25 @@ runs, so a grant heard before the next IDEN broadcast can be followed at once
 ## How it works
 
 ```
-source u8 IQ ─► Channelizer (one shared FFT, N channels, 1 s pre-roll history)
-   ├─ control channel ─► receiver bank ─► framer ─► TSDU ─► TSBKs ─► parser ─► CallManager
-   ├─ voice channels  ─► receiver bank ─► framer ─► LDUs  ─► soft FEC ─► IMBE ─► audio
-   └─ conventional    ─► energy in the shared spectrum ─► (open with pre-roll) ─► NBFM or P25 voice
-receiver bank = CQPSK + CQPSK with a T/2 CMA equaliser + C4FM, best of each frame
+radio (RTL-SDR, USRP, Airspy, SoapySDR, capture file) ─► IQ
+  ─► Channelizer: one shared FFT per radio, a "head" per channel, 1 s of pre-roll history
+      ├─ control channels ─► receivers ─► framer ─► TSBK (P25) / OSW (SmartNet) / CSBK (DMR)
+      │                                         ─► Message ─► call manager (grants, timeouts)
+      ├─ voice channels, opened per grant with pre-roll
+      │     ─► receivers ─► framer ─► voice tracker ─► IMBE / AMBE+2 vocoder ─► 8 kHz audio
+      └─ conventional channels: energy in the shared spectrum ─► open with pre-roll ─► FM / P25 / DMR voice
+  ─► call ends ─► best copy across sites ─► WAV + Trunk Recorder JSON ─► M4A, plugins
+P25 receiver bank = CQPSK + CQPSK with a T/2 CMA equaliser + C4FM, best of each frame
 ```
+
+[docs/architecture.md](docs/architecture.md) explains the whole path, the
+threads and how the pieces connect.
 
 | Path | What |
 |---|---|
-| `crates/trunk-core` | Platform-independent core (native and WebAssembly): no I/O, one dependency (`rustfft`) |
+| `crates/trunk-core` | Platform-independent core (native and WebAssembly): no I/O; depends on `rustfft`, `num-complex` and `regex-lite` only |
 | `…/dsp/channelizer.rs` | Overlap-save multi-head channelizer (after CyberEther's `filter_engine`), pre-roll, waterfall spectrum |
-| `…/dsp/cqpsk.rs`, `c4fm.rs` | Streaming receivers with soft bits; optional CMA equaliser |
+| `…/dsp/cqpsk.rs`, `c4fm.rs`, `msd.rs` | Streaming receivers with soft bits; optional CMA equaliser; multi-symbol detector |
 | `…/dsp/fm.rs` | Narrowband FM: channel filter / carrier meter, discriminator, de-emphasis, 8 kHz audio, CTCSS high-pass, squelch gate |
 | `…/dsp/tones.rs`, `signalling.rs` | Analog calls: which CTCSS tone / DCS code they carry; MDC1200 / FleetSync unit IDs |
 | `…/p25/frame.rs` | Framer with flywheel sync and NID recovery |
@@ -548,12 +635,17 @@ receiver bank = CQPSK + CQPSK with a T/2 CMA equaliser + C4FM, best of each fram
 | `…/p25/fec.rs`, `voice.rs` | Golay / Hamming (hard and soft), Reed–Solomon, IMBE framing, LC / ES / HDU / TDULC |
 | `…/p25/diversity.rs` | Receiver diversity: per-frame best of several receivers |
 | `…/p25/phase2.rs` | Phase 2 TDMA: slot framer, scrambler, ISCH / DUID, AMBE codeword FEC, ESS, MAC PDUs |
+| `…/smartnet/` | SmartNet: 3600 baud receiver, OSW framing and decoding, band plans |
+| `…/dmr/` | DMR: burst framing, slots, FEC, link control, CSBKs, trunking (Capacity Plus / Max, Connect Plus, Tier III) |
 | `…/mbe/` | IMBE and AMBE+2 vocoders (mbelib + Trunk Recorder's enhanced synthesis) |
-| `…/trunk/` | TSBK parser (Trunk Recorder's `p25_parser.cc`), call manager (`monitor_systems.cc`), Phase 1 and TDMA voice trackers, conventional channels (energy detection, calls), engine (multi-source) |
-| `crates/trunk-pro` | The app: `serve` (default; source threads, engine thread, web server + WebSocket), `replay`, `capture`, `devices`, `tool` |
+| `…/trunk/` | Control-channel messages (Trunk Recorder's `p25_parser.cc`), call manager (`monitor_systems.cc`), Phase 1, TDMA and DMR voice tracking, conventional channels, multi-site dedupe, the engine (several radios and systems) |
+| `…/survey.rs` | **Find my system**: band scan, control-channel check, band plan and ppm |
+| `crates/trunk-app` | The app layer shared by desktop and browser: config, the conventional channel CSV (`channels.rs`), file names, and a recording `Session` (status, spectrum, log, calls, files) |
+| `crates/trunk-pro` | The desktop app: `serve` (default; radio threads, engine thread, web server + WebSocket), `replay`, `capture`, `devices`, `survey`, `tool`, `plugin` |
 | `…/src/sdr.rs` | RTL-SDR over USB via `rtlsdr-nusb` (pure Rust; no libusb / librtlsdr) |
-| `…/src/radio/` | USRP (UHD's C API) and Airspy (libairspy), loaded at run time when installed |
-| `crates/trunk-app` | The app layer shared by desktop and browser: config, the conventional channel CSV (`channels.rs`), and a recording `Session` (status, spectrum, log, calls, files) |
+| `…/src/radio/` | USRP (UHD's C API), Airspy (libairspy) and SoapySDR, loaded at run time when installed |
+| `…/src/plugins/` | The plugin host, store and command line |
+| `crates/trunk-recorder-plugin` | The plugin protocol, and a Rust SDK for writing plugins (on crates.io) |
 | `crates/trunk-web` | The browser build: `Session` and the RTL-SDR driver (WebUSB) exported to JavaScript with `wasm-bindgen` |
 | `web/` | The browser interface (React + Vite), embedded in the binary; `src/web/` runs the engine in a worker for the browser version |
 | `research/native-bench` | Benchmarks, the C++ prototype, synthetic simulcast ground truth, comparison scripts — see its `RESULTS.md` |
@@ -601,8 +693,8 @@ NAC 0x443, from an R820T RTL-SDR):
 2. ~~Verification against TS, C++ and Trunk Recorder~~ — done
 3. ~~Live input (pure-Rust USB, several dongles), desktop app with embedded
    web server and browser interface, single-binary builds for macOS, Linux
-   (x86-64, ARM), Windows~~ — done (verified live on macOS; Linux and Windows
-   binaries build, hardware testing there pending)
+   (x86-64, ARM), Windows~~ — done (verified live on macOS and on a Raspberry
+   Pi 5; Windows builds, hardware testing there pending)
 4. ~~Web build: the same core as WebAssembly in a Web Worker, WebUSB, OPFS
    storage, the same interface~~ — done (verified on captures; live WebUSB
    needs a hands-on test)
@@ -619,11 +711,23 @@ NAC 0x443, from an R820T RTL-SDR):
    streaming not yet tested on hardware
 8. ~~Conventional channels: analog NBFM and P25, energy-detected from the
    shared spectrum with pre-roll~~ — done (verified on synthetic air; live
-   testing pending). Next: CTCSS / DCS tones and P25 NAC matching, so
-   several users of one frequency can be told apart
+   testing pending), then CTCSS / DCS tones, P25 NAC and DMR colour code
+   matching, so several users of one frequency can be told apart, and
+   conventional DMR
 9. ~~Several systems and sites at once, with site locks~~ — done (verified
    on captures), with duplicate calls across sites saved once (best copy
    kept)
+10. ~~SmartNet~~ — done: 800 / 900 MHz and VHF / UHF (OBT) band plans, analog
+    and digital voice, band plans found by the survey; verified live on a
+    UHF OBT system
+11. ~~Trunked DMR~~ — done: Capacity Plus (and Linked), Capacity Max,
+    Connect Plus, Tier III; channel tables learned from the air
+12. ~~Plugins~~ — done: a plugin protocol and Rust SDK, the registry and
+    store, uploaders for OpenMHz, Broadcastify and Rdio Scanner, streaming,
+    and upload scripts
+13. ~~Trunk Recorder parity~~ — done: call rules per system, file name
+    formats, the log format and options, unit names, Trunk Recorder config
+    import
 
 ## License
 

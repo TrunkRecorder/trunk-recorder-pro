@@ -156,9 +156,13 @@ pub const CONVENTIONAL: u16 = 65535;
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SystemInfo {
-    /// What events call it (conventional systems: [`CONVENTIONAL`] and down).
+    /// The number events carry for it (`system`) while the recorder runs
+    /// (conventional systems: [`CONVENTIONAL`] and down). It can change
+    /// between runs: know systems by `short_name`.
     pub index: u16,
-    /// The system's short name: its folder, and what users know it by.
+    /// The system's short name: its identity (unique among all the
+    /// recorder's systems), its folder, and what users know it by. Every
+    /// event carries it.
     pub short_name: String,
     /// "p25" | "smartnet" | "dmr" | "conventional"
     pub kind: String,
@@ -173,6 +177,7 @@ pub struct SystemInfo {
 pub struct CallInfo {
     /// Unique while the recorder runs (Trunk Recorder's call_num).
     pub id: u32,
+    /// [`SystemInfo::index`]: for this run only; `short_name` is the system's identity.
     pub system: u16,
     pub short_name: String,
     pub talkgroup: u32,
@@ -204,6 +209,7 @@ pub struct ConcludedCall {
     /// The call's key: its files' path relative to the capture folder, without
     /// an extension (`<shortName>/<Y>/<M>/<D>/<tg>-<start>_<freq>`).
     pub path: String,
+    /// [`SystemInfo::index`]: for this run only; the system's identity is `call.short_name`.
     pub system: u16,
     /// Its call JSON, in Trunk Recorder's format (the `.json` file's contents).
     pub call: CallRecord,
@@ -322,6 +328,7 @@ fn flag<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UnitEvent {
+    /// [`SystemInfo::index`]: for this run only; `short_name` is the system's identity.
     pub system: u16,
     pub short_name: String,
     /// "registration" | "deregistration" | "affiliation" | "acknowledge" |

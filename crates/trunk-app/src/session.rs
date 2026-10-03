@@ -19,13 +19,14 @@ pub enum Output {
     /// A JSON message for the interface.
     Text(String),
     /// Live audio frame `[2][u16 system][u32 call id][u32 talkgroup][i16…]`
-    /// for talkgroup `tg` of `system` (an index into `status.systems`, or
-    /// 65535 for a conventional channel).
-    Audio { system: u16, tg: u32, frame: Vec<u8> },
+    /// for talkgroup `tg` of `system` — that system's number for this run
+    /// (`status.systems[].index`, or 65535 and down for conventional
+    /// systems) — whose short name, its identity, is `short_name`.
+    Audio { system: u16, short_name: String, tg: u32, frame: Vec<u8> },
     /// A concluded call to store at `<rel>.wav` / `<rel>.json` (relative to
-    /// the recordings folder); `entry` is its history entry, also sent as a
-    /// `concluded` message. `frames`: the frame capture, for
-    /// `<rel>.frames.jsonl`.
+    /// the recordings folder); `entry` is its history entry, which the
+    /// platform sends as a `concluded` message once the files are stored.
+    /// `frames`: the frame capture, for `<rel>.frames.jsonl`.
     File { rel: String, system: u16, wav: Vec<u8>, json: String, frames: Option<String>, entry: Value },
     /// An event for plugins (only those [`Session::plugin_topics`] asks for).
     Plugin(HostMessage),
@@ -37,6 +38,12 @@ pub enum Output {
 const STATUS_EVERY_S: f64 = 200.0;
 /// The control channel decode rate is checked over this long, s.
 const RATE_EVERY_S: f64 = 10.0;
+/// A running source that sends nothing for this long is fed silence in its
+/// place ([`Engine::push_gap`]), so time goes on: calls on it end, and its
+/// clock stays in step with the others'. ms of wall clock.
+const QUIET_MS: f64 = 1000.0;
+/// The most silence fed for one gap, s: a driver's count of samples lost.
+const MAX_GAP_S: f64 = 10.0;
 
 /// What plugins subscribe to, so nothing else is built.
 #[derive(Clone, Copy, Debug, Default)]
@@ -58,6 +65,10 @@ struct SourceStats {
     last_error: Option<String>,
     rate_measured: f64,
     ended: bool,
+    /// Pushed to since the last poll.
+    fed: bool,
+    /// Wall clock (ms) when it was last fed or filled in.
+    fed_ms: Option<f64>,
 }
 
 pub struct Session {
@@ -128,20 +139,55 @@ impl Session {
         &self.cfg
     }
 
-    /// Raw u8 IQ from `source`; `dropped`: samples the driver knows it lost.
+    /// Raw u8 IQ from `source`; `dropped`: samples the driver knows it lost
+    /// before these (fed as silence, so time keeps up).
     pub fn push(&mut self, source: usize, bytes: &[u8], dropped: u64) {
+        self.gap(source, dropped);
         self.engine.push_u8(source, bytes);
         let s = &mut self.stats[source];
         s.samples += bytes.len() as u64 / 2;
-        s.dropped += dropped;
+        s.fed = true;
     }
 
     /// Float IQ from `source` (USRP, Airspy, float captures).
     pub fn push_iq(&mut self, source: usize, iq: &[Complex32], dropped: u64) {
+        self.gap(source, dropped);
         self.engine.push_iq(source, iq);
         let s = &mut self.stats[source];
         s.samples += iq.len() as u64;
-        s.dropped += dropped;
+        s.fed = true;
+    }
+
+    /// `dropped` samples of `source` lost: counted, and fed as silence.
+    fn gap(&mut self, source: usize, dropped: u64) {
+        if dropped == 0 {
+            return;
+        }
+        self.stats[source].dropped += dropped;
+        let most = (MAX_GAP_S * self.engine.sources()[source].rate_hz) as u64;
+        self.engine.push_gap(source, dropped.min(most));
+    }
+
+    /// Fill in for sources that went quiet while running (unplugged, a
+    /// driver reopening): silence for the time they've sent nothing.
+    fn fill_quiet(&mut self, now_ms: f64) {
+        for i in 0..self.stats.len() {
+            let s = &mut self.stats[i];
+            if std::mem::take(&mut s.fed) || s.fed_ms.is_none() {
+                // (Not before its first samples: a radio still opening isn't a gap.)
+                if s.samples > 0 {
+                    s.fed_ms = Some(now_ms);
+                }
+                continue;
+            }
+            let since = s.fed_ms.unwrap_or(now_ms);
+            if s.ended || now_ms - since < QUIET_MS {
+                continue;
+            }
+            s.fed_ms = Some(now_ms);
+            let n = ((now_ms - since) / 1000.0).min(MAX_GAP_S) * self.engine.sources()[i].rate_hz;
+            self.engine.push_gap(i, n as u64);
+        }
     }
 
     /// Time spent decoding (for the load figure), measured by the caller.
@@ -167,6 +213,7 @@ impl Session {
     /// spectra every 150 ms of wall clock.
     pub fn poll(&mut self, now_ms: f64, out: &mut Vec<Output>) {
         let start = *self.start_ms.get_or_insert(now_ms);
+        self.fill_quiet(now_ms);
         for ev in self.engine.drain_events() {
             self.handle(ev, out);
         }
@@ -288,8 +335,9 @@ impl Session {
     fn log_rates_and_status(&mut self, _out: &mut [Output]) {
         let st = self.engine.status();
         let warn = self.cfg.log.control_warn_rate;
-        self.rate_at.resize(st.systems.len(), (f64::NAN, 0));
-        for (i, y) in st.systems.iter().enumerate() {
+        self.rate_at.resize(self.engine.systems().len(), (f64::NAN, 0));
+        for y in &st.systems {
+            let i = y.system as usize;
             let (t0, n0) = self.rate_at[i];
             if t0.is_nan() || y.now_s < t0 {
                 self.rate_at[i] = (y.now_s, y.good);
@@ -347,16 +395,16 @@ impl Session {
     /// `dt`: seconds since the last one (0: the first).
     fn plugin_status(&mut self, dt: f64) -> trunk_recorder_plugin::Status {
         let st = self.engine.status();
-        self.plugin_good.resize(st.systems.len(), 0);
+        self.plugin_good.resize(self.engine.systems().len(), 0);
         let systems = st
             .systems
             .iter()
-            .enumerate()
-            .map(|(i, y)| {
+            .map(|y| {
+                let i = y.system as usize;
                 let rate = if dt > 0.0 { y.good.saturating_sub(self.plugin_good[i]) as f64 / dt } else { 0.0 };
                 self.plugin_good[i] = y.good;
                 PluginSystemStatus {
-                    index: i as u16,
+                    index: y.system,
                     short_name: y.short_name.clone(),
                     control_channel_hz: y.control_channel_hz,
                     decode_rate: (rate * 10.0).round() / 10.0,
@@ -412,7 +460,7 @@ impl Session {
                 for s in samples {
                     frame.extend_from_slice(&((s.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes());
                 }
-                out.push(Output::Audio { system, tg: talkgroup, frame });
+                out.push(Output::Audio { system, short_name: self.system_name(system).to_string(), tg: talkgroup, frame });
             }
             Event::ConvSkipped { freq_hz, code } => {
                 let ms = self.wall(self.engine.status().now_s) * 1000.0;
@@ -433,8 +481,7 @@ impl Session {
                     filename::render(&format, &record, k.call.system, offset)
                 };
                 let entry = json!({ "path": rel, "record": record });
-                out.push(Output::File { rel, system: k.call.system, wav: trunk_core::wav::encode(&k.audio, 8000), json: k.json, frames: k.frames, entry: entry.clone() });
-                out.push(Output::Text(json!({ "type": "concluded", "entry": entry }).to_string()));
+                out.push(Output::File { rel, system: k.call.system, wav: trunk_core::wav::encode(&k.audio, 8000), json: k.json, frames: k.frames, entry });
                 let f = |key: &str| record[key].as_f64();
                 let body = Body::Concluded { length_s: k.audio.len() as f64 / 8000.0, signal_db: f("signal"), noise_db: f("noise"), snr_db: f("snr"), clean_pct: f("clean_voice_pct") };
                 let r = self.call_record(Level::Info, &k.call, body);
@@ -513,21 +560,19 @@ impl Session {
         let systems: Vec<Value> = st
             .systems
             .iter()
-            .enumerate()
-            .map(|(i, y)| {
+            .map(|y| {
+                let sys = y.system;
                 json!({
-                    "index": i, "shortName": y.short_name, "nowS": y.now_s, "controlChannelHz": y.control_channel_hz,
+                    "index": sys, "shortName": y.short_name, "nowS": y.now_s, "controlChannelHz": y.control_channel_hz,
                     "identity": identity_json(&y.identity),
                     "good": y.good, "bad": y.bad, "modulation": if y.modulation.is_empty() { None } else { Some(y.modulation) },
                     "activeCalls": y.active_calls, "recording": y.recording, "callsConcluded": y.calls_concluded,
-                    "mismatch": y.mismatch,
+                    "mismatch": y.mismatch, "siteGroup": y.site_group,
                     "adjacent": y.adjacent.iter().map(|a| json!({ "sysId": a.sys_id, "rfss": a.rfss, "site": a.site, "freqHz": a.freq_hz })).collect::<Vec<_>>(),
                     "patches": y.patches.iter().map(|(sg, members)| {
-                        let sys = self.engine.systems().iter().position(|x| x.short_name == y.short_name).unwrap_or(usize::MAX) as u16;
                         json!({ "supergroup": self.tg_names(sys, [*sg])[0], "members": self.tg_names(sys, members.iter().copied()) })
                     }).collect::<Vec<_>>(),
                     "dmr": y.dmr.as_ref().map(|d| {
-                        let sys = self.engine.systems().iter().position(|x| x.short_name == y.short_name).unwrap_or(usize::MAX) as u16;
                         json!({
                             "variant": d.variant.map(|v| v.name()),
                             "colorCode": d.color_code,

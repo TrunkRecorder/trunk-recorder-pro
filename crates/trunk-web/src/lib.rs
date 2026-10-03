@@ -61,9 +61,10 @@ fn to_js(out: &mut Vec<Output>) -> Array {
                 set(&obj, "t", "text");
                 set(&obj, "json", t);
             }
-            Output::Audio { system, tg, frame } => {
+            Output::Audio { system, short_name, tg, frame } => {
                 set(&obj, "t", "audio");
                 set(&obj, "system", system);
+                set(&obj, "shortName", short_name);
                 set(&obj, "tg", tg);
                 set(&obj, "frame", Uint8Array::from(frame.as_slice()));
             }
@@ -257,7 +258,10 @@ impl WebRtl {
         if !serial.is_empty() {
             b = b.serial(serial);
         }
-        let dev = b.open().await.map_err(err)?;
+        let dev = b.open().await.map_err(|e| match e {
+            rtlsdr_nusb::Error::UnsupportedTuner => err("this dongle's tuner isn't supported in the browser (only R820T / R828D; not E4000, FC0012, FC0013 or FC2580) — the desktop app can use it as a SoapySDR source with driver=rtlsdr"),
+            e => err(e),
+        })?;
         let mut rx = dev.rx_stream().map_err(err)?;
         rx.start().await.map_err(err)?;
         Ok(WebRtl { inner: Rc::new(RefCell::new(Some(Rtl { dev, rx, stale: 0 }))), closing: Rc::new(Cell::new(false)) })

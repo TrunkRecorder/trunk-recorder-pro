@@ -60,9 +60,13 @@ pub struct Setup<C, S> {
 }
 
 impl<C, S> Setup<C, S> {
+    /// The system an event's `system` names. (Its number is for this run
+    /// only; keep anything you store by [`System::short_name`].)
     pub fn system(&self, index: u16) -> Option<&System<S>> {
         self.systems.iter().find(|s| s.index == index)
     }
+    /// The system with this short name — its identity: every event carries
+    /// it (`short_name`, or a concluded call's `call.short_name`).
     pub fn system_named(&self, short_name: &str) -> Option<&System<S>> {
         self.systems.iter().find(|s| s.short_name == short_name)
     }
@@ -74,7 +78,9 @@ impl<C, S> Setup<C, S> {
 
 #[derive(Clone, Debug)]
 pub struct System<S> {
+    /// The number events carry for it, for this run only.
     pub index: u16,
+    /// Its identity: unique among the recorder's systems, and what users know it by.
     pub short_name: String,
     /// "p25" | "smartnet" | "dmr" | "conventional"
     pub kind: String,

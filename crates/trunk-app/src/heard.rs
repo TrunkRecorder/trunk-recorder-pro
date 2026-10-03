@@ -1,7 +1,7 @@
 //! What codes each conventional frequency has carried — CTCSS tones and DCS
 //! codes, NACs, DMR colour codes / slots / talkgroups — counted across runs,
 //! so a frequency's codes can be found by recording it without any and
-//! looking. Kept as JSON beside the config (`<conventional short name>.heard.json`):
+//! looking. Kept as JSON beside the config (`conventional.heard.json`):
 //!
 //! ```text
 //! { "154325000": [ { "code": "151.4", "calls": 42, "skipped": 0, "lastMs": 1790683195000 },

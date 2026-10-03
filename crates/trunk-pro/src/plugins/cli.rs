@@ -16,6 +16,8 @@ use crate::config::{Config, PluginSetup};
 use crate::{die, Args};
 
 pub fn run(a: &Args) {
+    // Plugins are kept beside the config (`--config`), as the app keeps them.
+    config_path(a);
     match a.positional.first().map(String::as_str) {
         Some("list") => list(a),
         Some("describe") => {
@@ -64,7 +66,9 @@ trunk-pro plugin run <executable | id> [<call.json | folder>…] [options]
 ";
 
 fn config_path(a: &Args) -> PathBuf {
-    a.get("config").map(PathBuf::from).unwrap_or_else(|| crate::config::config_dir().join("config.json"))
+    let path = crate::paths::config_path(a.get("config"));
+    crate::paths::init(&path);
+    path
 }
 
 fn load_config(a: &Args) -> (PathBuf, Config) {

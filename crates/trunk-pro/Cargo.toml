@@ -1,6 +1,6 @@
 [package]
 name = "trunk-pro"
-description = "Trunk Recorder Pro: record a P25 trunked system from SDRs, with a browser interface."
+description = "Trunk Recorder Pro: record P25, SmartNet and DMR trunked systems and conventional channels from SDRs, with a browser interface."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

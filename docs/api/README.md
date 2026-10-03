@@ -222,7 +222,7 @@ whenever `change` fires.
 |---|---|
 | `send(msg)` | send a command (queued while disconnected) |
 | `start()`, `stop()` | start / stop recording |
-| `listen()`, `listen({ talkgroup })`, `listen({ system, talkgroup })`, `listen(false)` | live audio: every call, one talkgroup's, …, none. Kept across reconnects. |
+| `listen()`, `listen({ talkgroup })`, `listen({ system, talkgroup })`, `listen(false)` | live audio: every call, one talkgroup's, one system's (by short name) talkgroup's, none. Kept across reconnects. |
 | `setConfig(edit)` | `edit(copy)` changes a copy of the latest config, and the whole config is sent |
 | `callUrl(entry, "wav" \| "json" \| "m4a")` | a recorded call's file URL |
 | `talkgroups(shortName)` | the system's talkgroup file: `Map` talkgroup → `{ talkgroup, alphaTag, description, tag, group, mode }` |
@@ -350,8 +350,9 @@ or couldn't start) and `ended` (a capture file played to its end).
 sites. Each site recorded from its own control channel is its own system with
 its own `shortName`, which is also the folder its calls are saved in. While
 running, `status.status.systems[i].index` is the number that calls and live
-audio carry as `system`. It is the system's position among the **enabled**
-systems, so match on `shortName` rather than on positions in the config.
+audio carry as `system`. It is the system's position among the systems being
+**recorded** (enabled, with a control channel), so match on `shortName`
+rather than on positions in the config.
 
 **Conventional systems.** `config.conventional[k]` are groups of fixed
 frequencies. Their calls carry `system` = `65535 - k` (`conventionalSystem(k)`
@@ -419,7 +420,7 @@ aren't understood are ignored.
 |---|---|---|
 | `start` | — | Start recording with the saved config. `state` follows; `error` if it can't. |
 | `stop` | — | Stop recording. Calls in progress are saved. |
-| `listen` | `on`, `system` (number or null), `talkgroup` (number or null) | Live audio on this connection: every call (both null), one system's, one talkgroup's, or both. `on: false` stops it. |
+| `listen` | `on`, `system` (a short name, or null), `talkgroup` (number or null) | Live audio on this connection: every call (both null), one system's, one talkgroup's, or both. `on: false` stops it. |
 | `setConfig` | `config` | Replace the whole config: saved, and sent to everyone as `config`. Takes effect at the next `start` (plugin settings at once). |
 | `channelFile` | `index`, `path` | Link conventional system `index`'s channels to a CSV, reload it (same path), or unlink (`""`). |
 | `devices` | — | List RTL-SDR dongles (→ `devices`). |
@@ -448,7 +449,7 @@ messages:
 | Bytes | Type | |
 |---|---|---|
 | 0 | u8 | version: `2` |
-| 1–2 | u16 LE | `system` (as in `CallView.system`) |
+| 1–2 | u16 LE | `system`: the system's number this run (as in `CallView.system`; `status.systems[].index`) — map it to its short name |
 | 3–6 | u32 LE | call id (`CallView.id`) |
 | 7–10 | u32 LE | talkgroup |
 | 11– | i16 LE … | samples: mono, 8000 per second |
