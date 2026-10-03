@@ -2,7 +2,7 @@
 name = "trunk-recorder-plugin"
 description = "Plugins for Trunk Recorder Pro: the wire protocol between the recorder and a plugin process, and an SDK for writing plugins in Rust."
 # The crate's version tracks the plugin API, not the app's.
-version = "0.2.0"
+version = "0.2.1"
 edition.workspace = true
 # Permissive, so a plugin can be licensed however its author likes.
 license = "MIT OR Apache-2.0"

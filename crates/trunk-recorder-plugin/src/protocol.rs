@@ -184,7 +184,7 @@ pub struct CallInfo {
     /// The talkgroup's alpha tag, when known.
     pub talkgroup_tag: String,
     pub freq_hz: u64,
-    /// Phase II TDMA slot.
+    /// The TDMA slot (0 / 1) of a call on a two-slot channel: P25 Phase 2 or DMR.
     pub tdma_slot: Option<u8>,
     pub analog: bool,
     pub encrypted: bool,
@@ -347,7 +347,9 @@ pub struct UnitEvent {
 #[serde(default)]
 pub struct AudioChunk {
     pub call_id: u32,
+    /// [`SystemInfo::index`]: for this run only; `short_name` is the system's identity.
     pub system: u16,
+    pub short_name: String,
     pub talkgroup: u32,
     pub sample_rate: u32,
     pub pcm: String,
@@ -356,7 +358,7 @@ pub struct AudioChunk {
 impl AudioChunk {
     pub fn new(call_id: u32, system: u16, talkgroup: u32, sample_rate: u32, samples: &[i16]) -> Self {
         let bytes: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
-        AudioChunk { call_id, system, talkgroup, sample_rate, pcm: base64::encode(&bytes) }
+        AudioChunk { call_id, system, talkgroup, sample_rate, pcm: base64::encode(&bytes), ..Default::default() }
     }
     /// The samples.
     pub fn samples(&self) -> Vec<i16> {
