@@ -320,18 +320,7 @@ impl Plugins {
 
     /// The `pluginStore` message.
     pub fn store_json(&self, refresh: bool) -> Value {
-        let cat = self.catalog(refresh);
-        let plugins: Vec<Value> = cat
-            .index
-            .plugins
-            .iter()
-            .map(|l| {
-                let mut v = serde_json::to_value(l).unwrap_or_default();
-                v["unavailable"] = json!(l.unavailable());
-                v
-            })
-            .collect();
-        json!({ "type": "pluginStore", "source": cat.source, "fetched": cat.fetched, "problem": cat.problem, "target": store::target(), "plugins": plugins })
+        store_message(&self.catalog(refresh))
     }
 
     /// `installPlugin {id}` or `installPlugin {repository, tag?}`. Says how
@@ -408,4 +397,19 @@ fn level_name(l: Level) -> &'static str {
 
 fn now() -> f64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
+}
+
+/// The `pluginStore` message for a catalog.
+pub(crate) fn store_message(cat: &store::Catalog) -> Value {
+    let plugins: Vec<Value> = cat
+        .index
+        .plugins
+        .iter()
+        .map(|l| {
+            let mut v = serde_json::to_value(l).unwrap_or_default();
+            v["unavailable"] = json!(l.unavailable());
+            v
+        })
+        .collect();
+    json!({ "type": "pluginStore", "source": cat.source, "fetched": cat.fetched, "problem": cat.problem, "target": store::target(), "plugins": plugins })
 }

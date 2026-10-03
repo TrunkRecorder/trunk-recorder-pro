@@ -1,9 +1,11 @@
 //! Trunk Recorder Pro — command line.
 //!
 //! ```text
-//! trunk-pro [serve] [--config file.json] [--port 8080] [--bind 127.0.0.1] [--no-open]
+//! trunk-pro [serve] [--config file.json] [--port 8080] [--bind 127.0.0.1] [--no-open] [--ui folder]
 //!     The app: a browser interface at http://localhost:8080 to set up, start
 //!     and watch the recorder. Calls go to the capture folder in the config.
+//!     --ui: an interface of your own (a folder with an index.html; docs/api)
+//!     at / instead; the built-in one is at /builtin/.
 //!     Already running on that port? Opens the browser there and exits.
 //!     --start (or the config's server.autoStart): start recording right away.
 //!     --log-level trace|debug|info|warning|error|fatal: over the config's
@@ -65,6 +67,8 @@ mod radio;
 mod runtime;
 mod sdr;
 mod server;
+#[cfg(test)]
+mod protocol_tests;
 mod survey;
 mod tool;
 
@@ -127,9 +131,11 @@ const USAGE: &str = "\
 Trunk Recorder Pro — record a P25 trunked radio system from RTL-SDRs.
 
 usage:
-  trunk-pro [serve] [--port 8080] [--bind 127.0.0.1] [--config file.json] [--no-open] [--start]
+  trunk-pro [serve] [--port 8080] [--bind 127.0.0.1] [--config file.json] [--no-open] [--start] [--ui folder]
       Start the recorder and open its web interface (the default). Use
       --bind 0.0.0.0 to reach it from other machines (no authentication!).
+      --ui serves your own interface (a folder with an index.html) at /;
+      the built-in one stays at /builtin/. See /api/docs.
       --start begins recording with the saved settings at once.
       --log-level debug: more in the log (stderr; files and syslog as set up).
   trunk-pro devices [--usrp]
@@ -610,6 +616,15 @@ fn serve(a: &Args) {
         Err(e) => fatal(&format!("web server on {addr}: {e}")),
     };
     let history = runtime::scan_history(Path::new(&cfg.recording.capture_dir), 300);
+    // An interface of the user's own at / (docs/api), for this run.
+    let home_dir = a.get("ui").map(|d| {
+        let d = Path::new(d);
+        let d = std::fs::canonicalize(d).unwrap_or_else(|e| fatal(&format!("--ui {}: {e}", d.display())));
+        if !d.join("index.html").is_file() {
+            fatal(&format!("--ui {}: no index.html there", d.display()));
+        }
+        d
+    });
     let (hub, _) = tokio::sync::broadcast::channel(4096);
     let ctx = Arc::new(runtime::Ctx {
         config_path: config_path.clone(),
@@ -622,6 +637,7 @@ fn serve(a: &Args) {
         survey: Mutex::new(None),
         survey_last: Mutex::new(None),
         plugins: plugins::manage::Plugins::new(hub.clone()),
+        home_dir,
     });
     {
         let c = ctx.config.lock().unwrap();

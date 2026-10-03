@@ -1,0 +1,183 @@
+<!doctype html>
+<!--
+  scanner.html — a complete interface in one file, with no library: what's
+  being recorded now, the calls recorded, start / stop, and live audio. It
+  speaks the protocol directly (README.md), so it's the one to read to see
+  how the API works; the other examples use client.js.
+
+  Run it from the recorder: http://localhost:8080/api/examples/scanner.html,
+  or put it in an interface folder (README.md, "Serving your interface").
+  It also works opened as a file, with ?server=host:port, once the
+  recorder's config allows the origin "null" (server.allowedOrigins).
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scanner</title>
+<style>
+  body { font: 14px system-ui, sans-serif; margin: 0 auto; max-width: 900px; padding: 16px; color: #222; background: #fafafa; }
+  header { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  h1 { font-size: 20px; margin: 0; flex: 1; }
+  h2 { font-size: 15px; margin: 20px 0 6px; }
+  table { border-collapse: collapse; width: 100%; background: #fff; }
+  td, th { text-align: left; padding: 4px 8px; border-bottom: 1px solid #eee; }
+  .muted { color: #888; }
+  .on { color: #070; font-weight: 600; }
+  .bad { color: #b00; }
+  button { font: inherit; padding: 4px 10px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Scanner</h1>
+  <span id="conn" class="muted">connecting…</span>
+  <span id="phase"></span>
+  <button id="startStop" disabled>Start</button>
+  <label><input type="checkbox" id="live"> Live audio</label>
+</header>
+<p id="error" class="bad"></p>
+
+<h2>Systems</h2>
+<table><thead><tr><th>System</th><th>Control channel</th><th>Decode</th><th>Calls</th></tr></thead><tbody id="systems"></tbody></table>
+
+<h2>On the air</h2>
+<table><thead><tr><th>Talkgroup</th><th>System</th><th>Frequency</th><th>Radio</th><th></th></tr></thead><tbody id="active"></tbody></table>
+
+<h2>Recorded</h2>
+<table><thead><tr><th>Time</th><th>Talkgroup</th><th>System</th><th>Length</th><th></th></tr></thead><tbody id="recorded"></tbody></table>
+
+<script>
+const params = new URLSearchParams(location.search);
+const server = params.get("server") ?? (location.protocol.startsWith("http") ? location.host : "localhost:8080");
+const http = `${location.protocol === "https:" ? "https" : "http"}://${server}`;
+const wsUrl = `${location.protocol === "https:" ? "wss" : "ws"}://${server}/api/ws`;
+
+let ws = null;
+let phase = "idle";
+let history = []; // CallEntry[], newest first
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+const mhz = (hz) => (hz ? (hz / 1e6).toFixed(4) + " MHz" : "—");
+
+function connect() {
+  ws = new WebSocket(wsUrl);
+  ws.binaryType = "arraybuffer";
+  ws.onopen = () => ($("conn").textContent = "connected");
+  ws.onclose = () => {
+    $("conn").textContent = "disconnected — retrying";
+    $("startStop").disabled = true;
+    setTimeout(connect, 2000);
+  };
+  ws.onmessage = (ev) => (typeof ev.data === "string" ? onMessage(JSON.parse(ev.data)) : onAudio(ev.data));
+}
+const send = (msg) => ws?.readyState === WebSocket.OPEN && ws.send(JSON.stringify(msg));
+
+function onMessage(m) {
+  switch (m.type) {
+    case "hello":
+      $("conn").textContent = `connected · Trunk Recorder Pro ${m.version}`;
+      history = m.history;
+      setPhase(m.phase);
+      renderRecorded();
+      // Listening is per connection: ask again after every (re)connect.
+      if ($("live").checked) send({ type: "listen", on: true, system: null, talkgroup: null });
+      break;
+    case "state":
+      setPhase(m);
+      break;
+    case "status":
+      renderSystems(m.status.systems);
+      renderActive(m.calls);
+      break;
+    case "concluded":
+      history = [m.entry, ...history].slice(0, 200);
+      renderRecorded();
+      break;
+    case "error":
+      $("error").textContent = m.message;
+      break;
+  }
+}
+
+function setPhase(p) {
+  phase = p.phase;
+  $("phase").textContent = p.phase;
+  $("phase").className = p.phase === "running" ? "on" : "muted";
+  $("error").textContent = p.error ?? "";
+  $("startStop").textContent = p.phase === "idle" ? "Start" : "Stop";
+  $("startStop").disabled = p.phase === "starting" || p.phase === "stopping";
+  if (p.phase !== "running") renderActive([]);
+}
+$("startStop").onclick = () => send({ type: phase === "idle" ? "start" : "stop" });
+
+function renderSystems(systems) {
+  $("systems").innerHTML = systems
+    .map((s) => {
+      const total = s.good + s.bad;
+      const decode = total ? `${Math.round((100 * s.good) / total)} %` : "—";
+      return `<tr><td>${esc(s.shortName)}</td><td>${mhz(s.controlChannelHz)}</td><td>${decode}</td><td>${s.callsConcluded}</td></tr>`;
+    })
+    .join("");
+}
+
+function renderActive(calls) {
+  $("active").innerHTML = calls
+    .map((c) => {
+      const what = c.state === "recording" ? '<span class="on">recording</span>' : `<span class="muted">${esc(c.reason ?? "")}</span>`;
+      const tg = c.alphaTag ? `${esc(c.alphaTag)} <span class="muted">${c.talkgroup}</span>` : c.talkgroup;
+      return `<tr><td>${tg}${c.emergency ? ' <b class="bad">EMERGENCY</b>' : ""}</td><td>${esc(c.systemName)}</td><td>${mhz(c.freqHz)}</td><td>${c.sources.at(-1) ?? ""}</td><td>${what}</td></tr>`;
+    })
+    .join("");
+}
+
+function renderRecorded() {
+  $("recorded").innerHTML = history
+    .map((e, i) => {
+      const r = e.record;
+      const time = new Date(r.start_time * 1000).toLocaleTimeString();
+      const tg = r.talkgroup_tag ? `${esc(r.talkgroup_tag)} <span class="muted">${r.talkgroup}</span>` : r.talkgroup;
+      return `<tr><td>${time}</td><td>${tg}</td><td>${esc(r.short_name ?? "")}</td><td>${r.call_length} s</td><td><button data-i="${i}">▶</button></td></tr>`;
+    })
+    .join("");
+}
+// A recorded call's audio: /calls/<path>.wav (its details: /calls/<path>.json).
+$("recorded").onclick = (ev) => {
+  const i = ev.target.dataset?.i;
+  if (i === undefined) return;
+  const path = history[i].path.split("/").map(encodeURIComponent).join("/");
+  new Audio(`${http}/calls/${path}.wav`).play();
+};
+
+// ── live audio ──────────────────────────────────────────────────────────────
+// Binary frames: [u8 2][u16 system][u32 call id][u32 talkgroup][i16 samples…],
+// little-endian, 8000 samples/s. Played back to back, a little behind real time.
+let audio = null;
+let playAt = 0;
+$("live").onchange = () => {
+  const on = $("live").checked;
+  if (on && !audio) audio = new AudioContext();
+  if (on) audio.resume();
+  send({ type: "listen", on, system: null, talkgroup: null });
+};
+function onAudio(buf) {
+  if (!audio || !$("live").checked) return;
+  const v = new DataView(buf);
+  if (v.getUint8(0) !== 2) return;
+  const n = (buf.byteLength - 11) >> 1;
+  const b = audio.createBuffer(1, n, 8000);
+  const ch = b.getChannelData(0);
+  for (let i = 0; i < n; i++) ch[i] = v.getInt16(11 + 2 * i, true) / 32768;
+  const src = audio.createBufferSource();
+  src.buffer = b;
+  src.connect(audio.destination);
+  // Audio comes in bursts: queue each chunk after the last; after a gap, start again a little ahead.
+  if (playAt < audio.currentTime) playAt = audio.currentTime + 0.2;
+  src.start(playAt);
+  playAt += b.duration;
+}
+
+connect();
+</script>
+</body>
+</html>

@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "wasm": "cargo build -p trunk-web --target wasm32-unknown-unknown --profile dist && wasm-bindgen --target web --out-dir src/web/pkg --out-name trunk_web ../target/wasm32-unknown-unknown/dist/trunk_web.wasm",
     "dev:web": "vite --mode web",
-    "build:web": "tsc --noEmit && vite build --mode web"
+    "build:web": "tsc --noEmit && vite build --mode web",
+    "schema": "node scripts/schema.mjs"
   },
   "dependencies": {
     "react": "^18.3.1",
@@ -21,6 +22,7 @@
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",
+    "ts-json-schema-generator": "^2.9.0",
     "typescript": "^5.6.3",
     "vite": "^5.4.11"
   }

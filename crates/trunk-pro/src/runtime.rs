@@ -66,6 +66,8 @@ pub struct Ctx {
     /// Its latest snapshot, for browsers that connect meanwhile.
     pub survey_last: Mutex<Option<Value>>,
     pub plugins: plugins::manage::Plugins,
+    /// `--ui <folder>`: the interface / shows, over `server.home`.
+    pub home_dir: Option<PathBuf>,
 }
 
 impl Ctx {

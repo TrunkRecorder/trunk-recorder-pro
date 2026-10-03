@@ -1,0 +1,259 @@
+# Trunk Recorder Pro — building an interface (guide for an LLM)
+
+You are building an interface for Trunk Recorder Pro, a program that records
+public-safety radio (P25, SmartNet and DMR trunked systems, and conventional
+FM / P25 / DMR channels) from software-defined radios. It runs a web server
+(default http://localhost:8080). Everything its built-in interface does goes
+through the API below, so you can build anything a user asks for: a
+listening page, a wall display, a dashboard, a phone view, a program that
+logs or forwards calls.
+
+Read this whole file before writing code. The exact shape of every message
+is in protocol.ts (GET /api/protocol.ts); when this guide and protocol.ts
+disagree, protocol.ts is right. The human guide is README.md
+(GET /api/docs).
+
+
+## What to deliver
+
+Unless the user asks otherwise, deliver an interface the recorder serves:
+
+- A folder with an index.html, plus any other files it needs: plain HTML,
+  CSS and JavaScript (ES modules). No build step, no frameworks, no CDN
+  libraries unless the user asks for them.
+- Import the client library from the recorder:
+    import { TrunkClient, LivePlayer, escapeHtml } from "/api/client.js";
+- Refer to your own files with relative paths ("./app.js", "style.css"). The
+  folder is served at /ui/<name>/, or at / when it's the home interface.
+- Refer to the recorder with absolute paths: /api/…, /calls/….
+- Tell the user how to run it, in one of two ways:
+    trunk-pro --ui /path/to/folder
+      Shows it at http://localhost:8080/ for this run. The built-in
+      interface stays at /builtin/.
+    Setup → Recording → Interfaces → Add, then open /ui/<name>/.
+      Or in the config: "server": {"interfaces": [{"name": "…", "path": "…"}],
+      "home": "<name>"}.
+  The recorder serves the files as they are on disk: edit, then reload.
+- Make it work at phone width as well as on a desktop.
+
+For a program rather than a page (logging, forwarding, alerts), write a
+Node 22+ .mjs that imports a local copy of client.js. Node has WebSocket
+built in. Programs need no access settings.
+
+A page served from somewhere else (another machine, a dev server) needs its
+origin in the recorder's config: "server": {"allowedOrigins":
+["http://host:port"]}. It must import client.js by full URL, and pass
+`new TrunkClient({ server: "host:port" })`. Prefer serving from the recorder.
+
+
+## Template
+
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>…</title>
+<style>/* … */</style>
+</head>
+<body>
+<header><span id="conn">Connecting…</span> <button id="audio">Listen live</button></header>
+<main id="main"></main>
+<script type="module">
+import { TrunkClient, LivePlayer, escapeHtml as esc, duration } from "/api/client.js";
+
+const rec = new TrunkClient();
+const player = new LivePlayer();
+let listening = false;
+
+document.getElementById("audio").onclick = async () => {
+  listening = !listening;
+  if (listening) { await player.resume(); rec.listen(); }   // audio needs a click first
+  else { rec.listen(false); player.stop(); }
+  draw();
+};
+rec.on("audio", (chunk) => player.play(chunk));
+rec.on("change", draw);
+
+function draw() {
+  document.getElementById("conn").textContent = rec.connected ? `Recorder ${rec.phase.phase}` : "Reconnecting…";
+  document.getElementById("audio").textContent = listening ? "Stop listening" : "Listen live";
+  const now = rec.status?.nowS ?? 0;
+  document.getElementById("main").innerHTML = rec.calls
+    .map((c) => `<div>${esc(c.alphaTag || c.talkgroup)} · ${esc(c.systemName)} · ${duration(now - c.startS)}</div>`)
+    .join("") || "Quiet";
+}
+draw();
+</script>
+</body>
+</html>
+
+
+## client.js (all of it)
+
+new TrunkClient({ server?, secure?, historyLimit? })
+  server defaults to the page's host; in Node, localhost:8080.
+  It connects, reconnects by itself, and keeps this state (read only):
+  connected   true while connected
+  version     the recorder's version
+  config      the whole config (Config)
+  phase       { phase: "idle" | "starting" | "running" | "stopping", error: string|null, ended: boolean }
+  status      EngineStatus while running, else null: { nowS, activeCalls, recording, callsConcluded, systems: SystemStatus[] }
+  sources     SourceStatus[]: each radio (centerHz, rateHz, dropped, errors, errorPpm…)
+  calls       CallView[]: the calls on the air now; [] when not running
+  history     CallEntry[]: recorded calls, newest first (the last 300 at
+              connect, plus each one recorded since; up to historyLimit)
+  log         LogLine[]: the latest 500 log lines { timeS, kind, text, system? }
+  error       the text of the latest error message, or null
+  exited      true after the recorder said it was exiting; it keeps
+              reconnecting (every 5 s), and this clears when it's back
+ Events: rec.on(type, fn) returns a function that removes the handler.
+  "change"      fn(rec): after every message. Redraw here.
+  "<type>"      fn(message) for one message type, e.g. "concluded", "status", "state".
+  "message"     fn(message): every message.
+  "audio"       fn({ system, callId, talkgroup, samples: Float32Array /* 8000/s */ })
+  "connection"  fn(true | false)
+ Methods:
+  rec.start() / rec.stop()           start / stop recording
+  rec.listen()                       live audio of every call
+  rec.listen({ talkgroup })          one talkgroup's
+  rec.listen({ system, talkgroup })  one system's talkgroup's
+  rec.listen(false)                  none
+                                     (kept across reconnects; one filter per connection)
+  rec.setConfig((c) => { … })        change a copy of the config; the whole config is sent
+  rec.callUrl(entry, "wav" | "json" | "m4a")   a recorded call's file URL
+  rec.talkgroups(shortName)          Map talkgroup → { talkgroup, alphaTag, description, tag, group, mode }
+  rec.unitName(shortName, unit)      a radio's name, or ""
+  rec.send(message)                  any command (see Commands)
+  rec.close()
+new LivePlayer({ followCall = true, quietS = 1.5, gain = 2, onNowPlaying })
+  await player.resume()   Call it in a click or key handler; browsers block audio otherwise.
+  player.play(chunk)      Pass the "audio" chunks. followCall plays one call at
+                          a time and skips calls that overlap it.
+  player.nowPlaying       { callId, system, talkgroup } or null
+  player.stop()
+Helpers: escapeHtml(s), duration(seconds) → "1:05", mhz(hz) → "155.2000 MHz",
+  parseTalkgroups(csv), decodeAudioFrame(arrayBuffer), CONVENTIONAL (65535),
+  conventionalIndex(system).
+
+
+## The data
+
+CallView: a call on the air (rec.calls, from the "status" message)
+  id, system (number), systemName (short name), talkgroup, alphaTag ("" if
+  not in the talkgroup file), freqHz, slot, analog, tone, encrypted,
+  emergency, startS (engine seconds), sources (unit numbers that talked,
+  in order), state ("recording" | "monitoring"), reason (why it's only
+  monitored: "ignored" | "unknown_tg" | "encrypted" | "no_source" |
+  "no_recorder" | null), patched?, alsoOn?
+  How long it's been going: rec.status.nowS - call.startS.
+
+CallEntry: a recorded call (rec.history, the "concluded" message)
+  { path, record }. path has no extension; the files are
+  /calls/<path>.wav and .json (rec.callUrl(entry)).
+  record is Trunk Recorder's call JSON (snake_case):
+    talkgroup, talkgroup_tag, talkgroup_description, talkgroup_group,
+    short_name (the system), start_time / stop_time (Unix seconds),
+    start_time_ms, call_length (seconds of audio), freq (Hz),
+    emergency (1/0), encrypted (1/0), audio_type ("analog" | "digital" |
+    "digital tdma"), srcList [{ src (unit), tag (its name or ""), tag_ota,
+    time (Unix s), pos (s into the audio), emergency }], signal / noise
+    (dBFS) / snr (dB) (or null), tone_detected, patched_talkgroups?
+
+SystemStatus: one trunked system or site (rec.status.systems)
+  index (the `system` its calls carry), shortName, controlChannelHz,
+  identity { nac, wacn, sysId, rfss, site }, good / bad (control messages
+  decoded / failed: decode rate = good / (good + bad)), activeCalls,
+  recording, callsConcluded, mismatch, adjacent, patches?, dmr?, siteGroup?
+
+Systems and numbering
+  config.systems[]: trunked systems ({ shortName, name?, type: "p25" |
+    "smartnet" | "dmr", enabled, talkgroupsCsv, … }).
+  config.conventional[k]: conventional systems. Their calls carry
+    system = 65535 - k.
+  Calls and audio carry `system` as a number. Match systems by short name
+  (CallView.systemName, record.short_name, SystemStatus.shortName), not by
+  position. Talkgroup numbers can repeat across systems: key talkgroups by
+  (short name, talkgroup).
+
+Times
+  Engine seconds (nowS, startS, LogLine.timeS) count from when recording
+  started. Call records use Unix seconds / ms. Frequencies are Hz
+  everywhere.
+
+
+## Messages and commands (only if you don't use client.js)
+
+Connect to ws://<host>/api/ws. Text messages are JSON with a "type".
+Binary messages are live audio:
+  [u8 2][u16 system][u32 callId][u32 talkgroup][i16 samples…], little-endian, 8000/s.
+From the recorder:
+  hello        first; carries everything: version, config, phase, history (≤ 300), units, …
+  plugins      second
+  state        { phase, error, ended }: recording started / stopped
+  status       ~2/s while running: { status, sources, load, calls }
+  spectrum     ~7/s per radio: { source, centerHz, rateHz, bins: 512 dBFS levels }
+  concluded    { entry }: a call was recorded
+  log          { lines }
+  unitAlias    { system (short name), unit, alias }
+  config       { config }: someone changed the config
+  error / notice  { message }: about your command
+  quit         the recorder is exiting; keep reconnecting, slowly, in case it's restarted
+  (more in protocol.ts; ignore types you don't use)
+To the recorder:
+  { type: "start" }, { type: "stop" }
+  { type: "listen", on: true, system: null, talkgroup: null }   ("on" and both fields are always required)
+  { type: "setConfig", config: <the whole config> }
+  (more in protocol.ts: devices, survey, plugins, …)
+Listening is per connection. Send listen again after every hello (each reconnect).
+
+
+## Rules
+
+1. Use field names exactly as given here or in protocol.ts. Don't invent
+   fields or endpoints. There is no REST API for calls or talkgroups beyond
+   what's listed here.
+2. Escape everything that comes from the recorder before putting it in
+   HTML: talkgroup names, unit names and aliases come from files and from
+   the air. Use escapeHtml or textContent.
+3. Never assume a field is set. alphaTag / talkgroup_tag can be "".
+   status is null when not recording. Optional fields can be missing or
+   null. Show the talkgroup number when there's no name.
+4. Audio needs a user gesture. Call player.resume() inside a click handler
+   before playing. A recorded call plays with <audio src=rec.callUrl(entry)>.
+5. Everything is pushed. Don't poll, and don't fetch /calls/*.json for
+   calls already in rec.history (the record is there).
+6. Only change the config, or start / stop recording, when the user asks for
+   that feature. Do it with a visible control, through rec.setConfig /
+   rec.start / rec.stop. Never build a config from scratch: fields left out
+   reset to defaults.
+7. History reaches back 300 calls at connect, and grows as calls are
+   recorded. Older recordings are on disk, but there's no API to list them.
+   Say so if the user asks for more.
+8. One live-audio filter per connection: one talkgroup, or everything. For
+   several talkgroups, listen to everything and drop the chunks you don't
+   want before player.play.
+9. Keep the page alive through disconnects and restarts. Show the
+   connection state (rec.connected, rec.exited); client.js reconnects by
+   itself.
+10. The API has no login. Don't put the recorder on the internet. If the user
+    wants remote access, tell them to use a VPN, an SSH tunnel, or a reverse
+    proxy with authentication.
+
+
+## Before you finish
+
+- It runs from the recorder: `trunk-pro --ui <folder>` → http://localhost:8080/.
+- With the recorder idle, it shows the history and a clear idle state, not
+  an error.
+- While recording, it updates without reloading.
+- It survives the recorder restarting: it reconnects and redraws.
+- Live audio starts from a click, and stops.
+- It's usable on a phone-width screen.
+- Every piece of recorder text is escaped.
+
+Working examples to copy from (GET /api/examples/<file>):
+  scanner.html    everything, without client.js (the raw protocol)
+  wall.html       a wall display with client.js
+  talkgroup.html  follow one talkgroup: live, recordings, play new ones as they come
+  call-log.mjs    Node: append calls to a CSV file and POST them to a webhook

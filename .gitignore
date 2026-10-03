@@ -21,3 +21,4 @@ web/src/web/pkg/
 /wmata/logs/
 wmata
 tools/vocoder-shootout/examples
+research/cpu-vs-trunk-recorder

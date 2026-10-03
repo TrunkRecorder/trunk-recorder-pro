@@ -780,11 +780,42 @@ pub struct Server {
     pub port: u16,
     /// Start recording when the app starts (headless machines, after a reboot).
     pub auto_start: bool,
+    /// Web pages from other origins that may use the interface's API (a
+    /// custom interface served elsewhere): "http://host:port" as the browser
+    /// sends it, "null" a page opened from a file, "*" any. Its own pages
+    /// and programs that aren't browsers always may.
+    pub allowed_origins: Vec<String>,
+    /// Interfaces of the user's own (docs/api), served at /ui/<name>/.
+    pub interfaces: Vec<Interface>,
+    /// What / shows: "" the built-in interface, else an interface's name.
+    /// The built-in one is at /builtin/ either way.
+    pub home: String,
 }
 
 impl Default for Server {
     fn default() -> Self {
-        Server { bind: "127.0.0.1".into(), port: 8080, auto_start: false }
+        Server { bind: "127.0.0.1".into(), port: 8080, auto_start: false, allowed_origins: vec![], interfaces: vec![], home: String::new() }
+    }
+}
+
+/// An interface of the user's own: a folder of web pages (index.html and
+/// whatever it uses), served as it is on disk at /ui/<name>/.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Interface {
+    /// Its address: /ui/<name>/ (letters, digits, - and _).
+    pub name: String,
+    /// The folder, absolute or relative to the config file's.
+    pub path: String,
+}
+
+impl Interface {
+    /// Why its name can't be used, if it can't.
+    pub fn name_problem(name: &str) -> Option<String> {
+        if name.is_empty() || name.len() > 64 || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+            return Some(format!("Interface name \"{name}\": use letters, digits, - and _ (it's the address /ui/{name}/)."));
+        }
+        None
     }
 }
 

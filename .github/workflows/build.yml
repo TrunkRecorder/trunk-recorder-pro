@@ -63,7 +63,8 @@ jobs:
       # Must match the wasm-bindgen version in Cargo.lock.
       - uses: taiki-e/install-action@v2
         with: { tool: wasm-bindgen@0.2.129 }
-      - run: npm ci && npm run wasm && npm run build && npm run build:web
+      # docs/api/protocol.schema.json must be regenerated when protocol.ts changes.
+      - run: npm ci && npm run schema -- --check && npm run wasm && npm run build && npm run build:web
         working-directory: web
       - uses: actions/upload-artifact@v4
         with: { name: web-dist, path: web/dist }

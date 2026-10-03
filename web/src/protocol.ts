@@ -1,6 +1,11 @@
 // The messages between the interface and the recorder (crates/trunk-pro/src/
 // server.rs). The desktop app carries them over a WebSocket; the web build
-// will carry the same messages between the page and its engine worker.
+// carries the same messages between the page and its engine worker.
+//
+// This file is the protocol's definition for other interfaces too
+// (docs/api/README.md). After changing it, run `npm run schema` to update
+// docs/api/protocol.schema.json; trunk-pro's tests check what the recorder
+// sends against that.
 
 export type SampleFormat = "cu8" | "cs16" | "cf32";
 
@@ -262,11 +267,38 @@ export interface Config {
   /** The conventional systems; the k-th's calls carry `system` conventionalSystem(k). */
   conventional: Conventional[];
   recording: Recording;
-  server: { bind: string; port: number; autoStart: boolean };
+  server: {
+    bind: string;
+    port: number;
+    autoStart: boolean;
+    /** Web pages from other origins that may use the API ("http://host:port", "null" a file, "*" any). */
+    allowedOrigins?: string[];
+    /** Interfaces of your own, served at /ui/<name>/ (docs/api). */
+    interfaces?: CustomInterface[];
+    /** What / shows: "" the built-in interface (always at /builtin/ too), else an interface's name. */
+    home?: string;
+  };
   /** The plugins, by id (desktop app). Their settings for each system are in the system. */
   plugins?: Record<string, PluginSetup>;
   /** The log (desktop app). */
   log?: LogSettings;
+}
+
+/** An interface of your own: a folder with an index.html, served as it is on disk at /ui/<name>/. */
+export interface CustomInterface {
+  /** Its address: /ui/<name>/ (letters, digits, - and _). */
+  name: string;
+  /** The folder: absolute, ~/…, or relative to the config file's folder. */
+  path: string;
+}
+
+/** GET /api/interfaces (HTTP, not a message). */
+export interface InterfacesInfo {
+  /** What / shows: "builtin", an interface's name, or the folder given with --ui. */
+  home: "builtin" | string | { folder: string };
+  /** The built-in interface's address: /builtin/. */
+  builtin: string;
+  interfaces: (CustomInterface & { folder: string; url: string; problem: string | null })[];
 }
 
 export interface Device {
@@ -374,7 +406,7 @@ export interface SourceStatus {
 
 export interface CallView {
   id: number;
-  /** SystemStatus.index; CONVENTIONAL for a conventional channel. */
+  /** SystemStatus.index; conventionalSystem(k) for conventional system k's channels. */
   system: number;
   systemName: string;
   talkgroup: number;
@@ -404,20 +436,50 @@ export interface LogLine {
   system?: string;
 }
 
-/** Trunk Recorder's call JSON (the fields the interface shows). */
+/** Trunk Recorder's call JSON: each call's .json file, and `record` in `concluded` and `hello.history`. */
 export interface CallRecord {
+  /** The call's number since the recorder started. */
+  call_num: number;
   short_name?: string;
   talkgroup: number;
   talkgroup_tag: string;
+  talkgroup_description: string;
+  /** The talkgroup file's Tag and Category columns. */
+  talkgroup_group_tag: string;
+  talkgroup_group: string;
+  /** Hz. */
   freq: number;
+  /** How far off its channel the voice was, Hz (0: not measured). */
+  freq_error: number;
+  /** Unix seconds and ms. */
   start_time: number;
+  stop_time: number;
   start_time_ms: number;
+  stop_time_ms: number;
+  /** Seconds and ms of audio. */
   call_length: number;
   call_length_ms: number;
+  /** 1 / 0. */
   emergency: number;
   encrypted: number;
-  /** `tag`: the unit's name (the unit names file or the alias heard, by the system's mode); `tag_ota`: the alias heard. */
-  srcList: { src: number; tag?: string; tag_ota?: string }[];
+  phase2_tdma: number;
+  duplex: number;
+  /** Its P25 priority and service-option mode bit. */
+  priority: number;
+  mode: number;
+  /** TDMA / DMR slot (0 otherwise). */
+  tdma_slot: number;
+  /** DMR color code; -1 otherwise. */
+  color_code: number;
+  audio_type: "analog" | "digital" | "digital tdma";
+  /** Conventional analog: the tone it was matched on ("ctcss" / "dcs"), "search" (identified, not required), else "off". */
+  tone_mode: "ctcss" | "dcs" | "search" | "off";
+  /** The tone heard ("151.4 Hz", "D023N"), or "". */
+  tone_detected: string;
+  tone_confidence: number;
+  /** Always 0 (Trunk Recorder's fields). */
+  source_num: number;
+  recorder_num: number;
   /** Reception: the channel's level and the noise under it (dBFS), their difference (dB), and the share of voice frames decoded cleanly (digital). */
   signal?: number | null;
   noise?: number | null;
@@ -425,6 +487,15 @@ export interface CallRecord {
   clean_voice_pct?: number | null;
   /** Every talkgroup patched with this one, its own included (only when patched). */
   patched_talkgroups?: number[];
+  /** The frequencies it was on (one here): `time` Unix s, `pos` / `len` s into the audio. */
+  freqList: { freq: number; time: number; pos: number; len: number; error_count: number; spike_count: number }[];
+  /** Voice-frame errors over the call (digital), by interval: `pos` / `len` s into the audio. */
+  errorList: { pos: number; len: number; frames: number; error_count: number; bad_frames: number; max_frame_errors: number }[];
+  /**
+   * The radios that talked: `time` Unix s, `pos` s into the audio. `tag`: the unit's name (the unit names
+   * file or the alias heard, by the system's mode); `tag_ota`: the alias heard.
+   */
+  srcList: { src: number; time: number; pos: number; emergency: number; signal_system: string; tag: string; tag_ota: string }[];
 }
 
 /** A recorded call: `path` (no extension) under the capture folder. */
@@ -608,7 +679,7 @@ export interface PluginInfo {
   /** A build of the user's own (not installed in the plugins folder). */
   custom: boolean;
   /** The GitHub repository it was installed from, when that wasn't the registry (nobody reviewed it). */
-  unlistedFrom?: string;
+  unlistedFrom?: string | null;
   /** Null when it can't be asked (see `problem`). */
   manifest: PluginManifest | null;
   problem: string | null;
@@ -634,6 +705,8 @@ export interface StoreListing {
   api: number;
   tag: string;
   commit: string;
+  /** Its release downloads, by target ("aarch64-unknown-linux-gnu", "universal-apple-darwin", …). */
+  assets: Record<string, { url: string; sha256: string }>;
   /** Why this recorder can't install it (no build for this computer, a newer plugin API); null when it can. */
   unavailable: string | null;
 }
@@ -721,6 +794,10 @@ export type FromRecorder =
   | { type: "notice"; message: string }
   | ({ type: "plugins" } & PluginsList)
   | { type: "pluginRuntime"; id: string; runtime: PluginRuntime }
+  /** A plugin says how it is (desktop app, while recording). */
+  | { type: "pluginState"; id: string; state: "ok" | "warning" | "error"; message: string }
+  /** A plugin is done with a call: `path` its files' name, `url` where it went ("" when it doesn't say). */
+  | { type: "pluginResult"; id: string; path: string; outcome: "ok" | "skipped" | "failed"; message: string; url: string }
   | ({ type: "pluginStore" } & PluginStore)
   | ({ type: "pluginInstall" } & PluginInstall)
   | { type: "quit" };

@@ -205,6 +205,18 @@ platform, with no GNU Radio, OP25 or other runtime dependencies.
   `trunk-pro tool revoice` vocodes one again.
 - **Browser interface**: setup, live status, waterfall per dongle, active
   calls with live listening, recent recordings.
+- **Interfaces of your own**: the WebSocket and call files the built-in
+  interface uses, documented for developers (`docs/api/README.md`, served at
+  `/api/docs`) and for an LLM building one (`/api/llms.txt`), with
+  `client.js` (connection, state, live-audio player; `/api/client.js`),
+  four examples (`/api/examples/`), the protocol's TypeScript types
+  (`/api/protocol.ts`) and its JSON Schema (`/api/schema`, checked against
+  what the recorder sends). The recorder serves any number of them — folders
+  in `server.interfaces` (Setup → Recording → Interfaces) at
+  `/ui/<name>/`, one of them at `/` if `server.home` says so, or
+  `--ui <folder>` for one run — with the built-in interface always at
+  `/builtin/`. Web pages from other sites are refused unless listed in
+  `server.allowedOrigins`.
 - **Unattended use**: start recording at launch (`--start` / a setting),
   Ctrl-C / SIGTERM / Quit save calls in progress, a systemd service file;
   opening the app again shows the running instance.

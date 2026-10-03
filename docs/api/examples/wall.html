@@ -1,0 +1,132 @@
+<!doctype html>
+<!--
+  wall.html — a wall display: what's on the air in large type, emergencies
+  in red, the latest recorded calls, and live audio — built on client.js.
+
+  Options in the URL:
+    ?talkgroups=101,202   only these talkgroups (on screen and in the audio)
+    ?system=dcfd          only this system (its short name)
+    ?server=host:port     another recorder (its config must allow this page's origin)
+
+  Run it from the recorder: http://localhost:8080/api/examples/wall.html,
+  or copy it into an interface folder (README.md, "Serving your interface").
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>On the air</title>
+<style>
+  :root { color-scheme: dark; --bg: #0b0e13; --card: #151a22; --dim: #7d8794; --text: #e8edf2; --red: #ff4d4d; --green: #3ddc84; }
+  body { margin: 0; padding: 24px; background: var(--bg); color: var(--text); font: 18px system-ui, sans-serif; }
+  header { display: flex; align-items: baseline; gap: 20px; flex-wrap: wrap; margin-bottom: 20px; }
+  #clock { font-size: 40px; font-variant-numeric: tabular-nums; font-weight: 600; }
+  #state { color: var(--dim); flex: 1; }
+  #state.running { color: var(--green); }
+  button { font: inherit; font-size: 16px; padding: 8px 16px; border-radius: 8px; border: 1px solid #333c48; background: var(--card); color: var(--text); cursor: pointer; }
+  button.on { border-color: var(--green); color: var(--green); }
+  #air { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; min-height: 120px; }
+  .call { background: var(--card); border-radius: 12px; padding: 18px 20px; border-left: 6px solid var(--green); }
+  .call.monitoring { border-left-color: #444; opacity: 0.6; }
+  .call.emergency { border-left-color: var(--red); background: #2a1215; }
+  .call.playing { outline: 2px solid var(--green); }
+  .tg { font-size: 34px; font-weight: 700; line-height: 1.15; }
+  .meta { color: var(--dim); margin-top: 6px; display: flex; gap: 14px; flex-wrap: wrap; }
+  .em { color: var(--red); font-weight: 700; letter-spacing: 0.05em; }
+  .quiet { color: var(--dim); font-size: 24px; padding: 30px 0; }
+  h2 { font-size: 16px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--dim); margin: 32px 0 10px; }
+  #recent { list-style: none; padding: 0; margin: 0; }
+  #recent li { display: flex; gap: 16px; padding: 8px 0; border-bottom: 1px solid #1e252f; align-items: baseline; }
+  #recent .t { color: var(--dim); font-variant-numeric: tabular-nums; width: 5.5em; }
+  #recent .n { flex: 1; font-weight: 600; }
+</style>
+</head>
+<body>
+<header>
+  <div id="clock"></div>
+  <div id="state">connecting…</div>
+  <button id="audio">🔈 Live audio off</button>
+</header>
+<div id="air"></div>
+<h2>Recently</h2>
+<ul id="recent"></ul>
+
+<script type="module">
+import { TrunkClient, LivePlayer, escapeHtml as esc, duration } from "/api/client.js";
+
+const q = new URLSearchParams(location.search);
+const only = q.get("talkgroups") ? new Set(q.get("talkgroups").split(",").map(Number)) : null;
+const system = q.get("system");
+const wanted = (shortName, talkgroup) => (!only || only.has(talkgroup)) && (!system || shortName === system);
+
+const rec = new TrunkClient({ server: q.get("server") ?? undefined });
+const player = new LivePlayer({ onNowPlaying: () => draw() });
+let audioOn = false;
+
+document.getElementById("audio").onclick = async () => {
+  audioOn = !audioOn;
+  if (audioOn) {
+    await player.resume();
+    // One talkgroup: the recorder sends only it. Several: everything, filtered here.
+    rec.listen(only?.size === 1 ? { talkgroup: [...only][0] } : {});
+  } else {
+    rec.listen(false);
+    player.stop();
+  }
+  draw();
+};
+rec.on("audio", (chunk) => {
+  const name = rec.status?.systems.find((s) => s.index === chunk.system)?.shortName ?? rec.calls.find((c) => c.id === chunk.callId)?.systemName;
+  if (audioOn && wanted(name, chunk.talkgroup)) player.play(chunk);
+});
+rec.on("change", () => draw());
+
+function draw() {
+  const st = document.getElementById("state");
+  st.textContent = !rec.connected ? (rec.exited ? "recorder stopped — waiting for it" : "disconnected — reconnecting…") : rec.phase.phase === "running" ? "Recording" : `Recorder ${rec.phase.phase}${rec.phase.error ? `: ${rec.phase.error}` : ""}`;
+  st.className = rec.phase.phase;
+  const btn = document.getElementById("audio");
+  btn.textContent = audioOn ? "🔊 Live audio on" : "🔈 Live audio off";
+  btn.className = audioOn ? "on" : "";
+
+  // Engine time now, to say how long each call has been going.
+  const now = rec.status?.nowS ?? 0;
+  const calls = rec.calls.filter((c) => wanted(c.systemName, c.talkgroup));
+  document.getElementById("air").innerHTML = calls.length
+    ? calls
+        .sort((a, b) => b.emergency - a.emergency || a.startS - b.startS)
+        .map((c) => {
+          const unit = c.sources.at(-1);
+          const who = unit !== undefined ? rec.unitName(c.systemName, unit) || `Unit ${unit}` : "";
+          const cls = ["call", c.state, c.emergency ? "emergency" : "", player.nowPlaying?.callId === c.id ? "playing" : ""].join(" ");
+          return `<div class="${cls}">
+            <div class="tg">${esc(c.alphaTag || `Talkgroup ${c.talkgroup}`)}</div>
+            <div class="meta">
+              ${c.emergency ? '<span class="em">EMERGENCY</span>' : ""}
+              <span>${esc(c.systemName)}</span><span>${duration(Math.max(0, now - c.startS))}</span>
+              ${who ? `<span>${esc(who)}</span>` : ""}
+              ${c.state === "monitoring" ? `<span>${esc(c.reason ?? "")}</span>` : ""}
+            </div>
+          </div>`;
+        })
+        .join("")
+    : `<div class="quiet">${rec.phase.phase === "running" ? "Quiet" : ""}</div>`;
+
+  document.getElementById("recent").innerHTML = rec.history
+    .filter((e) => wanted(e.record.short_name, e.record.talkgroup))
+    .slice(0, 12)
+    .map((e) => {
+      const r = e.record;
+      const t = new Date(r.start_time * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      return `<li><span class="t">${t}</span><span class="n">${esc(r.talkgroup_tag || r.talkgroup)}</span><span>${esc(r.short_name)}</span><span>${duration(r.call_length)}</span>${r.emergency ? '<span class="em">EMERGENCY</span>' : ""}</li>`;
+    })
+    .join("");
+}
+
+setInterval(() => {
+  document.getElementById("clock").textContent = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}, 1000);
+draw();
+</script>
+</body>
+</html>

@@ -1,0 +1,164 @@
+<!doctype html>
+<!--
+  talkgroup.html — follow one talkgroup: pick it from the ones heard, see
+  whether it's on the air, listen live, play its recorded calls, and have
+  each new recording played as it comes in ("Play new calls") — built on
+  client.js.
+
+  ?talkgroup=101 picks one; ?server=host:port for another recorder.
+  Run it from the recorder: http://localhost:8080/api/examples/talkgroup.html
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Talkgroup</title>
+<style>
+  body { font: 15px system-ui, sans-serif; margin: 0 auto; max-width: 760px; padding: 20px 16px; color: #1d232a; background: #f6f7f9; }
+  select, button { font: inherit; padding: 6px 10px; }
+  .bar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin: 12px 0; }
+  .card { background: #fff; border-radius: 10px; padding: 14px 16px; box-shadow: 0 1px 2px #0001; margin: 12px 0; }
+  .live { color: #0a7d32; font-weight: 600; }
+  .muted { color: #6b7480; }
+  .em { color: #c11; font-weight: 700; }
+  ul { list-style: none; padding: 0; margin: 0; }
+  li { display: flex; gap: 12px; align-items: center; padding: 8px 0; border-bottom: 1px solid #eef0f3; }
+  li.playing { background: #eaf6ee; }
+  li .when { white-space: nowrap; color: #6b7480; font-variant-numeric: tabular-nums; }
+  li .who { flex: 1; }
+  button.on { background: #0a7d32; color: #fff; border-color: #0a7d32; }
+</style>
+</head>
+<body>
+<h1 id="title">Talkgroup</h1>
+<div class="bar">
+  <select id="pick"></select>
+  <button id="live">Listen live</button>
+  <button id="auto">Play new calls</button>
+  <span id="conn" class="muted"></span>
+</div>
+<div class="card" id="now"></div>
+<div class="card"><ul id="calls"></ul></div>
+
+<script type="module">
+import { TrunkClient, LivePlayer, escapeHtml as esc, duration, mhz } from "/api/client.js";
+
+const q = new URLSearchParams(location.search);
+const rec = new TrunkClient({ server: q.get("server") ?? undefined });
+const player = new LivePlayer();
+let tg = q.get("talkgroup") ? Number(q.get("talkgroup")) : null;
+let live = false;
+let auto = false;
+let audio = null; // the <audio> playing a recording
+let playingPath = null;
+const queue = []; // recordings waiting to be played (auto)
+
+// Every talkgroup heard (on the air or recorded), with its name and calls.
+function heard() {
+  const m = new Map();
+  const add = (talkgroup, name, n) => {
+    const t = m.get(talkgroup) ?? { talkgroup, name: "", calls: 0 };
+    t.name ||= name;
+    t.calls += n;
+    m.set(talkgroup, t);
+  };
+  for (const e of rec.history) add(e.record.talkgroup, e.record.talkgroup_tag, 1);
+  for (const c of rec.calls) add(c.talkgroup, c.alphaTag, 0);
+  return [...m.values()].sort((a, b) => b.calls - a.calls);
+}
+
+const pick = document.getElementById("pick");
+pick.onchange = () => choose(Number(pick.value));
+function choose(t) {
+  tg = t;
+  history.replaceState(null, "", `?talkgroup=${t}${q.get("server") ? `&server=${q.get("server")}` : ""}`);
+  if (live) rec.listen({ talkgroup: tg });
+  queue.length = 0;
+  draw();
+}
+
+document.getElementById("live").onclick = async () => {
+  live = !live;
+  if (live) {
+    await player.resume();
+    rec.listen({ talkgroup: tg });
+  } else {
+    rec.listen(false);
+    player.stop();
+  }
+  draw();
+};
+rec.on("audio", (chunk) => live && chunk.talkgroup === tg && player.play(chunk));
+
+document.getElementById("auto").onclick = () => {
+  auto = !auto;
+  draw();
+};
+rec.on("concluded", (m) => {
+  if (auto && m.entry.record.talkgroup === tg) {
+    queue.push(m.entry);
+    if (!audio) playNext();
+  }
+});
+
+function play(entry) {
+  audio?.pause();
+  playingPath = entry.path;
+  audio = new Audio(rec.callUrl(entry, "wav"));
+  audio.onended = audio.onerror = () => {
+    audio = null;
+    playingPath = null;
+    playNext();
+  };
+  audio.play().catch(() => audio?.onended());
+  draw();
+}
+function playNext() {
+  const next = queue.shift();
+  if (next) play(next);
+  else draw();
+}
+document.getElementById("calls").onclick = (ev) => {
+  const path = ev.target.dataset?.path;
+  const entry = path && rec.history.find((e) => e.path === path);
+  if (entry) play(entry);
+};
+
+rec.on("change", () => draw());
+
+function draw() {
+  document.getElementById("conn").textContent = rec.connected ? "" : "reconnecting…";
+  const list = heard();
+  if (tg === null && list.length) tg = list[0].talkgroup;
+  pick.innerHTML = list.map((t) => `<option value="${t.talkgroup}" ${t.talkgroup === tg ? "selected" : ""}>${esc(t.name || t.talkgroup)} (${t.talkgroup}) · ${t.calls}</option>`).join("");
+  const name = list.find((t) => t.talkgroup === tg)?.name;
+  document.getElementById("title").textContent = name || (tg !== null ? `Talkgroup ${tg}` : "Talkgroup");
+  document.getElementById("live").className = live ? "on" : "";
+  document.getElementById("auto").className = auto ? "on" : "";
+
+  const on = rec.calls.filter((c) => c.talkgroup === tg);
+  document.getElementById("now").innerHTML = on.length
+    ? on
+        .map((c) => {
+          const units = c.sources.map((u) => esc(rec.unitName(c.systemName, u) || u)).join(", ");
+          return `<div><span class="live">● On the air</span> ${c.emergency ? '<span class="em">EMERGENCY</span>' : ""} ${esc(c.systemName)} · ${mhz(c.freqHz)}${units ? ` · ${units}` : ""}${c.state !== "recording" ? ` · not recording (${esc(c.reason)})` : ""}</div>`;
+        })
+        .join("")
+    : `<span class="muted">${rec.phase.phase === "running" ? "Quiet" : `Recorder ${rec.phase.phase}`}</span>`;
+
+  const calls = rec.history.filter((e) => e.record.talkgroup === tg).slice(0, 100);
+  document.getElementById("calls").innerHTML = calls.length
+    ? calls
+        .map((e) => {
+          const r = e.record;
+          const when = new Date(r.start_time * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" });
+          const who = r.srcList.map((s) => esc(s.tag || s.src)).join(", ");
+          return `<li class="${e.path === playingPath ? "playing" : ""}"><button data-path="${esc(e.path)}">▶</button><span class="when">${when}</span><span class="who">${who || '<span class="muted">—</span>'}</span>${r.emergency ? '<span class="em">EMERGENCY</span>' : ""}<span>${duration(r.call_length)}</span></li>`;
+        })
+        .join("")
+    : '<li class="muted">No recorded calls yet.</li>';
+}
+draw();
+</script>
+</body>
+</html>

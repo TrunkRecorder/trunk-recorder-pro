@@ -1,34 +1,35 @@
 //! The browser interface: an embedded web UI, recorded calls under /calls/,
 //! and a WebSocket (/api/ws) carrying JSON messages both ways plus binary
-//! live-audio frames.
+//! live-audio frames `[2][u16 system][u32 call id][u32 talkgroup][i16…]`
+//! (8 kHz) to connections that asked to listen.
 //!
-//! Server → browser: `hello` (config, devices, phase, history), `state`,
-//! `status` (~2/s), `spectrum` (~7/s per source), `log`, `concluded`,
-//! `devices`, `error`, and audio frames `[2][u16 system][u32 call id][u32
-//! talkgroup][i16…]` (8 kHz) to connections that asked to listen.
-//! `radios` (the optional USRP / Airspy / SoapySDR drivers, SoapySDR's modules
-//! and the devices) comes in `hello` and answers `findRadios`, which also
-//! searches for USRPs and SoapySDR devices.
-//! Browser → server: `setConfig`, `start`, `stop`, `devices`, `findRadios`,
-//! `listen {on, system, talkgroup}`, `quit` (stop recording, tell every browser
-//! `quit`, exit). GET /api/version identifies a running instance.
+//! The messages are defined in web/src/protocol.ts and documented for
+//! anyone writing their own interface in docs/api/, which the server also
+//! serves: /api/docs (README.md), /api/llms.txt, /api/client.js,
+//! /api/examples/…, /api/protocol.ts and /api/schema (its JSON Schema; the
+//! tests in protocol_tests.rs check what is sent against it). GET
+//! /api/version identifies a running instance.
 //!
-//! The first-run survey (see [`crate::survey`]): `surveyStart {source, bands,
-//! findGain}`, `surveyListen {freqHz}`, `surveyRescan`, `surveyStop`; it
-//! reports `survey` snapshots (`stage` "idle" when none runs) and
-//! `surveySpectrum`. `hello` carries `surveyBands` and the latest snapshot.
+//! Interfaces: the built-in one at /builtin/, the user's own (folders named
+//! in `server.interfaces`) at /ui/<name>/, a list of them at /ui/ and
+//! /api/interfaces; / shows `server.home` (or `--ui <folder>`), else the
+//! built-in one.
 //!
-//! Plugins (see [`crate::plugins::manage`]): `plugins` follows `hello`, and
-//! answers `plugins`, `setPlugin`, `addPlugin`, `removePlugin` and
-//! `setPluginAudio`; `pluginRuntime` says how each is doing.
+//! A connection gets `hello`, then `plugins`; then what everyone hears
+//! (`state`, `status` ~2/s, `spectrum` ~7/s per source, `log`, `concluded`,
+//! …) and the answers to its own commands.
+//!
+//! Every request passes [`guard`]: pages from other sites are refused unless
+//! listed in `server.allowedOrigins`.
 
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Path as UrlPath, State};
-use axum::http::{header, StatusCode, Uri};
-use axum::response::{IntoResponse, Response};
+use axum::extract::{Path as UrlPath, Request, State};
+use axum::http::{header, HeaderValue, StatusCode, Uri};
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::get;
 use axum::Router;
 use rust_embed::RustEmbed;
@@ -43,6 +44,13 @@ use crate::sdr;
 #[allow_missing = true]
 struct Ui;
 
+/// The API's documentation, client and examples, served under /api/.
+#[derive(RustEmbed)]
+#[folder = "../../docs/api/"]
+struct ApiDocs;
+
+const PROTOCOL: &str = include_str!("../../../web/src/protocol.ts");
+
 /// What `GET /api/version` answers — how a second launch recognises us.
 pub const APP_ID: &str = "trunk-pro";
 
@@ -50,12 +58,27 @@ pub const APP_ID: &str = "trunk-pro";
 /// first either way, so calls in progress are written out.
 pub async fn serve(ctx: Arc<Ctx>, listener: std::net::TcpListener) -> std::io::Result<()> {
     listener.set_nonblocking(true)?;
+    let loopback = listener.local_addr()?.ip().is_loopback();
     let listener = tokio::net::TcpListener::from_std(listener)?;
     let app = Router::new()
         .route("/api/ws", get(ws))
         .route("/api/version", get(|| async { axum::Json(json!({ "app": APP_ID, "version": env!("CARGO_PKG_VERSION") })) }))
+        .route("/api/docs", get(|| async { api_file("README.md") }))
+        .route("/api/schema", get(|| async { api_file("protocol.schema.json") }))
+        .route("/api/protocol.ts", get(|| async { ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], PROTOCOL).into_response() }))
+        .route("/api/interfaces", get(interfaces_json))
+        .route("/api/{*path}", get(|UrlPath(p): UrlPath<String>| async move { api_file(&p) }))
         .route("/calls/{*path}", get(call_file))
-        .fallback(static_file)
+        .route("/builtin", get(|| async { Redirect::permanent("/builtin/") }))
+        .route("/builtin/", get(|| async { builtin("") }))
+        .route("/builtin/{*path}", get(|UrlPath(p): UrlPath<String>| async move { builtin(&p) }))
+        .route("/ui", get(|| async { Redirect::permanent("/ui/") }))
+        .route("/ui/", get(ui_index))
+        .route("/ui/{name}", get(|UrlPath(n): UrlPath<String>| async move { Redirect::permanent(&format!("/ui/{}/", url_segment(&n))) }))
+        .route("/ui/{name}/", get(|State(ctx): State<Arc<Ctx>>, UrlPath(n): UrlPath<String>, uri: Uri| async move { ui_file(&ctx, &n, "", &uri).await }))
+        .route("/ui/{name}/{*path}", get(|State(ctx): State<Arc<Ctx>>, UrlPath((n, p)): UrlPath<(String, String)>, uri: Uri| async move { ui_file(&ctx, &n, &p, &uri).await }))
+        .fallback(home)
+        .layer(middleware::from_fn_with_state((ctx.clone(), loopback), guard))
         .with_state(ctx.clone());
     #[cfg(unix)]
     tokio::spawn(reopen_log_on_hangup());
@@ -105,8 +128,84 @@ async fn terminate() {
     std::future::pending::<()>().await
 }
 
-async fn static_file(uri: Uri) -> Response {
-    let path = uri.path().trim_start_matches('/');
+/// Who may use the interface. Any web page a browser shows can reach
+/// ws://localhost:8080 too, and must not drive the recorder (change its
+/// config, list its folders, quit it). What a page asks for carries its
+/// `Origin`: it must be this server's own, or in `server.allowedOrigins` (a
+/// custom interface served elsewhere — its requests then get CORS headers).
+/// Programs that aren't browsers send no Origin and are let in. Bound to
+/// localhost, the `Host` must be localhost (or an allowed origin's host) as
+/// well: a site whose name was pointed at 127.0.0.1 (DNS rebinding) is
+/// still another site.
+async fn guard(State((ctx, loopback)): State<(Arc<Ctx>, bool)>, req: Request, next: Next) -> Response {
+    // (In a block: a closure borrowing the request mustn't live across the await.)
+    let (host, origin) = {
+        let header = |name| req.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_string);
+        (header(header::HOST), header(header::ORIGIN))
+    };
+    let allowed = ctx.config.lock().unwrap().server.allowed_origins.clone();
+    match admit(loopback, host.as_deref(), origin.as_deref(), &allowed) {
+        Ok(cors) => {
+            let mut res = next.run(req).await;
+            if let (true, Some(v)) = (cors, origin.and_then(|o| HeaderValue::from_str(&o).ok())) {
+                res.headers_mut().insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, v);
+                res.headers_mut().append(header::VARY, HeaderValue::from_static("Origin"));
+            }
+            res
+        }
+        Err(why) => {
+            // Once each: a refused page may keep reconnecting.
+            static TOLD: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+            let mut told = TOLD.lock().unwrap();
+            if told.len() < 50 && !told.contains(&why) {
+                log::warn!("Refused {why}");
+                told.push(why.clone());
+            }
+            (StatusCode::FORBIDDEN, format!("Refused {why}\n")).into_response()
+        }
+    }
+}
+
+/// [`guard`]'s verdict: Ok(whether the answer needs CORS headers) or Err(why not).
+fn admit(loopback: bool, host: Option<&str>, origin: Option<&str>, allowed: &[String]) -> Result<bool, String> {
+    let norm = |o: &str| o.trim().trim_end_matches('/').to_ascii_lowercase();
+    let allowed: Vec<String> = allowed.iter().map(|o| norm(o)).collect();
+    if let Some(host) = host {
+        let name = host_name(host);
+        let named = allowed.iter().any(|o| o.split_once("://").is_some_and(|(_, a)| host_name(a) == name));
+        if loopback && !is_loopback_name(&name) && !named {
+            return Err(format!("a request for {host}: this server only answers to localhost (add the page's origin to server.allowedOrigins in the config to allow it)."));
+        }
+    }
+    let Some(origin) = origin else { return Ok(false) };
+    let o = norm(origin);
+    if host.is_some_and(|h| o.split_once("://").is_some_and(|(_, a)| a.eq_ignore_ascii_case(h))) {
+        return Ok(false);
+    }
+    if allowed.iter().any(|a| *a == o || a == "*") {
+        return Ok(true);
+    }
+    Err(format!("a page from {origin}: add it to server.allowedOrigins in the config to let it use the interface."))
+}
+
+/// "Localhost:8080" → "localhost", "[::1]:8080" → "::1".
+fn host_name(host: &str) -> String {
+    let h = host.trim().to_ascii_lowercase();
+    let h = match h.strip_prefix('[') {
+        Some(v6) => v6.split(']').next().unwrap_or("").to_string(),
+        None if h.matches(':').count() == 1 => h.split(':').next().unwrap_or("").to_string(),
+        None => h,
+    };
+    h.trim_end_matches('.').to_string()
+}
+
+fn is_loopback_name(name: &str) -> bool {
+    name == "localhost" || name.ends_with(".localhost") || name.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
+}
+
+/// The built-in interface's file `path` (its index.html for anything else:
+/// it routes with the URL's #).
+fn builtin(path: &str) -> Response {
     let path = if path.is_empty() { "index.html" } else { path };
     match Ui::get(path).or_else(|| Ui::get("index.html")) {
         Some(f) => {
@@ -119,6 +218,197 @@ async fn static_file(uri: Uri) -> Response {
         )
             .into_response(),
     }
+}
+
+/// `/`: the home interface — `--ui <folder>`, else `server.home`, else the built-in one.
+async fn home(State(ctx): State<Arc<Ctx>>, uri: Uri) -> Response {
+    let raw = uri.path().trim_start_matches('/');
+    let dir = ctx.home_dir.clone().or_else(|| {
+        let home = ctx.config.lock().unwrap().server.home.clone();
+        (!home.is_empty()).then(|| interface_dir(&ctx, &home).ok()).flatten()
+    });
+    match (dir, percent_decode(raw)) {
+        (None, _) => builtin(raw),
+        (Some(dir), Some(rel)) => folder_file(&dir, &rel, &uri).await,
+        (Some(_), None) => StatusCode::BAD_REQUEST.into_response(),
+    }
+}
+
+/// A file of interface `name` (/ui/<name>/<path>).
+async fn ui_file(ctx: &Ctx, name: &str, path: &str, uri: &Uri) -> Response {
+    match interface_dir(ctx, name) {
+        Ok(dir) => folder_file(&dir, path, uri).await,
+        Err(e) => not_found(&e),
+    }
+}
+
+/// Interface `name`'s folder (it may not exist).
+fn interface_dir(ctx: &Ctx, name: &str) -> Result<PathBuf, String> {
+    let cfg = ctx.config.lock().unwrap();
+    let i = cfg.server.interfaces.iter().find(|i| i.name == name).ok_or_else(|| format!("There's no interface named “{name}” in the config."))?;
+    Ok(interface_path(&ctx.config_path, &i.path))
+}
+
+/// An interface's folder: absolute, ~/…, or relative to the config file's folder.
+fn interface_path(config_path: &Path, path: &str) -> PathBuf {
+    let path = path.trim();
+    if let Some(rest) = path.strip_prefix("~/") {
+        return trunk_app::config::home().join(rest);
+    }
+    let p = Path::new(path);
+    if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        config_path.parent().unwrap_or(Path::new(".")).join(p)
+    }
+}
+
+/// File `rel` of an interface's folder, as it is on disk now (edits show on
+/// reload): a folder's index.html, and the root's index.html for a path
+/// that isn't a file and has no extension (a page that routes itself).
+/// Nothing outside the folder, links included.
+async fn folder_file(root: &Path, rel: &str, uri: &Uri) -> Response {
+    let rel = Path::new(rel);
+    if rel.components().any(|c| !matches!(c, Component::Normal(_))) {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    let Ok(root) = tokio::fs::canonicalize(root).await else {
+        return not_found(&format!("The interface's folder {} isn't there.", root.display()));
+    };
+    let mut path = root.join(rel);
+    if tokio::fs::metadata(&path).await.is_ok_and(|m| m.is_dir()) {
+        // Its pages' relative links need the slash.
+        if !uri.path().ends_with('/') {
+            return Redirect::permanent(&format!("{}/", uri.path())).into_response();
+        }
+        path = path.join("index.html");
+    } else if rel.extension().is_none() && tokio::fs::metadata(&path).await.is_err() {
+        path = root.join("index.html");
+    }
+    let real = match tokio::fs::canonicalize(&path).await {
+        Ok(r) if r.starts_with(&root) => r,
+        _ => return not_found(&format!("{} isn't in the interface's folder {}.", uri.path(), root.display())),
+    };
+    match tokio::fs::read(&real).await {
+        Ok(bytes) => ([(header::CONTENT_TYPE, mime_of(&real.to_string_lossy())), (header::CACHE_CONTROL, "no-cache".to_string())], bytes).into_response(),
+        Err(e) => not_found(&format!("{}: {e}", real.display())),
+    }
+}
+
+fn not_found(why: &str) -> Response {
+    let page = format!(
+        "<!doctype html><meta charset=utf-8><title>Not found</title><body style=\"font:15px system-ui;margin:40px\"><h1>Not found</h1><p>{}</p>\
+         <p><a href=\"/builtin/\">Trunk Recorder Pro</a> · <a href=\"/ui/\">Interfaces</a></p>",
+        html_escape(why)
+    );
+    (StatusCode::NOT_FOUND, [(header::CONTENT_TYPE, "text/html; charset=utf-8")], page).into_response()
+}
+
+/// A file of docs/api (built in): /api/docs is its README.md.
+fn api_file(path: &str) -> Response {
+    match ApiDocs::get(path) {
+        Some(f) => ([(header::CONTENT_TYPE, mime_of(path))], f.data).into_response(),
+        None => not_found(&format!("/api/{path}: no such file.")),
+    }
+}
+
+fn mime_of(path: &str) -> String {
+    let lower = path.to_ascii_lowercase();
+    let mime = if lower.ends_with(".md") {
+        "text/markdown".to_string()
+    } else if lower.ends_with(".mjs") || lower.ends_with(".js") {
+        "text/javascript".to_string()
+    } else {
+        mime_guess::from_path(path).first_or_octet_stream().essence_str().to_string()
+    };
+    let text = mime.starts_with("text/") || mime.ends_with("json") || mime.ends_with("javascript");
+    if text { format!("{mime}; charset=utf-8") } else { mime }
+}
+
+/// The interfaces: `GET /api/interfaces`.
+async fn interfaces_json(State(ctx): State<Arc<Ctx>>) -> Response {
+    axum::Json(interfaces_list(&ctx)).into_response()
+}
+
+fn interfaces_list(ctx: &Ctx) -> Value {
+    let cfg = ctx.config.lock().unwrap().clone();
+    let list: Vec<Value> = cfg
+        .server
+        .interfaces
+        .iter()
+        .map(|i| {
+            let dir = interface_path(&ctx.config_path, &i.path);
+            let problem = trunk_app::config::Interface::name_problem(&i.name).or_else(|| {
+                if !dir.is_dir() {
+                    Some(format!("The folder {} isn't there.", dir.display()))
+                } else if !dir.join("index.html").is_file() {
+                    Some(format!("{} has no index.html.", dir.display()))
+                } else {
+                    None
+                }
+            });
+            json!({ "name": i.name, "path": i.path, "folder": dir.display().to_string(), "url": format!("/ui/{}/", url_segment(&i.name)), "problem": problem })
+        })
+        .collect();
+    let home = match &ctx.home_dir {
+        Some(d) => json!({ "folder": d.display().to_string() }),
+        None if cfg.server.home.is_empty() => json!("builtin"),
+        None => json!(cfg.server.home),
+    };
+    json!({ "home": home, "builtin": "/builtin/", "interfaces": list })
+}
+
+/// `/ui/`: the interfaces, the examples and the docs, as links.
+async fn ui_index(State(ctx): State<Arc<Ctx>>) -> Response {
+    let v = interfaces_list(&ctx);
+    let mut rows = String::from("<li><a href=\"/builtin/\">Trunk Recorder Pro</a> <span>the built-in interface</span></li>");
+    for i in v["interfaces"].as_array().into_iter().flatten() {
+        let (name, folder) = (i["name"].as_str().unwrap_or(""), i["folder"].as_str().unwrap_or(""));
+        let note = match i["problem"].as_str() {
+            Some(p) => format!("<b>{}</b>", html_escape(p)),
+            None => html_escape(folder),
+        };
+        rows += &format!("<li><a href=\"/ui/{}/\">{}</a> <span>{note}</span></li>", url_segment(name), html_escape(name));
+    }
+    let mut examples = String::new();
+    for f in ApiDocs::iter().filter(|f| f.starts_with("examples/") && f.ends_with(".html")) {
+        examples += &format!("<li><a href=\"/api/{f}\">{}</a></li>", html_escape(f.trim_start_matches("examples/")));
+    }
+    let page = format!(
+        "<!doctype html><meta charset=utf-8><meta name=viewport content=\"width=device-width\"><title>Interfaces</title>\
+         <style>body{{font:15px system-ui;margin:40px auto;max-width:760px;padding:0 16px}}li{{margin:6px 0}}span{{color:#777;margin-left:8px}}</style>\
+         <h1>Interfaces</h1><ul>{rows}</ul>\
+         <p>Add your own in the config's <code>server.interfaces</code> (Setup → Recording → Interfaces), or run <code>trunk-pro --ui &lt;folder&gt;</code>.</p>\
+         <h2>Examples</h2><ul>{examples}</ul>\
+         <h2>Build your own</h2><ul><li><a href=\"/api/docs\">The API</a> (docs/api/README.md)</li><li><a href=\"/api/llms.txt\">For an LLM</a> (llms.txt)</li>\
+         <li><a href=\"/api/client.js\">client.js</a></li><li><a href=\"/api/protocol.ts\">protocol.ts</a></li></ul>"
+    );
+    ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], page).into_response()
+}
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+}
+
+/// A name as one URL path segment.
+fn url_segment(s: &str) -> String {
+    s.bytes().map(|b| if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") }).collect()
+}
+
+/// "%20" → " "; None for bad escapes or bytes that aren't UTF-8.
+fn percent_decode(s: &str) -> Option<String> {
+    let b = s.as_bytes();
+    let (mut out, mut i) = (Vec::with_capacity(b.len()), 0);
+    while i < b.len() {
+        if b[i] == b'%' {
+            out.push(u8::from_str_radix(s.get(i + 1..i + 3)?, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
 }
 
 /// A recorded file, confined to the capture folder.
@@ -151,7 +441,7 @@ fn stop_survey(ctx: &Ctx) {
     }
 }
 
-fn devices_json() -> Value {
+pub(crate) fn devices_json() -> Value {
     json!({ "type": "devices", "devices": sdr::devices() })
 }
 
@@ -159,7 +449,7 @@ fn devices_json() -> Value {
 /// computer, its subfolders and its .json files (a Trunk Recorder config to
 /// import); "" = the home folder. A path that doesn't exist yet lists the
 /// nearest folder above it that does.
-fn dir_json(path: &str) -> Value {
+pub(crate) fn dir_json(path: &str) -> Value {
     let home = trunk_app::config::home();
     let want = if path.trim().is_empty() { home.clone() } else { PathBuf::from(path.trim()) };
     let mut at = want.as_path();
@@ -208,7 +498,7 @@ fn dir_json(path: &str) -> Value {
 /// holding one) with the talkgroup and channel files it names, read here so
 /// the browser imports them in one go. A name resolves beside the config (as
 /// Trunk Recorder run from its folder does), else by its file name there.
-fn tr_config_json(path: &str) -> Value {
+pub(crate) fn tr_config_json(path: &str) -> Value {
     let p = PathBuf::from(path.trim());
     let file = if p.is_dir() { p.join("config.json") } else { p };
     let shown = file.display().to_string();
@@ -241,37 +531,40 @@ fn tr_config_json(path: &str) -> Value {
     json!({ "type": "trConfig", "path": shown, "text": text, "files": files, "error": null })
 }
 
+/// The `hello` a connection starts with: everything the interface shows.
+pub(crate) fn hello_json(ctx: &Ctx, radios: Value) -> Value {
+    let config = ctx.config.lock().unwrap().clone();
+    let history: Vec<Value> = ctx.history.lock().unwrap().iter().take(300).cloned().collect();
+    // Each system's talker aliases, as saved (CSV).
+    let units: serde_json::Map<String, Value> = config
+        .systems
+        .iter()
+        .map(|s| &s.short_name)
+        .chain(config.conventional.iter().map(|c| &c.short_name))
+        .filter_map(|n| std::fs::read_to_string(crate::runtime::units_path(n)).ok().map(|csv| (n.clone(), Value::String(csv))))
+        .collect();
+    json!({
+        "type": "hello",
+        "version": env!("CARGO_PKG_VERSION"),
+        "platform": std::env::consts::OS,
+        "config": config,
+        "configPath": ctx.config_path.display().to_string(),
+        "devices": sdr::devices(),
+        "phase": ctx.phase.lock().unwrap().to_json(),
+        "history": history,
+        "units": units,
+        // The codes conventional frequencies carried, as saved.
+        "heard": std::fs::read_to_string(crate::runtime::heard_path(&config)).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).unwrap_or(json!({})),
+        "radios": radios,
+        "surveyBands": trunk_app::survey::bands_json(),
+        "survey": ctx.survey_last.lock().unwrap().clone().unwrap_or_else(crate::survey::idle_json),
+    })
+}
+
 async fn session(ctx: Arc<Ctx>, mut socket: WebSocket) {
     let mut rx = ctx.hub.subscribe();
     let radios = tokio::task::spawn_blocking(|| crate::radio::radios_json(false)).await.unwrap_or(Value::Null);
-    let hello = {
-        let config = ctx.config.lock().unwrap().clone();
-        let history: Vec<Value> = ctx.history.lock().unwrap().iter().take(300).cloned().collect();
-        // Each system's talker aliases, as saved (CSV).
-        let units: serde_json::Map<String, Value> = config
-            .systems
-            .iter()
-            .map(|s| &s.short_name)
-            .chain(config.conventional.iter().map(|c| &c.short_name))
-            .filter_map(|n| std::fs::read_to_string(crate::runtime::units_path(n)).ok().map(|csv| (n.clone(), Value::String(csv))))
-            .collect();
-        json!({
-            "type": "hello",
-            "version": env!("CARGO_PKG_VERSION"),
-            "platform": std::env::consts::OS,
-            "config": config,
-            "configPath": ctx.config_path.display().to_string(),
-            "devices": sdr::devices(),
-            "phase": ctx.phase.lock().unwrap().to_json(),
-            "history": history,
-            "units": units,
-            // The codes conventional frequencies carried, as saved.
-            "heard": std::fs::read_to_string(crate::runtime::heard_path(&config)).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).unwrap_or(json!({})),
-            "radios": radios,
-            "surveyBands": trunk_app::survey::bands_json(),
-            "survey": ctx.survey_last.lock().unwrap().clone().unwrap_or_else(crate::survey::idle_json),
-        })
-    };
+    let hello = hello_json(&ctx, radios);
     if socket.send(Message::Text(hello.to_string().into())).await.is_err() {
         return;
     }
@@ -547,5 +840,100 @@ async fn command(ctx: &Arc<Ctx>, v: &Value, listen: &mut Option<Listen>) -> Opti
             None
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{admit, folder_file, interface_path, percent_decode};
+    use axum::http::{header, StatusCode, Uri};
+    use std::path::Path;
+
+    async fn get(root: &Path, rel: &str, uri: &str) -> (StatusCode, String, String) {
+        let r = folder_file(root, rel, &uri.parse::<Uri>().unwrap()).await;
+        let status = r.status();
+        let h = |n| r.headers().get(n).map(|v| v.to_str().unwrap().to_string()).unwrap_or_default();
+        let (mime, location) = (h(header::CONTENT_TYPE), h(header::LOCATION));
+        let body = String::from_utf8_lossy(&axum::body::to_bytes(r.into_body(), usize::MAX).await.unwrap()).to_string();
+        (status, if location.is_empty() { mime } else { location }, body)
+    }
+
+    #[tokio::test]
+    async fn an_interface_folder_is_served_and_nothing_outside_it() {
+        let base = std::env::temp_dir().join(format!("trunk-pro-ui-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let root = base.join("my ui");
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::write(root.join("index.html"), "home").unwrap();
+        std::fs::write(root.join("app.js"), "js").unwrap();
+        std::fs::write(root.join("sub/index.html"), "sub").unwrap();
+        std::fs::write(base.join("secret.txt"), "secret").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(base.join("secret.txt"), root.join("link.txt")).unwrap();
+
+        assert_eq!(get(&root, "", "/ui/x/").await, (StatusCode::OK, "text/html; charset=utf-8".into(), "home".into()));
+        assert_eq!(get(&root, "app.js", "/ui/x/app.js").await, (StatusCode::OK, "text/javascript; charset=utf-8".into(), "js".into()));
+        // A folder: its index.html, after the slash its links need.
+        assert_eq!(get(&root, "sub", "/ui/x/sub").await.0, StatusCode::PERMANENT_REDIRECT);
+        assert_eq!(get(&root, "sub", "/ui/x/sub").await.1, "/ui/x/sub/");
+        assert_eq!(get(&root, "sub", "/ui/x/sub/").await.2, "sub");
+        // A page's own route: the root's index.html; a missing file: not found.
+        assert_eq!(get(&root, "calls/today", "/ui/x/calls/today").await.2, "home");
+        assert_eq!(get(&root, "missing.js", "/ui/x/missing.js").await.0, StatusCode::NOT_FOUND);
+        // Nothing outside.
+        assert_eq!(get(&root, "../secret.txt", "/ui/x/../secret.txt").await.0, StatusCode::BAD_REQUEST);
+        #[cfg(unix)]
+        assert_eq!(get(&root, "link.txt", "/ui/x/link.txt").await.0, StatusCode::NOT_FOUND);
+        // No folder: says so.
+        assert!(get(&base.join("gone"), "", "/").await.2.contains("isn't there"));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn paths_and_escapes() {
+        assert_eq!(percent_decode("my%20ui/a%2Bb.js").as_deref(), Some("my ui/a+b.js"));
+        assert_eq!(percent_decode("bad%2"), None);
+        assert_eq!(percent_decode("%FF"), None);
+        let cfg = Path::new("/etc/trunk-pro/config.json");
+        assert_eq!(interface_path(cfg, "ui/wall"), Path::new("/etc/trunk-pro/ui/wall"));
+        assert_eq!(interface_path(cfg, "/srv/wall"), Path::new("/srv/wall"));
+        assert!(interface_path(cfg, "~/wall").ends_with("wall") && !interface_path(cfg, "~/wall").starts_with("/etc"));
+    }
+
+    #[test]
+    fn its_own_pages_and_programs_are_let_in() {
+        assert_eq!(admit(true, Some("localhost:8080"), Some("http://localhost:8080"), &[]), Ok(false));
+        assert_eq!(admit(true, Some("127.0.0.1:8080"), Some("http://127.0.0.1:8080"), &[]), Ok(false));
+        assert_eq!(admit(true, Some("[::1]:8080"), Some("http://[::1]:8080"), &[]), Ok(false));
+        // The Vite dev server proxies with the page's Host.
+        assert_eq!(admit(true, Some("localhost:5173"), Some("http://localhost:5173"), &[]), Ok(false));
+        // curl, scripts: no Origin.
+        assert_eq!(admit(true, Some("localhost:8080"), None, &[]), Ok(false));
+        assert_eq!(admit(true, None, None, &[]), Ok(false));
+        // Bound to every address: reached by the machine's name or address.
+        assert_eq!(admit(false, Some("radiobox.local:8080"), Some("http://radiobox.local:8080"), &[]), Ok(false));
+        assert_eq!(admit(false, Some("192.168.1.20:8080"), Some("http://192.168.1.20:8080"), &[]), Ok(false));
+    }
+
+    #[test]
+    fn other_sites_are_refused() {
+        assert!(admit(true, Some("localhost:8080"), Some("https://evil.example"), &[]).is_err());
+        assert!(admit(false, Some("192.168.1.20:8080"), Some("https://evil.example"), &[]).is_err());
+        assert!(admit(true, Some("localhost:8080"), Some("null"), &[]).is_err());
+        // DNS rebinding: evil.example resolved to 127.0.0.1, so the page is "same origin".
+        assert!(admit(true, Some("evil.example:8080"), Some("http://evil.example:8080"), &[]).is_err());
+        assert!(admit(true, Some("evil.example:8080"), None, &[]).is_err());
+    }
+
+    #[test]
+    fn allowed_origins_get_cors() {
+        let allowed = vec!["http://192.168.1.50:3000/".to_string(), "null".to_string()];
+        assert_eq!(admit(true, Some("localhost:8080"), Some("http://192.168.1.50:3000"), &allowed), Ok(true));
+        assert_eq!(admit(true, Some("localhost:8080"), Some("null"), &allowed), Ok(true));
+        assert!(admit(true, Some("localhost:8080"), Some("http://192.168.1.51:3000"), &allowed).is_err());
+        assert_eq!(admit(true, Some("localhost:8080"), Some("https://anything.example"), &["*".to_string()]), Ok(true));
+        // A reverse proxy that passes its own Host, its origin listed.
+        let proxied = vec!["https://radio.example.com".to_string()];
+        assert_eq!(admit(true, Some("radio.example.com"), Some("https://radio.example.com"), &proxied), Ok(false));
     }
 }

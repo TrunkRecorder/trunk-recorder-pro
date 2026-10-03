@@ -148,8 +148,12 @@ pub fn catalog() -> Catalog {
             return Catalog { index, source: "saved", fetched, problem: Some(problem) };
         }
     }
-    let index = parse_index(BUILT_IN).unwrap_or_default();
-    Catalog { index, source: "built-in", fetched: None, problem: Some(problem) }
+    Catalog { problem: Some(problem), ..built_in() }
+}
+
+/// The copy of the registry's list built into this version.
+pub fn built_in() -> Catalog {
+    Catalog { index: parse_index(BUILT_IN).unwrap_or_default(), source: "built-in", fetched: None, problem: None }
 }
 
 /// GET `url`: its body, at most `limit` bytes.

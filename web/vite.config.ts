@@ -11,9 +11,10 @@ const version = /^version\s*=\s*"([^"]+)"/m.exec(readFileSync(new URL("../Cargo.
 // `npm run build:web` → dist-web/: the standalone browser version (engine in
 // WebAssembly, run from src/web/pkg, which `npm run wasm` builds).
 export default defineConfig(({ mode }) => ({
-  // The browser version uses relative URLs so it runs from any folder
-  // (e.g. unzipped from the -browser.zip release onto any web server).
-  base: mode === "web" ? "./" : "/",
+  // Relative URLs: the browser version runs from any folder (e.g. unzipped
+  // from the -browser.zip release onto any web server), and the desktop
+  // app's interface from / or /builtin/ (when / shows another interface).
+  base: "./",
   plugins: [react()],
   define: { __APP_VERSION__: JSON.stringify(version) },
   worker: { format: "es" },

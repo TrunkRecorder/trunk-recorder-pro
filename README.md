@@ -76,7 +76,8 @@ linearity or sensitivity gain step of 0–21, or its LNA (0–14), mixer and VGA
 (0–15) stages set by hand (the LNA and mixer optionally by its AGC), and an
 optional bias-T. Every radio has an AGC switch and **AutoTune**, which
 corrects for the frequency error its control channels show. Wider sources cost more
-CPU: about 1–2 % of a core per 2.4 MSPS.
+CPU: about 12 % of a core for a USRP at 8 MSPS, 8 % for two RTL-SDRs at 2.4 MSPS
+(Apple M4 Pro; see [docs/performance.md](docs/performance.md)).
 
 ## Run it
 
@@ -100,6 +101,14 @@ starts** (or run `trunk-pro --start`); Ctrl-C, SIGTERM and **Quit** all save
 the calls in progress before exiting. `--bind 0.0.0.0` makes the interface
 reachable from other machines — it has no login, so only on a network you
 trust (or use `ssh -L 8080:localhost:8080`).
+
+**Interfaces of your own** (a scanner page, a wall display, a dashboard)
+can do everything the built-in one does: see [docs/api](docs/api/README.md)
+(for developers) and [llms.txt](docs/api/llms.txt) (for an LLM building one
+for you). The recorder serves them: `trunk-pro --ui <folder>` shows one at
+`/`, and Setup → Recording → Interfaces adds any number at `/ui/<name>/`.
+The built-in interface is always at `/builtin/`, and `/ui/` lists everything,
+including runnable examples.
 
 `trunk-pro devices` lists radios; `trunk-pro capture out.cu8 --freq Hz
 --serial SN --seconds 30` records raw IQ from an RTL-SDR like `rtl_sdr`.
@@ -564,8 +573,11 @@ NAC 0x443, from an R820T RTL-SDR):
   100 % of TSBKs and 0 wrong voice codewords.
 - **Real air vs Trunk Recorder on the same capture:** more control messages
   decoded (1156 vs ~282) and more audio per call (e.g. TG 102 9.5 s vs 8.1 s).
-- **CPU:** 1.6 % of one core for a 2.4 MSPS site (CC + 2 voice channels,
-  three receivers each); 6 % for 8 MSPS with 16 simultaneous calls.
+- **CPU, live against Trunk Recorder** (same radios and settings, one at a
+  time, 30 min each, measured in cycles so clock-speed changes don't count):
+  P25 on a USRP at 8 MSPS 11.7 % of a core vs 201 % (17× less), SmartNet on
+  two RTL-SDRs 7.6 % vs 149 % (20×); each recorder adds under 1 point against
+  Trunk Recorder's 11–23. Details, chart and method: [docs/performance.md](docs/performance.md).
 - **Phase 2 TDMA, real air** (DCFD's 770 MHz channels): bit-exact with the
   TypeScript decoder (10,588 AMBE codewords, 3,741 MAC PDUs, vocoder audio
   max difference 0), the same receiver performance (82–97 % of codewords
