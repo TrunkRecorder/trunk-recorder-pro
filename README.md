@@ -76,8 +76,9 @@ linearity or sensitivity gain step of 0–21, or its LNA (0–14), mixer and VGA
 (0–15) stages set by hand (the LNA and mixer optionally by its AGC), and an
 optional bias-T. Every radio has an AGC switch and **AutoTune**, which
 corrects for the frequency error its control channels show. Wider sources cost more
-CPU: about 12 % of a core for a USRP at 8 MSPS, 8 % for two RTL-SDRs at 2.4 MSPS
-(Apple M4 Pro; see [docs/performance.md](docs/performance.md)).
+CPU: about 5 % of a Raspberry Pi 5 core for one RTL-SDR at 2.4 MSPS; on an
+Apple M4 Pro about 12 % of a core for a USRP at 8 MSPS and 8 % for two RTL-SDRs
+(see [docs/performance.md](docs/performance.md)).
 
 ## Run it
 
@@ -573,11 +574,13 @@ NAC 0x443, from an R820T RTL-SDR):
   100 % of TSBKs and 0 wrong voice codewords.
 - **Real air vs Trunk Recorder on the same capture:** more control messages
   decoded (1156 vs ~282) and more audio per call (e.g. TG 102 9.5 s vs 8.1 s).
-- **CPU, live against Trunk Recorder** (same radios and settings, one at a
-  time, 30 min each, measured in cycles so clock-speed changes don't count):
-  P25 on a USRP at 8 MSPS 11.7 % of a core vs 201 % (17× less), SmartNet on
-  two RTL-SDRs 7.6 % vs 149 % (20×); each recorder adds under 1 point against
-  Trunk Recorder's 11–23. Details, chart and method: [docs/performance.md](docs/performance.md).
+- **CPU, live against Trunk Recorder** (same radios, one at a time, 30 min
+  each): on a Raspberry Pi 5 (Linux, P25 on one RTL-SDR) 4–6× less while
+  recording (5.0 % of a core vs 20.3 % with one call, 6.2 % vs 35.6 % with
+  three); on macOS 17–20× less (P25 on a USRP at 8 MSPS 11.7 % vs 201 %,
+  SmartNet on two RTL-SDRs 7.6 % vs 149 %), where Trunk Recorder's thread
+  wake-ups cost far more. Each call adds under 1 point against Trunk
+  Recorder's 8–23. Details, charts and method: [docs/performance.md](docs/performance.md).
 - **Phase 2 TDMA, real air** (DCFD's 770 MHz channels): bit-exact with the
   TypeScript decoder (10,588 AMBE codewords, 3,741 MAC PDUs, vocoder audio
   max difference 0), the same receiver performance (82–97 % of codewords

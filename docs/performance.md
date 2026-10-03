@@ -1,14 +1,76 @@
 # Performance: Trunk Recorder Pro vs Trunk Recorder
 
-Measured on 2 October 2026, live on two real systems, the same radios and
-settings for both programs, one program running at a time.
+Measured on 2 October 2026 on live air, on a Raspberry Pi 5 (Linux) and a
+Mac mini (macOS): the same radios for both programs, one program running
+at a time.
+
+## Summary
+
+- **Linux, Raspberry Pi 5:** Pro uses **4–6× less CPU** than Trunk Recorder
+  while recording calls (5.0 % against 20.3 % of a core with one call, 6.2 %
+  against 35.6 % with three). Each extra call costs Pro 0.7 points and Trunk
+  Recorder 8.
+- **macOS, Apple M4 Pro:** the gap is **17–20×**, because about three
+  quarters of Trunk Recorder's CPU on macOS is the kernel contending over
+  thread wake-ups ([Where Trunk Recorder's CPU goes](#where-trunk-recorders-cpu-goes));
+  on Linux that share is about a fifth.
+
+Pro's cost hardly depends on how many calls are being recorded: the radio's
+spectrum is split into channels once by a shared FFT, so a recorder only
+decodes its own narrow channel. In Trunk Recorder each recorder filters the
+radio's whole sample stream for itself, through a chain of about 30 GNU
+Radio blocks, each its own thread.
+
+## Raspberry Pi 5 (Linux)
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="img/cpu-vs-recorders-pi-dark.svg">
+  <img src="img/cpu-vs-recorders-pi-light.svg" alt="CPU load against recorders in use on a Raspberry Pi 5, DCFD on one RTL-SDR: Trunk Recorder rising from 10 % idle to 20 % with one recorder, 28 % with two, 36 % with three and 44 % with four; Pro 4 % idle, 5 % with one, 6 % with two and three.">
+</picture>
+
+Median CPU (% of one core, clock fixed at 2.4 GHz) over 5 s samples, the
+recorder process itself:
+
+| Recorders | Trunk Recorder | Pro | Ratio |
+|---|---|---|---|
+| 0 | 10.4 % | 4.2 % | 2.5× |
+| 1 | 20.3 % | 5.0 % | 4.1× |
+| 2 | 27.5 % | 5.6 % | 4.9× |
+| 3 | 35.6 % | 6.2 % | 5.7× |
+| 4 | 44.4 % | | |
+| Average over the runs | 21.4 % | 5.0 % | 4.3× |
+| Each extra recorder | +8.0 points | +0.7 points | |
+
+| | Trunk Recorder | Pro |
+|---|---|---|
+| Kernel share of CPU time | 20 % | 2 % |
+| Context switches | 23,000 / s | 98 / s |
+| Memory | 137 MB | 56 MB |
+| Control messages decoded (DCFD sends ~25 / s) | 21 / s | 95 % |
+| Calls recorded, 2 × 15 min | 106 | 109 |
+
+On top of that, Trunk Recorder runs ffmpeg after every call (two-pass
+loudness normalisation and an M4A encode), another 9 % of a core on
+average. Pro normalises loudness in-process and, with no upload plugin
+configured, wasn't making M4As, so the table compares the recorder
+processes alone.
+
+**Setup:** Raspberry Pi Compute Module 5 (4 × Cortex-A76, 8 GB), Debian 12,
+`performance` governor (2,400 MHz on every sample; peak 71 °C, never
+throttled). One RTL-SDR (R820T) on DCFD at 858.3 MHz, 2.4 MSPS, −2 ppm, both
+control channels in range (857.9875, 858.9875), CQPSK. Trunk Recorder at
+1aac86c4 with Debian's GNU Radio 3.10.5, Release build, 8 digital
+recorders; Pro at 6773e36. Gains differ: Trunk Recorder decoded almost
+nothing at Pro's 28 dB (0–2 control messages / s) and runs at 49.6 dB, the
+RTL's maximum; Pro at 28 dB. Same order as on the Mac: Trunk Recorder,
+Pro, Trunk Recorder, Pro, 15 min each.
+
+## Mac mini (macOS)
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="img/cpu-vs-recorders-dark.svg">
-  <img src="img/cpu-vs-recorders-light.svg" alt="CPU load against recorders in use. DCFD on a USRP: Trunk Recorder about 23 % idle, jumping to 221 % with one recorder and 258 % with five; Pro 11 to 12 % throughout. WMATA on two RTL-SDRs: Trunk Recorder rising from 45 % with one recorder to 244 % with nine; Pro 5 to 10 %.">
+  <img src="img/cpu-vs-recorders-light.svg" alt="CPU load against recorders in use on macOS. DCFD on a USRP: Trunk Recorder about 23 % idle, jumping to 221 % with one recorder and 258 % with five; Pro 11 to 12 % throughout. WMATA on two RTL-SDRs: Trunk Recorder rising from 45 % with one recorder to 244 % with nine; Pro 5 to 10 %.">
 </picture>
-
-## Summary
 
 | | DCFD (P25, USRP B200, 8 MSPS) | WMATA (SmartNet, 2 RTL-SDRs, 2.4 MSPS each) |
 |---|---|---|
@@ -19,24 +81,12 @@ settings for both programs, one program running at a time.
 | Pro, each extra recorder | +0.6 points | +0.7 points |
 | Energy, Trunk Recorder / Pro | 5.4 W / 0.25 W | 1.1 W / 0.08 W |
 
-These are **macOS** measurements. Most of Trunk Recorder's CPU here is the
-kernel contending over thread wake-ups (see
-[Where Trunk Recorder's CPU goes](#where-trunk-recorders-cpu-goes)), which
-Linux handles differently, so expect a smaller gap on Linux until it has
-been measured there.
-
 "Load" is CPU work in cycles, as a share of one core at its full clock (see
 [Clock speed](#clock-speed)). With the same number of calls being recorded,
 Pro does 17–22× less work: at 2 recorders on DCFD 230 % vs 11.6 %, at 4 on
 WMATA 140 % vs 7.4 %, at 8 on WMATA 228 % vs 10.3 %.
 
-Pro's cost hardly depends on how many calls are being recorded: the radio's
-spectrum is split into channels once by a shared FFT, so a recorder only
-decodes its own narrow channel. In Trunk Recorder each recorder filters the
-radio's whole sample stream for itself, and (below) GNU Radio's scheduler
-adds a large fixed cost once any recorder is running.
-
-## Setup
+### Setup
 
 - **Computer:** Mac mini, Apple M4 Pro (8 performance + 4 efficiency
   cores), 24 GB, macOS 26.5. Nothing else heavy ran during the tests (one-minute load average 2–5).
@@ -57,7 +107,7 @@ Pro 15 min, so time-of-day traffic falls equally on both: 30 minutes of
 live air per program per system, sampled every 5 s after a 45 s warm-up
 (about 360 samples each).
 
-## Method
+### Method (macOS)
 
 A sampler ([`research/cpu-vs-trunk-recorder/`](../research/cpu-vs-trunk-recorder/))
 starts the program from the command line and every 5 s reads the process's
@@ -73,7 +123,7 @@ from its log ("Starting / Stopping … Recorder"), for Pro from the
 status connection costs it a little extra (it sends the spectrum to every
 client); that is counted against Pro.
 
-### Clock speed
+#### Clock speed
 
 The M4 Pro changes clock speed with load, and macOS moves threads between
 fast and efficient cores; neither can be fixed without root. A light load
@@ -101,7 +151,7 @@ By CPU time the ratios are smaller (11× and 17×) because Pro runs mostly
 on slow clocks. Pro uses more memory: it keeps one second of every radio's
 samples for pre-roll (8 MSPS × 8 bytes = 64 MB for the USRP).
 
-### Results by recorders in use
+#### Results by recorders in use
 
 Median load over the 5 s samples at each count (counts with at least 3
 samples):
@@ -125,7 +175,7 @@ in use on average against Pro's 1.2: `conversationMode` keeps a recorder
 between transmissions), which is why the comparison is made at the same
 number of recorders rather than over the runs as a whole.
 
-### Reception
+#### Reception
 
 Neither program was starved: the USRP delivered 8.000 MSPS and the RTL-SDRs
 2.4 MSPS throughout. Pro dropped 48,884 samples (6 ms) once in one DCFD run
@@ -217,15 +267,16 @@ that lock, and when many threads do so at once they spin.
 
 As far as we can tell from xnu's source, that lock is shared by the whole
 system rather than per process, so one busy Trunk Recorder slows another;
-the production DCFD instance ran throughout the WMATA A/B above. On
-Linux, the same waits are futexes in hashed buckets and don't serialise
-like this, so Trunk Recorder there likely spends far less CPU than on a
-Mac.
+the production DCFD instance ran throughout the WMATA A/B above.
+
+Linux confirms it: on the Raspberry Pi, where the same waits are futexes
+in hashed buckets, Trunk Recorder's kernel share is 20 % rather than 80 %,
+and Pro's lead shrinks from 17–20× to 4–6×. What's left there is each
+recorder filtering the whole sample stream for itself (+8 points per
+recorder against Pro's +0.7).
 
 ### Next steps
 
-- **Measure on Linux** (the Raspberry Pi testbed hears DCFD) before
-  comparing CPU in general terms.
 - **On macOS, cut the wake-ups that collide:** skip output ports with
   nothing new in GNU Radio's `tpb_detail::notify_downstream()`, so idle
   recorders aren't woken (on DCFD, ~1.4 of ~3 cores); and fewer threads per
@@ -237,8 +288,8 @@ Mac.
 ## Reproducing
 
 [`research/cpu-vs-trunk-recorder/`](../research/cpu-vs-trunk-recorder/) has
-the sampler (`bench.py`, `ru.py`), the run order (`series.sh`), the analysis
+the samplers (`bench.py` and `ru.py` for macOS, `bench_linux.py` for Linux), the run order (`series.sh`, and `pi/series.sh` with the Pi's configs), the analysis
 and chart (`analyze.py`), the TR profiling script (`prof.sh`) and the raw
-5-second samples (`runs/*.csv`) behind every number here. Configs are not
-included (they hold OpenMHz keys); the settings are listed under
+5-second samples (`runs/*.csv`) behind every number here. The Mac configs
+are not included (they hold OpenMHz keys); their settings are listed under
 [Setup](#setup).
