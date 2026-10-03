@@ -336,7 +336,7 @@ What the dashboard shows is measured by dedicated parts, kept out of the
 decoding code:
 
 ```text
-DSP parts (Bank, SmartNet CC, Engine) ── metrics::Instrumented::report ──┐
+ControlChannel / VoiceDecoder ::report, Engine::report ──────────────────┐
 stats::SampleMeter (headroom, clipping, on the sample path, 1 in 16) ────┤
 stats Tally (calls, airtime, reasons, voice errors, from events) ────────┴─► stats::Aggregator
                                                                                ├─► `stats` (1/s)
@@ -349,6 +349,10 @@ session events ─► Stats::observe ─► stats::Registry (talkgroups, radios,
   part keeps plain counters and current values in its own fields and lists
   them when asked, about once a second (`cc/good`, `cc/sep`, …). Running
   totals become rates in the aggregator; nothing on the sample path changes.
+  Each protocol says what it measures through `ControlChannel::report` and
+  each voice kind through `VoiceDecoder::report` (both default to nothing),
+  so a new protocol brings its own figures; `Engine::report` adds what every
+  system and source shares (levels, ppm, calls).
 - **`trunk-app/src/stats/`**: `Aggregator` (rates, per-minute avg/min/max),
   `History` (a minute grid per series, queries downsampled), `Registry`
   (bounded maps per system, saved as JSON), `Monitor` (events), and `Stats`,
