@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use trunk_core::p25::diversity::BankConfig;
 use trunk_core::trunk::{
-    check_channels, conventional_index, Access, parse_csv, CallConfig, ConvChannel, ConvConfig, ConvMode, ConvSystem, EngineConfig, Identity, SaveRules, SourceConfig,
+    check_channels, conventional_index, Access, parse_csv, CallConfig, Protocol, ConvChannel, ConvConfig, ConvMode, ConvSystem, EngineConfig, IdField, Identity, SaveRules, SourceConfig,
     SystemConfig, Talkgroup, UnitTags, UnitTagsMode, MAX_CONVENTIONAL,
 };
 
@@ -378,7 +378,13 @@ pub struct SiteIdentity {
 
 impl SiteIdentity {
     fn engine(&self) -> Identity {
-        Identity { nac: self.nac, wacn: self.wacn, sys_id: self.sys_id, rfss: self.rfss, site: self.site }
+        let mut id = Identity::default();
+        id.set_opt(IdField::Nac, self.nac.map(u32::from));
+        id.set_opt(IdField::Wacn, self.wacn);
+        id.set_opt(IdField::SysId, self.sys_id);
+        id.set_opt(IdField::Rfss, self.rfss);
+        id.set_opt(IdField::Site, self.site);
+        id
     }
 }
 
@@ -1293,8 +1299,13 @@ impl Config {
                 bank: s.bank(),
                 talkgroups: parse_csv(&s.talkgroups_csv),
                 expect: s.expect.engine(),
-                smartnet: if s.is_smartnet() { s.smartnet().ok() } else { None },
-                dmr: s.is_dmr().then(|| s.dmr()),
+                protocol: if s.is_dmr() {
+                    Protocol::Dmr(s.dmr())
+                } else if let Some(sn) = s.is_smartnet().then(|| s.smartnet().ok()).flatten() {
+                    Protocol::SmartNet(sn)
+                } else {
+                    Protocol::P25
+                },
                 site_group: s.site_group.trim().to_string(),
             })
             .collect();
@@ -1492,8 +1503,8 @@ mod tests {
         assert!((771_106_250.0 - centers[1]).abs() <= hw, "west's CC not in source 2 at {}", centers[1]);
         let e = c.engine_config(0.0);
         assert_eq!(e.systems.iter().map(|s| s.short_name.as_str()).collect::<Vec<_>>(), ["east", "west"]);
-        assert_eq!(e.systems[0].expect.nac, Some(0x443));
-        assert_eq!(e.systems[0].expect.site, Some(3));
+        assert_eq!(e.systems[0].expect.nac(), Some(0x443));
+        assert_eq!(e.systems[0].expect.site(), Some(3));
         assert!(e.systems[0].calls.record_unknown && !e.systems[1].calls.record_unknown);
         assert_eq!((e.systems[0].save.min_call_s, e.systems[1].save.min_call_s), (0.0, 2.0));
         let saved = serde_json::to_string(&c.systems[1]).unwrap();

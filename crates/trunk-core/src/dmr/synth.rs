@@ -364,7 +364,7 @@ mod tests {
         let iq = wideband(fs, freq - center);
         let cfg = EngineConfig {
             sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false }],
-            systems: vec![SystemConfig { short_name: "cap".into(), control_channels: vec![freq], dmr: Some(Default::default()), ..Default::default() }],
+            systems: vec![SystemConfig { short_name: "cap".into(), control_channels: vec![freq], protocol: crate::trunk::Protocol::Dmr(Default::default()), ..Default::default() }],
             ..Default::default()
         };
         let done = run(cfg, &iq);

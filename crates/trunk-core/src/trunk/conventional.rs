@@ -46,17 +46,15 @@ use super::calls::{conventional_index, conventional_system, Call, CallId, CallMa
 use super::frames::CallFrames;
 use super::record::{Reception, Transmissions};
 use super::talkgroups::Talkgroup;
-use super::tracker::{TrackerOut, VoiceTracker};
+use super::voice::TrackerOut;
+use super::voice::{self, VoiceDecoder, VoiceKind, VoiceSpec};
 use super::frames::VoiceFrame;
-use crate::dmr::voice::{DmrVoice, VOICE_BURST_S};
-use crate::dsp::c4fm::C4fm;
-use crate::dsp::fm::{self, ChannelFilter, Nbfm};
-use crate::dsp::signalling::Signalling;
+use crate::dsp::fm::{self, ChannelFilter};
 use crate::dsp::tones::{Tone, ToneDetector};
-use crate::dsp::{Channelizer, HeadId, Receiver, Symbol};
+use crate::dsp::{Channelizer, HeadId};
 use crate::mbe;
 use crate::p25::alias::Alias;
-use crate::p25::diversity::{best_frame, Bank, BankConfig, Group};
+use crate::p25::diversity::BankConfig;
 
 /// Half-width of the band the detector sums, Hz (a 12.5 kHz channel's signal).
 const DETECT_HALF_BW: f64 = 5000.0;
@@ -296,13 +294,6 @@ pub fn heard_code(call: &Call) -> Option<String> {
     call.nac.map(|n| Access::Nac(n).to_string())
 }
 
-enum Rx {
-    Fm(Nbfm, Signalling),
-    /// `t0`: sample-clock time of the head's first output; `rate`: its sample rate.
-    P25 { meter: ChannelFilter, bank: Bank, tracker: VoiceTracker, groups: Vec<Group>, t0: f64, rate: f64 },
-    Dmr { meter: ChannelFilter, rx: C4fm, voice: Box<DmrVoice>, syms: Vec<Symbol>, t0: f64, rate: f64 },
-}
-
 /// What one slot of an open channel heard in one run (FM and P25: slot 0 only).
 #[derive(Default)]
 struct Heard {
@@ -360,7 +351,10 @@ struct Live {
 
 struct Open {
     head: HeadId,
-    rx: Rx,
+    /// Its decoder ([`super::voice`]: the same as trunked calls').
+    voice: Box<dyn VoiceDecoder>,
+    /// Digital: the carrier meter (FM: the decoder's squelch tells).
+    meter: Option<ChannelFilter>,
     opened_s: f64,
     carrier_seen: bool,
     last_carrier_s: f64,
@@ -601,26 +595,26 @@ impl Conventional {
     fn open(ch: &mut Chan, chz: &mut Channelizer, now_s: f64, preroll_s: f64, bank_cfg: BankConfig, vocoder: mbe::Profile, meter_thr: f32, num: u32, calls: &mut CallManager, rules: &CallRules, out: &mut Vec<ConvOut>) {
         let (head, pre, start_sample) = chz.add_head(ch.offset_hz, HEAD_CUTOFF_HZ, preroll_s);
         let rate = chz.output_rate();
-        let rx = match ch.cfg.mode {
-            ConvMode::Fm => Rx::Fm(Nbfm::new(rate), Signalling::default()),
-            ConvMode::P25 => Rx::P25 {
-                meter: ChannelFilter::new(rate),
-                bank: Bank::new(rate, bank_cfg),
-                tracker: VoiceTracker::new(mbe::lcg(ch.cfg.freq_hz as u32), vocoder),
-                groups: Vec::new(),
-                t0: start_sample as f64 / chz.fs(),
-                rate,
-            },
-            ConvMode::Dmr => Rx::Dmr {
-                meter: ChannelFilter::new(rate),
-                rx: C4fm::dmr(rate),
-                voice: Box::new(DmrVoice::new(ch.cfg.freq_hz as u32)),
-                syms: Vec::new(),
-                t0: start_sample as f64 / chz.fs(),
-                rate,
-            },
+        let kind = match ch.cfg.mode {
+            ConvMode::Fm => VoiceKind::Analog,
+            ConvMode::P25 => VoiceKind::Fdma,
+            ConvMode::Dmr => VoiceKind::Dmr,
         };
-        ch.open = Some(Open { head, rx, opened_s: now_s, carrier_seen: false, last_carrier_s: now_s, live: [None, None], tx: None });
+        let voice = voice::build(&VoiceSpec {
+            kind,
+            rate,
+            // (On the engine's clock: `now_s` is this source's, offset included.)
+            t0: start_sample as f64 / chz.fs() + (now_s - chz.sample_position() as f64 / chz.fs()),
+            seed: ch.cfg.freq_hz as u32,
+            vocoder,
+            bank: bank_cfg,
+            // (FM: set on every run, from the noise floor.)
+            squelch: meter_thr,
+            // For the tone detector.
+            subaudible: true,
+        });
+        let meter = (kind != VoiceKind::Analog).then(|| ChannelFilter::new(rate));
+        ch.open = Some(Open { head, voice, meter, opened_s: now_s, carrier_seen: false, last_carrier_s: now_s, live: [None, None], tx: None });
         Self::run(ch, &pre, now_s, meter_thr, num, calls, rules, 0.0, out);
     }
 
@@ -629,76 +623,34 @@ impl Conventional {
     fn run(ch: &mut Chan, iq: &[Complex32], now_s: f64, meter_thr: f32, num: u32, calls: &mut CallManager, rules: &CallRules, max_call_s: f64, out: &mut Vec<ConvOut>) {
         let o = ch.open.as_mut().unwrap();
         let mut heard: [Heard; 2] = Default::default();
-        let carrier = match &mut o.rx {
-            Rx::Fm(fm, ids) => {
-                let h = &mut heard[0];
-                let up = fm.push_low(iq, meter_thr, &mut h.audio, Some(&mut h.low));
-                let mut found = Vec::new();
-                ids.push(&h.audio, &mut found);
-                h.infos.extend(found.iter().map(|u| (Some(u.unit), u.emergency, false)));
-                if ch.routed {
-                    if let Some(code) = Self::route(&ch.rows, &mut o.tx, h, up) {
-                        Self::skip(&mut ch.skipped[0], ch.cfg.freq_hz, code, now_s, rules, out);
-                    }
+        // Digital: the carrier by the meter; FM: by the decoder's squelch, at the same threshold.
+        let metered = o.meter.as_mut().map(|m| m.meter(iq) > meter_thr);
+        o.voice.set_squelch(meter_thr);
+        let mut vout = Vec::new();
+        o.voice.push(iq, &mut vout);
+        let carrier = metered.or(o.voice.carrier()).unwrap_or(false);
+        for v in vout {
+            let h = &mut heard[v.slot as usize & 1];
+            match v.out {
+                TrackerOut::Audio(a, f) => {
+                    h.audio.extend_from_slice(&a);
+                    h.frames.push(f);
                 }
-                up
+                TrackerOut::AnalogAudio(a) => h.audio.extend_from_slice(&a),
+                TrackerOut::Subaudible(l) => h.low.extend_from_slice(&l),
+                TrackerOut::Info { source, emergency, encrypted } => h.infos.push((source, emergency, encrypted)),
+                TrackerOut::Alias(a) => out.push(ConvOut::Alias(conventional_system(ch.cfg.system), a)),
             }
-            Rx::P25 { meter, bank, tracker, groups, t0, rate } => {
-                let up = meter.meter(iq) > meter_thr;
-                groups.clear();
-                bank.push(iq, groups);
-                let mut tout = Vec::new();
-                let h = &mut heard[0];
-                for g in groups.iter() {
-                    h.nac = Some(best_frame(g).nid.nac);
-                    let t = *t0 + best_frame(g).sample / *rate;
-                    let before = tout.len();
-                    tracker.group(g, t, &mut tout);
-                    if tout.len() > before {
-                        // An LDU is 180 ms of voice.
-                        h.air = Some((h.air.map_or(t, |a| a.0), t + 0.18));
-                    }
-                }
-                for t in tout {
-                    match t {
-                        TrackerOut::Audio(a, f) => {
-                            h.audio.extend_from_slice(&a);
-                            h.frames.push(f);
-                        }
-                        TrackerOut::Info { source, emergency, encrypted } => h.infos.push((source, emergency, encrypted)),
-                        TrackerOut::AnalogAudio(a) => h.audio.extend_from_slice(&a),
-                        TrackerOut::Alias(a) => out.push(ConvOut::Alias(conventional_system(ch.cfg.system), a)),
-                    }
-                }
-                h.tg = tracker.talkgroup();
-                up
+        }
+        for (slot, h) in heard.iter_mut().enumerate() {
+            let a = o.voice.air(slot as u8);
+            (h.air, h.tg, h.nac, h.color_code) = (a.air, a.talkgroup, a.nac, a.color_code);
+        }
+        if ch.routed && ch.cfg.mode == ConvMode::Fm {
+            if let Some(code) = Self::route(&ch.rows, &mut o.tx, &mut heard[0], carrier) {
+                Self::skip(&mut ch.skipped[0], ch.cfg.freq_hz, code, now_s, rules, out);
             }
-            Rx::Dmr { meter, rx, voice, syms, t0, rate } => {
-                let up = meter.meter(iq) > meter_thr;
-                syms.clear();
-                rx.push(iq, syms);
-                let mut vout = Vec::new();
-                voice.push(syms, *t0, *rate, &mut vout);
-                for v in vout {
-                    let h = &mut heard[v.slot as usize];
-                    match v.out {
-                        TrackerOut::Audio(a, f) => {
-                            h.air = Some((h.air.map_or(v.t, |a| a.0), v.t + VOICE_BURST_S));
-                            h.audio.extend_from_slice(&a);
-                            h.frames.push(f);
-                        }
-                        TrackerOut::Info { source, emergency, encrypted } => h.infos.push((source, emergency, encrypted)),
-                        TrackerOut::Alias(a) => out.push(ConvOut::Alias(conventional_system(ch.cfg.system), a)),
-                        TrackerOut::AnalogAudio(_) => {}
-                    }
-                }
-                for (s, h) in heard.iter_mut().enumerate() {
-                    h.tg = voice.talkgroup(s as u8);
-                    h.color_code = voice.color_code(s as u8);
-                }
-                up
-            }
-        };
+        }
         if carrier {
             o.carrier_seen = true;
             o.last_carrier_s = now_s;
@@ -953,21 +905,14 @@ impl Conventional {
         for (idx, ch) in self.chans.iter_mut().enumerate() {
             let rules = &rules[ch.cfg.system];
             let Some(o) = ch.open.as_mut() else { continue };
-            if let Rx::P25 { bank, tracker, groups, t0, rate, .. } = &mut o.rx {
-                groups.clear();
-                bank.flush(groups);
-                let mut tout = Vec::new();
-                for g in groups.iter() {
-                    tracker.group(g, *t0 + best_frame(g).sample / *rate, &mut tout);
-                }
-                if let Some(l) = o.live[0].as_mut() {
-                    for t in tout {
-                        if let TrackerOut::Audio(a, f) = t {
-                            if !(l.call.encrypted && !rules.record_encrypted) {
-                                l.audio.extend_from_slice(&a);
-                                l.frames.push(f);
-                            }
-                        }
+            let mut vout = Vec::new();
+            o.voice.flush(&mut vout);
+            for v in vout {
+                let Some(l) = o.live[v.slot as usize & 1].as_mut() else { continue };
+                if let TrackerOut::Audio(a, f) = v.out {
+                    if !(l.call.encrypted && !rules.record_encrypted) {
+                        l.audio.extend_from_slice(&a);
+                        l.frames.push(f);
                     }
                 }
             }

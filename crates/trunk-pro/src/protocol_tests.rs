@@ -136,6 +136,44 @@ fn a_recording_sessions_messages() {
     check_all("FromRecorder", &msgs);
 }
 
+/// A radio whose first samples come 3 s after recording starts (a USRP
+/// loading its FPGA, say): the session sets its clock from the wall clock,
+/// so a transmission 0.5 s into its samples is saved as 3.5 s in, not 0.5 s.
+#[test]
+fn a_late_radio_keeps_to_the_wall_clock() {
+    let epoch = 1.75e12;
+    // When the call starts, ms after the recording did.
+    let start_of = |cfg: Config| {
+        let mut s = Session::new(cfg, epoch, &|_| None, |_| 0).unwrap();
+        let mut out = Vec::new();
+        s.poll(epoch, &mut out);
+        let mut files = Vec::new();
+        air(2_400_000.0, 4.5, |iq, t| {
+            s.push_iq(0, iq, 0);
+            s.poll(epoch + 3000.0 + t * 1000.0, &mut out);
+            files.extend(out.drain(..).filter_map(|o| if let Output::File { json, .. } = o { Some(json) } else { None }));
+        });
+        s.finish(&mut out);
+        files.extend(out.drain(..).filter_map(|o| if let Output::File { json, .. } = o { Some(json) } else { None }));
+        let call: Value = serde_json::from_str(files.first().expect("a call")).unwrap();
+        call["start_time_ms"].as_f64().unwrap() - epoch
+    };
+    let radio = start_of(conventional_config());
+    assert!((radio - 3500.0).abs() < 100.0, "the call starts {radio} ms in");
+    // A capture played as fast as it can be keeps its own time.
+    let mut replay = conventional_config();
+    replay.sources = vec![trunk_app::config::Source::File {
+        path: "x.cu8".into(),
+        center_hz: 155_000_000.0,
+        rate_hz: 2_400_000.0,
+        realtime: false,
+        format: Default::default(),
+        auto_tune: false,
+    }];
+    let file = start_of(replay);
+    assert!((file - 500.0).abs() < 100.0, "the replayed call starts {file} ms in");
+}
+
 #[test]
 fn a_surveys_messages() {
     let cfg: Config = serde_json::from_value(json!({

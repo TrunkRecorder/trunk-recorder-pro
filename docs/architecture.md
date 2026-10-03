@@ -155,35 +155,63 @@ one `CallManager` serve P25, SmartNet and trunked DMR.
 
 - **`Radio`** is shared by all systems. It holds the sources and their
   channelizers, the open voice channels (`HashMap<(system, freq), Channel>`),
-  the recorder pool (`recordings`, capped by `maxRecorders`), each system's
-  Phase 2 scrambler keys, and the AutoTune ppm per source.
-- **`Trunk`** is one per active trunked system, or site. It holds the
-  control-channel state (P25 `Bank` + `TsbkParser`, or SmartNet receiver, or
-  `DmrWatch` over every carrier of a DMR site) and the site identity and site
-  lock (`Identity`, `expect`). It also owns a `CallManager` (`calls.rs`: turns
-  `Message`s into `Call`s, à la Trunk Recorder's `monitor_systems.cc`), the
-  unit aliases, and the adjacent sites.
+  the recorder pool (`recordings`, capped by `maxRecorders`), what each
+  system's control channel tells its voice channels (`VoiceParams`: the
+  Phase 2 scrambler key), and the AutoTune ppm per source.
+- **`Trunk`** is one per active trunked system, or site, and knows nothing
+  of any protocol. Its `ControlChannel` (`control.rs`) decodes the protocol;
+  the `Trunk` does what every protocol shares:
+  - hunting through the control channels, or watching every carrier, as the
+    protocol's `CarrierPlan` says;
+  - the site lock (`identity.rs`), on the fields the protocol states;
+  - AutoTune;
+  - the system's clock;
+  - its `CallManager` (`calls.rs`: turns `Message`s into `Call`s, à la Trunk
+    Recorder's `monitor_systems.cc`);
+  - the unit aliases and the adjacent sites.
 - **`Conventional`** (`conventional.rs`) covers energy-detected channels,
   tone / NAC / colour-code matching, and their calls.
 - **`MultiSite`** (`multisite.rs`) holds the copies of one call heard on
   several sites. When the last copy ends it keeps the best one (most cleanly
   decoded voice, or the talkgroup's preferred site).
 
-A `CallManager` reaches the radio through the `RecorderHost` trait, which
-`SysHost` implements. A grant calls `start_recording`, which takes a recorder
-from the pool and calls `open_channel`. That adds a head on whichever source
-covers the frequency, replays the pre-roll and builds the voice path:
+**Control channels** (`control.rs`): one `ControlChannel` implementation per
+protocol.
 
-| `Voice` | Path |
+| Protocol | Carriers | Decoding | Site lock fields |
+|---|---|---|---|
+| `P25` | one, hunted | receiver bank → framer → TSBKs → `TsbkParser` | NAC, WACN, System ID, RFSS, site |
+| `SmartNet` | one, hunted | `Fsk2` → OSW framer → `smartnet::Parser` | System ID, site |
+| `Dmr` | every carrier of the site, watched | `dmr::Site`: bursts → CSBKs / link control | none (colour codes) |
+
+Each one turns IQ into `Step`s (messages, plus what the site has said about
+itself so far). `Trunk::follow` checks every step against the site lock
+before the call manager sees it. A system's protocol is
+`SystemConfig::protocol` (`Protocol::{P25, SmartNet, Dmr}`). What the
+dashboard shows beyond the common fields is `ProtocolStatus` (e.g. a DMR
+site's channel table).
+
+**Voice channels** (`voice.rs`): a `CallManager` reaches the radio through the
+`RecorderHost` trait, which `SysHost` implements.
+1. A grant calls `start_recording`, which takes a recorder from the pool and
+   calls `open_channel`.
+2. `open_channel` adds a head on whichever source covers the frequency and
+   replays the pre-roll.
+3. It then builds the call's `VoiceDecoder`. Which decoder depends on the
+   call, not the control channel (`VoiceKind::of`): a P25 system grants
+   Phase 1 and Phase 2 calls, a SmartNet system analog and P25 ones.
+
+| `VoiceKind` | Path |
 |---|---|
 | `Fdma` | `Bank` → `VoiceTracker` (`tracker.rs`) → IMBE |
 | `Tdma` | `Cqpsk` (6000 Bd) → `phase2::Framer` → `TdmaTracker` (`tdma.rs`), both slots on one head |
-| `Analog` | `Nbfm`, squelched at the noise floor + 6 dB; MDC1200 / FleetSync IDs via `dsp::signalling` |
+| `Analog` | `Nbfm`, squelched; MDC1200 / FleetSync IDs via `dsp::signalling` |
 | `Dmr` | `C4fm` → `DmrVoice` (both slots) |
 
-Voice trackers emit `TrackerOut` (audio, link-control info, encryption,
-units). These outputs are queued and applied after the block, so a voice
-channel never borrows a `Trunk` mutably.
+Conventional channels use the same decoders, with their own squelch and
+carrier meter around them. A decoder's outputs (`VoiceOut`: slot, air time,
+`TrackerOut`) are queued and applied after the block, so a voice channel
+never borrows a `Trunk` mutably.
 
 For each source block the engine works in this order:
 
@@ -193,10 +221,25 @@ For each source block the engine works in this order:
 4. Run conventional channels.
 5. Emit call events.
 
-**Time.** The engine has no wall clock. Each `Trunk` keeps `now_s` from its
-control channel's sample count; the engine's own `now_s` comes from source 0.
-Wall time is `epoch_ms` (taken by the platform at start) plus sample time.
+**Time.** The engine has no wall clock. Every time comes from a source's
+sample count, plus that source's clock offset (`Engine::set_clock_offset`):
+- each `Trunk` keeps `now_s` from its control channel's source;
+- the engine's own `now_s` comes from source 0.
+
+Wall time is `epoch_ms` (taken by the platform at start) plus engine time.
 `Session` applies the local UTC offset for folder names.
+
+`Session` sets each live source's offset by measuring its samples against
+the wall clock (`ClockFit`):
+- **At first data, at once.** This covers the time a radio took to open (a
+  USRP's FPGA load).
+- **Then from the least lag in each 10 s window**, slewed at most 1 ms a
+  second. This covers crystal error, and time never runs backwards. (Samples
+  only ever arrive late, so the least lag is the clock's own.)
+
+A capture played as fast as it can be keeps its sample time. `now_ms`, which
+the platform passes to `poll`, is Unix ms on a monotonic clock: the epoch
+plus `Instant` / `performance.now()`.
 
 Sample counts stay in step with the air only if no samples go missing, so
 missing samples are fed as silence (`Engine::push_gap`):
@@ -207,8 +250,7 @@ missing samples are fed as silence (`Engine::push_gap`):
 
 Calls on a dead source therefore still time out, and sources' clocks stay
 comparable for multi-site matching. Conventional channels don't learn their
-noise floor from the silence or open on it. What isn't corrected: a source's
-crystal error, and the time a radio takes to open before its first samples.
+noise floor from the silence or open on it.
 
 **Output.** The engine does no I/O. Everything comes out of
 `Engine::drain_events()` as an `Event`:
@@ -226,13 +268,37 @@ crystal error, and the time a radio takes to open before its first samples.
 `Engine::status()` returns a snapshot of every system and source for the
 dashboard.
 
-#### Audio post-processing
+#### Saving a call
 
-`record.rs` builds the call JSON (Trunk Recorder's fields plus `signal`,
-`noise`, `snr`, `clean_voice_pct`, `errorList`, `freq_error`). The engine's
-`write_call` drops transmissions shorter than `minTransmissionS`, applies the
-digital / analog level, and normalises loudness (`loudness.rs`, −16.5 dBFS
-speech). `wav.rs` writes 16-bit mono 8 kHz.
+`record::save_call` turns a finished call into a `Concluded`:
+- it leaves out transmissions shorter than `minTransmissionS`;
+- it refuses a call that is too short or silent;
+- it normalises loudness (`loudness.rs`, −16.5 dBFS speech) and applies the
+  digital / analog level;
+- it writes the call JSON (Trunk Recorder's fields plus `signal`, `noise`,
+  `snr`, `clean_voice_pct`, `errorList`, `freq_error`).
+
+The engine only gathers the system's rules and names for it. `wav.rs` writes
+16-bit mono 8 kHz.
+
+#### Adding a protocol
+
+A new trunking protocol (say NXDN) touches these places:
+
+1. **Decoding:** a module of its own (`nxdn/`): receiver, framer, and a
+   parser that produces `trunk::Message`s.
+2. **Its control channel:** a `ControlChannel` implementation in
+   `control.rs`. It sets the `CarrierPlan`, the identity fields its site lock
+   can use, and its site group.
+3. **Wiring it in:** a `Protocol` variant, and its line in `control::build`.
+4. **Its voice:** if the voice is new, a `VoiceKind`, its `VoiceDecoder`, its
+   line in `voice::build`, and how a grant marks it in `VoiceKind::of`.
+5. **Its site's identity:** if the site states facts no protocol has yet, an
+   `IdField` for each.
+6. **The config:** a `type` in `trunk-app`'s config and Setup.
+
+The call manager, multi-site, recording, plugins and the interface don't
+change.
 
 ### 6. Session (`trunk-app/src/session.rs`)
 
@@ -431,6 +497,10 @@ Other conventions:
 | File names and folders | `trunk-app/src/filename.rs` |
 | Talkgroup CSV / unit names | `trunk-core/src/trunk/talkgroups.rs`, `units.rs` |
 | Conventional channel CSV | `trunk-app/src/channels.rs` |
+| Control channels, one per protocol | `trunk-core/src/trunk/control.rs` |
+| Voice decoders, one per kind of voice | `trunk-core/src/trunk/voice.rs` |
+| Site identity and the site lock | `trunk-core/src/trunk/identity.rs` |
+| Saving a call (cutting, levels, JSON) | `trunk-core/src/trunk/record.rs` |
 | Multi-site dedupe | `trunk-core/src/trunk/multisite.rs` |
 | Interface protocol | `web/src/protocol.ts` → `docs/api/protocol.schema.json` |
 | Plugin protocol | `crates/trunk-recorder-plugin/src/protocol.rs` |

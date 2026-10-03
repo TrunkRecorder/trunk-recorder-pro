@@ -6,7 +6,10 @@ use std::fmt::Write;
 use super::calls::{conventional_index, Call};
 use crate::dsp::tones::Tone;
 use super::frames::FrameErrors;
+use super::frames::frames_jsonl;
+use super::multisite::Held;
 use super::units::{UnitAliases, UnitTags};
+use crate::{loudness, mbe};
 
 pub struct ConcludeInfo<'a> {
     pub short_name: &'a str,
@@ -243,4 +246,97 @@ mod tests {
         tx.drop_short(&mut audio, 0.0, 8000);
         assert_eq!(audio.len(), 25600);
     }
+}
+
+/// What becomes of a finished call's audio: which calls are kept, and how
+/// they sound.
+#[derive(Clone, Copy, Debug)]
+pub struct SaveRules {
+    /// Keep calls with no decoded audio (encrypted, lost).
+    pub keep_silent: bool,
+    /// Drop calls with less audio than this, s (Trunk Recorder's minDuration).
+    pub min_call_s: f64,
+    /// Leave out transmissions shorter than this, s (minTransmissionDuration).
+    pub min_transmission_s: f64,
+    /// Bring each call's speech to one level ([`crate::loudness`]).
+    pub normalize: bool,
+    /// Then raise (or lower) digital and analog audio by this much, dB
+    /// (Trunk Recorder's digitalLevels / analogLevels).
+    pub digital_gain_db: f32,
+    pub analog_gain_db: f32,
+}
+
+impl Default for SaveRules {
+    fn default() -> Self {
+        SaveRules { keep_silent: false, min_call_s: 0.0, min_transmission_s: 0.0, normalize: true, digital_gain_db: 0.0, analog_gain_db: 0.0 }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Concluded {
+    pub call: Call,
+    /// Trunk Recorder's call JSON.
+    pub json: String,
+    /// The call's system's short name (its folder).
+    pub short_name: String,
+    /// `<talkgroup>-<start epoch>_<freq>[.slot]`
+    pub base_name: String,
+    /// 8 kHz mono in [−1, 1].
+    pub audio: Vec<f32>,
+    /// With [`EngineConfig::capture_frames`]: the vocoder frames behind
+    /// `audio`, as JSON lines (see [`super::frames::frames_jsonl`]).
+    pub frames: Option<String>,
+}
+
+/// What saving a call needs from its system.
+pub struct SaveContext<'a> {
+    pub rules: SaveRules,
+    pub short_name: &'a str,
+    /// Wall clock (Unix ms) at the engine's time 0.
+    pub epoch_ms_at_zero: f64,
+    /// Its radios' talker aliases, and its unit names file.
+    pub units: Option<&'a UnitAliases>,
+    pub unit_tags: Option<&'a UnitTags>,
+}
+
+/// A finished call made ready to save: transmissions shorter than its
+/// rules allow left out, its loudness and level set, Trunk Recorder's call
+/// JSON written. `Err(call)` when it isn't kept (silent, or shorter than
+/// its system's minimum).
+pub fn save_call(h: Held, cx: &SaveContext) -> Result<Concluded, Call> {
+    let Held { call, audio, frames, recorder_num, tx, reception, freq_error_hz } = h;
+    let rules = &cx.rules;
+    // An encrypted call's "audio" is at most a few frames vocoded before
+    // the cipher was known: noise. Trunk Recorder keeps none either.
+    let mut audio = if call.encrypted { Vec::new() } else { audio };
+    tx.drop_short(&mut audio, rules.min_transmission_s, mbe::SAMPLE_RATE);
+    let short = (audio.len() as f64) < rules.min_call_s * mbe::SAMPLE_RATE as f64 && !audio.is_empty();
+    if (audio.is_empty() && !rules.keep_silent) || short {
+        return Err(call);
+    }
+    if rules.normalize {
+        loudness::normalize(&mut audio, mbe::SAMPLE_RATE);
+    }
+    let gain_db = if call.analog { rules.analog_gain_db } else { rules.digital_gain_db };
+    if gain_db != 0.0 {
+        let g = 10f32.powf(gain_db / 20.0);
+        audio.iter_mut().for_each(|x| *x = (*x * g).clamp(-1.0, 1.0));
+    }
+    let (json, base_name) = call_record(
+        &call,
+        &ConcludeInfo {
+            short_name: cx.short_name,
+            epoch_ms_at_zero: cx.epoch_ms_at_zero,
+            audio_seconds: audio.len() as f64 / mbe::SAMPLE_RATE as f64,
+            errors: &frames.errors,
+            recorder_num,
+            end_s: call.last_audio_s,
+            units: cx.units,
+            unit_tags: cx.unit_tags,
+            reception,
+            freq_error_hz: freq_error_hz.map_or(0, |e| e.round() as i32),
+        },
+    );
+    let frames = frames.captured.filter(|_| !audio.is_empty()).map(|f| frames_jsonl(&f));
+    Ok(Concluded { call, json, short_name: cx.short_name.to_string(), base_name, audio, frames })
 }

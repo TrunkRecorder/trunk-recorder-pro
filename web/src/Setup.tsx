@@ -30,6 +30,7 @@ import {
   systemColor,
   USRP_RATES,
   usableHalfWidth,
+  siteLockFields,
 } from "./config.ts";
 import { currentView, dismissTodo, downloadText, findRadios, openGuide, refreshDevices, setChannelFile, setNotice, setSetupTab, setView, updateConfig, useApp, web, type SetupTab } from "./controller.ts";
 import { InterfacesPanel } from "./Interfaces.tsx";
@@ -1347,6 +1348,15 @@ function NumInput(props: { value: number | null | undefined; hex?: boolean; plac
 const hexText = (v: number | null | undefined) => (v === null || v === undefined ? "?" : v.toString(16).toUpperCase());
 
 /** "WACN BEE00 · SysID 445 · site 1-3" from what is known. */
+/** The site-lock inputs, in order. */
+const LOCK_INPUTS: { key: keyof SiteIdentity; label: string; hex: boolean }[] = [
+  { key: "nac", label: "NAC", hex: true },
+  { key: "wacn", label: "WACN", hex: true },
+  { key: "sysId", label: "System ID", hex: true },
+  { key: "rfss", label: "RFSS", hex: false },
+  { key: "site", label: "Site", hex: false },
+];
+
 export function siteText(id: SiteIdentity): string {
   const parts: string[] = [];
   if (id.wacn != null) parts.push(`WACN ${hexText(id.wacn)}`);
@@ -1495,7 +1505,10 @@ function SystemCard(props: { c: Config; i: number }) {
   const ignored = [...tgs.values()].filter((t) => t.ignore).length;
   const tgDonors = c.systems.filter((x, k) => k !== i && x.talkgroupsCsv);
   const siblings = siteSiblings(c, sys);
-  const locked = Object.values(sys.expect).some((v) => v !== null && v !== undefined);
+  // The lock, on the fields this protocol states (others are ignored).
+  const lockFields = siteLockFields(sys.type);
+  const lockedTo: SiteIdentity = Object.fromEntries(lockFields.filter((f) => sys.expect[f] != null).map((f) => [f, sys.expect[f]]));
+  const locked = Object.keys(lockedTo).length > 0;
   const dupName = c.systems.some((x, k) => k !== i && x.shortName === sys.shortName);
   // Where it lands on the sources.
   const centers = resolvedCenters(c);
@@ -1715,42 +1728,34 @@ function SystemCard(props: { c: Config; i: number }) {
           })
         }
       />
-      <details className={`help${need(`site-${sys.shortName}`) ? " needs" : ""}`} id={`need-site-${sys.shortName}`} open={need(`site-${sys.shortName}`) ? true : undefined}>
-        <summary>
-          Site lock{locked ? <span className="muted"> — only {siteText(sys.expect)}</span> : <span className="muted"> — off (follows any control channel listed)</span>}
-        </summary>
-        <p className="muted small">
-          {need(`site-${sys.shortName}`) && (
-            <>
-              <span className="field-needs">{need(`site-${sys.shortName}`)}</span>{" "}
-            </>
+      {lockFields.length > 0 && (
+        <details className={`help${need(`site-${sys.shortName}`) ? " needs" : ""}`} id={`need-site-${sys.shortName}`} open={need(`site-${sys.shortName}`) ? true : undefined}>
+          <summary>
+            Site lock{locked ? <span className="muted"> — only {siteText(lockedTo)}</span> : <span className="muted"> — off (follows any control channel listed)</span>}
+          </summary>
+          <p className="muted small">
+            {need(`site-${sys.shortName}`) && (
+              <>
+                <span className="field-needs">{need(`site-${sys.shortName}`)}</span>{" "}
+              </>
+            )}
+            Follow a control channel only when it announces this identity; leave a field empty to accept any. For a multi-site system, add each site as its own system with
+            its site number here — then a control channel that hunts onto a neighbouring site is not followed. {sys.type === "smartnet" ? "System ID in hex" : "Hex for NAC, WACN and System ID"}; the survey fills these in.
+          </p>
+          <div className="id-grid">
+            {LOCK_INPUTS.filter((x) => lockFields.includes(x.key)).map((x) => (
+              <Field key={x.key} label={x.label}>
+                <NumInput label={x.label} hex={x.hex} value={sys.expect[x.key]} onChange={(v) => setExpect(x.key, v)} />
+              </Field>
+            ))}
+          </div>
+          {locked && (
+            <button className="btn ghost small" onClick={() => edit((x) => void (x.expect = {}))}>
+              Clear the lock
+            </button>
           )}
-          Follow a control channel only when it announces this identity; leave a field empty to accept any. For a multi-site system, add each site as its own system with
-          its site number here — then a control channel that hunts onto a neighbouring site is not followed. Hex for NAC, WACN and System ID; the survey fills these in.
-        </p>
-        <div className="id-grid">
-          <Field label="NAC">
-            <NumInput label="NAC" hex value={sys.expect.nac} onChange={(v) => setExpect("nac", v)} />
-          </Field>
-          <Field label="WACN">
-            <NumInput label="WACN" hex value={sys.expect.wacn} onChange={(v) => setExpect("wacn", v)} />
-          </Field>
-          <Field label="System ID">
-            <NumInput label="System ID" hex value={sys.expect.sysId} onChange={(v) => setExpect("sysId", v)} />
-          </Field>
-          <Field label="RFSS">
-            <NumInput label="RFSS" value={sys.expect.rfss} onChange={(v) => setExpect("rfss", v)} />
-          </Field>
-          <Field label="Site">
-            <NumInput label="Site" value={sys.expect.site} onChange={(v) => setExpect("site", v)} />
-          </Field>
-        </div>
-        {locked && (
-          <button className="btn ghost small" onClick={() => edit((x) => void (x.expect = {}))}>
-            Clear the lock
-          </button>
-        )}
-      </details>
+        </details>
+      )}
     </div>
   );
 }

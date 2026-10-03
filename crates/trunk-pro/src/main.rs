@@ -81,7 +81,7 @@ use std::io::Read;
 use std::path::Path;
 use std::time::Instant;
 
-use trunk_core::trunk::{parse_csv, CallConfig, ConvChannel, ConvConfig, ConvMode, ConvSystem, Engine, EngineConfig, Event, Identity, SaveRules, SourceConfig, SystemConfig};
+use trunk_core::trunk::{parse_csv, CallConfig, ConvChannel, ConvConfig, ConvMode, ConvSystem, Engine, EngineConfig, Event, IdField, Identity, Protocol, SaveRules, SourceConfig, SystemConfig};
 
 /// `--key value` / `--flag` arguments after the positionals.
 pub struct Args {
@@ -314,10 +314,9 @@ fn replay(a: &Args) {
             calls,
             save,
             talkgroups: talkgroups.clone(),
-            smartnet,
             // --dmr-trunk: the --cc frequencies are a DMR site's; --dmr-channels
             // more voice frequencies to watch; --lcn 101=452275000,… its channel table.
-            dmr: a.flag("dmr-trunk").then(|| trunk_core::dmr::DmrConfig {
+            protocol: match a.flag("dmr-trunk").then(|| trunk_core::dmr::DmrConfig {
                 channels: hz_list("dmr-channels"),
                 lcn_table: a
                     .get("lcn")
@@ -326,7 +325,10 @@ fn replay(a: &Args) {
                     .filter_map(|e| e.split_once('=').and_then(|(l, h)| Some((l.trim().parse().ok()?, h.trim().parse::<f64>().ok()? as u64))))
                     .collect(),
                 color_code: a.get("color-code").and_then(|v| v.parse().ok()),
-            }),
+            }) {
+                Some(dc) => Protocol::Dmr(dc),
+                None => smartnet.map_or(Protocol::P25, Protocol::SmartNet),
+            },
             ..Default::default()
         });
     }
@@ -418,11 +420,11 @@ fn replay(a: &Args) {
             s.bad,
             if s.modulation == "2FSK" { "OSWs" } else { "TSBKs" },
             s.modulation,
-            hex(id.nac.map(u32::from)),
-            hex(id.wacn),
-            hex(id.sys_id),
-            dec(id.rfss),
-            dec(id.site),
+            hex(id.get(IdField::Nac)),
+            hex(id.wacn()),
+            hex(id.sys_id()),
+            dec(id.rfss()),
+            dec(id.site()),
             s.calls_concluded,
             s.mismatch.as_ref().map_or(String::new(), |m| format!(" — NOT FOLLOWED: {m}")),
         );
@@ -450,11 +452,11 @@ fn parse_system(spec: &str, calls: CallConfig, talkgroups: &trunk_core::trunk::T
         let h = || u32::from_str_radix(v.trim(), 16).map_err(|_| format!("bad {k} \"{v}\""));
         let d = || v.trim().parse::<u32>().map_err(|_| format!("bad {k} \"{v}\""));
         match k.trim() {
-            "nac" => expect.nac = Some(h()? as u16),
-            "sysid" => expect.sys_id = Some(h()?),
-            "wacn" => expect.wacn = Some(h()?),
-            "rfss" => expect.rfss = Some(d()?),
-            "site" => expect.site = Some(d()?),
+            "nac" => expect.set(IdField::Nac, h()? as u16 as u32),
+            "sysid" => expect.set(IdField::SysId, h()?),
+            "wacn" => expect.set(IdField::Wacn, h()?),
+            "rfss" => expect.set(IdField::Rfss, d()?),
+            "site" => expect.set(IdField::Site, d()?),
             "group" => site_group = v.trim().into(),
             other => return Err(format!("unknown key {other} (nac, sysid, wacn, rfss, site, group)")),
         }

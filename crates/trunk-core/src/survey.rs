@@ -43,7 +43,7 @@ use crate::dsp::{Channelizer, HeadId};
 use crate::p25::diversity::{best_frame, best_tsbks, Bank, BankConfig, Group};
 use crate::p25::frame::{LDU1, LDU2, TSDU};
 use crate::p25::Tsbk;
-use crate::trunk::engine::Identity;
+use crate::trunk::identity::{IdField, Identity};
 use crate::smartnet::plan::{self, PlanConfig, PlanFinder};
 use crate::smartnet::{self as sn, FramerOut};
 use crate::trunk::{Message, MessageType, TsbkParser};
@@ -453,7 +453,7 @@ impl Decode {
         let f = best_frame(g);
         self.frames += 1;
         *self.nac_votes.entry(f.nid.nac).or_default() += 1;
-        self.id.nac = self.nac_votes.iter().max_by_key(|(_, &c)| c).map(|(&n, _)| n);
+        self.id.set_opt(IdField::Nac, self.nac_votes.iter().max_by_key(|(_, &c)| c).map(|(&n, _)| n as u32));
         if f.nid.duid == LDU1 || f.nid.duid == LDU2 {
             self.voice += 1;
         }
@@ -468,13 +468,13 @@ impl Decode {
             if b(80, 0xff) == 0 {
                 match b(88, 0x3f) {
                     0x3a => {
-                        self.id.sys_id = Some(b(56, 0xfff));
-                        self.id.rfss = Some(b(48, 0xff));
-                        self.id.site = Some(b(40, 0xff));
+                        self.id.set(IdField::SysId, b(56, 0xfff));
+                        self.id.set(IdField::Rfss, b(48, 0xff));
+                        self.id.set(IdField::Site, b(40, 0xff));
                     }
                     0x3b => {
-                        self.id.wacn = Some(b(52, 0xfffff));
-                        self.id.sys_id = Some(b(40, 0xfff));
+                        self.id.set(IdField::Wacn, b(52, 0xfffff));
+                        self.id.set(IdField::SysId, b(40, 0xfff));
                     }
                     _ => {}
                 }
@@ -1008,7 +1008,9 @@ impl Monitor {
         let s = &self.sn;
         let i = &mut self.info;
         let voted = s.sys_votes.iter().max_by_key(|(_, &n)| n).map(|(&v, _)| v as u32);
-        i.identity = Identity { sys_id: voted.or(s.parser.sys_id), site: s.parser.site, ..Default::default() };
+        i.identity = Identity::default();
+        i.identity.set_opt(IdField::SysId, voted.or(s.parser.sys_id));
+        i.identity.set_opt(IdField::Site, s.parser.site);
         i.good = s.rx.framer.good;
         i.bad = s.rx.framer.bad;
         i.modulation = "2FSK";

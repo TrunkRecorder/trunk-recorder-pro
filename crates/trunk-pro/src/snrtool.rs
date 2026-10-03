@@ -273,7 +273,7 @@ fn run_p2(iq: &[Complex32], rate: f64, v: &Variant, key: (u32, u32, u32)) -> Cou
     use trunk_core::dsp::cqpsk::Cqpsk;
     use trunk_core::p25::phase2;
     use trunk_core::trunk::tdma::TdmaTracker;
-    use trunk_core::trunk::tracker::TrackerOut;
+    use trunk_core::trunk::voice::TrackerOut;
     let mut rx = Cqpsk::new(rate, v.cqpsk);
     let mut fr = phase2::Framer::default();
     let mut tr = TdmaTracker::new(1);
@@ -384,7 +384,7 @@ pub fn quality(a: &Args) {
     use trunk_core::dsp::cqpsk::Cqpsk;
     use trunk_core::p25::phase2;
     use trunk_core::trunk::tdma::TdmaTracker;
-    use trunk_core::trunk::tracker::TrackerOut;
+    use trunk_core::trunk::voice::TrackerOut;
     let (iq, rate) = channel(a, a.num("cutoff", 7000.0));
     let hexarg = |k: &str| a.get(k).and_then(|v| u32::from_str_radix(v.trim_start_matches("0x"), 16).ok()).unwrap_or(0);
     for name in a.get("variant").unwrap_or("base").split(',') {

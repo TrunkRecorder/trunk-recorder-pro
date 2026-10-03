@@ -141,6 +141,15 @@ function dmrImport(sys: Record<string, unknown>): Partial<System> {
   return out;
 }
 
+/**
+ * The site-lock fields a system's protocol states (the recorder's
+ * ControlChannel::identity_fields): the lock compares only these. DMR states
+ * none (its sites are told apart by colour code).
+ */
+export function siteLockFields(type: System["type"]): (keyof SiteIdentity)[] {
+  return type === "smartnet" ? ["sysId", "site"] : type === "dmr" ? [] : ["nac", "wacn", "sysId", "rfss", "site"];
+}
+
 /** A system with defaults filled in (configs saved before a field existed). */
 export function normalizeSystem(x: Partial<System>): System {
   return {

@@ -4,7 +4,7 @@
 //! wall clock (`now_ms`), the local date for folder names, and does the I/O.
 
 use serde_json::{json, Value};
-use trunk_core::trunk::{heard_code, Call, Engine, Event, Identity, MessageType};
+use trunk_core::trunk::{heard_code, Call, Engine, Event, IdField, Identity, MessageType, ProtocolStatus};
 
 use crate::filename;
 use crate::log::{Body, CallState, CallTag, Level, Record};
@@ -12,7 +12,7 @@ use crate::heard::HeardCodes;
 use trunk_core::dsp::tones::Tone;
 use trunk_core::Complex32;
 
-use crate::config::Config;
+use crate::config::{Config, Source};
 use trunk_recorder_plugin::{CallInfo, HostMessage, SystemStatus as PluginSystemStatus, UnitEvent};
 
 pub enum Output {
@@ -44,6 +44,14 @@ const RATE_EVERY_S: f64 = 10.0;
 const QUIET_MS: f64 = 1000.0;
 /// The most silence fed for one gap, s: a driver's count of samples lost.
 const MAX_GAP_S: f64 = 10.0;
+/// A source's clock is measured against the wall clock over this long:
+/// the least lag in it (samples only ever arrive late) is the clock's
+/// ([`ClockFit`]). ms.
+const CLOCK_WINDOW_MS: f64 = 10_000.0;
+/// Once set, a source's clock offset moves at most this much per second of
+/// wall clock (1000 ppm: far more than a crystal's error, yet time never
+/// runs backwards).
+const CLOCK_SLEW: f64 = 0.001;
 
 /// What plugins subscribe to, so nothing else is built.
 #[derive(Clone, Copy, Debug, Default)]
@@ -69,6 +77,29 @@ struct SourceStats {
     fed: bool,
     /// Wall clock (ms) when it was last fed or filled in.
     fed_ms: Option<f64>,
+    /// Its sample clock against the wall clock (live sources only).
+    clock: ClockFit,
+}
+
+/// A source's sample clock against the wall clock. Sample time runs slow or
+/// fast by the radio's crystal error, and starts late by the time the radio
+/// took to open; the offset that makes it wall time is measured here and
+/// set on the engine ([`Engine::set_clock_offset`]): at once on the first
+/// samples, then in small steps toward each window's measure.
+#[derive(Default, Clone)]
+struct ClockFit {
+    /// Whether the wall clock means anything for it (not a capture played
+    /// as fast as it can be).
+    live: bool,
+    /// Samples fed, silence filled in for gaps included.
+    samples: u64,
+    /// The least lag (wall time since the start, less sample time, s) seen
+    /// in this window, and when the window began (ms).
+    window_min: Option<f64>,
+    window_ms: f64,
+    /// The offset being steered to, and the one set.
+    target: Option<f64>,
+    applied: Option<f64>,
 }
 
 pub struct Session {
@@ -81,6 +112,7 @@ pub struct Session {
     local_offset: LocalOffset,
     busy_ms: f64,
     start_ms: Option<f64>,
+    last_poll_ms: Option<f64>,
     last_status_ms: f64,
     last_spec_ms: f64,
     rate_mark: (f64, Vec<u64>),
@@ -112,15 +144,22 @@ impl Session {
             }
         }
         let n = cfg.sources.len();
+        // (A capture played as fast as it can be has no wall clock to keep to.)
+        let stats = cfg
+            .sources
+            .iter()
+            .map(|s| SourceStats { clock: ClockFit { live: !matches!(s, Source::File { realtime: false, .. }), ..Default::default() }, ..Default::default() })
+            .collect();
         Ok(Session {
             cfg,
             engine,
-            stats: vec![SourceStats::default(); n],
+            stats,
             log: Vec::new(),
             records: Vec::new(),
             local_offset,
             busy_ms: 0.0,
             start_ms: None,
+            last_poll_ms: None,
             last_status_ms: 0.0,
             last_spec_ms: 0.0,
             rate_mark: (0.0, vec![0; n]),
@@ -146,6 +185,7 @@ impl Session {
         self.engine.push_u8(source, bytes);
         let s = &mut self.stats[source];
         s.samples += bytes.len() as u64 / 2;
+        s.clock.samples += bytes.len() as u64 / 2;
         s.fed = true;
     }
 
@@ -155,6 +195,7 @@ impl Session {
         self.engine.push_iq(source, iq);
         let s = &mut self.stats[source];
         s.samples += iq.len() as u64;
+        s.clock.samples += iq.len() as u64;
         s.fed = true;
     }
 
@@ -166,6 +207,7 @@ impl Session {
         self.stats[source].dropped += dropped;
         let most = (MAX_GAP_S * self.engine.sources()[source].rate_hz) as u64;
         self.engine.push_gap(source, dropped.min(most));
+        self.stats[source].clock.samples += dropped.min(most);
     }
 
     /// Fill in for sources that went quiet while running (unplugged, a
@@ -187,6 +229,43 @@ impl Session {
             s.fed_ms = Some(now_ms);
             let n = ((now_ms - since) / 1000.0).min(MAX_GAP_S) * self.engine.sources()[i].rate_hz;
             self.engine.push_gap(i, n as u64);
+            self.stats[i].clock.samples += n as u64;
+        }
+    }
+
+    /// Measure each live source's clock against the wall clock, and steer
+    /// its offset ([`ClockFit`]). `dt`: wall seconds since the last poll.
+    fn steer_clocks(&mut self, now_ms: f64, dt: f64) {
+        let since_epoch = (now_ms - self.epoch_ms) / 1000.0;
+        for i in 0..self.stats.len() {
+            let rate = self.engine.sources()[i].rate_hz;
+            let (fed, c) = (self.stats[i].fed, &mut self.stats[i].clock);
+            if !c.live || c.samples == 0 {
+                continue;
+            }
+            if fed {
+                // Samples only ever arrive late (buffers, a busy engine): the
+                // least lag over a window is the clock's own.
+                let lag = since_epoch - c.samples as f64 / rate;
+                c.window_min = Some(c.window_min.map_or(lag, |m| m.min(lag)));
+                if c.applied.is_none() {
+                    // The first samples: set at once (the radio's open time).
+                    c.target = Some(lag);
+                    c.window_ms = now_ms;
+                } else if now_ms - c.window_ms >= CLOCK_WINDOW_MS {
+                    c.target = c.window_min.take();
+                    c.window_ms = now_ms;
+                }
+            }
+            let Some(target) = c.target else { continue };
+            let next = match c.applied {
+                None => target,
+                Some(a) => a + (target - a).clamp(-CLOCK_SLEW * dt, CLOCK_SLEW * dt),
+            };
+            if c.applied != Some(next) {
+                c.applied = Some(next);
+                self.engine.set_clock_offset(i, next);
+            }
         }
     }
 
@@ -210,9 +289,15 @@ impl Session {
     }
 
     /// Collect what happened since the last poll; status every 500 ms and
-    /// spectra every 150 ms of wall clock.
+    /// spectra every 150 ms of wall clock. `now_ms`: the wall clock, Unix
+    /// ms, on the same clock as [`Session::new`]'s `epoch_ms` and never
+    /// jumping (the epoch plus a monotonic clock): sources' clocks are
+    /// measured against it.
     pub fn poll(&mut self, now_ms: f64, out: &mut Vec<Output>) {
         let start = *self.start_ms.get_or_insert(now_ms);
+        let dt = (now_ms - self.last_poll_ms.unwrap_or(now_ms)).max(0.0) / 1000.0;
+        self.last_poll_ms = Some(now_ms);
+        self.steer_clocks(now_ms, dt);
         self.fill_quiet(now_ms);
         for ev in self.engine.drain_events() {
             self.handle(ev, out);
@@ -572,7 +657,7 @@ impl Session {
                     "patches": y.patches.iter().map(|(sg, members)| {
                         json!({ "supergroup": self.tg_names(sys, [*sg])[0], "members": self.tg_names(sys, members.iter().copied()) })
                     }).collect::<Vec<_>>(),
-                    "dmr": y.dmr.as_ref().map(|d| {
+                    "dmr": match &y.protocol { ProtocolStatus::Dmr(d) => Some(d), _ => None }.map(|d| {
                         json!({
                             "variant": d.variant.map(|v| v.name()),
                             "colorCode": d.color_code,
@@ -630,8 +715,9 @@ fn unit_kind(k: MessageType) -> Option<&'static str> {
     })
 }
 
-fn identity_json(id: &Identity) -> Value {
-    json!({ "nac": id.nac, "wacn": id.wacn, "sysId": id.sys_id, "rfss": id.rfss, "site": id.site })
+/// `{nac, wacn, sysId, rfss, site}`: every field, null when not stated.
+pub(crate) fn identity_json(id: &Identity) -> Value {
+    Value::Object(IdField::ALL.into_iter().map(|f| (f.key().to_string(), json!(id.get(f)))).collect())
 }
 
 /// `patched`: the talkgroups patched with it ([`Session::tg_names`]).

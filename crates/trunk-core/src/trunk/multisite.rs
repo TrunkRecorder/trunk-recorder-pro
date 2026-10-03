@@ -19,6 +19,7 @@ use std::collections::HashMap;
 
 use super::calls::{Call, CallId};
 use super::frames::CallFrames;
+use super::talkgroups::Talkgroup;
 use crate::mbe::{FRAME_SAMPLES, SAMPLE_RATE};
 
 /// Grants for one call reach each site's control channel at nearly the same time.
@@ -180,6 +181,41 @@ impl MultiSite {
             self.of.remove(&m.0);
         }
         Ended::Done(conv.held)
+    }
+}
+
+impl MultiSite {
+    /// Link call `c`, just granted on site `key`, with the copies of it
+    /// already going on other sites of its system — the same talkgroup,
+    /// granted within [`TWIN_WINDOW_S`]. `sites`: every other site's key
+    /// (None: not known yet) and its calls.
+    pub fn link_new<'a>(&mut self, c: &Call, key: &SiteKey, sites: impl IntoIterator<Item = (Option<SiteKey>, &'a [Call])>) {
+        let twins: Vec<(CallId, u16)> = sites
+            .into_iter()
+            .filter(|(k, _)| k.as_ref().is_some_and(|k| k.twin(key)))
+            .flat_map(|(_, calls)| calls.iter())
+            .filter(|o| o.talkgroup == c.talkgroup && (o.start_s - c.start_s).abs() <= TWIN_WINDOW_S)
+            .map(|o| (o.id, o.system))
+            .collect();
+        self.link(c.id, c.system, &twins);
+    }
+
+    /// Call `id` ended (`held`: its recording, None when it wasn't
+    /// recorded). When it was the last of its copies: the one to save, and
+    /// the others (duplicates of it). `prefers(system, tg)`: whether
+    /// `system`'s site is the one the talkgroup file wants `tg` from.
+    pub fn conclude(&mut self, id: CallId, held: Option<Held>, prefers: impl Fn(u16, &Talkgroup) -> bool) -> Option<(Held, Vec<Held>)> {
+        let mut copies = match self.end(id, held) {
+            Ended::Alone(None) | Ended::Waiting => return None,
+            Ended::Alone(Some(h)) => vec![h],
+            Ended::Done(v) => v,
+        };
+        // The talkgroup's preferred site, by any site's talkgroup file.
+        let prefs: Vec<&Talkgroup> = copies.iter().filter_map(|h| h.call.talkgroup_info.as_ref()).collect();
+        let preferred: Vec<bool> = copies.iter().map(|h| prefs.iter().any(|tg| prefers(h.call.system, tg))).collect();
+        let k = pick(&copies, &preferred)?;
+        let kept = copies.swap_remove(k);
+        Some((kept, copies))
     }
 }
 

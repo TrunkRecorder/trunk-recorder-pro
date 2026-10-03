@@ -140,7 +140,7 @@ mod tests {
         let cfg = EngineConfig {
             systems: vec![SystemConfig {
                 control_channels: vec![cc_hz],
-                smartnet: Some(SmartnetConfig { bandplan, analog_default: false }),
+                protocol: crate::trunk::Protocol::SmartNet(SmartnetConfig { bandplan, analog_default: false }),
                 ..Default::default()
             }],
             sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false }],

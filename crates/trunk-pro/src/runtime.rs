@@ -122,7 +122,10 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
     if let Some(p) = cfg.problem() {
         return Err(p);
     }
+    // The wall clock now, and a monotonic clock from now: the session's
+    // `now_ms` is the one plus the other (wall time that never jumps).
     let epoch_ms = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_millis() as f64);
+    let epoch_at = Instant::now();
     let mut session = Session::new(cfg.clone(), epoch_ms, &|name| fs::read_to_string(bandplan_path(name)).ok(), local_offset)?;
     session.load_units(&|name| fs::read_to_string(units_path(name)).ok());
     session.load_heard(&fs::read_to_string(heard_path(&cfg)).unwrap_or_default());
@@ -158,7 +161,7 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
     threads.push(
         std::thread::Builder::new()
             .name("engine".into())
-            .spawn(move || engine_thread(ctx2, cfg, session, rx, stop2))
+            .spawn(move || engine_thread(ctx2, cfg, session, rx, stop2, (epoch_ms, epoch_at)))
             .map_err(|e| e.to_string())?,
     );
     Ok(Runner { stop, threads })
@@ -268,7 +271,8 @@ fn local_offset(t: i64) -> i32 {
     Local.timestamp_opt(t, 0).single().unwrap_or_else(Local::now).offset().fix().local_minus_utc()
 }
 
-fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Receiver<SourceMsg>, stop: Arc<AtomicBool>) {
+/// `epoch`: the wall clock (Unix ms) at an instant, for the session's clock.
+fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Receiver<SourceMsg>, stop: Arc<AtomicBool>, epoch: (f64, Instant)) {
     ctx.set_phase("running", None, false);
     let dir = PathBuf::from(&cfg.recording.capture_dir);
     // Each system's file rules, by a call's `system` (trunked or conventional).
@@ -288,8 +292,7 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Rec
             finish_one(&ctx, &dir, Finish { rules: FileRules { compress_wav: false, ..f.rules }, ..f }, None, plugins);
         }
     };
-    let t0 = Instant::now();
-    let now_ms = || t0.elapsed().as_secs_f64() * 1000.0;
+    let now_ms = || epoch.0 + epoch.1.elapsed().as_secs_f64() * 1000.0;
     let mut out = Vec::new();
     let mut ended_all = false;
     // Band plans (and DMR channel tables) as last saved: learned ones survive a crash or kill too.

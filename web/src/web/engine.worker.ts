@@ -24,6 +24,8 @@ export type ToWorker =
 export type FromWorker = { msg: FromRecorder } | { audio: ArrayBuffer; tg: number };
 
 const post = (msg: FromRecorder) => postMessage({ msg } satisfies FromWorker);
+/** Unix ms on a monotonic clock (the session's `now_ms`). */
+const wallMs = () => performance.timeOrigin + performance.now();
 
 let config: Config | null = null;
 let files: (File | null)[] = [];
@@ -203,7 +205,8 @@ async function start(): Promise<void> {
       const p = await readText(`bandplan-${x.shortName}.txt`);
       if (p) plans[x.shortName] = p;
     }
-    session = new WebSession(JSON.stringify(cfg), Date.now(), JSON.stringify(plans));
+    // The session's clock: Unix ms that never jump (performance.now() from the page's start).
+    session = new WebSession(JSON.stringify(cfg), wallMs(), JSON.stringify(plans));
     session.load_units(JSON.stringify(await savedUnits(cfg)));
     session.load_heard((await readText(heardFile(cfg))) ?? "");
     session.set_want_audio(listen.on);
@@ -227,7 +230,7 @@ async function start(): Promise<void> {
     }
     timer = setInterval(() => {
       if (!session) return;
-      deliver(session.poll(performance.now()));
+      deliver(session.poll(wallMs()));
       void saveUnits(session.units_changed());
       void saveHeard(session, cfg);
     }, 50);

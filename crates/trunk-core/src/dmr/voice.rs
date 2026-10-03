@@ -8,7 +8,7 @@ use super::slot::{Channel, LcFrom, SlotEvent};
 use crate::dsp::Symbol;
 use crate::mbe::{self, Kind, FRAME_SAMPLES};
 use crate::trunk::frames::{Codec, VoiceFrame};
-use crate::trunk::tracker::TrackerOut;
+use crate::trunk::voice::TrackerOut;
 
 /// A voice burst carries 60 ms of one slot's speech.
 pub const VOICE_BURST_S: f64 = 0.06;

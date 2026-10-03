@@ -6,22 +6,12 @@
 
 use super::frames::{Codec, VoiceFrame};
 use crate::mbe::{self, Kind, FRAME_SAMPLES};
-use crate::p25::alias::{Alias, LcAliases};
+use crate::p25::alias::LcAliases;
 use crate::p25::diversity::{best_es, best_frame, best_imbe, best_lc, Group};
 use crate::p25::frame::{HDU, LDU1, LDU2, TDU, TDULC};
 use crate::p25::voice::{decode_hdu, decode_tdulc, imbe_params_to_bits, ldu_codeword_end_bit, ALGID_CLEAR};
+use super::voice::TrackerOut;
 
-#[derive(Clone, Debug, PartialEq)]
-pub enum TrackerOut {
-    /// 20 ms of 8 kHz audio in [−1, 1], and the vocoder frame it came from.
-    Audio(Vec<f32>, VoiceFrame),
-    /// Link control named a source / emergency, or the call turned out encrypted.
-    Info { source: Option<u32>, emergency: bool, encrypted: bool },
-    /// Analog FM voice (a SmartNet analog channel): 8 kHz audio, squelched.
-    AnalogAudio(Vec<f32>),
-    /// A radio's talker alias, heard during the call.
-    Alias(Alias),
-}
 
 /// Algorithm id when encryption is known but not which cipher.
 const ALGID_UNKNOWN: i32 = -1;

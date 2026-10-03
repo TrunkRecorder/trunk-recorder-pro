@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::fmt::Write;
 
+use super::calls::conventional_index;
 use super::talkgroups::split_csv_line;
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -102,6 +103,75 @@ impl UnitAliases {
     /// Whether anything was learned since the last call.
     pub fn take_changed(&mut self) -> bool {
         std::mem::take(&mut self.changed)
+    }
+}
+
+/// Every system's talker aliases: looked up by the number a call carries
+/// (a trunked system's, or a conventional system's), kept between runs
+/// under each system's short name.
+#[derive(Clone, Debug, Default)]
+pub struct AliasBook {
+    trunked: Vec<(String, UnitAliases)>,
+    /// Conventional system k's, and whether it has channels (only those keep a file).
+    conventional: Vec<(String, bool, UnitAliases)>,
+}
+
+impl AliasBook {
+    /// `trunked`: each trunked system's short name, in the engine's order;
+    /// `conventional`: each conventional system's, and whether it has channels.
+    pub fn new(trunked: impl IntoIterator<Item = String>, conventional: impl IntoIterator<Item = (String, bool)>) -> Self {
+        AliasBook {
+            trunked: trunked.into_iter().map(|n| (n, UnitAliases::default())).collect(),
+            conventional: conventional.into_iter().map(|(n, used)| (n, used, UnitAliases::default())).collect(),
+        }
+    }
+
+    /// The table of system `system` (a call's).
+    pub fn of(&self, system: u16) -> Option<&UnitAliases> {
+        match conventional_index(system) {
+            Some(k) => self.conventional.get(k).map(|c| &c.2),
+            None => self.trunked.get(system as usize).map(|t| &t.1),
+        }
+    }
+
+    /// A radio's alias on system `system`.
+    pub fn get(&self, system: u16, unit: u32) -> Option<&str> {
+        self.of(system)?.get(unit)
+    }
+
+    /// Note an alias heard on system `system`; true when it's new (or changed).
+    pub fn learn(&mut self, system: u16, unit: u32, a: UnitAlias) -> bool {
+        let table = match conventional_index(system) {
+            Some(k) => self.conventional.get_mut(k).map(|c| &mut c.2),
+            None => self.trunked.get_mut(system as usize).map(|t| &mut t.1),
+        };
+        table.is_some_and(|t| t.learn(unit, a))
+    }
+
+    /// The short names that keep a table: each trunked system's, and each
+    /// conventional system's that has channels.
+    pub fn names(&self) -> Vec<String> {
+        self.trunked.iter().map(|t| t.0.clone()).chain(self.conventional.iter().filter(|c| c.1).map(|c| c.0.clone())).collect()
+    }
+
+    /// Preload the table kept under `short_name` (Trunk Recorder's unitTagsOTA CSV).
+    pub fn load(&mut self, short_name: &str, csv: &str) {
+        if let Some(t) = self.trunked.iter_mut().find(|t| t.0 == short_name) {
+            t.1 = UnitAliases::parse_csv(csv);
+        } else if let Some(c) = self.conventional.iter_mut().find(|c| c.0 == short_name) {
+            c.2 = UnitAliases::parse_csv(csv);
+        }
+    }
+
+    /// (short name, CSV) of each table that learned something since the last call.
+    pub fn changed(&mut self) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        for (name, t) in self.trunked.iter_mut().map(|t| (&t.0, &mut t.1)).chain(self.conventional.iter_mut().map(|c| (&c.0, &mut c.2))) {
+            if t.take_changed() {
+                out.push((name.clone(), t.to_csv()));
+            }
+        }
+        out
     }
 }
 

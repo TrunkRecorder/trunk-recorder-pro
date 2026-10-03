@@ -10,7 +10,6 @@
 
 use serde_json::{json, Value};
 use trunk_core::survey::{Command, GainState, Kind, Stage, Survey, SurveyConfig, BANDS};
-use trunk_core::trunk::engine::Identity;
 
 use crate::config::{auto_center, usable_half_width, Config, Source};
 use crate::session::Output;
@@ -152,7 +151,7 @@ impl SurveySession {
 
     pub fn snapshot(&self) -> Value {
         let s = &self.survey;
-        let id = |i: &Identity| json!({ "nac": i.nac, "wacn": i.wacn, "sysId": i.sys_id, "rfss": i.rfss, "site": i.site });
+        let id = crate::session::identity_json;
         let candidates: Vec<Value> = s
             .candidates()
             .iter()
@@ -227,11 +226,11 @@ impl SurveySession {
             "voiceCovered": covered,
             "voiceTotal": voice.len(),
             "spanHz": if hi > lo { hi - lo } else { 0.0 },
-            "nac": m.identity.nac,
-            "sysId": m.identity.sys_id,
-            "wacn": m.identity.wacn,
-            "rfss": m.identity.rfss,
-            "site": m.identity.site,
+            "nac": m.identity.nac(),
+            "sysId": m.identity.sys_id(),
+            "wacn": m.identity.wacn(),
+            "rfss": m.identity.rfss(),
+            "site": m.identity.site(),
             "voiceChannels": voice,
         }))
     }
