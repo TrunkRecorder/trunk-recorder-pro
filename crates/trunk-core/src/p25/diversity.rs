@@ -13,7 +13,7 @@ use num_complex::Complex32;
 use super::frame::{Frame, Framer, FramerOptions, LDU1, LDU2, TSDU};
 use super::tsbk::{tsbk_last, tsbk_ok, trellis_viterbi, Tsbk};
 use super::voice::{decode_ldu1_lc, decode_ldu2_es, ldu_imbe, EncryptionSync, ImbeParams, LinkControl};
-use crate::dsp::c4fm::{C4fm, C4fmOptions};
+use crate::dsp::c4fm::{C4fm, C4fmOptions, SYMBOL_RATE};
 use crate::dsp::cqpsk::{self, Cqpsk};
 use crate::dsp::{Receiver, Symbol};
 use crate::metrics::{Instrumented, Sink};
@@ -94,7 +94,7 @@ impl Bank {
         Bank {
             rx,
             pending: VecDeque::new(),
-            guard: 36.0 * rate / 4800.0,
+            guard: 36.0 * rate / SYMBOL_RATE,
             // Every receiver must be this far past a group's start: the longest
             // frame (LDU, 0.18 s) + the C4FM receiver's latency (~0.1 s) + slack.
             hold: 0.35 * rate,
@@ -266,7 +266,7 @@ pub fn best_imbe(g: &Group) -> [ImbeParams; 9] {
     let mut score = [f32::INFINITY; 9];
     for f in g.iter().filter(|f| f.nid.duid == LDU1 || f.nid.duid == LDU2) {
         for (k, p) in ldu_imbe(f, true).into_iter().enumerate() {
-            let s = if p.mean_rel > 0.0 { p.cost / p.mean_rel } else { p.errs as f32 };
+            let s = imbe_score(&p);
             if s < score[k] {
                 score[k] = s;
                 best[k] = p;
@@ -276,9 +276,41 @@ pub fn best_imbe(g: &Group) -> [ImbeParams; 9] {
     best
 }
 
+/// A candidate's cost per unit of reliability. An erased bit (no
+/// reliability) is flipped for free, so a copy heard through a fade would
+/// always win; each counts its expected cost instead, half the mean
+/// reliability of the codeword's other bits (it is wrong half the time).
+/// Without erased bits: `cost / mean_rel`.
+fn imbe_score(p: &ImbeParams) -> f32 {
+    if p.mean_rel <= 0.0 {
+        return p.errs as f32;
+    }
+    if p.erased == 0 {
+        return p.cost / p.mean_rel;
+    }
+    let mean = p.mean_rel * 144.0 / (144 - p.erased.min(143)) as f32;
+    (p.cost + p.erased as f32 * mean / 2.0) / mean
+}
+
 pub fn best_lc(g: &Group) -> Option<LinkControl> {
     g.iter().filter(|f| f.nid.duid == LDU1).find_map(|f| decode_ldu1_lc(&f.raw))
 }
 pub fn best_es(g: &Group) -> Option<EncryptionSync> {
     g.iter().filter(|f| f.nid.duid == LDU2).find_map(|f| decode_ldu2_es(&f.raw))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_copy_heard_through_a_fade_does_not_win_on_free_flips() {
+        // (From a DCFD call: CQPSK had the codeword with one marginal flip;
+        // C4FM, in a fade, made 24 flips, all on bits with no reliability.)
+        let clear = ImbeParams { errs: 1, cost: 0.012, mean_rel: 1.357, ..Default::default() };
+        let faded = ImbeParams { errs: 24, cost: 0.0, mean_rel: 0.410, erased: 42, ..Default::default() };
+        assert!(imbe_score(&clear) < imbe_score(&faded));
+        // Without erased bits the score is as it was.
+        assert_eq!(imbe_score(&clear), 0.012 / 1.357);
+    }
 }

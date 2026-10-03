@@ -22,6 +22,8 @@ use std::f64::consts::PI;
 
 use num_complex::Complex32;
 
+use super::c4fm::SYMBOL_RATE;
+use super::filters;
 use super::Symbol;
 
 /// Symbols either side whose pulse tails reach the window.
@@ -38,16 +40,6 @@ pub enum Pulse {
     Rc(f64),
 }
 
-fn rrc_at(t: f64, a: f64) -> f64 {
-    if t.abs() < 1e-9 {
-        1.0 - a + 4.0 * a / PI
-    } else if (t.abs() - 1.0 / (4.0 * a)).abs() < 1e-9 {
-        a / 2f64.sqrt() * ((1.0 + 2.0 / PI) * (PI / (4.0 * a)).sin() + (1.0 - 2.0 / PI) * (PI / (4.0 * a)).cos())
-    } else {
-        ((PI * t * (1.0 - a)).sin() + 4.0 * a * t * (PI * t * (1.0 + a)).cos()) / (PI * t * (1.0 - (4.0 * a * t).powi(2)))
-    }
-}
-
 fn rc_at(t: f64, a: f64) -> f64 {
     let s = if t.abs() < 1e-9 { 1.0 } else { (PI * t).sin() / (PI * t) };
     let d = 1.0 - (2.0 * a * t).powi(2);
@@ -61,7 +53,7 @@ fn rc_at(t: f64, a: f64) -> f64 {
 impl Pulse {
     fn at(self, t: f64) -> f64 {
         match self {
-            Pulse::Rrc(a) => rrc_at(t, a),
+            Pulse::Rrc(a) => filters::rrc(t, a),
             Pulse::Rc(a) => rc_at(t, a),
         }
     }
@@ -120,10 +112,10 @@ impl Msd {
     /// decided (16 hypotheses, not 64): better on DMR voice, ~0.8 dB worse on
     /// P25 C4FM (`tool snr`).
     pub fn new(rate: f64, tx: Pulse, rx_alpha: f64, feedback: bool) -> Self {
-        let sps = rate / 4800.0;
+        let sps = rate / SYMBOL_RATE;
         let n = (8.0 * sps).round() as i64 | 1;
         let m = n / 2;
-        let rx: Vec<f64> = (-m..=m).map(|i| rrc_at(i as f64 / sps, rx_alpha)).collect();
+        let rx: Vec<f64> = (-m..=m).map(|i| filters::rrc(i as f64 / sps, rx_alpha)).collect();
         let sum: f64 = rx.iter().sum();
         let k_norm: f64 = (-m..=m).map(|i| tx.at(i as f64 / sps) * rx[(i + m) as usize] / sum).sum();
         let half = (SPAN + 1) as f64 * sps;

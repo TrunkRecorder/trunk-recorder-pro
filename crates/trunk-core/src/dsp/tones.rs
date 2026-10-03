@@ -33,7 +33,8 @@ use std::sync::OnceLock;
 
 use num_complex::Complex32;
 
-use super::fm::{lowpass, AUDIO_RATE};
+use super::filters::lowpass;
+use super::fm::AUDIO_RATE;
 
 /// The CTCSS tones, tenths of a hertz.
 pub const CTCSS: [u16; 51] = [

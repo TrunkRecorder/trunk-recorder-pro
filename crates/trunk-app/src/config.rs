@@ -11,9 +11,10 @@ use trunk_core::trunk::{
     check_channels, conventional_index, Access, parse_csv, CallConfig, Protocol, ConvChannel, ConvConfig, ConvMode, ConvSystem, EngineConfig, IdField, Identity, SaveRules, SourceConfig,
     SystemConfig, Talkgroup, UnitTags, UnitTagsMode, MAX_CONVENTIONAL,
 };
+pub use trunk_core::trunk::{usable_half_width, DEFAULT_GUARD_HZ};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(tag = "type", rename_all = "camelCase")]
 pub enum Source {
     /// An RTL-SDR dongle. `serial` "" = the first free one; `center_hz` 0 =
     /// auto. `agc`: the tuner's AGC instead of `gain_db`.
@@ -29,6 +30,9 @@ pub enum Source {
         ppm: i32,
         #[serde(default)]
         auto_tune: bool,
+        /// Left unused at each edge of the band, Hz (the anti-alias roll-off).
+        #[serde(default = "guard_default")]
+        guard_hz: f64,
     },
     /// A USRP through UHD (installed separately; loaded at run time).
     /// `args`: UHD device arguments, "" = the first found ("serial=…",
@@ -40,7 +44,7 @@ pub enum Source {
         args: String,
         center_hz: f64,
         rate_hz: f64,
-        #[serde(default)]
+        #[serde(default = "usrp_gain")]
         gain_db: f64,
         #[serde(default)]
         agc: bool,
@@ -50,6 +54,9 @@ pub enum Source {
         ppm: f64,
         #[serde(default)]
         auto_tune: bool,
+        /// Left unused at each edge of the band, Hz (the anti-alias roll-off).
+        #[serde(default = "guard_default")]
+        guard_hz: f64,
     },
     /// An Airspy R2 / Mini through libairspy (installed separately; loaded
     /// at run time). `serial` hex, "" = the first. Gain: a 0..21 step of
@@ -64,14 +71,14 @@ pub enum Source {
         #[serde(default)]
         gain_mode: AirspyGain,
         #[serde(default = "airspy_gain")]
-        gain: u8,
+        gain_step: u8,
         /// Manual: LNA 0..14, mixer 0..15, VGA (IF) 0..15.
         #[serde(default = "airspy_stage")]
-        lna_gain: u8,
+        lna_step: u8,
         #[serde(default = "airspy_stage")]
-        mixer_gain: u8,
+        mixer_step: u8,
         #[serde(default = "airspy_stage")]
-        vga_gain: u8,
+        vga_step: u8,
         #[serde(default)]
         agc: bool,
         #[serde(default)]
@@ -80,6 +87,9 @@ pub enum Source {
         ppm: f64,
         #[serde(default)]
         auto_tune: bool,
+        /// Left unused at each edge of the band, Hz (the anti-alias roll-off).
+        #[serde(default = "guard_default")]
+        guard_hz: f64,
     },
     /// Any SDR with a SoapySDR module (SoapySDR installed separately; loaded
     /// at run time). `args`: device arguments, "" = the first found
@@ -93,7 +103,7 @@ pub enum Source {
         args: String,
         center_hz: f64,
         rate_hz: f64,
-        #[serde(default)]
+        #[serde(default = "yes")]
         agc: bool,
         #[serde(default)]
         gain_db: Option<f64>,
@@ -107,19 +117,26 @@ pub enum Source {
         ppm: f64,
         #[serde(default)]
         auto_tune: bool,
+        /// Left unused at each edge of the band, Hz (the anti-alias roll-off).
+        #[serde(default = "guard_default")]
+        guard_hz: f64,
     },
     /// A capture on this machine: `format` "cu8" (rtl_sdr), "cs16" or "cf32"
-    /// (GNU Radio / UHD complex float).
+    /// (GNU Radio / UHD complex float); left out, by the file's extension
+    /// ([`SampleFormat::of`]).
     #[serde(rename_all = "camelCase")]
     File {
         path: String,
         center_hz: f64,
         rate_hz: f64,
         realtime: bool,
-        #[serde(default)]
-        format: SampleFormat,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        format: Option<SampleFormat>,
         #[serde(default)]
         auto_tune: bool,
+        /// Left unused at each edge of the band, Hz (the anti-alias roll-off).
+        #[serde(default = "guard_default")]
+        guard_hz: f64,
     },
 }
 
@@ -134,6 +151,9 @@ pub enum AirspyGain {
     Manual,
 }
 
+fn guard_default() -> f64 {
+    DEFAULT_GUARD_HZ
+}
 fn rtl_gain() -> f32 {
     RTL_DEFAULT_GAIN_DB
 }
@@ -167,6 +187,10 @@ impl SampleFormat {
             _ => SampleFormat::Cu8,
         }
     }
+    /// A capture's format: as given, else by its extension.
+    pub fn of(format: Option<SampleFormat>, path: &str) -> Self {
+        format.unwrap_or_else(|| SampleFormat::from_path(path))
+    }
     pub fn bytes_per_sample(self) -> usize {
         match self {
             SampleFormat::Cu8 => 2,
@@ -191,6 +215,15 @@ impl Source {
         match self {
             Source::Rtlsdr { auto_tune, .. } | Source::Usrp { auto_tune, .. } | Source::Airspy { auto_tune, .. } | Source::Soapy { auto_tune, .. } | Source::File { auto_tune, .. } => *auto_tune,
         }
+    }
+    pub fn guard_hz(&self) -> f64 {
+        match self {
+            Source::Rtlsdr { guard_hz, .. } | Source::Usrp { guard_hz, .. } | Source::Airspy { guard_hz, .. } | Source::Soapy { guard_hz, .. } | Source::File { guard_hz, .. } => *guard_hz,
+        }
+    }
+    /// How far from its centre a channel may be, Hz.
+    pub fn usable_half_width(&self) -> f64 {
+        usable_half_width(self.rate_hz(), self.guard_hz())
     }
     /// For the interface: "RTL-SDR SN 200", "USRP serial=…", "file x.cu8".
     pub fn label(&self) -> String {
@@ -217,7 +250,7 @@ pub struct System {
     #[serde(rename = "type")]
     pub kind: String,
     pub enabled: bool,
-    pub control_channels: Vec<f64>,
+    pub control_channels_hz: Vec<f64>,
     /// "auto" | "fsk4" | "qpsk"
     pub modulation: String,
     pub talkgroups_csv: String,
@@ -230,7 +263,7 @@ pub struct System {
     /// neighbour on a nearby frequency.
     pub expect: SiteIdentity,
     /// Voice channels the survey heard (for placing sources; informational).
-    pub voice_channels: Vec<f64>,
+    pub voice_channels_hz: Vec<f64>,
     /// Its own recording rules; what's left out is as in [`Config::recording`].
     #[serde(skip_serializing_if = "RecordingOverride::is_empty")]
     pub recording: RecordingOverride,
@@ -240,24 +273,24 @@ pub struct System {
     #[serde(skip_serializing_if = "String::is_empty")]
     pub bandplan: String,
     #[serde(skip_serializing_if = "is_zero")]
-    pub bandplan_base: f64,
+    pub bandplan_base_hz: f64,
     #[serde(skip_serializing_if = "is_zero")]
-    pub bandplan_spacing: f64,
+    pub bandplan_spacing_hz: f64,
     #[serde(skip_serializing_if = "is_zero_u16")]
     pub bandplan_offset: u16,
     #[serde(skip_serializing_if = "is_zero")]
-    pub bandplan_high: f64,
+    pub bandplan_high_hz: f64,
     /// SmartNet: voice mode of a talkgroup never heard granted — "digital" (P25) or "analog".
     #[serde(skip_serializing_if = "String::is_empty")]
     pub default_mode: String,
     /// DMR (`type` "dmr"): logical channel number → frequency, Hz (Trunk
     /// Recorder's `lcnTable`); channels left out are learned from the air.
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    pub lcn_table: BTreeMap<String, f64>,
+    pub lcn_table_hz: BTreeMap<String, f64>,
     /// DMR: voice frequencies to watch besides the control channels (Trunk
     /// Recorder's `channels`; Capacity Plus: every repeater of the site).
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub channels: Vec<f64>,
+    pub dmr_channels_hz: Vec<f64>,
     /// DMR: only this colour code.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub color_code: Option<u8>,
@@ -293,27 +326,18 @@ impl System {
         self.kind.eq_ignore_ascii_case("dmr")
     }
 
-    /// The DMR settings; Trunk Recorder configs give frequencies in Hz or MHz.
+    /// The DMR settings.
     pub fn dmr(&self) -> trunk_core::dmr::DmrConfig {
-        let hz = |v: f64| if v > 0.0 && v < 1e5 { v * 1e6 } else { v };
         trunk_core::dmr::DmrConfig {
-            lcn_table: self.lcn_table.iter().filter_map(|(k, &v)| Some((k.trim().parse().ok()?, hz(v).round() as u64))).collect(),
-            channels: self.channels.iter().map(|&v| hz(v)).collect(),
+            lcn_table: self.lcn_table_hz.iter().filter_map(|(k, &v)| Some((k.trim().parse().ok()?, v.round() as u64))).collect(),
+            channels: self.dmr_channels_hz.clone(),
             color_code: self.color_code,
         }
     }
 
     /// The SmartNet settings, or why they don't work.
     pub fn smartnet(&self) -> Result<trunk_core::trunk::SmartnetConfig, String> {
-        // Trunk Recorder configs give these in Hz or in MHz.
-        let hz = |v: f64, mhz_below: f64| if v > 0.0 && v < mhz_below { v * 1e6 } else { v };
-        let bandplan = trunk_core::smartnet::Bandplan::from_config(
-            &self.bandplan,
-            hz(self.bandplan_base, 1e5),
-            hz(self.bandplan_spacing, 1.0),
-            self.bandplan_offset,
-            hz(self.bandplan_high, 1e5),
-        )?;
+        let bandplan = trunk_core::smartnet::Bandplan::from_config(&self.bandplan, self.bandplan_base_hz, self.bandplan_spacing_hz, self.bandplan_offset, self.bandplan_high_hz)?;
         Ok(trunk_core::trunk::SmartnetConfig { bandplan, analog_default: self.default_mode.eq_ignore_ascii_case("analog") })
     }
 }
@@ -326,22 +350,22 @@ impl Default for System {
             name: String::new(),
             kind: "p25".into(),
             enabled: true,
-            control_channels: vec![],
+            control_channels_hz: vec![],
             modulation: "auto".into(),
             talkgroups_csv: String::new(),
             talkgroups_name: String::new(),
             unit_names: UnitNames::default(),
             expect: SiteIdentity::default(),
-            voice_channels: vec![],
+            voice_channels_hz: vec![],
             recording: RecordingOverride::default(),
             bandplan: String::new(),
-            bandplan_base: 0.0,
-            bandplan_spacing: 0.0,
+            bandplan_base_hz: 0.0,
+            bandplan_spacing_hz: 0.0,
             bandplan_offset: 0,
-            bandplan_high: 0.0,
+            bandplan_high_hz: 0.0,
             default_mode: String::new(),
-            lcn_table: Default::default(),
-            channels: vec![],
+            lcn_table_hz: Default::default(),
+            dmr_channels_hz: vec![],
             color_code: None,
             site_group: String::new(),
             plugins: BTreeMap::new(),
@@ -356,7 +380,7 @@ impl System {
     }
     /// Recording it: enabled, with a control channel.
     pub fn active(&self) -> bool {
-        self.enabled && !self.control_channels.is_empty()
+        self.enabled && !self.control_channels_hz.is_empty()
     }
 }
 
@@ -527,6 +551,11 @@ pub struct Channel {
     pub squelch_db: Option<f64>,
     #[serde(default = "yes")]
     pub enabled: bool,
+}
+
+/// A USRP's gain when none is given, dB (as the interface starts one).
+fn usrp_gain() -> f64 {
+    40.0
 }
 
 fn yes() -> bool {
@@ -775,6 +804,7 @@ impl Recording {
     fn save_rules(&self) -> SaveRules {
         SaveRules {
             keep_silent: self.keep_silent_calls,
+            keep_encrypted: self.record_encrypted,
             min_call_s: self.min_call_s.max(0.0),
             min_transmission_s: self.min_transmission_s.max(0.0),
             normalize: self.normalize_audio,
@@ -914,7 +944,7 @@ pub struct LogSettings {
     pub status_as_string: bool,
     /// A control channel decoding fewer messages a second than this is
     /// logged as an error; −1 logs the rate always.
-    pub control_warn_rate: f64,
+    pub control_warn_rate_per_s: f64,
     /// Keys this version doesn't know (a newer version's, a hand edit's):
     /// kept, and saved back as they were.
     #[serde(flatten)]
@@ -935,7 +965,7 @@ impl Default for LogSettings {
             frequency_format: Default::default(),
             talkgroup_display_format: Default::default(),
             status_as_string: true,
-            control_warn_rate: 10.0,
+            control_warn_rate_per_s: 10.0,
         }
     }
 }
@@ -950,7 +980,7 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             other: BTreeMap::new(),
-            sources: vec![Source::Rtlsdr { serial: String::new(), center_hz: 0.0, rate_hz: 2_400_000.0, gain_db: RTL_DEFAULT_GAIN_DB, agc: false, ppm: 0, auto_tune: false }],
+            sources: vec![Source::Rtlsdr { serial: String::new(), center_hz: 0.0, rate_hz: 2_400_000.0, gain_db: RTL_DEFAULT_GAIN_DB, agc: false, ppm: 0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ }],
             systems: vec![],
             conventional: vec![],
             recording: Recording::default(),
@@ -1154,8 +1184,8 @@ impl Config {
             .map(|s| {
                 // A DMR site's watched frequencies are all needed.
                 let dmr: Vec<f64> = if s.is_dmr() { s.dmr().channels } else { vec![] };
-                let need: Vec<f64> = s.control_channels.iter().chain(&dmr).copied().collect();
-                (need.iter().chain(&s.voice_channels).copied().collect(), need)
+                let need: Vec<f64> = s.control_channels_hz.iter().chain(&dmr).copied().collect();
+                (need.iter().chain(&s.voice_channels_hz).copied().collect(), need)
             })
             .collect();
         for v in self.conventional.iter().filter(|v| v.enabled) {
@@ -1165,20 +1195,20 @@ impl Config {
             }
         }
         let mut centers: Vec<f64> = self.sources.iter().map(|s| s.center_hz()).collect();
-        let covered = |centers: &[f64], f: f64| self.sources.iter().zip(centers).any(|(s, &c)| c > 0.0 && (f - c).abs() <= usable_half_width(s.rate_hz()));
+        let covered = |centers: &[f64], f: f64| self.sources.iter().zip(centers).any(|(s, &c)| c > 0.0 && (f - c).abs() <= s.usable_half_width());
         for i in 0..self.sources.len() {
             if centers[i] > 0.0 {
                 continue;
             }
             let open: Vec<&(Vec<f64>, Vec<f64>)> = groups.iter().filter(|(_, need)| !need.iter().any(|&f| covered(&centers, f))).collect();
             let Some(first) = open.first() else { break };
-            let rate = self.sources[i].rate_hz();
+            let (rate, guard) = (self.sources[i].rate_hz(), self.sources[i].guard_hz());
             let all: Vec<f64> = open.iter().flat_map(|g| g.0.iter().copied()).collect();
             let needed: Vec<f64> = open.iter().flat_map(|g| g.1.iter().copied()).collect();
-            centers[i] = auto_center(&all, rate)
-                .or_else(|| auto_center(&needed, rate))
-                .or_else(|| auto_center(&first.0, rate))
-                .or_else(|| auto_center(&first.1, rate))
+            centers[i] = auto_center(&all, rate, guard)
+                .or_else(|| auto_center(&needed, rate, guard))
+                .or_else(|| auto_center(&first.0, rate, guard))
+                .or_else(|| auto_center(&first.1, rate, guard))
                 .unwrap_or(0.0);
         }
         centers
@@ -1206,6 +1236,9 @@ impl Config {
         if self.sources.is_empty() {
             return Some("Add a source (a dongle or a capture file).".into());
         }
+        if self.sources.iter().any(|s| matches!(s, Source::File { path, .. } if path.trim().is_empty())) {
+            return Some("Choose the capture file to replay.".into());
+        }
         let trunked = self.active_systems().next().is_some();
         if !trunked && self.enabled_channels().next().is_none() {
             return Some("Add a system with a control channel, or a conventional channel.".into());
@@ -1220,7 +1253,7 @@ impl Config {
                 i + 1
             ));
         }
-        let inside = |f: f64| self.sources.iter().zip(&centers).any(|(s, &c)| (f - c).abs() <= usable_half_width(s.rate_hz()));
+        let inside = |f: f64| self.sources.iter().zip(&centers).any(|(s, &c)| (f - c).abs() <= s.usable_half_width());
         for s in self.active_systems() {
             if s.is_smartnet() {
                 if let Err(e) = s.smartnet() {
@@ -1228,12 +1261,12 @@ impl Config {
                 }
             }
             if s.is_dmr() {
-                let out: Vec<String> = s.control_channels.iter().chain(&s.dmr().channels).filter(|&&f| !inside(f)).map(|f| format!("{:.5}", f / 1e6)).collect();
+                let out: Vec<String> = s.control_channels_hz.iter().chain(&s.dmr().channels).filter(|&&f| !inside(f)).map(|f| format!("{:.5}", f / 1e6)).collect();
                 if !out.is_empty() {
                     return Some(format!("{}: DMR frequencies outside every source's bandwidth: {} MHz — move a center frequency or add a source.", s.short_name, out.join(", ")));
                 }
             }
-            if !s.control_channels.iter().any(|&f| inside(f)) {
+            if !s.control_channels_hz.iter().any(|&f| inside(f)) {
                 return Some(format!("No control channel of {} falls inside any source's bandwidth — move a center frequency or add a source.", s.short_name));
             }
         }
@@ -1310,7 +1343,7 @@ impl Config {
             .active_systems()
             .map(|s| SystemConfig {
                 short_name: s.short_name.clone(),
-                control_channels: s.control_channels.clone(),
+                control_channels: s.control_channels_hz.clone(),
                 calls: self.recording.with(&s.recording).call_config(),
                 save: self.recording.with(&s.recording).save_rules(),
                 unit_tags: s.unit_names.engine(),
@@ -1351,7 +1384,7 @@ impl Config {
             .collect();
         EngineConfig {
             systems,
-            sources: self.sources.iter().zip(centers).map(|(s, c)| SourceConfig { center_hz: c, rate_hz: s.rate_hz(), auto_tune: s.auto_tune() }).collect(),
+            sources: self.sources.iter().zip(centers).map(|(s, c)| SourceConfig { center_hz: c, rate_hz: s.rate_hz(), auto_tune: s.auto_tune(), guard_hz: s.guard_hz() }).collect(),
             preroll_s: self.recording.preroll_s,
             max_recorders: self.recording.max_recorders,
             conv_systems,
@@ -1366,20 +1399,16 @@ impl Config {
     }
 }
 
-/// Usable half-width of a source (the edges are filter roll-off).
-pub fn usable_half_width(rate_hz: f64) -> f64 {
-    rate_hz / 2.0 * 0.9
-}
 
 /// A centre that puts every control channel inside one source (and off the
 /// DC spike), or None if they span too much.
-pub fn auto_center(ccs: &[f64], rate_hz: f64) -> Option<f64> {
+pub fn auto_center(ccs: &[f64], rate_hz: f64, guard_hz: f64) -> Option<f64> {
     if ccs.is_empty() {
         return None;
     }
     let lo = ccs.iter().copied().fold(f64::INFINITY, f64::min);
     let hi = ccs.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    let half = usable_half_width(rate_hz);
+    let half = usable_half_width(rate_hz, guard_hz);
     if hi - lo > 2.0 * half - 50_000.0 {
         return None;
     }
@@ -1400,7 +1429,7 @@ mod tests {
     fn conventional_only_config() {
         let mut c: Config = serde_json::from_str(
             r#"{
-                "sources": [{ "kind": "rtlsdr", "serial": "", "centerHz": 0, "rateHz": 2400000, "agc": true, "ppm": 0 }],
+                "sources": [{ "type": "rtlsdr", "serial": "", "centerHz": 0, "rateHz": 2400000, "agc": true, "ppm": 0 }],
                 "conventional": [{ "channels": [
                     { "freqHz": 154430000, "mode": "fm", "name": "County Fire Dispatch", "talkgroup": 1001 },
                     { "freqHz": 154100000, "mode": "p25", "squelchDb": 12 },
@@ -1434,7 +1463,7 @@ mod tests {
     fn several_conventional_systems() {
         let mut c: Config = serde_json::from_str(
             r#"{
-                "sources": [{ "kind": "rtlsdr", "serial": "", "centerHz": 0, "rateHz": 2400000, "agc": true, "ppm": 0 }],
+                "sources": [{ "type": "rtlsdr", "serial": "", "centerHz": 0, "rateHz": 2400000, "agc": true, "ppm": 0 }],
                 "conventional": [
                     { "shortName": "fire", "squelchDb": 10, "channels": [{ "freqHz": 154430000, "mode": "fm" }] },
                     { "shortName": "police", "recording": { "minCallS": 2 }, "channels": [{ "freqHz": 154100000, "mode": "fm", "squelchDb": 14 }] },
@@ -1468,11 +1497,11 @@ mod tests {
     #[test]
     fn site_groups_and_duplicates() {
         // Older configs: duplicates dropped, groups from the air.
-        let c: Config = serde_json::from_str(r#"{ "systems": [{ "shortName": "a", "controlChannels": [851012500] }], "recording": { "preroll_s": 1 } }"#).unwrap();
+        let c: Config = serde_json::from_str(r#"{ "systems": [{ "shortName": "a", "controlChannelsHz": [851012500] }], "recording": { "preroll_s": 1 } }"#).unwrap();
         assert!(c.recording.drop_duplicate_calls);
         assert!(!serde_json::to_string(&c.systems[0]).unwrap().contains("siteGroup"));
         let c: Config = serde_json::from_str(
-            r#"{ "systems": [{ "shortName": "a", "controlChannels": [851012500], "siteGroup": " capmax " }], "recording": { "dropDuplicateCalls": false } }"#,
+            r#"{ "systems": [{ "shortName": "a", "controlChannelsHz": [851012500], "siteGroup": " capmax " }], "recording": { "dropDuplicateCalls": false } }"#,
         )
         .unwrap();
         let e = c.engine_config(0.0);
@@ -1481,11 +1510,10 @@ mod tests {
     }
 
     #[test]
-    fn dmr_system_takes_trunk_recorders_lcn_table() {
-        // Trunk Recorder's keys; frequencies in MHz or Hz.
+    fn dmr_system_takes_a_channel_table() {
         let s: System = serde_json::from_str(
-            r#"{ "shortName": "capmax", "type": "dmr", "controlChannels": [452175000],
-                 "lcnTable": { "101": 452.275, "102": 452300000 }, "channels": [452.275], "colorCode": 0 }"#,
+            r#"{ "shortName": "capmax", "type": "dmr", "controlChannelsHz": [452175000],
+                 "lcnTableHz": { "101": 452275000, "102": 452300000 }, "dmrChannelsHz": [452275000], "colorCode": 0 }"#,
         )
         .unwrap();
         assert!(s.is_dmr());
@@ -1497,15 +1525,15 @@ mod tests {
     }
 
     fn system(name: &str, ccs: &[f64]) -> System {
-        System { short_name: name.into(), control_channels: ccs.to_vec(), ..Default::default() }
+        System { short_name: name.into(), control_channels_hz: ccs.to_vec(), ..Default::default() }
     }
 
     #[test]
     fn several_systems_centers_and_engine_config() {
-        let rtl = || Source::Rtlsdr { serial: String::new(), center_hz: 0.0, rate_hz: 2_400_000.0, gain_db: 30.0, agc: false, ppm: 0, auto_tune: false };
+        let rtl = || Source::Rtlsdr { serial: String::new(), center_hz: 0.0, rate_hz: 2_400_000.0, gain_db: 30.0, agc: false, ppm: 0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ };
         let mut c = Config { sources: vec![rtl(), rtl()], ..Default::default() };
         let mut a = system("east", &[851_012_500.0]);
-        a.voice_channels = vec![851_500_000.0, 852_000_000.0];
+        a.voice_channels_hz = vec![851_500_000.0, 852_000_000.0];
         a.expect = SiteIdentity { nac: Some(0x443), site: Some(3), ..Default::default() };
         let mut b = system("west", &[771_106_250.0]);
         b.recording.record_unknown = Some(false);
@@ -1514,7 +1542,7 @@ mod tests {
         assert_eq!(c.problem(), None);
         // Each auto source takes a system the ones before it don't cover.
         let centers = c.resolved_centers();
-        let hw = usable_half_width(2_400_000.0);
+        let hw = usable_half_width(2_400_000.0, DEFAULT_GUARD_HZ);
         for f in [851_012_500.0, 851_500_000.0, 852_000_000.0] {
             assert!((f - centers[0]).abs() <= hw, "{f} not in source 1 at {}", centers[0]);
         }
@@ -1618,7 +1646,7 @@ mod tests {
     /// interface saves the whole config on every change).
     #[test]
     fn unknown_keys_survive_a_save() {
-        let text = r#"{ "systems": [{ "shortName": "a", "controlChannels": [851012500], "futureKey": [1, 2] }],
+        let text = r#"{ "systems": [{ "shortName": "a", "controlChannelsHz": [851012500], "futureKey": [1, 2] }],
                         "conventional": [{ "shortName": "c", "note": "mine" }],
                         "recording": { "newRule": true }, "server": { "tls": { "cert": "x" } }, "log": { "rotate": 7 },
                         "multisite": { "window": 3 } }"#;

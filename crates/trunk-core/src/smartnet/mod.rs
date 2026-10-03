@@ -13,7 +13,7 @@ pub mod parser;
 pub mod plan;
 pub mod rx;
 
-pub use osw::{Framer, FramerOut, Osw};
+pub use osw::{Framer, Osw, Word};
 pub use parser::{Bandplan, Parser};
 pub use rx::{Bit, Fsk2, Fsk2Options, SYMBOL_RATE};
 
@@ -32,12 +32,12 @@ pub struct ControlChannel {
     pub parser: Parser,
     rate: f64,
     bits: Vec<Bit>,
-    fout: Vec<FramerOut>,
+    fout: Vec<Word>,
 }
 
 impl ControlChannel {
     pub fn new(rate: f64, parser: Parser) -> Self {
-        ControlChannel { rx: Fsk2::new(rate), framer: Framer::default(), parser, rate, bits: Vec::new(), fout: Vec::new() }
+        ControlChannel { rx: Fsk2::new(rate), framer: Framer::new(), parser, rate, bits: Vec::new(), fout: Vec::new() }
     }
 
     /// Good / lost OSWs so far.
@@ -70,8 +70,8 @@ impl ControlChannel {
             let t = t0 + b.sample / self.rate;
             for o in &self.fout {
                 match *o {
-                    FramerOut::Osw(osw, _) => self.parser.osw(osw, t, out),
-                    FramerOut::Bad(_) => self.parser.bad(t, out),
+                    Word::Osw(osw, _) => self.parser.osw(osw, t, out),
+                    Word::Bad(_) => self.parser.bad(t, out),
                 }
             }
         }
@@ -159,7 +159,7 @@ mod tests {
                 protocol: crate::trunk::Protocol::SmartNet(SmartnetConfig { bandplan, analog_default: false }),
                 ..Default::default()
             }],
-            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false }],
+            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
             ..Default::default()
         };
         let mut e = Engine::new(cfg).unwrap();

@@ -9,26 +9,26 @@
       "homepage": "https://www.broadcastify.com/calls/",
       "license": "GPL-3.0-or-later",
       "tier": "official",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "api": 1,
-      "tag": "v0.1.1",
-      "commit": "9104b3688ca0e4d9996ae7749853a04d07be669b",
+      "tag": "v0.1.2",
+      "commit": "5974efc0fc994af4fe6056dc673189581cec1777",
       "assets": {
         "x86_64-unknown-linux-gnu": {
-          "url": "https://github.com/TrunkRecorder/trunk-plugin-broadcastify/releases/download/v0.1.1/broadcastify-0.1.1-x86_64-unknown-linux-gnu.tar.gz",
-          "sha256": "5cf79d1880a93a43f83245eebb5ce5f5e5a97db144d9ab0456056b00ff6a9a0c"
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-broadcastify/releases/download/v0.1.2/broadcastify-0.1.2-x86_64-unknown-linux-gnu.tar.gz",
+          "sha256": "af0a8be1a28ff3626d8aa17531e0a9f7d2f577cc926ecb7bd17282847572a577"
         },
         "aarch64-unknown-linux-gnu": {
-          "url": "https://github.com/TrunkRecorder/trunk-plugin-broadcastify/releases/download/v0.1.1/broadcastify-0.1.1-aarch64-unknown-linux-gnu.tar.gz",
-          "sha256": "6766eaa2b90fc5b175c837c4f02a1a82128ab7180037f29087d5792af5303354"
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-broadcastify/releases/download/v0.1.2/broadcastify-0.1.2-aarch64-unknown-linux-gnu.tar.gz",
+          "sha256": "19befc664a83aa9a186d1b27d70f3c09527d35fe2a6bd77a13bb015b3bcc26e2"
         },
         "universal-apple-darwin": {
-          "url": "https://github.com/TrunkRecorder/trunk-plugin-broadcastify/releases/download/v0.1.1/broadcastify-0.1.1-universal-apple-darwin.tar.gz",
-          "sha256": "85fc668713753061b623d6b27a5cbc247f056e33be950738481696a6123fd51d"
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-broadcastify/releases/download/v0.1.2/broadcastify-0.1.2-universal-apple-darwin.tar.gz",
+          "sha256": "4cb08b83abb13b622c1d1b6b1867db53a492d132dafda5f8c8ffb2582d2de5a7"
         },
         "x86_64-pc-windows-msvc": {
-          "url": "https://github.com/TrunkRecorder/trunk-plugin-broadcastify/releases/download/v0.1.1/broadcastify-0.1.1-x86_64-pc-windows-msvc.zip",
-          "sha256": "debccc8d976d95f49824889c509eb0667ed39ff5051d9e79345f3421b1acfaee"
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-broadcastify/releases/download/v0.1.2/broadcastify-0.1.2-x86_64-pc-windows-msvc.zip",
+          "sha256": "d10a7195eb44b0c75070bd0d5fde0d5307aa67d2433ab9a124805f0a5787f819"
         }
       }
     },
@@ -40,26 +40,26 @@
       "homepage": "https://openmhz.com",
       "license": "GPL-3.0-or-later",
       "tier": "official",
-      "version": "0.1.2",
+      "version": "0.1.3",
       "api": 1,
-      "tag": "v0.1.2",
-      "commit": "19d1e7fa71fb8f91581fca3a8ec7a11ba805cde2",
+      "tag": "v0.1.3",
+      "commit": "cbd72d83bc93766cf00629d521775e50070c0d3a",
       "assets": {
         "x86_64-unknown-linux-gnu": {
-          "url": "https://github.com/TrunkRecorder/trunk-plugin-openmhz/releases/download/v0.1.2/openmhz-0.1.2-x86_64-unknown-linux-gnu.tar.gz",
-          "sha256": "50bf49682c5560a1a6eda3f610167a16686c2ed635bc868530cbbc782748581a"
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-openmhz/releases/download/v0.1.3/openmhz-0.1.3-x86_64-unknown-linux-gnu.tar.gz",
+          "sha256": "454e88533bc7853824d220b5a2931b01d86af3c6e84664030c72c804cda2eef4"
         },
         "aarch64-unknown-linux-gnu": {
-          "url": "https://github.com/TrunkRecorder/trunk-plugin-openmhz/releases/download/v0.1.2/openmhz-0.1.2-aarch64-unknown-linux-gnu.tar.gz",
-          "sha256": "fe0a7c47dd6fef1f345f96681315d226d1c1b256b0a0947d3a9d40ba966cee25"
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-openmhz/releases/download/v0.1.3/openmhz-0.1.3-aarch64-unknown-linux-gnu.tar.gz",
+          "sha256": "57b5be1655db8f19688d55a6e76831008f6c734d495a11d8171448211cfe8785"
         },
         "universal-apple-darwin": {
-          "url": "https://github.com/TrunkRecorder/trunk-plugin-openmhz/releases/download/v0.1.2/openmhz-0.1.2-universal-apple-darwin.tar.gz",
-          "sha256": "360889670bc6851a690e76428c458306cebea06a8c73fba56b70147ee7321a3f"
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-openmhz/releases/download/v0.1.3/openmhz-0.1.3-universal-apple-darwin.tar.gz",
+          "sha256": "f21ba4a837fe84a9f326a4513d8f5d67ff450b8eceda1be5a4c4c23335369843"
         },
         "x86_64-pc-windows-msvc": {
-          "url": "https://github.com/TrunkRecorder/trunk-plugin-openmhz/releases/download/v0.1.2/openmhz-0.1.2-x86_64-pc-windows-msvc.zip",
-          "sha256": "fe0a7c98961ef05d4ffe80350c258c38a6b75d9dd6178e2e193145f86041d8ff"
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-openmhz/releases/download/v0.1.3/openmhz-0.1.3-x86_64-pc-windows-msvc.zip",
+          "sha256": "7bfb9aa6f1b509cddbaf0d63c9a6ce82715456b6076738199bf5ad591896f981"
         }
       }
     },
@@ -71,26 +71,26 @@
       "homepage": "https://github.com/chuot/rdio-scanner",
       "license": "GPL-3.0-or-later",
       "tier": "official",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "api": 1,
-      "tag": "v0.1.1",
-      "commit": "a65b43a698b32dcd53e2ca55efb07dcd0c532837",
+      "tag": "v0.1.2",
+      "commit": "c539b8cbc5abc3e396a9cdefed03dcf59c62c2c1",
       "assets": {
         "x86_64-unknown-linux-gnu": {
-          "url": "https://github.com/TrunkRecorder/trunk-plugin-rdioscanner/releases/download/v0.1.1/rdioscanner-0.1.1-x86_64-unknown-linux-gnu.tar.gz",
-          "sha256": "d08e04698f1c55515b236c9a8c21300b5d303faf724070de61fefa07b0661e16"
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-rdioscanner/releases/download/v0.1.2/rdioscanner-0.1.2-x86_64-unknown-linux-gnu.tar.gz",
+          "sha256": "ab6eeb719101909f8e08df3fbc30dc2b9b6c8c7906e5e3ad20aca35f6158c3e0"
         },
         "aarch64-unknown-linux-gnu": {
-          "url": "https://github.com/TrunkRecorder/trunk-plugin-rdioscanner/releases/download/v0.1.1/rdioscanner-0.1.1-aarch64-unknown-linux-gnu.tar.gz",
-          "sha256": "96819b30b671a5e11b2157659f53249025e56406ec3b9cdb7ededae404a0e06a"
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-rdioscanner/releases/download/v0.1.2/rdioscanner-0.1.2-aarch64-unknown-linux-gnu.tar.gz",
+          "sha256": "e8d935b7fd3c547e90588a0296e50e4ac0433260a3387f2c1c21175a2f6d0c50"
         },
         "universal-apple-darwin": {
-          "url": "https://github.com/TrunkRecorder/trunk-plugin-rdioscanner/releases/download/v0.1.1/rdioscanner-0.1.1-universal-apple-darwin.tar.gz",
-          "sha256": "d83c652d65b29557e5df29d299eec7e59a154b8ff7c5d8e7fdc75e448ff97c05"
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-rdioscanner/releases/download/v0.1.2/rdioscanner-0.1.2-universal-apple-darwin.tar.gz",
+          "sha256": "5dc1e879f99aae874ef207c26a678a0256671ff940844b9385a2da92b5c1aea0"
         },
         "x86_64-pc-windows-msvc": {
-          "url": "https://github.com/TrunkRecorder/trunk-plugin-rdioscanner/releases/download/v0.1.1/rdioscanner-0.1.1-x86_64-pc-windows-msvc.zip",
-          "sha256": "c294475e42b132c050b5bb4e572d954a81584eb5051b68db8b8e05a8c8c0eda7"
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-rdioscanner/releases/download/v0.1.2/rdioscanner-0.1.2-x86_64-pc-windows-msvc.zip",
+          "sha256": "210ae1b6ec944555adaf30fc9c4644a465eb0a643b35c3282d8b96149db8d8e9"
         }
       }
     },
@@ -101,26 +101,26 @@
       "repository": "https://github.com/TrunkRecorder/trunk-plugin-simplestream",
       "license": "GPL-3.0-or-later",
       "tier": "official",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "api": 1,
-      "tag": "v0.1.1",
-      "commit": "90cc3eab61f29bad8353dbabf18e83f58a0e600a",
+      "tag": "v0.1.2",
+      "commit": "a772af1570c6ef38fbde5e6186a090c90e202720",
       "assets": {
         "x86_64-unknown-linux-gnu": {
-          "url": "https://github.com/TrunkRecorder/trunk-plugin-simplestream/releases/download/v0.1.1/simplestream-0.1.1-x86_64-unknown-linux-gnu.tar.gz",
-          "sha256": "c9861982ebdc755ff06a781ff5c3df86cd8b60a333c4b40955950bf32e5fbe30"
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-simplestream/releases/download/v0.1.2/simplestream-0.1.2-x86_64-unknown-linux-gnu.tar.gz",
+          "sha256": "880be53b6efad0678924665d00f721c9c78b704b88eb2581c528f605b6b09b26"
         },
         "aarch64-unknown-linux-gnu": {
-          "url": "https://github.com/TrunkRecorder/trunk-plugin-simplestream/releases/download/v0.1.1/simplestream-0.1.1-aarch64-unknown-linux-gnu.tar.gz",
-          "sha256": "8307b72bdddfb2f397790954f0790a9b92adbaff461d081f0860efd92764d257"
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-simplestream/releases/download/v0.1.2/simplestream-0.1.2-aarch64-unknown-linux-gnu.tar.gz",
+          "sha256": "67d3c888fe297c7406079a8c3b755af5a4259255dbfc7b8f91a7ca8e95b60caa"
         },
         "universal-apple-darwin": {
-          "url": "https://github.com/TrunkRecorder/trunk-plugin-simplestream/releases/download/v0.1.1/simplestream-0.1.1-universal-apple-darwin.tar.gz",
-          "sha256": "a4cac2f2b700cf5e4d52a7ae5631430a4e34da01d3197da785219477327a630c"
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-simplestream/releases/download/v0.1.2/simplestream-0.1.2-universal-apple-darwin.tar.gz",
+          "sha256": "a5c64cf19f220dc2924e6ac123d450cc152717f2f49db1d7c6a95190d362be0a"
         },
         "x86_64-pc-windows-msvc": {
-          "url": "https://github.com/TrunkRecorder/trunk-plugin-simplestream/releases/download/v0.1.1/simplestream-0.1.1-x86_64-pc-windows-msvc.zip",
-          "sha256": "1314ef12049dc7fafb92395a4b3e10c696ea0da5bc8daf4c4e595820161391dd"
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-simplestream/releases/download/v0.1.2/simplestream-0.1.2-x86_64-pc-windows-msvc.zip",
+          "sha256": "10f2f974616c44327915967c3cd3939672e70e04c6c08a43770faf631093dd1a"
         }
       }
     },
@@ -131,26 +131,26 @@
       "repository": "https://github.com/TrunkRecorder/trunk-plugin-upload-script",
       "license": "GPL-3.0-or-later",
       "tier": "official",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "api": 1,
-      "tag": "v0.1.0",
-      "commit": "fe4fc083398352f491b53be59fdf14f14c6e51a8",
+      "tag": "v0.1.1",
+      "commit": "a88190b9f22e439d99f1b14f36e51a31779d95dd",
       "assets": {
         "x86_64-unknown-linux-gnu": {
-          "url": "https://github.com/TrunkRecorder/trunk-plugin-upload-script/releases/download/v0.1.0/upload-script-0.1.0-x86_64-unknown-linux-gnu.tar.gz",
-          "sha256": "3d9ccb1b9b6dc3ad8dc78d06aa7d65f3bb250ba6eea3d1d0584f51f2df98cf60"
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-upload-script/releases/download/v0.1.1/upload-script-0.1.1-x86_64-unknown-linux-gnu.tar.gz",
+          "sha256": "498aa803e6d87d3533552c1d3d80fd7f4e98107250a867b3d1ff6213410a93c7"
         },
         "aarch64-unknown-linux-gnu": {
-          "url": "https://github.com/TrunkRecorder/trunk-plugin-upload-script/releases/download/v0.1.0/upload-script-0.1.0-aarch64-unknown-linux-gnu.tar.gz",
-          "sha256": "04b8a48d22b59ca2d0b465703588d10e4abd0b62fe8f3c290a541e72b0f16901"
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-upload-script/releases/download/v0.1.1/upload-script-0.1.1-aarch64-unknown-linux-gnu.tar.gz",
+          "sha256": "c1ee716278d53f4d64c8eafeb62e89e4564a57cc7225c100395417e42fdf4d2d"
         },
         "universal-apple-darwin": {
-          "url": "https://github.com/TrunkRecorder/trunk-plugin-upload-script/releases/download/v0.1.0/upload-script-0.1.0-universal-apple-darwin.tar.gz",
-          "sha256": "cb7445d667b5dc5ef96e33b423e2a51f4edc3afff5276bcc397f8c751dec00ec"
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-upload-script/releases/download/v0.1.1/upload-script-0.1.1-universal-apple-darwin.tar.gz",
+          "sha256": "d4d5c267c87a62f1b8938ea05132fdd0247c563f9d2f85c1fc8be80825dd72b1"
         },
         "x86_64-pc-windows-msvc": {
-          "url": "https://github.com/TrunkRecorder/trunk-plugin-upload-script/releases/download/v0.1.0/upload-script-0.1.0-x86_64-pc-windows-msvc.zip",
-          "sha256": "e8302c4527363d31654177cc2acd25371c9e9de098e8774ed3c5aa124445b6f3"
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-upload-script/releases/download/v0.1.1/upload-script-0.1.1-x86_64-pc-windows-msvc.zip",
+          "sha256": "33a2517ea18b3720f4eeed6f28bd428ca864bfaf272b8ecb51908a5562d2c0da"
         }
       }
     }

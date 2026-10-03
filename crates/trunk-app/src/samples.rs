@@ -41,13 +41,13 @@ mod tests {
     }
 
     #[test]
-    fn old_configs_still_load() {
-        // A config from before USRP / Airspy / formats: files default to cu8.
-        let c: crate::Config = serde_json::from_str(r#"{"sources":[{"kind":"file","path":"a.cu8","centerHz":1,"rateHz":2400000,"realtime":true}]}"#).unwrap();
-        assert!(matches!(c.sources[0], crate::config::Source::File { format: SampleFormat::Cu8, .. }));
-        let c: crate::Config = serde_json::from_str(r#"{"sources":[{"kind":"airspy","centerHz":1,"rateHz":6000000}]}"#).unwrap();
-        assert!(matches!(c.sources[0], crate::config::Source::Airspy { gain: 14, .. }));
-        let c: crate::Config = serde_json::from_str(r#"{"sources":[{"kind":"soapy","centerHz":1,"rateHz":8000000}]}"#).unwrap();
+    fn sources_left_at_their_defaults() {
+        // A capture's format, left out: by its extension.
+        let c: crate::Config = serde_json::from_str(r#"{"sources":[{"type":"file","path":"a.cf32","centerHz":1,"rateHz":2400000,"realtime":true}]}"#).unwrap();
+        assert!(matches!(&c.sources[0], crate::config::Source::File { format: None, path, .. } if SampleFormat::of(None, path) == SampleFormat::Cf32));
+        let c: crate::Config = serde_json::from_str(r#"{"sources":[{"type":"airspy","centerHz":1,"rateHz":6000000}]}"#).unwrap();
+        assert!(matches!(c.sources[0], crate::config::Source::Airspy { gain_step: 14, .. }));
+        let c: crate::Config = serde_json::from_str(r#"{"sources":[{"type":"soapy","centerHz":1,"rateHz":8000000}]}"#).unwrap();
         assert!(matches!(&c.sources[0], crate::config::Source::Soapy { args, gain_db: None, .. } if args.is_empty()));
     }
 }

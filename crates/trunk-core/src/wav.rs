@@ -1,10 +1,13 @@
 //! Mono 16-bit PCM WAV.
 
 pub fn encode(samples: &[f32], rate: u32) -> Vec<u8> {
-    let data = samples.len() as u32 * 2;
-    let mut b = Vec::with_capacity(44 + data as usize);
+    let bytes = samples.len() as u64 * 2;
+    // Past 4 GB (74 h at 8 kHz) the sizes don't fit: 0xFFFFFFFF, "to the
+    // end of the file", as streaming writers do.
+    let (riff, data) = if bytes + 36 <= u32::MAX as u64 { (bytes as u32 + 36, bytes as u32) } else { (u32::MAX, u32::MAX) };
+    let mut b = Vec::with_capacity(44 + bytes as usize);
     b.extend_from_slice(b"RIFF");
-    b.extend_from_slice(&(36 + data).to_le_bytes());
+    b.extend_from_slice(&riff.to_le_bytes());
     b.extend_from_slice(b"WAVEfmt ");
     b.extend_from_slice(&16u32.to_le_bytes());
     b.extend_from_slice(&1u16.to_le_bytes()); // PCM

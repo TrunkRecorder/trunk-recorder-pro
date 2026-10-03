@@ -8,6 +8,7 @@ pub mod config;
 pub mod filename;
 pub mod heard;
 pub mod log;
+pub mod profile;
 pub mod samples;
 pub mod session;
 pub mod stats;

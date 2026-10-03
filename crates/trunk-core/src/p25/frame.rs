@@ -1,5 +1,6 @@
 //! P25 Phase 1 frame layer: the NID's BCH(63,16) code and a streaming framer
-//! (sync → status-symbol strip → NID → frame of the DUID's length).
+//! (sync → status-symbol strip → NID → frame of the DUID's length):
+//! [`Framer`] (built from [`FramerOptions`]) puts out [`Frame`]s.
 //!
 //! `bch_decode` is op25's bch.cc::bchDec (© 2010 KA1RBI) and `decode_nid`
 //! op25's p25_framer::nid_codeword. The framer adds a flywheel (a weaker sync
@@ -179,6 +180,7 @@ pub fn bch_decode(cw: &mut [u8; 64]) -> i32 {
 pub struct Nid {
     pub nac: u16,
     pub duid: u8,
+    /// Bits the BCH decoder corrected.
     pub errors: u8,
 }
 
@@ -253,7 +255,8 @@ pub struct Frame {
     pub bits: Vec<u8>,
     /// op25's frame body: status symbols left in place (the voice tables index this).
     pub raw: Vec<u8>,
-    /// Per-bit reliability, parallel to `bits` / `raw` (empty if none given).
+    /// Per-bit reliability (≥ 0, unsigned: the bit is in `bits`), parallel
+    /// to `bits` / `raw`; empty when the symbols carried none.
     pub soft: Vec<f32>,
     pub raw_soft: Vec<f32>,
     /// Reached its full length (false: cut short by the next sync).

@@ -4,8 +4,10 @@
 pub mod c4fm;
 pub mod channelizer;
 pub mod cqpsk;
+pub mod filters;
 pub mod fm;
 pub mod msd;
+pub mod rolloff;
 pub mod signalling;
 pub mod tones;
 
@@ -14,7 +16,9 @@ pub use channelizer::{Channelizer, HeadId};
 /// One decided symbol from a receiver: the dibit, the channel-sample instant
 /// it was sampled at (common to every receiver on the channel, so frames from
 /// different receivers can be matched), and each bit's reliability (distance
-/// from its decision boundary, ≥ 0; high bit first).
+/// from its decision boundary, ≥ 0; high bit first). A negative reliability
+/// means none: soft decoding is off (the P25 framer then leaves
+/// [`crate::p25::Frame::soft`] empty).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Symbol {
     pub dibit: u8,

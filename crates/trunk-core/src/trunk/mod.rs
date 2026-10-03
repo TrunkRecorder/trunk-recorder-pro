@@ -22,7 +22,7 @@ pub use control::{Protocol, ProtocolStatus};
 pub use conventional::{check_channels, heard_code, Access, ConvChannel, ConvConfig, ConvMode};
 pub use identity::{IdField, Identity};
 pub use record::{Concluded, SaveRules};
-pub use engine::{AdjacentSite, ChannelSnapshot, ConvSystem, Engine, EngineConfig, Event, SmartnetConfig, SourceConfig, SourceTune, Status, SystemConfig, SystemStatus};
+pub use engine::{usable_half_width, AdjacentSite, ChannelSnapshot, ConvSystem, Engine, EngineConfig, Event, SmartnetConfig, SourceConfig, SourceTune, Status, SystemConfig, SystemStatus, DEFAULT_GUARD_HZ};
 pub use message::{Message, MessageType, Patch, TsbkParser};
 pub use patches::Patches;
 pub use talkgroups::{parse_csv, Talkgroup, Talkgroups};

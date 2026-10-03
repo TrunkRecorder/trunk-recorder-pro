@@ -15,8 +15,12 @@ use std::f64::consts::PI;
 
 use num_complex::Complex32;
 
+use super::filters;
 use super::msd::{Msd, Pulse};
 use super::{Receiver, Symbol};
+
+/// Symbols per second: P25 Phase 1 (C4FM, and CQPSK at the same rate) and DMR 4FSK.
+pub const SYMBOL_RATE: f64 = 4800.0;
 
 const BLOCK: u64 = 240;
 /// A channel is bursty (a mobile) when its peak power in the window is this
@@ -95,29 +99,6 @@ impl C4fmOptions {
     }
 }
 
-/// Root-raised-cosine taps (`span` symbols, `sps` samples per symbol), unit DC gain.
-fn rrc_taps(alpha: f64, sps: f64, span: usize) -> Vec<f32> {
-    let n = (span as f64 * sps).round() as usize | 1;
-    let m = (n - 1) as f64 / 2.0;
-    let mut h: Vec<f64> = (0..n)
-        .map(|i| {
-            let t = (i as f64 - m) / sps;
-            if t.abs() < 1e-9 {
-                1.0 - alpha + 4.0 * alpha / PI
-            } else if (t.abs() - 1.0 / (4.0 * alpha)).abs() < 1e-9 {
-                alpha / 2f64.sqrt() * ((1.0 + 2.0 / PI) * (PI / (4.0 * alpha)).sin() + (1.0 - 2.0 / PI) * (PI / (4.0 * alpha)).cos())
-            } else {
-                ((PI * t * (1.0 - alpha)).sin() + 4.0 * alpha * t * (PI * t * (1.0 + alpha)).cos()) / (PI * t * (1.0 - (4.0 * alpha * t).powi(2)))
-            }
-        })
-        .collect();
-    let dc: f64 = h.iter().sum();
-    for v in h.iter_mut() {
-        *v /= dc;
-    }
-    h.into_iter().map(|v| v as f32).collect()
-}
-
 pub struct C4fm {
     opts: C4fmOptions,
     msd: Option<Msd>,
@@ -127,7 +108,7 @@ pub struct C4fm {
     /// Matched filter taps (None: the boxcar); its delay, samples.
     taps: Option<Vec<f32>>,
     delay: f64,
-    fs: f64,
+    rate: f64,
     sps: f64,
     boxw: usize,
     steps: usize,
@@ -140,10 +121,13 @@ pub struct C4fm {
     acc: f64,
     y: Vec<f32>,
     y_base: u64,
-    /// Per sample (parallel to `y`): its power, smoothed over a symbol. Well
-    /// below the recent peak is quiet: a mobile between its bursts, or noise
-    /// from before a signal came up.
-    envs: Vec<f32>,
+    /// Per sample (parallel to `y`): its power, smoothed over a symbol, with
+    /// the peak and floor then. Well below the peak is quiet: a mobile
+    /// between its bursts, or noise from before a signal came up. (Judged by
+    /// the levels at the sample, not when its symbol is sliced: that comes
+    /// later by however much the pushes were, and a quiet spell can be out
+    /// of the window by then.)
+    envs: Vec<Level>,
     /// The symbols the levels come from: (value, power).
     soft_env: VecDeque<f32>,
     /// Power: smoothed over a symbol, and its slowly decaying peak.
@@ -172,12 +156,33 @@ pub struct C4fm {
     pub symbols: u64,
 }
 
-impl C4fm {
-    pub fn new(fs: f64) -> Self {
-        Self::with_options(fs, C4fmOptions::default())
+/// A sample's power (smoothed over a symbol) and the recent peak and floor
+/// it is judged against.
+#[derive(Clone, Copy, Debug)]
+struct Level {
+    env: f32,
+    peak: f32,
+    floor: f32,
+}
+
+impl Level {
+    /// The peak stands well above the floor: a mobile's bursts (a continuous
+    /// carrier's noise never dips that far for a whole window).
+    fn bursty(self) -> bool {
+        self.peak > BURSTY * self.floor
     }
 
-    /// For DMR (4FSK at 4800 baud, RRC-shaped).
+    /// Below the geometric middle of the two, on a bursty channel.
+    fn quiet(self) -> bool {
+        self.bursty() && self.env * self.env < self.peak * self.floor.max(1e-30)
+    }
+}
+
+impl C4fm {
+    pub fn new(rate: f64) -> Self {
+        Self::with_options(rate, C4fmOptions::default())
+    }
+
     /// Level step / spread of the symbols about their levels: ~10 and up,
     /// the decisions are clean; ~1, noise.
     pub fn separation(&self) -> f32 {
@@ -190,24 +195,25 @@ impl C4fm {
         [self.center - o, self.center - o / 3.0, self.center + o / 3.0, self.center + o]
     }
 
-    pub fn dmr(fs: f64) -> Self {
-        Self::with_options(fs, C4fmOptions::dmr())
+    /// For DMR (4FSK at 4800 baud, RRC-shaped).
+    pub fn dmr(rate: f64) -> Self {
+        Self::with_options(rate, C4fmOptions::dmr())
     }
 
-    pub fn with_options(fs: f64, opts: C4fmOptions) -> Self {
-        let sps = fs / 4800.0;
+    pub fn with_options(rate: f64, opts: C4fmOptions) -> Self {
+        let sps = rate / SYMBOL_RATE;
         let boxw = ((sps * opts.box_symbols).round() as usize).max(1);
-        let taps = opts.rrc.map(|a| rrc_taps(a, sps, 8));
+        let taps = opts.rrc.map(|a| filters::rrc_taps(a, sps, (8.0 * sps).round() as usize | 1));
         let delay = taps.as_ref().map_or((boxw - 1) as f64 / 2.0, |t| (t.len() - 1) as f64 / 2.0);
         C4fm {
             opts,
             // DMR (RRC pulse): decision feedback; P25 (RC): the full search.
-            msd: opts.msd.map(|p| Msd::new(fs, p, opts.rrc.unwrap_or(0.5), matches!(p, Pulse::Rrc(_)))),
+            msd: opts.msd.map(|p| Msd::new(rate, p, opts.rrc.unwrap_or(0.5), matches!(p, Pulse::Rrc(_)))),
             msd_in: Vec::new(),
             msd_on: true,
             taps,
             delay,
-            fs,
+            rate,
             sps,
             boxw,
             steps: ((sps * 2.0).round() as usize).max(8),
@@ -254,7 +260,7 @@ impl C4fm {
     /// Nothing on the air at channel sample `t` (the symbol instant, before the filter's delay).
     #[inline]
     fn quiet_at(&self, t: f64) -> bool {
-        self.is_quiet(self.env_at(t))
+        self.env_at(t).quiet()
     }
 
     /// A mobile came up out of nothing: the levels so far are noise's. Keep
@@ -287,27 +293,41 @@ impl C4fm {
     /// window); then quiet is below the geometric middle of the two.
     #[inline]
     fn is_quiet(&self, env: f32) -> bool {
-        self.peak > BURSTY * self.floor && env * env < self.peak * self.floor.max(1e-30)
+        self.level(env).quiet()
+    }
+
+    fn level(&self, env: f32) -> Level {
+        Level { env, peak: self.peak, floor: self.floor }
     }
 
     #[inline]
-    fn env_at(&self, t: f64) -> f32 {
+    fn env_at(&self, t: f64) -> Level {
         let i = (t - self.delay - self.y_base as f64).round();
         if i >= 0.0 && (i as usize) < self.envs.len() {
             self.envs[i as usize]
         } else {
-            self.peak
+            self.level(self.peak)
         }
     }
 
+    /// Block `b`'s sampling phase: the best of the `steps` candidates (on a
+    /// grid of sps / steps) within half a symbol of the last block's (the
+    /// first: in [0, one symbol)). Under a clock offset the phase keeps
+    /// growing (a symbol's worth every so often), so each block is measured
+    /// on the symbols its phase times — searching [0, one symbol) and
+    /// unwrapping after measured another stretch than the one used, more so
+    /// the longer it ran.
     fn block_phase(&mut self, b: u64) {
-        let (mut best, mut ph) = (-1.0f64, 0.0f64);
-        for p in 0..self.steps {
-            let cand = p as f64 / self.steps as f64 * self.sps;
+        let end = (self.y_base + self.y.len() as u64) as f64;
+        let step = self.sps / self.steps as f64;
+        let first = self.phase.back().map_or(0, |&prev| ((prev - self.sps / 2.0) / step).ceil() as i64);
+        let (mut best, mut ph) = (-1.0f64, first as f64 * step);
+        for p in first..first + self.steps as i64 {
+            let cand = p as f64 * step;
             let mut e = 0.0f64;
             for s in b * self.opts.block..(b + 1) * self.opts.block {
                 let t = cand + s as f64 * self.sps;
-                if t < self.y_base as f64 || self.quiet_at(t) {
+                if t < self.y_base as f64 || t + 1.0 >= end || self.quiet_at(t) {
                     continue;
                 }
                 e += (self.at(t) - self.center).abs() as f64;
@@ -317,15 +337,13 @@ impl C4fm {
                 ph = cand;
             }
         }
-        if let Some(&prev) = self.phase.back() {
-            while ph - prev > self.sps / 2.0 {
-                ph -= self.sps;
-            }
-            while ph - prev < -self.sps / 2.0 {
-                ph += self.sps;
-            }
-        }
         self.phase.push_back(ph);
+    }
+
+    /// How far past a block's start [`block_phase`](Self::block_phase) may
+    /// look for the next block's phase.
+    fn phase_reach(&self) -> f64 {
+        self.phase.back().map_or(self.sps, |&prev| (prev + self.sps / 2.0).max(self.sps))
     }
 
     /// Phase at symbol s: linear between block centres (b + 0.5)·block.
@@ -363,8 +381,9 @@ impl C4fm {
         }
     }
 
-    fn slice(&mut self, v: f32, t: f64, env: f32, out: &mut Vec<Symbol>) {
-        if self.is_quiet(env) {
+    fn slice(&mut self, v: f32, t: f64, lv: Level, out: &mut Vec<Symbol>) {
+        let env = lv.env;
+        if lv.quiet() {
             // Nothing on the air: a decision for the framer's count, worth nothing.
             let x = v - self.center;
             let dibit = if x >= self.thr { 0b01 } else if x >= 0.0 { 0b00 } else if x >= -self.thr { 0b10 } else { 0b11 };
@@ -384,8 +403,8 @@ impl C4fm {
             self.since_rails = 0;
             // A bursty channel (a mobile coming up): what came before at noise
             // level is no help with the levels — out of the history for good.
-            if self.peak > BURSTY * self.floor {
-                let gate = (self.peak * self.floor.max(1e-30)).sqrt();
+            if lv.bursty() {
+                let gate = (lv.peak * lv.floor.max(1e-30)).sqrt();
                 let keep: Vec<(f32, f32)> = self.soft.iter().zip(&self.soft_env).filter(|(_, &e)| e >= gate).map(|(&v, &e)| (v, e)).collect();
                 if keep.len() >= 240 {
                     self.soft = keep.iter().map(|k| k.0).collect();
@@ -393,10 +412,10 @@ impl C4fm {
                 }
             }
             self.tmp.clear();
-            if self.bursty {
+            if lv.bursty() {
                 // A mobile: levels from the bursts' steady middles (their edges
                 // ring through the filter from the quiet before and after).
-                let full = 0.5 * self.peak;
+                let full = 0.5 * lv.peak;
                 self.tmp.extend(self.soft.iter().zip(&self.soft_env).filter(|(_, &e)| e >= full).map(|(&v, _)| v));
             }
             if self.tmp.len() < 120 {
@@ -511,11 +530,11 @@ impl Receiver for C4fm {
     }
 
     fn push(&mut self, iq: &[Complex32], out: &mut Vec<Symbol>) {
-        let k = (self.fs / (2.0 * PI)) as f32;
+        let k = (self.rate / (2.0 * PI)) as f32;
         // Clicks: a noise-driven phase wrap gives a spike far outside the rails.
         let lim = self.opts.clip.map(|c| c * (self.thr * 1.5).max(1500.0));
         let a_env = (1.0 / (self.sps * ENV_SYMBOLS)) as f32;
-        let blk = ((self.fs * PEAK_WINDOW_S / PEAK_BLOCKS as f64) as usize).max(1);
+        let blk = ((self.rate * PEAK_WINDOW_S / PEAK_BLOCKS as f64) as usize).max(1);
         for &x in iq {
             let p = x.norm_sqr();
             self.env += a_env * (p - self.env);
@@ -543,7 +562,7 @@ impl Receiver for C4fm {
                 self.blk_min = f32::INFINITY;
                 self.blk_n = 0;
             }
-            self.envs.push(self.env);
+            self.envs.push(self.level(self.env));
             let mut f = (x * self.last.conj()).arg() * k;
             self.last = x;
             if let Some(l) = lim {
@@ -566,7 +585,9 @@ impl Receiver for C4fm {
             self.y.push((self.acc / self.hist.len() as f64) as f32);
         }
         self.filter();
-        while ((self.y_base + self.y.len() as u64) as f64) > ((self.next_block + 1) * self.opts.block) as f64 * self.sps + self.sps + 2.0 {
+        // (A block's latest candidate is half a symbol past the last block's
+        // phase, which drifts on without bound; the first's is one symbol.)
+        while ((self.y_base + self.y.len() as u64) as f64) > ((self.next_block + 1) * self.opts.block) as f64 * self.sps + self.phase_reach() + 2.0 {
             self.block_phase(self.next_block);
             self.next_block += 1;
         }
@@ -597,5 +618,58 @@ impl Receiver for C4fm {
             }
         }
         self.compact();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dmr::synth::modulate_on;
+
+    /// Bursts (2 s on, 1 s off) from a transmitter whose clock is 1000 ppm
+    /// off — the drift of a 10 ppm one over hours, in minutes: the start of
+    /// the last burst is still decoded as sent.
+    #[test]
+    fn long_runs_with_a_clock_offset_keep_their_timing() {
+        // Fast and slow, in big pushes and in small odd ones (a block's
+        // timing is found as soon as its samples are in).
+        for (ppm, chunk) in [(1000.0, 4800), (-1000.0, 4800), (1000.0, 77), (-1000.0, 77)] {
+            assert!(last_burst_decodes(ppm, chunk), "{ppm} ppm in pushes of {chunk}: the last burst's start isn't decoded as sent");
+        }
+    }
+
+    fn last_burst_decodes(ppm: f64, chunk: usize) -> bool {
+        let fs = 48_000.0;
+        let (on_s, off_s, bursts) = (2.0, 1.0, 66);
+        let mut x = 0x9e37_79b9u64;
+        let mut dibits = Vec::new();
+        let mut on = Vec::new();
+        let mut last_start = 0;
+        for b in 0..bursts {
+            if b == bursts - 1 {
+                last_start = dibits.len();
+            }
+            for _ in 0..(on_s * 4800.0) as usize {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                dibits.push((x & 3) as u8);
+                on.push(true);
+            }
+            dibits.extend(std::iter::repeat_n(0u8, (off_s * 4800.0) as usize));
+            on.extend(std::iter::repeat_n(false, (off_s * 4800.0) as usize));
+        }
+        // Sent at 4800·(1 + ppm) baud: made at a sample rate that much lower.
+        let mut phase = 0.0;
+        let iq = modulate_on(&dibits, Some(&on), fs / (1.0 + ppm * 1e-6), 0.0, 0.5, &mut phase);
+        let mut rx = C4fm::dmr(fs);
+        let mut out = Vec::new();
+        for chunk in iq.chunks(chunk) {
+            rx.push(chunk, &mut out);
+        }
+        let got: Vec<u8> = out.iter().map(|s| s.dibit).collect();
+        // The last burst's symbols 20..100 (its first timing block).
+        let want = &dibits[last_start + 20..last_start + 100];
+        got.windows(want.len()).any(|w| w == want)
     }
 }

@@ -151,8 +151,8 @@ pub fn systems_of(cfg: &crate::config::Config) -> Vec<trunk_recorder_plugin::Sys
         .collect()
 }
 
-/// Plugin notes as interface messages: log lines, and `pluginState` /
-/// `pluginResult` for the plugins view.
+/// Plugin notes as log lines (the plugins view follows each plugin's state
+/// and results in its `pluginRuntime`).
 pub fn notes_to_hub(hub: crate::runtime::Hub) -> host::Notes {
     use serde_json::json;
     use trunk_recorder_plugin::{Level, Outcome, State};
@@ -175,13 +175,11 @@ pub fn notes_to_hub(hub: crate::runtime::Hub) -> host::Notes {
             if state == State::Error {
                 log(&hub, &plugin, true, &message);
             }
-            crate::runtime::publish(&hub, json!({ "type": "pluginState", "id": plugin, "state": state, "message": message }));
         }
-        Note::Result { plugin, path, outcome, message, url } => {
+        Note::Result { plugin, path, outcome, message, .. } => {
             if outcome == Outcome::Failed {
                 log(&hub, &plugin, true, &format!("{path}: {message}"));
             }
-            crate::runtime::publish(&hub, json!({ "type": "pluginResult", "id": plugin, "path": path, "outcome": outcome, "message": message, "url": url }));
         }
         // (In the plugin's pluginRuntime.)
         Note::Metrics { .. } => {}
@@ -197,8 +195,8 @@ mod tests {
     fn what_plugins_get_from_the_config() {
         let c: Config = serde_json::from_value(json!({
             "systems": [
-                { "shortName": "dcfd", "controlChannels": [857987500], "plugins": { "openmhz": { "apiKey": "k" } } },
-                { "shortName": "wmata", "controlChannels": [489087500] }
+                { "shortName": "dcfd", "controlChannelsHz": [857987500], "plugins": { "openmhz": { "apiKey": "k" } } },
+                { "shortName": "wmata", "controlChannelsHz": [489087500] }
             ],
             "conventional": [{ "shortName": "conv", "plugins": { "openmhz": { "apiKey": "c" } } }],
             "plugins": {
@@ -227,9 +225,9 @@ mod tests {
     fn plugins_know_systems_by_short_name() {
         let c: Config = serde_json::from_value(json!({
             "systems": [
-                { "shortName": "old", "enabled": false, "controlChannels": [851000000], "plugins": { "openmhz": { "apiKey": "old" } } },
+                { "shortName": "old", "enabled": false, "controlChannelsHz": [851000000], "plugins": { "openmhz": { "apiKey": "old" } } },
                 { "shortName": "draft", "plugins": { "openmhz": { "apiKey": "draft" } } },
-                { "shortName": "dcfd", "controlChannels": [857987500], "plugins": { "openmhz": { "apiKey": "dcfd" } } }
+                { "shortName": "dcfd", "controlChannelsHz": [857987500], "plugins": { "openmhz": { "apiKey": "dcfd" } } }
             ],
             "conventional": [{ "shortName": "county", "channels": [{ "freqHz": 154430000 }], "plugins": { "openmhz": { "apiKey": "conv" } } }],
             "plugins": { "openmhz": { "enabled": true } }

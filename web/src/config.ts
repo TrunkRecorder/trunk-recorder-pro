@@ -57,7 +57,7 @@ export function defaultLog(): LogSettings {
     frequencyFormat: "mhz",
     talkgroupDisplayFormat: "id",
     statusAsString: true,
-    controlWarnRate: 10,
+    controlWarnRatePerS: 10,
   };
 }
 
@@ -67,21 +67,21 @@ export const USRP_RATES = [2_400_000, 4_000_000, 5_000_000, 6_400_000, 8_000_000
 export const AIRSPY_RATES = [10_000_000, 6_000_000, 3_000_000, 2_500_000];
 
 export function newDongle(): Source {
-  return { kind: "rtlsdr", serial: "", centerHz: 0, rateHz: 2_400_000, gainDb: RTL_DEFAULT_GAIN_DB, agc: false, ppm: 0 };
+  return { type: "rtlsdr", serial: "", centerHz: 0, rateHz: 2_400_000, gainDb: RTL_DEFAULT_GAIN_DB, agc: false, ppm: 0 };
 }
 export function newUsrp(): Source {
-  return { kind: "usrp", args: "", centerHz: 0, rateHz: 8_000_000, gainDb: 40, agc: false, antenna: "", ppm: 0 };
+  return { type: "usrp", args: "", centerHz: 0, rateHz: 8_000_000, gainDb: 40, agc: false, antenna: "", ppm: 0 };
 }
 export function newAirspy(): Source {
-  return { kind: "airspy", serial: "", centerHz: 0, rateHz: 6_000_000, gainMode: "linearity", gain: 14, lnaGain: 10, mixerGain: 10, vgaGain: 10, agc: false, biasTee: false, ppm: 0 };
+  return { type: "airspy", serial: "", centerHz: 0, rateHz: 6_000_000, gainMode: "linearity", gainStep: 14, lnaStep: 10, mixerStep: 10, vgaStep: 10, agc: false, biasTee: false, ppm: 0 };
 }
 /** Offered for SoapySDR devices; any rate the device takes can be typed. */
 export const SOAPY_RATES = [2_000_000, 2_400_000, 2_500_000, 3_000_000, 6_000_000, 8_000_000, 10_000_000];
 export function newSoapy(): Source {
-  return { kind: "soapy", args: "", centerHz: 0, rateHz: 8_000_000, agc: true, gainDb: null, gains: {}, antenna: "", settings: "", ppm: 0 };
+  return { type: "soapy", args: "", centerHz: 0, rateHz: 8_000_000, agc: true, gainDb: null, gains: {}, antenna: "", settings: "", ppm: 0 };
 }
 export function newFile(): Source {
-  return { kind: "file", path: "", centerHz: 0, rateHz: 2_400_000, realtime: true, format: "cu8" };
+  return { type: "file", path: "", centerHz: 0, rateHz: 2_400_000, realtime: true, format: "cu8" };
 }
 
 /** A capture's sample format from its name (as the recorder guesses it). */
@@ -90,17 +90,20 @@ export function formatFromPath(path: string): "cu8" | "cs16" | "cf32" {
   return ["cf32", "cfile", "fc32", "complex"].includes(ext) ? "cf32" : ["cs16", "sc16"].includes(ext) ? "cs16" : "cu8";
 }
 
-/** Usable half-width of a source (the edges are filter roll-off). */
-export function usableHalfWidth(rateHz: number): number {
-  return (rateHz / 2) * 0.9;
+/** Left unused at each edge of a source's band unless it says otherwise (`guardHz`), Hz. */
+export const DEFAULT_GUARD_HZ = 75_000;
+
+/** How far from a source's centre a channel may be: half its band less the guard (never under a quarter of the band). */
+export function usableHalfWidth(rateHz: number, guardHz: number = DEFAULT_GUARD_HZ): number {
+  return Math.max(rateHz / 2 - Math.max(0, guardHz), rateHz / 4);
 }
 
 /** A centre that fits every control channel in one source, off the DC spike. */
-export function autoCenter(controlChannels: number[], rateHz: number): number | null {
+export function autoCenter(controlChannels: number[], rateHz: number, guardHz?: number): number | null {
   if (!controlChannels.length) return null;
   const lo = Math.min(...controlChannels);
   const hi = Math.max(...controlChannels);
-  const half = usableHalfWidth(rateHz);
+  const half = usableHalfWidth(rateHz, guardHz);
   if (hi - lo > 2 * half - 50_000) return null;
   let c = Math.round((lo + hi) / 2 / 1000) * 1000;
   for (let step = 0; step < 40 && controlChannels.some((f) => Math.abs(f - c) < 25_000); step++) {
@@ -129,15 +132,16 @@ export function conventionalNamed(c: Config, shortName: string): Conventional | 
   return c.conventional.find((x) => x.shortName === shortName);
 }
 
-/** Trunk Recorder's trunked DMR settings: `lcnTable` { "<lcn>": Hz } and `channels` (candidate voice frequencies). */
+/** Trunk Recorder's trunked DMR settings: `lcnTable` { "<lcn>": Hz } and `channels` (candidate voice frequencies), in Hz (a value under 100000 read as MHz). */
 function dmrImport(sys: Record<string, unknown>): Partial<System> {
+  const hz = (v: unknown) => (typeof v === "number" && v > 0 ? (v < 1e5 ? Math.round(v * 1e6) : v) : undefined);
   const out: Partial<System> = { type: "dmr" };
   if (sys.lcnTable && typeof sys.lcnTable === "object") {
     const t: Record<string, number> = {};
-    for (const [k, v] of Object.entries(sys.lcnTable as Record<string, unknown>)) if (typeof v === "number" && v > 0) t[k] = v;
-    if (Object.keys(t).length) out.lcnTable = t;
+    for (const [k, v] of Object.entries(sys.lcnTable as Record<string, unknown>)) if (hz(v)) t[k] = hz(v)!;
+    if (Object.keys(t).length) out.lcnTableHz = t;
   }
-  if (Array.isArray(sys.channels)) out.channels = (sys.channels as unknown[]).filter((v): v is number => typeof v === "number" && v > 0);
+  if (Array.isArray(sys.channels)) out.dmrChannelsHz = (sys.channels as unknown[]).map(hz).filter((v): v is number => v !== undefined);
   return out;
 }
 
@@ -158,28 +162,28 @@ export function normalizeSystem(x: Partial<System>): System {
     type: x.type === "smartnet" ? "smartnet" : x.type === "dmr" ? "dmr" : "p25",
     ...(x.type === "dmr"
       ? {
-          ...(x.lcnTable && Object.keys(x.lcnTable).length ? { lcnTable: x.lcnTable } : {}),
-          ...(x.channels?.length ? { channels: x.channels } : {}),
+          ...(x.lcnTableHz && Object.keys(x.lcnTableHz).length ? { lcnTableHz: x.lcnTableHz } : {}),
+          ...(x.dmrChannelsHz?.length ? { dmrChannelsHz: x.dmrChannelsHz } : {}),
           ...(typeof x.colorCode === "number" ? { colorCode: x.colorCode } : {}),
         }
       : {}),
     ...(x.type === "smartnet"
       ? {
           bandplan: x.bandplan ?? "800_standard",
-          ...(x.bandplanBase ? { bandplanBase: x.bandplanBase } : {}),
-          ...(x.bandplanSpacing ? { bandplanSpacing: x.bandplanSpacing } : {}),
+          ...(x.bandplanBaseHz ? { bandplanBaseHz: x.bandplanBaseHz } : {}),
+          ...(x.bandplanSpacingHz ? { bandplanSpacingHz: x.bandplanSpacingHz } : {}),
           ...(x.bandplanOffset ? { bandplanOffset: x.bandplanOffset } : {}),
-          ...(x.bandplanHigh ? { bandplanHigh: x.bandplanHigh } : {}),
+          ...(x.bandplanHighHz ? { bandplanHighHz: x.bandplanHighHz } : {}),
           ...(x.defaultMode === "analog" ? { defaultMode: "analog" as const } : {}),
         }
       : {}),
     enabled: x.enabled ?? true,
-    controlChannels: x.controlChannels ?? [],
+    controlChannelsHz: x.controlChannelsHz ?? [],
     modulation: x.modulation ?? "auto",
     talkgroupsCsv: x.talkgroupsCsv ?? "",
     talkgroupsName: x.talkgroupsName ?? "",
     expect: x.expect ?? {},
-    voiceChannels: x.voiceChannels ?? [],
+    voiceChannelsHz: x.voiceChannelsHz ?? [],
     ...(x.recording && Object.keys(x.recording).length ? { recording: x.recording } : {}),
     ...(x.unitNames && (x.unitNames.csv || x.unitNames.mode) ? { unitNames: x.unitNames } : {}),
     ...(x.siteGroup?.trim() ? { siteGroup: x.siteGroup } : {}),
@@ -223,7 +227,7 @@ export function filenameProblem(format: string): string | null {
 
 /** The systems being recorded, in the recorder's order (SystemStatus.index). */
 export function activeSystems(c: Config): System[] {
-  return c.systems.filter((x) => x.enabled && x.controlChannels.length > 0);
+  return c.systems.filter((x) => x.enabled && x.controlChannelsHz.length > 0);
 }
 
 /** A system's color (the dashboard, waterfall and setup agree): by its place among the active systems. */
@@ -258,16 +262,16 @@ export function newSystem(c: Config, patch: Partial<System> = {}): System {
   return sys;
 }
 
-/** A SmartNet system's settings from a Trunk Recorder system (base / spacing / high in Hz or MHz). */
+/** A SmartNet system's settings from a Trunk Recorder system (its base / spacing / high are MHz; Hz here — a value already in Hz is kept). */
 function smartnetImport(sys: Record<string, unknown>): Partial<System> {
   const hz = (v: unknown, mhzBelow: number) => (typeof v === "number" && v > 0 ? (v < mhzBelow ? Math.round(v * 1e6) : v) : undefined);
   const out: Partial<System> = { type: "smartnet", bandplan: typeof sys.bandplan === "string" ? sys.bandplan : "800_standard" };
   const base = hz(sys.bandplanBase, 1e5);
   const spacing = hz(sys.bandplanSpacing, 1);
   const high = hz(sys.bandplanHigh, 1e5);
-  if (base) out.bandplanBase = base;
-  if (spacing) out.bandplanSpacing = spacing;
-  if (high) out.bandplanHigh = high;
+  if (base) out.bandplanBaseHz = base;
+  if (spacing) out.bandplanSpacingHz = spacing;
+  if (high) out.bandplanHighHz = high;
   if (typeof sys.bandplanOffset === "number") out.bandplanOffset = sys.bandplanOffset;
   return out;
 }
@@ -292,7 +296,7 @@ export function siteSiblings(c: Config, sys: System): System[] {
 
 /** The system a control channel is already configured on, if any. */
 export function systemWithChannel(c: Config, hz: number): System | undefined {
-  return c.systems.find((x) => [...x.controlChannels, ...(x.channels ?? [])].some((f) => Math.abs(f - hz) < 6_000));
+  return c.systems.find((x) => [...x.controlChannelsHz, ...(x.dmrChannelsHz ?? [])].some((f) => Math.abs(f - hz) < 6_000));
 }
 
 /**
@@ -302,29 +306,33 @@ export function systemWithChannel(c: Config, hz: number): System | undefined {
 export function resolvedCenters(c: Config): (number | null)[] {
   // A DMR site's watched frequencies are all needed (as Config::resolved_centers).
   const groups: [number[], number[]][] = activeSystems(c).map((x) => {
-    const need = [...x.controlChannels, ...(x.type === "dmr" ? (x.channels ?? []) : [])];
-    return [[...need, ...x.voiceChannels], need];
+    const need = [...x.controlChannelsHz, ...(x.type === "dmr" ? (x.dmrChannelsHz ?? []) : [])];
+    return [[...need, ...x.voiceChannelsHz], need];
   });
   for (const v of c.conventional.filter((x) => x.enabled)) {
     const conv = v.channels.filter((ch) => ch.enabled && ch.freqHz > 0).map((ch) => ch.freqHz);
     if (conv.length) groups.push([conv, conv]);
   }
   const centers = c.sources.map((s) => s.centerHz);
-  const covered = (f: number) => c.sources.some((s, i) => centers[i] > 0 && Math.abs(f - centers[i]) <= usableHalfWidth(s.rateHz));
+  const covered = (f: number) => c.sources.some((s, i) => centers[i] > 0 && Math.abs(f - centers[i]) <= usableHalfWidth(s.rateHz, s.guardHz));
   for (let i = 0; i < c.sources.length; i++) {
     if (centers[i] > 0) continue;
     const open = groups.filter(([, need]) => !need.some(covered));
     if (!open.length) break;
-    const rate = c.sources[i].rateHz;
+    const { rateHz: rate, guardHz: guard } = c.sources[i];
     centers[i] =
-      autoCenter(open.flatMap((g) => g[0]), rate) ?? autoCenter(open.flatMap((g) => g[1]), rate) ?? autoCenter(open[0][0], rate) ?? autoCenter(open[0][1], rate) ?? 0;
+      autoCenter(open.flatMap((g) => g[0]), rate, guard) ??
+      autoCenter(open.flatMap((g) => g[1]), rate, guard) ??
+      autoCenter(open[0][0], rate, guard) ??
+      autoCenter(open[0][1], rate, guard) ??
+      0;
   }
   return centers.map((x) => x || null);
 }
 
 /** The source (index) whose usable band holds `hz`, or -1. */
 export function sourceCovering(c: Config, centers: (number | null)[], hz: number): number {
-  return c.sources.findIndex((s, i) => centers[i] !== null && Math.abs(hz - (centers[i] ?? 0)) <= usableHalfWidth(s.rateHz));
+  return c.sources.findIndex((s, i) => centers[i] !== null && Math.abs(hz - (centers[i] ?? 0)) <= usableHalfWidth(s.rateHz, s.guardHz));
 }
 
 /** A conventional channel's talkgroup when none is given: its frequency in kHz. */
@@ -386,6 +394,24 @@ export function nameProblem(c: Config): string | null {
   return null;
 }
 
+/** Conventional systems a config may have (the recorder's MAX_CONVENTIONAL). */
+export const MAX_CONVENTIONAL = 256;
+
+/** The SmartNet band plans the recorder knows besides 400… / OBT (smartnet::Bandplan::from_config). */
+const BANDPLANS = ["", "800_standard", "800_domestic", "800_reband", "800_rebanded", "800_splinter", "800_domestic_splinter", "900"];
+
+/** Why a SmartNet system's band plan can't be used, or null (smartnet::Bandplan::from_config). */
+export function bandplanProblem(x: System): string | null {
+  const n = x.bandplan ?? "";
+  if (n.startsWith("400") || n.toLowerCase() === "obt") {
+    const base = x.bandplanBaseHz ?? 0;
+    if (!(base > 0) || !((x.bandplanSpacingHz ?? 0) > 0) || !((x.bandplanHighHz ?? 0) > base))
+      return `SmartNet band plan ${n} needs its base, spacing and high frequency (high above base) and offset.`;
+    return null;
+  }
+  return BANDPLANS.includes(n) ? null : `unknown SmartNet band plan "${n}" (800_standard, 800_reband, 800_splinter, 900, 400_custom).`;
+}
+
 /** Why the config can't start, or null (the recorder's Config::problem). */
 export function startProblem(c: Config): string | null {
   if (!c.sources.length) return "Add a source: a dongle or a capture file.";
@@ -399,8 +425,16 @@ export function startProblem(c: Config): string | null {
   if (missing >= 0)
     return `Set a center frequency for source ${missing + 1} — it couldn't be placed automatically (nothing left for it to cover, or the channels don't fit one source).`;
   const inside = (f: number) => sourceCovering(c, centers, f) >= 0;
-  const lost = systems.find((x) => !x.controlChannels.some(inside));
-  if (lost) return `No control channel of ${lost.shortName} falls inside any source's bandwidth — move a center frequency or add a source.`;
+  for (const x of systems) {
+    const plan = x.type === "smartnet" ? bandplanProblem(x) : null;
+    if (plan) return `${x.shortName}: ${plan}`;
+    if (x.type === "dmr") {
+      const out = [...x.controlChannelsHz, ...(x.dmrChannelsHz ?? [])].filter((f) => !inside(f)).map((f) => formatMhz(f));
+      if (out.length) return `${x.shortName}: DMR frequencies outside every source's bandwidth: ${out.join(", ")} MHz — move a center frequency or add a source.`;
+    }
+    if (!x.controlChannelsHz.some(inside)) return `No control channel of ${x.shortName} falls inside any source's bandwidth — move a center frequency or add a source.`;
+  }
+  if (c.conventional.length > MAX_CONVENTIONAL) return `At most ${MAX_CONVENTIONAL} conventional systems.`;
   const owner: [number, string][] = [];
   for (const v of c.conventional.filter((x) => x.enabled))
     for (const ch of v.channels.filter((x) => x.enabled)) {
@@ -422,7 +456,7 @@ export function startProblem(c: Config): string | null {
     const p = rowsProblem(channels.filter((o) => sameFreq(o.freqHz, ch.freqHz)));
     if (p) return p;
   }
-  if (c.sources.some((s) => s.kind === "file" && !s.path)) return "Choose the capture file to replay.";
+  if (c.sources.some((s) => s.type === "file" && !s.path)) return "Choose the capture file to replay.";
   return null;
 }
 
@@ -827,7 +861,7 @@ export function importTrunkRecorderConfig(
     const stage = (v: unknown) => (typeof v === "number" ? v : undefined);
     if (s.driver === "usrp") {
       imported.push({
-        kind: "usrp",
+        type: "usrp",
         args: dev,
         centerHz: center,
         rateHz: typeof s.rate === "number" ? s.rate : 8_000_000,
@@ -850,7 +884,7 @@ export function importTrunkRecorderConfig(
       const stages = { IF: s.ifGain, BB: s.bbGain, MIX: s.mixGain, LNA: s.lnaGain, TIA: s.tiaGain, PGA: s.pgaGain, AMP: s.ampGain, VGA: s.vgaGain, VGA1: s.vga1Gain, VGA2: s.vga2Gain };
       for (const [k, v] of Object.entries({ ...stages, ...(s.gainSettings as Record<string, unknown> | undefined) })) if (typeof v === "number" && v !== 0) gains[k] = v;
       imported.push({
-        kind: "soapy",
+        type: "soapy",
         args: soapyArgs,
         centerHz: center,
         rateHz: typeof s.rate === "number" ? s.rate : 8_000_000,
@@ -875,15 +909,15 @@ export function importTrunkRecorderConfig(
       const manual = lna !== undefined || mix !== undefined || vga !== undefined;
       const clamp = (v: number | undefined, max: number) => Math.max(0, Math.min(max, Math.round(v ?? 10)));
       imported.push({
-        kind: "airspy",
+        type: "airspy",
         serial: sn.toUpperCase(),
         centerHz: center,
         rateHz: rate,
         gainMode: manual || agc ? "manual" : "linearity",
-        gain: Math.max(0, Math.min(21, Math.round(gain ?? 14))),
-        lnaGain: clamp(lna, 14),
-        mixerGain: clamp(mix, 15),
-        vgaGain: clamp(vga, 15),
+        gainStep: Math.max(0, Math.min(21, Math.round(gain ?? 14))),
+        lnaStep: clamp(lna, 14),
+        mixerStep: clamp(mix, 15),
+        vgaStep: clamp(vga, 15),
         agc,
         biasTee: /bias=1/.test(dev),
         ppm,
@@ -901,7 +935,7 @@ export function importTrunkRecorderConfig(
       rate = 2_400_000;
     }
     imported.push({
-      kind: "rtlsdr",
+      type: "rtlsdr",
       serial: /^\d$/.test(serial) ? "" : serial,
       centerHz: center,
       rateHz: rate,
@@ -959,7 +993,7 @@ export function importTrunkRecorderConfig(
       if (sys.multiSite !== true && siteGroup) isolated.push(ownName);
       const x = newSystem(cfg, {
         shortName: typeof sys.shortName === "string" ? sys.shortName : undefined,
-        controlChannels: Array.isArray(sys.control_channels) ? (sys.control_channels as unknown[]).filter((v): v is number => typeof v === "number") : [],
+        controlChannelsHz: Array.isArray(sys.control_channels) ? (sys.control_channels as unknown[]).filter((v): v is number => typeof v === "number") : [],
         modulation: sys.modulation === "qpsk" || sys.modulation === "fsk4" ? sys.modulation : "auto",
         ...(Object.keys(trRecording(sys)).length ? { recording: trRecording(sys) } : {}),
         ...(sys.type === "smartnet" ? smartnetImport(sys) : {}),
@@ -986,8 +1020,14 @@ export function importTrunkRecorderConfig(
     if (!multi.length && p25.length > 1)
       notes.push("A call heard on several sites of one system is now saved once (Trunk Recorder's multiSite was off) — switch it off under Recording to keep every copy.");
   }
-  // A setting the same on every system there is the Recording tab's here; the rest stay each system's own.
   const owners = [...cfg.systems.map((x) => x as { recording?: RecordingOverride }), ...cfg.conventional];
+  // An instance-level format is every system's that has none of its own (a system's own wins, as in Trunk Recorder).
+  if (typeof j.filenameFormat === "string" && j.filenameFormat.trim()) {
+    const top = j.filenameFormat.trim();
+    if (!owners.length) cfg.recording.filenameFormat = top;
+    for (const o of owners) if (o.recording?.filenameFormat === undefined) o.recording = { ...o.recording, filenameFormat: top };
+  }
+  // A setting the same on every system there is the Recording tab's here; the rest stay each system's own.
   if (owners.length) {
     const keys = new Set(owners.flatMap((o) => Object.keys(o.recording ?? {}))) as Set<keyof RecordingOverride>;
     for (const k of keys) {
@@ -1014,16 +1054,11 @@ export function importTrunkRecorderConfig(
   if (typeof j.logColor === "string" && ["all", "console", "logfile", "none"].includes(j.logColor)) log.color = j.logColor;
   if (j.frequencyFormat === "exp" || j.frequencyFormat === "mhz" || j.frequencyFormat === "hz") log.frequencyFormat = j.frequencyFormat;
   if (typeof j.statusAsString === "boolean") log.statusAsString = j.statusAsString;
-  if (typeof j.controlWarnRate === "number") log.controlWarnRate = j.controlWarnRate;
+  if (typeof j.controlWarnRate === "number") log.controlWarnRatePerS = j.controlWarnRate;
   const tgFormat = systems.map((x) => x.talkgroupDisplayFormat).find((v) => v === "id" || v === "id_tag" || v === "tag_id");
   if (tgFormat) log.talkgroupDisplayFormat = tgFormat as LogSettings["talkgroupDisplayFormat"];
   if (log.file && log.dir && !log.dir.startsWith("/")) notes.push(`The log folder "${log.dir}" is now next to the config file.`);
   cfg.log = log;
-  // An instance-level format is every system's that has none of its own.
-  if (typeof j.filenameFormat === "string" && j.filenameFormat.trim()) {
-    const own = cfg.systems.filter((x) => x.recording?.filenameFormat !== undefined).length;
-    if (own < cfg.systems.length || !cfg.systems.length) cfg.recording.filenameFormat = j.filenameFormat.trim();
-  }
   if (systems.some((x) => x.conversationMode === false)) notes.push("conversationMode off (one file per transmission) isn't supported: each call is one file.");
   const { plugins, other } = trPlugins(j, names, systemNames);
   if (other.length) todo.push({ kind: "plugins", names: other });

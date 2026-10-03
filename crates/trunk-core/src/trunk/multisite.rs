@@ -57,6 +57,7 @@ pub struct Held {
     pub call: Call,
     pub audio: Vec<f32>,
     pub frames: CallFrames,
+    /// The call JSON's `recorder_num` ([`super::record::ConcludeInfo::recorder_num`]).
     pub recorder_num: u32,
     /// Where each transmission starts in `audio`.
     pub tx: super::record::Transmissions,
@@ -70,7 +71,7 @@ impl Held {
     /// Seconds of audio decoded cleanly: the vocoder frames not repeated,
     /// muted or lost (analog: all of it). Encrypted: none.
     pub fn clean_s(&self) -> f64 {
-        if self.call.encrypted || self.audio.is_empty() {
+        if self.audio.is_empty() {
             return 0.0;
         }
         let iv = &self.frames.errors.intervals;
@@ -201,10 +202,12 @@ impl MultiSite {
     }
 
     /// Call `id` ended (`held`: its recording, None when it wasn't
-    /// recorded). When it was the last of its copies: the one to save, and
-    /// the others (duplicates of it). `prefers(system, tg)`: whether
-    /// `system`'s site is the one the talkgroup file wants `tg` from.
-    pub fn conclude(&mut self, id: CallId, held: Option<Held>, prefers: impl Fn(u16, &Talkgroup) -> bool) -> Option<(Held, Vec<Held>)> {
+    /// recorded). When it was the last of its copies: all of them, the one
+    /// to save first ([`pick`]), then the others, best first — the next to
+    /// try when one isn't kept (too short for its site's rules).
+    /// `prefers(system, tg)`: whether `system`'s site is the one the
+    /// talkgroup file wants `tg` from.
+    pub fn conclude(&mut self, id: CallId, held: Option<Held>, prefers: impl Fn(u16, &Talkgroup) -> bool) -> Option<Vec<Held>> {
         let mut copies = match self.end(id, held) {
             Ended::Alone(None) | Ended::Waiting => return None,
             Ended::Alone(Some(h)) => vec![h],
@@ -214,8 +217,10 @@ impl MultiSite {
         let prefs: Vec<&Talkgroup> = copies.iter().filter_map(|h| h.call.talkgroup_info.as_ref()).collect();
         let preferred: Vec<bool> = copies.iter().map(|h| prefs.iter().any(|tg| prefers(h.call.system, tg))).collect();
         let k = pick(&copies, &preferred)?;
-        let kept = copies.swap_remove(k);
-        Some((kept, copies))
+        let first = copies.remove(k);
+        copies.sort_by(|a, b| b.clean_s().total_cmp(&a.clean_s()));
+        copies.insert(0, first);
+        Some(copies)
     }
 }
 

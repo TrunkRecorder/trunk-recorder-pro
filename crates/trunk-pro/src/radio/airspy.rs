@@ -208,7 +208,7 @@ extern "C" fn on_samples(t: *mut Transfer) -> c_int {
     // SAFETY: sample_count complex floats.
     let s = unsafe { std::slice::from_raw_parts(t.samples as *const Complex32, t.sample_count as usize) };
     let dropped = t.dropped_samples.saturating_sub(ctx.dropped.swap(t.dropped_samples, Ordering::Relaxed));
-    if ctx.tx.send(SourceMsg::Iq { source: ctx.source, samples: s.to_vec(), dropped }).is_err() {
+    if ctx.tx.send(SourceMsg::Iq { source: ctx.source, samples: s.to_vec(), dropped, at: std::time::Instant::now() }).is_err() {
         ctx.closed.store(true, Ordering::Relaxed);
         return 1;
     }

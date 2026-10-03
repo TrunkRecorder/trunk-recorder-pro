@@ -120,6 +120,12 @@ pub struct Call {
 }
 
 impl Call {
+    /// Its TDMA slot (0 / 1), for a call on a two-slot channel: P25 Phase 2
+    /// or DMR.
+    pub fn slot(&self) -> Option<u8> {
+        (self.phase2_tdma || self.color_code.is_some()).then_some(self.tdma_slot)
+    }
+
     /// Fold in the talkgroups patched with it now (`members`); true when that added any.
     fn note_patch(&mut self, members: Vec<u32>) -> bool {
         let n = self.patched_talkgroups.len();
@@ -151,17 +157,31 @@ impl Default for CallConfig {
     }
 }
 
-/// What the manager asks of whoever owns the radio.
+/// The longest a call goes on with no `max_call_s` set: one longer (a stuck
+/// carrier, a channel left keyed) is saved in parts this long, s.
+pub const STUCK_CALL_S: f64 = 600.0;
+
+/// What the manager asks of whoever owns the radio: a call's voice channel
+/// opened to record it ([`record`](Self::record)) or only to follow it
+/// ([`follow`](Self::follow)), and closed again ([`release`](Self::release)).
 pub trait RecorderHost {
-    /// Start recording; `Err` when out of band / no recorder free / unsupported.
-    fn start_recording(&mut self, call: &Call) -> Result<(), Reason>;
+    /// Record `call`: a recorder of the pool, its voice channel opened; `Err`
+    /// when out of band / no recorder free / unsupported.
+    fn record(&mut self, call: &Call) -> Result<(), Reason>;
     /// Follow a call that isn't recorded — its voice channel's link control
     /// only (who talks, talker aliases); true when a channel was opened.
     fn follow(&mut self, _call: &Call) -> bool {
         false
     }
-    /// Stop recording (or following) `call`; nothing when it has no channel.
-    fn stop_recording(&mut self, call: &Call);
+    /// `call` is over, recorded or followed: its place on the voice channel
+    /// is given up (the channel closes with its last call); nothing when it
+    /// has no channel.
+    fn release(&mut self, call: &Call);
+    /// A long call goes on as `new`: record it on `old`'s channel. `old`'s
+    /// recorder is freed as it ends, so this takes none more from the pool.
+    fn record_continued(&mut self, _old: &Call, new: &Call) -> Result<(), Reason> {
+        self.record(new)
+    }
 }
 
 /// What happened, for the owner to act on and report.
@@ -258,7 +278,7 @@ impl CallManager {
     /// past the length limit.
     pub fn tick(&mut self, now_s: f64, host: &mut dyn RecorderHost, ev: &mut Vec<CallEvent>) {
         let t = self.cfg.call_timeout_s;
-        let max = self.cfg.max_call_s;
+        let max = if self.cfg.max_call_s > 0.0 { self.cfg.max_call_s } else { STUCK_CALL_S };
         let mut i = self.calls.len();
         while i > 0 {
             i -= 1;
@@ -267,9 +287,9 @@ impl CallManager {
             let quiet_audio = now_s - c.last_audio_s > t;
             if quiet_cc && (!c.recording || quiet_audio) {
                 let c = self.calls.remove(i);
-                host.stop_recording(&c);
+                host.release(&c);
                 ev.push(CallEvent::End(c));
-            } else if max > 0.0 && c.recording && now_s - c.start_s >= max {
+            } else if c.recording && now_s - c.start_s >= max {
                 self.split(i, now_s, host, ev);
             }
         }
@@ -292,9 +312,13 @@ impl CallManager {
             sources: old.sources.last().map(|s| CallSource { time_s: now_s, ..s.clone() }).into_iter().collect(),
             ..old.clone()
         };
-        Self::admit(&mut c, &self.cfg, &self.talkgroups, host);
+        // (Only a recorded call is split: it carries on recorded.)
+        match host.record_continued(old, &c) {
+            Ok(()) => c.recording = true,
+            Err(r) => c.reason = Some(r),
+        }
         let old = self.calls.remove(i);
-        host.stop_recording(&old);
+        host.release(&old);
         ev.push(CallEvent::End(old));
         ev.push(CallEvent::Start(c.clone()));
         self.calls.push(c);
@@ -303,7 +327,7 @@ impl CallManager {
     /// End everything (source stopped).
     pub fn end_all(&mut self, host: &mut dyn RecorderHost, ev: &mut Vec<CallEvent>) {
         for c in std::mem::take(&mut self.calls) {
-            host.stop_recording(&c);
+            host.release(&c);
             ev.push(CallEvent::End(c));
         }
     }
@@ -397,7 +421,7 @@ impl CallManager {
             c.reason = Some(Reason::Encrypted);
             host.follow(c);
         } else {
-            match host.start_recording(c) {
+            match host.record(c) {
                 Ok(()) => c.recording = true,
                 Err(r) => c.reason = Some(r),
             }
@@ -413,10 +437,10 @@ mod tests {
 
     struct Host;
     impl RecorderHost for Host {
-        fn start_recording(&mut self, _: &Call) -> Result<(), Reason> {
+        fn record(&mut self, _: &Call) -> Result<(), Reason> {
             Ok(())
         }
-        fn stop_recording(&mut self, _: &Call) {}
+        fn release(&mut self, _: &Call) {}
     }
 
     fn msg(kind: MessageType, t: f64, tg: u32) -> Message {

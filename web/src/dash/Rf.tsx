@@ -18,13 +18,13 @@ import { systemChoices } from "./Calls.tsx";
 /** A source's gain setting, as configured. */
 function gainText(c: Source | undefined): string {
   if (!c) return "—";
-  switch (c.kind) {
+  switch (c.type) {
     case "rtlsdr":
       return c.agc ? "AGC" : `${formatGain(c.gainDb)} dB`;
     case "usrp":
       return c.agc ? "AGC" : `${c.gainDb} dB${c.antenna ? ` · ${c.antenna}` : ""}`;
     case "airspy":
-      return c.gainMode === "manual" ? (c.agc ? `AGC (VGA ${c.vgaGain})` : `LNA ${c.lnaGain} · mixer ${c.mixerGain} · VGA ${c.vgaGain}`) : `${c.gainMode} ${c.gain}`;
+      return c.gainMode === "manual" ? (c.agc ? `AGC (VGA ${c.vgaStep})` : `LNA ${c.lnaStep} · mixer ${c.mixerStep} · VGA ${c.vgaStep}`) : `${c.gainMode} ${c.gainStep}`;
     case "soapy":
       return c.agc ? "AGC" : c.gainDb !== null ? `${c.gainDb} dB` : Object.entries(c.gains ?? {}).map(([k, v]) => `${k} ${v}`).join(" · ") || "default";
     case "file":
@@ -336,7 +336,7 @@ export function RfPage() {
           <Card key={k} title={`Source ${k + 1}`}>
             <div className="kv small">
               <span>
-                {src.kind} · {mhz(src.centerHz, 3)} MHz · {num(src.rateHz / 1e6, 2)} MS/s · gain {gainText(src)}
+                {src.type} · {mhz(src.centerHz, 3)} MHz · {num(src.rateHz / 1e6, 2)} MS/s · gain {gainText(src)}
               </span>
             </div>
           </Card>

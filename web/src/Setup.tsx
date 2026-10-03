@@ -37,6 +37,7 @@ import { InterfacesPanel } from "./Interfaces.tsx";
 import { M4aSettings, PluginSetupPanel, renameSystemRefs, SystemPluginSettings } from "./Plugins.tsx";
 import { IconAntenna, IconDongle, IconFolder, IconPuzzle, IconTower } from "./Onboarding.tsx";
 import type { AirspyGainMode, Channel, Config, Conventional, HeardCode, LogSettings, Recording, RecordingOverride, RecordingRules, SiteIdentity, SoapyState, Source, System, UnitNames } from "./protocol.ts";
+import { GuardBand } from "./Rolloff.tsx";
 import { SurveyPanel } from "./Survey.tsx";
 import { parseTalkgroupCsv } from "./talkgroups.ts";
 import { unitNameCount } from "./units.ts";
@@ -393,16 +394,16 @@ function DecInput(props: { value: number | undefined; placeholder?: string; disa
   );
 }
 
-function PpmField(props: { src: Exclude<Source, { kind: "file" }>; edit: EditSource }) {
+function PpmField(props: { src: Exclude<Source, { type: "file" }>; edit: EditSource }) {
   const { src, edit } = props;
   return (
-    <Field label="Frequency correction, ppm" hint={src.kind === "rtlsdr" ? "Whole numbers" : undefined}>
+    <Field label="Frequency correction, ppm" hint={src.type === "rtlsdr" ? "Whole numbers" : undefined}>
       <DecInput
         label="Frequency correction, ppm"
         value={src.ppm}
         onChange={(v) =>
           edit((x) => {
-            if (x.kind !== "file") x.ppm = x.kind === "rtlsdr" ? Math.round(v ?? 0) : v ?? 0;
+            if (x.type !== "file") x.ppm = x.type === "rtlsdr" ? Math.round(v ?? 0) : v ?? 0;
           })
         }
       />
@@ -419,9 +420,9 @@ function AutoTune(props: { src: Source; i: number; edit: EditSource }) {
   const { src, i, edit } = props;
   const st = useApp().sources.find((x) => x.index === i);
   const err = st?.errorPpm ?? null;
-  const ppm = src.kind === "file" ? null : src.ppm;
+  const ppm = src.type === "file" ? null : src.ppm;
   // Measured against the ppm set now: setting ppm − error removes it.
-  const better = err !== null && ppm !== null ? (src.kind === "rtlsdr" ? Math.round(ppm - err) : Math.round((ppm - err) * 10) / 10) : null;
+  const better = err !== null && ppm !== null ? (src.type === "rtlsdr" ? Math.round(ppm - err) : Math.round((ppm - err) * 10) / 10) : null;
   return (
     <div className="field wide">
       <Toggle
@@ -443,7 +444,7 @@ function AutoTune(props: { src: Source; i: number; edit: EditSource }) {
             <>
               {" "}
               ·{" "}
-              <button className="btn ghost small" onClick={() => edit((x) => x.kind !== "file" && void (x.ppm = better))} title="The error is measured against the correction set now">
+              <button className="btn ghost small" onClick={() => edit((x) => x.type !== "file" && void (x.ppm = better))} title="The error is measured against the correction set now">
                 Set correction to {better} ppm
               </button>
             </>
@@ -460,10 +461,10 @@ const AIRSPY_MODES: { mode: AirspyGainMode; label: string; hint: string }[] = [
   { mode: "manual", label: "Each stage", hint: "LNA, mixer and VGA (IF) set by hand, as Trunk Recorder's lnaGain / mixGain / ifGain." },
 ];
 
-function AirspyGainFields(props: { src: Extract<Source, { kind: "airspy" }>; edit: EditSource }) {
+function AirspyGainFields(props: { src: Extract<Source, { type: "airspy" }>; edit: EditSource }) {
   const { src, edit } = props;
-  const set = (k: "gain" | "lnaGain" | "mixerGain" | "vgaGain", v: number) => edit((x) => x.kind === "airspy" && void (x[k] = v));
-  const slider = (k: "gain" | "lnaGain" | "mixerGain" | "vgaGain", label: string, max: number, disabled = false) => (
+  const set = (k: "gainStep" | "lnaStep" | "mixerStep" | "vgaStep", v: number) => edit((x) => x.type === "airspy" && void (x[k] = v));
+  const slider = (k: "gainStep" | "lnaStep" | "mixerStep" | "vgaStep", label: string, max: number, disabled = false) => (
     <Field label={label} hint={disabled ? "Set by the Airspy's AGC" : `0–${max}`}>
       <div className="row">
         <input type="range" min={0} max={max} value={src[k]} disabled={disabled} aria-label={label} aria-valuetext={String(src[k])} onChange={(e) => set(k, Number(e.target.value))} />
@@ -474,7 +475,7 @@ function AirspyGainFields(props: { src: Extract<Source, { kind: "airspy" }>; edi
   return (
     <>
       <Field label="Gain" hint={AIRSPY_MODES.find((m) => m.mode === src.gainMode)?.hint}>
-        <select value={src.gainMode} onChange={(e) => edit((x) => x.kind === "airspy" && void (x.gainMode = e.target.value as AirspyGainMode))}>
+        <select value={src.gainMode} onChange={(e) => edit((x) => x.type === "airspy" && void (x.gainMode = e.target.value as AirspyGainMode))}>
           {AIRSPY_MODES.map((m) => (
             <option key={m.mode} value={m.mode}>
               {m.label}
@@ -483,13 +484,13 @@ function AirspyGainFields(props: { src: Extract<Source, { kind: "airspy" }>; edi
         </select>
       </Field>
       {src.gainMode !== "manual" ? (
-        slider("gain", `${src.gainMode === "linearity" ? "Linearity" : "Sensitivity"} step`, 21)
+        slider("gainStep", `${src.gainMode === "linearity" ? "Linearity" : "Sensitivity"} step`, 21)
       ) : (
         <>
-          <Toggle label="AGC" hint="the Airspy sets its LNA and mixer; the VGA stays as set" checked={src.agc} onChange={(v) => edit((x) => x.kind === "airspy" && void (x.agc = v))} />
-          {slider("lnaGain", "LNA", 14, src.agc)}
-          {slider("mixerGain", "Mixer", 15, src.agc)}
-          {slider("vgaGain", "VGA (IF)", 15)}
+          <Toggle label="AGC" hint="the Airspy sets its LNA and mixer; the VGA stays as set" checked={src.agc} onChange={(v) => edit((x) => x.type === "airspy" && void (x.agc = v))} />
+          {slider("lnaStep", "LNA", 14, src.agc)}
+          {slider("mixerStep", "Mixer", 15, src.agc)}
+          {slider("vgaStep", "VGA (IF)", 15)}
         </>
       )}
     </>
@@ -506,7 +507,7 @@ function GainStages(props: { i: number; gains: Record<string, number>; disabled:
   const [name, setName] = useState("");
   const set = (fn: (g: Record<string, number>) => void) =>
     edit((x) => {
-      if (x.kind !== "soapy") return;
+      if (x.type !== "soapy") return;
       x.gains = { ...x.gains };
       fn(x.gains);
     });
@@ -542,7 +543,7 @@ function GainStages(props: { i: number; gains: Record<string, number>; disabled:
   );
 }
 
-const KINDS: { kind: Source["kind"]; label: string; desktop?: boolean }[] = [
+const KINDS: { kind: Source["type"]; label: string; desktop?: boolean }[] = [
   { kind: "rtlsdr", label: "RTL-SDR" },
   { kind: "usrp", label: "USRP", desktop: true },
   { kind: "airspy", label: "Airspy", desktop: true },
@@ -550,15 +551,15 @@ const KINDS: { kind: Source["kind"]; label: string; desktop?: boolean }[] = [
   { kind: "file", label: "Capture file" },
 ];
 
-function SourceCard(props: { c: Config; i: number }) {
+/** `fresh`: just added (measuring its roll-off is offered). */
+function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?: () => void }) {
   const s = useApp();
   const { c, i } = props;
   const src = c.sources[i];
   const center = resolvedCenters(c)[i];
   const auto = src.centerHz ? null : center;
-  const half = usableHalfWidth(src.rateHz);
   const edit = (fn: (x: Source) => void) => updateConfig((x) => fn(x.sources[i]));
-  const setKind = (kind: Source["kind"]) =>
+  const setKind = (kind: Source["type"]) =>
     updateConfig((x) => {
       const old = x.sources[i];
       const fresh = kind === "rtlsdr" ? newDongle() : kind === "usrp" ? newUsrp() : kind === "airspy" ? newAirspy() : kind === "soapy" ? newSoapy() : newFile();
@@ -566,7 +567,7 @@ function SourceCard(props: { c: Config; i: number }) {
     });
   const fileRef = useRef<HTMLInputElement>(null);
   const others = c.sources.filter((_, k) => k !== i);
-  const used = new Set(others.map((x) => (x.kind === "rtlsdr" ? `r:${x.serial}` : x.kind === "airspy" ? `a:${x.serial}` : x.kind === "usrp" ? `u:${x.args}` : x.kind === "soapy" ? `s:${x.args}` : "")));
+  const used = new Set(others.map((x) => (x.type === "rtlsdr" ? `r:${x.serial}` : x.type === "airspy" ? `a:${x.serial}` : x.type === "usrp" ? `u:${x.args}` : x.type === "soapy" ? `s:${x.args}` : "")));
   const radios = s.radios;
   const needs = useNeed()(`src-${i}`);
 
@@ -577,7 +578,7 @@ function SourceCard(props: { c: Config; i: number }) {
         <strong>Source {i + 1}</strong>
         <div className="seg small" role="radiogroup" aria-label={`Source ${i + 1} kind`}>
           {KINDS.filter((k) => !k.desktop || !web).map((k) => (
-            <button key={k.kind} role="radio" aria-checked={src.kind === k.kind} className={src.kind === k.kind ? "on" : ""} onClick={() => setKind(k.kind)}>
+            <button key={k.kind} role="radio" aria-checked={src.type === k.kind} className={src.type === k.kind ? "on" : ""} onClick={() => setKind(k.kind)}>
               {k.label}
             </button>
           ))}
@@ -596,13 +597,13 @@ function SourceCard(props: { c: Config; i: number }) {
         )}
       </div>
       <div className="grid2">
-        {src.kind === "rtlsdr" && (
+        {src.type === "rtlsdr" && (
           <Field
             label="Dongle"
             hint={s.devices.length ? undefined : web ? "No dongle connected — press Connect and pick it in the browser's list." : "No dongle found — plug one in and press Refresh."}
           >
             <div className="row">
-              <select value={src.serial} onChange={(e) => edit((x) => x.kind === "rtlsdr" && void (x.serial = e.target.value))}>
+              <select value={src.serial} onChange={(e) => edit((x) => x.type === "rtlsdr" && void (x.serial = e.target.value))}>
                 <option value="">First available</option>
                 {s.devices.map((d) => (
                   <option key={d.serial || d.index} value={d.serial} disabled={used.has(`r:${d.serial}`)}>
@@ -624,7 +625,7 @@ function SourceCard(props: { c: Config; i: number }) {
             </div>
           </Field>
         )}
-        {src.kind === "usrp" &&
+        {src.type === "usrp" &&
           (radios && !radios.usrp.available ? (
             <DriverMissing kind="usrp" detail={radios.usrp.detail} />
           ) : (
@@ -644,7 +645,7 @@ function SourceCard(props: { c: Config; i: number }) {
                   list={`usrp-${i}`}
                   value={src.args}
                   placeholder="first found"
-                  onChange={(e) => edit((x) => x.kind === "usrp" && void (x.args = e.target.value))}
+                  onChange={(e) => edit((x) => x.type === "usrp" && void (x.args = e.target.value))}
                 />
                 <datalist id={`usrp-${i}`}>
                   {(radios?.usrp.devices ?? []).map((d) => (
@@ -659,13 +660,13 @@ function SourceCard(props: { c: Config; i: number }) {
               </div>
             </Field>
           ))}
-        {src.kind === "airspy" &&
+        {src.type === "airspy" &&
           (radios && !radios.airspy.available ? (
             <DriverMissing kind="airspy" detail={radios.airspy.detail} />
           ) : (
             <Field label="Airspy" hint={radios?.airspy.devices?.length ? radios.airspy.detail : `${radios?.airspy.detail ?? "libairspy"} · none found — plug one in and press Refresh`}>
               <div className="row">
-                <select value={src.serial} onChange={(e) => edit((x) => x.kind === "airspy" && void (x.serial = e.target.value))}>
+                <select value={src.serial} onChange={(e) => edit((x) => x.type === "airspy" && void (x.serial = e.target.value))}>
                   <option value="">First available</option>
                   {src.serial && !(radios?.airspy.devices ?? []).some((d) => d.serial === src.serial) && <option value={src.serial}>SN {src.serial} (not connected)</option>}
                   {(radios?.airspy.devices ?? []).map((d) => (
@@ -681,7 +682,7 @@ function SourceCard(props: { c: Config; i: number }) {
               </div>
             </Field>
           ))}
-        {src.kind === "soapy" &&
+        {src.type === "soapy" &&
           (radios?.soapy && !radios.soapy.available ? (
             <DriverMissing kind="soapy" detail={radios.soapy.detail} />
           ) : (
@@ -702,7 +703,7 @@ function SourceCard(props: { c: Config; i: number }) {
                     list={`soapy-${i}`}
                     value={src.args}
                     placeholder="first found"
-                    onChange={(e) => edit((x) => x.kind === "soapy" && void (x.args = e.target.value))}
+                    onChange={(e) => edit((x) => x.type === "soapy" && void (x.args = e.target.value))}
                   />
                   <datalist id={`soapy-${i}`}>
                     {(radios?.soapy?.devices ?? []).map((d) => (
@@ -720,7 +721,7 @@ function SourceCard(props: { c: Config; i: number }) {
               {radios?.soapy && <SoapyModules soapy={radios.soapy} />}
             </>
           ))}
-        {src.kind === "file" &&
+        {src.type === "file" &&
           (web ? (
             <Field label="Capture file" hint="rtl_sdr output (unsigned 8-bit IQ). The browser forgets the choice on reload." wide>
               <div className="row">
@@ -736,7 +737,7 @@ function SourceCard(props: { c: Config; i: number }) {
                 onChange={(e) => {
                   const f = e.target.files?.[0] ?? null;
                   web?.setFile(i, f);
-                  edit((x) => x.kind === "file" && void (x.path = f?.name ?? ""));
+                  edit((x) => x.type === "file" && void (x.path = f?.name ?? ""));
                   e.target.value = "";
                 }}
               />
@@ -749,7 +750,7 @@ function SourceCard(props: { c: Config; i: number }) {
                 placeholder="/path/to/capture.cu8"
                 onChange={(e) =>
                   edit((x) => {
-                    if (x.kind !== "file") return;
+                    if (x.type !== "file") return;
                     x.path = e.target.value;
                     x.format = formatFromPath(x.path);
                   })
@@ -765,103 +766,104 @@ function SourceCard(props: { c: Config; i: number }) {
         </Field>
         <Field
           label="Sample rate"
-          hint={src.kind === "usrp" ? "MSPS; wider covers more channels, costs more CPU" : src.kind === "airspy" ? "R2: 10 or 2.5; Mini: 6 or 3 (10 on newer firmware)" : src.kind === "soapy" ? "MSPS; one the device supports (the error lists them)" : undefined}
+          hint={src.type === "usrp" ? "MSPS; wider covers more channels, costs more CPU" : src.type === "airspy" ? "R2: 10 or 2.5; Mini: 6 or 3 (10 on newer firmware)" : src.type === "soapy" ? "MSPS; one the device supports (the error lists them)" : undefined}
         >
           <RateInput
-            key={src.kind}
+            key={src.type}
             hz={src.rateHz}
-            free={src.kind === "usrp" || src.kind === "soapy" || (src.kind === "file" && !web)}
-            options={src.kind === "usrp" ? USRP_RATES : src.kind === "airspy" ? AIRSPY_RATES : src.kind === "soapy" ? SOAPY_RATES : src.kind === "file" ? [...SAMPLE_RATES, 8_000_000, 10_000_000] : SAMPLE_RATES}
+            free={src.type === "usrp" || src.type === "soapy" || (src.type === "file" && !web)}
+            options={src.type === "usrp" ? USRP_RATES : src.type === "airspy" ? AIRSPY_RATES : src.type === "soapy" ? SOAPY_RATES : src.type === "file" ? [...SAMPLE_RATES, 8_000_000, 10_000_000] : SAMPLE_RATES}
             onChange={(hz) => edit((x) => void (x.rateHz = hz))}
           />
         </Field>
-        {src.kind === "rtlsdr" && (
+        {src.type === "rtlsdr" && (
           <>
             <Field label="Gain, dB" hint={src.agc ? "The tuner's AGC sets it. A fixed gain is usually better." : "Most dongles: 0–49.6"}>
               <div className="row">
-                <GainInput label="Gain, dB" value={src.gainDb} disabled={src.agc} onChange={(v) => v !== null && edit((x) => x.kind === "rtlsdr" && void (x.gainDb = v))} />
-                <Toggle label="AGC" checked={src.agc} onChange={(v) => edit((x) => x.kind === "rtlsdr" && void (x.agc = v))} />
+                <GainInput label="Gain, dB" value={src.gainDb} disabled={src.agc} onChange={(v) => v !== null && edit((x) => x.type === "rtlsdr" && void (x.gainDb = v))} />
+                <Toggle label="AGC" checked={src.agc} onChange={(v) => edit((x) => x.type === "rtlsdr" && void (x.agc = v))} />
               </div>
             </Field>
             <PpmField src={src} edit={edit} />
           </>
         )}
-        {src.kind === "usrp" && (
+        {src.type === "usrp" && (
           <>
             <Field label="Gain, dB" hint={src.agc ? "The device's AGC sets it (B200 / B210, E3xx)" : "B200/B210: 0–76"}>
               <div className="row">
-                <GainInput label="Gain, dB" value={src.gainDb} disabled={src.agc} onChange={(v) => edit((x) => x.kind === "usrp" && void (x.gainDb = v || 0))} />
-                <Toggle label="AGC" checked={src.agc} onChange={(v) => edit((x) => x.kind === "usrp" && void (x.agc = v))} />
+                <GainInput label="Gain, dB" value={src.gainDb} disabled={src.agc} onChange={(v) => edit((x) => x.type === "usrp" && void (x.gainDb = v || 0))} />
+                <Toggle label="AGC" checked={src.agc} onChange={(v) => edit((x) => x.type === "usrp" && void (x.agc = v))} />
               </div>
             </Field>
             <Field label="Antenna" hint="Blank = the device's default (e.g. RX2, TX/RX)">
-              <input className="mono" value={src.antenna} placeholder="default" onChange={(e) => edit((x) => x.kind === "usrp" && void (x.antenna = e.target.value.trim()))} />
+              <input className="mono" value={src.antenna} placeholder="default" onChange={(e) => edit((x) => x.type === "usrp" && void (x.antenna = e.target.value.trim()))} />
             </Field>
             <PpmField src={src} edit={edit} />
           </>
         )}
-        {src.kind === "airspy" && <AirspyGainFields src={src} edit={edit} />}
-        {src.kind === "airspy" && (
+        {src.type === "airspy" && <AirspyGainFields src={src} edit={edit} />}
+        {src.type === "airspy" && (
           <>
             <PpmField src={src} edit={edit} />
-            <Toggle label="Bias-T" hint="powers an LNA over the antenna cable" checked={src.biasTee} onChange={(v) => edit((x) => x.kind === "airspy" && void (x.biasTee = v))} />
+            <Toggle label="Bias-T" hint="powers an LNA over the antenna cable" checked={src.biasTee} onChange={(v) => edit((x) => x.type === "airspy" && void (x.biasTee = v))} />
           </>
         )}
-        {src.kind === "soapy" && (
+        {src.type === "soapy" && (
           <>
             <Field label="Gain, dB" hint={src.agc ? "The device's AGC sets it" : "Overall; blank = left as the device has it. Then the stages below."}>
               <div className="row">
-                <GainInput label="Gain, dB" value={src.gainDb} placeholder={src.agc ? "AGC" : "as is"} disabled={src.agc} onChange={(v) => edit((x) => x.kind === "soapy" && void (x.gainDb = v))} />
-                <Toggle label="AGC" checked={src.agc} onChange={(v) => edit((x) => x.kind === "soapy" && void (x.agc = v))} />
+                <GainInput label="Gain, dB" value={src.gainDb} placeholder={src.agc ? "AGC" : "as is"} disabled={src.agc} onChange={(v) => edit((x) => x.type === "soapy" && void (x.gainDb = v))} />
+                <Toggle label="AGC" checked={src.agc} onChange={(v) => edit((x) => x.type === "soapy" && void (x.agc = v))} />
               </div>
             </Field>
             <Field label="Antenna" hint="Blank = the device's default">
-              <input className="mono" value={src.antenna} placeholder="default" onChange={(e) => edit((x) => x.kind === "soapy" && void (x.antenna = e.target.value.trim()))} />
+              <input className="mono" value={src.antenna} placeholder="default" onChange={(e) => edit((x) => x.type === "soapy" && void (x.antenna = e.target.value.trim()))} />
             </Field>
             <GainStages i={i} gains={src.gains} disabled={src.agc} edit={edit} />
             <Field label="Device settings" hint="key=value pairs the module offers, e.g. biastee=true (SoapySDRUtil --probe lists them)">
-              <input className="mono" value={src.settings} placeholder="none" onChange={(e) => edit((x) => x.kind === "soapy" && void (x.settings = e.target.value))} />
+              <input className="mono" value={src.settings} placeholder="none" onChange={(e) => edit((x) => x.type === "soapy" && void (x.settings = e.target.value))} />
             </Field>
             <PpmField src={src} edit={edit} />
           </>
         )}
-        {src.kind === "file" && (
+        {src.type === "file" && (
           <>
             {!web && (
               <Field label="Sample format">
-                <select value={src.format ?? "cu8"} onChange={(e) => edit((x) => x.kind === "file" && void (x.format = e.target.value as "cu8" | "cs16" | "cf32"))}>
+                <select value={src.format ?? "cu8"} onChange={(e) => edit((x) => x.type === "file" && void (x.format = e.target.value as "cu8" | "cs16" | "cf32"))}>
                   <option value="cu8">cu8 — rtl_sdr (unsigned 8-bit)</option>
                   <option value="cs16">cs16 — signed 16-bit</option>
                   <option value="cf32">cf32 — float (GNU Radio, UHD)</option>
                 </select>
               </Field>
             )}
-            <Toggle label="Real-time pace" hint="off = as fast as the computer decodes" checked={src.realtime} onChange={(v) => edit((x) => x.kind === "file" && void (x.realtime = v))} />
+            <Toggle label="Real-time pace" hint="off = as fast as the computer decodes" checked={src.realtime} onChange={(v) => edit((x) => x.type === "file" && void (x.realtime = v))} />
           </>
         )}
         <AutoTune src={src} i={i} edit={edit} />
+        <GuardBand c={c} i={i} fresh={props.fresh} onFreshDone={props.onFreshDone} />
       </div>
-      {center ? <CoverageBar c={c} center={center} rateHz={src.rateHz} /> : null}
+      {center ? <CoverageBar c={c} center={center} rateHz={src.rateHz} guardHz={src.guardHz} /> : null}
     </div>
   );
 }
 
 /** A source's band, with every system's control (tall) and known voice channels (short) inside it. */
-function CoverageBar(props: { c: Config; center: number; rateHz: number }) {
+function CoverageBar(props: { c: Config; center: number; rateHz: number; guardHz?: number }) {
   const { c, center, rateHz } = props;
-  const half = usableHalfWidth(rateHz);
+  const half = usableHalfWidth(rateHz, props.guardHz);
   const lo = center - rateHz / 2;
   const pos = (hz: number) => ((hz - lo) / rateHz) * 100;
   const inside = (hz: number) => Math.abs(hz - center) <= half;
   const systems = activeSystems(c);
   const ticks: { hz: number; kind: "cc" | "voice"; color: string; label: string }[] = [];
   systems.forEach((x, k) => {
-    for (const f of x.controlChannels) if (inside(f)) ticks.push({ hz: f, kind: "cc", color: systemColor(c, x.shortName), label: `${x.shortName} control channel ${formatMhz(f)} MHz` });
-    for (const f of x.voiceChannels) if (inside(f)) ticks.push({ hz: f, kind: "voice", color: systemColor(c, x.shortName), label: `${x.shortName} voice ${formatMhz(f)} MHz` });
+    for (const f of x.controlChannelsHz) if (inside(f)) ticks.push({ hz: f, kind: "cc", color: systemColor(c, x.shortName), label: `${x.shortName} control channel ${formatMhz(f)} MHz` });
+    for (const f of x.voiceChannelsHz) if (inside(f)) ticks.push({ hz: f, kind: "voice", color: systemColor(c, x.shortName), label: `${x.shortName} voice ${formatMhz(f)} MHz` });
   });
   const conv = enabledChannels(c).filter((ch) => inside(ch.freqHz));
   for (const ch of conv) ticks.push({ hz: ch.freqHz, kind: "voice", color: "var(--text)", label: `conventional ${ch.name || formatMhz(ch.freqHz)}` });
-  const here = systems.map((x, k) => ({ x, k })).filter(({ x }) => x.controlChannels.some(inside) || x.voiceChannels.some(inside));
+  const here = systems.map((x, k) => ({ x, k })).filter(({ x }) => x.controlChannelsHz.some(inside) || x.voiceChannelsHz.some(inside));
   return (
     <div className="stack" style={{ gap: 4 }}>
       <div className="coverage" role="img" aria-label={`Covers ${formatMhz(center - half, 3)} to ${formatMhz(center + half, 3)} MHz`}>
@@ -1388,8 +1390,8 @@ function parseLcn(s: string): Record<string, number> {
 
 function DmrFields(props: { sys: System; edit: (fn: (x: System) => void) => void }) {
   const { sys, edit } = props;
-  const [chText, setChText] = useState(() => (sys.channels ?? []).map((f) => (f / 1e6).toFixed(5)).join(", "));
-  const [lcn, setLcn] = useState(() => lcnText(sys.lcnTable));
+  const [chText, setChText] = useState(() => (sys.dmrChannelsHz ?? []).map((f) => (f / 1e6).toFixed(5)).join(", "));
+  const [lcn, setLcn] = useState(() => lcnText(sys.lcnTableHz));
   return (
     <>
       <Field label="Voice frequencies, MHz" hint="Tier III / Capacity Max / Connect Plus: the site's voice channels. Each grant's channel is learned from which one the talkgroup comes up on." wide>
@@ -1401,8 +1403,8 @@ function DmrFields(props: { sys: System; edit: (fn: (x: System) => void) => void
             setChText(e.target.value);
             const list = parseFreqList(e.target.value);
             edit((x) => {
-              if (list.length) x.channels = list;
-              else delete x.channels;
+              if (list.length) x.dmrChannelsHz = list;
+              else delete x.dmrChannelsHz;
             });
           }}
         />
@@ -1430,8 +1432,8 @@ function DmrFields(props: { sys: System; edit: (fn: (x: System) => void) => void
             setLcn(e.target.value);
             const t = parseLcn(e.target.value);
             edit((x) => {
-              if (Object.keys(t).length) x.lcnTable = t;
-              else delete x.lcnTable;
+              if (Object.keys(t).length) x.lcnTableHz = t;
+              else delete x.lcnTableHz;
             });
           }}
         />
@@ -1442,8 +1444,8 @@ function DmrFields(props: { sys: System; edit: (fn: (x: System) => void) => void
 
 function SmartnetFields(props: { sys: System; edit: (fn: (x: System) => void) => void }) {
   const { sys, edit } = props;
-  const custom = (sys.bandplan ?? "").startsWith("400");
-  const setNum = (k: "bandplanBase" | "bandplanSpacing" | "bandplanOffset" | "bandplanHigh", v: number | null) =>
+  const custom = (sys.bandplan ?? "").startsWith("400") || sys.bandplan?.toLowerCase() === "obt";
+  const setNum = (k: "bandplanBaseHz" | "bandplanSpacingHz" | "bandplanOffset" | "bandplanHighHz", v: number | null) =>
     edit((x) => {
       if (v === null) delete x[k];
       else x[k] = v;
@@ -1468,16 +1470,16 @@ function SmartnetFields(props: { sys: System; edit: (fn: (x: System) => void) =>
       {custom && (
         <div className="id-grid wide">
           <Field label="Base, Hz" hint="Frequency of the offset channel">
-            <NumInput label="Band plan base" placeholder="489087500" value={sys.bandplanBase} onChange={(v) => setNum("bandplanBase", v)} />
+            <NumInput label="Band plan base" placeholder="489087500" value={sys.bandplanBaseHz} onChange={(v) => setNum("bandplanBaseHz", v)} />
           </Field>
           <Field label="Spacing, Hz">
-            <NumInput label="Band plan spacing" placeholder="25000" value={sys.bandplanSpacing} onChange={(v) => setNum("bandplanSpacing", v)} />
+            <NumInput label="Band plan spacing" placeholder="25000" value={sys.bandplanSpacingHz} onChange={(v) => setNum("bandplanSpacingHz", v)} />
           </Field>
           <Field label="Offset (channel)">
             <NumInput label="Band plan offset" placeholder="380" value={sys.bandplanOffset} onChange={(v) => setNum("bandplanOffset", v)} />
           </Field>
           <Field label="High, Hz" hint="Highest outbound channel">
-            <NumInput label="Band plan high" placeholder="496612500" value={sys.bandplanHigh} onChange={(v) => setNum("bandplanHigh", v)} />
+            <NumInput label="Band plan high" placeholder="496612500" value={sys.bandplanHighHz} onChange={(v) => setNum("bandplanHighHz", v)} />
           </Field>
         </div>
       )}
@@ -1488,7 +1490,7 @@ function SmartnetFields(props: { sys: System; edit: (fn: (x: System) => void) =>
 function SystemCard(props: { c: Config; i: number }) {
   const { c, i } = props;
   const sys = c.systems[i];
-  const [ccText, setCcText] = useState(() => sys.controlChannels.map((f) => formatMhz(f)).join(", "));
+  const [ccText, setCcText] = useState(() => sys.controlChannelsHz.map((f) => formatMhz(f)).join(", "));
   const tgRef = useRef<HTMLInputElement>(null);
   const need = useNeed();
   const plugins = useApp().plugins?.plugins ?? [];
@@ -1512,8 +1514,8 @@ function SystemCard(props: { c: Config; i: number }) {
   const dupName = c.systems.some((x, k) => k !== i && x.shortName === sys.shortName);
   // Where it lands on the sources.
   const centers = resolvedCenters(c);
-  const ccOn = [...new Set(sys.controlChannels.map((f) => sourceCovering(c, centers, f)).filter((k) => k >= 0))];
-  const voiceIn = sys.voiceChannels.filter((f) => sourceCovering(c, centers, f) >= 0).length;
+  const ccOn = [...new Set(sys.controlChannelsHz.map((f) => sourceCovering(c, centers, f)).filter((k) => k >= 0))];
+  const voiceIn = sys.voiceChannelsHz.filter((f) => sourceCovering(c, centers, f) >= 0).length;
 
   const onTalkgroups = async (f: File | undefined) => {
     if (!f) return;
@@ -1531,16 +1533,16 @@ function SystemCard(props: { c: Config; i: number }) {
       <div className="row sys-head">
         <span className="sys-dot" style={{ background: color }} />
         <strong>{sys.shortName || "(no name)"}</strong>
-        {sys.enabled && sys.controlChannels.length > 0 ? (
+        {sys.enabled && sys.controlChannelsHz.length > 0 ? (
           ccOn.length ? (
             <span className="chip ok">control channel on source {ccOn.map((k) => k + 1).join(", ")}</span>
           ) : (
             <span className="chip bad">no control channel inside a source</span>
           )
         ) : null}
-        {sys.enabled && sys.voiceChannels.length > 0 && (
-          <span className={`chip ${voiceIn === sys.voiceChannels.length ? "ok" : "warn"}`} title="Voice channels the survey saw that a source covers">
-            voice {voiceIn}/{sys.voiceChannels.length} covered
+        {sys.enabled && sys.voiceChannelsHz.length > 0 && (
+          <span className={`chip ${voiceIn === sys.voiceChannelsHz.length ? "ok" : "warn"}`} title="Voice channels the survey saw that a source covers">
+            voice {voiceIn}/{sys.voiceChannelsHz.length} covered
           </span>
         )}
         {siblings.length > 0 && (
@@ -1597,7 +1599,7 @@ function SystemCard(props: { c: Config; i: number }) {
             onChange={(e) =>
               edit((x) => {
                 x.type = e.target.value === "smartnet" ? "smartnet" : e.target.value === "dmr" ? "dmr" : "p25";
-                if (x.type === "smartnet" && !x.bandplan) x.bandplan = "800_reband";
+                if (x.type === "smartnet" && !x.bandplan) x.bandplan = "800_standard";
               })
             }
           >
@@ -1631,7 +1633,7 @@ function SystemCard(props: { c: Config; i: number }) {
             onChange={(e) => {
               setCcText(e.target.value);
               const list = parseFreqList(e.target.value);
-              edit((x) => void (x.controlChannels = list));
+              edit((x) => void (x.controlChannelsHz = list));
             }}
           />
         </Field>
@@ -1862,8 +1864,8 @@ function LogPanel(props: { c: Config }) {
               <option value="none">None</option>
             </select>
           </Field>
-          <Field label="Decode rate warning, msg/s" hint="A control channel decoding fewer is logged as an error; −1 logs the rate always (controlWarnRate)">
-            <DecInput label="Decode rate warning" value={l.controlWarnRate} onChange={(v) => set({ controlWarnRate: v ?? 10 })} />
+          <Field label="Decode rate warning, msg/s" hint="A control channel decoding fewer is logged as an error; −1 logs the rate always (Trunk Recorder's controlWarnRate)">
+            <DecInput label="Decode rate warning" value={l.controlWarnRatePerS} onChange={(v) => set({ controlWarnRatePerS: v ?? 10 })} />
           </Field>
         </div>
         <Toggle label="To the console" hint="stderr (consoleLog)" checked={l.console} onChange={(v) => set({ console: v })} />
@@ -2157,6 +2159,8 @@ export function Setup() {
   const c = s.config;
   const tab = s.setupTab;
   shownTab = tab;
+  // A source just added on the Radios tab (measuring its roll-off is offered).
+  const [freshSource, setFreshSource] = useState<number | null>(null);
   if (!c) return <p className="muted">Connecting to the recorder…</p>;
 
   return (
@@ -2204,13 +2208,19 @@ export function Setup() {
       <section className="panel">
         <header className="panel-head">
           <h2>Radios</h2>
-          <button className="btn ghost" onClick={() => updateConfig((x) => void x.sources.push(newDongle()))}>
+          <button
+            className="btn ghost"
+            onClick={() => {
+              setFreshSource(c.sources.length);
+              updateConfig((x) => void x.sources.push(newDongle()));
+            }}
+          >
             Add a source
           </button>
         </header>
         <div className="stack">
           {c.sources.map((_, i) => (
-            <SourceCard key={`${i}-${s.configEpoch}`} c={c} i={i} />
+            <SourceCard key={`${i}-${s.configEpoch}`} c={c} i={i} fresh={freshSource === i} onFreshDone={() => setFreshSource(null)} />
           ))}
           <p className="muted small">
             Sources are shared by every system: each control channel runs on whichever source covers it, and each call is recorded from whichever covers its

@@ -188,11 +188,11 @@ function MonitorView(props: { m: SurveyMonitor; sug: SurveySuggestion | null; c:
   const total = m.good + m.bad;
   const pct = total ? Math.round((100 * m.good) / total) : 0;
   const src = c.sources[props.source];
-  const rtl = src?.kind === "rtlsdr";
+  const rtl = src?.type === "rtlsdr";
   const id = m.identity;
   const gainSteps = m.gain.steps.length;
   // The system this is already (one of its control channels), else a new one.
-  const existing = sug ? c.systems.findIndex((x) => sug.controlChannels.some((f) => x.controlChannels.some((g) => Math.abs(f - g) < 6_000))) : -1;
+  const existing = sug ? c.systems.findIndex((x) => sug.controlChannels.some((f) => x.controlChannelsHz.some((g) => Math.abs(f - g) < 6_000))) : -1;
   const [picked, setTarget] = useState<number | "new" | null>(null);
   const target = picked ?? (existing >= 0 ? existing : "new");
   const apply = () => {
@@ -202,7 +202,7 @@ function MonitorView(props: { m: SurveyMonitor; sug: SurveySuggestion | null; c:
     const bits = [`control channel${sug.controlChannels.length === 1 ? "" : "s"} ${mhzList(sug.controlChannels)} MHz`];
     if (sug.type === "smartnet" && sug.bandplan) bits.unshift(`SmartNet, band plan ${sug.bandplan.bandplan}`);
     if (sug.site !== null) bits.push(`site lock ${sug.rfss ?? "?"}-${sug.site}`);
-    if (src && src.kind !== "file") {
+    if (src && src.type !== "file") {
       if (sug.ppmApply !== null) bits.push(`correction ${sug.ppmApply > 0 ? "+" : ""}${sug.ppmApply} ppm`);
       if (rtl && sug.gainDb !== null) bits.push(`gain ${formatGain(sug.gainDb)} dB`);
       bits.push(done.centered ? `center ${formatMhz(sug.centerHz, 4)} MHz` : `source ${props.source + 1} left where it is (another system needs it) — give this system a source centered at ${formatMhz(sug.centerHz, 4)} MHz`);
@@ -339,7 +339,7 @@ function MonitorView(props: { m: SurveyMonitor; sug: SurveySuggestion | null; c:
                   </span>
                 </>
               )}
-              {src && src.kind !== "file" && (
+              {src && src.type !== "file" && (
                 <>
                   {sug.ppmApply !== null && (
                     <>
@@ -357,7 +357,7 @@ function MonitorView(props: { m: SurveyMonitor; sug: SurveySuggestion | null; c:
               )}
               .
             </div>
-            {src && src.kind !== "file" && (
+            {src && src.type !== "file" && (
               <div className="small muted">
                 {sug.voiceTotal === 0
                   ? "No calls seen yet, so the center is placed around the control channel. Listen a little longer to see where the voice channels are."
@@ -401,7 +401,7 @@ export function SurveyPanel(props: { c: Config }) {
   const bands = picked ?? s.surveyBands.filter((b) => b.defaultOn).map((b) => b.id);
   const src = c.sources[Math.min(source, c.sources.length - 1)];
   const active = sv.stage !== "idle";
-  const unsupported = web && (src?.kind === "usrp" || src?.kind === "airspy" || src?.kind === "soapy");
+  const unsupported = web && (src?.type === "usrp" || src?.type === "airspy" || src?.type === "soapy");
   const bandLabel = (id: string) => s.surveyBands.find((b) => b.id === id)?.label ?? id;
 
   if (!s.surveyBands.length) return null;
@@ -436,7 +436,7 @@ export function SurveyPanel(props: { c: Config }) {
             sites; you can still type everything in by hand below. Trunked DMR sites (Capacity Plus, Capacity Max, Connect Plus, Tier III) show up too, with
             their colour code — add the business bands to look where most of them are.
           </p>
-          {(c.sources.length > 1 || src?.kind === "rtlsdr") && (
+          {(c.sources.length > 1 || src?.type === "rtlsdr") && (
           <div className="grid2">
             {c.sources.length > 1 && (
               <label className="field">
@@ -444,13 +444,13 @@ export function SurveyPanel(props: { c: Config }) {
                 <select value={source} onChange={(e) => setSource(Number(e.target.value))}>
                   {c.sources.map((x, i) => (
                     <option key={i} value={i}>
-                      Source {i + 1} ({x.kind === "rtlsdr" ? "RTL-SDR" : x.kind === "usrp" ? "USRP" : x.kind === "airspy" ? "Airspy" : x.kind === "soapy" ? "SoapySDR" : "capture file"})
+                      Source {i + 1} ({x.type === "rtlsdr" ? "RTL-SDR" : x.type === "usrp" ? "USRP" : x.type === "airspy" ? "Airspy" : x.type === "soapy" ? "SoapySDR" : "capture file"})
                     </option>
                   ))}
                 </select>
               </label>
             )}
-            {src?.kind === "rtlsdr" && (
+            {src?.type === "rtlsdr" && (
               <label className="toggle">
                 <input type="checkbox" checked={findGain} onChange={(e) => setFindGain(e.target.checked)} />
                 <span>
@@ -460,7 +460,7 @@ export function SurveyPanel(props: { c: Config }) {
             )}
           </div>
           )}
-          {src?.kind === "file" ? (
+          {src?.type === "file" ? (
             <p className="muted small">A capture file is examined at its center frequency ({src.centerHz ? `${formatMhz(src.centerHz, 4)} MHz` : "set it below"}).</p>
           ) : (
             <fieldset className="bands">
@@ -483,9 +483,9 @@ export function SurveyPanel(props: { c: Config }) {
           <div className="row">
             <button
               className="btn primary"
-              disabled={!s.connected || recording || unsupported || (src?.kind !== "file" && !bands.length)}
+              disabled={!s.connected || recording || unsupported || (src?.type !== "file" && !bands.length)}
               title={recording ? "Stop recording first" : ""}
-              onClick={() => startSurvey(Math.min(source, c.sources.length - 1), bands, src?.kind === "rtlsdr" && findGain)}
+              onClick={() => startSurvey(Math.min(source, c.sources.length - 1), bands, src?.type === "rtlsdr" && findGain)}
             >
               Scan
             </button>

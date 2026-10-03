@@ -15,7 +15,8 @@ export interface CcMark {
 
 const ROWS = 160;
 
-function color(t: number): [number, number, number] {
+/** The waterfall's colour for `t` (0 = floor … 1 = strong), RGB. */
+export function color(t: number): [number, number, number] {
   // dark blue → cyan → yellow → white
   const c = Math.max(0, Math.min(1, t));
   const stops: [number, number, number][] = [

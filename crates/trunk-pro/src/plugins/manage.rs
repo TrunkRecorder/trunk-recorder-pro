@@ -8,13 +8,14 @@
 //! {id}` (the server forgets it in the config), `pluginStore {refresh?}` (the registry's list),
 //! `installPlugin {id}` (from the registry; also an update) or `installPlugin
 //! {repository, tag?}` (a GitHub release that isn't in it). Server → browser:
-//! `plugins`, `pluginRuntime {id, runtime}`, `pluginResult` for each call a
-//! plugin handled, `pluginStore`, and `pluginInstall {key, id, stage,
+//! `plugins`, `pluginRuntime {id, runtime}` (its state, counts and recent
+//! log, as they change), `pluginStore`, and `pluginInstall {key, id, stage,
 //! message?}` as an install goes ("finding", "downloading", "checking",
 //! "installing", then "done" or "failed").
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -226,7 +227,7 @@ impl Plugins {
     /// Start the config's enabled plugins for a recording.
     pub fn start(&self, cfg: &Config) {
         *self.env.lock().unwrap() = Some((super::systems_of(cfg), PathBuf::from(&cfg.recording.capture_dir)));
-        let host = self.new_host(cfg, true);
+        let host = self.new_host(cfg, true, Arc::new(AtomicBool::new(true)));
         *self.host.write().unwrap() = host;
     }
 
@@ -249,20 +250,30 @@ impl Plugins {
     }
 
     /// While recording: restart the plugins with `cfg`'s settings. The old
-    /// ones finish in the background.
+    /// ones finish in the background; the new ones start once they have
+    /// exited (each plugin's data folder, its saved queue, is theirs until
+    /// then), and events wait for them meanwhile.
     pub fn reload(&self, cfg: &Config) {
         if self.env.lock().unwrap().is_none() {
             return;
         }
-        let new = self.new_host(cfg, false);
+        let go = Arc::new(AtomicBool::new(false));
+        let new = self.new_host(cfg, false, go.clone());
         let old = std::mem::replace(&mut *self.host.write().unwrap(), new);
-        if let Some(mut h) = old {
-            std::thread::spawn(move || h.shutdown(Duration::from_secs(10)));
+        match old {
+            Some(mut h) => {
+                std::thread::spawn(move || {
+                    h.shutdown(Duration::from_secs(10));
+                    go.store(true, Ordering::Relaxed);
+                });
+            }
+            None => go.store(true, Ordering::Relaxed),
         }
     }
 
     /// `fresh`: a new recording (counts start over); else a restart within one.
-    fn new_host(&self, cfg: &Config, fresh: bool) -> Option<PluginHost> {
+    /// `go`: when the processes may start (`PluginHost::start_when`).
+    fn new_host(&self, cfg: &Config, fresh: bool, go: Arc<AtomicBool>) -> Option<PluginHost> {
         let (systems, capture_dir) = self.env.lock().unwrap().clone()?;
         let notes = self.notes();
         let specs = Spec::enabled(cfg);
@@ -281,7 +292,7 @@ impl Plugins {
         if specs.is_empty() {
             return None;
         }
-        let host = PluginHost::start(specs, &cfg.recording.m4a, &systems, &capture_dir, notes);
+        let host = PluginHost::start_when(specs, &cfg.recording.m4a, &systems, &capture_dir, notes, go);
         (!host.is_empty()).then_some(host)
     }
 

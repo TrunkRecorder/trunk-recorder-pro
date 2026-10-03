@@ -43,7 +43,7 @@ impl Bandplan {
             "900" => Ok(Bandplan::B900),
             n if n.starts_with("400") || n.eq_ignore_ascii_case("obt") => {
                 if base_hz <= 0.0 || spacing_hz <= 0.0 || high_hz <= base_hz {
-                    return Err(format!("SmartNet band plan {n} needs bandplanBase, bandplanSpacing, bandplanOffset and bandplanHigh"));
+                    return Err(format!("SmartNet band plan {n} needs bandplanBaseHz, bandplanSpacingHz, bandplanOffset and bandplanHighHz"));
                 }
                 Ok(Bandplan::Obt { base_hz, spacing_hz, offset, high_hz })
             }

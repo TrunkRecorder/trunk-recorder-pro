@@ -12,6 +12,8 @@ use serde_json::{json, Value};
 use trunk_core::survey::{Command, GainState, Kind, Stage, Survey, SurveyConfig, BANDS};
 
 use crate::config::{auto_center, usable_half_width, Config, Source};
+#[cfg(test)]
+use crate::config::DEFAULT_GUARD_HZ;
 use crate::session::Output;
 
 /// R820T / R828D gain steps worth trying (dB).
@@ -94,6 +96,8 @@ pub struct SurveySession {
     survey: Survey,
     source: usize,
     rtl: bool,
+    /// The source's guard band at each edge, Hz.
+    guard_hz: f64,
     bands: Vec<String>,
     error: Option<String>,
     last_ms: f64,
@@ -108,6 +112,7 @@ impl SurveySession {
             survey: Survey::new(sc),
             source: req.source,
             rtl: matches!(cfg.sources[req.source], Source::Rtlsdr { .. }),
+            guard_hz: cfg.sources[req.source].guard_hz(),
             bands: req.bands.clone(),
             error: None,
             last_ms: f64::NEG_INFINITY,
@@ -210,7 +215,7 @@ impl SurveySession {
         let ppm = m.ppm;
         let rate = self.survey.rate_hz();
         let voice: Vec<f64> = m.voice.iter().map(|v| v.freq_hz as f64).collect();
-        let (center, covered) = best_center(cc, &ccs, &voice, rate);
+        let (center, covered) = best_center(cc, &ccs, &voice, rate, self.guard_hz);
         let lo = voice.iter().chain(&ccs).copied().fold(f64::INFINITY, f64::min);
         let hi = voice.iter().chain(&ccs).copied().fold(f64::NEG_INFINITY, f64::max);
         let smartnet = m.smartnet.as_ref().and_then(|s| s.plan.as_ref());
@@ -248,8 +253,8 @@ fn plan_json(p: &trunk_core::smartnet::plan::PlanConfig) -> Value {
 /// A centre (off the DC spike) whose usable band holds the primary control
 /// channel and as many of the voice channels (and other control channels) as
 /// fit; and how many voice channels that covers.
-pub fn best_center(primary: f64, ccs: &[f64], voice: &[f64], rate_hz: f64) -> (f64, usize) {
-    let w = 2.0 * usable_half_width(rate_hz) - 60_000.0;
+pub fn best_center(primary: f64, ccs: &[f64], voice: &[f64], rate_hz: f64, guard_hz: f64) -> (f64, usize) {
+    let w = 2.0 * usable_half_width(rate_hz, guard_hz) - 60_000.0;
     let mut all: Vec<f64> = voice.iter().chain(ccs).copied().collect();
     all.sort_by(f64::total_cmp);
     let (mut best, mut best_n) = ((primary, primary), (0usize, 0usize));
@@ -265,7 +270,7 @@ pub fn best_center(primary: f64, ccs: &[f64], voice: &[f64], rate_hz: f64) -> (f
     }
     let inside: Vec<f64> = all.iter().copied().filter(|&f| f >= best.0 && f <= best.1).collect();
     let pts = if inside.is_empty() { vec![primary] } else { inside };
-    let center = auto_center(&pts, rate_hz).or_else(|| auto_center(&[primary], rate_hz)).unwrap_or(primary + 250_000.0);
+    let center = auto_center(&pts, rate_hz, guard_hz).or_else(|| auto_center(&[primary], rate_hz, guard_hz)).unwrap_or(primary + 250_000.0);
     (center, best_n.0)
 }
 
@@ -275,13 +280,13 @@ mod tests {
 
     #[test]
     fn center_covers_the_busiest_span() {
-        // 2.4 MSPS: ~2.1 MHz usable. Voice spread over 851–856 MHz; the CC at 851.5.
+        // 2.4 MSPS: ~2.25 MHz usable. Voice spread over 851–856 MHz; the CC at 851.5.
         let voice = [851.0125e6, 851.2625e6, 851.5125e6, 852.0125e6, 852.4625e6, 855.9e6];
-        let (c, n) = best_center(851.5e6, &[851.5e6], &voice, 2_400_000.0);
+        let (c, n) = best_center(851.5e6, &[851.5e6], &voice, 2_400_000.0, DEFAULT_GUARD_HZ);
         assert_eq!(n, 5);
         assert!((c - 851.5e6).abs() > 20_000.0, "on DC");
         for f in &voice[..5] {
-            assert!((f - c).abs() <= usable_half_width(2_400_000.0), "{f} outside {c}");
+            assert!((f - c).abs() <= usable_half_width(2_400_000.0, DEFAULT_GUARD_HZ), "{f} outside {c}");
         }
     }
 

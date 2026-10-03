@@ -42,10 +42,10 @@
 
 use num_complex::Complex32;
 
-use super::calls::{conventional_index, conventional_system, Call, CallId, CallManager, CallSource};
+use super::calls::{conventional_index, conventional_system, Call, CallId, CallIds, CallSource, STUCK_CALL_S};
 use super::frames::CallFrames;
 use super::record::{Reception, Transmissions};
-use super::talkgroups::Talkgroup;
+use super::talkgroups::{Talkgroup, Talkgroups};
 use super::voice::TrackerOut;
 use super::voice::{self, VoiceDecoder, VoiceKind, VoiceSpec};
 use super::frames::VoiceFrame;
@@ -264,14 +264,13 @@ impl Default for ConvConfig {
     }
 }
 
-/// A carrier stuck on still ends a call this long, s (with no length limit set).
-pub const STUCK_CALL_S: f64 = 600.0;
 
 /// What the conventional channels did, for the engine to report.
 pub enum ConvOut {
     Start(Call),
     Update(Call),
     Audio { call_id: CallId, system: u16, talkgroup: u32, samples: Vec<f32> },
+    /// `recorder_num`: the index of the channel (frequency) it came on.
     End { call: Call, audio: Vec<f32>, frames: CallFrames, recorder_num: u32, tx: Transmissions, reception: Reception },
     /// A radio's talker alias, heard on a P25 channel of conventional system `.0` ([`Call::system`]).
     Alias(u16, Alias),
@@ -408,20 +407,21 @@ pub fn check_channels(channels: &[ConvChannel]) -> Result<(), String> {
     Conventional::check(channels)
 }
 
-/// What the calls need from the engine's configuration.
-pub struct CallRules {
+/// What the calls need from the engine's configuration, per conventional system.
+pub struct CallRules<'a> {
     pub call_timeout_s: f64,
     /// A call longer than this is concluded and a new one started (0: never), s.
     pub max_call_s: f64,
-    pub record_encrypted: bool,
     /// Keep each call's vocoder frames (see [`super::frames`]).
     pub capture_frames: bool,
+    /// The system's talkgroup names.
+    pub talkgroups: &'a Talkgroups,
 }
 
 impl Conventional {
-    /// `sources`: (centre, rate) of each source. Channels outside every
-    /// source are an error.
-    pub fn new(channels: &[ConvChannel], sources: &[(f64, f64)], cfg: ConvConfig, bank_cfg: BankConfig, usable: f64) -> Result<Self, String> {
+    /// `sources`: (centre, rate, usable half-width) of each source. Channels
+    /// outside every source are an error.
+    pub fn new(channels: &[ConvChannel], sources: &[(f64, f64, f64)], cfg: ConvConfig, bank_cfg: BankConfig) -> Result<Self, String> {
         let mut chans = Vec::new();
         let mut outside = Vec::new();
         let mut groups: Vec<Vec<ConvChannel>> = Vec::new();
@@ -437,11 +437,11 @@ impl Conventional {
             c.squelch_db = rows.iter().filter_map(|r| r.squelch_db).reduce(f64::min);
             let c = &c;
             let routed = rows.len() > 1 || c.access.is_some();
-            let Some(src) = sources.iter().position(|&(center, rate)| (c.freq_hz - center).abs() <= rate / 2.0 * usable) else {
+            let Some(src) = sources.iter().position(|&(center, _, half)| (c.freq_hz - center).abs() <= half) else {
                 outside.push(format!("{:.5}", c.freq_hz / 1e6));
                 continue;
             };
-            let (center, rate) = sources[src];
+            let (center, rate, _) = sources[src];
             let offset_hz = c.freq_hz - center;
             let slice = (((offset_hz + rate / 2.0) / rate * FLOOR_SLICES as f64) as usize).min(FLOOR_SLICES - 1);
             let bar = c.squelch_db.unwrap_or(cfg.squelch_db);
@@ -513,11 +513,11 @@ impl Conventional {
     }
 
     /// After a block ran on `source` (whose clock reads `now_s`).
-    /// `calls` and `rules`: each conventional system's (a channel's `system` indexes them).
+    /// `ids`: the engine's call ids. `rules`: each conventional system's (a channel's `system` indexes them).
     /// `gap`: the block is silence standing in for samples that never came
     /// ([`super::Engine::push_gap`]): calls open run on, nothing new opens,
     /// and the noise floor is left as it was.
-    pub fn on_block(&mut self, source: usize, chz: &mut Channelizer, now_s: f64, gap: bool, calls: &mut [CallManager], rules: &[CallRules], out: &mut Vec<ConvOut>) {
+    pub fn on_block(&mut self, source: usize, chz: &mut Channelizer, now_s: f64, gap: bool, ids: &CallIds, rules: &[CallRules], out: &mut Vec<ConvOut>) {
         if !self.chans.iter().any(|c| c.source == source) {
             return;
         }
@@ -540,7 +540,7 @@ impl Conventional {
             if ch.source != source {
                 continue;
             }
-            let (calls, rules) = (&mut calls[ch.cfg.system], &rules[ch.cfg.system]);
+            let rules = &rules[ch.cfg.system];
             let floor = self.floors[source].slices[ch.slice].max(1e-30);
             let bp = chz.band_power(ch.offset_hz, DETECT_HALF_BW);
             ch.power = if ch.power == 0.0 { bp } else { ch.power + a * (bp - ch.power) };
@@ -553,13 +553,13 @@ impl Conventional {
                     ch.bar_db = base;
                 }
                 if snr_db >= ch.bar_db {
-                    Self::open(ch, chz, now_s, self.cfg.preroll_s, self.bank_cfg, self.cfg.vocoder, meter_thr, idx as u32, calls, rules, out);
+                    Self::open(ch, chz, now_s, self.cfg.preroll_s, self.bank_cfg, self.cfg.vocoder, meter_thr, idx as u32, ids, rules, out);
                 }
                 continue;
             }
             let Some(iq) = chz.output(ch.open.as_ref().unwrap().head).map(|v| v.to_vec()) else { continue };
             let max_call_s = if rules.max_call_s > 0.0 { rules.max_call_s } else { STUCK_CALL_S };
-            Self::run(ch, &iq, now_s, meter_thr, idx as u32, calls, rules, max_call_s, out);
+            Self::run(ch, &iq, now_s, meter_thr, idx as u32, ids, rules, max_call_s, out);
             // Reception: the channel's power while its carrier is up, against the floor (both as a channel's head would see them).
             if snr_db >= base {
                 let (sig, noise) = (chz.noise_in_band(ch.power, ChannelFilter::noise_bandwidth()), chz.noise_in_band(floor, ChannelFilter::noise_bandwidth()));
@@ -592,7 +592,7 @@ impl Conventional {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn open(ch: &mut Chan, chz: &mut Channelizer, now_s: f64, preroll_s: f64, bank_cfg: BankConfig, vocoder: mbe::Profile, meter_thr: f32, num: u32, calls: &mut CallManager, rules: &CallRules, out: &mut Vec<ConvOut>) {
+    fn open(ch: &mut Chan, chz: &mut Channelizer, now_s: f64, preroll_s: f64, bank_cfg: BankConfig, vocoder: mbe::Profile, meter_thr: f32, num: u32, ids: &CallIds, rules: &CallRules, out: &mut Vec<ConvOut>) {
         let (head, pre, start_sample) = chz.add_head(ch.offset_hz, HEAD_CUTOFF_HZ, preroll_s);
         let rate = chz.output_rate();
         let kind = match ch.cfg.mode {
@@ -615,12 +615,12 @@ impl Conventional {
         });
         let meter = (kind != VoiceKind::Analog).then(|| ChannelFilter::new(rate));
         ch.open = Some(Open { head, voice, meter, opened_s: now_s, carrier_seen: false, last_carrier_s: now_s, live: [None, None], tx: None });
-        Self::run(ch, &pre, now_s, meter_thr, num, calls, rules, 0.0, out);
+        Self::run(ch, &pre, now_s, meter_thr, num, ids, rules, 0.0, out);
     }
 
     /// Run the open channel's receiver over `iq` (air up to `now_s`).
     #[allow(clippy::too_many_arguments)]
-    fn run(ch: &mut Chan, iq: &[Complex32], now_s: f64, meter_thr: f32, num: u32, calls: &mut CallManager, rules: &CallRules, max_call_s: f64, out: &mut Vec<ConvOut>) {
+    fn run(ch: &mut Chan, iq: &[Complex32], now_s: f64, meter_thr: f32, num: u32, ids: &CallIds, rules: &CallRules, max_call_s: f64, out: &mut Vec<ConvOut>) {
         let o = ch.open.as_mut().unwrap();
         let mut heard: [Heard; 2] = Default::default();
         // Digital: the carrier by the meter; FM: by the decoder's squelch, at the same threshold.
@@ -663,7 +663,7 @@ impl Conventional {
             }
         }
         for (slot, h) in heard.into_iter().enumerate() {
-            Self::slot_call(ch, slot, h, now_s, num, calls, rules, max_call_s, out);
+            Self::slot_call(ch, slot, h, now_s, num, ids, rules, max_call_s, out);
         }
     }
 
@@ -774,7 +774,7 @@ impl Conventional {
 
     /// Start, relabel, split or feed the call on one slot with what it heard.
     #[allow(clippy::too_many_arguments)]
-    fn slot_call(ch: &mut Chan, slot: usize, h: Heard, now_s: f64, num: u32, calls: &mut CallManager, rules: &CallRules, max_call_s: f64, out: &mut Vec<ConvOut>) {
+    fn slot_call(ch: &mut Chan, slot: usize, h: Heard, now_s: f64, num: u32, ids: &CallIds, rules: &CallRules, max_call_s: f64, out: &mut Vec<ConvOut>) {
         if h.audio.is_empty() && h.infos.is_empty() {
             return;
         }
@@ -792,7 +792,7 @@ impl Conventional {
                 let l = o.live[slot].take().unwrap();
                 Self::end(l, num, out);
             } else if air_tg.is_some() && !l.tg_from_air {
-                let info = Self::info_for(&ch.rows, row, tg, calls);
+                let info = Self::info_for(&ch.rows, row, tg, rules.talkgroups);
                 let l = o.live[slot].as_mut().unwrap();
                 l.tg_from_air = true;
                 if l.call.talkgroup != tg {
@@ -807,7 +807,7 @@ impl Conventional {
             let start = h.air.map_or_else(|| (now_s - dur).max(o.opened_s - 0.05), |a| a.0);
             let call = Call {
                 system: conventional_system(ch.cfg.system),
-                id: calls.allocate_id(),
+                id: ids.next(),
                 talkgroup: tg,
                 freq_hz: ch.cfg.freq_hz.round() as u64,
                 phase2_tdma: false,
@@ -825,7 +825,7 @@ impl Conventional {
                 last_update_s: now_s,
                 last_audio_s: now_s,
                 sources: Vec::new(),
-                talkgroup_info: Self::info_for(&ch.rows, row, tg, calls),
+                talkgroup_info: Self::info_for(&ch.rows, row, tg, rules.talkgroups),
                 patched_talkgroups: Vec::new(),
                 color_code: h.color_code,
                 nac: h.nac,
@@ -857,6 +857,9 @@ impl Conventional {
             changed = true;
         }
         for (src, emergency, encrypted) in h.infos {
+            if encrypted {
+                l.tx.mark_encrypted(now_s);
+            }
             if encrypted && !l.call.encrypted {
                 l.call.encrypted = true;
                 changed = true;
@@ -875,21 +878,25 @@ impl Conventional {
         if changed {
             out.push(ConvOut::Update(l.call.clone()));
         }
-        if !h.audio.is_empty() && !(l.call.encrypted && !rules.record_encrypted) {
+        // (An encrypted transmission's audio is left out when the call is
+        // saved, as a trunked call's is; it isn't played live.)
+        if !h.audio.is_empty() {
             l.tx.note(l.audio.len(), now_s);
             l.audio.extend_from_slice(&h.audio);
             for f in h.frames {
                 l.frames.push(f);
             }
-            out.push(ConvOut::Audio { call_id: l.call.id, system: l.call.system, talkgroup: l.call.talkgroup, samples: h.audio });
+            if !l.tx.current_encrypted() {
+                out.push(ConvOut::Audio { call_id: l.call.id, system: l.call.system, talkgroup: l.call.talkgroup, samples: h.audio });
+            }
         }
     }
 
     /// The call's names: the row's filed under `tg`; else the talkgroup
     /// list's; else the names of the row it came on.
-    fn info_for(rows: &[ConvChannel], row: &ConvChannel, tg: u32, calls: &CallManager) -> Option<Talkgroup> {
+    fn info_for(rows: &[ConvChannel], row: &ConvChannel, tg: u32, talkgroups: &Talkgroups) -> Option<Talkgroup> {
         let named = |r: &ConvChannel| r.info.clone().map(|t| Talkgroup { number: tg, ..t });
-        let listed = calls.talkgroups.get(&tg).cloned();
+        let listed = talkgroups.get(&tg).cloned();
         match rows.iter().find(|r| r.talkgroup == tg) {
             Some(r) => named(r).or(listed),
             None => listed.or_else(|| named(row)),
@@ -901,19 +908,16 @@ impl Conventional {
     }
 
     /// End of input: flush the receivers and end every call.
-    pub fn finish(&mut self, rules: &[CallRules], out: &mut Vec<ConvOut>) {
+    pub fn finish(&mut self, out: &mut Vec<ConvOut>) {
         for (idx, ch) in self.chans.iter_mut().enumerate() {
-            let rules = &rules[ch.cfg.system];
             let Some(o) = ch.open.as_mut() else { continue };
             let mut vout = Vec::new();
             o.voice.flush(&mut vout);
             for v in vout {
                 let Some(l) = o.live[v.slot as usize & 1].as_mut() else { continue };
                 if let TrackerOut::Audio(a, f) = v.out {
-                    if !(l.call.encrypted && !rules.record_encrypted) {
-                        l.audio.extend_from_slice(&a);
-                        l.frames.push(f);
-                    }
+                    l.audio.extend_from_slice(&a);
+                    l.frames.push(f);
                 }
             }
             let o = ch.open.take().unwrap();
@@ -963,7 +967,7 @@ mod tests {
     fn run_gapped(fs: f64, secs: f64, txs: &mut [Tx], channels: Vec<ConvChannel>, conv_systems: Vec<crate::trunk::ConvSystem>, mut gap: Option<(f64, f64)>) -> Run {
         let center = 155_000_000.0;
         let cfg = EngineConfig {
-            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false }],
+            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
             conventional: channels,
             conv_systems,
             ..Default::default()

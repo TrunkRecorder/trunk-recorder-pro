@@ -1,8 +1,9 @@
 //! DMR bursts (TS 102 361-1 §4–§9): the sync search, the framer that cuts
-//! the symbol stream into 30 ms bursts, and the burst's fixed fields.
+//! the symbol stream into 30 ms bursts ([`Framer`] → [`Burst`]), and the
+//! burst's fixed fields.
 //!
 //! ```text
-//! a 30 ms unit, 144 dibits (outbound from a repeater):
+//! a 30 ms slot, 144 dibits (outbound from a repeater):
 //!   CACH 12 │ payload 54 │ sync or EMB+embedded 24 │ payload 54
 //! voice burst: AMBE 36 │ AMBE 18 ┊ … ┊ AMBE 18 │ AMBE 36
 //! data burst:  info 49, slot type 5 │ sync 24 │ slot type 5, info 49
@@ -21,9 +22,8 @@ use crate::dsp::Symbol;
 
 pub const CACH_DIBITS: usize = 12;
 pub const BURST_DIBITS: usize = 132;
-/// CACH + burst: 30 ms at 4800 baud.
-pub const UNIT_DIBITS: usize = CACH_DIBITS + BURST_DIBITS;
-pub const SYMBOL_RATE: f64 = 4800.0;
+/// CACH + burst: one slot, 30 ms at 4800 baud.
+pub const SLOT_DIBITS: usize = CACH_DIBITS + BURST_DIBITS;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SyncKind {
@@ -115,7 +115,8 @@ pub struct Burst {
     /// CACH (or, from a mobile, guard time) dibits.
     pub cach: [u8; CACH_DIBITS],
     pub dibits: [u8; BURST_DIBITS],
-    /// Each burst bit's reliability, air order (2 per dibit).
+    /// Each burst bit's reliability (≥ 0), air order (2 per dibit); [`Burst::soft`]
+    /// gives a bit and its reliability as one signed value.
     pub rel: [f32; 2 * BURST_DIBITS],
     pub sync: Option<SyncKind>,
     pub sync_errs: u32,
@@ -230,18 +231,22 @@ pub struct Framer {
 
 impl Default for Framer {
     fn default() -> Self {
-        Framer { grid_errs: GRID_ERRS_BS, buf: VecDeque::new(), win: 0, n: 0, next_end: None, pending: None, family: 0, since_sync: 0, bursts: 0, syncs: 0 }
+        Self::new()
     }
 }
 
 impl Framer {
+    pub fn new() -> Self {
+        Framer { grid_errs: GRID_ERRS_BS, buf: VecDeque::new(), win: 0, n: 0, next_end: None, pending: None, family: 0, since_sync: 0, bursts: 0, syncs: 0 }
+    }
+
     pub fn locked(&self) -> bool {
         self.next_end.is_some()
     }
 
     pub fn push(&mut self, s: &Symbol, out: &mut Vec<Burst>) {
         self.buf.push_back(*s);
-        if self.buf.len() > UNIT_DIBITS {
+        if self.buf.len() > SLOT_DIBITS {
             self.buf.pop_front();
         }
         self.win = (self.win << 2 | (s.dibit & 3) as u64) & 0xffff_ffff_ffff;
@@ -266,7 +271,7 @@ impl Framer {
             }
         }
         if self.next_end == Some(i) {
-            self.next_end = Some(i + UNIT_DIBITS as u64);
+            self.next_end = Some(i + SLOT_DIBITS as u64);
             let sync = self.pending.take();
             self.since_sync = if sync.is_some() { 0 } else { self.since_sync + 1 };
             if sync.is_some() {
@@ -276,7 +281,7 @@ impl Framer {
                 self.next_end = None;
                 return;
             }
-            if self.buf.len() < UNIT_DIBITS {
+            if self.buf.len() < SLOT_DIBITS {
                 return;
             }
             self.bursts += 1;
@@ -369,7 +374,7 @@ pub(crate) mod tests {
             }
             syms.extend(burst);
         }
-        let mut f = Framer::default();
+        let mut f = Framer::new();
         let mut out = Vec::new();
         for (i, &d) in syms.iter().enumerate() {
             f.push(&Symbol { dibit: d, sample: i as f64, rel_hi: 1.0, rel_lo: 1.0 }, &mut out);
@@ -379,7 +384,7 @@ pub(crate) mod tests {
         assert!(out[1..7].iter().all(|b| b.sync.is_none()));
         assert_eq!(out[7].sync, Some(SyncKind::BsVoice));
         for (k, b) in out.iter().enumerate() {
-            assert_eq!(b.sample, (k * UNIT_DIBITS + CACH_DIBITS) as f64);
+            assert_eq!(b.sample, (k * SLOT_DIBITS + CACH_DIBITS) as f64);
             assert_eq!(cach(&b.cach).0.unwrap().slot, k as u8 & 1);
         }
     }

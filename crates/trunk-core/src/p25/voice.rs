@@ -25,6 +25,9 @@ pub struct ImbeParams {
     pub cost0: f32,
     /// Mean bit reliability of the codeword (soft only).
     pub mean_rel: f32,
+    /// Its bits with no reliability at all (soft only): symbols the receiver
+    /// heard nothing in, e.g. a fade. The soft decoder flips them for free.
+    pub erased: u32,
 }
 
 #[inline]
@@ -65,6 +68,7 @@ pub fn imbe_header_decode(cw: &[u8; 144], soft: Option<&[f32; 144]>) -> ImbePara
     p.cost = r0.cost;
     if let Some(s) = soft {
         p.mean_rel = s.iter().sum::<f32>() / 144.0;
+        p.erased = s.iter().filter(|&&r| r == 0.0).count() as u32;
     }
     let mut pr = p.u[0] << 4;
     for k in 1..=3 {

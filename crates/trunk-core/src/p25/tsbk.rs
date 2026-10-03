@@ -6,6 +6,7 @@
 //! control channels from 62 % to 98–99 % of TSBKs.
 
 use super::frame::{Frame, TSDU};
+use crate::bits::crc_ccitt_bytes;
 
 pub type Tsbk = [u8; 12];
 
@@ -115,21 +116,9 @@ pub fn trellis_viterbi(bits: &[u8], soft: Option<&[f32]>) -> Tsbk {
     out
 }
 
-pub fn crc16(buf: &[u8]) -> u16 {
-    let mut crc = 0u32;
-    for &byte in buf {
-        for j in 0..8 {
-            crc = ((crc << 1) | ((byte as u32 >> (7 - j)) & 1)) & 0x1ffff;
-            if crc & 0x10000 != 0 {
-                crc = (crc & 0xffff) ^ 0x1021;
-            }
-        }
-    }
-    ((crc ^ 0xffff) & 0xffff) as u16
-}
-
+/// The block's last 16 bits are the CRC-CCITT of the 80 before them.
 pub fn tsbk_ok(t: &Tsbk) -> bool {
-    crc16(t) == 0
+    crc_ccitt_bytes(&t[..10]) == u16::from_be_bytes([t[10], t[11]])
 }
 pub fn tsbk_last(t: &Tsbk) -> bool {
     t[0] >> 7 != 0
@@ -190,3 +179,4 @@ pub fn decode_tsdu(f: &Frame, mode: Trellis) -> TsduResult {
     }
     r
 }
+

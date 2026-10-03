@@ -7,7 +7,7 @@
 //! need M4A are encoded on worker threads first.
 
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -66,13 +66,21 @@ struct Plugin {
     last_drop_note: Mutex<Option<Instant>>,
     restarts: AtomicU64,
     started: Mutex<Option<Instant>>,
+    /// When everything queued for it, `shutdown` last, was written to it.
+    drained_at: Arc<Mutex<Option<Instant>>>,
 }
 
 struct Shared {
     plugins: Vec<Plugin>,
     stopping: AtomicBool,
+    /// Plugins may start (false: wait for the ones they replace to exit).
+    go: Arc<AtomicBool>,
     notes: Notes,
 }
+
+/// How long `shutdown` waits for a plugin to read what was queued before
+/// `shutdown` (its grace counts from then).
+const DRAIN_MAX: Duration = Duration::from_secs(30);
 
 struct EncodeJob {
     call: ConcludedCall,
@@ -89,6 +97,8 @@ pub struct PluginHost {
     pub topics: PluginTopics,
     /// Some plugin wants live audio.
     pub audio: bool,
+    /// Each system's short name, by its number (for audio chunks).
+    names: BTreeMap<u16, String>,
     done: bool,
 }
 
@@ -118,6 +128,12 @@ impl PluginHost {
     /// Start `specs`. `systems`: every system calls come from (their `config` is filled in here).
     /// A plugin that can't start is reported and left out.
     pub fn start(specs: Vec<Spec>, audio: &super::AudioSettings, systems: &[SystemInfo], capture_dir: &Path, notes: Notes) -> PluginHost {
+        Self::start_when(specs, audio, systems, capture_dir, notes, Arc::new(AtomicBool::new(true)))
+    }
+
+    /// `start`, with the processes held back until `go` is set (events queue
+    /// meanwhile): the plugins they replace share their data folders.
+    pub fn start_when(specs: Vec<Spec>, audio: &super::AudioSettings, systems: &[SystemInfo], capture_dir: &Path, notes: Notes, go: Arc<AtomicBool>) -> PluginHost {
         let mut ready = Vec::new();
         for mut s in specs {
             // (It runs in its data folder: a relative path would be from there.)
@@ -185,9 +201,10 @@ impl PluginHost {
                 last_drop_note: Mutex::new(None),
                 restarts: AtomicU64::new(0),
                 started: Mutex::new(None),
+                drained_at: Arc::new(Mutex::new(None)),
             });
         }
-        let shared = Arc::new(Shared { plugins, stopping: AtomicBool::new(false), notes });
+        let shared = Arc::new(Shared { plugins, stopping: AtomicBool::new(false), go, notes });
         let supervisors = queues
             .into_iter()
             .enumerate()
@@ -212,7 +229,8 @@ impl PluginHost {
             }
             None => (None, Vec::new()),
         };
-        PluginHost { shared, capture_dir: capture_dir.to_path_buf(), encoder, encode_tx, encoders, supervisors, topics, audio: live_audio, done: false }
+        let names = systems.iter().map(|y| (y.index, y.short_name.clone())).collect();
+        PluginHost { shared, capture_dir: capture_dir.to_path_buf(), encoder, encode_tx, encoders, supervisors, topics, audio: live_audio, names, done: false }
     }
 
     /// Each plugin's process: drops, restarts, uptime.
@@ -263,13 +281,15 @@ impl PluginHost {
         let call_id = u32::from_le_bytes([frame[3], frame[4], frame[5], frame[6]]);
         let talkgroup = u32::from_le_bytes([frame[7], frame[8], frame[9], frame[10]]);
         let pcm = trunk_recorder_plugin::base64::encode(&frame[11..]);
-        let chunk = AudioChunk { call_id, system, talkgroup, sample_rate: 8000, pcm };
+        let short_name = self.names.get(&system).cloned().unwrap_or_default();
+        let chunk = AudioChunk { call_id, system, short_name, talkgroup, sample_rate: 8000, pcm };
         self.shared.dispatch(topic::AUDIO, &line(&HostMessage::Audio(chunk)));
     }
 
-    /// The plugins that take concluded calls (each reports on every one).
+    /// The plugins that take concluded calls (each reports on every one);
+    /// not one that gave up (a config error).
     pub fn call_takers(&self) -> usize {
-        self.shared.plugins.iter().filter(|p| p.manifest.subscribes(topic::CALL_CONCLUDED)).count()
+        self.shared.plugins.iter().filter(|p| p.manifest.subscribes(topic::CALL_CONCLUDED) && p.tx.lock().unwrap().is_some()).count()
     }
 
     /// A call whose files are written (`rel`: relative to the capture folder,
@@ -299,7 +319,9 @@ impl PluginHost {
         }
     }
 
-    /// Finish encoding, tell every plugin to stop, and give them `grace` to exit.
+    /// Finish encoding, tell every plugin to stop, and give each `grace` to
+    /// exit from when it has read `shutdown` (behind what was queued, for up
+    /// to `DRAIN_MAX`).
     pub fn shutdown(&mut self, grace: Duration) {
         if std::mem::replace(&mut self.done, true) {
             return;
@@ -318,17 +340,25 @@ impl PluginHost {
                 let _ = tx.try_send(bye.clone());
             }
         }
-        let deadline = Instant::now() + grace;
-        while self.supervisors.iter().any(|t| !t.is_finished()) && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        for p in &sh.plugins {
-            if let Some(c) = p.child.lock().unwrap().as_mut() {
-                if c.try_wait().ok().flatten().is_none() {
-                    sh.note_log(&p.id, Level::Warn, "didn't stop in time: killed");
-                    let _ = c.kill();
+        let asked = Instant::now();
+        let mut killed = vec![false; sh.plugins.len()];
+        while self.supervisors.iter().any(|t| !t.is_finished()) {
+            let now = Instant::now();
+            for (i, p) in sh.plugins.iter().enumerate() {
+                let drained = *p.drained_at.lock().unwrap();
+                let deadline = drained.map_or(asked + DRAIN_MAX + grace, |t| t + grace);
+                if killed[i] || self.supervisors[i].is_finished() || now < deadline {
+                    continue;
+                }
+                killed[i] = true;
+                if let Some(c) = p.child.lock().unwrap().as_mut() {
+                    if c.try_wait().ok().flatten().is_none() {
+                        sh.note_log(&p.id, Level::Warn, "didn't stop in time: killed");
+                        let _ = c.kill();
+                    }
                 }
             }
+            std::thread::sleep(Duration::from_millis(20));
         }
         for t in self.supervisors.drain(..) {
             let _ = t.join();
@@ -398,6 +428,13 @@ fn encode_worker(rx: &Mutex<Receiver<EncodeJob>>, sh: &Shared, e: &Encoder, kbps
 /// Keep plugin `i` running until the host stops, feeding it from `rx`.
 fn supervise(sh: &Shared, i: usize, mut rx: Receiver<Arc<str>>) {
     let p = &sh.plugins[i];
+    while !sh.go.load(Ordering::Relaxed) {
+        if sh.stopping.load(Ordering::Relaxed) {
+            // Replaced again before it started.
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
     let mut backoff = Duration::from_secs(1);
     loop {
         let started = Instant::now();
@@ -436,6 +473,24 @@ fn supervise(sh: &Shared, i: usize, mut rx: Receiver<Arc<str>>) {
     }
 }
 
+/// A pipe's lines until it closes; bytes that aren't UTF-8 become U+FFFD
+/// (a stray one mustn't stop the reading, leaving the plugin blocked).
+fn lossy_lines(r: impl Read) -> impl Iterator<Item = String> {
+    let mut r = BufReader::new(r);
+    std::iter::from_fn(move || {
+        let mut buf = Vec::new();
+        match r.read_until(b'\n', &mut buf) {
+            Ok(0) | Err(_) => None,
+            Ok(_) => {
+                while buf.last().is_some_and(|&b| b == b'\n' || b == b'\r') {
+                    buf.pop();
+                }
+                Some(String::from_utf8_lossy(&buf).into_owned())
+            }
+        }
+    })
+}
+
 enum Ended {
     /// The process exited (its code; None: killed).
     Exited(Option<i32>),
@@ -445,7 +500,13 @@ enum Ended {
 
 /// One run of a plugin's process. Gives the queue back.
 fn run_once(sh: &Shared, p: &Plugin, rx: Receiver<Arc<str>>) -> (Result<Ended, String>, Receiver<Arc<str>>) {
-    let spawned = Command::new(&p.exe).current_dir(&p.data_dir).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn();
+    let mut cmd = Command::new(&p.exe);
+    cmd.current_dir(&p.data_dir).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    // Its own process group: a Ctrl-C in the terminal stops the recorder,
+    // which then stops it (saving its queue), not both at once.
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+    let spawned = cmd.spawn();
     let mut child = match spawned {
         Ok(c) => c,
         Err(e) => return (Err(format!("couldn't start {}: {e}", p.exe.display())), rx),
@@ -456,6 +517,7 @@ fn run_once(sh: &Shared, p: &Plugin, rx: Receiver<Arc<str>>) -> (Result<Ended, S
     let dead = Arc::new(AtomicBool::new(false));
     let hello = p.hello.clone();
     let dead2 = dead.clone();
+    let drained_at = p.drained_at.clone();
     let writer = std::thread::spawn(move || {
         let mut ok = stdin.write_all(hello.as_bytes()).and_then(|_| stdin.flush()).is_ok();
         let mut drained = false;
@@ -464,6 +526,7 @@ fn run_once(sh: &Shared, p: &Plugin, rx: Receiver<Arc<str>>) -> (Result<Ended, S
                 Ok(l) => ok = stdin.write_all(l.as_bytes()).and_then(|_| stdin.flush()).is_ok(),
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    *drained_at.lock().unwrap() = Some(Instant::now());
                     drained = true;
                     break;
                 }
@@ -474,13 +537,13 @@ fn run_once(sh: &Shared, p: &Plugin, rx: Receiver<Arc<str>>) -> (Result<Ended, S
     });
     let (notes, id) = (sh.notes.clone(), p.id.clone());
     let err_reader = std::thread::spawn(move || {
-        for l in BufReader::new(stderr).lines().map_while(Result::ok) {
+        for l in lossy_lines(stderr) {
             if !l.trim().is_empty() {
                 notes(Note::Log { plugin: id.clone(), level: Level::Info, text: l });
             }
         }
     });
-    for l in BufReader::new(stdout).lines().map_while(Result::ok) {
+    for l in lossy_lines(stdout) {
         if l.trim().is_empty() {
             continue;
         }

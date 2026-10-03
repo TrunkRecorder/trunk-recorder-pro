@@ -8,6 +8,8 @@
 //!                          └ voice channels  → receivers → p25 framer → IMBE → mbe → audio
 //! ```
 
+pub mod ambe;
+pub mod bits;
 pub mod dmr;
 pub mod dsp;
 pub mod loudness;

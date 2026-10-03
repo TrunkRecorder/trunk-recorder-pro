@@ -1,4 +1,6 @@
 //! Outbound Signalling Words: framing, FEC and CRC (OP25's rx_smartnet).
+//! [`Framer`] takes soft bits and puts out a [`Word`] per OSW: a good one,
+//! or one that was due and failed.
 //!
 //! An OSW is 84 bits on the air: the 8-bit sync `0xAC`, then 76 bits
 //! interleaved 19 × 4. De-interleaved they are 38 (data, parity) pairs of a
@@ -31,8 +33,9 @@ pub struct Osw {
     pub cmd: u16,
 }
 
+/// What the framer puts out for each OSW it finds or expected.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum FramerOut {
+pub enum Word {
     /// A good OSW; `bit` is the index (in bits pushed) of its last bit.
     Osw(Osw, u64),
     /// An OSW was due (the flywheel was running) and failed its CRC.
@@ -171,11 +174,15 @@ const WINDOW: usize = FRAME_BITS + 8;
 
 impl Default for Framer {
     fn default() -> Self {
-        Framer { ring: vec![0.0; WINDOW], pos: 0, n: 0, hard: 0, since: None, misses: 0, invert: false, good: 0, bad: 0 }
+        Self::new()
     }
 }
 
 impl Framer {
+    pub fn new() -> Self {
+        Framer { ring: vec![0.0; WINDOW], pos: 0, n: 0, hard: 0, since: None, misses: 0, invert: false, good: 0, bad: 0 }
+    }
+
     pub fn in_sync(&self) -> bool {
         self.since.is_some()
     }
@@ -197,7 +204,7 @@ impl Framer {
         decode(&sent)
     }
 
-    pub fn push(&mut self, soft: f32, out: &mut Vec<FramerOut>) {
+    pub fn push(&mut self, soft: f32, out: &mut Vec<Word>) {
         self.ring[self.pos] = soft;
         self.pos = (self.pos + 1) % WINDOW;
         self.hard = (self.hard << 1) | (soft > 0.0) as u128;
@@ -238,7 +245,7 @@ impl Framer {
                 }
                 if s == FRAME_BITS as u64 + 2 {
                     self.bad += 1;
-                    out.push(FramerOut::Bad(end));
+                    out.push(Word::Bad(end));
                     self.misses += 1;
                     if self.misses > MAX_MISSES {
                         self.since = None;
@@ -250,11 +257,11 @@ impl Framer {
         }
     }
 
-    fn accept(&mut self, o: Osw, end: u64, out: &mut Vec<FramerOut>) {
+    fn accept(&mut self, o: Osw, end: u64, out: &mut Vec<Word>) {
         self.good += 1;
         self.since = Some(0);
         self.misses = 0;
-        out.push(FramerOut::Osw(o, end));
+        out.push(Word::Osw(o, end));
     }
 }
 
@@ -296,12 +303,12 @@ mod tests {
         // Corrupt frame 5's sync; and invert everything (the other polarity).
         bits[37 + 5 * FRAME_BITS + 2] ^= 1;
         bits[37 + 5 * FRAME_BITS + 5] ^= 1;
-        let mut fr = Framer::default();
+        let mut fr = Framer::new();
         let mut out = Vec::new();
         for &b in &bits {
             fr.push(if b == 1 { -1.0 } else { 1.0 }, &mut out);
         }
-        let got: Vec<Osw> = out.iter().filter_map(|o| if let FramerOut::Osw(o, _) = o { Some(*o) } else { None }).collect();
+        let got: Vec<Osw> = out.iter().filter_map(|o| if let Word::Osw(o, _) = o { Some(*o) } else { None }).collect();
         assert_eq!(got, msgs);
         assert_eq!(fr.bad, 0);
     }

@@ -212,7 +212,7 @@ fn run_dmr(iq: &[Complex32], rate: f64, v: &Variant) -> Count {
     let mut rx = C4fm::with_options(rate, v.c4fm);
     let (mut syms, mut bursts, mut ev) = (Vec::new(), Vec::new(), Vec::new());
 
-    let (mut f, mut ch) = (Framer::default(), dmr::Channel::default());
+    let (mut f, mut ch) = (Framer::new(), dmr::Channel::default());
     if let Some(g) = v.grid_errs {
         f.grid_errs = g;
     }
@@ -275,7 +275,7 @@ fn run_p2(iq: &[Complex32], rate: f64, v: &Variant, key: (u32, u32, u32)) -> Cou
     use trunk_core::trunk::tdma::TdmaTracker;
     use trunk_core::trunk::voice::TrackerOut;
     let mut rx = Cqpsk::new(rate, v.cqpsk);
-    let mut fr = phase2::Framer::default();
+    let mut fr = phase2::Framer::new();
     let mut tr = TdmaTracker::new(1);
     tr.set_key(key.0, key.1, key.2);
     let (mut syms, mut pkts, mut out) = (Vec::new(), Vec::new(), Vec::new());
@@ -303,7 +303,7 @@ fn run_p2(iq: &[Complex32], rate: f64, v: &Variant, key: (u32, u32, u32)) -> Cou
 
 fn run_smartnet(iq: &[Complex32], rate: f64, v: &Variant) -> Count {
     let mut rx = smartnet::Fsk2::with_options(rate, v.fsk2);
-    let mut fr = smartnet::Framer::default();
+    let mut fr = smartnet::Framer::new();
     let (mut bits, mut out) = (Vec::new(), Vec::new());
     let mut n = Count::default();
     for c in iq.chunks(4096) {
@@ -313,7 +313,7 @@ fn run_smartnet(iq: &[Complex32], rate: f64, v: &Variant) -> Count {
             out.clear();
             fr.push(b.soft, &mut out);
             for o in &out {
-                if let smartnet::FramerOut::Osw(w, _) = o {
+                if let smartnet::Word::Osw(w, _) = o {
                     n.blocks.push((b.sample / rate, format!("{:04x}{}{:03x}", w.addr, w.grp as u8, w.cmd)));
                 }
             }
@@ -390,7 +390,7 @@ pub fn quality(a: &Args) {
     for name in a.get("variant").unwrap_or("base").split(',') {
         let v = variant(name, "p2");
         let mut rx = Cqpsk::new(rate, v.cqpsk);
-        let mut fr = phase2::Framer::default();
+        let mut fr = phase2::Framer::new();
         let mut tr = TdmaTracker::new(1);
         tr.set_key(hexarg("nac"), hexarg("sysid"), hexarg("wacn"));
         let (mut syms, mut pkts, mut out) = (Vec::new(), Vec::new(), Vec::new());

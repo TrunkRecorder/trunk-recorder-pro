@@ -10,29 +10,31 @@
 export type SampleFormat = "cu8" | "cs16" | "cf32";
 
 /**
- * A radio, or a capture to replay. Every kind may have `autoTune`: correct its
+ * A radio, or a capture to replay (`type`). Every type may have `autoTune`: correct its
  * channels for the frequency error measured on the control channels (Trunk
- * Recorder's autoTune); the error is measured and shown either way.
+ * Recorder's autoTune); the error is measured and shown either way. And
+ * `guardHz`: left unused at each edge of its band, where the anti-alias filter
+ * rolls off (default 75 000; Setup can measure it — `profileSource`).
  */
 export type Source = (
   /** `agc`: the tuner's AGC instead of `gainDb`. */
-  | { kind: "rtlsdr"; serial: string; centerHz: number; rateHz: number; gainDb: number; agc: boolean; ppm: number }
+  | { type: "rtlsdr"; serial: string; centerHz: number; rateHz: number; gainDb: number; agc: boolean; ppm: number }
   /** USRP through UHD (desktop app, UHD installed). `args` "" = first found; `agc` the device's AGC (B200/B210). */
-  | { kind: "usrp"; args: string; centerHz: number; rateHz: number; gainDb: number; agc: boolean; antenna: string; ppm: number }
+  | { type: "usrp"; args: string; centerHz: number; rateHz: number; gainDb: number; agc: boolean; antenna: string; ppm: number }
   /**
-   * Airspy R2 / Mini through libairspy (desktop app). `gain`: a 0–21 step of the linearity or sensitivity
-   * table (`gainMode`); "manual": each stage, LNA 0–14, mixer 0–15, VGA 0–15, with `agc` the Airspy's own on LNA and mixer.
+   * Airspy R2 / Mini through libairspy (desktop app). `gainStep`: a 0–21 step of the linearity or sensitivity
+   * table (`gainMode`); "manual": each stage's step, LNA 0–14, mixer 0–15, VGA 0–15, with `agc` the Airspy's own on LNA and mixer.
    */
   | {
-      kind: "airspy";
+      type: "airspy";
       serial: string;
       centerHz: number;
       rateHz: number;
       gainMode: AirspyGainMode;
-      gain: number;
-      lnaGain: number;
-      mixerGain: number;
-      vgaGain: number;
+      gainStep: number;
+      lnaStep: number;
+      mixerStep: number;
+      vgaStep: number;
       agc: boolean;
       biasTee: boolean;
       ppm: number;
@@ -42,9 +44,9 @@ export type Source = (
    * `agc` the device's AGC; else `gainDb` overall (null: left as it is), then each stage in `gains`
    * (HackRF LNA / VGA / AMP …); `settings` device settings ("biastee=true").
    */
-  | { kind: "soapy"; args: string; centerHz: number; rateHz: number; agc: boolean; gainDb: number | null; gains: Record<string, number>; antenna: string; settings: string; ppm: number }
-  | { kind: "file"; path: string; centerHz: number; rateHz: number; realtime: boolean; format?: SampleFormat }
-) & { autoTune?: boolean };
+  | { type: "soapy"; args: string; centerHz: number; rateHz: number; agc: boolean; gainDb: number | null; gains: Record<string, number>; antenna: string; settings: string; ppm: number }
+  | { type: "file"; path: string; centerHz: number; rateHz: number; realtime: boolean; format?: SampleFormat }
+) & { autoTune?: boolean; guardHz?: number };
 
 export type AirspyGainMode = "linearity" | "sensitivity" | "manual";
 
@@ -102,7 +104,7 @@ export interface SiteIdentity {
  * A trunked system — or one site of a multi-site system: each site recorded
  * from its own control channel is a system, with its own short name (folder).
  */
-/** A SmartNet band plan, in Trunk Recorder's config names (Hz; offset a channel number). */
+/** A SmartNet band plan the survey learned, in Trunk Recorder's names (Hz; offset a channel number). */
 export interface SmartnetBandplan {
   /** "800_standard" | "800_reband" | "800_splinter" | "900" | "400_custom". */
   bandplan: string;
@@ -112,31 +114,37 @@ export interface SmartnetBandplan {
   bandplanHigh?: number;
 }
 
-export interface System extends Partial<SmartnetBandplan> {
+export interface System {
   shortName: string;
   /** What people call it ("County Public Safety"); the short name is its folder. */
   name?: string;
   /** "smartnet": a Motorola SmartNet / SmartZone control channel (voice P25 or analog FM).
    *  "dmr": a trunked DMR site (Capacity Plus, Capacity Max, Connect Plus, Tier III); every
-   *  control channel and `channels` frequency is watched. */
+   *  control channel and `dmrChannelsHz` frequency is watched. */
   type: "p25" | "smartnet" | "dmr";
+  /** SmartNet: "800_standard" | "800_reband" | "800_splinter" | "900" | "400_custom" (with base / spacing / offset / high; offset a channel number). */
+  bandplan?: string;
+  bandplanBaseHz?: number;
+  bandplanSpacingHz?: number;
+  bandplanOffset?: number;
+  bandplanHighHz?: number;
   /** DMR: logical channel number → frequency, Hz (Trunk Recorder's lcnTable); the rest is learned. */
-  lcnTable?: Record<string, number>;
-  /** DMR: voice frequencies to watch besides the control channels. */
-  channels?: number[];
+  lcnTableHz?: Record<string, number>;
+  /** DMR: voice frequencies to watch besides the control channels (Trunk Recorder's channels). */
+  dmrChannelsHz?: number[];
   /** DMR: only this colour code. */
   colorCode?: number;
   /** SmartNet: the voice of a talkgroup never heard granted. */
   defaultMode?: "digital" | "analog";
   enabled: boolean;
-  controlChannels: number[];
+  controlChannelsHz: number[];
   modulation: "auto" | "fsk4" | "qpsk";
   talkgroupsCsv: string;
   talkgroupsName: string;
   /** Only follow a control channel with this identity (e.g. this site, not a neighbour). */
   expect: SiteIdentity;
   /** Voice channels the survey heard (for placing sources). */
-  voiceChannels: number[];
+  voiceChannelsHz: number[];
   /** Its own recording rules; each left out is the Recording tab's. */
   recording?: RecordingOverride;
   /** Names for its radios (Trunk Recorder's unitTagsFile and unitTagsMode). */
@@ -218,7 +226,7 @@ export interface LogSettings {
   frequencyFormat: "exp" | "mhz" | "hz";
   talkgroupDisplayFormat: "id" | "id_tag" | "tag_id";
   statusAsString: boolean;
-  controlWarnRate: number;
+  controlWarnRatePerS: number;
 }
 
 export interface Recording extends RecordingRules {
@@ -520,6 +528,32 @@ export interface Spectrum {
   rateHz: number;
   bins: number[];
 }
+
+/**
+ * How a source's band rolls off at its edges (answers profileSource), or why
+ * it couldn't be looked at. Spectra run from −rateHz/2 to +rateHz/2 (1024
+ * points, dB, uncalibrated); `rows`: a waterfall of the capture, oldest first,
+ * whole dB. `lowHz` / `highHz`: how far in from each edge the noise floor is
+ * 3 dB or more below its mid-band level (`referenceDb`); `lowDropDb` /
+ * `highDropDb`: how far below it is at the very edge.
+ */
+export type SourceProfile =
+  | { source: number; error: string }
+  | {
+      source: number;
+      centerHz: number;
+      rateHz: number;
+      spectrum: number[];
+      floor: number[];
+      rows: number[][];
+      referenceDb: number;
+      lowHz: number;
+      highHz: number;
+      lowDropDb: number;
+      highDropDb: number;
+      /** The guard band to leave at each edge, Hz. */
+      suggestedGuardHz: number;
+    };
 
 // ── first-run survey (crates/trunk-app/src/survey.rs) ────────────────────────
 
@@ -1058,6 +1092,7 @@ export type FromRecorder =
   | { type: "heard"; heard: Record<string, HeardCode[]> }
   | ({ type: "survey" } & SurveyState)
   | ({ type: "surveySpectrum" } & Spectrum)
+  | ({ type: "sourceProfile" } & SourceProfile)
   | { type: "devices"; devices: Device[] }
   /** A folder on the recorder's computer (answers listDir). */
   | ({ type: "dir" } & DirListing)
@@ -1067,10 +1102,6 @@ export type FromRecorder =
   | { type: "notice"; message: string }
   | ({ type: "plugins" } & PluginsList)
   | { type: "pluginRuntime"; id: string; runtime: PluginRuntime }
-  /** A plugin says how it is (desktop app, while recording). */
-  | { type: "pluginState"; id: string; state: "ok" | "warning" | "error"; message: string }
-  /** A plugin is done with a call: `path` its files' name, `url` where it went ("" when it doesn't say). */
-  | { type: "pluginResult"; id: string; path: string; outcome: "ok" | "skipped" | "failed"; message: string; url: string }
   | ({ type: "pluginStore" } & PluginStore)
   | ({ type: "pluginInstall" } & PluginInstall)
   /** Every second while recording: each series' value now (see the series names above). */
@@ -1109,6 +1140,8 @@ export type ToRecorder =
   | { type: "surveyListen"; freqHz: number }
   | { type: "surveyRescan" }
   | { type: "surveyStop" }
+  /** Look at source `source`'s band (tuned to `centerHz`; a capture keeps its own) for its roll-off; answered with sourceProfile. Not while recording. */
+  | { type: "profileSource"; source: number; centerHz: number }
   | { type: "plugins" }
   /** A plugin executable on the recorder's computer (a build of the user's own); it's added to the config. */
   | { type: "addPlugin"; path: string }

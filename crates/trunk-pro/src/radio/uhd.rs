@@ -379,7 +379,7 @@ fn stream_once(source: usize, cfg: &UsrpConfig, tx: &SyncSender<SourceMsg>, stop
                 continue;
             }
             buf.truncate(n);
-            if tx.send(SourceMsg::Iq { source, samples: buf, dropped }).is_err() {
+            if tx.send(SourceMsg::Iq { source, samples: buf, dropped, at: std::time::Instant::now() }).is_err() {
                 return Ok(());
             }
         }

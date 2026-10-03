@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::fmt::Write;
 
 use super::calls::conventional_index;
-use super::talkgroups::split_csv_line;
+use super::talkgroups::{csv_lines, split_csv_line};
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct UnitAlias {
@@ -39,7 +39,7 @@ fn field(s: &str) -> String {
 impl UnitAliases {
     pub fn parse_csv(text: &str) -> Self {
         let mut map: HashMap<u32, UnitAlias> = HashMap::new();
-        for line in text.lines().filter(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#')) {
+        for line in csv_lines(text) {
             let f = split_csv_line(line);
             let (Some(unit), Some(alias)) = (f.first().and_then(|s| s.parse::<u32>().ok()), f.get(1).filter(|s| !s.is_empty())) else { continue };
             let get = |i: usize| f.get(i).cloned().unwrap_or_default();
@@ -215,7 +215,7 @@ impl UnitTags {
     pub fn parse_csv(text: &str, mode: UnitTagsMode) -> (UnitTags, Vec<String>) {
         let mut tags = Vec::new();
         let mut bad = Vec::new();
-        for line in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
+        for line in csv_lines(text).map(str::trim) {
             let f = split_csv_line(line);
             let (Some(pat), Some(name)) = (f.first().map(|s| s.trim()), f.get(1).map(|s| s.trim())) else { continue };
             if pat.is_empty() || name.is_empty() {

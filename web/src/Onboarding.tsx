@@ -263,7 +263,7 @@ function Welcome(props: { onStart: () => void; onImport: () => void; onSkip: () 
 
 interface Detected {
   key: string;
-  kind: Source["kind"];
+  kind: Source["type"];
   name: string;
   detail: string;
   source: Source;
@@ -273,7 +273,7 @@ interface Detected {
 
 /** A source's identity, as a detected radio's key. */
 function sourceKey(x: Source): string {
-  switch (x.kind) {
+  switch (x.type) {
     case "rtlsdr":
       return `r:${x.serial}`;
     case "airspy":
@@ -706,13 +706,13 @@ const raster = (hz: number) => Math.round(hz / 6250) * 6250;
 function ScanStep(props: { s: AppState; c: Config; found: Found | null; onFound: (f: Found) => void; onBack: () => void; onNext: () => void }) {
   const { s, c, found } = props;
   const sv = s.survey;
-  const radios = c.sources.map((x, i) => ({ x, i })).filter(({ x }) => x.kind !== "file");
+  const radios = c.sources.map((x, i) => ({ x, i })).filter(({ x }) => x.type !== "file");
   const [source, setSource] = useState(radios[0]?.i ?? 0);
   const [bands, setBands] = useState<string[] | null>(null);
   const [manual, setManual] = useState(false);
   const picked = bands ?? s.surveyBands.filter((b) => b.defaultOn).map((b) => b.id);
-  const unsupported = web && ["usrp", "airspy", "soapy"].includes(c.sources[source]?.kind ?? "");
-  const scan = () => startSurvey(source, picked, c.sources[source]?.kind === "rtlsdr");
+  const unsupported = web && ["usrp", "airspy", "soapy"].includes(c.sources[source]?.type ?? "");
+  const scan = () => startSurvey(source, picked, c.sources[source]?.type === "rtlsdr");
   // Re-scanning after adding one replaces it rather than adding a second.
   const target = found ? found.system : ("new" as const);
 
@@ -943,7 +943,7 @@ function ScanStep(props: { s: AppState; c: Config; found: Found | null; onFound:
 }
 
 function kindName(x: Source): string {
-  return x.kind === "rtlsdr" ? "RTL-SDR" : x.kind === "usrp" ? "USRP" : x.kind === "airspy" ? "Airspy" : x.kind === "soapy" ? "SoapySDR" : "file";
+  return x.type === "rtlsdr" ? "RTL-SDR" : x.type === "usrp" ? "USRP" : x.type === "airspy" ? "Airspy" : x.type === "soapy" ? "SoapySDR" : "file";
 }
 
 function Check(props: { ok: boolean; title: string; children: React.ReactNode }) {
@@ -968,7 +968,7 @@ function ManualSystem(props: { c: Config; target: number | "new"; onDone: (syste
   const add = () => {
     const system = props.target === "new" ? props.c.systems.length : props.target;
     updateConfig((x) => {
-      const sys = newSystem(x, { controlChannels: ccs, type, ...(type === "smartnet" ? { bandplan: "800_reband" } : {}) });
+      const sys = newSystem(x, { controlChannelsHz: ccs, type });
       if (props.target === "new") x.systems.push(sys);
       else x.systems[props.target] = { ...sys, shortName: x.systems[props.target].shortName, name: x.systems[props.target].name };
     });
@@ -1059,14 +1059,14 @@ function planCenters(rates: (number | null)[], fixed: (number | null)[], first: 
 function CoverageStep(props: { c: Config; found: Found | null; onNext: () => void; onBack: () => void }) {
   const { c, found } = props;
   const sys = found ? c.systems[found.system] : undefined;
-  const ccs = sys?.controlChannels ?? [];
+  const ccs = sys?.controlChannelsHz ?? [];
   const voice: Chan[] = useMemo(() => {
     if (found?.voice.length) return found.voice.map((v) => ({ hz: v.freqHz, weight: Math.max(1, v.grants) }));
-    return (sys?.voiceChannels ?? []).map((hz) => ({ hz, weight: 1 }));
+    return (sys?.voiceChannelsHz ?? []).map((hz) => ({ hz, weight: 1 }));
   }, [found, sys]);
   const rates = c.sources.map((x) => x.rateHz);
   // A capture file hears what it recorded: it can't be moved.
-  const fixed = c.sources.map((x) => (x.kind === "file" ? x.centerHz || null : null));
+  const fixed = c.sources.map((x) => (x.type === "file" ? x.centerHz || null : null));
   const first = found && c.sources[found.source] ? found.source : 0;
   const recommended = useMemo(() => {
     const firstCenter = found?.sug?.centerHz || autoCenter(ccs, rates[first] ?? 2_400_000) || ccs[0] || 0;
@@ -1340,7 +1340,7 @@ function NameStep(props: { c: Config; sys: System; index: number; onNext: () => 
           <IconFolder /> {now.getFullYear()} / {now.getMonth() + 1} / {now.getDate()}
         </div>
         <div className="d3">
-          <IconWave /> <span className="ob-mono">1201-{Math.floor(now.getTime() / 1000)}_{Math.round(sys.controlChannels[0] ?? 851012500)}.wav</span>
+          <IconWave /> <span className="ob-mono">1201-{Math.floor(now.getTime() / 1000)}_{Math.round(sys.controlChannelsHz[0] ?? 851012500)}.wav</span>
         </div>
       </div>
       <Nav onBack={props.onBack} onNext={props.onNext} disabled={!sys.shortName || dup} why="Pick a short name" />
@@ -1628,7 +1628,7 @@ function DoneStep(props: { s: AppState; c: Config; sys: System | undefined; onSt
             <IconTower />
             <span>
               {sys.name || sys.shortName}
-              <span className="ob-quiet ob-mono"> · {sys.controlChannels.map((f) => formatMhz(f, 4)).join(", ")} MHz</span>
+              <span className="ob-quiet ob-mono"> · {sys.controlChannelsHz.map((f) => formatMhz(f, 4)).join(", ")} MHz</span>
             </span>
           </li>
         )}
@@ -1806,25 +1806,25 @@ function ConfigPicker() {
 
 /** How an imported source will fare here. */
 function sourceState(src: Source, s: AppState): { tone: "ok" | "warn" | "bad"; text: string } {
-  if (src.kind === "rtlsdr") {
+  if (src.type === "rtlsdr") {
     if (!src.serial) return s.devices.some((d) => !d.busy) ? { tone: "ok", text: "The first free dongle" } : { tone: "warn", text: "No free dongle plugged in" };
     const d = s.devices.find((x) => x.serial === src.serial);
     return !d ? { tone: "warn", text: "Not plugged in" } : d.busy ? { tone: "warn", text: d.busy.replace(/^./, (ch) => ch.toUpperCase()) } : { tone: "ok", text: "Plugged in and free" };
   }
-  if (src.kind === "file") return { tone: "ok", text: "Capture file" };
+  if (src.type === "file") return { tone: "ok", text: "Capture file" };
   if (!s.radios) return { tone: "bad", text: "Needs the desktop app" };
-  const d = s.radios[src.kind];
-  return d?.available ? { tone: "ok", text: "Driver installed" } : { tone: "bad", text: `Needs ${src.kind === "usrp" ? "UHD" : src.kind === "airspy" ? "libairspy" : "SoapySDR"} installed` };
+  const d = s.radios[src.type];
+  return d?.available ? { tone: "ok", text: "Driver installed" } : { tone: "bad", text: `Needs ${src.type === "usrp" ? "UHD" : src.type === "airspy" ? "libairspy" : "SoapySDR"} installed` };
 }
 
 const sourceLabel = (src: Source) =>
-  src.kind === "rtlsdr"
+  src.type === "rtlsdr"
     ? `RTL-SDR${src.serial ? ` · serial ${src.serial}` : ""}`
-    : src.kind === "airspy"
+    : src.type === "airspy"
       ? `Airspy${src.serial ? ` · ${src.serial}` : ""}`
-      : src.kind === "usrp"
+      : src.type === "usrp"
         ? `USRP${src.args ? ` · ${src.args}` : ""}`
-        : src.kind === "soapy"
+        : src.type === "soapy"
           ? `SoapySDR${src.args ? ` · ${src.args}` : ""}`
           : `Capture · ${src.path.split(/[\\/]/).pop()}`;
 
@@ -1848,19 +1848,19 @@ function ImportReview(props: { s: AppState; c: Config; loaded: Loaded; onBack: (
       </section>
     );
   }
-  const cfg: Config = { ...result.config, sources: result.config.sources.map((x, i) => (x.kind === "rtlsdr" && swap[i] !== undefined ? { ...x, serial: swap[i] } : x)) };
+  const cfg: Config = { ...result.config, sources: result.config.sources.map((x, i) => (x.type === "rtlsdr" && swap[i] !== undefined ? { ...x, serial: swap[i] } : x)) };
   const named = trConfigFiles(loaded.text);
   const missing = (file: string) => !(file in files);
   const later = result.todo.filter((t) => t.kind === "siteLock" || t.kind === "plugins" || t.kind === "squelch");
   const replaces = c.systems.length > 0 || enabledChannels(c).length > 0;
-  const used = (i: number) => new Set(cfg.sources.filter((x, k) => k !== i && x.kind === "rtlsdr").map((x) => (x.kind === "rtlsdr" ? x.serial : "")));
+  const used = (i: number) => new Set(cfg.sources.filter((x, k) => k !== i && x.type === "rtlsdr").map((x) => (x.type === "rtlsdr" ? x.serial : "")));
   const addFile = async (name: string, f: File | undefined) => {
     if (f) setFiles({ ...files, [name]: await f.text() });
   };
   const convCount = cfg.conventional.reduce((n, v) => n + v.channels.length, 0);
   // Systems whose control channel no radio hears (as the radios stand, swaps included).
   const centers = resolvedCenters(cfg);
-  const unheard = (x: System) => x.enabled && x.controlChannels.length > 0 && !x.controlChannels.some((f) => sourceCovering(cfg, centers, f) >= 0);
+  const unheard = (x: System) => x.enabled && x.controlChannelsHz.length > 0 && !x.controlChannelsHz.some((f) => sourceCovering(cfg, centers, f) >= 0);
   const installed = (id: string) => {
     const p = s.plugins?.plugins.find((x) => x.id === id);
     return !!p && !p.problem;
@@ -1885,8 +1885,8 @@ function ImportReview(props: { s: AppState; c: Config; loaded: Loaded; onBack: (
     bumpEpoch();
     // Radios that aren't ready yet join what's left to do.
     const radios: ImportTodo[] = cfg.sources.flatMap((src, index): ImportTodo[] => {
-      if (src.kind === "rtlsdr" && src.serial && sourceState(src, s).tone !== "ok") return [{ kind: "source", index, serial: src.serial }];
-      if ((src.kind === "usrp" || src.kind === "airspy" || src.kind === "soapy") && sourceState(src, s).tone === "bad") return [{ kind: "driver", index, driver: src.kind }];
+      if (src.type === "rtlsdr" && src.serial && sourceState(src, s).tone !== "ok") return [{ kind: "source", index, serial: src.serial }];
+      if ((src.type === "usrp" || src.type === "airspy" || src.type === "soapy") && sourceState(src, s).tone === "bad") return [{ kind: "driver", index, driver: src.type }];
       return [];
     });
     const plugins: ImportTodo[] = web ? [] : result.plugins.map((p) => ({ kind: "plugin", id: p.id, name: s.plugins?.plugins.find((x) => x.id === p.id)?.manifest?.name ?? p.name }));
@@ -1917,7 +1917,7 @@ function ImportReview(props: { s: AppState; c: Config; loaded: Loaded; onBack: (
                   </span>
                 </span>
                 <span className={`ob-pill ${st.tone}`}>{st.text}</span>
-                {src.kind === "rtlsdr" && orig.kind === "rtlsdr" && (st.tone !== "ok" || swap[i] !== undefined) && free.length > 0 && (
+                {src.type === "rtlsdr" && orig.type === "rtlsdr" && (st.tone !== "ok" || swap[i] !== undefined) && free.length > 0 && (
                   <select
                     className="ob-select"
                     aria-label={`Use another dongle for radio ${i + 1}`}
@@ -1954,7 +1954,7 @@ function ImportReview(props: { s: AppState; c: Config; loaded: Loaded; onBack: (
                 <span className="ob-row-main">
                   <b>{x.shortName}</b>
                   <span className="ob-quiet">
-                    {x.type === "smartnet" ? "SmartNet" : x.type === "dmr" ? "DMR" : "P25"} · {x.controlChannels.map((f) => formatMhz(f, 4)).join(", ") || "no control channel"}
+                    {x.type === "smartnet" ? "SmartNet" : x.type === "dmr" ? "DMR" : "P25"} · {x.controlChannelsHz.map((f) => formatMhz(f, 4)).join(", ") || "no control channel"}
                   </span>
                 </span>
                 {unheard(x) && <span className="ob-pill warn">No radio hears its control channel</span>}

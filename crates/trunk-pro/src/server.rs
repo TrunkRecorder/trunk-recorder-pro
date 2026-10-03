@@ -534,9 +534,10 @@ pub(crate) fn tr_config_json(path: &str) -> Value {
 }
 
 /// The `hello` a connection starts with: everything the interface shows.
-pub(crate) fn hello_json(ctx: &Ctx, radios: Value) -> Value {
+/// `devices` and `radios` are found off the async workers (they open USB).
+pub(crate) fn hello_json(ctx: &Ctx, devices: Value, radios: Value) -> Value {
     let config = ctx.config.lock().unwrap().clone();
-    let history: Vec<Value> = ctx.history.lock().unwrap().iter().take(300).cloned().collect();
+    let history: Vec<Value> = ctx.history.lock().unwrap().iter().take(runtime::HISTORY).cloned().collect();
     // Each system's talker aliases, as saved (CSV).
     let units: serde_json::Map<String, Value> = config
         .systems
@@ -551,7 +552,7 @@ pub(crate) fn hello_json(ctx: &Ctx, radios: Value) -> Value {
         "platform": std::env::consts::OS,
         "config": config,
         "configPath": ctx.config_path.display().to_string(),
-        "devices": sdr::devices(),
+        "devices": devices,
         "phase": ctx.phase.lock().unwrap().to_json(),
         "history": history,
         "units": units,
@@ -639,8 +640,9 @@ pub(crate) fn radio_query(ctx: &Ctx, v: &Value) -> Value {
 
 async fn session(ctx: Arc<Ctx>, mut socket: WebSocket) {
     let mut rx = ctx.hub.subscribe();
-    let radios = tokio::task::spawn_blocking(|| crate::radio::radios_json(false)).await.unwrap_or(Value::Null);
-    let hello = hello_json(&ctx, radios);
+    let found = tokio::task::spawn_blocking(|| (json!(sdr::devices()), crate::radio::radios_json(false))).await;
+    let (devices, radios) = found.unwrap_or((Value::Null, Value::Null));
+    let hello = hello_json(&ctx, devices, radios);
     if socket.send(Message::Text(hello.to_string().into())).await.is_err() {
         return;
     }
@@ -841,7 +843,7 @@ async fn command(ctx: &Arc<Ctx>, v: &Value, listen: &mut Option<Listen>, subs: &
             .await;
             None
         }
-        "devices" => Some(devices_json()),
+        "devices" => tokio::task::spawn_blocking(devices_json).await.ok(),
         "findRadios" => {
             let radios = tokio::task::spawn_blocking(|| crate::radio::radios_json(true)).await.unwrap_or(Value::Null);
             Some(json!({ "type": "radios", "radios": radios }))
@@ -903,6 +905,34 @@ async fn command(ctx: &Arc<Ctx>, v: &Value, listen: &mut Option<Listen>, subs: &
             let ctx2 = ctx.clone();
             let _ = tokio::task::spawn_blocking(move || stop_survey(&ctx2)).await;
             None
+        }
+        // A moment with the radio alone (nothing may start meanwhile); the answer is this connection's.
+        "profileSource" => {
+            let cfg = ctx.config.lock().unwrap().clone();
+            let req = trunk_app::profile::Request::from_json(v);
+            let ctx2 = ctx.clone();
+            tokio::task::spawn_blocking(move || {
+                let quitting = ctx2.lifecycle.lock().unwrap();
+                if *quitting {
+                    return None;
+                }
+                {
+                    let mut runner = ctx2.runner.lock().unwrap();
+                    match runner.take() {
+                        Some(r) if r.finished() => r.stop(),
+                        Some(r) => {
+                            *runner = Some(r);
+                            return Some(trunk_app::profile::error_json(req.source, "Stop recording first — profiling needs the radio to itself."));
+                        }
+                        None => {}
+                    }
+                }
+                stop_survey(&ctx2);
+                Some(crate::profile::run(&cfg, &req))
+            })
+            .await
+            .ok()
+            .flatten()
         }
         "readTrConfig" => {
             let path = v["path"].as_str().unwrap_or("").to_string();

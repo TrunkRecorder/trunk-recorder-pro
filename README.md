@@ -241,7 +241,7 @@ costs a fraction of a percent of a core):
   talkgroup's link control on one of the voice frequencies a moment later,
   ties the two together — saved like a band plan, so it is known from the
   start next time. Tier III systems that announce their channels, or grant
-  with absolute frequencies, need no learning. Trunk Recorder's `lcnTable`
+  with absolute frequencies, need no learning. `lcnTableHz` (Trunk Recorder's `lcnTable`)
   (`{ "101": 452275000, … }`) sets channels by hand and wins over what is
   learned.
 
@@ -251,14 +251,15 @@ Each slot of a carrier records its own call (file names end in `.0` / `.1`,
 and the call JSON has the slot and `color_code`). Systems that key their
 checksums (Motorola / Hytera restricted access, as Capacity Max often does)
 are recognised, and their blocks are taken on their error correction alone.
-Encrypted calls are marked (the privacy bit or header) and not recorded,
-unless the config's `recording.recordEncrypted` is `true` (there is no
-switch for it in the interface yet).
+Encrypted transmissions are marked (the privacy bit or header) and left out
+of the audio; a call that was all encrypted is kept only when the config's
+`recording.recordEncrypted` is `true` (there is no switch for it in the
+interface yet).
 
 ```json
-{ "shortName": "capplus", "type": "dmr", "controlChannels": [463375000, 463750000, 464350000] }
-{ "shortName": "capmax", "type": "dmr", "controlChannels": [452175000], "channels": [452275000, 452300000],
-  "lcnTable": { "101": 452275000 } }
+{ "shortName": "capplus", "type": "dmr", "controlChannelsHz": [463375000, 463750000, 464350000] }
+{ "shortName": "capmax", "type": "dmr", "controlChannelsHz": [452175000], "dmrChannelsHz": [452275000, 452300000],
+  "lcnTableHz": { "101": 452275000 } }
 ```
 
 **Find my system** finds trunked DMR sites too (pick the Business UHF / VHF

@@ -12,7 +12,7 @@
 
 use super::burst::{cach, Burst, SyncKind};
 use super::fec::{self, bptc196_decode_soft, embedded_lc_decode, pack, rs129_decode, Bptc};
-use crate::p25::phase2::{decode_vcw, AmbeFrame};
+use crate::ambe::{decode_vcw, AmbeFrame};
 
 /// Data types of a data burst's slot type (TS 102 361-1 §9.3.6).
 pub const DT_PI_HEADER: u8 = 0;
@@ -125,7 +125,7 @@ impl Csbk {
     }
     /// Bits `a..b` of the block (0 = first bit of byte 0).
     pub fn bits(&self, a: usize, b: usize) -> u32 {
-        (a..b).fold(0, |v, i| v << 1 | (self.0[i / 8] >> (7 - i % 8) & 1) as u32)
+        crate::bits::field(&self.0, a, b)
     }
 }
 
@@ -180,7 +180,7 @@ pub const KEYED_AFTER: i32 = 3;
 const UNKEYED_AFTER: i32 = 20;
 /// A keyed system's block is taken with at most this many BPTC corrections
 /// (the code's distance is 9).
-const KEYED_MAX_BPTC_ERRS: i32 = 3;
+const KEYED_MAX_BPTC_ERRS: u32 = 3;
 
 impl SlotDecoder {
     pub fn burst(&mut self, b: &Burst, out: &mut Vec<SlotEvent>) {
@@ -302,7 +302,7 @@ impl SlotDecoder {
             _ => (None, Lc([0; 9])),
         };
         // A CRC that passes on a block the BPTC couldn't make whole is chance.
-        (blk, checked.map(|c| c && blk.errs >= 0), lc)
+        (blk, checked.map(|c| c && blk.errs.is_some()), lc)
     }
 
     fn data(&mut self, b: &Burst, out: &mut Vec<SlotEvent>) {
@@ -326,7 +326,7 @@ impl SlotDecoder {
                 if self.keyed_votes <= -UNKEYED_AFTER {
                     (self.keyed, self.keyed_votes) = (false, 0);
                 }
-            } else if blk.errs == 0 {
+            } else if blk.errs == Some(0) {
                 self.keyed_votes = if self.keyed { 0 } else { self.keyed_votes + 1 };
                 if self.keyed_votes >= KEYED_AFTER {
                     self.keyed = true;
@@ -334,9 +334,9 @@ impl SlotDecoder {
             }
         }
         let keyed = self.keyed;
-        let accept = |checked: Option<bool>, errs: i32| match checked {
-            Some(c) => c || (keyed && (0..=KEYED_MAX_BPTC_ERRS).contains(&errs)),
-            None => errs >= 0,
+        let accept = |checked: Option<bool>, errs: Option<u32>| match checked {
+            Some(c) => c || (keyed && errs.is_some_and(|e| e <= KEYED_MAX_BPTC_ERRS)),
+            None => errs.is_some(),
         };
         let mut ok = accept(checked, blk.errs);
         let mut blk = blk;

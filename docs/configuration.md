@@ -22,14 +22,18 @@ General rules:
 - Keys are camelCase.
 - A missing key takes its default (listed below), except the few fields
   marked **required**.
-- Keys this version doesn't know are kept and saved back as they were, so a
-  config written by a newer version, or with notes of your own, survives
-  being saved from the interface.
+- Keys this version doesn't know are kept and saved back as they were at the
+  top level and in a system, a conventional system, `recording`, `server` and
+  `log`, so notes of your own survive being saved from the interface. Inside
+  a source, a channel, `unitNames`, `expect`, `m4a`, `interfaces` or a
+  plugin's entry they are dropped on save.
 - A value of the wrong type (a string where a number belongs, an unknown
-  `kind`, a fraction in an integer field) makes the whole file unreadable.
+  source `type`, a fraction in an integer field) makes the whole file unreadable.
   The app then refuses to start, saying `not a config this version reads`.
-- Frequencies are in **Hz**. A few DMR and SmartNet fields also accept MHz;
-  they are noted where it applies.
+- Frequencies are in **Hz**, everywhere. Keys carry their unit: `…Hz`,
+  `…Db`, `…S`, `…Kbps`, `…PerS`; the Airspy gains are driver steps (`…Step`).
+- A key ending in `Csv` holds a file's **contents** (`talkgroupsCsv`); one
+  ending in `File` holds a **path** (`channelFile`).
 - The file is only checked for *problems* (overlapping channels, nothing in
   range, duplicate names…) when recording starts, not when it is saved. See
   [Validation](#validation).
@@ -40,10 +44,10 @@ A minimal config: one dongle, one P25 system.
 ```json
 {
   "sources": [
-    { "kind": "rtlsdr", "serial": "", "centerHz": 0, "rateHz": 2400000, "gainDb": 25.4, "ppm": 0 }
+    { "type": "rtlsdr", "serial": "", "centerHz": 0, "rateHz": 2400000, "gainDb": 25.4, "ppm": 0 }
   ],
   "systems": [
-    { "shortName": "dcfd", "type": "p25", "controlChannels": [857987500, 858987500] }
+    { "shortName": "dcfd", "type": "p25", "controlChannelsHz": [857987500, 858987500] }
   ],
   "recording": { "captureDir": "/home/me/TrunkRecorderPro" }
 }
@@ -60,23 +64,30 @@ A minimal config: one dongle, one P25 system.
 | `server` | object | see below | The web server: [Server](#server) |
 | `log` | object | see below | Logging: [Log](#log) |
 | `plugins` | object | `{}` | Which plugins run, and their settings: [Plugins](#plugins) |
+| `monitor` | object | see below | The dashboard's checks: [Monitor](#monitor) |
 
 ## Sources
 
-Each source is one radio (or a capture file). It has a `kind` and covers about
-90 % of its sample rate around its centre.
+Each source is one radio (or a capture file). It has a `type` and covers its
+sample rate around its centre, less a guard band at each edge.
 
 - **`centerHz` = 0 means Auto.** The source is centred over whatever the
-  sources before it don't cover yet: systems' control and known voice
-  channels, and conventional channels.
+  sources before it don't cover yet: systems' control channels, DMR
+  `dmrChannelsHz` and known voice channels, and conventional channels.
 - **`ppm` corrects the radio's frequency error.** A frequency *f* is tuned
   as *f* / (1 + ppm·10⁻⁶).
 - **`autoTune` follows the measured error.** The error is measured on P25
   and SmartNet control channels. With `autoTune` on, new voice channels open
-  at the corrected frequency, and a control channel more than 150 Hz off is
-  reopened (at most every 200 s).
+  at the corrected frequency, and a P25 control channel more than 150 Hz off
+  is reopened (at most every 200 s).
+- **`guardHz` is left unused at each edge** (default 75 000), where the
+  radio's anti-alias filter rolls off: a channel is used only if it is within
+  `rateHz` / 2 − `guardHz` of the centre (never less than a quarter of the
+  rate). Setup → Radios → *Profile roll-off* measures where the radio's noise
+  floor sags and suggests a value; so does `trunk-pro rolloff`. Trunk Recorder
+  left 32–64 kHz, depending on the rate.
 
-### `"kind": "rtlsdr"`
+### `"type": "rtlsdr"`
 
 | Key | Type | Default | |
 |---|---|---|---|
@@ -87,24 +98,26 @@ Each source is one radio (or a capture file). It has a `kind` and covers about
 | `agc` | bool | `false` | The tuner's AGC instead of `gainDb` |
 | `ppm` | integer | **required** | Frequency correction. Whole numbers only |
 | `autoTune` | bool | `false` | |
+| `guardHz` | number | `75000` | Hz left unused at each edge of the band |
 
 Only R820T / R828D tuners are driven natively. Use a `soapy` source with
 `"args": "driver=rtlsdr"` for E4000, FC0012, FC0013 and FC2580 dongles.
 
-### `"kind": "usrp"` (needs UHD installed)
+### `"type": "usrp"` (needs UHD installed)
 
 | Key | Type | Default | |
 |---|---|---|---|
 | `args` | string | `""` | UHD device arguments: `""` = the first found, `serial=…`, `addr=192.168.10.2` |
 | `centerHz` | number | **required** | Hz; 0 = Auto |
 | `rateHz` | number | **required** | Any rate the device's clock supports, e.g. 8 000 000 |
-| `gainDb` | number | `0` | dB. The interface uses 40 for a new USRP |
+| `gainDb` | number | `40` | dB |
 | `agc` | bool | `false` | The device's AGC (B200 / B210 / E3xx) |
 | `antenna` | string | `""` | e.g. `RX2`, `TX/RX`; `""` = the device's default |
 | `ppm` | number | `0` | |
 | `autoTune` | bool | `false` | |
+| `guardHz` | number | `75000` | Hz left unused at each edge of the band |
 
-### `"kind": "airspy"` (needs libairspy installed)
+### `"type": "airspy"` (needs libairspy installed)
 
 | Key | Type | Default | |
 |---|---|---|---|
@@ -112,33 +125,35 @@ Only R820T / R828D tuners are driven natively. Use a `soapy` source with
 | `centerHz` | number | **required** | Hz; 0 = Auto |
 | `rateHz` | number | **required** | R2: 10 000 000 or 2 500 000. Mini: 6 000 000 or 3 000 000 |
 | `gainMode` | string | `"linearity"` | `"linearity"`, `"sensitivity"` or `"manual"` |
-| `gain` | integer | `14` | Linearity / sensitivity step, 0–21 |
-| `lnaGain` | integer | `10` | Manual mode: LNA step 0–14 |
-| `mixerGain` | integer | `10` | Manual mode: mixer step 0–15 |
-| `vgaGain` | integer | `10` | Manual mode: VGA step 0–15 |
+| `gainStep` | integer | `14` | Linearity / sensitivity step, 0–21 |
+| `lnaStep` | integer | `10` | Manual mode: LNA step 0–14 |
+| `mixerStep` | integer | `10` | Manual mode: mixer step 0–15 |
+| `vgaStep` | integer | `10` | Manual mode: VGA step 0–15 |
 | `agc` | bool | `false` | Manual mode only: LNA and mixer by AGC (VGA still applies) |
 | `biasTee` | bool | `false` | Power an LNA on the antenna port |
 | `ppm` | number | `0` | |
 | `autoTune` | bool | `false` | |
+| `guardHz` | number | `75000` | Hz left unused at each edge of the band |
 
 The Airspy gains are the driver's **steps**, not dB.
 
-### `"kind": "soapy"` (needs SoapySDR and the device's module)
+### `"type": "soapy"` (needs SoapySDR and the device's module)
 
 | Key | Type | Default | |
 |---|---|---|---|
 | `args` | string | `""` | Device arguments, e.g. `driver=hackrf`, `driver=sdrplay,serial=…`, `driver=rtlsdr` |
 | `centerHz` | number | **required** | Hz; 0 = Auto |
 | `rateHz` | number | **required** | |
-| `agc` | bool | `false` | The device's AGC. The interface turns it on for a new SoapySDR source |
+| `agc` | bool | `true` | The device's AGC |
 | `gainDb` | number or null | `null` | Overall gain, dB; `null` leaves it as the device has it |
 | `gains` | object | `{}` | Gain stages by name, dB, applied after `gainDb`, e.g. `{ "LNA": 32, "VGA": 20, "AMP": 0 }`, `{ "IFGR": 40, "RFGR": 2 }` |
 | `antenna` | string | `""` | |
 | `settings` | string | `""` | Device settings as `key=value,key=value`, e.g. `biastee=true` |
 | `ppm` | number | `0` | |
 | `autoTune` | bool | `false` | |
+| `guardHz` | number | `75000` | Hz left unused at each edge of the band |
 
-### `"kind": "file"` (replay a capture)
+### `"type": "file"` (replay a capture)
 
 | Key | Type | Default | |
 |---|---|---|---|
@@ -146,8 +161,9 @@ The Airspy gains are the driver's **steps**, not dB.
 | `centerHz` | number | **required** | The frequency it was recorded at |
 | `rateHz` | number | **required** | Its sample rate |
 | `realtime` | bool | **required** | `true`: play at the speed it was recorded. `false`: as fast as possible |
-| `format` | string | `"cu8"` | `"cu8"` (rtl_sdr), `"cs16"` or `"cf32"` (GNU Radio, UHD). Not guessed from the file name: set it for float captures |
+| `format` | string | from the name | `"cu8"` (rtl_sdr), `"cs16"` or `"cf32"` (GNU Radio, UHD). Unset: from the file's extension (`.cs16` / `.sc16`; `.cf32` / `.fc32` / `.cfile` / `.complex`), otherwise `cu8` |
 | `autoTune` | bool | `false` | |
+| `guardHz` | number | `75000` | Hz left unused at each edge of the band |
 
 ## Trunked systems
 
@@ -161,27 +177,27 @@ at least one control channel.
 | `name` | string | `""` | all | What people call it |
 | `type` | string | `"p25"` | | `"p25"`, `"smartnet"` or `"dmr"`. Anything else is treated as P25 |
 | `enabled` | bool | `true` | all | `false` keeps it in the config without recording it |
-| `controlChannels` | numbers | `[]` | all | Hz. P25 / SmartNet: the control channel and its alternates; the recorder hunts through them. DMR: every frequency listed is watched |
+| `controlChannelsHz` | numbers | `[]` | all | P25 / SmartNet: the control channel and its alternates; the recorder hunts through them. DMR: every frequency listed is watched |
 | `modulation` | string | `"auto"` | P25, SmartNet | `"auto"` (every receiver, best of each frame), `"qpsk"` (CQPSK / simulcast) or `"fsk4"` (C4FM) |
 | `talkgroupsCsv` | string | `""` | all | The talkgroup file's **contents** (not a path): [Talkgroups](#talkgroups) |
 | `talkgroupsName` | string | `""` | all | The name of the file it came from, for display |
 | `unitNames` | object | empty | all | Radio names: [Unit names](#unit-names) |
 | `expect` | object | `{}` | P25, SmartNet | Site lock: [Site lock](#site-lock-expect) |
-| `voiceChannels` | numbers | `[]` | all | Hz. Voice channels seen by the survey; used only to place Auto sources |
+| `voiceChannelsHz` | numbers | `[]` | all | Voice channels seen by the survey; used only to place Auto sources |
 | `siteGroup` | string | `""` | all | Groups sites whose calls are the same calls: [Multi-site](#multi-site) |
 | `recording` | object | `{}` | all | This system's own call rules: [Per-system rules](#per-system-rules) |
 | `plugins` | object | `{}` | all | This system's plugin settings: [Plugins](#plugins) |
 | `bandplan` | string | `""` (= `800_standard`) | SmartNet | `800_standard`, `800_reband`, `800_splinter`, `900`, or `400_custom` (VHF / UHF / OBT). Aliases `800_domestic`, `800_rebanded`, `800_domestic_splinter` and `obt` also work |
-| `bandplanBase` | number | — | SmartNet 400 | Frequency of channel `bandplanOffset`. Hz, or MHz if below 100 000 |
-| `bandplanSpacing` | number | — | SmartNet 400 | Channel spacing. Hz, or MHz if below 1 |
+| `bandplanBaseHz` | number | — | SmartNet 400 | Frequency of channel `bandplanOffset` |
+| `bandplanSpacingHz` | number | — | SmartNet 400 | Channel spacing |
 | `bandplanOffset` | integer | `0` | SmartNet 400 | First channel number |
-| `bandplanHigh` | number | — | SmartNet 400 | Top of the band. Hz, or MHz if below 100 000 |
+| `bandplanHighHz` | number | — | SmartNet 400 | Top of the band |
 | `defaultMode` | string | `""` | SmartNet | `"analog"`: a talkgroup never heard granted is recorded as analog FM |
-| `channels` | numbers | `[]` | DMR | Voice frequencies to watch (Trunk Recorder's `channels`). Hz, or MHz if below 100 000. Each must be inside a source |
-| `lcnTable` | object | `{}` | DMR | Logical channel → frequency, e.g. `{ "101": 452275000 }`; wins over channels learned from the air |
+| `dmrChannelsHz` | numbers | `[]` | DMR | Voice frequencies to watch (Trunk Recorder's `channels`). Each must be inside a source |
+| `lcnTableHz` | object | `{}` | DMR | Logical channel → frequency, e.g. `{ "101": 452275000 }`; wins over channels learned from the air |
 | `colorCode` | integer or null | `null` | DMR | Only this colour code (0–15). Default: the control channel's |
 
-`400_custom` needs `bandplanBase`, `bandplanSpacing` and `bandplanHigh`. The
+`400_custom` needs `bandplanBaseHz`, `bandplanSpacingHz` and `bandplanHighHz`. The
 survey fills them in for SmartNet OBT systems.
 
 ### Site lock (`expect`)
@@ -201,9 +217,10 @@ wait until every locked field has been heard.
 Values are plain **decimal** numbers in the file, though the interface shows
 NAC, WACN and System ID in hex. For example, NAC `0x443` is `"nac": 1091`.
 
-On SmartNet systems, set only `sysId` and `site`. SmartNet never reports a
-NAC, WACN or RFSS, so a SmartNet system locked on one of those records
-nothing. DMR systems ignore `expect`; use `colorCode`.
+Only the fields a protocol announces are compared. On SmartNet that is
+`sysId` and `site`; `nac`, `wacn` and `rfss` are ignored. Lock `site` only
+if the system sends it (OBT systems do): otherwise grants wait for it
+forever. DMR systems ignore `expect`; use `colorCode`.
 
 ### Multi-site
 
@@ -228,8 +245,8 @@ talkgroup file's `Preferred Site` (or `Preferred NAC`) column.
 
 `talkgroupsCsv` holds Trunk Recorder's talkgroup file, either form:
 
-- **With a header.** The first cell must be exactly `Decimal`. These column
-  names are recognised, case-sensitively and in any order:
+- **With a header.** The first cell must be `Decimal`. These column names
+  are recognised, in any case and any order:
   - `Decimal`, `Mode`, `Alpha Tag`, `Description`, `Tag`, `Category`
   - `Priority`, `Preferred NAC`, `Preferred Site`, `Ignore`
 - **Without a header.** The columns are, in order: `Decimal,Hex,Mode,Alpha
@@ -239,15 +256,13 @@ Parsing:
 
 - Lines starting with `#` and blank lines are skipped.
 - A row whose `Decimal` isn't a number is skipped.
-- Commas only.
-- Save the file without a byte-order mark, or a header row won't be
-  recognised.
+- Commas only; a byte-order mark is ignored.
 
 | Column | |
 |---|---|
 | `Mode` | `E`, `TE` or `DE` mean encrypted (not recorded unless `recordEncrypted`) |
 | `Priority` | Negative: never record |
-| `Ignore` | `true`, `yes`, `y`, `1`, `x`: never record |
+| `Ignore` | `true`, `yes`, `y`, `1`, `x`, `ignore`: never record |
 | `Preferred Site` | A site's `shortName`: its copy is kept when it has at least 90 % of the best copy's clean audio |
 | `Preferred NAC` | The same, as a NAC or as RFSS and site (`RRRRssss`) |
 
@@ -260,10 +275,10 @@ conventional system has its own.
 |---|---|---|---|
 | `csv` | string | `""` | The file's **contents**: `unit,name` lines without a header, `#` for comments. A unit written `/regex/` matches by regular expression; `$1` / `\1` in the name insert its groups. The first match wins |
 | `name` | string | `""` | The file it came from, for display |
-| `mode` | string | `"user"` | How these combine with talker aliases heard over the air: `"user"` (yours first, then over the air), `"ota"` (over the air first), `"user_only"`, `"none"` |
+| `mode` | string | `""` (= `"user"`) | How these combine with talker aliases heard over the air: `"user"` (yours first, then over the air), `"ota"` (over the air first), `"user_only"`, `"none"` |
 
-Talker aliases heard over the air are kept in `<shortName>.units.csv` in the
-app's config folder.
+Talker aliases heard over the air are kept in `<shortName>.units.csv`
+beside the config file ([Files beside the config](#files-beside-the-config)).
 
 ## Conventional systems
 
@@ -294,7 +309,7 @@ not `recording.prerollS`.
 | `mode` | string | `"fm"` | `"fm"` (analog narrowband FM), `"p25"` (Phase 1, C4FM or CQPSK) or `"dmr"` (both slots) |
 | `name` | string | `""` | Alpha tag in the call JSON |
 | `description`, `tag`, `group` | string | `""` | Description, tag and category in the call JSON |
-| `talkgroup` | integer | the frequency in kHz | The number calls are filed under. A further row on the same frequency gets the kHz with a digit added (1543251, 1543252…). P25 and DMR calls keep the talkgroup the radio sends, unless several rows split the frequency |
+| `talkgroup` | integer | the frequency in kHz | The number calls are filed under. A further row on the same frequency gets the kHz with a digit added (1543251, 1543252…). P25 calls keep the talkgroup the radio sends, unless several rows split the frequency. DMR calls always keep the talkgroup on the air (the rows give it names); a DMR row with no `talkgroup` takes the `TG` in its `tone` |
 | `tone` | string | `""` (any) | Record only transmissions carrying this code. FM: CTCSS `151.4` or DCS `D023N`. P25: NAC, `NAC 293`. DMR: `CC 1`, `CC 1 TS 2`, `CC 1 TS 2 TG 201` |
 | `squelchDb` | number | the system's | Per channel |
 | `enabled` | bool | `true` | |
@@ -333,15 +348,15 @@ Where calls go and which are kept. Keys marked ✓ can be set per system too
 | Key | Type | Default | ✓ | |
 |---|---|---|---|---|
 | `captureDir` | string | `~/TrunkRecorderPro` | | The recordings folder. Use an absolute path: `~` isn't expanded, and a relative path is taken from wherever the app was started |
-| `prerollS` | number | `1` | | Seconds of air before a grant replayed into a trunked call (0–3) |
-| `maxRecorders` | integer | `32` | | Calls recorded at once, across all trunked systems (at least 1) |
+| `prerollS` | number | `1` | | Seconds of air before a grant replayed into a trunked call (the interface allows 0–3) |
+| `maxRecorders` | integer | `32` | | Calls recorded at once, across all trunked systems (the interface allows 1–64) |
 | `callTimeoutS` | number | `3` | ✓ | A call ends this long after its last grant or audio |
-| `recordUnknown` | bool | `true` | ✓ | Record talkgroups not in the talkgroup file |
-| `recordEncrypted` | bool | `false` | ✓ | Record encrypted calls (no audio, but the call and its radios). Not in the interface |
+| `recordUnknown` | bool | `true` | ✓ | Record talkgroups not in the talkgroup file. Applies only when there is one; a talkgroup patched with a listed one is recorded anyway |
+| `recordEncrypted` | bool | `false` | ✓ | Record calls flagged encrypted (by the grant or the talkgroup's `Mode`), keeping the call and its radios even with no audio. Encrypted transmissions are always left out of the audio. Without it, a call flagged encrypted at its grant isn't recorded at all, and one that turns encrypted part-way is kept with its clear transmissions (if none were clear, only with `keepSilentCalls`). Not in the interface |
 | `recordUnitToUnit` | bool | `true` | ✓ | Record P25 unit-to-unit (private) calls |
 | `keepSilentCalls` | bool | `false` | ✓ | Keep calls with no audio |
-| `minCallS` | number | `0` | ✓ | Drop calls shorter than this |
-| `maxCallS` | number | `0` | ✓ | Save calls longer than this in parts; 0 = no limit |
+| `minCallS` | number | `0` | ✓ | Drop calls with less audio than this, s |
+| `maxCallS` | number | `0` | ✓ | Save calls longer than this in parts, the conversation continuing on the same recorder; 0 = parts of 600 s (a stuck carrier never records without bound) |
 | `minTransmissionS` | number | `0` | ✓ | Leave out transmissions shorter than this (key-ups, data bursts) |
 | `normalizeAudio` | bool | `true` | ✓ | Even out loudness |
 | `digitalLevelDb` | number | `0` | ✓ | Gain on digital audio, dB (±40) |
@@ -362,7 +377,7 @@ A trunked or conventional system's `recording` object can override any key
 marked ✓ above. A key left out follows the global `recording`.
 
 ```json
-{ "shortName": "fireground", "type": "p25", "controlChannels": [851012500],
+{ "shortName": "fireground", "type": "p25", "controlChannelsHz": [851012500],
   "recording": { "minCallS": 2, "recordUnknown": false } }
 ```
 
@@ -399,22 +414,18 @@ Rendering rules:
 - Characters that can't be in a file name (`\ / : * ? " < > |` and spaces)
   inside a token's text become `_`.
 - An unknown token is left as typed.
-- On Windows, keep `:` out of time formats: `iso` and `%H:%M` put one in the
-  name.
+- A `:` from a time format (`iso`, `%H:%M`) becomes `-`.
 
 ## Server
 
 | Key | Type | Default | |
 |---|---|---|---|
-| `bind` | string | `"127.0.0.1"` | Address the interface listens on. `"0.0.0.0"` makes it reachable from other machines. It has **no login**: anyone who can reach it can change settings and run plugins. `--bind` overrides it |
-| `port` | integer | `8080` | `--port` overrides it |
+| `bind` | string | `"127.0.0.1"` | Address the interface listens on. `"0.0.0.0"` makes it reachable from other machines. It has **no login**: anyone who can reach it can change settings and run plugins. `--bind` overrides it for one run |
+| `port` | integer | `8080` | `--port` overrides it for one run |
 | `autoStart` | bool | `false` | Start recording when the app starts (as `--start` does) |
 | `allowedOrigins` | strings | `[]` | Web pages on other origins allowed to use the API: `"http://host:port"`, `"null"` (a page opened from a file), or `"*"` |
 | `interfaces` | array | `[]` | Interfaces of your own, each `{ "name": "wall", "path": "~/wall-display" }`, served at `/ui/<name>/`. `name`: letters, digits, `-`, `_`. `path`: absolute, `~/…`, or relative to the config file's folder |
 | `home` | string | `""` | What `/` shows: `""` = the built-in interface, or an interface's `name`. `--ui <folder>` overrides it |
-
-Note: `--bind` and `--port` are currently written into the file the next time
-the interface saves settings.
 
 ## Log
 
@@ -426,19 +437,25 @@ and the system log.
 | `level` | string | `"info"` | `trace`, `debug`, `info`, `warning`, `error`, `fatal`. `--log-level` overrides it |
 | `console` | bool | `true` | Log to stderr |
 | `file` | bool | `false` | Also log to files: a new one each day, or at 100 MB |
-| `dir` | string | `""` (= `logs`) | The log folder, relative to the config file's folder |
-| `syslogFriendly` | bool | `false` | One `trunk-pro.log`, never rotated (SIGHUP reopens it, for logrotate) |
+| `dir` | string | `""` (= `logs`) | The log folder, absolute or relative to the config file's folder |
+| `syslogFriendly` | bool | `false` | With `file`: one `trunk-pro.log`, never rotated (SIGHUP reopens it, for logrotate) |
 | `syslog` | bool | `false` | Also send to the system log (Linux, macOS) |
 | `color` | string | `""` | `"console"`, `"logfile"`, `"all"`, `"none"`; `""` = on the console when it's a terminal and `NO_COLOR` isn't set |
 | `frequencyFormat` | string | `"mhz"` | `"mhz"`, `"hz"` or `"exp"` |
 | `talkgroupDisplayFormat` | string | `"id"` | `"id"`, `"id_tag"` or `"tag_id"` |
 | `statusAsString` | bool | `true` | |
-| `controlWarnRate` | number | `10` | Warn when a control channel decodes fewer messages/s than this; −1 = log the rate every time |
+| `controlWarnRatePerS` | number | `10` | Log an error when a control channel decodes fewer messages/s than this; −1 = log the rate every time (info) |
+
+## Monitor
+
+| Key | Type | Default | |
+|---|---|---|---|
+| `probeHosts` | strings | `["1.1.1.1:443", "dns.google:443"]` | `host:port`s the dashboard connects to every 15 s for its uplink history; `[]` = no checks. Not in the interface |
 
 ## Plugins
 
 Plugins are installed from the Plugins page or `trunk-pro plugin install
-<id>`, into `plugins/<id>/` in the app's config folder. The config says which
+<id>`, into `plugins/<id>/` beside the config file. The config says which
 run and with what settings.
 
 Recorder-wide, under the top-level `plugins`:
@@ -480,10 +497,11 @@ with a message, if:
 - a SmartNet `bandplan` is unknown, or a `400_custom` plan lacks its base,
   spacing or high, or has high ≤ base;
 - a recorded system has no control channel inside any source, or a DMR
-  control channel or `channels` frequency is outside every source;
+  control channel or `dmrChannelsHz` frequency is outside every source;
+- a `file` source has no `path`;
 - there are more than 256 conventional systems;
-- a conventional frequency is in two systems, is ≤ 0, or is outside every
-  source;
+- an enabled conventional frequency is in two systems, is ≤ 0, or is
+  outside every source;
 - a `tone` doesn't parse (including a CTCSS tone that isn't a standard one);
 - rows sharing a frequency have different modes, two have no code, or two
   have codes that can't be told apart.
@@ -502,6 +520,8 @@ configs keep their own):
 | `plugins/<id>/` | Installed plugins |
 | `plugin-data/<id>/` | Each plugin's own data (e.g. calls waiting to upload); also its working folder |
 | `plugin-registry.json` | The plugin store's cached index |
+| `radio/` | The radio registry: the radios each system has heard, one file per system |
+| `stats/` | The dashboard's history, a `YYYY-MM-DD.jsonl` per day, gzipped after the day and kept about a week |
 
 Log files go in `log.dir`, relative to the config file. Channel files
 (`channelFile`) are relative to the config file too.
@@ -516,9 +536,10 @@ converts:
   `usrp` becomes `usrp`. Gains, `agc`, `ppm` (or `error`) and `autoTune` come
   across.
 - **Systems.** `p25`, `smartnet` and `dmr` become trunked systems, with
-  control channels, modulation, band plan, `lcnTable` / `channels`,
-  talkgroups and unit tags. `multiSite` / `multiSiteSystemName` become
-  `siteGroup`.
+  control channels, modulation, band plan, `lcnTableHz` / `dmrChannelsHz`,
+  talkgroups and unit tags. `multiSite` with `multiSiteSystemName` becomes
+  `siteGroup` (an empty name: grouped from the air); when some systems have
+  `multiSite` on, one with it off gets a group of its own.
 - **Conventional.** `conventional`, `conventionalP25` and `conventionalDMR`
   each become a conventional system, from `channels` or `channelFile`.
 - **Call rules.**
@@ -530,7 +551,10 @@ converts:
   - Top level: `callTimeout`, `recordUUVCalls`, `archiveFilesOnFailure`,
     `captureDir`.
   - A rule that is the same on every system becomes the global one.
-- **Log options**, as named in [Log](#log).
+- **Log options**: `logLevel`, `consoleLog`, `logFile`, `logDir` (relative to
+  the config file), `syslogFriendly`, `logColor`, `frequencyFormat`,
+  `statusAsString`, `controlWarnRate`, and the first system's
+  `talkgroupDisplayFormat`.
 - **Upload settings.** OpenMHz, Broadcastify, `uploadScript`, rdio-scanner
   and simplestream settings are offered as plugin settings.
 
@@ -547,7 +571,9 @@ These are **not** carried over:
 - `softVocoder`, `tempDir`, `instanceId` / `instanceKey`, `audioStreaming`,
   `broadcastSignals`
 - a conventional system's `talkgroupsFile`
+- `conversationMode: false` (a file per transmission)
 
 Where Trunk Recorder's defaults differ from these (`compressWav`,
-`archiveFilesOnFailure`), a key absent from the Trunk Recorder config gets
-*this* app's default.
+`archiveFilesOnFailure`, `multiSite`), a key absent from the Trunk Recorder
+config gets *this* app's default: duplicate copies of a call are dropped
+unless `dropDuplicateCalls` is off.

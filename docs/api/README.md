@@ -203,7 +203,7 @@ whenever `change` fires.
 | `calls` | `CallView[]`: on the air now (empty when not running) |
 | `history` | `CallEntry[]`: recorded calls, newest first |
 | `log` | the latest 500 `LogLine`s |
-| `unitCsv`, `aliases` | unit names as saved, and talker aliases heard (see `unitName`) |
+| `aliases` | talker aliases heard on the air: short name → `{ unit: alias }` (those saved, from `hello.units`, then each `unitAlias`) |
 | `error` | the latest `error` message's text |
 | `exited` | the recorder said it was exiting (`quit`); it keeps trying to reconnect, and this clears when it's back |
 
@@ -227,8 +227,8 @@ whenever `change` fires.
 | `subscribe(topics)` | the costly messages to receive: `["log"]` fills `log`; `"spectrum:0"` a waterfall's `spectrum`. Kept across reconnects. |
 | `setConfig(edit)` | `edit(copy)` changes a copy of the latest config, and the whole config is sent |
 | `callUrl(entry, "wav" \| "json" \| "m4a")` | a recorded call's file URL |
-| `talkgroups(shortName)` | the system's talkgroup file: `Map` talkgroup → `{ talkgroup, alphaTag, description, tag, group, mode }` |
-| `unitName(shortName, unit)` | a radio's name: the unit names file (regular-expression rows too), else the alias heard, else `""` |
+| `talkgroups(shortName)` | the system's talkgroup file: `Map` talkgroup → `{ talkgroup, alphaTag, description, tag, group, mode }`; a conventional system's channels (`alphaTag` the channel's name) |
+| `unitName(shortName, unit)` | a radio's name, as the system's `unitNames.mode` says: its unit names (`unitNames.csv`, regular-expression rows too) and the alias heard; else `""` |
 | `close()` | disconnect for good |
 
 ### `new LivePlayer(opts?)`
@@ -340,8 +340,10 @@ origin listed (e.g. `"https://radio.example.com"`).
    doesn't compute them.
 6. **Send commands** as JSON text whenever you like. Answers to your own
    commands (`error`, `notice`, `dir`, `trConfig`, `devices`, `radios`,
-   `plugins`, `pluginStore`) come to your connection only. Everything else goes to every
-   client.
+   `pluginStore`, and `plugins` when you sent `plugins`) come to your
+   connection only. Everything else goes to every client: after
+   `addPlugin`, `removePlugin` or `installPlugin` everyone gets `plugins`,
+   and after `setConfig` or `channelFile` everyone gets `config`.
 7. **Reconnect** when the socket closes: the recorder may have restarted. A
    new `hello` brings you up to date. Per-connection settings (live audio,
    subscriptions) must be sent again after it.
@@ -383,9 +385,10 @@ in protocol.ts). Each frequency acts as a talkgroup: the channel's
 **Talkgroups** are numbers. Their names (`alphaTag` / `talkgroup_tag`) come
 from each system's talkgroup file (`talkgroupsCsv` in the config), and are
 `""` when the talkgroup isn't in it. **Units** (radios) are numbers too:
-`CallView.sources`, `CallRecord.srcList`. Their names come from
-`hello.units` (CSV per system), the `unitAlias` messages (talker aliases
-heard on the air), and `srcList[].tag`.
+`CallView.sources`, `CallRecord.srcList`. Their names come from the
+user's unit names (`unitNames` of each system in the config), the talker
+aliases heard on the air (`hello.units`, then the `unitAlias` messages),
+and `srcList[].tag`.
 
 **Times.** Engine times (`nowS`, `startS`, `timeS`) are seconds since
 recording started. Times in call records are Unix seconds / milliseconds.
@@ -398,7 +401,7 @@ Every message is a JSON object with a `type`. Exact fields are in
 
 | `type` | When | What's in it |
 |---|---|---|
-| `hello` | First, on every connection | `version`, `platform`, `config`, `configPath`, `devices`, `phase`, `history` (≤ 300 `CallEntry`, newest first), `units` (short name → unit names CSV), `heard`, `radios`, `surveyBands`, `survey`, `events` (recent `monitorEvent`s), `host` (the last `host`), `pluginRuntime` (id → runtime) |
+| `hello` | First, on every connection | `version`, `platform`, `config`, `configPath`, `devices`, `phase`, `history` (≤ 300 `CallEntry`, newest first), `units` (short name → the talker aliases heard, as CSV: `unit,alias,source,time,wacn,sys,tg`, the newest line per unit wins), `heard`, `radios`, `surveyBands`, `survey`, `events` (recent `monitorEvent`s), `host` (the last `host`), `pluginRuntime` (id → runtime) |
 | `plugins` | After `hello`; after plugin changes; answers `plugins` | `plugins` (`PluginInfo[]`), `encoderFound` |
 | `state` | Recording starts / stops | `phase`, `error`, `ended` |
 | `status` | ~2/s while running | `status` (`EngineStatus`: totals, `systems[]` with control channel, decode counts `good`/`bad`, site identity, patches, DMR state), `sources[]` (each radio: rate, drops, errors, frequency error), `load` (share of real time the decoder is busy), `calls` (`CallView[]`, on the air now) |
@@ -422,9 +425,8 @@ Every message is a JSON object with a `type`. Exact fields are in
 | `trConfig` | Answers `readTrConfig` | a Trunk Recorder config.json's `text`, the `files` it names, or `error` |
 | `survey` | The survey's progress | `stage` (`idle` / `scanning` / `monitoring` / `done`), candidates, the channel monitored, the suggested system |
 | `surveySpectrum` | While surveying | like `spectrum` |
+| `sourceProfile` | Answers `profileSource` | `source`, then `error`, or `centerHz`, `rateHz`, `spectrum` / `floor` (1024 points, dB, −rate/2 … +rate/2), `rows` (a waterfall), `referenceDb`, `lowHz` / `highHz` (how far in the floor is 3 dB down), `lowDropDb` / `highDropDb`, `suggestedGuardHz` |
 | `pluginRuntime` | A plugin's totals changed | `id`, `runtime` (state, counts, recent log; `metrics` — queue, upload time, endpoints — when the plugin reports them; restarts, events dropped, uptime; results per minute for the last hour) |
-| `pluginState` | A plugin reports how it is | `id`, `state` (`ok` / `warning` / `error`), `message` |
-| `pluginResult` | A plugin finished with a call | `id`, `path`, `outcome` (`ok` / `skipped` / `failed`), `message`, `url` |
 | `pluginStore` | Answers `pluginStore` | the plugin registry's listings |
 | `pluginInstall` | An install's progress | `key`, `id`, `stage` (`finding` … `done` / `failed`), `message` |
 | `error` | A command failed | `message`, for the user |
@@ -450,6 +452,7 @@ aren't understood are ignored.
 | `surveyStart` | `source`, `bands` (ids from `hello.surveyBands`), `findGain` | Scan for systems with radio `source` (not while recording). |
 | `surveyListen` | `freqHz` | Monitor this signal. |
 | `surveyRescan` / `surveyStop` | — | Scan again / end the survey. |
+| `profileSource` | `source`, `centerHz` | Look at radio `source`'s band for a couple of seconds, tuned to `centerHz` (a capture keeps its own), and measure how it rolls off at the edges (→ `sourceProfile`; not while recording). |
 | `plugins` | — | List plugins again (→ `plugins`). |
 | `addPlugin` | `path` | Add a plugin executable of your own. |
 | `removePlugin` | `id` | Remove a plugin. |
@@ -564,9 +567,17 @@ the command worked: `error` says why it didn't.
 `config.systems[i].talkgroupsCsv` (Trunk Recorder's CSV format). With
 client.js: `rec.talkgroups(shortName).get(1234)?.alphaTag`.
 
-**A radio's name.** In a recorded call: `srcList[].tag`. Live: look the unit
-up in `hello.units[shortName]` (headerless `unit,name` CSV; a unit between
-slashes is a regular expression), then in the `unitAlias` messages heard.
+**A radio's name.** In a recorded call: `srcList[].tag`. Live: the user's
+names are in the config, `systems[i].unitNames.csv` (or
+`conventional[k].unitNames.csv`): headerless `unit,name` lines, `#`
+comments; a unit between slashes is a regular expression whose groups
+(`$1` or `\1`) may appear in the name (`/^1(\d{3})$/,Engine $1`); the first
+matching line wins. The aliases heard on the air are in
+`hello.units[shortName]` (Trunk Recorder's unitTagsOTA CSV:
+`unit,alias,source,time,wacn,sys,tg`, the newest line per unit wins), then
+in the `unitAlias` messages. `unitNames.mode` says which to use:
+`"user"` (the default) the user's name first, then the alias; `"ota"` the
+alias first; `"user_only"`; `"none"`.
 With client.js: `rec.unitName(shortName, unit)`.
 
 ## Having an LLM build an interface

@@ -36,7 +36,7 @@ export function decodeAudioFrame(buf) {
  *
  * State (read it, don't change it): connected, version, config, phase
  * ({ phase, error, ended }), status (EngineStatus), sources, calls (on the
- * air now), history (recorded calls, newest first), log (after subscribe(["log"])), unitCsv, aliases,
+ * air now), history (recorded calls, newest first), log (after subscribe(["log"])), aliases,
  * error, exited (the recorder quit; it keeps trying to reconnect).
  */
 export class TrunkClient {
@@ -63,9 +63,7 @@ export class TrunkClient {
     this.calls = [];
     this.history = [];
     this.log = [];
-    /** Each system's unit names as saved: short name → CSV (`unit,name` lines; see unitName). */
-    this.unitCsv = {};
-    /** Talker aliases heard since connecting: short name → { unit: alias }. */
+    /** Talker aliases heard on the air (saved ones, then live): short name → { unit: alias }. */
     this.aliases = {};
     this._unitCache = new Map();
     /** The latest `error` message from the recorder (a command that failed). */
@@ -146,36 +144,31 @@ export class TrunkClient {
   }
 
   /**
-   * A radio's name on system `shortName`: from its unit names file (a unit
-   * between slashes there is a regular expression: `/^1(\d{3})$/,Engine $1`),
-   * else the talker alias heard, else "".
+   * A radio's name on system `shortName` (trunked or conventional), as the
+   * system's `unitNames.mode` picks it: "user" (the default) its unit names
+   * (`unitNames.csv`: `unit,name` lines; a unit between slashes is a regular
+   * expression, `/^1(\d{3})$/,Engine $1`) then the talker alias heard, "ota"
+   * the alias first, "user_only", "none". "" when there's none.
    */
   unitName(shortName, unit) {
-    if (!this._unitCache.has(shortName)) {
-      const rows = [];
-      for (const line of (this.unitCsv[shortName] ?? "").split(/\r?\n/)) {
-        const at = line.indexOf(",");
-        if (at < 0) continue;
-        const [key, name] = [line.slice(0, at).trim(), line.slice(at + 1).trim().replace(/^"|"$/g, "")];
-        const re = /^\/(.*)\/$/.exec(key);
-        try {
-          rows.push(re ? { re: new RegExp(re[1]), name } : { unit: Number(key), name });
-        } catch {}
-      }
-      this._unitCache.set(shortName, rows);
-    }
-    const id = String(unit);
-    for (const r of this._unitCache.get(shortName)) {
-      if (r.re ? r.re.test(id) : r.unit === unit) return r.re ? id.replace(r.re, r.name) : r.name;
-    }
-    return this.aliases[shortName]?.[unit] ?? "";
+    const sys = this.config?.systems.find((s) => s.shortName === shortName) ?? this.config?.conventional?.find((s) => s.shortName === shortName);
+    const names = sys?.unitNames;
+    const user = () => userUnitName(this._unitCache, names?.csv ?? "", unit);
+    const heard = () => this.aliases[shortName]?.[unit] || undefined;
+    const mode = names?.mode || "user";
+    const name = mode === "ota" ? heard() ?? user() : mode === "user_only" ? user() : mode === "none" ? undefined : user() ?? heard();
+    return name ?? "";
   }
 
   /**
-   * System `shortName`'s talkgroup file (Trunk Recorder's CSV, as in the
-   * config): Map talkgroup → { talkgroup, alphaTag, description, tag, group, mode }.
+   * System `shortName`'s talkgroups: Map talkgroup → { talkgroup, alphaTag,
+   * description, tag, group, mode }. A trunked system's from its talkgroup
+   * file (Trunk Recorder's CSV, as in the config); a conventional system's
+   * from its channels (alphaTag the channel's name).
    */
   talkgroups(shortName) {
+    const conv = this.config?.conventional?.find((s) => s.shortName === shortName);
+    if (conv) return channelTalkgroups(conv.channels ?? []);
     const csv = this.config?.systems.find((s) => s.shortName === shortName)?.talkgroupsCsv ?? "";
     this._tgCache ??= new Map();
     const hit = this._tgCache.get(shortName);
@@ -246,8 +239,7 @@ export class TrunkClient {
     switch (m.type) {
       case "hello":
         Object.assign(this, { version: m.version, config: m.config, phase: m.phase, history: m.history, error: null, exited: false });
-        this.unitCsv = m.units ?? {};
-        this._unitCache.clear();
+        this.aliases = Object.fromEntries(Object.entries(m.units ?? {}).map(([name, csv]) => [name, parseUnitAliases(csv)]));
         if (!this.connected) {
           this.connected = true;
           this._emit("connection", true);
@@ -288,31 +280,92 @@ export class TrunkClient {
   }
 }
 
+/** One CSV line → its fields (quotes as in RFC 4180). */
+function splitCsv(line) {
+  const out = [];
+  let cur = "",
+    quoted = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (quoted && ch === '"' && line[i + 1] === '"') (cur += '"'), i++;
+    else if (ch === '"') quoted = !quoted;
+    else if (ch === "," && !quoted) out.push(cur.trim()), (cur = "");
+    else cur += ch;
+  }
+  out.push(cur.trim());
+  return out;
+}
+
+/**
+ * Talker aliases as the recorder saves them (`hello.units`: Trunk Recorder's
+ * unitTagsOTA CSV, `unit,alias,source,time,wacn,sys,tg`) → { unit: alias }; the newest line wins.
+ */
+export function parseUnitAliases(csv) {
+  const out = {};
+  const when = {};
+  for (const line of csv.split(/\r?\n/)) {
+    if (!line.trim() || line.trim().startsWith("#")) continue;
+    const [id, alias, , time] = splitCsv(line);
+    const unit = parseInt(id, 10);
+    const t = parseInt(time, 10) || 0;
+    if (!Number.isFinite(unit) || !alias || (when[unit] ?? -1) > t) continue;
+    out[unit] = alias;
+    when[unit] = t;
+  }
+  return out;
+}
+
+/** The name a unit names CSV gives `unit` (first match; `$1` / `\1` take a pattern's groups), or undefined. */
+function userUnitName(cache, csv, unit) {
+  if (!csv) return undefined;
+  let rows = cache.get(csv);
+  if (!rows) {
+    rows = [];
+    for (const line of csv.split(/\r?\n/)) {
+      const t = line.trim();
+      if (!t || t.startsWith("#")) continue;
+      const [pat = "", name = ""] = splitCsv(t);
+      if (!pat || !name) continue;
+      try {
+        const re = pat.length > 1 && pat.startsWith("/") && pat.endsWith("/") ? new RegExp(pat.slice(1, -1)) : new RegExp(`^${pat.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`);
+        rows.push([re, name.replace(/\\(\d+)/g, "$$$1")]);
+      } catch {}
+    }
+    cache.set(csv, rows);
+  }
+  const id = String(unit);
+  const hit = rows.find(([re]) => re.test(id));
+  return hit ? id.replace(hit[0], hit[1]) : undefined;
+}
+
+/**
+ * A conventional system's channels → Map talkgroup → { talkgroup, alphaTag, … }.
+ * A channel's talkgroup: its own, else a DMR row's in its tone ("TG 1234"),
+ * else its frequency in kHz (with a digit for a second row on one frequency: 1543251 …).
+ */
+function channelTalkgroups(channels) {
+  const map = new Map();
+  channels.forEach((c, i) => {
+    const kHz = Math.round(c.freqHz / 1000);
+    const k = channels.slice(0, i).filter((o) => Math.abs(o.freqHz - c.freqHz) < 1).length;
+    const air = c.mode === "dmr" ? /\bTG (\d+)/.exec(c.tone ?? "")?.[1] : undefined;
+    const talkgroup = c.talkgroup ?? (air !== undefined ? Number(air) : k === 0 ? kHz : kHz * 10 + k);
+    map.set(talkgroup, { talkgroup, alphaTag: c.name ?? "", description: c.description ?? "", tag: c.tag ?? "", group: c.group ?? "", mode: c.mode });
+  });
+  return map;
+}
+
 /** Trunk Recorder's talkgroup CSV (with a "Decimal,…" header, or the old fixed columns) → Map. */
 export function parseTalkgroups(csv) {
-  const split = (line) => {
-    const out = [];
-    let cur = "",
-      quoted = false;
-    for (let i = 0; i < line.length; i++) {
-      const ch = line[i];
-      if (quoted && ch === '"' && line[i + 1] === '"') (cur += '"'), i++;
-      else if (ch === '"') quoted = !quoted;
-      else if (ch === "," && !quoted) out.push(cur.trim()), (cur = "");
-      else cur += ch;
-    }
-    out.push(cur.trim());
-    return out;
-  };
   const lines = csv.split(/\r?\n/).filter((l) => l.trim() && !l.trim().startsWith("#"));
   const map = new Map();
   if (!lines.length) return map;
-  const head = split(lines[0]);
+  const head = splitCsv(lines[0]);
   const headed = head[0] === "Decimal";
   // Without a header: Decimal, Hex, Mode, Alpha Tag, Description, Tag, Category.
   const at = (f, name, legacy) => (headed ? f[head.indexOf(name)] : f[legacy]) ?? "";
   for (const line of headed ? lines.slice(1) : lines) {
-    const f = split(line);
+    const f = splitCsv(line);
     const talkgroup = parseInt(f[0], 10);
     if (!Number.isFinite(talkgroup)) continue;
     map.set(talkgroup, { talkgroup, alphaTag: at(f, "Alpha Tag", 3), description: at(f, "Description", 4), tag: at(f, "Tag", 5), group: at(f, "Category", 6), mode: at(f, "Mode", 2) });

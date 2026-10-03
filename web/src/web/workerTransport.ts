@@ -69,7 +69,7 @@ export class WorkerTransport implements Transport {
       msg.type === "installPlugin"
     )
       return;
-    if (msg.type === "start" || msg.type === "surveyStart") this.post({ type: "files", files: this.files });
+    if (msg.type === "start" || msg.type === "surveyStart" || msg.type === "profileSource") this.post({ type: "files", files: this.files });
     this.post(msg);
   }
 

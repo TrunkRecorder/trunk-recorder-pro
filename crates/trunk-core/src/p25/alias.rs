@@ -13,6 +13,8 @@
 //!   talking.
 //! - Harris, Phase 2: MAC message 0xA8, MFID 0xA4, plain ASCII.
 
+use crate::bits::crc_ccitt_bytes;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Alias {
     pub unit: u32,
@@ -34,18 +36,6 @@ fn unhex(s: &str) -> Option<Vec<u8>> {
     (0..s.len() / 2).map(|i| u8::from_str_radix(s.get(2 * i..2 * i + 2)?, 16).ok()).collect()
 }
 
-/// CRC-16/GSM (poly 0x1021, init 0, xorout 0xffff).
-pub fn crc16_gsm(data: &[u8]) -> u16 {
-    let mut crc = 0u16;
-    for &b in data {
-        crc ^= (b as u16) << 8;
-        for _ in 0..8 {
-            crc = if crc & 0x8000 != 0 { crc << 1 ^ 0x1021 } else { crc << 1 };
-        }
-    }
-    !crc
-}
-
 /// The alias length (UTF-16 characters) from the first byte of its code.
 fn motorola_len(code: &str) -> Option<usize> {
     const CODES: [&str; 14] = ["94", "32", "95", "9d", "1b", "77", "b5", "6e", "24", "61", "2d", "7d", "83", "29"];
@@ -62,7 +52,7 @@ fn decode_motorola(payload: &str, at: usize, source: &'static str) -> Option<Ali
     let code = field(at + 14, len * 4)?;
     let checksum = u16::from_str_radix(field(at + 14 + len * 4, 4)?, 16).ok()?;
     let body = unhex(&format!("{wacn}{sys}{radio}{code}"))?;
-    if crc16_gsm(&body) != checksum || body.len() < 8 {
+    if crc_ccitt_bytes(&body) != checksum || body.len() < 8 {
         return None;
     }
     let unit = u32::from_str_radix(radio, 16).ok()?;
@@ -326,7 +316,7 @@ mod tests {
     fn payload(wacn: u32, sys: u32, radio: u32, text: &str) -> Option<String> {
         let code = obfuscate(text);
         let body = format!("{wacn:05x}{sys:03x}{radio:06x}{}", hex(&code));
-        let crc = crc16_gsm(&unhex(&body).unwrap());
+        let crc = crc_ccitt_bytes(&unhex(&body).unwrap());
         // The alias's first byte must be the length code for this length.
         (motorola_len(&body[14..16]) == Some(text.len())).then(|| format!("{body}{crc:04x}"))
     }
@@ -384,11 +374,6 @@ mod tests {
             got = a.lcw(&w, None, None).or(got);
         }
         assert_eq!(got, Some(Alias { unit: 1_102_841, alias: "6531 PEAKE".into(), source: "MotoP25_FDMA", talkgroup: Some(3747) }));
-    }
-
-    #[test]
-    fn crc16_gsm_check_value() {
-        assert_eq!(crc16_gsm(b"123456789"), 0xce3c);
     }
 
     #[test]

@@ -56,10 +56,15 @@ const MAX_GAP_S: f64 = 10.0;
 /// the least lag in it (samples only ever arrive late) is the clock's
 /// ([`ClockFit`]). ms.
 const CLOCK_WINDOW_MS: f64 = 10_000.0;
-/// Once set, a source's clock offset moves at most this much per second of
-/// wall clock (1000 ppm: far more than a crystal's error, yet time never
-/// runs backwards).
+/// A source's clock offset moves toward each window's measure at most this
+/// much per second of wall clock (1000 ppm: far more than a crystal's
+/// error, so it keeps up, yet smooth).
 const CLOCK_SLEW: f64 = 0.001;
+/// A window's measure further than this from the offset set is no drift
+/// but samples lost or invented (a driver's unreported overflow, a stalled
+/// radio's backlog after its quiet was filled in): the offset is set to it
+/// at once, s.
+const REANCHOR_S: f64 = 0.25;
 
 /// What plugins subscribe to, so nothing else is built.
 #[derive(Clone, Copy, Debug, Default)]
@@ -92,10 +97,14 @@ struct SourceStats {
 }
 
 /// A source's sample clock against the wall clock. Sample time runs slow or
-/// fast by the radio's crystal error, and starts late by the time the radio
-/// took to open; the offset that makes it wall time is measured here and
-/// set on the engine ([`Engine::set_clock_offset`]): at once on the first
-/// samples, then in small steps toward each window's measure.
+/// fast by the radio's crystal error, starts late by the time the radio took
+/// to open, and jumps when samples are lost or silence is filled in for
+/// more than was missing. Each buffer is measured when the driver handed it
+/// over (`push`'s `at_ms`), so time spent queued for a busy engine doesn't
+/// count. The offset that makes sample time wall time is set on the engine
+/// ([`Engine::set_clock_offset`]): at once on the first samples; then every
+/// window, anchored afresh to that window's measure — slewed to it when
+/// it's drift, set at once when it's off by more than [`REANCHOR_S`].
 #[derive(Default, Clone)]
 struct ClockFit {
     /// Whether the wall clock means anything for it (not a capture played
@@ -106,10 +115,51 @@ struct ClockFit {
     /// The least lag (wall time since the start, less sample time, s) seen
     /// in this window, and when the window began (ms).
     window_min: Option<f64>,
-    window_ms: f64,
+    window_ms: Option<f64>,
     /// The offset being steered to, and the one set.
     target: Option<f64>,
     applied: Option<f64>,
+}
+
+impl ClockFit {
+    /// The samples so far ended at `at_ms` on the wall clock.
+    fn observe(&mut self, at_ms: f64, epoch_ms: f64, rate: f64) {
+        if !self.live {
+            return;
+        }
+        // Samples only ever arrive late (USB and driver buffers): the least
+        // lag over a window is the clock's own.
+        let lag = (at_ms - epoch_ms) / 1000.0 - self.samples as f64 / rate;
+        self.window_min = Some(self.window_min.map_or(lag, |m| m.min(lag)));
+        match self.window_ms {
+            // The first samples: anchored at once (the radio's open time).
+            None => {
+                self.target = Some(lag);
+                self.window_ms = Some(at_ms);
+            }
+            Some(w) if at_ms - w >= CLOCK_WINDOW_MS => {
+                self.target = self.window_min.take();
+                self.window_ms = Some(at_ms);
+            }
+            Some(_) => {}
+        }
+    }
+
+    /// The offset to set after `dt` wall seconds, when it moved, and whether
+    /// it was re-anchored (a step, not a slew).
+    fn steer(&mut self, dt: f64) -> Option<(f64, bool)> {
+        let target = self.target?;
+        let (next, step) = match self.applied {
+            Some(a) if (target - a).abs() <= REANCHOR_S => (a + (target - a).clamp(-CLOCK_SLEW * dt, CLOCK_SLEW * dt), false),
+            Some(_) => (target, true),
+            None => (target, false),
+        };
+        if self.applied == Some(next) {
+            return None;
+        }
+        self.applied = Some(next);
+        Some((next, step))
+    }
 }
 
 pub struct Session {
@@ -238,25 +288,29 @@ impl Session {
 
 
     /// Raw u8 IQ from `source`; `dropped`: samples the driver knows it lost
-    /// before these (fed as silence, so time keeps up).
-    pub fn push(&mut self, source: usize, bytes: &[u8], dropped: u64) {
+    /// before these (fed as silence, so time keeps up); `at_ms`: when the
+    /// driver handed them over, on `poll`'s clock.
+    pub fn push(&mut self, source: usize, bytes: &[u8], dropped: u64, at_ms: f64) {
         self.gap(source, dropped);
         self.engine.push_u8(source, bytes);
         self.meas.meter(source).u8(bytes);
-        let s = &mut self.stats[source];
-        s.samples += bytes.len() as u64 / 2;
-        s.clock.samples += bytes.len() as u64 / 2;
-        s.fed = true;
+        self.fed(source, bytes.len() as u64 / 2, at_ms);
     }
 
-    /// Float IQ from `source` (USRP, Airspy, float captures).
-    pub fn push_iq(&mut self, source: usize, iq: &[Complex32], dropped: u64) {
+    /// Float IQ from `source` (USRP, Airspy, float captures); as [`push`](Self::push).
+    pub fn push_iq(&mut self, source: usize, iq: &[Complex32], dropped: u64, at_ms: f64) {
         self.gap(source, dropped);
         self.engine.push_iq(source, iq);
         self.meas.meter(source).iq(iq);
+        self.fed(source, iq.len() as u64, at_ms);
+    }
+
+    fn fed(&mut self, source: usize, n: u64, at_ms: f64) {
+        let rate = self.engine.sources()[source].rate_hz;
         let s = &mut self.stats[source];
-        s.samples += iq.len() as u64;
-        s.clock.samples += iq.len() as u64;
+        s.samples += n;
+        s.clock.samples += n;
+        s.clock.observe(at_ms, self.epoch_ms, rate);
         s.fed = true;
     }
 
@@ -295,39 +349,16 @@ impl Session {
         }
     }
 
-    /// Measure each live source's clock against the wall clock, and steer
-    /// its offset ([`ClockFit`]). `dt`: wall seconds since the last poll.
-    fn steer_clocks(&mut self, now_ms: f64, dt: f64) {
-        let since_epoch = (now_ms - self.epoch_ms) / 1000.0;
+    /// Steer each live source's clock offset ([`ClockFit`]). `dt`: wall
+    /// seconds since the last poll.
+    fn steer_clocks(&mut self, dt: f64) {
         for i in 0..self.stats.len() {
-            let rate = self.engine.sources()[i].rate_hz;
-            let (fed, c) = (self.stats[i].fed, &mut self.stats[i].clock);
-            if !c.live || c.samples == 0 {
-                continue;
+            let Some((offset, step)) = self.stats[i].clock.steer(dt) else { continue };
+            if step {
+                let moved = offset - self.engine.clock_offset(i);
+                self.records.push(Record::text(Level::Info, None, format!("Source {i}: clock re-anchored to the wall clock ({:+.3} s)", moved)));
             }
-            if fed {
-                // Samples only ever arrive late (buffers, a busy engine): the
-                // least lag over a window is the clock's own.
-                let lag = since_epoch - c.samples as f64 / rate;
-                c.window_min = Some(c.window_min.map_or(lag, |m| m.min(lag)));
-                if c.applied.is_none() {
-                    // The first samples: set at once (the radio's open time).
-                    c.target = Some(lag);
-                    c.window_ms = now_ms;
-                } else if now_ms - c.window_ms >= CLOCK_WINDOW_MS {
-                    c.target = c.window_min.take();
-                    c.window_ms = now_ms;
-                }
-            }
-            let Some(target) = c.target else { continue };
-            let next = match c.applied {
-                None => target,
-                Some(a) => a + (target - a).clamp(-CLOCK_SLEW * dt, CLOCK_SLEW * dt),
-            };
-            if c.applied != Some(next) {
-                c.applied = Some(next);
-                self.engine.set_clock_offset(i, next);
-            }
+            self.engine.set_clock_offset(i, offset);
         }
     }
 
@@ -361,7 +392,7 @@ impl Session {
         let start = *self.start_ms.get_or_insert(now_ms);
         let dt = (now_ms - self.last_poll_ms.unwrap_or(now_ms)).max(0.0) / 1000.0;
         self.last_poll_ms = Some(now_ms);
-        self.steer_clocks(now_ms, dt);
+        self.steer_clocks(dt);
         self.meas.set_now(now_ms / 1000.0);
         self.fill_quiet(now_ms);
         for ev in self.engine.drain_events() {
@@ -494,7 +525,7 @@ impl Session {
     /// Trunk Recorder's control channel decode rate check, and its status summary.
     fn log_rates_and_status(&mut self, _out: &mut [Output]) {
         let st = self.engine.status();
-        let warn = self.cfg.log.control_warn_rate;
+        let warn = self.cfg.log.control_warn_rate_per_s;
         self.rate_at.resize(self.engine.systems().len(), (f64::NAN, 0));
         for y in &st.systems {
             let i = y.system as usize;
@@ -540,7 +571,7 @@ impl Session {
             talkgroup: c.talkgroup,
             talkgroup_tag: c.talkgroup_info.as_ref().map_or(String::new(), |t| t.alpha_tag.clone()),
             freq_hz: c.freq_hz,
-            tdma_slot: c.phase2_tdma.then_some(c.tdma_slot),
+            tdma_slot: c.slot(),
             analog: c.analog,
             encrypted: c.encrypted,
             emergency: c.emergency,
@@ -681,7 +712,7 @@ impl Session {
                 let r = match c.reason {
                     _ if c.recording => {
                         let kind = if c.analog { "Analog" } else if c.color_code.is_some() { "DMR" } else if c.phase2_tdma { "P25 Phase 2" } else { "P25" };
-                        let slot = (c.phase2_tdma || c.color_code.is_some()).then_some(c.tdma_slot);
+                        let slot = c.slot();
                         self.call_record(Level::Info, &c, Body::Recording { kind, slot })
                     }
                     Some(why) => {
@@ -830,7 +861,7 @@ fn call_view(c: &Call, system_name: &str, patched: Vec<Value>) -> Value {
         "talkgroup": c.talkgroup,
         "alphaTag": c.talkgroup_info.as_ref().map_or("", |t| t.alpha_tag.as_str()),
         "freqHz": c.freq_hz,
-        "slot": if c.phase2_tdma { Some(c.tdma_slot) } else { None },
+        "slot": c.slot(),
         "analog": c.analog,
         // "151.4 Hz" or "D023N".
         "tone": c.tone.map(|h| match h.tone {
@@ -845,4 +876,50 @@ fn call_view(c: &Call, system_name: &str, patched: Vec<Value>) -> Value {
         "sources": c.sources.iter().map(|s| s.src).collect::<Vec<_>>(),
         "patched": patched,
     })
+}
+
+#[cfg(test)]
+mod clock_tests {
+    use super::*;
+
+    /// A live clock fed `secs` of 1 MS/s samples, handed over every 100 ms
+    /// with `lag` s of latency, plus `extra` samples beyond the wall time
+    /// at `jump_at` s; steered every 100 ms. The offsets set, per 100 ms.
+    fn run(secs: f64, ppm: f64, jump_at: f64, extra: u64) -> Vec<(f64, bool)> {
+        let mut c = ClockFit { live: true, ..Default::default() };
+        let mut set = Vec::new();
+        let mut t = 0.0;
+        while t < secs {
+            t += 0.1;
+            c.samples = (t * 1e6 * (1.0 + ppm * 1e-6)) as u64 + if t > jump_at { extra } else { 0 };
+            c.observe(1000.0 * (t + 0.02), 0.0, 1e6);
+            if let Some(s) = c.steer(0.1) {
+                set.push(s);
+            }
+        }
+        set
+    }
+
+    #[test]
+    fn crystal_drift_is_followed_in_small_steps() {
+        // 20 ppm fast: 0.2 ms more every 10 s, never a step.
+        let set = run(120.0, 20.0, f64::INFINITY, 0);
+        assert!(set.iter().skip(1).all(|&(_, step)| !step));
+        let last = set.last().unwrap().0;
+        // Lag = 0.02 s latency − 20 ppm × 120 s (the window's least lag lags by up to a window).
+        assert!((last - (0.02 - 20e-6 * 120.0)).abs() < 0.0005, "{last}");
+    }
+
+    #[test]
+    fn samples_gained_or_lost_are_re_anchored_at_once() {
+        // 2 s of samples more than the wall clock allows at 30 s (a stalled
+        // radio's backlog after its quiet was filled in).
+        let set = run(60.0, 0.0, 30.0, 2_000_000);
+        let steps: Vec<f64> = set.iter().filter(|s| s.1).map(|s| s.0).collect();
+        assert_eq!(steps.len(), 1, "{set:?}");
+        assert!((steps[0] - (0.02 - 2.0)).abs() < 1e-6, "{steps:?}");
+        // And 2 s lost (not reported by the driver).
+        let set = run(60.0, 0.0, 30.0, 0);
+        assert!((set.last().unwrap().0 - 0.02).abs() < 1e-6);
+    }
 }

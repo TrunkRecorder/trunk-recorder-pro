@@ -36,6 +36,12 @@ impl Talkgroup {
 
 pub type Talkgroups = HashMap<u32, Talkgroup>;
 
+/// A CSV file's lines that hold something: not blank, not a `#` comment,
+/// and without the byte-order mark spreadsheets put at the start.
+pub(crate) fn csv_lines(text: &str) -> impl Iterator<Item = &str> {
+    text.strip_prefix('\u{feff}').unwrap_or(text).lines().filter(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#'))
+}
+
 /// RFC-4180-ish split: commas, double-quoted fields, "" escapes.
 pub(crate) fn split_csv_line(line: &str) -> Vec<String> {
     let mut out = Vec::new();
@@ -66,11 +72,13 @@ pub(crate) fn split_csv_line(line: &str) -> Vec<String> {
 }
 
 pub fn parse_csv(text: &str) -> Talkgroups {
-    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty() && !l.trim().starts_with('#')).collect();
+    let lines: Vec<&str> = csv_lines(text).collect();
     let mut out = Talkgroups::new();
     let Some(first) = lines.first().map(|l| split_csv_line(l)) else { return out };
-    let headed = first.first().map(|s| s.as_str()) == Some("Decimal");
-    let col = |name: &str| first.iter().position(|c| c == name);
+    // Headers in any case, as spreadsheets save them.
+    let first: Vec<String> = first.iter().map(|c| c.trim().to_ascii_lowercase()).collect();
+    let headed = first.first().map(|s| s.as_str()) == Some("decimal");
+    let col = |name: &str| first.iter().position(|c| c.eq_ignore_ascii_case(name));
     for line in if headed { &lines[1..] } else { &lines[..] } {
         let f = split_csv_line(line);
         let get = |name: &str, legacy: usize| -> Option<&str> {
@@ -121,5 +129,11 @@ mod tests {
         let l = parse_csv("202,ca,E,Police,Tac 2,Law,City,3\n");
         assert!(l[&202].encrypted_mode());
         assert_eq!(l[&202].priority, 3);
+    }
+
+    #[test]
+    fn a_spreadsheets_bom_and_header_case_are_fine() {
+        let t = parse_csv("\u{feff}DECIMAL,alpha tag,Mode\r\n101,Disp,D\r\n");
+        assert_eq!((t[&101].alpha_tag.as_str(), t[&101].mode.as_str()), ("Disp", "D"));
     }
 }

@@ -302,7 +302,7 @@ pub fn install(l: &Listing, progress: &dyn Fn(&'static str)) -> Result<Manifest,
     let dir = plugins_dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     // Unpacked beside the plugins (same disk, so it can be moved into place).
-    let staging = Staging(dir.join(format!(".installing-{}-{}", l.id, std::process::id())));
+    let staging = Staging(dir.join(format!(".installing-{}-{}", l.id, unique())));
     let _ = std::fs::remove_dir_all(&staging.0);
     std::fs::create_dir_all(&staging.0).map_err(|e| format!("{}: {e}", staging.0.display()))?;
     unpack(&data, a.url.ends_with(".zip"), &staging.0)?;
@@ -365,7 +365,7 @@ fn only_folder(dir: &Path) -> Option<PathBuf> {
 
 /// Move `new` to `dest`, keeping the old `dest` until the move has worked.
 fn put_in_place(new: &Path, dest: &Path) -> Result<(), String> {
-    let old = dest.with_file_name(format!(".old-{}-{}", dest.file_name().unwrap_or_default().to_string_lossy(), std::process::id()));
+    let old = dest.with_file_name(format!(".old-{}-{}", dest.file_name().unwrap_or_default().to_string_lossy(), unique()));
     let _ = std::fs::remove_dir_all(&old);
     let had = dest.exists();
     if had {
@@ -438,6 +438,13 @@ fn unpack(data: &[u8], zip: bool, into: &Path) -> Result<(), String> {
 
 fn now() -> f64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
+}
+
+/// A name part no other install (in this process or another) is using:
+/// two installs of one plugin at once mustn't share a staging folder.
+fn unique() -> String {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    format!("{}-{}", std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
 }
 
 #[cfg(test)]

@@ -2,7 +2,7 @@
 // RTL-SDR driver (WebUSB), speaking the same protocol as the desktop app's
 // server, so the interface is identical. Calls are stored in OPFS.
 
-import init, { survey_bands, WebRtl, WebSession, WebSurvey } from "./pkg/trunk_web.js";
+import init, { survey_bands, WebProfiler, WebRtl, WebSession, WebSurvey } from "./pkg/trunk_web.js";
 import type { Config, FromRecorder, HeardCode } from "../protocol.ts";
 import { activeSystems, resolvedCenters } from "../config.ts";
 import { listCalls, readText, saveCall, writeText } from "./opfs.ts";
@@ -19,6 +19,7 @@ export type ToWorker =
   | { type: "surveyListen"; freqHz: number }
   | { type: "surveyRescan" }
   | { type: "surveyStop" }
+  | { type: "profileSource"; source: number; centerHz: number }
   | { type: "subscribe"; topics: string[] }
   | { type: "statsQuery"; id: number; series: string[]; range?: string; from?: number; to?: number; points?: number }
   | { type: "radioQuery"; id: number; what: string; system?: string; key?: number; hours?: number; limit?: number };
@@ -92,6 +93,46 @@ function deliver(outs: { t: string; json?: string; system?: number; shortName?: 
   }
 }
 
+// ── a source's roll-off (Setup): a moment with the radio alone ───────────────
+
+async function profileSource(req: { source: number; centerHz: number }): Promise<void> {
+  const fail = (error: string) => post({ type: "sourceProfile", source: req.source, error });
+  if (running) return fail("Stop recording first — profiling needs the radio to itself.");
+  await surveyStop();
+  const src = config?.sources[req.source];
+  if (!src) return fail("No such source.");
+  let rtl: WebRtl | null = null;
+  try {
+    await ready;
+    if (src.type === "usrp" || src.type === "airspy" || src.type === "soapy") throw new Error("USRP, Airspy and SoapySDR need the desktop app.");
+    if (src.type === "rtlsdr") {
+      if (!(req.centerHz > 0)) throw new Error("Choose a frequency to look at.");
+      const p = new WebProfiler(req.source, req.centerHz, src.rateHz);
+      rtl = await WebRtl.open(src.serial, req.centerHz, src.rateHz, src.agc ? undefined : src.gainDb, src.ppm);
+      while (!p.done()) {
+        const b = (await rtl.next()) as { bytes: Uint8Array } | undefined;
+        if (!b) break;
+        p.push(b.bytes);
+      }
+      post(JSON.parse(p.result()) as FromRecorder);
+      p.free();
+    } else {
+      if (src.format && src.format !== "cu8") throw new Error("The browser version reads rtl_sdr (cu8) captures only.");
+      const f = files[req.source];
+      if (!f) throw new Error("Choose the capture file again (the browser forgets it on reload).");
+      const p = new WebProfiler(req.source, resolvedCenters(config!)[req.source] ?? src.centerHz, src.rateHz);
+      const chunk = 1 << 18;
+      for (let off = 0; !p.done() && off < f.size; off += chunk) p.push(new Uint8Array(await f.slice(off, Math.min(f.size, off + chunk)).arrayBuffer()));
+      post(JSON.parse(p.result()) as FromRecorder);
+      p.free();
+    }
+  } catch (e) {
+    fail(e instanceof Error ? e.message : String(e));
+  } finally {
+    if (rtl) await rtl.close().catch(() => {});
+  }
+}
+
 // ── first-run survey: one source, retuned as the survey asks ─────────────────
 
 let survey: WebSurvey | null = null;
@@ -111,12 +152,12 @@ async function surveyStart(req: { source: number; bands: string[]; findGain: boo
     await ready;
     const src = config.sources[req.source];
     if (!src) throw new Error("No such source.");
-    if (src.kind === "usrp" || src.kind === "airspy" || src.kind === "soapy") throw new Error("USRP, Airspy and SoapySDR need the desktop app.");
+    if (src.type === "usrp" || src.type === "airspy" || src.type === "soapy") throw new Error("USRP, Airspy and SoapySDR need the desktop app.");
     const s = new WebSurvey(JSON.stringify(config), JSON.stringify(req));
     survey = s;
     surveying = true;
     surveyTimer = setInterval(surveyPoll, 100);
-    if (src.kind === "rtlsdr") {
+    if (src.type === "rtlsdr") {
       const first = s.command() as { tune?: number } | undefined;
       const rtl = await WebRtl.open(src.serial, first?.tune ?? src.centerHz, src.rateHz, src.agc ? undefined : src.gainDb, src.ppm);
       surveyRtl = rtl;
@@ -237,11 +278,11 @@ async function start(): Promise<void> {
     rtls = [];
     for (let i = 0; i < cfg.sources.length; i++) {
       const s = cfg.sources[i];
-      if (s.kind === "rtlsdr") {
+      if (s.type === "rtlsdr") {
         const rtl = await WebRtl.open(s.serial, centers[i] ?? s.centerHz, s.rateHz, s.agc ? undefined : s.gainDb, s.ppm);
         rtls.push(rtl);
         void pumpRtl(i, rtl);
-      } else if (s.kind === "usrp" || s.kind === "airspy" || s.kind === "soapy") {
+      } else if (s.type === "usrp" || s.type === "airspy" || s.type === "soapy") {
         throw new Error(`Source ${i + 1}: USRP, Airspy and SoapySDR need the desktop app.`);
       } else {
         if (s.format && s.format !== "cu8") throw new Error(`Source ${i + 1}: the browser version reads rtl_sdr (cu8) captures only.`);
@@ -274,7 +315,7 @@ async function pumpRtl(source: number, rtl: WebRtl): Promise<void> {
       const b = (await rtl.next()) as { bytes: Uint8Array; dropped: number } | undefined;
       if (!b || !session) break;
       const t = performance.now();
-      session.push(source, b.bytes, b.dropped);
+      session.push(source, b.bytes, b.dropped, wallMs());
       session.add_busy_ms(performance.now() - t);
     } catch (e) {
       if (!running) break;
@@ -291,7 +332,7 @@ async function pumpFile(source: number, f: File, rateHz: number, realtime: boole
     const bytes = new Uint8Array(await f.slice(off, Math.min(f.size, off + chunk)).arrayBuffer());
     if (!running || !session) return;
     const t = performance.now();
-    session.push(source, bytes, 0);
+    session.push(source, bytes, 0, wallMs());
     session.add_busy_ms(performance.now() - t);
     const due = ((off + bytes.length) / 2 / rateHz) * 1000;
     const wait = realtime ? due - (performance.now() - t0) : 0;
@@ -397,6 +438,9 @@ onmessage = async (ev: MessageEvent<ToWorker>) => {
       break;
     case "surveyStop":
       await surveyStop();
+      break;
+    case "profileSource":
+      await profileSource(m);
       break;
   }
 };

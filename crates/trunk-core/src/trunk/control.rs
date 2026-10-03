@@ -13,7 +13,7 @@
 //! DMR:      every carrier of the site: 4FSK → bursts → CSBK / link control → Message
 //! ```
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use num_complex::Complex32;
 
@@ -145,7 +145,7 @@ pub fn build(cfg: &SystemConfig, rate: f64) -> Box<dyn ControlChannel> {
             bank: Bank::new(rate, cfg.bank),
             parser: TsbkParser::default(),
             identity: Identity::default(),
-            nac_votes: HashMap::new(),
+            nac_votes: BTreeMap::new(),
             good: 0,
             bad: 0,
             t0: 0.0,
@@ -165,7 +165,8 @@ struct P25 {
     bank: Bank,
     parser: TsbkParser,
     identity: Identity,
-    nac_votes: HashMap<u16, u32>,
+    /// (Ordered: a tie goes to the higher NAC, every run.)
+    nac_votes: BTreeMap<u16, u32>,
     good: u64,
     bad: u64,
     /// The last push's start time and rate (for the flush).

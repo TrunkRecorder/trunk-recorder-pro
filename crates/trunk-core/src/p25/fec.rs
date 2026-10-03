@@ -11,6 +11,8 @@
 
 use std::sync::OnceLock;
 
+/// A decoded codeword. `errs` keeps op25's −1 for uncorrectable, as the RS
+/// decoders' return values do.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Fec {
     pub data: u32,

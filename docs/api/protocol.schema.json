@@ -1695,6 +1695,101 @@
         },
         {
           "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "source": {
+              "type": "number"
+            },
+            "error": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "sourceProfile"
+            }
+          },
+          "required": [
+            "error",
+            "source",
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "source": {
+              "type": "number"
+            },
+            "centerHz": {
+              "type": "number"
+            },
+            "rateHz": {
+              "type": "number"
+            },
+            "spectrum": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              }
+            },
+            "floor": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              }
+            },
+            "rows": {
+              "type": "array",
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                }
+              }
+            },
+            "referenceDb": {
+              "type": "number"
+            },
+            "lowHz": {
+              "type": "number"
+            },
+            "highHz": {
+              "type": "number"
+            },
+            "lowDropDb": {
+              "type": "number"
+            },
+            "highDropDb": {
+              "type": "number"
+            },
+            "suggestedGuardHz": {
+              "type": "number",
+              "description": "The guard band to leave at each edge, Hz."
+            },
+            "type": {
+              "type": "string",
+              "const": "sourceProfile"
+            }
+          },
+          "required": [
+            "centerHz",
+            "floor",
+            "highDropDb",
+            "highHz",
+            "lowDropDb",
+            "lowHz",
+            "rateHz",
+            "referenceDb",
+            "rows",
+            "source",
+            "spectrum",
+            "suggestedGuardHz",
+            "type"
+          ]
+        },
+        {
+          "type": "object",
           "properties": {
             "type": {
               "type": "string",
@@ -1879,74 +1974,6 @@
             "type",
             "id",
             "runtime"
-          ],
-          "additionalProperties": false
-        },
-        {
-          "type": "object",
-          "properties": {
-            "type": {
-              "type": "string",
-              "const": "pluginState"
-            },
-            "id": {
-              "type": "string"
-            },
-            "state": {
-              "type": "string",
-              "enum": [
-                "ok",
-                "warning",
-                "error"
-              ]
-            },
-            "message": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "id",
-            "state",
-            "message"
-          ],
-          "additionalProperties": false
-        },
-        {
-          "type": "object",
-          "properties": {
-            "type": {
-              "type": "string",
-              "const": "pluginResult"
-            },
-            "id": {
-              "type": "string"
-            },
-            "path": {
-              "type": "string"
-            },
-            "outcome": {
-              "type": "string",
-              "enum": [
-                "ok",
-                "skipped",
-                "failed"
-              ]
-            },
-            "message": {
-              "type": "string"
-            },
-            "url": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "id",
-            "path",
-            "outcome",
-            "message",
-            "url"
           ],
           "additionalProperties": false
         },
@@ -2747,7 +2774,7 @@
         "statusAsString": {
           "type": "boolean"
         },
-        "controlWarnRate": {
+        "controlWarnRatePerS": {
           "type": "number"
         }
       },
@@ -2762,7 +2789,7 @@
         "frequencyFormat",
         "talkgroupDisplayFormat",
         "statusAsString",
-        "controlWarnRate"
+        "controlWarnRatePerS"
       ],
       "additionalProperties": false,
       "description": "The log (desktop app), with Trunk Recorder's options (crates/trunk-app/src/config.rs LogSettings)."
@@ -3968,7 +3995,7 @@
         "bandplan"
       ],
       "additionalProperties": false,
-      "description": "A SmartNet band plan, in Trunk Recorder's config names (Hz; offset a channel number)."
+      "description": "A SmartNet band plan the survey learned, in Trunk Recorder's names (Hz; offset a channel number)."
     },
     "SoapyModule": {
       "type": "object",
@@ -4078,7 +4105,10 @@
             "autoTune": {
               "type": "boolean"
             },
-            "kind": {
+            "guardHz": {
+              "type": "number"
+            },
+            "type": {
               "type": "string",
               "const": "rtlsdr"
             },
@@ -4105,10 +4135,10 @@
             "agc",
             "centerHz",
             "gainDb",
-            "kind",
             "ppm",
             "rateHz",
-            "serial"
+            "serial",
+            "type"
           ]
         },
         {
@@ -4118,7 +4148,10 @@
             "autoTune": {
               "type": "boolean"
             },
-            "kind": {
+            "guardHz": {
+              "type": "number"
+            },
+            "type": {
               "type": "string",
               "const": "usrp"
             },
@@ -4150,9 +4183,9 @@
             "args",
             "centerHz",
             "gainDb",
-            "kind",
             "ppm",
-            "rateHz"
+            "rateHz",
+            "type"
           ]
         },
         {
@@ -4162,7 +4195,10 @@
             "autoTune": {
               "type": "boolean"
             },
-            "kind": {
+            "guardHz": {
+              "type": "number"
+            },
+            "type": {
               "type": "string",
               "const": "airspy"
             },
@@ -4178,16 +4214,16 @@
             "gainMode": {
               "$ref": "#/definitions/AirspyGainMode"
             },
-            "gain": {
+            "gainStep": {
               "type": "number"
             },
-            "lnaGain": {
+            "lnaStep": {
               "type": "number"
             },
-            "mixerGain": {
+            "mixerStep": {
               "type": "number"
             },
-            "vgaGain": {
+            "vgaStep": {
               "type": "number"
             },
             "agc": {
@@ -4204,15 +4240,15 @@
             "agc",
             "biasTee",
             "centerHz",
-            "gain",
             "gainMode",
-            "kind",
-            "lnaGain",
-            "mixerGain",
+            "gainStep",
+            "lnaStep",
+            "mixerStep",
             "ppm",
             "rateHz",
             "serial",
-            "vgaGain"
+            "type",
+            "vgaStep"
           ]
         },
         {
@@ -4222,7 +4258,10 @@
             "autoTune": {
               "type": "boolean"
             },
-            "kind": {
+            "guardHz": {
+              "type": "number"
+            },
+            "type": {
               "type": "string",
               "const": "soapy"
             },
@@ -4267,10 +4306,10 @@
             "centerHz",
             "gainDb",
             "gains",
-            "kind",
             "ppm",
             "rateHz",
-            "settings"
+            "settings",
+            "type"
           ]
         },
         {
@@ -4280,7 +4319,10 @@
             "autoTune": {
               "type": "boolean"
             },
-            "kind": {
+            "guardHz": {
+              "type": "number"
+            },
+            "type": {
               "type": "string",
               "const": "file"
             },
@@ -4302,14 +4344,14 @@
           },
           "required": [
             "centerHz",
-            "kind",
             "path",
             "rateHz",
-            "realtime"
+            "realtime",
+            "type"
           ]
         }
       ],
-      "description": "A radio, or a capture to replay. Every kind may have `autoTune`: correct its channels for the frequency error measured on the control channels (Trunk Recorder's autoTune); the error is measured and shown either way."
+      "description": "A radio, or a capture to replay (`type`). Every type may have `autoTune`: correct its channels for the frequency error measured on the control channels (Trunk Recorder's autoTune); the error is measured and shown either way. And `guardHz`: left unused at each edge of its band, where the anti-alias filter rolls off (default 75 000; Setup can measure it — `profileSource`)."
     },
     "SourceStatus": {
       "type": "object",
@@ -5025,22 +5067,6 @@
     "System": {
       "type": "object",
       "properties": {
-        "bandplan": {
-          "type": "string",
-          "description": "\"800_standard\" | \"800_reband\" | \"800_splinter\" | \"900\" | \"400_custom\"."
-        },
-        "bandplanBase": {
-          "type": "number"
-        },
-        "bandplanSpacing": {
-          "type": "number"
-        },
-        "bandplanOffset": {
-          "type": "number"
-        },
-        "bandplanHigh": {
-          "type": "number"
-        },
         "shortName": {
           "type": "string"
         },
@@ -5055,21 +5081,37 @@
             "smartnet",
             "dmr"
           ],
-          "description": "\"smartnet\": a Motorola SmartNet / SmartZone control channel (voice P25 or analog FM). \"dmr\": a trunked DMR site (Capacity Plus, Capacity Max, Connect Plus, Tier III); every control channel and `channels` frequency is watched."
+          "description": "\"smartnet\": a Motorola SmartNet / SmartZone control channel (voice P25 or analog FM). \"dmr\": a trunked DMR site (Capacity Plus, Capacity Max, Connect Plus, Tier III); every control channel and `dmrChannelsHz` frequency is watched."
         },
-        "lcnTable": {
+        "bandplan": {
+          "type": "string",
+          "description": "SmartNet: \"800_standard\" | \"800_reband\" | \"800_splinter\" | \"900\" | \"400_custom\" (with base / spacing / offset / high; offset a channel number)."
+        },
+        "bandplanBaseHz": {
+          "type": "number"
+        },
+        "bandplanSpacingHz": {
+          "type": "number"
+        },
+        "bandplanOffset": {
+          "type": "number"
+        },
+        "bandplanHighHz": {
+          "type": "number"
+        },
+        "lcnTableHz": {
           "type": "object",
           "additionalProperties": {
             "type": "number"
           },
           "description": "DMR: logical channel number → frequency, Hz (Trunk Recorder's lcnTable); the rest is learned."
         },
-        "channels": {
+        "dmrChannelsHz": {
           "type": "array",
           "items": {
             "type": "number"
           },
-          "description": "DMR: voice frequencies to watch besides the control channels."
+          "description": "DMR: voice frequencies to watch besides the control channels (Trunk Recorder's channels)."
         },
         "colorCode": {
           "type": "number",
@@ -5086,7 +5128,7 @@
         "enabled": {
           "type": "boolean"
         },
-        "controlChannels": {
+        "controlChannelsHz": {
           "type": "array",
           "items": {
             "type": "number"
@@ -5110,7 +5152,7 @@
           "$ref": "#/definitions/SiteIdentity",
           "description": "Only follow a control channel with this identity (e.g. this site, not a neighbour)."
         },
-        "voiceChannels": {
+        "voiceChannelsHz": {
           "type": "array",
           "items": {
             "type": "number"
@@ -5141,12 +5183,12 @@
         "shortName",
         "type",
         "enabled",
-        "controlChannels",
+        "controlChannelsHz",
         "modulation",
         "talkgroupsCsv",
         "talkgroupsName",
         "expect",
-        "voiceChannels"
+        "voiceChannelsHz"
       ],
       "additionalProperties": false
     },
@@ -5597,6 +5639,27 @@
           },
           "required": [
             "type"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "profileSource"
+            },
+            "source": {
+              "type": "number"
+            },
+            "centerHz": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "source",
+            "centerHz"
           ],
           "additionalProperties": false
         },

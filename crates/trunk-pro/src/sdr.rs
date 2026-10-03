@@ -3,7 +3,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rtlsdr_nusb::{Device, GainConfig, MaybeFuture};
 
@@ -68,10 +68,11 @@ fn busy(info: &nusb::DeviceInfo) -> Option<String> {
 
 /// What a source thread reports.
 pub enum SourceMsg {
-    /// Raw u8 IQ, and samples the driver knows were dropped just before it.
-    Data { source: usize, bytes: Vec<u8>, dropped: u64 },
+    /// Raw u8 IQ, samples the driver knows were dropped just before it, and
+    /// when the driver handed it over (the source's clock is measured by it).
+    Data { source: usize, bytes: Vec<u8>, dropped: u64, at: Instant },
     /// Float IQ (USRP, Airspy, float captures).
-    Iq { source: usize, samples: Vec<num_complex::Complex32>, dropped: u64 },
+    Iq { source: usize, samples: Vec<num_complex::Complex32>, dropped: u64, at: Instant },
     Error { source: usize, error: String },
     /// A finite source (a capture file) has no more data.
     End { source: usize },
@@ -164,7 +165,7 @@ fn stream_once(source: usize, cfg: &RtlConfig, tx: &SyncSender<SourceMsg>, stop:
         }
         match rx.next_block(Some(Duration::from_secs(2))).wait() {
             Ok(Some(block)) => {
-                let msg = SourceMsg::Data { source, bytes: block.raw_bytes().to_vec(), dropped: block.dropped_samples() };
+                let msg = SourceMsg::Data { source, bytes: block.raw_bytes().to_vec(), dropped: block.dropped_samples(), at: Instant::now() };
                 if tx.send(msg).is_err() {
                     break Ok(());
                 }

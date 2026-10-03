@@ -61,16 +61,20 @@ pub struct FrameErrors {
 
 impl FrameErrors {
     pub fn add(&mut self, f: &VoiceFrame) {
+        self.add_stat(FrameStat::of(f));
+    }
+
+    fn add_stat(&mut self, f: FrameStat) {
         if self.intervals.last().is_none_or(|i| i.frames >= INTERVAL_FRAMES) {
             self.intervals.push(ErrorInterval::default());
         }
         let i = self.intervals.last_mut().unwrap();
         i.frames += 1;
-        if !f.erased {
-            i.errors += f.errs as u64;
-            i.max_frame_errors = i.max_frame_errors.max(f.errs);
+        if let Some(errs) = f.errs {
+            i.errors += errs as u64;
+            i.max_frame_errors = i.max_frame_errors.max(errs);
         }
-        i.bad_frames += f.bad() as u32;
+        i.bad_frames += f.bad as u32;
     }
 
     /// The share of voice frames decoded cleanly (not repeated, muted or
@@ -167,17 +171,57 @@ pub fn frames_jsonl(frames: &[VoiceFrame]) -> String {
 pub struct CallFrames {
     pub errors: FrameErrors,
     pub captured: Option<Vec<VoiceFrame>>,
+    /// Each frame's errors, in order (so the summary can be redone for
+    /// the frames a call keeps: [`CallFrames::keep`]).
+    stats: Vec<FrameStat>,
+}
+
+/// What [`FrameErrors`] needs of a frame.
+#[derive(Clone, Copy, Debug)]
+struct FrameStat {
+    /// Bit errors corrected; None when it was lost.
+    errs: Option<u32>,
+    bad: bool,
+}
+
+impl FrameStat {
+    fn of(f: &VoiceFrame) -> FrameStat {
+        FrameStat { errs: (!f.erased).then_some(f.errs), bad: f.bad() }
+    }
 }
 
 impl CallFrames {
     pub fn new(capture: bool) -> Self {
-        CallFrames { errors: FrameErrors::default(), captured: capture.then(Vec::new) }
+        CallFrames { errors: FrameErrors::default(), captured: capture.then(Vec::new), stats: Vec::new() }
     }
 
     pub fn push(&mut self, f: VoiceFrame) {
-        self.errors.add(&f);
+        let st = FrameStat::of(&f);
+        self.stats.push(st);
+        self.errors.add_stat(st);
         if let Some(c) = self.captured.as_mut() {
             c.push(f);
+        }
+    }
+
+    /// Keep only the frames whose audio is in `ranges` (sample ranges of the
+    /// call's `audio_len` samples), the error summary redone for them. A
+    /// call's digital audio is its frames one after another; when it isn't
+    /// (analog: no frames), nothing changes.
+    pub fn keep(&mut self, ranges: &[std::ops::Range<usize>], audio_len: usize) {
+        if self.stats.is_empty() || self.stats.len() * FRAME_SAMPLES != audio_len {
+            return;
+        }
+        let kept = |k: usize| ranges.iter().any(|r| r.contains(&(k * FRAME_SAMPLES)));
+        let mut k = 0;
+        self.stats.retain(|_| (kept(k), k += 1).0);
+        if let Some(c) = self.captured.as_mut() {
+            let mut k = 0;
+            c.retain(|_| (kept(k), k += 1).0);
+        }
+        self.errors = FrameErrors::default();
+        for &st in &self.stats {
+            self.errors.add_stat(st);
         }
     }
 }

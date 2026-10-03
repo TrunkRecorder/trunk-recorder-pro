@@ -106,7 +106,7 @@ fn air(fs: f64, secs: f64, mut each: impl FnMut(&[Complex32], f64)) {
 
 fn conventional_config() -> Config {
     serde_json::from_value(json!({
-        "sources": [{ "kind": "rtlsdr", "serial": "", "centerHz": 155000000, "rateHz": 2400000, "gainDb": 25, "agc": false, "ppm": 0 }],
+        "sources": [{ "type": "rtlsdr", "serial": "", "centerHz": 155000000, "rateHz": 2400000, "gainDb": 25, "agc": false, "ppm": 0 }],
         "conventional": [{ "shortName": "conv", "channels": [{ "freqHz": 155200000, "mode": "fm", "name": "Fire", "tone": "151.4" }] }],
         "recording": { "callTimeoutS": 1 }
     }))
@@ -121,7 +121,7 @@ fn a_recording_sessions_messages() {
     s.set_topics(trunk_app::stats::Topics::new(["spectrum:0", "log", "rf:0", "decode:conv"].map(String::from)));
     let (mut out, mut msgs) = (Vec::new(), Vec::new());
     air(2_400_000.0, 4.5, |iq, t| {
-        s.push_iq(0, iq, 0);
+        s.push_iq(0, iq, 0, 1.75e12 + t * 1000.0);
         s.poll(1.75e12 + t * 1000.0, &mut out);
         texts(&mut out, &mut msgs);
     });
@@ -153,7 +153,7 @@ fn a_late_radio_keeps_to_the_wall_clock() {
         s.poll(epoch, &mut out);
         let mut files = Vec::new();
         air(2_400_000.0, 4.5, |iq, t| {
-            s.push_iq(0, iq, 0);
+            s.push_iq(0, iq, 0, epoch + 3000.0 + t * 1000.0);
             s.poll(epoch + 3000.0 + t * 1000.0, &mut out);
             files.extend(out.drain(..).filter_map(|o| if let Output::File { json, .. } = o { Some(json) } else { None }));
         });
@@ -171,11 +171,34 @@ fn a_late_radio_keeps_to_the_wall_clock() {
         center_hz: 155_000_000.0,
         rate_hz: 2_400_000.0,
         realtime: false,
-        format: Default::default(),
+        format: None,
         auto_tune: false,
+        guard_hz: trunk_app::config::DEFAULT_GUARD_HZ,
     }];
     let file = start_of(replay);
     assert!((file - 500.0).abs() < 100.0, "the replayed call starts {file} ms in");
+}
+
+/// An engine running 2 s behind its radio (samples queued for it): each
+/// buffer is timed by when the driver handed it over, so the call still
+/// starts 0.5 s in, not 2.5 s.
+#[test]
+fn a_busy_engine_does_not_make_the_radio_look_late() {
+    let epoch = 1.75e12;
+    let mut s = Session::new(conventional_config(), epoch, &|_| None, |_| 0).unwrap();
+    let mut out = Vec::new();
+    s.poll(epoch, &mut out);
+    let mut files = Vec::new();
+    air(2_400_000.0, 4.5, |iq, t| {
+        s.push_iq(0, iq, 0, epoch + t * 1000.0);
+        s.poll(epoch + 2000.0 + t * 1000.0, &mut out);
+        files.extend(out.drain(..).filter_map(|o| if let Output::File { json, .. } = o { Some(json) } else { None }));
+    });
+    s.finish(&mut out);
+    files.extend(out.drain(..).filter_map(|o| if let Output::File { json, .. } = o { Some(json) } else { None }));
+    let call: Value = serde_json::from_str(files.first().expect("a call")).unwrap();
+    let start = call["start_time_ms"].as_f64().unwrap() - epoch;
+    assert!((start - 500.0).abs() < 100.0, "the call starts {start} ms in");
 }
 
 /// Without subscriptions, the costly messages aren't made.
@@ -184,7 +207,7 @@ fn unwatched_topics_are_not_sent() {
     let mut s = Session::new(conventional_config(), 1.75e12, &|_| None, |_| 0).unwrap();
     let (mut out, mut msgs) = (Vec::new(), Vec::new());
     air(2_400_000.0, 3.0, |iq, t| {
-        s.push_iq(0, iq, 0);
+        s.push_iq(0, iq, 0, 1.75e12 + t * 1000.0);
         s.poll(1.75e12 + t * 1000.0, &mut out);
         texts(&mut out, &mut msgs);
     });
@@ -198,7 +221,7 @@ fn unwatched_topics_are_not_sent() {
 #[test]
 fn a_surveys_messages() {
     let cfg: Config = serde_json::from_value(json!({
-        "sources": [{ "kind": "file", "path": "x.cu8", "centerHz": 851000000, "rateHz": 2400000, "realtime": false }]
+        "sources": [{ "type": "file", "path": "x.cu8", "centerHz": 851000000, "rateHz": 2400000, "realtime": false }]
     }))
     .unwrap();
     let mut s = SurveySession::new(&cfg, &Request::from_json(&json!({ "source": 0, "bands": [] }))).unwrap();
@@ -244,6 +267,36 @@ fn ctx(cfg: Config, dir: &Path) -> Arc<crate::runtime::Ctx> {
     })
 }
 
+/// A source's roll-off, from a capture of noise; and why it couldn't be had.
+#[test]
+fn a_source_profile() {
+    let path = std::env::temp_dir().join(format!("trunk-pro-profile-{}.cu8", std::process::id()));
+    let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+    let noise: Vec<u8> = (0..2_400_000 * 2 * 2)
+        .map(|_| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            // Roughly Gaussian (a sum of four), around the middle.
+            (96 + (0..4).map(|k| (seed >> (k * 8)) as u8 as u32 / 4).sum::<u32>() / 2) as u8
+        })
+        .collect();
+    std::fs::write(&path, noise).unwrap();
+    let cfg: Config = serde_json::from_value(json!({
+        "sources": [{ "type": "file", "path": path.display().to_string(), "centerHz": 851000000, "rateHz": 2400000, "realtime": false }]
+    }))
+    .unwrap();
+    let ok = crate::profile::run(&cfg, &trunk_app::profile::Request { source: 0, center_hz: 0.0 });
+    let _ = std::fs::remove_file(&path);
+    assert!(ok["error"].is_null(), "{}", ok["error"]);
+    assert_eq!(ok["centerHz"], 851_000_000.0);
+    // White noise: flat to the edge.
+    assert!(ok["suggestedGuardHz"].as_f64().unwrap() <= 15_000.0, "{}", ok["suggestedGuardHz"]);
+    let missing = crate::profile::run(&cfg, &trunk_app::profile::Request { source: 3, center_hz: 0.0 });
+    assert!(missing["error"].is_string());
+    check_all("FromRecorder", &[ok, missing]);
+}
+
 /// The server's own messages: hello, config, state, devices, radios,
 /// plugins, the plugin store, a folder, a Trunk Recorder config.
 #[test]
@@ -263,16 +316,16 @@ fn the_servers_messages() {
     let mut cfg = conventional_config();
     let more: Config = serde_json::from_value(json!({
         "sources": [
-            { "kind": "rtlsdr", "serial": "", "centerHz": 0, "rateHz": 2400000, "gainDb": 25, "agc": false, "ppm": 0, "autoTune": true },
-            { "kind": "usrp", "args": "", "centerHz": 0, "rateHz": 8000000, "gainDb": 30, "agc": false, "antenna": "RX2", "ppm": 0 },
-            { "kind": "airspy", "serial": "", "centerHz": 0, "rateHz": 10000000, "gainMode": "linearity", "gain": 12, "lnaGain": 0, "mixerGain": 0, "vgaGain": 0, "agc": false, "biasTee": false, "ppm": 0 },
-            { "kind": "soapy", "args": "driver=hackrf", "centerHz": 0, "rateHz": 8000000, "agc": false, "gainDb": null, "gains": { "LNA": 16 }, "antenna": "", "settings": "", "ppm": 0 },
-            { "kind": "file", "path": "x.cu8", "centerHz": 851000000, "rateHz": 2400000, "realtime": true, "format": "cu8" }
+            { "type": "rtlsdr", "serial": "", "centerHz": 0, "rateHz": 2400000, "gainDb": 25, "agc": false, "ppm": 0, "autoTune": true },
+            { "type": "usrp", "args": "", "centerHz": 0, "rateHz": 8000000, "gainDb": 30, "agc": false, "antenna": "RX2", "ppm": 0 },
+            { "type": "airspy", "serial": "", "centerHz": 0, "rateHz": 10000000, "gainMode": "linearity", "gainStep": 12, "lnaStep": 0, "mixerStep": 0, "vgaStep": 0, "agc": false, "biasTee": false, "ppm": 0 },
+            { "type": "soapy", "args": "driver=hackrf", "centerHz": 0, "rateHz": 8000000, "agc": false, "gainDb": null, "gains": { "LNA": 16 }, "antenna": "", "settings": "", "ppm": 0 },
+            { "type": "file", "path": "x.cu8", "centerHz": 851000000, "rateHz": 2400000, "realtime": true, "format": "cu8" }
         ],
         "systems": [
-            { "shortName": "p25", "controlChannels": [851012500], "recording": { "minCallS": 2 }, "siteGroup": "g" },
-            { "shortName": "dmr", "type": "dmr", "controlChannels": [452175000], "lcnTable": { "101": 452275000 }, "colorCode": 1 },
-            { "shortName": "smartnet", "type": "smartnet", "controlChannels": [856112500], "bandplan": "800_standard" }
+            { "shortName": "p25", "controlChannelsHz": [851012500], "recording": { "minCallS": 2 }, "siteGroup": "g" },
+            { "shortName": "dmr", "type": "dmr", "controlChannelsHz": [452175000], "lcnTableHz": { "101": 452275000 }, "colorCode": 1 },
+            { "shortName": "smartnet", "type": "smartnet", "controlChannelsHz": [856112500], "bandplan": "800_standard" }
         ]
     }))
     .unwrap();
@@ -307,7 +360,7 @@ fn the_servers_messages() {
     agg.begin(now as f64);
     let p = platform.sample(&mut agg, true);
     *ctx.host_last.lock().unwrap() = Some(crate::monitor::message(now as f64, &agg, p));
-    let hello = crate::server::hello_json(&ctx, crate::radio::radios_json(false));
+    let hello = crate::server::hello_json(&ctx, serde_json::json!(crate::sdr::devices()), crate::radio::radios_json(false));
     assert_eq!(hello["events"].as_array().map(Vec::len), Some(2));
     let mut queries = vec![crate::server::stats_query(&ctx, &json!({ "id": 1, "series": ["sys/p25/*"], "range": "1h" }))];
     assert!(queries[0]["series"]["sys/p25/cc/good"]["v"].is_array(), "{}", queries[0]);
@@ -436,6 +489,7 @@ fn messages_to_the_recorder() {
         json!({ "type": "listen", "on": true, "system": null, "talkgroup": 101 }),
         json!({ "type": "listDir", "path": "" }),
         json!({ "type": "surveyStart", "source": 0, "bands": ["800"], "findGain": true }),
+        json!({ "type": "profileSource", "source": 0, "centerHz": 460_000_000 }),
         json!({ "type": "installPlugin", "id": "openmhz" }),
         json!({ "type": "installPlugin", "repository": "someone/plugin", "tag": "v1.0.0" }),
         json!({ "type": "subscribe", "topics": ["spectrum:0", "rf:0", "decode:dcfd", "log", "platform"] }),

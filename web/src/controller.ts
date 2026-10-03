@@ -30,6 +30,7 @@ import type {
   Radios,
   SourceStatus,
   SiteIdentity,
+  SourceProfile,
   Spectrum,
   SurveyBand,
   SurveyState,
@@ -81,6 +82,9 @@ export interface AppState {
   survey: SurveyState;
   surveyBands: SurveyBand[];
   surveySpectrum: Spectrum | null;
+  /** A source's roll-off as last measured (Setup), and the source being measured now (null: none). */
+  profile: SourceProfile | null;
+  profiling: number | null;
   /** Bumped when the config is replaced from outside the form (fields re-read it). */
   configEpoch: number;
   /** The plugins (desktop app); null until the recorder says. */
@@ -161,6 +165,8 @@ let state: AppState = {
   survey: { stage: "idle" },
   surveyBands: [],
   surveySpectrum: null,
+  profile: null,
+  profiling: null,
   configEpoch: 0,
   plugins: null,
   pluginStore: null,
@@ -305,6 +311,11 @@ transport.onMessage = (m: FromRecorder) => {
     case "surveySpectrum":
       set({ surveySpectrum: m });
       break;
+    case "sourceProfile": {
+      const { type: _, ...profile } = m;
+      set({ profile, profiling: null });
+      break;
+    }
     case "devices":
       set({ devices: m.devices });
       break;
@@ -659,6 +670,8 @@ export function refreshDevices(): void {
 }
 /** Search for USRPs and SoapySDR devices (and re-list Airspys and SoapySDR modules); a search can take seconds. */
 export function findRadios(): void {
+  // The browser has no USRP, Airspy or SoapySDR (its worker drops findRadios: nothing would answer).
+  if (web) return;
   set({ findingRadios: true });
   transport.send({ type: "findRadios" });
 }
@@ -729,6 +742,12 @@ export function startSurvey(source: number, bands: string[], findGain: boolean):
   set({ error: null, surveySpectrum: null });
   transport.send({ type: "surveyStart", source, bands, findGain });
 }
+/** Measure source `source`'s roll-off, tuned to `centerHz` (a capture keeps its own); the answer lands in `profile`. */
+export function profileSource(source: number, centerHz: number): void {
+  flushConfig();
+  set({ profile: null, profiling: source });
+  transport.send({ type: "profileSource", source, centerHz });
+}
 export function surveyListen(freqHz: number): void {
   transport.send({ type: "surveyListen", freqHz });
 }
@@ -756,8 +775,11 @@ export function applySurvey(i: number, sug: SurveySuggestion, target: number | "
   let applied: SurveyApplied = { system: "", centered: false };
   updateConfig((c) => {
     const expect: SiteIdentity = { nac: sug.nac, wacn: sug.wacn, sysId: sug.sysId, rfss: sug.rfss, site: sug.site };
-    const smartnet = sug.type === "smartnet" && sug.bandplan ? { type: "smartnet" as const, ...sug.bandplan } : { type: "p25" as const };
-    const fields = { controlChannels: sug.controlChannels, expect, voiceChannels: sug.voiceChannels, enabled: true, ...smartnet };
+    const b = sug.type === "smartnet" ? sug.bandplan : null;
+    const smartnet: Partial<System> = b
+      ? { type: "smartnet", bandplan: b.bandplan, bandplanBaseHz: b.bandplanBase, bandplanSpacingHz: b.bandplanSpacing, bandplanOffset: b.bandplanOffset, bandplanHighHz: b.bandplanHigh }
+      : { type: "p25" };
+    const fields: Partial<System> = { controlChannelsHz: sug.controlChannels, expect, voiceChannelsHz: sug.voiceChannels, enabled: true, ...smartnet };
     let sys: System;
     if (target === "new" || !c.systems[target]) {
       // Another site of a system already here: same talkgroups.
@@ -770,20 +792,20 @@ export function applySurvey(i: number, sug: SurveySuggestion, target: number | "
     }
     const src = c.sources[i];
     let centered = false;
-    if (src && src.kind !== "file") {
+    if (src && src.type !== "file") {
       if (sug.ppmApply !== null) src.ppm = sug.ppmApply;
-      if (src.kind === "rtlsdr" && sug.gainDb !== null) {
+      if (src.type === "rtlsdr" && sug.gainDb !== null) {
         src.gainDb = sug.gainDb;
         src.agc = false;
       }
       // Don't strand another system that only this source covers now.
       const centers = resolvedCenters(c);
-      const within = (f: number) => Math.abs(f - sug.centerHz) <= usableHalfWidth(src.rateHz);
+      const within = (f: number) => Math.abs(f - sug.centerHz) <= usableHalfWidth(src.rateHz, src.guardHz);
       const stranded = activeSystems(c).some((x) => {
         if (x === sys) return false;
-        const on = x.controlChannels.map((f) => sourceCovering(c, centers, f));
+        const on = x.controlChannelsHz.map((f) => sourceCovering(c, centers, f));
         const onlyHere = on.includes(i) && !on.some((k) => k >= 0 && k !== i);
-        return onlyHere && !x.controlChannels.some(within);
+        return onlyHere && !x.controlChannelsHz.some(within);
       });
       if (!stranded) {
         src.centerHz = sug.centerHz;
@@ -803,7 +825,7 @@ export function addSite(controlChannels: number[], expect: SiteIdentity): string
     const sibling = c.systems.find((x) => sameSystem(x.expect, expect) || (expect.sysId != null && x.expect.sysId === expect.sysId && x.talkgroupsCsv));
     const sys = newSystem(c, {
       shortName: siteName(c, expect),
-      controlChannels,
+      controlChannelsHz: controlChannels,
       expect,
       modulation: sibling?.modulation ?? "auto",
       talkgroupsCsv: sibling?.talkgroupsCsv ?? "",
@@ -823,7 +845,7 @@ export function addDmrSite(freqHz: number, colorCode: number | null): string {
     const sys = newSystem(c, {
       shortName: colorCode === null ? "dmr" : `dmr-cc${colorCode}`,
       type: "dmr",
-      controlChannels: [freqHz],
+      controlChannelsHz: [freqHz],
       ...(colorCode === null ? {} : { colorCode }),
     });
     c.systems.push(sys);

@@ -104,6 +104,7 @@ new TrunkClient({ server?, secure?, historyLimit? })
   history     CallEntry[]: recorded calls, newest first (the last 300 at
               connect, plus each one recorded since; up to historyLimit)
   log         LogLine[]: the latest 500 log lines { timeS, kind, text, system? }
+  aliases     talker aliases heard on the air: { shortName: { unit: alias } }
   error       the text of the latest error message, or null
   exited      true after the recorder said it was exiting; it keeps
               reconnecting (every 5 s), and this clears when it's back
@@ -123,7 +124,9 @@ new TrunkClient({ server?, secure?, historyLimit? })
   rec.setConfig((c) => { … })        change a copy of the config; the whole config is sent
   rec.callUrl(entry, "wav" | "json" | "m4a")   a recorded call's file URL
   rec.talkgroups(shortName)          Map talkgroup → { talkgroup, alphaTag, description, tag, group, mode }
-  rec.unitName(shortName, unit)      a radio's name, or ""
+                                     (a conventional system's: its channels, alphaTag the channel's name)
+  rec.unitName(shortName, unit)      a radio's name (the user's unit names and the aliases heard,
+                                     as the system's unitNames.mode says), or ""
   rec.send(message)                  any command (see Commands)
   rec.close()
 new LivePlayer({ followCall = true, quietS = 1.5, gain = 2, onNowPlaying })
@@ -188,7 +191,8 @@ Connect to ws://<host>/api/ws. Text messages are JSON with a "type".
 Binary messages are live audio:
   [u8 2][u16 system][u32 callId][u32 talkgroup][i16 samples…], little-endian, 8000/s.
 From the recorder:
-  hello        first; carries everything: version, config, phase, history (≤ 300), units, …
+  hello        first; carries everything: version, config, phase, history (≤ 300),
+               units (short name → aliases heard, CSV unit,alias,source,time,wacn,sys,tg; newest line wins), …
   plugins      second
   state        { phase, error, ended }: recording started / stopped
   status       ~2/s while running: { status, sources, load, calls }

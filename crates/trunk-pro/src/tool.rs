@@ -202,7 +202,7 @@ fn voice_line(
     vocoder: &mut mbe::Decoder,
     audio: Option<&mut BufWriter<File>>,
 ) -> String {
-    let mut s = format!("{{\"t\":{:.3},\"duid\":{},\"nac\":{},\"complete\":{},\"nbits\":{},\"raw\":\"", f.symbol as f64 / 4800.0, f.nid.duid, f.nid.nac, f.complete as u8, f.raw.len());
+    let mut s = format!("{{\"t\":{:.3},\"duid\":{},\"nac\":{},\"complete\":{},\"nbits\":{},\"raw\":\"", f.symbol as f64 / trunk_core::dsp::c4fm::SYMBOL_RATE, f.nid.duid, f.nid.nac, f.complete as u8, f.raw.len());
     for c in f.raw.chunks(4) {
         let v = (0..4).fold(0u8, |v, j| (v << 1) | c.get(j).copied().unwrap_or(0));
         let _ = write!(s, "{v:x}");
@@ -329,6 +329,7 @@ fn run_revoice(a: &Args) {
 fn run_p2(a: &Args) {
     use trunk_core::dsp::cqpsk::{self, Cqpsk};
     use trunk_core::dsp::Receiver;
+    use trunk_core::ambe::decode_vcw;
     use trunk_core::p25::phase2::{self, *};
 
     let path = a.positional.get(1).unwrap_or_else(|| die("tool p2: no capture"));
@@ -342,7 +343,7 @@ fn run_p2(a: &Args) {
     let rate = chz.output_rate();
     let (head, _, _) = chz.add_head(freq - center, 7000.0, 0.0);
     let mut rx = Cqpsk::new(rate, cqpsk::Options { baud: phase2::SYMBOL_RATE, eq_taps: a.num("eq", 0.0) as usize, ..Default::default() });
-    let mut framer = phase2::Framer::default();
+    let mut framer = phase2::Framer::new();
     let mut vocoder = mbe::Decoder::new(mbe::lcg(1), mbe::Profile::Enhanced);
     let mut audio_out = a.get("audio").map(|p| BufWriter::new(File::create(p).unwrap_or_else(|e| die(&format!("{p}: {e}")))));
     let stdout = std::io::stdout();
@@ -366,7 +367,7 @@ fn run_p2(a: &Args) {
                 let burst = &p.dibits[10..];
                 let kind = duid_decode(burst);
                 *by_type.entry(kind).or_default() += 1;
-                let mut line = format!("{{\"t\":{:.4},\"slot\":{},\"type\":{kind},\"dibits\":\"", p.sample / rate, p.slot);
+                let mut line = format!("{{\"t\":{:.4},\"slot\":{},\"type\":{kind},\"dibits\":\"", p.sample / rate, p.sf_slot);
                 for d in p.dibits {
                     line.push((b'0' + d) as char);
                 }
@@ -377,7 +378,7 @@ fn run_p2(a: &Args) {
                 if scrambled {
                     if let Some(m) = &mask {
                         for (i, v) in x.iter_mut().enumerate() {
-                            *v ^= m[p.slot * SLOT_DIBITS + i];
+                            *v ^= m[p.sf_slot * SLOT_DIBITS + i];
                         }
                     }
                 }
@@ -392,7 +393,7 @@ fn run_p2(a: &Args) {
                         vcw_clean += (f.errs <= 1) as u64;
                         let bits: String = f.bits.iter().map(|&b| (b'0' + b) as char).collect();
                         let _ = write!(line, "{}{{\"bits\":\"{bits}\",\"errs\":{}}}", if k > 0 { "," } else { "" }, f.errs);
-                        if SLOT_CHANNEL[p.slot] == want_slot {
+                        if SLOT_CHANNEL[p.sf_slot] == want_slot {
                             if let Some(w) = audio_out.as_mut() {
                                 let mut buf = [0f32; FRAME_SAMPLES];
                                 vocoder.ambe(&f.bits, f.errs, &mut buf);
@@ -458,7 +459,7 @@ pub fn smartnet_bandplan(a: &Args, name: &str) -> trunk_core::smartnet::Bandplan
 }
 
 fn run_smartnet(a: &Args) {
-    use trunk_core::smartnet::{self, FramerOut, Fsk2, Framer, Parser};
+    use trunk_core::smartnet::{self, Framer, Fsk2, Parser, Word};
     let path = a.positional.get(1).unwrap_or_else(|| die("tool smartnet: no capture"));
     let cap = std::fs::read(path).unwrap_or_else(|e| die(&format!("{path}: {e}")));
     let fs = a.num("rate", 2_400_000.0);
@@ -466,7 +467,7 @@ fn run_smartnet(a: &Args) {
     let rate = chz.output_rate();
     let (head, _, _) = chz.add_head(a.num("cc", 0.0) - a.num("center", 0.0), smartnet::CHANNEL_CUTOFF_HZ, 0.0);
     let mut rx = Fsk2::new(rate);
-    let mut framer = Framer::default();
+    let mut framer = Framer::new();
     let mut parser = Parser::new(smartnet_bandplan(a, a.get("bandplan").unwrap_or("800_standard")));
     let show_osw = a.flag("osw");
     let stdout = std::io::stdout();
@@ -488,14 +489,14 @@ fn run_smartnet(a: &Args) {
                 let t = b.sample / rate;
                 for o in &fout {
                     match *o {
-                        FramerOut::Osw(osw, _) => {
+                        Word::Osw(osw, _) => {
                             if show_osw {
                                 let f = parser.bandplan().rx_hz(osw.cmd).map_or("null".into(), |f| f.to_string());
                                 let _ = writeln!(out, "{{\"t\":{t:.4},\"osw\":{{\"addr\":{},\"grp\":{},\"cmd\":\"{:03x}\",\"rx_hz\":{f}}}}}", osw.addr, osw.grp, osw.cmd);
                             }
                             parser.osw(osw, t, &mut msgs);
                         }
-                        FramerOut::Bad(_) => {
+                        Word::Bad(_) => {
                             if show_osw {
                                 let _ = writeln!(out, "{{\"t\":{t:.4},\"bad\":true}}");
                             }

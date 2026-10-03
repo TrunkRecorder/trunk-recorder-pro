@@ -51,7 +51,7 @@ pub struct DmrVoice {
 impl DmrVoice {
     pub fn new(seed: u32) -> Self {
         DmrVoice {
-            framer: Framer::default(),
+            framer: Framer::new(),
             chan: Channel::default(),
             slots: [Slot::new(seed), Slot::new(seed ^ 0x5a5a_5a5a)],
             bursts: Vec::new(),
@@ -108,8 +108,15 @@ impl DmrVoice {
                 s.talkgroup = Some(tg);
                 s.group = group;
                 s.source = Some(src);
-                s.encrypted |= lc.encrypted();
-                s.emergency |= lc.emergency();
+                if from == LcFrom::Header {
+                    // A new transmission: what an earlier one was (its
+                    // terminator lost in a fade) doesn't carry over.
+                    s.encrypted = lc.encrypted();
+                    s.emergency = lc.emergency();
+                } else {
+                    s.encrypted |= lc.encrypted();
+                    s.emergency |= lc.emergency();
+                }
                 if fresh {
                     push(TrackerOut::Info { source: (src != 0).then_some(src), emergency: s.emergency, encrypted: s.encrypted });
                 }
@@ -140,5 +147,32 @@ impl DmrVoice {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dmr::slot::Lc;
+
+    /// Group voice link control to TG 201 from radio 5; `privacy`: the
+    /// service options' privacy bit.
+    fn lc(privacy: bool) -> Lc {
+        Lc([0, 0, if privacy { 0x40 } else { 0 }, 0, 0, 201, 0, 0, 5])
+    }
+
+    /// An encrypted transmission whose terminator is lost (a fade), then a
+    /// clear one on the same slot: the clear one is not taken for encrypted.
+    #[test]
+    fn a_new_transmission_starts_clear() {
+        let mut v = DmrVoice::new(1);
+        let mut out = Vec::new();
+        v.event(0, SlotEvent::Lc { lc: lc(true), from: LcFrom::Header }, 0.0, &mut out);
+        assert!(v.slots[0].encrypted);
+        v.event(0, SlotEvent::Lc { lc: lc(false), from: LcFrom::Header }, 1.0, &mut out);
+        assert!(!v.slots[0].encrypted);
+        // Embedded link control saying so mid-transmission still counts.
+        v.event(0, SlotEvent::Lc { lc: lc(true), from: LcFrom::Embedded }, 1.2, &mut out);
+        assert!(v.slots[0].encrypted);
     }
 }

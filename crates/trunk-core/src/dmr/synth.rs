@@ -6,10 +6,12 @@ use num_complex::Complex32;
 
 use super::burst::tests::{cach_dibits, sync_dibits};
 use super::burst::{SyncKind, BURST_DIBITS};
-use super::fec::{bptc196_encode, crc_ccitt, embedded_lc_encode, golay20_encode, qr16_encode, rs129_parity, unpack, MASK_CSBK, MASK_TERMINATOR_LC, MASK_VOICE_LC_HEADER};
+use super::fec::{bptc196_encode, embedded_lc_encode, golay20_encode, qr16_encode, rs129_parity, unpack, MASK_CSBK, MASK_TERMINATOR_LC, MASK_VOICE_LC_HEADER};
 use super::slot::{DT_CSBK, DT_IDLE, DT_TERMINATOR_LC, DT_VOICE_LC_HEADER};
+use crate::ambe::{ambe_pn23, VCW_MAP};
+use crate::bits::crc_ccitt;
+use crate::dsp::c4fm::SYMBOL_RATE;
 use crate::p25::fec::{golay23_encode, golay24_encode};
-use crate::p25::phase2::{ambe_pn23, VCW_MAP};
 
 pub struct Tx {
     pub cc: u8,
@@ -183,25 +185,25 @@ pub fn dibits_on(tx: &Tx) -> (Vec<u8>, Vec<bool>) {
     (out, on)
 }
 
-/// 4FSK at `fs`, `offset_hz` from the centre: ±648 / ±1944 Hz, 4800 baud.
-pub fn modulate(dibits: &[u8], fs: f64, offset_hz: f64, amp: f32, phase: &mut f64) -> Vec<Complex32> {
-    modulate_on(dibits, None, fs, offset_hz, amp, phase)
+/// 4FSK at `rate`, `offset_hz` from the centre: ±648 / ±1944 Hz, 4800 baud.
+pub fn modulate(dibits: &[u8], rate: f64, offset_hz: f64, amp: f32, phase: &mut f64) -> Vec<Complex32> {
+    modulate_on(dibits, None, rate, offset_hz, amp, phase)
 }
 
 /// … with the carrier off where `on` says so.
-pub fn modulate_on(dibits: &[u8], on: Option<&[bool]>, fs: f64, offset_hz: f64, amp: f32, phase: &mut f64) -> Vec<Complex32> {
-    let n = (dibits.len() as f64 / 4800.0 * fs) as usize;
+pub fn modulate_on(dibits: &[u8], on: Option<&[bool]>, rate: f64, offset_hz: f64, amp: f32, phase: &mut f64) -> Vec<Complex32> {
+    let n = (dibits.len() as f64 / SYMBOL_RATE * rate) as usize;
     (0..n)
         .map(|i| {
-            let d = dibits[((i as f64 / fs * 4800.0) as usize).min(dibits.len() - 1)];
+            let d = dibits[((i as f64 / rate * SYMBOL_RATE) as usize).min(dibits.len() - 1)];
             let dev = match d {
                 0b01 => 3.0,
                 0b00 => 1.0,
                 0b10 => -1.0,
                 _ => -3.0,
             } * 648.0;
-            *phase += 2.0 * std::f64::consts::PI * (offset_hz + dev) / fs;
-            let k = ((i as f64 / fs * 4800.0) as usize).min(dibits.len() - 1);
+            *phase += 2.0 * std::f64::consts::PI * (offset_hz + dev) / rate;
+            let k = ((i as f64 / rate * SYMBOL_RATE) as usize).min(dibits.len() - 1);
             let a = if on.is_none_or(|o| o[k]) { amp } else { 0.0 };
             Complex32::from_polar(a, *phase as f32)
         })
@@ -235,7 +237,7 @@ mod tests {
                 eprintln!("t {:.1} levels {:?} sep {:.1}", k as f64 * 0.1, l.map(|v| v.round()), rx.separation());
             }
         }
-        let (mut f, mut ch) = (Framer::default(), Channel::default());
+        let (mut f, mut ch) = (Framer::new(), Channel::default());
         let mut bursts = Vec::new();
         for s in &syms {
             f.push(s, &mut bursts);
@@ -288,7 +290,7 @@ mod tests {
         let (fs, center, freq) = (1_200_000.0, 460_000_000.0, 460_050_000.0);
         let iq = wideband(fs, freq - center);
         let cfg = EngineConfig {
-            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false }],
+            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
             conventional: vec![ConvChannel::new(freq, ConvMode::Dmr)],
             ..Default::default()
         };
@@ -315,7 +317,7 @@ mod tests {
             ..ConvChannel::new(freq, ConvMode::Dmr)
         };
         let calls = |rows: Vec<ConvChannel>| {
-            let cfg = EngineConfig { sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false }], conventional: rows, ..Default::default() };
+            let cfg = EngineConfig { sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }], conventional: rows, ..Default::default() };
             run(cfg, &iq).into_iter().map(|k| (k.call.talkgroup, k.call.talkgroup_info.map(|t| t.alpha_tag))).collect::<Vec<_>>()
         };
         // The most specific row that fits wins; the talkgroup stays the air's.
@@ -326,7 +328,7 @@ mod tests {
         // Nothing fits, no row without a code: not recorded, reported once.
         let rows = vec![row("CC3", 1, "A"), row("CC5 TS1", 2, "B"), row("CC5 TG 999", 3, "C")];
         assert!(calls(rows.clone()).is_empty());
-        let cfg = EngineConfig { sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false }], conventional: rows, ..Default::default() };
+        let cfg = EngineConfig { sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }], conventional: rows, ..Default::default() };
         let mut e = Engine::new(cfg).unwrap();
         for c in iq.chunks(8192) {
             e.push_iq(0, c);
@@ -345,7 +347,7 @@ mod tests {
         let t = Tx { mobile: true, slot: 0, ..tx() };
         let iq = wideband_of(&t, fs, freq - center);
         let cfg = EngineConfig {
-            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false }],
+            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
             conventional: vec![ConvChannel::new(freq, ConvMode::Dmr)],
             ..Default::default()
         };
@@ -363,7 +365,7 @@ mod tests {
         let (fs, center, freq) = (240_000.0, 460_000_000.0, 460_050_000.0);
         let iq = wideband(fs, freq - center);
         let cfg = EngineConfig {
-            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false }],
+            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
             systems: vec![SystemConfig { short_name: "cap".into(), control_channels: vec![freq], protocol: crate::trunk::Protocol::Dmr(Default::default()), ..Default::default() }],
             ..Default::default()
         };

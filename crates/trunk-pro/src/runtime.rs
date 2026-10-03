@@ -185,36 +185,48 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
     let (tx, rx) = mpsc::sync_channel::<SourceMsg>(256);
     let centers = cfg.resolved_centers();
     let mut threads = Vec::new();
+    // A thread that can't be made: what was started is stopped again.
+    let undo = |threads: Vec<JoinHandle<()>>, e: std::io::Error| {
+        stop.store(true, Ordering::Relaxed);
+        for t in threads {
+            let _ = t.join();
+        }
+        ctx.plugins.stop(Duration::from_secs(2));
+        e.to_string()
+    };
     for (i, (src, center)) in cfg.sources.iter().zip(&centers).enumerate() {
         let (tx, stop) = (tx.clone(), stop.clone());
         let src = src.clone();
         let center = *center;
-        threads.push(std::thread::Builder::new().name(format!("source-{i}")).spawn(move || match src {
+        let spawned = std::thread::Builder::new().name(format!("source-{i}")).spawn(move || match src {
             Source::Rtlsdr { serial, rate_hz, gain_db, agc, ppm, .. } => {
                 sdr::run(i, RtlConfig { serial, center_hz: center as u64, rate_hz: rate_hz as u32, gain_db: (!agc).then_some(gain_db), ppm }, tx, stop)
             }
             Source::Usrp { args, rate_hz, gain_db, agc, antenna, ppm, .. } => {
                 uhd::run(i, uhd::UsrpConfig { args, center_hz: center, rate_hz, gain_db, agc, antenna, ppm }, tx, stop)
             }
-            Source::Airspy { serial, rate_hz, gain_mode, gain, lna_gain, mixer_gain, vga_gain, agc, bias_tee, ppm, .. } => {
-                let gain = airspy_gain(gain_mode, gain, lna_gain, mixer_gain, vga_gain, agc);
+            Source::Airspy { serial, rate_hz, gain_mode, gain_step, lna_step, mixer_step, vga_step, agc, bias_tee, ppm, .. } => {
+                let gain = airspy_gain(gain_mode, gain_step, lna_step, mixer_step, vga_step, agc);
                 airspy::run(i, airspy::AirspyConfig { serial, center_hz: center, rate_hz, gain, bias_tee, ppm }, tx, stop)
             }
             Source::Soapy { args, rate_hz, agc, gain_db, gains, antenna, settings, ppm, .. } => {
                 let gains = gains.into_iter().collect();
                 soapy::run(i, soapy::SoapyConfig { args, center_hz: center, rate_hz, agc, gain_db, gains, antenna, settings, ppm }, tx, stop)
             }
-            Source::File { path, rate_hz, realtime, format, .. } => run_file(i, &path, rate_hz, realtime, format, tx, stop),
-        }).map_err(|e| e.to_string())?);
+            Source::File { path, rate_hz, realtime, format, .. } => run_file(i, &path, rate_hz, realtime, SampleFormat::of(format, &path), tx, stop),
+        });
+        match spawned {
+            Ok(t) => threads.push(t),
+            Err(e) => return Err(undo(threads, e)),
+        }
     }
     drop(tx);
     let (ctx2, stop2) = (ctx.clone(), stop.clone());
-    threads.push(
-        std::thread::Builder::new()
-            .name("engine".into())
-            .spawn(move || engine_thread(ctx2, cfg, session, rx, stop2, (epoch_ms, epoch_at)))
-            .map_err(|e| e.to_string())?,
-    );
+    let spawned = std::thread::Builder::new().name("engine".into()).spawn(move || engine_thread(ctx2, cfg, session, rx, stop2, (epoch_ms, epoch_at)));
+    match spawned {
+        Ok(t) => threads.push(t),
+        Err(e) => return Err(undo(threads, e)),
+    }
     Ok(Runner { stop, threads })
 }
 
@@ -316,8 +328,8 @@ pub(crate) fn run_file(source: usize, path: &str, rate_hz: f64, realtime: bool, 
         buf.truncate(n - n % bps);
         sent += (buf.len() / bps) as u64;
         let msg = match format {
-            SampleFormat::Cu8 => SourceMsg::Data { source, bytes: buf, dropped: 0 },
-            _ => SourceMsg::Iq { source, samples: trunk_app::samples::to_iq(format, &buf), dropped: 0 },
+            SampleFormat::Cu8 => SourceMsg::Data { source, bytes: buf, dropped: 0, at: Instant::now() },
+            _ => SourceMsg::Iq { source, samples: trunk_app::samples::to_iq(format, &buf), dropped: 0, at: Instant::now() },
         };
         if tx.send(msg).is_err() {
             return;
@@ -380,6 +392,8 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Rec
         }
     };
     let now_ms = || epoch.0 + epoch.1.elapsed().as_secs_f64() * 1000.0;
+    // An instant on the same clock (when a driver handed samples over).
+    let at_ms = |at: Instant| epoch.0 + at.saturating_duration_since(epoch.1).as_secs_f64() * 1000.0;
     let mut out = Vec::new();
     let mut ended_all = false;
     // Band plans (and DMR channel tables) as last saved: learned ones survive a crash or kill too.
@@ -392,14 +406,14 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Rec
             break;
         }
         match rx.recv_timeout(Duration::from_millis(50)) {
-            Ok(SourceMsg::Data { source, bytes, dropped }) => {
+            Ok(SourceMsg::Data { source, bytes, dropped, at }) => {
                 let t = Instant::now();
-                session.push(source, &bytes, dropped);
+                session.push(source, &bytes, dropped, at_ms(at));
                 session.add_busy_ms(t.elapsed().as_secs_f64() * 1000.0);
             }
-            Ok(SourceMsg::Iq { source, samples, dropped }) => {
+            Ok(SourceMsg::Iq { source, samples, dropped, at }) => {
                 let t = Instant::now();
-                session.push_iq(source, &samples, dropped);
+                session.push_iq(source, &samples, dropped, at_ms(at));
                 session.add_busy_ms(t.elapsed().as_secs_f64() * 1000.0);
             }
             Ok(SourceMsg::Error { source, error }) => session.source_error(source, &error),
@@ -446,6 +460,16 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Rec
         }
     }
     ctx.set_phase("stopping", None, false);
+    // What the sources had already sent (up to the queue's ~3 s): calls in
+    // progress keep it.
+    for m in rx.try_iter() {
+        match m {
+            SourceMsg::Data { source, bytes, dropped, at } => session.push(source, &bytes, dropped, at_ms(at)),
+            SourceMsg::Iq { source, samples, dropped, at } => session.push_iq(source, &samples, dropped, at_ms(at)),
+            _ => {}
+        }
+    }
+    session.poll(now_ms(), &mut out);
     session.finish(&mut out);
     deliver(&ctx, &mut out, ctx.plugins.host.read().unwrap().as_ref(), &rules, &fin);
     drop(fin_tx);
@@ -510,7 +534,7 @@ fn finish_one(ctx: &Ctx, dir: &Path, f: Finish, encoder: Option<&(plugins::Encod
     {
         let mut h = ctx.history.lock().unwrap();
         h.push_front(f.entry);
-        h.truncate(500);
+        h.truncate(HISTORY_KEPT);
     }
     let m4a = match encoder.filter(|_| f.rules.compress_wav) {
         Some((e, kbps)) => {
@@ -559,6 +583,25 @@ fn deliver(ctx: &Ctx, out: &mut Vec<Output>, plugins: Option<&PluginHost>, rules
         }
     }
 }
+
+/// Fill the history list with the newest calls already on disk, in the
+/// background: a capture folder with years of calls takes a while to walk.
+/// Calls concluded meanwhile stay in front.
+pub fn load_history(ctx: Arc<Ctx>) {
+    let dir = PathBuf::from(&ctx.config.lock().unwrap().recording.capture_dir);
+    let _ = std::thread::Builder::new().name("history".into()).spawn(move || {
+        let found = scan_history(&dir, HISTORY);
+        let mut h = ctx.history.lock().unwrap();
+        let known: std::collections::HashSet<String> = h.iter().filter_map(|e| e["path"].as_str().map(String::from)).collect();
+        h.extend(found.into_iter().filter(|e| e["path"].as_str().is_none_or(|p| !known.contains(p))));
+        h.truncate(HISTORY_KEPT);
+    });
+}
+
+/// Calls the interface's history list is given.
+pub const HISTORY: usize = 300;
+/// Calls kept in memory for it.
+const HISTORY_KEPT: usize = 500;
 
 /// The newest `limit` calls already on disk (for the history list at startup).
 pub fn scan_history(dir: &Path, limit: usize) -> VecDeque<Value> {

@@ -85,7 +85,8 @@ pub struct Fsk2 {
     to_hz: f32,
     ma: Vec<f32>,
     ma_pos: usize,
-    ma_sum: f32,
+    /// (f64: a running sum kept for days on a control channel would drift in f32.)
+    ma_sum: f64,
     hi: f32,
     lo: f32,
     /// Symbol phase at the previous sample: a symbol is sampled as it passes 1.
@@ -94,7 +95,7 @@ pub struct Fsk2 {
     n: u64,
     /// Tone detector: per tone, the last symbol's products x·e^(−jωn) and their sum.
     tone_hist: [Vec<Complex32>; 2],
-    tone_sum: [Complex32; 2],
+    tone_sum: [num_complex::Complex64; 2],
     tone_pos: usize,
     tone_ph: [f64; 2],
     /// The discriminator's value at the last sample (levels are tracked on it).
@@ -123,7 +124,7 @@ impl Fsk2 {
             prev: 0.0,
             n: 0,
             tone_hist: [vec![Complex32::default(); sps.round().max(1.0) as usize], vec![Complex32::default(); sps.round().max(1.0) as usize]],
-            tone_sum: [Complex32::default(); 2],
+            tone_sum: [num_complex::Complex64::default(); 2],
             tone_pos: 0,
             tone_ph: [0.0; 2],
             prev_disc: 0.0,
@@ -140,9 +141,10 @@ impl Fsk2 {
             self.tone_ph[k] = (self.tone_ph[k] - 2.0 * PI * freqs[k] / self.rate) % (2.0 * PI);
             let p = x * Complex32::from_polar(1.0, self.tone_ph[k] as f32);
             let h = &mut self.tone_hist[k];
-            self.tone_sum[k] += p - h[self.tone_pos];
+            let d = p - h[self.tone_pos];
+            self.tone_sum[k] += num_complex::Complex64::new(d.re as f64, d.im as f64);
             h[self.tone_pos] = p;
-            e[k] = self.tone_sum[k].norm_sqr();
+            e[k] = self.tone_sum[k].norm_sqr() as f32;
         }
         self.tone_pos = (self.tone_pos + 1) % self.tone_hist[0].len();
         let d = (e[1] - e[0]) / (e[1] + e[0]).max(1e-20);
@@ -165,10 +167,10 @@ impl Fsk2 {
         for &x in iq {
             let f = (x * self.last.conj()).arg() * self.to_hz;
             self.last = x;
-            self.ma_sum += f - self.ma[self.ma_pos];
+            self.ma_sum += (f - self.ma[self.ma_pos]) as f64;
             self.ma[self.ma_pos] = f;
             self.ma_pos = (self.ma_pos + 1) % self.ma.len();
-            let disc = self.ma_sum / len;
+            let disc = (self.ma_sum / len as f64) as f32;
             let y = if self.opts.tones { self.tone_stat(x) } else { disc };
             let center = self.offset_hz();
             let (a, b) = (self.prev - center, y - center);

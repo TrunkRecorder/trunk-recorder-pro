@@ -179,7 +179,7 @@ pub fn build(spec: &VoiceSpec) -> Box<dyn VoiceDecoder> {
             // Decision-feedback differential detection: ~1 dB in noise on Phase 2
             // voice (tool snr); not used on Phase 1, where simulcast didn't like it.
             let rx = Cqpsk::new(spec.rate, cqpsk::Options { baud: phase2::SYMBOL_RATE, df_beta: 0.5, ..Default::default() });
-            Box::new(P25Tdma { rx, framer: phase2::Framer::default(), tracker, syms: Vec::new(), pkts: Vec::new(), tout: Vec::new(), t0: spec.t0, rate: spec.rate })
+            Box::new(P25Tdma { rx, framer: phase2::Framer::new(), tracker, syms: Vec::new(), pkts: Vec::new(), tout: Vec::new(), t0: spec.t0, rate: spec.rate })
         }
         VoiceKind::Dmr => Box::new(Dmr { rx: C4fm::dmr(spec.rate), voice: Box::new(DmrVoice::new(spec.seed)), syms: Vec::new(), t0: spec.t0, rate: spec.rate, air: [None; 2] }),
         VoiceKind::Analog => {

@@ -7,6 +7,8 @@
 //!   backend; works in a worker once the page has been granted the device).
 //! * [`WebSurvey`] — the first-run survey (trunk-app): it asks for retunes,
 //!   takes u8 IQ, and reports `survey` / `surveySpectrum` messages.
+//! * [`WebProfiler`] — a source's roll-off for Setup: takes u8 IQ, answers
+//!   with a `sourceProfile` message.
 //!
 //! Build: `cargo build -p trunk-web --target wasm32-unknown-unknown --profile
 //! dist` with `-C target-feature=+simd128`, then `wasm-bindgen --target web`
@@ -156,8 +158,9 @@ impl WebSession {
         let changed = self.s.shared().radio.lock().unwrap().take_dirty();
         serde_json::Value::Object(changed.into_iter().map(|(n, j)| (n, serde_json::Value::String(j))).collect()).to_string()
     }
-    pub fn push(&mut self, source: usize, bytes: &[u8], dropped: f64) {
-        self.s.push(source, bytes, dropped as u64);
+    /// `at_ms`: when the samples arrived, on `poll`'s clock.
+    pub fn push(&mut self, source: usize, bytes: &[u8], dropped: f64, at_ms: f64) {
+        self.s.push(source, bytes, dropped as u64, at_ms);
     }
     pub fn add_busy_ms(&mut self, ms: f64) {
         self.s.add_busy_ms(ms);
@@ -266,6 +269,36 @@ impl WebSurvey {
     pub fn poll(&mut self, now_ms: f64) -> Array {
         self.s.poll(now_ms, &mut self.out);
         to_js(&mut self.out, &mut History::new(2))
+    }
+}
+
+/// How a source's band rolls off at its edges (`profileSource`).
+#[wasm_bindgen]
+pub struct WebProfiler {
+    p: trunk_core::dsp::rolloff::Profiler,
+    source: usize,
+    center_hz: f64,
+}
+
+#[wasm_bindgen]
+impl WebProfiler {
+    #[wasm_bindgen(constructor)]
+    pub fn new(source: usize, center_hz: f64, rate_hz: f64) -> WebProfiler {
+        WebProfiler { p: trunk_core::dsp::rolloff::Profiler::new(rate_hz, trunk_app::profile::SECONDS), source, center_hz }
+    }
+    pub fn push(&mut self, bytes: &[u8]) {
+        self.p.push_u8(bytes);
+    }
+    pub fn done(&self) -> bool {
+        self.p.done()
+    }
+    /// The `sourceProfile` message (JSON), or its error if nothing was seen.
+    pub fn result(&self) -> String {
+        match self.p.result() {
+            Some(r) => trunk_app::profile::json(self.source, self.center_hz, &r),
+            None => trunk_app::profile::error_json(self.source, "The source ended before anything could be seen."),
+        }
+        .to_string()
     }
 }
 

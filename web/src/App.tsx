@@ -110,7 +110,7 @@ export function App() {
   const health = useSelect((x) => pageHealth(x), (a, b) => Object.keys(a).every((k) => a[k].level === b[k].level && a[k].why === b[k].why));
   const running = s.phase === "running" || s.phase === "starting";
   const problem = s.config ? startProblem(s.config) : "Connecting to the recorder…";
-  const liveDongle = s.config?.sources.some((x) => x.kind !== "file") ?? false;
+  const liveDongle = s.config?.sources.some((x) => x.type !== "file") ?? false;
   // The setup guide: offered once, when the recorder first reports an empty config.
   const offered = useRef(false);
   useEffect(() => {

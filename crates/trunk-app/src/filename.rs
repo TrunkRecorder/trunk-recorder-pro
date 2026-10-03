@@ -128,8 +128,14 @@ fn clean(s: &str) -> String {
 }
 
 /// A formatted time may make folders (`%Y/%m`), but nothing else unsafe.
+/// `:` (`iso`, `%H:%M`) becomes `-`: on Windows it would name an alternate
+/// data stream, and the call would vanish.
 fn clean_time(s: &str) -> String {
-    s.chars().map(|c| if matches!(c, '\\' | '*' | '?' | '"' | '<' | '>' | '|') { '_' } else { c }).collect()
+    s.chars().map(|c| match c {
+        ':' => '-',
+        '\\' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+        c => c,
+    }).collect()
 }
 
 /// (year, month, day), (hour, minute, second), weekday 0 = Sunday, day of the year 1..
@@ -234,7 +240,7 @@ mod tests {
         );
         assert_eq!(
             render("{short_name}/{ztime:%Y-%m-%d}/{talkgroup_group}/{talkgroup}-{ztime:iso}_{freq_mhz}", &c, 0, est),
-            "dcsys/2025-11-21/Fire/12345-2025-11-21T21:19:39Z_851.0125-call_42"
+            "dcsys/2025-11-21/Fire/12345-2025-11-21T21-19-39Z_851.0125-call_42"
         );
         assert_eq!(
             render("{short_name}/{ztime:%Y-%m-%d}/{talkgroup}-{ztime:%Y-%m-%dT%H%M%S.%fZ}_{freq}", &c, 3, est),

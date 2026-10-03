@@ -1007,3 +1007,28 @@ table.calls tr.ignored td { opacity: 0.55; }
 .overview-grid { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(300px, 1fr); gap: 20px; align-items: start; }
 @media (max-width: 1100px) { .overview-grid { grid-template-columns: minmax(0, 1fr); } }
 .overview-grid .stack { gap: 14px; }
+
+/* A source's roll-off (Setup → Radios → Profile roll-off): waterfall over spectrum, guard band shaded at each edge. */
+.guard-input { width: 6em; }
+.rolloff { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; padding: 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); }
+.rolloff .row { flex-wrap: wrap; }
+.rolloff input.mhz { width: 8em; }
+.rolloff-plot { position: relative; height: 200px; border-radius: 6px; overflow: hidden; background: rgb(8, 12, 30); cursor: ew-resize; touch-action: none; user-select: none; }
+.rolloff-fall { position: absolute; left: 0; top: 0; width: 100%; height: 45%; image-rendering: auto; }
+.rolloff-trace { position: absolute; left: 0; bottom: 0; width: 100%; height: 55%; background: color-mix(in srgb, var(--panel) 92%, black); }
+.rolloff-trace polyline { fill: none; vector-effect: non-scaling-stroke; stroke-linejoin: round; }
+.rolloff-trace .spec { stroke: var(--muted); stroke-width: 1; opacity: 0.6; }
+.rolloff-trace .floor { stroke: var(--trace); stroke-width: 2; }
+.rolloff-trace line { vector-effect: non-scaling-stroke; stroke-width: 1; }
+.rolloff-trace .ref { stroke: var(--text); opacity: 0.35; stroke-dasharray: 4 3; }
+.rolloff-trace .ref3 { stroke: var(--warn); opacity: 0.6; stroke-dasharray: 2 3; }
+.rolloff-plot .guard { position: absolute; top: 0; bottom: 0; background: color-mix(in srgb, var(--bad) 26%, transparent); pointer-events: none; }
+.rolloff-plot .guard.lo { left: 0; border-right: 2px solid var(--bad); }
+.rolloff-plot .guard.hi { right: 0; border-left: 2px solid var(--bad); }
+.rolloff-plot .sugg { position: absolute; top: 0; bottom: 0; width: 0; border-left: 1px dashed var(--ok); pointer-events: none; }
+.rolloff-plot .tick { position: absolute; bottom: 0; height: 14px; width: 2px; transform: translateX(-1px); background: var(--ok); pointer-events: none; }
+.rolloff-plot .tick.cut { background: var(--bad); height: 22px; }
+.rolloff-axis { display: flex; justify-content: space-between; color: var(--muted); }
+.rolloff-controls input[type="range"] { flex: 1 1 200px; min-width: 0; }
+.rolloff .bad { color: var(--bad); }
+.rolloff .warn { color: var(--warn); }

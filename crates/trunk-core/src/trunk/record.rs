@@ -17,6 +17,8 @@ pub struct ConcludeInfo<'a> {
     pub epoch_ms_at_zero: f64,
     pub audio_seconds: f64,
     pub errors: &'a FrameErrors,
+    /// Written as `recorder_num`: the recorder pool slot of a trunked call;
+    /// for a conventional call, the index of the channel (frequency) it came on.
     pub recorder_num: u32,
     pub end_s: f64,
     /// The system's talker aliases (each source's `tag_ota`).
@@ -70,10 +72,15 @@ impl Reception {
 /// gaps between voice frames inside one (P25 delivers 180 ms at a time).
 const TRANSMISSION_GAP_S: f64 = 0.5;
 
-/// Where in a call's audio each transmission starts (sample index).
+/// Where in a call's audio each transmission starts (sample index), and
+/// which were encrypted.
 #[derive(Clone, Debug, Default)]
 pub struct Transmissions {
     pub starts: Vec<usize>,
+    /// Per start: the transmission was encrypted.
+    encrypted: Vec<bool>,
+    /// Encryption was announced before the next transmission's audio came.
+    encrypted_next: bool,
     last_s: Option<f64>,
 }
 
@@ -82,28 +89,41 @@ impl Transmissions {
     pub fn note(&mut self, at: usize, t_s: f64) {
         if self.last_s.is_none_or(|l| t_s - l > TRANSMISSION_GAP_S) && self.starts.last() != Some(&at) {
             self.starts.push(at);
+            self.encrypted.push(std::mem::take(&mut self.encrypted_next));
         }
         self.last_s = Some(t_s);
     }
 
-    /// `audio` without the transmissions shorter than `min_s` (Trunk
-    /// Recorder's minTransmissionDuration: key-ups, data bursts).
-    pub fn drop_short(&self, audio: &mut Vec<f32>, min_s: f64, rate: u32) {
-        if min_s <= 0.0 || self.starts.is_empty() {
-            return;
+    /// The air said, at `t_s`, that the call is encrypted: the transmission
+    /// going on then, or (none is) the next one.
+    pub fn mark_encrypted(&mut self, t_s: f64) {
+        match self.encrypted.last_mut() {
+            Some(e) if self.last_s.is_some_and(|l| t_s - l <= TRANSMISSION_GAP_S) => *e = true,
+            _ => self.encrypted_next = true,
         }
-        let min = (min_s * rate as f64) as usize;
-        let mut kept = Vec::with_capacity(audio.len());
+    }
+
+    /// The transmission going on now is encrypted.
+    pub fn current_encrypted(&self) -> bool {
+        self.encrypted.last().copied().unwrap_or(self.encrypted_next)
+    }
+
+    /// The parts of a call's `len` samples of audio to keep: every
+    /// transmission but those shorter than `min_s` (Trunk Recorder's
+    /// minTransmissionDuration: key-ups, data bursts) and the encrypted ones
+    /// (what a vocoder makes of them before the cipher is known is noise).
+    /// None: all of it.
+    pub fn kept(&self, len: usize, min_s: f64, rate: u32) -> Option<Vec<std::ops::Range<usize>>> {
+        if (min_s <= 0.0 && !self.encrypted.contains(&true)) || self.starts.is_empty() {
+            return None;
+        }
+        let min = (min_s.max(0.0) * rate as f64) as usize;
         // (Audio before the first mark is the first transmission's too.)
-        let mut bounds: Vec<usize> = self.starts.iter().copied().filter(|&s| s > 0 && s < audio.len()).collect();
+        let mut bounds: Vec<usize> = self.starts.iter().copied().filter(|&s| s > 0 && s < len).collect();
         bounds.insert(0, 0);
-        bounds.push(audio.len());
-        for w in bounds.windows(2) {
-            if w[1] - w[0] >= min {
-                kept.extend_from_slice(&audio[w[0]..w[1]]);
-            }
-        }
-        *audio = kept;
+        bounds.push(len);
+        let encrypted = |at: usize| self.starts.iter().zip(&self.encrypted).find(|(&s, _)| s == at).is_some_and(|(_, &e)| e);
+        Some(bounds.windows(2).filter(|w| w[1] - w[0] >= min && !encrypted(w[0])).map(|w| w[0]..w[1]).collect())
     }
 }
 
@@ -215,7 +235,7 @@ pub fn call_record(call: &Call, info: &ConcludeInfo) -> (String, String) {
         call.talkgroup,
         start_ms.div_euclid(1000),
         call.freq_hz,
-        if call.phase2_tdma || call.color_code.is_some() { format!(".{}", call.tdma_slot) } else { String::new() }
+        call.slot().map_or(String::new(), |s| format!(".{s}"))
     );
     (j, base)
 }
@@ -239,12 +259,11 @@ mod tests {
             }
         }
         assert_eq!(tx.starts, [0, 8000, 9600]);
-        let mut a = audio.clone();
-        tx.drop_short(&mut a, 0.5, 8000);
-        assert_eq!(a.len(), 24000);
-        assert!(!a.contains(&3.0));
-        tx.drop_short(&mut audio, 0.0, 8000);
-        assert_eq!(audio.len(), 25600);
+        assert_eq!(tx.kept(audio.len(), 0.5, 8000), Some(vec![0..8000, 9600..25600]));
+        assert_eq!(tx.kept(audio.len(), 0.0, 8000), None);
+        // The last one turns out encrypted: only it goes.
+        tx.mark_encrypted(5.3);
+        assert_eq!(tx.kept(audio.len(), 0.0, 8000), Some(vec![0..8000, 8000..9600]));
     }
 }
 
@@ -254,6 +273,9 @@ mod tests {
 pub struct SaveRules {
     /// Keep calls with no decoded audio (encrypted, lost).
     pub keep_silent: bool,
+    /// Keep encrypted calls (Trunk Recorder's recordEncrypted): with no
+    /// audio, for what they say — who, when — even when silent calls aren't kept.
+    pub keep_encrypted: bool,
     /// Drop calls with less audio than this, s (Trunk Recorder's minDuration).
     pub min_call_s: f64,
     /// Leave out transmissions shorter than this, s (minTransmissionDuration).
@@ -268,7 +290,7 @@ pub struct SaveRules {
 
 impl Default for SaveRules {
     fn default() -> Self {
-        SaveRules { keep_silent: false, min_call_s: 0.0, min_transmission_s: 0.0, normalize: true, digital_gain_db: 0.0, analog_gain_db: 0.0 }
+        SaveRules { keep_silent: false, keep_encrypted: false, min_call_s: 0.0, min_transmission_s: 0.0, normalize: true, digital_gain_db: 0.0, analog_gain_db: 0.0 }
     }
 }
 
@@ -306,12 +328,16 @@ pub struct SaveContext<'a> {
 pub fn save_call(h: Held, cx: &SaveContext) -> Result<Concluded, Call> {
     let Held { call, audio, frames, recorder_num, tx, reception, freq_error_hz } = h;
     let rules = &cx.rules;
-    // An encrypted call's "audio" is at most a few frames vocoded before
-    // the cipher was known: noise. Trunk Recorder keeps none either.
-    let mut audio = if call.encrypted { Vec::new() } else { audio };
-    tx.drop_short(&mut audio, rules.min_transmission_s, mbe::SAMPLE_RATE);
+    // Short transmissions and encrypted ones left out (an encrypted one's
+    // "audio" is a few frames vocoded before the cipher was known: noise);
+    // the frames and the error summary with them.
+    let (mut audio, mut frames) = (audio, frames);
+    if let Some(ranges) = tx.kept(audio.len(), rules.min_transmission_s, mbe::SAMPLE_RATE) {
+        frames.keep(&ranges, audio.len());
+        audio = ranges.iter().flat_map(|r| audio[r.clone()].iter().copied()).collect();
+    }
     let short = (audio.len() as f64) < rules.min_call_s * mbe::SAMPLE_RATE as f64 && !audio.is_empty();
-    if (audio.is_empty() && !rules.keep_silent) || short {
+    if (audio.is_empty() && !(rules.keep_silent || call.encrypted && rules.keep_encrypted)) || short {
         return Err(call);
     }
     if rules.normalize {

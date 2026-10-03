@@ -16,6 +16,8 @@ use std::f64::consts::PI;
 
 use num_complex::Complex32;
 
+use super::filters::lowpass;
+
 /// Audio output rate, Hz.
 pub const AUDIO_RATE: f64 = 8000.0;
 /// One-sided passband of the channel filter / carrier meter, Hz.
@@ -29,22 +31,6 @@ const POWER_TAU: f64 = 0.010;
 const RAMP_S: f64 = 0.010;
 /// Carrier must hold this long before the gate opens, s.
 const ATTACK_S: f64 = 0.030;
-
-/// Blackman windowed-sinc low-pass, DC gain 1. `fc` in cycles per sample.
-pub fn lowpass(ntaps: usize, fc: f64) -> Vec<f32> {
-    let m = (ntaps - 1) as f64;
-    let mut h: Vec<f64> = (0..ntaps)
-        .map(|i| {
-            let k = i as f64 - m / 2.0;
-            let sinc = if k == 0.0 { 2.0 * fc } else { (2.0 * PI * fc * k).sin() / (PI * k) };
-            let w = 0.42 - 0.5 * (2.0 * PI * i as f64 / m).cos() + 0.08 * (4.0 * PI * i as f64 / m).cos();
-            sinc * w
-        })
-        .collect();
-    let sum: f64 = h.iter().sum();
-    h.iter_mut().for_each(|v| *v /= sum);
-    h.into_iter().map(|v| v as f32).collect()
-}
 
 /// A narrow channel filter that also meters carrier power. Its output
 /// passband is ±[`CHANNEL_HALF_BW`], narrower than the channelizer's head
@@ -114,8 +100,8 @@ struct Biquad {
 }
 
 impl Biquad {
-    fn highpass(fs: f64, f0: f64, q: f64) -> Self {
-        let w0 = 2.0 * PI * f0 / fs;
+    fn highpass(rate: f64, f0: f64, q: f64) -> Self {
+        let w0 = 2.0 * PI * f0 / rate;
         let (c, alpha) = (w0.cos(), w0.sin() / (2.0 * q));
         let a0 = 1.0 + alpha;
         Biquad {

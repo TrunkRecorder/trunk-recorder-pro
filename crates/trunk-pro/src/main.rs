@@ -25,6 +25,7 @@
 //!     --min-call s  --max-call s  --min-transmission s (drop short calls, split long
 //!     ones, leave out short transmissions)  --auto-tune (correct the sources'
 //!     frequency error as measured on the control channels; reported either way)
+//!     --guard Hz (left unused at each edge of a source's band; default 75000)
 //!     More systems (or sites): --system name:Hz[,Hz…][:nac=443,sysid=445,wacn=bee00,rfss=1,site=3,group=name]
 //!     (repeatable; the identity is optional — a control channel that
 //!     disagrees isn't followed). With several, calls go to <out>/<name>/.
@@ -48,6 +49,11 @@
 //!     to the best control channel; JSON lines of what was found, then the
 //!     system (IDs, band plan, alternates, neighbours, voice channels, ppm).
 //!
+//! trunk-pro rolloff [--serial S] --center Hz [--rate Hz] [--gain dB] [--full]
+//! trunk-pro rolloff <capture> --center Hz --rate Hz
+//!     How far in from each edge the band's noise floor sags, and the guard
+//!     band to use (as Setup's "Profile roll-off"); JSON.
+//!
 //! trunk-pro tool cc|voice|frames <capture.cu8> --center Hz --rate Hz (--cc Hz | --freq Hz) [options]
 //!     One channel's decode, as JSON lines (the research/native-bench format).
 //! trunk-pro tool revoice <call.frames.jsonl> <out.wav> [--profile enhanced|mbelib]
@@ -66,6 +72,7 @@ mod paths;
 mod platform;
 mod snrtool;
 mod plugins;
+mod profile;
 mod radio;
 mod runtime;
 mod sdr;
@@ -84,7 +91,7 @@ use std::io::Read;
 use std::path::Path;
 use std::time::Instant;
 
-use trunk_core::trunk::{parse_csv, CallConfig, ConvChannel, ConvConfig, ConvMode, ConvSystem, Engine, EngineConfig, Event, IdField, Identity, Protocol, SaveRules, SourceConfig, SystemConfig};
+use trunk_core::trunk::{parse_csv, CallConfig, ConvChannel, ConvConfig, ConvMode, ConvSystem, Engine, EngineConfig, Event, IdField, Identity, Protocol, SaveRules, SourceConfig, SystemConfig, DEFAULT_GUARD_HZ};
 
 /// `--key value` / `--flag` arguments after the positionals.
 pub struct Args {
@@ -92,13 +99,23 @@ pub struct Args {
     pub opts: HashMap<String, Vec<String>>,
 }
 
+/// Options that are on or off: they never take the next argument as their
+/// value (`--quiet capture.cu8` is a flag and a positional). `--k=v` sets
+/// any option, these included (`--start=0`).
+const FLAGS: &[&str] = &[
+    "analog-default", "auto-tune", "bursts", "capture-frames", "diversity", "dmr-trunk", "full", "hard-fec", "keep-silent", "messages", "no-gain", "no-open",
+    "no-unknown", "osw", "quality", "quiet", "record-encrypted", "s16", "separation", "start",
+];
+
 impl Args {
     pub fn parse(args: &[String]) -> Args {
         let mut a = Args { positional: vec![], opts: HashMap::new() };
         let mut i = 0;
         while i < args.len() {
-            if let Some(k) = args[i].strip_prefix("--") {
-                let v = if i + 1 < args.len() && !args[i + 1].starts_with("--") {
+            if let Some((k, v)) = args[i].strip_prefix("--").and_then(|kv| kv.split_once('=')) {
+                a.opts.entry(k.to_string()).or_default().push(v.to_string());
+            } else if let Some(k) = args[i].strip_prefix("--") {
+                let v = if !FLAGS.contains(&k) && i + 1 < args.len() && !args[i + 1].starts_with("--") {
                     i += 1;
                     args[i].clone()
                 } else {
@@ -161,6 +178,10 @@ usage:
       Find a P25 system from scratch: scan for control channels, then listen
       to the best one and report its IDs, alternates, neighbours, voice
       channels and the dongle's frequency correction (ppm).
+  trunk-pro rolloff [--serial S] --center Hz [--rate Hz] [--gain dB]
+  trunk-pro rolloff <capture> --center Hz --rate Hz
+      How far in from each edge of the band the noise floor sags, and the
+      guard band to leave there.
   trunk-pro tool cc|voice|frames|p2 <capture.cu8> …
       One channel's decode as JSON lines (diagnostics).
   trunk-pro tool revoice <call.frames.jsonl> <out.wav> [--profile enhanced|mbelib]
@@ -187,6 +208,7 @@ fn main() {
         Some("devices") => devices(&Args::parse(&argv[1..])),
         Some("capture") => capture(&Args::parse(&argv[1..])),
         Some("survey") => survey::cli(&Args::parse(&argv[1..])),
+        Some("rolloff") => profile::cli(&Args::parse(&argv[1..])),
         Some("plugin") => plugins::cli::run(&Args::parse(&argv[1..])),
         _ => die(USAGE),
     }
@@ -257,12 +279,12 @@ fn replay(a: &Args) {
         }
         files.push(f[0].to_string());
         formats.push(format_of(f[0], f.get(3).copied()));
-        sources.push(SourceConfig { center_hz: f[1].parse().unwrap_or(0.0), rate_hz: f[2].parse().unwrap_or(2_400_000.0), auto_tune: a.flag("auto-tune") });
+        sources.push(SourceConfig { center_hz: f[1].parse().unwrap_or(0.0), rate_hz: f[2].parse().unwrap_or(2_400_000.0), auto_tune: a.flag("auto-tune"), guard_hz: a.num("guard", DEFAULT_GUARD_HZ) });
     }
     if let Some(p) = a.positional.first() {
         files.push(p.clone());
         formats.push(format_of(p, None));
-        sources.push(SourceConfig { center_hz: a.num("center", 0.0), rate_hz: a.num("rate", 2_400_000.0), auto_tune: a.flag("auto-tune") });
+        sources.push(SourceConfig { center_hz: a.num("center", 0.0), rate_hz: a.num("rate", 2_400_000.0), auto_tune: a.flag("auto-tune"), guard_hz: a.num("guard", DEFAULT_GUARD_HZ) });
     }
     if files.is_empty() {
         die("replay: no capture given");
@@ -299,6 +321,7 @@ fn replay(a: &Args) {
     };
     let save = SaveRules {
         keep_silent: a.flag("keep-silent"),
+        keep_encrypted: a.flag("record-encrypted"),
         min_call_s: a.num("min-call", 0.0),
         min_transmission_s: a.num("min-transmission", 0.0),
         ..Default::default()
@@ -596,16 +619,16 @@ fn serve(a: &Args) {
     use std::sync::{Arc, Mutex};
     let config_path = paths::config_path(a.get("config"));
     paths::init(&config_path);
-    let mut cfg = config::Config::load(&config_path).unwrap_or_else(|e| fatal(&e));
+    let cfg = config::Config::load(&config_path).unwrap_or_else(|e| fatal(&e));
     let level = a.get("log-level").map(|l| trunk_app::log::Level::parse(l).unwrap_or_else(|| fatal(&format!("--log-level {l}: trace, debug, info, warning, error or fatal"))));
     logging::init(&cfg.log, config_path.parent().unwrap_or(Path::new(".")), level);
-    if let Some(p) = a.get("port").and_then(|p| p.parse().ok()) {
-        cfg.server.port = p;
-    }
-    if let Some(b) = a.get("bind") {
-        cfg.server.bind = b.to_string();
-    }
-    let addr: std::net::SocketAddr = format!("{}:{}", cfg.server.bind, cfg.server.port).parse().unwrap_or_else(|e| fatal(&format!("bind address: {e}")));
+    // (For this run only: the config, saved from the interface, keeps its own.)
+    let port = match a.get("port") {
+        Some(p) => p.parse::<u16>().unwrap_or_else(|_| fatal(&format!("--port {p}: a port number, 1–65535"))),
+        None => cfg.server.port,
+    };
+    let bind = a.get("bind").unwrap_or(&cfg.server.bind);
+    let addr: std::net::SocketAddr = format!("{bind}:{port}").parse().unwrap_or_else(|e| fatal(&format!("bind address: {e}")));
     let url = format!("http://{}:{}", if addr.ip().is_unspecified() { "localhost".into() } else { addr.ip().to_string() }, addr.port());
     let listener = match std::net::TcpListener::bind(addr) {
         Ok(l) => l,
@@ -623,7 +646,6 @@ fn serve(a: &Args) {
         }
         Err(e) => fatal(&format!("web server on {addr}: {e}")),
     };
-    let history = runtime::scan_history(Path::new(&cfg.recording.capture_dir), 300);
     // An interface of the user's own at / (docs/api), for this run.
     let home_dir = a.get("ui").map(|d| {
         let d = Path::new(d);
@@ -646,7 +668,7 @@ fn serve(a: &Args) {
         runner: Mutex::new(None),
         lifecycle: Mutex::new(false),
         phase: Mutex::new(runtime::PhaseInfo { phase: "idle", error: None, ended: false }),
-        history: Mutex::new(history.into_iter().collect::<VecDeque<_>>()),
+        history: Mutex::new(VecDeque::new()),
         quit: tokio::sync::Notify::new(),
         survey: Mutex::new(None),
         survey_last: Mutex::new(None),
@@ -661,6 +683,7 @@ fn serve(a: &Args) {
         host_last: Mutex::new(None),
     });
     monitor::start(ctx.clone());
+    runtime::load_history(ctx.clone());
     {
         let c = ctx.config.lock().unwrap();
         let l = &c.log;

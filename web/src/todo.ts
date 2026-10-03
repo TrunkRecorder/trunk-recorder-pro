@@ -59,7 +59,7 @@ export function openTodos(s: AppState): OpenTodo[] {
       }
       case "source": {
         const src = c.sources[item.index];
-        if (!src || src.kind !== "rtlsdr" || src.serial !== item.serial) break;
+        if (!src || src.type !== "rtlsdr" || src.serial !== item.serial) break;
         const dev = s.devices.find((d) => d.serial === item.serial);
         if (dev && !dev.busy) break;
         out.push({
@@ -73,7 +73,7 @@ export function openTodos(s: AppState): OpenTodo[] {
       case "driver": {
         const src = c.sources[item.index];
         const d = s.radios?.[item.driver];
-        if (!src || src.kind !== item.driver || !s.radios || d?.available) break;
+        if (!src || src.type !== item.driver || !s.radios || d?.available) break;
         out.push({ item, target: `src-${item.index}`, title: `Source ${item.index + 1}`, text: `Needs ${DRIVER[item.driver]} installed on this computer, then a restart.` });
         break;
       }
@@ -101,14 +101,14 @@ export function openTodos(s: AppState): OpenTodo[] {
       }
       case "coverage": {
         const sys = c.systems.find((x) => x.shortName === item.system);
-        if (!sys || !sys.enabled || !sys.controlChannels.length) break;
+        if (!sys || !sys.enabled || !sys.controlChannelsHz.length) break;
         const centers = resolvedCenters(c);
-        if (sys.controlChannels.some((f) => sourceCovering(c, centers, f) >= 0)) break;
+        if (sys.controlChannelsHz.some((f) => sourceCovering(c, centers, f) >= 0)) break;
         out.push({
           item,
           target: `cc-${item.system}`,
           title: `Control channel of ${item.system}`,
-          text: `No radio hears ${sys.controlChannels.map((f) => formatMhz(f, 4)).join(" or ")} MHz. Move a radio's center frequency there, or add a radio.`,
+          text: `No radio hears ${sys.controlChannelsHz.map((f) => formatMhz(f, 4)).join(" or ")} MHz. Move a radio's center frequency there, or add a radio.`,
         });
         break;
       }

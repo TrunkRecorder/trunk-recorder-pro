@@ -34,7 +34,7 @@
 //! and feeds samples. Samples before that report are the old frequency and
 //! are dropped.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::PI;
 
 use num_complex::Complex32;
@@ -45,7 +45,7 @@ use crate::p25::frame::{LDU1, LDU2, TSDU};
 use crate::p25::Tsbk;
 use crate::trunk::identity::{IdField, Identity};
 use crate::smartnet::plan::{self, PlanConfig, PlanFinder};
-use crate::smartnet::{self as sn, FramerOut};
+use crate::smartnet::{self as sn, Word};
 use crate::trunk::{Message, MessageType, TsbkParser};
 
 /// One-sided channel filter cutoff for P25, Hz.
@@ -440,7 +440,7 @@ fn tsbk_bits(t: &Tsbk) -> impl Fn(u32, u64) -> u32 {
 #[derive(Default)]
 struct Decode {
     parser: TsbkParser,
-    nac_votes: HashMap<u16, u32>,
+    nac_votes: BTreeMap<u16, u32>,
     frames: u32,
     voice: u32,
     good: u64,
@@ -534,16 +534,16 @@ struct SnRx {
     rx: sn::Fsk2,
     framer: sn::Framer,
     bits: Vec<sn::Bit>,
-    out: Vec<FramerOut>,
+    out: Vec<Word>,
 }
 
 impl SnRx {
     fn new(rate: f64) -> Self {
-        SnRx { rx: sn::Fsk2::new(rate), framer: sn::Framer::default(), bits: Vec::new(), out: Vec::new() }
+        SnRx { rx: sn::Fsk2::new(rate), framer: sn::Framer::new(), bits: Vec::new(), out: Vec::new() }
     }
 
     /// Decode `iq`; each framer output with its channel-sample instant.
-    fn push(&mut self, iq: &[Complex32], mut each: impl FnMut(FramerOut, f64)) {
+    fn push(&mut self, iq: &[Complex32], mut each: impl FnMut(Word, f64)) {
         self.bits.clear();
         self.rx.push(iq, &mut self.bits);
         for b in &self.bits {
@@ -751,9 +751,9 @@ struct SnMonitor {
     finder: PlanFinder,
     row: Vec<f32>,
     sorted: Vec<f32>,
-    cc_votes: HashMap<u16, u32>,
+    cc_votes: BTreeMap<u16, u32>,
     /// System IDs: the OSW before a "this control channel" broadcast.
-    sys_votes: HashMap<u16, u32>,
+    sys_votes: BTreeMap<u16, u32>,
     prev: Option<sn::Osw>,
     alt: BTreeSet<u16>,
     grants: BTreeMap<u16, u32>,
@@ -774,8 +774,8 @@ impl SnMonitor {
             finder: PlanFinder::new(center, chz.fs(), cells, chz.fs() / 2.0 * USABLE),
             row: vec![0.0; cells],
             sorted: vec![0.0; cells],
-            cc_votes: HashMap::new(),
-            sys_votes: HashMap::new(),
+            cc_votes: BTreeMap::new(),
+            sys_votes: BTreeMap::new(),
             prev: None,
             alt: BTreeSet::new(),
             grants: BTreeMap::new(),
@@ -865,6 +865,8 @@ struct Monitor {
     msgs: Vec<(Tsbk, Vec<Message>)>,
     ppm_applied: f64,
     sn: SnMonitor,
+    /// Its P25 receivers' settings (a re-centre starts them afresh).
+    bank_cfg: BankConfig,
 }
 
 impl Monitor {
@@ -881,6 +883,7 @@ impl Monitor {
             head,
             head_hz: freq,
             bank: Bank::new(rate, cfg.bank),
+            bank_cfg: cfg.bank,
             labels: bank_labels(&cfg.bank),
             dec: Decode::default(),
             est: FreqEst::default(),
@@ -943,8 +946,8 @@ impl Monitor {
         self.sn.rx.push(iq, |o, _| outs.push(o));
         for o in outs {
             match o {
-                FramerOut::Osw(o, _) => self.sn.osw(o, t),
-                FramerOut::Bad(_) => self.sn.parser.bad(t, &mut self.sn.msgs),
+                Word::Osw(o, _) => self.sn.osw(o, t),
+                Word::Bad(_) => self.sn.parser.bad(t, &mut self.sn.msgs),
             }
         }
         self.groups.clear();
@@ -1095,6 +1098,10 @@ impl Monitor {
             let (head, _, _) = self.chz.add_head(heard - self.center, CUTOFF_HZ, 0.0);
             self.head = head;
             self.head_hz = heard;
+            // Fresh receivers on the new head: the old ones' carrier tracking,
+            // levels and timing were for the old offset. (What was learned stays.)
+            self.bank = Bank::new(rate, self.bank_cfg);
+            self.sn.rx = SnRx::new(rate);
             self.est = FreqEst::default();
             self.est_from = self.blocks + 2;
             self.recenters += 1;

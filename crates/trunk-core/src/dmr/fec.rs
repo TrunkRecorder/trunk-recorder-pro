@@ -17,6 +17,8 @@
 
 use std::sync::OnceLock;
 
+use crate::bits::crc_ccitt;
+
 /// A small systematic code: data bits, then each data bit's parity row.
 struct Small {
     n: u32,
@@ -121,8 +123,8 @@ fn hamming_fix(rows: &[u32], pbits: usize, cw: &mut [u8]) -> Option<u32> {
 #[derive(Clone, Copy, Debug)]
 pub struct Bptc {
     pub bits: [u8; 96],
-    /// Bits corrected; −1 when some row or column is still wrong.
-    pub errs: i32,
+    /// Bits corrected; None when some row or column is still wrong.
+    pub errs: Option<u32>,
 }
 
 /// Deinterleave, then correct rows and columns in turn. `raw`: the 196 bits
@@ -173,8 +175,8 @@ pub fn bptc196_decode(raw: &[u8; 196]) -> Bptc {
             p += 1;
         }
     }
-    let errs = m.iter().zip(&received).filter(|(a, b)| a != b).count() as i32;
-    Bptc { bits, errs: if clean { errs } else { -1 } }
+    let errs = m.iter().zip(&received).filter(|(a, b)| a != b).count() as u32;
+    Bptc { bits, errs: clean.then_some(errs) }
 }
 
 /// Chase decoding of one Hamming row / column: the received bits and their
@@ -269,8 +271,8 @@ pub fn bptc196_decode_soft(soft: &[f32; 196]) -> Bptc {
             p += 1;
         }
     }
-    let errs = m.iter().zip(&received).filter(|(a, b)| a != b).count() as i32;
-    Bptc { bits, errs }
+    let errs = m.iter().zip(&received).filter(|(a, b)| a != b).count() as u32;
+    Bptc { bits, errs: Some(errs) }
 }
 
 pub fn bptc196_encode(data: &[u8; 96]) -> [u8; 196] {
@@ -455,15 +457,6 @@ pub fn rs129_decode(cw: &mut [u8; 12]) -> Option<u32> {
 
 // ── CRCs ───────────────────────────────────────────────────────────────────
 
-/// CRC-CCITT (x¹⁶+x¹²+x⁵+1, init 0, inverted) of `bits`.
-pub fn crc_ccitt(bits: &[u8]) -> u16 {
-    let mut crc = 0u16;
-    for &b in bits {
-        crc = if (crc >> 15) as u8 ^ (b & 1) != 0 { crc << 1 ^ 0x1021 } else { crc << 1 };
-    }
-    !crc
-}
-
 /// CRC masks by data type (TS 102 361-1 B.3.12).
 pub const MASK_PI: u16 = 0x6969;
 pub const MASK_VOICE_LC_HEADER: u32 = 0x969696;
@@ -554,8 +547,8 @@ mod tests {
             }
             let b = bptc196_decode(&raw);
             if flips < 3 {
-                assert!(b.bits == data && (0..=flips as i32).contains(&b.errs), "trial {trial}"); // R(3) is not counted
-            } else if b.errs >= 0 && b.bits == data {
+                assert!(b.bits == data && b.errs.is_some_and(|e| e <= flips as u32), "trial {trial}"); // R(3) is not counted
+            } else if b.errs.is_some() && b.bits == data {
                 fixed3 += 1;
             }
         }
@@ -595,12 +588,5 @@ mod tests {
         two[1] ^= 1;
         two[7] ^= 0x80;
         assert_eq!(rs129_decode(&mut two), None);
-    }
-
-    #[test]
-    fn crc_ccitt_matches_the_reference() {
-        // CRC-16/GENIBUS ("123456789" → 0xD64E): init 0x0000 here, so check the inverted XMODEM value.
-        let bits = unpack(b"123456789");
-        assert_eq!(crc_ccitt(&bits), !0x31c3);
     }
 }

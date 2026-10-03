@@ -4,7 +4,7 @@
 //! ```text
 //! channel IQ → dsp::C4fm (4800 baud 4FSK, as P25) → burst::Framer (sync, 30 ms grid)
 //!   → slot::Channel (CACH names the slot) → SlotDecoder × 2
-//!       → voice: AMBE+2 codewords (the P25 Phase 2 FEC and vocoder)
+//!       → voice: AMBE+2 codewords (crate::ambe, as P25 Phase 2) → mbe
 //!       → link control (talkgroup, source, privacy), CSBKs
 //! ```
 

@@ -6,10 +6,11 @@
 
 use super::frames::{Codec, VoiceFrame};
 use super::voice::TrackerOut;
+use crate::ambe::decode_vcw;
 use crate::mbe::{self, Kind, FRAME_SAMPLES};
 use crate::p25::alias::{mac_messages, mac_talker, MacAliases};
 use crate::p25::phase2::{
-    decode_acch, decode_ess, decode_vcw, duid_decode, isch_lookup, parse_mac_ptt, read_ess_a, read_ess_b, xor_mask, Packet, BURST_2V, BURST_4V,
+    decode_acch, decode_ess, duid_decode, isch_lookup, parse_mac_ptt, read_ess_a, read_ess_b, xor_mask, Packet, BURST_2V, BURST_4V,
     BURST_FACCH_S, BURST_FACCH_U, BURST_LCCH_S, BURST_SACCH_S, BURST_SACCH_U, BURST_DIBITS, MAC_ACTIVE, MAC_END_PTT, MAC_HANGTIME, MAC_IDLE, MAC_PTT,
     MAC_SIGNAL, SLOT_CHANNEL, SLOT_DIBITS,
 };
@@ -93,7 +94,7 @@ impl TdmaTracker {
     /// One slot packet at time `t` (s); what it produced goes to `out` as
     /// (logical channel, output).
     pub fn packet(&mut self, p: &Packet, t: f64, out: &mut Vec<(usize, TrackerOut)>) {
-        let c = SLOT_CHANNEL[p.slot];
+        let c = SLOT_CHANNEL[p.sf_slot];
         let burstp = &p.dibits[10..];
         let kind = duid_decode(burstp);
         if kind < 0 {
@@ -107,7 +108,7 @@ impl TdmaTracker {
                 self.undecodable += 1;
                 return;
             };
-            let base = p.slot * SLOT_DIBITS;
+            let base = p.sf_slot * SLOT_DIBITS;
             for (i, v) in x.iter_mut().enumerate() {
                 *v ^= m[base + i];
             }
@@ -117,7 +118,7 @@ impl TdmaTracker {
 
         if kind == BURST_4V || kind == BURST_2V {
             // op25 track_vb
-            let current = (p.slot >> 1) as i32;
+            let current = (p.sf_slot >> 1) as i32;
             s.burst_id += 1;
             s.burst_id = if kind == BURST_4V { s.burst_id % 5 } else { 4 };
             let last_rc = isch_lookup(&p.dibits);
@@ -187,7 +188,7 @@ impl TdmaTracker {
                     s.end_s = t;
                     s.algid = ptt.algid;
                     s.encrypted = ptt.algid != ALGID_CLEAR;
-                    s.first4v = ((p.slot >> 1) as i32 + pdu.offset as i32 + 1) % 5;
+                    s.first4v = ((p.sf_slot >> 1) as i32 + pdu.offset as i32 + 1) % 5;
                     s.burst_id = -1;
                     s.talker = (ptt.source != 0).then_some(ptt.source);
                     s.talkgroup = (ptt.group != 0).then_some(ptt.group);

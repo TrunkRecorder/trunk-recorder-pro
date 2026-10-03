@@ -23,6 +23,8 @@ use std::sync::Arc;
 use num_complex::Complex32;
 use rustfft::{Fft, FftPlanner};
 
+use super::filters::blackman_sinc;
+
 pub type HeadId = u32;
 
 struct Head {
@@ -35,6 +37,7 @@ struct Head {
 }
 
 pub struct Channelizer {
+    /// The wideband (input) sample rate; each head puts out `output_rate`.
     fs: f64,
     n: usize,
     p: usize,
@@ -111,9 +114,11 @@ impl Channelizer {
         }
     }
 
+    /// Each head's sample rate.
     pub fn output_rate(&self) -> f64 {
         self.output_rate
     }
+    /// The wideband sample rate.
     pub fn fs(&self) -> f64 {
         self.fs
     }
@@ -213,7 +218,8 @@ impl Channelizer {
     /// averaged down to `bins`, in dBFS — free for a waterfall.
     pub fn power_spectrum(&self, bins: usize) -> Vec<f32> {
         let mut out = vec![-120.0f32; bins];
-        if self.history_count == 0 || bins == 0 {
+        // (No more cells than bins.)
+        if self.history_count == 0 || bins == 0 || bins > self.n {
             return out;
         }
         let n = self.n;
@@ -235,7 +241,7 @@ impl Channelizer {
     /// (a divisor of the FFT size), fft-shifted (first cell starts at −fs/2);
     /// zeros before the first block. The survey's raw spectrum.
     pub fn cell_powers(&self, out: &mut [f32]) {
-        if self.history_count == 0 || out.is_empty() {
+        if self.history_count == 0 || out.is_empty() || out.len() > self.n {
             out.fill(0.0);
             return;
         }
@@ -276,7 +282,7 @@ impl Channelizer {
     /// ln 2 × the mean — so signals filling under half a slice don't lift it,
     /// and the profile follows the SDR's passband shape.
     pub fn noise_profile(&self, out: &mut [f64]) {
-        if self.history_count == 0 || out.is_empty() {
+        if self.history_count == 0 || out.is_empty() || out.len() > self.n {
             out.fill(0.0);
             return;
         }
@@ -311,15 +317,8 @@ impl Channelizer {
         // just those bins keeps the stopband exact.
         let (n, p, m) = (self.n, self.p, self.m);
         let fc = cutoff_hz / self.fs;
-        let mut h = vec![0.0f64; p];
-        let mut sum = 0.0;
-        for (i, v) in h.iter_mut().enumerate() {
-            let k = i as f64 - (p - 1) as f64 / 2.0;
-            let sinc = if k == 0.0 { 2.0 * fc } else { (2.0 * PI * fc * k).sin() / (PI * k) };
-            let w = 0.42 - 0.5 * (2.0 * PI * i as f64 / (p - 1) as f64).cos() + 0.08 * (4.0 * PI * i as f64 / (p - 1) as f64).cos();
-            *v = sinc * w;
-            sum += *v;
-        }
+        let h = blackman_sinc(p, fc);
+        let sum: f64 = h.iter().sum();
         let f: Vec<Complex32> = (0..m)
             .map(|k| {
                 let src = if k < m / 2 { k } else { n - m + k };

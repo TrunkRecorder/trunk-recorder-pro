@@ -35,7 +35,7 @@ pub fn run_scan(a: &Args) {
     let (cap, fs, center) = capture(a, "dmrscan");
     let mut chz = Channelizer::new(fs, 24_000.0, 0.1);
     let rate = chz.output_rate();
-    let span = fs / 2.0 * 0.9;
+    let span = trunk_core::trunk::usable_half_width(fs, a.num("guard", trunk_core::trunk::DEFAULT_GUARD_HZ));
     let step = 6250.0;
     let first = ((center - span) / step).ceil() as i64;
     let last = ((center + span) / step).floor() as i64;
@@ -55,7 +55,7 @@ pub fn run_scan(a: &Args) {
             let hz = k as f64 * step;
             let (head, _, _) = chz.add_head(hz - center, dmr::CHANNEL_CUTOFF_HZ, 0.0);
             // A scan only needs syncs: no multi-symbol detection (it would cost 20×).
-            Ch { hz, head, rx: C4fm::with_options(rate, C4fmOptions { msd: None, ..C4fmOptions::dmr() }), framer: Framer::default(), chan: dmr::Channel::default(), syncs: BTreeMap::new(), cc: BTreeMap::new(), lcs: 0, voice: 0 }
+            Ch { hz, head, rx: C4fm::with_options(rate, C4fmOptions { msd: None, ..C4fmOptions::dmr() }), framer: Framer::new(), chan: dmr::Channel::default(), syncs: BTreeMap::new(), cc: BTreeMap::new(), lcs: 0, voice: 0 }
         })
         .collect();
     let t0 = Instant::now();
@@ -120,7 +120,7 @@ pub fn run(a: &Args) {
     let rate = chz.output_rate();
     let (head, _, _) = chz.add_head(freq - center, dmr::CHANNEL_CUTOFF_HZ, 0.0);
     let mut rx = C4fm::dmr(rate);
-    let mut framer = Framer::default();
+    let mut framer = Framer::new();
     let mut chan = dmr::Channel::default();
     let mut vocoders = [mbe::Decoder::new(mbe::lcg(1), mbe::Profile::Enhanced), mbe::Decoder::new(mbe::lcg(2), mbe::Profile::Enhanced)];
     let mut audio_out = a.get("audio").map(|p| BufWriter::new(File::create(p).unwrap_or_else(|e| die(&format!("{p}: {e}")))));
@@ -168,8 +168,8 @@ pub fn run(a: &Args) {
                     if matches!(dt, 0..=7 | 11) {
                         // The block and its CRC-CCITT residual (0 = the CRC checks unmasked).
                         let blk = dmr::fec::bptc196_decode(&b.info196());
-                        let crc = dmr::fec::crc_ccitt(&blk.bits[..80]) ^ blk.bits[80..].iter().fold(0u16, |v, &x| v << 1 | x as u16);
-                        let _ = write!(line, ",\"block\":\"{}\",\"bptc_errs\":{},\"crc_residual\":\"{crc:04x}\"", hex(&dmr::fec::pack(&blk.bits)), blk.errs);
+                        let crc = trunk_core::bits::crc_ccitt(&blk.bits[..80]) ^ blk.bits[80..].iter().fold(0u16, |v, &x| v << 1 | x as u16);
+                        let _ = write!(line, ",\"block\":\"{}\",\"bptc_errs\":{},\"crc_residual\":\"{crc:04x}\"", hex(&dmr::fec::pack(&blk.bits)), blk.errs.map_or(-1, |e| e as i64));
                     }
                 } else if b.sync.is_none() {
                     let (cc, pi, lcss, e) = b.emb();

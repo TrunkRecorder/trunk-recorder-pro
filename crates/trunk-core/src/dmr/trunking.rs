@@ -27,6 +27,7 @@ use num_complex::Complex32;
 
 use super::burst::{Burst, Framer};
 use super::slot::{Channel, Csbk, LcFrom, SlotEvent, FID_MOTOROLA, FID_STANDARD};
+use crate::bits::field;
 use crate::dsp::c4fm::C4fm;
 use crate::dsp::{Receiver, Symbol};
 use crate::trunk::message::{Message, MessageType};
@@ -114,6 +115,8 @@ pub fn lsn(n: u32) -> (u32, u8) {
 pub struct Carrier {
     pub hz: u64,
     rx: C4fm,
+    /// The sample rate `rx` was made for (its source's channel rate).
+    rate: f64,
     framer: Framer,
     pub chan: Channel,
     syms: Vec<Symbol>,
@@ -178,7 +181,8 @@ impl Site {
             .map(|hz| Carrier {
                 hz,
                 rx: C4fm::dmr(rate),
-                framer: Framer::default(),
+                rate,
+                framer: Framer::new(),
                 chan: Channel::default(),
                 syms: Vec::new(),
                 bursts: Vec::new(),
@@ -262,6 +266,10 @@ impl Site {
     /// Carrier `idx`'s channel IQ; `t0` + sample / `rate` is a sample's air time (s).
     pub fn push(&mut self, idx: usize, iq: &[Complex32], t0: f64, rate: f64, out: &mut Vec<Message>) {
         let c = &mut self.carriers[idx];
+        if c.rate != rate {
+            // On a source of another rate than the site was made for.
+            (c.rx, c.rate) = (C4fm::dmr(rate), rate);
+        }
         c.syms.clear();
         c.rx.push(iq, &mut c.syms);
         c.bursts.clear();
@@ -514,7 +522,7 @@ impl Site {
                 // C_BCAST: a channel's frequency (type 5, with absolute parameters).
                 if k.bits(16, 21) == 5 {
                     if let Some(c) = cont {
-                        let lcn = bits(c, 22, 34);
+                        let lcn = field(c, 22, 34);
                         if let Some(hz) = absolute_downlink(c) {
                             if !self.cfg.lcn_table.contains_key(&lcn) && self.learned.get(&lcn) != Some(&hz) {
                                 self.learned.insert(lcn, hz);
@@ -580,14 +588,9 @@ impl Site {
     }
 }
 
-/// Bits `a..b` of a 12-byte block.
-fn bits(b: &[u8; 12], a: usize, e: usize) -> u32 {
-    (a..e).fold(0, |v, i| v << 1 | (b[i / 8] >> (7 - i % 8) & 1) as u32)
-}
-
 /// An MBC continuation's absolute channel parameters → downlink frequency.
 fn absolute_downlink(c: &[u8; 12]) -> Option<u64> {
-    let hz = bits(c, 57, 67) as u64 * 1_000_000 + bits(c, 67, 80) as u64 * 125;
+    let hz = field(c, 57, 67) as u64 * 1_000_000 + field(c, 67, 80) as u64 * 125;
     (hz > 0).then_some(hz)
 }
 

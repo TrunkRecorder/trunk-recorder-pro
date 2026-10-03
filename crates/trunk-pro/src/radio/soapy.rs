@@ -566,7 +566,7 @@ fn stream_once(source: usize, cfg: &SoapyConfig, tx: &SyncSender<SourceMsg>, sto
                 continue;
             }
             buf.truncate(got);
-            if tx.send(SourceMsg::Iq { source, samples: buf, dropped }).is_err() {
+            if tx.send(SourceMsg::Iq { source, samples: buf, dropped, at: std::time::Instant::now() }).is_err() {
                 return Ok(());
             }
         }

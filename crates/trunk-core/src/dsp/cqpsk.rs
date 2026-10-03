@@ -15,6 +15,7 @@ use std::f64::consts::PI;
 
 use num_complex::Complex32;
 
+use super::{c4fm, filters};
 use super::{Receiver, Symbol};
 
 #[derive(Clone, Copy, Debug)]
@@ -35,13 +36,13 @@ pub struct Options {
     /// symbols, each turned on by its decided step, averaged with this
     /// forgetting factor (0 = plain differential detection).
     pub df_beta: f32,
-    /// Symbol rate: 4800 (Phase 1) or 6000 (Phase 2 H-DQPSK).
+    /// Symbol rate: 4800 (Phase 1, [`super::c4fm::SYMBOL_RATE`]) or 6000 (Phase 2 H-DQPSK, [`crate::p25::phase2::SYMBOL_RATE`]).
     pub baud: f64,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Options { eq_taps: 0, eq_mu: 0.02, soft_amplitude: true, coherent: false, pll_kp: 0.04, baud: 4800.0, df_beta: 0.0 }
+        Options { eq_taps: 0, eq_mu: 0.02, soft_amplitude: true, coherent: false, pll_kp: 0.04, baud: c4fm::SYMBOL_RATE, df_beta: 0.0 }
     }
 }
 
@@ -108,32 +109,19 @@ pub struct Cqpsk {
 }
 
 impl Cqpsk {
-    pub fn new(fs: f64, mut opt: Options) -> Self {
-        let sps = fs / opt.baud;
-        let alpha = 0.35;
+    pub fn new(rate: f64, mut opt: Options) -> Self {
+        let sps = rate / opt.baud;
         let persym = (sps.round() as usize).max(1);
         let span = (512 / persym).clamp(4, 11);
         let mut len = persym * span;
         if len % 2 == 0 {
             len += 1;
         }
-        let mid = (len - 1) as f64 / 2.0;
-        let mut taps: Vec<f64> = (0..len)
-            .map(|i| {
-                let t = (i as f64 - mid) / sps;
-                if t.abs() < 1e-8 {
-                    1.0 - alpha + 4.0 * alpha / PI
-                } else if (t.abs() - 1.0 / (4.0 * alpha)).abs() < 1e-8 {
-                    let a = PI / (4.0 * alpha);
-                    alpha / std::f64::consts::SQRT_2 * ((1.0 + 2.0 / PI) * a.sin() + (1.0 - 2.0 / PI) * a.cos())
-                } else {
-                    let pt = PI * t;
-                    ((pt * (1.0 - alpha)).sin() + 4.0 * alpha * t * (pt * (1.0 + alpha)).cos()) / (pt * (1.0 - (4.0 * alpha * t).powi(2)))
-                }
-            })
-            .collect();
-        let sum: f64 = taps.iter().sum();
-        taps.iter_mut().for_each(|t| *t /= sum);
+        let taps = filters::rrc_taps(0.35, sps, len);
+        // Odd, and at least 3: it is T/2-spaced, two inputs a symbol.
+        if opt.eq_taps > 0 && opt.eq_taps < 3 {
+            opt.eq_taps = 3;
+        }
         if opt.eq_taps > 0 && opt.eq_taps % 2 == 0 {
             opt.eq_taps += 1;
         }
@@ -144,7 +132,7 @@ impl Cqpsk {
         Cqpsk {
             sps,
             opt,
-            taps: taps.iter().map(|&t| t as f32).collect(),
+            taps,
             last: Complex32::default(),
             acc_r: 0.0,
             acc_i: 0.0,
@@ -425,5 +413,20 @@ impl Receiver for Cqpsk {
         self.front(iq);
         // 4. Timing and detection.
         self.gardner(out);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dsp::Receiver;
+
+    /// A 1-tap equaliser (a tool flag) is made 3 taps, not a panic.
+    #[test]
+    fn a_one_tap_equaliser_is_widened() {
+        let mut rx = Cqpsk::new(48_000.0, Options { eq_taps: 1, ..Default::default() });
+        let mut out = Vec::new();
+        let iq: Vec<Complex32> = (0..4800).map(|i| Complex32::from_polar(1.0, i as f32 * 0.7)).collect();
+        rx.push(&iq, &mut out);
     }
 }
