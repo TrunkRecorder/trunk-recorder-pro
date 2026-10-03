@@ -327,6 +327,7 @@ pub fn json(search: bool) -> serde_json::Value {
     let i = info();
     let mut j = i.json();
     if !i.loaded {
+        j["devices"] = serde_json::Value::Null;
         return j;
     }
     match modules() {
