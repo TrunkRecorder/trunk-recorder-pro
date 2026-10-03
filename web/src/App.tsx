@@ -12,10 +12,8 @@ import { StatsPage } from "./Stats.tsx";
 import { Tile } from "./Tile.tsx";
 import { parseTalkgroupCsv } from "./talkgroups.ts";
 import { unitName } from "./units.ts";
+import { fullRows } from "./layout.ts";
 import { Waterfall, type CcMark } from "./Waterfall.tsx";
-
-/** Sources this wide (Hz) get a whole row for their waterfall; narrower ones share a row two by two. */
-const WIDE_SOURCE_HZ = 5e6;
 
 const hex = (v: number | null | undefined) => (v === null || v === undefined ? "—" : v.toString(16).toUpperCase());
 
@@ -806,6 +804,8 @@ export function App() {
   const liveDongle = s.config?.sources.some((x) => x.kind === "rtlsdr") ?? false;
   // A viewer watches: no setup, plugins, start or stop.
   const ro = readOnly(s);
+  // Which waterfalls take a whole row.
+  const fullRow = fullRows(s.spectra.map((x) => x?.rateHz ?? null));
   // The setup guide: offered once, when the recorder first reports an empty config.
   const offered = useRef(false);
   useEffect(() => {
@@ -923,7 +923,7 @@ export function App() {
             <div className="waterfalls">
               {s.spectra.map((sp, i) =>
                 sp ? (
-                  <section className={`panel flush${sp.rateHz >= WIDE_SOURCE_HZ ? " wide" : ""}`} key={i}>
+                  <section className={`panel flush${fullRow[i] ? " wide" : ""}`} key={i}>
                     <Waterfall
                       radio={sp}
                       label={s.sources[i]?.label}
