@@ -1032,3 +1032,10 @@ table.calls tr.ignored td { opacity: 0.55; }
 .rolloff-controls input[type="range"] { flex: 1 1 200px; min-width: 0; }
 .rolloff .bad { color: var(--bad); }
 .rolloff .warn { color: var(--warn); }
+.sys-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 14px 18px; background: var(--panel); border: 1px solid var(--line); border-left: 6px solid var(--accent); border-radius: 12px; }
+.sys-header p { margin: 2px 0 0; }
+.sys-section .barlist li { grid-template-columns: minmax(90px, 200px) minmax(0, 1fr) 40px; }
+.src-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: var(--gap); align-items: start; }
+@media (max-width: 1200px) { .src-row { grid-template-columns: minmax(0, 1fr); } }
+.wf-card { padding-bottom: 8px; }
+.wf-card .waterfall { border-radius: 8px; overflow: hidden; }

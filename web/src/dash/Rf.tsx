@@ -209,6 +209,57 @@ function ChannelPlot({ profile, channels, src, color }: { profile: number[]; cha
   );
 }
 
+/** A source's waterfall shown or not (remembered in this browser; on at first). */
+function useWaterfallOn(i: number): [boolean, (on: boolean) => void] {
+  const key = `trp.waterfall.${i}`;
+  const [on, setOn] = useState(() => {
+    try {
+      return localStorage.getItem(key) !== "0";
+    } catch {
+      return true;
+    }
+  });
+  const set = (v: boolean) => {
+    setOn(v);
+    try {
+      localStorage.setItem(key, v ? "1" : "0");
+    } catch {
+      // Not remembered.
+    }
+  };
+  return [on, set];
+}
+
+/**
+ * A source's spectrum and waterfall, with the control channels and calls
+ * marked. Its spectrum is only made (and sent) while it's shown.
+ */
+function SourceWaterfall({ s, i, title }: { s: AppState; i: number; title?: string }) {
+  const src = s.sources[i];
+  const [on, setOn] = useWaterfallOn(i);
+  useTopic(on ? `spectrum:${i}` : null);
+  const color = (sys: string) => systemColor(s.config, sys);
+  return (
+    <Card
+      title={title ?? `Waterfall · ${src.label}`}
+      className="wf-card"
+      actions={
+        <label className="toggle small">
+          <input type="checkbox" checked={on} onChange={(e) => setOn(e.target.checked)} />
+          <span>Show</span>
+        </label>
+      }
+    >
+      {on &&
+        (s.spectra[i] ? (
+          <Waterfall radio={s.spectra[i]} label={src.label} ccs={ccMarks(s.config, s.status?.systems ?? [])} calls={s.calls} multi={systemChoices(s).length > 1} colorOf={color} />
+        ) : (
+          <div className="chart-empty">Waiting for the spectrum…</div>
+        ))}
+    </Card>
+  );
+}
+
 const RANGES: { v: StatsRange; label: string }[] = [
   { v: "1h", label: "1 h" },
   { v: "24h", label: "24 h" },
@@ -218,9 +269,7 @@ const RANGES: { v: StatsRange; label: string }[] = [
 function SourceDetail({ s, i }: { s: AppState; i: number }) {
   const src = s.sources[i];
   const [range, setRange] = useState<StatsRange>("24h");
-  const [fall, setFall] = useState(false);
   useTopic(`rf:${i}`);
-  useTopic(fall ? `spectrum:${i}` : null);
   const k = (x: string) => K.src(src.label, x);
   const hist = useHistory([k("noise"), k("peak"), k("ppm"), k("tune"), k("dropped"), k("clipPct")], range, 360);
   const d = s.rfDetail[i];
@@ -236,24 +285,13 @@ function SourceDetail({ s, i }: { s: AppState; i: number }) {
         </button>
       </div>
       <SourceCard s={s} src={src} i={i} />
-      <Card
-        title="Across the band"
-        actions={
-          <label className="toggle small">
-            <input type="checkbox" checked={fall} onChange={(e) => setFall(e.target.checked)} />
-            <span>Waterfall</span>
-          </label>
-        }
-      >
+      <SourceWaterfall s={s} i={i} title="Waterfall" />
+      <Card title="Across the band">
         {d ? <ChannelPlot profile={d.profile} channels={d.channels} src={src} color={color} /> : <div className="chart-empty">Measuring…</div>}
         <Hint>
           Bars are the noise floor in each slice of the band (the SDR's passband shape shows here: lower at the edges). Stems are channels: how far each stands above the floor under
           it. Control channels want 10 dB or more; voice decodes cleanly from about 8 dB.
         </Hint>
-        {fall && s.spectra[i] && (
-          <Waterfall radio={s.spectra[i]} label={src.label} ccs={ccMarks(s.config, s.status?.systems ?? [])} calls={s.calls} multi={systemChoices(s).length > 1} colorOf={color} />
-        )}
-        {fall && !s.spectra[i] && <div className="chart-empty">Waiting for the spectrum…</div>}
       </Card>
       {d && d.channels.length > 0 && (
         <Card title="Channels on this source">
@@ -348,12 +386,13 @@ export function RfPage() {
   return (
     <div className="page">
       <BandOverview s={s} />
-      <div className="card-grid wide">
-        {s.sources.map((src, k) => (
-          <SourceCard key={k} s={s} src={src} i={k} />
-        ))}
-      </div>
-      <Hint>Pick a source for its band in detail — the floor across it, each channel's level, the waterfall — and its last week.</Hint>
+      {s.sources.map((src, k) => (
+        <div key={k} className="src-row">
+          <SourceCard s={s} src={src} i={k} />
+          <SourceWaterfall s={s} i={k} />
+        </div>
+      ))}
+      <Hint>Pick a source for its band in detail — the floor across it, each channel's level above it — and its last week.</Hint>
     </div>
   );
 }
