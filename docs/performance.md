@@ -109,9 +109,8 @@ live air per program per system, sampled every 5 s after a 45 s warm-up
 
 ### Method (macOS)
 
-A sampler ([`research/cpu-vs-trunk-recorder/`](../research/cpu-vs-trunk-recorder/))
-starts the program from the command line and every 5 s reads the process's
-counters with `proc_pid_rusage` (`RUSAGE_INFO_V6`): CPU time (user and
+A sampler starts the program from the command line and every 5 s reads
+the process's counters with `proc_pid_rusage` (`RUSAGE_INFO_V6`): CPU time (user and
 system), CPU cycles and instructions (all cores, and on performance cores),
 energy, memory. It adds the program's child processes: Trunk Recorder's
 ffmpeg runs (waited for, so counted through the parent's child CPU time) and
@@ -284,12 +283,3 @@ recorder against Pro's +0.7).
   threads to contend.
 - Repeat the selector A/B with nothing else running, to rule out the
   production instance's contention.
-
-## Reproducing
-
-[`research/cpu-vs-trunk-recorder/`](../research/cpu-vs-trunk-recorder/) has
-the samplers (`bench.py` and `ru.py` for macOS, `bench_linux.py` for Linux), the run order (`series.sh`, and `pi/series.sh` with the Pi's configs), the analysis
-and chart (`analyze.py`), the TR profiling script (`prof.sh`) and the raw
-5-second samples (`runs/*.csv`) behind every number here. The Mac configs
-are not included (they hold OpenMHz keys); their settings are listed under
-[Setup](#setup).
