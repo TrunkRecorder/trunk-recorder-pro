@@ -1,5 +1,6 @@
 //! A queue of calls worked off the event thread — what an uploader needs:
 //! retries with backoff, a warning status while calls are waiting, results
+//! and [`Metrics`] (queue depth, upload time, how the service is answering)
 //! reported for you, and calls still waiting at shutdown saved to the data
 //! folder and picked up at the next start.
 //!
@@ -22,7 +23,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use crate::protocol::{ConcludedCall, Outcome, State};
+use crate::protocol::{ConcludedCall, Endpoint, EndpointState, Metrics, Outcome, State};
 use crate::sdk::Host;
 
 /// What became of one try at a call.
@@ -50,11 +51,14 @@ pub struct QueueOptions {
     pub capacity: usize,
     /// A name for the status line, e.g. "upload" → "3 uploads waiting to retry".
     pub noun: &'static str,
+    /// The service the work goes to ("Broadcastify Calls"), for the
+    /// dashboard's endpoint status. None: the plugin's own name is shown.
+    pub endpoint: Option<String>,
 }
 
 impl Default for QueueOptions {
     fn default() -> Self {
-        QueueOptions { retry_after: [10, 60, 300, 900].map(Duration::from_secs).to_vec(), threads: 2, save_to: None, capacity: 10_000, noun: "call" }
+        QueueOptions { retry_after: [10, 60, 300, 900].map(Duration::from_secs).to_vec(), threads: 2, save_to: None, capacity: 10_000, noun: "call", endpoint: None }
     }
 }
 
@@ -81,6 +85,92 @@ struct Inner {
     /// The waiting count last reported in a status.
     reported: usize,
     last_error: String,
+    stats: Tally,
+}
+
+/// What the queue has done, for [`Metrics`].
+#[derive(Default)]
+struct Tally {
+    retries: u64,
+    bytes: u64,
+    latency_ms: Option<f64>,
+    last_ok: Option<f64>,
+    last_error: Option<f64>,
+    /// Failed tries in a row (0 after a success).
+    in_a_row: u32,
+    tried: bool,
+    /// Unix s of the first try (the clock for "silent" before any success).
+    first_try: Option<f64>,
+    changed: bool,
+    sent: Option<Instant>,
+    sent_state: EndpointState,
+}
+
+/// Metrics go out at most this often, and at least this often while something changes.
+const METRICS_MIN: Duration = Duration::from_secs(5);
+const METRICS_MAX: Duration = Duration::from_secs(30);
+/// The service counts as down after this many failed tries in a row, or
+/// this long without a success while calls wait.
+const DOWN_AFTER: u32 = 3;
+const DOWN_SILENT: Duration = Duration::from_secs(300);
+
+fn unix_now() -> f64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
+}
+
+impl Inner {
+    fn endpoint_state(&self) -> EndpointState {
+        let t = &self.stats;
+        if !t.tried {
+            return EndpointState::Unknown;
+        }
+        let since = t.last_ok.or(t.first_try).unwrap_or_else(unix_now);
+        let silent = !self.waiting.is_empty() && unix_now() - since > DOWN_SILENT.as_secs_f64();
+        if t.in_a_row >= DOWN_AFTER || silent {
+            EndpointState::Down
+        } else if t.in_a_row > 0 || !self.waiting.is_empty() {
+            EndpointState::Degraded
+        } else {
+            EndpointState::Up
+        }
+    }
+
+    fn metrics(&self, o: &QueueOptions) -> Metrics {
+        let t = &self.stats;
+        let state = self.endpoint_state();
+        Metrics {
+            queued: Some((self.ready.len() + self.waiting.len()) as u64),
+            retrying: Some(self.waiting.len() as u64),
+            in_flight: Some(self.busy as u64),
+            retries: Some(t.retries),
+            bytes_sent: Some(t.bytes),
+            latency_ms: t.latency_ms.map(|l| (l * 10.0).round() / 10.0),
+            last_ok: t.last_ok,
+            last_error: t.last_error,
+            last_error_text: self.last_error.clone(),
+            endpoints: o
+                .endpoint
+                .as_ref()
+                .map(|name| Endpoint { name: name.clone(), state, latency_ms: t.latency_ms, last_ok: t.last_ok, last_error: if state == EndpointState::Up { String::new() } else { self.last_error.clone() } })
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    /// Send metrics when something changed and it's been a while (or the
+    /// service's state changed: at once).
+    fn report(&mut self, host: &Host, o: &QueueOptions) {
+        let state = self.endpoint_state();
+        let since = self.stats.sent.map_or(Duration::MAX, |t| t.elapsed());
+        let due = (self.stats.changed && since >= METRICS_MIN) || since >= METRICS_MAX || state != self.stats.sent_state;
+        if due {
+            host.metrics(&self.metrics(o));
+            self.stats.sent = Some(Instant::now());
+            self.stats.sent_state = state;
+            self.stats.changed = false;
+        }
+    }
 }
 
 struct Shared {
@@ -135,6 +225,7 @@ impl CallQueue {
             return;
         }
         g.ready.push_back(Item { call, tries: 0, due: Instant::now(), last_error: String::new() });
+        g.stats.changed = true;
         drop(g);
         self.shared.wake.notify_one();
     }
@@ -202,6 +293,7 @@ fn worker(sh: &Shared, host: &Host, work: &(dyn Fn(&ConcludedCall) -> Attempt + 
             }
         }
         let Some(mut it) = g.ready.pop_front() else {
+            g.report(host, o);
             let next = g.waiting.iter().map(|w| w.due).min();
             let wait = next.map_or(Duration::from_secs(1), |t| t.saturating_duration_since(now)).min(Duration::from_secs(1));
             g = sh.wake.wait_timeout(g, wait).unwrap().0;
@@ -209,9 +301,36 @@ fn worker(sh: &Shared, host: &Host, work: &(dyn Fn(&ConcludedCall) -> Attempt + 
         };
         g.busy += 1;
         drop(g);
+        let started = Instant::now();
         let r = work(&it.call);
+        let took_ms = started.elapsed().as_secs_f64() * 1000.0;
         g = sh.inner.lock().unwrap();
         g.busy -= 1;
+        {
+            let t = &mut g.stats;
+            t.changed = true;
+            t.first_try.get_or_insert_with(unix_now);
+            match &r {
+                Attempt::Done { .. } => {
+                    t.tried = true;
+                    t.in_a_row = 0;
+                    t.last_ok = Some(unix_now());
+                    t.latency_ms = Some(t.latency_ms.map_or(took_ms, |l| l + 0.2 * (took_ms - l)));
+                    let f = &it.call.files;
+                    t.bytes += f.m4a.as_ref().and_then(|m| std::fs::metadata(m).ok()).or_else(|| std::fs::metadata(&f.wav).ok()).map_or(0, |m| m.len());
+                }
+                Attempt::Retry(_) | Attempt::Fail(_) => {
+                    t.tried = true;
+                    t.in_a_row += 1;
+                    t.last_error = Some(unix_now());
+                    t.retries += matches!(r, Attempt::Retry(_)) as u64;
+                }
+                Attempt::Skip(_) => {}
+            }
+        }
+        if let Attempt::Fail(m) = &r {
+            g.last_error = m.clone();
+        }
         match r {
             Attempt::Done { url } => host.call_result(&it.call.path, Outcome::Ok, "", url),
             Attempt::Skip(m) => host.call_result(&it.call.path, Outcome::Skipped, m, ""),
@@ -238,6 +357,7 @@ fn worker(sh: &Shared, host: &Host, work: &(dyn Fn(&ConcludedCall) -> Attempt + 
                 host.status(State::Warning, format!("{n} {noun} waiting to retry: {}", g.last_error));
             }
         }
+        g.report(host, o);
     }
 }
 
@@ -299,6 +419,38 @@ mod tests {
         assert_eq!(tries.load(Ordering::SeqCst), 2);
         assert_eq!(out.results(), vec![(call.path, Outcome::Ok, String::new(), "u".into())]);
         assert!(matches!(out.status(), Some((State::Ok, _))));
+    }
+
+    #[test]
+    fn metrics_follow_the_service() {
+        let dir = testing::temp_dir("queue");
+        let (host, out) = testing::capture();
+        let tries = Arc::new(AtomicUsize::new(0));
+        let t = tries.clone();
+        let opts = QueueOptions { endpoint: Some("Example Calls".into()), ..quick(&dir) };
+        let mut q = CallQueue::start(host, opts, move |_| {
+            if t.fetch_add(1, Ordering::SeqCst) == 0 {
+                Attempt::Retry("503".into())
+            } else {
+                Attempt::Done { url: String::new() }
+            }
+        });
+        q.push(testing::call(&dir, "sys1", 5));
+        let t0 = Instant::now();
+        while !q.is_empty() && t0.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        q.shutdown(Duration::from_secs(1));
+        let m = out.output().metrics();
+        // The service went degraded on the retry (reported at once), then up.
+        let states: Vec<EndpointState> = m.iter().filter_map(|x| x.endpoints.first().map(|e| e.state)).collect();
+        assert!(states.contains(&EndpointState::Degraded), "{states:?}");
+        assert_eq!(states.last(), Some(&EndpointState::Up), "{states:?}");
+        let last = m.last().unwrap();
+        assert_eq!(last.retries, Some(1));
+        assert_eq!(last.queued, Some(0));
+        assert!(last.latency_ms.is_some() && last.last_ok.is_some());
+        assert_eq!(last.endpoints[0].name, "Example Calls");
     }
 
     #[test]

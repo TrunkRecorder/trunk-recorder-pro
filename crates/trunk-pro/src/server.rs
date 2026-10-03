@@ -560,7 +560,81 @@ pub(crate) fn hello_json(ctx: &Ctx, radios: Value) -> Value {
         "radios": radios,
         "surveyBands": trunk_app::survey::bands_json(),
         "survey": ctx.survey_last.lock().unwrap().clone().unwrap_or_else(crate::survey::idle_json),
+        // The dashboard: recent notable events, the computer as last sampled, every plugin's runtime.
+        "events": ctx.shared.recent_events(),
+        "host": ctx.host_last.lock().unwrap().clone(),
+        "pluginRuntime": ctx.plugins.runtime_json(),
     })
+}
+
+/// What one connection watches ([`trunk_app::stats::Topics`]); counted in
+/// the shared tally while it lasts.
+struct Subs {
+    ctx: Arc<Ctx>,
+    topics: std::collections::BTreeSet<String>,
+}
+
+impl Subs {
+    fn set(&mut self, topics: std::collections::BTreeSet<String>) {
+        let add: Vec<String> = topics.difference(&self.topics).cloned().collect();
+        let remove: Vec<String> = self.topics.difference(&topics).cloned().collect();
+        self.ctx.retopic(&add, &remove);
+        self.topics = topics;
+    }
+}
+
+impl Drop for Subs {
+    fn drop(&mut self) {
+        let all: Vec<String> = self.topics.iter().cloned().collect();
+        self.ctx.retopic(&[], &all);
+    }
+}
+
+/// A query's time span: `range` ("10m", "1h", "6h", "24h", "7d") back from
+/// now, or `from` / `to` (Unix s).
+fn span(v: &Value, now: i64) -> (i64, i64) {
+    let back = match v["range"].as_str().unwrap_or("1h") {
+        "10m" => 600,
+        "1h" => 3600,
+        "6h" => 6 * 3600,
+        "24h" => 86400,
+        "7d" => 7 * 86400,
+        _ => 3600,
+    };
+    let to = v["to"].as_i64().unwrap_or(now);
+    (v["from"].as_i64().unwrap_or(to - back), to)
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
+}
+
+/// `statsQuery {id, series, range | from/to, points?}`: the minute history.
+pub(crate) fn stats_query(ctx: &Ctx, v: &Value) -> Value {
+    let (from, to) = span(v, unix_now());
+    let patterns: Vec<String> = v["series"].as_array().into_iter().flatten().filter_map(|t| t.as_str()).take(200).map(String::from).collect();
+    let points = v["points"].as_u64().unwrap_or(0) as usize;
+    let h = ctx.series.lock().unwrap();
+    json!({ "type": "statsResult", "id": v["id"], "from": from, "to": to, "loading": h.loading, "series": h.query(&patterns, from, to, points) })
+}
+
+/// `radioQuery`: the registry, with talkgroup names from the config and radio names as saved.
+pub(crate) fn radio_query(ctx: &Ctx, v: &Value) -> Value {
+    let cfg = ctx.config.lock().unwrap().clone();
+    let tables = trunk_app::stats::talkgroup_tables(&cfg);
+    let mut aliases: std::collections::HashMap<String, trunk_core::trunk::UnitAliases> = Default::default();
+    for n in cfg.systems.iter().map(|s| &s.short_name).chain(cfg.conventional.iter().map(|c| &c.short_name)) {
+        if let Ok(csv) = std::fs::read_to_string(crate::runtime::units_path(n)) {
+            aliases.insert(n.clone(), trunk_core::trunk::UnitAliases::parse_csv(&csv));
+        }
+    }
+    let tg = |sys: &str, t: u32| trunk_app::stats::tg_info(&tables, sys, t);
+    let unit = |sys: &str, u: u32| aliases.get(sys).and_then(|a| a.get(u)).map(str::to_string);
+    let names = trunk_app::stats::Names { tg: &tg, unit: &unit };
+    let mut out = ctx.shared.radio.lock().unwrap().query(v, unix_now(), &names);
+    out["type"] = json!("radioResult");
+    out["id"] = v["id"].clone();
+    out
 }
 
 async fn session(ctx: Arc<Ctx>, mut socket: WebSocket) {
@@ -576,12 +650,15 @@ async fn session(ctx: Arc<Ctx>, mut socket: WebSocket) {
     }
     // Live audio: off until the browser asks; optionally one system and/or talkgroup only.
     let mut listen: Option<Listen> = None;
+    let mut subs = Subs { ctx: ctx.clone(), topics: Default::default() };
     loop {
         tokio::select! {
             msg = rx.recv() => match msg {
                 Ok(out) => {
                     let m = match &*out {
                         Out::Text(s) => Message::Text(s.clone().into()),
+                        Out::Topic { topic, text } if subs.topics.contains(topic) => Message::Text(text.clone().into()),
+                        Out::Topic { .. } => continue,
                         Out::Audio { short_name, tg, frame } => match &listen {
                             Some(l) if l.wants(short_name, *tg) => Message::Binary(frame.clone().into()),
                             _ => continue,
@@ -599,7 +676,7 @@ async fn session(ctx: Arc<Ctx>, mut socket: WebSocket) {
             msg = socket.recv() => match msg {
                 Some(Ok(Message::Text(t))) => {
                     let Ok(v) = serde_json::from_str::<Value>(&t) else { continue };
-                    if let Some(reply) = command(&ctx, &v, &mut listen).await {
+                    if let Some(reply) = command(&ctx, &v, &mut listen, &mut subs).await {
                         if socket.send(Message::Text(reply.to_string().into())).await.is_err() {
                             return;
                         }
@@ -660,8 +737,23 @@ impl Listen {
     }
 }
 
-async fn command(ctx: &Arc<Ctx>, v: &Value, listen: &mut Option<Listen>) -> Option<Value> {
+async fn command(ctx: &Arc<Ctx>, v: &Value, listen: &mut Option<Listen>, subs: &mut Subs) -> Option<Value> {
     match v["type"].as_str()? {
+        // What this connection watches: costly messages (waterfalls, the
+        // control channel log, detail views) only go to those that ask.
+        "subscribe" => {
+            let topics: std::collections::BTreeSet<String> = v["topics"].as_array().into_iter().flatten().filter_map(|t| t.as_str()).take(64).map(String::from).collect();
+            subs.set(topics);
+            Some(json!({ "type": "subscribed", "topics": subs.topics }))
+        }
+        "statsQuery" => {
+            let (ctx2, v) = (ctx.clone(), v.clone());
+            tokio::task::spawn_blocking(move || stats_query(&ctx2, &v)).await.ok()
+        }
+        "radioQuery" => {
+            let (ctx2, v) = (ctx.clone(), v.clone());
+            tokio::task::spawn_blocking(move || radio_query(&ctx2, &v)).await.ok()
+        }
         "setConfig" => match serde_json::from_value::<Config>(v["config"].clone()) {
             Ok(mut c) => {
                 // While linked, a conventional system's channels are its file's
@@ -670,6 +762,15 @@ async fn command(ctx: &Arc<Ctx>, v: &Value, listen: &mut Option<Listen>) -> Opti
                 c.load_channel_files(&ctx.config_path);
                 let saved = c.save(&ctx.config_path);
                 let old = std::mem::replace(&mut *ctx.config.lock().unwrap(), c.clone());
+                // A talkgroup file changed while recording (an Ignore flag set): the session takes it now.
+                if ctx.runner.lock().unwrap().is_some() {
+                    let mut cmds = ctx.engine_cmds.lock().unwrap();
+                    for s in &c.systems {
+                        if old.systems.iter().find(|o| o.short_name == s.short_name).is_some_and(|o| o.talkgroups_csv != s.talkgroups_csv) {
+                            cmds.push(crate::runtime::EngineCmd::Talkgroups { short_name: s.short_name.clone(), csv: s.talkgroups_csv.clone() });
+                        }
+                    }
+                }
                 if old.log != c.log {
                     crate::logging::configure(&c.log, ctx.config_path.parent().unwrap_or(std::path::Path::new(".")));
                 }

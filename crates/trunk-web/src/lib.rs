@@ -18,6 +18,7 @@ use std::rc::Rc;
 use js_sys::{Array, Object, Reflect, Uint8Array};
 use rtlsdr_nusb::{Device, GainConfig, RawIq, RxStream};
 use trunk_app::survey::{Request, SurveySession};
+use trunk_app::stats::{History, Topics};
 use trunk_app::{Config, Output, Session};
 use trunk_core::survey::Command;
 use wasm_bindgen::prelude::*;
@@ -50,14 +51,20 @@ fn set(o: &Object, k: &str, v: impl Into<JsValue>) {
     let _ = Reflect::set(o, &JsValue::from_str(k), &v.into());
 }
 
-fn to_js(out: &mut Vec<Output>) -> Array {
+/// `history`: where the session's minutes go (the dashboard's charts).
+fn to_js(out: &mut Vec<Output>, history: &mut History) -> Array {
     let a = Array::new();
     for o in out.drain(..) {
         let obj = Object::new();
         match o {
             // (No plugins in the browser; none are asked for.)
             Output::Plugin(_) | Output::Log(_) => continue,
-            Output::Text(t) => {
+            Output::Rollup(r) => {
+                history.insert(&r);
+                continue;
+            }
+            // (One page, which asked for its topics.)
+            Output::Text(t) | Output::Topic { text: t, .. } => {
                 set(&obj, "t", "text");
                 set(&obj, "json", t);
             }
@@ -86,6 +93,8 @@ fn to_js(out: &mut Vec<Output>) -> Array {
 pub struct WebSession {
     s: Session,
     out: Vec<Output>,
+    /// This session's minutes (the browser keeps no files of them).
+    history: History,
 }
 
 #[wasm_bindgen]
@@ -98,7 +107,54 @@ impl WebSession {
         let plans: serde_json::Map<String, serde_json::Value> = bandplans_json.and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default();
         let plan = |name: &str| plans.get(name).and_then(|v| v.as_str()).map(str::to_string);
         let s = Session::new(cfg, epoch_ms, &plan, local_offset).map_err(|e| JsError::new(&e))?;
-        Ok(WebSession { s, out: Vec::new() })
+        Ok(WebSession { s, out: Vec::new(), history: History::default() })
+    }
+    /// What the page watches: JSON `["spectrum:0", "log", …]`.
+    pub fn set_topics(&mut self, topics_json: &str) {
+        let t: Vec<String> = serde_json::from_str(topics_json).unwrap_or_default();
+        self.s.set_topics(Topics::new(t));
+    }
+    /// A `statsQuery` (JSON) → its `statsResult` (JSON), from this session's minutes.
+    pub fn stats_query(&self, query_json: &str) -> String {
+        let q: serde_json::Value = serde_json::from_str(query_json).unwrap_or_default();
+        let now = (js_sys::Date::now() / 1000.0) as i64;
+        let back = match q["range"].as_str().unwrap_or("1h") {
+            "10m" => 600,
+            "6h" => 6 * 3600,
+            "24h" => 86400,
+            "7d" => 7 * 86400,
+            _ => 3600,
+        };
+        let to = q["to"].as_i64().unwrap_or(now);
+        let from = q["from"].as_i64().unwrap_or(to - back);
+        let patterns: Vec<String> = q["series"].as_array().into_iter().flatten().filter_map(|t| t.as_str().map(String::from)).collect();
+        let series = self.history.query(&patterns, from, to, q["points"].as_u64().unwrap_or(0) as usize);
+        serde_json::json!({ "type": "statsResult", "id": q["id"], "from": from, "to": to, "loading": false, "series": series }).to_string()
+    }
+    /// A `radioQuery` (JSON) → its `radioResult` (JSON).
+    pub fn radio_query(&self, query_json: &str) -> String {
+        let q: serde_json::Value = serde_json::from_str(query_json).unwrap_or_default();
+        self.s.radio_query(&q, (js_sys::Date::now() / 1000.0) as i64).to_string()
+    }
+    /// A system's talkgroup file changed (an Ignore flag): calls from now on go by it.
+    pub fn set_talkgroups(&mut self, short_name: &str, csv: &str) {
+        self.s.set_talkgroups(short_name, csv);
+    }
+    /// Preload the radio registry: JSON `{shortName: registry}` ([`WebSession::registry_unsaved`]).
+    pub fn load_registry(&mut self, json: &str) {
+        let m: serde_json::Map<String, serde_json::Value> = serde_json::from_str(json).unwrap_or_default();
+        let shared = self.s.shared();
+        let mut r = shared.radio.lock().unwrap();
+        for (name, v) in m {
+            if let Some(text) = v.as_str() {
+                r.load(&name, text);
+            }
+        }
+    }
+    /// The registry's systems that changed since the last call, JSON `{shortName: registry}`.
+    pub fn registry_unsaved(&mut self) -> String {
+        let changed = self.s.shared().radio.lock().unwrap().take_dirty();
+        serde_json::Value::Object(changed.into_iter().map(|(n, j)| (n, serde_json::Value::String(j))).collect()).to_string()
     }
     pub fn push(&mut self, source: usize, bytes: &[u8], dropped: f64) {
         self.s.push(source, bytes, dropped as u64);
@@ -119,11 +175,11 @@ impl WebSession {
     /// Outputs since the last poll: [{t:"text",json}|{t:"audio",system,tg,frame}|{t:"file",rel,wav,json,entry}].
     pub fn poll(&mut self, now_ms: f64) -> Array {
         self.s.poll(now_ms, &mut self.out);
-        to_js(&mut self.out)
+        to_js(&mut self.out, &mut self.history)
     }
     pub fn finish(&mut self) -> Array {
         self.s.finish(&mut self.out);
-        to_js(&mut self.out)
+        to_js(&mut self.out, &mut self.history)
     }
     /// Preload talker aliases: JSON `{shortName: csv}` saved from a previous
     /// run ([`WebSession::units_changed`]).
@@ -209,7 +265,7 @@ impl WebSurvey {
     /// Messages since the last poll: [{t:"text", json}].
     pub fn poll(&mut self, now_ms: f64) -> Array {
         self.s.poll(now_ms, &mut self.out);
-        to_js(&mut self.out)
+        to_js(&mut self.out, &mut History::new(2))
     }
 }
 

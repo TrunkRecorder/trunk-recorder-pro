@@ -18,7 +18,10 @@ export type ToWorker =
   | { type: "surveyStart"; source: number; bands: string[]; findGain: boolean }
   | { type: "surveyListen"; freqHz: number }
   | { type: "surveyRescan" }
-  | { type: "surveyStop" };
+  | { type: "surveyStop" }
+  | { type: "subscribe"; topics: string[] }
+  | { type: "statsQuery"; id: number; series: string[]; range?: string; from?: number; to?: number; points?: number }
+  | { type: "radioQuery"; id: number; what: string; system?: string; key?: number; hours?: number; limit?: number };
 
 /** Worker → page: a protocol message, or a live audio frame. */
 export type FromWorker = { msg: FromRecorder } | { audio: ArrayBuffer; tg: number };
@@ -34,6 +37,23 @@ let running = false;
 /** `system`: a short name. */
 let listen: { on: boolean; system: string | null; talkgroup: number | null } = { on: false, system: null, talkgroup: null };
 let phase: FromRecorder & { type: "state" } = { type: "state", phase: "idle", error: null, ended: false };
+/** What the page watches (applied to each new session). */
+let topics: string[] = [];
+/** The radio registry, saved between runs. */
+const REGISTRY_FILE = "radio-registry.json";
+let registrySaved = 0;
+
+async function saveRegistry(s: WebSession): Promise<void> {
+  const changed = JSON.parse(s.registry_unsaved()) as Record<string, string>;
+  if (!Object.keys(changed).length) return;
+  let all: Record<string, string> = {};
+  try {
+    all = JSON.parse((await readText(REGISTRY_FILE)) ?? "{}");
+  } catch {
+    // Start afresh.
+  }
+  await writeText(REGISTRY_FILE, JSON.stringify({ ...all, ...changed })).catch(() => {});
+}
 const ready = init();
 
 function setPhase(p: "idle" | "starting" | "running" | "stopping", error: string | null = null, ended = false): void {
@@ -206,6 +226,8 @@ async function start(): Promise<void> {
     session = new WebSession(JSON.stringify(cfg), Date.now(), JSON.stringify(plans));
     session.load_units(JSON.stringify(await savedUnits(cfg)));
     session.load_heard((await readText(heardFile(cfg))) ?? "");
+    session.load_registry((await readText(REGISTRY_FILE)) ?? "{}");
+    session.set_topics(JSON.stringify(topics));
     session.set_want_audio(listen.on);
     const centers = resolvedCenters(cfg);
     running = true;
@@ -230,6 +252,11 @@ async function start(): Promise<void> {
       deliver(session.poll(performance.now()));
       void saveUnits(session.units_changed());
       void saveHeard(session, cfg);
+      // The registry is rewritten whole: once a minute at most.
+      if (performance.now() - registrySaved > 60_000) {
+        registrySaved = performance.now();
+        void saveRegistry(session);
+      }
     }, 50);
     setPhase("running");
   } catch (e) {
@@ -286,6 +313,7 @@ async function stop(ended = false): Promise<void> {
   session = null;
   deliver(s.finish());
   await saveUnits(s.units_changed());
+  await saveRegistry(s);
   if (config) await saveHeard(s, config);
   for (const [name, plan] of Object.entries(JSON.parse(s.bandplans()) as Record<string, string>)) {
     await writeText(`bandplan-${name}.txt`, plan).catch(() => {});
@@ -314,8 +342,30 @@ onmessage = async (ev: MessageEvent<ToWorker>) => {
         survey: { type: "survey", stage: "idle" },
       });
       break;
-    case "setConfig":
+    case "setConfig": {
+      // A talkgroup file changed while recording (an Ignore flag): the session takes it now.
+      const old = config;
       config = m.config;
+      if (session && old) {
+        for (const x of m.config.systems) {
+          const was = old.systems.find((o) => o.shortName === x.shortName);
+          if (was && was.talkgroupsCsv !== x.talkgroupsCsv) session.set_talkgroups(x.shortName, x.talkgroupsCsv);
+        }
+      }
+      break;
+    }
+    case "subscribe":
+      topics = m.topics;
+      session?.set_topics(JSON.stringify(topics));
+      post({ type: "subscribed", topics });
+      break;
+    case "statsQuery": {
+      const now = Math.floor(Date.now() / 1000);
+      post(session ? (JSON.parse(session.stats_query(JSON.stringify(m))) as FromRecorder) : { type: "statsResult", id: m.id, from: now - 3600, to: now, loading: false, series: {} });
+      break;
+    }
+    case "radioQuery":
+      post(session ? (JSON.parse(session.radio_query(JSON.stringify(m))) as FromRecorder) : ({ type: "radioResult", id: m.id, what: m.what as "summary", error: "Start recording to see the radio system." } as FromRecorder));
       break;
     case "files":
       files = m.files;

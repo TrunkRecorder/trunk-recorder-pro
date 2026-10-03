@@ -17,7 +17,13 @@ protocol, plus an SDK that does the plumbing for you:
 - **Settings forms**: derive `JsonSchema` on your settings struct, and the
   recorder draws a form for it on its Plugins page.
 - **`CallQueue`**: an upload queue with retries and backoff, which saves the
-  calls still waiting at shutdown and picks them up at the next start.
+  calls still waiting at shutdown and picks them up at the next start. It
+  reports its own health to the recorder's dashboard: queue depth, upload
+  time, and whether the service is up, degraded or down (name it with
+  `QueueOptions::endpoint`).
+- **`Host::metrics`**: report the same yourself (`Metrics`: queue, timing,
+  bytes sent, the services you talk to, and any figures of your own in
+  `extra`) when you don't use the queue.
 - **`TalkgroupFilter`**: Trunk Recorder's talkgroup allow and deny patterns.
 - **`Multipart`**: a `multipart/form-data` body for any HTTP client.
 - **`testing`**: run a plugin without the recorder, and a mock web server to

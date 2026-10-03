@@ -16,6 +16,7 @@ use super::voice::{decode_ldu1_lc, decode_ldu2_es, ldu_imbe, EncryptionSync, Imb
 use crate::dsp::c4fm::{C4fm, C4fmOptions};
 use crate::dsp::cqpsk::{self, Cqpsk};
 use crate::dsp::{Receiver, Symbol};
+use crate::metrics::{Instrumented, Sink};
 
 /// One frame slot as seen by every receiver that found it.
 pub type Group = Vec<Frame>;
@@ -167,7 +168,40 @@ impl Bank {
     pub fn frames_per_rx(&self) -> Vec<u64> {
         self.rx.iter().map(|r| r.frames).collect()
     }
+}
 
+/// The receivers' framing and demodulation, summed over the bank: frame
+/// syncs found, NIDs that failed, frames carried over a missed sync
+/// (flywheel), CQPSK equaliser resets — and the C4FM receiver's eye opening.
+impl Instrumented for Bank {
+    fn report(&self, sink: &mut dyn Sink) {
+        let (mut syncs, mut nid_fails, mut flywheels, mut eq_resets) = (0, 0, 0, 0);
+        for r in &self.rx {
+            syncs += r.framer.stats.syncs;
+            nid_fails += r.framer.stats.nid_fails;
+            flywheels += r.framer.stats.flywheels;
+            if let Demod::Cqpsk(c) = &r.demod {
+                eq_resets += c.eq_resets;
+            }
+        }
+        sink.counter("syncs", syncs);
+        sink.counter("nidFails", nid_fails);
+        sink.counter("flywheels", flywheels);
+        sink.counter("eqResets", eq_resets);
+        sink.counter("frames", self.groups);
+        if let Some(q) = self.rx.iter().find_map(|r| match &r.demod {
+            Demod::Other(d) => d.quality(),
+            Demod::Cqpsk(_) => None,
+        }) {
+            sink.gauge("sep", q as f64);
+        }
+        if let Some(off) = self.offset_hz() {
+            sink.gauge("offset", off as f64);
+        }
+    }
+}
+
+impl Bank {
     fn release(&mut self, all: bool, out: &mut Vec<Group>) {
         let min_progress = self.rx.iter().map(|r| r.progress).fold(f64::INFINITY, f64::min);
         while let Some(front) = self.pending.front() {

@@ -479,6 +479,68 @@
       "additionalProperties": false,
       "description": "A conventional channel. `talkgroup` defaults to the frequency in kHz; `squelchDb` to the section's."
     },
+    "ChannelSnapshot": {
+      "type": "object",
+      "properties": {
+        "system": {
+          "type": "string"
+        },
+        "freqHz": {
+          "type": "number"
+        },
+        "source": {
+          "type": "number"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "control",
+            "voice",
+            "carrier",
+            "conventional"
+          ]
+        },
+        "powerDb": {
+          "type": "number"
+        },
+        "noiseDb": {
+          "type": "number"
+        },
+        "snrDb": {
+          "type": "number"
+        },
+        "offsetHz": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "quality": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "The receiver's eye opening (~10+ clean, ~1 noise)."
+        },
+        "calls": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "system",
+        "freqHz",
+        "source",
+        "kind",
+        "powerDb",
+        "noiseDb",
+        "snrDb",
+        "offsetHz",
+        "quality",
+        "calls"
+      ],
+      "additionalProperties": false,
+      "description": "A channel listened to now, with its power and the noise floor under it."
+    },
     "Config": {
       "type": "object",
       "properties": {
@@ -552,6 +614,10 @@
         "log": {
           "$ref": "#/definitions/LogSettings",
           "description": "The log (desktop app)."
+        },
+        "monitor": {
+          "$ref": "#/definitions/MonitorSettings",
+          "description": "What the dashboard watches on the computer (desktop app)."
         }
       },
       "required": [
@@ -887,6 +953,100 @@
       ],
       "additionalProperties": false
     },
+    "FreqRow": {
+      "type": "object",
+      "properties": {
+        "freqHz": {
+          "type": "number"
+        },
+        "calls": {
+          "type": "number"
+        },
+        "frames": {
+          "type": "number"
+        },
+        "errors": {
+          "type": "number"
+        },
+        "errPerFrame": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "totalCalls": {
+          "type": "number"
+        },
+        "allErrPerFrame": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "badPct": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Voice frames that couldn't be decoded, % (in the query's hours; all time)."
+        },
+        "allBadPct": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "snr": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "freqError": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "clean": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "last": {
+          "type": "number"
+        },
+        "hourly": {
+          "type": "array",
+          "items": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "description": "Bad frames % by hour, oldest first."
+        }
+      },
+      "required": [
+        "freqHz",
+        "calls",
+        "frames",
+        "errors",
+        "errPerFrame",
+        "totalCalls",
+        "allErrPerFrame",
+        "badPct",
+        "allBadPct",
+        "snr",
+        "freqError",
+        "clean",
+        "last",
+        "hourly"
+      ],
+      "additionalProperties": false,
+      "description": "A frequency's voice decoding (radioQuery freqs)."
+    },
     "FromRecorder": {
       "anyOf": [
         {
@@ -1100,6 +1260,56 @@
                   ]
                 }
               ]
+            },
+            "events": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/MonitorEvent"
+              },
+              "description": "The dashboard: recent notable events (oldest first)."
+            },
+            "host": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "const": "host"
+                    },
+                    "t": {
+                      "type": "number"
+                    },
+                    "values": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "number"
+                      }
+                    },
+                    "platform": {
+                      "$ref": "#/definitions/PlatformInfo"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "t",
+                    "values",
+                    "platform"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The computer as last sampled (desktop app)."
+            },
+            "pluginRuntime": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/definitions/PluginRuntime"
+              },
+              "description": "Every plugin's runtime, by id (desktop app)."
             }
           },
           "required": [
@@ -1840,6 +2050,523 @@
           "properties": {
             "type": {
               "type": "string",
+              "const": "stats"
+            },
+            "t": {
+              "type": "number"
+            },
+            "values": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "number"
+              }
+            }
+          },
+          "required": [
+            "type",
+            "t",
+            "values"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "host"
+            },
+            "t": {
+              "type": "number"
+            },
+            "values": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "number"
+              }
+            },
+            "platform": {
+              "$ref": "#/definitions/PlatformInfo"
+            }
+          },
+          "required": [
+            "type",
+            "t",
+            "values",
+            "platform"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "rfDetail"
+            },
+            "source": {
+              "type": "number"
+            },
+            "profile": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              }
+            },
+            "channels": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/ChannelSnapshot"
+              }
+            }
+          },
+          "required": [
+            "type",
+            "source",
+            "profile",
+            "channels"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "decodeDetail"
+            },
+            "system": {
+              "type": "string"
+            },
+            "channels": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/ChannelSnapshot"
+              }
+            }
+          },
+          "required": [
+            "type",
+            "system",
+            "channels"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "t": {
+              "type": "number",
+              "description": "Unix seconds."
+            },
+            "level": {
+              "type": "string",
+              "enum": [
+                "info",
+                "ok",
+                "warn",
+                "bad"
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "tgFirstSeen",
+                "unitFirstSeen",
+                "tgActive",
+                "unitActive",
+                "unitAffiliated",
+                "callVolume",
+                "controlLost",
+                "controlRegained",
+                "sourceDrops",
+                "sourceClipping",
+                "sourceRecovered",
+                "pluginHealth",
+                "linkDown",
+                "linkUp",
+                "diskLow"
+              ]
+            },
+            "system": {
+              "type": "string",
+              "description": "A system's short name (talkgroup, radio, call volume, control channel events)."
+            },
+            "talkgroup": {
+              "type": "number"
+            },
+            "alphaTag": {
+              "type": "string"
+            },
+            "unit": {
+              "type": "number"
+            },
+            "alias": {
+              "type": "string"
+            },
+            "units": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              }
+            },
+            "perMin": {
+              "type": "number"
+            },
+            "freqHz": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "source": {
+              "type": "string",
+              "description": "A source's series name (its label)."
+            },
+            "perS": {
+              "type": "number"
+            },
+            "pct": {
+              "type": "number"
+            },
+            "plugin": {
+              "type": "string"
+            },
+            "state": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "target": {
+              "type": "string"
+            },
+            "downS": {
+              "type": "number"
+            },
+            "path": {
+              "type": "string"
+            },
+            "freePct": {
+              "type": "number"
+            },
+            "type": {
+              "type": "string",
+              "const": "monitorEvent"
+            }
+          },
+          "required": [
+            "kind",
+            "level",
+            "t",
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "subscribed"
+            },
+            "topics": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/Topic"
+              }
+            }
+          },
+          "required": [
+            "type",
+            "topics"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "statsResult"
+            },
+            "id": {
+              "type": "number"
+            },
+            "from": {
+              "type": "number"
+            },
+            "to": {
+              "type": "number"
+            },
+            "loading": {
+              "type": "boolean"
+            },
+            "series": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/definitions/SeriesData"
+              }
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "from",
+            "to",
+            "loading",
+            "series"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "number"
+            },
+            "what": {
+              "type": "string",
+              "enum": [
+                "summary",
+                "talkgroups",
+                "units",
+                "tg",
+                "unit",
+                "freqs",
+                "lengths"
+              ]
+            },
+            "error": {
+              "type": "string"
+            },
+            "system": {
+              "type": "string"
+            },
+            "systems": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/definitions/RadioSummary"
+              },
+              "description": "summary"
+            },
+            "hours": {
+              "type": "number",
+              "description": "talkgroups, units, freqs"
+            },
+            "total": {
+              "type": "number"
+            },
+            "rows": {
+              "type": "array",
+              "items": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/TgRow"
+                  },
+                  {
+                    "$ref": "#/definitions/UnitRow"
+                  },
+                  {
+                    "$ref": "#/definitions/FreqRow"
+                  }
+                ]
+              }
+            },
+            "tg": {
+              "type": "number",
+              "description": "tg / unit: the one asked about (null: never heard)."
+            },
+            "unit": {
+              "type": "number"
+            },
+            "row": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/TgRow"
+                },
+                {
+                  "$ref": "#/definitions/UnitRow"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "week": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "description": "tg: calls per hour over the week; who talks on it; who's affiliated with it; its call lengths."
+            },
+            "talkers": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "unit": {
+                    "type": "number"
+                  },
+                  "alias": {
+                    "type": "string"
+                  },
+                  "n": {
+                    "type": "number"
+                  },
+                  "lastTx": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "unit",
+                  "alias",
+                  "n",
+                  "lastTx"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "affiliated": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "unit": {
+                    "type": "number"
+                  },
+                  "alias": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "unit",
+                  "alias"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "lengths": {
+              "$ref": "#/definitions/LengthHistogram"
+            },
+            "recent": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "t": {
+                    "type": "number"
+                  },
+                  "tg": {
+                    "type": "number"
+                  },
+                  "alphaTag": {
+                    "type": "string"
+                  },
+                  "secs": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "t",
+                  "tg",
+                  "alphaTag",
+                  "secs"
+                ],
+                "additionalProperties": false
+              },
+              "description": "unit: its latest transmissions, affiliations, talkgroups, and the radios it's heard with."
+            },
+            "affiliations": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "t": {
+                    "type": "number"
+                  },
+                  "tg": {
+                    "type": "number"
+                  },
+                  "alphaTag": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "t",
+                  "tg",
+                  "alphaTag"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "tgs": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "tg": {
+                    "type": "number"
+                  },
+                  "alphaTag": {
+                    "type": "string"
+                  },
+                  "n": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "tg",
+                  "alphaTag",
+                  "n"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "partners": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "unit": {
+                    "type": "number"
+                  },
+                  "alias": {
+                    "type": "string"
+                  },
+                  "n": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "unit",
+                  "alias",
+                  "n"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "histogram": {
+              "$ref": "#/definitions/LengthHistogram",
+              "description": "lengths"
+            },
+            "type": {
+              "type": "string",
+              "const": "radioResult"
+            }
+          },
+          "required": [
+            "id",
+            "type",
+            "what"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
               "const": "quit"
             }
           },
@@ -1917,6 +2644,29 @@
         "sysId",
         "rfss",
         "site"
+      ],
+      "additionalProperties": false
+    },
+    "LengthHistogram": {
+      "type": "object",
+      "properties": {
+        "edges": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "Bin starts, s (the last is open-ended)."
+        },
+        "counts": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        }
+      },
+      "required": [
+        "edges",
+        "counts"
       ],
       "additionalProperties": false
     },
@@ -2017,6 +2767,134 @@
       "additionalProperties": false,
       "description": "The log (desktop app), with Trunk Recorder's options (crates/trunk-app/src/config.rs LogSettings)."
     },
+    "MonitorEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "t": {
+          "type": "number",
+          "description": "Unix seconds."
+        },
+        "level": {
+          "type": "string",
+          "enum": [
+            "info",
+            "ok",
+            "warn",
+            "bad"
+          ]
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "tgFirstSeen",
+            "unitFirstSeen",
+            "tgActive",
+            "unitActive",
+            "unitAffiliated",
+            "callVolume",
+            "controlLost",
+            "controlRegained",
+            "sourceDrops",
+            "sourceClipping",
+            "sourceRecovered",
+            "pluginHealth",
+            "linkDown",
+            "linkUp",
+            "diskLow"
+          ]
+        },
+        "system": {
+          "type": "string",
+          "description": "A system's short name (talkgroup, radio, call volume, control channel events)."
+        },
+        "talkgroup": {
+          "type": "number"
+        },
+        "alphaTag": {
+          "type": "string"
+        },
+        "unit": {
+          "type": "number"
+        },
+        "alias": {
+          "type": "string"
+        },
+        "units": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        },
+        "perMin": {
+          "type": "number"
+        },
+        "freqHz": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "source": {
+          "type": "string",
+          "description": "A source's series name (its label)."
+        },
+        "perS": {
+          "type": "number"
+        },
+        "pct": {
+          "type": "number"
+        },
+        "plugin": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "target": {
+          "type": "string"
+        },
+        "downS": {
+          "type": "number"
+        },
+        "path": {
+          "type": "string"
+        },
+        "freePct": {
+          "type": "number"
+        },
+        "type": {
+          "type": "string",
+          "const": "monitorEvent"
+        }
+      },
+      "required": [
+        "kind",
+        "level",
+        "t",
+        "type"
+      ],
+      "description": "Something notable (crates/trunk-app/src/stats/events.rs). Which fields come depends on `kind`."
+    },
+    "MonitorSettings": {
+      "type": "object",
+      "properties": {
+        "probeHosts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Where to check the internet answers (host:port, a TCP connect every 15 s). Empty: no checks."
+        }
+      },
+      "required": [
+        "probeHosts"
+      ],
+      "additionalProperties": false
+    },
     "Phase": {
       "type": "string",
       "enum": [
@@ -2025,6 +2903,250 @@
         "running",
         "stopping"
       ]
+    },
+    "PlatformInfo": {
+      "type": "object",
+      "properties": {
+        "os": {
+          "type": "string"
+        },
+        "arch": {
+          "type": "string"
+        },
+        "host": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cores": {
+          "type": "number"
+        },
+        "container": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "\"docker\" | \"podman\" | \"kubernetes\" | \"lxc\", inside one."
+        },
+        "cpuLimitCores": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "memTotal": {
+          "type": "number"
+        },
+        "uptimeS": {
+          "type": "number"
+        },
+        "disks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "mount": {
+                "type": "string"
+              },
+              "totalBytes": {
+                "type": "number"
+              },
+              "freeBytes": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "name",
+              "path",
+              "mount",
+              "totalBytes",
+              "freeBytes"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "probes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "target": {
+                "type": "string"
+              },
+              "ok": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "rttMs": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "lastOk": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "lastFail": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "downSince": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "tries": {
+                "type": "number"
+              },
+              "fails": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "target",
+              "ok",
+              "rttMs",
+              "lastOk",
+              "lastFail",
+              "downSince",
+              "tries",
+              "fails"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "perCore": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "number"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "With the `platform` topic: each core's use, %, and the interfaces' traffic since the last sample."
+        },
+        "interfaces": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "rx": {
+                    "type": "number"
+                  },
+                  "tx": {
+                    "type": "number"
+                  },
+                  "state": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "rx",
+                  "tx",
+                  "state"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "unavailable": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "why": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "field",
+              "why"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "os",
+        "arch",
+        "host",
+        "cores",
+        "container",
+        "cpuLimitCores",
+        "memTotal",
+        "uptimeS",
+        "disks",
+        "probes",
+        "perCore",
+        "interfaces",
+        "unavailable"
+      ],
+      "additionalProperties": false,
+      "description": "The computer, as last sampled (desktop app). Missing values are listed in `unavailable`."
+    },
+    "PluginEndpoint": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "unknown",
+            "up",
+            "degraded",
+            "down"
+          ]
+        },
+        "latencyMs": {
+          "type": "number"
+        },
+        "lastOk": {
+          "type": "number"
+        },
+        "lastError": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "state"
+      ],
+      "additionalProperties": false,
+      "description": "A service a plugin talks to, as the plugin reports it."
     },
     "PluginInfo": {
       "type": "object",
@@ -2143,6 +3265,51 @@
       "additionalProperties": false,
       "description": "What a plugin says it is (`<plugin> --describe`)."
     },
+    "PluginMetrics": {
+      "type": "object",
+      "properties": {
+        "queued": {
+          "type": "number"
+        },
+        "retrying": {
+          "type": "number"
+        },
+        "inFlight": {
+          "type": "number"
+        },
+        "retries": {
+          "type": "number"
+        },
+        "bytesSent": {
+          "type": "number"
+        },
+        "latencyMs": {
+          "type": "number"
+        },
+        "lastOk": {
+          "type": "number",
+          "description": "Unix seconds."
+        },
+        "lastError": {
+          "type": "number"
+        },
+        "lastErrorText": {
+          "type": "string"
+        },
+        "endpoints": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/PluginEndpoint"
+          }
+        },
+        "extra": {
+          "type": "object",
+          "additionalProperties": {}
+        }
+      },
+      "additionalProperties": false,
+      "description": "What a plugin says of its work (its `metrics` message; every field optional)."
+    },
     "PluginRuntime": {
       "type": "object",
       "properties": {
@@ -2198,6 +3365,70 @@
             ],
             "additionalProperties": false
           }
+        },
+        "metrics": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PluginMetrics"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lastResult": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Unix seconds of its last result, success, failure."
+        },
+        "lastOk": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "lastFail": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "restarts": {
+          "type": "number",
+          "description": "Its process: restarts, events dropped (fell behind), seconds up."
+        },
+        "dropped": {
+          "type": "number"
+        },
+        "uptimeS": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "minutes": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "minItems": 2,
+            "items": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 3,
+                "maxItems": 3
+              }
+            ],
+            "maxItems": 2
+          },
+          "description": "Results per minute, the last hour: [minute start (Unix s), [ok, skipped, failed]]."
         }
       },
       "required": [
@@ -2338,6 +3569,75 @@
       "required": [
         "usrp",
         "airspy"
+      ],
+      "additionalProperties": false
+    },
+    "RadioSummary": {
+      "type": "object",
+      "properties": {
+        "since": {
+          "type": "number"
+        },
+        "talkgroups": {
+          "type": "number"
+        },
+        "tgs24h": {
+          "type": "number"
+        },
+        "units": {
+          "type": "number"
+        },
+        "units1h": {
+          "type": "number"
+        },
+        "units24h": {
+          "type": "number"
+        },
+        "newUnits24h": {
+          "type": "number"
+        },
+        "newTgs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "tg": {
+                "type": "number"
+              },
+              "first": {
+                "type": "number"
+              },
+              "alphaTag": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "tg",
+              "first",
+              "alphaTag"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "unknownTgs24h": {
+          "type": "number"
+        },
+        "baseline": {
+          "type": "boolean",
+          "description": "Heard long enough that \"new\" means new."
+        }
+      },
+      "required": [
+        "since",
+        "talkgroups",
+        "tgs24h",
+        "units",
+        "units1h",
+        "units24h",
+        "newUnits24h",
+        "newTgs",
+        "unknownTgs24h",
+        "baseline"
       ],
       "additionalProperties": false
     },
@@ -2549,6 +3849,63 @@
         "cs16",
         "cf32"
       ]
+    },
+    "SeriesData": {
+      "type": "object",
+      "properties": {
+        "t0": {
+          "type": "number"
+        },
+        "stepS": {
+          "type": "number"
+        },
+        "v": {
+          "type": "array",
+          "items": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "description": "Averages."
+        },
+        "lo": {
+          "type": "array",
+          "items": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "description": "Lowest and highest in each step."
+        },
+        "hi": {
+          "type": "array",
+          "items": {
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "n": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "The minutes measured in each step (a rate × n × 60 is the amount)."
+        }
+      },
+      "required": [
+        "t0",
+        "stepS",
+        "v",
+        "lo",
+        "hi",
+        "n"
+      ],
+      "additionalProperties": false,
+      "description": "One series from the history: points every `stepS` from `t0`; null where nothing was measured."
     },
     "SiteIdentity": {
       "type": "object",
@@ -2982,7 +4339,15 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "description": "The last error, for 5 minutes after it."
+        },
+        "lastErrorS": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "When it was, Unix seconds."
         },
         "ended": {
           "type": "boolean"
@@ -3939,6 +5304,74 @@
       "additionalProperties": false,
       "description": "A talkgroup and its alpha tag from the system's talkgroup file (\"\" when not in it)."
     },
+    "TgRow": {
+      "type": "object",
+      "properties": {
+        "tg": {
+          "type": "number"
+        },
+        "alphaTag": {
+          "type": "string"
+        },
+        "known": {
+          "type": "boolean",
+          "description": "In the system's talkgroup file."
+        },
+        "ignore": {
+          "type": "boolean"
+        },
+        "first": {
+          "type": "number"
+        },
+        "last": {
+          "type": "number"
+        },
+        "calls": {
+          "type": "number",
+          "description": "In the query's hours."
+        },
+        "secs": {
+          "type": "number"
+        },
+        "totalCalls": {
+          "type": "number"
+        },
+        "encPct": {
+          "type": "number"
+        },
+        "new": {
+          "type": "boolean",
+          "description": "First heard in the last day (once the system has a baseline)."
+        },
+        "hourly": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "Calls per hour, oldest first."
+        }
+      },
+      "required": [
+        "tg",
+        "alphaTag",
+        "known",
+        "ignore",
+        "first",
+        "last",
+        "calls",
+        "secs",
+        "totalCalls",
+        "encPct",
+        "new",
+        "hourly"
+      ],
+      "additionalProperties": false,
+      "description": "A talkgroup as heard (radioQuery talkgroups / tg)."
+    },
+    "Topic": {
+      "type": "string",
+      "description": "What a dashboard watches: `spectrum:<source>`, `log`, `rf:<source>`, `decode:<shortName>`, `platform`."
+    },
     "ToRecorder": {
       "anyOf": [
         {
@@ -4272,6 +5705,111 @@
           "properties": {
             "type": {
               "type": "string",
+              "const": "subscribe"
+            },
+            "topics": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/Topic"
+              }
+            }
+          },
+          "required": [
+            "type",
+            "topics"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "statsQuery"
+            },
+            "id": {
+              "type": "number"
+            },
+            "series": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "range": {
+              "type": "string",
+              "enum": [
+                "10m",
+                "1h",
+                "6h",
+                "24h",
+                "7d"
+              ]
+            },
+            "from": {
+              "type": "number"
+            },
+            "to": {
+              "type": "number"
+            },
+            "points": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "series"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "radioQuery"
+            },
+            "id": {
+              "type": "number"
+            },
+            "what": {
+              "type": "string",
+              "enum": [
+                "summary",
+                "talkgroups",
+                "units",
+                "tg",
+                "unit",
+                "freqs",
+                "lengths"
+              ]
+            },
+            "system": {
+              "type": "string"
+            },
+            "key": {
+              "type": "number"
+            },
+            "hours": {
+              "type": "number"
+            },
+            "limit": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "what"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
               "const": "quit"
             }
           },
@@ -4304,6 +5842,98 @@
       },
       "additionalProperties": false,
       "description": "Names for a system's radios: Trunk Recorder's unitTagsFile, kept as text (headerless `unit,name`; a unit between slashes is a regular expression, `/^1(\\d{3})$/,Engine $1`), and unitTagsMode: \"user\" (these first, then the aliases heard; the default), \"ota\" (the aliases first), \"user_only\", \"none\"."
+    },
+    "UnitRow": {
+      "type": "object",
+      "properties": {
+        "unit": {
+          "type": "number"
+        },
+        "alias": {
+          "type": "string"
+        },
+        "first": {
+          "type": "number"
+        },
+        "last": {
+          "type": "number"
+        },
+        "lastTx": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "tx": {
+          "type": "number"
+        },
+        "txSecs": {
+          "type": "number"
+        },
+        "aff": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "The talkgroup it's affiliated with, and since when."
+        },
+        "affT": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "reg": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "tgs": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "description": "[talkgroup, transmissions], most first."
+        },
+        "partners": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "description": "[radio, calls together], most first."
+        },
+        "new": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "unit",
+        "alias",
+        "first",
+        "last",
+        "lastTx",
+        "tx",
+        "txSecs",
+        "aff",
+        "affT",
+        "reg",
+        "tgs",
+        "partners",
+        "new"
+      ],
+      "additionalProperties": false,
+      "description": "A radio as heard (radioQuery units / unit)."
     }
   }
 }

@@ -52,7 +52,8 @@ The recorder listens on `http://localhost:8080` unless it was started with
 11. [Recorded calls](#recorded-calls)
 12. [Recipes](#recipes)
 13. [Having an LLM build an interface](#having-an-llm-build-an-interface)
-14. [Compatibility](#compatibility)
+14. [Statistics and history](#statistics-and-history)
+15. [Compatibility](#compatibility)
 
 ## Quick start
 
@@ -223,6 +224,7 @@ whenever `change` fires.
 | `send(msg)` | send a command (queued while disconnected) |
 | `start()`, `stop()` | start / stop recording |
 | `listen()`, `listen({ talkgroup })`, `listen({ system, talkgroup })`, `listen(false)` | live audio: every call, one talkgroup's, one system's (by short name) talkgroup's, none. Kept across reconnects. |
+| `subscribe(topics)` | the costly messages to receive: `["log"]` fills `log`; `"spectrum:0"` a waterfall's `spectrum`. Kept across reconnects. |
 | `setConfig(edit)` | `edit(copy)` changes a copy of the latest config, and the whole config is sent |
 | `callUrl(entry, "wav" \| "json" \| "m4a")` | a recorded call's file URL |
 | `talkgroups(shortName)` | the system's talkgroup file: `Map` talkgroup → `{ talkgroup, alphaTag, description, tag, group, mode }` |
@@ -321,19 +323,29 @@ origin listed (e.g. `"https://radio.example.com"`).
    - `state` when recording starts or stops
    - `status` about twice a second while recording: systems, sources and the
      calls on the air
-   - `spectrum` for each radio, ~7 times a second
+   - `stats` once a second while recording: every measured series' value
+     (see [Statistics and history](#statistics-and-history))
+   - `host` every 2 s: the computer and the plugins (desktop app)
    - `concluded` for each recorded call
-   - `log` lines
+   - `monitorEvent` when something notable happens
    - `config` when anyone changes the config
    - …the full list is [below](#messages-from-the-recorder).
-5. **Send commands** as JSON text whenever you like. Answers to your own
+5. **Subscribe** to what costs the recorder something to make, while you
+   show it: `{"type": "subscribe", "topics": ["spectrum:0", "log"]}`. A
+   connection gets none of these until it asks; each `subscribe` replaces the
+   last. Topics: `spectrum:<source>` (the waterfall, ~7/s), `log` (every
+   control channel message as a line), `rf:<source>` (`rfDetail`, 1/s),
+   `decode:<shortName>` (`decodeDetail`, 1/s), `platform` (per-core and
+   per-interface figures in `host`). With nobody subscribed the recorder
+   doesn't compute them.
+6. **Send commands** as JSON text whenever you like. Answers to your own
    commands (`error`, `notice`, `dir`, `trConfig`, `devices`, `radios`,
    `plugins`, `pluginStore`) come to your connection only. Everything else goes to every
    client.
-6. **Reconnect** when the socket closes: the recorder may have restarted. A
-   new `hello` brings you up to date. Per-connection settings (live audio)
-   must be sent again after it.
-7. **`quit`** means the recorder is exiting (Quit, Ctrl-C, a service stop or
+7. **Reconnect** when the socket closes: the recorder may have restarted. A
+   new `hello` brings you up to date. Per-connection settings (live audio,
+   subscriptions) must be sent again after it.
+8. **`quit`** means the recorder is exiting (Quit, Ctrl-C, a service stop or
    restart). The built-in interface stops there. A display that should come
    back after a restart keeps trying, more slowly. client.js retries every
    5 s and sets `exited`.
@@ -386,13 +398,21 @@ Every message is a JSON object with a `type`. Exact fields are in
 
 | `type` | When | What's in it |
 |---|---|---|
-| `hello` | First, on every connection | `version`, `platform`, `config`, `configPath`, `devices`, `phase`, `history` (≤ 300 `CallEntry`, newest first), `units` (short name → unit names CSV), `heard`, `radios`, `surveyBands`, `survey` |
+| `hello` | First, on every connection | `version`, `platform`, `config`, `configPath`, `devices`, `phase`, `history` (≤ 300 `CallEntry`, newest first), `units` (short name → unit names CSV), `heard`, `radios`, `surveyBands`, `survey`, `events` (recent `monitorEvent`s), `host` (the last `host`), `pluginRuntime` (id → runtime) |
 | `plugins` | After `hello`; after plugin changes; answers `plugins` | `plugins` (`PluginInfo[]`), `encoderFound` |
 | `state` | Recording starts / stops | `phase`, `error`, `ended` |
 | `status` | ~2/s while running | `status` (`EngineStatus`: totals, `systems[]` with control channel, decode counts `good`/`bad`, site identity, patches, DMR state), `sources[]` (each radio: rate, drops, errors, frequency error), `load` (share of real time the decoder is busy), `calls` (`CallView[]`, on the air now) |
-| `spectrum` | ~7/s per radio while running | `source`, `centerHz`, `rateHz`, `bins`: 512 levels in dBFS, lowest frequency first, spanning `centerHz ± rateHz/2` |
+| `spectrum` | Topic `spectrum:<source>`: ~7/s while running | `source`, `centerHz`, `rateHz`, `bins`: 512 levels in dBFS, lowest frequency first, spanning `centerHz ± rateHz/2` |
+| `stats` | 1/s while running | `t` (Unix s), `values`: series name → value now ([Statistics and history](#statistics-and-history)) |
+| `host` | Every 2 s (desktop app) | `t`, `values` (the computer's and plugins' series), `platform` (OS, cores, container and its limits, disks, connectivity checks, `unavailable`: what this platform can't tell and why) |
+| `rfDetail` | Topic `rf:<source>`: 1/s | `source`, `profile` (the noise floor in 64 slices across the band, dBFS per FFT bin), `channels` (each channel on it: power, floor, SNR, carrier offset, the receiver's eye opening) |
+| `decodeDetail` | Topic `decode:<shortName>`: 1/s | `system`, `channels` (the system's channels as received now) |
+| `monitorEvent` | Something notable happened | `t`, `level`, `kind` (`controlLost`, `tgFirstSeen`, `sourceDrops`, `pluginHealth`, `linkDown`, `diskLow`, …) and its fields |
+| `subscribed` | Answers `subscribe` | `topics` |
+| `statsResult` | Answers `statsQuery` | `id`, `from`, `to`, `loading` (the history files are still being read), `series`: name → `{ t0, stepS, v, lo, hi, n }` |
+| `radioResult` | Answers `radioQuery` | `id`, `what`, and by `what`: `rows` (talkgroups / radios / frequencies), `row` and its detail, `systems` (summary), `histogram` |
 | `concluded` | A call was recorded | `entry`: `{ path, record }` |
-| `log` | Things happened | `lines[]`: `{ timeS, kind, text, system? }` — `kind` e.g. `"error"`, `"control"`, `"alias"`, `"plugin"`, or a control-message kind |
+| `log` | Topic `log` (errors and notices always) | `lines[]`: `{ timeS, kind, text, system? }` — `kind` e.g. `"error"`, `"control"`, `"alias"`, `"plugin"`, or a control-message kind |
 | `unitAlias` | A talker alias was heard | `system` (short name), `unit`, `alias` |
 | `heard` | Conventional codes heard changed | `heard`: frequency (Hz, as a string) → `HeardCode[]` |
 | `config` | The config changed (anyone's `setConfig`, a plugin added…) | `config` |
@@ -402,7 +422,7 @@ Every message is a JSON object with a `type`. Exact fields are in
 | `trConfig` | Answers `readTrConfig` | a Trunk Recorder config.json's `text`, the `files` it names, or `error` |
 | `survey` | The survey's progress | `stage` (`idle` / `scanning` / `monitoring` / `done`), candidates, the channel monitored, the suggested system |
 | `surveySpectrum` | While surveying | like `spectrum` |
-| `pluginRuntime` | A plugin's totals changed | `id`, `runtime` (state, counts, recent log) |
+| `pluginRuntime` | A plugin's totals changed | `id`, `runtime` (state, counts, recent log; `metrics` — queue, upload time, endpoints — when the plugin reports them; restarts, events dropped, uptime; results per minute for the last hour) |
 | `pluginState` | A plugin reports how it is | `id`, `state` (`ok` / `warning` / `error`), `message` |
 | `pluginResult` | A plugin finished with a call | `id`, `path`, `outcome` (`ok` / `skipped` / `failed`), `message`, `url` |
 | `pluginStore` | Answers `pluginStore` | the plugin registry's listings |
@@ -435,6 +455,9 @@ aren't understood are ignored.
 | `removePlugin` | `id` | Remove a plugin. |
 | `pluginStore` | `refresh?` | The plugin registry's list (→ `pluginStore`). |
 | `installPlugin` | `id`, or `repository` + `tag?` | Install or update a plugin (→ `pluginInstall` as it goes). |
+| `subscribe` | `topics` | What this connection watches (replaces the last): `spectrum:<source>`, `log`, `rf:<source>`, `decode:<shortName>`, `platform` (→ `subscribed`). |
+| `statsQuery` | `id`, `series` (names, or prefixes ending in `*`), `range` (`10m` / `1h` / `6h` / `24h` / `7d`) or `from` / `to` (Unix s), `points?` | The minute history of series, averaged down to about `points` steps (→ `statsResult`). |
+| `radioQuery` | `id`, `what`, `system?`, `key?`, `hours?`, `limit?` | The radio registry: `summary`, `talkgroups`, `units`, `tg` (`key`: the talkgroup), `unit` (`key`: the radio), `freqs`, `lengths` (→ `radioResult`). |
 | `quit` | — | Stop recording and exit the recorder. |
 
 A listening-only interface needs nothing but `listen`, and perhaps
@@ -581,6 +604,40 @@ loop:
 The recorder serves the files as they are on disk, so a reload shows each
 change.
 
+## Statistics and history
+
+While recording, the recorder measures itself once a second and keeps a
+week of it, a minute at a time (`<data folder>/stats/*.jsonl`, gzipped after
+the day). The live values come in `stats` (and `host`); the history answers
+`statsQuery`. Each value has a name:
+
+| Series | What |
+|---|---|
+| `src/<label>/noise`, `peak`, `clipPct` | A radio's noise floor (dBFS per FFT bin), its peaks (dBFS), and the share of samples at full scale |
+| `src/<label>/samples`, `dropped`, `errors` | Samples a second, samples lost a second, driver errors |
+| `src/<label>/ppm`, `tune` | Its frequency error as measured on the control channels, and the correction applied (ppm) |
+| `sys/<short>/cc/good`, `bad` | Control messages decoded / lost a second |
+| `sys/<short>/cc/locked`, `snr`, `signal`, `noise`, `offset`, `sep` | Decoding (1/0), the channel's SNR and levels, its carrier offset (Hz), the C4FM receiver's eye opening |
+| `sys/<short>/cc/syncs`, `nidFails`, `flywheels`, `eqResets` | P25 framing: syncs found, headers failed, frames carried over a missed sync, equaliser resets (a second) |
+| `sys/<short>/calls`, `airMs`, `audioBytes`, `active`, `recording` | Calls ending a second, airtime (ms a second), audio written, calls on the air and being recorded now |
+| `sys/<short>/why/<reason>` | Calls starting a second by what happened to them: `recorded`, `monitored`, `ignored`, `encrypted`, `unknown_tg`, `no_source`, `no_recorder` |
+| `sys/<short>/voice/frames`, `errors`, `bad` | Voice frames decoded, bit errors corrected, frames lost (a second) |
+| `all/…`, `day/…`, `eng/…` | Every system together; this run's totals today; the decoder's load and recorders |
+| `plat/cpu`, `proCpu`, `mem`, `memPsi`, `memLevel`, `temp`, `disk/<name>/freePct`, … | The computer (desktop app) |
+| `net/up`, `rtt`, `dns`, `rx`, `tx` | Connectivity checks (share answering, connect time), name lookup time, traffic |
+| `plg/<id>/ok`, `failed`, `queued`, `latency`, `state` | Each plugin |
+
+Running totals arrive as rates (per second); everything else as it is.
+`<label>` is the source's label with `/` made `_`. In a `statsResult`, `v`
+is each step's average, `lo` / `hi` its lowest and highest minute, and `n`
+the minutes measured in it — so a rate's amount over a step is `v × n × 60`.
+
+The **radio registry** (`radioQuery`) is what the recorder has heard of each
+system: talkgroups (first and last heard, calls and airtime by hour, whether
+in the talkgroup file or ignored), radios (transmissions, affiliation, the
+talkgroups they use, the radios heard with them), and each frequency's voice
+quality. It is kept between runs (`<data folder>/radio/`).
+
 ## Compatibility
 
 protocol.ts is the definition. The recorder's tests check what it actually
@@ -593,6 +650,9 @@ The protocol can grow: new message types, new fields. Write clients that
 ignore what they don't know. Fields may be removed or renamed between
 versions; the changes are noted in CHANGELOG.md. `hello.version` (or
 `GET /api/version`) says which version you're talking to.
+
+Since 0.2, `spectrum` and the control channel `log` lines come only to
+connections that `subscribe` to them.
 
 The **browser version** of Trunk Recorder Pro (WebAssembly, no server) speaks
 the same messages between its page and a worker, but has no network API for

@@ -282,6 +282,13 @@ export interface Config {
   plugins?: Record<string, PluginSetup>;
   /** The log (desktop app). */
   log?: LogSettings;
+  /** What the dashboard watches on the computer (desktop app). */
+  monitor?: MonitorSettings;
+}
+
+export interface MonitorSettings {
+  /** Where to check the internet answers (host:port, a TCP connect every 15 s). Empty: no checks. */
+  probeHosts: string[];
 }
 
 /** An interface of your own: a folder with an index.html, served as it is on disk at /ui/<name>/. */
@@ -396,7 +403,10 @@ export interface SourceStatus {
   rateMeasured: number;
   dropped: number;
   errors: number;
+  /** The last error, for 5 minutes after it. */
   lastError: string | null;
+  /** When it was, Unix seconds. */
+  lastErrorS?: number | null;
   ended: boolean;
   /** Its frequency error as measured on the control channels, ppm (+: signals come in high); null until measured. */
   errorPpm?: number | null;
@@ -658,6 +668,31 @@ export interface PluginManifest {
   license?: string;
 }
 
+/** A service a plugin talks to, as the plugin reports it. */
+export interface PluginEndpoint {
+  name: string;
+  state: "unknown" | "up" | "degraded" | "down";
+  latencyMs?: number;
+  lastOk?: number;
+  lastError?: string;
+}
+
+/** What a plugin says of its work (its `metrics` message; every field optional). */
+export interface PluginMetrics {
+  queued?: number;
+  retrying?: number;
+  inFlight?: number;
+  retries?: number;
+  bytesSent?: number;
+  latencyMs?: number;
+  /** Unix seconds. */
+  lastOk?: number;
+  lastError?: number;
+  lastErrorText?: string;
+  endpoints?: PluginEndpoint[];
+  extra?: Record<string, unknown>;
+}
+
 /** How a plugin is doing while recording. */
 export interface PluginRuntime {
   state: "off" | "starting" | "ok" | "warning" | "error";
@@ -667,6 +702,17 @@ export interface PluginRuntime {
   failed: number;
   lastFailure: string;
   log: { time: number; level: "error" | "warn" | "info"; text: string }[];
+  metrics?: PluginMetrics | null;
+  /** Unix seconds of its last result, success, failure. */
+  lastResult?: number | null;
+  lastOk?: number | null;
+  lastFail?: number | null;
+  /** Its process: restarts, events dropped (fell behind), seconds up. */
+  restarts?: number;
+  dropped?: number;
+  uptimeS?: number | null;
+  /** Results per minute, the last hour: [minute start (Unix s), [ok, skipped, failed]]. */
+  minutes?: [number, [number, number, number]][];
 }
 
 export type PluginValues = Record<string, unknown>;
@@ -755,6 +801,227 @@ export interface DirListing {
   error: string | null;
 }
 
+// ── The dashboard ────────────────────────────────────────────────────────────
+//
+// Series are named by `/`-separated keys (crates/trunk-app/src/stats):
+//   src/<label>/{noise,peak,clipPct,samples,dropped,errors,ppm,tune}
+//   sys/<shortName>/{active,recording,calls,airMs,audioBytes,notSaved,dup}
+//   sys/<shortName>/cc/{good,bad,locked,syncs,nidFails,flywheels,eqResets,frames,sep,offset,signal,noise,snr,inSync,deviation}
+//   sys/<shortName>/why/<recorded|monitored|ignored|encrypted|unknown_tg|no_source|no_recorder>
+//   sys/<shortName>/voice/{frames,errors,bad}
+//   all/{calls,airMs,audioBytes}  day/{calls,airS,audioBytes}  eng/{load,recording,channels,recorders}
+//   plat/{cpu,proCpu,proCores,proMem,mem,memAvail,swap,memPsi,memLevel,load1,temp,throttledUs,piThrottled}
+//   plat/disk/<recordings|data>/{free,freePct}  net/{rx,tx,errors,up,rtt,dns}  net/probe/<target>/{up,rtt}
+//   plg/<id>/{state,ok,skipped,failed,dropped,restarts,queued,latency,bytes}
+// Running totals arrive as rates per second; everything else as it is.
+
+/** What a dashboard watches: `spectrum:<source>`, `log`, `rf:<source>`, `decode:<shortName>`, `platform`. */
+export type Topic = string;
+
+/** One series from the history: points every `stepS` from `t0`; null where nothing was measured. */
+export interface SeriesData {
+  t0: number;
+  stepS: number;
+  /** Averages. */
+  v: (number | null)[];
+  /** Lowest and highest in each step. */
+  lo: (number | null)[];
+  hi: (number | null)[];
+  /** The minutes measured in each step (a rate × n × 60 is the amount). */
+  n: number[];
+}
+
+/** A channel listened to now, with its power and the noise floor under it. */
+export interface ChannelSnapshot {
+  system: string;
+  freqHz: number;
+  source: number;
+  kind: "control" | "voice" | "carrier" | "conventional";
+  powerDb: number;
+  noiseDb: number;
+  snrDb: number;
+  offsetHz: number | null;
+  /** The receiver's eye opening (~10+ clean, ~1 noise). */
+  quality: number | null;
+  calls: number;
+}
+
+/** Something notable (crates/trunk-app/src/stats/events.rs). Which fields come depends on `kind`. */
+export type MonitorEvent = { type: "monitorEvent" } & MonitorEventBody;
+
+export interface MonitorEventBody {
+  /** Unix seconds. */
+  t: number;
+  level: "info" | "ok" | "warn" | "bad";
+  kind:
+    | "tgFirstSeen"
+    | "unitFirstSeen"
+    | "tgActive"
+    | "unitActive"
+    | "unitAffiliated"
+    | "callVolume"
+    | "controlLost"
+    | "controlRegained"
+    | "sourceDrops"
+    | "sourceClipping"
+    | "sourceRecovered"
+    | "pluginHealth"
+    | "linkDown"
+    | "linkUp"
+    | "diskLow";
+  /** A system's short name (talkgroup, radio, call volume, control channel events). */
+  system?: string;
+  talkgroup?: number;
+  alphaTag?: string;
+  unit?: number;
+  alias?: string;
+  units?: number[];
+  perMin?: number;
+  freqHz?: number | null;
+  /** A source's series name (its label). */
+  source?: string;
+  perS?: number;
+  pct?: number;
+  plugin?: string;
+  state?: string;
+  message?: string;
+  target?: string;
+  downS?: number;
+  path?: string;
+  freePct?: number;
+}
+
+/** The computer, as last sampled (desktop app). Missing values are listed in `unavailable`. */
+export interface PlatformInfo {
+  os: string;
+  arch: string;
+  host: string | null;
+  cores: number;
+  /** "docker" | "podman" | "kubernetes" | "lxc", inside one. */
+  container: string | null;
+  cpuLimitCores: number | null;
+  memTotal: number;
+  uptimeS: number;
+  disks: { name: string; path: string; mount: string; totalBytes: number; freeBytes: number }[];
+  probes: { target: string; ok: boolean | null; rttMs: number | null; lastOk: number | null; lastFail: number | null; downSince: number | null; tries: number; fails: number }[];
+  /** With the `platform` topic: each core's use, %, and the interfaces' traffic since the last sample. */
+  perCore: number[] | null;
+  interfaces: { name: string; rx: number; tx: number; state: string }[] | null;
+  unavailable: { field: string; why: string }[];
+}
+
+/** A talkgroup as heard (radioQuery talkgroups / tg). */
+export interface TgRow {
+  tg: number;
+  alphaTag: string;
+  /** In the system's talkgroup file. */
+  known: boolean;
+  ignore: boolean;
+  first: number;
+  last: number;
+  /** In the query's hours. */
+  calls: number;
+  secs: number;
+  totalCalls: number;
+  encPct: number;
+  /** First heard in the last day (once the system has a baseline). */
+  new: boolean;
+  /** Calls per hour, oldest first. */
+  hourly: number[];
+}
+
+/** A radio as heard (radioQuery units / unit). */
+export interface UnitRow {
+  unit: number;
+  alias: string;
+  first: number;
+  last: number;
+  lastTx: number | null;
+  tx: number;
+  txSecs: number;
+  /** The talkgroup it's affiliated with, and since when. */
+  aff: number | null;
+  affT: number | null;
+  reg: boolean | null;
+  /** [talkgroup, transmissions], most first. */
+  tgs: [number, number][];
+  /** [radio, calls together], most first. */
+  partners: [number, number][];
+  new: boolean;
+}
+
+/** A frequency's voice decoding (radioQuery freqs). */
+export interface FreqRow {
+  freqHz: number;
+  calls: number;
+  frames: number;
+  errors: number;
+  errPerFrame: number | null;
+  totalCalls: number;
+  allErrPerFrame: number | null;
+  /** Voice frames that couldn't be decoded, % (in the query's hours; all time). */
+  badPct: number | null;
+  allBadPct: number | null;
+  snr: number | null;
+  freqError: number | null;
+  clean: number | null;
+  last: number;
+  /** Bad frames % by hour, oldest first. */
+  hourly: (number | null)[];
+}
+
+export interface LengthHistogram {
+  /** Bin starts, s (the last is open-ended). */
+  edges: number[];
+  counts: number[];
+}
+
+export interface RadioSummary {
+  since: number;
+  talkgroups: number;
+  tgs24h: number;
+  units: number;
+  units1h: number;
+  units24h: number;
+  newUnits24h: number;
+  newTgs: { tg: number; first: number; alphaTag: string }[];
+  unknownTgs24h: number;
+  /** Heard long enough that "new" means new. */
+  baseline: boolean;
+}
+
+/** Answers radioQuery; which fields come depends on `what`. */
+export type RadioResult = { type: "radioResult" } & RadioResultBody;
+
+export interface RadioResultBody {
+  id: number;
+  what: "summary" | "talkgroups" | "units" | "tg" | "unit" | "freqs" | "lengths";
+  error?: string;
+  system?: string;
+  /** summary */
+  systems?: Record<string, RadioSummary>;
+  /** talkgroups, units, freqs */
+  hours?: number;
+  total?: number;
+  rows?: (TgRow | UnitRow | FreqRow)[];
+  /** tg / unit: the one asked about (null: never heard). */
+  tg?: number;
+  unit?: number;
+  row?: TgRow | UnitRow | null;
+  /** tg: calls per hour over the week; who talks on it; who's affiliated with it; its call lengths. */
+  week?: number[];
+  talkers?: { unit: number; alias: string; n: number; lastTx: number }[];
+  affiliated?: { unit: number; alias: string }[];
+  lengths?: LengthHistogram;
+  /** unit: its latest transmissions, affiliations, talkgroups, and the radios it's heard with. */
+  recent?: { t: number; tg: number; alphaTag: string; secs: number }[];
+  affiliations?: { t: number; tg: number; alphaTag: string }[];
+  tgs?: { tg: number; alphaTag: string; n: number }[];
+  partners?: { unit: number; alias: string; n: number }[];
+  /** lengths */
+  histogram?: LengthHistogram;
+}
+
 export type FromRecorder =
   | {
       type: "hello";
@@ -772,6 +1039,12 @@ export type FromRecorder =
       radios?: Radios;
       surveyBands?: SurveyBand[];
       survey?: { type: "survey" } & SurveyState;
+      /** The dashboard: recent notable events (oldest first). */
+      events?: MonitorEvent[];
+      /** The computer as last sampled (desktop app). */
+      host?: { type: "host"; t: number; values: Record<string, number>; platform: PlatformInfo } | null;
+      /** Every plugin's runtime, by id (desktop app). */
+      pluginRuntime?: Record<string, PluginRuntime>;
     }
   | { type: "radios"; radios: Radios }
   | ({ type: "state" } & PhaseState)
@@ -800,6 +1073,20 @@ export type FromRecorder =
   | { type: "pluginResult"; id: string; path: string; outcome: "ok" | "skipped" | "failed"; message: string; url: string }
   | ({ type: "pluginStore" } & PluginStore)
   | ({ type: "pluginInstall" } & PluginInstall)
+  /** Every second while recording: each series' value now (see the series names above). */
+  | { type: "stats"; t: number; values: Record<string, number> }
+  /** Every 2 s (desktop app): the computer's and the plugins' series, and the computer's own figures. */
+  | { type: "host"; t: number; values: Record<string, number>; platform: PlatformInfo }
+  /** Topic rf:<source>, every second: the noise floor across the band (64 slices, dBFS per bin) and the channels on it. */
+  | { type: "rfDetail"; source: number; profile: number[]; channels: ChannelSnapshot[] }
+  /** Topic decode:<shortName>, every second: the system's channels as received now. */
+  | { type: "decodeDetail"; system: string; channels: ChannelSnapshot[] }
+  | ({ type: "monitorEvent" } & MonitorEventBody)
+  /** Answers subscribe: what this connection now watches. */
+  | { type: "subscribed"; topics: Topic[] }
+  /** Answers statsQuery: `loading` while the history files are still being read. */
+  | { type: "statsResult"; id: number; from: number; to: number; loading: boolean; series: Record<string, SeriesData> }
+  | ({ type: "radioResult" } & RadioResultBody)
   | { type: "quit" };
 
 export type ToRecorder =
@@ -833,6 +1120,12 @@ export type ToRecorder =
   | { type: "installPlugin"; id: string }
   /** Install a plugin from a GitHub release that isn't in the registry (its latest, or `tag`). */
   | { type: "installPlugin"; repository: string; tag?: string }
+  /** What this connection watches (replaces the last): costly messages only go to those that ask. */
+  | { type: "subscribe"; topics: Topic[] }
+  /** The history of series (names, or prefixes ending in `*`) over `range` back from now, or `from`–`to` (Unix s), in about `points` points. */
+  | { type: "statsQuery"; id: number; series: string[]; range?: "10m" | "1h" | "6h" | "24h" | "7d"; from?: number; to?: number; points?: number }
+  /** The radio registry: talkgroups, radios, frequencies heard. `key`: the talkgroup or radio for "tg" / "unit". */
+  | { type: "radioQuery"; id: number; what: "summary" | "talkgroups" | "units" | "tg" | "unit" | "freqs" | "lengths"; system?: string; key?: number; hours?: number; limit?: number }
   | { type: "quit" };
 
 /** Live audio: one 20 ms (or longer) chunk of a call, 8 kHz. */

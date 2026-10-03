@@ -873,6 +873,8 @@ pub struct Config {
     pub plugins: BTreeMap<String, PluginSetup>,
     /// The log: how much, where to, and how lines read.
     pub log: LogSettings,
+    /// The dashboard's watch on the computer (desktop app).
+    pub monitor: MonitorSettings,
     /// Keys this version doesn't know (a newer version's, a hand edit's):
     /// kept, and saved back as they were.
     #[serde(flatten)]
@@ -949,7 +951,23 @@ impl Default for Config {
             server: Server::default(),
             plugins: BTreeMap::new(),
             log: LogSettings::default(),
+            monitor: MonitorSettings::default(),
         }
+    }
+}
+
+/// What the dashboard watches on the computer.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct MonitorSettings {
+    /// Where to check the internet answers (`host:port`, a TCP connect every
+    /// 15 s): the uplink's history. Empty: no checks.
+    pub probe_hosts: Vec<String>,
+}
+
+impl Default for MonitorSettings {
+    fn default() -> Self {
+        MonitorSettings { probe_hosts: vec!["1.1.1.1:443".into(), "dns.google:443".into()] }
     }
 }
 

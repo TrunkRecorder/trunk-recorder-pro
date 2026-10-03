@@ -2,10 +2,15 @@
 // web build's engine worker) owns the truth; this mirrors what it reports and
 // sends what the user does. Components read state with useApp().
 
-import { useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { feedSeries } from "./series.ts";
 import { LivePlayer } from "./livePlayer.ts";
 import { conventionalIndex } from "./protocol.ts";
 import type {
+  MonitorEvent,
+  PlatformInfo,
+  RadioResult,
+  ToRecorder,
   HeardCode,
   AudioChunk,
   CallEntry,
@@ -34,6 +39,7 @@ import type {
 import { type ImportTodo, activeSystems, newSystem, resolvedCenters, sameSystem, siteName, sourceCovering, usableHalfWidth } from "./config.ts";
 import { WsTransport, type Transport } from "./transport.ts";
 import { parseUnitsCsv, type UnitAliases } from "./units.ts";
+import { withIgnore } from "./talkgroups.ts";
 import type { WorkerTransport } from "./web/workerTransport.ts";
 
 export interface AppState {
@@ -85,8 +91,18 @@ export interface AppState {
   pluginInstalls: Record<string, PluginInstall>;
   /** A plugin this browser just installed: its settings open. */
   pluginJustInstalled: string | null;
-  /** Which page is showing. */
+  /** Which page is showing, and what in it (`#/rf/0` → page "rf", path ["0"]). */
   view: View;
+  path: string[];
+  /** The dashboard: each series' value now (the recorder's `stats`, every second while recording). */
+  stats: { t: number; values: Record<string, number> } | null;
+  /** The computer's and the plugins' series, and the computer's own figures (desktop app, every 2 s). */
+  host: { t: number; values: Record<string, number>; platform: PlatformInfo } | null;
+  /** Notable events, oldest first (the last 200). */
+  events: MonitorEvent[];
+  /** The latest `rfDetail` per source and `decodeDetail` per system (only while watched). */
+  rfDetail: Record<number, Extract<FromRecorder, { type: "rfDetail" }>>;
+  decodeDetail: Record<string, Extract<FromRecorder, { type: "decodeDetail" }>>;
   /** The folder the folder picker last listed (desktop app). */
   dir: DirListing | null;
   /** The Trunk Recorder config last read from the recorder's computer. */
@@ -101,10 +117,14 @@ export interface AppState {
 
 export type SetupTab = "systems" | "conventional" | "radios" | "recording" | "plugins";
 
-export type View = "recorder" | "plugins";
+export type View = "overview" | "rf" | "decode" | "radio" | "calls" | "plugins" | "platform" | "setup";
+const VIEWS: View[] = ["overview", "rf", "decode", "radio", "calls", "plugins", "platform", "setup"];
 
-function viewFromHash(): View {
-  return location.hash === "#plugins" ? "plugins" : "recorder";
+/** `#/radio/dcfd/tg/101` → ["radio", ["dcfd", "tg", "101"]]; the old `#plugins` too. */
+function routeFromHash(): { view: View; path: string[] } {
+  const parts = location.hash.replace(/^#\/?/, "").split("/").filter(Boolean).map(decodeURIComponent);
+  const v = parts[0] as View;
+  return VIEWS.includes(v) ? { view: v, path: parts.slice(1) } : { view: "overview", path: [] };
 }
 
 // Remembered in this browser (read while the state below is built, so declared first).
@@ -146,7 +166,12 @@ let state: AppState = {
   pluginStore: null,
   pluginInstalls: {},
   pluginJustInstalled: null,
-  view: viewFromHash(),
+  ...routeFromHash(),
+  stats: null,
+  host: null,
+  events: [],
+  rfDetail: {},
+  decodeDetail: {},
   dir: null,
   trConfig: null,
   guide: null,
@@ -160,14 +185,47 @@ function set(patch: Partial<AppState>): void {
   for (const l of listeners) l();
 }
 
+function subscribe(l: () => void): () => void {
+  listeners.add(l);
+  return () => listeners.delete(l);
+}
+
 export function useApp(): AppState {
-  return useSyncExternalStore(
-    (l) => {
-      listeners.add(l);
-      return () => listeners.delete(l);
-    },
-    () => state,
-  );
+  return useSyncExternalStore(subscribe, () => state);
+}
+
+/** Shallow equality of two values (arrays and plain objects by their items). */
+export function shallowEqual(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true;
+  if (typeof a !== "object" || typeof b !== "object" || !a || !b) return false;
+  const ka = Object.keys(a);
+  const kb = Object.keys(b);
+  return ka.length === kb.length && ka.every((k) => Object.is((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]));
+}
+
+/**
+ * One slice of the state: the component re-renders only when the slice
+ * changes (shallowly), not on every message as with useApp().
+ */
+export function useSelect<T>(pick: (s: AppState) => T, eq: (a: T, b: T) => boolean = shallowEqual): T {
+  const last = useRef<{ s: AppState; v: T } | null>(null);
+  const get = () => {
+    const l = last.current;
+    if (l && l.s === state) return l.v;
+    const v = pick(state);
+    if (l && eq(l.v, v)) {
+      last.current = { s: state, v: l.v };
+      return l.v;
+    }
+    last.current = { s: state, v };
+    return v;
+  };
+  return useSyncExternalStore(subscribe, get);
+}
+
+/** The state now (outside React). */
+export function snapshot(): AppState {
+  return state;
 }
 
 const player = new LivePlayer();
@@ -204,12 +262,18 @@ transport.onMessage = (m: FromRecorder) => {
         ended: m.phase.ended,
         surveyBands: m.surveyBands ?? [],
         survey: m.survey ?? { stage: "idle" },
+        events: m.events ?? [],
+        host: m.host ?? state.host,
       });
+      if (m.host) feedSeries(m.host.t, m.host.values);
+      if (m.pluginRuntime) pendingRuntime = m.pluginRuntime;
       if (state.listen) transport.send({ type: "listen", on: true, system: state.listenSystem, talkgroup: state.listenTalkgroup });
+      // (A new connection: it watches nothing until told.)
+      sendTopics(true);
       break;
     case "state":
-      set({ phase: m.phase, error: m.error ?? state.error, ended: m.ended, ...(m.phase === "starting" ? { calls: [], log: [], status: null, sources: [], spectra: [] } : {}) });
-      if (m.phase === "idle") set({ nowPlaying: null });
+      set({ phase: m.phase, error: m.error ?? state.error, ended: m.ended, ...(m.phase === "starting" ? { calls: [], log: [], status: null, sources: [], spectra: [], rfDetail: {}, decodeDetail: {} } : {}) });
+      if (m.phase === "idle") set({ nowPlaying: null, stats: null });
       break;
     case "config":
       if (!pendingConfig) set({ config: m.config });
@@ -263,7 +327,39 @@ transport.onMessage = (m: FromRecorder) => {
       break;
     case "plugins": {
       const { type: _, ...list } = m;
+      // The runtimes hello carried (the list only names plugins), merged in once.
+      if (pendingRuntime) {
+        const rt = pendingRuntime;
+        list.plugins = list.plugins.map((p) => (rt[p.id] ? { ...p, runtime: rt[p.id] } : p));
+        pendingRuntime = null;
+      }
       set({ plugins: list });
+      break;
+    }
+    case "stats":
+      set({ stats: { t: m.t, values: m.values } });
+      feedSeries(m.t, m.values);
+      break;
+    case "host":
+      set({ host: { t: m.t, values: m.values, platform: m.platform } });
+      feedSeries(m.t, m.values);
+      break;
+    case "rfDetail":
+      set({ rfDetail: { ...state.rfDetail, [m.source]: m } });
+      break;
+    case "decodeDetail":
+      set({ decodeDetail: { ...state.decodeDetail, [m.system]: m } });
+      break;
+    case "monitorEvent":
+      set({ events: [...state.events, m].slice(-200) });
+      break;
+    case "subscribed":
+      break;
+    case "statsResult":
+    case "radioResult": {
+      const r = pending.get(m.id);
+      pending.delete(m.id);
+      r?.(m);
       break;
     }
     case "pluginRuntime":
@@ -297,6 +393,110 @@ transport.onMessage = (m: FromRecorder) => {
       break;
   }
 };
+
+/** Plugin runtimes from hello, waiting for the plugin list. */
+let pendingRuntime: Record<string, import("./protocol.ts").PluginRuntime> | null = null;
+
+// ── what this dashboard watches ──────────────────────────────────────────────
+//
+// Costly messages (waterfalls, the control channel log, detail views) only
+// come while something on screen asks for them: each component that shows one
+// holds its topic with useTopic(), and the union is sent as `subscribe`.
+
+const held = new Map<string, number>();
+let topicsTimer: ReturnType<typeof setTimeout> | null = null;
+let topicsSent = "";
+
+function sendTopics(now = false): void {
+  if (topicsTimer) clearTimeout(topicsTimer);
+  const go = () => {
+    topicsTimer = null;
+    const topics = [...held.keys()].sort();
+    const key = topics.join(",");
+    if (!now && key === topicsSent) return;
+    topicsSent = key;
+    transport.send({ type: "subscribe", topics });
+  };
+  if (now) go();
+  else topicsTimer = setTimeout(go, 150);
+}
+
+/** Watch `topic` while the component is shown (null: nothing). */
+export function useTopic(topic: string | null): void {
+  useEffect(() => {
+    if (!topic) return;
+    held.set(topic, (held.get(topic) ?? 0) + 1);
+    sendTopics();
+    return () => {
+      const n = (held.get(topic) ?? 1) - 1;
+      if (n <= 0) held.delete(topic);
+      else held.set(topic, n);
+      sendTopics();
+    };
+  }, [topic]);
+}
+
+// ── queries ──────────────────────────────────────────────────────────────────
+
+let nextId = 1;
+const pending = new Map<number, (m: FromRecorder) => void>();
+
+function ask<T extends FromRecorder>(msg: ToRecorder & { id: number }): Promise<T> {
+  return new Promise((resolve) => {
+    pending.set(msg.id, (m) => resolve(m as T));
+    transport.send(msg);
+    // Never answered (the connection dropped): let it go.
+    setTimeout(() => {
+      if (pending.delete(msg.id)) resolve({ type: "error", message: "no answer" } as unknown as T);
+    }, 20_000);
+  });
+}
+
+export type StatsResult = Extract<FromRecorder, { type: "statsResult" }>;
+export type StatsRange = "10m" | "1h" | "6h" | "24h" | "7d";
+
+/** The history of `series` (names or `prefix*`) over `range`. */
+export function statsQuery(series: string[], range: StatsRange, points?: number): Promise<StatsResult> {
+  return ask<StatsResult>({ type: "statsQuery", id: nextId++, series, range, ...(points ? { points } : {}) });
+}
+
+/** The history of `series` from `from` (Unix s) to now. */
+export function statsSince(series: string[], from: number, points?: number): Promise<StatsResult> {
+  return ask<StatsResult>({ type: "statsQuery", id: nextId++, series, from, to: Math.floor(Date.now() / 1000), ...(points ? { points } : {}) });
+}
+
+export type RadioQuery = Omit<Extract<ToRecorder, { type: "radioQuery" }>, "type" | "id">;
+
+export function radioQuery(q: RadioQuery): Promise<RadioResult> {
+  return ask<RadioResult>({ type: "radioQuery", id: nextId++, ...q });
+}
+
+/**
+ * A query's answer, asked again every `everyMs` while shown (and when `key`
+ * — what it depends on — changes). Null until the first answer.
+ */
+export function usePolled<T>(key: string, run: () => Promise<T>, everyMs: number): T | null {
+  const [v, setV] = useState<{ key: string; v: T } | null>(null);
+  useEffect(() => {
+    let live = true;
+    const go = () => run().then((r) => live && setV({ key, v: r }));
+    go();
+    const t = everyMs > 0 ? setInterval(go, everyMs) : null;
+    return () => {
+      live = false;
+      if (t) clearInterval(t);
+    };
+  }, [key, everyMs]);
+  return v && v.key === key ? v.v : null;
+}
+
+/** Mark talkgroup `tg` of system `system` ignored (or not) in its talkgroup file. */
+export function setTalkgroupIgnore(system: string, tg: number, ignore: boolean, alphaTag = ""): void {
+  updateConfig((c) => {
+    const sys = c.systems.find((x) => x.shortName === system);
+    if (sys) sys.talkgroupsCsv = withIgnore(sys.talkgroupsCsv, tg, ignore, alphaTag);
+  });
+}
 
 // ── config ───────────────────────────────────────────────────────────────────
 
@@ -354,18 +554,20 @@ export function bumpEpoch(): void {
 
 // ── pages ────────────────────────────────────────────────────────────────────
 
-/** Show a page (the address's #fragment follows, so back/forward and reloads work). */
 /** The page showing (outside React). */
 export function currentView(): View {
   return state.view;
 }
 
-export function setView(view: View): void {
-  const hash = view === "plugins" ? "#plugins" : "";
-  if (location.hash !== hash) history.pushState(null, "", hash || location.pathname + location.search);
-  set({ view });
+/** Show a page, and what in it (the address's #fragment follows, so back/forward and reloads work). */
+export function setView(view: View, ...path: (string | number)[]): void {
+  const p = path.map(String);
+  const hash = `#/${[view, ...p].map(encodeURIComponent).join("/")}`;
+  if (location.hash !== hash) history.pushState(null, "", hash);
+  set({ view, path: p });
+  scrollTo({ top: 0 });
 }
-addEventListener("popstate", () => set({ view: viewFromHash() }));
+addEventListener("popstate", () => set(routeFromHash()));
 
 // ── plugins ──────────────────────────────────────────────────────────────────
 

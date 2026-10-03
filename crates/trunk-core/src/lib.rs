@@ -12,6 +12,7 @@ pub mod dmr;
 pub mod dsp;
 pub mod loudness;
 pub mod mbe;
+pub mod metrics;
 pub mod p25;
 pub mod smartnet;
 pub mod survey;

@@ -153,3 +153,57 @@ export function talkgroupsToCsv(tgs: Talkgroup[]): string {
   const rows = tgs.map((t) => [String(t.number), t.number.toString(16), t.alphaTag, t.mode, t.description, t.tag, t.group].map(cell).join(","));
   return ["Decimal,Hex,Alpha Tag,Mode,Description,Tag,Category", ...rows].join("\n") + "\n";
 }
+
+const csvCell = (v: string) => (/[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
+const LEGACY = ["Decimal", "Hex", "Mode", "Alpha Tag", "Description", "Tag", "Category", "Priority"];
+
+/**
+ * The talkgroup file with talkgroup `tg` marked ignored (never recorded) or
+ * not, in its Ignore column — added when the file has none (a headerless,
+ * legacy file is given its header). Only that cell changes; a talkgroup not
+ * in the file gets a row (named `alphaTag`). Comment lines stay as they are.
+ */
+export function withIgnore(csv: string, tg: number, ignore: boolean, alphaTag = ""): string {
+  const lines = csv.split(/\r?\n/);
+  while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+  const data = (l: string) => !!l.trim() && !l.trim().startsWith("#");
+  let hi = lines.findIndex(data);
+  let header: string[];
+  if (hi < 0) {
+    header = ["Decimal", "Hex", "Alpha Tag", "Mode", "Description", "Tag", "Category"];
+    lines.push(header.join(","));
+    hi = lines.length - 1;
+  } else if (splitCsvLine(lines[hi])[0] === "Decimal") {
+    header = splitCsvLine(lines[hi]);
+  } else {
+    // Legacy: give it a header (as many columns as its widest row).
+    const width = Math.max(...lines.filter(data).map((l) => splitCsvLine(l).length));
+    header = LEGACY.slice(0, Math.max(7, Math.min(8, width)));
+    lines.splice(hi, 0, header.join(","));
+  }
+  let ic = header.indexOf("Ignore");
+  if (ic < 0) {
+    header.push("Ignore");
+    ic = header.length - 1;
+    lines[hi] = header.map(csvCell).join(",");
+  }
+  const pc = header.indexOf("Priority");
+  let found = false;
+  for (let i = hi + 1; i < lines.length; i++) {
+    if (!data(lines[i])) continue;
+    const f = splitCsvLine(lines[i]);
+    while (f.length < header.length) f.push("");
+    if (Number.parseInt(f[0], 10) === tg) {
+      found = true;
+      f[ic] = ignore ? "x" : "";
+      // Trunk Recorder's way of ignoring is a priority of −1: undo that too.
+      if (!ignore && pc >= 0 && Number.parseInt(f[pc], 10) < 0) f[pc] = "1";
+    }
+    lines[i] = f.map(csvCell).join(",");
+  }
+  if (!found && ignore) {
+    const f = header.map((h) => (h === "Decimal" ? String(tg) : h === "Hex" ? tg.toString(16) : h === "Alpha Tag" ? alphaTag : h === "Mode" ? "D" : h === "Ignore" ? "x" : ""));
+    lines.push(f.map(csvCell).join(","));
+  }
+  return lines.join("\n") + "\n";
+}

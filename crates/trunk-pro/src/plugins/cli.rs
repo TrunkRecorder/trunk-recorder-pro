@@ -360,6 +360,9 @@ fn print_note(n: Note) {
             let extra = [message, url].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" ");
             println!("[{plugin}] {mark} {path} {extra}");
         }
+        Note::Metrics { plugin, metrics } => {
+            eprintln!("[{plugin}] metrics: {}", serde_json::to_string(&metrics).unwrap_or_default());
+        }
     }
 }
 

@@ -7,7 +7,7 @@ use std::collections::VecDeque;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -26,6 +26,8 @@ use crate::sdr::{self, RtlConfig, SourceMsg};
 /// A message for every connected browser.
 pub enum Out {
     Text(String),
+    /// Only for browsers that subscribed to `topic` (see [`trunk_app::stats::Topics`]).
+    Topic { topic: String, text: String },
     /// Live audio (binary frame) for talkgroup `tg` of the system with short
     /// name `short_name` (the frame carries the system's number this run).
     Audio { short_name: String, tg: u32, frame: Vec<u8> },
@@ -73,9 +75,57 @@ pub struct Ctx {
     pub plugins: plugins::manage::Plugins,
     /// `--ui <folder>`: the interface / shows, over `server.home`.
     pub home_dir: Option<PathBuf>,
+    /// The radio registry and the event monitor: outlive recordings.
+    pub shared: Arc<trunk_app::stats::Shared>,
+    /// The dashboard's minute history (a week), and where new minutes go.
+    pub series: Arc<Mutex<trunk_app::stats::History>>,
+    pub store: crate::statstore::Store,
+    /// How many connected browsers watch each topic; `topics_gen` changes with it.
+    pub topics: Mutex<std::collections::BTreeMap<String, usize>>,
+    pub topics_gen: AtomicU64,
+    /// For the engine thread, while recording.
+    pub engine_cmds: Mutex<Vec<EngineCmd>>,
+    /// The latest `host` message (the computer and plugins), for browsers that connect.
+    pub host_last: Mutex<Option<Value>>,
+}
+
+/// Something for the running session to do.
+pub enum EngineCmd {
+    /// A system's talkgroup file changed (an Ignore flag set from the dashboard).
+    Talkgroups { short_name: String, csv: String },
 }
 
 impl Ctx {
+    /// What the connected browsers watch.
+    pub fn topics(&self) -> trunk_app::stats::Topics {
+        trunk_app::stats::Topics::new(self.topics.lock().unwrap().keys().cloned())
+    }
+
+    /// A browser now watches `add` and no longer `remove`.
+    pub fn retopic(&self, add: &[String], remove: &[String]) {
+        let mut t = self.topics.lock().unwrap();
+        for r in remove {
+            if let Some(n) = t.get_mut(r) {
+                *n -= 1;
+                if *n == 0 {
+                    t.remove(r);
+                }
+            }
+        }
+        for a in add {
+            *t.entry(a.clone()).or_default() += 1;
+        }
+        self.topics_gen.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Hand an event to the monitor, and to the browsers when it's one for the feed.
+    pub fn event(&self, e: trunk_app::stats::MonitorEvent) {
+        let t = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
+        if let Some(v) = self.shared.emit(t, e) {
+            publish(&self.hub, v);
+        }
+    }
+
     pub fn set_phase(&self, phase: &'static str, error: Option<String>, ended: bool) {
         let p = PhaseInfo { phase, error, ended };
         publish(&self.hub, p.to_json());
@@ -124,6 +174,7 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
     }
     let epoch_ms = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_millis() as f64);
     let mut session = Session::new(cfg.clone(), epoch_ms, &|name| fs::read_to_string(bandplan_path(name)).ok(), local_offset)?;
+    session.attach(ctx.shared.clone());
     session.load_units(&|name| fs::read_to_string(units_path(name)).ok());
     session.load_heard(&fs::read_to_string(heard_path(&cfg)).unwrap_or_default());
     ctx.plugins.start(&cfg);
@@ -184,6 +235,42 @@ fn save_bandplans(session: &Session, saved: &mut std::collections::HashMap<Strin
         }
     }
 }
+
+/// Where the radio registry (talkgroups, radios, frequencies heard) is kept, a file per system.
+fn radio_dir() -> PathBuf {
+    crate::paths::data_dir().join("radio")
+}
+
+/// Read the radio registry saved by earlier runs.
+pub fn load_registry(shared: &trunk_app::stats::Shared) {
+    let mut r = shared.radio.lock().unwrap();
+    for e in fs::read_dir(radio_dir()).into_iter().flatten().flatten() {
+        let p = e.path();
+        if p.extension().is_some_and(|x| x == "json") {
+            if let (Some(name), Ok(text)) = (p.file_stem().and_then(|n| n.to_str()), fs::read_to_string(&p)) {
+                r.load(name, &text);
+            }
+        }
+    }
+}
+
+/// Save the systems whose registry changed since the last save.
+pub fn save_registry(shared: &trunk_app::stats::Shared) {
+    let changed = shared.radio.lock().unwrap().take_dirty();
+    if changed.is_empty() {
+        return;
+    }
+    let _ = fs::create_dir_all(radio_dir());
+    for (name, json) in changed {
+        let file = radio_dir().join(format!("{}.json", trunk_core::metrics::key_part(&name)));
+        if let Err(e) = trunk_app::config::write_atomic(&file, &json) {
+            log::warn!("Couldn't save {}: {e}", file.display());
+        }
+    }
+}
+
+/// How often the radio registry is saved while recording (it's rewritten whole).
+const REGISTRY_EVERY: Duration = Duration::from_secs(15 * 60);
 
 /// Where the codes conventional frequencies carried are kept ([`trunk_app::heard`]).
 pub(crate) fn heard_path(cfg: &trunk_app::Config) -> PathBuf {
@@ -295,6 +382,8 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Rec
     // Band plans (and DMR channel tables) as last saved: learned ones survive a crash or kill too.
     let mut saved_plans: std::collections::HashMap<String, String> = Default::default();
     let mut plans_at = Instant::now();
+    let mut registry_at = Instant::now();
+    let mut topics_gen = u64::MAX;
     loop {
         if stop.load(Ordering::Relaxed) {
             break;
@@ -326,6 +415,20 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Rec
         let plugins = ctx.plugins.host.read().unwrap();
         session.plugin_topics = plugins.as_ref().map_or(Default::default(), |p| p.topics);
         session.want_audio = ctx.hub.receiver_count() > 0 || plugins.as_ref().is_some_and(|p| p.audio);
+        let g = ctx.topics_gen.load(Ordering::Relaxed);
+        if g != topics_gen {
+            topics_gen = g;
+            session.set_topics(ctx.topics());
+        }
+        for c in std::mem::take(&mut *ctx.engine_cmds.lock().unwrap()) {
+            match c {
+                EngineCmd::Talkgroups { short_name, csv } => {
+                    if session.set_talkgroups(&short_name, &csv) {
+                        log::info!("[{short_name}] Talkgroups updated");
+                    }
+                }
+            }
+        }
         session.poll(now_ms(), &mut out);
         deliver(&ctx, &mut out, plugins.as_ref(), &rules, &fin);
         drop(plugins);
@@ -333,6 +436,10 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Rec
         if plans_at.elapsed() >= Duration::from_secs(10) {
             plans_at = Instant::now();
             save_bandplans(&session, &mut saved_plans);
+        }
+        if registry_at.elapsed() >= REGISTRY_EVERY {
+            registry_at = Instant::now();
+            save_registry(&ctx.shared);
         }
     }
     ctx.set_phase("stopping", None, false);
@@ -347,6 +454,7 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Rec
         let _ = trunk_app::config::write_atomic(&bandplan_path(&name), plan);
     }
     save_units(&mut session);
+    save_registry(&ctx.shared);
     stop.store(true, Ordering::Relaxed);
     ctx.set_phase("idle", None, ended_all);
 }
@@ -440,6 +548,10 @@ fn deliver(ctx: &Ctx, out: &mut Vec<Output>, plugins: Option<&PluginHost>, rules
                 }
             }
             Output::Log(r) => crate::logging::record(&r),
+            Output::Topic { topic, text } => {
+                let _ = ctx.hub.send(Arc::new(Out::Topic { topic, text }));
+            }
+            Output::Rollup(r) => ctx.store.add(r),
             Output::File { rel, system, wav, json, frames, entry } => finish(Finish { rel, system, wav, json, frames, entry, rules: rules(system) }, plugins),
         }
     }

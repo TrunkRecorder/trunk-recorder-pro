@@ -63,7 +63,7 @@ fn check_all(direction: &str, msgs: &[Value]) {
 fn texts(out: &mut Vec<Output>, into: &mut Vec<Value>) {
     for o in out.drain(..) {
         match o {
-            Output::Text(t) => into.push(serde_json::from_str(&t).unwrap()),
+            Output::Text(t) | Output::Topic { text: t, .. } => into.push(serde_json::from_str(&t).unwrap()),
             // Stored, a call is announced as the platform does it (runtime::finish_one).
             Output::File { entry, .. } => into.push(json!({ "type": "concluded", "entry": entry })),
             _ => {}
@@ -114,10 +114,11 @@ fn conventional_config() -> Config {
 }
 
 /// What a recording session sends: status (with the call while it's on),
-/// spectrum, log, heard, concluded.
+/// spectrum, log, heard, concluded, the dashboard's stats and details.
 #[test]
 fn a_recording_sessions_messages() {
     let mut s = Session::new(conventional_config(), 1.75e12, &|_| None, |_| 0).unwrap();
+    s.set_topics(trunk_app::stats::Topics::new(["spectrum:0", "log", "rf:0", "decode:conv"].map(String::from)));
     let (mut out, mut msgs) = (Vec::new(), Vec::new());
     air(2_400_000.0, 4.5, |iq, t| {
         s.push_iq(0, iq, 0);
@@ -129,11 +130,31 @@ fn a_recording_sessions_messages() {
     s.finish(&mut out);
     texts(&mut out, &mut msgs);
     let types: BTreeSet<&str> = msgs.iter().filter_map(|m| m["type"].as_str()).collect();
-    for t in ["status", "spectrum", "log", "concluded"] {
+    for t in ["status", "spectrum", "log", "concluded", "stats", "rfDetail", "decodeDetail"] {
         assert!(types.contains(t), "no {t} message (got {types:?})");
     }
     assert!(msgs.iter().any(|m| m["type"] == "status" && !m["calls"].as_array().unwrap().is_empty()), "no status with a call in it");
+    let stats = msgs.iter().rfind(|m| m["type"] == "stats").unwrap();
+    assert!(stats["values"]["src/RTL-SDR (first)/noise"].is_number(), "{stats}");
+    assert!(stats["values"]["sys/conv/calls"].is_number() || stats["values"]["all/calls"].is_number(), "{stats}");
     check_all("FromRecorder", &msgs);
+}
+
+/// Without subscriptions, the costly messages aren't made.
+#[test]
+fn unwatched_topics_are_not_sent() {
+    let mut s = Session::new(conventional_config(), 1.75e12, &|_| None, |_| 0).unwrap();
+    let (mut out, mut msgs) = (Vec::new(), Vec::new());
+    air(2_400_000.0, 3.0, |iq, t| {
+        s.push_iq(0, iq, 0);
+        s.poll(t * 1000.0, &mut out);
+        texts(&mut out, &mut msgs);
+    });
+    let types: BTreeSet<&str> = msgs.iter().filter_map(|m| m["type"].as_str()).collect();
+    for t in ["spectrum", "log", "rfDetail", "decodeDetail"] {
+        assert!(!types.contains(t), "{t} sent with nobody watching");
+    }
+    assert!(types.contains("stats") && types.contains("status"));
 }
 
 #[test]
@@ -160,6 +181,8 @@ fn a_surveys_messages() {
 
 fn ctx(cfg: Config, dir: &Path) -> Arc<crate::runtime::Ctx> {
     let (hub, _) = tokio::sync::broadcast::channel(16);
+    let shared = trunk_app::stats::Shared::new();
+    let series = Arc::new(Mutex::new(trunk_app::stats::History::default()));
     Arc::new(crate::runtime::Ctx {
         config_path: dir.join("config.json"),
         config: Mutex::new(cfg),
@@ -171,8 +194,15 @@ fn ctx(cfg: Config, dir: &Path) -> Arc<crate::runtime::Ctx> {
         quit: tokio::sync::Notify::new(),
         survey: Mutex::new(None),
         survey_last: Mutex::new(None),
-        plugins: crate::plugins::manage::Plugins::new(hub),
+        plugins: crate::plugins::manage::Plugins::new(hub.clone(), shared.clone()),
         home_dir: None,
+        shared,
+        series: series.clone(),
+        store: crate::statstore::Store::start(dir.join("stats"), series),
+        topics: Mutex::new(Default::default()),
+        topics_gen: std::sync::atomic::AtomicU64::new(0),
+        engine_cmds: Mutex::new(Vec::new()),
+        host_last: Mutex::new(None),
     })
 }
 
@@ -215,7 +245,48 @@ fn the_servers_messages() {
     cfg.server.home = "wall".into();
 
     let ctx = ctx(cfg.clone(), &dir);
+    // Something in the registry and the history to ask about.
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    {
+        let mut r = ctx.shared.radio.lock().unwrap();
+        let c = trunk_core::trunk::Call {
+            talkgroup: 101,
+            start_s: 0.0,
+            last_update_s: 4.0,
+            sources: vec![trunk_core::trunk::CallSource { src: 7, time_s: 0.0, emergency: false }, trunk_core::trunk::CallSource { src: 8, time_s: 2.0, emergency: false }],
+            ..Default::default()
+        };
+        r.call_start("p25", &c, now - 10);
+        r.call_end("p25", &c, now - 6);
+        r.message("p25", &trunk_core::trunk::Message { kind: trunk_core::trunk::MessageType::Affiliation, source: 7, talkgroup: 101, ..Default::default() }, now);
+        r.concluded("p25", &json!({ "freq": 851_012_500u64, "snr": 18.5, "errorList": [{ "frames": 50, "error_count": 2, "bad_frames": 0 }] }), now);
+    }
+    ctx.series.lock().unwrap().insert(&trunk_app::stats::Rollup { t: now / 60 * 60, values: [("sys/p25/cc/good".to_string(), [30.0, 28.0, 33.0])].into() });
+    ctx.event(trunk_app::stats::MonitorEvent::ControlLost { system: "p25".into(), freq_hz: Some(851_012_500) });
+    ctx.event(trunk_app::stats::MonitorEvent::PluginHealth { plugin: "openmhz".into(), state: "warning".into(), message: "3 uploads waiting".into() });
+    let mut agg = trunk_app::stats::Aggregator::default();
+    let mut platform = crate::platform::Platform::new(vec![crate::platform::Watched { name: "data", path: dir.clone() }], Arc::new(crate::platform::Probes::default()));
+    agg.begin(now as f64);
+    let p = platform.sample(&mut agg, true);
+    *ctx.host_last.lock().unwrap() = Some(crate::monitor::message(now as f64, &agg, p));
     let hello = crate::server::hello_json(&ctx, crate::radio::radios_json(false));
+    assert_eq!(hello["events"].as_array().map(Vec::len), Some(2));
+    let mut queries = vec![crate::server::stats_query(&ctx, &json!({ "id": 1, "series": ["sys/p25/*"], "range": "1h" }))];
+    assert!(queries[0]["series"]["sys/p25/cc/good"]["v"].is_array(), "{}", queries[0]);
+    for q in [
+        json!({ "id": 2, "what": "summary" }),
+        json!({ "id": 3, "what": "talkgroups", "system": "p25", "hours": 24 }),
+        json!({ "id": 4, "what": "units", "system": "p25" }),
+        json!({ "id": 5, "what": "tg", "system": "p25", "key": 101 }),
+        json!({ "id": 6, "what": "unit", "system": "p25", "key": 7 }),
+        json!({ "id": 7, "what": "freqs", "system": "p25", "hours": 24 }),
+        json!({ "id": 8, "what": "lengths", "system": "p25", "hours": 24 }),
+        json!({ "id": 9, "what": "talkgroups", "system": "nowhere" }),
+    ] {
+        queries.push(crate::server::radio_query(&ctx, &q));
+    }
+    assert_eq!(queries[2]["rows"][0]["alphaTag"], "", "no talkgroup file for p25 here");
+    assert_eq!(queries[4]["talkers"].as_array().map(Vec::len), Some(2));
     let msgs = vec![
         hello,
         json!({ "type": "config", "config": cfg }),
@@ -230,7 +301,9 @@ fn the_servers_messages() {
         crate::server::tr_config_json(&dir.display().to_string()),
         crate::server::tr_config_json(&dir.join("nothing.json").display().to_string()),
         json!({ "type": "quit" }),
+        json!({ "type": "subscribed", "topics": ["spectrum:0", "log"] }),
     ];
+    let msgs: Vec<Value> = msgs.into_iter().chain(queries).chain(ctx.shared.recent_events()).collect();
     let _ = std::fs::remove_dir_all(&dir);
     check_all("FromRecorder", &msgs);
 }
@@ -253,7 +326,7 @@ fn sources() -> Vec<(String, String)> {
     files
 }
 
-/// Each `json!({ "type": "…"` in the code: a message sent.
+/// Each `json!({ "type": "…"` (or `["type"] = json!("…")`) in the code: a message sent.
 fn sent_types() -> BTreeSet<String> {
     let mut found = BTreeSet::new();
     for (_, text) in sources() {
@@ -265,6 +338,12 @@ fn sent_types() -> BTreeSet<String> {
             if before.ends_with("json!({") {
                 found.insert(name);
             }
+            rest = after;
+        }
+        let mut rest = text.as_str();
+        while let Some(i) = rest.find("[\"type\"] = json!(\"") {
+            let after = &rest[i + 18..];
+            found.insert(after.chars().take_while(|c| c.is_ascii_alphanumeric()).collect());
             rest = after;
         }
     }
@@ -321,6 +400,11 @@ fn messages_to_the_recorder() {
         json!({ "type": "surveyStart", "source": 0, "bands": ["800"], "findGain": true }),
         json!({ "type": "installPlugin", "id": "openmhz" }),
         json!({ "type": "installPlugin", "repository": "someone/plugin", "tag": "v1.0.0" }),
+        json!({ "type": "subscribe", "topics": ["spectrum:0", "rf:0", "decode:dcfd", "log", "platform"] }),
+        json!({ "type": "statsQuery", "id": 1, "series": ["sys/dcfd/cc/*"], "range": "24h", "points": 200 }),
+        json!({ "type": "statsQuery", "id": 2, "series": ["plat/cpu"], "from": 1_750_000_000, "to": 1_750_086_400 }),
+        json!({ "type": "radioQuery", "id": 3, "what": "talkgroups", "system": "dcfd", "hours": 168, "limit": 100 }),
+        json!({ "type": "radioQuery", "id": 4, "what": "unit", "system": "dcfd", "key": 1234 }),
     ];
     check_all("ToRecorder", &msgs);
 }

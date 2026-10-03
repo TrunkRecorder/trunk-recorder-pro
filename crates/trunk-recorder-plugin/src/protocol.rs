@@ -421,8 +421,79 @@ pub enum PluginMessage {
         #[serde(default, skip_serializing_if = "String::is_empty")]
         url: String,
     },
+    /// How the plugin's work is going, for the dashboard: queue, results,
+    /// timing and the services it talks to. Send it when it changes, at most
+    /// every few seconds ([`crate::CallQueue`] does it for you).
+    #[serde(rename = "metrics")]
+    Metrics(Metrics),
     #[serde(other)]
     Unknown,
+}
+
+/// A plugin's figures ([`PluginMessage::Metrics`]). Every field is optional:
+/// send what you know. Totals are since the plugin started.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Metrics {
+    /// Calls waiting to be worked on (ready, or waiting to retry).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub queued: Option<u64>,
+    /// Of those, waiting to retry after a failure.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retrying: Option<u64>,
+    /// Being worked on now.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub in_flight: Option<u64>,
+    /// Tries that failed and will be retried, in total.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retries: Option<u64>,
+    /// Bytes sent, in total.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bytes_sent: Option<u64>,
+    /// How long one piece of work takes (an upload), ms, smoothed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<f64>,
+    /// Unix seconds of the last success and the last failure.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_ok: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<f64>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub last_error_text: String,
+    /// The services it talks to.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub endpoints: Vec<Endpoint>,
+    /// Anything else worth showing, by name (shown as it is).
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub extra: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+/// A service a plugin talks to, and how it's answering.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Endpoint {
+    /// What it is ("Broadcastify Calls", a host name).
+    pub name: String,
+    pub state: EndpointState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_ok: Option<f64>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub last_error: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum EndpointState {
+    #[default]
+    Unknown,
+    /// Answering.
+    Up,
+    /// Answering, with failures (retries).
+    Degraded,
+    /// Not answering.
+    Down,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]

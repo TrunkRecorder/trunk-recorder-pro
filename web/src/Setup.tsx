@@ -69,8 +69,8 @@ function tabOf(target: string): SetupTab {
 
 /** Show a setup field (`need-<target>`): switch to its page and tab, scroll to it and flash it. */
 export function showTodo(target: string, tries = 0): void {
-  if (currentView() !== "recorder") {
-    setView("recorder");
+  if (currentView() !== "setup") {
+    setView("setup");
     return void setTimeout(() => showTodo(target, tries), 60);
   }
   if (currentTab() !== tabOf(target)) {
