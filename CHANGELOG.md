@@ -5,6 +5,38 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+## [0.1.2] — 2026-10-03
+
+**Breaking: config keys renamed.** Every key now carries its unit, and a
+v0.1.1 config won't load until it's updated (the app says which field it
+couldn't read). Rename in your config.json:
+
+| v0.1.1 | v0.1.2 |
+|---|---|
+| a source's `kind` | `type` |
+| `controlChannels` | `controlChannelsHz` |
+| `voiceChannels` | `voiceChannelsHz` |
+| DMR `channels` | `dmrChannelsHz` |
+| `lcnTable` | `lcnTableHz` |
+| `bandplanBase` / `bandplanSpacing` / `bandplanHigh` | `bandplanBaseHz` / `bandplanSpacingHz` / `bandplanHighHz` |
+| Airspy `gain` / `lnaGain` / `mixerGain` / `vgaGain` | `gainStep` / `lnaStep` / `mixerStep` / `vgaStep` |
+| `controlWarnRate` | `controlWarnRatePerS` |
+
+Frequencies are in Hz everywhere (the MHz some DMR and SmartNet fields
+accepted is gone).
+
+- **Guard band per source** (`guardHz`, default 75 kHz at each edge) in place
+  of the fixed 90 % of the sample rate, which left 120 kHz per edge at
+  2.4 MSPS and 1 MHz at 20 MSPS. Trunk Recorder left 32–64 kHz, so a config
+  with channels near the edge of a source may need its centre moved, or a
+  smaller guard.
+- **Profile roll-off** (Setup → Radios, offered when a source is added; also
+  `trunk-pro rolloff`): listens to the radio for a moment, finds where its
+  noise floor sags at each edge, and suggests a guard band — shown on a
+  waterfall and spectrum, adjusted by dragging or with a slider, with the
+  channels it would leave out. The suggestion is conservative: on an
+  RTL-SDR at 2.4 MSPS the floor sags gently and the 3 dB point is
+  140–180 kHz in.
 - **A dashboard for running the recorder**, in place of the single page:
   - **Overview**: every system at a glance — today's calls, airtime and
     audio, recorders in use, calls missed; a card per system with its
