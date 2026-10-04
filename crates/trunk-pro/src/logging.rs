@@ -226,7 +226,7 @@ struct Syslog;
 #[cfg(unix)]
 mod libc_syslog {
     use std::os::raw::{c_char, c_int};
-    extern "C" {
+    unsafe extern "C" {
         pub fn openlog(ident: *const c_char, option: c_int, facility: c_int);
         pub fn syslog(priority: c_int, format: *const c_char, ...);
     }

@@ -179,7 +179,7 @@ impl P25 {
         for g in groups {
             let f = best_frame(g);
             *self.nac_votes.entry(f.nid.nac).or_default() += 1;
-            self.identity.set_opt(IdField::Nac, self.nac_votes.iter().max_by_key(|(_, &c)| c).map(|(&n, _)| n as u32));
+            self.identity.set_opt(IdField::Nac, self.nac_votes.iter().max_by_key(|&(_, &c)| c).map(|(&n, _)| n as u32));
             if f.nid.duid != TSDU {
                 continue;
             }

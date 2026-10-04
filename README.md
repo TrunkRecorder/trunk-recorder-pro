@@ -546,7 +546,7 @@ for it.
 
 ## Build
 
-Needs Rust 1.88+ and Node 20+ (for the interface).
+Needs Rust 1.95+ and Node 20+ (for the interface).
 
 ```bash
 (cd web && npm ci && npm run build)     # the interface → web/dist, embedded in the binary

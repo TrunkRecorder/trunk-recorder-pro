@@ -106,7 +106,7 @@ pub fn run_scan(a: &Args) {
     for c in &chans {
         let total: u64 = c.syncs.values().sum();
         let kinds: Vec<String> = c.syncs.iter().map(|(k, n)| format!("{k}:{n}")).collect();
-        let cc = c.cc.iter().max_by_key(|(_, &n)| n).map_or("?".into(), |(c, _)| c.to_string());
+        let cc = c.cc.iter().max_by_key(|&(_, &n)| n).map_or("?".into(), |(c, _)| c.to_string());
         println!("{:.5} MHz  syncs {total:6}  cc {cc:>2}  lc {:5}  voice {:6}  {}", c.hz / 1e6, c.lcs, c.voice, kinds.join(" "));
     }
 }

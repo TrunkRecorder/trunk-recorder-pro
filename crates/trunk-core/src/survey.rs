@@ -430,7 +430,7 @@ impl FreqEst {
     }
 }
 
-fn tsbk_bits(t: &Tsbk) -> impl Fn(u32, u64) -> u32 {
+fn tsbk_bits(t: &Tsbk) -> impl Fn(u32, u64) -> u32 + use<> {
     let v = t.iter().fold(0u128, |a, &b| (a << 8) | b as u128);
     move |shift, mask| ((v >> shift) as u64 & mask) as u32
 }
@@ -453,7 +453,7 @@ impl Decode {
         let f = best_frame(g);
         self.frames += 1;
         *self.nac_votes.entry(f.nid.nac).or_default() += 1;
-        self.id.set_opt(IdField::Nac, self.nac_votes.iter().max_by_key(|(_, &c)| c).map(|(&n, _)| n as u32));
+        self.id.set_opt(IdField::Nac, self.nac_votes.iter().max_by_key(|&(_, &c)| c).map(|(&n, _)| n as u32));
         if f.nid.duid == LDU1 || f.nid.duid == LDU2 {
             self.voice += 1;
         }
@@ -821,7 +821,7 @@ impl SnMonitor {
 
     /// Fit the plan through what's been seen, the control channel heard at `heard_hz`.
     fn fit(&mut self, heard_hz: f64) {
-        let cc = self.cc_votes.iter().max_by_key(|(_, &n)| n).map(|(&c, _)| c);
+        let cc = self.cc_votes.iter().max_by_key(|&(_, &n)| n).map(|(&c, _)| c);
         let i = &mut self.info;
         i.cc_chan = cc;
         i.alt_chans = self.alt.iter().copied().filter(|&c| Some(c) != cc).collect();
@@ -1010,7 +1010,7 @@ impl Monitor {
     fn smartnet_info(&mut self, t: f64) {
         let s = &self.sn;
         let i = &mut self.info;
-        let voted = s.sys_votes.iter().max_by_key(|(_, &n)| n).map(|(&v, _)| v as u32);
+        let voted = s.sys_votes.iter().max_by_key(|&(_, &n)| n).map(|(&v, _)| v as u32);
         i.identity = Identity::default();
         i.identity.set_opt(IdField::SysId, voted.or(s.parser.sys_id));
         i.identity.set_opt(IdField::Site, s.parser.site);
@@ -1029,7 +1029,7 @@ impl Monitor {
                 i.voice = s
                     .grants
                     .iter()
-                    .filter(|(&c, _)| Some(c) != cc && !info.alt_chans.contains(&c))
+                    .filter(|&(&c, _)| Some(c) != cc && !info.alt_chans.contains(&c))
                     .filter_map(|(&c, &n)| p.plan.rx_hz(c).map(|f| VoiceChannel { freq_hz: f, grants: n, tdma: false }))
                     .collect();
                 i.bandplan = if p.name == "400_custom" {

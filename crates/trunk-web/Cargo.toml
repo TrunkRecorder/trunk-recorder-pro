@@ -3,6 +3,7 @@ name = "trunk-web"
 description = "Trunk Recorder Pro in the browser: the engine and the RTL-SDR driver (WebUSB) as WebAssembly, driven by web/src/web/engine.worker.ts."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 

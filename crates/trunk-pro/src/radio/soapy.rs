@@ -169,35 +169,43 @@ pub fn info() -> DriverInfo {
 
 /// SAFETY: `p` null or a NUL-terminated string.
 unsafe fn cstr(p: *const c_char) -> String {
-    if p.is_null() {
-        return String::new();
+    unsafe {
+        if p.is_null() {
+            return String::new();
+        }
+        CStr::from_ptr(p).to_string_lossy().into_owned()
     }
-    CStr::from_ptr(p).to_string_lossy().into_owned()
 }
 
 /// A string the library allocated, freed.
 unsafe fn owned(a: &Api, p: *mut c_char) -> String {
-    let s = cstr(p);
-    if let (Some(free), false) = (a.free, p.is_null()) {
-        free(p as *mut c_void);
+    unsafe {
+        let s = cstr(p);
+        if let (Some(free), false) = (a.free, p.is_null()) {
+            free(p as *mut c_void);
+        }
+        s
     }
-    s
 }
 
 /// A `char**` list the library allocated, freed.
 unsafe fn strings(a: &Api, f: unsafe extern "C" fn(*mut usize) -> *mut *mut c_char) -> Vec<String> {
-    let mut n = 0usize;
-    let mut p = f(&mut n);
-    if p.is_null() {
-        return vec![];
+    unsafe {
+        let mut n = 0usize;
+        let mut p = f(&mut n);
+        if p.is_null() {
+            return vec![];
+        }
+        let out = (0..n).map(|i| cstr(*p.add(i))).collect();
+        (a.strings_clear)(&mut p, n);
+        out
     }
-    let out = (0..n).map(|i| cstr(*p.add(i))).collect();
-    (a.strings_clear)(&mut p, n);
-    out
 }
 
 unsafe fn kwargs(k: &Kwargs) -> Vec<(String, String)> {
-    (0..k.size).map(|i| (cstr(*k.keys.add(i)), cstr(*k.vals.add(i)))).collect()
+    unsafe {
+        (0..k.size).map(|i| (cstr(*k.keys.add(i)), cstr(*k.vals.add(i)))).collect()
+    }
 }
 
 fn check(a: &Api, what: &str, r: c_int) -> Result<(), String> {
@@ -417,25 +425,31 @@ impl Drop for Device<'_> {
 impl Device<'_> {
     /// A reference off by `ppm` makes a requested f come out at f·(1+ppm).
     unsafe fn tune(&self, hz: f64, ppm: f64) -> Result<(), String> {
-        check(self.a, "tune", (self.a.set_frequency)(self.dev, RX, 0, hz / (1.0 + ppm * 1e-6), std::ptr::null()))
+        unsafe {
+            check(self.a, "tune", (self.a.set_frequency)(self.dev, RX, 0, hz / (1.0 + ppm * 1e-6), std::ptr::null()))
+        }
     }
     unsafe fn gain(&self, db: f64) -> Result<(), String> {
-        if (self.a.has_gain_mode)(self.dev, RX, 0) {
-            check(self.a, "AGC off", (self.a.set_gain_mode)(self.dev, RX, 0, false))?;
+        unsafe {
+            if (self.a.has_gain_mode)(self.dev, RX, 0) {
+                check(self.a, "AGC off", (self.a.set_gain_mode)(self.dev, RX, 0, false))?;
+            }
+            check(self.a, "gain", (self.a.set_gain)(self.dev, RX, 0, db))
         }
-        check(self.a, "gain", (self.a.set_gain)(self.dev, RX, 0, db))
     }
     unsafe fn rates(&self) -> String {
-        let mut n = 0usize;
-        let p = (self.a.list_sample_rates)(self.dev, RX, 0, &mut n);
-        if p.is_null() {
-            return "?".into();
+        unsafe {
+            let mut n = 0usize;
+            let p = (self.a.list_sample_rates)(self.dev, RX, 0, &mut n);
+            if p.is_null() {
+                return "?".into();
+            }
+            let s: Vec<String> = std::slice::from_raw_parts(p, n).iter().map(|r| format!("{}", r / 1e6)).collect();
+            if let Some(free) = self.a.free {
+                free(p as *mut c_void);
+            }
+            s.join(" / ")
         }
-        let s: Vec<String> = std::slice::from_raw_parts(p, n).iter().map(|r| format!("{}", r / 1e6)).collect();
-        if let Some(free) = self.a.free {
-            free(p as *mut c_void);
-        }
-        s.join(" / ")
     }
 }
 

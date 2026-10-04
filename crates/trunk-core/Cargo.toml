@@ -3,6 +3,7 @@ name = "trunk-core"
 description = "Trunked and conventional radio (P25, SmartNet, DMR, analog FM) decoding and call recording: channelizer, receivers, FEC, vocoders, trunking. Platform-independent (native and WebAssembly)."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 

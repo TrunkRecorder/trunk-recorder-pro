@@ -267,7 +267,7 @@ impl C4fm {
     /// the history's strong symbols; with too few for levels, start afresh.
     fn burst_began(&mut self) {
         let gate = (self.peak * self.floor.max(1e-30)).sqrt();
-        let keep: Vec<(f32, f32)> = self.soft.iter().zip(&self.soft_env).filter(|(_, &e)| e >= gate).map(|(&v, &e)| (v, e)).collect();
+        let keep: Vec<(f32, f32)> = self.soft.iter().zip(&self.soft_env).filter(|&(_, &e)| e >= gate).map(|(&v, &e)| (v, e)).collect();
         self.soft = keep.iter().map(|k| k.0).collect();
         self.soft_env = keep.iter().map(|k| k.1).collect();
         if self.soft.len() < 240 {
@@ -405,7 +405,7 @@ impl C4fm {
             // level is no help with the levels — out of the history for good.
             if lv.bursty() {
                 let gate = (lv.peak * lv.floor.max(1e-30)).sqrt();
-                let keep: Vec<(f32, f32)> = self.soft.iter().zip(&self.soft_env).filter(|(_, &e)| e >= gate).map(|(&v, &e)| (v, e)).collect();
+                let keep: Vec<(f32, f32)> = self.soft.iter().zip(&self.soft_env).filter(|&(_, &e)| e >= gate).map(|(&v, &e)| (v, e)).collect();
                 if keep.len() >= 240 {
                     self.soft = keep.iter().map(|k| k.0).collect();
                     self.soft_env = keep.iter().map(|k| k.1).collect();
@@ -416,7 +416,7 @@ impl C4fm {
                 // A mobile: levels from the bursts' steady middles (their edges
                 // ring through the filter from the quiet before and after).
                 let full = 0.5 * lv.peak;
-                self.tmp.extend(self.soft.iter().zip(&self.soft_env).filter(|(_, &e)| e >= full).map(|(&v, _)| v));
+                self.tmp.extend(self.soft.iter().zip(&self.soft_env).filter(|&(_, &e)| e >= full).map(|(&v, _)| v));
             }
             if self.tmp.len() < 120 {
                 self.tmp.clear();

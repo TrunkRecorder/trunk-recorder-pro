@@ -3,6 +3,7 @@ name = "trunk-app"
 description = "Trunk Recorder Pro's app layer shared by the desktop app and the web build: config, and a Session that turns the engine's events into interface messages, live audio and call files."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 

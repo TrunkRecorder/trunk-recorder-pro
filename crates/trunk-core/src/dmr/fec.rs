@@ -93,7 +93,7 @@ const H16: [u32; 11] = [0b10011, 0b11010, 0b11111, 0b11100, 0b01110, 0b10101, 0b
 
 /// Parity of `bits` (bits[i] = data bit i) under the parity rows.
 fn parity_of(rows: &[u32], bits: &[u8]) -> u32 {
-    rows.iter().zip(bits).filter(|(_, &b)| b != 0).fold(0, |p, (r, _)| p ^ r)
+    rows.iter().zip(bits).filter(|&(_, &b)| b != 0).fold(0, |p, (r, _)| p ^ r)
 }
 
 /// Correct a single error in place in `cw` (data then parity bits, one per

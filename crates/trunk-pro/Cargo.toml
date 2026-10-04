@@ -3,6 +3,7 @@ name = "trunk-pro"
 description = "Trunk Recorder Pro: record P25, SmartNet and DMR trunked systems and conventional channels from SDRs, with a browser interface."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 

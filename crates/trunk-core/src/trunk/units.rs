@@ -61,7 +61,7 @@ impl UnitAliases {
     /// One line per unit, by unit ID.
     pub fn to_csv(&self) -> String {
         let mut units: Vec<_> = self.map.iter().collect();
-        units.sort_by_key(|(&u, _)| u);
+        units.sort_by_key(|&(&u, _)| u);
         let mut s = String::new();
         for (u, a) in units {
             let tg = a.talkgroup.map_or(String::new(), |t| t.to_string());

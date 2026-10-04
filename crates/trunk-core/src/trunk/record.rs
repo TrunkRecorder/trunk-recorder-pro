@@ -122,7 +122,7 @@ impl Transmissions {
         let mut bounds: Vec<usize> = self.starts.iter().copied().filter(|&s| s > 0 && s < len).collect();
         bounds.insert(0, 0);
         bounds.push(len);
-        let encrypted = |at: usize| self.starts.iter().zip(&self.encrypted).find(|(&s, _)| s == at).is_some_and(|(_, &e)| e);
+        let encrypted = |at: usize| self.starts.iter().zip(&self.encrypted).find(|&(&s, _)| s == at).is_some_and(|(_, &e)| e);
         Some(bounds.windows(2).filter(|w| w[1] - w[0] >= min && !encrypted(w[0])).map(|w| w[0]..w[1]).collect())
     }
 }

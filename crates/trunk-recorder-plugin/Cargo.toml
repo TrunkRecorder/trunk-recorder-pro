@@ -4,6 +4,8 @@ description = "Plugins for Trunk Recorder Pro: the wire protocol between the rec
 # The crate's version tracks the plugin API, not the app's.
 version = "0.2.1"
 edition.workspace = true
+# Kept as low as edition 2024 allows: plugin authors build against this.
+rust-version = "1.85"
 # Permissive, so a plugin can be licensed however its author likes.
 license = "MIT OR Apache-2.0"
 repository.workspace = true
