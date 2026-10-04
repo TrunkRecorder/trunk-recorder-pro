@@ -414,6 +414,22 @@ impl Receiver for Cqpsk {
         // 4. Timing and detection.
         self.gardner(out);
     }
+
+    /// The carrier step the front end derotates by, plus the residual turn
+    /// per symbol detection takes out (the 4th-power estimate, or the PLL's
+    /// frequency term), in Hz. Only while frames sync (within the last
+    /// second), and not on a receiver fed another's filter output: its own
+    /// carrier estimate never runs.
+    fn offset_hz(&self) -> Option<f32> {
+        let baud = self.opt.baud as u64;
+        let synced = self.syncs > 0 && self.symbols - self.last_sync <= baud;
+        if !synced || (self.acc_r == 0.0 && self.acc_i == 0.0) {
+            return None;
+        }
+        let w = self.acc_i.atan2(self.acc_r) * self.sps;
+        let theta = if self.opt.coherent { self.cfr } else { (-self.q4.im).atan2(-self.q4.re) / 4.0 };
+        Some(((w + theta as f64) / (2.0 * PI) * self.opt.baud) as f32)
+    }
 }
 
 #[cfg(test)]
@@ -428,5 +444,45 @@ mod tests {
         let mut out = Vec::new();
         let iq: Vec<Complex32> = (0..4800).map(|i| Complex32::from_polar(1.0, i as f32 * 0.7)).collect();
         rx.push(&iq, &mut out);
+    }
+
+    /// The carrier offset reads back once frames sync, and not before.
+    #[test]
+    fn reports_the_carrier_offset_once_it_syncs() {
+        let (rate, sps, off) = (48_000.0, 10usize, 400.0);
+        // Frames: the 24-dibit sync, then pseudo-random dibits to 864.
+        let mut dibits = Vec::new();
+        let mut lfsr = 0xACE1u16;
+        for _ in 0..8 {
+            dibits.extend((0..24).rev().map(|i| ((0x5575_F5FF_77FFu64 >> (2 * i)) & 3) as usize));
+            for _ in 24..864 {
+                for _ in 0..2 {
+                    lfsr = (lfsr >> 1) ^ (-((lfsr & 1) as i16) as u16 & 0xB400);
+                }
+                dibits.push((lfsr & 3) as usize);
+            }
+        }
+        let step = [PI / 4.0, 3.0 * PI / 4.0, -PI / 4.0, -3.0 * PI / 4.0];
+        let taps = filters::rrc_taps(0.35, sps as f64, 8 * sps + 1);
+        let mut x = vec![Complex32::default(); dibits.len() * sps + taps.len()];
+        let mut ph = 0.0f64;
+        for (k, &d) in dibits.iter().enumerate() {
+            ph += step[d];
+            let s = Complex32::from_polar(1.0, ph as f32);
+            for (j, &t) in taps.iter().enumerate() {
+                x[k * sps + j] += s * t;
+            }
+        }
+        let iq: Vec<Complex32> = x.iter().enumerate().map(|(n, &v)| v * Complex32::from_polar(1.0, (2.0 * PI * off * n as f64 / rate) as f32)).collect();
+
+        let mut rx = Cqpsk::new(rate, Options::default());
+        assert_eq!(rx.offset_hz(), None);
+        let mut out = Vec::new();
+        for c in iq.chunks(4800) {
+            rx.push(c, &mut out);
+        }
+        assert!(rx.syncs > 2, "syncs {}", rx.syncs);
+        let got = rx.offset_hz().expect("an offset once synced");
+        assert!((got - off as f32).abs() < 30.0, "offset {got}");
     }
 }
