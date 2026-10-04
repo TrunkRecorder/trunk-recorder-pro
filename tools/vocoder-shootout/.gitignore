@@ -3,3 +3,4 @@
 build/
 shootout-*/
 shootout-*.zip
+__pycache__/

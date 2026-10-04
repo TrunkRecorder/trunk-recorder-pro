@@ -414,7 +414,8 @@ Every message is a JSON object with a `type`. Exact fields are in
 | `subscribed` | Answers `subscribe` | `topics` |
 | `statsResult` | Answers `statsQuery` | `id`, `from`, `to`, `loading` (the history files are still being read), `series`: name → `{ t0, stepS, v, lo, hi, n }` |
 | `radioResult` | Answers `radioQuery` | `id`, `what`, and by `what`: `rows` (talkgroups / radios / frequencies), `row` and its detail, `systems` (summary), `histogram` |
-| `concluded` | A call was recorded | `entry`: `{ path, record }` |
+| `concluded` | A call was recorded | `entry`: `{ path, record, audio, json }`; `audio` / `json`: whether they stay in the recordings folder once the upload plugins are done (false: deleted after uploading) |
+| `callFiles` | A call's upload plugins are done, and it kept other than its entry said (an upload failed and its files stay) | `path`, `audio`, `json` |
 | `log` | Topic `log` (errors and notices always) | `lines[]`: `{ timeS, kind, text, system? }` — `kind` e.g. `"error"`, `"control"`, `"alias"`, `"plugin"`, or a control-message kind |
 | `unitAlias` | A talker alias was heard | `system` (short name), `unit`, `alias` |
 | `heard` | Conventional codes heard changed | `heard`: frequency (Hz, as a string) → `HeardCode[]` |

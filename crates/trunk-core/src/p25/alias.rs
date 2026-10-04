@@ -81,6 +81,31 @@ fn ascii(b: &[u8]) -> Option<String> {
     (!s.is_empty()).then(|| s.to_string())
 }
 
+/// What a terminator's link control (Phase 1) or a MAC message (Phase 2)
+/// showed of talker aliases: counted per system, to tell a fleet whose
+/// radios send none from one whose link control is encrypted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AliasLc {
+    /// Phase 1 terminator, link control encrypted: an alias can't be read.
+    Protected,
+    /// Phase 1 terminator, clear, not part of an alias.
+    Clear,
+    /// Phase 1 terminator carrying part of an alias.
+    Fragment,
+    /// Phase 2 MAC message carrying part of an alias.
+    MacFragment,
+}
+
+/// A link control word that is part of a talker alias (Motorola or Harris).
+pub fn is_alias_lcw(w: &[u8; 9]) -> bool {
+    matches!((w[0] & 0x3f, w[1]), (0x15 | 0x17, MOTOROLA) | (0x32..=0x35, HARRIS))
+}
+
+/// A MAC message that is part of a talker alias (Motorola or Harris).
+pub fn is_alias_msg(m: &MacMsg) -> bool {
+    matches!((m.op, m.mfid), (0x91 | 0x95, MOTOROLA) | (0xa8, HARRIS))
+}
+
 // ── Phase 1: link control words ──────────────────────────────────────────────
 
 /// Collects alias fragments from one voice channel's Phase 1 link control.
@@ -437,6 +462,20 @@ mod tests {
         assert_eq!((msgs[0].op, msgs[0].mfid, msgs[0].bytes.len()), (0xa8, HARRIS, 11));
         let mut m = MacAliases::default();
         assert_eq!(m.msg(&msgs[0], Some(5), None).map(|x| (x.unit, x.alias)), Some((5, "DISPATCH".into())));
+    }
+
+    #[test]
+    fn alias_words_and_messages_are_recognised() {
+        let w = |s: &str| -> [u8; 9] { unhex(s).unwrap().try_into().unwrap() };
+        assert!(is_alias_lcw(&w("15900ea306010058e1")));
+        assert!(is_alias_lcw(&w("1790015bee0044510d")));
+        assert!(is_alias_lcw(&[0x33, HARRIS, 0, 0, 0, 0, 0, 0, 0]));
+        // Group voice channel user; a Motorola LCO 0x15 under another MFID.
+        assert!(!is_alias_lcw(&w("000000000065000007")));
+        assert!(!is_alias_lcw(&[0x15, HARRIS, 0, 0, 0, 0, 0, 0, 0]));
+        assert!(is_alias_msg(&MacMsg { op: 0x95, mfid: MOTOROLA, bytes: &[] }));
+        assert!(is_alias_msg(&MacMsg { op: 0xa8, mfid: HARRIS, bytes: &[] }));
+        assert!(!is_alias_msg(&MacMsg { op: 0x01, mfid: 0, bytes: &[] }));
     }
 
     #[test]

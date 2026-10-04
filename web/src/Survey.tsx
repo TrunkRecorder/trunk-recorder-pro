@@ -28,7 +28,7 @@ const KIND: Record<SurveyCandidate["kind"], string> = {
   dmrControl: "DMR control / rest channel",
   p25: "P25 (voice / data)",
   dmr: "DMR (conventional / data)",
-  other: "Not P25, SmartNet or DMR",
+  other: "Other",
 };
 const isControl = (c: SurveyCandidate) => c.kind === "control" || c.kind === "smartnet";
 
@@ -45,7 +45,7 @@ function Candidates(props: { c: Config; list: SurveyCandidate[]; listening: numb
     const id = cand.identity;
     const expect: SiteIdentity = { nac: id.nac, sysId: id.sysId, rfss: id.rfss, site: id.site, wacn: id.wacn };
     const name = addSite(ccs, expect);
-    setNotice(`Added ${name}: control channel${ccs.length === 1 ? "" : "s"} ${ccs.map((f) => formatMhz(f)).join(", ")} MHz. Listening to it fills in the rest (frequency correction, voice channels).`);
+    setNotice(`Added ${name}: control channel${ccs.length === 1 ? "" : "s"} ${ccs.map((f) => formatMhz(f)).join(", ")} MHz.`);
   };
   const addDmr = (cand: SurveyCandidate) => {
     const hz = Math.round((cand.correctedHz ?? cand.freqHz) / 6250) * 6250;
@@ -55,8 +55,8 @@ function Candidates(props: { c: Config; list: SurveyCandidate[]; listening: numb
     setNotice(
       `Added ${name}: ${cand.dmr?.variant ?? "DMR"} on ${formatMhz(hz)} MHz${cc === null ? "" : `, colour code ${cc}`}. ` +
         (plus
-          ? "Capacity Plus: add the site's other repeaters under Site frequencies — only the rest channel shows in a scan."
-          : "Add the site's voice frequencies under Voice frequencies; which channel is which is learned from the air."),
+          ? "Add the other repeaters under Site frequencies."
+          : "Add voice channels under Voice frequencies."),
     );
   };
   const [showOther, setShowOther] = useState(false);
@@ -81,7 +81,7 @@ function Candidates(props: { c: Config; list: SurveyCandidate[]; listening: numb
             <tbody>
               {rows.map((c) => (
                 <tr key={c.freqHz} className={isControl(c) ? "" : "st-monitoring"}>
-                  <td className="mono" title={c.correctedHz ? `heard at ${formatMhz(c.freqHz)} MHz before correction` : "as heard, before frequency correction"}>
+                  <td className="mono" title={c.correctedHz ? `${formatMhz(c.freqHz)} MHz uncorrected` : "Uncorrected"}>
                     {formatMhz(c.correctedHz ?? c.freqHz)}
                   </td>
                   <td className="mono">{c.snrDb.toFixed(0)} dB</td>
@@ -100,7 +100,7 @@ function Candidates(props: { c: Config; list: SurveyCandidate[]; listening: numb
                         return have ? (
                           <span className="muted small">in {have.shortName}</span>
                         ) : (
-                          <button className="btn ghost small" onClick={() => add(c)} title="Add this control channel (and its site's others) as a system">
+                          <button className="btn ghost small" onClick={() => add(c)} title="Includes the site's other control channels">
                             Add
                           </button>
                         );
@@ -111,12 +111,12 @@ function Candidates(props: { c: Config; list: SurveyCandidate[]; listening: numb
                         return have ? (
                           <span className="muted small">in {have.shortName}</span>
                         ) : (
-                          <button className="btn ghost small" onClick={() => addDmr(c)} title="Add this DMR site as a system">
+                          <button className="btn ghost small" onClick={() => addDmr(c)}>
                             Add
                           </button>
                         );
                       })()}
-                    {c.kind === "smartnet" && !props.onListen && <span className="muted small">listen to learn its band plan</span>}
+                    {c.kind === "smartnet" && !props.onListen && <span className="muted small">listen for band plan</span>}
                     {isControl(c) && props.onListen && (
                       <button className="btn ghost small" disabled={props.listening !== null && Math.abs(props.listening - c.freqHz) < 6000} onClick={() => props.onListen?.(c.freqHz)}>
                         {props.listening !== null && Math.abs(props.listening - c.freqHz) < 6000 ? "Listening" : "Listen"}
@@ -135,7 +135,7 @@ function Candidates(props: { c: Config; list: SurveyCandidate[]; listening: numb
         <label className="toggle small">
           <input type="checkbox" checked={showOther} onChange={(e) => setShowOther(e.target.checked)} />
           <span>
-            Show {others} other continuous signal{others === 1 ? "" : "s"} (not P25, SmartNet or DMR: other trunking systems, data)
+            Show {others} other signal{others === 1 ? "" : "s"}
           </span>
         </label>
       )}
@@ -165,8 +165,8 @@ function SmartnetPlan(props: { s: NonNullable<SurveyMonitor["smartnet"]> }) {
   if (!s.bandplan) {
     return (
       <>
-        learning it from where granted channels come up — {found}
-        {s.ccChan !== null ? ` (this is channel ${s.ccChan})` : ""}. It needs two channels on one line; calls on channels this source can see make it quicker.
+        learning — {found}
+        {s.ccChan !== null ? ` (this is channel ${s.ccChan})` : ""}
       </>
     );
   }
@@ -178,7 +178,7 @@ function SmartnetPlan(props: { s: NonNullable<SurveyMonitor["smartnet"]> }) {
           ? `${b.bandplan}: channel ${b.bandplanOffset} = ${formatMhz(b.bandplanBase ?? 0)} MHz, ${(b.bandplanSpacing ?? 0) / 1000} kHz steps`
           : b.bandplan}
       </span>{" "}
-      — learned from the air ({found}, {s.inliers ?? 0} on the line)
+      ({found})
     </>
   );
 }
@@ -205,9 +205,9 @@ function MonitorView(props: { m: SurveyMonitor; sug: SurveySuggestion | null; c:
     if (src && src.type !== "file") {
       if (sug.ppmApply !== null) bits.push(`correction ${sug.ppmApply > 0 ? "+" : ""}${sug.ppmApply} ppm`);
       if (rtl && sug.gainDb !== null) bits.push(`gain ${formatGain(sug.gainDb)} dB`);
-      bits.push(done.centered ? `center ${formatMhz(sug.centerHz, 4)} MHz` : `source ${props.source + 1} left where it is (another system needs it) — give this system a source centered at ${formatMhz(sug.centerHz, 4)} MHz`);
+      bits.push(done.centered ? `center ${formatMhz(sug.centerHz, 4)} MHz` : `source ${props.source + 1} unchanged (in use) — needs a source at ${formatMhz(sug.centerHz, 4)} MHz`);
     }
-    setNotice(`${target === "new" ? "Added" : "Updated"} ${done.system}: ${bits.join(", ")}. Press Start to record.`);
+    setNotice(`${target === "new" ? "Added" : "Updated"} ${done.system}: ${bits.join(", ")}.`);
     props.onDone();
   };
   const neighbour = (a: SurveyMonitor["adjacent"][number]) => {
@@ -221,7 +221,7 @@ function MonitorView(props: { m: SurveyMonitor; sug: SurveySuggestion | null; c:
           {total ? (
             <>
               decoding {pct} % of {total} messages{m.modulation ? ` · ${m.modulation}` : ""}
-              {m.snrDb !== null ? ` · ${m.snrDb.toFixed(0)} dB above the noise` : ""}
+              {m.snrDb !== null ? ` · ${m.snrDb.toFixed(0)} dB SNR` : ""}
             </>
           ) : (
             "waiting for messages…"
@@ -255,15 +255,15 @@ function MonitorView(props: { m: SurveyMonitor; sug: SurveySuggestion | null; c:
         <Check state={m.ppm !== null ? "ok" : "wait"} label="Frequency correction">
           {m.ppm !== null && m.advertisedHz !== null && m.offsetHz !== null ? (
             <>
-              the channel announces {formatMhz(m.advertisedHz)} MHz and is heard {Math.abs(m.offsetHz).toFixed(0)} Hz {m.offsetHz < 0 ? "low" : "high"} →{" "}
+              heard {Math.abs(m.offsetHz).toFixed(0)} Hz {m.offsetHz < 0 ? "low" : "high"} →{" "}
               <b className="mono">
                 {m.ppm > 0 ? "+" : ""}
                 {m.ppm.toFixed(2)} ppm
               </b>
-              {rtl ? ` (the dongle takes ${Math.round(m.ppm)})` : ""}
+              {rtl ? ` (dongle: ${Math.round(m.ppm)})` : ""}
             </>
           ) : m.advertisedHz === null ? (
-            "waiting for the channel to announce its frequency…"
+            "waiting for its frequency…"
           ) : (
             "measuring…"
           )}
@@ -272,11 +272,11 @@ function MonitorView(props: { m: SurveyMonitor; sug: SurveySuggestion | null; c:
           <Check state={m.gain.state === "done" ? "ok" : "wait"} label="Gain">
             {m.gain.state === "done"
               ? m.gain.bestDb !== null
-                ? `${formatGain(m.gain.bestDb)} dB is the lowest with the best signal (tried ${gainSteps})`
-                : "couldn't pick one; keeping the current setting"
+                ? `${formatGain(m.gain.bestDb)} dB (best of ${gainSteps})`
+                : "no clear best; unchanged"
               : m.gain.state === "running"
                 ? `trying settings… (${gainSteps} done)`
-                : "tried once decoding is steady"}
+                : "once decoding is steady"}
           </Check>
         )}
         <Check state="info" label="Alternate control channels">
@@ -295,7 +295,7 @@ function MonitorView(props: { m: SurveyMonitor; sug: SurveySuggestion | null; c:
                     {have ? (
                       <span>· in {have.shortName}</span>
                     ) : (
-                      <button className="btn ghost small" onClick={() => neighbour(a)} title="Record this site too (as its own system)">
+                      <button className="btn ghost small" onClick={() => neighbour(a)} title="Add as its own system">
                         Add
                       </button>
                     )}
@@ -321,7 +321,7 @@ function MonitorView(props: { m: SurveyMonitor; sug: SurveySuggestion | null; c:
               </span>
             </>
           ) : (
-            "none yet — listening longer shows where calls go"
+            "none yet"
           )}
         </Check>
       </ul>
@@ -360,13 +360,13 @@ function MonitorView(props: { m: SurveyMonitor; sug: SurveySuggestion | null; c:
             {src && src.type !== "file" && (
               <div className="small muted">
                 {sug.voiceTotal === 0
-                  ? "No calls seen yet, so the center is placed around the control channel. Listen a little longer to see where the voice channels are."
+                  ? "No calls yet; centered on the control channel."
                   : sug.voiceCovered < sug.voiceTotal
-                    ? `This source covers ${sug.voiceCovered} of the ${sug.voiceTotal} voice channels seen; the system spans ${(sug.spanHz / 1e6).toFixed(1)} MHz — add another dongle (or use a wider SDR) to record the rest.`
-                    : `This source covers all ${sug.voiceTotal} voice channels seen so far.`}
+                    ? `Covers ${sug.voiceCovered} of ${sug.voiceTotal} voice channels seen; the system spans ${(sug.spanHz / 1e6).toFixed(1)} MHz.`
+                    : `Covers all ${sug.voiceTotal} voice channels seen.`}
               </div>
             )}
-            {!m.ready && <div className="small muted">Still measuring — waiting a few more seconds gives a better result.</div>}
+            {!m.ready && <div className="small muted">Still measuring…</div>}
             <div className="row">
               {c.systems.length > 0 && (
                 <select value={String(target)} onChange={(e) => setTarget(e.target.value === "new" ? "new" : Number(e.target.value))} aria-label="Add as, or replace">
@@ -430,12 +430,7 @@ export function SurveyPanel(props: { c: Config }) {
       </header>
       {!active && open && (
         <div className="stack">
-          <p className="muted small">
-            Don't know the frequencies? Connect your radio and the recorder scans the public-safety bands for P25 control channels, listens to the strongest, and
-            works out the system's control channels, site and your radio's frequency correction — usually in a minute or two. Run it again to add more systems or
-            sites; you can still type everything in by hand below. Trunked DMR sites (Capacity Plus, Capacity Max, Connect Plus, Tier III) show up too, with
-            their colour code — add the business bands to look where most of them are.
-          </p>
+          <p className="muted small">Scans for P25, SmartNet and DMR control channels and sets up the system.</p>
           {(c.sources.length > 1 || src?.type === "rtlsdr") && (
           <div className="grid2">
             {c.sources.length > 1 && (
@@ -461,7 +456,7 @@ export function SurveyPanel(props: { c: Config }) {
           </div>
           )}
           {src?.type === "file" ? (
-            <p className="muted small">A capture file is examined at its center frequency ({src.centerHz ? `${formatMhz(src.centerHz, 4)} MHz` : "set it below"}).</p>
+            <p className="muted small">Scanned at its center frequency ({src.centerHz ? `${formatMhz(src.centerHz, 4)} MHz` : "set it below"}).</p>
           ) : (
             <fieldset className="bands">
               <legend className="field-label">Bands to scan</legend>
@@ -484,12 +479,11 @@ export function SurveyPanel(props: { c: Config }) {
             <button
               className="btn primary"
               disabled={!s.connected || recording || unsupported || (src?.type !== "file" && !bands.length)}
-              title={recording ? "Stop recording first" : ""}
               onClick={() => startSurvey(Math.min(source, c.sources.length - 1), bands, src?.type === "rtlsdr" && findGain)}
             >
               Scan
             </button>
-            {recording && <span className="muted small">Stop recording to scan — the scan needs the radio to itself.</span>}
+            {recording && <span className="muted small">Stop recording to scan.</span>}
           </div>
         </div>
       )}

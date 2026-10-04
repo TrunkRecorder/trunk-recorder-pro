@@ -55,22 +55,41 @@ struct Pending {
     since: Instant,
 }
 
+/// Told what a call kept once its plugins are done: (its path, audio kept, JSON kept).
+pub type OnSettle = Box<dyn Fn(&str, bool, bool) + Send + Sync>;
+
 #[derive(Default)]
 pub struct Archive {
     pending: Mutex<HashMap<String, Pending>>,
+    on_settle: Mutex<Option<OnSettle>>,
 }
 
 impl Archive {
+    /// Who to tell what each call kept (the history list).
+    pub fn on_settle(&self, f: OnSettle) {
+        *self.on_settle.lock().unwrap() = Some(f);
+    }
+
+    fn settled(&self, rel: &str, audio: bool, json: bool) {
+        if let Some(f) = self.on_settle.lock().unwrap().as_ref() {
+            f(rel, audio, json);
+        }
+    }
+
     /// Call `rel` (at `base`, and `spooled`) goes to `plugins` plugins, each of which will report on it.
     pub fn expect(&self, rel: &str, plugins: usize, rules: FileRules, base: &Path, spooled: Option<&Path>) {
         let mut p = self.pending.lock().unwrap();
         // (Their files stay; anything in the spool goes to the recordings folder with time.)
+        let lost: Vec<String> = p.iter().filter(|(_, x)| x.since.elapsed() >= GIVE_UP).map(|(k, _)| k.clone()).collect();
         p.retain(|_, x| x.since.elapsed() < GIVE_UP);
-        if plugins == 0 || (rules.keeps_all() && spooled.is_none()) {
-            return;
+        if plugins > 0 && !(rules.keeps_all() && spooled.is_none()) {
+            let x = Pending { left: plugins, failed: false, rules, base: base.to_path_buf(), spooled: spooled.map(Path::to_path_buf), since: Instant::now() };
+            p.insert(rel.to_string(), x);
         }
-        let x = Pending { left: plugins, failed: false, rules, base: base.to_path_buf(), spooled: spooled.map(Path::to_path_buf), since: Instant::now() };
-        p.insert(rel.to_string(), x);
+        drop(p);
+        for k in lost {
+            self.settled(&k, true, true);
+        }
     }
 
     /// A plugin reported on call `rel`.
@@ -82,12 +101,14 @@ impl Archive {
         if x.left == 0 {
             let x = p.remove(rel).unwrap();
             drop(p);
-            settle(&x);
+            let (audio, json) = settle(&x);
+            self.settled(rel, audio, json);
         }
     }
 }
 
-fn settle(x: &Pending) {
+/// Delete what isn't kept; (audio kept, JSON kept).
+fn settle(x: &Pending) -> (bool, bool) {
     let r = x.rules;
     let keep_all = x.failed && r.archive_files_on_failure;
     let audio = r.audio_archive || keep_all;
@@ -95,7 +116,8 @@ fn settle(x: &Pending) {
     let places = |ext: &str| [Some(at(&x.base, ext)), x.spooled.as_ref().map(|s| at(s, ext))].into_iter().flatten().collect::<Vec<_>>();
     let wav = places("wav").iter().any(|p| p.exists());
     // An .m4a made only for the plugins goes, unless it's the only audio.
-    let keep = [("wav", audio), ("frames.jsonl", audio), ("m4a", audio && (r.compress_wav || !wav)), ("json", r.call_log || keep_all)];
+    let json = r.call_log || keep_all;
+    let keep = [("wav", audio), ("frames.jsonl", audio), ("m4a", audio && (r.compress_wav || !wav)), ("json", json)];
     for (ext, kept) in keep {
         if !kept {
             for p in places(ext) {
@@ -107,6 +129,7 @@ fn settle(x: &Pending) {
             }
         }
     }
+    (audio, json)
 }
 
 #[cfg(test)]
@@ -158,6 +181,17 @@ mod tests {
         a.expect("e", 0, no_audio, &b, None);
         a.result("e", Outcome::Ok);
         assert_eq!(left(&b), ["wav", "json", "m4a"]);
+        // Each settled call says what it kept.
+        let told = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let t = told.clone();
+        a.on_settle(Box::new(move |rel, audio, json| t.lock().unwrap().push((rel.to_string(), audio, json))));
+        let b = files(&dir, "f");
+        a.expect("f", 1, no_audio, &b, None);
+        a.result("f", Outcome::Ok);
+        let b = files(&dir, "g");
+        a.expect("g", 1, no_audio, &b, None);
+        a.result("g", Outcome::Failed);
+        assert_eq!(*told.lock().unwrap(), [("f".to_string(), false, true), ("g".to_string(), true, true)]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

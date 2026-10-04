@@ -133,15 +133,8 @@ impl Channelizer {
     pub fn sample_position(&self) -> u64 {
         self.block * self.l as u64 + self.fill as u64
     }
-    /// Seconds of pre-roll currently available.
-    pub fn history_seconds(&self) -> f64 {
-        (self.history_count * self.l) as f64 / self.fs
-    }
     pub fn fft_size(&self) -> usize {
         self.n
-    }
-    pub fn head_ids(&self) -> Vec<HeadId> {
-        self.heads.keys().copied().collect()
     }
     /// A head's output for the block that just ran (empty before the first).
     pub fn output(&self, id: HeadId) -> Option<&[Complex32]> {

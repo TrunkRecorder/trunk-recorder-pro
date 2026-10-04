@@ -15,8 +15,7 @@ and Rdio Scanner, stream them, or run a script of yours.
 radios, decoding, recording, and the browser interface. It has been tested
 live on macOS and on Linux (a Raspberry Pi 5), and builds for Windows. The
 browser version runs the same engine as WebAssembly. The previous
-TypeScript/browser implementation lives in
-[`archive/ts-engine`](archive/ts-engine) and serves as a reference.
+TypeScript/browser implementation is in git history (removed in 7012637).
 
 More documentation:
 - [docs/configuration.md](docs/configuration.md): every setting in the
@@ -692,7 +691,6 @@ threads and how the pieces connect.
 | `crates/trunk-web` | The browser build: `Session` and the RTL-SDR driver (WebUSB) exported to JavaScript with `wasm-bindgen` |
 | `web/` | The browser interface (React + Vite), embedded in the binary; `src/web/` runs the engine in a worker for the browser version |
 | `research/native-bench` | Benchmarks, the C++ prototype, synthetic simulcast ground truth, comparison scripts — see its `RESULTS.md` |
-| `scripts/gen_tables.ts` | Regenerates `trunk-core/src/tables.rs` from the archived sources |
 
 ## Verified
 

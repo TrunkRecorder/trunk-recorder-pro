@@ -1,7 +1,6 @@
 // The running systems as their control channels describe them: sites and
 // their decoding, neighbours not recorded yet, patches, DMR carriers.
 
-import { Fragment, useRef } from "react";
 import { formatMhz, systemColor, systemWithChannel } from "../config.ts";
 import { addSite, setNotice, type AppState } from "../controller.ts";
 import type { Config, DmrSiteStatus, SystemStatus, TalkgroupName } from "../protocol.ts";
@@ -14,110 +13,6 @@ export function ccMarks(c: Config | null, systems: SystemStatus[]): CcMark[] {
   const at = new Map<number, SystemStatus[]>();
   for (const x of systems) if (x.controlChannelHz) at.set(x.controlChannelHz, [...(at.get(x.controlChannelHz) ?? []), x]);
   return [...at].map(([hz, xs]) => ({ hz, label: systems.length > 1 ? xs.map((x) => x.shortName).join(" · ") : "CC", color: systemColor(c, xs[0].shortName) }));
-}
-
-/** Control channel messages per second of each system (by short name), over ≥2 s of its clock. */
-export function useMsgRates(systems: SystemStatus[]): Map<string, number> {
-  const marks = useRef(new Map<string, { good: number; t: number; perS: number }>());
-  const out = new Map<string, number>();
-  for (const x of systems) {
-    const prev = marks.current.get(x.shortName);
-    if (!prev || x.nowS < prev.t) marks.current.set(x.shortName, { good: x.good, t: x.nowS, perS: 0 });
-    else if (x.nowS - prev.t >= 2) marks.current.set(x.shortName, { good: x.good, t: x.nowS, perS: (x.good - prev.good) / (x.nowS - prev.t) });
-    out.set(x.shortName, marks.current.get(x.shortName)!.perS);
-  }
-  return out;
-}
-
-const ccTone = (x: SystemStatus, perS: number | undefined): "ok" | "warn" | "bad" => (x.mismatch ? "bad" : (perS ?? 0) > 5 ? "ok" : (perS ?? 0) > 0 ? "warn" : "bad");
-const pctText = (x: SystemStatus) => (x.good + x.bad ? `${Math.round((100 * x.good) / (x.good + x.bad))}% decoded` : "no decodes yet");
-
-/** "multi-site: 3 sites", or "3 systems on site 1-3" when they share one. */
-function sitesText(g: SystemStatus[]): string {
-  const sites = new Set(g.filter((x) => x.identity.site != null).map((x) => `${x.identity.rfss}-${x.identity.site}`));
-  if (sites.size > 1) return `multi-site: ${sites.size} sites${sites.size < g.length ? `, ${g.length} systems` : ""}`;
-  return `${g.length} systems${sites.size === 1 ? ` on site ${[...sites][0]}` : ""}`;
-}
-
-/** Every running system (site), sites of one system (same WACN / SysID) together. */
-export function SystemsTable(props: { s: AppState; systems: SystemStatus[]; rates: Map<string, number> }) {
-  const { systems, rates } = props;
-  const key = (x: SystemStatus) => x.siteGroup ?? (x.identity.wacn != null && x.identity.sysId != null ? `${x.identity.wacn}/${x.identity.sysId}` : `solo-${x.shortName}`);
-  const groups = new Map<string, SystemStatus[]>();
-  for (const x of systems) groups.set(key(x), [...(groups.get(key(x)) ?? []), x]);
-  return (
-    <section className="panel">
-      <header className="panel-head">
-        <h2>Systems</h2>
-        <span className="muted small">
-          {systems.length} following their control channels · recorders shared ({props.s.status?.recording ?? 0} in use)
-        </span>
-      </header>
-      <div className="table-wrap">
-        <table className="calls sys-table">
-          <thead>
-            <tr>
-              <th>System</th>
-              <th>Site</th>
-              <th>Control channel</th>
-              <th>Decoding</th>
-              <th>NAC</th>
-              <th>Calls</th>
-            </tr>
-          </thead>
-          <tbody>
-            {[...groups.values()].map((g) => (
-              <Fragment key={key(g[0])}>
-                {g.length > 1 && (
-                  <tr className="group-head">
-                    <td colSpan={6}>
-                      {g[0].siteGroup?.startsWith("group:") ? (
-                        <>
-                          Site group <b>{g[0].siteGroup.slice(6)}</b>
-                        </>
-                      ) : (
-                        <>
-                          WACN <span className="mono">{hex(g[0].identity.wacn)}</span> · SysID <span className="mono">{hex(g[0].identity.sysId)}</span>
-                        </>
-                      )}{" "}
-                      · {sitesText(g)}
-                    </td>
-                  </tr>
-                )}
-                {g.map((x) => {
-                  const perS = rates.get(x.shortName);
-                  const tone = ccTone(x, perS);
-                  return (
-                    <tr key={x.shortName} className={x.mismatch ? "mismatch" : ""}>
-                      <td className="sys-name">
-                        <span className="sys-dot" style={{ background: systemColor(props.s.config, x.shortName) }} />
-                        <b>{x.shortName}</b>
-                      </td>
-                      <td className={x.dmr ? "small" : "mono"}>
-                        {x.dmr ? (x.dmr.variant?.replace(/^DMR /, "") ?? "DMR") : x.identity.site != null ? `${x.identity.rfss ?? "?"}-${x.identity.site}` : "—"}
-                      </td>
-                      <td className="mono">
-                        <span className={`dot dot-${tone === "ok" ? "recording" : "monitoring"}`} /> {x.controlChannelHz ? formatMhz(x.controlChannelHz) : "—"}
-                        {x.mismatch && <div className="small">not this system: {x.mismatch}</div>}
-                      </td>
-                      <td className="small">
-                        <span className={`chip ${tone}`}>{perS !== undefined ? `${perS.toFixed(1)} msg/s` : "…"}</span> {pctText(x)}
-                        {x.modulation ? ` · ${x.modulation}` : ""}
-                      </td>
-                      <td className="mono">{x.dmr ? (x.dmr.colorCode != null ? `CC ${x.dmr.colorCode}` : "CC ?") : hex(x.identity.nac)}</td>
-                      <td className="mono small">
-                        {x.activeCalls} active · {x.recording} rec · {x.callsConcluded} saved
-                      </td>
-                    </tr>
-                  );
-                })}
-              </Fragment>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </section>
-  );
 }
 
 /** Neighbouring sites the control channels announce that aren't set up yet — add one to record it too (next Start). */
@@ -199,7 +94,6 @@ export function DmrSites(props: { systems: SystemStatus[] }) {
     <section className="panel">
       <header className="panel-head">
         <h2>DMR</h2>
-        <span className="muted small">every listed frequency is watched; the channel table is learned from the air</span>
       </header>
       {sites.map((x) => {
         const d = x.dmr!;
@@ -216,7 +110,7 @@ export function DmrSites(props: { systems: SystemStatus[] }) {
           <div key={x.shortName} className="stack">
             <div className="row small">
               {props.systems.length > 1 && <b>{x.shortName}</b>}
-              <span>{d.variant ?? "kind not known yet"}</span>
+              <span>{d.variant ?? "type unknown"}</span>
               <span className="mono">{dmrText(d)}</span>
             </div>
             <div className="table-wrap">

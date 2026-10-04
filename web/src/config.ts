@@ -127,11 +127,6 @@ export function newConventional(c: Config, patch: Partial<Conventional> = {}): C
   return normalizeConventional({ ...patch, shortName: uniqueShortName(c, patch.shortName ?? "conv") });
 }
 
-/** The conventional system with this short name. */
-export function conventionalNamed(c: Config, shortName: string): Conventional | undefined {
-  return c.conventional.find((x) => x.shortName === shortName);
-}
-
 /** Trunk Recorder's trunked DMR settings: `lcnTable` { "<lcn>": Hz } and `channels` (candidate voice frequencies), in Hz (a value under 100000 read as MHz). */
 function dmrImport(sys: Record<string, unknown>): Partial<System> {
   const hz = (v: unknown) => (typeof v === "number" && v > 0 ? (v < 1e5 ? Math.round(v * 1e6) : v) : undefined);

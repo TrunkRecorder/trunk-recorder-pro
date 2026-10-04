@@ -47,9 +47,9 @@ export function InterfacesPanel() {
       l.push({ name: `interface-${n}`, path: "" });
     });
   const problem = (i: CustomInterface, k: number): string | null => {
-    if (!NAME.test(i.name)) return "Use letters, digits, - and _ in the name: it's the address.";
-    if (list.findIndex((x) => x.name === i.name) !== k) return "Two interfaces have this name.";
-    if (!i.path.trim()) return "Set the folder.";
+    if (!NAME.test(i.name)) return "Name: letters, digits, - and _ only.";
+    if (list.findIndex((x) => x.name === i.name) !== k) return "Name already used.";
+    if (!i.path.trim()) return "Folder needed.";
     return info?.interfaces.find((x) => x.name === i.name && x.path === i.path)?.problem ?? null;
   };
   const home = server.home ?? "";
@@ -64,9 +64,9 @@ export function InterfacesPanel() {
       </header>
       <div className="stack">
         <p className="muted small">
-          Pages of your own that use the recorder: a folder with an <code>index.html</code>, served at <code>/ui/&lt;name&gt;/</code> as it is on disk (edit,
-          then reload). Everything this interface does is in <a href="/api/docs" target="_blank" rel="noreferrer">the API</a>, written so you — or an LLM, given{" "}
-          <a href="/api/llms.txt" target="_blank" rel="noreferrer">llms.txt</a> — can build one. <a href="/ui/" target="_blank" rel="noreferrer">Examples</a>.
+          Folders with an <code>index.html</code>, served at <code>/ui/&lt;name&gt;/</code>.{" "}
+          <a href="/api/docs" target="_blank" rel="noreferrer">API</a> · <a href="/api/llms.txt" target="_blank" rel="noreferrer">llms.txt</a> ·{" "}
+          <a href="/ui/" target="_blank" rel="noreferrer">Examples</a>
         </p>
         {list.map((i, k) => {
           const p = problem(i, k);
@@ -113,12 +113,12 @@ export function InterfacesPanel() {
                 </option>
               ))}
             </select>
-            <span className="field-hint">This one is always at /builtin/{info && typeof info.home === "object" ? ` (--ui ${info.home.folder} is at / now)` : ""}</span>
+            <span className="field-hint">Built-in is always at /builtin/{info && typeof info.home === "object" ? ` (--ui ${info.home.folder} is at / now)` : ""}</span>
           </div>
         </div>
         <div className="field">
           <label className="field-label" htmlFor="ui-origins">
-            Pages elsewhere allowed to use the recorder
+            Other pages allowed to use the API
           </label>
           <textarea
             id="ui-origins"
@@ -138,8 +138,7 @@ export function InterfacesPanel() {
             }
           />
           <span className="field-hint">
-            One origin a line, as the browser sends it (scheme://host:port). <code>null</code>: a page opened from a file; <code>*</code>: any page — only where
-            nobody else can reach the recorder. Interfaces above don't need this.
+            One origin per line (scheme://host:port). <code>null</code>: local files; <code>*</code>: any page — private networks only.
           </span>
         </div>
       </div>

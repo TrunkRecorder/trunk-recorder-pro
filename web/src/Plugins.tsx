@@ -9,7 +9,7 @@
 // The settings forms are drawn from the schemas plugins describe themselves
 // with (trunk-recorder-plugin's schema.rs lists the subset).
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   addPlugin,
   fetchPluginStore,
@@ -62,19 +62,19 @@ function TierChip(props: { tier: StoreListing["tier"] | "unreviewed"; title?: st
   switch (props.tier) {
     case "official":
       return (
-        <span className="chip ok" title={props.title ?? "Made with the recorder, and reviewed"}>
+        <span className="chip ok" title={props.title ?? "From the recorder's authors; reviewed"}>
           Official
         </span>
       );
     case "community":
       return (
-        <span className="chip" title={props.title ?? "Made by someone else, and reviewed for the registry"}>
+        <span className="chip" title={props.title ?? "Third-party; reviewed"}>
           Community
         </span>
       );
     default:
       return (
-        <span className="chip warn" title={props.title ?? "Not from the plugin registry: nobody has reviewed it"}>
+        <span className="chip warn" title={props.title ?? "Not from the registry; unreviewed"}>
           Not reviewed
         </span>
       );
@@ -401,12 +401,9 @@ export function PluginSetupPanel() {
           Find and install plugins…
         </button>
       </header>
-      <p className="muted small plugins-intro">
-        Plugins upload calls to services like OpenMHz, stream audio, or send alerts, while the recorder records. Turn them on and set them up here; what each needs for
-        a system is on that system's card. Install, update and remove them on the Plugins page.
-      </p>
+      <p className="muted small plugins-intro">Per-system settings are on each system's card.</p>
       {!list ? (
-        <p className="muted">Asking the recorder about plugins…</p>
+        <p className="muted">Loading…</p>
       ) : (
         <div className="stack">
           {plugins.map((p) => (
@@ -455,7 +452,7 @@ function PluginSetupCard(props: { p: PluginInfo; c: Config }) {
           {systems.length === 0 ? (
             <span className="muted">no systems yet.</span>
           ) : !on ? (
-            <span className="muted">turn it on to set it up on each system's card.</span>
+            <span className="muted">turn it on first.</span>
           ) : (
             systems.map((x) => {
               const ok = systemSetUp(m, x.values(p.id), settings);
@@ -497,7 +494,7 @@ function PluginHead(props: { p: PluginInfo; on: boolean; tone: string; state: st
               your build
             </span>
           )}
-          {p.unlistedFrom && <TierChip tier="unreviewed" title={`Installed from ${p.unlistedFrom}, not the plugin registry: nobody has reviewed it`} />}
+          {p.unlistedFrom && <TierChip tier="unreviewed" title={`From ${p.unlistedFrom}; unreviewed`} />}
           {props.extra}
         </div>
         <span className={`plugin-state tone-${props.tone}`}>{props.state}</span>
@@ -528,8 +525,7 @@ export function M4aSettings() {
       </header>
       <div className="stack">
         <p className="muted small">
-          M4A is about a tenth the size of WAV. Some plugins upload it, and <b>Also save an M4A</b> (Call rules) keeps one of every call. The recorder encodes each
-          call once, with an encoder already on this computer.{" "}
+          About a tenth the size of WAV. Used by some plugins and <b>Also save an M4A</b>.{" "}
           {wanted.length > 0 && !found && (
             <span className="bad-text">
               {wanted.map((p) => p.manifest!.name).join(", ")} {wanted.length > 1 ? "need" : "needs"} it: install ffmpeg.
@@ -567,7 +563,7 @@ export function M4aSettings() {
                 else setKbps(String(a.bitrateKbps));
               }}
             />
-            <span className="field-hint">32 is what Trunk Recorder uses.</span>
+            <span className="field-hint">Trunk Recorder uses 32.</span>
           </div>
         </div>
       </div>
@@ -680,8 +676,8 @@ function PluginCard(props: { p: PluginInfo; recording: boolean; listing?: StoreL
           disabled={!!install}
           onClick={() => {
             const what = p.custom
-              ? `Remove ${m?.name ?? p.id} from the recorder? Its settings are forgotten; your build at ${p.path} isn't touched.`
-              : `Uninstall ${m?.name ?? p.id}? Its settings, for every system too, are forgotten.`;
+              ? `Remove ${m?.name ?? p.id} and its settings? ${p.path} stays.`
+              : `Uninstall ${m?.name ?? p.id} and delete its settings?`;
             if (confirm(what)) removePlugin(p.id);
           }}
         >
@@ -743,10 +739,9 @@ function AddPlugin() {
     >
       <div className="field wide">
         <label className="field-label" htmlFor="add-plugin-path">
-          Plugin executable, on the recorder's computer
+          Plugin executable
         </label>
         <input id="add-plugin-path" className="mono" autoFocus value={path} placeholder="/path/to/my-plugin" onChange={(e) => setPath(e.target.value)} />
-        <span className="field-hint">A plugin you built, or unpacked from a release. It's asked who it is before it's added; it stays off until you turn it on.</span>
       </div>
       <div className="row">
         <button className="btn primary" type="submit" disabled={!path.trim()}>
@@ -771,11 +766,11 @@ function ago(t: number): string {
 
 function StoreSource(props: { store: PluginStore }) {
   const st = props.store;
-  if (st.source === "registry") return <p className="muted small">From the plugin registry, checked {st.fetched ? ago(st.fetched) : "now"}.</p>;
-  const when = st.source === "saved" && st.fetched ? `the list from ${new Date(st.fetched * 1000).toLocaleString()}` : "the list that came with this version";
+  if (st.source === "registry") return <p className="muted small">Registry checked {st.fetched ? ago(st.fetched) : "now"}.</p>;
+  const when = st.source === "saved" && st.fetched ? `the list from ${new Date(st.fetched * 1000).toLocaleString()}` : "the built-in list";
   return (
     <p className="small warn-text" title={st.problem ?? undefined}>
-      Couldn't reach the plugin registry, so this is {when}.
+      Registry unreachable; showing {when}.
     </p>
   );
 }
@@ -867,14 +862,11 @@ function InstallFromGitHub(props: { busy: boolean }) {
         setOpen(false);
       }}
     >
-      <p className="small warn-text">
-        Plugins from outside the registry haven't been reviewed by anyone. A plugin runs with the same access to this computer as the recorder, so install
-        only ones you trust.
-      </p>
+      <p className="small warn-text">Unreviewed. Plugins get full access to this computer.</p>
       <div className="grid2">
         <div className="field">
           <label className="field-label" htmlFor="gh-repo">
-            GitHub repository, or a release's page
+            GitHub repository or release URL
           </label>
           <input id="gh-repo" className="mono" autoFocus value={repo} placeholder="https://github.com/someone/trunk-plugin-pager" onChange={(e) => setRepo(e.target.value)} />
         </div>
@@ -882,10 +874,10 @@ function InstallFromGitHub(props: { busy: boolean }) {
           <label className="field-label" htmlFor="gh-tag">
             Release (optional)
           </label>
-          <input id="gh-tag" className="mono" value={tag} placeholder="the latest" onChange={(e) => setTag(e.target.value)} />
+          <input id="gh-tag" className="mono" value={tag} placeholder="latest" onChange={(e) => setTag(e.target.value)} />
         </div>
       </div>
-      <span className="field-hint">It has to be released with the plugin template's release workflow. It's checked against its release's checksums, and stays off until you turn it on.</span>
+      <span className="field-hint">Must use the plugin template's release workflow.</span>
       <div className="row">
         <button className="btn primary" type="submit" disabled={!repo.trim() || props.busy}>
           Install
@@ -922,7 +914,7 @@ function PluginStorePanel(props: { list: PluginsList; recording: boolean }) {
         </button>
       </header>
       {!store ? (
-        <p className="muted">Asking the plugin registry…</p>
+        <p className="muted">Loading…</p>
       ) : (
         <div className="stack">
           <StoreSource store={store} />
@@ -956,7 +948,7 @@ export function PluginsPage() {
   const s: AppState = useApp();
   const list = s.plugins;
   const recording = s.phase === "running" || s.phase === "starting";
-  if (!list) return <p className="muted">Asking the recorder about plugins…</p>;
+  if (!list) return <p className="muted">Loading…</p>;
   const on = (p: PluginInfo) => Number(pluginOn(s.config, p.id));
   const plugins = [...list.plugins].sort((a, b) => on(b) - on(a) || (a.manifest?.name ?? a.id).localeCompare(b.manifest?.name ?? b.id));
 
@@ -967,11 +959,7 @@ export function PluginsPage() {
           <h2 id="plugins-title">Plugins</h2>
           <AddPlugin />
         </header>
-        <p className="muted small plugins-intro">
-          Plugins are programs the recorder runs while it records and tells what happens: they upload calls to services like OpenMHz, stream audio, or send
-          alerts. They only listen — nothing they do changes what's recorded. Install them here; set them up in Setup, where each system's card has its
-          settings for each plugin.
-        </p>
+        <p className="muted small plugins-intro">Upload calls, stream audio or send alerts. Set them up in Setup.</p>
         <div className="stack">
           {plugins.map((p) => (
             <PluginCard
@@ -982,7 +970,7 @@ export function PluginsPage() {
               install={s.pluginInstalls[p.id]}
             />
           ))}
-          {plugins.length === 0 && <p className="empty">No plugins yet. Find one below, or add one you've built with <b>Add from a file</b>.</p>}
+          {plugins.length === 0 && <p className="empty">No plugins yet.</p>}
         </div>
       </section>
       <PluginStorePanel list={list} recording={recording} />

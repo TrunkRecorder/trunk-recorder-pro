@@ -372,10 +372,6 @@ impl Registry {
             .collect()
     }
 
-    pub fn has_dirty(&self) -> bool {
-        !self.dirty.is_empty()
-    }
-
     /// Load a system saved by [`Registry::take_dirty`] (a bad file is ignored).
     pub fn load(&mut self, system: &str, json: &str) {
         if let Ok(s) = serde_json::from_str::<SystemRadio>(json) {

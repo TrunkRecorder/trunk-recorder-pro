@@ -299,6 +299,9 @@ transport.onMessage = (m: FromRecorder) => {
     case "concluded":
       set({ history: [m.entry, ...state.history].slice(0, 500) });
       break;
+    case "callFiles":
+      set({ history: state.history.map((e) => (e.path === m.path ? { ...e, audio: m.audio, json: m.json } : e)) });
+      break;
     case "heard":
       set({ heard: m.heard });
       break;

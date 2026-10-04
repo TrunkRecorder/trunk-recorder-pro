@@ -629,4 +629,4 @@ Other conventions:
 | Interface protocol | `web/src/protocol.ts` → `docs/api/protocol.schema.json` |
 | Plugin protocol | `crates/trunk-recorder-plugin/src/protocol.rs` |
 | Log format | `trunk-app/src/log.rs`, `trunk-pro/src/logging.rs` |
-| Generated tables (IMBE / AMBE) | `trunk-core/src/tables.rs` from `scripts/gen_tables.ts` |
+| Generated tables (IMBE / AMBE) | `trunk-core/src/tables.rs` (op25 / mbelib values, copied mechanically) |

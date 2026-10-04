@@ -40,18 +40,6 @@ const LABEL: Record<View, string> = {
   setup: "Setup",
 };
 
-/** What each section is for (under its title). */
-const PURPOSE: Record<View, string> = {
-  overview: "Every system at a glance",
-  rf: "How well the radios capture the air",
-  decode: "How well signals turn into messages and voice",
-  radio: "Talkgroups and radios: who's active, and with whom",
-  calls: "On the air now, and recorded",
-  plugins: "Where calls go, and how that's going",
-  platform: "The computer this runs on",
-  setup: "Sources, systems, recording",
-};
-
 function Nav({ view, health }: { view: View; health: Record<string, Health> }) {
   const pages: View[] = ["overview", "rf", "decode", "radio", "calls", ...(web ? [] : (["plugins", "platform"] as View[])), "setup"];
   return (
@@ -128,7 +116,7 @@ export function App() {
         <div className="quit-screen">
           <span className="logo" aria-hidden="true" />
           <h1>Trunk Recorder Pro has quit</h1>
-          <p className="muted">Recording stopped and calls in progress were saved. You can close this tab; open the app again to start it.</p>
+          <p className="muted">Recording stopped; calls in progress were saved.</p>
         </div>
       </div>
     );
@@ -151,11 +139,10 @@ export function App() {
         <header className="topbar">
           <div>
             <h1>{LABEL[s.view]}</h1>
-            <p className="muted small">{PURPOSE[s.view]}</p>
           </div>
           <div className="row">
             {!running && s.connected && (
-              <button className="btn ghost" onClick={() => openGuide("start")} title="Step-by-step setup for a new system">
+              <button className="btn ghost" onClick={() => openGuide("start")} title="Set up a new system step by step">
                 Setup guide
               </button>
             )}
@@ -179,7 +166,7 @@ export function App() {
           </div>
         </header>
         <div className="banners">
-          {!s.connected && <div className="banner bad">Not connected to the recorder — is trunk-pro running? Retrying…</div>}
+          {!s.connected && <div className="banner bad">Not connected to trunk-pro. Retrying…</div>}
           {s.error && (
             <div className="banner bad" role="alert">
               <span>{s.error}</span>

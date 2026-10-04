@@ -51,7 +51,7 @@ export function SourceCard({ s, src, i, compact: small }: { s: AppState; src: So
           value={num(noise)}
           unit="dBFS"
           spark={<LiveSpark k={K.src(src.label, "noise")} color="var(--series-1)" minSpan={6} title="Noise floor, last 10 min" />}
-          hint="The median power across the band per FFT bin. It rises with gain and with interference; a jump without a gain change means something new nearby."
+          hint="Median power per FFT bin; rises with gain or interference."
         />
         <div className="stat stat-kpi">
           <div className="stat-label">Headroom</div>
@@ -66,9 +66,9 @@ export function SourceCard({ s, src, i, compact: small }: { s: AppState; src: So
           label="Frequency error"
           value={src.errorPpm == null ? "—" : signed(src.errorPpm, 2)}
           unit="ppm"
-          sub={autoTuneOf(cfg) ? `AutoTune corrects ${signed(src.tunePpm ?? 0, 2)}` : src.errorPpm == null ? "measured on a control channel" : "measured; not corrected (AutoTune off)"}
+          sub={autoTuneOf(cfg) ? `AutoTune corrects ${signed(src.tunePpm ?? 0, 2)}` : src.errorPpm == null ? "needs a control channel" : "not corrected (AutoTune off)"}
           spark={small ? undefined : <LiveSpark k={K.src(src.label, "ppm")} color="var(--series-2)" minSpan={1} title="Measured error, last 10 min" />}
-          hint="How far signals come in from where they should, measured on the control channels. A steady offset is the dongle's crystal (set its ppm); a drifting one is temperature."
+          hint="Measured on control channels. Steady: set ppm; drifting: temperature."
         />
         <Stat
           label="Dropped"
@@ -76,7 +76,7 @@ export function SourceCard({ s, src, i, compact: small }: { s: AppState; src: So
           unit="samples/s"
           level={drops > 0 ? "bad" : undefined}
           sub={`${compact(src.dropped)} this run`}
-          hint="Samples the driver lost: USB or CPU couldn't keep up. Calls on this source lose audio when it happens."
+          hint="Lost by the driver (USB or CPU); calls lose audio."
         />
       </div>
       {!small && (
@@ -148,7 +148,7 @@ function BandOverview({ s }: { s: AppState }) {
       <div className="legend small">
         <span>
           <i className="sw-src" />
-          source passband (usable part darker)
+          source passband (darker: usable)
         </span>
         <span>
           <i className="sw-cc" />
@@ -289,10 +289,7 @@ function SourceDetail({ s, i }: { s: AppState; i: number }) {
       <SourceWaterfall s={s} i={i} title="Waterfall" />
       <Card title="Across the band">
         {d ? <ChannelPlot profile={d.profile} channels={d.channels} src={src} color={color} /> : <div className="chart-empty">Measuring…</div>}
-        <Hint>
-          Bars are the noise floor in each slice of the band (the SDR's passband shape shows here: lower at the edges). Stems are channels: how far each stands above the floor under
-          it. Control channels want 10 dB or more; voice decodes cleanly from about 8 dB.
-        </Hint>
+        <Hint>Bars: noise floor. Stems: channels; 10 dB+ above the floor is clean.</Hint>
       </Card>
       {d && d.channels.length > 0 && (
         <Card title="Channels on this source">
@@ -303,11 +300,11 @@ function SourceDetail({ s, i }: { s: AppState; i: number }) {
                   <th>MHz</th>
                   <th>System</th>
                   <th>What</th>
-                  <th title="Power in the channel">Power</th>
-                  <th title="The floor under it">Floor</th>
+                  <th>Power</th>
+                  <th>Floor</th>
                   <th title="Power above the floor">SNR</th>
-                  <th title="How far the carrier is from where it should be">Offset</th>
-                  <th title="The demodulator's eye opening (~10 and up clean, ~1 noise), or CQPSK's phase error in degrees (under 10° clean, ~25° noise)">Quality</th>
+                  <th title="Carrier offset from nominal">Offset</th>
+                  <th title="Eye opening (10+ clean) or phase error (under 10° clean)">Quality</th>
                 </tr>
               </thead>
               <tbody>
@@ -332,10 +329,7 @@ function SourceDetail({ s, i }: { s: AppState; i: number }) {
             </table>
           </div>
           {meanOffset !== null && Math.abs(meanOffset * 1e6) > 1 && (
-            <Hint>
-              Every carrier here comes in about {signed(meanOffset * 1e6, 1)} ppm off. When they all agree, it's the source's crystal, not the transmitters: set its ppm (or turn on
-              AutoTune).
-            </Hint>
+            <Hint>Every carrier is about {signed(meanOffset * 1e6, 1)} ppm off: set the source's ppm or turn on AutoTune.</Hint>
           )}
         </Card>
       )}
@@ -345,13 +339,11 @@ function SourceDetail({ s, i }: { s: AppState; i: number }) {
         <Choice value={range} options={RANGES} onChange={setRange} label="Span" />
       </div>
       <div className="columns">
-        <Card title="Noise floor and peaks">
+        <Card title="Noise floor and peaks, dBFS">
           <TimeSeries lines={[line(k("noise"), "Noise floor", "var(--series-1)", { band: true }), line(k("peak"), "Peak", "var(--series-2)")]} fmt={(v) => `${v.toFixed(0)}`} />
-          <Hint>dBFS. Peaks near 0 mean clipping; a floor that jumps at certain hours is interference with a schedule.</Hint>
         </Card>
-        <Card title="Frequency error">
+        <Card title="Frequency error, ppm">
           <TimeSeries lines={[line(k("ppm"), "Measured", "var(--series-2)", { band: true }), line(k("tune"), "Corrected", "var(--series-1)", { dashed: true })]} fmt={(v) => v.toFixed(2)} />
-          <Hint>ppm, measured on the control channels. Drift that follows the day's temperature is normal for RTL-SDRs; a TCXO dongle stays flat.</Hint>
         </Card>
         <Card title="Dropped samples">
           <TimeSeries lines={[line(k("dropped"), "Dropped a second", "var(--critical)")]} zero fmt={(v) => compact(v)} empty="No drops recorded." />
@@ -370,7 +362,7 @@ export function RfPage() {
   if (!running(s) || !s.sources.length) {
     return (
       <div className="page">
-        <p className="empty">Start recording to see the sources. Their history is kept: the charts on each source's page cover the last week.</p>
+        <p className="empty">Start recording to see the sources.</p>
         {s.config?.sources.map((src, k) => (
           <Card key={k} title={`Source ${k + 1}`}>
             <div className="kv small">
@@ -393,7 +385,6 @@ export function RfPage() {
           <SourceWaterfall s={s} i={k} />
         </div>
       ))}
-      <Hint>Pick a source for its band in detail — the floor across it, each channel's level above it — and its last week.</Hint>
     </div>
   );
 }

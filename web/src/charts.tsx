@@ -199,7 +199,7 @@ export function TimeSeries(props: { lines: Line[]; height?: number; fmt?: (v: nu
   const all = pts.flatMap((p) => [...p.v, ...p.lo, ...p.hi]).filter((x): x is number => x !== null && Number.isFinite(x));
   // The span with data (a week's chart of a new install shows its hours, not six empty days).
   const ts = pts.flatMap((p) => p.t.filter((_, i) => p.v[i] !== null));
-  if (!all.length || ts.length < 1) return <div className="chart-empty" style={{ height: H }}>{props.empty ?? "Collecting — the chart fills in as data arrives."}</div>;
+  if (!all.length || ts.length < 1) return <div className="chart-empty" style={{ height: H }}>{props.empty ?? "Collecting data…"}</div>;
   let lo = props.lo ?? Math.min(...all, ...(props.marks ?? []).map((m) => m.v));
   let hi = props.hi ?? Math.max(...all, ...(props.marks ?? []).map((m) => m.v));
   if (props.zero) lo = Math.min(0, lo);

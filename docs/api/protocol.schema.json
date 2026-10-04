@@ -19,6 +19,13 @@
         },
         "record": {
           "$ref": "#/definitions/CallRecord"
+        },
+        "audio": {
+          "type": "boolean",
+          "description": "Whether its audio / its JSON stay in the recordings folder once the upload plugins are done (Keep the audio / the call JSON after uploading). False: they're gone, or soon will be. Missing: kept (the browser version)."
+        },
+        "json": {
+          "type": "boolean"
         }
       },
       "required": [
@@ -1495,6 +1502,31 @@
           "required": [
             "type",
             "entry"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "callFiles"
+            },
+            "path": {
+              "type": "string"
+            },
+            "audio": {
+              "type": "boolean"
+            },
+            "json": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "type",
+            "path",
+            "audio",
+            "json"
           ],
           "additionalProperties": false
         },

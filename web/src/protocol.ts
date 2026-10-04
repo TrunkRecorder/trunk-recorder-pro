@@ -526,6 +526,13 @@ export interface CallRecord {
 export interface CallEntry {
   path: string;
   record: CallRecord;
+  /**
+   * Whether its audio / its JSON stay in the recordings folder once the
+   * upload plugins are done (Keep the audio / the call JSON after uploading).
+   * False: they're gone, or soon will be. Missing: kept (the browser version).
+   */
+  audio?: boolean;
+  json?: boolean;
 }
 
 export interface Spectrum {
@@ -1105,6 +1112,8 @@ export type FromRecorder =
   | ({ type: "spectrum" } & Spectrum)
   | { type: "log"; lines: LogLine[] }
   | { type: "concluded"; entry: CallEntry }
+  /** A call's upload plugins are done and it kept other than its entry said (an upload failed, so its files stay). */
+  | { type: "callFiles"; path: string; audio: boolean; json: boolean }
   /** A radio's talker alias, newly heard on system `system` (its short name). */
   | { type: "unitAlias"; system: string; unit: number; alias: string }
   | { type: "heard"; heard: Record<string, HeardCode[]> }

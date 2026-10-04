@@ -6,7 +6,7 @@
 import { useState } from "react";
 import { formatMhz, systemColor } from "../config.ts";
 import { radioQuery, setView, usePolled, useApp, useTopic, type AppState, type StatsRange } from "../controller.ts";
-import { Card, Choice, HeatStrip, Hint, LiveSpark, Stat, TimeSeries, Trend, type Line } from "../charts.tsx";
+import { Card, Choice, HeatStrip, LiveSpark, Stat, TimeSeries, Trend, type Line } from "../charts.tsx";
 import { mhz, num, signed } from "../fmt.ts";
 import type { FreqRow, SeriesData, SourceStatus } from "../protocol.ts";
 import { change, dashSystems, K, KIND_LABEL, recentAvg, running, systemHealth, useHistory, useUsual, val, type DashSystem, type Usual } from "./data.ts";
@@ -56,7 +56,7 @@ function freqHints(rows: FreqRow[], sources: SourceStatus[]): string[] {
     const ppm = withErr.map((r) => (r.freqError! / r.freqHz) * 1e6);
     const mean = ppm.reduce((a, b) => a + b, 0) / ppm.length;
     const same = ppm.every((p) => Math.sign(p) === Math.sign(mean));
-    if (same && Math.abs(mean) > 0.8) out.push(`Every frequency comes in about ${signed(mean, 1)} ppm off. Transmitters don't agree like that — the source's crystal does: correct its ppm or turn on AutoTune.`);
+    if (same && Math.abs(mean) > 0.8) out.push(`Every frequency is about ${signed(mean, 1)} ppm off: correct the source's ppm or turn on AutoTune.`);
   }
   const rated = rows.filter((r) => r.badPct !== null && r.frames > 500);
   if (rated.length >= 3) {
@@ -65,8 +65,8 @@ function freqHints(rows: FreqRow[], sources: SourceStatus[]): string[] {
     for (const r of rated) {
       if (r.badPct! < Math.max(3, median * 3)) continue;
       const p = placeOn(sources, r.freqHz);
-      if (p && p.depth < 0.15) out.push(`${mhz(r.freqHz)} MHz decodes worse than the rest and sits at the edge of ${p.src.label}'s band, where the passband rolls off. Move the centre toward it.`);
-      else out.push(`${mhz(r.freqHz)} MHz decodes worse than the rest (${num(r.badPct, 1)}% of voice frames lost vs ${num(median, 1)}%). With the same source, that's the channel: interference, or a weaker site path.`);
+      if (p && p.depth < 0.15) out.push(`${mhz(r.freqHz)} MHz decodes worse, at the edge of ${p.src.label}'s band: move the centre toward it.`);
+      else out.push(`${mhz(r.freqHz)} MHz decodes worse (${num(r.badPct, 1)}% lost vs ${num(median, 1)}%): interference or a weak path.`);
     }
   }
   return out.slice(0, 4);
@@ -118,10 +118,10 @@ function DecodeCard({ s, x, usual, freqs }: { s: AppState; x: DashSystem; usual:
               unit="%"
               level={lost !== null && lost > 10 ? (lost > 30 ? "bad" : "warn") : undefined}
               spark={<LiveSpark k={k("cc/bad")} color="var(--serious)" lo={0} />}
-              hint="Control messages (TSBKs / OSWs / DMR blocks) no receiver decoded. A few percent is normal."
+              hint="Control messages not decoded. A few % is normal."
             />
             {x.kind === "smartnet" ? (
-              <Stat label="Deviation" value={num(val(s, k("cc/deviation")), 0)} unit="Hz" sub={`carrier ${signed(val(s, k("cc/offset")), 0)} Hz`} hint="SmartNet's tones sit about ±2.4 kHz apart; much less means a weak or filtered signal." />
+              <Stat label="Deviation" value={num(val(s, k("cc/deviation")), 0)} unit="Hz" sub={`carrier ${signed(val(s, k("cc/offset")), 0)} Hz`} hint="Normal is about ±2.4 kHz; less means weak or filtered." />
             ) : cqpsk ? (
               <Stat
                 label="Phase error"
@@ -130,7 +130,7 @@ function DecodeCard({ s, x, usual, freqs }: { s: AppState; x: DashSystem; usual:
                 level={perr === null ? undefined : perr >= PHASE_BAD ? "bad" : perr >= PHASE_WARN ? "warn" : undefined}
                 spark={<LiveSpark k={k("cc/phaseErr")} color="var(--series-3)" lo={0} />}
                 sub={`carrier ${signed(val(s, k("cc/offset")), 0)} Hz`}
-                hint="How far the CQPSK receiver's phase steps land from the ideal ±45° / ±135°, RMS: under 10° is clean, past about 13° bit errors creep in (the FEC covers them), 20° and up is marginal, ~25° is noise."
+                hint="CQPSK phase error: under 10° clean, 20°+ marginal, ~25° noise."
               />
             ) : (
               <Stat
@@ -139,7 +139,7 @@ function DecodeCard({ s, x, usual, freqs }: { s: AppState; x: DashSystem; usual:
                 level={sep !== null && sep < 4 ? "warn" : undefined}
                 spark={<LiveSpark k={k("cc/sep")} color="var(--series-3)" lo={0} />}
                 sub={`carrier ${signed(val(s, k("cc/offset")), 0)} Hz`}
-                hint="How far apart the C4FM receiver's symbol levels are, over their spread: about 10 and up is clean, below 4 errors creep in, ~1 is noise. (Simulcast CQPSK sites read low here; the CQPSK receivers carry them.)"
+                hint="C4FM symbol separation: 10+ clean, under 4 errors, ~1 noise. Simulcast reads low."
               />
             )}
             {x.kind === "p25" && (
@@ -148,7 +148,7 @@ function DecodeCard({ s, x, usual, freqs }: { s: AppState; x: DashSystem; usual:
                 value={syncs > 0 ? num((100 * misses) / (syncs + misses), 1) : "—"}
                 unit="% missed"
                 sub={`${num((recentAvg(k("cc/eqResets"), 60) ?? 0) * 60, 0)} equaliser resets/min`}
-                hint="Of the frames the receivers found, the share whose header (NID) failed or that were carried over a missed sync, across all three receivers. Steady misses mean a marginal signal; bursts mean fades or interference."
+                hint="Frames with a failed header (NID) or missed sync."
               />
             )}
           </>
@@ -158,8 +158,8 @@ function DecodeCard({ s, x, usual, freqs }: { s: AppState; x: DashSystem; usual:
           value={vbad === null ? "—" : num(vbad, 1)}
           unit="% of frames"
           level={vbad === null ? undefined : vbad >= 8 ? "bad" : vbad >= 2 ? "warn" : undefined}
-          sub={vf > 0 ? `${num(ve / vf, 1)} bit errors corrected a frame` : "no voice yet"}
-          hint="Voice frames the vocoder couldn't use (heard as gaps or warble), last 10 minutes. Under 2% sounds clean. Corrected bit errors are normal — a few a frame is the FEC doing its job."
+          sub={vf > 0 ? `${num(ve / vf, 1)} bit errors fixed per frame` : "no voice yet"}
+          hint="Unusable voice frames, 10 min. Under 2% is clean."
         />
       </div>
       {freqs && freqs.length > 0 && (
@@ -172,7 +172,7 @@ function DecodeCard({ s, x, usual, freqs }: { s: AppState; x: DashSystem; usual:
             titles={freqs.map((f) => `${mhz(f.freqHz)} MHz · ${f.calls} calls · ${f.badPct ?? "—"}% of voice frames lost · SNR ${f.snr ?? "—"} dB · ${signed(f.freqError, 0)} Hz`)}
             label="voice quality by frequency"
           />
-          <span className="muted small">voice frames lost by frequency, 24 h (green clean, darker orange worse)</span>
+          <span className="muted small">voice lost by frequency, 24 h</span>
         </div>
       )}
     </Card>
@@ -227,7 +227,7 @@ function SystemDetail({ s, name }: { s: AppState; name: string }) {
         </div>
       )}
       {live && live.channels.length > 0 && (
-        <Card title="Its channels now">
+        <Card title="Channels now">
           <div className="table-wrap">
             <table className="calls">
               <thead>
@@ -236,7 +236,7 @@ function SystemDetail({ s, name }: { s: AppState; name: string }) {
                   <th>What</th>
                   <th>SNR</th>
                   <th>Offset</th>
-                  <th title="The demodulator's eye opening (~10 and up clean, ~1 noise), or CQPSK's phase error in degrees (under 10° clean, ~25° noise)">Quality</th>
+                  <th title="Eye opening (10+ clean) or phase error (under 10° clean)">Quality</th>
                   <th>Calls</th>
                 </tr>
               </thead>
@@ -271,12 +271,10 @@ function SystemDetail({ s, name }: { s: AppState; name: string }) {
               zero
               marks={usual[k("cc/good")] ? [{ v: usual[k("cc/good")]!.avg, label: "usual" }] : []}
             />
-            <Hint>A dip in decoded with a rise in lost is reception; a dip in both is the system being quiet (or the site's control channel moving).</Hint>
           </Card>
         )}
         <Card title="Voice frames lost">
           <TimeSeries lines={[{ label: "Lost, %", color: "var(--serious)", data: ratio(hist?.[k("voice/bad")], hist?.[k("voice/frames")], 100) }]} zero fmt={(v) => v.toFixed(1)} empty="No voice decoded yet." />
-          <Hint>Of the voice frames recorded, the share the vocoder couldn't use. It rises with fades, distance, and interference on the voice channels.</Hint>
         </Card>
         {x.kind !== "conventional" && (
           <Card title="Signal and demodulation">
@@ -286,7 +284,6 @@ function SystemDetail({ s, name }: { s: AppState; name: string }) {
         {x.kind !== "conventional" && (
           <Card title="Carrier offset">
             <TimeSeries lines={[line(k("cc/offset"), "Hz from nominal", "var(--series-2)", { band: true })]} fmt={(v) => v.toFixed(0)} />
-            <Hint>How far off the control channel's carrier comes in, before correction. Drift tracks the source's crystal temperature.</Hint>
           </Card>
         )}
       </div>
@@ -297,7 +294,7 @@ function SystemDetail({ s, name }: { s: AppState; name: string }) {
           </p>
         ))}
         {rows.length === 0 ? (
-          <p className="empty">No recorded calls yet: each call's errors, SNR and offset fill this in.</p>
+          <p className="empty">No recorded calls yet.</p>
         ) : (
           <div className="table-wrap">
             <table className="calls">
@@ -305,12 +302,12 @@ function SystemDetail({ s, name }: { s: AppState; name: string }) {
                 <tr>
                   <th>MHz</th>
                   <th>Source</th>
-                  <th title="Distance from the source's band edge (0 at the edge)">In band</th>
+                  <th title="0% at the band edge, 100% at the centre">In band</th>
                   <th>Calls</th>
                   <th>SNR</th>
                   <th>Offset</th>
                   <th title="Voice frames decoded cleanly">Clean</th>
-                  <th title="Voice frames lost (couldn't be decoded)">Lost</th>
+                  <th title="Voice frames lost">Lost</th>
                   <th>By hour</th>
                 </tr>
               </thead>
@@ -327,7 +324,7 @@ function SystemDetail({ s, name }: { s: AppState; name: string }) {
                       <td className="mono">{r.freqError !== null ? `${signed(r.freqError, 0)} Hz` : "—"}</td>
                       <td className="mono">{r.clean !== null ? `${num(r.clean, 0)}%` : "—"}</td>
                       <td className="mono">
-                        <span className={`snr ${badLevel(r.badPct)}`} title={`${num(r.errPerFrame, 1)} bit errors corrected a frame`}>{r.badPct === null ? "—" : `${num(r.badPct, 1)}%`}</span>
+                        <span className={`snr ${badLevel(r.badPct)}`} title={`${num(r.errPerFrame, 1)} bit errors fixed per frame`}>{r.badPct === null ? "—" : `${num(r.badPct, 1)}%`}</span>
                       </td>
                       <td className="spark-cell">
                         <HeatStrip v={r.hourly} ramp="hot" max={BAD_MAX} titles={r.hourly.map((v, i) => `${r.hourly.length - i} h ago: ${v === null ? "no calls" : `${v}% lost`}`)} />
@@ -358,13 +355,12 @@ export function DecodePage() {
   if (!systems.length) return <p className="empty">No systems set up yet.</p>;
   return (
     <div className="page">
-      {!on && <p className="empty">Not recording: the figures below are from the history.</p>}
+      {!on && <p className="empty">Not recording — showing past data.</p>}
       <div className="card-grid wide">
         {systems.map((x) => (
           <DecodeCard key={x.name} s={s} x={x} usual={usual[K.sys(x.name, "cc/good")]} freqs={freqs?.find((f) => f.system === x.name)?.rows as FreqRow[] | undefined} />
         ))}
       </div>
-      <Hint>Pick a system for its channels now, its last week, and each frequency's record — where a pattern across frequencies points back to the RF.</Hint>
     </div>
   );
 }

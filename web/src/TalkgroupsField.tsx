@@ -27,9 +27,9 @@ export function TalkgroupsField(props: { sys: System; index: number; needs?: str
     if (!f) return;
     const csv = normalizeTalkgroupCsv(await f.text());
     const r = readTalkgroupCsv(csv);
-    if (!r.talkgroups.size) return setNotice(`${f.name}: no talkgroups in it — each row needs a talkgroup number in its first (Decimal) column.`);
+    if (!r.talkgroups.size) return setNotice(`${f.name}: no talkgroups found.`);
     set(csv, f.name);
-    setNotice(`Loaded ${r.talkgroups.size} talkgroups from ${f.name} into ${sys.shortName}.${r.skipped.length ? ` ${r.skipped.length} row(s) without a number were passed over.` : ""}`);
+    setNotice(`Loaded ${r.talkgroups.size} talkgroups from ${f.name} into ${sys.shortName}.${r.skipped.length ? ` ${r.skipped.length} row(s) without a number skipped.` : ""}`);
   };
 
   return (
@@ -45,7 +45,7 @@ export function TalkgroupsField(props: { sys: System; index: number; needs?: str
         <span className="mono">{tgs.length ? `${tgs.length} from ${sys.talkgroupsName || "a file"}` : "none"}</span>
         {tgs.length > 0 && (
           <>
-            <button className="btn ghost" title="As a Trunk Recorder talkgroup CSV" onClick={() => downloadText(csvName(sys), sys.talkgroupsCsv)}>
+            <button className="btn ghost" title="Trunk Recorder CSV" onClick={() => downloadText(csvName(sys), sys.talkgroupsCsv)}>
               Download
             </button>
             <button className="btn ghost" onClick={() => set("", "")}>
@@ -68,15 +68,15 @@ export function TalkgroupsField(props: { sys: System; index: number; needs?: str
       {tgs.length > 0 && (
         <div className="row tg-facts">
           {ignored > 0 && <span className="chip">{ignored} ignored</span>}
-          {encrypted > 0 && <span className="chip" title="Mode E, DE or TE: Trunk Recorder doesn't record them">{encrypted} encrypted</span>}
-          {report.legacy && <span className="chip" title="Trunk Recorder now wants a header row; Download gives the file with one">no header row</span>}
+          {encrypted > 0 && <span className="chip" title="Not recorded">{encrypted} encrypted</span>}
+          {report.legacy && <span className="chip" title="Download adds one">no header row</span>}
           {report.missing.length > 0 && (
-            <span className="chip warn" title="Trunk Recorder stops at a talkgroup file without them; this recorder doesn't mind">
+            <span className="chip warn" title="Trunk Recorder requires it">
               no {report.missing.join(" or ")} column
             </span>
           )}
           {report.unknownColumns.length > 0 && (
-            <span className="chip warn" title="Trunk Recorder stops at a column it doesn't know; this recorder leaves it be">
+            <span className="chip warn" title="Trunk Recorder rejects these">
               unknown column{report.unknownColumns.length === 1 ? "" : "s"}: {report.unknownColumns.join(", ")}
             </span>
           )}
@@ -88,10 +88,6 @@ export function TalkgroupsField(props: { sys: System; index: number; needs?: str
         </div>
       )}
       {props.needs && <span className="field-needs">{props.needs}</span>}
-      <span className="field-hint">
-        Trunk Recorder&apos;s talkgroup CSV (Decimal, Mode, Alpha Tag, Description, Tag, Category, Priority…; commas, semicolons or tabs). An Ignore column (true / yes / x)
-        marks talkgroups never to record, as does Priority −1.
-      </span>
       {pasting && (
         <RadioReferencePaste
           sys={sys}
@@ -109,39 +105,30 @@ export function TalkgroupsField(props: { sys: System; index: number; needs?: str
 }
 
 const csvName = (sys: System) => (sys.talkgroupsName && sys.talkgroupsName !== PASTED && /\.csv$/i.test(sys.talkgroupsName) ? sys.talkgroupsName : `${sys.shortName || "talkgroups"}-talkgroups.csv`);
-const hex = (n: number) => n.toString(16).toUpperCase();
 
 /** Where to copy from, the box to paste into, and what was read from it. */
 function RadioReferencePaste(props: { sys: System; replacing: number; onUse: (list: Talkgroup[]) => void; onCancel: () => void }) {
   const [text, setText] = useState("");
+  const { sysId, wacn } = props.sys.expect;
+  const hex = (n: number) => n.toString(16).toUpperCase();
   const parsed = useMemo(() => parseRadioReferencePaste(text), [text]);
-  const id = props.sys.expect;
   const shown = 8;
   return (
     <div className="tg-paste">
-      <ol className="small">
-        <li>
-          Open{" "}
-          <a href="https://www.radioreference.com/db/browse/" target="_blank" rel="noreferrer">
-            RadioReference&apos;s database
-          </a>{" "}
-          and find this system (state, county, then the trunked system)
-          {id.sysId != null && (
-            <>
-              {" "}
-              — it&apos;s <b className="mono">System ID {hex(id.sysId)}</b>
-              {id.wacn != null && (
-                <>
-                  , <b className="mono">WACN {hex(id.wacn)}</b>
-                </>
-              )}
-            </>
-          )}
-          .
-        </li>
-        <li>Select the talkgroup tables, from the first category heading to the last talkgroup, and copy. Headings and column names can come along; the whole page works too.</li>
-        <li>Paste below. Each category heading becomes the talkgroups&apos; Category.</li>
-      </ol>
+      <p className="small">
+        Copy the talkgroup tables from{" "}
+        <a href="https://www.radioreference.com/db/browse/" target="_blank" rel="noreferrer">
+          RadioReference
+        </a>{" "}
+        and paste them here.
+        {sysId != null && (
+          <span className="muted">
+            {" "}
+            This system: <span className="mono">System ID {hex(sysId)}</span>
+            {wacn != null && <span className="mono">, WACN {hex(wacn)}</span>}.
+          </span>
+        )}
+      </p>
       <textarea
         className="mono tg-paste-box"
         value={text}
@@ -149,7 +136,7 @@ function RadioReferencePaste(props: { sys: System; replacing: number; onUse: (li
         placeholder={"Fire Dispatch\nDEC\tHEX\tMode\tAlpha Tag\tDescription\tTag\n1201\t4b1\tD\tFD Disp\tFire Dispatch\tFire Dispatch"}
         onChange={(e) => setText(e.target.value)}
       />
-      {text.trim() && !parsed.length && <span className="field-needs">That doesn&apos;t look like a talkgroup table — each row should start with a talkgroup number.</span>}
+      {text.trim() && !parsed.length && <span className="field-needs">No talkgroups found.</span>}
       {parsed.length > 0 && (
         <>
           <div className="table-wrap">
@@ -192,7 +179,7 @@ function RadioReferencePaste(props: { sys: System; replacing: number; onUse: (li
           Cancel
         </button>
         <button className="btn primary" disabled={!parsed.length} onClick={() => props.onUse(parsed)}>
-          {props.replacing && parsed.length ? `Replace the ${props.replacing} with these ${parsed.length}` : `Use these ${parsed.length || ""}`}
+          {props.replacing && parsed.length ? `Replace ${props.replacing} with ${parsed.length}` : `Use these ${parsed.length || ""}`}
         </button>
       </div>
     </div>

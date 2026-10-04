@@ -6,7 +6,7 @@
 
 use super::frames::{Codec, VoiceFrame};
 use crate::mbe::{self, Kind, FRAME_SAMPLES};
-use crate::p25::alias::LcAliases;
+use crate::p25::alias::{is_alias_lcw, AliasLc, LcAliases};
 use crate::p25::diversity::{best_es, best_frame, best_imbe, best_lc, Group};
 use crate::p25::frame::{HDU, LDU1, LDU2, TDU, TDULC};
 use crate::p25::voice::{decode_hdu, decode_tdulc, imbe_params_to_bits, ldu_codeword_end_bit, ALGID_CLEAR};
@@ -111,12 +111,18 @@ impl VoiceTracker {
             TDU | TDULC => {
                 // Link control from whichever receiver's copy decodes. Motorola
                 // sends talker aliases here, in the terminators after the voice.
-                let lc = g
-                    .iter()
-                    .filter(|f| f.nid.duid == TDULC)
-                    .find_map(|f| decode_tdulc(&f.raw))
-                    .filter(|lc| !lc.protected);
+                let lc = g.iter().filter(|f| f.nid.duid == TDULC).find_map(|f| decode_tdulc(&f.raw));
                 if let Some(lc) = lc {
+                    let sign = if lc.protected {
+                        AliasLc::Protected
+                    } else if is_alias_lcw(&lc.raw) {
+                        AliasLc::Fragment
+                    } else {
+                        AliasLc::Clear
+                    };
+                    out.push(TrackerOut::AliasLc(sign));
+                }
+                if let Some(lc) = lc.filter(|lc| !lc.protected) {
                     if self.active && self.tgid.is_none() {
                         self.tgid = lc.tgid;
                     }

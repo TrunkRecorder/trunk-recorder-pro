@@ -25,7 +25,7 @@
 //! channels, or both. Everything that happens is reported as [`Event`]s; the
 //! engine does no I/O.
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
 use num_complex::Complex32;
 
@@ -45,7 +45,7 @@ use super::voice::{self, VoiceDecoder, VoiceKind, VoiceParams, VoiceSpec};
 use crate::dsp::{Channelizer, HeadId};
 use crate::mbe;
 use crate::metrics::{self, Scoped, Sink};
-use crate::p25::alias::Alias;
+use crate::p25::alias::{Alias, AliasLc};
 use crate::p25::diversity::BankConfig;
 use crate::dsp::fm::ChannelFilter;
 use crate::smartnet::Bandplan;
@@ -608,8 +608,10 @@ impl RecorderHost for SysHost<'_> {
 
     fn follow(&mut self, call: &Call) -> bool {
         // Only with a recorder's worth of room to spare, and never on analog.
+        // A recording's channel is counted with its recording, not again.
         let r = &*self.radio;
-        if call.analog || r.recordings.len() + r.channels.len() >= r.max_recorders {
+        let following = r.channels.values().filter(|ch| !ch.calls.iter().flatten().any(|id| r.recordings.contains_key(id))).count();
+        if call.analog || r.recordings.len() + following >= r.max_recorders {
             return false;
         }
         let Some(src) = r.source_for(call.freq_hz as f64) else {
@@ -668,6 +670,11 @@ struct Trunk {
     cc_ppm: f64,
     cc_measured_s: f64,
     cc_retuned_s: f64,
+    /// Terminators' link control, as talker aliases see it: encrypted,
+    /// clear, alias fragments; then Phase 2 alias messages ([`AliasLc`]).
+    alias_lc: [u64; 4],
+    /// The talkgroups whose terminators' link control was heard encrypted (noted once each).
+    lc_protected_tgs: BTreeSet<u32>,
 }
 
 impl Trunk {
@@ -1012,6 +1019,8 @@ impl Engine {
                 cc_ppm: 0.0,
                 cc_measured_s: 0.0,
                 cc_retuned_s: 0.0,
+                alias_lc: [0; 4],
+                lc_protected_tgs: BTreeSet::new(),
                 cfg: sc.clone(),
             };
             t.calls.patches.hold_s = t.cc.patch_hold_s();
@@ -1218,6 +1227,10 @@ impl Engine {
             k.gauge("recording", t.calls.calls.iter().filter(|c| self.radio.recordings.contains_key(&c.id)).count() as f64);
             if !t.running() {
                 continue;
+            }
+            let mut al = Scoped::new(&mut k, "aliasLc");
+            for (name, n) in ["protected", "clear", "fragment", "mac"].iter().zip(t.alias_lc) {
+                al.counter(name, n);
             }
             let mut cc = Scoped::new(&mut k, "cc");
             cc.counter("good", t.good);
@@ -1509,6 +1522,14 @@ impl Engine {
                         .map(|c| c.talkgroup);
                     self.learn_alias(sys, a, tg);
                 }
+                TrackerOut::AliasLc(sign) => {
+                    t.alias_lc[sign as usize] += 1;
+                    let tg = t.calls.calls.iter().find(|c| c.id == id).map_or(0, |c| c.talkgroup);
+                    if sign == AliasLc::Protected && t.lc_protected_tgs.insert(tg) {
+                        let text = format!("Talkgroup {tg}: link control is encrypted, so its radios' talker aliases can't be read");
+                        self.events.push(Event::Note { system: sys, text });
+                    }
+                }
             }
         }
     }
@@ -1670,8 +1691,8 @@ mod tests {
         let e = Engine::new(cfg).unwrap();
         assert_eq!(e.status().systems.len(), 2);
         let ids = CallIds::default();
-        let (mut x, mut y) = (CallManager::with_ids(CallConfig::default(), Talkgroups::default(), 0, ids.clone()), CallManager::with_ids(CallConfig::default(), Talkgroups::default(), 1, ids));
-        assert_eq!([x.allocate_id(), y.allocate_id(), x.allocate_id()], [1, 2, 3]);
+        let (x, y) = (ids.clone(), ids);
+        assert_eq!([x.next(), y.next(), x.next()], [1, 2, 3]);
     }
 
     /// Three sites grant TG 101: east and west of one system, far of another.

@@ -56,14 +56,14 @@ function PluginCard({ s, p }: { s: AppState; p: PluginInfo }) {
               label="Waiting"
               value={m?.queued ?? "—"}
               level={(m?.queued ?? 0) > 20 ? "warn" : undefined}
-              sub={m?.retrying ? `${m.retrying} to retry` : m ? "queue clear" : "doesn't report a queue"}
+              sub={m?.retrying ? `${m.retrying} to retry` : m ? "queue clear" : "not reported"}
               spark={m?.queued !== undefined ? <LiveSpark k={K.plg(p.id, "queued")} color="var(--series-4)" lo={0} sinceS={600} /> : undefined}
             />
             <Stat label="Upload time" value={m?.latencyMs !== undefined ? num(m.latencyMs / 1000, 1) : "—"} unit={m?.latencyMs !== undefined ? "s" : undefined} sub={m?.bytesSent ? `${bytes(m.bytesSent)} sent` : undefined} />
           </div>
           <div className="minutes">
             <StackedBars parts={minutes} colors={["var(--good)", "var(--muted-mark)", "var(--critical)"]} labels={["sent", "skipped", "failed"]} h={44} titles={minutes.map((c, i) => `${60 - i} min ago: ${c[0]} sent, ${c[1]} skipped, ${c[2]} failed`)} />
-            <span className="muted small">the last hour, a column a minute</span>
+            <span className="muted small">last hour, per minute</span>
           </div>
           {m?.endpoints && m.endpoints.length > 0 && (
             <ul className="line-list">
@@ -102,7 +102,7 @@ function PluginCard({ s, p }: { s: AppState; p: PluginInfo }) {
               </span>
             ) : null}
             {r.dropped ? (
-              <span className="warn" title="Events the plugin was too slow to take">
+              <span className="warn" title="Events it was too slow to take">
                 Fell behind <b>{compact(r.dropped)}</b> events
               </span>
             ) : null}
@@ -157,7 +157,7 @@ export function PluginHealthPage({ manage }: { manage: ReactNode }) {
       {tab === "manage" ? (
         manage
       ) : plugins.length === 0 ? (
-        <p className="empty">No plugins installed. They send calls on to services — Broadcastify, OpenMHz, rdio-scanner, your own scripts.</p>
+        <p className="empty">No plugins installed.</p>
       ) : (
         <>
           <div className="card-grid wide">
@@ -166,10 +166,7 @@ export function PluginHealthPage({ manage }: { manage: ReactNode }) {
             ))}
           </div>
           {off.length > 0 && <p className="muted small">Off: {off.map((p) => p.manifest?.name ?? p.id).join(", ")}</p>}
-          <Hint>
-            Plugins built with the SDK's call queue report their queue, upload time and the service's state on their own; others show their results and status. A service counts as
-            down after three failures in a row, or five minutes without a success while calls wait.
-          </Hint>
+          <Hint>A service is down after 3 failures in a row, or 5 min without success.</Hint>
         </>
       )}
     </div>

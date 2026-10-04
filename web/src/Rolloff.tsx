@@ -71,11 +71,11 @@ export function GuardBand(props: { c: Config; i: number; fresh?: boolean; onFres
         </button>
       </div>
       <span className="field-hint">
-        Channels this close to the edge of the band aren't used: the radio's filter rolls off there. {khz(DEFAULT_GUARD_HZ)} unless measured or set.
+        Unused at each edge, where the filter rolls off. Default {khz(DEFAULT_GUARD_HZ)}.
       </span>
       {props.fresh && !open && (
         <div className="banner small">
-          <span>New radio — optionally, measure how its band rolls off at the edges to choose its guard band.</span>
+          <span>New radio — measure its edge roll-off?</span>
           <span className="row">
             <button className="btn small" onClick={start}>
               Profile roll-off
@@ -121,14 +121,11 @@ function Profiler(props: { c: Config; i: number; src: Source; guard: number; onA
           {result ? "Measure again" : "Measure"}
         </button>
         <span className="muted small">
-          {recording ? "Stop recording first — this needs the radio to itself." : busy ? "Listening for a couple of seconds…" : null}
+          {recording ? "Stop recording first." : busy ? "Listening…" : null}
         </span>
       </div>
       {!result && !busy && !profile && (
-        <p className="muted small">
-          Listens to the band for a moment and finds where the noise floor sags at each edge. Any frequency will do; one without strong signals, with the
-          antenna connected and the gain set as you'll record, is best.
-        </p>
+        <p className="muted small">Best on a quiet frequency, antenna connected, gain as you'll record.</p>
       )}
       {profile && "error" in profile && <p className="bad small">{profile.error}</p>}
       {result && <Measurement c={c} i={i} r={result} draft={draft} setDraft={setDraft} guard={guard} onApply={props.onApply} />}
@@ -235,14 +232,12 @@ function Measurement(props: { c: Config; i: number; r: Measured; draft: number; 
         </button>
       </div>
       <p className="muted small">
-        The noise floor (the blue line) is 3 dB below its mid-band level <b>{khz(r.lowHz)}</b> in from the low edge and <b>{khz(r.highHz)}</b> from the high
-        edge, and {r.lowDropDb.toFixed(1)} / {r.highDropDb.toFixed(1)} dB down at the very edges. Suggested: the larger plus half a channel. A gentle sag costs
-        little (signal and noise drop together) — nearer the edge, signals from just outside the band fold back in.
+        Noise floor (blue) is 3 dB down <b>{khz(r.lowHz)}</b> / <b>{khz(r.highHz)}</b> from the low / high edge, {r.lowDropDb.toFixed(1)} /{" "}
+        {r.highDropDb.toFixed(1)} dB at the edges. Suggested: the larger plus half a channel.
       </p>
       {out.length > 0 && (
         <p className="warn small">
-          {out.length === 1 ? "A channel" : `${out.length} channels`} on this source would be in the guard band: {out.map((w) => `${w.label} ${formatMhz(w.hz)}`).join(", ")} MHz —
-          move its center frequency, or use a smaller guard band.
+          {out.length === 1 ? "A channel" : `${out.length} channels`} in the guard band: {out.map((w) => `${w.label} ${formatMhz(w.hz)}`).join(", ")} MHz.
         </p>
       )}
     </>

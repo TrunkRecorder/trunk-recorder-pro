@@ -65,11 +65,6 @@ export function seriesPoints(key: string, sinceS = CAP * 2): { t: number[]; v: n
   return { t, v };
 }
 
-/** The series names seen so far. */
-export function seriesKeys(): string[] {
-  return [...rings.keys()];
-}
-
 function subscribe(l: () => void): () => void {
   listeners.add(l);
   return () => listeners.delete(l);
@@ -84,10 +79,4 @@ export function useSeriesTick(): number {
 export function useSeries(key: string, sinceS?: number): { t: number[]; v: number[] } {
   useSeriesTick();
   return seriesPoints(key, sinceS);
-}
-
-/** Forget every series. */
-export function clearSeries(): void {
-  rings.clear();
-  notify();
 }

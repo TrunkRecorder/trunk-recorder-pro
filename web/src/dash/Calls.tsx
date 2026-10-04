@@ -200,7 +200,7 @@ export function ActiveCalls({ s }: { s: AppState }) {
                     {c.emergency && <span className="badge bad">EMERG</span>}
                     <PatchedWith tgs={c.patched ?? []} />
                     {c.alsoOn?.length ? (
-                      <div className="patched small" title="The same call on other sites of this system: the best copy is saved">
+                      <div className="patched small" title="Same call on other sites; best copy saved">
                         also on {c.alsoOn.join(", ")}
                       </div>
                     ) : null}
@@ -218,7 +218,7 @@ export function ActiveCalls({ s }: { s: AppState }) {
                   <td>
                     {c.state === "recording" && (
                       // Heard on several sites: one copy plays, from whichever site has it.
-                      <button className="btn ghost small" onClick={() => setListen(true, c.alsoOn?.length ? null : c.systemName, c.talkgroup)} title="Listen to this talkgroup only">
+                      <button className="btn ghost small" onClick={() => setListen(true, c.alsoOn?.length ? null : c.systemName, c.talkgroup)} title="This talkgroup only">
                         Listen
                       </button>
                     )}
@@ -295,7 +295,7 @@ export function History({ s }: { s: AppState }) {
         </div>
       </header>
       {rows.length === 0 ? (
-        <p className="empty">Recorded calls will appear here.</p>
+        <p className="empty">No recorded calls yet.</p>
       ) : (
         <div className="table-wrap history">
           <table className="calls">
@@ -305,7 +305,7 @@ export function History({ s }: { s: AppState }) {
                 {multi && <th>System</th>}
                 <th>Talkgroup</th>
                 <th>Length</th>
-                <th title="Signal over noise; hover for the levels and the share of voice decoded cleanly">Reception</th>
+                <th title="Signal over noise">Reception</th>
                 <th>Sources</th>
                 <th />
               </tr>
@@ -335,15 +335,26 @@ export function History({ s }: { s: AppState }) {
                   <Reception r={c.record} />
                   <Sources s={s} entry={c} />
                   <td className="actions">
-                    <button className="btn ghost small" onClick={() => setPlaying(c.path)}>
-                      Play
-                    </button>
-                    <button className="btn ghost small" onClick={() => void downloadCall(c.path, "wav")}>
-                      WAV
-                    </button>
-                    <button className="btn ghost small" onClick={() => void downloadCall(c.path, "json")}>
-                      JSON
-                    </button>
+                    {c.audio !== false && (
+                      <>
+                        <button className="btn ghost small" onClick={() => setPlaying(c.path)}>
+                          Play
+                        </button>
+                        <button className="btn ghost small" onClick={() => void downloadCall(c.path, "wav")}>
+                          WAV
+                        </button>
+                      </>
+                    )}
+                    {c.json !== false && (
+                      <button className="btn ghost small" onClick={() => void downloadCall(c.path, "json")}>
+                        JSON
+                      </button>
+                    )}
+                    {c.audio === false && c.json === false && (
+                      <span className="muted small" title="Deleted after upload (Setup → Recording)">
+                        not kept
+                      </span>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -400,12 +411,12 @@ export function Log({ s }: { s: AppState }) {
     <details className="panel log" open={open} onToggle={(e) => setOpen(e.currentTarget.open)}>
       <summary className="panel-head">
         <h2>Control channel log</h2>
-        <span className="muted small">{open ? `${s.log.length} recent messages` : "open to follow it live"}</span>
+        {open && <span className="muted small">{s.log.length} recent messages</span>}
       </summary>
       <div className="row log-filter">
         <label className="toggle">
           <input type="checkbox" checked={show === "all"} onChange={(e) => setShow(e.target.checked ? "all" : "calls")} />
-          <span>Show unit activity (affiliations, registrations…)</span>
+          <span>Show unit activity</span>
         </label>
         {multi && <SystemFilter s={s} choices={systems.map((x) => x.shortName)} value={only} onChange={setOnly} />}
       </div>

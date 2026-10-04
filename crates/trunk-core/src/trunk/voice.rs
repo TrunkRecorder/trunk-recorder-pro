@@ -28,7 +28,7 @@ use crate::dsp::signalling::Signalling;
 use crate::dsp::{Receiver, Symbol};
 use crate::mbe;
 use crate::metrics::{Instrumented, Sink};
-use crate::p25::alias::Alias;
+use crate::p25::alias::{Alias, AliasLc};
 use crate::p25::diversity::{best_frame, Bank, BankConfig, Group};
 use crate::p25::phase2::{self, Packet};
 
@@ -79,6 +79,8 @@ pub enum TrackerOut {
     Subaudible(Vec<f32>),
     /// A radio's talker alias, heard during the call.
     Alias(Alias),
+    /// What a terminator / MAC message showed of talker aliases (counted).
+    AliasLc(AliasLc),
 }
 
 /// What one decoder produced: an output for the call on `slot`, from air

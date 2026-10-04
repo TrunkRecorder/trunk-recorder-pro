@@ -686,6 +686,13 @@ fn serve(a: &Args) {
         spool: Mutex::new(None),
     });
     monitor::start(ctx.clone());
+    // What each call kept once its plugins are done, for the history list.
+    let weak = Arc::downgrade(&ctx);
+    ctx.plugins.archive.on_settle(Box::new(move |rel, audio, json| {
+        if let Some(ctx) = weak.upgrade() {
+            runtime::call_files(&ctx, rel, audio, json);
+        }
+    }));
     runtime::load_history(ctx.clone());
     {
         let c = ctx.config.lock().unwrap();

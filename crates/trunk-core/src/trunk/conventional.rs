@@ -640,6 +640,7 @@ impl Conventional {
                 TrackerOut::Subaudible(l) => h.low.extend_from_slice(&l),
                 TrackerOut::Info { source, emergency, encrypted } => h.infos.push((source, emergency, encrypted)),
                 TrackerOut::Alias(a) => out.push(ConvOut::Alias(conventional_system(ch.cfg.system), a)),
+                TrackerOut::AliasLc(_) => {}
             }
         }
         for (slot, h) in heard.iter_mut().enumerate() {

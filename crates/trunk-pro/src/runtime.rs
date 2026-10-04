@@ -574,10 +574,14 @@ fn finish_one(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, f: Fin
         publish(&ctx.hub, json!({ "type": "log", "lines": [{ "timeS": 0, "kind": "error", "text": format!("couldn't write {}", base.display()) }] }));
         return;
     }
-    publish(&ctx.hub, json!({ "type": "concluded", "entry": &f.entry }));
+    // Whether its audio and JSON stay once the plugins are done (an upload that fails may keep them after all: call_files).
+    let mut entry = f.entry;
+    entry["audio"] = json!(keep_audio);
+    entry["json"] = json!(keep_json);
+    publish(&ctx.hub, json!({ "type": "concluded", "entry": &entry }));
     {
         let mut h = ctx.history.lock().unwrap();
-        h.push_front(f.entry);
+        h.push_front(entry);
         h.truncate(HISTORY_KEPT);
     }
     let mut audio = plugins::CallAudio {
@@ -633,6 +637,21 @@ fn deliver(ctx: &Ctx, out: &mut Vec<Output>, plugins: Option<&PluginHost>, rules
     }
 }
 
+/// A call's plugins are done: what of it was kept (`audio`, `json`). Its
+/// history entry follows, and the interface is told when that's not what
+/// the entry said (an upload failed and the files were kept after all).
+pub fn call_files(ctx: &Ctx, rel: &str, audio: bool, json: bool) {
+    let mut h = ctx.history.lock().unwrap();
+    let Some(e) = h.iter_mut().find(|e| e["path"] == rel) else { return };
+    if e["audio"] == json!(audio) && e["json"] == json!(json) {
+        return;
+    }
+    e["audio"] = json!(audio);
+    e["json"] = json!(json);
+    drop(h);
+    publish(&ctx.hub, json!({ "type": "callFiles", "path": rel, "audio": audio, "json": json }));
+}
+
 /// Fill the history list with the newest calls already on disk, in the
 /// background: a capture folder with years of calls takes a while to walk.
 /// Calls concluded meanwhile stay in front.
@@ -675,7 +694,8 @@ pub fn scan_history(dir: &Path, limit: usize) -> VecDeque<Value> {
         .filter_map(|(_, p)| {
             let record: Value = serde_json::from_str(&fs::read_to_string(&p).ok()?).ok()?;
             let rel = p.strip_prefix(dir).ok()?.with_extension("");
-            Some(json!({ "path": rel.to_string_lossy().replace('\\', "/"), "record": record }))
+            let audio = ["wav", "m4a"].iter().any(|x| p.with_extension(x).exists());
+            Some(json!({ "path": rel.to_string_lossy().replace('\\', "/"), "record": record, "audio": audio, "json": true }))
         })
         .collect()
 }

@@ -42,7 +42,7 @@ def main() -> None:
         "Trunk Recorder Pro is licensed under the GNU General Public License v3.0 or",
         "later (LICENSE). It contains code derived from op25 (boatbod/op25, GPLv3),",
         "Trunk Recorder (GPLv3) and mbelib (ISC; notice in",
-        "crates/trunk-core/src/mbe and archive/ts-engine/src/vendor/ff/mbe/tables.ts).",
+        "crates/trunk-core/src/tables.rs).",
         "IMBE and AMBE+2 are vocoder technologies of Digital Voice Systems, Inc.",
         "",
         "It also includes the following open-source components.",

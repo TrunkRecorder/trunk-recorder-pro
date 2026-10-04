@@ -40,19 +40,17 @@ function Today({ s }: { s: AppState }) {
         size="hero"
         label="Calls today"
         value={compact(Math.round(day("all/calls", "day/calls")))}
-        trend={<Trend delta={change(callsPerH / 3600, usual["all/calls"])} title="The last hour against the day's usual" />}
+        trend={<Trend delta={change(callsPerH / 3600, usual["all/calls"])} title="Last hour vs usual" />}
         sub={`${compact(callsPerH)} an hour now`}
         spark={<Sparkline v={perHour("all/calls")} title="Calls an hour, last 24 h" />}
-        hint="Calls that ended today (local time), every system. The arrow compares the last hour with the day's average."
       />
       <Stat
         label="Airtime today"
         value={hmm(day("all/airMs", "day/airS", 0.001))}
-        sub={`${num(onAir, 1)} calls on the air on average`}
+        sub={`${num(onAir, 1)} at once on average`}
         spark={<Sparkline v={(h24?.["all/airMs"]?.v ?? []).map((v) => (v === null ? null : v / 1000))} color="var(--series-3)" title="Calls on the air at once, last 24 h" />}
-        hint="Time with voice on a channel, summed. 'On the air on average' is how many calls overlap — compare it with your recorders."
       />
-      <Stat label="Audio today" value={bytes(day("all/audioBytes", "day/audioBytes"))} sub={`${bytes(audioPerH)} an hour now`} spark={<Sparkline v={perHour("all/audioBytes")} color="var(--series-7)" />} hint="Recorded audio written (WAV size)." />
+      <Stat label="Audio today" value={bytes(day("all/audioBytes", "day/audioBytes"))} sub={`${bytes(audioPerH)} an hour now`} spark={<Sparkline v={perHour("all/audioBytes")} color="var(--series-7)" />} />
       <Stat
         label="Recorders"
         value={
@@ -64,22 +62,20 @@ function Today({ s }: { s: AppState }) {
         level={recMax && rec >= recMax ? "warn" : undefined}
         spark={<Meter value={rec} max={Math.max(1, recMax)} zones={[recMax * 0.75, recMax]} label="recorders in use" />}
         sub={`${val(s, "eng/channels") ?? 0} channels open`}
-        hint="Recorders in use of the most allowed. When they run out, calls are missed (no_recorder)."
       />
       <Stat
         label="Missed, 24 h"
         value={compact(missed)}
         level={missed > 0 ? "warn" : undefined}
-        sub={missed > 0 ? "no free recorder, or outside every source" : "none — everything heard was followed"}
+        sub={missed > 0 ? "no free recorder, or out of band" : "none"}
         onClick={() => setView("radio")}
-        hint="Calls not recorded because no recorder was free (raise the maximum) or no source covers the frequency (move a centre)."
       />
       <Stat
         label="Decoding load"
         value={pct(load === null ? null : load * 100)}
         sub="of one CPU core"
         spark={<LiveSpark k="eng/load" mul={100} color="var(--series-2)" lo={0} />}
-        hint="Time the decoder is busy per second of air. Above 100% it falls behind (or uses more cores)."
+        hint="Over 100% needs more than one core"
       />
     </div>
   );
@@ -122,8 +118,8 @@ function SystemCard({ s, x, usual, summary, freqs }: { s: AppState; x: DashSyste
           label="Last 24 h"
           value={dayCalls === null ? "—" : compact(dayCalls)}
           unit="calls"
-          spark={<Sparkline v={day?.[K.sys(x.name, "cc/good")]?.v ?? []} title="Control messages a second, last 24 h" />}
-          sub={dayRate ? `control channel averaged ${num(dayRate.avg)} msg/s` : "no history yet"}
+          spark={<Sparkline v={day?.[K.sys(x.name, "cc/good")]?.v ?? []} title="Control msg/s, last 24 h" />}
+          sub={dayRate ? `control avg ${num(dayRate.avg)} msg/s` : "no history yet"}
         />
       ) : x.kind !== "conventional" ? (
         <div className="sys-main">
@@ -131,8 +127,8 @@ function SystemCard({ s, x, usual, summary, freqs }: { s: AppState; x: DashSyste
             label="Control channel"
             value={num(rate)}
             unit="msg/s"
-            trend={<Trend delta={change(recentAvg(K.sys(x.name, "cc/good"), 60), usual)} title="Against its usual (the shaded band)" />}
-            spark={<LiveSpark k={K.sys(x.name, "cc/good")} band={usual ? [usual.lo, usual.hi] : null} lo={0} title="Messages a second, 10 min; the band is its usual" />}
+            trend={<Trend delta={change(recentAvg(K.sys(x.name, "cc/good"), 60), usual)} title="vs usual" />}
+            spark={<LiveSpark k={K.sys(x.name, "cc/good")} band={usual ? [usual.lo, usual.hi] : null} lo={0} title="msg/s, 10 min; band is usual" />}
             sub={
               <>
                 {decoded !== null ? `${num(decoded, 0)}% decoded` : "…"} · {st?.controlChannelHz ? `${formatMhz(st.controlChannelHz)} MHz` : "hunting"}
@@ -151,11 +147,11 @@ function SystemCard({ s, x, usual, summary, freqs }: { s: AppState; x: DashSyste
           <b>{onAir.length}</b>
           <span>on the air</span>
         </div>
-        <div title="Voice frames the vocoder couldn't use, last 10 min (under 2% sounds clean)">
+        <div title="Unusable voice frames, 10 min (under 2% is clean)">
           <b className={badLevel(lost) === "ok" ? "" : badLevel(lost)}>{lost === null ? "—" : `${num(lost, 1)}%`}</b>
           <span>voice lost</span>
         </div>
-        <div title="Talkgroups heard for the first time in the last day">
+        <div title="First heard in the last 24 h">
           <b className={summary?.newTgs.length ? "accent" : ""}>{summary ? summary.newTgs.length : "—"}</b>
           <span>new TGs</span>
         </div>
@@ -171,7 +167,7 @@ function SystemCard({ s, x, usual, summary, freqs }: { s: AppState; x: DashSyste
         </div>
       )}
       {freqs && freqs.length > 0 && (
-        <div className="freq-strip" title="Voice decode quality by frequency, last 24 h">
+        <div className="freq-strip">
           <HeatStrip
             v={freqs.map((f) => f.badPct)}
             ramp="hot"
@@ -180,7 +176,7 @@ function SystemCard({ s, x, usual, summary, freqs }: { s: AppState; x: DashSyste
             onCell={() => setView("decode", x.name)}
             label="decode quality by frequency"
           />
-          <span className="muted small">voice quality by frequency</span>
+          <span className="muted small">voice quality by frequency, 24 h</span>
         </div>
       )}
     </Card>
@@ -249,7 +245,7 @@ export function EventFeed({ events, limit = 12 }: { events: MonitorEvent[]; limi
   return (
     <Card title="Lately" className="events">
       {shown.length === 0 ? (
-        <p className="empty">Nothing notable yet. Lost control channels, new talkgroups, links going down and plugins in trouble show up here.</p>
+        <p className="empty">Nothing notable yet.</p>
       ) : (
         <ul className="feed">
           {shown.map((e, i) => (
@@ -274,7 +270,7 @@ function PluginsLine({ s }: { s: AppState }) {
   return (
     <Card title="Plugins" onTitle={() => setView("plugins")}>
       {on.length === 0 ? (
-        <p className="empty">No plugins on. They send calls to services (Broadcastify, OpenMHz, rdio-scanner…).</p>
+        <p className="empty">No plugins on.</p>
       ) : (
         <ul className="line-list">
           {on.map((p) => {
@@ -360,7 +356,7 @@ export function Overview() {
           <div>
             <h2 className="big">Not recording</h2>
             <p className="muted">
-              {s.config && systems.length ? `${systems.length} system${systems.length > 1 ? "s" : ""} set up. Start to watch them here.` : "Set up a source and a system, then start."}
+              {s.config && systems.length ? `${systems.length} system${systems.length > 1 ? "s" : ""} set up.` : "Set up a source and a system, then start."}
             </p>
           </div>
           <div className="row">
@@ -392,7 +388,7 @@ export function Overview() {
               ))}
             </>
           )}
-          <h2 className="section-title">Around it</h2>
+          <h2 className="section-title">Status</h2>
           {!web && <PlatformLine s={s} />}
           {!web && <PluginsLine s={s} />}
           <EventFeed events={s.events} />

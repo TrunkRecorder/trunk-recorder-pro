@@ -65,14 +65,14 @@ export function BrowserStorage() {
   async function persist() {
     const ok = await navigator.storage.persist?.();
     setEst(await storageEstimate());
-    if (!ok) setNotice("The browser declined to make storage persistent; calls may be cleared if space runs low.");
+    if (!ok) setNotice("Browser declined; calls may be evicted when space is low.");
   }
 
   return (
     <span className="storage">
       Stored in this browser{est ? ` · ${mb(est.usage)} of ${mb(est.quota)}` : ""}
       {est && !est.persisted && (
-        <button className="btn ghost small" onClick={() => void persist()} title="Ask the browser not to evict recordings when space runs low">
+        <button className="btn ghost small" onClick={() => void persist()} title="Protect recordings from eviction when space is low">
           Keep
         </button>
       )}
@@ -85,7 +85,7 @@ export function BrowserStorage() {
               Export to folder…
             </button>
           ) : null}
-          <button className="btn ghost small" onClick={() => void downloadZip()} disabled={!s.history.length} title="Download every call as one .zip">
+          <button className="btn ghost small" onClick={() => void downloadZip()} disabled={!s.history.length}>
             Download zip
           </button>
           <button className="btn ghost small" onClick={() => void clearAll()} disabled={!s.history.length || s.phase !== "idle"}>

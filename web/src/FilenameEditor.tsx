@@ -81,8 +81,8 @@ function chipLabel(p: Piece): string {
 }
 
 function chipTitle(p: Piece, when: Date): string {
-  if (p.kind === "sep") return "A folder: what comes after it goes inside";
-  if (p.kind === "text") return "Text, as written";
+  if (p.kind === "sep") return "Folder";
+  if (p.kind === "text") return "Text";
   const code = p.kind === "time" ? `{${p.utc ? "ztime" : "time"}:${p.fmt}}` : `{${p.name}}`;
   return `${code} — e.g. ${pieceSample(p, when) || "(empty)"}`;
 }
@@ -102,7 +102,7 @@ function cleanText(s: string, allowFolders: boolean): { text: string; dropped: b
  * Recorder's layout, or the Recording tab's for a system), shown as
  * Default; changing anything starts this one's own from it.
  */
-export function FilenameEditor(props: { label: string; hint: string; value: string; fallback: string; fallbackName: string; root?: string; onChange: (v: string) => void }) {
+export function FilenameEditor(props: { label: string; hint?: string; value: string; fallback: string; fallbackName: string; root?: string; onChange: (v: string) => void }) {
   const { value, fallback, onChange } = props;
   const [open, setOpen] = useState(false);
   const own = value.trim() !== "";
@@ -154,8 +154,8 @@ export function FilenameEditor(props: { label: string; hint: string; value: stri
           ))}
         </ul>
       )}
-      <span className="field-hint">{props.hint}</span>
-      {open && <Builder pieces={pieces} own={own} when={when} fallbackName={props.fallbackName} write={write} onChange={onChange} value={value} />}
+      {props.hint && <span className="field-hint">{props.hint}</span>}
+      {open && <Builder pieces={pieces} own={own} when={when} write={write} onChange={onChange} value={value} />}
     </div>
   );
 }
@@ -171,7 +171,7 @@ function Chip(props: { piece: Piece; when: Date }) {
 }
 
 /** The editor: the format's chips, which can be dragged about, and the palette to drag new ones from. */
-function Builder(props: { pieces: Piece[]; own: boolean; when: Date; fallbackName: string; value: string; write: (p: Piece[]) => void; onChange: (v: string) => void }) {
+function Builder(props: { pieces: Piece[]; own: boolean; when: Date; value: string; write: (p: Piece[]) => void; onChange: (v: string) => void }) {
   const { pieces, write, when } = props;
   const [dropAt, setDropAt] = useState<number | null>(null);
   const [utc, setUtc] = useState(false);
@@ -224,7 +224,7 @@ function Builder(props: { pieces: Piece[]; own: boolean; when: Date; fallbackNam
       key={key ?? label}
       className={`fname-chip k-${p.kind} palette`}
       draggable
-      title={`${chipTitle(p, when)}. Drag it into place, or click to add it at the end.`}
+      title={chipTitle(p, when)}
       onDragStart={(e) => startDrag(e, { piece: p })}
       onClick={() => insert(p)}
     >
@@ -234,11 +234,6 @@ function Builder(props: { pieces: Piece[]; own: boolean; when: Date; fallbackNam
 
   return (
     <div className="fname-editor">
-      {!props.own && (
-        <p className="muted small">
-          This is the default ({props.fallbackName}). Change anything and it becomes this one&apos;s own.
-        </p>
-      )}
       <div
         className={`fname-chips build${dropAt !== null ? " dragging" : ""}`}
         onDragOver={(e) => {
@@ -260,7 +255,7 @@ function Builder(props: { pieces: Piece[]; own: boolean; when: Date; fallbackNam
                 className={`fname-chip k-${p.kind}${bad ? " bad" : ""}`}
                 draggable
                 tabIndex={0}
-                title={bad ?? `${chipTitle(p, when)}. Drag to move; Delete removes it, Alt+←/→ moves it.`}
+                title={bad ?? chipTitle(p, when)}
                 onDragStart={(e) => startDrag(e, { move: k })}
                 onDragEnd={() => setDropAt(null)}
                 onKeyDown={(e) => {
@@ -280,7 +275,7 @@ function Builder(props: { pieces: Piece[]; own: boolean; when: Date; fallbackNam
                     aria-label="Text"
                     onChange={(e) => {
                       const c = cleanText(e.target.value, true);
-                      if (c.dropped) setNote('Names can\'t hold : * ? " < > |');
+                      if (c.dropped) setNote('Not allowed: : * ? " < > |');
                       // A / or \ typed here makes a folder.
                       const next = [...pieces];
                       next[k] = { kind: "text", text: c.text };
@@ -298,7 +293,7 @@ function Builder(props: { pieces: Piece[]; own: boolean; when: Date; fallbackNam
           );
         })}
         {dropAt === pieces.length && <span className="fname-caret" />}
-        {!pieces.length && <span className="muted small">Drag tokens here</span>}
+        {!pieces.length && <span className="muted small">Empty</span>}
       </div>
 
       <div
@@ -323,7 +318,7 @@ function Builder(props: { pieces: Piece[]; own: boolean; when: Date; fallbackNam
               aria-label="Text to add"
               onChange={(e) => {
                 const c = cleanText(e.target.value, false);
-                setNote(c.dropped ? 'Text can\'t hold / \\ : * ? " < > | { } — use the folder token for /' : "");
+                setNote(c.dropped ? 'Not allowed: / \\ : * ? " < > | { }' : "");
                 setText(c.text);
               }}
               onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), addText())}
@@ -354,7 +349,6 @@ function Builder(props: { pieces: Piece[]; own: boolean; when: Date; fallbackNam
           {TIMES.map((f) => paletteChip({ kind: "time", utc, fmt: f }, `${TIME_LABEL[f]}${f.startsWith("%-") ? " (no 0)" : ""}`, f))}
         </div>
         {note && <p className="small warn-text">{note}</p>}
-        <p className="muted small">Drag a token into the format above, or click it to add it at the end. Drag one back here to remove it.</p>
       </div>
 
       <div className="row fname-actions">
@@ -387,7 +381,7 @@ function Builder(props: { pieces: Piece[]; own: boolean; when: Date; fallbackNam
           className="mono"
           aria-label="The format as text"
           value={props.value}
-          placeholder="{short_name}/{time:%Y}/… — / or \ make folders"
+          placeholder="{short_name}/{time:%Y}/…"
           onChange={(e) => props.onChange(e.target.value)}
         />
       )}

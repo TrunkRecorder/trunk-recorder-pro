@@ -249,11 +249,6 @@ impl CallManager {
         }
     }
 
-    /// A fresh call id (conventional channels make their own calls).
-    pub fn allocate_id(&mut self) -> CallId {
-        self.ids.next()
-    }
-
     pub fn call_mut(&mut self, id: CallId) -> Option<&mut Call> {
         self.calls.iter_mut().find(|c| c.id == id)
     }

@@ -7,7 +7,7 @@
 import { useState } from "react";
 import type { PlatformInfo } from "../protocol.ts";
 import { useApp, useTopic, type StatsRange } from "../controller.ts";
-import { Card, Choice, HeatStrip, Hint, LiveSpark, Meter, Ribbon, Stat, TimeSeries, type Level } from "../charts.tsx";
+import { Card, Choice, HeatStrip, LiveSpark, Meter, Ribbon, Stat, TimeSeries, type Level } from "../charts.tsx";
 import { ago, bytes, clockAt, dur, num, pct } from "../fmt.ts";
 import { platformHealth, total, useHistory } from "./data.ts";
 
@@ -58,7 +58,6 @@ export function PlatformPage() {
           value={pct(v["plat/proCpu"])}
           sub={`${num(v["plat/proCores"], 2)} cores · ${bytes(v["plat/proMem"])} memory`}
           spark={<LiveSpark k="plat/proCpu" color="var(--series-2)" lo={0} />}
-          hint="This program's share of the CPU it can use, and its memory."
         />
         <Stat
           label="Memory"
@@ -71,7 +70,7 @@ export function PlatformPage() {
                 : `${bytes(v["plat/memAvail"])} available`
           }
           spark={<Meter value={v["plat/mem"] ?? null} max={100} zones={[85, 95]} label="memory used" />}
-          hint="Used share of the memory available to it (the container's limit inside one). Pressure says whether that's hurting: time spent waiting for memory."
+          hint="Stalled: time spent waiting for memory."
         />
         <Stat
           label="Internet"
@@ -147,15 +146,15 @@ export function PlatformPage() {
                       <b>{bytes(d.freeBytes)}</b> free of {bytes(d.totalBytes)}
                     </span>
                     {spool ? (
-                      <span title="Files only the upload plugins need wait here, in memory, until every plugin has had the call. It fills when uploads fall behind; when full, calls go to the recordings folder.">
+                      <span title="Held in memory until plugins upload; overflows to disk.">
                         {d.kind === "RAM disk" ? "a RAM disk" : d.kind === "tmpfs" ? "in /dev/shm" : "a folder of yours"} · calls waiting for upload
                       </span>
                     ) : (
                       <span>on {d.mount}</span>
                     )}
-                    {spool && !!d.overflowed && <span className="warn">{d.overflowed} call{d.overflowed === 1 ? "" : "s"} went to the disk for want of room</span>}
+                    {spool && !!d.overflowed && <span className="warn">{d.overflowed} call{d.overflowed === 1 ? "" : "s"} overflowed to disk</span>}
                     {days !== null && (
-                      <span className={days < 7 ? "warn" : ""} title="Free space over the last week's average audio a day (before M4A and any clean-up)">
+                      <span className={days < 7 ? "warn" : ""} title="At last week's average, before M4A or clean-up">
                         About <b>{days > 365 ? "a year or more" : dur(days * 86400)}</b> of recordings left at {bytes(audioPerDay)} a day
                       </span>
                     )}
@@ -171,11 +170,11 @@ export function PlatformPage() {
           <>
             <Ribbon cells={upCells} titles={(up?.v ?? []).map((x, i) => `${clockAt(up!.t0 + i * up!.stepS)}: ${x === null ? "no data" : x >= 1 ? "up" : `${Math.round((x ?? 0) * 100)}% of checks answered`}`)} h={18} label="internet reachability" />
             <p className="muted small">
-              {downSteps ? `${downSteps} stretch${downSteps > 1 ? "es" : ""} with failed checks in this span` : "Every check answered in this span"} · a cell per step, red down, amber partly
+              {downSteps ? `${downSteps} stretch${downSteps > 1 ? "es" : ""} with failed checks` : "Every check answered"}
             </p>
           </>
         ) : (
-          <p className="empty">No connectivity checks yet (set them in the config's monitor.probeHosts).</p>
+          <p className="empty">No checks set up (monitor.probeHosts).</p>
         )}
         <div className="columns">
           <TimeSeries lines={[{ label: "Connect time, ms", color: "var(--series-3)", data: hist?.["net/rtt"] ?? null, band: true }]} zero height={120} fmt={(x) => x.toFixed(0)} />
@@ -218,7 +217,6 @@ export function PlatformPage() {
           </div>
         )}
         {v["net/dns"] !== undefined && <p className="muted small">Name lookups take {num(v["net/dns"], 0)} ms.</p>}
-        <Hint>The checks connect to each host every 15 s (no ping: that needs privileges). Short red cells are the dropped links plugins retry over.</Hint>
       </Card>
       <Card title="This computer">
         <div className="kv">
@@ -278,7 +276,7 @@ function SpotlightNote({ spot }: { spot: PlatformInfo["spotlight"] }) {
       <div>
         <b>{spot.state === "indexed" ? "Spotlight indexes the recordings folder" : "Spotlight may be indexing the recordings folder"}</b>
         <p className="small">
-          It reads every call saved there into its index: extra writes to the disk for files nobody searches. <span className="muted">({spot.why}.)</span>
+          Extra disk writes for files nobody searches. <span className="muted">({spot.why}.)</span>
         </p>
         <ol className="small">
           <li>
@@ -288,7 +286,7 @@ function SpotlightNote({ spot }: { spot: PlatformInfo["spotlight"] }) {
             Click <b>+</b> and choose <span className="mono">{spot.path}</span> (in the dialog, ⇧⌘G takes a path).
           </li>
         </ol>
-        <p className="muted small">macOS doesn't let apps read or change that list, so this asks Spotlight instead, once a day.</p>
+        <p className="muted small">Apps can't change that list; rechecked daily.</p>
       </div>
       {spot.state === "unknown" && <button onClick={note}>I've done it</button>}
     </div>
