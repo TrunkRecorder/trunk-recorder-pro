@@ -557,9 +557,51 @@ cargo build --profile dist              # stripped, as released
 ```
 
 Release packages: `packaging/package.sh <macos|linux-x86_64|linux-aarch64|windows-x86_64|browser> <version> <binary> <out-dir>`
-(what CI runs; see the top of the script). Tagging `v<version>` (the
-version in `Cargo.toml`, with a matching section in `CHANGELOG.md`) makes CI
-publish a release.
+(what CI runs; see the top of the script).
+
+### Releasing
+
+A release is a commit that bumps the version, and a tag on it. With
+everything for the release already pushed to `main`:
+
+1. **`Cargo.toml`**: `[workspace.package] version` (`0.1.3` → `0.1.4`).
+   `trunk-core`, `trunk-app`, `trunk-pro` and `trunk-web` take it from
+   there; the plugin SDK (`trunk-recorder-plugin`) has its own version
+   (below).
+2. **`Cargo.lock`**: refresh it with `cargo check`. Four entries change
+   (the four crates above).
+3. **`CHANGELOG.md`**: rename `## [Unreleased]` to `## [<version>] — <date>`,
+   or add that section under it, and leave an empty `## [Unreleased]` on
+   top. The release notes are this section, copied as it is, so write it
+   for users: what's new, what changed, and anything they must change
+   (config keys, say) first, in bold.
+4. Commit as `v<version>`, tag, push both:
+
+   ```bash
+   git commit -am "v0.1.4"
+   git tag -a v0.1.4 -m v0.1.4
+   git push origin main v0.1.4
+   ```
+
+Then `.github/workflows/build.yml` takes over. It stops if the tag doesn't
+match `Cargo.toml`. It builds the packages (macOS DMG and CLI, Linux x86-64 /
+ARM64, Windows, browser) and publishes the GitHub release with `SHA256SUMS`
+and the changelog section. It then tells
+[trunkrecorder.pro](https://trunkrecorder.pro) to rebuild its download links
+and `/app/` (`SITE_DEPLOY_TOKEN`; without the token the site still finds the
+release within the hour). A tag with a suffix (`v0.1.4-rc.1`) makes a
+prerelease and leaves the site alone. Watch it with `gh run watch`.
+
+If CI fails, fix it on `main` and move the tag:
+`git tag -fa v0.1.4 -m v0.1.4 && git push -f origin v0.1.4`. Do this only
+before anyone has downloaded the release.
+
+The plugin SDK is released apart from the app, only when its API changes:
+bump `crates/trunk-recorder-plugin/Cargo.toml`'s `version`, refresh
+`Cargo.lock`, commit, and `cargo publish -p trunk-recorder-plugin`. Plugins
+pick it up from crates.io. `API_VERSION`
+(`crates/trunk-recorder-plugin/src/protocol.rs`) changes only when a plugin
+built for the old one would break.
 
 `web/`: `npm run dev` serves the interface with hot reload on :5173, talking to
 a running `trunk-pro` on :8080.
