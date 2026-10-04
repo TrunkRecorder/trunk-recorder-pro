@@ -222,6 +222,13 @@ pub fn run(source: usize, cfg: UsrpConfig, tx: SyncSender<SourceMsg>, stop: Arc<
 
 /// [`run`], retuned on request.
 pub fn run_with(source: usize, mut cfg: UsrpConfig, tx: SyncSender<SourceMsg>, stop: Arc<AtomicBool>, ctl: Option<Arc<Control>>) {
+    // The device's buffer holds only milliseconds: a receive thread left
+    // waiting behind other work (a screen-sharing session, say) loses samples.
+    #[cfg(target_os = "macos")]
+    // SAFETY: sets this thread's own QoS class.
+    unsafe {
+        libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_USER_INTERACTIVE, 0);
+    }
     while !stop.load(Ordering::Relaxed) {
         if let Some(c) = ctl.as_ref().and_then(|c| *c.current_hz.lock().unwrap()) {
             cfg.center_hz = c;
@@ -231,6 +238,19 @@ pub fn run_with(source: usize, mut cfg: UsrpConfig, tx: SyncSender<SourceMsg>, s
             std::thread::sleep(Duration::from_secs(3));
         }
     }
+}
+
+/// UHD's default USB buffer (16 frames on a B200: ~4 ms at 8 MSPS) overflows
+/// whenever the receive thread waits a few ms for the CPU; 256 frames hold
+/// ~65 ms. Kept when `args` sets its own.
+const RECV_FRAMES: usize = 256;
+
+fn device_args(args: &str) -> String {
+    if args.split(',').any(|kv| kv.trim().starts_with("num_recv_frames=")) {
+        return args.to_string();
+    }
+    let sep = if args.trim().is_empty() { "" } else { "," };
+    format!("{args}{sep}num_recv_frames={RECV_FRAMES}")
 }
 
 /// Owns the UHD objects so every exit path frees them.
@@ -266,7 +286,7 @@ impl Drop for Session<'_> {
 fn stream_once(source: usize, cfg: &UsrpConfig, tx: &SyncSender<SourceMsg>, stop: &AtomicBool, ctl: Option<&Control>) -> Result<(), String> {
     let a = api()?;
     let mut s = Session { a, usrp: std::ptr::null_mut(), rx: std::ptr::null_mut(), md: std::ptr::null_mut(), streaming: false };
-    let args = CString::new(cfg.args.as_str()).map_err(|e| e.to_string())?;
+    let args = CString::new(device_args(&cfg.args)).map_err(|e| e.to_string())?;
     // SAFETY: UHD C API calls on handles this session owns.
     unsafe {
         check(a, "open", (a.usrp_make)(&mut s.usrp, args.as_ptr()))?;
@@ -385,4 +405,16 @@ fn stream_once(source: usize, cfg: &UsrpConfig, tx: &SyncSender<SourceMsg>, stop
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::device_args;
+
+    #[test]
+    fn recv_frames_added_unless_set() {
+        assert_eq!(device_args(""), "num_recv_frames=256");
+        assert_eq!(device_args("serial=31A"), "serial=31A,num_recv_frames=256");
+        assert_eq!(device_args("serial=31A, num_recv_frames=64"), "serial=31A, num_recv_frames=64");
+    }
 }

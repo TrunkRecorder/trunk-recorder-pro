@@ -229,7 +229,12 @@ impl Source {
     pub fn label(&self) -> String {
         match self {
             Source::Rtlsdr { serial, .. } => format!("RTL-SDR {}", if serial.is_empty() { "(first)".into() } else { format!("SN {serial}") }),
-            Source::Usrp { args, .. } => format!("USRP {}", if args.is_empty() { "(first)" } else { args }),
+            Source::Usrp { args, .. } => {
+                // Which device, not how it's driven: buffer sizes and the like
+                // would rename it (and start its stats history afresh).
+                let which: Vec<&str> = args.split(',').map(str::trim).filter(|kv| ["serial=", "addr=", "type=", "product=", "name="].iter().any(|k| kv.starts_with(k))).collect();
+                format!("USRP {}", if which.is_empty() { "(first)".to_string() } else { which.join(",") })
+            }
             Source::Airspy { serial, .. } => format!("Airspy {}", if serial.is_empty() { "(first)".into() } else { format!("SN {serial}") }),
             Source::Soapy { args, .. } => format!("SoapySDR {}", if args.is_empty() { "(first)" } else { args }),
             Source::File { path, .. } => format!("file {}", path.rsplit(['/', '\\']).next().unwrap_or(path)),
@@ -1424,6 +1429,14 @@ pub fn auto_center(ccs: &[f64], rate_hz: f64, guard_hz: f64) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn usrp_label_names_the_device() {
+        let label = |args: &str| serde_json::from_str::<Source>(&format!(r#"{{"type":"usrp","args":"{args}","centerHz":0,"rateHz":8e6}}"#)).unwrap().label();
+        assert_eq!(label(""), "USRP (first)");
+        assert_eq!(label("num_recv_frames=256"), "USRP (first)");
+        assert_eq!(label("serial=31A, num_recv_frames=256"), "USRP serial=31A");
+    }
 
     #[test]
     fn conventional_only_config() {

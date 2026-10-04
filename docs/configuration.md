@@ -107,7 +107,7 @@ Only R820T / R828D tuners are driven natively. Use a `soapy` source with
 
 | Key | Type | Default | |
 |---|---|---|---|
-| `args` | string | `""` | UHD device arguments: `""` = the first found, `serial=…`, `addr=192.168.10.2` |
+| `args` | string | `""` | UHD device arguments: `""` = the first found, `serial=…`, `addr=192.168.10.2`. `num_recv_frames=256` is added unless set (UHD's default buffer overflows at high rates) |
 | `centerHz` | number | **required** | Hz; 0 = Auto |
 | `rateHz` | number | **required** | Any rate the device's clock supports, e.g. 8 000 000 |
 | `gainDb` | number | `40` | dB |
