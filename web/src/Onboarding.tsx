@@ -27,7 +27,7 @@ import {
   type AppState,
 } from "./controller.ts";
 import type { Config, Source, SurveyCandidate, SurveyMonitor, SurveySuggestion, System } from "./protocol.ts";
-import { parseRadioReferencePaste, parseTalkgroupCsv, talkgroupsToCsv, type Talkgroup } from "./talkgroups.ts";
+import { normalizeTalkgroupCsv, parseRadioReferencePaste, parseTalkgroupCsv, talkgroupsToCsv, type Talkgroup } from "./talkgroups.ts";
 import { openTodos } from "./todo.ts";
 import { Waterfall } from "./Waterfall.tsx";
 
@@ -1470,7 +1470,7 @@ function TalkgroupsStep(props: { sys: System; index: number; onNext: () => void;
     });
   const onFile = async (f: File | undefined) => {
     if (!f) return;
-    setList(await f.text(), f.name);
+    setList(normalizeTalkgroupCsv(await f.text()), f.name);
     props.onNext();
   };
   const id = sys.expect;

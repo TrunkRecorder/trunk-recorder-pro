@@ -30,6 +30,14 @@ export const badLevel = (p: number | null) => (p === null ? "" : p < 2 ? "ok" : 
 
 /** The voice quality strip's scale: 20% bad frames is the darkest. */
 export const BAD_MAX = 20;
+/** CQPSK phase error, RMS degrees: errors creep in past ~13°, a few % by 20°. */
+const PHASE_WARN = 15;
+const PHASE_BAD = 20;
+
+/** A channel's demodulation quality: the eye opening, or CQPSK's phase error. */
+export function quality(c: { quality: number | null; phaseErrDeg: number | null }): string {
+  return c.quality !== null ? num(c.quality, 1) : c.phaseErrDeg !== null ? `${num(c.phaseErrDeg, 1)}°` : "—";
+}
 
 /** The source covering `hz`, and how far inside its band edge it is (0 at the edge, 1 at the centre). */
 function placeOn(sources: SourceStatus[], hz: number): { src: SourceStatus; depth: number } | null {
@@ -76,7 +84,10 @@ function DecodeCard({ s, x, usual, freqs }: { s: AppState; x: DashSystem; usual:
   const syncs = recentAvg(k("cc/syncs"), 60) ?? 0;
   const misses = (recentAvg(k("cc/nidFails"), 60) ?? 0) + (recentAvg(k("cc/flywheels"), 60) ?? 0);
   const sep = val(s, k("cc/sep"));
+  const perr = val(s, k("cc/phaseErr"));
   const st = x.status;
+  // CQPSK carries it (or only CQPSK runs): its phase error, not C4FM's eye.
+  const cqpsk = st?.modulation === "CQPSK" || (sep === null && perr !== null);
   return (
     <Card
       title={
@@ -102,7 +113,7 @@ function DecodeCard({ s, x, usual, freqs }: { s: AppState; x: DashSystem; usual:
               sub={st?.controlChannelHz ? `${formatMhz(st.controlChannelHz)} MHz` : "hunting"}
             />
             <Stat
-              label="Lost"
+              label="Control lost"
               value={lost === null ? "—" : num(lost, 1)}
               unit="%"
               level={lost !== null && lost > 10 ? (lost > 30 ? "bad" : "warn") : undefined}
@@ -111,6 +122,16 @@ function DecodeCard({ s, x, usual, freqs }: { s: AppState; x: DashSystem; usual:
             />
             {x.kind === "smartnet" ? (
               <Stat label="Deviation" value={num(val(s, k("cc/deviation")), 0)} unit="Hz" sub={`carrier ${signed(val(s, k("cc/offset")), 0)} Hz`} hint="SmartNet's tones sit about ±2.4 kHz apart; much less means a weak or filtered signal." />
+            ) : cqpsk ? (
+              <Stat
+                label="Phase error"
+                value={perr === null ? "—" : num(perr, 1)}
+                unit="° rms"
+                level={perr === null ? undefined : perr >= PHASE_BAD ? "bad" : perr >= PHASE_WARN ? "warn" : undefined}
+                spark={<LiveSpark k={k("cc/phaseErr")} color="var(--series-3)" lo={0} />}
+                sub={`carrier ${signed(val(s, k("cc/offset")), 0)} Hz`}
+                hint="How far the CQPSK receiver's phase steps land from the ideal ±45° / ±135°, RMS: under 10° is clean, past about 13° bit errors creep in (the FEC covers them), 20° and up is marginal, ~25° is noise."
+              />
             ) : (
               <Stat
                 label="Eye opening"
@@ -169,7 +190,7 @@ function SystemDetail({ s, name }: { s: AppState; name: string }) {
   const [range, setRange] = useState<StatsRange>("24h");
   useTopic(`decode:${name}`);
   const k = (n: string) => K.sys(name, n);
-  const hist = useHistory([k("cc/good"), k("cc/bad"), k("cc/sep"), k("cc/snr"), k("cc/offset"), k("voice/frames"), k("voice/bad")], range, 360);
+  const hist = useHistory([k("cc/good"), k("cc/bad"), k("cc/sep"), k("cc/phaseErr"), k("cc/snr"), k("cc/offset"), k("voice/frames"), k("voice/bad")], range, 360);
   const usual = useUsual([k("cc/good")]);
   const freqs = usePolled(`dfreqs:${name}:${range}`, () => radioQuery({ what: "freqs", system: name, hours: range === "7d" ? 168 : 24 }), 120_000);
   const rows = (freqs?.rows ?? []) as FreqRow[];
@@ -215,7 +236,7 @@ function SystemDetail({ s, name }: { s: AppState; name: string }) {
                   <th>What</th>
                   <th>SNR</th>
                   <th>Offset</th>
-                  <th>Eye</th>
+                  <th title="The demodulator's eye opening (~10 and up clean, ~1 noise), or CQPSK's phase error in degrees (under 10° clean, ~25° noise)">Quality</th>
                   <th>Calls</th>
                 </tr>
               </thead>
@@ -228,7 +249,7 @@ function SystemDetail({ s, name }: { s: AppState; name: string }) {
                       <span className={`snr ${c.snrDb >= 15 ? "ok" : c.snrDb >= 8 ? "warn" : "bad"}`}>{num(c.snrDb, 0)} dB</span>
                     </td>
                     <td className="mono">{c.offsetHz !== null ? `${signed(c.offsetHz, 0)} Hz` : "—"}</td>
-                    <td className="mono">{c.quality !== null ? num(c.quality, 1) : "—"}</td>
+                    <td className="mono">{quality(c)}</td>
                     <td className="mono">{c.calls || ""}</td>
                   </tr>
                 ))}
@@ -259,7 +280,7 @@ function SystemDetail({ s, name }: { s: AppState; name: string }) {
         </Card>
         {x.kind !== "conventional" && (
           <Card title="Signal and demodulation">
-            <TimeSeries lines={[line(k("cc/snr"), "SNR, dB", "var(--series-1)"), line(k("cc/sep"), "Eye opening", "var(--series-3)")]} />
+            <TimeSeries lines={[line(k("cc/snr"), "SNR, dB", "var(--series-1)"), x.kind === "p25" && (hist?.[k("cc/sep")] == null || st?.modulation === "CQPSK") ? line(k("cc/phaseErr"), "Phase error, °", "var(--series-3)") : line(k("cc/sep"), "Eye opening", "var(--series-3)")]} />
           </Card>
         )}
         {x.kind !== "conventional" && (

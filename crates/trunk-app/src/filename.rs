@@ -10,7 +10,7 @@
 //! `{emergency}`, `{encrypted}`, `{priority}`, `{signal}`, `{noise}`,
 //! `{color_code}`; and the start time, `{time:FORMAT}` in local time or
 //! `{ztime:FORMAT}` in UTC, FORMAT being strftime's (`%Y %m %d %H %M %S`,
-//! `%f` for milliseconds, …) or `iso` / `iso_ms`. Text from the talkgroup
+//! `%f` for milliseconds, `%-m` for no padding, …) or `iso` / `iso_ms`. Text from the talkgroup
 //! file has `\ / : * ? " < > |` and spaces made `_`.
 
 use serde_json::Value;
@@ -181,7 +181,14 @@ fn strftime(f: &str, ms: i64, utc_offset_s: i32, utc: bool) -> String {
             out.push(c);
             continue;
         }
-        match chars.next() {
+        // `%-m`: without the padding (glibc's flag).
+        let mut next = chars.next();
+        let bare = next == Some('-');
+        if bare {
+            next = chars.next();
+        }
+        let start = out.len();
+        match next {
             Some('Y') => out += &y.to_string(),
             Some('y') => out += &format!("{:02}", y.rem_euclid(100)),
             Some('m') => out += &format!("{mo:02}"),
@@ -209,9 +216,21 @@ fn strftime(f: &str, ms: i64, utc_offset_s: i32, utc: bool) -> String {
             Some('%') => out.push('%'),
             Some(o) => {
                 out.push('%');
+                if bare {
+                    out.push('-');
+                }
                 out.push(o);
+                continue;
             }
-            None => out.push('%'),
+            None => {
+                out.push('%');
+                continue;
+            }
+        }
+        if bare && matches!(next, Some('y' | 'm' | 'd' | 'e' | 'H' | 'I' | 'M' | 'S' | 'j')) {
+            let v = out[start..].trim_start_matches([' ', '0']).to_string();
+            out.truncate(start);
+            out += if v.is_empty() { "0" } else { &v };
         }
     }
     out
@@ -252,6 +271,14 @@ mod tests {
         // Just after midnight UTC is still the day before in New York.
         assert_eq!(default_path("x", "b", 1763769600, est), "x/2025/11/21/b");
         assert_eq!(default_path("x", "b", 1709164800, 0), "x/2024/2/29/b");
+    }
+
+    #[test]
+    fn no_padding_gives_the_default_layout() {
+        let c = json!({ "call_num": 7, "freq": 851012500, "talkgroup": 101, "short_name": "x", "start_time": 1709164800 });
+        let f = "{short_name}/{time:%Y}/{time:%-m}/{time:%-d}/{talkgroup}-{epoch}_{freq}";
+        assert_eq!(render(f, &c, 0, 0), format!("{}-call_7", default_path("x", "101-1709164800_851012500", 1709164800, 0)));
+        assert_eq!(render("{time:%-H}{time:%-M}{time:%-S}{time:%-q}", &c, 0, 0), "000%-q-call_7");
     }
 
     #[test]

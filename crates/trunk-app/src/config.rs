@@ -683,6 +683,8 @@ pub struct Recording {
     pub vocoder: String,
     /// M4A for the plugins that upload it, encoded once per call.
     pub m4a: M4a,
+    /// Calls waiting for the upload plugins kept in memory, not on the disk.
+    pub ram_spool: RamSpool,
     /// Keys this version doesn't know (a newer version's, a hand edit's):
     /// kept, and saved back as they were.
     #[serde(flatten)]
@@ -700,6 +702,27 @@ pub struct M4a {
 impl Default for M4a {
     fn default() -> Self {
         M4a { encoder: "auto".into(), bitrate_kbps: 32 }
+    }
+}
+
+/// A RAM disk for the files only the upload plugins need: they go there
+/// instead of the recordings folder, and to the recordings folder only when
+/// they're kept after all (an upload failed). macOS: a RAM disk the app makes;
+/// Linux: a folder in /dev/shm.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct RamSpool {
+    pub enabled: bool,
+    /// Its size (Linux: the most it may hold of /dev/shm), MB.
+    pub size_mb: u32,
+    /// A RAM-backed folder of your own instead (a tmpfs mount); empty = the usual.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub dir: String,
+}
+
+impl Default for RamSpool {
+    fn default() -> Self {
+        RamSpool { enabled: false, size_mb: 256, dir: String::new() }
     }
 }
 
@@ -744,6 +767,7 @@ impl Default for Recording {
             drop_duplicate_calls: true,
             vocoder: "fixed".into(),
             m4a: M4a::default(),
+            ram_spool: RamSpool::default(),
         }
     }
 }

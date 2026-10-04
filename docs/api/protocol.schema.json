@@ -522,6 +522,13 @@
           ],
           "description": "The receiver's eye opening (~10+ clean, ~1 noise)."
         },
+        "phaseErrDeg": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "CQPSK's phase error, RMS degrees (under 10 clean, ~25 noise)."
+        },
         "calls": {
           "type": "number"
         }
@@ -536,6 +543,7 @@
         "snrDb",
         "offsetHz",
         "quality",
+        "phaseErrDeg",
         "calls"
       ],
       "additionalProperties": false,
@@ -2213,7 +2221,10 @@
                 "pluginHealth",
                 "linkDown",
                 "linkUp",
-                "diskLow"
+                "diskLow",
+                "spoolLow",
+                "spoolFull",
+                "spoolRecovered"
               ]
             },
             "system": {
@@ -2277,6 +2288,14 @@
             },
             "freePct": {
               "type": "number"
+            },
+            "critical": {
+              "type": "boolean",
+              "description": "spoolLow: nearly full."
+            },
+            "calls": {
+              "type": "number",
+              "description": "spoolFull: calls that went to the recordings folder for want of room."
             },
             "type": {
               "type": "string",
@@ -2828,7 +2847,10 @@
             "pluginHealth",
             "linkDown",
             "linkUp",
-            "diskLow"
+            "diskLow",
+            "spoolLow",
+            "spoolFull",
+            "spoolRecovered"
           ]
         },
         "system": {
@@ -2892,6 +2914,14 @@
         },
         "freePct": {
           "type": "number"
+        },
+        "critical": {
+          "type": "boolean",
+          "description": "spoolLow: nearly full."
+        },
+        "calls": {
+          "type": "number",
+          "description": "spoolFull: calls that went to the recordings folder for want of room."
         },
         "type": {
           "type": "string",
@@ -2987,6 +3017,12 @@
               },
               "freeBytes": {
                 "type": "number"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "overflowed": {
+                "type": "number"
               }
             },
             "required": [
@@ -2997,7 +3033,41 @@
               "freeBytes"
             ],
             "additionalProperties": false
-          }
+          },
+          "description": "\"recordings\", \"data\", and \"spool\" (the RAM spool, with its `kind` and calls `overflowed` to the disk)."
+        },
+        "spotlight": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "indexed",
+                    "excluded",
+                    "unknown"
+                  ]
+                },
+                "why": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "state",
+                "why"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "macOS: whether Spotlight indexes the recordings folder (null: not checked yet, or not macOS)."
         },
         "probes": {
           "type": "array",
@@ -3774,6 +3844,26 @@
           ],
           "additionalProperties": false,
           "description": "M4A for the plugins that upload it, and for compressWav (desktop app)."
+        },
+        "ramSpool": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "sizeMb": {
+              "type": "number"
+            },
+            "dir": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "enabled",
+            "sizeMb"
+          ],
+          "additionalProperties": false,
+          "description": "Desktop: files only the upload plugins need wait in RAM, not on the disk (macOS: a RAM disk the app makes; Linux: /dev/shm). `dir`: a RAM-backed folder of your own instead."
         }
       },
       "required": [

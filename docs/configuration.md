@@ -369,6 +369,7 @@ Where calls go and which are kept. Keys marked ✓ can be set per system too
 | `dropDuplicateCalls` | bool | `true` | | Multi-site: save only the best copy of a call |
 | `captureFrames` | bool | `false` | | Also save each call's vocoder frames as `<call>.frames.jsonl` (for `trunk-pro tool revoice`) |
 | `vocoder` | string | `"fixed"` | | IMBE vocoder: `"fixed"`, `"enhanced"` or `"mbelib"` |
+| `ramSpool` | object | `{ "enabled": false, "sizeMb": 256 }` | | Files only the upload plugins need (with `audioArchive` / `callLog` off, and an `.m4a` made only for them) wait in RAM, not in `captureDir`: on macOS a RAM disk the app makes (no administrator needed, hidden from the Finder and Spotlight), on Linux a folder in `/dev/shm`. A failed upload's files are moved to `captureDir` (`archiveFilesOnFailure`); when the spool is full, calls go there directly. `sizeMb`: 16–65536. `dir`: a RAM-backed folder of your own (a tmpfs mount) instead. Applies at the next start; its room is on the dashboard's Computer page, with an event as it fills |
 | `m4a` | object | `{ "encoder": "auto", "bitrateKbps": 32 }` | | The M4A encoder for `compressWav` and plugins. `encoder`: `"auto"` (ffmpeg, then afconvert, then fdkaac), `"ffmpeg"`, `"afconvert"`, `"fdkaac"` or `"none"`. `bitrateKbps`: 8–320 |
 
 ### Per-system rules

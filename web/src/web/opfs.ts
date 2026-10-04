@@ -4,6 +4,7 @@
 // (writes) and the page (reads, export, delete).
 
 import type { CallEntry } from "../protocol.ts";
+import { ZipWriter } from "./zip.ts";
 
 async function dirFor(path: string[], create: boolean): Promise<FileSystemDirectoryHandle> {
   let d = await navigator.storage.getDirectory();
@@ -98,6 +99,31 @@ export async function exportCalls(dest: FileSystemDirectoryHandle, progress: (do
   const root = await dirFor(["calls"], false).catch(() => null);
   if (root) await writeFile(dest, "index.ndjson", await (await (await root.getFileHandle("index.ndjson")).getFile()).text());
   return done;
+}
+
+/** Every call (and the index) as one zip, in the same layout as exportCalls. */
+export async function zipCalls(progress: (done: number, total: number) => void): Promise<{ zip: Blob; count: number }> {
+  const entries = await listCalls(1_000_000);
+  const zip = new ZipWriter();
+  let done = 0;
+  for (const e of entries) {
+    for (const ext of ["wav", "json"] as const) {
+      let f: File;
+      try {
+        f = (await callBlob(e.path, ext)) as File;
+      } catch {
+        continue; // missing file: skip
+      }
+      await zip.add(`${e.path}.${ext}`, f, f.lastModified);
+    }
+    progress(++done, entries.length);
+  }
+  const root = await dirFor(["calls"], false).catch(() => null);
+  if (root) {
+    const index = await (await root.getFileHandle("index.ndjson").catch(() => null))?.getFile();
+    if (index) await zip.add("index.ndjson", index, index.lastModified);
+  }
+  return { zip: zip.finish(), count: done };
 }
 
 export async function clearCalls(): Promise<void> {

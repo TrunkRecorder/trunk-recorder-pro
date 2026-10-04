@@ -823,6 +823,10 @@ h2.big { font-size: 26px; text-transform: none; letter-spacing: -0.01em; color: 
 .why-warn { border-left-color: var(--warn); }
 .why-bad { border-left-color: var(--bad); }
 .why-ok { border-left-color: var(--ok); }
+.spotlight-note { align-items: flex-start; }
+.spotlight-note p { margin: 4px 0; }
+.spotlight-note ol { margin: 4px 0; padding-left: 20px; }
+.spotlight-note button { flex: none; }
 .stopped, .hero { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; padding: 22px 24px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
 .stopped p, .hero p { margin: 4px 0 0; }
 
@@ -1039,3 +1043,48 @@ table.calls tr.ignored td { opacity: 0.55; }
 @media (max-width: 1200px) { .src-row { grid-template-columns: minmax(0, 1fr); } }
 .wf-card { padding-bottom: 8px; }
 .wf-card .waterfall { border-radius: 8px; overflow: hidden; }
+
+/* Folders and file names: the format as chips, and the palette to drag them from (FilenameEditor). */
+.fname .seg { margin: 0 0 0 auto; }
+.fname-line { display: flex; align-items: center; gap: 10px; }
+.fname-line .fname-chips { flex: 1; }
+.fname-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 2px; min-height: 40px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); }
+.fname-line.invalid .fname-chips { border-color: var(--bad); }
+.fname-chips.build { min-height: 56px; padding: 10px; border-style: dashed; }
+.fname-chips.build.dragging { border-color: var(--accent); }
+.fname-slot { display: inline-flex; align-items: center; }
+.fname-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 6px; font-size: 13px; line-height: 20px; white-space: nowrap; border: 1px solid transparent; background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--text); font-family: inherit; }
+.fname-chip.k-time { background: color-mix(in srgb, var(--ok) 15%, transparent); }
+.fname-chip.k-sep { background: color-mix(in srgb, var(--muted) 22%, transparent); font-weight: 700; font-family: ui-monospace, monospace; }
+.fname-chip.k-text { background: transparent; border-color: var(--line); font-family: ui-monospace, monospace; }
+.fname-chip.bad { background: color-mix(in srgb, var(--bad) 16%, transparent); border-color: var(--bad); }
+.fname-chips.build .fname-chip { cursor: grab; }
+.fname-chips.build .fname-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.fname-chip.palette { cursor: grab; }
+.fname-chip.palette:hover { border-color: var(--accent); }
+.fname-text { white-space: pre; }
+.setup .fname-chip .fname-text-input, .fname-text-input { font: inherit; font-size: 13px; background: transparent; border: 0; padding: 0; border-radius: 0; color: inherit; min-width: 1ch; width: auto; }
+.fname-x { background: none; border: 0; padding: 0 0 0 2px; color: var(--muted); cursor: pointer; font-size: 14px; line-height: 1; }
+.fname-x:hover { color: var(--bad); }
+.fname-caret { display: inline-block; width: 2px; height: 22px; margin: 0 2px; border-radius: 1px; background: var(--accent); }
+.fname-example { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+.fname-example code { overflow-wrap: anywhere; }
+.fname-problems { margin: 0; padding-left: 18px; }
+.fname-editor { display: flex; flex-direction: column; gap: 12px; margin-top: 6px; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel-2); }
+.fname-palette { display: flex; flex-direction: column; gap: 10px; }
+.fname-group { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.fname-group-title { display: inline-flex; align-items: center; gap: 8px; width: 100%; font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.fname-group-title .seg { margin: 0; text-transform: none; letter-spacing: 0; }
+.fname-add { display: inline-flex; gap: 6px; align-items: center; }
+.setup .fname-add input { width: 9em; padding: 4px 8px; font-size: 13px; }
+.fname-actions select { font-size: 13px; }
+
+/* A system's talkgroups: the RadioReference paste (TalkgroupsField). */
+.tg-facts { gap: 6px; }
+.tg-paste { display: flex; flex-direction: column; gap: 10px; margin-top: 6px; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel-2); }
+.tg-paste ol { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; }
+.tg-paste a { color: var(--accent); }
+.tg-paste-box { width: 100%; min-height: 140px; resize: vertical; font-size: 13px; white-space: pre; }
+.tg-preview { width: 100%; border-collapse: collapse; font-size: 13px; }
+.tg-preview th { text-align: left; font-weight: 600; color: var(--muted); padding: 4px 8px; border-bottom: 1px solid var(--line); }
+.tg-preview td { padding: 4px 8px; border-bottom: 1px solid color-mix(in srgb, var(--line) 50%, transparent); }

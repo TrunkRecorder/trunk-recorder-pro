@@ -407,10 +407,10 @@ Every message is a JSON object with a `type`. Exact fields are in
 | `status` | ~2/s while running | `status` (`EngineStatus`: totals, `systems[]` with control channel, decode counts `good`/`bad`, site identity, patches, DMR state), `sources[]` (each radio: rate, drops, errors, frequency error), `load` (share of real time the decoder is busy), `calls` (`CallView[]`, on the air now) |
 | `spectrum` | Topic `spectrum:<source>`: ~7/s while running | `source`, `centerHz`, `rateHz`, `bins`: 512 levels in dBFS, lowest frequency first, spanning `centerHz ± rateHz/2` |
 | `stats` | 1/s while running | `t` (Unix s), `values`: series name → value now ([Statistics and history](#statistics-and-history)) |
-| `host` | Every 2 s (desktop app) | `t`, `values` (the computer's and plugins' series), `platform` (OS, cores, container and its limits, disks, connectivity checks, `unavailable`: what this platform can't tell and why) |
-| `rfDetail` | Topic `rf:<source>`: 1/s | `source`, `profile` (the noise floor in 64 slices across the band, dBFS per FFT bin), `channels` (each channel on it: power, floor, SNR, carrier offset, the receiver's eye opening) |
+| `host` | Every 2 s (desktop app) | `t`, `values` (the computer's and plugins' series), `platform` (OS, cores, container and its limits, disks (the RAM spool's too, as `spool`), connectivity checks, `spotlight` (macOS: whether Spotlight indexes the recordings folder), `unavailable`: what this platform can't tell and why) |
+| `rfDetail` | Topic `rf:<source>`: 1/s | `source`, `profile` (the noise floor in 64 slices across the band, dBFS per FFT bin), `channels` (each channel on it: power, floor, SNR, carrier offset, the receiver's eye opening or CQPSK phase error) |
 | `decodeDetail` | Topic `decode:<shortName>`: 1/s | `system`, `channels` (the system's channels as received now) |
-| `monitorEvent` | Something notable happened | `t`, `level`, `kind` (`controlLost`, `tgFirstSeen`, `sourceDrops`, `pluginHealth`, `linkDown`, `diskLow`, …) and its fields |
+| `monitorEvent` | Something notable happened | `t`, `level`, `kind` (`controlLost`, `tgFirstSeen`, `sourceDrops`, `pluginHealth`, `linkDown`, `diskLow`, `spoolLow`, `spoolFull`, …) and its fields |
 | `subscribed` | Answers `subscribe` | `topics` |
 | `statsResult` | Answers `statsQuery` | `id`, `from`, `to`, `loading` (the history files are still being read), `series`: name → `{ t0, stepS, v, lo, hi, n }` |
 | `radioResult` | Answers `radioQuery` | `id`, `what`, and by `what`: `rows` (talkgroups / radios / frequencies), `row` and its detail, `systems` (summary), `histogram` |
@@ -628,7 +628,7 @@ the day). The live values come in `stats` (and `host`); the history answers
 | `src/<label>/samples`, `dropped`, `errors` | Samples a second, samples lost a second, driver errors |
 | `src/<label>/ppm`, `tune` | Its frequency error as measured on the control channels, and the correction applied (ppm) |
 | `sys/<short>/cc/good`, `bad` | Control messages decoded / lost a second |
-| `sys/<short>/cc/locked`, `snr`, `signal`, `noise`, `offset`, `sep` | Decoding (1/0), the channel's SNR and levels, its carrier offset (Hz), the C4FM receiver's eye opening |
+| `sys/<short>/cc/locked`, `snr`, `signal`, `noise`, `offset`, `sep`, `phaseErr` | Decoding (1/0), the channel's SNR and levels, its carrier offset (Hz), the C4FM receiver's eye opening, the CQPSK receiver's phase error (RMS degrees: under 10 clean, ~25 noise) |
 | `sys/<short>/cc/syncs`, `nidFails`, `flywheels`, `eqResets` | P25 framing: syncs found, headers failed, frames carried over a missed sync, equaliser resets (a second) |
 | `sys/<short>/calls`, `airMs`, `audioBytes`, `active`, `recording` | Calls ending a second, airtime (ms a second), audio written, calls on the air and being recorded now |
 | `sys/<short>/why/<reason>` | Calls starting a second by what happened to them: `recorded`, `monitored`, `ignored`, `encrypted`, `unknown_tg`, `no_source`, `no_recorder` |

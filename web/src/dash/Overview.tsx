@@ -213,6 +213,12 @@ export function eventText(e: MonitorEvent): string {
       return `${e.target} answers again (down ${e.downS ? `${Math.round(e.downS)} s` : "briefly"})`;
     case "diskLow":
       return `The ${e.path} disk has only ${e.freePct}% free`;
+    case "spoolLow":
+      return `The RAM spool has only ${e.freePct}% free: ${e.critical ? "calls will soon go to the disk" : "uploads aren't keeping up"}`;
+    case "spoolFull":
+      return `The RAM spool was full: ${e.calls} call${e.calls === 1 ? "" : "s"} written to the recordings folder instead`;
+    case "spoolRecovered":
+      return `The RAM spool has room again (${e.freePct}% free)`;
     default:
       return `${e.kind}${e.system ? ` (${e.system})` : ""}`;
   }
@@ -294,6 +300,7 @@ function PlatformLine({ s }: { s: AppState }) {
   const h = platformHealth(s);
   const v = s.host?.values ?? {};
   const disk = s.host?.platform.disks.find((d) => d.name === "recordings") ?? s.host?.platform.disks[0];
+  const spool = s.host?.platform.disks.find((d) => d.name === "spool");
   return (
     <Card title="Computer" level={s.host ? h.level : undefined} why={h.why} onTitle={() => setView("platform")}>
       <div className="meters">
@@ -312,6 +319,13 @@ function PlatformLine({ s }: { s: AppState }) {
             <span>Disk</span>
             <Meter value={100 - (100 * disk.freeBytes) / Math.max(1, disk.totalBytes)} max={100} zones={[90, 95]} label="disk" />
             <b>{bytes(disk.freeBytes)} free</b>
+          </label>
+        )}
+        {spool && (
+          <label>
+            <span>RAM spool</span>
+            <Meter value={100 - (100 * spool.freeBytes) / Math.max(1, spool.totalBytes)} max={100} zones={[75, 90]} label="RAM spool" />
+            <b>{bytes(spool.freeBytes)} free</b>
           </label>
         )}
         {v["net/up"] !== undefined && (

@@ -4,6 +4,9 @@
 //! any order) or the legacy headerless one:
 //! Decimal,Hex,Mode,Alpha Tag,Description,Tag,Group[,Priority].
 //!
+//! Delimited by commas, semicolons, tabs or bars (as Trunk Recorder's CSV
+//! reader guesses), headers in any case.
+//!
 //! An `Ignore` column (this app's) marks talkgroups never to record (`true`,
 //! `yes`, `1`, `x`); so does Trunk Recorder's priority −1.
 
@@ -44,6 +47,21 @@ pub(crate) fn csv_lines(text: &str) -> impl Iterator<Item = &str> {
 
 /// RFC-4180-ish split: commas, double-quoted fields, "" escapes.
 pub(crate) fn split_csv_line(line: &str) -> Vec<String> {
+    split_csv_on(line, ',')
+}
+
+/// The delimiter a CSV's first line uses: comma, semicolon, tab or bar, as
+/// Trunk Recorder's CSV reader guesses (a decimal-comma spreadsheet saves
+/// with semicolons).
+pub(crate) fn csv_delimiter(line: &str) -> char {
+    [',', ';', '\t', '|'].into_iter().fold((',', 0), |best, d| {
+        let n = line.matches(d).count();
+        if n > best.1 { (d, n) } else { best }
+    }).0
+}
+
+/// [`split_csv_line`] on `delim`.
+pub(crate) fn split_csv_on(line: &str, delim: char) -> Vec<String> {
     let mut out = Vec::new();
     let mut cur = String::new();
     let mut quoted = false;
@@ -60,7 +78,7 @@ pub(crate) fn split_csv_line(line: &str) -> Vec<String> {
             }
         } else if ch == '"' {
             quoted = true;
-        } else if ch == ',' {
+        } else if ch == delim {
             out.push(cur.trim().to_string());
             cur.clear();
         } else {
@@ -74,13 +92,22 @@ pub(crate) fn split_csv_line(line: &str) -> Vec<String> {
 pub fn parse_csv(text: &str) -> Talkgroups {
     let lines: Vec<&str> = csv_lines(text).collect();
     let mut out = Talkgroups::new();
-    let Some(first) = lines.first().map(|l| split_csv_line(l)) else { return out };
-    // Headers in any case, as spreadsheets save them.
-    let first: Vec<String> = first.iter().map(|c| c.trim().to_ascii_lowercase()).collect();
+    let Some(&head) = lines.first() else { return out };
+    let delim = csv_delimiter(head);
+    // Headers in any case, as spreadsheets save them, and RadioReference's DEC and Group.
+    let first: Vec<String> = split_csv_on(head, delim)
+        .iter()
+        .map(|c| match c.trim().to_ascii_lowercase().as_str() {
+            "dec" => "decimal".to_string(),
+            "group" => "category".to_string(),
+            "alphatag" => "alpha tag".to_string(),
+            h => h.to_string(),
+        })
+        .collect();
     let headed = first.first().map(|s| s.as_str()) == Some("decimal");
     let col = |name: &str| first.iter().position(|c| c.eq_ignore_ascii_case(name));
     for line in if headed { &lines[1..] } else { &lines[..] } {
-        let f = split_csv_line(line);
+        let f = split_csv_on(line, delim);
         let get = |name: &str, legacy: usize| -> Option<&str> {
             if headed {
                 col(name).and_then(|i| f.get(i)).map(|s| s.as_str())
@@ -135,5 +162,14 @@ mod tests {
     fn a_spreadsheets_bom_and_header_case_are_fine() {
         let t = parse_csv("\u{feff}DECIMAL,alpha tag,Mode\r\n101,Disp,D\r\n");
         assert_eq!((t[&101].alpha_tag.as_str(), t[&101].mode.as_str()), ("Disp", "D"));
+    }
+
+    #[test]
+    fn semicolons_tabs_and_radioreferences_headers() {
+        let s = parse_csv("Decimal;Alpha Tag;Mode;Description\n101;\"Fire; Disp\";De;Main\n");
+        assert_eq!((s[&101].alpha_tag.as_str(), s[&101].mode.as_str()), ("Fire; Disp", "De"));
+        assert!(!s[&101].encrypted_mode());
+        let t = parse_csv("DEC\tHEX\tMode\tAlpha Tag\tDescription\tTag\tGroup\n1201\t4b1\tD\tFD Disp\tFire Dispatch\tFire Dispatch\tCounty Fire\n");
+        assert_eq!((t[&1201].alpha_tag.as_str(), t[&1201].group.as_str()), ("FD Disp", "County Fire"));
     }
 }

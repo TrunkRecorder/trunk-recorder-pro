@@ -1,7 +1,7 @@
 // Config helpers for the setup form (the recorder validates again).
 
 import type { Channel, Config, Conventional, LogSettings, RecordingOverride, SiteIdentity, Source, System, UnitNames } from "./protocol.ts";
-import { splitCsvLine } from "./talkgroups.ts";
+import { normalizeTalkgroupCsv, splitCsvLine } from "./talkgroups.ts";
 import { dmrTalkgroup, parseAccess, sameTone } from "./tones.ts";
 
 /** A new RTL-SDR's gain, dB (higher overloads its front end near strong transmitters). */
@@ -204,26 +204,8 @@ export function storedConfig(raw: Partial<Config>): Config {
   };
 }
 
-/**
- * Why a filename format can't be used, or null (the recorder's filename::problem).
- * Tokens: crates/trunk-app/src/filename.rs.
- */
-export const FILENAME_TOKENS = [
-  "talkgroup", "talkgroup_tag", "talkgroup_alpha_tag", "talkgroup_description", "talkgroup_group", "talkgroup_display", "short_name", "freq", "freq_mhz",
-  "call_num", "tdma_slot", "sys_num", "epoch", "source_num", "recorder_num", "audio_type", "emergency", "encrypted", "priority", "signal", "noise", "color_code",
-];
-export function filenameProblem(format: string): string | null {
-  const unknown: string[] = [];
-  let rest = format;
-  for (let open = rest.indexOf("{"); open >= 0; open = rest.indexOf("{")) {
-    const close = rest.indexOf("}", open);
-    if (close < 0) return "A { has no closing }.";
-    const t = rest.slice(open + 1, close);
-    if (!t.startsWith("time:") && !t.startsWith("ztime:") && !FILENAME_TOKENS.includes(t)) unknown.push(`{${t}}`);
-    rest = rest.slice(close + 1);
-  }
-  return unknown.length ? `Unknown token${unknown.length === 1 ? "" : "s"}: ${unknown.join(", ")}.` : null;
-}
+/** Why a filename format can't be used, or null: filenameFormat.ts. */
+export { FILENAME_TOKENS, filenameProblem } from "./filenameFormat.ts";
 
 /** The systems being recorded, in the recorder's order (SystemStatus.index). */
 export function activeSystems(c: Config): System[] {
@@ -1007,7 +989,7 @@ export function importTrunkRecorderConfig(
         const csv = files[sys.talkgroupsFile];
         if (csv === undefined) todo.push({ kind: "talkgroups", system: x.shortName, file: sys.talkgroupsFile });
         else {
-          x.talkgroupsCsv = csv;
+          x.talkgroupsCsv = normalizeTalkgroupCsv(csv);
           x.talkgroupsName = baseName(sys.talkgroupsFile);
         }
       }

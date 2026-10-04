@@ -191,6 +191,12 @@ export function platformHealth(s: AppState): Health {
   const hs: Health[] = [];
   for (const d of h.platform.disks) {
     const free = (100 * d.freeBytes) / Math.max(1, d.totalBytes);
+    if (d.name === "spool") {
+      // It fills when uploads fall behind; full, calls go to the disk.
+      if (free < 10) hs.push({ level: "bad", why: `The RAM spool is ${pct(100 - free)} full: calls will soon go to the disk` });
+      else if (free < 25) hs.push({ level: "warn", why: `The RAM spool is ${pct(100 - free)} full: uploads aren't keeping up` });
+      continue;
+    }
     if (free < 5) hs.push({ level: "bad", why: `The ${d.name} disk is ${pct(100 - free)} full` });
     else if (free < 10) hs.push({ level: "warn", why: `The ${d.name} disk is ${pct(100 - free)} full` });
   }

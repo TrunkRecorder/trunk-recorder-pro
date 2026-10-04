@@ -413,20 +413,29 @@ fn percent_decode(s: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
-/// A recorded file, confined to the capture folder.
+/// A recorded file, confined to the capture folder (or the RAM spool, while
+/// it waits there for the plugins). A call's .wav that was never written
+/// (only uploaded) is its .m4a.
 async fn call_file(State(ctx): State<Arc<Ctx>>, UrlPath(path): UrlPath<String>) -> Response {
-    let dir = PathBuf::from(&ctx.config.lock().unwrap().recording.capture_dir);
+    let mut dirs = vec![PathBuf::from(&ctx.config.lock().unwrap().recording.capture_dir)];
+    dirs.extend(ctx.spool.lock().unwrap().as_ref().map(|s| s.dir.clone()));
     let rel = Path::new(&path);
     if rel.components().any(|c| !matches!(c, Component::Normal(_))) {
         return StatusCode::BAD_REQUEST.into_response();
     }
-    match tokio::fs::read(dir.join(rel)).await {
-        Ok(bytes) => {
-            let mime = mime_guess::from_path(rel).first_or_octet_stream();
-            ([(header::CONTENT_TYPE, mime.as_ref().to_string())], bytes).into_response()
-        }
-        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    let mut tries: Vec<PathBuf> = vec![rel.to_path_buf()];
+    if rel.extension().is_some_and(|x| x == "wav") {
+        tries.push(rel.with_extension("m4a"));
     }
+    for r in &tries {
+        for d in &dirs {
+            if let Ok(bytes) = tokio::fs::read(d.join(r)).await {
+                let mime = mime_guess::from_path(r).first_or_octet_stream();
+                return ([(header::CONTENT_TYPE, mime.as_ref().to_string())], bytes).into_response();
+            }
+        }
+    }
+    StatusCode::NOT_FOUND.into_response()
 }
 
 async fn ws(State(ctx): State<Arc<Ctx>>, up: WebSocketUpgrade) -> Response {

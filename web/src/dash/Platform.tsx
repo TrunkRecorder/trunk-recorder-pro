@@ -5,6 +5,7 @@
 // platform can't tell is listed, greyed, with why.
 
 import { useState } from "react";
+import type { PlatformInfo } from "../protocol.ts";
 import { useApp, useTopic, type StatsRange } from "../controller.ts";
 import { Card, Choice, HeatStrip, Hint, LiveSpark, Meter, Ribbon, Stat, TimeSeries, type Level } from "../charts.tsx";
 import { ago, bytes, clockAt, dur, num, pct } from "../fmt.ts";
@@ -42,6 +43,7 @@ export function PlatformPage() {
   return (
     <div className="page">
       {health.level !== "ok" && <p className={`why why-${health.level}`}>{health.why}</p>}
+      <SpotlightNote spot={p.spotlight ?? null} />
       <div className="kpis">
         <Stat
           size="hero"
@@ -132,18 +134,26 @@ export function PlatformPage() {
             {p.disks.map((d) => {
               const used = 100 - (100 * d.freeBytes) / Math.max(1, d.totalBytes);
               const days = d.name === "recordings" && audioPerDay ? d.freeBytes / audioPerDay : null;
+              const spool = d.name === "spool";
               return (
                 <div key={d.name} className="disk">
                   <div className="row">
-                    <b>{d.name === "recordings" ? "Recordings" : "App data"}</b>
+                    <b>{spool ? "RAM spool" : d.name === "recordings" ? "Recordings" : "App data"}</b>
                     <span className="muted small mono">{d.path}</span>
                   </div>
-                  <Meter value={used} max={100} zones={[90, 95]} label={`${d.name} disk used`} />
+                  <Meter value={used} max={100} zones={spool ? [75, 90] : [90, 95]} label={`${d.name} disk used`} />
                   <div className="kv small">
                     <span>
                       <b>{bytes(d.freeBytes)}</b> free of {bytes(d.totalBytes)}
                     </span>
-                    <span>on {d.mount}</span>
+                    {spool ? (
+                      <span title="Files only the upload plugins need wait here, in memory, until every plugin has had the call. It fills when uploads fall behind; when full, calls go to the recordings folder.">
+                        {d.kind === "RAM disk" ? "a RAM disk" : d.kind === "tmpfs" ? "in /dev/shm" : "a folder of yours"} · calls waiting for upload
+                      </span>
+                    ) : (
+                      <span>on {d.mount}</span>
+                    )}
+                    {spool && !!d.overflowed && <span className="warn">{d.overflowed} call{d.overflowed === 1 ? "" : "s"} went to the disk for want of room</span>}
                     {days !== null && (
                       <span className={days < 7 ? "warn" : ""} title="Free space over the last week's average audio a day (before M4A and any clean-up)">
                         About <b>{days > 365 ? "a year or more" : dur(days * 86400)}</b> of recordings left at {bytes(audioPerDay)} a day
@@ -235,6 +245,52 @@ export function PlatformPage() {
           </ul>
         )}
       </Card>
+    </div>
+  );
+}
+
+/**
+ * macOS: Spotlight reads every call saved in the recordings folder into its
+ * index — disk writes for files nobody searches. Apps can't read or change
+ * its exclusion list, so this says how to (shown until the check finds it
+ * excluded; a "can't tell" can be dismissed).
+ */
+function SpotlightNote({ spot }: { spot: PlatformInfo["spotlight"] }) {
+  const key = spot ? `spotlightNoted:${spot.path}` : "";
+  const [noted, setNoted] = useState(() => {
+    try {
+      return !!key && localStorage.getItem(key) === "1";
+    } catch {
+      return false;
+    }
+  });
+  if (!spot || spot.state === "excluded" || (spot.state === "unknown" && noted)) return null;
+  const note = () => {
+    try {
+      localStorage.setItem(key, "1");
+    } catch {
+      // (Shown again next time.)
+    }
+    setNoted(true);
+  };
+  return (
+    <div className="banner spotlight-note" role="note">
+      <div>
+        <b>{spot.state === "indexed" ? "Spotlight indexes the recordings folder" : "Spotlight may be indexing the recordings folder"}</b>
+        <p className="small">
+          It reads every call saved there into its index: extra writes to the disk for files nobody searches. <span className="muted">({spot.why}.)</span>
+        </p>
+        <ol className="small">
+          <li>
+            Open <b>System Settings → Spotlight</b> and click <b>Search Privacy</b>.
+          </li>
+          <li>
+            Click <b>+</b> and choose <span className="mono">{spot.path}</span> (in the dialog, ⇧⌘G takes a path).
+          </li>
+        </ol>
+        <p className="muted small">macOS doesn't let apps read or change that list, so this asks Spotlight instead, once a day.</p>
+      </div>
+      {spot.state === "unknown" && <button onClick={note}>I've done it</button>}
     </div>
   );
 }

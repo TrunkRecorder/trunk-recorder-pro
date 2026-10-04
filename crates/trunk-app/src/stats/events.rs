@@ -52,6 +52,14 @@ pub enum MonitorEvent {
     LinkUp { target: String, down_s: f64 },
     #[serde(rename_all = "camelCase")]
     DiskLow { path: String, free_pct: f64 },
+    /// The RAM spool is filling (uploads not keeping up); `critical`: nearly full.
+    #[serde(rename_all = "camelCase")]
+    SpoolLow { free_pct: f64, critical: bool },
+    /// It had no room: calls went to the recordings folder.
+    #[serde(rename_all = "camelCase")]
+    SpoolFull { calls: u64 },
+    #[serde(rename_all = "camelCase")]
+    SpoolRecovered { free_pct: f64 },
 }
 
 impl MonitorEvent {
@@ -63,14 +71,15 @@ impl MonitorEvent {
     /// "info" | "warn" | "bad" | "ok": how the feed colours it.
     pub fn level(&self) -> &'static str {
         match self {
-            MonitorEvent::ControlLost { .. } | MonitorEvent::LinkDown { .. } | MonitorEvent::DiskLow { .. } => "bad",
+            MonitorEvent::ControlLost { .. } | MonitorEvent::LinkDown { .. } | MonitorEvent::DiskLow { .. } | MonitorEvent::SpoolFull { .. } => "bad",
+            MonitorEvent::SpoolLow { critical, .. } => if *critical { "bad" } else { "warn" },
             MonitorEvent::SourceDrops { .. } | MonitorEvent::SourceClipping { .. } => "warn",
             MonitorEvent::PluginHealth { state, .. } => match state.as_str() {
                 "error" => "bad",
                 "warning" => "warn",
                 _ => "ok",
             },
-            MonitorEvent::ControlRegained { .. } | MonitorEvent::LinkUp { .. } | MonitorEvent::SourceRecovered { .. } => "ok",
+            MonitorEvent::ControlRegained { .. } | MonitorEvent::LinkUp { .. } | MonitorEvent::SourceRecovered { .. } | MonitorEvent::SpoolRecovered { .. } => "ok",
             _ => "info",
         }
     }

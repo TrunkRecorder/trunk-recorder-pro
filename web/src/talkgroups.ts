@@ -21,8 +21,8 @@ export function isEncryptedMode(mode: string): boolean {
   return mode === "E" || mode === "TE" || mode === "DE";
 }
 
-/** RFC-4180-ish line split: commas, double-quoted fields, "" escapes. */
-export function splitCsvLine(line: string): string[] {
+/** RFC-4180-ish line split: `delim` (a comma), double-quoted fields, "" escapes. */
+export function splitCsvLine(line: string, delim = ","): string[] {
   const out: string[] = [];
   let cur = "";
   let q = false;
@@ -35,7 +35,7 @@ export function splitCsvLine(line: string): string[] {
       } else if (ch === '"') q = false;
       else cur += ch;
     } else if (ch === '"') q = true;
-    else if (ch === ",") {
+    else if (ch === delim) {
       out.push(cur.trim());
       cur = "";
     } else cur += ch;
@@ -49,20 +49,90 @@ const int = (s: string | undefined, dflt = 0): number => {
   return Number.isFinite(v) ? v : dflt;
 };
 
+/**
+ * The delimiter a CSV's first line uses: comma, semicolon, tab or bar (what
+ * Trunk Recorder's CSV reader guesses between; spreadsheets set to a
+ * decimal-comma locale save with semicolons).
+ */
+export function csvDelimiter(line: string): string {
+  let best = ",";
+  let most = 0;
+  for (const d of [",", ";", "\t", "|"]) {
+    const n = line.split(d).length - 1;
+    if (n > most) [best, most] = [d, n];
+  }
+  return best;
+}
+
+/** Header names as Trunk Recorder spells them, by any case and the names RadioReference's export uses. */
+const HEADER: Record<string, string> = {
+  decimal: "Decimal",
+  dec: "Decimal",
+  hex: "Hex",
+  mode: "Mode",
+  "alpha tag": "Alpha Tag",
+  alphatag: "Alpha Tag",
+  description: "Description",
+  tag: "Tag",
+  category: "Category",
+  group: "Category",
+  priority: "Priority",
+  "preferred nac": "Preferred NAC",
+  "preferred site": "Preferred Site",
+  ignore: "Ignore",
+  comment: "Comment",
+};
+const canonical = (h: string) => HEADER[h.trim().toLowerCase()] ?? h.trim();
+
+/** Lines that hold something: not blank, not a # comment, without a spreadsheet's byte-order mark. */
+function dataLines(text: string): string[] {
+  return text
+    .replace(/^\uFEFF/, "")
+    .split(/\r?\n/)
+    .filter((l) => l.trim() && !l.trim().startsWith("#"));
+}
+
 export function parseTalkgroupCsv(text: string): Map<number, Talkgroup> {
-  const lines = text.split(/\r?\n/).filter((l) => l.trim() && !l.trim().startsWith("#"));
-  const out = new Map<number, Talkgroup>();
+  return readTalkgroupCsv(text).talkgroups;
+}
+
+/** What a talkgroup file held, and what in it was passed over. */
+export interface TalkgroupCsvReport {
+  talkgroups: Map<number, Talkgroup>;
+  /** No header: the old fixed columns (Decimal, Hex, Mode, Alpha Tag, Description, Tag, Group, Priority). */
+  legacy: boolean;
+  /** Rows with no talkgroup number in the Decimal column (their text, the first few). */
+  skipped: string[];
+  /** Columns neither Trunk Recorder nor this app knows. */
+  unknownColumns: string[];
+  /** Header problems Trunk Recorder would stop at (it needs Decimal, Mode and Description). */
+  missing: string[];
+}
+
+export function readTalkgroupCsv(text: string): TalkgroupCsvReport {
+  const lines = dataLines(text);
+  const out: TalkgroupCsvReport = { talkgroups: new Map(), legacy: false, skipped: [], unknownColumns: [], missing: [] };
   if (!lines.length) return out;
-  const first = splitCsvLine(lines[0]);
+  const delim = csvDelimiter(lines[0]);
+  const first = splitCsvLine(lines[0], delim).map(canonical);
   const headed = first[0] === "Decimal";
+  out.legacy = !headed;
+  if (headed) {
+    out.unknownColumns = first.filter((h) => h && !Object.values(HEADER).includes(h));
+    out.missing = ["Mode", "Description"].filter((h) => !first.includes(h));
+  }
   const col = (name: string) => first.indexOf(name);
   const rows = headed ? lines.slice(1) : lines;
   for (const line of rows) {
-    const f = splitCsvLine(line);
+    const f = splitCsvLine(line, delim);
     const get = (name: string, legacy: number) => (headed ? (col(name) >= 0 ? f[col(name)] : undefined) : f[legacy]);
-    const number = int(get("Decimal", 0), NaN);
-    if (!Number.isFinite(number)) continue;
-    out.set(number, {
+    const cell = (get("Decimal", 0) ?? "").trim();
+    const number = /^\d+$/.test(cell) ? Number(cell) : NaN;
+    if (!Number.isFinite(number)) {
+      out.skipped.push(line.trim());
+      continue;
+    }
+    out.talkgroups.set(number, {
       number,
       mode: get("Mode", 2) ?? "",
       alphaTag: get("Alpha Tag", 3) ?? "",
@@ -77,8 +147,43 @@ export function parseTalkgroupCsv(text: string): Map<number, Talkgroup> {
   return out;
 }
 
-/** Mode letters RadioReference's talkgroup tables use (Trunk Recorder's too). */
-const RR_MODE = /^(A|D|T|E|M|DE|TE|DM|AE)$/i;
+/**
+ * A talkgroup file as loaded, ready to keep: a Trunk Recorder file with
+ * commas comes back as it is; one saved with semicolons or tabs, with a
+ * byte-order mark, or with headers in another case is rewritten with commas
+ * and Trunk Recorder's header names, every column kept.
+ */
+export function normalizeTalkgroupCsv(text: string): string {
+  const bom = text.startsWith("\uFEFF");
+  const body = bom ? text.slice(1) : text;
+  const lines = body.split(/\r?\n/);
+  const hi = lines.findIndex((l) => l.trim() && !l.trim().startsWith("#"));
+  if (hi < 0) return body;
+  const delim = csvDelimiter(lines[hi]);
+  const header = splitCsvLine(lines[hi], delim);
+  const fixed = header.map(canonical);
+  const headed = fixed[0] === "Decimal";
+  const renamed = headed && fixed.some((h, k) => h !== header[k]);
+  if (delim === "," && !renamed) return body;
+  return (
+    lines
+      .map((l, k) => {
+        if (!l.trim() || l.trim().startsWith("#")) return l;
+        const f = k === hi && headed ? fixed : splitCsvLine(l, delim);
+        return f.map(csvCell).join(",");
+      })
+      .join("\n")
+      .replace(/\n*$/, "") + "\n"
+  );
+}
+
+/**
+ * Mode letters RadioReference's talkgroup tables use (Trunk Recorder's too):
+ * A analog, D digital, T TDMA, M mixed, E encrypted; DE / TE always
+ * encrypted, De / Te only sometimes — Trunk Recorder records those, so the
+ * case is kept.
+ */
+const RR_MODE = /^(A|D|T|E|M|DE|TE|De|Te|DM|AE|Ae)$/;
 
 /**
  * A Mode cell: "D", or the letter with RadioReference's encryption badge
@@ -86,9 +191,10 @@ const RR_MODE = /^(A|D|T|E|M|DE|TE|DM|AE)$/i;
  * it doesn't record. Null when it isn't a mode.
  */
 function rrMode(cell: string): string | null {
-  const [base = "", ...badges] = cell.split(/\s+/);
-  if (!RR_MODE.test(base)) return null;
-  const mode = base.toUpperCase();
+  const [raw = "", ...badges] = cell.split(/\s+/);
+  // A lone lower-case letter ("d") is the upper-case one.
+  const mode = raw.length === 1 ? raw.toUpperCase() : raw;
+  if (!RR_MODE.test(mode)) return null;
   if (!badges.some((b) => /^enc/i.test(b)) || mode.endsWith("E")) return mode;
   return mode === "D" ? "DE" : mode === "T" ? "TE" : "E";
 }

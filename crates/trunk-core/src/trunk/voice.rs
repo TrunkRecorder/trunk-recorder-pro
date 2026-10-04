@@ -157,7 +157,8 @@ pub trait VoiceDecoder: Send {
         None
     }
     /// Its receivers' measurements for the dashboard (the eye opening as
-    /// `sep`; see [`crate::metrics`]). Default: none.
+    /// `sep`, CQPSK's phase error as `phaseErr`; see [`crate::metrics`]).
+    /// Default: none.
     fn report(&self, _sink: &mut dyn Sink) {}
 }
 
@@ -263,6 +264,11 @@ struct P25Tdma {
 impl VoiceDecoder for P25Tdma {
     fn kind(&self) -> VoiceKind {
         VoiceKind::Tdma
+    }
+    fn report(&self, sink: &mut dyn Sink) {
+        if let Some(e) = self.rx.phase_error_deg() {
+            sink.gauge("phaseErr", e as f64);
+        }
     }
     fn push(&mut self, iq: &[Complex32], out: &mut Vec<VoiceOut>) {
         self.syms.clear();

@@ -77,6 +77,8 @@ mod radio;
 mod runtime;
 mod sdr;
 mod server;
+mod spool;
+mod spotlight;
 mod statstore;
 #[cfg(test)]
 mod protocol_tests;
@@ -681,6 +683,7 @@ fn serve(a: &Args) {
         topics_gen: std::sync::atomic::AtomicU64::new(0),
         engine_cmds: Mutex::new(Vec::new()),
         host_last: Mutex::new(None),
+        spool: Mutex::new(None),
     });
     monitor::start(ctx.clone());
     runtime::load_history(ctx.clone());

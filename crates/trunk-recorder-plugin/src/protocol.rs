@@ -220,7 +220,8 @@ pub struct ConcludedCall {
 #[serde(default)]
 pub struct CallFiles {
     pub json: PathBuf,
-    /// 16-bit mono WAV, 8 kHz.
+    /// 16-bit mono WAV, 8 kHz. There whenever `m4a` isn't; with an .m4a it
+    /// may not be (the recorder writes the WAV only when it's kept).
     pub wav: PathBuf,
     /// When the plugin asked for M4A and the recorder could encode it.
     #[serde(skip_serializing_if = "Option::is_none")]

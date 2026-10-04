@@ -172,7 +172,8 @@ impl Bank {
 
 /// The receivers' framing and demodulation, summed over the bank: frame
 /// syncs found, NIDs that failed, frames carried over a missed sync
-/// (flywheel), CQPSK equaliser resets — and the C4FM receiver's eye opening.
+/// (flywheel), CQPSK equaliser resets — the C4FM receiver's eye opening and
+/// the lead CQPSK receiver's phase error.
 impl Instrumented for Bank {
     fn report(&self, sink: &mut dyn Sink) {
         let (mut syncs, mut nid_fails, mut flywheels, mut eq_resets) = (0, 0, 0, 0);
@@ -194,6 +195,12 @@ impl Instrumented for Bank {
             Demod::Cqpsk(_) => None,
         }) {
             sink.gauge("sep", q as f64);
+        }
+        if let Some(e) = self.rx.iter().find_map(|r| match &r.demod {
+            Demod::Cqpsk(c) => c.phase_error_deg(),
+            Demod::Other(_) => None,
+        }) {
+            sink.gauge("phaseErr", e as f64);
         }
         if let Some(off) = self.offset_hz() {
             sink.gauge("offset", off as f64);

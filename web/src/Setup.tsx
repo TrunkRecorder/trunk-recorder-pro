@@ -6,8 +6,6 @@ import {
   channelTalkgroups,
   defaultLog,
   enabledChannels,
-  FILENAME_TOKENS,
-  filenameProblem,
   formatFromPath,
   formatGain,
   formatMhz,
@@ -37,9 +35,10 @@ import { InterfacesPanel } from "./Interfaces.tsx";
 import { M4aSettings, PluginSetupPanel, renameSystemRefs, SystemPluginSettings } from "./Plugins.tsx";
 import { IconAntenna, IconDongle, IconFolder, IconPuzzle, IconTower } from "./Onboarding.tsx";
 import type { AirspyGainMode, Channel, Config, Conventional, HeardCode, LogSettings, Recording, RecordingOverride, RecordingRules, SiteIdentity, SoapyState, Source, System, UnitNames } from "./protocol.ts";
+import { DEFAULT_FORMAT, FilenameEditor } from "./FilenameEditor.tsx";
 import { GuardBand } from "./Rolloff.tsx";
 import { SurveyPanel } from "./Survey.tsx";
-import { parseTalkgroupCsv } from "./talkgroups.ts";
+import { TalkgroupsField } from "./TalkgroupsField.tsx";
 import { unitNameCount } from "./units.ts";
 import { openTodos } from "./todo.ts";
 import { parseAccess, sameTone } from "./tones.ts";
@@ -1491,7 +1490,6 @@ function SystemCard(props: { c: Config; i: number }) {
   const { c, i } = props;
   const sys = c.systems[i];
   const [ccText, setCcText] = useState(() => sys.controlChannelsHz.map((f) => formatMhz(f)).join(", "));
-  const tgRef = useRef<HTMLInputElement>(null);
   const need = useNeed();
   const plugins = useApp().plugins?.plugins ?? [];
   const edit = (fn: (x: System) => void) => updateConfig((x) => fn(x.systems[i]));
@@ -1502,10 +1500,6 @@ function SystemCard(props: { c: Config; i: number }) {
       else x.expect[k] = v;
     });
   const color = systemColor(c, sys.shortName);
-  const tgs = sys.talkgroupsCsv ? parseTalkgroupCsv(sys.talkgroupsCsv) : new Map();
-  const tgCount = tgs.size;
-  const ignored = [...tgs.values()].filter((t) => t.ignore).length;
-  const tgDonors = c.systems.filter((x, k) => k !== i && x.talkgroupsCsv);
   const siblings = siteSiblings(c, sys);
   // The lock, on the fields this protocol states (others are ignored).
   const lockFields = siteLockFields(sys.type);
@@ -1516,17 +1510,6 @@ function SystemCard(props: { c: Config; i: number }) {
   const centers = resolvedCenters(c);
   const ccOn = [...new Set(sys.controlChannelsHz.map((f) => sourceCovering(c, centers, f)).filter((k) => k >= 0))];
   const voiceIn = sys.voiceChannelsHz.filter((f) => sourceCovering(c, centers, f) >= 0).length;
-
-  const onTalkgroups = async (f: File | undefined) => {
-    if (!f) return;
-    const text = await f.text();
-    const n = parseTalkgroupCsv(text).size;
-    edit((x) => {
-      x.talkgroupsCsv = text;
-      x.talkgroupsName = f.name;
-    });
-    setNotice(`Loaded ${n} talkgroups from ${f.name} into ${sys.shortName}.`);
-  };
 
   return (
     <div className={`system-card${sys.enabled ? "" : " off"}`} style={{ ["--sys-color" as string]: color }} id={`need-sys-${sys.shortName}`}>
@@ -1637,54 +1620,7 @@ function SystemCard(props: { c: Config; i: number }) {
             }}
           />
         </Field>
-        <Field
-          label="Talkgroups"
-          hint={`Trunk Recorder's talkgroup CSV. An Ignore column (true / yes / x) marks talkgroups never to record, as does Priority −1.${ignored ? ` ${ignored} ignored.` : ""}`}
-          needs={need(`tg-${sys.shortName}`)}
-          anchor={`tg-${sys.shortName}`}
-        >
-          <div className="row">
-            <button className="btn" onClick={() => tgRef.current?.click()}>
-              Load CSV…
-            </button>
-            <span className="mono">{tgCount ? `${tgCount} from ${sys.talkgroupsName}` : "none"}</span>
-            {tgCount > 0 && (
-              <button
-                className="btn ghost"
-                onClick={() =>
-                  edit((x) => {
-                    x.talkgroupsCsv = "";
-                    x.talkgroupsName = "";
-                  })
-                }
-              >
-                Clear
-              </button>
-            )}
-            {tgDonors.length > 0 && (
-              <select
-                value=""
-                aria-label="Copy talkgroups from another system"
-                onChange={(e) => {
-                  const d = c.systems.find((x) => x.shortName === e.target.value);
-                  if (d)
-                    edit((x) => {
-                      x.talkgroupsCsv = d.talkgroupsCsv;
-                      x.talkgroupsName = d.talkgroupsName;
-                    });
-                }}
-              >
-                <option value="">Copy from…</option>
-                {tgDonors.map((d) => (
-                  <option key={d.shortName} value={d.shortName}>
-                    {d.shortName} ({d.talkgroupsName})
-                  </option>
-                ))}
-              </select>
-            )}
-          </div>
-          <input ref={tgRef} type="file" accept=".csv,text/csv" hidden onChange={(e) => void onTalkgroups(e.target.files?.[0])} />
-        </Field>
+        <TalkgroupsField sys={sys} index={i} needs={need(`tg-${sys.shortName}`)} anchor={`tg-${sys.shortName}`} />
         <UnitNamesField
           value={sys.unitNames}
           anchor={`units-${sys.shortName}`}
@@ -1933,8 +1869,8 @@ const RULE_GROUPS: { title: string; rules: Rule[] }[] = [
     title: "Audio",
     rules: [
       { key: "normalizeAudio", kind: "bool", label: "Even out call loudness", hint: "Bring every call's speech to the same level, as Trunk Recorder's uploads were" },
-      { key: "digitalLevelDb", kind: "num", label: "Digital level, dB", hint: "Then louder (+) or quieter (−) for P25 and DMR calls (digitalLevels)", min: -20, max: 20 },
-      { key: "analogLevelDb", kind: "num", label: "Analog level, dB", hint: "The same for analog FM calls (analogLevels)", min: -20, max: 20 },
+      { key: "digitalLevelDb", kind: "num", label: "Digital Level Adjustment, dB", hint: "Then louder (+) or quieter (−) for P25 and DMR calls (digitalLevels)", min: -20, max: 20 },
+      { key: "analogLevelDb", kind: "num", label: "Analog Level Adjustment, dB", hint: "The same for analog FM calls (analogLevels)", min: -20, max: 20 },
     ],
   },
   {
@@ -1944,7 +1880,7 @@ const RULE_GROUPS: { title: string; rules: Rule[] }[] = [
         key: "filenameFormat",
         kind: "text",
         label: "Folders and file names",
-        hint: "Under the recordings folder; -call_<number> is added to each name (filenameFormat). Blank: <short name>/<year>/<month>/<day>/<talkgroup>-<epoch>_<freq>",
+        hint: "Inside the recordings folder; -call_<number> is added to each file name, and text from the talkgroup file has spaces and \\ / : * ? \" < > | made _ (filenameFormat).",
       },
       { key: "compressWav", kind: "bool", label: "Also save an M4A", hint: "Of every call, about a tenth the size of the WAV; needs ffmpeg, or afconvert on macOS (compressWav)", desktop: true },
       { key: "audioArchive", kind: "bool", label: "Keep the audio after uploading", hint: "Off: deleted once every upload plugin has had the call. Calls no plugin takes are kept (audioArchive)", desktop: true },
@@ -1960,46 +1896,6 @@ function ruleValue(r: Rule, v: Recording[keyof Recording] | undefined): string {
   if (r.kind === "bool") return v ? "on" : "off";
   if (r.kind === "text") return (v as string) || "the usual layout";
   return v === 0 && r.zero ? r.zero : String(v);
-}
-
-/** A filename format, checked as typed. */
-function FormatInput(props: { value: string; placeholder: string; onChange: (v: string) => void; label: string }) {
-  const problem = props.value ? filenameProblem(props.value) : null;
-  return (
-    <>
-      <input
-        className={`mono${problem ? " invalid" : ""}`}
-        aria-label={props.label}
-        aria-invalid={!!problem}
-        value={props.value}
-        placeholder={props.placeholder}
-        onChange={(e) => props.onChange(e.target.value)}
-      />
-      {problem && <span className="field-needs">{problem}</span>}
-    </>
-  );
-}
-
-function FormatHelp() {
-  return (
-    <details className="help wide">
-      <summary>Filename tokens</summary>
-      <p className="small">
-        <code>/</code> makes a folder. Call: {FILENAME_TOKENS.map((t, k) => (
-          <Fragment key={t}>
-            {k > 0 && " "}
-            <code>{`{${t}}`}</code>
-          </Fragment>
-        ))}
-        . Start time: <code>{"{time:%Y-%m-%d}"}</code> in local time or <code>{"{ztime:…}"}</code> in UTC, with strftime&apos;s <code>%Y %m %d %H %M %S</code>,{" "}
-        <code>%f</code> for milliseconds, or <code>iso</code> / <code>iso_ms</code> (with colons, which Windows doesn&apos;t allow in names). Text from the talkgroup file has
-        spaces and <code>{"\\ / : * ? \" < > |"}</code> made <code>_</code>.
-      </p>
-      <p className="small">
-        Example: <code>{"{short_name}/{time:%Y}/{time:%m}/{time:%d}/{talkgroup}-{talkgroup_alpha_tag}-{epoch}_{freq}"}</code>
-      </p>
-    </details>
-  );
 }
 
 /** The call rules for the whole recorder (the Recording tab). */
@@ -2033,12 +1929,18 @@ function CallRules(props: { c: Config }) {
                     />
                   </Field>
                 ) : (
-                  <Field key={rule.key} label={rule.label} hint={rule.hint} wide>
-                    <FormatInput label={rule.label} value={r.filenameFormat} placeholder="{short_name}/{time:%Y}/…" onChange={(v) => set("filenameFormat", v.trim() ? v : "")} />
-                  </Field>
+                  <FilenameEditor
+                    key={rule.key}
+                    label={rule.label}
+                    hint={rule.hint}
+                    value={r.filenameFormat}
+                    fallback={DEFAULT_FORMAT}
+                    fallbackName="Trunk Recorder's layout"
+                    root={web ? undefined : props.c.recording.captureDir}
+                    onChange={(v) => set("filenameFormat", v.trim() ? v : "")}
+                  />
                 ),
               )}
-              {g.title === "Files" && <FormatHelp />}
             </div>
           </div>
         ))}
@@ -2049,7 +1951,7 @@ function CallRules(props: { c: Config }) {
 
 /**
  * A system's own call rules (or the conventional channels'): each setting
- * left at "As Recording" follows the Recording tab.
+ * left at Default follows the Recording tab.
  */
 function RecordingOverridePanel(props: { c: Config; value: RecordingOverride | undefined; onChange: (fn: (o: RecordingOverride) => void) => void }) {
   const { c, value, onChange } = props;
@@ -2066,33 +1968,44 @@ function RecordingOverridePanel(props: { c: Config; value: RecordingOverride | u
     <details className="help override">
       <summary>
         Recording override
-        <span className="muted">{mine.length ? ` — its own ${mine.map((r) => r.label.replace(/, (s|dB)$/, "").replace(/^\w(?=[a-z])/, (ch) => ch.toLowerCase())).join(", ")}` : " — as in Recording"}</span>
+        <span className="muted">{mine.length ? ` — its own ${mine.map((r) => r.label.replace(/, (s|dB)$/, "").replace(/\b[A-Z](?=[a-z])/g, (ch) => ch.toLowerCase())).join(", ")}` : " — defaults"}</span>
       </summary>
-      <p className="muted small">Blank boxes and “As Recording” follow the Recording tab (its value is shown greyed); set one and this system uses its own.</p>
+      <p className="muted small">Each setting left at Default follows the Recording tab (its value is shown in brackets); set one and this system uses its own.</p>
       <div className="grid3">
         {rules.map((rule) => {
           const mineNow = own[rule.key] !== undefined;
+          if (rule.kind === "text")
+            return (
+              <FilenameEditor
+                key={rule.key}
+                label={rule.label}
+                hint={rule.hint}
+                value={own.filenameFormat ?? ""}
+                fallback={base.filenameFormat || DEFAULT_FORMAT}
+                fallbackName={base.filenameFormat ? "from Recording" : "Trunk Recorder's layout"}
+                root={web ? undefined : base.captureDir}
+                onChange={(v) => set("filenameFormat", v.trim() ? v : undefined)}
+              />
+            );
           return (
-            <Field key={rule.key} label={rule.label} hint={mineNow ? `Recording: ${ruleValue(rule, base[rule.key])}` : undefined} wide={rule.kind === "text"}>
+            <Field key={rule.key} label={rule.label} hint={mineNow ? `Default: ${ruleValue(rule, base[rule.key])}` : undefined}>
               {rule.kind === "bool" ? (
                 <select
                   className={mineNow ? "overridden" : ""}
                   value={own[rule.key] === undefined ? "" : own[rule.key] ? "on" : "off"}
                   onChange={(e) => set(rule.key, e.target.value === "" ? undefined : e.target.value === "on")}
                 >
-                  <option value="">As Recording ({ruleValue(rule, base[rule.key])})</option>
+                  <option value="">Default ({ruleValue(rule, base[rule.key])})</option>
                   <option value="on">On</option>
                   <option value="off">Off</option>
                 </select>
-              ) : rule.kind === "num" ? (
+              ) : (
                 <DecInput
                   label={rule.label}
                   value={own[rule.key]}
-                  placeholder={ruleValue(rule, base[rule.key])}
+                  placeholder={`Default (${ruleValue(rule, base[rule.key])})`}
                   onChange={(v) => set(rule.key, v === undefined ? undefined : Math.max(rule.min, Math.min(rule.max, v)))}
                 />
-              ) : (
-                <FormatInput label={rule.label} value={own.filenameFormat ?? ""} placeholder={base.filenameFormat || "the usual layout: <short name>/<year>/<month>/<day>/…"} onChange={(v) => set("filenameFormat", v.trim() ? v : undefined)} />
               )}
             </Field>
           );
@@ -2102,7 +2015,7 @@ function RecordingOverridePanel(props: { c: Config; value: RecordingOverride | u
         <div className="row">
           <span className="spacer" />
           <button className="btn ghost small" onClick={() => onChange((o) => rules.forEach((r) => delete o[r.key]))}>
-            All as Recording
+            Reset to Defaults
           </button>
         </div>
       )}
@@ -2269,6 +2182,23 @@ export function Setup() {
           ) : (
             <Field label="Recordings folder" hint="On the recorder's computer. Each call goes where Folders and file names (below) says." wide>
               <input className="mono" value={c.recording.captureDir} onChange={(e) => updateConfig((x) => void (x.recording.captureDir = e.target.value))} />
+            </Field>
+          )}
+          {!web && (
+            <Toggle
+              label="Keep calls waiting to upload in memory"
+              hint="what only the upload plugins need waits on a RAM disk (Linux: /dev/shm), not the recordings folder, which gets it only if an upload fails. What's kept (Keep the audio / the call JSON, per system) still goes to the folder. macOS and Linux; from the next start"
+              checked={c.recording.ramSpool?.enabled ?? false}
+              onChange={(v) => updateConfig((x) => void (x.recording.ramSpool = { sizeMb: 256, ...x.recording.ramSpool, enabled: v }))}
+            />
+          )}
+          {!web && c.recording.ramSpool?.enabled && (
+            <Field label="RAM spool size, MB" hint="When it's full, calls go to the recordings folder. 256 MB holds hours of calls waiting to upload.">
+              <input
+                className="mono"
+                value={c.recording.ramSpool.sizeMb}
+                onChange={(e) => updateConfig((x) => void (x.recording.ramSpool = { ...x.recording.ramSpool!, sizeMb: Math.max(16, Math.min(8192, Number(e.target.value) || 256)) }))}
+              />
             </Field>
           )}
           <div className="grid3">

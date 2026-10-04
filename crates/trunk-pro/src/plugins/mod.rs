@@ -26,7 +26,7 @@ pub mod store;
 
 pub use archive::{Archive, FileRules};
 pub use encode::Encoder;
-pub use host::{Note, PluginHost, Spec};
+pub use host::{CallAudio, Note, PluginHost, Spec};
 
 use std::collections::BTreeMap;
 use std::io::Read;

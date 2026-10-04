@@ -1,9 +1,9 @@
 // The web build keeps calls in the browser's private storage; this shows how
-// much, and copies them out to a real folder (Trunk Recorder's layout).
+// much, and copies them out to a real folder or a zip (Trunk Recorder's layout).
 
 import { useEffect, useState } from "react";
 import { forgetHistory, setNotice, useApp } from "../controller.ts";
-import { clearCalls, exportCalls, storageEstimate } from "./opfs.ts";
+import { clearCalls, exportCalls, storageEstimate, zipCalls } from "./opfs.ts";
 
 const mb = (b: number) => (b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : b >= 1e7 ? `${(b / 1e6).toFixed(0)} MB` : `${(b / 1e6).toFixed(1)} MB`);
 
@@ -33,6 +33,23 @@ export function BrowserStorage() {
       setNotice(`Exported ${n} calls to “${dest.name}”.`);
     } catch (e) {
       setNotice(`Export failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function downloadZip() {
+    try {
+      const { zip, count } = await zipCalls((d, t) => setBusy(`Zipping ${d}/${t}…`));
+      const url = URL.createObjectURL(zip);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `calls-${new Date().toISOString().slice(0, 10)}.zip`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      setNotice(`Zipped ${count} calls.`);
+    } catch (e) {
+      setNotice(`Zip failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setBusy(null);
     }
@@ -68,6 +85,9 @@ export function BrowserStorage() {
               Export to folder…
             </button>
           ) : null}
+          <button className="btn ghost small" onClick={() => void downloadZip()} disabled={!s.history.length} title="Download every call as one .zip">
+            Download zip
+          </button>
           <button className="btn ghost small" onClick={() => void clearAll()} disabled={!s.history.length || s.phase !== "idle"}>
             Delete all
           </button>

@@ -16,6 +16,7 @@ import { DecodePage } from "./dash/Decode.tsx";
 import { RadioPage } from "./dash/Radio.tsx";
 import { PluginHealthPage } from "./dash/PluginHealth.tsx";
 import { PlatformPage } from "./dash/Platform.tsx";
+import { useWakeLock } from "./web/wakeLock.ts";
 
 const ICON: Record<View, ReactNode> = {
   overview: <path d="M3 3h6v8H3zM11 3h6v5h-6zM11 10h6v7h-6zM3 13h6v4H3z" />,
@@ -109,6 +110,8 @@ export function App() {
   // The lights: recomputed with what they depend on, a few times a second at most.
   const health = useSelect((x) => pageHealth(x), (a, b) => Object.keys(a).every((k) => a[k].level === b[k].level && a[k].why === b[k].why));
   const running = s.phase === "running" || s.phase === "starting";
+  // The browser build records in this tab: keep the screen (and so the tab) awake.
+  useWakeLock(!!web && running);
   const problem = s.config ? startProblem(s.config) : "Connecting to the recorder…";
   const liveDongle = s.config?.sources.some((x) => x.type !== "file") ?? false;
   // The setup guide: offered once, when the recorder first reports an empty config.

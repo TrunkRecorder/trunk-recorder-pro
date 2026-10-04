@@ -14,6 +14,7 @@ import { Waterfall } from "../Waterfall.tsx";
 import { K, recentAvg, running, sourceHealth, useHistory, val } from "./data.ts";
 import { ccMarks } from "./Systems.tsx";
 import { systemChoices } from "./Calls.tsx";
+import { quality } from "./Decode.tsx";
 
 /** A source's gain setting, as configured. */
 function gainText(c: Source | undefined): string {
@@ -306,7 +307,7 @@ function SourceDetail({ s, i }: { s: AppState; i: number }) {
                   <th title="The floor under it">Floor</th>
                   <th title="Power above the floor">SNR</th>
                   <th title="How far the carrier is from where it should be">Offset</th>
-                  <th title="The demodulator's eye opening: ~10 and up clean, ~1 noise">Eye</th>
+                  <th title="The demodulator's eye opening (~10 and up clean, ~1 noise), or CQPSK's phase error in degrees (under 10° clean, ~25° noise)">Quality</th>
                 </tr>
               </thead>
               <tbody>
@@ -324,7 +325,7 @@ function SourceDetail({ s, i }: { s: AppState; i: number }) {
                       <span className={`snr ${c.snrDb >= 15 ? "ok" : c.snrDb >= 8 ? "warn" : "bad"}`}>{num(c.snrDb, 0)} dB</span>
                     </td>
                     <td className="mono">{c.offsetHz !== null ? `${signed(c.offsetHz, 0)} Hz` : "—"}</td>
-                    <td className="mono">{c.quality !== null ? num(c.quality, 1) : "—"}</td>
+                    <td className="mono">{quality(c)}</td>
                   </tr>
                 ))}
               </tbody>

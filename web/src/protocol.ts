@@ -241,6 +241,12 @@ export interface Recording extends RecordingRules {
   vocoder: "fixed" | "enhanced" | "mbelib";
   /** M4A for the plugins that upload it, and for compressWav (desktop app). */
   m4a?: { encoder: string; bitrateKbps: number };
+  /**
+   * Desktop: files only the upload plugins need wait in RAM, not on the disk
+   * (macOS: a RAM disk the app makes; Linux: /dev/shm). `dir`: a RAM-backed
+   * folder of your own instead.
+   */
+  ramSpool?: { enabled: boolean; sizeMb: number; dir?: string };
 }
 
 /**
@@ -877,6 +883,8 @@ export interface ChannelSnapshot {
   offsetHz: number | null;
   /** The receiver's eye opening (~10+ clean, ~1 noise). */
   quality: number | null;
+  /** CQPSK's phase error, RMS degrees (under 10 clean, ~25 noise). */
+  phaseErrDeg: number | null;
   calls: number;
 }
 
@@ -902,7 +910,10 @@ export interface MonitorEventBody {
     | "pluginHealth"
     | "linkDown"
     | "linkUp"
-    | "diskLow";
+    | "diskLow"
+    | "spoolLow"
+    | "spoolFull"
+    | "spoolRecovered";
   /** A system's short name (talkgroup, radio, call volume, control channel events). */
   system?: string;
   talkgroup?: number;
@@ -923,6 +934,10 @@ export interface MonitorEventBody {
   downS?: number;
   path?: string;
   freePct?: number;
+  /** spoolLow: nearly full. */
+  critical?: boolean;
+  /** spoolFull: calls that went to the recordings folder for want of room. */
+  calls?: number;
 }
 
 /** The computer, as last sampled (desktop app). Missing values are listed in `unavailable`. */
@@ -936,7 +951,10 @@ export interface PlatformInfo {
   cpuLimitCores: number | null;
   memTotal: number;
   uptimeS: number;
-  disks: { name: string; path: string; mount: string; totalBytes: number; freeBytes: number }[];
+  /** "recordings", "data", and "spool" (the RAM spool, with its `kind` and calls `overflowed` to the disk). */
+  disks: { name: string; path: string; mount: string; totalBytes: number; freeBytes: number; kind?: string; overflowed?: number }[];
+  /** macOS: whether Spotlight indexes the recordings folder (null: not checked yet, or not macOS). */
+  spotlight?: { path: string; state: "indexed" | "excluded" | "unknown"; why: string } | null;
   probes: { target: string; ok: boolean | null; rttMs: number | null; lastOk: number | null; lastFail: number | null; downSince: number | null; tries: number; fails: number }[];
   /** With the `platform` topic: each core's use, %, and the interfaces' traffic since the last sample. */
   perCore: number[] | null;

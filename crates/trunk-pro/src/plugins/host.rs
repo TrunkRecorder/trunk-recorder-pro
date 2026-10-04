@@ -84,11 +84,44 @@ const DRAIN_MAX: Duration = Duration::from_secs(30);
 
 struct EncodeJob {
     call: ConcludedCall,
+    audio: CallAudio,
+}
+
+/// A concluded call's audio, for the plugins.
+pub struct CallAudio {
+    /// Its WAV, to encode from (and to write, should that fail).
+    pub wav: Arc<Vec<u8>>,
+    /// The WAV is at `files.wav` (otherwise only in `wav`).
+    pub wav_written: bool,
+    /// Where its files are: the .json, the .wav (written or not), the .m4a once made.
+    pub files: CallFiles,
+    /// Where an .m4a for the plugins goes.
+    pub m4a_to: PathBuf,
+}
+
+impl CallAudio {
+    /// A call already on disk at `base` (its path without the extension).
+    pub fn on_disk(base: &Path) -> CallAudio {
+        let wav = with_ext(base, "wav");
+        let m4a = Some(with_ext(base, "m4a")).filter(|p| p.exists());
+        CallAudio {
+            wav: Arc::new(std::fs::read(&wav).unwrap_or_default()),
+            wav_written: true,
+            files: CallFiles { json: with_ext(base, "json"), wav, m4a },
+            m4a_to: with_ext(base, "m4a"),
+        }
+    }
+
+    /// Write the WAV, when it wasn't (the plugins get that instead of an .m4a).
+    fn write_wav(&mut self) {
+        if !self.wav_written {
+            self.wav_written = std::fs::write(&self.files.wav, &*self.wav).is_ok();
+        }
+    }
 }
 
 pub struct PluginHost {
     shared: Arc<Shared>,
-    capture_dir: PathBuf,
     encoder: Option<(Encoder, u32)>,
     encode_tx: Option<SyncSender<EncodeJob>>,
     encoders: Vec<JoinHandle<()>>,
@@ -230,7 +263,7 @@ impl PluginHost {
             None => (None, Vec::new()),
         };
         let names = systems.iter().map(|y| (y.index, y.short_name.clone())).collect();
-        PluginHost { shared, capture_dir: capture_dir.to_path_buf(), encoder, encode_tx, encoders, supervisors, topics, audio: live_audio, names, done: false }
+        PluginHost { shared, encoder, encode_tx, encoders, supervisors, topics, audio: live_audio, names, done: false }
     }
 
     /// Each plugin's process: drops, restarts, uptime.
@@ -292,30 +325,36 @@ impl PluginHost {
         self.shared.plugins.iter().filter(|p| p.manifest.subscribes(topic::CALL_CONCLUDED) && p.tx.lock().unwrap().is_some()).count()
     }
 
-    /// A call whose files are written (`rel`: relative to the capture folder,
-    /// no extension; `json`: its call JSON; `m4a`: its .m4a, when one was made).
-    pub fn concluded(&self, system: u16, rel: &str, json: &str, m4a: Option<PathBuf>) {
+    /// Some plugin takes the WAV file: one that doesn't ask for M4A, or does
+    /// with no encoder to make it. (Otherwise the WAV needn't be written.)
+    pub fn needs_wav(&self) -> bool {
+        self.shared.plugins.iter().any(|p| p.manifest.subscribes(topic::CALL_CONCLUDED) && (self.encoder.is_none() || !p.manifest.wants_format(format::M4A)))
+    }
+
+    /// A concluded call (`rel`: relative to the capture folder, no extension;
+    /// `json`: its call JSON) whose JSON is written, and its audio as
+    /// `audio` says. An .m4a is made here when there isn't one and a plugin
+    /// wants it.
+    pub fn concluded(&self, system: u16, rel: &str, json: &str, mut audio: CallAudio) {
         if self.call_takers() == 0 {
             return;
         }
-        let base = self.capture_dir.join(rel);
         let record: CallRecord = serde_json::from_str(json).unwrap_or_default();
-        let made = m4a.is_some();
-        let call = ConcludedCall {
-            path: rel.to_string(),
-            system,
-            call: record,
-            files: CallFiles { json: with_ext(&base, "json"), wav: with_ext(&base, "wav"), m4a },
-        };
+        let call = |files: &CallFiles| ConcludedCall { path: rel.to_string(), system, call: record.clone(), files: files.clone() };
         match &self.encode_tx {
-            _ if made => self.shared.dispatch(topic::CALL_CONCLUDED, &line(&HostMessage::CallConcluded(call))),
-            Some(tx) => {
-                if let Err(TrySendError::Full(job) | TrySendError::Disconnected(job)) = tx.try_send(EncodeJob { call }) {
+            Some(tx) if audio.files.m4a.is_none() => {
+                if let Err(TrySendError::Full(mut job) | TrySendError::Disconnected(mut job)) = tx.try_send(EncodeJob { call: call(&audio.files), audio }) {
                     self.shared.note_log("", Level::Warn, "M4A encoding is behind: a call goes out as WAV only");
+                    job.audio.write_wav();
                     self.shared.dispatch(topic::CALL_CONCLUDED, &line(&HostMessage::CallConcluded(job.call)));
                 }
             }
-            None => self.shared.dispatch(topic::CALL_CONCLUDED, &line(&HostMessage::CallConcluded(call))),
+            _ => {
+                if audio.files.m4a.is_none() {
+                    audio.write_wav();
+                }
+                self.shared.dispatch(topic::CALL_CONCLUDED, &line(&HostMessage::CallConcluded(call(&audio.files))));
+            }
         }
     }
 
@@ -408,13 +447,13 @@ fn encode_worker(rx: &Mutex<Receiver<EncodeJob>>, sh: &Shared, e: &Encoder, kbps
     let mut last_error: Option<Instant> = None;
     loop {
         let job = rx.lock().unwrap().recv();
-        let Ok(EncodeJob { mut call }) = job else {
+        let Ok(EncodeJob { mut call, mut audio }) = job else {
             return;
         };
-        let out = call.files.wav.with_extension("m4a");
-        match e.m4a(&call.files.wav, &out, kbps) {
-            Ok(()) => call.files.m4a = Some(out),
+        match e.m4a(&audio.wav, &audio.m4a_to, kbps) {
+            Ok(()) => call.files.m4a = Some(audio.m4a_to),
             Err(err) => {
+                audio.write_wav();
                 if last_error.is_none_or(|t| t.elapsed() > Duration::from_secs(60)) {
                     last_error = Some(Instant::now());
                     sh.note_log("", Level::Warn, format!("M4A encoding failed ({err}); plugins get WAV"));

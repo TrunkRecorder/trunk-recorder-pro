@@ -67,6 +67,9 @@ fn dot(a: &[f32], b: &[f32]) -> f32 {
     s
 }
 
+/// The phase error's average: about half a second of symbols.
+const PERR_ALPHA: f32 = 1.0 / 2400.0;
+
 pub struct Cqpsk {
     sps: f64,
     opt: Options,
@@ -96,6 +99,8 @@ pub struct Cqpsk {
     // detection
     dprev: Complex32,
     q4: Complex32,
+    /// Mean square of each decided step's distance from its ideal phase, rad².
+    perr: f32,
     cth: f32,
     cfr: f32,
     prev_p: Complex32,
@@ -153,6 +158,7 @@ impl Cqpsk {
             pos_n: 0,
             dprev: Complex32::default(),
             q4: Complex32::default(),
+            perr: 0.0,
             cth: 0.0,
             cfr: 0.0,
             prev_p: Complex32::new(1.0, 0.0),
@@ -310,11 +316,15 @@ impl Cqpsk {
         let r = d * Complex32::from_polar(1.0, -theta);
         // +45° = 00, +135° = 01, −45° = 10, −135° = 11 (P25's +1 +3 −1 −3).
         let dib = if r.im >= 0.0 { if r.re > 0.0 { 0b00 } else { 0b01 } } else if r.re > 0.0 { 0b10 } else { 0b11 };
+        let step = [PI32 / 4.0, 3.0 * PI32 / 4.0, -PI32 / 4.0, -3.0 * PI32 / 4.0][dib as usize];
+        if m > 0.0 {
+            let e = (r * Complex32::from_polar(1.0, -step)).arg();
+            self.perr += (e * e - self.perr) * PERR_ALPHA;
+        }
         if !self.opt.coherent {
             // The next reference: this symbol, plus the old reference turned on
             // by the step just decided (and the residual turn).
             let b = self.opt.df_beta;
-            let step = [PI32 / 4.0, 3.0 * PI32 / 4.0, -PI32 / 4.0, -3.0 * PI32 / 4.0][dib as usize];
             self.dprev = s * (1.0 - b) + self.dprev * Complex32::from_polar(b, step + theta);
         }
         self.symbols += 1;
@@ -408,6 +418,18 @@ impl Cqpsk {
     }
 }
 
+impl Cqpsk {
+    /// How far the decided phase steps land from their ideal ±45° / ±135°,
+    /// RMS degrees: CQPSK's signal quality, as the eye opening is C4FM's.
+    /// A few degrees is clean; ~26° (uniform over each decision's ±45°) is
+    /// noise. Only while frames sync (within the last second).
+    pub fn phase_error_deg(&self) -> Option<f32> {
+        let baud = self.opt.baud as u64;
+        let synced = self.syncs > 0 && self.symbols - self.last_sync <= baud;
+        (synced && self.symbols > 2400).then(|| self.perr.sqrt().to_degrees())
+    }
+}
+
 impl Receiver for Cqpsk {
     fn push(&mut self, iq: &[Complex32], out: &mut Vec<Symbol>) {
         self.front(iq);
@@ -446,11 +468,11 @@ mod tests {
         rx.push(&iq, &mut out);
     }
 
-    /// The carrier offset reads back once frames sync, and not before.
-    #[test]
-    fn reports_the_carrier_offset_once_it_syncs() {
-        let (rate, sps, off) = (48_000.0, 10usize, 400.0);
-        // Frames: the 24-dibit sync, then pseudo-random dibits to 864.
+    /// Eight P25 frames (the 24-dibit sync, then pseudo-random dibits to
+    /// 864) as π/4-DQPSK at 48 kHz, `off` Hz above the channel, with complex
+    /// noise of standard deviation `sigma` per component.
+    fn signal(off: f64, sigma: f32) -> (Vec<usize>, Vec<Complex32>) {
+        let (rate, sps) = (48_000.0, 10usize);
         let mut dibits = Vec::new();
         let mut lfsr = 0xACE1u16;
         for _ in 0..8 {
@@ -473,8 +495,30 @@ mod tests {
                 x[k * sps + j] += s * t;
             }
         }
-        let iq: Vec<Complex32> = x.iter().enumerate().map(|(n, &v)| v * Complex32::from_polar(1.0, (2.0 * PI * off * n as f64 / rate) as f32)).collect();
+        let mut seed = 0x2545_F491_4F6C_DD1Du64;
+        let mut uniform = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            ((seed >> 11) as f64 + 0.5) / (1u64 << 53) as f64
+        };
+        let iq = x
+            .iter()
+            .enumerate()
+            .map(|(n, &v)| {
+                let (r, a) = ((-2.0 * uniform().ln()).sqrt(), 2.0 * PI * uniform());
+                let w = Complex32::new((r * a.cos()) as f32, (r * a.sin()) as f32) * sigma;
+                v * Complex32::from_polar(1.0, (2.0 * PI * off * n as f64 / rate) as f32) + w
+            })
+            .collect();
+        (dibits, iq)
+    }
 
+    /// The carrier offset reads back once frames sync, and not before.
+    #[test]
+    fn reports_the_carrier_offset_once_it_syncs() {
+        let (rate, off) = (48_000.0, 400.0);
+        let (_, iq) = signal(off, 0.0);
         let mut rx = Cqpsk::new(rate, Options::default());
         assert_eq!(rx.offset_hz(), None);
         let mut out = Vec::new();
@@ -484,5 +528,26 @@ mod tests {
         assert!(rx.syncs > 2, "syncs {}", rx.syncs);
         let got = rx.offset_hz().expect("an offset once synced");
         assert!((got - off as f32).abs() < 30.0, "offset {got}");
+    }
+
+    /// The phase error follows the noise: a few degrees on a strong signal,
+    /// near 20° where dibit errors reach a few percent (Es/N0 9 dB).
+    #[test]
+    fn the_phase_error_follows_the_noise() {
+        let (_, clean) = signal(200.0, 0.0);
+        let ps = clean.iter().map(|v| v.norm_sqr()).sum::<f32>() / clean.len() as f32;
+        let at = |esn0: f32| {
+            let (_, iq) = signal(200.0, (ps * 10.0 / 10f32.powf(esn0 / 10.0) / 2.0).sqrt());
+            let mut rx = Cqpsk::new(48_000.0, Options::default());
+            assert_eq!(rx.phase_error_deg(), None);
+            let mut out = Vec::new();
+            for c in iq.chunks(4800) {
+                rx.push(c, &mut out);
+            }
+            rx.phase_error_deg().expect("a phase error once synced")
+        };
+        let (strong, weak) = (at(25.0), at(9.0));
+        assert!(strong < 5.0, "25 dB: {strong}°");
+        assert!((16.0..23.0).contains(&weak), "9 dB: {weak}°");
     }
 }

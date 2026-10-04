@@ -325,7 +325,7 @@ fn run_calls(a: &Args) {
         // Its key: relative to the capture folder (absolute when it isn't in there).
         let base = p.with_extension("");
         let rel = base.strip_prefix(&capture_dir).map(Path::to_path_buf).unwrap_or(base.clone());
-        host.concluded(system, &rel.to_string_lossy().replace('\\', "/"), json, None);
+        host.concluded(system, &rel.to_string_lossy().replace('\\', "/"), json, super::host::CallAudio::on_disk(&base));
     }
     let grace: f64 = a.get("grace").and_then(|s| s.parse().ok()).unwrap_or(30.0);
     host.shutdown(Duration::from_secs_f64(grace));

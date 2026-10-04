@@ -302,6 +302,8 @@ pub struct ChannelSnapshot {
     pub offset_hz: Option<f32>,
     /// The receiver's eye opening (C4FM / DMR 4FSK; see [`crate::dsp::Receiver::quality`]).
     pub quality: Option<f32>,
+    /// CQPSK's phase error, RMS degrees (see [`crate::dsp::cqpsk::Cqpsk::phase_error_deg`]).
+    pub phase_err: Option<f32>,
     /// Calls on it now.
     pub calls: usize,
 }
@@ -319,12 +321,16 @@ fn slice_at(p: &[f64], s: &Source, hz: f64) -> f64 {
 }
 
 /// Picks the receiver quality out of a report.
-struct Quality(Option<f32>);
+/// The eye opening (`sep`) and phase error (`phaseErr`) from a report.
+#[derive(Default)]
+struct Quality(Option<f32>, Option<f32>);
 impl Sink for Quality {
     fn counter(&mut self, _: &str, _: u64) {}
     fn gauge(&mut self, name: &str, value: f64) {
-        if name == "sep" {
-            self.0 = Some(value as f32);
+        match name {
+            "sep" => self.0 = Some(value as f32),
+            "phaseErr" => self.1 = Some(value as f32),
+            _ => {}
         }
     }
 }
@@ -1145,6 +1151,7 @@ impl Engine {
                 noise_db: metrics::bin_dbfs(slice_at(&profiles[src], s, hz), n),
                 offset_hz: None,
                 quality: None,
+                phase_err: None,
                 calls: 0,
             }
         };
@@ -1160,18 +1167,18 @@ impl Engine {
             let Some(hz) = t.cc_hz.filter(|_| t.cc_head.is_some()) else { continue };
             let mut x = snap(t.idx, hz as f64, t.cc_source, "control", CC_HALF_HZ);
             x.offset_hz = t.cc.offset_hz();
-            let mut q = Quality(None);
+            let mut q = Quality::default();
             t.cc.report(&mut q);
-            x.quality = q.0;
+            (x.quality, x.phase_err) = (q.0, q.1);
             out.push(x);
         }
         for ch in self.radio.channels.values() {
             let mut x = snap(ch.system, ch.freq_hz, ch.source, "voice", CC_HALF_HZ);
             x.calls = ch.calls.iter().flatten().count();
             x.offset_hz = ch.voice.offset_hz();
-            let mut q = Quality(None);
+            let mut q = Quality::default();
             ch.voice.report(&mut q);
-            x.quality = q.0;
+            (x.quality, x.phase_err) = (q.0, q.1);
             out.push(x);
         }
         for c in &self.cfg.conventional {

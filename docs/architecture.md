@@ -420,8 +420,10 @@ main ─► serve()
                │     deliver(): Text/Topic/Audio → hub (tokio broadcast, 4096)
                │                Plugin, Audio → PluginHost   Log → logging   Rollup → statstore
                │                File → Finish queue (1024; when full, written here without its .m4a)
-               ├─ finish thread: write .wav/.json, `concluded` + history, .m4a,
-               │                 PluginHost::concluded, Archive bookkeeping
+               ├─ finish thread: write .json (+ .wav when kept or a plugin takes it),
+               │                 `concluded` + history, .m4a (WAV piped to the encoder),
+               │                 PluginHost::concluded, Archive bookkeeping; files only
+               │                 the plugins need go to the RAM spool (spool.rs) if on
                └─ PluginHost: per enabled plugin a supervisor thread (plugin-<id>) and its
                               child process; encode-N threads make M4A for plugins
 ```
@@ -543,6 +545,20 @@ changes what is recorded.
   on a plugin.
 - **Archive.** `Archive` counts `call.result`s to decide when a call's files
   can be deleted (`audioArchive: false` / `callLog: false`).
+- **WAV only when needed.** The WAV goes to the encoder on stdin (afconvert
+  gets a temporary file), so it's written only when it's kept, a plugin
+  takes WAV, or encoding failed; `call.concluded`'s `wav` path may not exist
+  for a plugin that asked for M4A.
+- **RAM spool** (`spool.rs`, `recording.ramSpool`). Files that will be
+  deleted once the plugins are done (and the .m4a made only for them) are
+  written to a RAM disk instead: on macOS one the app makes with `hdiutil`
+  (mounted `nobrowse` at `<data>/spool`, kept across restarts so queued
+  retries still find their files), on Linux a folder in /dev/shm. Kept files
+  go to the recordings folder directly. `Archive` moves a failed upload's
+  files there; the monitor moves anything older than 2 h there too, and
+  reports the spool's room (a `spool` disk row, `spoolLow` / `spoolFull` /
+  `spoolRecovered` events). With no room, calls go to the recordings folder.
+  Turned off, the spool is emptied into the recordings folder and removed.
 - **Store** (`store.rs`).
   - Packages are listed in the registry `index.json` (fetched, cached in
     `plugin-registry.json`, or the copy built into the binary), or come from

@@ -356,7 +356,8 @@ impl Stats {
             json!({
                 "system": system_name(c.system), "freqHz": c.freq_hz, "source": c.source, "kind": c.kind,
                 "powerDb": r1(c.power_db), "noiseDb": r1(c.noise_db), "snrDb": r1(c.power_db - c.noise_db),
-                "offsetHz": c.offset_hz.map(|v| v.round()), "quality": c.quality.map(|v| r1(v as f64)), "calls": c.calls,
+                "offsetHz": c.offset_hz.map(|v| v.round()), "quality": c.quality.map(|v| r1(v as f64)),
+                "phaseErrDeg": c.phase_err.map(|v| r1(v as f64)), "calls": c.calls,
             })
         };
         for i in rf {
