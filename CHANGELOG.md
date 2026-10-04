@@ -5,6 +5,51 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+## [0.1.3] — 2026-10-04
+
+- **Folders and file names, built by dragging.** Setup → Recording (and a
+  system's Recording override) has an editor for `filenameFormat`: drag in
+  the call's fields, its start time (local or UTC), folder separators and
+  your own text, with an example path as macOS / Linux or Windows would
+  write it. The format is checked as you go — unknown tokens, a leading `/`
+  or drive, empty folders, `..`, characters or names Windows won't take.
+  A format with `\` for folders works as well as one with `/`. Time codes
+  take `-` for no padding (`{time:%-m}`), so Trunk Recorder's
+  `<year>/<month>/<day>` layout can be written as a format.
+- **Talkgroups pasted from RadioReference** in Setup → Systems: copy the
+  talkgroup tables from the system's page, paste, check the preview. Each
+  category heading becomes the Category. Each system keeps its own list
+  ("Copy from…" is gone), and Download saves it as a Trunk Recorder CSV.
+  RadioReference's `De` / `Te` (only sometimes encrypted) are no longer read
+  as `DE` / `TE`, which aren't recorded.
+- **Talkgroup CSVs as Trunk Recorder reads them:** commas, semicolons, tabs
+  or `|`, a spreadsheet's byte-order mark, headers in any case, and
+  RadioReference's `DEC` / `Group` headings. After loading, Setup says what
+  Trunk Recorder itself would refuse (no header row, no Mode or Description
+  column, unknown columns) and which rows had no talkgroup number.
+- Call rules: "Default (…)" in place of "As Recording (…)", "Reset to
+  Defaults", and "Digital / Analog Level Adjustment, dB".
+- **RAM spool** (`recording.ramSpool`, macOS and Linux): a call's files that
+  only the upload plugins need wait in memory — a RAM disk on macOS, /dev/shm
+  on Linux — and reach the recordings folder only when they're kept (an
+  upload failed, or Keep the audio / call JSON is on). When it's full, calls
+  go to the folder as before. The dashboard shows how full it is, with
+  `spoolLow` / `spoolFull` events.
+- **Spotlight** (macOS): the dashboard says when Spotlight is indexing the
+  recordings folder — disk writes for every call — and how to exclude it.
+- **CQPSK phase error** (`sys/<short>/cc/phaseErr`, RMS degrees: under 10
+  clean, ~25 noise) as CQPSK's quality figure, where C4FM has its eye
+  opening; the carrier offset graph reads correctly for CQPSK.
+- **USRP:** a bigger receive buffer (`num_recv_frames=256` unless the
+  device args set it) and, on macOS, the receive thread at interactive
+  priority — a B200 at 8 MSPS was losing samples whenever the computer was
+  busy.
+- Dashboard: each source's waterfall is back on the RF page; with several
+  systems, Radio system shows each one separately.
+- Web build: the screen stays awake while recording (phones and tablets
+  froze the tab), and calls can be downloaded as one .zip where there's no
+  folder picker (Android Chrome, Firefox).
+
 ## [0.1.2] — 2026-10-03
 
 **Breaking: config keys renamed.** Every key now carries its unit, and a
