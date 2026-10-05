@@ -5,6 +5,8 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+## [0.1.4] — 2026-10-04
+
 - **NXDN** (Kenwood NEXEDGE, Icom IDAS), at both rates — NXDN48 (6.25 kHz)
   and NXDN96 (12.5 kHz):
   - conventional channels, `"mode": "nxdn48"` / `"nxdn96"`, split by RAN
@@ -16,7 +18,7 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   - Find my system recognises NXDN control channels and carriers; the
     dashboard shows a site's system and site code, RAN, channel table, the
     channel numbers not known yet, and its carriers;
-  - call JSON `"ran"`, file name `{ran}`; `tool nxdnscan` / `tool nxdn`,
+  - call JSON `"ran"`, file name `{ran}`; `tool nxdnscan` / `tool nxdn` / `tool nxdnsynth`,
     `replay --nxdn48 / --nxdn96 / --nxdn-trunk`.
 
   Checked on recorded NXDN48 / NXDN96 signals and synthesized control and
@@ -24,6 +26,8 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 - The 4FSK receiver no longer counts the noise just before a signal comes
   up towards its levels (it decided those symbols late, by the levels of
   the time), so a transmission's first frames decode.
+- Building from source needs Rust 1.95 or newer (the workspace is on the
+  2024 edition).
 
 ## [0.1.3] — 2026-10-04
 
