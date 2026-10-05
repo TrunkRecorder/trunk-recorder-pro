@@ -37,7 +37,7 @@ import type {
   SurveySuggestion,
   System,
 } from "./protocol.ts";
-import { type ImportTodo, activeSystems, newSystem, resolvedCenters, sameSystem, siteName, sourceCovering, usableHalfWidth } from "./config.ts";
+import { type ImportTodo, activeSystems, newConventional, newSystem, resolvedCenters, sameSystem, siteName, sourceCovering, usableHalfWidth } from "./config.ts";
 import { WsTransport, type Transport } from "./transport.ts";
 import { parseUnitsCsv, type UnitAliases } from "./units.ts";
 import { withIgnore } from "./talkgroups.ts";
@@ -853,6 +853,40 @@ export function addDmrSite(freqHz: number, colorCode: number | null): string {
     });
     c.systems.push(sys);
     name = sys.shortName;
+  });
+  set({ configEpoch: state.configEpoch + 1 });
+  return name;
+}
+
+/** An NXDN Type-C site the scan found: its control channel, rate and RAN. */
+export function addNxdnSite(freqHz: number, rate: "nxdn48" | "nxdn96", ran: number | null): string {
+  let name = "";
+  updateConfig((c) => {
+    const sys = newSystem(c, {
+      shortName: ran === null ? "nxdn" : `nxdn-ran${ran}`,
+      type: "nxdn",
+      controlChannelsHz: [freqHz],
+      ...(rate === "nxdn96" ? { nxdnRate: rate } : {}),
+      ...(ran === null ? {} : { ran }),
+    });
+    c.systems.push(sys);
+    name = sys.shortName;
+  });
+  set({ configEpoch: state.configEpoch + 1 });
+  return name;
+}
+
+/** A conventional NXDN channel the scan found, with its RAN: into the first conventional system (or a new one). Its name. */
+export function addNxdnChannel(freqHz: number, rate: "nxdn48" | "nxdn96", ran: number | null): string {
+  let name = "";
+  updateConfig((c) => {
+    let conv = c.conventional[0];
+    if (!conv) {
+      conv = newConventional(c);
+      c.conventional.push(conv);
+    }
+    conv.channels.push({ freqHz, mode: rate, name: "", enabled: true, ...(ran ? { tone: `RAN ${ran}` } : {}) });
+    name = conv.shortName;
   });
   set({ configEpoch: state.configEpoch + 1 });
   return name;

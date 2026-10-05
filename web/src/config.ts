@@ -142,11 +142,18 @@ function dmrImport(sys: Record<string, unknown>): Partial<System> {
 
 /**
  * The site-lock fields a system's protocol states (the recorder's
- * ControlChannel::identity_fields): the lock compares only these. DMR states
- * none (its sites are told apart by colour code).
+ * ControlChannel::identity_fields): the lock compares only these. DMR and
+ * NXDN Type-D state none (their sites are told apart by colour code / RAN);
+ * NXDN Type-C its system and site codes.
  */
-export function siteLockFields(type: System["type"]): (keyof SiteIdentity)[] {
-  return type === "smartnet" ? ["sysId", "site"] : type === "dmr" ? [] : ["nac", "wacn", "sysId", "rfss", "site"];
+export function siteLockFields(sys: Pick<System, "type" | "nxdnType">): (keyof SiteIdentity)[] {
+  if (sys.type === "nxdn") return sys.nxdnType === "typeD" ? [] : ["sysId", "site"];
+  return sys.type === "smartnet" ? ["sysId", "site"] : sys.type === "dmr" ? [] : ["nac", "wacn", "sysId", "rfss", "site"];
+}
+
+/** Frequencies a watching protocol (DMR, NXDN) needs besides the control channels (the recorder's System::watched_channels). */
+export function watchedChannels(x: System): number[] {
+  return x.type === "dmr" ? (x.dmrChannelsHz ?? []) : x.type === "nxdn" ? (x.nxdnChannelsHz ?? []) : [];
 }
 
 /** A system with defaults filled in (configs saved before a field existed). */
@@ -154,12 +161,21 @@ export function normalizeSystem(x: Partial<System>): System {
   return {
     shortName: x.shortName ?? "sys1",
     ...(x.name?.trim() ? { name: x.name } : {}),
-    type: x.type === "smartnet" ? "smartnet" : x.type === "dmr" ? "dmr" : "p25",
+    type: x.type === "smartnet" ? "smartnet" : x.type === "dmr" ? "dmr" : x.type === "nxdn" ? "nxdn" : "p25",
     ...(x.type === "dmr"
       ? {
           ...(x.lcnTableHz && Object.keys(x.lcnTableHz).length ? { lcnTableHz: x.lcnTableHz } : {}),
           ...(x.dmrChannelsHz?.length ? { dmrChannelsHz: x.dmrChannelsHz } : {}),
           ...(typeof x.colorCode === "number" ? { colorCode: x.colorCode } : {}),
+        }
+      : {}),
+    ...(x.type === "nxdn"
+      ? {
+          ...(x.nxdnType === "typeD" ? { nxdnType: "typeD" as const } : {}),
+          ...(x.nxdnRate === "nxdn96" ? { nxdnRate: "nxdn96" as const } : {}),
+          ...(x.lcnTableHz && Object.keys(x.lcnTableHz).length ? { lcnTableHz: x.lcnTableHz } : {}),
+          ...(x.nxdnChannelsHz?.length ? { nxdnChannelsHz: x.nxdnChannelsHz } : {}),
+          ...(typeof x.ran === "number" ? { ran: x.ran } : {}),
         }
       : {}),
     ...(x.type === "smartnet"
@@ -273,7 +289,7 @@ export function siteSiblings(c: Config, sys: System): System[] {
 
 /** The system a control channel is already configured on, if any. */
 export function systemWithChannel(c: Config, hz: number): System | undefined {
-  return c.systems.find((x) => [...x.controlChannelsHz, ...(x.dmrChannelsHz ?? [])].some((f) => Math.abs(f - hz) < 6_000));
+  return c.systems.find((x) => [...x.controlChannelsHz, ...watchedChannels(x)].some((f) => Math.abs(f - hz) < 6_000));
 }
 
 /**
@@ -281,9 +297,9 @@ export function systemWithChannel(c: Config, hz: number): System | undefined {
  * before it don't cover yet (the recorder's Config::resolved_centers).
  */
 export function resolvedCenters(c: Config): (number | null)[] {
-  // A DMR site's watched frequencies are all needed (as Config::resolved_centers).
+  // A DMR / NXDN site's watched frequencies are all needed (as Config::resolved_centers).
   const groups: [number[], number[]][] = activeSystems(c).map((x) => {
-    const need = [...x.controlChannelsHz, ...(x.type === "dmr" ? (x.dmrChannelsHz ?? []) : [])];
+    const need = [...x.controlChannelsHz, ...watchedChannels(x)];
     return [[...need, ...x.voiceChannelsHz], need];
   });
   for (const v of c.conventional.filter((x) => x.enabled)) {
@@ -320,14 +336,14 @@ export function defaultTalkgroup(freqHz: number): number {
 const sameFreq = (a: number, b: number) => Math.abs(a - b) < 1;
 
 /**
- * Each channel's talkgroup: its own; else a DMR row's talkgroup in its Tone;
+ * Each channel's talkgroup: its own; else a DMR / NXDN row's talkgroup in its Tone;
  * else by its place among the rows on its frequency — the frequency in kHz,
  * then that with a digit (154325, 1543251 …). The recorder's channel_talkgroups.
  */
 export function channelTalkgroups(channels: Channel[]): number[] {
   return channels.map((c, i) => {
     if (c.talkgroup !== undefined) return c.talkgroup;
-    const air = c.mode === "dmr" ? dmrTalkgroup(c.tone) : undefined;
+    const air = c.mode === "dmr" || c.mode === "nxdn48" || c.mode === "nxdn96" ? dmrTalkgroup(c.tone) : undefined;
     if (air !== undefined) return air;
     const k = channels.slice(0, i).filter((o) => sameFreq(o.freqHz, c.freqHz)).length;
     return k === 0 ? defaultTalkgroup(c.freqHz) : defaultTalkgroup(c.freqHz) * 10 + k;
@@ -346,7 +362,7 @@ export function nextTalkgroup(channels: Channel[], freqHz: number): number {
 function rowsProblem(rows: Channel[]): string | null {
   const mhz = formatMhz(rows[0].freqHz);
   if (rows.some((r) => r.mode !== rows[0].mode)) return `Conventional channel ${mhz} MHz is listed with different modes — rows sharing a frequency need the same one.`;
-  const what = { fm: "tone", p25: "NAC", dmr: "colour code, slot or talkgroup" }[rows[0].mode];
+  const what = { fm: "tone", p25: "NAC", dmr: "colour code, slot or talkgroup", nxdn48: "RAN or talkgroup", nxdn96: "RAN or talkgroup" }[rows[0].mode];
   const tones = rows.map((r) => {
     const t = parseAccess(r.mode, r.tone ?? "");
     return "tone" in t ? t.tone : "";
@@ -405,9 +421,10 @@ export function startProblem(c: Config): string | null {
   for (const x of systems) {
     const plan = x.type === "smartnet" ? bandplanProblem(x) : null;
     if (plan) return `${x.shortName}: ${plan}`;
-    if (x.type === "dmr") {
-      const out = [...x.controlChannelsHz, ...(x.dmrChannelsHz ?? [])].filter((f) => !inside(f)).map((f) => formatMhz(f));
-      if (out.length) return `${x.shortName}: DMR frequencies outside every source's bandwidth: ${out.join(", ")} MHz — move a center frequency or add a source.`;
+    if (x.type === "dmr" || x.type === "nxdn") {
+      const out = [...x.controlChannelsHz, ...watchedChannels(x)].filter((f) => !inside(f)).map((f) => formatMhz(f));
+      const what = x.type === "dmr" ? "DMR" : "NXDN";
+      if (out.length) return `${x.shortName}: ${what} frequencies outside every source's bandwidth: ${out.join(", ")} MHz — move a center frequency or add a source.`;
     }
     if (!x.controlChannelsHz.some(inside)) return `No control channel of ${x.shortName} falls inside any source's bandwidth — move a center frequency or add a source.`;
   }
@@ -527,11 +544,14 @@ export function parseChannelCsv(text: string): { channels: Channel[]; notes: str
     const m = at(cMode).toLowerCase();
     const raw = at(cTone);
     let mode: Channel["mode"] = "fm";
-    // No Mode: a NAC means P25, a colour code DMR.
+    // No Mode: a NAC means P25, a colour code DMR, a RAN NXDN48.
     if (!m && (/NAC/i.test(raw) || raw.startsWith("$"))) mode = "p25";
     else if (!m && /^CC/i.test(raw)) mode = "dmr";
+    else if (!m && /^RAN/i.test(raw)) mode = "nxdn48";
     else if (["p25", "digital", "d"].includes(m)) mode = "p25";
     else if (m === "dmr") mode = "dmr";
+    else if (m === "nxdn" || m === "nxdn48") mode = "nxdn48";
+    else if (m === "nxdn96") mode = "nxdn96";
     else if (!["", "fm", "nfm", "analog", "a"].includes(m)) badMode.push(row);
     const ch: Channel = { freqHz, mode, name: at(cName), enabled: !["false", "no", "0", "off"].includes(at(cEnable).toLowerCase()) };
     const tgText = at(cTg);
@@ -557,7 +577,7 @@ export function parseChannelCsv(text: string): { channels: Channel[]; notes: str
   }
   const notes: string[] = [];
   if (badFreq.length) notes.push(`Skipped row(s) ${rowsList(badFreq)} — no usable frequency.`);
-  if (badMode.length) notes.push(`Row(s) ${rowsList(badMode)}: unknown Mode (use fm or p25) — read as fm.`);
+  if (badMode.length) notes.push(`Row(s) ${rowsList(badMode)}: unknown Mode (use fm, p25, dmr, nxdn48 or nxdn96) — read as fm.`);
   if (badTg.length) notes.push(`Row(s) ${rowsList(badTg)}: TG Number isn't a positive whole number — using the default.`);
   if (badSq.length) notes.push(`Row(s) ${rowsList(badSq)}: Squelch dB must be 3–40 (dB above the noise) — using the default.`);
   if (badTone.length) notes.push(`Tone not read (the row records any): ${badTone.join("; ")}.`);

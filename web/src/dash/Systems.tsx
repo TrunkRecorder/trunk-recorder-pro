@@ -1,9 +1,9 @@
 // The running systems as their control channels describe them: sites and
-// their decoding, neighbours not recorded yet, patches, DMR carriers.
+// their decoding, neighbours not recorded yet, patches, DMR and NXDN carriers.
 
 import { formatMhz, systemColor, systemWithChannel } from "../config.ts";
 import { addSite, setNotice, type AppState } from "../controller.ts";
-import type { Config, DmrSiteStatus, SystemStatus, TalkgroupName } from "../protocol.ts";
+import type { Config, DmrSiteStatus, NxdnSiteStatus, SystemStatus, TalkgroupName } from "../protocol.ts";
 import type { CcMark } from "../Waterfall.tsx";
 
 export const hex = (v: number | null | undefined) => (v === null || v === undefined ? "—" : v.toString(16).toUpperCase());
@@ -154,6 +154,96 @@ export function DmrSites(props: { systems: SystemStatus[] }) {
                     </span>
                   ))}
               </div>
+            )}
+          </div>
+        );
+      })}
+    </section>
+  );
+}
+
+/** "NXDN48 · SysID 123 · site 1 · RAN 5 · DFA 451.0000 + n × 6.25 kHz". */
+export function nxdnText(d: NxdnSiteStatus): string {
+  const parts = [d.rate ? d.rate.toUpperCase() : "rate ?"];
+  if (d.location) parts.push(`SysID ${hex(d.location.system)} · site ${d.location.site}`);
+  parts.push(d.ran != null ? `RAN ${d.ran}` : "RAN ?");
+  if (d.dfa) parts.push(`DFA ${formatMhz(d.dfa.baseHz)} + n × ${d.dfa.stepHz / 1000} kHz`);
+  return parts.join(" · ");
+}
+
+/** Each NXDN site: its watched frequencies (control, repeater number, the call now), its channel table and the channels granted but not placed. */
+export function NxdnSites(props: { systems: SystemStatus[] }) {
+  const sites = props.systems.filter((x) => x.nxdn);
+  return (
+    <section className="panel">
+      <header className="panel-head">
+        <h2>NXDN</h2>
+      </header>
+      {sites.map((x) => {
+        const d = x.nxdn!;
+        const typeD = d.kind === "NXDN Type-D";
+        const offTable = d.channels.filter((e) => !d.carriers.some((c) => c.freqHz === e.freqHz));
+        return (
+          <div key={x.shortName} className="stack">
+            <div className="row small">
+              {props.systems.length > 1 && <b>{x.shortName}</b>}
+              <span>{d.kind}</span>
+              <span className="mono">{nxdnText(d)}</span>
+            </div>
+            <div className="table-wrap">
+              <table className="calls">
+                <thead>
+                  <tr>
+                    <th>MHz</th>
+                    <th>{typeD ? "Repeater" : "Channel"}</th>
+                    <th>Call</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {d.carriers.map((c) => {
+                    const ch = d.channels.find((e) => e.freqHz === c.freqHz);
+                    const num = typeD && c.repeater != null ? String(c.repeater) : ch ? `${ch.channel}${ch.configured ? "" : " (learned)"}` : "—";
+                    return (
+                      <tr key={c.freqHz}>
+                        <td className="mono">
+                          {formatMhz(c.freqHz)}
+                          {c.control && <span className="chip ok small">control</span>}
+                          {c.ran != null && d.ran != null && c.ran !== d.ran && <span className="chip warn small">RAN {c.ran}</span>}
+                        </td>
+                        <td className="mono small">{num}</td>
+                        <td className="small">
+                          {c.call ? (
+                            <span>
+                              {tgText(c.call.talkgroup)}
+                              {c.call.source ? <span className="muted"> · {c.call.source}</span> : null}
+                            </span>
+                          ) : (
+                            <span className="muted">—</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            {offTable.length > 0 && (
+              <div className="row small">
+                <span className="muted">Also in the channel table:</span>
+                {offTable.map((e) => (
+                  <span key={e.channel} className="chip mono">
+                    {e.channel} → {formatMhz(e.freqHz)}
+                    {e.configured ? "" : " (learned)"}
+                  </span>
+                ))}
+              </div>
+            )}
+            {d.unknownChannels.length > 0 && (
+              <p className="why why-warn small">
+                {d.unknownChannels.length === 1
+                  ? `Channel ${d.unknownChannels[0]} was granted but isn't in the channel table — it is learned when its call shows up on a listed voice frequency; or add it to the channel table in Setup.`
+                  : `Channels ${d.unknownChannels.join(", ")} were granted but aren't in the channel table — each is learned when its call shows up on a listed voice frequency; or add them to the channel table in Setup.`}
+              </p>
             )}
           </div>
         );

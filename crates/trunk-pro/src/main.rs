@@ -152,7 +152,7 @@ fn die(msg: &str) -> ! {
 }
 
 const USAGE: &str = "\
-Trunk Recorder Pro — record P25, SmartNet and DMR trunked systems and
+Trunk Recorder Pro — record P25, SmartNet, DMR and NXDN trunked systems and
 conventional channels from SDRs.
 
 usage:
@@ -173,9 +173,12 @@ usage:
   trunk-pro replay --source cap.cu8,center,rate [--source …] --cc Hz …
   trunk-pro replay <capture> … --system name:Hz[,Hz…][:nac=443,site=3] [--system …]
   trunk-pro replay <capture> --center Hz --rate Hz --fm Hz[,Hz…] --p25 Hz[,Hz…] [--squelch 8]
+  trunk-pro replay <capture> --center Hz --rate Hz --dmr Hz,… --nxdn48 Hz,… --nxdn96 Hz,…
+  trunk-pro replay <capture> --center Hz --rate Hz --cc Hz,… --dmr-trunk | --nxdn-trunk typeC|typeD [--nxdn-rate 48|96] [--nxdn-channels Hz,…] [--lcn n=Hz,…] [--ran N]
   trunk-pro replay <capture> --center Hz --rate Hz --channels channels.csv
       Record calls from captures instead of dongles (a trunked system from
-      --cc, more from --system, conventional analog FM / P25 channels, or both).
+      --cc, more from --system, conventional analog FM / P25 / DMR / NXDN
+      channels, or both).
   trunk-pro survey [--serial S] [--bands 800,700,900,uhf,vhf,uhf-fed,t-band] [--gain dB] [--seconds 30]
   trunk-pro survey <capture> --center Hz --rate Hz
       Find a P25 system from scratch: scan for control channels, then listen
@@ -187,6 +190,10 @@ usage:
       guard band to leave there.
   trunk-pro tool cc|voice|frames|p2 <capture.cu8> …
       One channel's decode as JSON lines (diagnostics).
+  trunk-pro tool dmrscan|nxdnscan <capture.cu8> --center Hz
+      Every DMR / NXDN carrier in a capture.
+  trunk-pro tool dmr|nxdn <capture.cu8> --center Hz --freq Hz [--nxdn 48|96] [--audio out.f32]
+      One DMR / NXDN channel's messages.
   trunk-pro tool revoice <call.frames.jsonl> <out.wav> [--profile enhanced|mbelib]
       Vocode a call's saved frames (recording setting \"Save vocoder frames\") again.
   trunk-pro plugin search | install | update | uninstall | list | describe | run …

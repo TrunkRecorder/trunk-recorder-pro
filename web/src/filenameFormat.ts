@@ -6,7 +6,7 @@
 /** The call tokens, as filename.rs knows them. */
 export const FILENAME_TOKENS = [
   "talkgroup", "talkgroup_tag", "talkgroup_alpha_tag", "talkgroup_description", "talkgroup_group", "talkgroup_display", "short_name", "freq", "freq_mhz",
-  "call_num", "tdma_slot", "sys_num", "epoch", "source_num", "recorder_num", "audio_type", "emergency", "encrypted", "priority", "signal", "noise", "color_code",
+  "call_num", "tdma_slot", "sys_num", "epoch", "source_num", "recorder_num", "audio_type", "emergency", "encrypted", "priority", "signal", "noise", "color_code", "ran",
 ];
 
 export type Piece =
@@ -151,6 +151,7 @@ export const SAMPLE_CALL = {
   signal: -48,
   noise: -112,
   color_code: -1,
+  ran: -1,
 };
 
 const DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];

@@ -60,6 +60,9 @@ pub struct C4fmOptions {
     /// The outer level's deviation, Hz, to slice with until the levels are
     /// measured (P25 / DMR ~1800; NXDN48 1050, NXDN96 2400).
     pub outer_hz: f32,
+    /// Also undo a transmitter's x / sin x pre-emphasis (NXDN's: TS 1-A
+    /// §3.4–3.5): the matched filter times sin(πfT)/(πfT), a one-symbol boxcar.
+    pub rx_sinc: bool,
 }
 
 /// P25: an RRC matched filter (α 0.5) and cluster-mean levels. Against the
@@ -68,7 +71,7 @@ pub struct C4fmOptions {
 /// CQPSK receivers carry it.
 impl Default for C4fmOptions {
     fn default() -> Self {
-        C4fmOptions { box_symbols: 0.9, rrc: Some(0.5), clip: None, rail_means: true, block: BLOCK, msd: Some(Pulse::Rc(0.2)), baud: SYMBOL_RATE, outer_hz: 1800.0 }
+        C4fmOptions { box_symbols: 0.9, rrc: Some(0.5), clip: None, rail_means: true, block: BLOCK, msd: Some(Pulse::Rc(0.2)), baud: SYMBOL_RATE, outer_hz: 1800.0, rx_sinc: false }
     }
 }
 
@@ -88,7 +91,7 @@ impl C4fmOptions {
 
     /// The first receiver (boxcar, quantile levels), for comparisons.
     pub fn legacy() -> Self {
-        C4fmOptions { box_symbols: 0.9, rrc: None, clip: None, rail_means: false, block: BLOCK, msd: None, baud: SYMBOL_RATE, outer_hz: 1800.0 }
+        C4fmOptions { box_symbols: 0.9, rrc: None, clip: None, rail_means: false, block: BLOCK, msd: None, baud: SYMBOL_RATE, outer_hz: 1800.0, rx_sinc: false }
     }
 
     /// Apply one `name[=value]` setting; false if unknown.
@@ -106,6 +109,7 @@ impl C4fmOptions {
             "means" => self.rail_means = true,
             "nomsd" => self.msd = None,
             "block" => self.block = v.unwrap_or(240.0) as u64,
+            "sinc" => self.rx_sinc = v.is_none_or(|v| v != 0.0),
             _ => return false,
         }
         true
@@ -216,7 +220,7 @@ impl C4fm {
     pub fn with_options(rate: f64, opts: C4fmOptions) -> Self {
         let sps = rate / opts.baud;
         let boxw = ((sps * opts.box_symbols).round() as usize).max(1);
-        let taps = opts.rrc.map(|a| filters::rrc_taps(a, sps, (8.0 * sps).round() as usize | 1));
+        let taps = opts.rrc.map(|a| filters::rrc_taps(a, sps, (8.0 * sps).round() as usize | 1)).map(|t| if opts.rx_sinc { filters::with_boxcar(&t, sps) } else { t });
         let delay = taps.as_ref().map_or((boxw - 1) as f64 / 2.0, |t| (t.len() - 1) as f64 / 2.0);
         C4fm {
             opts,

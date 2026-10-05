@@ -150,6 +150,8 @@ pub struct Carrier {
     /// The call last reported (group, source, when).
     last: Option<(u32, u32, f64)>,
     pub control_s: f64,
+    /// Last frame with a valid LICH heard on it, s.
+    pub heard_s: f64,
     pub ran: Option<u8>,
     repeater: Option<u8>,
     good: u64,
@@ -201,6 +203,7 @@ impl Site {
                 state: CallState::default(),
                 last: None,
                 control_s: f64::NEG_INFINITY,
+                heard_s: f64::NEG_INFINITY,
                 ran: None,
                 repeater: None,
                 good: 0,
@@ -272,9 +275,11 @@ impl Site {
         self.cfg.channel_table.get(&n).or_else(|| self.learned.get(&n)).copied()
     }
 
-    /// The carrier sending CAC now.
+    /// The carrier sending CAC now; on Type-D (no control channel), the
+    /// last one heard, so the site doesn't look like it is hunting.
     pub fn control_hz(&self) -> Option<u64> {
-        self.carriers.iter().filter(|c| self.now_s - c.control_s < CONTROL_HOLD_S).max_by(|a, b| a.control_s.total_cmp(&b.control_s)).map(|c| c.hz)
+        let at = |c: &Carrier| if self.cfg.kind == Kind::TypeD { c.heard_s } else { c.control_s };
+        self.carriers.iter().filter(|c| self.now_s - at(c) < CONTROL_HOLD_S).max_by(|a, b| at(a).total_cmp(&at(b))).map(|c| c.hz)
     }
 
     /// The learned table as `channel=hz` lines.
@@ -318,6 +323,7 @@ impl Site {
             self.carriers[idx].bad += 1;
             return;
         };
+        self.carriers[idx].heard_s = t;
         if !lich.outbound() {
             // A radio's own transmission (heard on a repeater input): not the site's.
             return;
@@ -368,7 +374,7 @@ impl Site {
         match m {
             L3::SiteInfo { location, access, control, .. } => {
                 if self.location != Some(location) {
-                    self.notes.push(format!("Site: system {} site {} (category {})", location.system(), location.site(), location.category()));
+                    self.notes.push(format!("Site: system {:X} site {} (category {})", location.system(), location.site(), location.category()));
                     for (i, &cc) in control.iter().enumerate().filter(|(_, c)| **c != 0) {
                         let hz = self.resolve(cc as u32).map_or_else(|| "frequency not known".into(), mhz);
                         self.notes.push(format!("Control channel {}: channel {cc} ({hz})", i + 1));
@@ -400,7 +406,7 @@ impl Site {
                     m.sys_id = loc.system();
                     m.site = loc.site();
                     m.freq_hz = hz;
-                    m.meta = format!("Adjacent site: system {} site {} on channel {ch}", loc.system(), loc.site());
+                    m.meta = format!("Adjacent site: system {:X} site {} on channel {ch}", loc.system(), loc.site());
                     out.push(m);
                 }
             }
@@ -415,7 +421,7 @@ impl Site {
     }
 
     fn base(&self, kind: MessageType, t: f64) -> Message {
-        Message { kind, time_s: t, nxdn: Some(self.cfg.rate), sys_id: self.location.map_or(0, |l| l.system()), site: self.location.map_or(0, |l| l.site()), ..Default::default() }
+        Message { kind, time_s: t, nxdn: Some(self.cfg.rate), ran: self.ran, sys_id: self.location.map_or(0, |l| l.system()), site: self.location.map_or(0, |l| l.site()), ..Default::default() }
     }
 
     fn set_learned(&mut self, n: u32, hz: u64, why: &str) {
@@ -604,6 +610,7 @@ impl Site {
             None => self.cfg.rate,
         };
         let mut m = self.base(kind, t);
+        m.ran = self.carriers[idx].ran.or(self.ran);
         m.freq_hz = hz;
         m.talkgroup = tg;
         m.source = if src != 0 { src as i64 } else { -1 };

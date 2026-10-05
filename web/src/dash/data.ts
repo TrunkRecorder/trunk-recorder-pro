@@ -34,7 +34,7 @@ export function recentAvg(key: string, sinceS: number): number | null {
 
 export interface DashSystem {
   name: string;
-  kind: "p25" | "smartnet" | "dmr" | "conventional";
+  kind: "p25" | "smartnet" | "dmr" | "nxdn" | "conventional";
   /** The running system's status (trunked, once its control channel is open). */
   status: SystemStatus | null;
 }
@@ -51,7 +51,7 @@ export function dashSystems(s: AppState): DashSystem[] {
   return out;
 }
 
-export const KIND_LABEL: Record<DashSystem["kind"], string> = { p25: "P25", smartnet: "SmartNet", dmr: "DMR", conventional: "Conventional" };
+export const KIND_LABEL: Record<DashSystem["kind"], string> = { p25: "P25", smartnet: "SmartNet", dmr: "DMR", nxdn: "NXDN", conventional: "Conventional" };
 
 export const running = (s: AppState) => s.phase === "running" || s.phase === "starting";
 

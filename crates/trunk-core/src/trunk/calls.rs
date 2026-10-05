@@ -396,7 +396,7 @@ impl CallManager {
             patched_talkgroups: self.patches.members_of(m.talkgroup),
             color_code: m.color_code,
             nxdn: m.nxdn,
-            ran: None,
+            ran: m.ran,
             nac: None,
             tone: None,
             tone_set: None,

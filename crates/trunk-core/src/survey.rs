@@ -1,8 +1,9 @@
-//! Finding a P25, SmartNet or trunked DMR system with nothing configured:
-//! sweep the land-mobile bands for carriers that never key down (a control
-//! channel transmits all the time), check each with the P25, SmartNet and
-//! DMR receivers (a DMR control or rest channel says which kind of trunking
-//! its blocks are; DMR sites aren't monitored further),
+//! Finding a P25, SmartNet, trunked DMR or NXDN system with nothing
+//! configured: sweep the land-mobile bands for carriers that never key down
+//! (a control channel transmits all the time), check each with the P25,
+//! SmartNet, DMR and NXDN receivers (a DMR control or rest channel says
+//! which kind of trunking its blocks are, an NXDN control channel its RAN,
+//! system and site; DMR and NXDN sites aren't monitored further),
 //! then sit on the best one and
 //! learn the system from its broadcasts — band plan, identity, alternate
 //! control channels, neighbouring sites, the voice channels it grants — and
@@ -141,10 +142,14 @@ pub enum Kind {
     Other,
     /// DMR bursts but no trunking control blocks (a conventional repeater, data).
     Dmr,
+    /// NXDN frames but no control channel (a conventional repeater, a busy traffic channel).
+    Nxdn,
     /// P25 frames but no control messages (a voice channel, conventional P25).
     P25,
     /// A trunked DMR control or rest channel ([`Candidate::dmr`] says which kind).
     DmrControl,
+    /// An NXDN Type-C control channel (CRC-valid CAC; [`Candidate::nxdn`]).
+    NxdnControl,
     /// A SmartNet / SmartZone control channel (CRC-valid OSWs).
     SmartNet,
     /// A P25 control channel.
@@ -156,6 +161,8 @@ impl Kind {
         match self {
             Kind::Other => "other",
             Kind::Dmr => "dmr",
+            Kind::Nxdn => "nxdn",
+            Kind::NxdnControl => "nxdnControl",
             Kind::P25 => "p25",
             Kind::DmrControl => "dmrControl",
             Kind::SmartNet => "smartnet",
@@ -181,6 +188,16 @@ pub struct Candidate {
     pub identity: Identity,
     /// DMR: the trunking kind its blocks are, and its colour code.
     pub dmr: Option<DmrFound>,
+    /// NXDN: its rate, RAN, and (a control channel) its system and site.
+    pub nxdn: Option<NxdnFound>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NxdnFound {
+    pub rate: crate::nxdn::Rate,
+    pub ran: Option<u8>,
+    /// SITE_INFO / SRV_INFO: (system code, site code).
+    pub location: Option<(u32, u32)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -527,6 +544,75 @@ struct Probe {
     /// The DMR side: one carrier's site decoder (what trunking it is, if any).
     dmr: crate::dmr::Site,
     dmr_samples: u64,
+    /// The NXDN side: a receiver per rate.
+    nxdn: [NxdnProbe; 2],
+}
+
+/// An NXDN receiver and framer at one rate: frames with a valid LICH, CRC-valid CACs, the RAN and the site.
+struct NxdnProbe {
+    rate: crate::nxdn::Rate,
+    rx: crate::dsp::c4fm::C4fm,
+    framer: crate::nxdn::frame::Framer,
+    syms: Vec<crate::dsp::Symbol>,
+    frames: Vec<crate::nxdn::frame::Frame>,
+    lich: u32,
+    cac: u32,
+    ran: BTreeMap<u8, u32>,
+    location: Option<(u32, u32)>,
+}
+
+impl NxdnProbe {
+    fn new(rate: crate::nxdn::Rate, fs: f64) -> Self {
+        let mut o = crate::dsp::c4fm::C4fmOptions::nxdn(rate.baud());
+        o.msd = None;
+        NxdnProbe {
+            rate,
+            rx: crate::dsp::c4fm::C4fm::with_options(fs, o),
+            framer: crate::nxdn::frame::Framer::new(),
+            syms: Vec::new(),
+            frames: Vec::new(),
+            lich: 0,
+            cac: 0,
+            ran: BTreeMap::new(),
+            location: None,
+        }
+    }
+
+    fn push(&mut self, iq: &[Complex32]) {
+        use crate::dsp::Receiver;
+        use crate::nxdn::channel;
+        use crate::nxdn::layer3::{Context, Message as L3};
+        self.syms.clear();
+        self.rx.push(iq, &mut self.syms);
+        self.frames.clear();
+        for s in &self.syms {
+            self.framer.push(s, &mut self.frames);
+        }
+        for f in &self.frames {
+            let Some((l, _)) = f.lich() else { continue };
+            self.lich += 1;
+            if l.is_cac() {
+                let Some((sr, o, _)) = channel::cac(f) else { continue };
+                self.cac += 1;
+                *self.ran.entry(sr.ran).or_default() += 1;
+                let mut msgs = vec![L3::parse(&o, Context::Control, false)];
+                if sr.structure & 1 != 0 {
+                    msgs.push(L3::parse(&o[9..], Context::Control, false));
+                }
+                for m in msgs {
+                    if let L3::SiteInfo { location, .. } | L3::SrvInfo { location, .. } = m {
+                        self.location = Some((location.system(), location.site()));
+                    }
+                }
+            } else if let Some(s) = channel::sacch(f) {
+                *self.ran.entry(s.sr.ran).or_default() += 1;
+            }
+        }
+    }
+
+    fn found(&self) -> NxdnFound {
+        NxdnFound { rate: self.rate, ran: self.ran.iter().max_by_key(|&(_, n)| n).map(|(&r, _)| r), location: self.location }
+    }
 }
 
 /// A SmartNet receiver and framer (the probes' and the monitor's).
@@ -630,7 +716,8 @@ impl HopScan {
             for p in peaks {
                 let (head, _, _) = self.chz.add_head(p.offset_hz, CUTOFF_HZ, 0.0);
                 let dmr = crate::dmr::Site::new(&[self.center + p.offset_hz], rate, Default::default());
-                self.probes.push(Probe { peak: p, head, bank: Bank::new(rate, PROBE_BANK), est: FreqEst::default(), dec: Decode::default(), sn: SnRx::new(rate), dmr, dmr_samples: 0 });
+                let nxdn = [NxdnProbe::new(crate::nxdn::Rate::N48, rate), NxdnProbe::new(crate::nxdn::Rate::N96, rate)];
+                self.probes.push(Probe { peak: p, head, bank: Bank::new(rate, PROBE_BANK), est: FreqEst::default(), dec: Decode::default(), sn: SnRx::new(rate), dmr, dmr_samples: 0, nxdn });
             }
             self.decode_from = Some(self.blocks);
             return None;
@@ -644,6 +731,9 @@ impl HopScan {
             let mut dm = Vec::new();
             p.dmr.push(0, iq, 0.0, rate, &mut dm);
             p.dmr_samples += iq.len() as u64;
+            for n in p.nxdn.iter_mut() {
+                n.push(iq);
+            }
             self.groups.clear();
             p.bank.push(iq, &mut self.groups);
             if done {
@@ -664,19 +754,42 @@ impl HopScan {
                 .map(|p| {
                     // DMR: a continuous carrier frames ~33 bursts a second, most with a sync.
                     let dmr_syncs = p.dmr.syncs(0);
+                    // NXDN: the rate whose receiver framed more (a 9600 signal
+                    // frames as noise at 2400 and the other way round).
+                    let nx = p.nxdn.iter().max_by_key(|n| (n.cac, n.lich)).unwrap();
                     let kind = if p.dec.good >= 2 {
                         Kind::Control
                     } else if p.sn.framer.good >= 3 {
                         Kind::SmartNet
                     } else if p.dmr.variant.is_some() && dmr_syncs >= 6 {
                         Kind::DmrControl
+                    } else if nx.cac >= 2 {
+                        Kind::NxdnControl
                     } else if p.dec.frames >= 3 {
                         Kind::P25
                     } else if dmr_syncs >= 6 {
                         Kind::Dmr
+                    } else if nx.lich >= 4 {
+                        Kind::Nxdn
                     } else {
                         Kind::Other
                     };
+                    if matches!(kind, Kind::Nxdn | Kind::NxdnControl) {
+                        return Candidate {
+                            freq_hz: self.center + p.peak.offset_hz,
+                            band: self.band,
+                            snr_db: p.peak.snr_db,
+                            width_hz: p.peak.width_hz,
+                            kind,
+                            frames: nx.lich,
+                            good: nx.cac,
+                            bad: 0,
+                            modulation: if nx.rate == crate::nxdn::Rate::N48 { "NXDN48" } else { "NXDN96" },
+                            identity: Identity::default(),
+                            dmr: None,
+                            nxdn: Some(nx.found()),
+                        };
+                    }
                     if matches!(kind, Kind::Dmr | Kind::DmrControl) {
                         let cc = p.dmr.color_code.or(p.dmr.carriers[0].chan.slots.iter().find_map(|s| s.color_code));
                         return Candidate {
@@ -691,6 +804,7 @@ impl HopScan {
                             modulation: "4FSK",
                             identity: Identity::default(),
                             dmr: Some(DmrFound { variant: p.dmr.variant, color_code: cc }),
+                            nxdn: None,
                         };
                     }
                     // A decoding signal's own carrier beats the spectrum's centroid.
@@ -713,6 +827,7 @@ impl HopScan {
                             modulation: "2FSK",
                             identity: Identity::default(),
                             dmr: None,
+                            nxdn: None,
                         };
                     }
                     Candidate {
@@ -727,6 +842,7 @@ impl HopScan {
                         modulation: modulation(&labels, &p.bank.frames_per_rx()),
                         identity: p.dec.id.clone(),
                         dmr: None,
+                        nxdn: None,
                     }
                 })
                 .collect(),
@@ -1462,10 +1578,12 @@ impl Survey {
                 self.stage = Stage::Done;
                 self.work = Work::None;
                 let dmr = self.candidates.iter().filter(|c| c.kind == Kind::DmrControl).count();
-                self.message = if dmr > 0 {
-                    format!("Found {dmr} trunked DMR control / rest channel(s) — add one below. No P25 or SmartNet control channel.")
+                let nxdn = self.candidates.iter().filter(|c| c.kind == Kind::NxdnControl).count();
+                let found: Vec<String> = [(dmr, "trunked DMR control / rest"), (nxdn, "NXDN control")].iter().filter(|(n, _)| *n > 0).map(|(n, what)| format!("{n} {what} channel(s)")).collect();
+                self.message = if !found.is_empty() {
+                    format!("Found {} — add one below. No P25 or SmartNet control channel.", found.join(" and "))
                 } else if self.candidates.iter().any(|c| c.kind != Kind::Other) {
-                    "P25 or DMR signals were found, but no control channel. Scan again, or add more bands.".into()
+                    "P25, DMR or NXDN signals were found, but no control channel. Scan again, or add more bands.".into()
                 } else {
                     "No P25 or SmartNet control channel found. Check the antenna and gain, and add more bands.".into()
                 };
@@ -1573,6 +1691,31 @@ mod tests {
                 gauss() * 0.05 + cc * 0.05 * rot(300_000.0) + if keyed { vo * 0.05 * rot(-500_000.0) } else { Complex32::default() } + rot(100_000.0) * 0.2
             })
             .collect()
+    }
+
+    #[test]
+    fn an_nxdn_control_channel_is_recognised() {
+        use crate::nxdn::channel::Sr;
+        use crate::nxdn::layer3::build as l3;
+        use crate::nxdn::synth::{cac_frame, dibits, modulate};
+        use crate::nxdn::Rate;
+        let fs = 37_500.0;
+        let site = l3::site_info(0x2a << 12 | 0x07, 0x0200, 0, 0, [1, 0]);
+        let idle = l3::idle();
+        let frames: Vec<_> = (0..12).map(|k| cac_frame(Sr { structure: 2, ran: 7 }, if k % 3 == 0 { &site } else { &idle })).collect();
+        let mut d: Vec<u8> = (0..400u32).map(|i| (i.wrapping_mul(2654435761) >> 30) as u8).collect();
+        d.extend(dibits(&frames));
+        d.extend((0..800u32).map(|i| (i.wrapping_mul(2246822519) >> 30) as u8));
+        let mut ph = 0.0;
+        let iq = modulate(&d, None, Rate::N48, fs, 0.0, 1.0, &mut ph);
+        let mut probes = [NxdnProbe::new(Rate::N48, fs), NxdnProbe::new(Rate::N96, fs)];
+        for p in probes.iter_mut() {
+            p.push(&iq);
+        }
+        let best = probes.iter().max_by_key(|n| (n.cac, n.lich)).unwrap();
+        assert!(best.cac >= 10, "{} CACs", best.cac);
+        assert_eq!(best.found(), NxdnFound { rate: Rate::N48, ran: Some(7), location: Some((0x2a, 0x07)) });
+        assert_eq!(probes[1].cac, 0);
     }
 
     #[test]

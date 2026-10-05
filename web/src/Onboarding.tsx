@@ -9,6 +9,7 @@ import { autoCenter, enabledChannels, formatMhz, importTrunkRecorderConfig, newA
 import {
   applySurvey,
   addDmrSite,
+  addNxdnSite,
   bumpEpoch,
   dismissError,
   findRadios,
@@ -723,7 +724,8 @@ function ScanStep(props: { s: AppState; c: Config; found: Found | null; onFound:
   };
   const useDmr = (cand: SurveyCandidate) => {
     const system = c.systems.length;
-    addDmrSite(raster(cand.correctedHz ?? cand.freqHz), cand.dmr?.colorCode ?? null);
+    if (cand.kind === "nxdnControl") addNxdnSite(raster(cand.correctedHz ?? cand.freqHz), cand.nxdn?.rate ?? "nxdn48", cand.nxdn?.ran ?? null);
+    else addDmrSite(raster(cand.correctedHz ?? cand.freqHz), cand.dmr?.colorCode ?? null);
     stopSurvey();
     props.onFound({ system, source, sug: null, voice: [] });
   };
@@ -801,7 +803,8 @@ function ScanStep(props: { s: AppState; c: Config; found: Found | null; onFound:
 
   const m = sv.monitor;
   const controls = sv.candidates.filter(isControl);
-  const dmr = sv.candidates.filter((x) => x.kind === "dmrControl");
+  // Trunked DMR and NXDN sites: added as they are (nothing to listen for).
+  const dmr = sv.candidates.filter((x) => x.kind === "dmrControl" || x.kind === "nxdnControl");
   const bandLabel = (id: string) => s.surveyBands.find((b) => b.id === id)?.label ?? id;
 
   if (sv.stage === "scanning") {
@@ -894,7 +897,15 @@ function ScanStep(props: { s: AppState; c: Config; found: Found | null; onFound:
     <section className="ob-step">
       <Head
         art={<ArtSearch />}
-        title={dmr.length ? "Found a DMR system" : "No system found"}
+        title={
+          !dmr.length
+            ? "No system found"
+            : dmr.every((x) => x.kind === "nxdnControl")
+              ? "Found an NXDN system"
+              : dmr.every((x) => x.kind === "dmrControl")
+                ? "Found a DMR system"
+                : "Found a system"
+        }
       />
       {sv.error && <div className="ob-note bad">{sv.error}</div>}
       {dmr.length > 0 ? (
@@ -905,10 +916,18 @@ function ScanStep(props: { s: AppState; c: Config; found: Found | null; onFound:
                 <IconTower />
               </span>
               <span className="ob-card-title ob-mono">{formatMhz(raster(x.correctedHz ?? x.freqHz), 4)} MHz</span>
-              <span className="ob-card-sub">
-                {x.dmr?.variant ?? "DMR"}
-                {x.dmr?.colorCode != null ? ` · colour code ${x.dmr.colorCode}` : ""}
-              </span>
+              {x.kind === "nxdnControl" ? (
+                <span className="ob-card-sub">
+                  {x.nxdn?.rate.toUpperCase() ?? "NXDN"} Type-C
+                  {x.nxdn?.ran != null ? ` · RAN ${x.nxdn.ran}` : ""}
+                  {x.nxdn?.system != null ? ` · System ID ${hex(x.nxdn.system)}` : ""}
+                </span>
+              ) : (
+                <span className="ob-card-sub">
+                  {x.dmr?.variant ?? "DMR"}
+                  {x.dmr?.colorCode != null ? ` · colour code ${x.dmr.colorCode}` : ""}
+                </span>
+              )}
             </button>
           ))}
         </div>
@@ -985,9 +1004,9 @@ function ManualSystem(props: { c: Config; target: number | "new"; onDone: (syste
         <div className="ob-field">
           <span className="ob-label">System type</span>
           <div className="ob-seg">
-            {(["p25", "smartnet", "dmr"] as const).map((t) => (
+            {(["p25", "smartnet", "dmr", "nxdn"] as const).map((t) => (
               <button key={t} className={type === t ? "on" : ""} onClick={() => setType(t)}>
-                {t === "p25" ? "P25" : t === "smartnet" ? "SmartNet" : "DMR"}
+                {t === "p25" ? "P25" : t === "smartnet" ? "SmartNet" : t === "dmr" ? "DMR" : "NXDN"}
               </button>
             ))}
           </div>
@@ -1946,7 +1965,7 @@ function ImportReview(props: { s: AppState; c: Config; loaded: Loaded; onBack: (
                 <span className="ob-row-main">
                   <b>{x.shortName}</b>
                   <span className="ob-quiet">
-                    {x.type === "smartnet" ? "SmartNet" : x.type === "dmr" ? "DMR" : "P25"} · {x.controlChannelsHz.map((f) => formatMhz(f, 4)).join(", ") || "no control channel"}
+                    {x.type === "smartnet" ? "SmartNet" : x.type === "dmr" ? "DMR" : x.type === "nxdn" ? "NXDN" : "P25"} · {x.controlChannelsHz.map((f) => formatMhz(f, 4)).join(", ") || "no control channel"}
                   </span>
                 </span>
                 {unheard(x) && <span className="ob-pill warn">Control channel out of reach</span>}

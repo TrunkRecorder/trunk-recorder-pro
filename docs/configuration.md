@@ -73,7 +73,8 @@ sample rate around its centre, less a guard band at each edge.
 
 - **`centerHz` = 0 means Auto.** The source is centred over whatever the
   sources before it don't cover yet: systems' control channels, DMR
-  `dmrChannelsHz` and known voice channels, and conventional channels.
+  `dmrChannelsHz`, NXDN `nxdnChannelsHz` and known voice channels, and
+  conventional channels.
 - **`ppm` corrects the radio's frequency error.** A frequency *f* is tuned
   as *f* / (1 + ppm·10⁻⁶).
 - **`autoTune` follows the measured error.** The error is measured on P25
@@ -175,9 +176,9 @@ at least one control channel.
 |---|---|---|---|---|
 | `shortName` | string | `"sys1"` | all | The system's identity: its recordings folder, the name in call JSON, and how plugins know it. Every system, trunked or conventional, on or off, needs its own. Keep it to letters, digits, `-` and `_` (it becomes folder and file names) |
 | `name` | string | `""` | all | What people call it |
-| `type` | string | `"p25"` | | `"p25"`, `"smartnet"` or `"dmr"`. Anything else is treated as P25 |
+| `type` | string | `"p25"` | | `"p25"`, `"smartnet"`, `"dmr"` or `"nxdn"`. Anything else is treated as P25 |
 | `enabled` | bool | `true` | all | `false` keeps it in the config without recording it |
-| `controlChannelsHz` | numbers | `[]` | all | P25 / SmartNet: the control channel and its alternates; the recorder hunts through them. DMR: every frequency listed is watched |
+| `controlChannelsHz` | numbers | `[]` | all | P25 / SmartNet: the control channel and its alternates; the recorder hunts through them. DMR, NXDN: every frequency listed is watched (NXDN Type-D: the repeaters) |
 | `modulation` | string | `"auto"` | P25, SmartNet | `"auto"` (every receiver, best of each frame), `"qpsk"` (CQPSK / simulcast) or `"fsk4"` (C4FM) |
 | `talkgroupsCsv` | string | `""` | all | The talkgroup file's **contents** (not a path): [Talkgroups](#talkgroups) |
 | `talkgroupsName` | string | `""` | all | The name of the file it came from, for display |
@@ -196,9 +197,21 @@ at least one control channel.
 | `dmrChannelsHz` | numbers | `[]` | DMR | Voice frequencies to watch (Trunk Recorder's `channels`). Each must be inside a source |
 | `lcnTableHz` | object | `{}` | DMR | Logical channel → frequency, e.g. `{ "101": 452275000 }`; wins over channels learned from the air |
 | `colorCode` | integer or null | `null` | DMR | Only this colour code (0–15). Default: the control channel's |
+| `nxdnType` | string | `"typeC"` | NXDN | `"typeC"`: a control channel assigns calls to channels (Kenwood NEXEDGE, Icom IDAS Type-C). `"typeD"`: IDAS distributed trunking, no control channel — list every repeater |
+| `nxdnRate` | string | `"nxdn48"` | NXDN | `"nxdn48"` (4800 bps, 6.25 kHz) or `"nxdn96"` (9600 bps, 12.5 kHz): the control channel's (Type-D: the repeaters'). Voice channels go at the rate each grant names |
+| `nxdnChannelsHz` | numbers | `[]` | NXDN | Voice frequencies to watch besides the control channels. A grant to a channel number not in `lcnTableHz` is learned when its call comes up on one of them. Each must be inside a source |
+| `lcnTableHz` | object | `{}` | NXDN | Channel number → frequency, e.g. `{ "12": 451118750 }` (RadioReference lists them as LCNs for many systems); wins over channels learned from the air. Not needed when the site uses Direct Frequency Assignment |
+| `ran` | integer or null | `null` | NXDN | Only this RAN (0–63). Default: the control channel's |
 
 `400_custom` needs `bandplanBaseHz`, `bandplanSpacingHz` and `bandplanHighHz`. The
 survey fills them in for SmartNet OBT systems.
+
+An NXDN Type-C grant names a 10-bit channel number. Its frequency comes from
+`lcnTableHz`; from the site itself when it uses Direct Frequency Assignment
+(its SITE_INFO says so, and grants then carry the frequency); or is learned
+when the granted group's call comes up on a frequency in
+`nxdnChannelsHz`. Until then the grant is logged as "frequency not known
+yet", and the dashboard lists the channel numbers still unknown.
 
 ### Site lock (`expect`)
 
@@ -210,9 +223,9 @@ wait until every locked field has been heard.
 |---|---|---|
 | `nac` | integer | P25 NAC |
 | `wacn` | integer | P25 WACN |
-| `sysId` | integer | P25 or SmartNet System ID |
+| `sysId` | integer | P25 or SmartNet System ID; NXDN Type-C system code |
 | `rfss` | integer | P25 RFSS |
-| `site` | integer | P25 site (SmartNet: when the system sends it) |
+| `site` | integer | P25 site (SmartNet: when the system sends it); NXDN Type-C site code |
 
 Values are plain **decimal** numbers in the file, though the interface shows
 NAC, WACN and System ID in hex. For example, NAC `0x443` is `"nac": 1091`.
@@ -220,7 +233,8 @@ NAC, WACN and System ID in hex. For example, NAC `0x443` is `"nac": 1091`.
 Only the fields a protocol announces are compared. On SmartNet that is
 `sysId` and `site`; `nac`, `wacn` and `rfss` are ignored. Lock `site` only
 if the system sends it (OBT systems do): otherwise grants wait for it
-forever. DMR systems ignore `expect`; use `colorCode`.
+forever. NXDN Type-C sites state `sysId` and `site` (from SITE_INFO). DMR
+and NXDN Type-D systems ignore `expect`; use `colorCode` / `ran`.
 
 ### Multi-site
 
@@ -229,7 +243,8 @@ is recorded, and when the last one ends the best copy is saved
 (`recording.dropDuplicateCalls`, on by default).
 
 Sites are grouped into one system by what their control channels announce:
-P25 by WACN and System ID, SmartNet by System ID. Two config entries that
+P25 by WACN and System ID, SmartNet by System ID, NXDN Type-C by system
+code. Two config entries that
 follow the *same* site are never grouped.
 
 A non-empty `siteGroup` overrides that grouping:
@@ -237,7 +252,8 @@ A non-empty `siteGroup` overrides that grouping:
 - Systems with the same `siteGroup` are grouped.
 - A `siteGroup` used by only one system keeps that system on its own.
 
-Give DMR sites a group name, since they don't announce a system identity.
+Give DMR and NXDN Type-D sites a group name, since they don't announce a
+system identity.
 Give ISSI-linked systems one too. To prefer a site for a talkgroup, use the
 talkgroup file's `Preferred Site` (or `Preferred NAC`) column.
 
@@ -306,11 +322,11 @@ not `recording.prerollS`.
 | Key | Type | Default | |
 |---|---|---|---|
 | `freqHz` | number | **required** | Hz. A frequency can belong to only one conventional system |
-| `mode` | string | `"fm"` | `"fm"` (analog narrowband FM), `"p25"` (Phase 1, C4FM or CQPSK) or `"dmr"` (both slots) |
+| `mode` | string | `"fm"` | `"fm"` (analog narrowband FM), `"p25"` (Phase 1, C4FM or CQPSK), `"dmr"` (both slots), `"nxdn48"` or `"nxdn96"` |
 | `name` | string | `""` | Alpha tag in the call JSON |
 | `description`, `tag`, `group` | string | `""` | Description, tag and category in the call JSON |
-| `talkgroup` | integer | the frequency in kHz | The number calls are filed under. A further row on the same frequency gets the kHz with a digit added (1543251, 1543252…). P25 calls keep the talkgroup the radio sends, unless several rows split the frequency. DMR calls always keep the talkgroup on the air (the rows give it names); a DMR row with no `talkgroup` takes the `TG` in its `tone` |
-| `tone` | string | `""` (any) | Record only transmissions carrying this code. FM: CTCSS `151.4` or DCS `D023N`. P25: NAC, `NAC 293`. DMR: `CC 1`, `CC 1 TS 2`, `CC 1 TS 2 TG 201` |
+| `talkgroup` | integer | the frequency in kHz | The number calls are filed under. A further row on the same frequency gets the kHz with a digit added (1543251, 1543252…). P25 calls keep the talkgroup the radio sends, unless several rows split the frequency. DMR and NXDN calls always keep the talkgroup (group) on the air when it names one (the rows give it names); a DMR / NXDN row with no `talkgroup` takes the `TG` in its `tone` |
+| `tone` | string | `""` (any) | Record only transmissions carrying this code. FM: CTCSS `151.4` or DCS `D023N`. P25: NAC, `NAC 293`. DMR: `CC 1`, `CC 1 TS 2`, `CC 1 TS 2 TG 201`. NXDN: `RAN 5`, `RAN 5 TG 201` (RAN 0 means any) |
 | `squelchDb` | number | the system's | Per channel |
 | `enabled` | bool | `true` | |
 
@@ -326,9 +342,9 @@ in any order:
 | Column | |
 |---|---|
 | `Frequency` (`Freq`, `FreqHz`) | **Required.** MHz with a decimal point (`154.4300`), or Hz |
-| `Mode` | `fm`, `p25`, `dmr` (also `nfm`, `analog`, `A`, `digital`, `D`); empty = `fm`, or `p25` / `dmr` when `Tone` holds a NAC / colour code |
+| `Mode` | `fm`, `p25`, `dmr`, `nxdn48` (or `nxdn`), `nxdn96` (also `nfm`, `analog`, `A`, `digital`, `D`); empty = `fm`, or `p25` / `dmr` / `nxdn48` when `Tone` holds a NAC / colour code / RAN |
 | `TG Number` (`Talkgroup`, `TG`) | Empty = the default above |
-| `Tone` | As `tone` above; RadioReference spellings (`151.4 PL`, `023 DPL`, `293 NAC`, `CC1 TS2 TG201`) work |
+| `Tone` | As `tone` above; RadioReference spellings (`151.4 PL`, `023 DPL`, `293 NAC`, `CC1 TS2 TG201`, `RAN 5`) work |
 | `Alpha Tag` (`Name`), `Description`, `Tag`, `Category` (`Group`) | Names |
 | `Squelch dB` | 3–40; empty = the system's |
 | `Enable` (`Enabled`) | `false`, `no`, `0`, `off` = off |
@@ -402,7 +418,7 @@ from Trunk Recorder's tokens:
 | `{talkgroup}`, `{talkgroup_display}`, `{talkgroup_alpha_tag}`, `{talkgroup_description}`, `{talkgroup_tag}`, `{talkgroup_group}` | The talkgroup |
 | `{freq}` (Hz), `{freq_mhz}` | The frequency |
 | `{epoch}`, `{time:FORMAT}` (local), `{ztime:FORMAT}` (UTC) | Time. `FORMAT` is strftime (`%Y/%m/%d`), plus `%f` for milliseconds, `iso` and `iso_ms` |
-| `{call_num}`, `{tdma_slot}`, `{source_num}`, `{recorder_num}`, `{color_code}` | Call details |
+| `{call_num}`, `{tdma_slot}`, `{source_num}`, `{recorder_num}`, `{color_code}`, `{ran}` | Call details (`{ran}`: an NXDN call's RAN, −1 otherwise) |
 | `{audio_type}`, `{emergency}`, `{encrypted}`, `{priority}`, `{signal}`, `{noise}` | Call properties |
 
 ```json
@@ -497,8 +513,9 @@ with a message, if:
 - an Auto source has nothing left to centre on;
 - a SmartNet `bandplan` is unknown, or a `400_custom` plan lacks its base,
   spacing or high, or has high ≤ base;
-- a recorded system has no control channel inside any source, or a DMR
-  control channel or `dmrChannelsHz` frequency is outside every source;
+- a recorded system has no control channel inside any source, or a DMR /
+  NXDN control channel, `dmrChannelsHz` or `nxdnChannelsHz` frequency is
+  outside every source;
 - a `file` source has no `path`;
 - there are more than 256 conventional systems;
 - an enabled conventional frequency is in two systems, is ≤ 0, or is
@@ -515,9 +532,9 @@ configs keep their own):
 
 | File | |
 |---|---|
-| `<shortName>.bandplan` | Each system's learned band plan (P25 IDEN tables, DMR channel tables), so grants can be followed at once next time |
+| `<shortName>.bandplan` | Each system's learned band plan (P25 IDEN tables, DMR and NXDN channel tables), so grants can be followed at once next time |
 | `<shortName>.units.csv` | Talker aliases heard over the air |
-| `conventional.heard.json` | The tones, NACs and colour codes each conventional frequency carried (the "Heard" list) |
+| `conventional.heard.json` | The tones, NACs, colour codes and RANs each conventional frequency carried (the "Heard" list) |
 | `plugins/<id>/` | Installed plugins |
 | `plugin-data/<id>/` | Each plugin's own data (e.g. calls waiting to upload); also its working folder |
 | `plugin-registry.json` | The plugin store's cached index |

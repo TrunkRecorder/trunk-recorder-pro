@@ -167,6 +167,7 @@ impl SurveySession {
                     "widthHz": c.width_hz.round(), "kind": c.kind.as_str(), "frames": c.frames, "good": c.good, "bad": c.bad,
                     "modulation": c.modulation, "identity": id(&c.identity),
                     "dmr": c.dmr.map(|d| json!({ "variant": d.variant.map(|v| v.name()), "colorCode": d.color_code })),
+                    "nxdn": c.nxdn.map(|n| json!({ "rate": n.rate.name(), "ran": n.ran, "system": n.location.map(|l| l.0), "site": n.location.map(|l| l.1) })),
                 })
             })
             .collect();

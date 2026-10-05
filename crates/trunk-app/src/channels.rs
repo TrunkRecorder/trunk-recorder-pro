@@ -183,7 +183,7 @@ pub fn parse(text: &str) -> Result<Parsed, String> {
         out.notes.push(format!("Skipped row(s) {} — no usable frequency.", rows_list(&bad_freq)));
     }
     if !bad_mode.is_empty() {
-        out.notes.push(format!("Row(s) {}: unknown Mode (use fm or p25) — read as fm.", rows_list(&bad_mode)));
+        out.notes.push(format!("Row(s) {}: unknown Mode (use fm, p25, dmr, nxdn48 or nxdn96) — read as fm.", rows_list(&bad_mode)));
     }
     if !bad_tg.is_empty() {
         out.notes.push(format!("Row(s) {}: TG Number isn't a positive whole number — using the default.", rows_list(&bad_tg)));

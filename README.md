@@ -2,9 +2,9 @@
 
 A lightweight, self-contained trunked-radio recorder: point one or more
 RTL-SDRs (or, optionally, USRPs and Airspys) at one or more **P25** systems (Phase 1 and Phase 2 TDMA voice),
-**SmartNet** or **trunked DMR** systems and it follows their control channels and records
+**SmartNet**, **trunked DMR** or **NXDN** systems and it follows their control channels and records
 every call it can hear as WAV + Trunk Recorder–compatible JSON. It also records
-**conventional channels** — analog FM, P25 and DMR — alongside a trunked system or
+**conventional channels** — analog FM, P25, DMR and NXDN — alongside a trunked system or
 on their own (see [Conventional channels](#conventional-channels)). It is written
 in Rust, with no GNU Radio or OP25 dependency, and runs as a desktop app
 (macOS, Linux, Windows) or in the browser, with the same browser-based
@@ -149,7 +149,7 @@ including runnable examples.
 Capture files can be `cu8` (rtl_sdr), `cs16` or `cf32` (GNU Radio, UHD's
 `rx_samples_to_file`). `trunk-pro --help` lists every command, including the
 `tool` diagnostics (`cc`, `voice`, `frames`, `p2`, `snr`, `smartnet`, `dmr`,
-`dmrscan`, `revoice`). SIGHUP reopens the log file (for logrotate).
+`dmrscan`, `nxdn`, `nxdnscan`, `revoice`). SIGHUP reopens the log file (for logrotate).
 
 ### In the browser (no install)
 
@@ -164,7 +164,7 @@ unattended runs.
 
 ### Several systems and sites
 
-One recorder can follow several systems at once (P25, SmartNet and DMR, in
+One recorder can follow several systems at once (P25, SmartNet, DMR and NXDN, in
 any mix), or several **sites** of one multi-site system. Each gets a card under **Systems** in Setup, with its
 own short name (its recordings folder and band plan), control channels,
 modulation and talkgroup CSV; **Record** switches one off without deleting
@@ -275,6 +275,59 @@ them.
 carrier in a capture with its colour code; `tool dmr … --freq Hz` decodes
 one (link control, CSBKs, `--bursts` for every burst, `--audio` a slot).
 
+### NXDN
+
+NXDN (Kenwood NEXEDGE, Icom IDAS) comes at two rates: **NXDN48** (4800 bps,
+6.25 kHz channels) and **NXDN96** (9600 bps, 12.5 kHz). Both are decoded,
+conventional and trunked; voice is AMBE+2, as on DMR. A system of `type`
+`nxdn` is one site:
+
+- **Type-C** (`"nxdnType": "typeC"`, the default) has a control channel that
+  assigns calls to channel numbers. List the control channel (`nxdnRate`:
+  its rate, `nxdn48` by default). A channel number's frequency comes from
+  `lcnTableHz` (`{ "12": 451118750, … }`; RadioReference lists them as LCNs
+  for many systems), from the site itself when it uses Direct Frequency
+  Assignment (its grants then carry the frequency), or is learned: list the
+  site's voice frequencies under `nxdnChannelsHz`, and a grant for an
+  unknown channel, then that group's call on one of them a moment later,
+  ties the two together — saved like a band plan. The dashboard lists the
+  channel numbers granted but not known yet.
+- **Type-D** (`"nxdnType": "typeD"`, IDAS distributed trunking) has no
+  control channel: each repeater says in its signalling channel (SCCH) when
+  it is idle and who is talking on it. List every repeater; each call is
+  found on the repeater carrying it.
+
+A site's RAN (Radio Access Number, NXDN's colour code) is the control
+channel's (or `ran`); other RANs are ignored. Type-C sites announce a system
+and site code, which the site lock (`expect`'s `sysId` and `site`) and
+multi-site grouping use. Group and unit IDs are 16 bits; on Type-D the top 5
+bits are the home repeater or prefix. The call JSON gets `"ran"`, and file
+name formats `{ran}`. Encrypted transmissions (scrambler, DES or AES) are
+marked and left out of the audio, as on P25 and DMR; full-rate (EFR) voice
+isn't decoded.
+
+```json
+{ "shortName": "nexedge", "type": "nxdn", "controlChannelsHz": [451018750],
+  "nxdnChannelsHz": [451118750, 452381250], "lcnTableHz": { "12": 451118750 } }
+{ "shortName": "idas", "type": "nxdn", "nxdnType": "typeD", "nxdnRate": "nxdn48",
+  "controlChannelsHz": [452012500, 452062500, 452112500] }
+```
+
+Conventional NXDN channels are `"mode": "nxdn48"` or `"nxdn96"`, with an
+optional `RAN 5` (or `RAN 5 TG 201`) in the Tone column. **Find my system**
+recognises NXDN control channels (with their RAN, system and site) and busy
+NXDN carriers.
+
+`trunk-pro tool nxdnscan <capture> --center Hz` lists every NXDN carrier in a
+capture at both rates, with its RAN and what it carries; `tool nxdn … --freq
+Hz --nxdn 48|96` decodes one (layer 3 messages, `--frames` for every frame,
+`--audio` its voice). The receiver finds the polarity itself, so spectrally
+inverted recordings decode too. There is no NXDN system near the
+developer: it was tested on recordings (the sigidwiki NXDN48 / NXDN96 IQ
+files) and on synthesized control and traffic channels — reports from
+real systems are welcome ([research/nxdn.md](research/nxdn.md) says what to
+capture).
+
 ### Find my system
 
 Don't know the frequencies? Under **Find my system** in Setup, press **Scan**
@@ -369,10 +422,10 @@ There are three ways to keep a system's list:
 | Field | |
 |---|---|
 | `freqHz` | The channel frequency, in Hz (the interface takes MHz) |
-| `mode` | `fm` (analog narrowband FM, 12.5 kHz), `p25` (P25 Phase 1, C4FM or CQPSK) or `dmr` (both slots, each recording its own calls). Each channel has its own, so one list can mix them |
+| `mode` | `fm` (analog narrowband FM, 12.5 kHz), `p25` (P25 Phase 1, C4FM or CQPSK), `dmr` (both slots, each recording its own calls), `nxdn48` or `nxdn96`. Each channel has its own, so one list can mix them |
 | `name`, `description`, `tag`, `group` | Written into the call JSON (Trunk Recorder's alpha tag, description, tag, category) |
-| `talkgroup` | The number calls are filed under (file names, JSON, uploaders). Default: the frequency in kHz, e.g. 154430 — stable however you reorder the list; further rows on the same frequency get that with a digit added (1543251, 1543252 …). P25 and DMR channels use the talkgroup the radio sends, when it sends one |
-| `tone` | Record only transmissions carrying this code: analog's CTCSS tone (`151.4`) or DCS code (`D023N`), P25's NAC (`NAC 293`), DMR's colour code, slot and talkgroup (`CC 1 TS 2 TG 201`). Empty: any. See [Tones](#tones-several-users-of-one-frequency) |
+| `talkgroup` | The number calls are filed under (file names, JSON, uploaders). Default: the frequency in kHz, e.g. 154430 — stable however you reorder the list; further rows on the same frequency get that with a digit added (1543251, 1543252 …). P25, DMR and NXDN channels use the talkgroup the radio sends, when it sends one |
+| `tone` | Record only transmissions carrying this code: analog's CTCSS tone (`151.4`) or DCS code (`D023N`), P25's NAC (`NAC 293`), DMR's colour code, slot and talkgroup (`CC 1 TS 2 TG 201`), NXDN's RAN and group (`RAN 5 TG 201`). Empty: any. See [Tones](#tones-several-users-of-one-frequency) |
 | `squelchDb` | How far above the noise floor a signal must be to open the channel, in dB. Per channel, or for all in the system (default 8). The noise floor is measured, so this doesn't depend on the dongle or gain the way Trunk Recorder's absolute squelch does |
 | `enabled` | `false` keeps a channel (or, on the system, the whole system) without recording it |
 | `shortName`, `name` (system) | Its folder and record name; what people call it |
@@ -392,9 +445,9 @@ TG Number,Frequency,Tone,Mode,Alpha Tag,Description,Tag,Category,Squelch dB,Enab
 | Column | |
 |---|---|
 | `Frequency` | MHz with a decimal point (`154.4300`), or Hz (`154430000`) |
-| `Mode` | `fm`, `p25` or `dmr` (also `analog` / `digital`, `A` / `D`); empty = `fm` |
+| `Mode` | `fm`, `p25`, `dmr`, `nxdn48` (or `nxdn`) or `nxdn96` (also `analog` / `digital`, `A` / `D`); empty = `fm` |
 | `TG Number` | Empty = the frequency in kHz (further rows on that frequency: with a digit added) |
-| `Tone` | The code the row records, as Trunk Recorder or RadioReference write it (`151.4 PL`, `023 DPL`, `293 NAC`, `CC1 TS2 TG201`); empty = any. With no `Mode`, a NAC means `p25` and a colour code `dmr` |
+| `Tone` | The code the row records, as Trunk Recorder or RadioReference write it (`151.4 PL`, `023 DPL`, `293 NAC`, `CC1 TS2 TG201`); empty = any. With no `Mode`, a NAC means `p25`, a colour code `dmr` and a RAN `nxdn48` |
 | `Alpha Tag`, `Description`, `Tag`, `Category` | Names for the call JSON |
 | `Squelch dB` | dB above the noise floor, 3–40; empty = the default |
 | `Enable` | `false` (or `no`, `0`) = off; empty = on |
@@ -429,6 +482,7 @@ Digital channels have the same idea, in the same column:
 | Analog | CTCSS tone or DCS code | `151.4 PL`, `PL 151.4`, `023 DPL`, `D023` | `151.4`, `D023N` |
 | P25 | NAC | `293`, `293 NAC`, `$293`, `0x293` (`F7E` = any) | `NAC 293` |
 | DMR | colour code, and optionally slot and talkgroup | `CC1`, `1`, `CC1 TS2 TG201`, `CC 1 TG 201 SL 2` | `CC 1 TS 2 TG 201` |
+| NXDN | RAN, and optionally group | `RAN 5`, `5`, `RAN5 TG 201` (`RAN 0` = any) | `RAN 5 TG 201` |
 
 To split a shared frequency, list it once per code: **+ tone** (**+ NAC**,
 **+ code**) on a row adds another on the same frequency, with its own
@@ -454,6 +508,7 @@ with codes leave anything out.
 - **DMR:** each slot on its own. The most specific row that fits wins (`CC1
   TS2 TG201` over `CC1`), and calls keep the talkgroup on the air; the row
   gives the names. A row whose code names a talkgroup is filed under it.
+- **NXDN:** as DMR, with the RAN for the colour code (and no slots).
 
 Every analog call's tone is identified whether or not one is set, and shown
 in the call list. The call JSON gets Trunk Recorder's fields: `tone_mode`
@@ -653,11 +708,11 @@ runs, so a grant heard before the next IDEN broadcast can be followed at once
 ```
 radio (RTL-SDR, USRP, Airspy, SoapySDR, capture file) ─► IQ
   ─► Channelizer: one shared FFT per radio, a "head" per channel, 1 s of pre-roll history
-      ├─ control channels ─► receivers ─► framer ─► TSBK (P25) / OSW (SmartNet) / CSBK (DMR)
+      ├─ control channels ─► receivers ─► framer ─► TSBK (P25) / OSW (SmartNet) / CSBK (DMR) / CAC (NXDN)
       │                                         ─► Message ─► call manager (grants, timeouts)
       ├─ voice channels, opened per grant with pre-roll
       │     ─► receivers ─► framer ─► voice tracker ─► IMBE / AMBE+2 vocoder ─► 8 kHz audio
-      └─ conventional channels: energy in the shared spectrum ─► open with pre-roll ─► FM / P25 / DMR voice
+      └─ conventional channels: energy in the shared spectrum ─► open with pre-roll ─► FM / P25 / DMR / NXDN voice
   ─► call ends ─► best copy across sites ─► WAV + Trunk Recorder JSON ─► M4A, plugins
 P25 receiver bank = CQPSK + CQPSK with a T/2 CMA equaliser + C4FM, best of each frame
 ```
@@ -679,6 +734,7 @@ threads and how the pieces connect.
 | `…/p25/phase2.rs` | Phase 2 TDMA: slot framer, scrambler, ISCH / DUID, AMBE codeword FEC, ESS, MAC PDUs |
 | `…/smartnet/` | SmartNet: 3600 baud receiver, OSW framing and decoding, band plans |
 | `…/dmr/` | DMR: burst framing, slots, FEC, link control, CSBKs, trunking (Capacity Plus / Max, Connect Plus, Tier III) |
+| `…/nxdn/` | NXDN: frame sync and scrambler, LICH, the convolutional / CRC channel coding (SACCH, FACCH1, UDCH, CAC, SCCH), layer 3 messages, voice, Type-C and Type-D trunking, a synthesizer for tests |
 | `…/mbe/` | IMBE and AMBE+2 vocoders (mbelib + Trunk Recorder's enhanced synthesis) |
 | `…/trunk/` | Control-channel messages (Trunk Recorder's `p25_parser.cc`), call manager (`monitor_systems.cc`), Phase 1, TDMA and DMR voice tracking, conventional channels, multi-site dedupe, the engine (several radios and systems) |
 | `…/survey.rs` | **Find my system**: band scan, control-channel check, band plan and ppm |
@@ -763,6 +819,9 @@ NAC 0x443, from an R820T RTL-SDR):
     UHF OBT system
 11. ~~Trunked DMR~~ — done: Capacity Plus (and Linked), Capacity Max,
     Connect Plus, Tier III; channel tables learned from the air
+11a. NXDN — built: NXDN48 / NXDN96, conventional, Type-C (channel table,
+    Direct Frequency Assignment or learned) and Type-D trunking; tested on
+    recordings and synthesized signals, awaiting a live system
 12. ~~Plugins~~ — done: a plugin protocol and Rust SDK, the registry and
     store, uploaders for OpenMHz, Broadcastify and Rdio Scanner, streaming,
     and upload scripts

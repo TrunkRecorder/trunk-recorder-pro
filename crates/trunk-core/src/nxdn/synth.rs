@@ -440,7 +440,7 @@ mod tests {
         let (done, _) = run_engine(cfg, &iq);
         assert_eq!(done.len(), 1, "{:?}", done.iter().map(|k| &k.call).collect::<Vec<_>>());
         let c = &done[0].call;
-        assert_eq!((c.talkgroup, c.freq_hz, c.nxdn), (3001, vc as u64, Some(Rate::N48)));
+        assert_eq!((c.talkgroup, c.freq_hz, c.nxdn, c.ran), (3001, vc as u64, Some(Rate::N48), Some(5)));
         assert_eq!(c.sources.first().map(|s| s.src), Some(77));
         let secs = done[0].audio.len() as f64 / 8000.0;
         assert!((secs - 3.2).abs() < 0.2, "{secs:.2} s of audio");
@@ -506,4 +506,95 @@ mod tests {
         }
         frame_dibits(&body)
     }
+}
+
+/// Weak-signal curves on synthesized voice (`cargo test -p trunk-core
+/// nxdn_snr_curve -- --ignored --nocapture`): the share of voice codewords
+/// decoded as sent, per SNR (signal over noise in the channel's own
+/// bandwidth: 6.25 / 12.5 kHz), with and without multi-symbol detection.
+#[cfg(test)]
+mod snr_curve {
+    use super::*;
+    use crate::ambe::decode_vcw;
+    use crate::dsp::c4fm::{C4fm, C4fmOptions};
+    use crate::dsp::Receiver;
+    use crate::nxdn::frame::{Body, Framer};
+    use crate::nxdn::layer3::CALL_CONFERENCE;
+
+    #[test]
+    #[ignore]
+    fn nxdn_snr_curve() {
+        let fs = 48_000.0;
+        for rate in [Rate::N48, Rate::N96] {
+            let bw = if rate == Rate::N48 { 6250.0 } else { 12_500.0 };
+            let t = Tx { rate, ran: 1, head: CallHead { cc_option: 0, call_type: CALL_CONFERENCE, option: 0, source: 1, destination: 2 }, cipher: 0, superframes: 40, rf: 2, outbound: true };
+            let mut x = 3u32;
+            let mut d: Vec<u8> = (0..1000)
+                .map(|_| {
+                    x = x.wrapping_mul(1664525).wrapping_add(1013904223);
+                    (x >> 30) as u8
+                })
+                .collect();
+            d.extend(dibits(&t.frames()));
+            d.extend(d[..2000].to_vec());
+            let mut ph = 0.0;
+            let clean = modulate(&d, None, rate, fs, 0.0, 1.0, &mut ph);
+            let mut line = format!("{rate:?}:");
+            for snr_db in [20.0, 15.0, 12.0, 10.0, 8.0, 6.0, 4.0] {
+                // Noise power in the channel bandwidth = 1 / snr: per sample over fs.
+                let sigma = ((fs / bw) / 10f64.powf(snr_db / 10.0) / 2.0).sqrt() as f32;
+                for msd in [true, false] {
+                    let mut iq = clean.clone();
+                    let mut seed = 77;
+                    add_noise(&mut iq, sigma, &mut seed);
+                    // The channel filter a real head would have.
+                    let mut chz = crate::dsp::Channelizer::new(fs, 24_000.0, 0.1);
+                    let (head, _, _) = chz.add_head(0.0, rate.cutoff_hz(), 0.0);
+                    let mut o = C4fmOptions::nxdn(rate.baud());
+                    if !msd {
+                        o.msd = None;
+                    }
+                    let mut rx = C4fm::with_options(chz.output_rate(), o);
+                    let mut syms = Vec::new();
+                    let mut buf = Vec::new();
+                    for c in iq.chunks(4096) {
+                        let u8s: Vec<u8> = c.iter().flat_map(|v| [((v.re * 40.0 + 127.5).clamp(0.0, 255.0)) as u8, ((v.im * 40.0 + 127.5).clamp(0.0, 255.0)) as u8]).collect();
+                        let mut off = 0;
+                        while off < u8s.len() {
+                            let (used, ran) = chz.feed_u8(&u8s[off..]);
+                            off += used;
+                            if ran {
+                                buf.clear();
+                                buf.extend_from_slice(chz.output(head).unwrap());
+                                rx.push(&buf, &mut syms);
+                            } else if used == 0 {
+                                break;
+                            }
+                        }
+                    }
+                    let mut fr = Framer::new();
+                    let mut frames = Vec::new();
+                    for s in &syms {
+                        fr.push(s, &mut frames);
+                    }
+                    // Voice frames as sent: every superframe's 16 codewords at 4800, 8 at 9600 (k odd: FACCH1).
+                    let sent: std::collections::HashSet<[u8; 49]> = (0..40 * 16).map(ambe).collect();
+                    let mut ok = 0;
+                    for f in &frames {
+                        let Some((l, _)) = f.lich() else { continue };
+                        if let Body::Voice { facch: [false, false], idle: false, .. } = l.body() {
+                            for k in 0..4 {
+                                let (dd, r) = f.voice_frame(k);
+                                ok += sent.contains(&decode_vcw(&dd, Some(&r)).bits) as usize;
+                            }
+                        }
+                    }
+                    let total = if rate == Rate::N48 { 40 * 16 } else { 40 * 8 };
+                    let _ = write!(line, " {snr_db:>2} dB {}: {:5.1} %", if msd { "msd" } else { "   " }, 100.0 * ok as f64 / total as f64);
+                }
+            }
+            eprintln!("{line}");
+        }
+    }
+    use std::fmt::Write as _;
 }

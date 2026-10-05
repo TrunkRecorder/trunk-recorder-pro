@@ -79,7 +79,7 @@ export interface Radios {
 /** A conventional channel. `talkgroup` defaults to the frequency in kHz; `squelchDb` to the section's. */
 export interface Channel {
   freqHz: number;
-  mode: "fm" | "p25" | "dmr";
+  mode: "fm" | "p25" | "dmr" | "nxdn48" | "nxdn96";
   name: string;
   talkgroup?: number;
   /** FM: the CTCSS tone or DCS code it records, Trunk Recorder's form ("151.4", "D023N"); absent / "": any. */
@@ -120,20 +120,32 @@ export interface System {
   name?: string;
   /** "smartnet": a Motorola SmartNet / SmartZone control channel (voice P25 or analog FM).
    *  "dmr": a trunked DMR site (Capacity Plus, Capacity Max, Connect Plus, Tier III); every
-   *  control channel and `dmrChannelsHz` frequency is watched. */
-  type: "p25" | "smartnet" | "dmr";
+   *  control channel and `dmrChannelsHz` frequency is watched.
+   *  "nxdn": an NXDN site (Type-C: a control channel; Type-D / IDAS: every repeater listed);
+   *  every control channel and `nxdnChannelsHz` frequency is watched. */
+  type: "p25" | "smartnet" | "dmr" | "nxdn";
   /** SmartNet: "800_standard" | "800_reband" | "800_splinter" | "900" | "400_custom" (with base / spacing / offset / high; offset a channel number). */
   bandplan?: string;
   bandplanBaseHz?: number;
   bandplanSpacingHz?: number;
   bandplanOffset?: number;
   bandplanHighHz?: number;
-  /** DMR: logical channel number → frequency, Hz (Trunk Recorder's lcnTable); the rest is learned. */
+  /** DMR: logical channel number → frequency, Hz (Trunk Recorder's lcnTable); the rest is learned.
+   *  NXDN: the channel table, channel number → frequency (Type-D: repeater number → frequency). */
   lcnTableHz?: Record<string, number>;
   /** DMR: voice frequencies to watch besides the control channels (Trunk Recorder's channels). */
   dmrChannelsHz?: number[];
   /** DMR: only this colour code. */
   colorCode?: number;
+  /** NXDN: "typeC" (a control channel; the default) or "typeD" (IDAS distributed: list every repeater). */
+  nxdnType?: "typeC" | "typeD";
+  /** NXDN: the control channel's (Type-D: the repeaters') rate; default "nxdn48". */
+  nxdnRate?: "nxdn48" | "nxdn96";
+  /** NXDN: voice frequencies to watch besides the control channels (Type-D: the repeaters).
+   *  A grant to a channel number not in `lcnTableHz` is learned when its call comes up on one. */
+  nxdnChannelsHz?: number[];
+  /** NXDN: only this RAN. */
+  ran?: number;
   /** SmartNet: the voice of a talkgroup never heard granted. */
   defaultMode?: "digital" | "analog";
   enabled: boolean;
@@ -374,6 +386,8 @@ export interface SystemStatus {
   patches?: { supergroup: TalkgroupName; members: TalkgroupName[] }[];
   /** A trunked DMR site. */
   dmr?: DmrSiteStatus | null;
+  /** An NXDN site. */
+  nxdn?: NxdnSiteStatus | null;
   /** Multi-site: the system it is a site of ("p25:bee00.1a2", "group:<name>"), once known. */
   siteGroup?: string | null;
 }
@@ -390,6 +404,23 @@ export interface DmrSiteStatus {
   channels: { lcn: number; freqHz: number; configured: boolean }[];
   /** Every watched frequency: sending control blocks, and each slot's call now. */
   carriers: { freqHz: number; control: boolean; colorCode: number | null; slots: ({ talkgroup: TalkgroupName; source: number } | null)[] }[];
+}
+
+export interface NxdnSiteStatus {
+  kind: "NXDN Type-C" | "NXDN Type-D";
+  /** The control channel's (Type-D: the repeaters') rate, once heard. */
+  rate: "nxdn48" | "nxdn96" | null;
+  /** SITE_INFO: the site's location ID. */
+  location: { category: number; system: number; site: number } | null;
+  ran: number | null;
+  /** Direct Frequency Assignment, when the site uses it: grants carry frequencies from this base and step. */
+  dfa: { baseHz: number; stepHz: number } | null;
+  /** Channel number → frequency: from the config, or learned from the air. */
+  channels: { channel: number; freqHz: number; configured: boolean }[];
+  /** Channel numbers granted whose frequency isn't known yet. */
+  unknownChannels: number[];
+  /** Every watched frequency: control (Type-C), its RAN, repeater number (Type-D), and the call on it now. */
+  carriers: { freqHz: number; control: boolean; ran: number | null; repeater: number | null; call: { talkgroup: TalkgroupName; source: number } | null }[];
 }
 
 /** A talkgroup and its alpha tag from the system's talkgroup file ("" when not in it). */
@@ -438,6 +469,10 @@ export interface CallView {
   freqHz: number;
   slot: number | null;
   analog: boolean;
+  /** An NXDN call: its rate. */
+  nxdn: "nxdn48" | "nxdn96" | null;
+  /** NXDN: the RAN its frames carried. */
+  ran: number | null;
   /** Conventional FM: the CTCSS tone ("151.4 Hz") or DCS code ("D023N") heard. */
   tone?: string | null;
   state: "recording" | "monitoring";
@@ -495,6 +530,8 @@ export interface CallRecord {
   tdma_slot: number;
   /** DMR color code; -1 otherwise. */
   color_code: number;
+  /** NXDN RAN; -1 otherwise (absent in calls saved before NXDN). */
+  ran?: number;
   audio_type: "analog" | "digital" | "digital tdma";
   /** Conventional analog: the tone it was matched on ("ctcss" / "dcs"), "search" (identified, not required), else "off". */
   tone_mode: "ctcss" | "dcs" | "search" | "off";
@@ -594,7 +631,7 @@ export interface SurveyCandidate {
   band: string;
   snrDb: number;
   widthHz: number;
-  kind: "control" | "smartnet" | "p25" | "dmrControl" | "dmr" | "other";
+  kind: "control" | "smartnet" | "p25" | "dmrControl" | "dmr" | "nxdnControl" | "nxdn" | "other";
   frames: number;
   good: number;
   bad: number;
@@ -602,6 +639,8 @@ export interface SurveyCandidate {
   identity: SurveyIdentity;
   /** DMR: the trunking its control blocks are ("DMR Capacity Plus", …) and its colour code. */
   dmr?: { variant: string | null; colorCode: number | null } | null;
+  /** NXDN: its rate and RAN, and (a control channel) its system and site codes. */
+  nxdn?: { rate: "nxdn48" | "nxdn96"; ran: number | null; system: number | null; site: number | null } | null;
 }
 
 export interface SurveyMonitor {

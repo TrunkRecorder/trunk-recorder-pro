@@ -335,7 +335,8 @@ pub fn heard_code(call: &Call) -> Option<String> {
         return Some(call.tone.map_or(String::new(), |h| h.tone.to_string()));
     }
     if call.nxdn.is_some() {
-        return Some(Access::Nxdn { ran: call.ran, tg: Some(call.talkgroup) }.to_string());
+        // (RAN 0 is "any": a row can't ask for it.)
+        return Some(Access::Nxdn { ran: call.ran.filter(|&r| r != 0), tg: Some(call.talkgroup) }.to_string());
     }
     if call.color_code.is_some() {
         return Some(Access::Dmr { cc: call.color_code, slot: Some(call.tdma_slot + 1), tg: Some(call.talkgroup) }.to_string());
@@ -801,7 +802,7 @@ impl Conventional {
             None => {
                 let code = match rows[0].mode {
                     ConvMode::P25 => h.nac.map_or(String::new(), |n| Access::Nac(n).to_string()),
-                    ConvMode::Nxdn(_) => Access::Nxdn { ran: h.ran, tg: h.tg }.to_string(),
+                    ConvMode::Nxdn(_) => Access::Nxdn { ran: h.ran.filter(|&r| r != 0), tg: h.tg }.to_string(),
                     _ => Access::Dmr { cc: h.color_code, slot: Some(slot as u8 + 1), tg: h.tg }.to_string(),
                 };
                 *h = Heard::default();

@@ -4,9 +4,17 @@
 //! frames, rate, RAN and what they carry.
 //!
 //! `trunk-pro tool nxdn <capture> --center Hz --freq Hz [--nxdn 48|96]
-//! [--frames] [--audio out.f32]` — one NXDN channel: its layer 3 messages
-//! as JSON lines (`--frames`: every frame), then counts; `--audio` vocodes
-//! its voice (8 kHz f32).
+//! [--frames] [--audio out.f32] [--variant sinc,…]` — one NXDN channel: its
+//! layer 3 messages as JSON lines (`--frames`: every frame), then counts;
+//! `--audio` vocodes its voice (8 kHz f32).
+//!
+//! `trunk-pro tool nxdnsynth <out.cu8> --center Hz [--kind conv|typeC|typeD]
+//! [--nxdn 48|96] [--rate 2400000]` — a synthetic capture (rtl_sdr's cu8):
+//! a conventional call at centre + 50 kHz; a Type-C control channel at
+//! centre + 18.75 kHz granting group 3001 channel 12, whose call is at
+//! centre + 68.75 kHz; or a Type-D site, repeaters at centre + 12.5 / 62.5
+//! kHz, the call on the second. For checking a setup, or another decoder
+//! (SDRTrunk, DSD-FME) against this one on the same IQ.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -158,7 +166,14 @@ pub fn run(a: &Args) {
     let mut chz = Channelizer::new(fs, 24_000.0, 0.1);
     let rate = chz.output_rate();
     let (head, _, _) = chz.add_head(freq - center, nxdn.cutoff_hz(), 0.0);
-    let mut rx = nxdn.receiver(rate);
+    // --variant sinc,nomsd,…: receiver settings (C4fmOptions::set).
+    let mut opts = trunk_core::dsp::c4fm::C4fmOptions::nxdn(nxdn.baud());
+    for v in a.get("variant").unwrap_or("").split(',').filter(|v| !v.is_empty()) {
+        if !opts.set(v) {
+            die(&format!("--variant: unknown setting {v}"));
+        }
+    }
+    let mut rx = C4fm::with_options(rate, opts);
     let mut framer = Framer::new();
     let mut vocoder = mbe::Decoder::new(mbe::lcg(1), mbe::Profile::Enhanced);
     let mut audio_out = a.get("audio").map(|p| BufWriter::new(File::create(p).unwrap_or_else(|e| die(&format!("{p}: {e}")))));
@@ -284,4 +299,102 @@ pub fn run(a: &Args) {
             eprintln!("vocoded: {}", c.vocoded.iter().map(|(k, n)| format!("{k}:{n}")).collect::<Vec<_>>().join(" "));
         }
     }
+}
+
+pub fn run_synth(a: &Args) {
+    use trunk_core::nxdn::channel::{build as cb, Sr};
+    use trunk_core::nxdn::layer3::{build as l3, CallHead, CALL_CONFERENCE};
+    use trunk_core::nxdn::synth::{add_noise, cac_frame, dibits, modulate, voice_frame, Half, Tx};
+    let path = a.positional.get(1).unwrap_or_else(|| die("tool nxdnsynth: no output file"));
+    let center = a.num("center", 451_000_000.0);
+    let fs = a.num("rate", 2_400_000.0);
+    let nxdn = Rate::parse(a.get("nxdn").unwrap_or("48")).unwrap_or_else(|| die("--nxdn 48|96"));
+    let kind = a.get("kind").unwrap_or("typeC");
+    let head = CallHead { cc_option: 0, call_type: CALL_CONFERENCE, option: if nxdn == Rate::N96 { 2 } else { 0 }, source: 77, destination: 3001 };
+    let idle = l3::idle();
+    let idle_frame = voice_frame(0x39, Sr { structure: 0, ran: 5 }, 0, &[Half::Facch1(idle.clone()), Half::Facch1(idle.clone())]);
+    // (offset Hz, frames)
+    let carriers: Vec<(f64, Vec<[u8; 192]>)> = match kind {
+        "conv" => {
+            let t = Tx { rate: nxdn, ran: 5, head, cipher: 0, superframes: 15, rf: 2, outbound: true };
+            vec![(50_000.0, t.frames())]
+        }
+        "typeC" => {
+            let t = Tx { rate: nxdn, ran: 5, head, cipher: 0, superframes: 15, rf: 1, outbound: true };
+            let mut voice = vec![idle_frame; 4];
+            voice.extend(t.frames());
+            let sr = Sr { structure: 2, ran: 5 };
+            let mut ctrl = vec![cac_frame(sr, &l3::site_info(0x123 << 12 | 0x045, 0x0200, 0, 0, [1, 0])), cac_frame(sr, &l3::vcall_assgn(false, &head, 4, 12))];
+            while ctrl.len() < voice.len() + 4 {
+                let m = if ctrl.len() % 8 == 0 { l3::site_info(0x123 << 12 | 0x045, 0x0200, 0, 0, [1, 0]) } else { l3::vcall_assgn(true, &head, 4, 12) };
+                ctrl.push(cac_frame(sr, &m));
+            }
+            vec![(18_750.0, ctrl), (68_750.0, voice)]
+        }
+        "typeD" => {
+            let tg: u16 = 3 << 11 | 101;
+            let src: u16 = 3 << 11 | 1234;
+            let d_frame = |lich: u8, structure: u8, data: u32, n: Option<usize>| {
+                use trunk_core::nxdn::frame::{frame_dibits, Lich, BODY_SYMBOLS};
+                let mut body = [0u8; BODY_SYMBOLS];
+                body[..8].copy_from_slice(&Lich { raw: lich }.dibits());
+                for (i, &b) in cb::scch(structure, false, data).iter().enumerate() {
+                    let k = 16 + i;
+                    body[k / 2] |= b << (1 - k % 2);
+                }
+                if let Some(n) = n {
+                    for j in 0..4 {
+                        let d = trunk_core::ambe::encode_vcw(&trunk_core::nxdn::synth::ambe(4 * n + j));
+                        let at = (76 + 72 * j) / 2;
+                        body[at..at + 36].copy_from_slice(&d);
+                    }
+                }
+                frame_dibits(&body)
+            };
+            let idle_d = |k: usize| d_frame(0x7f, 3 - (k % 4) as u8, if k % 4 == 3 { cb::scch_id(0, 2046, false) } else { 0 }, None);
+            let r1: Vec<_> = (0..70).map(idle_d).collect();
+            let mut r2: Vec<_> = (0..4).map(idle_d).collect();
+            for n in 0..60usize {
+                let k = n % 4;
+                let data = match k {
+                    0 => cb::scch_info1(0, 0, 0, 0, 0),
+                    1 | 3 => cb::scch_id(2, tg, true),
+                    _ => cb::scch_id(0, src, false),
+                };
+                r2.push(d_frame(0x77, 3 - k as u8, data, Some(n)));
+            }
+            vec![(12_500.0, r1), (62_500.0, r2)]
+        }
+        k => die(&format!("--kind {k}: conv, typeC or typeD")),
+    };
+    let mut sum: Vec<num_complex::Complex32> = Vec::new();
+    for (i, (off, frames)) in carriers.iter().enumerate() {
+        let mut x = 7u32 + i as u32;
+        let mut rnd = |n: usize| -> Vec<u8> {
+            (0..n)
+                .map(|_| {
+                    x = x.wrapping_mul(1664525).wrapping_add(1013904223);
+                    (x >> 30) as u8
+                })
+                .collect()
+        };
+        let mut d = rnd(nxdn.baud() as usize / 2);
+        d.extend(dibits(frames));
+        d.extend(rnd(nxdn.baud() as usize));
+        let mut ph = 0.0;
+        let iq = modulate(&d, None, nxdn, fs, *off, 0.25, &mut ph);
+        if sum.len() < iq.len() {
+            sum.resize(iq.len(), Default::default());
+        }
+        for (s, v) in sum.iter_mut().zip(&iq) {
+            *s += v;
+        }
+    }
+    let mut seed = 1;
+    add_noise(&mut sum, 0.02, &mut seed);
+    let mut w = BufWriter::new(File::create(path).unwrap_or_else(|e| die(&format!("{path}: {e}"))));
+    for v in &sum {
+        w.write_all(&[(v.re * 127.5 + 127.5).clamp(0.0, 255.0) as u8, (v.im * 127.5 + 127.5).clamp(0.0, 255.0) as u8]).unwrap();
+    }
+    eprintln!("{path}: {:.1} s at {fs} S/s, centre {center} Hz ({kind}, {})", sum.len() as f64 / fs, nxdn.name());
 }

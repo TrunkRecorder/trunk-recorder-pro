@@ -82,7 +82,7 @@ pub struct System<S> {
     pub index: u16,
     /// Its identity: unique among the recorder's systems, and what users know it by.
     pub short_name: String,
-    /// "p25" | "smartnet" | "dmr" | "conventional"
+    /// "p25" | "smartnet" | "dmr" | "nxdn" | "conventional"
     pub kind: String,
     pub config: Option<S>,
 }

@@ -164,7 +164,7 @@ pub struct SystemInfo {
     /// recorder's systems), its folder, and what users know it by. Every
     /// event carries it.
     pub short_name: String,
-    /// "p25" | "smartnet" | "dmr" | "conventional"
+    /// "p25" | "smartnet" | "dmr" | "nxdn" | "conventional"
     pub kind: String,
     /// The plugin's settings for this system (see [`Manifest::system_config`]);
     /// null when the user left them empty.

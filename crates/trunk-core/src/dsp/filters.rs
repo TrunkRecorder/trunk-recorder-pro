@@ -26,6 +26,28 @@ pub fn rrc_taps(alpha: f64, sps: f64, n: usize) -> Vec<f32> {
     h.into_iter().map(|v| v as f32).collect()
 }
 
+/// `taps` convolved with a boxcar `width` samples wide (fractional ends
+/// weighted), DC gain kept at 1: the time-domain form of multiplying the
+/// filter's response by sin(πfT)/(πfT), T = `width` samples.
+pub fn with_boxcar(taps: &[f32], width: f64) -> Vec<f32> {
+    let half = (width / 2.0).ceil() as usize;
+    let k: Vec<f64> = (0..=2 * half)
+        .map(|i| {
+            let d = (i as f64 - half as f64).abs();
+            (width / 2.0 - d + 0.5).clamp(0.0, 1.0)
+        })
+        .collect();
+    let n = taps.len() + k.len() - 1;
+    let mut out = vec![0f64; n];
+    for (i, &t) in taps.iter().enumerate() {
+        for (j, &w) in k.iter().enumerate() {
+            out[i + j] += t as f64 * w;
+        }
+    }
+    let dc: f64 = out.iter().sum();
+    out.into_iter().map(|v| (v / dc) as f32).collect()
+}
+
 /// `n` Blackman windowed-sinc low-pass taps, cutoff `fc` in cycles per sample, not normalised (DC gain ≈ 1).
 pub fn blackman_sinc(n: usize, fc: f64) -> Vec<f64> {
     let m = (n - 1) as f64;

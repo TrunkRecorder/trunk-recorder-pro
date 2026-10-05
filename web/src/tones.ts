@@ -86,9 +86,10 @@ export function sameTone(a: string, b: string): boolean {
  * src/trunk/conventional.rs: Access::parse — keep them together): FM as
  * parseTone; P25's NAC (`293`, `293 NAC`, `$293`, `0x293` → `NAC 293`; `F7E`
  * / `F7F` = any); DMR's colour code, slot and talkgroup (`CC1`, `1`,
- * `CC1 TS2 TG201`, `CC 1 TG 201 SL 2` → `CC 1 TS 2 TG 201`).
+ * `CC1 TS2 TG201`, `CC 1 TG 201 SL 2` → `CC 1 TS 2 TG 201`); NXDN's RAN
+ * and group (`RAN 5`, `5`, `ran5 tg 201` → `RAN 5 TG 201`; RAN 0 = any).
  */
-export function parseAccess(mode: "fm" | "p25" | "dmr", text: string): { tone: string } | { error: string } {
+export function parseAccess(mode: "fm" | "p25" | "dmr" | "nxdn48" | "nxdn96", text: string): { tone: string } | { error: string } {
   if (mode === "fm") return parseTone(text);
   const up = text.trim().toUpperCase();
   if (["", "0", "S", "ANY", "NONE", "SEARCH"].includes(up)) return { tone: "" };
@@ -104,7 +105,12 @@ export function parseAccess(mode: "fm" | "p25" | "dmr", text: string): { tone: s
     const n = parseInt(body, 16);
     return n === 0xf7e || n === 0xf7f ? { tone: "" } : { tone: `NAC ${n.toString(16).toUpperCase().padStart(3, "0")}` };
   }
-  const bad = { error: `"${text.trim()}" isn't a DMR colour code (CC1), slot (TS2) or talkgroup (TG201)` };
+  const nxdn = mode === "nxdn48" || mode === "nxdn96";
+  const bad = {
+    error: nxdn
+      ? `"${text.trim()}" isn't an NXDN RAN (RAN 5) or talkgroup (TG 201)`
+      : `"${text.trim()}" isn't a DMR colour code (CC1), slot (TS2) or talkgroup (TG201)`,
+  };
   const words = up
     .replace(/[,:=]/g, " ")
     .replace(/([A-Z])(\d)/g, "$1 $2")
@@ -114,14 +120,23 @@ export function parseAccess(mode: "fm" | "p25" | "dmr", text: string): { tone: s
   let cc: number | undefined;
   let slot: number | undefined;
   let tg: number | undefined;
+  let ran: number | undefined;
   for (let i = 0; i < words.length; ) {
     const bare = /^\d+$/.test(words[i]);
-    const key = bare && i === 0 ? "CC" : words[i];
+    const key = bare && i === 0 ? (nxdn ? "RAN" : "CC") : words[i];
     const valText = bare ? words[i] : words[i + 1];
     if (!valText || !/^\d+$/.test(valText)) return bad;
     const v = Number(valText);
     i += bare ? 1 : 2;
-    if (key === "CC" || key === "COLOR" || key === "COLOUR") {
+    if (nxdn) {
+      if (key === "RAN") {
+        if (v > 63) return { error: `RAN ${v}: a RAN is 0–63` };
+        ran = v;
+      } else if (key === "TG") {
+        if (v < 1 || v >= 1 << 16) return { error: `TG ${v}: not an NXDN group (1–65535)` };
+        tg = v;
+      } else return bad;
+    } else if (key === "CC" || key === "COLOR" || key === "COLOUR") {
       if (v > 15) return { error: `CC ${v}: a colour code is 0–15` };
       cc = v;
     } else if (key === "TS" || key === "SLOT") {
@@ -132,11 +147,16 @@ export function parseAccess(mode: "fm" | "p25" | "dmr", text: string): { tone: s
       tg = v;
     } else if (key !== "SL") return bad;
   }
+  if (nxdn) {
+    // RAN 0 means "any" to a receiver.
+    const parts = [ran ? `RAN ${ran}` : "", tg !== undefined ? `TG ${tg}` : ""].filter(Boolean);
+    return { tone: parts.join(" ") };
+  }
   const parts = [cc !== undefined ? `CC ${cc}` : "", slot !== undefined ? `TS ${slot}` : "", tg !== undefined ? `TG ${tg}` : ""].filter(Boolean);
   return { tone: parts.join(" ") };
 }
 
-/** The talkgroup a DMR row's code names, if any. */
+/** The talkgroup a DMR or NXDN row's code names, if any. */
 export function dmrTalkgroup(tone: string | undefined): number | undefined {
   const m = /\bTG (\d+)/.exec(tone ?? "");
   return m ? Number(m[1]) : undefined;

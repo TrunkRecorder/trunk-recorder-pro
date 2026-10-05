@@ -117,6 +117,10 @@
           "type": "number",
           "description": "DMR color code; -1 otherwise."
         },
+        "ran": {
+          "type": "number",
+          "description": "NXDN RAN; -1 otherwise (absent in calls saved before NXDN)."
+        },
         "audio_type": {
           "type": "string",
           "enum": [
@@ -361,6 +365,25 @@
         "analog": {
           "type": "boolean"
         },
+        "nxdn": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "nxdn48",
+            "nxdn96",
+            null
+          ],
+          "description": "An NXDN call: its rate."
+        },
+        "ran": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "NXDN: the RAN its frames carried."
+        },
         "tone": {
           "type": [
             "string",
@@ -428,6 +451,8 @@
         "freqHz",
         "slot",
         "analog",
+        "nxdn",
+        "ran",
         "state",
         "reason",
         "encrypted",
@@ -448,7 +473,9 @@
           "enum": [
             "fm",
             "p25",
-            "dmr"
+            "dmr",
+            "nxdn48",
+            "nxdn96"
           ]
         },
         "name": {
@@ -2984,6 +3011,188 @@
       ],
       "additionalProperties": false
     },
+    "NxdnSiteStatus": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "NXDN Type-C",
+            "NXDN Type-D"
+          ]
+        },
+        "rate": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "nxdn48",
+            "nxdn96",
+            null
+          ],
+          "description": "The control channel's (Type-D: the repeaters') rate, once heard."
+        },
+        "location": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "category": {
+                  "type": "number"
+                },
+                "system": {
+                  "type": "number"
+                },
+                "site": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "category",
+                "system",
+                "site"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "SITE_INFO: the site's location ID."
+        },
+        "ran": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "dfa": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "baseHz": {
+                  "type": "number"
+                },
+                "stepHz": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "baseHz",
+                "stepHz"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Direct Frequency Assignment, when the site uses it: grants carry frequencies from this base and step."
+        },
+        "channels": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "channel": {
+                "type": "number"
+              },
+              "freqHz": {
+                "type": "number"
+              },
+              "configured": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "channel",
+              "freqHz",
+              "configured"
+            ],
+            "additionalProperties": false
+          },
+          "description": "Channel number → frequency: from the config, or learned from the air."
+        },
+        "unknownChannels": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "Channel numbers granted whose frequency isn't known yet."
+        },
+        "carriers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "freqHz": {
+                "type": "number"
+              },
+              "control": {
+                "type": "boolean"
+              },
+              "ran": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "repeater": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "call": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "talkgroup": {
+                        "$ref": "#/definitions/TalkgroupName"
+                      },
+                      "source": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "talkgroup",
+                      "source"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "freqHz",
+              "control",
+              "ran",
+              "repeater",
+              "call"
+            ],
+            "additionalProperties": false
+          },
+          "description": "Every watched frequency: control (Type-C), its RAN, repeater number (Type-D), and the call on it now."
+        }
+      },
+      "required": [
+        "kind",
+        "rate",
+        "location",
+        "ran",
+        "dfa",
+        "channels",
+        "unknownChannels",
+        "carriers"
+      ],
+      "additionalProperties": false
+    },
     "Phase": {
       "type": "string",
       "enum": [
@@ -4685,6 +4894,8 @@
             "p25",
             "dmrControl",
             "dmr",
+            "nxdnControl",
+            "nxdn",
             "other"
           ]
         },
@@ -4732,6 +4943,51 @@
             }
           ],
           "description": "DMR: the trunking its control blocks are (\"DMR Capacity Plus\", …) and its colour code."
+        },
+        "nxdn": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "rate": {
+                  "type": "string",
+                  "enum": [
+                    "nxdn48",
+                    "nxdn96"
+                  ]
+                },
+                "ran": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "system": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "site": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "rate",
+                "ran",
+                "system",
+                "site"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "NXDN: its rate and RAN, and (a control channel) its system and site codes."
         }
       },
       "required": [
@@ -5201,9 +5457,10 @@
           "enum": [
             "p25",
             "smartnet",
-            "dmr"
+            "dmr",
+            "nxdn"
           ],
-          "description": "\"smartnet\": a Motorola SmartNet / SmartZone control channel (voice P25 or analog FM). \"dmr\": a trunked DMR site (Capacity Plus, Capacity Max, Connect Plus, Tier III); every control channel and `dmrChannelsHz` frequency is watched."
+          "description": "\"smartnet\": a Motorola SmartNet / SmartZone control channel (voice P25 or analog FM). \"dmr\": a trunked DMR site (Capacity Plus, Capacity Max, Connect Plus, Tier III); every control channel and `dmrChannelsHz` frequency is watched. \"nxdn\": an NXDN site (Type-C: a control channel; Type-D / IDAS: every repeater listed); every control channel and `nxdnChannelsHz` frequency is watched."
         },
         "bandplan": {
           "type": "string",
@@ -5226,7 +5483,7 @@
           "additionalProperties": {
             "type": "number"
           },
-          "description": "DMR: logical channel number → frequency, Hz (Trunk Recorder's lcnTable); the rest is learned."
+          "description": "DMR: logical channel number → frequency, Hz (Trunk Recorder's lcnTable); the rest is learned. NXDN: the channel table, channel number → frequency (Type-D: repeater number → frequency)."
         },
         "dmrChannelsHz": {
           "type": "array",
@@ -5238,6 +5495,33 @@
         "colorCode": {
           "type": "number",
           "description": "DMR: only this colour code."
+        },
+        "nxdnType": {
+          "type": "string",
+          "enum": [
+            "typeC",
+            "typeD"
+          ],
+          "description": "NXDN: \"typeC\" (a control channel; the default) or \"typeD\" (IDAS distributed: list every repeater)."
+        },
+        "nxdnRate": {
+          "type": "string",
+          "enum": [
+            "nxdn48",
+            "nxdn96"
+          ],
+          "description": "NXDN: the control channel's (Type-D: the repeaters') rate; default \"nxdn48\"."
+        },
+        "nxdnChannelsHz": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "NXDN: voice frequencies to watch besides the control channels (Type-D: the repeaters). A grant to a channel number not in `lcnTableHz` is learned when its call comes up on one."
+        },
+        "ran": {
+          "type": "number",
+          "description": "NXDN: only this RAN."
         },
         "defaultMode": {
           "type": "string",
@@ -5424,6 +5708,17 @@
             }
           ],
           "description": "A trunked DMR site."
+        },
+        "nxdn": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/NxdnSiteStatus"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "An NXDN site."
         },
         "siteGroup": {
           "type": [

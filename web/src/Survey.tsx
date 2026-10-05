@@ -1,4 +1,4 @@
-// "Find my system": the survey. Scan the bands for P25, SmartNet and trunked DMR control channels,
+// "Find my system": the survey. Scan the bands for P25, SmartNet, trunked DMR and NXDN control channels,
 // listen to the best one, and add it as a system — control channels, site
 // identity, the dongle's frequency correction, gain and centre from what it
 // announces. Neighbouring sites it announces can be added as systems too.
@@ -8,7 +8,7 @@
 
 import { useState } from "react";
 import { formatGain, formatMhz, systemWithChannel } from "./config.ts";
-import { addDmrSite, addSite, applySurvey, setNotice, startSurvey, stopSurvey, surveyListen, surveyRescan, useApp, web } from "./controller.ts";
+import { addDmrSite, addNxdnChannel, addNxdnSite, addSite, applySurvey, setNotice, startSurvey, stopSurvey, surveyListen, surveyRescan, useApp, web } from "./controller.ts";
 import type { Config, SiteIdentity, SurveyCandidate, SurveyIdentity, SurveyMonitor, SurveySuggestion } from "./protocol.ts";
 import { Waterfall } from "./Waterfall.tsx";
 
@@ -28,6 +28,8 @@ const KIND: Record<SurveyCandidate["kind"], string> = {
   dmrControl: "DMR control / rest channel",
   p25: "P25 (voice / data)",
   dmr: "DMR (conventional / data)",
+  nxdnControl: "NXDN control channel",
+  nxdn: "NXDN (conventional / voice)",
   other: "Other",
 };
 const isControl = (c: SurveyCandidate) => c.kind === "control" || c.kind === "smartnet";
@@ -58,6 +60,21 @@ function Candidates(props: { c: Config; list: SurveyCandidate[]; listening: numb
           ? "Add the other repeaters under Site frequencies."
           : "Add voice channels under Voice frequencies."),
     );
+  };
+  const addNxdn = (cand: SurveyCandidate) => {
+    const hz = Math.round((cand.correctedHz ?? cand.freqHz) / 6250) * 6250;
+    const rate = cand.nxdn?.rate ?? "nxdn48";
+    const ran = cand.nxdn?.ran ?? null;
+    if (cand.kind === "nxdnControl") {
+      const name = addNxdnSite(hz, rate, ran);
+      setNotice(
+        `Added ${name}: NXDN Type-C on ${formatMhz(hz)} MHz${ran === null ? "" : `, RAN ${ran}`}. ` +
+          "Add its channel table, or its voice frequencies so channel numbers are learned.",
+      );
+    } else {
+      const name = addNxdnChannel(hz, rate, ran);
+      setNotice(`Added ${formatMhz(hz)} MHz (${rate.toUpperCase()}${ran ? `, RAN ${ran}` : ""}) to ${name}'s conventional channels.`);
+    }
   };
   const [showOther, setShowOther] = useState(false);
   const others = props.list.filter((c) => c.kind === "other").length;
@@ -90,7 +107,13 @@ function Candidates(props: { c: Config; list: SurveyCandidate[]; listening: numb
                     {c.modulation && <span className="tag">{c.modulation}</span>}
                   </td>
                   <td className="mono small">
-                    {c.dmr ? [c.dmr.variant?.replace(/^DMR /, ""), c.dmr.colorCode !== null ? `CC ${c.dmr.colorCode}` : null].filter(Boolean).join(" · ") : idText(c.identity)}
+                    {c.dmr
+                      ? [c.dmr.variant?.replace(/^DMR /, ""), c.dmr.colorCode !== null ? `CC ${c.dmr.colorCode}` : null].filter(Boolean).join(" · ")
+                      : c.nxdn
+                        ? [c.nxdn.ran !== null ? `RAN ${c.nxdn.ran}` : null, c.nxdn.system !== null ? `SysID ${hex(c.nxdn.system)}` : null, c.nxdn.site !== null ? `site ${c.nxdn.site}` : null]
+                            .filter(Boolean)
+                            .join(" · ")
+                        : idText(c.identity)}
                   </td>
                   <td className="mono small">{decoded(c)}</td>
                   <td className="actions">
@@ -112,6 +135,19 @@ function Candidates(props: { c: Config; list: SurveyCandidate[]; listening: numb
                           <span className="muted small">in {have.shortName}</span>
                         ) : (
                           <button className="btn ghost small" onClick={() => addDmr(c)}>
+                            Add
+                          </button>
+                        );
+                      })()}
+                    {(c.kind === "nxdnControl" || c.kind === "nxdn") &&
+                      (() => {
+                        const hz = c.correctedHz ?? c.freqHz;
+                        const have = systemWithChannel(props.c, hz);
+                        const conv = props.c.conventional.find((v) => v.channels.some((ch) => Math.abs(ch.freqHz - hz) < 6_000));
+                        return have || conv ? (
+                          <span className="muted small">in {(have ?? conv)!.shortName}</span>
+                        ) : (
+                          <button className="btn ghost small" onClick={() => addNxdn(c)} title={c.kind === "nxdn" ? "As a conventional channel" : undefined}>
                             Add
                           </button>
                         );
@@ -430,7 +466,7 @@ export function SurveyPanel(props: { c: Config }) {
       </header>
       {!active && open && (
         <div className="stack">
-          <p className="muted small">Scans for P25, SmartNet and DMR control channels and sets up the system.</p>
+          <p className="muted small">Scans for P25, SmartNet, DMR and NXDN control channels and sets up the system.</p>
           {(c.sources.length > 1 || src?.type === "rtlsdr") && (
           <div className="grid2">
             {c.sources.length > 1 && (

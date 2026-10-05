@@ -56,6 +56,9 @@ pub fn run(a: &Args) {
     if mode == "nxdnscan" {
         return crate::nxdntool::run_scan(a);
     }
+    if mode == "nxdnsynth" {
+        return crate::nxdntool::run_synth(a);
+    }
     if mode == "revoice" {
         return run_revoice(a);
     }

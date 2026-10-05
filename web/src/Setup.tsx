@@ -175,9 +175,11 @@ const TONE_HINT = {
   fm: { placeholder: "any", title: "CTCSS tone or DCS code (151.4 PL, 023 DPL). Empty: any." },
   p25: { placeholder: "any NAC", title: "NAC, hex (293). Empty: any." },
   dmr: { placeholder: "any CC", title: "Colour code, optional slot and talkgroup (CC1 TS2 TG201). Empty: any." },
+  nxdn48: { placeholder: "any RAN", title: "RAN, optional talkgroup (RAN 5 TG 201). Empty or RAN 0: any." },
+  nxdn96: { placeholder: "any RAN", title: "RAN, optional talkgroup (RAN 5 TG 201). Empty or RAN 0: any." },
 };
 
-/** A channel's code (CTCSS / DCS, NAC, colour code): kept as typed, tidied when left. */
+/** A channel's code (CTCSS / DCS, NAC, colour code, RAN): kept as typed, tidied when left. */
 function ToneInput(props: { mode: Channel["mode"]; tone: string; disabled?: boolean; onChange: (tone: string) => void }) {
   const [text, setText] = useState(props.tone);
   const parsed = parseAccess(props.mode, text);
@@ -205,7 +207,7 @@ function ToneInput(props: { mode: Channel["mode"]; tone: string; disabled?: bool
   );
 }
 
-const NONE_LABEL = { fm: "no tone", p25: "no NAC", dmr: "no code" };
+const NONE_LABEL = { fm: "no tone", p25: "no NAC", dmr: "no code", nxdn48: "no code", nxdn96: "no code" };
 const SHOWN_CODES = 8;
 
 /**
@@ -215,10 +217,11 @@ const SHOWN_CODES = 8;
  */
 function HeardRow(props: { rows: Channel[]; heard: HeardCode[]; linked: boolean; onAdd: (code: string) => void }) {
   const mode = props.rows[0].mode;
-  // Only what this mode's Tone can say.
-  const codes = props.heard.filter((h) => {
+  // Only what this mode's Tone can say (NXDN's RAN 0 is any: "RAN 0 TG 201" is "TG 201").
+  const nxdn = mode === "nxdn48" || mode === "nxdn96";
+  const codes = props.heard.flatMap((h) => {
     const p = parseAccess(mode, h.code);
-    return "tone" in p && p.tone === h.code;
+    return "tone" in p && (p.tone === h.code || (nxdn && /^RAN 0\b/.test(h.code))) ? [{ ...h, code: p.tone }] : [];
   });
   if (!codes.length) return null;
   const listed = (code: string) => props.rows.some((r) => (code ? !!r.tone && sameTone(r.tone, code) : !r.tone));
@@ -953,8 +956,8 @@ function ConventionalPanel(props: { c: Config; k: number }) {
     const ch = chans[i];
     const at = lastOfFreq(i);
     const row: Channel = { freqHz: ch.freqHz, mode: ch.mode, name: "", enabled: true, tone };
-    // A DMR code naming a talkgroup files under it; others get the next free number.
-    if (!(ch.mode === "dmr" && /\bTG \d/.test(tone))) row.talkgroup = nextTalkgroup(chans, ch.freqHz);
+    // A DMR / NXDN code naming a talkgroup files under it; others get the next free number.
+    if (!(ch.mode !== "fm" && ch.mode !== "p25" && /\bTG \d/.test(tone))) row.talkgroup = nextTalkgroup(chans, ch.freqHz);
     if (!tone) delete row.tone;
     if (ch.squelchDb !== undefined) row.squelchDb = ch.squelchDb;
     ids.current.splice(at + 1, 0, nextRowId++);
@@ -1118,6 +1121,8 @@ function ConventionalPanel(props: { c: Config; k: number }) {
                   <option value="fm">Analog FM</option>
                   <option value="p25">P25</option>
                   <option value="dmr">DMR</option>
+                  <option value="nxdn48">NXDN48 (6.25 kHz)</option>
+                  <option value="nxdn96">NXDN96 (12.5 kHz)</option>
                 </select>
                 <button
                   className="btn"
@@ -1142,7 +1147,7 @@ function ConventionalPanel(props: { c: Config; k: number }) {
                     <th title="Record this channel">On</th>
                     <th>Frequency, MHz</th>
                     <th>Mode</th>
-                    <th title="Tone, NAC or colour code to record; blank takes the rest">
+                    <th title="Tone, NAC, colour code or RAN to record; blank takes the rest">
                       Tone
                     </th>
                     <th>Name</th>
@@ -1166,6 +1171,8 @@ function ConventionalPanel(props: { c: Config; k: number }) {
                           <option value="fm">Analog FM</option>
                           <option value="p25">P25</option>
                           <option value="dmr">DMR</option>
+                          <option value="nxdn48">NXDN48 (6.25 kHz)</option>
+                          <option value="nxdn96">NXDN96 (12.5 kHz)</option>
                         </select>
                       </td>
                       <td>
@@ -1223,11 +1230,11 @@ function ConventionalPanel(props: { c: Config; k: number }) {
                             {ch.freqHz > 0 && (
                               <button
                                 className="btn ghost small"
-                                title={`Another ${{ fm: "tone", p25: "NAC", dmr: "colour code or talkgroup" }[ch.mode]} on this frequency`}
+                                title={`Another ${{ fm: "tone", p25: "NAC", dmr: "colour code or talkgroup", nxdn48: "RAN or talkgroup", nxdn96: "RAN or talkgroup" }[ch.mode]} on this frequency`}
                                 aria-label="Add a row on this frequency"
                                 onClick={() => addTone(i)}
                               >
-                                {{ fm: "+ tone", p25: "+ NAC", dmr: "+ code" }[ch.mode]}
+                                {{ fm: "+ tone", p25: "+ NAC", dmr: "+ code", nxdn48: "+ code", nxdn96: "+ code" }[ch.mode]}
                               </button>
                             )}
                             <button className="btn ghost small danger" title="Remove" aria-label="Remove channel" onClick={() => remove(i)}>
@@ -1435,6 +1442,95 @@ function DmrFields(props: { sys: System; edit: (fn: (x: System) => void) => void
   );
 }
 
+function NxdnFields(props: { sys: System; edit: (fn: (x: System) => void) => void }) {
+  const { sys, edit } = props;
+  const typeD = sys.nxdnType === "typeD";
+  const [chText, setChText] = useState(() => (sys.nxdnChannelsHz ?? []).map((f) => (f / 1e6).toFixed(5)).join(", "));
+  const [table, setTable] = useState(() => lcnText(sys.lcnTableHz));
+  return (
+    <>
+      <Field label="NXDN type">
+        <select
+          value={typeD ? "typeD" : "typeC"}
+          onChange={(e) =>
+            edit((x) => {
+              if (e.target.value === "typeD") x.nxdnType = "typeD";
+              else delete x.nxdnType;
+            })
+          }
+        >
+          <option value="typeC">Type-C (control channel)</option>
+          <option value="typeD">Type-D / IDAS (no control channel)</option>
+        </select>
+      </Field>
+      <Field label="Rate" hint={typeD ? "The repeaters'" : "The control channel's"}>
+        <select
+          value={sys.nxdnRate === "nxdn96" ? "nxdn96" : "nxdn48"}
+          onChange={(e) =>
+            edit((x) => {
+              if (e.target.value === "nxdn96") x.nxdnRate = "nxdn96";
+              else delete x.nxdnRate;
+            })
+          }
+        >
+          <option value="nxdn48">NXDN48 (6.25 kHz)</option>
+          <option value="nxdn96">NXDN96 (12.5 kHz)</option>
+        </select>
+      </Field>
+      <Field label="RAN">
+        <input
+          className="mono"
+          value={sys.ran ?? ""}
+          placeholder="auto"
+          onChange={(e) =>
+            edit((x) => {
+              const v = parseInt(e.target.value, 10);
+              if (v >= 0 && v <= 63) x.ran = v;
+              else delete x.ran;
+            })
+          }
+        />
+      </Field>
+      <Field label={typeD ? "More repeaters, MHz" : "Voice frequencies, MHz"} hint={typeD ? "Optional: may all go above" : "Watched; channel numbers are learned from them"} wide>
+        <input
+          className="mono"
+          value={chText}
+          placeholder="451.0125, 451.0375"
+          onChange={(e) => {
+            setChText(e.target.value);
+            const list = parseFreqList(e.target.value);
+            edit((x) => {
+              if (list.length) x.nxdnChannelsHz = list;
+              else delete x.nxdnChannelsHz;
+            });
+          }}
+        />
+      </Field>
+      <Field label="Channel table (optional)" hint={typeD ? "Repeater number = MHz, e.g. 1=451.0125" : "Channel number = MHz, e.g. 20=451.0125"} wide>
+        <input
+          className="mono"
+          value={table}
+          placeholder={typeD ? "none" : "learned from the air"}
+          onChange={(e) => {
+            setTable(e.target.value);
+            const t = parseLcn(e.target.value);
+            edit((x) => {
+              if (Object.keys(t).length) x.lcnTableHz = t;
+              else delete x.lcnTableHz;
+            });
+          }}
+        />
+      </Field>
+      {!typeD && (
+        <p className="muted small" style={{ gridColumn: "1 / -1", margin: 0 }}>
+          A Type-C control channel grants channel numbers. Their frequencies come from the channel table (RadioReference lists it for many systems), from the site if it
+          uses Direct Frequency Assignment, or are learned when the voice frequencies are listed above.
+        </p>
+      )}
+    </>
+  );
+}
+
 function SmartnetFields(props: { sys: System; edit: (fn: (x: System) => void) => void }) {
   const { sys, edit } = props;
   const custom = (sys.bandplan ?? "").startsWith("400") || sys.bandplan?.toLowerCase() === "obt";
@@ -1496,7 +1592,7 @@ function SystemCard(props: { c: Config; i: number }) {
   const color = systemColor(c, sys.shortName);
   const siblings = siteSiblings(c, sys);
   // The lock, on the fields this protocol states (others are ignored).
-  const lockFields = siteLockFields(sys.type);
+  const lockFields = siteLockFields(sys);
   const lockedTo: SiteIdentity = Object.fromEntries(lockFields.filter((f) => sys.expect[f] != null).map((f) => [f, sys.expect[f]]));
   const locked = Object.keys(lockedTo).length > 0;
   const dupName = c.systems.some((x, k) => k !== i && x.shortName === sys.shortName);
@@ -1566,7 +1662,7 @@ function SystemCard(props: { c: Config; i: number }) {
             value={sys.type}
             onChange={(e) =>
               edit((x) => {
-                x.type = e.target.value === "smartnet" ? "smartnet" : e.target.value === "dmr" ? "dmr" : "p25";
+                x.type = e.target.value === "smartnet" ? "smartnet" : e.target.value === "dmr" ? "dmr" : e.target.value === "nxdn" ? "nxdn" : "p25";
                 if (x.type === "smartnet" && !x.bandplan) x.bandplan = "800_standard";
               })
             }
@@ -1574,9 +1670,10 @@ function SystemCard(props: { c: Config; i: number }) {
             <option value="p25">P25</option>
             <option value="smartnet">SmartNet / SmartZone</option>
             <option value="dmr">DMR (trunked)</option>
+            <option value="nxdn">NXDN (trunked)</option>
           </select>
         </Field>
-        {sys.type !== "dmr" && <Field label={sys.type === "smartnet" ? "P25 voice modulation" : "Modulation"}>
+        {sys.type !== "dmr" && sys.type !== "nxdn" && <Field label={sys.type === "smartnet" ? "P25 voice modulation" : "Modulation"}>
           <select value={sys.modulation} onChange={(e) => edit((x) => void (x.modulation = e.target.value as System["modulation"]))}>
             <option value="auto">Auto (both receivers)</option>
             <option value="fsk4">C4FM (fsk4)</option>
@@ -1586,11 +1683,13 @@ function SystemCard(props: { c: Config; i: number }) {
         <Field
           needs={need(`cc-${sys.shortName}`)}
           anchor={`cc-${sys.shortName}`}
-          label={sys.type === "dmr" ? "Site frequencies, MHz" : "Control channels, MHz"}
+          label={sys.type === "dmr" ? "Site frequencies, MHz" : sys.type === "nxdn" && sys.nxdnType === "typeD" ? "Repeaters, MHz" : "Control channels, MHz"}
           hint={
             sys.type === "dmr"
               ? "Capacity Plus: every repeater. Others: control channels."
-              : "Later ones are fallbacks"
+              : sys.type === "nxdn" && sys.nxdnType === "typeD"
+                ? "Every repeater of the site"
+                : "Later ones are fallbacks"
           }
           wide
         >
@@ -1619,17 +1718,18 @@ function SystemCard(props: { c: Config; i: number }) {
         />
         {sys.type === "smartnet" && <SmartnetFields sys={sys} edit={edit} />}
         {sys.type === "dmr" && <DmrFields sys={sys} edit={edit} />}
+        {sys.type === "nxdn" && <NxdnFields sys={sys} edit={edit} />}
         <Field
           label="Site group"
           hint={
-            sys.type === "dmr"
+            sys.type === "dmr" || (sys.type === "nxdn" && sys.nxdnType === "typeD")
               ? "Same name on each site: calls saved once"
               : "Only to join ISSI-linked systems or split a site"
           }
         >
           <input
             value={sys.siteGroup ?? ""}
-            placeholder={sys.type === "dmr" ? "none" : "from the air"}
+            placeholder={sys.type === "dmr" || (sys.type === "nxdn" && sys.nxdnType === "typeD") ? "none" : "from the air"}
             onChange={(e) =>
               edit((x) => {
                 if (e.target.value.trim()) x.siteGroup = e.target.value;
@@ -1662,7 +1762,7 @@ function SystemCard(props: { c: Config; i: number }) {
                 <span className="field-needs">{need(`site-${sys.shortName}`)}</span>{" "}
               </>
             )}
-            Follow only a control channel announcing this site. Empty = any; {sys.type === "smartnet" ? "System ID in hex" : "NAC, WACN and System ID in hex"}.
+            Follow only a control channel announcing this site. Empty = any; {sys.type === "smartnet" || sys.type === "nxdn" ? "System ID in hex" : "NAC, WACN and System ID in hex"}.
           </p>
           <div className="id-grid">
             {LOCK_INPUTS.filter((x) => lockFields.includes(x.key)).map((x) => (

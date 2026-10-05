@@ -5,6 +5,26 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **NXDN** (Kenwood NEXEDGE, Icom IDAS), at both rates — NXDN48 (6.25 kHz)
+  and NXDN96 (12.5 kHz):
+  - conventional channels, `"mode": "nxdn48"` / `"nxdn96"`, split by RAN
+    and group in the Tone column (`RAN 5 TG 201`);
+  - trunked `type` `"nxdn"` systems: Type-C (a control channel; channel
+    numbers from `lcnTableHz`, the site's Direct Frequency Assignment, or
+    learned from the voice frequencies in `nxdnChannelsHz`) and Type-D (IDAS
+    distributed: every repeater watched, calls found by their SCCH);
+  - Find my system recognises NXDN control channels and carriers; the
+    dashboard shows a site's system and site code, RAN, channel table, the
+    channel numbers not known yet, and its carriers;
+  - call JSON `"ran"`, file name `{ran}`; `tool nxdnscan` / `tool nxdn`,
+    `replay --nxdn48 / --nxdn96 / --nxdn-trunk`.
+
+  Checked on recorded NXDN48 / NXDN96 signals and synthesized control and
+  traffic channels; not yet on a live trunked system.
+- The 4FSK receiver no longer counts the noise just before a signal comes
+  up towards its levels (it decided those symbols late, by the levels of
+  the time), so a transmission's first frames decode.
+
 ## [0.1.3] — 2026-10-04
 
 - **Folders and file names, built by dragging.** Setup → Recording (and a

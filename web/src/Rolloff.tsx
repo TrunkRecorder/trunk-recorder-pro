@@ -6,7 +6,7 @@
 // would leave out.
 
 import { useEffect, useRef, useState } from "react";
-import { activeSystems, DEFAULT_GUARD_HZ, enabledChannels, formatMhz, resolvedCenters } from "./config.ts";
+import { activeSystems, DEFAULT_GUARD_HZ, enabledChannels, formatMhz, resolvedCenters, watchedChannels } from "./config.ts";
 import { profileSource, updateConfig, useApp } from "./controller.ts";
 import type { Config, Source, SourceProfile } from "./protocol.ts";
 import { color as heat } from "./Waterfall.tsx";
@@ -22,7 +22,7 @@ function watched(c: Config): { hz: number; label: string }[] {
   const out: { hz: number; label: string }[] = [];
   for (const x of activeSystems(c)) {
     for (const f of x.controlChannelsHz) out.push({ hz: f, label: `${x.shortName} control` });
-    for (const f of x.type === "dmr" ? (x.dmrChannelsHz ?? []) : []) out.push({ hz: f, label: `${x.shortName} DMR` });
+    for (const f of watchedChannels(x)) out.push({ hz: f, label: `${x.shortName} ${x.type === "dmr" ? "DMR" : "NXDN"}` });
     for (const f of x.voiceChannelsHz) out.push({ hz: f, label: `${x.shortName} voice` });
   }
   for (const ch of enabledChannels(c)) out.push({ hz: ch.freqHz, label: ch.name || "conventional" });
