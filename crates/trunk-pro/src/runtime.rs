@@ -21,7 +21,7 @@ use trunk_app::{Feeder, Output, Session};
 
 use crate::config::{AirspyGain, Config, SampleFormat, Source};
 use crate::plugins::{self, FileRules, PluginHost};
-use crate::radio::{airspy, soapy, uhd};
+use crate::radio::{airspy, bladerf, soapy, uhd};
 use crate::sdr::{self, RtlConfig, SourceMsg};
 
 /// A message for the connected browsers, serialized once for all of them.
@@ -584,6 +584,9 @@ pub(crate) fn spawn_source(src: &Source, i: usize, center: f64, tx: SyncSender<S
         Source::Airspy { serial, rate_hz, gain_mode, gain_step, lna_step, mixer_step, vga_step, agc, bias_tee, packing, ppm, .. } => {
             let gain = airspy_gain(gain_mode, gain_step, lna_step, mixer_step, vga_step, agc);
             sdr::run_with(i, airspy::AirspyConfig { serial, center_hz: center, rate_hz, gain, bias_tee, packing, ppm }, tx, stop, ctl)
+        }
+        Source::Bladerf { serial, rate_hz, bandwidth_hz, gain_db, agc, bias_tee, ppm, .. } => {
+            sdr::run_with(i, bladerf::BladerfConfig { serial, center_hz: center, rate_hz, bandwidth_hz, gain_db, agc, bias_tee, ppm }, tx, stop, ctl)
         }
         Source::Soapy { args, rate_hz, agc, gain_db, gains, antenna, settings, ppm, .. } => {
             let gains = gains.into_iter().collect();

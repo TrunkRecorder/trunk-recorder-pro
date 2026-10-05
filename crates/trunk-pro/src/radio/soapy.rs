@@ -295,7 +295,7 @@ pub fn search_paths() -> Vec<String> {
 }
 
 /// Drivers this recorder has its own source for: better used that way.
-const NATIVE: &[(&str, &str)] = &[("rtlsdr", "RTL-SDR"), ("airspy", "Airspy"), ("uhd", "USRP")];
+const NATIVE: &[(&str, &str)] = &[("rtlsdr", "RTL-SDR"), ("airspy", "Airspy"), ("bladerf", "bladeRF"), ("uhd", "USRP")];
 
 /// Devices the loaded modules can see: [{args, label, driver}]. A real
 /// search (USB, network): some modules take seconds, so it runs only when asked.

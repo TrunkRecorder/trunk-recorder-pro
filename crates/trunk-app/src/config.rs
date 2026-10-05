@@ -1,4 +1,4 @@
-//! The app's configuration: which sources (RTL-SDRs, USRPs, Airspys, SoapySDR devices or capture files), which
+//! The app's configuration: which sources (RTL-SDRs, USRPs, Airspys, bladeRFs, SoapySDR devices or capture files), which
 //! trunked systems (sites) and/or conventional channels, recording rules and the web server. Stored as JSON in the platform
 //! config folder; the browser interface reads and edits it.
 
@@ -103,6 +103,33 @@ pub enum Source {
         #[serde(default = "guard_default")]
         guard_hz: f64,
     },
+    /// A bladeRF (2.0 micro xA4 / xA9, or the original x40 / x115) through
+    /// libbladeRF 2.x (installed separately; loaded at run time). `serial`
+    /// "" = the first. `bandwidth_hz`: the analog filter, 0 = the sample
+    /// rate. `agc`: the board's AGC instead of `gain_db`. `bias_tee`: power
+    /// an LNA over the RX coax (bladeRF 2.0 only).
+    #[serde(rename_all = "camelCase")]
+    Bladerf {
+        #[serde(default)]
+        serial: String,
+        center_hz: f64,
+        rate_hz: f64,
+        #[serde(default)]
+        bandwidth_hz: f64,
+        #[serde(default = "bladerf_gain")]
+        gain_db: f64,
+        #[serde(default)]
+        agc: bool,
+        #[serde(default)]
+        bias_tee: bool,
+        #[serde(default)]
+        ppm: f64,
+        #[serde(default)]
+        auto_tune: bool,
+        /// Left unused at each edge of the band, Hz (the anti-alias roll-off).
+        #[serde(default = "guard_default")]
+        guard_hz: f64,
+    },
     /// Any SDR with a SoapySDR module (SoapySDR installed separately; loaded
     /// at run time). `args`: device arguments, "" = the first found
     /// ("driver=hackrf", "driver=sdrplay,serial=…"). `agc`: the device's AGC;
@@ -175,6 +202,9 @@ fn airspy_gain() -> u8 {
 fn airspy_stage() -> u8 {
     10
 }
+fn bladerf_gain() -> f64 {
+    30.0
+}
 
 choice! {
     /// Sample format of a capture file.
@@ -216,30 +246,30 @@ impl SampleFormat {
 impl Source {
     pub fn center_hz(&self) -> f64 {
         match self {
-            Source::Rtlsdr { center_hz, .. } | Source::Usrp { center_hz, .. } | Source::Airspy { center_hz, .. } | Source::Soapy { center_hz, .. } | Source::File { center_hz, .. } => *center_hz,
+            Source::Rtlsdr { center_hz, .. } | Source::Usrp { center_hz, .. } | Source::Airspy { center_hz, .. } | Source::Bladerf { center_hz, .. } | Source::Soapy { center_hz, .. } | Source::File { center_hz, .. } => *center_hz,
         }
     }
     pub fn rate_hz(&self) -> f64 {
         match self {
-            Source::Rtlsdr { rate_hz, .. } | Source::Usrp { rate_hz, .. } | Source::Airspy { rate_hz, .. } | Source::Soapy { rate_hz, .. } | Source::File { rate_hz, .. } => *rate_hz,
+            Source::Rtlsdr { rate_hz, .. } | Source::Usrp { rate_hz, .. } | Source::Airspy { rate_hz, .. } | Source::Bladerf { rate_hz, .. } | Source::Soapy { rate_hz, .. } | Source::File { rate_hz, .. } => *rate_hz,
         }
     }
     /// The frequency correction set for it, ppm (a file: 0).
     pub fn ppm(&self) -> f64 {
         match self {
             Source::Rtlsdr { ppm, .. } => *ppm as f64,
-            Source::Usrp { ppm, .. } | Source::Airspy { ppm, .. } | Source::Soapy { ppm, .. } => *ppm,
+            Source::Usrp { ppm, .. } | Source::Airspy { ppm, .. } | Source::Bladerf { ppm, .. } | Source::Soapy { ppm, .. } => *ppm,
             Source::File { .. } => 0.0,
         }
     }
     pub fn auto_tune(&self) -> bool {
         match self {
-            Source::Rtlsdr { auto_tune, .. } | Source::Usrp { auto_tune, .. } | Source::Airspy { auto_tune, .. } | Source::Soapy { auto_tune, .. } | Source::File { auto_tune, .. } => *auto_tune,
+            Source::Rtlsdr { auto_tune, .. } | Source::Usrp { auto_tune, .. } | Source::Airspy { auto_tune, .. } | Source::Bladerf { auto_tune, .. } | Source::Soapy { auto_tune, .. } | Source::File { auto_tune, .. } => *auto_tune,
         }
     }
     pub fn guard_hz(&self) -> f64 {
         match self {
-            Source::Rtlsdr { guard_hz, .. } | Source::Usrp { guard_hz, .. } | Source::Airspy { guard_hz, .. } | Source::Soapy { guard_hz, .. } | Source::File { guard_hz, .. } => *guard_hz,
+            Source::Rtlsdr { guard_hz, .. } | Source::Usrp { guard_hz, .. } | Source::Airspy { guard_hz, .. } | Source::Bladerf { guard_hz, .. } | Source::Soapy { guard_hz, .. } | Source::File { guard_hz, .. } => *guard_hz,
         }
     }
     /// How far from its centre a channel may be, Hz.
@@ -257,6 +287,7 @@ impl Source {
                 format!("USRP {}", if which.is_empty() { "(first)".to_string() } else { which.join(",") })
             }
             Source::Airspy { serial, .. } => format!("Airspy {}", if serial.is_empty() { "(first)".into() } else { format!("SN {serial}") }),
+            Source::Bladerf { serial, .. } => format!("bladeRF {}", if serial.is_empty() { "(first)".into() } else { format!("SN {serial}") }),
             Source::Soapy { args, .. } => format!("SoapySDR {}", if args.is_empty() { "(first)" } else { args }),
             Source::File { path, .. } => format!("file {}", path.rsplit(['/', '\\']).next().unwrap_or(path)),
         }
@@ -1698,7 +1729,7 @@ pub fn default_capture_dir() -> PathBuf {
 
 /// A source's `type` names its kind (the tag of [`Source`]), read in any case
 /// as the other closed choices are (`"RTLSDR"` is `"rtlsdr"`).
-const SOURCE_TYPES: [&str; 5] = ["rtlsdr", "usrp", "airspy", "soapy", "file"];
+const SOURCE_TYPES: [&str; 6] = ["rtlsdr", "usrp", "airspy", "bladerf", "soapy", "file"];
 
 fn source_types(v: &mut serde_json::Value) {
     for s in v.get_mut("sources").and_then(serde_json::Value::as_array_mut).into_iter().flatten() {
