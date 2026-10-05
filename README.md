@@ -41,7 +41,7 @@ Download the package for your system from the
 | Docker (Linux hosts) | [`robotastic/trunk-recorder-pro`](https://hub.docker.com/r/robotastic/trunk-recorder-pro) | [Run in Docker](docs/install/docker.md) |
 | Chrome or Edge | `trunk-pro-<version>-browser.zip`, or [trunkrecorder.pro/app](https://trunkrecorder.pro/app/) | [Run in the browser](docs/install/browser.md) |
 
-USRP, Airspy and SoapySDR radios need their makers' drivers: see
+USRP, Airspy, bladeRF and SoapySDR radios need their makers' drivers: see
 [Other radios](docs/install/other-radios.md).
 
 ## Quick start

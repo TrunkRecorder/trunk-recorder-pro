@@ -5,6 +5,12 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **bladeRF** sources (optional; bladeRF 2.0 micro xA4 / xA9 and the
+  original x40 / x115): used when libbladeRF 2.x is installed (`"type":
+  "bladerf"`). Serial, any sample rate to 61.44 MSPS, overall gain or the
+  board's AGC, analog filter bandwidth and bias-T; samples USB drops are
+  counted from the board's timestamps. Trunk Recorder's osmosdr
+  `bladerf=…` sources (and `"driver": "bladerf"`) import as bladeRF sources.
 - **P25 Phase 1 voice repeats fewer good frames.** A frame whose FEC corrected a lot of errors
   is repeated only when the errors fall in its pitch word *and* there are many in total, as
   TIA-102.BABA-A §7.7 has it, not on either one (an `||` inherited from op25, which taclane
