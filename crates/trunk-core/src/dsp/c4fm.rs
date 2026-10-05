@@ -19,7 +19,8 @@ use super::filters;
 use super::msd::{Msd, Pulse};
 use super::{Receiver, Symbol};
 
-/// Symbols per second: P25 Phase 1 (C4FM, and CQPSK at the same rate) and DMR 4FSK.
+/// Symbols per second: P25 Phase 1 (C4FM, and CQPSK at the same rate), DMR
+/// 4FSK and NXDN96 (the default; NXDN48 sets [`C4fmOptions::baud`] to 2400).
 pub const SYMBOL_RATE: f64 = 4800.0;
 
 const BLOCK: u64 = 240;
@@ -54,6 +55,8 @@ pub struct C4fmOptions {
     pub block: u64,
     /// Re-decide every symbol by multi-symbol detection with this transmit pulse ([`super::msd`]).
     pub msd: Option<Pulse>,
+    /// Symbols per second.
+    pub baud: f64,
 }
 
 /// P25: an RRC matched filter (α 0.5) and cluster-mean levels. Against the
@@ -62,7 +65,7 @@ pub struct C4fmOptions {
 /// CQPSK receivers carry it.
 impl Default for C4fmOptions {
     fn default() -> Self {
-        C4fmOptions { box_symbols: 0.9, rrc: Some(0.5), clip: None, rail_means: true, block: BLOCK, msd: Some(Pulse::Rc(0.2)) }
+        C4fmOptions { box_symbols: 0.9, rrc: Some(0.5), clip: None, rail_means: true, block: BLOCK, msd: Some(Pulse::Rc(0.2)), baud: SYMBOL_RATE }
     }
 }
 
@@ -73,9 +76,16 @@ impl C4fmOptions {
         C4fmOptions { rrc: Some(0.2), msd: Some(Pulse::Rrc(0.2)), ..Default::default() }
     }
 
+    /// NXDN at `baud` (2400: NXDN48, 4800: NXDN96): root-raised-cosine
+    /// shaped (α 0.2) like DMR. (The spec adds a sinc pre-emphasis at the
+    /// transmitter and its inverse at the receiver, which cancel.)
+    pub fn nxdn(baud: f64) -> Self {
+        C4fmOptions { baud, ..Self::dmr() }
+    }
+
     /// The first receiver (boxcar, quantile levels), for comparisons.
     pub fn legacy() -> Self {
-        C4fmOptions { box_symbols: 0.9, rrc: None, clip: None, rail_means: false, block: BLOCK, msd: None }
+        C4fmOptions { box_symbols: 0.9, rrc: None, clip: None, rail_means: false, block: BLOCK, msd: None, baud: SYMBOL_RATE }
     }
 
     /// Apply one `name[=value]` setting; false if unknown.
@@ -201,14 +211,14 @@ impl C4fm {
     }
 
     pub fn with_options(rate: f64, opts: C4fmOptions) -> Self {
-        let sps = rate / SYMBOL_RATE;
+        let sps = rate / opts.baud;
         let boxw = ((sps * opts.box_symbols).round() as usize).max(1);
         let taps = opts.rrc.map(|a| filters::rrc_taps(a, sps, (8.0 * sps).round() as usize | 1));
         let delay = taps.as_ref().map_or((boxw - 1) as f64 / 2.0, |t| (t.len() - 1) as f64 / 2.0);
         C4fm {
             opts,
             // DMR (RRC pulse): decision feedback; P25 (RC): the full search.
-            msd: opts.msd.map(|p| Msd::new(rate, p, opts.rrc.unwrap_or(0.5), matches!(p, Pulse::Rrc(_)))),
+            msd: opts.msd.map(|p| Msd::with_baud(rate, opts.baud, p, opts.rrc.unwrap_or(0.5), matches!(p, Pulse::Rrc(_)))),
             msd_in: Vec::new(),
             msd_on: true,
             taps,

@@ -112,7 +112,12 @@ impl Msd {
     /// decided (16 hypotheses, not 64): better on DMR voice, ~0.8 dB worse on
     /// P25 C4FM (`tool snr`).
     pub fn new(rate: f64, tx: Pulse, rx_alpha: f64, feedback: bool) -> Self {
-        let sps = rate / SYMBOL_RATE;
+        Self::with_baud(rate, SYMBOL_RATE, tx, rx_alpha, feedback)
+    }
+
+    /// At another symbol rate than 4800 (NXDN48: 2400).
+    pub fn with_baud(rate: f64, baud: f64, tx: Pulse, rx_alpha: f64, feedback: bool) -> Self {
+        let sps = rate / baud;
         let n = (8.0 * sps).round() as i64 | 1;
         let m = n / 2;
         let rx: Vec<f64> = (-m..=m).map(|i| filters::rrc(i as f64 / sps, rx_alpha)).collect();

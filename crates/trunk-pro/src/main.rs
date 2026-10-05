@@ -68,6 +68,7 @@
 mod dmrtool;
 mod logging;
 mod monitor;
+mod nxdntool;
 mod paths;
 mod platform;
 mod snrtool;
