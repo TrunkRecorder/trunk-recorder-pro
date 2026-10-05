@@ -433,7 +433,6 @@ export function formatGain(db: number): string {
 /** osmosdr device strings → SoapySDR's driver names, for radios with no source of their own here. */
 const OSMOSDR_DRIVERS: Record<string, string> = {
   hackrf: "hackrf",
-  bladerf: "bladerf",
   airspyhf: "airspyhf",
   lime: "lime",
   limesdr: "lime",
@@ -445,7 +444,7 @@ const OSMOSDR_DRIVERS: Record<string, string> = {
 
 /**
  * A Trunk Recorder osmosdr device string → SoapySDR device arguments, or null
- * when it's a radio with its own source (rtl=, airspy=, uhd). "soapy=0,driver=sdrplay"
+ * when it's a radio with its own source (rtl=, airspy=, bladerf=, uhd). "soapy=0,driver=sdrplay"
  * keeps its arguments; "hackrf=0" → "driver=hackrf"; "hackrf=0000000000000000a06063c8"
  * → "driver=hackrf,serial=…". Other osmosdr options (bias=1, buffers=…) are left out
  * (an RTL-SDR source keeps buflen= and buffers=).
@@ -628,7 +627,7 @@ function trRecording(sys: Record<string, unknown>): RecordingOverride {
 
 /** The talkgroup and channel files a Trunk Recorder config.json names, as it names them. */
 export function trConfigFiles(text: string): { file: string; kind: "talkgroups" | "channels" | "units"; system: string }[] {
-  const j = JSON.parse(text) as { systems?: Record<string, unknown>[] };
+  const j = JSON.parse(text.replace(/^\uFEFF/, "")) as { systems?: Record<string, unknown>[] };
   const out: { file: string; kind: "talkgroups" | "channels" | "units"; system: string }[] = [];
   for (const sys of j.systems ?? []) {
     const name = typeof sys.shortName === "string" ? sys.shortName : "";
@@ -666,7 +665,8 @@ export function importTrunkRecorderConfig(
   files: Record<string, string> = {},
   merge = false,
 ): { config: Config; talkgroups: Record<string, string>; notes: string[]; todo: ImportTodo[]; plugins: PluginImport[]; added: { sources: number[]; systems: string[] } } {
-  const j = JSON.parse(text) as Record<string, unknown>;
+  // A byte-order mark (Windows editors add one) is not JSON; Trunk Recorder skips it, so do we.
+  const j = JSON.parse(text.replace(/^\uFEFF/, "")) as Record<string, unknown>;
   const notes: string[] = [];
   const todo: ImportTodo[] = [];
   // Trunk Recorder short name → the one here (made unique; the first system of a name), and each system → its name here.
@@ -702,7 +702,9 @@ export function importTrunkRecorderConfig(
       notes.push("USRP source imported: it needs UHD installed on this computer.");
       continue;
     }
-    if (s.driver && s.driver !== "osmosdr") {
+    // Trunk Recorder builds with a native bladeRF driver use "driver": "bladerf" (same device string).
+    const bladerfDriver = s.driver === "bladerf";
+    if (s.driver && s.driver !== "osmosdr" && !bladerfDriver) {
       notes.push(`Source driver "${String(s.driver)}" skipped — not supported.`);
       continue;
     }
@@ -725,6 +727,29 @@ export function importTrunkRecorderConfig(
         ...autoTune,
       });
       notes.push(`"${dev}" imported as a SoapySDR source (${soapyArgs || "first found"}): it needs SoapySDR and the device's module installed on this computer.`);
+      continue;
+    }
+    if (bladerfDriver || /(^|,)\s*bladerf(=|,|$)/i.test(dev)) {
+      // osmosdr: "bladerf=0" (index) or "bladerf=<serial>", anywhere in the string ("numchan=1,bladerf=…"),
+      // with options such as biastee=rx|on, bandwidth=…
+      const id = /bladerf=([^,\s]*)/i.exec(dev)?.[1] ?? "";
+      const bw = /bandwidth=(\d+(?:\.\d+)?(?:e\d+)?)/i.exec(dev)?.[1];
+      const bwHz = typeof s.bandwidth === "number" ? s.bandwidth : bw ? Number(bw) : 0;
+      // Trunk Recorder's bladeRF gain is one overall dB value (gain, or gainSettings.full).
+      const full = stage((s.gainSettings as Record<string, unknown> | undefined)?.full) ?? stage((s.gainSettings as Record<string, unknown> | undefined)?.FULL);
+      imported.push({
+        type: "bladerf",
+        serial: /^\d{1,2}$/.test(id) ? "" : id,
+        centerHz: center,
+        rateHz: typeof s.rate === "number" ? s.rate : 10_000_000,
+        bandwidthHz: bwHz,
+        gainDb: gain ?? full ?? 30,
+        agc,
+        biasTee: /bias(tee)?=(1|on|rx|both|true)/i.test(dev),
+        ppm,
+        ...autoTune,
+      });
+      notes.push(`bladeRF source imported (${agc ? "AGC" : `gain ${gain ?? full ?? 30} dB`}): it needs libbladeRF 2.x and the board's FPGA image installed on this computer.`);
       continue;
     }
     if (/airspy/.test(dev)) {
