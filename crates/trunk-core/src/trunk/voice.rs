@@ -11,6 +11,7 @@
 //!   P25 Phase 1: receiver bank → framer → VoiceTracker (IMBE)
 //!   P25 Phase 2: H-DQPSK → slot framer → TdmaTracker (AMBE+2, both slots)
 //!   DMR:         4FSK → burst framer → DmrVoice (AMBE+2, both slots)
+//!   NXDN:        4FSK (2400 / 4800 baud) → frame framer → NxdnVoice (AMBE+2)
 //!   analog FM:   discriminator, squelch, MDC1200 / FleetSync unit IDs
 //! ```
 
@@ -27,6 +28,8 @@ use crate::dsp::fm::Nbfm;
 use crate::dsp::signalling::Signalling;
 use crate::dsp::{Receiver, Symbol};
 use crate::mbe;
+use crate::nxdn::voice::{NxdnVoice, VCH_S};
+use crate::nxdn::Rate;
 use crate::metrics::{Instrumented, Sink};
 use crate::p25::alias::{Alias, AliasLc};
 use crate::p25::diversity::{best_frame, Bank, BankConfig, Group};
@@ -43,6 +46,8 @@ pub enum VoiceKind {
     Analog,
     /// DMR (4FSK, AMBE+2, two slots).
     Dmr,
+    /// NXDN (4FSK at either rate, AMBE+2).
+    Nxdn(Rate),
 }
 
 impl VoiceKind {
@@ -50,6 +55,8 @@ impl VoiceKind {
     pub fn of(call: &Call) -> VoiceKind {
         if call.analog {
             VoiceKind::Analog
+        } else if let Some(r) = call.nxdn {
+            VoiceKind::Nxdn(r)
         } else if call.color_code.is_some() {
             VoiceKind::Dmr
         } else if call.phase2_tdma {
@@ -93,13 +100,14 @@ pub struct VoiceOut {
 }
 
 /// What the air said about a slot (conventional channels match their rows
-/// by it): the talkgroup, the P25 NAC or DMR colour code, and the span of
-/// air the last [`VoiceDecoder::push`] heard voice in.
+/// by it): the talkgroup, the P25 NAC, DMR colour code or NXDN RAN, and the
+/// span of air the last [`VoiceDecoder::push`] heard voice in.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct AirInfo {
     pub talkgroup: Option<u32>,
     pub nac: Option<u16>,
     pub color_code: Option<u8>,
+    pub ran: Option<u8>,
     pub air: Option<(f64, f64)>,
 }
 
@@ -185,6 +193,7 @@ pub fn build(spec: &VoiceSpec) -> Box<dyn VoiceDecoder> {
             Box::new(P25Tdma { rx, framer: phase2::Framer::new(), tracker, syms: Vec::new(), pkts: Vec::new(), tout: Vec::new(), t0: spec.t0, rate: spec.rate })
         }
         VoiceKind::Dmr => Box::new(Dmr { rx: C4fm::dmr(spec.rate), voice: Box::new(DmrVoice::new(spec.seed)), syms: Vec::new(), t0: spec.t0, rate: spec.rate, air: [None; 2] }),
+        VoiceKind::Nxdn(r) => Box::new(Nxdn { rx: r.receiver(spec.rate), voice: Box::new(NxdnVoice::new(spec.seed)), syms: Vec::new(), t0: spec.t0, rate: spec.rate, nxdn: r, air: None }),
         VoiceKind::Analog => {
             Box::new(Analog { fm: Nbfm::new(spec.rate), ids: Signalling::default(), squelch: spec.squelch, subaudible: spec.subaudible, carrier: false })
         }
@@ -244,7 +253,7 @@ impl VoiceDecoder for P25Fdma {
         if slot != 0 {
             return AirInfo::default();
         }
-        AirInfo { talkgroup: self.tracker.talkgroup(), nac: self.nac, color_code: None, air: self.air }
+        AirInfo { talkgroup: self.tracker.talkgroup(), nac: self.nac, color_code: None, ran: None, air: self.air }
     }
     fn offset_hz(&self) -> Option<f32> {
         self.bank.offset_hz()
@@ -330,7 +339,52 @@ impl VoiceDecoder for Dmr {
         self.voice.vocode = slots;
     }
     fn air(&self, slot: u8) -> AirInfo {
-        AirInfo { talkgroup: self.voice.talkgroup(slot), nac: None, color_code: self.voice.color_code(slot), air: self.air[slot as usize & 1] }
+        AirInfo { talkgroup: self.voice.talkgroup(slot), nac: None, color_code: self.voice.color_code(slot), ran: None, air: self.air[slot as usize & 1] }
+    }
+}
+
+/// NXDN: 4FSK at the channel's rate, the frame framer, one call at a time.
+struct Nxdn {
+    rx: C4fm,
+    voice: Box<NxdnVoice>,
+    syms: Vec<Symbol>,
+    t0: f64,
+    rate: f64,
+    nxdn: Rate,
+    /// The air with voice in the last push.
+    air: Option<(f64, f64)>,
+}
+
+impl VoiceDecoder for Nxdn {
+    fn kind(&self) -> VoiceKind {
+        VoiceKind::Nxdn(self.nxdn)
+    }
+    fn report(&self, sink: &mut dyn Sink) {
+        if let Some(q) = self.rx.quality() {
+            sink.gauge("sep", q as f64);
+        }
+    }
+    fn push(&mut self, iq: &[Complex32], out: &mut Vec<VoiceOut>) {
+        self.air = None;
+        self.syms.clear();
+        self.rx.push(iq, &mut self.syms);
+        let mut vout = Vec::new();
+        self.voice.push(&self.syms, self.t0, self.rate, &mut vout);
+        for v in vout {
+            if matches!(v.out, TrackerOut::Audio(..)) {
+                self.air = Some((self.air.map_or(v.t, |a| a.0), v.t + VCH_S));
+            }
+            out.push(VoiceOut { slot: 0, t: v.t, out: v.out });
+        }
+    }
+    fn air(&self, slot: u8) -> AirInfo {
+        if slot != 0 {
+            return AirInfo::default();
+        }
+        AirInfo { talkgroup: self.voice.talkgroup(), nac: None, color_code: None, ran: self.voice.ran(), air: self.air }
+    }
+    fn offset_hz(&self) -> Option<f32> {
+        self.rx.offset_hz()
     }
 }
 

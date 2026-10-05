@@ -13,6 +13,8 @@
 //!   → receiver bank → voice tracker     (p25; talkgroup from link control)
 //!   → 4FSK → DMR framer → both slots   (dmr; a call on each slot, talkgroup
 //!                                        from link control)
+//!   → 4FSK → NXDN framer               (nxdn48 / nxdn96; group and unit
+//!                                        from VCALL, the RAN from the SACCH)
 //! a call starts with the first audio (or P25 link control), ends when there
 //! has been none for the call timeout; the head closes once the carrier has
 //! been gone for CLOSE_HANG_S with no call.
@@ -31,6 +33,7 @@
 //!   mostly send a talkgroup that says little, often 1).
 //! - DMR: per slot; filed under the talkgroup on the air, as always (the row
 //!   gives the names).
+//! - NXDN: by RAN and / or group, as DMR by colour code and talkgroup.
 //!
 //! A detection the carrier meter doesn't confirm raises that channel's open
 //! threshold to just above what triggered it, until the band quietens again,
@@ -53,6 +56,7 @@ use crate::dsp::fm::{self, ChannelFilter};
 use crate::dsp::tones::{Tone, ToneDetector};
 use crate::dsp::{Channelizer, HeadId};
 use crate::mbe;
+use crate::nxdn::Rate;
 use crate::p25::alias::Alias;
 use crate::p25::diversity::BankConfig;
 
@@ -85,6 +89,8 @@ pub enum ConvMode {
     P25,
     /// DMR (Tier II): each of the two slots records its own calls.
     Dmr,
+    /// NXDN at either rate.
+    Nxdn(Rate),
 }
 
 impl ConvMode {
@@ -93,6 +99,23 @@ impl ConvMode {
             ConvMode::Fm => "fm",
             ConvMode::P25 => "p25",
             ConvMode::Dmr => "dmr",
+            ConvMode::Nxdn(r) => r.name(),
+        }
+    }
+
+    /// Half-width of the band the detector sums, Hz.
+    fn detect_half_bw(self) -> f64 {
+        match self {
+            ConvMode::Nxdn(Rate::N48) => 3125.0,
+            _ => DETECT_HALF_BW,
+        }
+    }
+
+    /// The head's filter cutoff, Hz.
+    fn head_cutoff_hz(self) -> f64 {
+        match self {
+            ConvMode::Nxdn(r) => r.cutoff_hz(),
+            _ => HEAD_CUTOFF_HZ,
         }
     }
 }
@@ -125,6 +148,8 @@ pub enum Access {
     Nac(u16),
     /// DMR: whichever of colour code, slot (1, 2) and talkgroup are given.
     Dmr { cc: Option<u8>, slot: Option<u8>, tg: Option<u32> },
+    /// NXDN: whichever of RAN and group (or unit) are given.
+    Nxdn { ran: Option<u8>, tg: Option<u32> },
 }
 
 impl std::fmt::Display for Access {
@@ -138,6 +163,10 @@ impl std::fmt::Display for Access {
                     [cc.map(|c| format!("CC {c}")), slot.map(|s| format!("TS {s}")), tg.map(|t| format!("TG {t}"))].into_iter().flatten().collect();
                 write!(f, "{}", parts.join(" "))
             }
+            Access::Nxdn { ran, tg } => {
+                let parts: Vec<String> = [ran.map(|r| format!("RAN {r}")), tg.map(|t| format!("TG {t}"))].into_iter().flatten().collect();
+                write!(f, "{}", parts.join(" "))
+            }
         }
     }
 }
@@ -148,7 +177,8 @@ impl Access {
     /// - P25: `293`, `293 NAC`, `NAC 293`, `$293`, `0x293`; `F7E` / `F7F`
     ///   (a radio's "receive any") mean any;
     /// - DMR: `CC1`, `1`, RadioReference's `CC1 TS2 TG201` or
-    ///   `CC 1 TG 201 SL 2` (its scan list is ignored), `Slot 2`.
+    ///   `CC 1 TG 201 SL 2` (its scan list is ignored), `Slot 2`;
+    /// - NXDN: `RAN 5`, `5`, `RAN5 TG 201`.
     ///
     /// Empty, `0` and `S` (Trunk Recorder's search): any.
     pub fn parse(mode: ConvMode, text: &str) -> Result<Option<Access>, String> {
@@ -170,7 +200,14 @@ impl Access {
             let n = u16::from_str_radix(body, 16).map_err(|_| bad())?;
             return Ok((n != 0xf7e && n != 0xf7f).then_some(Access::Nac(n)));
         }
-        let bad = || format!("\"{}\" isn't a DMR colour code (CC1), slot (TS2) or talkgroup (TG201)", text.trim());
+        let nxdn = matches!(mode, ConvMode::Nxdn(_));
+        let bad = || {
+            if nxdn {
+                format!("\"{}\" isn't an NXDN RAN (RAN 5) or talkgroup (TG 201)", text.trim())
+            } else {
+                format!("\"{}\" isn't a DMR colour code (CC1), slot (TS2) or talkgroup (TG201)", text.trim())
+            }
+        };
         // Letters and digits apart: CC1 → CC 1.
         let mut spaced = String::new();
         for c in up.chars() {
@@ -180,22 +217,30 @@ impl Access {
             spaced.push(if c == ',' || c == ':' || c == '=' { ' ' } else { c });
         }
         let words: Vec<&str> = spaced.split_whitespace().collect();
-        let (mut cc, mut slot, mut tg) = (None, None, None);
+        let (mut cc, mut slot, mut tg, mut ran) = (None, None, None, None);
         let mut i = 0;
         while i < words.len() {
             let (key, val) = match words[i].parse::<u32>() {
-                Ok(v) if i == 0 => ("CC", Some(v)),
+                Ok(v) if i == 0 => (if nxdn { "RAN" } else { "CC" }, Some(v)),
                 _ => (words[i], words.get(i + 1).and_then(|w| w.parse::<u32>().ok())),
             };
             let v = val.ok_or_else(bad)?;
             i += if words[i].parse::<u32>().is_ok() { 1 } else { 2 };
             match key {
+                "RAN" if nxdn => ran = Some(u8::try_from(v).ok().filter(|&r| r <= 63).ok_or_else(|| format!("RAN {v}: a RAN is 0–63"))?),
+                "TG" if nxdn => tg = Some(v).filter(|&t| t > 0 && t < 1 << 16).map(Some).ok_or_else(|| format!("TG {v}: not an NXDN group (1–65535)"))?,
+                _ if nxdn => return Err(bad()),
                 "CC" | "COLOR" | "COLOUR" => cc = Some(u8::try_from(v).ok().filter(|&c| c <= 15).ok_or_else(|| format!("CC {v}: a colour code is 0–15"))?),
                 "TS" | "SLOT" => slot = Some(u8::try_from(v).ok().filter(|s| (1..=2).contains(s)).ok_or_else(|| format!("TS {v}: the slot is 1 or 2"))?),
                 "TG" => tg = Some(v).filter(|&t| t > 0 && t < 1 << 24).map(Some).ok_or_else(|| format!("TG {v}: not a DMR talkgroup"))?,
                 "SL" => {}
                 _ => return Err(bad()),
             }
+        }
+        if nxdn {
+            // RAN 0 means "any" to a receiver (TS 1-A table 6.3-3).
+            let ran = ran.filter(|&r| r != 0);
+            return Ok((ran.is_some() || tg.is_some()).then_some(Access::Nxdn { ran, tg }));
         }
         Ok((cc.is_some() || slot.is_some() || tg.is_some()).then_some(Access::Dmr { cc, slot, tg }))
     }
@@ -212,19 +257,21 @@ impl Access {
     fn fields(self) -> usize {
         match self {
             Access::Dmr { cc, slot, tg } => cc.is_some() as usize + slot.is_some() as usize + tg.is_some() as usize,
+            Access::Nxdn { ran, tg } => ran.is_some() as usize + tg.is_some() as usize,
             _ => 1,
         }
     }
 
     /// Whether a digital transmission (on `slot` 0 / 1) satisfies it; what
     /// isn't known yet doesn't.
-    fn admits(self, nac: Option<u16>, slot: usize, cc: Option<u8>, tg: Option<u32>) -> bool {
+    fn admits(self, nac: Option<u16>, slot: usize, cc: Option<u8>, tg: Option<u32>, ran: Option<u8>) -> bool {
         match self {
             Access::Tone(_) => false,
             Access::Nac(n) => nac == Some(n),
             Access::Dmr { cc: c, slot: s, tg: t } => {
                 c.is_none_or(|c| cc == Some(c)) && s.is_none_or(|s| s as usize == slot + 1) && t.is_none_or(|t| tg == Some(t))
             }
+            Access::Nxdn { ran: r, tg: t } => r.is_none_or(|r| ran == Some(r)) && t.is_none_or(|t| tg == Some(t)),
         }
     }
 }
@@ -287,6 +334,9 @@ pub fn heard_code(call: &Call) -> Option<String> {
     if call.analog {
         return Some(call.tone.map_or(String::new(), |h| h.tone.to_string()));
     }
+    if call.nxdn.is_some() {
+        return Some(Access::Nxdn { ran: call.ran, tg: Some(call.talkgroup) }.to_string());
+    }
     if call.color_code.is_some() {
         return Some(Access::Dmr { cc: call.color_code, slot: Some(call.tdma_slot + 1), tg: Some(call.talkgroup) }.to_string());
     }
@@ -307,6 +357,8 @@ struct Heard {
     /// The talkgroup the air named (FM with tones: the row's).
     tg: Option<u32>,
     color_code: Option<u8>,
+    /// NXDN: the RAN its SACCH carried.
+    ran: Option<u8>,
     /// P25: the NAC its frames carried.
     nac: Option<u16>,
     /// The row it is for, on a frequency with codes.
@@ -480,6 +532,7 @@ impl Conventional {
             ConvMode::Fm => "tone",
             ConvMode::P25 => "NAC",
             ConvMode::Dmr => "colour code, slot or talkgroup",
+            ConvMode::Nxdn(_) => "RAN or talkgroup",
         };
         for (i, a) in rows.iter().enumerate() {
             for b in &rows[..i] {
@@ -542,7 +595,7 @@ impl Conventional {
             }
             let rules = &rules[ch.cfg.system];
             let floor = self.floors[source].slices[ch.slice].max(1e-30);
-            let bp = chz.band_power(ch.offset_hz, DETECT_HALF_BW);
+            let bp = chz.band_power(ch.offset_hz, ch.cfg.mode.detect_half_bw());
             ch.power = if ch.power == 0.0 { bp } else { ch.power + a * (bp - ch.power) };
             let snr_db = if gap { f64::NEG_INFINITY } else { 10.0 * (ch.power / floor).log10() };
             let base = ch.base_db(dflt);
@@ -593,12 +646,13 @@ impl Conventional {
 
     #[allow(clippy::too_many_arguments)]
     fn open(ch: &mut Chan, chz: &mut Channelizer, now_s: f64, preroll_s: f64, bank_cfg: BankConfig, vocoder: mbe::Profile, meter_thr: f32, num: u32, ids: &CallIds, rules: &CallRules, out: &mut Vec<ConvOut>) {
-        let (head, pre, start_sample) = chz.add_head(ch.offset_hz, HEAD_CUTOFF_HZ, preroll_s);
+        let (head, pre, start_sample) = chz.add_head(ch.offset_hz, ch.cfg.mode.head_cutoff_hz(), preroll_s);
         let rate = chz.output_rate();
         let kind = match ch.cfg.mode {
             ConvMode::Fm => VoiceKind::Analog,
             ConvMode::P25 => VoiceKind::Fdma,
             ConvMode::Dmr => VoiceKind::Dmr,
+            ConvMode::Nxdn(r) => VoiceKind::Nxdn(r),
         };
         let voice = voice::build(&VoiceSpec {
             kind,
@@ -645,7 +699,7 @@ impl Conventional {
         }
         for (slot, h) in heard.iter_mut().enumerate() {
             let a = o.voice.air(slot as u8);
-            (h.air, h.tg, h.nac, h.color_code) = (a.air, a.talkgroup, a.nac, a.color_code);
+            (h.air, h.tg, h.nac, h.color_code, h.ran) = (a.air, a.talkgroup, a.nac, a.color_code, a.ran);
         }
         if ch.routed && ch.cfg.mode == ConvMode::Fm {
             if let Some(code) = Self::route(&ch.rows, &mut o.tx, &mut heard[0], carrier) {
@@ -736,7 +790,7 @@ impl Conventional {
         let best = rows
             .iter()
             .enumerate()
-            .filter(|(_, r)| r.access.is_none_or(|a| a.admits(h.nac, slot, h.color_code, h.tg)))
+            .filter(|(_, r)| r.access.is_none_or(|a| a.admits(h.nac, slot, h.color_code, h.tg, h.ran)))
             .max_by_key(|(i, r)| (r.access.map_or(0, Access::fields), std::cmp::Reverse(*i)));
         match best {
             // Only voice counts as a transmission lost (as only calls with audio are kept).
@@ -747,6 +801,7 @@ impl Conventional {
             None => {
                 let code = match rows[0].mode {
                     ConvMode::P25 => h.nac.map_or(String::new(), |n| Access::Nac(n).to_string()),
+                    ConvMode::Nxdn(_) => Access::Nxdn { ran: h.ran, tg: h.tg }.to_string(),
                     _ => Access::Dmr { cc: h.color_code, slot: Some(slot as u8 + 1), tg: h.tg }.to_string(),
                 };
                 *h = Heard::default();
@@ -829,6 +884,11 @@ impl Conventional {
                 talkgroup_info: Self::info_for(&ch.rows, row, tg, rules.talkgroups),
                 patched_talkgroups: Vec::new(),
                 color_code: h.color_code,
+                nxdn: match ch.cfg.mode {
+                    ConvMode::Nxdn(r) => Some(r),
+                    _ => None,
+                },
+                ran: h.ran,
                 nac: h.nac,
                 tone: None,
                 tone_set: match row.access {
@@ -852,6 +912,10 @@ impl Conventional {
         }
         if l.call.nac.is_none() && h.nac.is_some() {
             l.call.nac = h.nac;
+        }
+        if l.call.ran.is_none() && h.ran.is_some() {
+            l.call.ran = h.ran;
+            changed = true;
         }
         if l.call.color_code.is_none() && h.color_code.is_some() {
             l.call.color_code = h.color_code;

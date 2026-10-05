@@ -11,6 +11,7 @@
 //! P25:      receiver bank → framer → TSBKs → TsbkParser → Message
 //! SmartNet: 2FSK → OSW framer → Parser → Message
 //! DMR:      every carrier of the site: 4FSK → bursts → CSBK / link control → Message
+//! NXDN:     every carrier of the site: 4FSK → frames → CAC / VCALL / SCCH → Message
 //! ```
 
 use std::collections::BTreeMap;
@@ -24,6 +25,7 @@ use super::patches;
 use super::voice::VoiceParams;
 use crate::dmr;
 use crate::metrics::{Instrumented, Sink};
+use crate::nxdn;
 use crate::p25::diversity::{best_frame, best_tsbks, Bank, BankConfig, Group};
 use crate::p25::frame::TSDU;
 use crate::smartnet;
@@ -40,6 +42,8 @@ pub enum Protocol {
     SmartNet(SmartnetConfig),
     /// Every control channel (and [`dmr::DmrConfig::channels`]) is watched.
     Dmr(dmr::DmrConfig),
+    /// Every control channel (and [`nxdn::trunking::NxdnConfig::channels`]) is watched.
+    Nxdn(nxdn::trunking::NxdnConfig),
 }
 
 /// What a system's protocol has to show beyond what every system shows.
@@ -50,6 +54,8 @@ pub enum ProtocolStatus {
     SmartNet,
     /// The site's kind, colour code, rest channel, channel table and carriers.
     Dmr(dmr::SiteStatus),
+    /// Type-C / Type-D, the site's location and RAN, channel table and carriers.
+    Nxdn(nxdn::trunking::SiteStatus),
 }
 
 /// Which carriers a system listens to.
@@ -155,6 +161,11 @@ pub fn build(cfg: &SystemConfig, rate: f64) -> Box<dyn ControlChannel> {
         Protocol::Dmr(dc) => {
             let note = format!("Watching {} DMR frequencies", cfg.control_channels.len() + dc.channels.len());
             Box::new(Dmr { site: dmr::Site::new(&cfg.control_channels, rate, dc.clone()), note })
+        }
+        Protocol::Nxdn(nc) => {
+            let what = if nc.kind == nxdn::trunking::Kind::TypeD { "repeaters" } else { "frequencies" };
+            let note = format!("Watching {} NXDN {what} ({})", cfg.control_channels.len() + nc.channels.len(), nc.kind.name());
+            Box::new(Nxdn { site: nxdn::trunking::Site::new(&cfg.control_channels, rate, nc.clone()), note })
         }
     }
 }
@@ -392,5 +403,63 @@ impl ControlChannel for Dmr {
     }
     fn status(&self) -> ProtocolStatus {
         ProtocolStatus::Dmr(self.site.status())
+    }
+}
+
+/// Trunked NXDN: every carrier of the site at once (CAC on the control
+/// channel; VCALL / SCCH on the traffic channels). Type-C sites state their
+/// system and site code (SITE_INFO), which the site lock checks.
+struct Nxdn {
+    site: nxdn::trunking::Site,
+    note: String,
+}
+
+impl ControlChannel for Nxdn {
+    fn name(&self) -> &'static str {
+        "NXDN"
+    }
+    fn plan(&self) -> CarrierPlan {
+        let cutoff_hz = self.site.status().rate.unwrap_or(nxdn::Rate::N96).cutoff_hz();
+        CarrierPlan::Watch { carriers: self.site.carriers.iter().map(|c| c.hz as f64).collect(), cutoff_hz, note: self.note.clone() }
+    }
+    fn push(&mut self, carrier: usize, iq: &[Complex32], t0: f64, rate: f64, out: &mut Vec<Step>) {
+        let (good0, _) = self.site.counts();
+        let mut msgs = Vec::new();
+        self.site.push(carrier, iq, t0, rate, &mut msgs);
+        let good = self.site.counts().0 > good0;
+        out.push(Step { good: good || !msgs.is_empty(), msgs, identity: self.site.identity().clone() });
+    }
+    fn counts(&self) -> (u64, u64) {
+        self.site.counts()
+    }
+    fn identity_fields(&self) -> &'static [IdField] {
+        match self.site.kind() {
+            nxdn::trunking::Kind::TypeC => &[IdField::SysId, IdField::Site],
+            nxdn::trunking::Kind::TypeD => &[],
+        }
+    }
+    fn site_group(&self, id: &Identity) -> Option<String> {
+        Some(format!("nxdn:{:x}", id.sys_id()?))
+    }
+    fn modulation(&self) -> &'static str {
+        match self.site.status().rate {
+            Some(nxdn::Rate::N96) => "NXDN96",
+            _ => "NXDN48",
+        }
+    }
+    fn control_hz(&self) -> Option<u64> {
+        self.site.control_hz()
+    }
+    fn take_notes(&mut self) -> Vec<String> {
+        self.site.take_notes()
+    }
+    fn bandplan(&self) -> String {
+        self.site.map_to_string()
+    }
+    fn load_bandplan(&mut self, s: &str) {
+        self.site.map_from_str(s);
+    }
+    fn status(&self) -> ProtocolStatus {
+        ProtocolStatus::Nxdn(self.site.status())
     }
 }

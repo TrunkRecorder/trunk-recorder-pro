@@ -60,6 +60,51 @@ pub fn cac(f: &Frame) -> Option<(Sr, [u8; 18], u32)> {
     d.crc_ok.then(|| (Sr::of(&d.bits), bytes_of(&d.bits[8..152]).try_into().unwrap(), d.errs))
 }
 
+/// A Type-D SCCH (TS 1-E §6.5): structure (which of INFO1–4 it is, by its
+/// place in the superframe: 3 → INFO1 … 0 → INFO4), the area bit and 22
+/// bits whose meaning depends on the message.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Scch {
+    pub structure: u8,
+    pub area: bool,
+    pub data: u32,
+    pub errs: u32,
+}
+
+impl Scch {
+    /// INFO1 (3) … INFO4 (0) → 1 … 4.
+    pub fn info(&self) -> u8 {
+        4 - self.structure
+    }
+    /// The first 5-bit field: repeater in use / go to repeater / free repeater 1.
+    pub fn repeater(&self) -> u8 {
+        (self.data >> 17) as u8 & 0x1f
+    }
+    /// INFO2 / INFO3 / INFO4: the 16-bit ID (home repeater or prefix, then
+    /// the 11-bit unit or group), as VCALL carries it.
+    pub fn id(&self) -> u16 {
+        (self.data >> 1) as u16
+    }
+    /// The 11-bit unit / group part (2041–2047: special messages).
+    pub fn short_id(&self) -> u16 {
+        self.id() & 0x7ff
+    }
+    /// INFO2 / INFO4: the destination is a group (G/U bit 0) or a unit.
+    pub fn group(&self) -> bool {
+        self.data & 1 == 0
+    }
+    /// INFO1: cipher type (0 clear).
+    pub fn cipher(&self) -> u8 {
+        (self.data >> 7) as u8 & 3
+    }
+}
+
+pub fn scch(f: &Frame) -> Option<Scch> {
+    let d = decode_at(f, &fec::SCCH, SACCH_AT);
+    let w = |a: usize, n: usize| d.bits[a..a + n].iter().fold(0u32, |v, &b| v << 1 | b as u32);
+    d.crc_ok.then(|| Scch { structure: w(0, 2) as u8, area: d.bits[2] != 0, data: w(3, 22), errs: d.errs })
+}
+
 /// Gathers a superframe's four SACCH quarters (SR structure 3, 2, 1, 0)
 /// into its 72-bit message (9 octets).
 #[derive(Clone, Debug, Default)]
@@ -117,6 +162,23 @@ pub mod build {
         let mut b = sr_bits(sr);
         b.extend(bits_of(&o, 176));
         encode(&fec::UDCH, &b)
+    }
+
+    /// A Type-D SCCH from its structure, area bit and 22 data bits.
+    pub fn scch(structure: u8, area: bool, data: u32) -> Vec<u8> {
+        let mut b: Vec<u8> = vec![structure >> 1 & 1, structure & 1, area as u8];
+        b.extend((0..22).rev().map(|k| (data >> k & 1) as u8));
+        encode(&fec::SCCH, &b)
+    }
+
+    /// SCCH data for INFO2 / INFO4 (and INFO3, `group` false): repeater, 16-bit ID, G/U.
+    pub fn scch_id(repeater: u8, id: u16, group: bool) -> u32 {
+        (repeater as u32 & 0x1f) << 17 | (id as u32) << 1 | !group as u32
+    }
+
+    /// SCCH data for INFO1: free repeaters, call option, cipher, key.
+    pub fn scch_info1(rep1: u8, rep2: u8, option: u8, cipher: u8, key: u8) -> u32 {
+        (rep1 as u32 & 0x1f) << 17 | (rep2 as u32 & 0x1f) << 12 | (option as u32 & 7) << 9 | (cipher as u32 & 3) << 7 | (key as u32 & 0x3f) << 1
     }
 
     pub fn cac(sr: Sr, octets: &[u8]) -> Vec<u8> {

@@ -161,7 +161,7 @@ pub fn call_record(call: &Call, info: &ConcludeInfo) -> (String, String) {
         "{{\"call_num\":{},\"freq\":{},\"freq_error\":{},\"signal\":{},\"noise\":{},\"snr\":{},\"clean_voice_pct\":{},\"source_num\":0,\"recorder_num\":{},\"tdma_slot\":{},\"phase2_tdma\":{},\
 \"start_time\":{},\"stop_time\":{},\"start_time_ms\":{},\"stop_time_ms\":{},\"emergency\":{},\"priority\":{},\"mode\":{},\"duplex\":{},\"encrypted\":{},\
 \"call_length\":{},\"call_length_ms\":{},\"talkgroup\":{},\"talkgroup_tag\":\"{}\",\"talkgroup_description\":\"{}\",\"talkgroup_group_tag\":\"{}\",\
-\"talkgroup_group\":\"{}\",\"color_code\":{},\"tone_mode\":\"{}\",\"tone_detected\":\"{}\",\"tone_confidence\":{:.3},\
+\"talkgroup_group\":\"{}\",\"color_code\":{},\"ran\":{},\"tone_mode\":\"{}\",\"tone_detected\":\"{}\",\"tone_confidence\":{:.3},\
 \"audio_type\":\"{}\",\"short_name\":\"{}\",",
         call.id,
         call.freq_hz,
@@ -190,6 +190,7 @@ pub fn call_record(call: &Call, info: &ConcludeInfo) -> (String, String) {
         t(|t| &t.tag),
         t(|t| &t.group),
         call.color_code.map_or(-1, i32::from),
+        call.ran.map_or(-1, i32::from),
         // Trunk Recorder's (PR #1137) tone fields; "search": identified, not matched.
         match call.tone_set {
             Some(Tone::Ctcss(_)) => "ctcss",

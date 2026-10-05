@@ -92,6 +92,8 @@ pub struct Message {
     pub patch: Option<Patch>,
     /// DMR: the colour code; a DMR grant's slot is `tdma_slot`.
     pub color_code: Option<u8>,
+    /// NXDN: the voice channel's rate.
+    pub nxdn: Option<crate::nxdn::Rate>,
     pub opcode: u8,
     /// Human-readable summary, as Trunk Recorder logs it.
     pub meta: String,

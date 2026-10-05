@@ -8,10 +8,8 @@ use super::burst::tests::{cach_dibits, sync_dibits};
 use super::burst::{SyncKind, BURST_DIBITS};
 use super::fec::{bptc196_encode, embedded_lc_encode, golay20_encode, qr16_encode, rs129_parity, unpack, MASK_CSBK, MASK_TERMINATOR_LC, MASK_VOICE_LC_HEADER};
 use super::slot::{DT_CSBK, DT_IDLE, DT_TERMINATOR_LC, DT_VOICE_LC_HEADER};
-use crate::ambe::{ambe_pn23, VCW_MAP};
 use crate::bits::crc_ccitt;
 use crate::dsp::c4fm::SYMBOL_RATE;
-use crate::p25::fec::{golay23_encode, golay24_encode};
 
 pub struct Tx {
     pub cc: u8,
@@ -74,17 +72,7 @@ pub fn csbk_burst(cc: u8, csbk: &[u8; 10]) -> [u8; BURST_DIBITS] {
     data_burst(cc, DT_CSBK, &bptc196_encode(&bits.try_into().unwrap()))
 }
 
-/// 49 AMBE bits → the 36 dibits of a 72-bit codeword (the inverse of decode_vcw).
-fn ambe_dibits(u: &[u8; 49]) -> [u8; 36] {
-    let word = |a: usize, n: usize| u[a..a + n].iter().fold(0u32, |v, &b| v << 1 | b as u32);
-    let (u0, u1, u2, u3) = (word(0, 12), word(12, 12), word(24, 11), word(35, 14));
-    let c = [golay24_encode(u0), golay23_encode(u1) ^ ambe_pn23(u0), u2, u3];
-    let mut bits = [0u8; 72];
-    for (k, &(w, i)) in VCW_MAP.iter().enumerate() {
-        bits[k] = (c[w as usize] >> i & 1) as u8;
-    }
-    bits_to_dibits(&bits).try_into().unwrap()
-}
+use crate::ambe::encode_vcw as ambe_dibits;
 
 /// Voice burst `pos` (0 = A … 5 = F) of a superframe, carrying `frames`.
 fn voice_burst(cc: u8, pos: usize, frames: &[[u8; 36]; 3], emb_lc: &[u8; 128], vsync: SyncKind) -> [u8; BURST_DIBITS] {

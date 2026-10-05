@@ -57,6 +57,9 @@ pub struct C4fmOptions {
     pub msd: Option<Pulse>,
     /// Symbols per second.
     pub baud: f64,
+    /// The outer level's deviation, Hz, to slice with until the levels are
+    /// measured (P25 / DMR ~1800; NXDN48 1050, NXDN96 2400).
+    pub outer_hz: f32,
 }
 
 /// P25: an RRC matched filter (α 0.5) and cluster-mean levels. Against the
@@ -65,7 +68,7 @@ pub struct C4fmOptions {
 /// CQPSK receivers carry it.
 impl Default for C4fmOptions {
     fn default() -> Self {
-        C4fmOptions { box_symbols: 0.9, rrc: Some(0.5), clip: None, rail_means: true, block: BLOCK, msd: Some(Pulse::Rc(0.2)), baud: SYMBOL_RATE }
+        C4fmOptions { box_symbols: 0.9, rrc: Some(0.5), clip: None, rail_means: true, block: BLOCK, msd: Some(Pulse::Rc(0.2)), baud: SYMBOL_RATE, outer_hz: 1800.0 }
     }
 }
 
@@ -80,12 +83,12 @@ impl C4fmOptions {
     /// shaped (α 0.2) like DMR. (The spec adds a sinc pre-emphasis at the
     /// transmitter and its inverse at the receiver, which cancel.)
     pub fn nxdn(baud: f64) -> Self {
-        C4fmOptions { baud, ..Self::dmr() }
+        C4fmOptions { baud, outer_hz: if baud < 3000.0 { 1050.0 } else { 2400.0 }, ..Self::dmr() }
     }
 
     /// The first receiver (boxcar, quantile levels), for comparisons.
     pub fn legacy() -> Self {
-        C4fmOptions { box_symbols: 0.9, rrc: None, clip: None, rail_means: false, block: BLOCK, msd: None, baud: SYMBOL_RATE }
+        C4fmOptions { box_symbols: 0.9, rrc: None, clip: None, rail_means: false, block: BLOCK, msd: None, baud: SYMBOL_RATE, outer_hz: 1800.0 }
     }
 
     /// Apply one `name[=value]` setting; false if unknown.
@@ -253,7 +256,7 @@ impl C4fm {
             tmp: Vec::new(),
             since_rails: 0,
             center: 0.0,
-            thr: 1200.0,
+            thr: opts.outer_hz * 2.0 / 3.0,
             separation: f32::INFINITY,
             symbols: 0,
         }
@@ -282,7 +285,7 @@ impl C4fm {
         self.soft_env = keep.iter().map(|k| k.1).collect();
         if self.soft.len() < 240 {
             self.center = 0.0;
-            self.thr = 1200.0;
+            self.thr = self.opts.outer_hz * 2.0 / 3.0;
             self.separation = f32::INFINITY;
         }
         self.since_rails = self.opts.block;
@@ -393,7 +396,13 @@ impl C4fm {
 
     fn slice(&mut self, v: f32, t: f64, lv: Level, out: &mut Vec<Symbol>) {
         let env = lv.env;
-        if lv.quiet() {
+        // Symbols are sliced a couple of blocks after they arrive (200 ms at
+        // 2400 baud): ones from just before a signal came up were judged
+        // against the noise then. Far below the quietest of the window now
+        // (13 dB: a carrier doesn't fade that far below its own last 0.1 s),
+        // they are noise.
+        let late_quiet = env * BURSTY < self.floor;
+        if lv.quiet() || late_quiet {
             // Nothing on the air: a decision for the framer's count, worth nothing.
             let x = v - self.center;
             let dibit = if x >= self.thr { 0b01 } else if x >= 0.0 { 0b00 } else if x >= -self.thr { 0b10 } else { 0b11 };
@@ -438,7 +447,7 @@ impl C4fm {
             let q_hi = *self.tmp.select_nth_unstable_by(hi, f32::total_cmp).1;
             self.center = (q_hi + q_lo) / 2.0;
             let outer = (q_hi - q_lo) / 2.0;
-            self.thr = if outer > 300.0 { outer * 2.0 / 3.0 } else { 1200.0 };
+            self.thr = if outer > 300.0 { outer * 2.0 / 3.0 } else { self.opts.outer_hz * 2.0 / 3.0 };
             if self.opts.rail_means && outer > 300.0 {
                 // Refine from the clusters: a few rounds of assigning symbols to
                 // the nearest level and taking each level's mean.

@@ -12,6 +12,9 @@ pub mod channel;
 pub mod fec;
 pub mod frame;
 pub mod layer3;
+pub mod synth;
+pub mod trunking;
+pub mod voice;
 
 use crate::dsp::c4fm::{C4fm, C4fmOptions};
 

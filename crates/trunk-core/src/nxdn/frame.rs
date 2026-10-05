@@ -63,8 +63,10 @@ pub enum RfChannel {
     Traffic,
     /// Conventional (repeater or direct) channel.
     Direct,
-    /// Composite control channel (a control channel also carrying traffic);
-    /// on a Type-D system, its traffic channel (RTCH2).
+    /// On a Type-D (IDAS) system its traffic channel (RTCH2, with an SCCH
+    /// where the SACCH would be); on a Type-C one a composite control
+    /// channel (a control channel also carrying traffic), whose CAC frames
+    /// the CAC's CRC tells apart.
     Composite,
 }
 
@@ -111,12 +113,16 @@ impl Lich {
     }
     /// A control channel frame carrying a CAC (outbound) / long / short CAC (inbound).
     pub fn is_cac(self) -> bool {
-        self.rf() == RfChannel::Control || (self.rf() == RfChannel::Composite && self.fct() == 0 && self.outbound())
+        self.rf() == RfChannel::Control
     }
 
     /// A traffic channel's (or conventional channel's) body, by the
     /// functional channel and option.
     pub fn body(self) -> Body {
+        if self.rf() == RfChannel::Composite && self.fct() == 0 {
+            // Type-D, one frame on its own: FACCH1 first, then FACCH1 or a guard / post field.
+            return Body::Voice { superframe: false, idle: true, facch: [true, self.option() == 0] };
+        }
         match self.fct() {
             1 if self.option() == 0 => Body::Facch2,
             1 => Body::Udch,

@@ -111,6 +111,10 @@ pub struct Call {
     pub patched_talkgroups: Vec<u32>,
     /// DMR: the colour code the voice came with (a DMR call's slot is `tdma_slot`).
     pub color_code: Option<u8>,
+    /// NXDN: the rate its voice is at (set: an NXDN call).
+    pub nxdn: Option<crate::nxdn::Rate>,
+    /// NXDN: the RAN its frames carried.
+    pub ran: Option<u8>,
     /// Conventional P25: the NAC its frames carried.
     pub nac: Option<u16>,
     /// Conventional FM: the CTCSS tone or DCS code it carried.
@@ -391,6 +395,8 @@ impl CallManager {
             talkgroup_info: tg.clone(),
             patched_talkgroups: self.patches.members_of(m.talkgroup),
             color_code: m.color_code,
+            nxdn: m.nxdn,
+            ran: None,
             nac: None,
             tone: None,
             tone_set: None,

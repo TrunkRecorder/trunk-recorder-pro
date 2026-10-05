@@ -536,7 +536,13 @@ impl SysHost<'_> {
         }
         let s = &mut r.sources[src];
         let rate = s.chz.output_rate();
-        let cutoff = if call.color_code.is_some() { dmr::CHANNEL_CUTOFF_HZ } else { CHANNEL_CUTOFF_HZ };
+        let cutoff = if let Some(r) = call.nxdn {
+            r.cutoff_hz()
+        } else if call.color_code.is_some() {
+            dmr::CHANNEL_CUTOFF_HZ
+        } else {
+            CHANNEL_CUTOFF_HZ
+        };
         let tune_ppm = s.tune_ppm;
         let (head, pre, start_sample) = s.chz.add_head(s.offset(call.freq_hz as f64), cutoff, r.preroll_s);
         // The noise floor under the channel, from the source's spectrum: analog squelch, and reception.

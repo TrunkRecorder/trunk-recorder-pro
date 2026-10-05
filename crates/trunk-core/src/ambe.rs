@@ -3,7 +3,7 @@
 //! whitened by a PN sequence seeded from c0's data, c2 and c3 uncoded. After
 //! op25 p25p2_vf.cc; the vocoder itself is [`crate::mbe`].
 
-use crate::p25::fec::{golay23_decode, golay23_decode_soft, golay24_decode};
+use crate::p25::fec::{golay23_decode, golay23_decode_soft, golay23_encode, golay24_decode, golay24_encode};
 
 /// extract_vcw: vf bit k ← (which of c0..c3, bit index).
 pub const VCW_MAP: [(u8, u8); 72] = [
@@ -71,6 +71,19 @@ pub fn decode_vcw(d: &[u8], rel: Option<&[f32]>) -> AmbeFrame {
         }
     }
     AmbeFrame { bits, errs: (if r0.errs < 0 { 4 } else { r0.errs as u32 }) + r1.errs.max(0) as u32 }
+}
+
+/// 49 AMBE bits → the 36 dibits of a 72-bit codeword (the inverse of
+/// [`decode_vcw`]; for synthesizers and tests).
+pub fn encode_vcw(u: &[u8; 49]) -> [u8; 36] {
+    let word = |a: usize, n: usize| u[a..a + n].iter().fold(0u32, |v, &b| v << 1 | b as u32);
+    let (u0, u1, u2, u3) = (word(0, 12), word(12, 12), word(24, 11), word(35, 14));
+    let c = [golay24_encode(u0), golay23_encode(u1) ^ ambe_pn23(u0), u2, u3];
+    let mut bits = [0u8; 72];
+    for (k, &(w, i)) in VCW_MAP.iter().enumerate() {
+        bits[k] = (c[w as usize] >> i & 1) as u8;
+    }
+    std::array::from_fn(|i| bits[2 * i] << 1 | bits[2 * i + 1])
 }
 
 #[cfg(test)]
