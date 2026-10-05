@@ -8,6 +8,7 @@ import {
   defaultBandwidthKhz,
   SQUELCH_HANG_MAX_MS,
   SQUELCH_OPEN_MAX_MS,
+  BLADERF_RATES,
   channelsToCsv,
   channelTalkgroups,
   defaultLog,
@@ -16,6 +17,7 @@ import {
   formatMhz,
   mhzCell,
   newAirspy,
+  newBladerf,
   newConventional,
   newDongle,
   newFile,
@@ -337,7 +339,7 @@ function RateInput(props: { hz: number; options: number[]; onChange: (hz: number
 }
 
 /** Why an optional driver can't be used, and how to install it. */
-function DriverMissing(props: { kind: "usrp" | "airspy" | "soapy"; detail: string }) {
+function DriverMissing(props: { kind: "usrp" | "airspy" | "bladerf" | "soapy"; detail: string }) {
   return (
     <div className="banner bad small wide">
       {props.kind === "soapy" ? (
@@ -345,6 +347,12 @@ function DriverMissing(props: { kind: "usrp" | "airspy" | "soapy"; detail: strin
           SoapySDR support needs <b>SoapySDR</b> and your radio&apos;s module, which weren&apos;t found ({props.detail}). Install them — macOS:{" "}
           <code>brew install soapysdr soapyhackrf</code>; Debian/Ubuntu: <code>sudo apt install soapysdr0.8-module-all</code>; Windows: PothosSDR or
           radioconda — then restart Trunk Recorder Pro.
+        </span>
+      ) : props.kind === "bladerf" ? (
+        <span>
+          bladeRF support needs <b>libbladeRF 2.x</b>, which wasn&apos;t found ({props.detail}). Install it — Debian/Ubuntu:{" "}
+          <code>sudo apt install libbladerf2 bladerf-fpga-hostedxa4</code> (or Nuand&apos;s PPA, <code>ppa:nuandllc/bladerf</code>); macOS:{" "}
+          <code>brew install libbladerf</code>; Windows: Nuand&apos;s bladeRF installer — then restart Trunk Recorder Pro.
         </span>
       ) : props.kind === "usrp" ? (
         <span>
@@ -593,6 +601,7 @@ const KINDS: { kind: Source["type"]; label: string; drivers?: boolean }[] = [
   { kind: "rtlsdr", label: "RTL-SDR" },
   { kind: "usrp", label: "USRP", drivers: true },
   { kind: "airspy", label: "Airspy", drivers: true },
+  { kind: "bladerf", label: "bladeRF", drivers: true },
   { kind: "soapy", label: "SoapySDR", drivers: true },
   { kind: "file", label: "Capture file" },
 ];
@@ -608,12 +617,12 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
   const setKind = (kind: Source["type"]) =>
     updateConfig((x) => {
       const old = x.sources[i];
-      const fresh = kind === "rtlsdr" ? newDongle() : kind === "usrp" ? newUsrp() : kind === "airspy" ? newAirspy() : kind === "soapy" ? newSoapy() : newFile();
+      const fresh = kind === "rtlsdr" ? newDongle() : kind === "usrp" ? newUsrp() : kind === "airspy" ? newAirspy() : kind === "bladerf" ? newBladerf() : kind === "soapy" ? newSoapy() : newFile();
       x.sources[i] = { ...fresh, centerHz: old.centerHz } as Source;
     });
   const fileRef = useRef<HTMLInputElement>(null);
   const others = c.sources.filter((_, k) => k !== i);
-  const used = new Set(others.map((x) => (x.type === "rtlsdr" ? `r:${x.serial}` : x.type === "airspy" ? `a:${x.serial}` : x.type === "usrp" ? `u:${x.args}` : x.type === "soapy" ? `s:${x.args}` : "")));
+  const used = new Set(others.map((x) => (x.type === "rtlsdr" ? `r:${x.serial}` : x.type === "airspy" ? `a:${x.serial}` : x.type === "bladerf" ? `b:${x.serial}` : x.type === "usrp" ? `u:${x.args}` : x.type === "soapy" ? `s:${x.args}` : "")));
   const radios = s.radios;
   const needs = useNeed()(`src-${i}`);
 
@@ -763,6 +772,31 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
             />
           </>
         )}
+        {src.type === "bladerf" &&
+          (radios?.bladerf && !radios.bladerf.available ? (
+            <DriverMissing kind="bladerf" detail={radios.bladerf.detail} />
+          ) : (
+            <Field label="bladeRF" hint={radios?.bladerf?.devices?.length ? radios.bladerf.detail : `${radios?.bladerf?.detail ?? "libbladeRF"} · none found — plug one in and press Refresh`}>
+              <div className="row">
+                <select value={src.serial} onChange={(e) => edit((x) => x.type === "bladerf" && void (x.serial = e.target.value))}>
+                  <option value="">First available</option>
+                  {src.serial && !(radios?.bladerf?.devices ?? []).some((d) => d.serial === src.serial) && <option value={src.serial}>SN {src.serial} (not connected)</option>}
+                  {(radios?.bladerf?.devices ?? []).map((d) => (
+                    <option key={d.serial} value={d.serial} disabled={used.has(`b:${d.serial}`)}>
+                      {d.label}
+                      {used.has(`b:${d.serial}`) ? " (in use)" : ""}
+                    </option>
+                  ))}
+                </select>
+                <button className="btn ghost small" disabled={s.findingRadios} onClick={findRadios}>
+                  Refresh
+                </button>
+              </div>
+            </Field>
+          ))}
+        {src.type === "bladerf" && (
+          <Toggle label="Bias-T" hint="Powers an LNA via the antenna cable (bladeRF 2.0)" checked={src.biasTee} onChange={(v) => edit((x) => x.type === "bladerf" && void (x.biasTee = v))} />
+        )}
         {src.type === "soapy" &&
           (radios?.soapy && !radios.soapy.available ? (
             <DriverMissing kind="soapy" detail={radios.soapy.detail} />
@@ -861,16 +895,21 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
         </Field>
         <Field
           label="Sample rate"
-          hint={src.type === "usrp" ? "MSPS; wider costs more CPU" : src.type === "airspy" ? "R2: 10 or 2.5; Mini: 6 or 3" : src.type === "soapy" ? "MSPS, one the device supports" : undefined}
+          hint={src.type === "usrp" ? "MSPS; wider costs more CPU" : src.type === "airspy" ? "R2: 10 or 2.5; Mini: 6 or 3" : src.type === "bladerf" ? "MSPS, 0.52–61.44" : src.type === "soapy" ? "MSPS, one the device supports" : undefined}
         >
           <RateInput
             key={src.type}
             hz={src.rateHz}
-            free={src.type === "usrp" || src.type === "soapy" || (src.type === "file" && can("service"))}
-            options={src.type === "usrp" ? USRP_RATES : src.type === "airspy" ? AIRSPY_RATES : src.type === "soapy" ? SOAPY_RATES : src.type === "file" ? [...SAMPLE_RATES, 8_000_000, 10_000_000] : SAMPLE_RATES}
+            free={src.type === "usrp" || src.type === "bladerf" || src.type === "soapy" || (src.type === "file" && can("service"))}
+            options={src.type === "usrp" ? USRP_RATES : src.type === "airspy" ? AIRSPY_RATES : src.type === "bladerf" ? BLADERF_RATES : src.type === "soapy" ? SOAPY_RATES : src.type === "file" ? [...SAMPLE_RATES, 8_000_000, 10_000_000] : SAMPLE_RATES}
             onChange={(hz) => edit((x) => void (x.rateHz = hz))}
           />
         </Field>
+        {src.type === "bladerf" && (
+          <Field label="Filter bandwidth, MHz" hint="The analog low-pass filter. Blank = the sample rate.">
+            <DraftInput className="mono" codec={mhz} value={src.bandwidthHz} placeholder={formatMhz(src.rateHz, 2)} aria-label="Filter bandwidth, MHz" onChange={(hz) => edit((x) => x.type === "bladerf" && void (x.bandwidthHz = hz))} />
+          </Field>
+        )}
         <GuardBand c={c} i={i} fresh={props.fresh} onFreshDone={props.onFreshDone} />
         {center ? (
           <div className="wide">
@@ -893,6 +932,14 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
               <div className="row">
                 <NumberInput gain label="Gain, dB" value={src.gainDb} disabled={src.agc} onChange={(v) => edit((x) => x.type === "usrp" && void (x.gainDb = v || 0))} />
                 <Toggle label="AGC" checked={src.agc} onChange={(v) => edit((x) => x.type === "usrp" && void (x.agc = v))} />
+              </div>
+            </Field>
+          )}
+          {src.type === "bladerf" && (
+            <Field label="Gain, dB" hint={src.agc ? "The board's AGC sets it. A fixed gain is usually better for trunking." : "Overall RX gain; bladeRF 2.0: about −15 to 60"}>
+              <div className="row">
+                <NumberInput gain label="Gain, dB" value={src.gainDb} disabled={src.agc} onChange={(v) => edit((x) => x.type === "bladerf" && void (x.gainDb = v ?? 0))} />
+                <Toggle label="AGC" checked={src.agc} onChange={(v) => edit((x) => x.type === "bladerf" && void (x.agc = v))} />
               </div>
             </Field>
           )}

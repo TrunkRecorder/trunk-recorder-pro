@@ -102,7 +102,7 @@ async function profileSource(req: { source: number; centerHz: number }): Promise
   let rtl: WebRtl | null = null;
   try {
     await ready;
-    if (src.type === "usrp" || src.type === "airspy" || src.type === "soapy") throw new Error("USRP, Airspy and SoapySDR need the desktop app.");
+    if (src.type === "usrp" || src.type === "airspy" || src.type === "bladerf" || src.type === "soapy") throw new Error("USRP, Airspy, bladeRF and SoapySDR need the desktop app.");
     if (src.type === "rtlsdr") {
       if (!(req.centerHz > 0)) throw new Error("Choose a frequency to look at.");
       const p = new WebProfiler(req.source, req.centerHz, src.rateHz);
@@ -150,7 +150,7 @@ async function surveyStart(req: { source: number; bands: string[]; findGain: boo
     await ready;
     const src = config.sources[req.source];
     if (!src) throw new Error("No such source.");
-    if (src.type === "usrp" || src.type === "airspy" || src.type === "soapy") throw new Error("USRP, Airspy and SoapySDR need the desktop app.");
+    if (src.type === "usrp" || src.type === "airspy" || src.type === "bladerf" || src.type === "soapy") throw new Error("USRP, Airspy, bladeRF and SoapySDR need the desktop app.");
     const s = new WebSurvey(JSON.stringify(config), JSON.stringify(req));
     survey = s;
     surveying = true;
@@ -320,8 +320,8 @@ async function start(): Promise<void> {
         const rtl = await WebRtl.open(s.serial, centers[i] ?? s.centerHz, s.rateHz, s.agc ? undefined : s.gainDb, s.ppm);
         rtls.push(rtl);
         void pumpRtl(i, rtl);
-      } else if (s.type === "usrp" || s.type === "airspy" || s.type === "soapy") {
-        throw new Error(`Source ${i + 1}: USRP, Airspy and SoapySDR need the desktop app.`);
+      } else if (s.type === "usrp" || s.type === "airspy" || s.type === "bladerf" || s.type === "soapy") {
+        throw new Error(`Source ${i + 1}: USRP, Airspy, bladeRF and SoapySDR need the desktop app.`);
       } else {
         if (s.format && s.format !== "cu8") throw new Error(`Source ${i + 1}: the browser version reads rtl_sdr (cu8) captures only.`);
         const f = files[i];

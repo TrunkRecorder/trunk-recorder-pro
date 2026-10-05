@@ -13,7 +13,7 @@ export interface OpenTodo {
   text: string;
 }
 
-const DRIVER = { usrp: "UHD", airspy: "libairspy", soapy: "SoapySDR and your radio's module" };
+const DRIVER = { usrp: "UHD", airspy: "libairspy", bladerf: "libbladeRF", soapy: "SoapySDR and your radio's module" };
 
 export function openTodos(s: AppState): OpenTodo[] {
   const c = s.config;

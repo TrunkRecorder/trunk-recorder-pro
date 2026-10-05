@@ -46,6 +46,11 @@ export type Source = (
       ppm: number;
     }
   /**
+   * bladeRF 2.0 micro (xA4 / xA9) or original bladeRF through libbladeRF (desktop app). `serial` "" = the first;
+   * `bandwidthHz` the analog filter, 0 = the sample rate; `agc` the board's AGC instead of `gainDb`; `biasTee` bladeRF 2.0 only.
+   */
+  | { type: "bladerf"; serial: string; centerHz: number; rateHz: number; bandwidthHz: number; gainDb: number; agc: boolean; biasTee: boolean; ppm: number }
+  /**
    * Any SDR with a SoapySDR module (desktop app). `args` "" = first found ("driver=hackrf,serial=…");
    * `agc` the device's AGC; else `gainDb` overall (null: left as it is), then each stage in `gains`
    * (HackRF LNA / VGA / AMP …); `settings` device settings ("biastee=true").
@@ -79,6 +84,8 @@ export interface SoapyState extends DriverState {
 export interface Radios {
   usrp: DriverState;
   airspy: DriverState;
+  /** Older recorders don't report it. */
+  bladerf?: DriverState;
   soapy?: SoapyState;
 }
 

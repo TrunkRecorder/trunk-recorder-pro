@@ -4537,6 +4537,10 @@
         "airspy": {
           "$ref": "#/definitions/DriverState"
         },
+        "bladerf": {
+          "$ref": "#/definitions/DriverState",
+          "description": "Older recorders don't report it."
+        },
         "soapy": {
           "$ref": "#/definitions/SoapyState"
         }
@@ -5488,6 +5492,57 @@
             "serial",
             "type",
             "vgaStep"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "autoTune": {
+              "type": "boolean"
+            },
+            "guardHz": {
+              "type": "number"
+            },
+            "type": {
+              "type": "string",
+              "const": "bladerf"
+            },
+            "serial": {
+              "type": "string"
+            },
+            "centerHz": {
+              "type": "number"
+            },
+            "rateHz": {
+              "type": "number"
+            },
+            "bandwidthHz": {
+              "type": "number"
+            },
+            "gainDb": {
+              "type": "number"
+            },
+            "agc": {
+              "type": "boolean"
+            },
+            "biasTee": {
+              "type": "boolean"
+            },
+            "ppm": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "agc",
+            "bandwidthHz",
+            "biasTee",
+            "centerHz",
+            "gainDb",
+            "ppm",
+            "rateHz",
+            "serial",
+            "type"
           ]
         },
         {

@@ -32,6 +32,11 @@ export function newUsrp(): Source {
 export function newAirspy(): Source {
   return { type: "airspy", serial: "", centerHz: 0, rateHz: 6_000_000, gainMode: "linearity", gainStep: 14, lnaStep: 10, mixerStep: 10, vgaStep: 10, agc: false, biasTee: false, packing: true, ppm: 0 };
 }
+/** Offered for a bladeRF (any rate 0.52–61.44 MSPS can be typed; above ~40 MSPS needs USB 3 and a fast CPU). */
+export const BLADERF_RATES = [2_400_000, 4_000_000, 5_000_000, 6_000_000, 8_000_000, 10_000_000, 12_500_000, 16_000_000, 20_000_000, 25_000_000, 30_720_000];
+export function newBladerf(): Source {
+  return { type: "bladerf", serial: "", centerHz: 0, rateHz: 10_000_000, bandwidthHz: 0, gainDb: 30, agc: false, biasTee: false, ppm: 0 };
+}
 /** Offered for SoapySDR devices; any rate the device takes can be typed. */
 export const SOAPY_RATES = [2_000_000, 2_400_000, 2_500_000, 3_000_000, 6_000_000, 8_000_000, 10_000_000];
 export function newSoapy(): Source {
@@ -471,7 +476,7 @@ export type ImportTodo =
   /** An RTL-SDR that wasn't free when imported (`serial` as configured). */
   | { kind: "source"; index: number; serial: string }
   /** A source whose driver isn't installed here. */
-  | { kind: "driver"; index: number; driver: "usrp" | "airspy" | "soapy" }
+  | { kind: "driver"; index: number; driver: "usrp" | "airspy" | "bladerf" | "soapy" }
   /** Conventional squelch means something else here (a conventional system's). */
   | { kind: "squelch"; system: string }
   /** Trunk Recorder plugins with no counterpart here. */
