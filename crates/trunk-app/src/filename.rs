@@ -83,6 +83,7 @@ const TOKENS: &[&str] = &[
     "signal",
     "noise",
     "color_code",
+    "ran",
 ];
 
 fn token(t: &str, r: &Value, sys_num: u16, utc_offset_s: i32) -> String {
@@ -116,7 +117,7 @@ fn token(t: &str, r: &Value, sys_num: u16, utc_offset_s: i32) -> String {
         }
         "sys_num" => sys_num.to_string(),
         "epoch" => num("start_time"),
-        "source_num" | "recorder_num" | "emergency" | "encrypted" | "priority" | "signal" | "noise" | "color_code" => num(t),
+        "source_num" | "recorder_num" | "emergency" | "encrypted" | "priority" | "signal" | "noise" | "color_code" | "ran" => num(t),
         "audio_type" => text("audio_type"),
         _ => format!("{{{t}}}"),
     }

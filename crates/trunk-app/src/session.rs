@@ -711,7 +711,17 @@ impl Session {
             Event::CallStart(c) => {
                 let r = match c.reason {
                     _ if c.recording => {
-                        let kind = if c.analog { "Analog" } else if c.color_code.is_some() { "DMR" } else if c.phase2_tdma { "P25 Phase 2" } else { "P25" };
+                        let kind = if c.analog {
+                            "Analog"
+                        } else if let Some(r) = c.nxdn {
+                            if r == trunk_core::nxdn::Rate::N48 { "NXDN48" } else { "NXDN96" }
+                        } else if c.color_code.is_some() {
+                            "DMR"
+                        } else if c.phase2_tdma {
+                            "P25 Phase 2"
+                        } else {
+                            "P25"
+                        };
                         let slot = c.slot();
                         self.call_record(Level::Info, &c, Body::Recording { kind, slot })
                     }
@@ -790,6 +800,21 @@ impl Session {
                             })).collect::<Vec<_>>(),
                         })
                     }),
+                    "nxdn": match &y.protocol { ProtocolStatus::Nxdn(n) => Some(n), _ => None }.map(|n| {
+                        json!({
+                            "kind": n.kind.name(),
+                            "rate": n.rate.map(|r| r.name()),
+                            "location": n.location.map(|(cat, sys, site)| json!({ "category": cat, "system": sys, "site": site })),
+                            "ran": n.ran,
+                            "dfa": n.dfa.map(|(base, step)| json!({ "baseHz": base, "stepHz": step })),
+                            "channels": n.channels.iter().map(|c| json!({ "channel": c.number, "freqHz": c.hz, "configured": c.configured })).collect::<Vec<_>>(),
+                            "unknownChannels": n.unknown,
+                            "carriers": n.carriers.iter().map(|c| json!({
+                                "freqHz": c.hz, "control": c.control, "ran": c.ran, "repeater": c.repeater,
+                                "call": c.call.map(|(tg, src)| json!({ "talkgroup": self.tg_names(sys, [tg])[0], "source": src })),
+                            })).collect::<Vec<_>>(),
+                        })
+                    }),
                 })
             })
             .collect();
@@ -863,6 +888,8 @@ fn call_view(c: &Call, system_name: &str, patched: Vec<Value>) -> Value {
         "freqHz": c.freq_hz,
         "slot": c.slot(),
         "analog": c.analog,
+        "nxdn": c.nxdn.map(|r| r.name()),
+        "ran": c.ran,
         // "151.4 Hz" or "D023N".
         "tone": c.tone.map(|h| match h.tone {
             Tone::Ctcss(_) => format!("{} Hz", h.tone),

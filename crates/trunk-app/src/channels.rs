@@ -13,15 +13,17 @@
 //! - A header row names the columns, in any order, any case. Trunk Recorder's
 //!   channel file reads as is; `Mode` and `Squelch dB` are additions.
 //! - `Frequency`: MHz when it has a decimal point (and is under 10 000), else Hz.
-//! - `Mode`: `fm` / `analog` / `A`, or `p25` / `digital` / `D`; empty = fm.
+//! - `Mode`: `fm` / `analog` / `A`, `p25` / `digital` / `D`, `dmr`,
+//!   `nxdn48` (or `nxdn`) / `nxdn96`; empty = fm.
 //! - `TG Number`: empty = the frequency in kHz (further rows on the same
 //!   frequency: that and a digit, 1543251, 1543252 …).
 //! - `Tone`: the code the row records, as Trunk Recorder or RadioReference
 //!   write it — FM's CTCSS tone or DCS code (`151.4`, `151.4 PL`, `D023N`,
 //!   `023 DPL`), P25's NAC (`293 NAC`, `$293`), DMR's colour code, slot and
-//!   talkgroup (`CC1`, `CC1 TS2 TG201`); empty = any. Rows sharing a
-//!   frequency split it by code (one may have none: the rest). With no
-//!   `Mode`, a NAC means p25 and a colour code dmr.
+//!   talkgroup (`CC1`, `CC1 TS2 TG201`), NXDN's RAN and group (`RAN 5`,
+//!   `RAN 5 TG 201`); empty = any. Rows sharing a frequency split it by
+//!   code (one may have none: the rest). With no `Mode`, a NAC means p25, a
+//!   colour code dmr and a RAN nxdn48.
 //! - `Squelch dB`: dB above the noise floor; empty = the section's. Trunk
 //!   Recorder's `Squelch` column is an absolute level and is not read.
 //! - `Enable`: `false` / `no` / `0` switches a channel off; empty = on.
@@ -30,7 +32,7 @@
 //!   writes them in some locales. Blank rows and `#` comments are skipped.
 
 use crate::config::{Channel, ChannelMode};
-use trunk_core::trunk::{Access, ConvMode};
+use trunk_core::trunk::Access;
 
 /// The columns [`write`] produces.
 pub const HEADER: &str = "TG Number,Frequency,Tone,Mode,Alpha Tag,Description,Tag,Category,Squelch dB,Enable";
@@ -123,9 +125,12 @@ pub fn parse(text: &str) -> Result<Parsed, String> {
         let mode = match at(c_mode).to_lowercase().as_str() {
             "" if raw.to_uppercase().contains("NAC") || raw.starts_with('$') => ChannelMode::P25,
             "" if raw.to_uppercase().starts_with("CC") => ChannelMode::Dmr,
+            "" if raw.to_uppercase().starts_with("RAN") => ChannelMode::Nxdn48,
             "" | "fm" | "nfm" | "analog" | "a" => ChannelMode::Fm,
             "p25" | "digital" | "d" => ChannelMode::P25,
             "dmr" => ChannelMode::Dmr,
+            "nxdn" | "nxdn48" => ChannelMode::Nxdn48,
+            "nxdn96" => ChannelMode::Nxdn96,
             _ => {
                 bad_mode.push(row);
                 ChannelMode::Fm
@@ -153,11 +158,7 @@ pub fn parse(text: &str) -> Result<Parsed, String> {
         };
         let enabled = !matches!(at(c_enable).to_lowercase().as_str(), "false" | "no" | "0" | "off");
         search |= raw.eq_ignore_ascii_case("s");
-        let conv = match mode {
-            ChannelMode::Fm => ConvMode::Fm,
-            ChannelMode::P25 => ConvMode::P25,
-            ChannelMode::Dmr => ConvMode::Dmr,
-        };
+        let conv = mode.conv();
         let tone = match Access::parse(conv, raw) {
             Ok(a) => a.map_or(String::new(), |a| a.to_string()),
             Err(e) => {
@@ -231,6 +232,8 @@ pub fn write(channels: &[Channel]) -> String {
                 ChannelMode::Fm => "fm".into(),
                 ChannelMode::P25 => "p25".into(),
                 ChannelMode::Dmr => "dmr".into(),
+                ChannelMode::Nxdn48 => "nxdn48".into(),
+                ChannelMode::Nxdn96 => "nxdn96".into(),
             },
             cell(&c.name),
             cell(&c.description),

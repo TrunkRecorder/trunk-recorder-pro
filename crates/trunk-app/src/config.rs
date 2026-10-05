@@ -299,6 +299,21 @@ pub struct System {
     /// DMR: only this colour code.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub color_code: Option<u8>,
+    /// NXDN (`type` "nxdn"): "typeC" (a control channel; the default) or
+    /// "typeD" (IDAS distributed: list every repeater).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub nxdn_type: String,
+    /// NXDN: "nxdn48" (the default) or "nxdn96", the control channel's (Type-D: the repeaters') rate.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub nxdn_rate: String,
+    /// NXDN: voice frequencies to watch besides the control channels (Type-D:
+    /// the repeaters). A grant to a channel number not in `lcnTableHz` is
+    /// learned when its call comes up on one of them.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub nxdn_channels_hz: Vec<f64>,
+    /// NXDN: only this RAN.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ran: Option<u8>,
     /// Multi-site: sites with the same group are one system, and a call
     /// heard on several of them is saved once (see `Recording::drop_duplicate_calls`).
     /// Empty: grouped by what the control channels say — P25 WACN and System
@@ -329,6 +344,33 @@ impl System {
     }
     pub fn is_dmr(&self) -> bool {
         self.kind.eq_ignore_ascii_case("dmr")
+    }
+    pub fn is_nxdn(&self) -> bool {
+        self.kind.eq_ignore_ascii_case("nxdn")
+    }
+
+    /// The NXDN settings (`lcnTableHz` is its channel table: channel number
+    /// → frequency; Type-D: repeater number → frequency).
+    pub fn nxdn(&self) -> trunk_core::nxdn::trunking::NxdnConfig {
+        use trunk_core::nxdn::trunking::{Kind, NxdnConfig};
+        NxdnConfig {
+            kind: if self.nxdn_type.eq_ignore_ascii_case("typeD") { Kind::TypeD } else { Kind::TypeC },
+            rate: trunk_core::nxdn::Rate::parse(&self.nxdn_rate).unwrap_or(trunk_core::nxdn::Rate::N48),
+            channel_table: self.lcn_table_hz.iter().filter_map(|(k, &v)| Some((k.trim().parse().ok()?, v.round() as u64))).collect(),
+            channels: self.nxdn_channels_hz.clone(),
+            ran: self.ran,
+        }
+    }
+
+    /// Frequencies a watching protocol (DMR, NXDN) needs besides the control channels.
+    pub fn watched_channels(&self) -> Vec<f64> {
+        if self.is_dmr() {
+            self.dmr().channels
+        } else if self.is_nxdn() {
+            self.nxdn_channels_hz.clone()
+        } else {
+            vec![]
+        }
     }
 
     /// The DMR settings.
@@ -372,6 +414,10 @@ impl Default for System {
             lcn_table_hz: Default::default(),
             dmr_channels_hz: vec![],
             color_code: None,
+            nxdn_type: String::new(),
+            nxdn_rate: String::new(),
+            nxdn_channels_hz: vec![],
+            ran: None,
             site_group: String::new(),
             plugins: BTreeMap::new(),
         }
@@ -522,6 +568,22 @@ pub enum ChannelMode {
     P25,
     /// DMR (both slots).
     Dmr,
+    /// NXDN at 4800 bps (6.25 kHz).
+    Nxdn48,
+    /// NXDN at 9600 bps (12.5 kHz).
+    Nxdn96,
+}
+
+impl ChannelMode {
+    pub fn conv(self) -> ConvMode {
+        match self {
+            ChannelMode::Fm => ConvMode::Fm,
+            ChannelMode::P25 => ConvMode::P25,
+            ChannelMode::Dmr => ConvMode::Dmr,
+            ChannelMode::Nxdn48 => ConvMode::Nxdn(trunk_core::nxdn::Rate::N48),
+            ChannelMode::Nxdn96 => ConvMode::Nxdn(trunk_core::nxdn::Rate::N96),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -541,8 +603,8 @@ pub struct Channel {
     pub talkgroup: Option<u32>,
     /// The code it records ([`Access`]): FM's CTCSS tone or DCS code in Trunk
     /// Recorder's form (`151.4`, `D023N`), P25's NAC (`NAC 293`), DMR's colour
-    /// code / slot / talkgroup (`CC 1 TS 2 TG 201`); empty: any (beside rows
-    /// with codes: the rest).
+    /// code / slot / talkgroup (`CC 1 TS 2 TG 201`), NXDN's RAN / group
+    /// (`RAN 5 TG 201`); empty: any (beside rows with codes: the rest).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub tone: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -577,7 +639,7 @@ pub fn channel_talkgroups(channels: &[Channel]) -> Vec<u32> {
         .map(|(i, c)| {
             let k = channels[..i].iter().filter(|o| (o.freq_hz - c.freq_hz).abs() < 1.0).count();
             let air = match c.parsed_access() {
-                Ok(Some(Access::Dmr { tg, .. })) => tg,
+                Ok(Some(Access::Dmr { tg, .. })) | Ok(Some(Access::Nxdn { tg, .. })) => tg,
                 _ => None,
             };
             c.talkgroup.or(air).unwrap_or_else(|| ConvChannel::default_talkgroup_at(c.freq_hz, k))
@@ -587,11 +649,7 @@ pub fn channel_talkgroups(channels: &[Channel]) -> Vec<u32> {
 
 impl Channel {
     pub fn conv_mode(&self) -> ConvMode {
-        match self.mode {
-            ChannelMode::Fm => ConvMode::Fm,
-            ChannelMode::P25 => ConvMode::P25,
-            ChannelMode::Dmr => ConvMode::Dmr,
-        }
+        self.mode.conv()
     }
 
     /// The code it records, read for its mode.
@@ -916,7 +974,7 @@ pub struct CallSystem<'a> {
     /// The number its calls carry (`Call::system`).
     pub index: u16,
     pub short_name: &'a str,
-    /// "p25", "smartnet", "dmr" or "conventional".
+    /// "p25", "smartnet", "dmr", "nxdn" or "conventional".
     pub kind: &'static str,
     /// Its plugin settings, by plugin id.
     pub plugins: &'a BTreeMap<String, serde_json::Value>,
@@ -1211,9 +1269,9 @@ impl Config {
         let mut groups: Vec<(Vec<f64>, Vec<f64>)> = self
             .active_systems()
             .map(|s| {
-                // A DMR site's watched frequencies are all needed.
-                let dmr: Vec<f64> = if s.is_dmr() { s.dmr().channels } else { vec![] };
-                let need: Vec<f64> = s.control_channels_hz.iter().chain(&dmr).copied().collect();
+                // A DMR / NXDN site's watched frequencies are all needed.
+                let watched = s.watched_channels();
+                let need: Vec<f64> = s.control_channels_hz.iter().chain(&watched).copied().collect();
                 (need.iter().chain(&s.voice_channels_hz).copied().collect(), need)
             })
             .collect();
@@ -1289,10 +1347,11 @@ impl Config {
                     return Some(format!("{}: {e}", s.short_name));
                 }
             }
-            if s.is_dmr() {
-                let out: Vec<String> = s.control_channels_hz.iter().chain(&s.dmr().channels).filter(|&&f| !inside(f)).map(|f| format!("{:.5}", f / 1e6)).collect();
+            if s.is_dmr() || s.is_nxdn() {
+                let out: Vec<String> = s.control_channels_hz.iter().chain(&s.watched_channels()).filter(|&&f| !inside(f)).map(|f| format!("{:.5}", f / 1e6)).collect();
                 if !out.is_empty() {
-                    return Some(format!("{}: DMR frequencies outside every source's bandwidth: {} MHz — move a center frequency or add a source.", s.short_name, out.join(", ")));
+                    let what = if s.is_dmr() { "DMR" } else { "NXDN" };
+                    return Some(format!("{}: {what} frequencies outside every source's bandwidth: {} MHz — move a center frequency or add a source.", s.short_name, out.join(", ")));
                 }
             }
             if !s.control_channels_hz.iter().any(|&f| inside(f)) {
@@ -1348,7 +1407,15 @@ impl Config {
             .map(|(i, s)| CallSystem {
                 index: i as u16,
                 short_name: &s.short_name,
-                kind: if s.is_smartnet() { "smartnet" } else if s.is_dmr() { "dmr" } else { "p25" },
+                kind: if s.is_smartnet() {
+                    "smartnet"
+                } else if s.is_dmr() {
+                    "dmr"
+                } else if s.is_nxdn() {
+                    "nxdn"
+                } else {
+                    "p25"
+                },
                 plugins: &s.plugins,
             })
             .collect();
@@ -1381,6 +1448,8 @@ impl Config {
                 expect: s.expect.engine(),
                 protocol: if s.is_dmr() {
                     Protocol::Dmr(s.dmr())
+                } else if s.is_nxdn() {
+                    Protocol::Nxdn(s.nxdn())
                 } else if let Some(sn) = s.is_smartnet().then(|| s.smartnet().ok()).flatten() {
                     Protocol::SmartNet(sn)
                 } else {

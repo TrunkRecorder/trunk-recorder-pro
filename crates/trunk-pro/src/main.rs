@@ -106,7 +106,7 @@ pub struct Args {
 /// value (`--quiet capture.cu8` is a flag and a positional). `--k=v` sets
 /// any option, these included (`--start=0`).
 const FLAGS: &[&str] = &[
-    "analog-default", "auto-tune", "bursts", "capture-frames", "diversity", "dmr-trunk", "full", "hard-fec", "keep-silent", "messages", "no-gain", "no-open",
+    "analog-default", "auto-tune", "bursts", "capture-frames", "diversity", "dmr-trunk", "frames", "full", "hard-fec", "keep-silent", "messages", "no-gain", "no-open",
     "no-unknown", "osw", "quality", "quiet", "record-encrypted", "s16", "separation", "start",
 ];
 
@@ -299,6 +299,8 @@ fn replay(a: &Args) {
         .map(|f| ConvChannel::new(f, ConvMode::Fm))
         .chain(hz_list("p25").into_iter().map(|f| ConvChannel::new(f, ConvMode::P25)))
         .chain(hz_list("dmr").into_iter().map(|f| ConvChannel::new(f, ConvMode::Dmr)))
+        .chain(hz_list("nxdn48").into_iter().map(|f| ConvChannel::new(f, ConvMode::Nxdn(trunk_core::nxdn::Rate::N48))))
+        .chain(hz_list("nxdn96").into_iter().map(|f| ConvChannel::new(f, ConvMode::Nxdn(trunk_core::nxdn::Rate::N96))))
         .chain(a.get("channels").map_or_else(Vec::new, |p| {
             let text = fs::read_to_string(p).unwrap_or_else(|e| die(&format!("{p}: {e}")));
             let parsed = trunk_app::channels::parse(&text).unwrap_or_else(|e| die(&format!("{p}: {e}")));
@@ -345,17 +347,24 @@ fn replay(a: &Args) {
             talkgroups: talkgroups.clone(),
             // --dmr-trunk: the --cc frequencies are a DMR site's; --dmr-channels
             // more voice frequencies to watch; --lcn 101=452275000,… its channel table.
+            // --nxdn-trunk [typeC|typeD]: an NXDN site's (--nxdn-rate 48|96,
+            // --nxdn-channels, --lcn for its channel numbers, --ran).
             protocol: match a.flag("dmr-trunk").then(|| trunk_core::dmr::DmrConfig {
                 channels: hz_list("dmr-channels"),
-                lcn_table: a
-                    .get("lcn")
-                    .unwrap_or("")
-                    .split(',')
-                    .filter_map(|e| e.split_once('=').and_then(|(l, h)| Some((l.trim().parse().ok()?, h.trim().parse::<f64>().ok()? as u64))))
-                    .collect(),
+                lcn_table: lcn_table(a),
                 color_code: a.get("color-code").and_then(|v| v.parse().ok()),
             }) {
                 Some(dc) => Protocol::Dmr(dc),
+                None if a.get("nxdn-trunk").is_some() => {
+                    use trunk_core::nxdn::trunking::{Kind, NxdnConfig};
+                    Protocol::Nxdn(NxdnConfig {
+                        kind: if a.get("nxdn-trunk").is_some_and(|k| k.eq_ignore_ascii_case("typeD") || k.eq_ignore_ascii_case("d")) { Kind::TypeD } else { Kind::TypeC },
+                        rate: trunk_core::nxdn::Rate::parse(a.get("nxdn-rate").unwrap_or("48")).unwrap_or_else(|| die("--nxdn-rate 48|96")),
+                        channel_table: lcn_table(a).into_iter().collect(),
+                        channels: hz_list("nxdn-channels"),
+                        ran: a.get("ran").and_then(|v| v.parse().ok()),
+                    })
+                }
                 None => smartnet.map_or(Protocol::P25, Protocol::SmartNet),
             },
             ..Default::default()
@@ -749,4 +758,13 @@ fn open_browser(url: &str) {
         std::process::Command::new("xdg-open").arg(url).spawn()
     };
     let _ = r;
+}
+
+/// `--lcn 101=452275000,102=…`: a channel table.
+fn lcn_table(a: &Args) -> std::collections::BTreeMap<u32, u64> {
+    a.get("lcn")
+        .unwrap_or("")
+        .split(',')
+        .filter_map(|e| e.split_once('=').and_then(|(l, h)| Some((l.trim().parse().ok()?, h.trim().parse::<f64>().ok()? as u64))))
+        .collect()
 }
