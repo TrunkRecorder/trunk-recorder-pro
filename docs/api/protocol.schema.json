@@ -4758,11 +4758,21 @@
             "number",
             "null"
           ],
-          "description": "Its frequency error as measured on the control channels, ppm (+: signals come in high); null until measured."
+          "description": "Its frequency error, ppm (+: signals come in high): the running score of its last calls and control channel measurements; null until measured."
         },
         "tunePpm": {
           "type": "number",
           "description": "The correction autoTune applies now, ppm."
+        },
+        "tuneCalls": {
+          "type": "number",
+          "description": "Calls and control channel measurements in the score; the correction is an earlier run's score (nothing measured yet)."
+        },
+        "tuneControl": {
+          "type": "number"
+        },
+        "tuneSeeded": {
+          "type": "boolean"
         }
       },
       "required": [
