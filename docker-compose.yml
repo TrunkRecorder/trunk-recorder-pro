@@ -1,0 +1,33 @@
+# Trunk Recorder Pro in Docker (Linux hosts: Docker Desktop on macOS and
+# Windows can't pass USB devices through).
+#
+#   docker compose up -d --build
+#   open http://<this machine>:8080 and set it up there
+#
+# Settings, plugins and recordings are kept in ./data on the host.
+#
+# The host must not hold the dongles: if the kernel's DVB driver claims them
+# trunk-pro detaches it itself, but stop any other SDR app first.
+
+services:
+  trunk-pro:
+    build: .
+    image: trunk-pro
+    container_name: trunk-pro
+    restart: unless-stopped
+    ports:
+      # No login: only on a network you trust. "127.0.0.1:8080:8080" keeps
+      # it to this machine.
+      - "8080:8080"
+    volumes:
+      - ./data:/data
+      # USB devices, including ones plugged in after the container starts.
+      - /dev/bus/usb:/dev/bus/usb
+      # The host's time zone, for call times and file names.
+      - /etc/localtime:/etc/localtime:ro
+    device_cgroup_rules:
+      # USB character devices (major 189).
+      - "c 189:* rmw"
+    # Start recording right away instead of waiting for the Start button
+    # (or turn on "Start recording when the app starts" in the settings).
+    # command: ["serve", "--no-open", "--bind", "0.0.0.0", "--start"]

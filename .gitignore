@@ -22,3 +22,6 @@ web/src/web/pkg/
 wmata
 tools/vocoder-shootout/examples
 research/cpu-vs-trunk-recorder
+
+# docker compose: settings, plugins and recordings
+/data/

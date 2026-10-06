@@ -1,0 +1,14 @@
+# Only what the image build needs (the rest — target/, captures/, tools/ —
+# is gigabytes).
+*
+!Cargo.toml
+!Cargo.lock
+!crates/
+!docs/api/
+!packaging/icons/
+!web/
+web/node_modules/
+web/dist/
+web/dist-web/
+web/src/web/pkg/
+**/.DS_Store
