@@ -1,7 +1,7 @@
 # Trunk Recorder Pro in Docker (Linux hosts: Docker Desktop on macOS and
 # Windows can't pass USB devices through).
 #
-#   docker compose up -d --build
+#   docker compose up -d          (the Docker Hub image; --build to build it here)
 #   open http://<this machine>:8080 and set it up there
 #
 # Settings, plugins and recordings are kept in ./data on the host.
@@ -11,8 +11,9 @@
 
 services:
   trunk-pro:
+    image: robotastic/trunk-recorder-pro:latest
+    # Or build it here: docker compose up -d --build
     build: .
-    image: trunk-pro
     container_name: trunk-pro
     restart: unless-stopped
     ports:

@@ -59,6 +59,16 @@ install). `SHA256SUMS` lists their checksums.
   your user can open RTL-SDRs, Airspys and USB USRPs (the kernel's DVB driver is detached
   automatically) and a menu entry. `trunk-pro.service` in the package runs it
   headless as a systemd user service.
+- **Docker** (Linux hosts, x86-64 or ARM64; Docker Desktop on macOS and
+  Windows can't pass USB through): [`docker-compose.yml`](docker-compose.yml)
+  runs [robotastic/trunk-recorder-pro](https://hub.docker.com/r/robotastic/trunk-recorder-pro)
+  with the host's USB devices, the interface on port 8080 and settings,
+  plugins and recordings in `./data`. RTL-SDRs only (the image has no UHD or
+  libairspy).
+
+  ```bash
+  docker compose up -d
+  ```
 - **Browser**, no install: see [In the browser](#in-the-browser-no-install).
 
 ### USRP, Airspy and SoapySDR (optional)

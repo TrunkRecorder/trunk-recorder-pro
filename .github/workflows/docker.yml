@@ -1,0 +1,119 @@
+# The Docker image (Dockerfile), for linux/amd64 and linux/arm64, pushed to
+# Docker Hub as robotastic/trunk-recorder-pro:
+#
+#   tag v1.2.3     1.2.3, 1.2, latest   (a pre-release v1.2.3-rc.1: only 1.2.3-rc.1)
+#   push to main   edge, sha-<commit>
+#   pull request   built, not pushed
+#
+# Each architecture builds on its own runner (no emulation: the Rust build
+# would take an hour under QEMU), pushed by digest; then one job joins the two
+# into a multi-arch tag.
+#
+# Repository secrets (without them the image is built but not pushed):
+#   DOCKERHUB_USERNAME   the Docker Hub account the token belongs to
+#   DOCKERHUB_TOKEN      a Docker Hub access token with Read & Write access
+name: docker
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: robotastic/trunk-recorder-pro
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: linux/amd64, arch: amd64, os: ubuntu-latest }
+          - { platform: linux/arm64, arch: arm64, os: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.os }}
+    env:
+      PUSH: ${{ github.event_name != 'pull_request' && secrets.DOCKERHUB_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        if: env.PUSH == 'true'
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with: { images: "${{ env.IMAGE }}" }
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=${{ env.PUSH }}
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,scope=${{ matrix.arch }},mode=max
+      - name: Smoke test
+        run: |
+          docker buildx build --load --platform ${{ matrix.platform }} --cache-from type=gha,scope=${{ matrix.arch }} -t trunk-pro-test .
+          docker run --rm trunk-pro-test --version
+          docker run --rm --entrypoint ffmpeg trunk-pro-test -hide_banner -version | head -1
+      - name: Keep the digest
+        if: env.PUSH == 'true'
+        run: |
+          mkdir -p /tmp/digests
+          touch "/tmp/digests/${DIGEST#sha256:}"
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+      - uses: actions/upload-artifact@v4
+        if: env.PUSH == 'true'
+        with:
+          name: digest-${{ matrix.arch }}
+          path: /tmp/digests/*
+          retention-days: 1
+
+  # One tag for both architectures.
+  merge:
+    needs: build
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    env:
+      PUSH: ${{ secrets.DOCKERHUB_TOKEN != '' }}
+    steps:
+      - name: No Docker Hub secrets
+        if: env.PUSH != 'true'
+        run: echo "::warning::DOCKERHUB_USERNAME / DOCKERHUB_TOKEN not set; the image was built but not pushed"
+      - uses: actions/download-artifact@v4
+        if: env.PUSH == 'true'
+        with: { path: /tmp/digests, pattern: digest-*, merge-multiple: true }
+      - uses: docker/setup-buildx-action@v3
+        if: env.PUSH == 'true'
+      - uses: docker/login-action@v3
+        if: env.PUSH == 'true'
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - id: meta
+        if: env.PUSH == 'true'
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          flavor: latest=false
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') }}
+            type=edge,branch=main
+            type=sha,enable=${{ github.ref == 'refs/heads/main' }}
+      - name: Push the multi-arch tags
+        if: env.PUSH == 'true' && steps.meta.outputs.tags != ''
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf "$IMAGE@sha256:%s " *)
+          docker buildx imagetools inspect "$IMAGE:${{ steps.meta.outputs.version }}"
