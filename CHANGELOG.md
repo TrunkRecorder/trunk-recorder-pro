@@ -5,6 +5,52 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+## [0.1.5] — 2026-10-06
+
+- **New documentation** in [docs/](https://github.com/TrunkRecorder/trunk-recorder-pro/blob/main/docs/README.md):
+  installing on each platform, getting started, a guide for each kind of
+  system (P25, SmartNet, DMR, NXDN, multi-site, conventional, tones), the
+  interface and dashboard, recordings, plugins, the configuration reference
+  split by section, the command line, coming from Trunk Recorder, and
+  troubleshooting. The README is now a short overview with links.
+- **Windows:** closing the console window, Ctrl-Break, signing out or
+  shutting down now saves the calls in progress before quitting, as Ctrl-C
+  does (closing the window used to lose them).
+- **Upload script:** the WAV is always written for it, so its first argument
+  is never a missing file (with an M4A encoder installed and Keep the audio
+  off, it used to be).
+- A plugin that needs a recorder-wide setting (an API key, say) isn't started
+  until it's set; the log and the Health tab say which setting is missing.
+- File name formats: `{signal}` and `{noise}` give the call's levels in whole
+  dBFS, as Trunk Recorder does (they were always 0).
+- Informational protocol notes (a DMR site's colour code and kind, NXDN
+  RAN and site, channels learned) are logged as information, not as errors.
+- The browser version keeps settings it doesn't know when it saves, as the
+  desktop app does.
+- **Import Trunk Recorder config** also brings Broadcastify's `broadcastifyOTA`
+  and talkgroup allow / deny lists, Rdio Scanner's talkgroup allow / deny
+  lists, and the global `defaultMode` (to each SmartNet system).
+- Setup: the **multi-site with …** chip groups sites as the recorder does
+  (SmartNet, NXDN, and sites grouped by what their control channels
+  announce); a headerless talkgroup file downloads with a header row; the
+  conventional CSV help lists every mode and the Tone column; the Linux dongle
+  hint covers both RTL-SDR USB IDs.
+- Dashboard: the RF page's band and the Decode page's **In band** use each
+  source's guard band; the setup guide's coverage step does too. Plugin
+  Health cards show a plugin's own figures (simplestream's packets sent and
+  dropped).
+- A call whose uploads never report back within an hour has its spooled files
+  moved to the recordings folder at once, instead of staying in the RAM spool
+  for another hour.
+- `survey` and `rolloff` refuse an unknown `--format` (they read it as cu8);
+  `rolloff` on a capture takes `--format`. `--help` lists every command and
+  option.
+- Linux: `install.sh` creates the `plugdev` group where the distribution has
+  none (Fedora, Arch) and adds you to it, so a headless service can open the
+  dongles.
+- The Docker image is published to Docker Hub as
+  `robotastic/trunk-recorder-pro` for each release (`latest`, `0.1.5`, `0.1`).
+
 ## [0.1.4] — 2026-10-04
 
 - **NXDN** (Kenwood NEXEDGE, Icom IDAS), at both rates — NXDN48 (6.25 kHz)
