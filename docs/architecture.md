@@ -2,7 +2,7 @@
 
 How Trunk Recorder Pro is put together: the crates, the threads, and the
 path a sample takes from the radio to a `.wav` / `.json` pair on disk. For
-the config file see [configuration.md](configuration.md); for the interface
+the config file see [configuration/](configuration/README.md); for the interface
 protocol see [api/README.md](api/README.md).
 
 ## The crates
