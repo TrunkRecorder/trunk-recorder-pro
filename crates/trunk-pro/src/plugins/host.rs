@@ -176,6 +176,14 @@ impl PluginHost {
                     if m.id != s.id {
                         notes(Note::Log { plugin: s.id.clone(), level: Level::Warn, text: format!("{} says it is \"{}\"", s.exe.display(), m.id) });
                     }
+                    // Not set up yet (the interface says so too): it would only fail.
+                    let unset = unset_required(m.config.as_ref(), &s.config);
+                    if !unset.is_empty() {
+                        let text = format!("not started: {} {} set", unset.join(", "), if unset.len() == 1 { "isn't" } else { "aren't" });
+                        notes(Note::State { plugin: s.id.clone(), state: State::Warning, message: text.clone() });
+                        notes(Note::Log { plugin: s.id, level: Level::Warn, text });
+                        continue;
+                    }
                     ready.push((s, m));
                 }
                 Err(e) => {
@@ -325,10 +333,11 @@ impl PluginHost {
         self.shared.plugins.iter().filter(|p| p.manifest.subscribes(topic::CALL_CONCLUDED) && p.tx.lock().unwrap().is_some()).count()
     }
 
-    /// Some plugin takes the WAV file: one that doesn't ask for M4A, or does
-    /// with no encoder to make it. (Otherwise the WAV needn't be written.)
+    /// Some plugin takes the WAV file: one that doesn't ask for M4A, does
+    /// with no encoder to make it, or asks for the WAV too. (Otherwise the
+    /// WAV needn't be written.)
     pub fn needs_wav(&self) -> bool {
-        self.shared.plugins.iter().any(|p| p.manifest.subscribes(topic::CALL_CONCLUDED) && (self.encoder.is_none() || !p.manifest.wants_format(format::M4A)))
+        self.shared.plugins.iter().any(|p| p.manifest.subscribes(topic::CALL_CONCLUDED) && (self.encoder.is_none() || takes_wav(&p.manifest)))
     }
 
     /// A concluded call (`rel`: relative to the capture folder, no extension;
@@ -409,6 +418,39 @@ impl Drop for PluginHost {
     fn drop(&mut self) {
         self.shutdown(Duration::from_secs(2));
     }
+}
+
+/// The fields `schema` (a plugin's settings) requires — its `required`
+/// list, or `"x-required": true` — that `values` leaves empty, by title, as
+/// the interface's "Needs setting up" finds them. Per-system settings don't
+/// count: a plugin skips a system that isn't set up.
+fn unset_required(schema: Option<&Value>, values: &Value) -> Vec<String> {
+    let Some(schema) = schema else { return Vec::new() };
+    let props = schema.get("properties").and_then(Value::as_object);
+    let mut keys: Vec<&str> = schema.get("required").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).collect();
+    for (k, f) in props.into_iter().flatten() {
+        if f.get("x-required") == Some(&Value::Bool(true)) && !keys.contains(&k.as_str()) {
+            keys.push(k);
+        }
+    }
+    let empty = |v: Option<&Value>| match v {
+        None | Some(Value::Null) => true,
+        Some(Value::String(s)) => s.is_empty(),
+        Some(Value::Array(a)) => a.is_empty(),
+        _ => false,
+    };
+    keys.into_iter()
+        .filter(|k| empty(values.get(*k)))
+        .map(|k| props.and_then(|p| p.get(k)?.get("title")?.as_str()).unwrap_or(k).to_string())
+        .collect()
+}
+
+/// A plugin uses the WAV file even with an .m4a made: it doesn't ask for
+/// M4A, or asks for the WAV too. upload-script hands the WAV to the script
+/// first, as Trunk Recorder does, but its manifest (0.1.1) predates
+/// [`format::WAV`].
+fn takes_wav(m: &Manifest) -> bool {
+    !m.wants_format(format::M4A) || m.wants_format(format::WAV) || m.id == "upload-script"
 }
 
 fn with_ext(base: &Path, ext: &str) -> PathBuf {
@@ -619,4 +661,28 @@ fn run_once(sh: &Shared, p: &Plugin, rx: Receiver<Arc<str>>) -> (Result<Ended, S
     let (rx, drained) = writer.join().expect("writer");
     let _ = err_reader.join();
     (Ok(if drained && status == Some(0) { Ended::Drained } else { Ended::Exited(status) }), rx)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn who_takes_the_wav_with_an_m4a_made() {
+        let m = |id: &str, formats: &[&str]| Manifest { id: id.into(), audio_formats: formats.iter().map(|f| f.to_string()).collect(), ..Default::default() };
+        assert!(takes_wav(&m("rdioscanner", &[])));
+        assert!(!takes_wav(&m("openmhz", &[format::M4A])));
+        assert!(takes_wav(&m("mine", &[format::M4A, format::WAV])));
+        // Its published manifest asks for M4A alone, but it passes the WAV.
+        assert!(takes_wav(&m("upload-script", &[format::M4A])));
+    }
+
+    #[test]
+    fn a_required_setting_left_empty_is_named() {
+        let schema = serde_json::json!({ "required": ["apiKey"],
+            "properties": { "apiKey": { "type": "string", "title": "API key" }, "url": { "type": "string", "x-required": true }, "n": { "type": "integer" } } });
+        assert_eq!(unset_required(Some(&schema), &serde_json::json!({ "apiKey": "", "n": 3 })), ["API key", "url"]);
+        assert!(unset_required(Some(&schema), &serde_json::json!({ "apiKey": "k", "url": "http://x" })).is_empty());
+        assert!(unset_required(None, &Value::Null).is_empty());
+    }
 }

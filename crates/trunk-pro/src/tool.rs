@@ -37,7 +37,7 @@ use trunk_core::p25::voice::{decode_hdu, decode_ldu1_lc, decode_ldu2_es, decode_
 use crate::{die, Args};
 
 pub fn run(a: &Args) {
-    let mode = a.positional.first().map(String::as_str).unwrap_or_else(|| die("tool cc|voice|frames|p2|revoice <capture> …"));
+    let mode = a.positional.first().map(String::as_str).unwrap_or_else(|| die("tool cc|voice|frames|p2|smartnet|dmr|dmrscan|nxdn|nxdnscan|nxdnsynth|snr|revoice … (trunk-pro --help)"));
     if mode == "p2" {
         return run_p2(a);
     }

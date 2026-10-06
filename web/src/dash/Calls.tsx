@@ -405,7 +405,7 @@ export function Log({ s }: { s: AppState }) {
   const [only, setOnly] = useState<string | null>(null);
   const systems = s.status?.systems ?? [];
   const multi = systems.length > 1;
-  const lines = (show === "all" ? s.log : s.log.filter((l) => /grant|update|control|patch|status|sysid|adjacent|error|alias|plugin|duplicate/.test(l.kind))).filter(
+  const lines = (show === "all" ? s.log : s.log.filter((l) => /grant|update|control|patch|status|sysid|adjacent|error|note|alias|plugin|duplicate/.test(l.kind))).filter(
     (l) => only === null || l.system === only,
   );
   return (

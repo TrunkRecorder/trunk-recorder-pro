@@ -7,8 +7,9 @@
 //! `{talkgroup_display}`, `{short_name}`, `{freq}` (Hz), `{freq_mhz}`,
 //! `{call_num}`, `{tdma_slot}` (empty when it has none), `{sys_num}`,
 //! `{epoch}`, `{source_num}`, `{recorder_num}`, `{audio_type}`,
-//! `{emergency}`, `{encrypted}`, `{priority}`, `{signal}`, `{noise}`,
-//! `{color_code}`; and the start time, `{time:FORMAT}` in local time or
+//! `{emergency}`, `{encrypted}`, `{priority}`, `{signal}`, `{noise}` (dBFS,
+//! whole dB cut toward zero as Trunk Recorder does; 0 when unmeasured),
+//! `{color_code}`, `{ran}`; and the start time, `{time:FORMAT}` in local time or
 //! `{ztime:FORMAT}` in UTC, FORMAT being strftime's (`%Y %m %d %H %M %S`,
 //! `%f` for milliseconds, `%-m` for no padding, …) or `iso` / `iso_ms`. Text from the talkgroup
 //! file has `\ / : * ? " < > |` and spaces made `_`.
@@ -117,7 +118,9 @@ fn token(t: &str, r: &Value, sys_num: u16, utc_offset_s: i32) -> String {
         }
         "sys_num" => sys_num.to_string(),
         "epoch" => num("start_time"),
-        "source_num" | "recorder_num" | "emergency" | "encrypted" | "priority" | "signal" | "noise" | "color_code" | "ran" => num(t),
+        // Decimal dBFS (or null) in the JSON; Trunk Recorder casts to int.
+        "signal" | "noise" => (r[t].as_f64().unwrap_or(0.0) as i64).to_string(),
+        "source_num" | "recorder_num" | "emergency" | "encrypted" | "priority" | "color_code" | "ran" => num(t),
         "audio_type" => text("audio_type"),
         _ => format!("{{{t}}}"),
     }
@@ -280,6 +283,14 @@ mod tests {
         let f = "{short_name}/{time:%Y}/{time:%-m}/{time:%-d}/{talkgroup}-{epoch}_{freq}";
         assert_eq!(render(f, &c, 0, 0), format!("{}-call_7", default_path("x", "101-1709164800_851012500", 1709164800, 0)));
         assert_eq!(render("{time:%-H}{time:%-M}{time:%-S}{time:%-q}", &c, 0, 0), "000%-q-call_7");
+    }
+
+    #[test]
+    fn signal_and_noise_are_whole_db() {
+        let c = json!({ "call_num": 1, "signal": -45.7, "noise": -88.2 });
+        assert_eq!(render("{signal}_{noise}", &c, 0, 0), "-45_-88-call_1");
+        let c = json!({ "call_num": 1, "signal": null, "noise": -3 });
+        assert_eq!(render("{signal}_{noise}", &c, 0, 0), "0_-3-call_1");
     }
 
     #[test]

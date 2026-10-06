@@ -125,7 +125,24 @@ async fn terminate() {
         Err(_) => std::future::pending().await,
     }
 }
-#[cfg(not(unix))]
+/// The console window closed, Ctrl-Break, or the user logging off or
+/// Windows shutting down. For a close, logoff or shutdown tokio's handler
+/// holds the event (Windows waits ~5 s on a close) until we exit, so calls
+/// in progress are saved as for Ctrl-C.
+#[cfg(windows)]
+async fn terminate() {
+    use tokio::signal::windows::{ctrl_break, ctrl_close, ctrl_logoff, ctrl_shutdown};
+    let (Ok(mut close), Ok(mut brk), Ok(mut logoff), Ok(mut shutdown)) = (ctrl_close(), ctrl_break(), ctrl_logoff(), ctrl_shutdown()) else {
+        return std::future::pending().await;
+    };
+    tokio::select! {
+        _ = close.recv() => {}
+        _ = brk.recv() => {}
+        _ = logoff.recv() => {}
+        _ = shutdown.recv() => {}
+    }
+}
+#[cfg(not(any(unix, windows)))]
 async fn terminate() {
     std::future::pending::<()>().await
 }

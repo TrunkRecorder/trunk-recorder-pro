@@ -1,5 +1,5 @@
 //! `trunk-pro tool snr <capture> --center Hz --rate Hz --freq Hz --kind dmr|p25|smartnet
-//! [--seconds N] [--snr 30,20,15,12,10,8,6,4] [--variant base,…] [--cutoff Hz]`
+//! [--seconds N] [--snr 40,20,16,14,12,10,8,6] [--variant base,…] [--cutoff Hz]`
 //! (`--kind p2 --nac --sysid --wacn`: P25 Phase 2 voice; `--quality`: a real
 //! channel as it is, per variant) —
 //! weak-signal curves from a strong capture: one channel's IQ is cut out

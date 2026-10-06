@@ -154,6 +154,11 @@ export function systemHealth(s: AppState, x: DashSystem, usualRate?: Usual | nul
 }
 
 /** A source: drops, clipping, frequency error, sample rate. */
+/** A running source's guardHz, from the config (undefined = the default): its usable band is usableHalfWidth(rate, guard) each side. */
+export function sourceGuard(s: AppState, src: SourceStatus): number | undefined {
+  return s.config?.sources[src.index]?.guardHz;
+}
+
 export function sourceHealth(s: AppState, src: SourceStatus, autoTune: boolean): Health {
   if (!running(s)) return { level: "idle", why: "Not recording" };
   if (src.ended) return { level: "idle", why: "Ended" };

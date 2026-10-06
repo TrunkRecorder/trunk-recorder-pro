@@ -19,6 +19,14 @@ if [ "${1:-}" = "--uninstall" ]; then
   exit 0
 fi
 install -Dm755 trunk-pro "$PREFIX/bin/trunk-pro"
+# The udev rule gives the plugdev group the dongles (and the desktop's user,
+# via uaccess). Fedora and Arch have no plugdev: make it, so a service with
+# no desktop session can open them too, and put the installing user in it.
+getent group plugdev >/dev/null || groupadd -r plugdev || echo "Couldn't create the plugdev group." >&2
+if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ] && getent group plugdev >/dev/null && ! id -nG "$SUDO_USER" | tr ' ' '\n' | grep -qx plugdev; then
+  usermod -aG plugdev "$SUDO_USER"
+  echo "Added $SUDO_USER to the plugdev group (log out and back in for it to count)."
+fi
 install -Dm644 60-trunk-pro-rtlsdr.rules /etc/udev/rules.d/60-trunk-pro-rtlsdr.rules
 install -Dm644 trunk-pro.desktop "$PREFIX/share/applications/trunk-pro.desktop"
 install -Dm644 trunk-pro.png "$PREFIX/share/icons/hicolor/256x256/apps/trunk-pro.png"

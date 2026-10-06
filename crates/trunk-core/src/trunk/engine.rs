@@ -206,14 +206,24 @@ impl Default for ConvSystem {
 }
 
 
+/// How much an [`Event::Note`] matters.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NoteLevel {
+    /// What the system said of itself, or what was learned.
+    Info,
+    /// Something wrong (another system's control channel, a channel not in the table).
+    Warning,
+}
+
 #[derive(Clone, Debug)]
 pub enum Event {
     /// System `system` tuned a control channel.
     ControlChannel { system: u16, freq_hz: u64 },
     /// A control channel message of system `system`.
     Message { system: u16, msg: Message },
-    /// Something worth a log line about system `system`.
-    Note { system: u16, text: String },
+    /// Something worth a log line about system `system`: news (a colour
+    /// code, a channel learned) or, as a warning, something wrong.
+    Note { system: u16, level: NoteLevel, text: String },
     CallStart(Call),
     CallUpdate(Call),
     CallEnd(Call),
@@ -338,8 +348,10 @@ impl Sink for Quality {
 /// A source's frequency error (Trunk Recorder's autoTune report).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct SourceTune {
-    /// The average of the last measurements, ppm (+ = signals come in high:
-    /// add it to the source's ppm). None until a control channel was measured.
+    /// The average of the last measurements, ppm, against the source's ppm
+    /// as set (+ = signals come in high): setting the source's ppm to
+    /// `ppm − error_ppm` removes it (as Setup suggests). None until a control
+    /// channel was measured.
     pub error_ppm: Option<f64>,
     /// The correction applied to channels opened now, ppm (0 without autoTune).
     pub applied_ppm: f64,
@@ -777,7 +789,7 @@ impl Trunk {
             return Err(format!("{}: {} frequencies outside every source's bandwidth: {} MHz — move a center frequency.", self.cfg.short_name, self.cc.name(), outside.join(", ")));
         }
         self.carriers = heads;
-        events.push(Event::Note { system: self.idx, text: note });
+        events.push(Event::Note { system: self.idx, level: NoteLevel::Info, text: note });
         Ok(())
     }
 
@@ -825,8 +837,8 @@ impl Trunk {
             self.cc.push(i, &iq, start as f64 / fs + offset, rate, &mut steps);
         }
         self.now_s = self.now_s.max(radio.sources[source].time());
-        for text in self.cc.take_notes() {
-            events.push(Event::Note { system: self.idx, text });
+        for (level, text) in self.cc.take_notes() {
+            events.push(Event::Note { system: self.idx, level, text });
         }
         // Where the control channel is now (Capacity Plus: the rest channel moves).
         let cc = self.cc.control_hz();
@@ -859,7 +871,7 @@ impl Trunk {
                 if conflict != self.mismatch {
                     if let Some(c) = &conflict {
                         let hz = self.cc_hz.unwrap_or(0) as f64 / 1e6;
-                        events.push(Event::Note { system: self.idx, text: format!("Control channel {hz:.5} MHz is not this system: {c}") });
+                        events.push(Event::Note { system: self.idx, level: NoteLevel::Warning, text: format!("Control channel {hz:.5} MHz is not this system: {c}") });
                     }
                     self.mismatch = conflict;
                 }
@@ -1533,7 +1545,7 @@ impl Engine {
                     let tg = t.calls.calls.iter().find(|c| c.id == id).map_or(0, |c| c.talkgroup);
                     if sign == AliasLc::Protected && t.lc_protected_tgs.insert(tg) {
                         let text = format!("Talkgroup {tg}: link control is encrypted, so its radios' talker aliases can't be read");
-                        self.events.push(Event::Note { system: sys, text });
+                        self.events.push(Event::Note { system: sys, level: NoteLevel::Info, text });
                     }
                 }
             }

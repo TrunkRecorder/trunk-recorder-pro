@@ -34,6 +34,7 @@ use super::layer3::{CallHead, Channel, ChannelAccess, Context, Location, Message
 use super::Rate;
 use crate::dsp::c4fm::C4fm;
 use crate::dsp::{Receiver, Symbol};
+use crate::trunk::engine::NoteLevel;
 use crate::trunk::identity::{IdField, Identity};
 use crate::trunk::message::{Message, MessageType};
 
@@ -176,7 +177,7 @@ pub struct Site {
     /// The site's RAN: configured, else the first CAC's.
     pub ran: Option<u8>,
     n_control: usize,
-    notes: Vec<String>,
+    notes: Vec<(NoteLevel, String)>,
     now_s: f64,
     identity: Identity,
 }
@@ -266,7 +267,7 @@ impl Site {
         }
     }
 
-    pub fn take_notes(&mut self) -> Vec<String> {
+    pub fn take_notes(&mut self) -> Vec<(NoteLevel, String)> {
         std::mem::take(&mut self.notes)
     }
 
@@ -363,7 +364,7 @@ impl Site {
             Some(want) => ran == want,
             None if idx < self.n_control => {
                 self.ran = Some(ran);
-                self.notes.push(format!("RAN {ran}"));
+                self.notes.push((NoteLevel::Info, format!("RAN {ran}")));
                 true
             }
             None => true,
@@ -374,17 +375,17 @@ impl Site {
         match m {
             L3::SiteInfo { location, access, control, .. } => {
                 if self.location != Some(location) {
-                    self.notes.push(format!("Site: system {:X} site {} (category {})", location.system(), location.site(), location.category()));
+                    self.notes.push((NoteLevel::Info, format!("Site: system {:X} site {} (category {})", location.system(), location.site(), location.category())));
                     for (i, &cc) in control.iter().enumerate().filter(|(_, c)| **c != 0) {
                         let hz = self.resolve(cc as u32).map_or_else(|| "frequency not known".into(), mhz);
-                        self.notes.push(format!("Control channel {}: channel {cc} ({hz})", i + 1));
+                        self.notes.push((NoteLevel::Info, format!("Control channel {}: channel {cc} ({hz})", i + 1)));
                     }
                 }
                 self.set_location(location);
                 if self.access != Some(access) {
                     self.access = Some(access);
                     if access.dfa {
-                        self.notes.push(format!("Direct frequency assignment: base {} step {} Hz", mhz(access.base_hz), access.step_hz));
+                        self.notes.push((NoteLevel::Info, format!("Direct frequency assignment: base {} step {} Hz", mhz(access.base_hz), access.step_hz)));
                     }
                 }
                 // The channel the site's first control channel number names is this carrier, when it is the only one heard sending CAC.
@@ -431,7 +432,7 @@ impl Site {
         // A frequency is one channel: drop what said otherwise.
         self.learned.retain(|_, h| *h != hz);
         self.learned.insert(n, hz);
-        self.notes.push(format!("Channel {n} is {} ({why})", mhz(hz)));
+        self.notes.push((NoteLevel::Info, format!("Channel {n} is {} ({why})", mhz(hz))));
     }
 
     /// A group's call on a watched carrier: the frequency of a channel a recent grant sent it to.
@@ -456,7 +457,7 @@ impl Site {
                     self.pending.retain(|p| p.channel != n as u32);
                     self.pending.push(Pending { channel: n as u32, tg, t });
                     if self.unknown.insert(n as u32) {
-                        self.notes.push(format!("Channel {n} isn't in the channel table: listening for the call on the watched frequencies"));
+                        self.notes.push((NoteLevel::Warning, format!("Channel {n} isn't in the channel table: listening for the call on the watched frequencies")));
                     }
                 }
                 (hz, if head.rate_9600() { Rate::N96 } else { Rate::N48 }, n as u32)

@@ -10,6 +10,7 @@ import {
   formatGain,
   formatMhz,
   mhzCell,
+  multiSiteGroup,
   newAirspy,
   newConventional,
   newDongle,
@@ -1311,10 +1312,12 @@ function ConventionalPanel(props: { c: Config; k: number }) {
           <summary>CSV format</summary>
           <p className="small">
             A header row, then one channel per row; <b>Export CSV</b> writes one to start from. Columns, in any order: <code>TG Number</code> (empty = the
-            frequency in kHz), <code>Frequency</code> (MHz with a decimal point, or Hz), <code>Mode</code> (<code>fm</code> or <code>p25</code>; empty = fm),{" "}
-            <code>Alpha Tag</code>, <code>Description</code>, <code>Tag</code>, <code>Category</code>, <code>Squelch dB</code> (above the noise; empty = the
-            default), <code>Enable</code> (<code>false</code> = off). Trunk Recorder's channel file reads as is; its <code>Squelch</code> column (an absolute
-            level) isn't used.
+            frequency in kHz), <code>Frequency</code> (MHz with a decimal point, or Hz), <code>Mode</code> (<code>fm</code>, <code>p25</code>,{" "}
+            <code>dmr</code>, <code>nxdn48</code> or <code>nxdn96</code>; empty = fm, or what the Tone says: a NAC p25, a colour code dmr, a RAN nxdn48),{" "}
+            <code>Tone</code> (the code the row records: a CTCSS tone <code>151.4</code>, a DCS code <code>D023N</code>, a NAC <code>NAC 293</code>, a
+            colour code <code>CC1 TS2 TG201</code>, a RAN <code>RAN 5</code>; empty = any), <code>Alpha Tag</code>, <code>Description</code>,{" "}
+            <code>Tag</code>, <code>Category</code>, <code>Squelch dB</code> (above the noise; empty = the default), <code>Enable</code> (<code>false</code> =
+            off). Trunk Recorder's channel file reads as is; its <code>Squelch</code> column (an absolute level) isn't used.
           </p>
         </details>
       </div>
@@ -1358,6 +1361,16 @@ const LOCK_INPUTS: { key: keyof SiteIdentity; label: string; hex: boolean }[] = 
   { key: "rfss", label: "RFSS", hex: false },
   { key: "site", label: "Site", hex: false },
 ];
+
+/** A group the recorder names from the air ("p25:bee00.1a2") in words: "P25 WACN BEE00 · SysID 1A2". */
+function groupText(group: string | null): string {
+  const [proto, id = ""] = (group ?? "").split(":");
+  const [a, b] = id.split(".").map((x) => x.toUpperCase());
+  if (proto === "p25") return `P25 WACN ${a} · SysID ${b}`;
+  if (proto === "smartnet") return `SmartNet SysID ${a}`;
+  if (proto === "nxdn") return `NXDN system code ${a}`;
+  return group ?? "";
+}
 
 export function siteText(id: SiteIdentity): string {
   const parts: string[] = [];
@@ -1581,7 +1594,8 @@ function SystemCard(props: { c: Config; i: number }) {
   const sys = c.systems[i];
   const [ccText, setCcText] = useState(() => sys.controlChannelsHz.map((f) => formatMhz(f)).join(", "));
   const need = useNeed();
-  const plugins = useApp().plugins?.plugins ?? [];
+  const app = useApp();
+  const plugins = app.plugins?.plugins ?? [];
   const edit = (fn: (x: System) => void) => updateConfig((x) => fn(x.systems[i]));
   const setExpect = (k: keyof SiteIdentity, v: number | null) =>
     edit((x) => {
@@ -1590,7 +1604,15 @@ function SystemCard(props: { c: Config; i: number }) {
       else x.expect[k] = v;
     });
   const color = systemColor(c, sys.shortName);
-  const siblings = siteSiblings(c, sys);
+  // Multi-site: as configured, or as the running recorder's control channels say.
+  const live = app.status?.systems ?? [];
+  const siblings = siteSiblings(c, sys, live);
+  const group = multiSiteGroup(sys, live.find((y) => y.shortName === sys.shortName));
+  const groupWhy = sys.siteGroup?.trim()
+    ? `Site group "${sys.siteGroup.trim()}"`
+    : group && multiSiteGroup(sys) === group
+      ? siteText(sys.expect)
+      : `The same system on the air (${groupText(group)})`;
   // The lock, on the fields this protocol states (others are ignored).
   const lockFields = siteLockFields(sys);
   const lockedTo: SiteIdentity = Object.fromEntries(lockFields.filter((f) => sys.expect[f] != null).map((f) => [f, sys.expect[f]]));
@@ -1621,7 +1643,7 @@ function SystemCard(props: { c: Config; i: number }) {
         {siblings.length > 0 && (
           <span
             className="chip"
-            title={`${sys.siteGroup?.trim() ? `Site group "${sys.siteGroup.trim()}"` : siteText(sys.expect)} — ${c.recording.dropDuplicateCalls ? "calls saved once" : "every site's copy saved"}`}
+            title={`${groupWhy} — ${c.recording.dropDuplicateCalls ? "calls saved once" : "every site's copy saved"}`}
           >
             multi-site with {siblings.map((x) => x.shortName).join(", ")}
           </span>
@@ -2203,7 +2225,7 @@ export function Setup() {
                   <b>Windows:</b> install the WinUSB driver for “Bulk-In, Interface 0” with Zadig.
                 </li>
                 <li>
-                  <b>Linux:</b> add a udev rule giving your user access to USB 0bda:2838 and unload <code>dvb_usb_rtl28xxu</code>.
+                  <b>Linux:</b> add a udev rule giving your user access to USB 0bda:2838 and 0bda:2832, and unload <code>dvb_usb_rtl28xxu</code>.
                 </li>
                 <li>For several dongles or long unattended runs, the desktop app is sturdier.</li>
               </ul>
@@ -2213,7 +2235,7 @@ export function Setup() {
                 <b>Windows:</b> install the WinUSB driver for “Bulk-In, Interface 0” with Zadig.
               </li>
               <li>
-                <b>Linux:</b> add a udev rule giving your user access to USB 0bda:2838, and unload the DVB driver (<code>sudo rmmod dvb_usb_rtl28xxu</code>) if it holds the dongle.
+                <b>Linux:</b> add a udev rule giving your user access to USB 0bda:2838 and 0bda:2832, and unload the DVB driver (<code>sudo rmmod dvb_usb_rtl28xxu</code>) if it holds the dongle.
               </li>
               <li>
                 <b>macOS:</b> works as-is. Quit other SDR apps that hold the dongle.

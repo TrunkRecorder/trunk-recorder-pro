@@ -5,13 +5,13 @@
 // time.
 
 import { useState } from "react";
-import { formatGain, formatMhz, systemColor } from "../config.ts";
+import { formatGain, formatMhz, systemColor, usableHalfWidth } from "../config.ts";
 import { setView, useApp, useTopic, type AppState, type StatsRange } from "../controller.ts";
 import { Card, Choice, Hint, LiveSpark, Meter, Stat, TimeSeries, type Line } from "../charts.tsx";
 import { compact, mhz, num, signed } from "../fmt.ts";
 import type { ChannelSnapshot, Source, SourceStatus } from "../protocol.ts";
 import { Waterfall } from "../Waterfall.tsx";
-import { K, recentAvg, running, sourceHealth, useHistory, val } from "./data.ts";
+import { K, recentAvg, running, sourceGuard, sourceHealth, useHistory, val } from "./data.ts";
 import { ccMarks } from "./Systems.tsx";
 import { systemChoices } from "./Calls.tsx";
 import { quality } from "./Decode.tsx";
@@ -113,14 +113,18 @@ function BandOverview({ s }: { s: AppState }) {
   return (
     <Card title="The band" className="band">
       <svg viewBox={`0 0 ${W} 74`} className="band-svg" preserveAspectRatio="none" role="img" aria-label="sources and channels by frequency">
-        {s.sources.map((src, i) => (
-          <g key={i}>
-            <rect x={x(src.centerHz - src.rateHz / 2)} width={x(src.centerHz + src.rateHz / 2) - x(src.centerHz - src.rateHz / 2)} y={30} height={20} rx={4} className="band-src" />
-            <rect x={x(src.centerHz - src.rateHz * 0.4)} width={x(src.centerHz + src.rateHz * 0.4) - x(src.centerHz - src.rateHz * 0.4)} y={30} height={20} rx={4} className="band-usable">
-              <title>{`${src.label}: ${mhz(src.centerHz - src.rateHz / 2, 3)}–${mhz(src.centerHz + src.rateHz / 2, 3)} MHz`}</title>
-            </rect>
-          </g>
-        ))}
+        {s.sources.map((src, i) => {
+          // Usable: half the band less the source's guard at each edge (as the recorder reckons it).
+          const half = usableHalfWidth(src.rateHz, sourceGuard(s, src));
+          return (
+            <g key={i}>
+              <rect x={x(src.centerHz - src.rateHz / 2)} width={x(src.centerHz + src.rateHz / 2) - x(src.centerHz - src.rateHz / 2)} y={30} height={20} rx={4} className="band-src" />
+              <rect x={x(src.centerHz - half)} width={x(src.centerHz + half) - x(src.centerHz - half)} y={30} height={20} rx={4} className="band-usable">
+                <title>{`${src.label}: ${mhz(src.centerHz - src.rateHz / 2, 3)}–${mhz(src.centerHz + src.rateHz / 2, 3)} MHz (usable ${mhz(src.centerHz - half, 3)}–${mhz(src.centerHz + half, 3)})`}</title>
+              </rect>
+            </g>
+          );
+        })}
         {conv.map((c, i) => (
           <line key={`v${i}`} x1={x(c.hz)} x2={x(c.hz)} y1={30} y2={50} className="band-conv" vectorEffect="non-scaling-stroke">
             <title>{`${c.name}${c.label ? ` · ${c.label}` : ""} · ${mhz(c.hz)} MHz`}</title>

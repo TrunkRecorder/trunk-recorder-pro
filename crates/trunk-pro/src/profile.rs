@@ -77,7 +77,7 @@ pub fn cli(a: &crate::Args) {
     let center = a.num("center", 0.0);
     let guard_hz = crate::config::DEFAULT_GUARD_HZ;
     let src = match a.positional.first() {
-        Some(path) => Source::File { path: path.clone(), center_hz: center, rate_hz: rate, realtime: false, format: None, auto_tune: false, guard_hz },
+        Some(path) => Source::File { path: path.clone(), center_hz: center, rate_hz: rate, realtime: false, format: Some(crate::sample_format(path, a.get("format"))), auto_tune: false, guard_hz },
         None => Source::Rtlsdr {
             serial: a.get("serial").unwrap_or("").into(),
             center_hz: center,

@@ -5,7 +5,7 @@
 import { useMemo, useRef, useState } from "react";
 import { downloadText, setNotice, updateConfig } from "./controller.ts";
 import type { System } from "./protocol.ts";
-import { isEncryptedMode, normalizeTalkgroupCsv, parseRadioReferencePaste, readTalkgroupCsv, talkgroupsToCsv, type Talkgroup } from "./talkgroups.ts";
+import { isEncryptedMode, normalizeTalkgroupCsv, parseRadioReferencePaste, readTalkgroupCsv, talkgroupsToCsv, withHeader, type Talkgroup } from "./talkgroups.ts";
 
 const PASTED = "RadioReference (pasted)";
 
@@ -45,7 +45,7 @@ export function TalkgroupsField(props: { sys: System; index: number; needs?: str
         <span className="mono">{tgs.length ? `${tgs.length} from ${sys.talkgroupsName || "a file"}` : "none"}</span>
         {tgs.length > 0 && (
           <>
-            <button className="btn ghost" title="Trunk Recorder CSV" onClick={() => downloadText(csvName(sys), sys.talkgroupsCsv)}>
+            <button className="btn ghost" title="Trunk Recorder CSV, with a header row" onClick={() => downloadText(csvName(sys), withHeader(sys.talkgroupsCsv))}>
               Download
             </button>
             <button className="btn ghost" onClick={() => set("", "")}>
@@ -69,7 +69,7 @@ export function TalkgroupsField(props: { sys: System; index: number; needs?: str
         <div className="row tg-facts">
           {ignored > 0 && <span className="chip">{ignored} ignored</span>}
           {encrypted > 0 && <span className="chip" title="Not recorded">{encrypted} encrypted</span>}
-          {report.legacy && <span className="chip" title="Download adds one">no header row</span>}
+          {report.legacy && <span className="chip" title="Trunk Recorder's old fixed columns; Download adds a header row">no header row</span>}
           {report.missing.length > 0 && (
             <span className="chip warn" title="Trunk Recorder requires it">
               no {report.missing.join(" or ")} column

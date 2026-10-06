@@ -1,6 +1,6 @@
 // Config helpers for the setup form (the recorder validates again).
 
-import type { Channel, Config, Conventional, LogSettings, RecordingOverride, SiteIdentity, Source, System, UnitNames } from "./protocol.ts";
+import type { Channel, Config, Conventional, LogSettings, RecordingOverride, SiteIdentity, Source, System, SystemStatus, UnitNames } from "./protocol.ts";
 import { normalizeTalkgroupCsv, splitCsvLine } from "./talkgroups.ts";
 import { dmrTalkgroup, parseAccess, sameTone } from "./tones.ts";
 
@@ -119,7 +119,7 @@ export function enabledChannels(c: Config): Channel[] {
 
 /** A conventional system with its defaults filled in. */
 export function normalizeConventional(x: Partial<Conventional>): Conventional {
-  return { shortName: "conv", enabled: true, squelchDb: 8, channels: [], ...x };
+  return { shortName: "conv", enabled: true, squelchDb: 8, ...x, channels: Array.isArray(x.channels) ? x.channels : [] };
 }
 
 /** A new conventional system (not yet in the config), named uniquely: conv, conv2… */
@@ -156,9 +156,25 @@ export function watchedChannels(x: System): number[] {
   return x.type === "dmr" ? (x.dmrChannelsHz ?? []) : x.type === "nxdn" ? (x.nxdnChannelsHz ?? []) : [];
 }
 
-/** A system with defaults filled in (configs saved before a field existed). */
+/** Every key of System this version knows (the rest are kept as they are: a newer version's, a hand edit's). */
+const SYSTEM_KEYS: (keyof System)[] = [
+  "shortName", "name", "type", "bandplan", "bandplanBaseHz", "bandplanSpacingHz", "bandplanOffset", "bandplanHighHz", "lcnTableHz", "dmrChannelsHz",
+  "colorCode", "nxdnType", "nxdnRate", "nxdnChannelsHz", "ran", "defaultMode", "enabled", "controlChannelsHz", "modulation", "talkgroupsCsv",
+  "talkgroupsName", "expect", "voiceChannelsHz", "recording", "unitNames", "siteGroup", "plugins",
+];
+
+/** `x` without the keys in `known`: what this version doesn't know of it, kept as it was (as the recorder's `other`). */
+function unknownKeys<T extends object>(x: T, known: readonly string[]): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(x).filter(([k]) => !known.includes(k)));
+}
+
+/** A plain object (not an array, not null), or undefined. */
+const plain = <T extends object>(v: unknown): T | undefined => (v && typeof v === "object" && !Array.isArray(v) ? (v as T) : undefined);
+
+/** A system with defaults filled in (configs saved before a field existed); keys this version doesn't know are kept. */
 export function normalizeSystem(x: Partial<System>): System {
   return {
+    ...unknownKeys(x, SYSTEM_KEYS),
     shortName: x.shortName ?? "sys1",
     ...(x.name?.trim() ? { name: x.name } : {}),
     type: x.type === "smartnet" ? "smartnet" : x.type === "dmr" ? "dmr" : x.type === "nxdn" ? "nxdn" : "p25",
@@ -189,29 +205,33 @@ export function normalizeSystem(x: Partial<System>): System {
         }
       : {}),
     enabled: x.enabled ?? true,
-    controlChannelsHz: x.controlChannelsHz ?? [],
+    controlChannelsHz: Array.isArray(x.controlChannelsHz) ? x.controlChannelsHz : [],
     modulation: x.modulation ?? "auto",
     talkgroupsCsv: x.talkgroupsCsv ?? "",
     talkgroupsName: x.talkgroupsName ?? "",
-    expect: x.expect ?? {},
-    voiceChannelsHz: x.voiceChannelsHz ?? [],
+    expect: plain<SiteIdentity>(x.expect) ?? {},
+    voiceChannelsHz: Array.isArray(x.voiceChannelsHz) ? x.voiceChannelsHz : [],
     ...(x.recording && Object.keys(x.recording).length ? { recording: x.recording } : {}),
     ...(x.unitNames && (x.unitNames.csv || x.unitNames.mode) ? { unitNames: x.unitNames } : {}),
     ...(x.siteGroup?.trim() ? { siteGroup: x.siteGroup } : {}),
+    ...(plain(x.plugins) && Object.keys(x.plugins!).length ? { plugins: x.plugins } : {}),
   };
 }
 
 /** A config stored by this browser, with any setting it lacks at its default. */
 export function storedConfig(raw: Partial<Config>): Config {
   const base = defaultConfig();
+  // Keys this version doesn't know are kept at each level (as the recorder keeps them); a known one of the wrong shape is the default.
+  const objects = <T extends object>(v: unknown): T[] => (Array.isArray(v) ? v.filter((x): x is T => !!plain<T>(x)) : []);
   return {
     ...base,
     ...raw,
-    systems: (raw.systems ?? []).map(normalizeSystem),
-    conventional: Array.isArray(raw.conventional) ? raw.conventional.map(normalizeConventional) : [],
-    recording: { ...base.recording, ...(raw.recording ?? {}) },
-    server: { ...base.server, ...(raw.server ?? {}) },
-    log: { ...defaultLog(), ...(raw.log ?? {}) },
+    sources: Array.isArray(raw.sources) ? objects<Source>(raw.sources) : base.sources,
+    systems: objects<Partial<System>>(raw.systems).map(normalizeSystem),
+    conventional: objects<Partial<Conventional>>(raw.conventional).map(normalizeConventional),
+    recording: { ...base.recording, ...plain<Partial<Config["recording"]>>(raw.recording) },
+    server: { ...base.server, ...plain<Partial<Config["server"]>>(raw.server) },
+    log: { ...defaultLog(), ...plain<Partial<LogSettings>>(raw.log) },
   };
 }
 
@@ -281,10 +301,53 @@ export function sameSystem(a: SiteIdentity, b: SiteIdentity): boolean {
   return a.wacn != null && a.sysId != null && a.wacn === b.wacn && a.sysId === b.sysId;
 }
 
-/** Other sites of `sys`'s system as configured: the same site group, or (none named) the same site lock WACN / System ID. */
-export function siteSiblings(c: Config, sys: System): System[] {
+/** What the running recorder says of a site (its SystemStatus): what the control channel announces, and the group that puts it in. */
+export type LiveSite = Pick<SystemStatus, "shortName" | "identity" | "controlChannelHz" | "siteGroup">;
+
+/**
+ * The multi-site group a system is in, named as the recorder names it
+ * (Trunk::site_key): its site group ("group:<name>"); else what its control
+ * channel announces — P25 WACN + System ID ("p25:<wacn>.<sysid>"), SmartNet
+ * System ID ("smartnet:<sysid>"), NXDN Type-C system code ("nxdn:<code>") —
+ * from its site lock, or else from the running recorder (`live`). DMR and
+ * NXDN Type-D sites announce none: only a site group joins them. Null: none
+ * known.
+ */
+export function multiSiteGroup(sys: System, live?: LiveSite): string | null {
   const group = sys.siteGroup?.trim();
-  return c.systems.filter((x) => x !== sys && (group ? x.siteGroup?.trim() === group : !x.siteGroup?.trim() && x.type === sys.type && sameSystem(x.expect, sys.expect)));
+  if (group) return `group:${group}`;
+  const { wacn, sysId } = sys.expect;
+  const h = (n: number) => n.toString(16);
+  if (sys.type === "p25" && wacn != null && sysId != null) return `p25:${h(wacn)}.${h(sysId)}`;
+  if (sys.type === "smartnet" && sysId != null) return `smartnet:${h(sysId)}`;
+  if (sys.type === "nxdn" && sys.nxdnType !== "typeD" && sysId != null) return `nxdn:${h(sysId)}`;
+  // From the air: unless it was a site group's (since taken out of the config), and only for the protocol it is now.
+  const heard = live?.siteGroup ?? null;
+  const proto = sys.type === "nxdn" && sys.nxdnType === "typeD" ? null : sys.type === "dmr" ? null : sys.type;
+  return heard && proto && heard.startsWith(`${proto}:`) ? heard : null;
+}
+
+/**
+ * Other sites of `sys`'s system, as the recorder groups them (a call heard on
+ * several is saved once): the same site group, or (none named) the same
+ * system announced on the air — by the site lock, or by what the running
+ * recorder's control channels say (`live`, its systems' status). Two entries
+ * following the same site (the same site heard or locked, the same control
+ * channel) aren't sites of each other (multisite.rs SiteKey::twin).
+ */
+export function siteSiblings(c: Config, sys: System, live: LiveSite[] = []): System[] {
+  const liveOf = (x: System) => live.find((y) => y.shortName === x.shortName);
+  const group = multiSiteGroup(sys, liveOf(sys));
+  if (!group) return [];
+  /** The site it follows, (RFSS, site): as heard, else as locked. */
+  const site = (x: System) => {
+    const id = liveOf(x)?.identity;
+    const s = id?.site ?? x.expect.site;
+    return s == null ? null : `${id?.site != null ? (id.rfss ?? 0) : (x.expect.rfss ?? 0)}-${s}`;
+  };
+  const cc = (x: System) => liveOf(x)?.controlChannelHz ?? null;
+  const same = <T,>(a: T | null, b: T | null) => a !== null && a === b;
+  return c.systems.filter((x) => x !== sys && multiSiteGroup(x, liveOf(x)) === group && !same(site(x), site(sys)) && !same(cc(x), cc(sys)));
 }
 
 /** The system a control channel is already configured on, if any. */
@@ -702,9 +765,11 @@ export interface PluginImport {
 
 /**
  * Trunk Recorder's uploaders and streamers, as this app's plugins: OpenMHz
- * and Broadcastify keys on the systems (and their servers at the top),
- * uploadScript, and the rdioscanner, openmhz, broadcastify and simplestream
- * entries of `plugins`. `names`: Trunk Recorder short name → short name here;
+ * and Broadcastify keys on the systems (with Broadcastify's talkgroup allow /
+ * deny lists; their servers, broadcastifyOTA at the top), uploadScript, and
+ * the rdioscanner (talkgroupAllow / talkgroupDeny too), openmhz, broadcastify
+ * and simplestream entries of `plugins`. `name` is the plugin's manifest name
+ * (shown when it isn't installed). `names`: Trunk Recorder short name → short name here;
  * `imported`: each of its systems → its short name here (keys follow the system, even renamed).
  * Plugins with nothing like them here come back in `other`.
  */
@@ -721,12 +786,27 @@ function trPlugins(j: Record<string, unknown>, names: Map<string, string>, impor
     if (name && Object.keys(kept).length) p.systems[name] = { ...p.systems[name], ...kept };
   };
   const list = <T,>(v: unknown) => (Array.isArray(v) ? (v as T[]) : []);
+  /** A talkgroup allow / deny list (numbers or patterns like 507*), or undefined when there's none. */
+  const patterns = (v: unknown) => {
+    const kept = list<unknown>(v).map(str).filter((x) => x);
+    return kept.length ? kept : undefined;
+  };
+  /** The first of a system's keys that has a list (Trunk Recorder's Broadcastify takes several names). */
+  const firstList = (x: Record<string, unknown>, keys: string[]) => keys.map((k) => patterns(x[k])).find((v) => v);
+  const bcfyAllow = (x: Record<string, unknown>) => firstList(x, ["broadcastifyAllow", "broadcastifyWhitelist", "talkgroupWhitelist"]);
+  const bcfyDeny = (x: Record<string, unknown>) => firstList(x, ["broadcastifyDeny", "broadcastifyBlacklist", "talkgroupBlacklist"]);
   // Built in to Trunk Recorder: keys on each system, servers at the top.
   for (const sys of list<Record<string, unknown>>(j.systems)) {
     const here = imported.get(sys);
     if (here === undefined) continue;
     if (str(sys.apiKey)) forSystem(plugin("openmhz", "OpenMHz"), null, { apiKey: str(sys.apiKey), systemName: str(sys.openmhzSystemId) }, here);
-    if (str(sys.broadcastifyApiKey)) forSystem(plugin("broadcastify", "Broadcastify Calls"), null, { apiKey: str(sys.broadcastifyApiKey), systemId: num(sys.broadcastifySystemId) }, here);
+    if (str(sys.broadcastifyApiKey))
+      forSystem(
+        plugin("broadcastify", "Broadcastify Calls"),
+        null,
+        { apiKey: str(sys.broadcastifyApiKey), systemId: num(sys.broadcastifySystemId), talkgroupAllow: bcfyAllow(sys), talkgroupDeny: bcfyDeny(sys) },
+        here,
+      );
     if (str(sys.uploadScript)) forSystem(plugin("upload-script", "Upload script"), null, { script: str(sys.uploadScript) }, here);
   }
   if (out.has("openmhz") && str(j.uploadServer)) plugin("openmhz", "OpenMHz").config.server = str(j.uploadServer);
@@ -734,6 +814,7 @@ function trPlugins(j: Record<string, unknown>, names: Map<string, string>, impor
     const b = plugin("broadcastify", "Broadcastify Calls");
     if (str(j.broadcastifyCallsServer)) b.config.server = str(j.broadcastifyCallsServer);
     if (j.broadcastifySslVerifyDisable === true) b.config.skipCertificateCheck = true;
+    if (typeof j.broadcastifyOTA === "boolean") b.config.talkerAliases = j.broadcastifyOTA;
   }
   for (const pl of list<Record<string, unknown>>(j.plugins)) {
     const what = `${str(pl.name)} ${str(pl.library)}`.toLowerCase();
@@ -742,7 +823,7 @@ function trPlugins(j: Record<string, unknown>, names: Map<string, string>, impor
     if (/rdio/.test(what)) {
       const p = plugin("rdioscanner", "Rdio Scanner");
       if (str(pl.server)) p.config.server = str(pl.server);
-      for (const x of systems) forSystem(p, x.shortName, { apiKey: str(x.apiKey), systemId: num(x.systemId) });
+      for (const x of systems) forSystem(p, x.shortName, { apiKey: str(x.apiKey), systemId: num(x.systemId), talkgroupAllow: patterns(x.talkgroupAllow), talkgroupDeny: patterns(x.talkgroupDeny) });
     } else if (/openmhz/.test(what)) {
       const p = plugin("openmhz", "OpenMHz");
       if (str(pl.server ?? pl.uploadServer)) p.config.server = str(pl.server ?? pl.uploadServer);
@@ -751,7 +832,9 @@ function trPlugins(j: Record<string, unknown>, names: Map<string, string>, impor
       const p = plugin("broadcastify", "Broadcastify Calls");
       if (str(pl.broadcastifyCallsServer ?? pl.server)) p.config.server = str(pl.broadcastifyCallsServer ?? pl.server);
       if (pl.broadcastifySslVerifyDisable === true) p.config.skipCertificateCheck = true;
-      for (const x of systems) forSystem(p, x.shortName, { apiKey: str(x.apiKey ?? x.broadcastifyApiKey), systemId: num(x.systemId ?? x.broadcastifySystemId) });
+      if (typeof pl.broadcastifyOTA === "boolean") p.config.talkerAliases = pl.broadcastifyOTA;
+      for (const x of systems)
+        forSystem(p, x.shortName, { apiKey: str(x.apiKey ?? x.broadcastifyApiKey), systemId: num(x.systemId ?? x.broadcastifySystemId), talkgroupAllow: bcfyAllow(x), talkgroupDeny: bcfyDeny(x) });
     } else if (/simplestream/.test(what)) {
       const streams = list<Record<string, unknown>>(pl.streams).map((st) => ({
         url: str(st.url) || `${st.useTCP === true ? "tcp" : "udp"}://${str(st.address) || "127.0.0.1"}:${num(st.port) ?? 9123}`,
@@ -762,7 +845,7 @@ function trPlugins(j: Record<string, unknown>, names: Map<string, string>, impor
         sendCallStart: st.sendCallStart === true,
         sendCallEnd: st.sendCallEnd === true,
       }));
-      if (streams.length) plugin("simplestream", "Simple stream").config.streams = streams;
+      if (streams.length) plugin("simplestream", "simplestream").config.streams = streams;
     } else other.push(str(pl.name) || str(pl.library).replace(/^lib|\.(so|dylib|dll)$/g, "") || "plugin");
   }
   return { plugins: [...out.values()], other };
@@ -994,6 +1077,8 @@ export function importTrunkRecorderConfig(
         modulation: sys.modulation === "qpsk" || sys.modulation === "fsk4" ? sys.modulation : "auto",
         ...(Object.keys(trRecording(sys)).length ? { recording: trRecording(sys) } : {}),
         ...(sys.type === "smartnet" ? smartnetImport(sys) : {}),
+        // Trunk Recorder's defaultMode is global and only SmartNet's; here each SmartNet system has its own.
+        ...(sys.type === "smartnet" && j.defaultMode === "analog" ? { defaultMode: "analog" as const } : {}),
         ...(sys.type === "dmr" ? dmrImport(sys) : {}),
         ...(siteGroup ? { siteGroup } : {}),
       });

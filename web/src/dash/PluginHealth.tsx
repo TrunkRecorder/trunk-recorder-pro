@@ -12,6 +12,27 @@ import { K, pluginHealth, useHistory } from "./data.ts";
 
 const ENDPOINT_LEVEL = { up: "ok", degraded: "warn", down: "bad", unknown: "idle" } as const;
 
+/** "packetsSent" → "Packets sent", "bytes_out" → "Bytes out". */
+function humanize(key: string): string {
+  const words = key
+    .replace(/[_-]+/g, " ")
+    .replace(/([a-z\d])([A-Z])/g, "$1 $2")
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+    .trim()
+    .split(/\s+/)
+    .map((w) => (/^[A-Z\d]{2,}$/.test(w) ? w : w.toLowerCase()));
+  const text = words.join(" ");
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+/** An extra metric's value: a number compactly, text as it is, anything else as JSON. */
+function extraValue(v: unknown): string {
+  if (typeof v === "number") return compact(v);
+  if (typeof v === "string") return v;
+  if (typeof v === "boolean") return v ? "yes" : "no";
+  return JSON.stringify(v);
+}
+
 function PluginCard({ s, p }: { s: AppState; p: PluginInfo }) {
   const on = pluginOn(s.config, p.id);
   const h = pluginHealth(p, on);
@@ -26,6 +47,8 @@ function PluginCard({ s, p }: { s: AppState; p: PluginInfo }) {
     return r.minutes?.find((x) => x[0] === t)?.[1] ?? [0, 0, 0];
   });
   const tries = r.ok + r.failed;
+  // Its own figures (simplestream's packetsSent, packetsDropped…), as they come.
+  const extras = Object.entries(m?.extra ?? {}).filter(([, v]) => v !== null && v !== undefined && v !== "");
   return (
     <Card
       title={p.manifest?.name ?? p.id}
@@ -80,6 +103,15 @@ function PluginCard({ s, p }: { s: AppState; p: PluginInfo }) {
                 </li>
               ))}
             </ul>
+          )}
+          {extras.length > 0 && (
+            <div className="kv small" aria-label="What the plugin reports">
+              {extras.map(([k, v]) => (
+                <span key={k}>
+                  {humanize(k)} <b>{extraValue(v)}</b>
+                </span>
+              ))}
+            </div>
           )}
           <div className="kv small">
             <span>

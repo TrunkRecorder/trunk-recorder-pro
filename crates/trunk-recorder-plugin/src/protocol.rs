@@ -40,10 +40,14 @@ pub mod topic {
     pub const ALL: &[&str] = &[CALL_START, CALL_END, CALL_CONCLUDED, UNIT, AUDIO, STATUS];
 }
 
-/// Audio formats a plugin can ask for ([`Manifest::audio_formats`]). WAV is always there.
+/// Audio formats a plugin can ask for ([`Manifest::audio_formats`]). A plugin
+/// that asks for none gets the WAV.
 pub mod format {
     /// AAC in an MP4 container (OpenMHz, Broadcastify Calls).
     pub const M4A: &str = "m4a";
+    /// The WAV file as well as the M4A: with an .m4a made, the WAV is
+    /// otherwise written only when it's kept.
+    pub const WAV: &str = "wav";
 }
 
 /// Who a plugin is and what it wants — printed by `plugin --describe`.
@@ -221,7 +225,8 @@ pub struct ConcludedCall {
 pub struct CallFiles {
     pub json: PathBuf,
     /// 16-bit mono WAV, 8 kHz. There whenever `m4a` isn't; with an .m4a it
-    /// may not be (the recorder writes the WAV only when it's kept).
+    /// may not be (the recorder writes the WAV only when it's kept, or a
+    /// plugin asks for [`format::WAV`]).
     pub wav: PathBuf,
     /// When the plugin asked for M4A and the recorder could encode it.
     #[serde(skip_serializing_if = "Option::is_none")]

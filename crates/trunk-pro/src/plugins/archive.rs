@@ -8,7 +8,8 @@
 //!
 //! With a RAM spool ([`crate::spool`]), the files only the plugins needed
 //! wait there: those kept after all (an upload failed) move to the
-//! recordings folder then.
+//! recordings folder then, as do a call's that no plugin finished within
+//! [`GIVE_UP`].
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -79,15 +80,15 @@ impl Archive {
     /// Call `rel` (at `base`, and `spooled`) goes to `plugins` plugins, each of which will report on it.
     pub fn expect(&self, rel: &str, plugins: usize, rules: FileRules, base: &Path, spooled: Option<&Path>) {
         let mut p = self.pending.lock().unwrap();
-        // (Their files stay; anything in the spool goes to the recordings folder with time.)
-        let lost: Vec<String> = p.iter().filter(|(_, x)| x.since.elapsed() >= GIVE_UP).map(|(k, _)| k.clone()).collect();
-        p.retain(|_, x| x.since.elapsed() < GIVE_UP);
+        // Their files stay: anything in the spool goes to the recordings folder.
+        let lost: Vec<(String, Pending)> = p.extract_if(|_, x| x.since.elapsed() >= GIVE_UP).collect();
         if plugins > 0 && !(rules.keeps_all() && spooled.is_none()) {
             let x = Pending { left: plugins, failed: false, rules, base: base.to_path_buf(), spooled: spooled.map(Path::to_path_buf), since: Instant::now() };
             p.insert(rel.to_string(), x);
         }
         drop(p);
-        for k in lost {
+        for (k, x) in lost {
+            unspool(&x);
             self.settled(&k, true, true);
         }
     }
@@ -103,6 +104,19 @@ impl Archive {
             drop(p);
             let (audio, json) = settle(&x);
             self.settled(rel, audio, json);
+        }
+    }
+}
+
+/// Move whatever of a call is in the spool to the recordings folder.
+fn unspool(x: &Pending) {
+    let Some(s) = &x.spooled else { return };
+    for ext in ["wav", "frames.jsonl", "m4a", "json"] {
+        let (from, to) = (PathBuf::from(format!("{}.{ext}", s.display())), PathBuf::from(format!("{}.{ext}", x.base.display())));
+        if from.exists() {
+            if let Err(e) = crate::spool::move_file(&from, &to) {
+                log::warn!("Couldn't move {} out of the spool: {e}", from.display());
+            }
         }
     }
 }
@@ -229,6 +243,16 @@ mod tests {
         a.result("c", Outcome::Ok);
         assert_eq!(left(&b), ["json"]);
         assert!(left(&s).is_empty());
+        // Never settled: after an hour its files move to the recordings folder, and it's kept.
+        let (b, s) = (capture.join("sys/d"), spool.join("sys/d"));
+        for ext in ["json", "m4a"] {
+            std::fs::write(format!("{}.{ext}", s.display()), b"x").unwrap();
+        }
+        a.expect("d", 1, upload_only, &b, Some(&s));
+        a.pending.lock().unwrap().get_mut("d").unwrap().since = Instant::now() - GIVE_UP;
+        a.expect("e", 0, upload_only, &capture.join("sys/e"), None);
+        assert_eq!(left(&b), ["json", "m4a"]);
+        assert!(left(&s).is_empty() && a.pending.lock().unwrap().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

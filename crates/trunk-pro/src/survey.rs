@@ -179,12 +179,7 @@ pub fn cli(a: &crate::Args) {
     let mut cfg = Config::default();
     let rate = a.num("rate", 2_400_000.0);
     if let Some(path) = a.positional.first() {
-        let format = match a.get("format") {
-            Some("cs16") => crate::config::SampleFormat::Cs16,
-            Some("cf32") => crate::config::SampleFormat::Cf32,
-            Some(_) => crate::config::SampleFormat::Cu8,
-            None => crate::config::SampleFormat::from_path(path),
-        };
+        let format = crate::sample_format(path, a.get("format"));
         cfg.sources = vec![Source::File { path: path.clone(), center_hz: a.num("center", 0.0), rate_hz: rate, realtime: false, format: Some(format), auto_tune: false, guard_hz: crate::config::DEFAULT_GUARD_HZ }];
     } else {
         cfg.sources = vec![Source::Rtlsdr {

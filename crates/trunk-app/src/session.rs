@@ -4,7 +4,7 @@
 //! wall clock (`now_ms`), the local date for folder names, and does the I/O.
 
 use serde_json::{json, Value};
-use trunk_core::trunk::{heard_code, Call, Engine, Event, IdField, Identity, MessageType, ProtocolStatus};
+use trunk_core::trunk::{heard_code, Call, Engine, Event, IdField, Identity, MessageType, NoteLevel, ProtocolStatus};
 
 use crate::filename;
 use crate::log::{Body, CallState, CallTag, Level, Record};
@@ -646,10 +646,14 @@ impl Session {
                 self.records.push(Record { level: Level::Info, system: Some(name.clone()), call: None, body: Body::ControlChannel { freq_hz: freq_hz as f64 } });
                 self.log.push(json!({ "timeS": 0, "kind": "control", "text": format!("Control channel {:.5} MHz", freq_hz as f64 / 1e6), "system": name }))
             }
-            Event::Note { system, text } => {
+            Event::Note { system, level, text } => {
                 let name = self.system_name(system).to_string();
-                self.records.push(Record::text(Level::Warning, Some(&name), text.clone()));
-                self.log.push(json!({ "timeS": self.engine.status().now_s, "kind": "error", "text": text, "system": name }))
+                let (level, kind) = match level {
+                    NoteLevel::Info => (Level::Info, "note"),
+                    NoteLevel::Warning => (Level::Warning, "error"),
+                };
+                self.records.push(Record::text(level, Some(&name), text.clone()));
+                self.log.push(json!({ "timeS": self.engine.status().now_s, "kind": kind, "text": text, "system": name }))
             }
             Event::Audio { call_id, system, talkgroup, samples } => {
                 if !self.want_audio {

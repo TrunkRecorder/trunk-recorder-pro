@@ -263,6 +263,28 @@ export function talkgroupsToCsv(tgs: Talkgroup[]): string {
 const csvCell = (v: string) => (/[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
 const LEGACY = ["Decimal", "Hex", "Mode", "Alpha Tag", "Description", "Tag", "Category", "Priority"];
 
+/** The header a headerless, legacy file's columns are (as many as its widest row: 7, or 8 with Priority). */
+function legacyHeader(rows: string[], delim = ","): string[] {
+  const width = Math.max(...rows.map((l) => splitCsvLine(l, delim).length));
+  return LEGACY.slice(0, Math.max(7, Math.min(8, width)));
+}
+
+/**
+ * A talkgroup file with a header row: a headerless, legacy one is given
+ * Trunk Recorder's (Decimal,Hex,Mode,Alpha Tag,Description,Tag,Category
+ * [,Priority]); anything else comes back as it is.
+ */
+export function withHeader(csv: string): string {
+  const lines = csv.replace(/^\uFEFF/, "").split(/\r?\n/);
+  const data = (l: string) => !!l.trim() && !l.trim().startsWith("#");
+  const hi = lines.findIndex(data);
+  if (hi < 0) return csv;
+  const delim = csvDelimiter(lines[hi]);
+  if (canonical(splitCsvLine(lines[hi], delim)[0] ?? "") === "Decimal") return csv;
+  lines.splice(hi, 0, legacyHeader(lines.filter(data), delim).join(delim));
+  return lines.join("\n");
+}
+
 /**
  * The talkgroup file with talkgroup `tg` marked ignored (never recorded) or
  * not, in its Ignore column — added when the file has none (a headerless,
@@ -283,8 +305,7 @@ export function withIgnore(csv: string, tg: number, ignore: boolean, alphaTag = 
     header = splitCsvLine(lines[hi]);
   } else {
     // Legacy: give it a header (as many columns as its widest row).
-    const width = Math.max(...lines.filter(data).map((l) => splitCsvLine(l).length));
-    header = LEGACY.slice(0, Math.max(7, Math.min(8, width)));
+    header = legacyHeader(lines.filter(data));
     lines.splice(hi, 0, header.join(","));
   }
   let ic = header.indexOf("Ignore");

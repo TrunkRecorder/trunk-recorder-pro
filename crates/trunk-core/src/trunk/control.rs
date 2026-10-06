@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 
 use num_complex::Complex32;
 
-use super::engine::{SmartnetConfig, SystemConfig};
+use super::engine::{NoteLevel, SmartnetConfig, SystemConfig};
 use super::identity::{IdField, Identity};
 use super::message::{Message, MessageType, TsbkParser};
 use super::patches;
@@ -123,7 +123,7 @@ pub trait ControlChannel: Send {
         None
     }
     /// Log lines it has for the system.
-    fn take_notes(&mut self) -> Vec<String> {
+    fn take_notes(&mut self) -> Vec<(NoteLevel, String)> {
         Vec::new()
     }
     /// How long a patch stands without being heard again, s.
@@ -392,8 +392,9 @@ impl ControlChannel for Dmr {
     fn control_hz(&self) -> Option<u64> {
         self.site.control_hz()
     }
-    fn take_notes(&mut self) -> Vec<String> {
-        self.site.take_notes()
+    fn take_notes(&mut self) -> Vec<(NoteLevel, String)> {
+        // (All news: the colour code, the variant, channels learned.)
+        self.site.take_notes().into_iter().map(|t| (NoteLevel::Info, t)).collect()
     }
     fn bandplan(&self) -> String {
         self.site.map_to_string()
@@ -450,7 +451,7 @@ impl ControlChannel for Nxdn {
     fn control_hz(&self) -> Option<u64> {
         self.site.control_hz()
     }
-    fn take_notes(&mut self) -> Vec<String> {
+    fn take_notes(&mut self) -> Vec<(NoteLevel, String)> {
         self.site.take_notes()
     }
     fn bandplan(&self) -> String {

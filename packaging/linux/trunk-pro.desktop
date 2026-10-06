@@ -1,9 +1,9 @@
 [Desktop Entry]
 Type=Application
 Name=Trunk Recorder Pro
-Comment=Record a P25 trunked radio system from RTL-SDRs
+Comment=Record P25, SmartNet, DMR and NXDN trunked systems and conventional channels from SDRs
 Exec=trunk-pro
 Icon=trunk-pro
 Terminal=false
 Categories=HamRadio;Audio;Network;
-Keywords=P25;SDR;RTL-SDR;scanner;trunking;
+Keywords=P25;SmartNet;DMR;NXDN;SDR;RTL-SDR;scanner;trunking;
