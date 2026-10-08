@@ -5,6 +5,15 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+## [0.1.7] — 2026-10-07
+
+- **Louder calls:** speech is normalised to about −14 LUFS (−12 dBFS), 4.5 dB
+  louder than before, for digital and analog calls alike. Peaks are still
+  limited to −2.5 dBFS, so nothing clips.
+- `digitalLevelDb` and `analogLevelDb` now go through the limiter: turning
+  them up makes a call louder without clipping it (it used to clip anything
+  past about +2.5 dB).
+
 ## [0.1.6] — 2026-10-07
 
 - **Analog calls** no longer end with a burst of noise (a squelch tail) when
