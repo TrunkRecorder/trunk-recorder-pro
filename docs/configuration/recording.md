@@ -32,8 +32,8 @@ under **Recording override**.
 | `minCallS` | | `0` | number | Per system. Delete calls with less audio than this, s, before they're uploaded. `0` keeps all. The interface allows 0–60 |
 | `maxCallS` | | `0` | number | Per system. Save a call this long and carry on in a new one, s; nothing is lost. `0`: parts of 600 s, so a stuck carrier never records without bound. The interface allows 0–3600 |
 | `minTransmissionS` | | `0` | number | Per system. Leave out transmissions shorter than this (key-ups, data bursts), s. `0` keeps all. The interface allows 0–10 |
-| `normalizeAudio` | | `true` | bool | Per system. Bring every call's speech to the same loudness |
-| `digitalLevelDb` | | `0` | number | Per system. Then raise or lower digital calls by this much, dB. Applied up to ±40; the interface allows ±20 |
+| `normalizeAudio` | | `true` | bool | Per system. Bring every call's speech to the same loudness (about −14 LUFS, peaks limited to −2.5 dBFS) |
+| `digitalLevelDb` | | `0` | number | Per system. Then raise or lower digital calls by this much, dB; the limiter keeps them from clipping. Applied up to ±40; the interface allows ±20 |
 | `analogLevelDb` | | `0` | number | Per system. The same for analog calls |
 | `compressWav` | | `false` | bool | Per system. Also save an `.m4a` of every call. Needs an encoder: see `m4a` |
 | `audioArchive` | | `true` | bool | Per system. Keep the audio once every upload plugin has had the call. `false`: deleted then |

@@ -1,14 +1,16 @@
-//! Per-call loudness normalisation: every call's speech brought to one level,
-//! as Trunk Recorder's uploads were (it runs ffmpeg's two-pass loudnorm, I −16
-//! LUFS, on every call, whatever `audioPostprocess.enabled` says — about −18.6
-//! LUFS measured on its WMATA M4As). The vocoder's own level follows the
-//! talker: 13 dB between a quiet and a loud one is common.
+//! Per-call loudness normalisation: every call's speech brought to one level.
+//! The vocoder's own level follows the talker: 13 dB between a quiet and a
+//! loud one is common. Trunk Recorder's uploads come out at about −18.6 LUFS
+//! (ffmpeg's two-pass loudnorm, measured on its WMATA M4As), which listeners
+//! find quiet, and its analog audio is ×8 and clips; this aims at −14 LUFS,
+//! where streaming services put speech.
 //!
 //! ```text
 //! 20 ms frames → speech level: mean power of the frames above −50 dBFS and
 //! within 10 dB of their mean (BS.1770's gates) → gain to TARGET_DB (−18 dB
-//! up to +24 dB) → look-ahead peak limiter at −2.5 dBFS (headroom for the
-//! overshoot between samples once resampled for AAC)
+//! up to +24 dB), plus the system's digital / analog level → look-ahead peak
+//! limiter at −2.5 dBFS (headroom for the overshoot between samples once
+//! resampled for AAC)
 //! ```
 //!
 //! A call with under 0.2 s of speech-level frames — a keyed radio sending
@@ -16,8 +18,8 @@
 //! 50 dB into a steady hum.
 
 const FRAME: usize = 160;
-/// Speech level the gain aims for, dBFS (≈ −18.5 LUFS, Trunk Recorder's level).
-pub const TARGET_DB: f64 = -16.5;
+/// Speech level the gain aims for, dBFS (≈ −14 LUFS).
+pub const TARGET_DB: f64 = -12.0;
 const MAX_GAIN_DB: f64 = 24.0;
 const MIN_GAIN_DB: f64 = -18.0;
 const ABS_GATE_DB: f64 = -50.0;
@@ -41,16 +43,24 @@ pub fn speech_level_db(x: &[f32]) -> Option<f64> {
     (kept.len() >= MIN_FRAMES).then(|| db(kept.iter().sum::<f64>() / kept.len() as f64))
 }
 
-/// Normalise `x` (8 kHz, [−1, 1]) in place; returns the gain applied, dB.
-pub fn normalize(x: &mut [f32], rate: u32) -> f64 {
-    let Some(level) = speech_level_db(x) else { return 0.0 };
-    let gain_db = (TARGET_DB - level).clamp(MIN_GAIN_DB, MAX_GAIN_DB);
-    let g = 10f64.powf(gain_db / 20.0) as f32;
+/// Normalise `x` (8 kHz, [−1, 1]) in place, then add `extra_db`; returns
+/// the gain applied, dB. Too little speech to judge: only `extra_db`.
+pub fn normalize(x: &mut [f32], rate: u32, extra_db: f64) -> f64 {
+    let gain_db = speech_level_db(x).map_or(0.0, |level| (TARGET_DB - level).clamp(MIN_GAIN_DB, MAX_GAIN_DB));
+    gain(x, rate, gain_db + extra_db);
+    gain_db + extra_db
+}
+
+/// Raise (or lower) `x` by `db`, the limiter keeping it under the ceiling.
+pub fn gain(x: &mut [f32], rate: u32, db: f64) {
+    if db == 0.0 {
+        return;
+    }
+    let g = 10f64.powf(db / 20.0) as f32;
     for v in x.iter_mut() {
         *v *= g;
     }
     limit(x, rate);
-    gain_db
 }
 
 /// Peak limiter: the gain each sample needs to stay under the ceiling, its
@@ -88,7 +98,7 @@ mod tests {
     fn brings_quiet_and_loud_calls_to_the_target() {
         for amp in [0.03, 0.1, 0.5] {
             let mut x = tone(amp, 2.0);
-            normalize(&mut x, 8000);
+            normalize(&mut x, 8000, 0.0);
             let l = speech_level_db(&x).unwrap();
             assert!((l - TARGET_DB).abs() < 0.5, "amp {amp}: {l}");
         }
@@ -98,7 +108,7 @@ mod tests {
     fn leaves_dead_air_alone() {
         let mut x = tone(0.0005, 3.0);
         let before = x.clone();
-        assert_eq!(normalize(&mut x, 8000), 0.0);
+        assert_eq!(normalize(&mut x, 8000, 0.0), 0.0);
         assert_eq!(x, before);
     }
 
@@ -108,7 +118,7 @@ mod tests {
         let mut x = tone(0.02, 2.0);
         x.extend(tone(0.4, 0.1));
         x.extend(tone(0.02, 1.0));
-        normalize(&mut x, 8000);
+        normalize(&mut x, 8000, 0.0);
         let peak = x.iter().fold(0f32, |m, v| m.max(v.abs()));
         assert!(peak <= CEILING + 1e-3, "{peak}");
     }
@@ -116,6 +126,16 @@ mod tests {
     #[test]
     fn gain_is_capped() {
         let mut x = tone(0.006, 2.0);
-        assert_eq!(normalize(&mut x, 8000), MAX_GAIN_DB);
+        assert_eq!(normalize(&mut x, 8000, 0.0), MAX_GAIN_DB);
+    }
+
+    #[test]
+    fn level_gain_goes_through_the_limiter() {
+        // A system level of +12 dB on top of the target: louder, never clipped.
+        let mut x = tone(0.1, 2.0);
+        normalize(&mut x, 8000, 12.0);
+        let peak = x.iter().fold(0f32, |m, v| m.max(v.abs()));
+        assert!(peak <= CEILING + 1e-3, "{peak}");
+        assert!(speech_level_db(&x).unwrap() > TARGET_DB + 6.0);
     }
 }

@@ -283,8 +283,8 @@ pub struct SaveRules {
     pub min_transmission_s: f64,
     /// Bring each call's speech to one level ([`crate::loudness`]).
     pub normalize: bool,
-    /// Then raise (or lower) digital and analog audio by this much, dB
-    /// (Trunk Recorder's digitalLevels / analogLevels).
+    /// Then raise (or lower) digital and analog audio by this much, dB,
+    /// under the limiter (Trunk Recorder's digitalLevels / analogLevels).
     pub digital_gain_db: f32,
     pub analog_gain_db: f32,
 }
@@ -341,13 +341,11 @@ pub fn save_call(h: Held, cx: &SaveContext) -> Result<Concluded, Call> {
     if (audio.is_empty() && !(rules.keep_silent || call.encrypted && rules.keep_encrypted)) || short {
         return Err(call);
     }
+    let gain_db = if call.analog { rules.analog_gain_db } else { rules.digital_gain_db } as f64;
     if rules.normalize {
-        loudness::normalize(&mut audio, mbe::SAMPLE_RATE);
-    }
-    let gain_db = if call.analog { rules.analog_gain_db } else { rules.digital_gain_db };
-    if gain_db != 0.0 {
-        let g = 10f32.powf(gain_db / 20.0);
-        audio.iter_mut().for_each(|x| *x = (*x * g).clamp(-1.0, 1.0));
+        loudness::normalize(&mut audio, mbe::SAMPLE_RATE, gain_db);
+    } else {
+        loudness::gain(&mut audio, mbe::SAMPLE_RATE, gain_db);
     }
     let (json, base_name) = call_record(
         &call,

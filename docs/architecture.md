@@ -299,7 +299,7 @@ swaps a system's talkgroup table while recording.
   and error list to match (`CallFrames::keep`);
 - it refuses a call that is too short or silent (`SaveRules`), except an
   encrypted one when `recordEncrypted` keeps it;
-- it normalises loudness (`loudness.rs`, −16.5 dBFS speech) and applies the
+- it normalises loudness (`loudness.rs`, −12 dBFS speech, about −14 LUFS) and applies the
   digital / analog level;
 - it writes the call JSON (Trunk Recorder's fields plus `signal`, `noise`,
   `snr` from `Reception`, `clean_voice_pct`, `errorList`, `freq_error`).
