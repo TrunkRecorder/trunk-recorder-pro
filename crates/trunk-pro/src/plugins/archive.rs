@@ -111,7 +111,7 @@ impl Archive {
 /// Move whatever of a call is in the spool to the recordings folder.
 fn unspool(x: &Pending) {
     let Some(s) = &x.spooled else { return };
-    for ext in ["wav", "frames.jsonl", "m4a", "json"] {
+    for ext in ["wav", "sdr", "frames.jsonl", "m4a", "json"] {
         let (from, to) = (PathBuf::from(format!("{}.{ext}", s.display())), PathBuf::from(format!("{}.{ext}", x.base.display())));
         if from.exists() {
             if let Err(e) = crate::spool::move_file(&from, &to) {
@@ -131,7 +131,7 @@ fn settle(x: &Pending) -> (bool, bool) {
     let wav = places("wav").iter().any(|p| p.exists());
     // An .m4a made only for the plugins goes, unless it's the only audio.
     let json = r.call_log || keep_all;
-    let keep = [("wav", audio), ("frames.jsonl", audio), ("m4a", audio && (r.compress_wav || !wav)), ("json", json)];
+    let keep = [("wav", audio), ("sdr", audio), ("frames.jsonl", audio), ("m4a", audio && (r.compress_wav || !wav)), ("json", json)];
     for (ext, kept) in keep {
         if !kept {
             for p in places(ext) {

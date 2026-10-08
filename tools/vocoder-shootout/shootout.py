@@ -8,8 +8,10 @@ score them, and build a blind listening page.
     ./shootout.py stats INPUT...              voicing statistics of the encoded speech
 
 INPUT is a file or a directory (searched recursively) of IMBE frames:
-  *.frames.jsonl  trunk-pro's vocoder frame capture (Recording → "Save vocoder frames"),
-                  with the call's .json record beside it for talkgroup names
+  *.sdr           trunk-pro's vocoder frame capture (Recording → "Save vocoder frames"),
+                  with the call's .json record beside it for talkgroup names; read
+                  with trunk-pro (tool sdr --frames)
+  *.frames.jsonl  the same capture as older trunk-pro versions saved it
   *.hex           one frame per line: 22 hex digits (u0..u7), optionally followed by E0 and ET
   *.imbe          raw 11-byte frames (u0..u7 packed MSB first)
 
@@ -223,7 +225,7 @@ def find_inputs(paths):
     files = []
     for p in paths:
         if os.path.isdir(p):
-            for ext in ("*.frames.jsonl", "*.hex", "*.imbe"):
+            for ext in ("*.sdr", "*.frames.jsonl", "*.hex", "*.imbe"):
                 files += glob.glob(os.path.join(p, "**", ext), recursive=True)
         elif os.path.exists(p):
             files.append(p)
@@ -234,7 +236,7 @@ def find_inputs(paths):
 
 def call_name(path):
     b = os.path.basename(path)
-    for ext in (".frames.jsonl", ".hex", ".imbe"):
+    for ext in (".sdr", ".frames.jsonl", ".hex", ".imbe"):
         if b.endswith(ext):
             return b[: -len(ext)]
     return os.path.splitext(b)[0]
@@ -252,7 +254,14 @@ def normalise(path, dst):
             if t and len(t[0]) == 22:
                 recs.append({"bits": t[0].lower(), "e0": int(t[1]) if len(t) > 1 else 0, "errs": int(t[2]) if len(t) > 2 else 0})
     else:
-        for line in open(path):
+        if path.endswith(".sdr"):
+            tp = trunk_pro_path()
+            if not tp:
+                die(f"{path}: reading .sdr needs trunk-pro")
+            lines = subprocess.run([tp, "tool", "sdr", path, "--frames"], check=True, capture_output=True, text=True).stdout.splitlines()
+        else:
+            lines = open(path)
+        for line in lines:
             line = line.strip()
             if line:
                 r = json.loads(line)
@@ -264,7 +273,7 @@ def normalise(path, dst):
                  "erased": r.get("erased", False), "out": r.get("out", "voice")}
             f.write(json.dumps(r, separators=(",", ":")) + "\n")
     meta = {"name": call_name(path), "desc": "", "tag": ""}
-    rec = path[: -len(".frames.jsonl")] + ".json" if path.endswith(".frames.jsonl") else None
+    rec = next((path[: -len(e)] + ".json" for e in (".sdr", ".frames.jsonl") if path.endswith(e)), None)
     if rec and os.path.exists(rec):
         try:
             c = json.load(open(rec))

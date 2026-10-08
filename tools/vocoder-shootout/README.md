@@ -32,11 +32,12 @@ A file or a folder (searched recursively) of IMBE frames, in any of these forms:
 
 | File | Contents |
 |---|---|
-| `*.frames.jsonl` | trunk-pro's vocoder frame capture. Turn on **Save vocoder frames** (`recording.captureFrames`) and every call gets one beside its WAV. The call's `.json` record next to it supplies the talkgroup name, description and frequency. |
+| `*.sdr` | trunk-pro's vocoder frame capture. Turn on **Save vocoder frames** (`recording.captureFrames`) and every call gets one beside its WAV. The call's `.json` record next to it supplies the talkgroup name, description and frequency. Read through `trunk-pro tool sdr --frames`, so trunk-pro must be found. |
+| `*.frames.jsonl` | The same capture as JSON lines, as trunk-pro saved it before `.sdr` (and still does for NXDN). |
 | `*.hex` | One frame per line: 22 hex digits (the 88 bits u0..u7), optionally followed by E0 and ET error counts. |
 | `*.imbe` | Raw 11-byte frames, u0..u7 packed MSB first. |
 
-Frames in `.frames.jsonl` carry the FEC error counts, so decoders apply their
+Frames in `.sdr` and `.frames.jsonl` carry the FEC error counts, so decoders apply their
 own repeat and mute rules exactly as they would live. The other two formats
 count as error-free unless a `.hex` line gives the counts.
 

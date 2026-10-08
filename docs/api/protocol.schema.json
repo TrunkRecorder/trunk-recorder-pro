@@ -4054,7 +4054,7 @@
         },
         "captureFrames": {
           "type": "boolean",
-          "description": "Save each call's vocoder frames (<call>.frames.jsonl) for diagnosis."
+          "description": "Save each digital call's vocoder frames (<call>.sdr; NXDN <call>.frames.jsonl) for diagnosis."
         },
         "dropDuplicateCalls": {
           "type": "boolean",

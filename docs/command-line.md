@@ -247,7 +247,7 @@ called `conv`.
 | `--min-call s` | 0 | Drop calls shorter than this |
 | `--max-call s` | 0 (no limit) | Split calls longer than this |
 | `--min-transmission s` | 0 | Leave out transmissions shorter than this |
-| `--capture-frames` | off | Also write each call's vocoder frames as `<call>.frames.jsonl` (for `tool revoice`) |
+| `--capture-frames` | off | Also write each digital call's vocoder frames as `<call>.sdr` (NXDN: `<call>.frames.jsonl`), for `tool revoice` |
 | `--messages` | off | Print every control channel message |
 | `--quiet` | off | Don't print control channels, calls and files as they happen |
 
@@ -420,14 +420,24 @@ separation at each SNR.
 ### tool revoice
 
 ```bash
-trunk-pro tool revoice <call.frames.jsonl> <out.wav> [--profile enhanced|fixed|mbelib] [--seed 1]
-                       [--hard-fec] [--s16]
+trunk-pro tool revoice <call.sdr | call.frames.jsonl> <out.wav> [--profile enhanced|fixed|mbelib]
+                       [--seed 1] [--hard-fec] [--s16]
 ```
 
 Runs a call's saved vocoder frames through the vocoder again, for example to hear it with another
 vocoder. The frames are saved when **Save vocoder frames** is on in Setup → Recording (or with
 `replay --capture-frames`). `--hard-fec` uses the standard's repeat thresholds; `--s16` writes raw
 16-bit samples instead of a WAV.
+
+### tool sdr
+
+```bash
+trunk-pro tool sdr <call.sdr> [--frames]
+```
+
+Prints a saved `.sdr` call's metadata as JSON, as MimoSDR reads it, or with `--frames` its vocoder
+frames as JSON lines (one frame per line: `codec`, `bits` in hex, `e0`, `errs`, `erased`, and `out`,
+what the vocoder made of it).
 
 ## plugin
 

@@ -112,7 +112,7 @@ make folders (`{time:%Y/%m}`).
 | `<name>.wav` | 8 kHz mono 16-bit PCM. Written unless nothing keeps or needs it (see [What's kept](#whats-kept-and-whats-deleted)) |
 | `<name>.json` | The [call JSON](#the-call-json) |
 | `<name>.m4a` | With **Also save an M4A**, or when an upload plugin wants M4A |
-| `<name>.frames.jsonl` | With **Save vocoder frames**, for digital calls |
+| `<name>.sdr` | With **Save vocoder frames**, for digital calls (NXDN: `<name>.frames.jsonl`) |
 
 ## The call JSON
 
@@ -325,6 +325,8 @@ A call that isn't kept logs `Call not saved - no audio, or shorter than the mini
   usually sounds most natural. **Enhanced** is Trunk Recorder's floating-point synthesis. **mbelib**
   behaves exactly like mbelib.
 - **Save vocoder frames** (`captureFrames`, off): also saves each digital call's raw vocoder frames
-  as `<name>.frames.jsonl`. It's for diagnosing audio problems: `trunk-pro tool revoice` turns a
-  frames file back into a WAV with a different vocoder, so you can compare them on the same call.
-  See the [command line](../command-line.md).
+  as `<name>.sdr`, MimoSDR's call file ([sdr-stream](https://github.com/MimoCAD/sdr-stream)):
+  the call's identity and the voice still coded, about a tenth the size of the WAV. MimoSDR's
+  tools read it, and `trunk-pro tool revoice` turns it back into a WAV with a different vocoder, so
+  you can compare them on the same call. NXDN, which the format doesn't cover, is saved as
+  `<name>.frames.jsonl`. See the [command line](../command-line.md).
