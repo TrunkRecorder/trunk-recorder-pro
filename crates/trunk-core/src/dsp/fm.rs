@@ -9,6 +9,12 @@
 //!     opens — a neighbour keying up splatters for an instant — 10 ms ramps)
 //! ```
 //!
+//! The gate closes on a 1 ms carrier meter, 2 ms after it falls under the
+//! threshold, and the audio runs 15 ms behind the gate: the ramp down is
+//! over before the discriminator noise of a dropped carrier (the squelch
+//! tail) reaches the output. The 10 ms meter alone took 50–80 ms to fall
+//! from a strong carrier, and all of that was noise at full scale.
+//!
 //! Audio is emitted only while the gate is open: a transmission's gaps are
 //! cut, as Trunk Recorder's squelched analog recorder does.
 
@@ -31,6 +37,12 @@ const POWER_TAU: f64 = 0.010;
 const RAMP_S: f64 = 0.010;
 /// Carrier must hold this long before the gate opens, s.
 const ATTACK_S: f64 = 0.030;
+/// Fast carrier meter window (a boxcar), s.
+const FAST_S: f64 = 0.001;
+/// The fast meter under the threshold this long closes the gate, s.
+const CLOSE_S: f64 = 0.002;
+/// Audio runs this far behind the gate, s: more than the close and the ramp.
+const DELAY_S: f64 = 0.015;
 
 /// A narrow channel filter that also meters carrier power. Its output
 /// passband is ±[`CHANNEL_HALF_BW`], narrower than the channelizer's head
@@ -139,6 +151,16 @@ pub struct Nbfm {
     /// Channel samples the carrier has been up for, and how many opens the gate.
     up_run: u32,
     attack: u32,
+    /// Fast meter: |y|² over the last `fast.len()` channel samples, and their sum.
+    fast: Vec<f32>,
+    fast_pos: usize,
+    fast_sum: f64,
+    /// Channel samples the fast meter has been under the threshold, and how many close the gate.
+    down_run: u32,
+    close: u32,
+    /// Audio (high-passed, raw) waiting `DELAY_S` for the gate.
+    delay: Vec<(f32, f32)>,
+    delay_pos: usize,
 }
 
 const ARING: usize = 256;
@@ -168,6 +190,13 @@ impl Nbfm {
             ramp: (1.0 / (RAMP_S * AUDIO_RATE)) as f32,
             up_run: 0,
             attack: (ATTACK_S * rate) as u32,
+            fast: vec![0.0; ((FAST_S * rate).round() as usize).max(1)],
+            fast_pos: 0,
+            fast_sum: 0.0,
+            down_run: 0,
+            close: (CLOSE_S * rate) as u32,
+            delay: vec![(0.0, 0.0); (DELAY_S * AUDIO_RATE) as usize],
+            delay_pos: 0,
         }
     }
 
@@ -200,7 +229,18 @@ impl Nbfm {
             let up = self.filter.power() > open_power;
             carrier |= up;
             self.up_run = if up { self.up_run.saturating_add(1) } else { 0 };
-            let open = self.up_run >= self.attack;
+            let p = y.norm_sqr();
+            self.fast_sum += (p - self.fast[self.fast_pos]) as f64;
+            self.fast[self.fast_pos] = p;
+            self.fast_pos = (self.fast_pos + 1) % self.fast.len();
+            if self.fast_pos == 0 {
+                // Re-sum now and then so rounding can't drift.
+                self.fast_sum = self.fast.iter().map(|&v| v as f64).sum();
+            }
+            let fast_up = self.fast_sum > open_power as f64 * self.fast.len() as f64;
+            self.down_run = if fast_up { 0 } else { self.down_run.saturating_add(1) };
+            // A fade too short to drop the slow meter reopens as soon as the carrier is back.
+            let open = self.up_run >= self.attack && self.down_run < self.close;
             let d = (y * self.last.conj()).arg() * self.disc_gain;
             self.last = y;
             self.de_y += self.de_a * (d - self.de_y);
@@ -219,6 +259,8 @@ impl Nbfm {
                     for h in &mut self.hpf {
                         s = h.step(s);
                     }
+                    let (s, raw) = std::mem::replace(&mut self.delay[self.delay_pos], (s, raw));
+                    self.delay_pos = (self.delay_pos + 1) % self.delay.len();
                     let target = if open { 1.0 } else { 0.0 };
                     self.gate = if self.gate < target { (self.gate + self.ramp).min(1.0) } else { (self.gate - self.ramp).max(0.0) };
                     if self.gate > 0.0 {
@@ -300,11 +342,34 @@ mod tests {
         let n_on = out.len();
         let off = vec![Complex32::new(1e-3, 0.0); (rate * 0.5) as usize];
         fm.push(&off, 1e-3, &mut out);
-        // The meter decays from 24 dB above the threshold (~55 ms) plus the ramp.
-        assert!(out.len() - n_on < 800, "gate stayed open: {} extra samples", out.len() - n_on);
+        // The delay, the fast meter's close and the ramp: ~28 ms.
+        assert!(out.len() - n_on < 300, "gate stayed open: {} extra samples", out.len() - n_on);
         let n_off = out.len();
         assert!(!fm.push(&off, 1e-3, &mut out));
         assert_eq!(out.len(), n_off);
         assert!(n_on > 3500);
+    }
+
+    #[test]
+    fn no_squelch_tail() {
+        // A strong carrier (40 dB over the threshold) drops to noise: none of
+        // the discriminator noise may reach the output.
+        let rate = 37_500.0;
+        let mut fm = Nbfm::new(rate);
+        let mut out = Vec::new();
+        let on = fm_tone(rate, 1000.0, 2500.0, (rate * 0.5) as usize, 1.0);
+        fm.push(&on, 1e-4, &mut out);
+        let n_on = out.len();
+        let mut seed = 1u32;
+        let mut rnd = || {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (seed >> 8) as f32 / (1 << 24) as f32 - 0.5
+        };
+        // Noise at ~1e-5, 10 dB under the threshold.
+        let off: Vec<Complex32> = (0..(rate * 0.5) as usize).map(|_| Complex32::new(rnd(), rnd()) * 0.011).collect();
+        fm.push(&off, 1e-4, &mut out);
+        // The 1 kHz tone peaks at 0.5; discriminator noise runs to several times full scale.
+        let peak = out[n_on..].iter().fold(0.0f32, |m, &v| m.max(v.abs()));
+        assert!(peak < 0.6, "squelch tail: peak {peak:.2} after the carrier dropped");
     }
 }
