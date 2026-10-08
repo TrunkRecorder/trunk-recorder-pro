@@ -5,6 +5,14 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+## [0.1.6] — 2026-10-07
+
+- **Analog calls** no longer end with a burst of noise (a squelch tail) when
+  the transmitter's carrier drops. It was most noticeable on SmartNet analog
+  talkgroups. The squelch now closes within a few milliseconds of the carrier
+  going away, and the audio is held back slightly so the fade-out finishes
+  before any noise is recorded.
+
 ## [0.1.5] — 2026-10-06
 
 - **New documentation** in [docs/](https://github.com/TrunkRecorder/trunk-recorder-pro/blob/main/docs/README.md):
