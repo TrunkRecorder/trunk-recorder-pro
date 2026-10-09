@@ -3,7 +3,7 @@
 The dashboard pages show how the recorder is doing: whether each system's control channel is
 decoding as usual, how well the radios hear the air, how clean the voice is, what the system is
 doing, and whether the computer and plugins are keeping up. This page goes through each one and
-what its numbers mean. For the frame around them, Setup and the Calls page, see
+what its numbers mean. For the frame around them, Setup and the Listen and Live pages, see
 [The web interface](interface.md).
 
 Most numbers come with a small chart of the last 10 minutes, and many pages have an **Over time**
@@ -129,7 +129,7 @@ The system as heard. With several systems it first shows a card each (talkgroups
 
 **What happened to calls** splits the calls by what became of them: **Recorded**, **Followed
 only**, **Ignored**, **Encrypted**, **Not in the file**, **No recorder** and **Out of band**. The
-last two are calls you missed; see the reasons table on [the Calls page](interface.md#active-calls).
+last two are calls you missed; see the reasons table on [the Live page](interface.md#active-calls).
 
 Then: **On the air now**, **Busiest … by hour**, **Who talks on what** (talkgroups and the
 busiest radios, linked by how often each radio talks on each), the **Talkgroups** table, the

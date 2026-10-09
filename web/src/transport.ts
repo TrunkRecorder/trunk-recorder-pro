@@ -4,6 +4,8 @@
 
 import { decodeAudioFrame, type AudioChunk, type FromRecorder, type ToRecorder } from "./protocol.ts";
 
+export type CallExt = "wav" | "m4a" | "json";
+
 export interface Transport {
   readonly kind: "desktop" | "web";
   send(msg: ToRecorder): void;
@@ -12,8 +14,8 @@ export interface Transport {
   onConnection: (connected: boolean) => void;
   /** Stop for good (the recorder quit): no more reconnecting. */
   close?(): void;
-  /** A URL for a recorded file (desktop: the server's /calls/; web: a blob from OPFS). */
-  callUrl(path: string, ext: "wav" | "json"): Promise<string>;
+  /** A URL for a recorded file (desktop: the server's /calls/; web: a blob from OPFS). An "m4a" not kept is its WAV. */
+  callUrl(path: string, ext: CallExt): Promise<string>;
 }
 
 export class WsTransport implements Transport {
@@ -65,7 +67,7 @@ export class WsTransport implements Transport {
     else this.queue.push(msg);
   }
 
-  async callUrl(path: string, ext: "wav" | "json"): Promise<string> {
+  async callUrl(path: string, ext: CallExt): Promise<string> {
     return `/calls/${path.split("/").map(encodeURIComponent).join("/")}.${ext}`;
   }
 }

@@ -671,6 +671,74 @@ pub const HISTORY: usize = 300;
 /// Calls kept in memory for it.
 const HISTORY_KEPT: usize = 500;
 
+/// How far back `olderCalls` looks.
+const OLDER_WINDOW_MS: i64 = 24 * 3600 * 1000;
+
+/// `olderCalls` (the Listen page's "Load older"): up to `limit` calls that
+/// started before `before_ms`, newest first, from the last 24 hours. Only the
+/// day folders of Trunk Recorder's layout are read (a system with its own
+/// filename format isn't searched), so this stays cheap without an index.
+pub fn older_calls(ctx: &Ctx, before_ms: i64, limit: usize) -> Value {
+    let (dir, names) = {
+        let c = ctx.config.lock().unwrap();
+        let names: Vec<String> = c.systems.iter().map(|s| s.short_name.clone()).chain(c.conventional.iter().map(|v| v.short_name.clone())).collect();
+        (PathBuf::from(&c.recording.capture_dir), names)
+    };
+    let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
+    let floor_ms = now_ms - OLDER_WINDOW_MS;
+    let before_ms = before_ms.min(now_ms + 60_000);
+    // Each system's day folders from `before` back to the window's start.
+    let mut folders = std::collections::BTreeSet::new();
+    let mut t = before_ms.div_euclid(1000);
+    while t * 1000 >= floor_ms - 86_400_000 {
+        for n in &names {
+            folders.insert(dir.join(trunk_app::filename::default_path(n, "", t, local_offset(t))));
+        }
+        t -= 86_400;
+    }
+    // A call's start from its name (<talkgroup>-<start>_<freq>), else when the file was written.
+    let start_of = |p: &Path, e: &fs::DirEntry| -> i64 {
+        let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        let from_name = stem.split_once('-').and_then(|(_, r)| r.split(['_', '.', '-']).next()).and_then(|s| s.parse::<i64>().ok());
+        from_name.unwrap_or_else(|| e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs() as i64))
+    };
+    let mut found: Vec<(i64, PathBuf)> = Vec::new();
+    for f in &folders {
+        let Ok(rd) = fs::read_dir(f) else { continue };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.extension().is_some_and(|x| x == "json") {
+                let s = start_of(&p, &e);
+                if s * 1000 <= before_ms && (s + 1) * 1000 > floor_ms {
+                    found.push((s, p));
+                }
+            }
+        }
+    }
+    found.sort_by(|a, b| b.0.cmp(&a.0));
+    // (Names give the second: the last second taken is taken whole, so the
+    // next page, before the oldest call's millisecond, misses none.)
+    let mut entries: Vec<(i64, Value)> = Vec::new();
+    let mut read = 0;
+    for (s, p) in &found {
+        if entries.len() >= limit && found[read - 1].0 != *s {
+            break;
+        }
+        read += 1;
+        let Some(record) = fs::read_to_string(p).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()) else { continue };
+        let start = record["start_time_ms"].as_i64().or_else(|| record["start_time"].as_i64().map(|s| s * 1000)).unwrap_or(0);
+        if start >= before_ms || start < floor_ms {
+            continue;
+        }
+        let Ok(rel) = p.strip_prefix(&dir) else { continue };
+        let audio = ["wav", "m4a"].iter().any(|x| p.with_extension(x).exists());
+        entries.push((start, json!({ "path": rel.with_extension("").to_string_lossy().replace('\\', "/"), "record": record, "audio": audio, "json": true })));
+    }
+    entries.sort_by(|a, b| b.0.cmp(&a.0));
+    let entries: Vec<Value> = entries.into_iter().map(|(_, e)| e).collect();
+    json!({ "type": "olderCalls", "before": before_ms, "entries": entries, "more": read < found.len() })
+}
+
 /// The newest `limit` calls already on disk (for the history list at startup).
 pub fn scan_history(dir: &Path, limit: usize) -> VecDeque<Value> {
     let mut found: Vec<(SystemTime, PathBuf)> = Vec::new();

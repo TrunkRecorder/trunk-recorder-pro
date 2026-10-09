@@ -38,7 +38,7 @@ import type {
   System,
 } from "./protocol.ts";
 import { type ImportTodo, activeSystems, newConventional, newSystem, resolvedCenters, sameSystem, siteName, sourceCovering, usableHalfWidth } from "./config.ts";
-import { WsTransport, type Transport } from "./transport.ts";
+import { WsTransport, type CallExt, type Transport } from "./transport.ts";
 import { parseUnitsCsv, type UnitAliases } from "./units.ts";
 import { withIgnore } from "./talkgroups.ts";
 import type { WorkerTransport } from "./web/workerTransport.ts";
@@ -121,13 +121,14 @@ export interface AppState {
 
 export type SetupTab = "systems" | "conventional" | "radios" | "recording" | "plugins";
 
-export type View = "overview" | "rf" | "decode" | "radio" | "calls" | "plugins" | "platform" | "setup";
-const VIEWS: View[] = ["overview", "rf", "decode", "radio", "calls", "plugins", "platform", "setup"];
+export type View = "overview" | "listen" | "rf" | "decode" | "radio" | "live" | "plugins" | "platform" | "setup";
+const VIEWS: View[] = ["overview", "listen", "rf", "decode", "radio", "live", "plugins", "platform", "setup"];
 
 /** `#/radio/dcfd/tg/101` → ["radio", ["dcfd", "tg", "101"]]; the old `#plugins` too. */
 function routeFromHash(): { view: View; path: string[] } {
   const parts = location.hash.replace(/^#\/?/, "").split("/").filter(Boolean).map(decodeURIComponent);
-  const v = parts[0] as View;
+  // (Live was Calls.)
+  const v = (parts[0] === "calls" ? "live" : parts[0]) as View;
   return VIEWS.includes(v) ? { view: v, path: parts.slice(1) } : { view: "overview", path: [] };
 }
 
@@ -191,7 +192,8 @@ function set(patch: Partial<AppState>): void {
   for (const l of listeners) l();
 }
 
-function subscribe(l: () => void): () => void {
+/** Be told of every change to the state (outside React). */
+export function subscribe(l: () => void): () => void {
   listeners.add(l);
   return () => listeners.delete(l);
 }
@@ -241,16 +243,27 @@ export const web: WorkerTransport | null = import.meta.env.MODE === "web" ? new 
 export const transport: Transport = web ?? new WsTransport();
 
 /** Save a recorded file (a download from the recorder, or out of browser storage). */
-export async function downloadCall(path: string, ext: "wav" | "json"): Promise<void> {
+export async function downloadCall(path: string, ext: CallExt): Promise<void> {
   const a = document.createElement("a");
   a.href = await transport.callUrl(path, ext);
   a.download = `${path.split("/").pop()}.${ext}`;
   a.click();
 }
 
+const messageHooks = new Set<(m: FromRecorder) => void>();
+/** Every message from the recorder, after the state has taken it (the Listen page's calls and older ones). */
+export function onRecorderMessage(f: (m: FromRecorder) => void): void {
+  messageHooks.add(f);
+}
+
 transport.onConnection = (connected) => set({ connected, ...(connected ? {} : { phase: "idle" as Phase }) });
 transport.onAudio = onAudio;
 transport.onMessage = (m: FromRecorder) => {
+  take(m);
+  for (const f of messageHooks) f(m);
+};
+
+function take(m: FromRecorder): void {
   switch (m.type) {
     case "hello":
       set({
@@ -406,7 +419,7 @@ transport.onMessage = (m: FromRecorder) => {
       set({ quit: true, connected: false, phase: "idle" });
       break;
   }
-};
+}
 
 /** Plugin runtimes from hello, waiting for the plugin list. */
 let pendingRuntime: Record<string, import("./protocol.ts").PluginRuntime> | null = null;

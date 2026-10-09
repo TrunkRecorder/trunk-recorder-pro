@@ -1184,6 +1184,8 @@ export type FromRecorder =
   /** Answers statsQuery: `loading` while the history files are still being read. */
   | { type: "statsResult"; id: number; from: number; to: number; loading: boolean; series: Record<string, SeriesData> }
   | ({ type: "radioResult" } & RadioResultBody)
+  /** Answers olderCalls; `more`: there are older ones still. */
+  | { type: "olderCalls"; before: number; entries: CallEntry[]; more: boolean }
   | { type: "quit" };
 
 export type ToRecorder =
@@ -1224,6 +1226,8 @@ export type ToRecorder =
   /** The history of series (names, or prefixes ending in `*`) over `range` back from now, or `from`–`to` (Unix s), in about `points` points. */
   | { type: "statsQuery"; id: number; series: string[]; range?: "10m" | "1h" | "6h" | "24h" | "7d"; from?: number; to?: number; points?: number }
   /** The radio registry: talkgroups, radios, frequencies heard. `key`: the talkgroup or radio for "tg" / "unit". */
+  /** Calls that started before `before` (Unix ms), newest first, from the last 24 hours (the Listen page's "Load older"). */
+  | { type: "olderCalls"; before: number; limit: number }
   | { type: "radioQuery"; id: number; what: "summary" | "talkgroups" | "units" | "tg" | "unit" | "freqs" | "lengths"; system?: string; key?: number; hours?: number; limit?: number }
   | { type: "quit" };
 

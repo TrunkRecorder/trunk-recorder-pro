@@ -327,7 +327,7 @@ the journal:
 journalctl --user -u trunk-pro -f
 ```
 
-The Calls page's **Control channel log** is a live view of control messages, not this log.
+The Live page's **Control channel log** is a live view of control messages, not this log.
 
 ## Making a capture
 

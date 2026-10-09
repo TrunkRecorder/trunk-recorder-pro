@@ -2672,6 +2672,34 @@
           "properties": {
             "type": {
               "type": "string",
+              "const": "olderCalls"
+            },
+            "before": {
+              "type": "number"
+            },
+            "entries": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/CallEntry"
+              }
+            },
+            "more": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "type",
+            "before",
+            "entries",
+            "more"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
               "const": "quit"
             }
           },
@@ -6240,6 +6268,27 @@
             "type",
             "id",
             "series"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "olderCalls"
+            },
+            "before": {
+              "type": "number"
+            },
+            "limit": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "before",
+            "limit"
           ],
           "additionalProperties": false
         },

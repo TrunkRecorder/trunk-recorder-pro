@@ -1,13 +1,11 @@
-// Calls: on the air now (with live audio), recorded, and the control
-// channel's log (made only while it's open).
+// Live: the calls on the air now (with live audio), and the control
+// channel's log (made only while it's open). Recorded calls are on Listen.
 
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { useState } from "react";
 import { formatMhz, systemColor } from "../config.ts";
-import { downloadCall, setListen, transport, useTopic, web, type AppState } from "../controller.ts";
-import type { CallEntry, CallView, TalkgroupName } from "../protocol.ts";
-import { parseTalkgroupCsv } from "../talkgroups.ts";
+import { setListen, useTopic, type AppState } from "../controller.ts";
+import type { CallView, TalkgroupName } from "../protocol.ts";
 import { unitName } from "../units.ts";
-import { BrowserStorage } from "../web/BrowserStorage.tsx";
 import { tgText } from "./Systems.tsx";
 
 export function clock(s: number): string {
@@ -50,20 +48,6 @@ export const aliasOf = (s: AppState, system: string, id: number, saved?: string)
       return user() ?? heard();
   }
 };
-
-/** A saved call's reception: the SNR, with the levels and clean share on hover. */
-function Reception({ r }: { r: CallEntry["record"] }) {
-  if (r.snr === undefined || r.snr === null) return <td className="muted">—</td>;
-  const tone = r.snr >= 20 ? "ok" : r.snr >= 10 ? "warn" : "bad";
-  const clean = r.clean_voice_pct ?? null;
-  const title = `Signal ${r.signal?.toFixed(1)} dBFS, noise ${r.noise?.toFixed(1)} dBFS${clean !== null ? `, ${clean.toFixed(1)} % of voice frames decoded cleanly` : ""}`;
-  return (
-    <td className="mono" title={title}>
-      <span className={`snr ${tone}`}>{r.snr.toFixed(0)} dB</span>
-      {clean !== null && clean < 99.5 && <span className="muted small"> · {clean.toFixed(0)} %</span>}
-    </td>
-  );
-}
 
 /** Under a call's talkgroup: what's patched with it. */
 export function PatchedWith({ tgs }: { tgs: TalkgroupName[] }) {
@@ -234,169 +218,6 @@ export function ActiveCalls({ s }: { s: AppState }) {
   );
 }
 
-/** A recorded call's system: its record's short_name, else its folder. */
-const systemOf = (c: CallEntry) => c.record.short_name || c.path.split("/")[0] || "";
-
-export function History({ s }: { s: AppState }) {
-  const [playing, setPlaying] = useState<string | null>(null);
-  const [playingUrl, setPlayingUrl] = useState<string | null>(null);
-  useEffect(() => {
-    setPlayingUrl(null);
-    if (!playing) return;
-    let live = true;
-    transport.callUrl(playing, "wav").then(
-      (u) => live && setPlayingUrl(u),
-      () => live && setPlaying(null),
-    );
-    return () => {
-      live = false;
-    };
-  }, [playing]);
-  const [filter, setFilter] = useState("");
-  const [only, setOnly] = useState<string | null>(null);
-  const systems = useMemo(() => [...new Set(s.history.map(systemOf))].sort(), [s.history]);
-  // Each system's talkgroup file, by short name: names for a call's patched talkgroups.
-  const files = useMemo(() => new Map((s.config?.systems ?? []).map((x) => [x.shortName, parseTalkgroupCsv(x.talkgroupsCsv)])), [s.config]);
-  const patchedWith = (c: CallEntry): TalkgroupName[] =>
-    (c.record.patched_talkgroups ?? [])
-      .filter((t) => t !== c.record.talkgroup)
-      .map((t) => ({ talkgroup: t, alphaTag: files.get(systemOf(c))?.get(t)?.alphaTag ?? "" }));
-  const rows = useMemo(() => {
-    const f = filter.trim().toLowerCase();
-    const unitMatch = (c: CallEntry) =>
-      c.record.srcList?.some((x) => String(x.src).includes(f) || (aliasOf(s, systemOf(c), x.src, x.tag_ota) ?? "").toLowerCase().includes(f));
-    const ok = (c: CallEntry) =>
-      (only === null || systemOf(c) === only) &&
-      (!f ||
-        String(c.record.talkgroup).includes(f) ||
-        (c.record.talkgroup_tag ?? "").toLowerCase().includes(f) ||
-        patchedWith(c).some((t) => String(t.talkgroup).includes(f) || t.alphaTag.toLowerCase().includes(f)) ||
-        unitMatch(c));
-    return f || only !== null ? s.history.filter(ok) : s.history;
-  }, [s.history, s.units, filter, only, files]);
-  const multi = systems.length > 1;
-  const colorOf = (name: string) => systemColor(s.config, name);
-
-  return (
-    <section className="panel">
-      <header className="panel-head">
-        <h2>Recent calls</h2>
-        <div className="row">
-          {multi && (
-            <select value={only ?? ""} onChange={(e) => setOnly(e.target.value || null)} aria-label="System">
-              <option value="">All systems</option>
-              {systems.map((x) => (
-                <option key={x} value={x}>
-                  {x}
-                </option>
-              ))}
-            </select>
-          )}
-          <input className="search" placeholder="Filter talkgroup or unit…" value={filter} onChange={(e) => setFilter(e.target.value)} />
-        </div>
-      </header>
-      {rows.length === 0 ? (
-        <p className="empty">No recorded calls yet.</p>
-      ) : (
-        <div className="table-wrap history">
-          <table className="calls">
-            <thead>
-              <tr>
-                <th>Time</th>
-                {multi && <th>System</th>}
-                <th>Talkgroup</th>
-                <th>Length</th>
-                <th title="Signal over noise">Reception</th>
-                <th>Sources</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {rows.slice(0, 200).map((c) => (
-                <tr key={c.path} className={playing === c.path ? "playing" : ""}>
-                  <td className="mono">{new Date(c.record.start_time_ms).toLocaleTimeString()}</td>
-                  {multi && (
-                    <td className="sys-name small">
-                      <span className="sys-dot" style={{ background: colorOf(systemOf(c)) }} />
-                      {systemOf(c)}
-                    </td>
-                  )}
-                  <td>
-                    {c.record.talkgroup_tag ? (
-                      <span className="tg-name" title={`Talkgroup ${c.record.talkgroup}`}>
-                        {c.record.talkgroup_tag}
-                      </span>
-                    ) : (
-                      <span className="tg">{c.record.talkgroup}</span>
-                    )}
-                    {c.record.emergency ? <span className="badge bad">EMERG</span> : null}
-                    <PatchedWith tgs={patchedWith(c)} />
-                  </td>
-                  <td className="mono">{(c.record.call_length_ms / 1000).toFixed(1)} s</td>
-                  <Reception r={c.record} />
-                  <Sources s={s} entry={c} />
-                  <td className="actions">
-                    {c.audio !== false && (
-                      <>
-                        <button className="btn ghost small" onClick={() => setPlaying(c.path)}>
-                          Play
-                        </button>
-                        <button className="btn ghost small" onClick={() => void downloadCall(c.path, "wav")}>
-                          WAV
-                        </button>
-                      </>
-                    )}
-                    {c.json !== false && (
-                      <button className="btn ghost small" onClick={() => void downloadCall(c.path, "json")}>
-                        JSON
-                      </button>
-                    )}
-                    {c.audio === false && c.json === false && (
-                      <span className="muted small" title="Deleted after upload (Setup → Recording)">
-                        not kept
-                      </span>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-      {playing && playingUrl && <audio className="player" src={playingUrl} controls autoPlay onEnded={() => setPlaying(null)} />}
-      <footer className="panel-foot muted small">
-        {web ? (
-          <BrowserStorage />
-        ) : s.config ? (
-          <span>
-            Saved to <span className="mono">{s.config.recording.captureDir}</span>
-          </span>
-        ) : null}
-      </footer>
-    </section>
-  );
-}
-
-/** A recorded call's radios, in the order they spoke: aliases first, every one on hover. */
-function Sources({ s, entry }: { s: AppState; entry: CallEntry }) {
-  const system = systemOf(entry);
-  const seen = new Map<number, string | undefined>();
-  for (const x of entry.record.srcList ?? []) if (!seen.has(x.src)) seen.set(x.src, aliasOf(s, system, x.src, x.tag || x.tag_ota));
-  const units = [...seen];
-  return (
-    <td className="srcs" title={units.map(([id, alias]) => (alias ? `${alias} (${id})` : String(id))).join(", ")}>
-      {units.length
-        ? units.map(([id, alias], i) => (
-            <Fragment key={id}>
-              {i > 0 && ", "}
-              <Unit id={id} alias={alias} />
-            </Fragment>
-          ))
-        : "—"}
-    </td>
-  );
-}
-
 export function Log({ s }: { s: AppState }) {
   const [show, setShow] = useState<"calls" | "all">("calls");
   // Every control message as a line costs the recorder: only while it's open.
@@ -436,14 +257,11 @@ export function Log({ s }: { s: AppState }) {
   );
 }
 
-/** The Calls page: on the air now, recorded, and the log. */
-export function CallsPage({ s }: { s: AppState }) {
+/** The Live page: on the air now, and the log. */
+export function LivePage({ s }: { s: AppState }) {
   return (
     <>
-      <div className="columns">
-        <ActiveCalls s={s} />
-        <History s={s} />
-      </div>
+      <ActiveCalls s={s} />
       <Log s={s} />
     </>
   );
