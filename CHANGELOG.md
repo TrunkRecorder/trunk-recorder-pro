@@ -5,6 +5,28 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+## [0.1.8] — 2026-10-08
+
+- **Listen**, a new page right under Overview: a scanner over the
+  recorded calls, like rdio-scanner. Turn on **Live feed** and each new
+  call plays as it's recorded, one after another, with **Hold sys**,
+  **Hold TG**, **Pause**, **Replay**, **Skip** and **Avoid** (until let
+  go, or 30/60/120 minutes). Pick the systems, talkgroups, groups and tags
+  to hear; the choice is kept in your browser. Click any recent call to
+  play it, and **Load older** goes back through the last 24 hours.
+  Encrypted calls and calls whose audio wasn't kept are left out.
+- The **Calls** page is now **Live**: the calls on the air now (with
+  Listen live) and the control channel log. Its recent calls table moved
+  to Listen.
+- **RF → The band** draws one row per band in use (VHF, UHF, 700 MHz,
+  800 MHz…), so sources in different bands no longer squeeze each other
+  into slivers.
+- Recorded calls are served with byte ranges, so Safari can play them.
+- **captureFrames** now saves each digital call's vocoder frames as a
+  MimoSDR `.sdr` file (DigitalStream) instead of `.frames.jsonl`; NXDN
+  calls stay `.frames.jsonl`. `tool revoice` reads either, and `tool sdr`
+  prints an `.sdr` file.
+
 ## [0.1.7] — 2026-10-07
 
 - **Louder calls:** speech is normalised to about −14 LUFS (−12 dBFS), 4.5 dB
