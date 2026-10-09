@@ -324,7 +324,7 @@ function share(sel: Selection, tgs: Tg[]): "on" | "off" | "some" {
   return on === tgs.length ? "on" : on === 0 ? "off" : "some";
 }
 
-function Chips({ title, by, sel, tgs }: { title: string; by: (t: Tg) => string; sel: Selection; tgs: Tg[] }) {
+function Chips({ title, by, sel, tgs, known }: { title: string; by: (t: Tg) => string; sel: Selection; tgs: Tg[]; known: string[] }) {
   const groups = useMemo(() => {
     const m = new Map<string, Tg[]>();
     for (const t of tgs) {
@@ -341,7 +341,7 @@ function Chips({ title, by, sel, tgs }: { title: string; by: (t: Tg) => string; 
         {groups.map(([name, list]) => {
           const st = share(sel, list);
           return (
-            <button key={name} className={`btn ghost small chip3 ${st}`} onClick={() => setTalkgroupsOn(list.map((t) => t.key), st !== "on")} aria-pressed={st === "some" ? "mixed" : st === "on"}>
+            <button key={name} className={`btn ghost small chip3 ${st}`} onClick={() => setTalkgroupsOn(list.map((t) => t.key), st !== "on", known)} aria-pressed={st === "some" ? "mixed" : st === "on"}>
               {name}
             </button>
           );
@@ -356,6 +356,7 @@ function Talkgroups({ s }: { s: AppState }) {
   const cat = useMemo(() => catalog(s, l.calls), [s.config, l.calls]);
   const [filter, setFilter] = useState("");
   const all = useMemo(() => [...cat.values()].flat(), [cat]);
+  const known = useMemo(() => all.map((t) => t.key), [all]);
   const f = filter.trim().toLowerCase();
   const match = (t: Tg) => !f || String(t.talkgroup).includes(f) || `${t.alphaTag} ${t.description} ${t.tag} ${t.group}`.toLowerCase().includes(f);
   const sel = l.sel;
@@ -401,8 +402,8 @@ function Talkgroups({ s }: { s: AppState }) {
           </div>
         </div>
       )}
-      <Chips title="Groups" by={(t) => t.group} sel={sel} tgs={all} />
-      <Chips title="Tags" by={(t) => t.tag} sel={sel} tgs={all} />
+      <Chips title="Groups" by={(t) => t.group} sel={sel} tgs={all} known={known} />
+      <Chips title="Tags" by={(t) => t.tag} sel={sel} tgs={all} known={known} />
       {[...cat].map(([system, tgs]) => {
         const sysOn = !sel.offSystems.includes(system);
         const shown = tgs.filter(match);
@@ -414,15 +415,16 @@ function Talkgroups({ s }: { s: AppState }) {
               <Led color={systemColor(s.config, system)} />
               <b>{system}</b>
               <span className="muted small">
-                {tgs.filter((t) => !sel.offTalkgroups.includes(t.key)).length} of {tgs.length} talkgroups
+                {sysOn ? tgs.filter((t) => !sel.offTalkgroups.includes(t.key)).length : 0} of {tgs.length} talkgroups
               </span>
             </label>
-            <div className={`tg-grid${sysOn ? "" : " off"}`}>
+            <div className="tg-grid">
               {shown.map((t) => {
-                const on = !sel.offTalkgroups.includes(t.key);
+                // (Ticked: heard. A system that's off has none; ticking one brings it back.)
+                const on = sysOn && !sel.offTalkgroups.includes(t.key);
                 return (
                   <label key={t.key} className={`tg-cell${avoided(sel, t.key, now) ? " avoided" : ""}`} title={[t.description, t.tag, t.group].filter(Boolean).join(" · ")}>
-                    <input type="checkbox" checked={on} onChange={(e) => setTalkgroupsOn([t.key], e.target.checked)} />
+                    <input type="checkbox" checked={on} onChange={(e) => setTalkgroupsOn([t.key], e.target.checked, known)} />
                     <span className="tg-cell-name">{t.alphaTag || `TG ${t.talkgroup}`}</span>
                     <span className="mono muted small">{t.talkgroup}</span>
                   </label>

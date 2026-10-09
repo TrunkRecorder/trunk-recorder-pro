@@ -147,11 +147,22 @@ export function setSystemOn(system: string, on: boolean): void {
   setSelection({ ...state.sel, offSystems: on ? off : [...off, system] });
 }
 
-/** Switch talkgroups (keys) on or off, together. */
-export function setTalkgroupsOn(keys: string[], on: boolean): void {
+/** A talkgroup key's system. */
+const systemOfKey = (key: string) => key.slice(0, key.lastIndexOf(":"));
+
+/**
+ * Switch talkgroups (keys) on or off, together. Switched on in a system
+ * that's off, the system comes on with only them (of `known`, every
+ * talkgroup there is): none of its others played, and none start to.
+ */
+export function setTalkgroupsOn(keys: string[], on: boolean, known: string[] = []): void {
   const drop = new Set(keys);
-  const off = state.sel.offTalkgroups.filter((x) => !drop.has(x));
-  setSelection({ ...state.sel, offTalkgroups: on ? off : [...off, ...keys] });
+  let off = state.sel.offTalkgroups.filter((x) => !drop.has(x));
+  if (!on) return setSelection({ ...state.sel, offTalkgroups: [...off, ...keys] });
+  const waking = new Set(keys.map(systemOfKey).filter((x) => state.sel.offSystems.includes(x)));
+  const others = known.filter((k) => !drop.has(k) && waking.has(systemOfKey(k)));
+  off = [...new Set([...off, ...others])];
+  setSelection({ ...state.sel, offSystems: state.sel.offSystems.filter((x) => !waking.has(x)), offTalkgroups: off });
 }
 
 /** Everything on (or every listed system and talkgroup off). */

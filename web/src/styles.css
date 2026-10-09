@@ -1147,7 +1147,6 @@ table.calls tr.ignored td { opacity: 0.55; }
 .tg-system-head { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--line); cursor: pointer; }
 .tg-system-head input, .tg-cell input { accent-color: var(--accent); }
 .tg-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 2px 10px; padding-top: 6px; }
-.tg-grid.off { opacity: 0.45; }
 .tg-cell { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 6px; cursor: pointer; min-width: 0; }
 .tg-cell:hover { background: var(--panel-2); }
 .tg-cell-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
