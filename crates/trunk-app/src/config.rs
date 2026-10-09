@@ -322,7 +322,7 @@ pub struct System {
     #[serde(skip_serializing_if = "String::is_empty")]
     pub site_group: String,
     /// Plugins' settings for this system, by plugin id (as each plugin's
-    /// `system_config` schema describes them).
+    /// `system_config` schema describes them); a list for several copies of one.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub plugins: BTreeMap<String, serde_json::Value>,
     /// Keys this version doesn't know (a newer version's, a hand edit's):
@@ -500,7 +500,7 @@ pub struct Conventional {
     #[serde(skip_serializing_if = "String::is_empty")]
     pub channel_file_status: String,
     /// Plugins' settings for the conventional channels, by plugin id (to
-    /// plugins they're one more system).
+    /// plugins they're one more system); a list for several copies of one.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub plugins: BTreeMap<String, serde_json::Value>,
     /// Their own recording rules; what's left out is as in [`Config::recording`].

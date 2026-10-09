@@ -164,8 +164,8 @@ export interface System {
   /** Multi-site: sites with one group are one system (a call on several is saved once).
    *  Absent: grouped by what the control channels say (P25 WACN + System ID, SmartNet System ID). */
   siteGroup?: string;
-  /** Plugins' settings for this system, by plugin id (each plugin's `system_config` schema). */
-  plugins?: Record<string, PluginValues>;
+  /** Plugins' settings for this system, by plugin id (each plugin's `system_config` schema); a list for several copies of one. */
+  plugins?: Record<string, SystemPluginValues>;
 }
 
 /** A plugin, as the config has it: on or off, and its settings for the whole recorder. */
@@ -280,8 +280,8 @@ export interface Conventional {
   channels: Channel[];
   /** How the channel file last read (from the recorder). */
   channelFileStatus?: string;
-  /** Plugins' settings for it (one more system to them), by plugin id. */
-  plugins?: Record<string, PluginValues>;
+  /** Plugins' settings for it (one more system to them), by plugin id; a list for several copies of one. */
+  plugins?: Record<string, SystemPluginValues>;
   /** Its own recording rules; each left out is the Recording tab's. */
   recording?: RecordingOverride;
   unitNames?: UnitNames;
@@ -802,6 +802,14 @@ export interface PluginRuntime {
 }
 
 export type PluginValues = Record<string, unknown>;
+/** A system's settings for a plugin: one copy of it, or several (each after
+ * the first runs as a process of its own, for the systems that have it). */
+export type SystemPluginValues = PluginValues | PluginValues[];
+
+/** A system's settings for a plugin, one per copy of it. */
+export function pluginCopies(v: SystemPluginValues | undefined): PluginValues[] {
+  return v === undefined || v === null ? [] : Array.isArray(v) ? v : [v];
+}
 
 /** An installed plugin (or one the config names), and what it is. Whether it's on, and its settings, are in the config. */
 export interface PluginInfo {

@@ -138,6 +138,8 @@ pub struct PluginHost {
 /// A plugin to run: what the config says of it (its `plugins` entry and each system's settings), resolved.
 pub struct Spec {
     pub id: String,
+    /// Which copy of it (0: the first; see [`super::copies`]).
+    pub copy: usize,
     pub exe: PathBuf,
     pub config: Value,
     /// Its settings for each system, by short name.
@@ -147,12 +149,21 @@ pub struct Spec {
 }
 
 impl Spec {
-    /// The config's enabled plugins.
+    /// The config's enabled plugins, each copy of each.
     pub fn enabled(cfg: &crate::config::Config) -> Vec<Spec> {
         cfg.plugins
             .iter()
             .filter(|(_, p)| p.enabled)
-            .map(|(id, p)| Spec { id: id.clone(), exe: executable(id, p), config: p.settings.clone(), systems: super::system_settings(cfg, id), data_dir: None })
+            .flat_map(|(id, p)| {
+                (0..super::copies(cfg, id)).map(move |copy| Spec {
+                    id: id.clone(),
+                    copy,
+                    exe: executable(id, p),
+                    config: p.settings.clone(),
+                    systems: super::system_settings(cfg, id, copy),
+                    data_dir: None,
+                })
+            })
             .collect()
     }
 }
@@ -173,9 +184,11 @@ impl PluginHost {
             s.exe = std::fs::canonicalize(&s.exe).unwrap_or(s.exe);
             match describe(&s.exe) {
                 Ok(m) => {
-                    if m.id != s.id {
+                    if m.id != s.id && s.copy == 0 {
                         notes(Note::Log { plugin: s.id.clone(), level: Level::Warn, text: format!("{} says it is \"{}\"", s.exe.display(), m.id) });
                     }
+                    // From here on a copy goes by its label: its notes, its data folder.
+                    s.id = super::copy_label(&s.id, s.copy);
                     // Not set up yet (the interface says so too): it would only fail.
                     let unset = unset_required(m.config.as_ref(), &s.config);
                     if !unset.is_empty() {

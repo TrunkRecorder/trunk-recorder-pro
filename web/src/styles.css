@@ -311,6 +311,9 @@ td.unit-cell .unit, .now-playing .unit {
 .install-stage { font-style: italic; }
 .system-plugins { border-top: 1px solid var(--line); margin-top: 12px; padding-top: 12px; gap: 12px; }
 .system-plugins h4 { margin: 0; font-size: 13px; font-weight: 600; }
+.plugin-copy-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 0 8px; }
+.plugin-copy-head .field-hint { margin: 0; }
+.plugin-add-pick { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .plugin-systems { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .plugin-systems button.chip { cursor: pointer; font: inherit; font-size: 13px; }
 .plugin-systems button.chip:hover { filter: brightness(1.15); }

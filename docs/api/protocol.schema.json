@@ -706,9 +706,9 @@
         "plugins": {
           "type": "object",
           "additionalProperties": {
-            "$ref": "#/definitions/PluginValues"
+            "$ref": "#/definitions/SystemPluginValues"
           },
-          "description": "Plugins' settings for it (one more system to them), by plugin id."
+          "description": "Plugins' settings for it (one more system to them), by plugin id; a list for several copies of one."
         },
         "recording": {
           "$ref": "#/definitions/RecordingOverride",
@@ -5608,9 +5608,9 @@
         "plugins": {
           "type": "object",
           "additionalProperties": {
-            "$ref": "#/definitions/PluginValues"
+            "$ref": "#/definitions/SystemPluginValues"
           },
-          "description": "Plugins' settings for this system, by plugin id (each plugin's `system_config` schema)."
+          "description": "Plugins' settings for this system, by plugin id (each plugin's `system_config` schema); a list for several copies of one."
         }
       },
       "required": [
@@ -5625,6 +5625,20 @@
         "voiceChannelsHz"
       ],
       "additionalProperties": false
+    },
+    "SystemPluginValues": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/PluginValues"
+        },
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/PluginValues"
+          }
+        }
+      ],
+      "description": "A system's settings for a plugin: one copy of it, or several (each after the first runs as a process of its own, for the systems that have it)."
     },
     "SystemStatus": {
       "type": "object",

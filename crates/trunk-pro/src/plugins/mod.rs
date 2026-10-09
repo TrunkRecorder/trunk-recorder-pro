@@ -12,6 +12,13 @@
 //! }
 //! ```
 //!
+//! A system can have several copies of a plugin (a list of settings in place
+//! of one, `"openmhz": [{ "apiKey": "a" }, { "apiKey": "b" }]`, to upload it
+//! to two places, say). Each copy after the first runs as a process of its
+//! own. Every copy is told of every system; a system with fewer copies gets
+//! null settings, as one that doesn't use the plugin does, so plugins needn't
+//! know. Each copy that takes `call.concluded` is a taker the Archive waits on.
+//!
 //! An installed plugin is `<config dir>/plugins/<id>/<id>` (`.exe` on
 //! Windows), put there by the plugin store ([`store`]) or by hand; `"path"`
 //! in its entry runs another executable instead (a build of your own). Each
@@ -42,10 +49,47 @@ use crate::config::{Config, PluginSetup};
 /// The M4A settings (the config's `recording.m4a`).
 pub type AudioSettings = crate::config::M4a;
 
-/// Plugin `id`'s settings for each system calls can come from that has
-/// some, by short name (every system's own: [`Config::name_problem`]).
-pub fn system_settings(cfg: &Config, id: &str) -> BTreeMap<String, Value> {
-    cfg.call_systems().into_iter().filter_map(|s| Some((s.short_name.to_string(), s.plugins.get(id)?.clone()))).collect()
+/// A system's settings for a plugin, one per copy of it: most have one (an
+/// object); a list is several.
+fn copies_of(v: &Value) -> &[Value] {
+    match v {
+        Value::Array(a) => a,
+        Value::Null => &[],
+        v => std::slice::from_ref(v),
+    }
+}
+
+/// How many copies of plugin `id` run: one, and more when a system has more.
+pub fn copies(cfg: &Config, id: &str) -> usize {
+    cfg.call_systems().iter().filter_map(|s| s.plugins.get(id)).map(|v| copies_of(v).len()).max().unwrap_or(0).max(1)
+}
+
+/// Copy `copy` (0: the first) of plugin `id`'s settings for each system
+/// calls can come from that has some, by short name (every system's own:
+/// [`Config::name_problem`]).
+pub fn system_settings(cfg: &Config, id: &str, copy: usize) -> BTreeMap<String, Value> {
+    cfg.call_systems().into_iter().filter_map(|s| Some((s.short_name.to_string(), copies_of(s.plugins.get(id)?).get(copy)?.clone()))).collect()
+}
+
+/// What a copy of plugin `id` goes by in its notes, process stats and data
+/// folder: `id` for the first, `id#2` and on for the others.
+pub fn copy_label(id: &str, copy: usize) -> String {
+    if copy == 0 {
+        id.to_string()
+    } else {
+        format!("{id}#{}", copy + 1)
+    }
+}
+
+/// A label's plugin id and which copy (0: the first).
+pub fn parse_label(label: &str) -> (&str, usize) {
+    match label.rsplit_once('#') {
+        Some((id, n)) => match n.parse::<usize>() {
+            Ok(n) if n >= 2 => (id, n - 1),
+            _ => (label, 0),
+        },
+        None => (label, 0),
+    }
 }
 
 /// Forget plugin `id`: its entry and its settings for every system.
@@ -241,5 +285,28 @@ mod tests {
         assert_eq!(specs[0].systems.get("dcfd"), Some(&json!({ "apiKey": "dcfd" })));
         assert_eq!(specs[0].systems.get("county"), Some(&json!({ "apiKey": "conv" })));
         assert_eq!(specs[0].systems.len(), 2);
+    }
+
+    /// A system with two copies of a plugin: a second process, told only of
+    /// the systems with a second copy.
+    #[test]
+    fn a_second_copy_runs_for_its_systems_only() {
+        let c: Config = serde_json::from_value(json!({
+            "systems": [
+                { "shortName": "dcfd", "controlChannelsHz": [857987500], "plugins": { "openmhz": [{ "apiKey": "a" }, { "apiKey": "b" }] } },
+                { "shortName": "wmata", "controlChannelsHz": [489087500], "plugins": { "openmhz": { "apiKey": "w" } } }
+            ],
+            "plugins": { "openmhz": { "enabled": true, "settings": { "server": "s" } } }
+        }))
+        .unwrap();
+        assert_eq!(copies(&c, "openmhz"), 2);
+        let specs = Spec::enabled(&c);
+        assert_eq!(specs.iter().map(|s| (s.id.as_str(), s.copy)).collect::<Vec<_>>(), [("openmhz", 0), ("openmhz", 1)]);
+        assert_eq!(specs[0].systems, BTreeMap::from([("dcfd".to_string(), json!({ "apiKey": "a" })), ("wmata".to_string(), json!({ "apiKey": "w" }))]));
+        assert_eq!(specs[1].systems, BTreeMap::from([("dcfd".to_string(), json!({ "apiKey": "b" }))]));
+        assert_eq!(specs[1].config, json!({ "server": "s" }), "every copy has the whole recorder's settings");
+        assert_eq!(copy_label("openmhz", 1), "openmhz#2");
+        assert_eq!(parse_label("openmhz#2"), ("openmhz", 1));
+        assert_eq!(parse_label("openmhz"), ("openmhz", 0));
     }
 }

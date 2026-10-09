@@ -5,7 +5,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { feedSeries } from "./series.ts";
 import { LivePlayer } from "./livePlayer.ts";
-import { conventionalIndex } from "./protocol.ts";
+import { conventionalIndex, pluginCopies } from "./protocol.ts";
 import type {
   MonitorEvent,
   PlatformInfo,
@@ -627,17 +627,34 @@ export function setPluginSettings(id: string, settings: PluginValues): void {
     all[id] = p;
   });
 }
-/** A plugin's settings for one system, trunked or conventional. */
-export function setSystemPluginSettings(system: SystemRef, id: string, values: PluginValues): void {
+/** Change a system's copies of plugin `id` (trunked or conventional): one is
+ * kept as an object, several as a list; a lone copy with nothing set, not at all. */
+function editSystemPlugin(system: SystemRef, id: string, f: (copies: PluginValues[]) => PluginValues[]): void {
   updateConfig((x) => {
     const sys = systemAt(x, system);
     if (!sys) return;
     const all = { ...(sys.plugins ?? {}) };
-    if (blank(values)) delete all[id];
-    else all[id] = values;
+    const copies = f([...pluginCopies(all[id])]);
+    if (copies.length === 0 || (copies.length === 1 && blank(copies[0]))) delete all[id];
+    else all[id] = copies.length === 1 ? copies[0] : copies;
     if (Object.keys(all).length) sys.plugins = all;
     else delete sys.plugins;
   });
+}
+/** A plugin's settings for one system: copy `copy` of it (0: the first). */
+export function setSystemPluginSettings(system: SystemRef, id: string, values: PluginValues, copy = 0): void {
+  editSystemPlugin(system, id, (c) => {
+    while (c.length <= copy) c.push({});
+    c[copy] = values;
+    return c;
+  });
+}
+/** Another copy of a plugin for one system, to set up: it runs again, with these settings, for this system alone. */
+export function addSystemPluginCopy(system: SystemRef, id: string): void {
+  editSystemPlugin(system, id, (c) => [...(c.length ? c : [{}]), {}]);
+}
+export function removeSystemPluginCopy(system: SystemRef, id: string, copy: number): void {
+  editSystemPlugin(system, id, (c) => c.filter((_, i) => i !== copy));
 }
 export function addPlugin(path: string): void {
   transport.send({ type: "addPlugin", path });
