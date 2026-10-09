@@ -2308,7 +2308,7 @@ export function Setup() {
           {!web && (
             <Toggle
               label="Save vocoder frames"
-              hint="diagnostics, as <call>.frames.jsonl"
+              hint="as <call>.sdr, for diagnostics and MimoSDR"
               checked={c.recording.captureFrames}
               onChange={(v) => updateConfig((x) => void (x.recording.captureFrames = v))}
             />

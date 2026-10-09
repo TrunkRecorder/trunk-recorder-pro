@@ -11,3 +11,5 @@ repository.workspace = true
 rustfft.workspace = true
 num-complex.workspace = true
 regex-lite = "0.1"
+# MimoSDR's .sdr call container (frame capture). Zero dependencies; not on crates.io.
+sdr_stream = { package = "sdr-stream", git = "https://github.com/MimoCAD/sdr-stream.git", rev = "8c4d293bc5b27732252faea5112dd5a37a2ed0bd" }

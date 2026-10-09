@@ -245,7 +245,7 @@ export interface Recording extends RecordingRules {
   captureDir: string;
   prerollS: number;
   maxRecorders: number;
-  /** Save each call's vocoder frames (<call>.frames.jsonl) for diagnosis. */
+  /** Save each digital call's vocoder frames (<call>.sdr; NXDN <call>.frames.jsonl) for diagnosis. */
   captureFrames: boolean;
   /** A call heard on several sites of one system: save the best copy only. */
   dropDuplicateCalls: boolean;

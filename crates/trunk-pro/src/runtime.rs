@@ -520,7 +520,7 @@ struct Finish {
     system: u16,
     wav: Vec<u8>,
     json: String,
-    frames: Option<String>,
+    frames: Option<trunk_core::trunk::Capture>,
     /// Its history entry (`{path, record}`).
     entry: Value,
     rules: FileRules,
@@ -562,13 +562,13 @@ fn finish_one(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, f: Fin
     let need = f.json.len() + f.wav.len() / 4 + if write_wav && !keep_audio { f.wav.len() } else { 0 };
     let spooled = spool.filter(|s| spooling && s.room_for(need as u64)).map(|s| s.dir.join(&f.rel));
     let at = |kept: bool, ext: &str| PathBuf::from(format!("{}.{ext}", if kept { &base } else { spooled.as_ref().unwrap_or(&base) }.display()));
-    let (wav_at, json_at, frames_at, m4a_at) = (at(keep_audio, "wav"), at(keep_json, "json"), at(keep_audio, "frames.jsonl"), at(keep_m4a, "m4a"));
+    let (wav_at, json_at, frames_at, m4a_at) = (at(keep_audio, "wav"), at(keep_json, "json"), at(keep_audio, f.frames.as_ref().map_or("sdr", |c| c.ext)), at(keep_m4a, "m4a"));
     for d in [&wav_at, &json_at, &m4a_at].into_iter().filter_map(|p| p.parent()) {
         let _ = fs::create_dir_all(d);
     }
     let ok = (!write_wav || fs::write(&wav_at, &f.wav).is_ok())
         && fs::write(&json_at, &f.json).is_ok()
-        && f.frames.as_ref().is_none_or(|fr| fs::write(&frames_at, fr).is_ok());
+        && f.frames.as_ref().is_none_or(|c| fs::write(&frames_at, &c.bytes).is_ok());
     if !ok {
         log::error!("Couldn't write {}", base.display());
         publish(&ctx.hub, json!({ "type": "log", "lines": [{ "timeS": 0, "kind": "error", "text": format!("couldn't write {}", base.display()) }] }));
