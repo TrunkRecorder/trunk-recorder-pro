@@ -95,6 +95,10 @@ LimeSDR...).
 - [Development](development.md): building from source, making a release, the code layout and how
   it was verified
 - [Architecture](architecture.md): how it works, from SDR to audio file
+- [Architecture explainer](developer/architecture.html): interactive diagrams of the sample path,
+  DSP chains, trunking, recorders, back-pressure, plugins, data objects, config, clocks,
+  measurements, the browser build and the interface protocol
+  ([text version](developer/architecture.md))
 - [Performance](performance.md): CPU use measured against Trunk Recorder
 - [Building your own interface](api/README.md): the WebSocket API the built-in interface uses
 - [Writing a plugin](plugins/writing-plugins.md)
