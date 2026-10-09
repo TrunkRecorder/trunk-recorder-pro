@@ -4,12 +4,14 @@
 //! audio — the same outputs as the P25 and DMR trackers, so the engine
 //! records it the same way.
 
+use super::alias::Aliases;
 use super::channel::{self, SacchAssembler};
 use super::frame::{Body, Frame, Framer, RfChannel};
 use super::layer3::{Context, Message};
 use crate::ambe::decode_vcw;
 use crate::dsp::Symbol;
 use crate::mbe::{self, Kind, FRAME_SAMPLES};
+use crate::p25::alias::Alias;
 use crate::trunk::frames::{Codec, VoiceFrame};
 use crate::trunk::voice::TrackerOut;
 
@@ -35,6 +37,10 @@ pub struct NxdnVoice {
     /// Full-rate voice (not decoded).
     efr: bool,
     ran: Option<u8>,
+    /// Kenwood talker alias segments heard in this transmission.
+    aliases: Aliases,
+    /// The alias heard before a VCALL named its radio.
+    alias: Option<String>,
     /// Layer 3 messages heard on the channel since the last [`NxdnVoice::take_messages`] (the trunk follower's).
     pub messages: Vec<(f64, Message)>,
     /// Keep `messages` (a trunked voice channel, for late entry and other calls' DUPs).
@@ -60,6 +66,8 @@ impl NxdnVoice {
             emergency: false,
             efr: false,
             ran: None,
+            aliases: Aliases::default(),
+            alias: None,
             messages: Vec::new(),
             keep_messages: false,
             vch: 0,
@@ -196,6 +204,11 @@ impl NxdnVoice {
                 if tg.is_some() {
                     self.talkgroup = tg;
                 }
+                if self.source.is_some() && self.source != src {
+                    // Another radio took over mid-call: the alias heard so far isn't its.
+                    self.aliases.reset();
+                    self.alias = None;
+                }
                 self.group = head.group();
                 self.source = src;
                 self.encrypted = encrypted;
@@ -204,6 +217,14 @@ impl NxdnVoice {
                 if fresh {
                     out.push(Out { t, out: TrackerOut::Info { source: src, emergency: self.emergency, encrypted } });
                 }
+                self.name_source(t, out);
+            }
+            Message::TalkerAlias(seg) => {
+                // Kenwood radios name themselves in the SACCH and FACCH1, whole once its checksum is good.
+                if let Some(alias) = self.aliases.push(*seg) {
+                    self.alias = Some(alias);
+                    self.name_source(t, out);
+                }
             }
             Message::TxRel { .. } | Message::TxRelEx { .. } | Message::Disc { .. } => {
                 // End of the transmission: what it was doesn't carry over to the next.
@@ -211,12 +232,22 @@ impl NxdnVoice {
                 self.encrypted = false;
                 self.emergency = false;
                 self.efr = false;
+                self.aliases.reset();
+                self.alias = None;
                 self.dec.reset();
             }
             _ => {}
         }
         if self.keep_messages {
             self.messages.push((t, m));
+        }
+    }
+
+    /// Tell the engine the talker's alias, once the VCALL has said who that is.
+    fn name_source(&mut self, t: f64, out: &mut Vec<Out>) {
+        if let Some(unit) = self.source {
+            let Some(alias) = self.alias.take() else { return };
+            out.push(Out { t, out: TrackerOut::Alias(Alias { unit, alias, source: "KenwoodNXDN", talkgroup: self.talkgroup }) });
         }
     }
 
@@ -267,7 +298,7 @@ mod tests {
     }
 
     fn tx(rate: Rate, cipher: u8) -> Tx {
-        Tx { rate, ran: 3, head: CallHead { cc_option: 0, call_type: CALL_CONFERENCE, option: 0, source: 501, destination: 3100 }, cipher, superframes: 4, rf: 2, outbound: true }
+        Tx { rate, ran: 3, head: CallHead { cc_option: 0, call_type: CALL_CONFERENCE, option: 0, source: 501, destination: 3100 }, cipher, superframes: 4, rf: 2, outbound: true, alias: None }
     }
 
     #[test]
@@ -282,6 +313,69 @@ mod tests {
             let want = if rate == Rate::N96 { 32 } else { 64 };
             assert_eq!(audio, want, "{rate:?}");
         }
+    }
+
+    fn heard(v: &mut NxdnVoice, o: &[u8], out: &mut Vec<Out>) {
+        v.message(Message::parse(o, Context::Traffic, false), 0.0, out);
+    }
+
+    fn aliases(out: &[Out]) -> Vec<(u32, String, Option<u32>)> {
+        out.iter()
+            .filter_map(|o| match &o.out {
+                TrackerOut::Alias(a) => Some((a.unit, a.alias.clone(), a.talkgroup)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn vcall(source: u16) -> Vec<u8> {
+        let head = CallHead { cc_option: 0, call_type: CALL_CONFERENCE, option: 0, source, destination: 3100 };
+        crate::nxdn::layer3::build::vcall(&head, 0, 0)
+    }
+
+    #[test]
+    fn a_kenwood_alias_names_the_radio_that_called() {
+        let mut v = NxdnVoice::new(1);
+        let mut out = Vec::new();
+        heard(&mut v, &vcall(501), &mut out);
+        for _ in 0..3 {
+            for s in crate::nxdn::alias::build::segments("E12 CAPT") {
+                heard(&mut v, &s, &mut out);
+            }
+        }
+        assert_eq!(aliases(&out), [(501, "E12 CAPT".to_string(), Some(3100))]);
+    }
+
+    #[test]
+    fn an_alias_heard_before_the_call_names_its_radio_afterwards() {
+        let mut v = NxdnVoice::new(1);
+        let mut out = Vec::new();
+        for s in crate::nxdn::alias::build::segments("MEDIC 7") {
+            heard(&mut v, &s, &mut out);
+        }
+        assert!(aliases(&out).is_empty());
+        heard(&mut v, &vcall(77), &mut out);
+        assert_eq!(aliases(&out), [(77, "MEDIC 7".to_string(), Some(3100))]);
+    }
+
+    #[test]
+    fn the_next_radio_gets_its_own_alias_not_the_last_ones() {
+        let mut v = NxdnVoice::new(1);
+        let mut out = Vec::new();
+        heard(&mut v, &vcall(1), &mut out);
+        for s in crate::nxdn::alias::build::segments("ALPHA") {
+            heard(&mut v, &s, &mut out);
+        }
+        // Another radio keys up without an alias of its own: it isn't called ALPHA.
+        heard(&mut v, &vcall(2), &mut out);
+        for _ in 0..2 {
+            heard(&mut v, &vcall(2), &mut out);
+        }
+        assert_eq!(aliases(&out), [(1, "ALPHA".to_string(), Some(3100))]);
+        for s in crate::nxdn::alias::build::segments("BRAVO") {
+            heard(&mut v, &s, &mut out);
+        }
+        assert_eq!(aliases(&out).last(), Some(&(2, "BRAVO".to_string(), Some(3100))));
     }
 
     #[test]

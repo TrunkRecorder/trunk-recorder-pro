@@ -93,6 +93,9 @@ pub struct Tx {
     /// RF channel of the LICH: 1 trunked traffic, 2 conventional.
     pub rf: u8,
     pub outbound: bool,
+    /// A Kenwood talker alias, sent in the SACCH superframes after the first
+    /// (one segment each, round and round, as a radio does).
+    pub alias: Option<String>,
 }
 
 impl Tx {
@@ -110,9 +113,24 @@ impl Tx {
         let mut out = vec![voice_frame(self.lich(0, 0), sr(0), 0, &[Half::Facch1(vcall.clone()), Half::Facch1(vcall.clone())])];
         let mut msg = [0u8; 9];
         msg[..vcall.len()].copy_from_slice(&vcall);
-        let q = build::sacch_quarters(&msg);
+        let vcall_q = build::sacch_quarters(&msg);
+        let alias: Vec<[u32; 4]> = self
+            .alias
+            .as_deref()
+            .map(|a| {
+                super::alias::build::segments(a)
+                    .iter()
+                    .map(|m| {
+                        let mut o = [0u8; 9];
+                        o.copy_from_slice(m);
+                        build::sacch_quarters(&o)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         let mut n = 0;
-        for _ in 0..self.superframes {
+        for sf in 0..self.superframes {
+            let q = if sf == 0 || alias.is_empty() { vcall_q } else { alias[(sf - 1) % alias.len()] };
             for k in 0..4 {
                 let halves = if self.rate == Rate::N96 && k % 2 == 1 {
                     [Half::Facch1(vcall.clone()), Half::Facch1(vcall.clone())]
@@ -202,7 +220,7 @@ mod tests {
     use crate::nxdn::layer3::{Context, Message, CALL_CONFERENCE};
 
     fn tx(rate: Rate) -> Tx {
-        Tx { rate, ran: 9, head: CallHead { cc_option: 0, call_type: CALL_CONFERENCE, option: if rate == Rate::N96 { 2 } else { 0 }, source: 1234, destination: 77 }, cipher: 0, superframes: 5, rf: 2, outbound: true }
+        Tx { rate, ran: 9, head: CallHead { cc_option: 0, call_type: CALL_CONFERENCE, option: if rate == Rate::N96 { 2 } else { 0 }, source: 1234, destination: 77 }, cipher: 0, superframes: 5, rf: 2, outbound: true, alias: None }
     }
 
     /// Through the 4FSK receiver and framer, at both rates, clean and in
@@ -319,7 +337,7 @@ mod tests {
     }
 
     fn conv_tx(rate: Rate) -> Tx {
-        Tx { rate, ran: 3, head: CallHead { cc_option: 0, call_type: CALL_CONFERENCE, option: if rate == Rate::N96 { 2 } else { 0 }, source: 501, destination: 3100 }, cipher: 0, superframes: 10, rf: 2, outbound: true }
+        Tx { rate, ran: 3, head: CallHead { cc_option: 0, call_type: CALL_CONFERENCE, option: if rate == Rate::N96 { 2 } else { 0 }, source: 501, destination: 3100 }, cipher: 0, superframes: 10, rf: 2, outbound: true, alias: None }
     }
 
     #[test]
@@ -343,6 +361,34 @@ mod tests {
             assert!((secs - want).abs() < 0.15, "{rate:?}: {secs:.2} s of audio");
             assert!(done[0].json.contains("\"ran\":3"), "{}", done[0].json);
         }
+    }
+
+    #[test]
+    fn engine_names_a_conventional_radio_by_its_kenwood_alias() {
+        let (fs, center, freq) = (1_200_000.0, 460_000_000.0, 460_056_250.0);
+        for rate in [Rate::N48, Rate::N96] {
+            for alias in ["E12 CAPT", "A", "TWELVE-CHARS!"] {
+                let mut tx = conv_tx(rate);
+                tx.alias = Some(alias.into());
+                let cfg = EngineConfig {
+                    sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
+                    conventional: vec![ConvChannel::new(freq, ConvMode::Nxdn(rate))],
+                    ..Default::default()
+                };
+                let (done, _) = run_engine(cfg, &keyed(&tx, fs, freq - center));
+                assert_eq!(done.len(), 1, "{rate:?} {alias}");
+                assert!(done[0].json.contains(&format!("\"src\":501,")), "{}", done[0].json);
+                assert!(done[0].json.contains(&format!("\"tag_ota\":\"{alias}\"")), "{rate:?}: {}", done[0].json);
+            }
+        }
+        // No alias sent: none made up.
+        let cfg = EngineConfig {
+            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
+            conventional: vec![ConvChannel::new(freq, ConvMode::Nxdn(Rate::N48))],
+            ..Default::default()
+        };
+        let (done, _) = run_engine(cfg, &keyed(&conv_tx(Rate::N48), fs, freq - center));
+        assert!(done[0].json.contains("\"tag_ota\":\"\""), "{}", done[0].json);
     }
 
     #[test]
@@ -418,7 +464,7 @@ mod tests {
         let (fs, center) = (240_000.0, 451_043_750.0);
         let (cc, vc) = (451_018_750.0, 451_068_750.0);
         let h = CallHead { cc_option: 0, call_type: CALL_CONFERENCE, option: 0, source: 77, destination: 3001 };
-        let t = Tx { rate: Rate::N48, ran: 5, head: h, cipher: 0, superframes: 10, rf: 1, outbound: true };
+        let t = Tx { rate: Rate::N48, ran: 5, head: h, cipher: 0, superframes: 10, rf: 1, outbound: true, alias: None };
         let voice = t.frames();
         // Control: site info, the grant to channel 7, then its duplicates while the call lasts.
         let mut ctrl = vec![cac_frame(S { structure: 2, ran: 5 }, &l3::site_info(0x123 << 12 | 0x045, 0x0200, 0, 0, [1, 0]))];
@@ -527,7 +573,7 @@ mod snr_curve {
         let fs = 48_000.0;
         for rate in [Rate::N48, Rate::N96] {
             let bw = if rate == Rate::N48 { 6250.0 } else { 12_500.0 };
-            let t = Tx { rate, ran: 1, head: CallHead { cc_option: 0, call_type: CALL_CONFERENCE, option: 0, source: 1, destination: 2 }, cipher: 0, superframes: 40, rf: 2, outbound: true };
+            let t = Tx { rate, ran: 1, head: CallHead { cc_option: 0, call_type: CALL_CONFERENCE, option: 0, source: 1, destination: 2 }, cipher: 0, superframes: 40, rf: 2, outbound: true, alias: None };
             let mut x = 3u32;
             let mut d: Vec<u8> = (0..1000)
                 .map(|_| {

@@ -190,7 +190,8 @@ Conventional systems take a unit names file too, on their own card.
 
 Many P25 radios send their programmed name ("E12 CAPT") along with their unit ID while they talk:
 a *talker alias*. Trunk Recorder Pro reads them on P25 voice channels, Phase 1 and Phase 2, in
-Motorola's and Harris's formats, and learns them as it goes. There is nothing to turn on.
+Motorola's and Harris's formats, and on NXDN voice channels in Kenwood's format (see
+[NXDN](nxdn.md#talker-aliases)), and learns them as it goes. There is nothing to turn on.
 
 - Each new or changed alias is logged: `Unit 1234 is "E12 CAPT" (TG 2207)`.
 - Aliases are kept per system in `<shortName>.units.csv`, in the folder the config file is in,
@@ -203,7 +204,7 @@ Motorola's and Harris's formats, and learns them as it goes. There is nothing to
   clear. When a system encrypts that too, the log says so once per talkgroup ("Talkgroup 2207:
   link control is encrypted, so its radios' talker aliases can't be read").
 
-DMR and NXDN talker aliases aren't read.
+DMR talker aliases, and NXDN ones in any format but Kenwood's, aren't read.
 
 ## Common problems
 
