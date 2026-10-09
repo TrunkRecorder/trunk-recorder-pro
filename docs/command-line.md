@@ -63,8 +63,8 @@ Where the default config lives:
 | Windows | `%APPDATA%\trunk-pro\config.json` |
 | Linux | `$XDG_CONFIG_HOME/trunk-pro/config.json`, or `~/.config/trunk-pro/config.json` |
 
-If the file doesn't exist, the app starts with an empty config and the interface offers the
-setup guide. If it exists but can't be read, the app stops with
+If the file doesn't exist, the app starts with the default config (one RTL-SDR source, no
+systems) and the interface offers the setup guide. If it exists but can't be read, the app stops with
 `<path>: not a config this version reads (…)`. See [Troubleshooting](troubleshooting.md).
 
 At start the log says where everything is:

@@ -145,7 +145,8 @@ const DECIM_TAPS: usize = 129;
 /// CTCSS block, samples at 1 kHz (50 ms), and blocks per decision window.
 const BLOCK: usize = 50;
 const WINDOW: usize = 5;
-/// The strongest tone's power over the median of all of them, to count.
+/// The strongest tone's power over the median of all of them, to count (a
+/// power ratio: 20× is 13 dB, well under the 20+ dB a real tone stands clear).
 const CTCSS_OVER_MEDIAN: f32 = 20.0;
 /// … and over the strongest tone more than 8 Hz away.
 const CTCSS_OVER_OTHERS: f32 = 10.0;

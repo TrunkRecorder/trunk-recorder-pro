@@ -488,8 +488,9 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Rec
         }
     }
     ctx.set_phase("stopping", None, false);
-    // What the sources had already sent (up to the queue's ~3 s): calls in
-    // progress keep it.
+    // What the sources had already sent (up to the queue's 256 blocks: about
+    // 2.5 s of 10 ms USRP / Soapy blocks, about 14 s of RTL-SDR's at
+    // 2.4 MSPS): calls in progress keep it.
     for m in rx.try_iter() {
         match m {
             SourceMsg::Data { source, bytes, dropped, at } => session.push(source, &bytes, dropped, at_ms(at)),

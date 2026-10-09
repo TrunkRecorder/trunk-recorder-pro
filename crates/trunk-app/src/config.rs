@@ -178,7 +178,8 @@ pub enum SampleFormat {
 }
 
 impl SampleFormat {
-    /// From a file name's extension (.cf32 / .cfile / .fc32 / .raw → cf32, .cs16 / .sc16 → cs16, else cu8).
+    /// From a file name's extension (.cf32 / .cfile / .fc32 / .complex → cf32, .cs16 / .sc16 → cs16, else
+    /// cu8, .raw included).
     pub fn from_path(path: &str) -> Self {
         let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
         match ext.as_str() {
@@ -705,7 +706,8 @@ pub struct Recording {
     /// (Trunk Recorder's minDuration).
     pub min_call_s: f64,
     /// Per system: save a call this long and carry on in a new one, s; 0 =
-    /// no limit (maxDuration).
+    /// parts of `STUCK_CALL_S` (600 s), so a stuck carrier never records
+    /// without bound (maxDuration).
     pub max_call_s: f64,
     /// Per system: leave out transmissions shorter than this, s; 0 = keep
     /// all (minTransmissionDuration).

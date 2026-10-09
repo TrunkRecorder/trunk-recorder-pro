@@ -15,7 +15,7 @@ what to put in a bug report.
 The config file isn't valid JSON, or a value has the wrong type (text where a number goes, say).
 The part in brackets says what and where. This usually comes from a hand edit: a missing comma,
 a trailing comma, or a stray quote. Fix that line, or move the file aside and start again (the
-app starts with an empty config when there's no file).
+app starts with the default config, one RTL-SDR and no systems, when there's no file).
 
 A Trunk Recorder `config.json` is a different format. Don't point `--config` at one; bring it over
 with **Import Trunk Recorder config…** instead (see
