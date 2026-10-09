@@ -5,6 +5,11 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **NXDN talker aliases:** Kenwood radios' programmed names are read from the
+  traffic channel and shown as each radio's name (`tag_ota`, the Calls page,
+  `<shortName>.units.csv`), as P25's are. ASCII aliases only; Icom's format
+  isn't read. A new test sends one through the whole recorder.
+
 ## [0.1.7] — 2026-10-07
 
 - **Louder calls:** speech is normalised to about −14 LUFS (−12 dBFS), 4.5 dB

@@ -197,7 +197,7 @@ pub fn run(a: &Args) {
             let t = f.sample / rate;
             let lich = f.lich();
             let mut line = format!("{{\"t\":{t:.3},\"sync\":{}", f.sync_errs.map_or("null".into(), |e| e.to_string()));
-            let mut msgs: Vec<(&str, Message)> = Vec::new();
+            let mut msgs: Vec<(&str, Message, Vec<u8>)> = Vec::new();
             if let Some((l, inner)) = lich {
                 c.lich += 1;
                 let _ = write!(line, ",\"lich\":\"{:02x}\",\"lich_inner\":{inner}", l.raw);
@@ -213,9 +213,9 @@ pub fn run(a: &Args) {
                         if let Message::SiteInfo { access, .. } = &first {
                             dfa = access.dfa;
                         }
-                        msgs.push(("cac", first));
+                        msgs.push(("cac", first, o.to_vec()));
                         if dual {
-                            msgs.push(("cac", Message::parse(&o[9..], Context::Control, dfa)));
+                            msgs.push(("cac", Message::parse(&o[9..], Context::Control, dfa), (o[9..]).to_vec()));
                         }
                     }
                 } else {
@@ -228,7 +228,7 @@ pub fn run(a: &Args) {
                                     let _ = write!(line, ",\"sacch\":{{\"ran\":{},\"structure\":{},\"errs\":{}}}", s.sr.ran, s.sr.structure, s.errs);
                                     if superframe {
                                         if let Some(o) = sf.push(&s) {
-                                            msgs.push(("sacch", Message::parse(&o, Context::Traffic, dfa)));
+                                            msgs.push(("sacch", Message::parse(&o, Context::Traffic, dfa), (o).to_vec()));
                                         }
                                     }
                                 }
@@ -239,7 +239,7 @@ pub fn run(a: &Args) {
                                     c.facch1.1 += 1;
                                     if let Some((o, _)) = channel::facch1(f, h) {
                                         c.facch1.0 += 1;
-                                        msgs.push(("facch1", Message::parse(&o, Context::Traffic, dfa)));
+                                        msgs.push(("facch1", Message::parse(&o, Context::Traffic, dfa), (o).to_vec()));
                                     }
                                 } else {
                                     for k in 0..2 {
@@ -266,7 +266,7 @@ pub fn run(a: &Args) {
                             if let Some((_, o, _)) = channel::udch(f) {
                                 c.udch.0 += 1;
                                 if l.body() == Body::Facch2 {
-                                    msgs.push(("facch2", Message::parse(&o, Context::Traffic, dfa)));
+                                    msgs.push(("facch2", Message::parse(&o, Context::Traffic, dfa), (o).to_vec()));
                                 }
                             }
                         }
@@ -277,8 +277,11 @@ pub fn run(a: &Args) {
             if all {
                 writeln!(out, "{line}").unwrap();
             }
-            for (ch, m) in msgs {
-                let s = format!("{m:?}");
+            for (ch, m, raw) in msgs {
+                let mut s = format!("{m:?}");
+                if let Message::PropForm { .. } = m {
+                    s.push_str(&format!(" raw={}", raw.iter().map(|b| format!("{b:02x}")).collect::<String>()));
+                }
                 if s != last_msg || all {
                     writeln!(out, "{{\"t\":{t:.3},\"ch\":\"{ch}\",\"msg\":\"{}\",\"detail\":{:?}}}", m.name(), s).unwrap();
                     last_msg = s;
@@ -316,11 +319,11 @@ pub fn run_synth(a: &Args) {
     // (offset Hz, frames)
     let carriers: Vec<(f64, Vec<[u8; 192]>)> = match kind {
         "conv" => {
-            let t = Tx { rate: nxdn, ran: 5, head, cipher: 0, superframes: 15, rf: 2, outbound: true };
+            let t = Tx { rate: nxdn, ran: 5, head, cipher: 0, superframes: 15, rf: 2, outbound: true, alias: None };
             vec![(50_000.0, t.frames())]
         }
         "typeC" => {
-            let t = Tx { rate: nxdn, ran: 5, head, cipher: 0, superframes: 15, rf: 1, outbound: true };
+            let t = Tx { rate: nxdn, ran: 5, head, cipher: 0, superframes: 15, rf: 1, outbound: true, alias: None };
             let mut voice = vec![idle_frame; 4];
             voice.extend(t.frames());
             let sr = Sr { structure: 2, ran: 5 };

@@ -148,7 +148,9 @@ pub enum Message {
     CchInfo { location: Location, flags: u8, control: [u16; 2] },
     /// Up to 4 adjacent sites: (location, site number, control channel).
     AdjSiteInfo { sites: Vec<(Location, u8, u16)> },
-    /// Manufacturer-specific (Kenwood talker alias and others).
+    /// One segment of a Kenwood talker alias ([`super::alias`]).
+    TalkerAlias(super::alias::Segment),
+    /// Manufacturer-specific, other than a Kenwood talker alias.
     PropForm { manufacturer: u8 },
     Other { kind: u8 },
 }
@@ -231,7 +233,10 @@ impl Message {
                     .collect();
                 Message::AdjSiteInfo { sites }
             }
-            (PROP_FORM, _) => Message::PropForm { manufacturer: o[1] },
+            (PROP_FORM, _) => match super::alias::segment(&o[..n]) {
+                Some(seg) => Message::TalkerAlias(seg),
+                None => Message::PropForm { manufacturer: o[1] },
+            },
             (kind, _) => Message::Other { kind },
         }
     }
@@ -252,6 +257,7 @@ impl Message {
             Message::SrvInfo { .. } => "SRV_INFO",
             Message::CchInfo { .. } => "CCH_INFO",
             Message::AdjSiteInfo { .. } => "ADJ_SITE_INFO",
+            Message::TalkerAlias(_) => "TALKER_ALIAS",
             Message::PropForm { .. } => "PROP_FORM",
             Message::Other { .. } => "OTHER",
         }

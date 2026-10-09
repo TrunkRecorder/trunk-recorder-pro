@@ -685,7 +685,7 @@ mod tests {
         msgs.extend(std::iter::repeat_n(l3::idle(), 20));
         let ctrl = iq_of(&control_frames(&msgs, 5), Rate::N48, fs);
         // Group 3001's call comes up on the watched voice frequency (channel 20, unknown).
-        let t = Tx { rate: Rate::N48, ran: 5, head: head(3001, 77, CALL_CONFERENCE), cipher: 0, superframes: 3, rf: 1, outbound: true };
+        let t = Tx { rate: Rate::N48, ran: 5, head: head(3001, 77, CALL_CONFERENCE), cipher: 0, superframes: 3, rf: 1, outbound: true, alias: None };
         let mut vframes = vec![voice_frame(0x39, Sr { structure: 0, ran: 5 }, 0, &[Half::Facch1(l3::idle()), Half::Facch1(l3::idle())]); 4];
         vframes.extend(t.frames());
         let vc = iq_of(&vframes, Rate::N48, fs);
