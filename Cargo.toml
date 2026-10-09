@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/trunk-core", "crates/trunk-app", "crates/trunk-pro", "crates/trunk-web", "crates/trunk-recorder-plugin"]
 
 [workspace.package]
-version = "0.1.8"
+version = "0.1.9"
 edition = "2024"
 # The oldest Rust that builds the app (sysinfo needs 1.95). The plugin SDK
 # sets its own, lower one.

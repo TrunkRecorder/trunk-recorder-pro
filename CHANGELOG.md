@@ -5,6 +5,21 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+## [0.1.9] — 2026-10-09
+
+- **Plugins: more than one copy for a system.** In a system's plugin
+  settings, **Add plugin** runs a plugin again for that system with
+  settings of its own, for example to upload to two OpenMHz or
+  Broadcastify accounts. Each copy runs separately and is shown under
+  its plugin on the Plugins page; **Remove** takes a copy away. A call's
+  files are deleted only after every copy has finished with it.
+- **Listen:** ticking a talkgroup, group or tag in a system that's turned
+  off now turns the system back on with just those talkgroups. A system
+  that's off no longer shows its talkgroups ticked.
+- A new developer guide, `docs/developer/architecture.html`, explains how
+  the recorder works with interactive diagrams, with a text version
+  beside it.
+
 ## [0.1.8] — 2026-10-08
 
 - **Listen**, a new page right under Overview: a scanner over the
