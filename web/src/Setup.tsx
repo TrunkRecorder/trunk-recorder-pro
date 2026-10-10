@@ -429,7 +429,7 @@ function AutoTune(props: { src: Source; i: number; edit: EditSource }) {
     <div className="field wide">
       <Toggle
         label="AutoTune"
-        hint="follows crystal drift using the control channel (P25, SmartNet)"
+        hint="follows crystal drift using its P25 calls and control channels (P25, SmartNet)"
         checked={!!src.autoTune}
         onChange={(v) =>
           edit((x) => {

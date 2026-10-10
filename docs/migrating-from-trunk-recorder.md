@@ -46,7 +46,7 @@ The importer reads Trunk Recorder's keys and writes this app's. A key not listed
 | `gain` | `gainDb` |
 | `agc` | `agc` |
 | `ppm` | `ppm` (rounded to a whole number for an RTL-SDR) |
-| `error` (Hz) | Converted to `ppm` at the source's center frequency |
+| `error` (Hz) | Converted to `ppm` at the source's center frequency, sign reversed (`error: 3000` at 770 MHz → `ppm: -4`) |
 | `autoTune` | `autoTune` |
 
 USRP, Airspy and SoapySDR sources need their driver installed on this computer; the review says so.

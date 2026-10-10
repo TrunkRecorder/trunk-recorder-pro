@@ -467,6 +467,23 @@ impl Session {
         self.engine.units_changed()
     }
 
+    /// AutoTune scores to keep for the next run: each source's label, its
+    /// score and the ppm set for it then (only sources that measured).
+    pub fn tune_scores(&self) -> Vec<(String, f64, f64)> {
+        let st = self.engine.status();
+        self.cfg.sources.iter().zip(&st.sources).filter_map(|(c, t)| t.error_ppm.map(|e| (c.label(), e, c.ppm()))).collect()
+    }
+
+    /// Start each AutoTune source from its saved score (`saved`: label →
+    /// (score, the ppm set then)), shifted by any change to its ppm since.
+    pub fn seed_tune(&mut self, saved: &dyn Fn(&str) -> Option<(f64, f64)>) {
+        for (i, c) in self.cfg.sources.iter().enumerate() {
+            if let Some((e, at)) = c.auto_tune().then(|| saved(&c.label())).flatten() {
+                self.engine.seed_tune(i, e + (c.ppm() - at));
+            }
+        }
+    }
+
     /// Preload the codes conventional frequencies carried before (what
     /// [`Session::heard_unsaved`] gave, saved as [`Session::heard_file`]).
     pub fn load_heard(&mut self, json: &str) {
@@ -773,7 +790,7 @@ impl Session {
                 let recent = ss.last_error.as_ref().filter(|_| ss.last_error_s == 0.0 || self.meas.now() - ss.last_error_s < ERROR_SHOWN_S);
                 json!({ "index": i, "label": label, "centerHz": sc.center_hz, "rateHz": sc.rate_hz, "rateMeasured": ss.rate_measured,
                         "dropped": ss.dropped, "errors": ss.errors, "lastError": recent, "lastErrorS": recent.filter(|_| ss.last_error_s > 0.0).map(|_| ss.last_error_s.round()), "ended": ss.ended,
-                        "errorPpm": tune.error_ppm, "tunePpm": tune.applied_ppm })
+                        "errorPpm": tune.error_ppm, "tunePpm": tune.applied_ppm, "tuneCalls": tune.calls, "tuneControl": tune.control, "tuneSeeded": tune.seeded })
             })
             .collect();
         let systems: Vec<Value> = st
