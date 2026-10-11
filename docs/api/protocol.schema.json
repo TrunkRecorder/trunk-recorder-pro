@@ -5164,6 +5164,10 @@
         "bad": {
           "type": "number"
         },
+        "airS": {
+          "type": "number",
+          "description": "Seconds of air the decoded messages account for (P25), of `elapsedS`."
+        },
         "modulation": {
           "type": "string"
         },
