@@ -2,10 +2,12 @@
 //! parser (Trunk Recorder's P25Parser::decode_tsbk, opcode for opcode, with
 //! its IDEN band-plan tables and TDMA slot mapping). Field positions are
 //! `bitset_shift_mask(tsbk, shift, mask)` on the block as a 96-bit integer.
+//! MBTs arrive re-packed as the TSBK they stand for ([`Mbt::to_tsbk`]).
 
 use std::collections::BTreeMap;
 use std::fmt::Write;
 
+use crate::p25::mbt::Mbt;
 use crate::p25::Tsbk;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -169,6 +171,12 @@ impl TsbkParser {
                 },
             );
         }
+    }
+
+    /// An MBT without a TSBK form ([`Mbt::to_tsbk`]): logged, not acted on.
+    pub fn unknown_mbt(m: &Mbt, nac: u16, time_s: f64) -> Message {
+        let mfid = if m.mfid() == 0 { String::new() } else { format!(" mfid 0x{:02x}", m.mfid()) };
+        Message { time_s, opcode: m.opcode(), nac, source: -1, meta: format!("MBT opcode 0x{:02x}{mfid}", m.opcode()), ..Default::default() }
     }
 
     /// One CRC-valid TSBK → messages. `nac` from the frame's NID.

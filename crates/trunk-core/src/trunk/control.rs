@@ -8,13 +8,14 @@
 //! the one vocabulary the call manager speaks.
 //!
 //! ```text
-//! P25:      receiver bank → framer → TSBKs → TsbkParser → Message
+//! P25:      receiver bank → framer → TSBKs (and MBTs) → TsbkParser → Message
 //! SmartNet: 2FSK → OSW framer → Parser → Message
 //! DMR:      every carrier of the site: 4FSK → bursts → CSBK / link control → Message
 //! NXDN:     every carrier of the site: 4FSK → frames → CAC / VCALL / SCCH → Message
 //! ```
 
 use std::collections::BTreeMap;
+use std::fmt::Write;
 
 use num_complex::Complex32;
 
@@ -26,8 +27,11 @@ use super::voice::VoiceParams;
 use crate::dmr;
 use crate::metrics::{Instrumented, Sink};
 use crate::nxdn;
-use crate::p25::diversity::{best_frame, best_tsbks, Bank, BankConfig, Group};
-use crate::p25::frame::TSDU;
+use crate::dsp::c4fm::SYMBOL_RATE;
+use crate::p25::diversity::{air_symbols, best_frame, best_pdu, best_tsbks, Bank, BankConfig, Group};
+use crate::p25::frame::{duid_name, frame_dibits, PDU, TDU, TSDU};
+use crate::p25::mbt::{Mbt, Pdu};
+use crate::p25::Tsbk;
 use crate::smartnet;
 
 /// One-sided channel filter cutoff of a P25 control channel, Hz.
@@ -154,6 +158,8 @@ pub fn build(cfg: &SystemConfig, rate: f64) -> Box<dyn ControlChannel> {
             nac_votes: BTreeMap::new(),
             good: 0,
             bad: 0,
+            air: 0,
+            profile: std::env::var_os("TRP_CC_PROFILE").map(|_| Profile::default()),
             t0: 0.0,
             rate,
         }),
@@ -180,6 +186,11 @@ struct P25 {
     nac_votes: BTreeMap<u16, u32>,
     good: u64,
     bad: u64,
+    /// Symbols of air the decoded blocks account for (see [`air_symbols`]).
+    air: u64,
+    /// `TRP_CC_PROFILE=1`: what the frames are, how far apart, and credited
+    /// how much — logged each minute (a diagnostic).
+    profile: Option<Profile>,
     /// The last push's start time and rate (for the flush).
     t0: f64,
     rate: f64,
@@ -191,15 +202,48 @@ impl P25 {
             let f = best_frame(g);
             *self.nac_votes.entry(f.nid.nac).or_default() += 1;
             self.identity.set_opt(IdField::Nac, self.nac_votes.iter().max_by_key(|&(_, &c)| c).map(|(&n, _)| n as u32));
-            if f.nid.duid != TSDU {
-                continue;
-            }
-            let (blocks, missing) = best_tsbks(g);
-            self.bad += missing as u64;
             let t = self.t0 + f.sample / self.rate;
+            let air0 = self.air;
+            let mut sample: Option<String> = None;
+            let (kind, blocks): (String, Vec<Result<Tsbk, Mbt>>) = match f.nid.duid {
+                TSDU => {
+                    let (blocks, missing) = best_tsbks(g);
+                    self.bad += missing as u64;
+                    self.air += air_symbols(blocks.len() + missing, blocks.len());
+                    (format!("TSDU x{}{}", blocks.len() + missing, if missing > 0 { " (some lost)" } else { "" }), blocks.into_iter().map(Ok).collect())
+                }
+                PDU => match best_pdu(g) {
+                    Pdu::Mbt(m) => {
+                        self.air += air_symbols(m.blocks(), m.blocks());
+                        sample = Some(m.header.iter().chain(&m.data).map(|b| format!("{b:02x}")).collect());
+                        (format!("MBT x{} op 0x{:02x} mfid 0x{:02x}", m.blocks(), m.opcode(), m.mfid()), vec![m.to_tsbk().ok_or(m)])
+                    }
+                    Pdu::Other(h) => {
+                        sample = Some(h.iter().map(|b| format!("{b:02x}")).collect());
+                        (format!("PDU x{} fmt 0x{:02x} sap {} op 0x{:02x}", 1 + (h[6] & 0x7f) as usize, h[0] & 0x1f, h[1] & 0x3f, h[7]), Vec::new())
+                    }
+                    Pdu::Lost => {
+                        self.bad += 1;
+                        ("PDU lost".into(), Vec::new())
+                    }
+                },
+                d => {
+                    // A TDU between frames is filler: decoded air all the same.
+                    if d == TDU {
+                        self.air += frame_dibits(TDU) as u64;
+                    }
+                    (duid_name(d).to_string(), Vec::new())
+                }
+            };
+            if let Some(p) = &mut self.profile {
+                p.frame(f.sample * SYMBOL_RATE / self.rate, kind, self.air - air0, sample);
+            }
             for blk in &blocks {
                 self.good += 1;
-                let msgs = self.parser.parse(blk, f.nid.nac, t);
+                let msgs = match blk {
+                    Ok(tsbk) => self.parser.parse(tsbk, f.nid.nac, t),
+                    Err(m) => vec![TsbkParser::unknown_mbt(m, f.nid.nac, t)],
+                };
                 for m in &msgs {
                     match m.kind {
                         MessageType::Status => {
@@ -220,18 +264,82 @@ impl P25 {
     }
 }
 
+/// Frames by kind: how many, how far each is from the next frame's sync
+/// (its true length, when none was missed between), and the airtime
+/// credited for it. One note a minute.
+#[derive(Default)]
+struct Profile {
+    /// The last frame: its start, symbols, and kind.
+    prev: Option<(f64, String)>,
+    /// Kind → (frames, frames followed closely, their spacing summed, credit summed).
+    by_kind: BTreeMap<String, (u32, u32, f64, u64)>,
+    credited: u64,
+    /// Kind → the latest one's octets, hex (MBTs and other PDUs).
+    samples: BTreeMap<String, String>,
+    from: Option<f64>,
+    notes: Vec<(NoteLevel, String)>,
+}
+
+impl Profile {
+    fn frame(&mut self, at: f64, kind: String, credit: u64, sample: Option<String>) {
+        if let Some(h) = sample {
+            self.samples.insert(kind.clone(), h);
+        }
+        let from = *self.from.get_or_insert(at);
+        if let Some((prev_at, prev_kind)) = self.prev.take() {
+            let e = self.by_kind.entry(prev_kind).or_default();
+            e.0 += 1;
+            // A gap longer than an LDU means a frame went unseen in between.
+            if at - prev_at <= 864.0 {
+                e.1 += 1;
+                e.2 += at - prev_at;
+            }
+        }
+        self.by_kind.entry(kind.clone()).or_default().3 += credit;
+        self.credited += credit;
+        self.prev = Some((at, kind));
+        let span = at - from;
+        if span >= 60.0 * SYMBOL_RATE {
+            let mut s = format!("CC profile, {:.0} s: {:.1} % of air credited;", span / SYMBOL_RATE, 100.0 * self.credited as f64 / span);
+            for (k, (n, close, gaps, credit)) in &self.by_kind {
+                let _ = write!(
+                    s,
+                    " [{k}: {:.2}/s, spacing {:.0} ({} of {n} followed closely), credit {:.0}]",
+                    *n as f64 * SYMBOL_RATE / span,
+                    gaps / (*close).max(1) as f64,
+                    close,
+                    *credit as f64 / (*n).max(1) as f64
+                );
+                if let Some(h) = self.samples.get(k) {
+                    let _ = write!(s, " e.g. {h}");
+                }
+            }
+            self.notes.push((NoteLevel::Info, s));
+            (self.by_kind, self.samples, self.credited, self.from) = (BTreeMap::new(), BTreeMap::new(), 0, Some(at));
+        }
+    }
+}
+
 impl ControlChannel for P25 {
     fn name(&self) -> &'static str {
         "P25"
     }
     fn report(&self, sink: &mut dyn Sink) {
         self.bank.report(sink);
+        // A rate: over the symbol rate, the share of the channel's air decoded.
+        sink.counter("airSym", self.air);
     }
     fn plan(&self) -> CarrierPlan {
         CarrierPlan::Hunt { cutoff_hz: P25_CUTOFF_HZ }
     }
     fn restart(&mut self, rate: f64) {
         self.bank = Bank::new(rate, self.bank_cfg);
+        if let Some(p) = &mut self.profile {
+            p.prev = None;
+        }
+    }
+    fn take_notes(&mut self) -> Vec<(NoteLevel, String)> {
+        self.profile.as_mut().map(|p| std::mem::take(&mut p.notes)).unwrap_or_default()
     }
     fn forget_site(&mut self) {
         self.identity = Identity::default();

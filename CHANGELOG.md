@@ -5,6 +5,19 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **P25: multi-block control channel messages.** Some sites send part of
+  their control channel as multi-block (MBT) messages, which were
+  dropped. Those sites now show their WACN and System ID (so a site lock
+  and multi-site grouping work), and multi-block grants, patch grants,
+  affiliations and registrations are followed like the single-block ones.
+  On a site that uses them, control messages a second go up: CLMRN-I
+  went from about 12 to 22.
+- **Control channel airtime.** The Decode page and Find my system show how
+  much of a P25 control channel's airtime was decoded, next to the
+  messages a second. It reads the same on every system, unlike messages
+  a second, which are lower where a site sends multi-block messages (one
+  takes the air of two or three).
+
 ## [0.1.9] — 2026-10-09
 
 - **Plugins: more than one copy for a system.** In a system's plugin

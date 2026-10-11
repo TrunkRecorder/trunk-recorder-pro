@@ -85,6 +85,11 @@ function DecodeCard({ s, x, usual, freqs }: { s: AppState; x: DashSystem; usual:
   const good = recentAvg(k("cc/good"), 60) ?? 0;
   const bad = recentAvg(k("cc/bad"), 60) ?? 0;
   const lost = good + bad > 0 ? (100 * bad) / (good + bad) : null;
+  // P25: symbols of air decoded a second, over 4800: the share of the
+  // channel accounted for, which messages a second can't show where an MBT
+  // takes several TSBKs' air.
+  const airSym = recentAvg(k("cc/airSym"), 60);
+  const air = airSym === null ? null : Math.min(100, airSym / 48);
   const vbad = voiceBadPct(x.name);
   const vf = recentAvg(k("voice/frames"), 600) ?? 0;
   const ve = recentAvg(k("voice/errors"), 600) ?? 0;
@@ -117,7 +122,8 @@ function DecodeCard({ s, x, usual, freqs }: { s: AppState; x: DashSystem; usual:
               unit="/s"
               trend={<Trend delta={change(recentAvg(k("cc/good"), 60), usual)} />}
               spark={<LiveSpark k={k("cc/good")} band={usual ? [usual.lo, usual.hi] : null} lo={0} />}
-              sub={st?.controlChannelHz ? `${formatMhz(st.controlChannelHz)} MHz` : "hunting"}
+              sub={`${st?.controlChannelHz ? `${formatMhz(st.controlChannelHz)} MHz` : "hunting"}${air !== null ? ` · ${num(air, 0)}% of airtime` : ""}`}
+              hint={air !== null ? "Airtime: the share of the control channel decoded. Unlike messages a second, it reads the same on systems that send multi-block messages." : undefined}
             />
             <Stat
               label="Control lost"

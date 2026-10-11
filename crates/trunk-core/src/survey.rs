@@ -40,9 +40,11 @@ use std::f64::consts::PI;
 
 use num_complex::Complex32;
 
+use crate::dsp::c4fm::SYMBOL_RATE;
 use crate::dsp::{Channelizer, HeadId};
-use crate::p25::diversity::{best_frame, best_tsbks, Bank, BankConfig, Group};
-use crate::p25::frame::{LDU1, LDU2, TSDU};
+use crate::p25::diversity::{air_symbols, best_frame, best_pdu, best_tsbks, Bank, BankConfig, Group};
+use crate::p25::frame::{frame_dibits, LDU1, LDU2, PDU, TDU, TSDU};
+use crate::p25::mbt::Pdu;
 use crate::p25::Tsbk;
 use crate::trunk::identity::{IdField, Identity};
 use crate::smartnet::plan::{self, PlanConfig, PlanFinder};
@@ -276,6 +278,8 @@ pub struct SystemInfo {
     pub bandplan: String,
     pub good: u64,
     pub bad: u64,
+    /// Seconds of air the decoded messages account for (P25; of `elapsed_s`).
+    pub air_s: f64,
     pub modulation: &'static str,
     pub snr_db: Option<f64>,
     /// Heard − advertised, Hz.
@@ -462,6 +466,8 @@ struct Decode {
     voice: u32,
     good: u64,
     bad: u64,
+    /// Symbols of air the decoded blocks account for.
+    air: u64,
     id: Identity,
 }
 
@@ -474,11 +480,37 @@ impl Decode {
         if f.nid.duid == LDU1 || f.nid.duid == LDU2 {
             self.voice += 1;
         }
-        if f.nid.duid != TSDU {
-            return;
-        }
-        let (blocks, missing) = best_tsbks(g);
-        self.bad += missing as u64;
+        let blocks = match f.nid.duid {
+            TSDU => {
+                let (blocks, missing) = best_tsbks(g);
+                self.bad += missing as u64;
+                self.air += air_symbols(blocks.len() + missing, blocks.len());
+                blocks
+            }
+            PDU => match best_pdu(g) {
+                Pdu::Mbt(m) => {
+                    self.air += air_symbols(m.blocks(), m.blocks());
+                    match m.to_tsbk() {
+                        Some(t) => vec![t],
+                        None => {
+                            self.good += 1;
+                            return;
+                        }
+                    }
+                }
+                Pdu::Other(_) => return,
+                Pdu::Lost => {
+                    self.bad += 1;
+                    return;
+                }
+            },
+            // A TDU between frames is filler: decoded air all the same.
+            TDU => {
+                self.air += frame_dibits(TDU) as u64;
+                return;
+            }
+            _ => return,
+        };
         for blk in blocks {
             self.good += 1;
             let b = tsbk_bits(&blk);
@@ -1112,6 +1144,7 @@ impl Monitor {
         i.identity = self.dec.id.clone();
         i.good = self.dec.good;
         i.bad = self.dec.bad;
+        i.air_s = self.dec.air as f64 / SYMBOL_RATE;
         i.modulation = modulation(&self.labels, &self.bank.frames_per_rx());
         i.snr_db = self.snr.map(|r| 10.0 * r.log10());
         i.elapsed_s = t;
