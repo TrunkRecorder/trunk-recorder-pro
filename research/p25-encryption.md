@@ -147,19 +147,69 @@ are gone. So:
 4. In the field: ship it marked experimental, per algorithm. Ask testers
    for the dashboard's ciphers line and a ciphertext capture.
 
-## Open questions for item 3
+## Decisions (2026-10-12, from the user)
 
-- **A whole LDU2 lost** (not just its sync): the tracker advances the MI
-  once per LDU2 it hears. If a fade eats an entire LDU2, the next LDU1
-  goes out under the wrong keystream until the next good LDU2. Fix: count
-  superframes by LDU1/LDU2 alternation, or by time (360 ms), and step the
-  LFSR once per missed superframe.
-- **Keys shorter than the cipher's** (OP25 pads them with leading
-  zeros): accept and pad them the same way, or refuse them? Pad them, with
-  a warning, so that OP25 key files work.
-- `p25::synth` (item 5) needs a Reed–Solomon *encoder* (RS(24,12),
-  RS(24,16), RS(36,20) and the Phase 2 RS(63,35) / RS(44,16)). Only
-  decoders exist so far.
+- **A whole LDU2 (or Phase 2 2V burst) lost to a fade:** don't guess.
+  Stop trusting the sync and wait for the next good one. The tracker today
+  steps the MI with the LFSR only when a frame *arrives* with undecodable
+  sync; it does not yet notice a frame that never arrived. That detection
+  (LDU1 followed by LDU1, or a gap in time) is still to do.
+- **Keys shorter than the cipher needs:** refuse them. Loading fails
+  with a clear message that names the key ID, the algorithm, and the
+  length expected versus given. Keys are not padded the way OP25 pads
+  them. `Keystream::new` already returns None on a wrong length; the
+  config loader must turn that into the error.
+- **A Reed–Solomon encoder** is to be written, so that `p25::synth` can
+  build test signals. Only decoders exist (`p25::fec::rs_decode`,
+  `rs_decode_erasures`). Needed: RS(24,12) LDU1 LC, RS(24,16) LDU2 ES,
+  RS(36,20) HDU, RS(44,16) Phase 2 ESS, RS(63,35) MAC.
+
+## Handoff (2026-10-12)
+
+**State of the branch.** `p25-crypt` at commit 3f516d0, one commit on top
+of main's v0.1.9, worktree `../trunk-recorder-lite-crypt`. The working tree
+is clean, apart from an untracked `web/node_modules` symlink to the main
+checkout's (it lets `npm run schema` run; never commit it).
+
+**Done (items 1 and 2):** see the log below. Files:
+
+- `crates/trunk-core/src/p25/crypt.rs`: new; the ciphers, LFSR, keystreams, tests
+- `p25/phase2.rs`: `MacPtt.mi`, `Ess.mi`
+- `p25/voice.rs`: `ALGID_CLEAR` now re-exported from crypt; `hexbits_to_bytes` is pub(crate)
+- `trunk/tracker.rs`, `trunk/tdma.rs`: `es` / `es_next` / `cipher` state, `encryption_sync()`, `TrackerOut::Cipher`
+- `trunk/voice.rs`: `CipherId`, `TrackerOut::Cipher`
+- `trunk/calls.rs`, `engine.rs`, `conventional.rs`, `record.rs`: `Call.cipher`; call JSON `algid` / `key_id`
+- `trunk-app/src/stats/radio.rs`: `Tg.ciphers`
+- `web/src/protocol.ts`, `web/src/dash/Radio.tsx`, `docs/api/protocol.schema.json`: the "Encryption heard" card
+- `trunk-pro/src/tool.rs`: MI in the voice dump
+- docs: `docs/guides/recordings.md`, `CHANGELOG.md`
+
+**How it was checked:**
+
+- `cargo test --workspace`: all pass.
+- Clippy: the same warnings as main.
+- `cargo check -p trunk-web --target wasm32-unknown-unknown`: builds.
+- The replay check, against a baseline built from main (not against
+  `captures/reference`, which is older than main):
+  `BIN=<branch release binary> captures/regress.sh <out>`, then
+  `captures/compare.sh <main-out> <out>`. Only the call JSONs differ, by
+  the new fields. The scripts and captures live in the main checkout.
+- The dashboard card has not been looked at in a browser.
+
+**Remaining**, in order (see Progress above):
+
+1. Item 3: Phase 1 decryption, the per-system keys file and config, and
+   the key-length error.
+   - Where keys would reach the decoders: `VoiceSpec`
+     (`trunk/voice.rs`), built in `engine.rs` (trunked) and
+     `conventional.rs` (conventional), from `SystemConfig` / `ConvSystem`.
+   - App config: `trunk-app/src/config.rs`.
+   - Detecting a lost LDU2, per the decision above.
+2. The Reed–Solomon encoder, then `p25::synth` (item 5): round-trip tests,
+   then the cross-checks against OP25 master and dsd-fme.
+3. Item 4: the call flow (`calls.rs` `admit`, `record.rs`
+   `Transmissions`, `engine.rs`, live listen) and the plugin protocol.
+4. Items 6 and 7, then DMR / NXDN.
 
 ## Log
 
