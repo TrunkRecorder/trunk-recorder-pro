@@ -521,6 +521,9 @@ export interface CallRecord {
   /** 1 / 0. */
   emergency: number;
   encrypted: number;
+  /** The cipher its encryption sync named: P25 ALGID and key ID; -1 when none was heard (absent in calls saved before). */
+  algid?: number;
+  key_id?: number;
   phase2_tdma: number;
   duplex: number;
   /** Its P25 priority and service-option mode bit. */
@@ -1030,10 +1033,23 @@ export interface TgRow {
   secs: number;
   totalCalls: number;
   encPct: number;
+  /** The ciphers its calls' encryption sync named, most recent first. */
+  ciphers: CipherSeen[];
   /** First heard in the last day (once the system has a baseline). */
   new: boolean;
   /** Calls per hour, oldest first. */
   hourly: number[];
+}
+
+/** A cipher heard on a talkgroup: P25 ALGID and key ID. */
+export interface CipherSeen {
+  algid: number;
+  keyId: number;
+  /** What the ALGID is called ("ADP", "AES-256", …). */
+  name: string;
+  calls: number;
+  /** Unix seconds. */
+  last: number;
 }
 
 /** A radio as heard (radioQuery units / unit). */

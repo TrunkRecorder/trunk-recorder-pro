@@ -133,6 +133,7 @@ It is written on a single line.
 | `start_time`, `stop_time` | Start and end, seconds since 1970 |
 | `start_time_ms`, `stop_time_ms` | The same in milliseconds |
 | `emergency`, `encrypted` | `1` or `0` |
+| `algid`, `key_id` | P25: the cipher an encrypted call's voice named, as numbers (`132` = 0x84, AES-256); `-1` when none was heard |
 | `priority`, `mode`, `duplex` | As Trunk Recorder writes them (`mode` and `duplex` are always `0` on conventional calls) |
 | `call_length`, `call_length_ms` | Length of the saved audio, seconds (rounded) and milliseconds |
 | `talkgroup` | Talkgroup number |

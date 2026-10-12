@@ -14,6 +14,7 @@ use std::sync::Arc;
 use super::message::{Message, MessageType};
 use super::patches::Patches;
 use super::talkgroups::{Talkgroup, Talkgroups};
+use super::voice::CipherId;
 use crate::dsp::tones::{Tone, ToneHeard};
 
 pub type CallId = u32;
@@ -95,6 +96,8 @@ pub struct Call {
     pub recording: bool,
     pub reason: Option<Reason>,
     pub encrypted: bool,
+    /// The cipher its voice's encryption sync named (the latest, if more than one).
+    pub cipher: Option<CipherId>,
     pub emergency: bool,
     pub priority: u8,
     pub duplex: bool,
@@ -382,6 +385,7 @@ impl CallManager {
             recording: false,
             reason: None,
             encrypted: m.encrypted || tg.as_ref().is_some_and(|t| t.encrypted_mode()),
+            cipher: None,
             emergency: m.emergency,
             priority: m.priority,
             duplex: m.duplex,

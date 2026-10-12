@@ -5,7 +5,7 @@
 //! burst counting. After op25 p25p2_tdma.cc handle_packet.
 
 use super::frames::{Codec, VoiceFrame};
-use super::voice::TrackerOut;
+use super::voice::{CipherId, TrackerOut};
 use crate::ambe::decode_vcw;
 use crate::mbe::{self, Kind, FRAME_SAMPLES};
 use crate::p25::alias::{is_alias_msg, mac_messages, mac_talker, AliasLc, MacAliases};
@@ -14,7 +14,8 @@ use crate::p25::phase2::{
     BURST_FACCH_S, BURST_FACCH_U, BURST_LCCH_S, BURST_SACCH_S, BURST_SACCH_U, BURST_DIBITS, MAC_ACTIVE, MAC_END_PTT, MAC_HANGTIME, MAC_IDLE, MAC_PTT,
     MAC_SIGNAL, SLOT_CHANNEL, SLOT_DIBITS,
 };
-use crate::p25::voice::ALGID_CLEAR;
+use crate::p25::crypt::next_mi;
+use crate::p25::voice::{EncryptionSync, ALGID_CLEAR};
 
 struct Slot {
     dec: mbe::Decoder,
@@ -25,6 +26,13 @@ struct Slot {
     first4v: i32,
     ess_b: [u8; 16],
     next_algid: u8,
+    /// The encryption sync the current superframe's voice is under (the
+    /// MAC_PTT's, then each 2V burst's ESS for the superframe after it), and
+    /// the one the last ESS brought.
+    es: Option<EncryptionSync>,
+    es_next: Option<EncryptionSync>,
+    /// The cipher last reported for this transmission.
+    cipher: Option<CipherId>,
     end_s: f64,
     /// Who is talking (MAC_PTT, Group Voice Channel User), until the transmission ends.
     talker: Option<u32>,
@@ -43,6 +51,9 @@ impl Slot {
             first4v: -1,
             ess_b: [0; 16],
             next_algid: ALGID_CLEAR,
+            es: None,
+            es_next: None,
+            cipher: None,
             end_s: 0.0,
             talker: None,
             talkgroup: None,
@@ -78,6 +89,12 @@ impl TdmaTracker {
             undecodable: 0,
             mac_pdus: 0,
         }
+    }
+
+    /// The encryption sync logical channel `c`'s current superframe is under
+    /// (None: clear, or not known yet).
+    pub fn encryption_sync(&self, c: usize) -> Option<EncryptionSync> {
+        self.slots[c].es
     }
 
     /// The scrambler seed: NAC, System ID, WACN (from the control channel).
@@ -138,6 +155,9 @@ impl TdmaTracker {
                 s.active = true;
                 s.encrypted = false;
                 s.algid = ALGID_CLEAR;
+                s.es = None;
+                s.es_next = None;
+                s.cipher = None;
             }
             s.end_s = t;
             // ESS (op25 handle_4V2V_ess)
@@ -147,8 +167,11 @@ impl TdmaTracker {
                 s.ess_b[b..b + 4].copy_from_slice(&hb);
             } else if let Some(ess) = decode_ess(&s.ess_b, &read_ess_a(&x)) {
                 s.next_algid = ess.algid;
+                let es = EncryptionSync { algid: ess.algid, keyid: ess.keyid, mi: ess.mi };
+                s.es_next = Some(es);
                 if ess.algid != ALGID_CLEAR {
                     Self::set_encryption(s, c, ess.algid, out);
+                    Self::report_cipher(s, c, &es, out);
                 }
             }
             let at: &[usize] = if kind == BURST_4V { &[11, 48, 96, 133] } else { &[11, 48] };
@@ -170,6 +193,12 @@ impl TdmaTracker {
             if kind == BURST_2V {
                 let a = s.next_algid;
                 Self::set_encryption(s, c, a, out);
+                // The next superframe is under the ESS this one brought; lost
+                // to errors, the MI it would have said follows from the last.
+                s.es = match s.es_next.take() {
+                    Some(es) => Some(es).filter(|es| es.algid != ALGID_CLEAR),
+                    None => s.es.map(|es| EncryptionSync { mi: next_mi(&es.mi), ..es }),
+                };
             }
             return;
         }
@@ -190,10 +219,17 @@ impl TdmaTracker {
                     s.talker = (ptt.source != 0).then_some(ptt.source);
                     s.talkgroup = (ptt.group != 0).then_some(ptt.group);
                     out.push((c, TrackerOut::Info { source: (ptt.source != 0).then_some(ptt.source), emergency: false, encrypted: s.encrypted }));
+                    s.cipher = None;
+                    s.es_next = None;
+                    s.es = s.encrypted.then_some(EncryptionSync { algid: ptt.algid, keyid: ptt.keyid, mi: ptt.mi });
+                    if let Some(es) = s.es {
+                        Self::report_cipher(s, c, &es, out);
+                    }
                 }
                 MAC_END_PTT => {
                     s.active = false;
                     s.algid = ALGID_CLEAR;
+                    s.es = None;
                     s.talker = None;
                 }
                 MAC_ACTIVE => s.first4v = if pdu.offset > 4 { 0 } else { pdu.offset as i32 },
@@ -217,6 +253,14 @@ impl TdmaTracker {
                     s.talker = None;
                 }
             }
+        }
+    }
+
+    fn report_cipher(s: &mut Slot, c: usize, es: &EncryptionSync, out: &mut Vec<(usize, TrackerOut)>) {
+        let id = CipherId { algid: es.algid, keyid: es.keyid };
+        if s.active && s.cipher != Some(id) {
+            s.cipher = Some(id);
+            out.push((c, TrackerOut::Cipher(id)));
         }
     }
 

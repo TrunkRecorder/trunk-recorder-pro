@@ -263,7 +263,7 @@ fn voice_line(
             } else {
                 match es {
                     Some(e) => {
-                        let _ = write!(s, ",\"es\":{{\"algid\":{},\"keyid\":{}}}", e.algid, e.keyid);
+                        let _ = write!(s, ",\"es\":{{\"algid\":{},\"keyid\":{},\"mi\":\"{}\"}}", e.algid, e.keyid, hex(&e.mi));
                     }
                     None => s.push_str(",\"es\":null"),
                 }
@@ -271,7 +271,7 @@ fn voice_line(
         }
         HDU => match decode_hdu(&f.raw) {
             Some(h) => {
-                let _ = write!(s, ",\"hdu\":{{\"algid\":{},\"keyid\":{},\"mfid\":{},\"tgid\":{}}}", h.es.algid, h.es.keyid, h.mfid, h.tgid);
+                let _ = write!(s, ",\"hdu\":{{\"algid\":{},\"keyid\":{},\"mi\":\"{}\",\"mfid\":{},\"tgid\":{}}}", h.es.algid, h.es.keyid, hex(&h.es.mi), h.mfid, h.tgid);
             }
             None => s.push_str(",\"hdu\":null"),
         },
@@ -463,11 +463,10 @@ fn run_p2(a: &Args) {
                     match decode_acch(&x, kind == BURST_FACCH_S || kind == BURST_FACCH_U) {
                         Some(pdu) => {
                             macs += 1;
-                            let hex: String = pdu.bytes.iter().map(|b| format!("{b:02x}")).collect();
-                            let _ = write!(line, ",\"mac\":{{\"op\":{},\"offset\":{},\"hex\":\"{hex}\"}}", pdu.opcode, pdu.offset);
+                            let _ = write!(line, ",\"mac\":{{\"op\":{},\"offset\":{},\"hex\":\"{}\"}}", pdu.opcode, pdu.offset, hex(&pdu.bytes));
                             if pdu.opcode == MAC_PTT {
                                 let m = parse_mac_ptt(&pdu.bytes);
-                                let _ = write!(line, ",\"ptt\":{{\"algid\":{},\"keyid\":{},\"src\":{},\"tg\":{}}}", m.algid, m.keyid, m.source, m.group);
+                                let _ = write!(line, ",\"ptt\":{{\"algid\":{},\"keyid\":{},\"mi\":\"{}\",\"src\":{},\"tg\":{}}}", m.algid, m.keyid, hex(&m.mi), m.source, m.group);
                             }
                         }
                         None => {
@@ -591,4 +590,9 @@ fn run_smartnet(a: &Args) {
         rx.deviation_hz(),
         parser.sys_id.map_or("?".into(), |s| format!("{s:04x}")),
     );
+}
+
+/// Bytes as lowercase hex.
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
 }

@@ -11,6 +11,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use trunk_core::p25::crypt::algid_name;
 use trunk_core::trunk::{Call, Message, MessageType};
 
 /// Caps per system.
@@ -22,6 +23,8 @@ const MAX_AFFILIATIONS: usize = 2000;
 const MAX_LENGTHS: usize = 5000;
 const MAX_RECENT_TX: usize = 30;
 const TOP_TGS: usize = 8;
+/// Ciphers (ALGID, key ID) kept per talkgroup.
+const MAX_CIPHERS: usize = 16;
 /// Hours of per-hour activity kept (a week).
 const HOURS: i64 = 168;
 /// A registry this young has no baseline: everything in it is "new".
@@ -40,6 +43,9 @@ pub struct Tg {
     pub secs: f32,
     /// Calls that were encrypted.
     pub enc: u32,
+    /// The ciphers its calls' encryption sync named: (ALGID, key ID, calls,
+    /// last heard), most recent first.
+    pub ciphers: Vec<(u8, u16, u32, i64)>,
     /// (hour = Unix s / 3600, calls, seconds), oldest first, last week only.
     pub hours: VecDeque<(i64, (u32, f32))>,
 }
@@ -234,6 +240,9 @@ impl Registry {
             g.calls += 1;
             g.secs += secs;
             g.enc += c.encrypted as u32;
+            if let Some(cp) = c.cipher {
+                note_cipher(&mut g.ciphers, cp.algid, cp.keyid, t);
+            }
             bump_hour(&mut g.hours, h, |v: &mut (u32, f32)| {
                 v.0 += 1;
                 v.1 += secs;
@@ -425,6 +434,16 @@ fn histogram(lengths: impl Iterator<Item = f32>) -> Value {
     json!({ "edges": LENGTH_BINS, "counts": h })
 }
 
+/// A call under (algid, keyid), at `t`: counted, moved to the front.
+fn note_cipher(list: &mut Vec<(u8, u16, u32, i64)>, algid: u8, keyid: u16, t: i64) {
+    let n = match list.iter().position(|x| x.0 == algid && x.1 == keyid) {
+        Some(i) => list.remove(i).2,
+        None => 0,
+    };
+    list.insert(0, (algid, keyid, n + 1, t));
+    list.truncate(MAX_CIPHERS);
+}
+
 fn is_new(s: &SystemRadio, first: i64, now: i64) -> bool {
     first > now - NEW_S && first - s.created >= BASELINE_S
 }
@@ -456,6 +475,7 @@ fn tg_row(name: &str, s: &SystemRadio, tg: u32, g: &Tg, now: i64, hours: i64, na
         "totalCalls": g.calls,
         "encPct": if g.calls > 0 { (g.enc as f64 * 1000.0 / g.calls as f64).round() / 10.0 } else { 0.0 },
         "new": is_new(s, g.first, now),
+        "ciphers": g.ciphers.iter().map(|&(a, k, n, t)| json!({ "algid": a, "keyId": k, "name": algid_name(a), "calls": n, "last": t })).collect::<Vec<_>>(),
         "hourly": c,
     })
 }
@@ -612,7 +632,7 @@ fn summary(name: &str, s: &SystemRadio, now: i64, names: &Names) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use trunk_core::trunk::CallSource;
+    use trunk_core::trunk::{CallSource, CipherId};
 
     fn call(tg: u32, units: &[(u32, f64)], start: f64, end: f64) -> Call {
         Call {
@@ -692,5 +712,21 @@ mod tests {
         evict(&mut m, 1000, |v| *v);
         assert_eq!(m.len(), 1000);
         assert!(m.contains_key(&1199) && !m.contains_key(&10));
+    }
+
+    #[test]
+    fn ciphers_are_counted_per_talkgroup() {
+        let mut r = Registry::default();
+        let t0 = 1_700_000_000;
+        let adp = CipherId { algid: 0xAA, keyid: 0x1B50 };
+        for (i, cipher) in [Some(adp), None, Some(adp), Some(CipherId { algid: 0x84, keyid: 2 })].into_iter().enumerate() {
+            let c = Call { encrypted: cipher.is_some(), cipher, ..call(100, &[], 0.0, 5.0) };
+            r.call_end("dcfd", &c, t0 + 10 * i as i64);
+        }
+        assert_eq!(r.systems["dcfd"].tgs[&100].ciphers, vec![(0x84, 2, 1, t0 + 30), (0xAA, 0x1B50, 2, t0 + 20)]);
+        let (tg, unit) = names();
+        let n = Names { tg: &tg, unit: &unit };
+        let q = r.query(&json!({ "what": "tg", "system": "dcfd", "key": 100, "hours": 24 }), t0 + 40, &n);
+        assert_eq!(q["row"]["ciphers"][1], json!({ "algid": 0xAA, "keyId": 0x1B50, "name": "ADP", "calls": 2, "last": t0 + 20 }));
     }
 }

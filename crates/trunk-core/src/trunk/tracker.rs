@@ -9,8 +9,9 @@ use crate::mbe::{self, Kind, FRAME_SAMPLES};
 use crate::p25::alias::{is_alias_lcw, AliasLc, LcAliases};
 use crate::p25::diversity::{best_es, best_frame, best_imbe, best_lc, Group};
 use crate::p25::frame::{HDU, LDU1, LDU2, TDU, TDULC};
-use crate::p25::voice::{decode_hdu, decode_tdulc, imbe_params_to_bits, ldu_codeword_end_bit, ALGID_CLEAR};
-use super::voice::TrackerOut;
+use crate::p25::crypt::next_mi;
+use crate::p25::voice::{decode_hdu, decode_tdulc, imbe_params_to_bits, ldu_codeword_end_bit, EncryptionSync, ALGID_CLEAR};
+use super::voice::{CipherId, TrackerOut};
 
 
 /// Algorithm id when encryption is known but not which cipher.
@@ -21,6 +22,13 @@ pub struct VoiceTracker {
     active: bool,
     encrypted: bool,
     algid: i32,
+    /// The encryption sync the current superframe's voice is under (the
+    /// HDU's, then each LDU2's for the superframe after it), and the one the
+    /// last LDU2 brought.
+    es: Option<EncryptionSync>,
+    es_next: Option<EncryptionSync>,
+    /// The cipher last reported for this transmission.
+    cipher: Option<CipherId>,
     tgid: Option<u32>,
     /// The unit link control named for the current transmission.
     talker: Option<u32>,
@@ -39,6 +47,9 @@ impl VoiceTracker {
             active: false,
             encrypted: false,
             algid: ALGID_CLEAR as i32,
+            es: None,
+            es_next: None,
+            cipher: None,
             tgid: None,
             talker: None,
             aliases: LcAliases::default(),
@@ -54,6 +65,12 @@ impl VoiceTracker {
         self.tgid
     }
 
+    /// The encryption sync the current superframe's voice is under (None:
+    /// clear, or not known yet).
+    pub fn encryption_sync(&self) -> Option<EncryptionSync> {
+        self.es
+    }
+
     /// A frame group at time `t` (s, sample clock).
     pub fn group(&mut self, g: &Group, t: f64, out: &mut Vec<TrackerOut>) {
         let best = best_frame(g);
@@ -62,6 +79,10 @@ impl VoiceTracker {
                 let h = decode_hdu(&best.raw);
                 self.algid = h.map_or(ALGID_CLEAR as i32, |h| h.es.algid as i32);
                 self.start(t, h.map(|h| h.tgid as u32));
+                self.es = h.map(|h| h.es).filter(|es| es.algid != ALGID_CLEAR);
+                if let Some(es) = self.es {
+                    self.report_cipher(&es, out);
+                }
             }
             LDU1 | LDU2 => {
                 self.touch(t);
@@ -91,8 +112,14 @@ impl VoiceTracker {
                             out.push(TrackerOut::Alias(a));
                         }
                     }
-                } else if let Some(es) = best_es(g) {
-                    self.set_encryption(es.algid as i32, out);
+                } else {
+                    self.es_next = best_es(g);
+                    if let Some(es) = self.es_next {
+                        self.set_encryption(es.algid as i32, out);
+                        if es.algid != ALGID_CLEAR {
+                            self.report_cipher(&es, out);
+                        }
+                    }
                 }
                 // A cut frame (the next sync came early, in every receiver):
                 // from the first codeword that fails its FEC or runs past the
@@ -106,6 +133,9 @@ impl VoiceTracker {
                         erased = true;
                     }
                     self.voice_frame(p.u, p.e0, p.errs, erased, out);
+                }
+                if best.nid.duid == LDU2 {
+                    self.next_superframe();
                 }
             }
             TDU | TDULC => {
@@ -132,6 +162,7 @@ impl VoiceTracker {
                 }
                 self.active = false;
                 self.algid = ALGID_CLEAR as i32;
+                self.es = None;
             }
             _ => {}
         }
@@ -143,8 +174,29 @@ impl VoiceTracker {
         self.tgid = tgid;
         self.talker = None;
         self.encrypted = self.algid != ALGID_CLEAR as i32;
+        self.es = None;
+        self.es_next = None;
+        self.cipher = None;
         self.end_s = t;
         self.call_frames = 0;
+    }
+
+    /// An LDU2's voice is done: the next superframe is under the sync it
+    /// brought. Lost to errors, the MI it would have said follows from the
+    /// last one (the MI LFSR).
+    fn next_superframe(&mut self) {
+        self.es = match self.es_next.take() {
+            Some(es) => Some(es).filter(|es| es.algid != ALGID_CLEAR),
+            None => self.es.map(|es| EncryptionSync { mi: next_mi(&es.mi), ..es }),
+        };
+    }
+
+    fn report_cipher(&mut self, es: &EncryptionSync, out: &mut Vec<TrackerOut>) {
+        let c = CipherId { algid: es.algid, keyid: es.keyid };
+        if self.active && self.cipher != Some(c) {
+            self.cipher = Some(c);
+            out.push(TrackerOut::Cipher(c));
+        }
     }
 
     fn touch(&mut self, t: f64) {

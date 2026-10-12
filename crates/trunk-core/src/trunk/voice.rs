@@ -72,6 +72,14 @@ impl VoiceKind {
     }
 }
 
+/// The cipher a transmission is encrypted with, as its encryption sync named
+/// it (P25: the ALGID and key ID).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct CipherId {
+    pub algid: u8,
+    pub keyid: u16,
+}
+
 /// What a voice tracker heard, for the call on its slot.
 #[derive(Clone, Debug, PartialEq)]
 pub enum TrackerOut {
@@ -79,6 +87,9 @@ pub enum TrackerOut {
     Audio(Vec<f32>, VoiceFrame),
     /// Link control named a source / emergency, or the call turned out encrypted.
     Info { source: Option<u32>, emergency: bool, encrypted: bool },
+    /// The transmission's encryption sync named its cipher (once a
+    /// transmission, and again if it changes).
+    Cipher(CipherId),
     /// Analog FM voice (a SmartNet analog call, a conventional FM channel): 8 kHz audio, squelched.
     AnalogAudio(Vec<f32>),
     /// Analog FM: the same audio before the 300 Hz high-pass (CTCSS / DCS

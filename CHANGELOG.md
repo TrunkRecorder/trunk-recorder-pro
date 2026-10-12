@@ -5,6 +5,13 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Encryption heard:** a talkgroup's page on the Radio dashboard lists
+  the ciphers its encrypted P25 calls used, with each algorithm (ADP,
+  DES, AES-256, …), key ID, number of calls and when it was last heard.
+  Hover over a talkgroup's **ENC** badge to see the same. A call's JSON
+  now has `algid` and `key_id`. This is the first step towards decrypting
+  calls for users who hold the keys.
+
 ## [0.1.9] — 2026-10-09
 
 - **Plugins: more than one copy for a system.** In a system's plugin

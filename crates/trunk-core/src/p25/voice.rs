@@ -10,7 +10,7 @@ use super::fec::{golay23_decode, golay23_decode_soft, golay24_decode, hamming106
 use super::frame::Frame;
 use crate::tables::{HDU_CODEWORD_BITS, LDU_LS_DATA_BITS, VOICE_CODEWORD_BITS};
 
-pub const ALGID_CLEAR: u8 = 0x80;
+pub use super::crypt::ALGID_CLEAR;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ImbeParams {
@@ -161,7 +161,8 @@ fn bit(fb: &[u8], k: usize) -> u32 {
     fb.get(k).map_or(0, |b| (b & 1) as u32)
 }
 
-fn hexbits_to_bytes(hb: &[u8; 63], from: usize) -> [u8; 9] {
+/// Nine bytes from the hexbits at `from` on (three bytes per four hexbits).
+pub(crate) fn hexbits_to_bytes(hb: &[u8; 63], from: usize) -> [u8; 9] {
     let mut out = [0u8; 9];
     let (mut n, mut j) = (0, from);
     while n < 9 {

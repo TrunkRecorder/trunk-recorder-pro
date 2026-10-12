@@ -48,6 +48,7 @@ use num_complex::Complex32;
 use super::calls::{conventional_index, conventional_system, Call, CallId, CallIds, CallSource, STUCK_CALL_S};
 use super::frames::CallFrames;
 use super::record::{Reception, Transmissions};
+use super::voice::CipherId;
 use super::talkgroups::{Talkgroup, Talkgroups};
 use super::voice::TrackerOut;
 use super::voice::{self, VoiceDecoder, VoiceKind, VoiceSpec};
@@ -353,6 +354,8 @@ struct Heard {
     frames: Vec<VoiceFrame>,
     /// (source, emergency, encrypted) from link control.
     infos: Vec<(Option<u32>, bool, bool)>,
+    /// The cipher the encryption sync named, if it did.
+    cipher: Option<CipherId>,
     /// Air time of the first voice frame, and the end of the last (digital).
     air: Option<(f64, f64)>,
     /// The talkgroup the air named (FM with tones: the row's).
@@ -372,6 +375,7 @@ impl Heard {
         self.audio.append(&mut other.audio);
         self.low.append(&mut other.low);
         self.infos.append(&mut other.infos);
+        self.cipher = other.cipher.or(self.cipher);
     }
 }
 
@@ -694,6 +698,7 @@ impl Conventional {
                 TrackerOut::AnalogAudio(a) => h.audio.extend_from_slice(&a),
                 TrackerOut::Subaudible(l) => h.low.extend_from_slice(&l),
                 TrackerOut::Info { source, emergency, encrypted } => h.infos.push((source, emergency, encrypted)),
+                TrackerOut::Cipher(id) => h.cipher = Some(id),
                 TrackerOut::Alias(a) => out.push(ConvOut::Alias(conventional_system(ch.cfg.system), a)),
                 TrackerOut::AliasLc(_) => {}
             }
@@ -873,6 +878,7 @@ impl Conventional {
                 recording: true,
                 reason: None,
                 encrypted: false,
+                cipher: None,
                 emergency: false,
                 priority: 0,
                 duplex: false,
@@ -920,6 +926,10 @@ impl Conventional {
         }
         if l.call.color_code.is_none() && h.color_code.is_some() {
             l.call.color_code = h.color_code;
+            changed = true;
+        }
+        if h.cipher.is_some() && l.call.cipher != h.cipher {
+            l.call.cipher = h.cipher;
             changed = true;
         }
         for (src, emergency, encrypted) in h.infos {

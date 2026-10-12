@@ -1,0 +1,181 @@
+# P25 decryption: design, progress and what is still unknown
+
+October 2026. Branch `p25-crypt` (worktree `../trunk-recorder-lite-crypt`).
+Decrypting encrypted P25 voice, Phase 1 and Phase 2, for users who are
+authorized and hold the keys. There is no keyed system here to test on, so
+correctness rests on test vectors, synthesized signals, cross-checks
+against OP25 and dsd-fme, and reports from users who have keys.
+
+Sources: OP25 (boatbod master: `op25_crypt*.cc`; Trunk Recorder's bundled
+snapshot has only ADP, and nothing loads keys into it), dsd-fme (ISC;
+`dsd_mbe.c`, `p25p1_ldu2.c`), dsd-neo (GPLv3; keyring, crypto state
+machine, `tests/crypto`) and SDRTrunk (no decryption; its `Encryption.java`
+is a good ALGID name table). The code here is written from those facts and
+the TIA-102 descriptions. OP25 and dsd-neo are GPL and are not ported.
+
+## Progress
+
+- [x] 1. `p25::crypt`: ALGID table, MI LFSR (step, 64-bit advance,
+      AES IV expansion), keystreams for ADP / DES-OFB / 3DES / AES-128 /
+      AES-256 with the Phase 1 and Phase 2 offsets, and unit tests (FIPS /
+      SP 800-38A / RC4 vectors, offset layout)
+- [x] 2. Keep ALGID, KID and MI everywhere: tracker state (Phase 1
+      current/pending sync, Phase 2 MI from MAC_PTT and ESS-B), a
+      `TrackerOut::Cipher` event, `Call.cipher`, the call JSON, the
+      `trunk-pro tool` voice dump, and a dashboard "ciphers seen" list per
+      talkgroup. (The plugin protocol's `algid`/`keyId` move to item 4,
+      together with `decrypted`. The tool shows Phase 2 MIs from MAC_PTT
+      only; it doesn't assemble the ESS.)
+- [ ] 3. Phase 1 decryption plus the keys file and config
+- [ ] 4. Call flow: tentative admit when the system has keys, a `decrypted`
+      flag, decrypted transmissions kept, live listen allowed, and
+      `algid`/`keyId`/`decrypted` in the plugin protocol
+- [ ] 5. `p25::synth` and cross-checks against OP25 master and dsd-fme
+- [ ] 6. Phase 2 decryption
+- [ ] 7. Late entry: decrypt the first superframe by running the LFSR
+      backwards. Import OP25 `keys.json` and dsd-fme CSV key files
+- [ ] Later: DMR (Basic Privacy, ARC4 / DES / AES) and NXDN (scrambler,
+      DES / AES) on the same keyring
+
+## Where things stood (before this branch)
+
+- Encryption was detected, and the audio dropped. Phase 1:
+  `VoiceTracker::voice_frame` returned before the vocoder. Phase 2: each
+  codeword was skipped. `Transmissions::kept` dropped encrypted
+  transmissions.
+- Only the ALGID was used. The KID was decoded but ignored, except in the
+  `trunk-pro tool` dump. The Phase 1 MI was decoded, then dropped. The
+  Phase 2 MI (MAC_PTT bytes 1–9, ESS-B hexbits 4–15) was never parsed.
+- Every implementation XORs the keystream onto the voice bits *after* FEC:
+  the 88 IMBE bits u0..u7, or the 49 AMBE+2 bits. That is exactly what the
+  trackers hand the vocoder (`imbe_params_to_bits`, `decode_vcw`), so
+  decryption is a step there and nothing upstream changes.
+
+## Algorithms
+
+| ALGID | Cipher | Here |
+|---|---|---|
+| 0x80 | clear | |
+| 0x81 | DES-OFB | yes |
+| 0x83 | 3-key 3DES-OFB | yes (dsd-fme does Phase 1; nobody does Phase 2) |
+| 0x84 | AES-256-OFB | yes |
+| 0x89 | AES-128-OFB | yes |
+| 0xAA | Motorola ADP (40-bit RC4) | yes |
+| 0x82 2-key 3DES, 0x85 AES-128-ECB?, 0x88 AES-CBC, 0x9F DES-XL, 0xA0–A3 DVI-XL/DVP, 0xAB CFX-256, 0xAF AES-256-GCM | | reported as unsupported |
+
+DES and AES come from RustCrypto (`des`, `aes`: pure Rust, no_std,
+WebAssembly-friendly). OFB is the block cipher run on its own output, and
+RC4 is hand-written.
+
+### Message indicator
+
+- 72 bits are sent; 64 (MI[0..8]) are used.
+- LFSR C(x) = x^64 + x^62 + x^46 + x^38 + x^27 + x^15 + 1. Each step the
+  feedback (bits 63, 61, 45, 37, 26, 14) is shifted in at the bottom.
+  - The next superframe's MI: 64 steps, then MI[8] = 0. Used when an
+    LDU2's (or Phase 2 ESS's) encryption sync fails its FEC.
+  - AES's 128-bit IV: the 64 bits shifted out over 64 steps, MSB first,
+    followed by the final 64-bit state.
+  - The LFSR can be inverted (it has an x^0 term), so a late joiner can
+    step the first good MI back one superframe (item 7).
+
+### Keystream layout
+
+One keystream per superframe (Phase 1: an LDU1 + LDU2 pair; Phase 2: the
+4 × 4V + 2V of one slot), built from the key and the current MI.
+
+- Throw away the first block. ADP discards 256 bytes; DES and 3DES 8; AES 16.
+- **Phase 1**: frame k (0–8) of LDU n (0, 1) takes 11 bytes from
+  `discard + 101·n + 11 + 11·k + (k == 8 ? 2 : 0)`. That is ADP's familiar
+  267 = 256 + 11. The first 11 bytes skip the LC/ES and reserved bytes, and
+  the +2 before frame 8 skips the low-speed data.
+- **Phase 2**: frame f (0–17: 4 per 4V burst, then 2 for the 2V) takes 7
+  bytes from `discard + 7·f`. The last byte keeps only its top bit (49 bits).
+- ADP: the RC4 key is the 5-byte key followed by MI[0..8] (13 bytes).
+- Which sync applies:
+  - Phase 1: the HDU's for the first superframe, then each LDU2's for the
+    *next* superframe. It is promoted after that LDU2's voice is decoded.
+  - Phase 2: the MAC_PTT's for the first superframe, then the ESS for the
+    next. It is promoted after the 2V burst.
+
+## Integration design
+
+- `p25::crypt` is pure, with no engine dependencies. `Keystream::new(alg,
+  key, mi, phase)`, `apply_p1(ldu, frame, &mut [u8; 88])` and
+  `apply_p2(frame, &mut [u8; 49])`.
+- `Keyring`: (algid, kid) → key, plus optional talkgroup → key overrides.
+  `resolve(algid, kid, tg)` → decrypt / no key / unsupported. One
+  `Arc<Keyring>` per system.
+- **Config**: keys go in their own file, never in the main config (the web
+  UI reads and edits that). A system gets `"keys": "keys/dcfd.json"`:
+
+  ```json
+  { "keys": [
+      { "algId": "0xAA", "keyId": "0x1B50", "key": "1234567890" },
+      { "algId": "0x84", "keyId": "0x0002", "key": "<64 hex>", "talkgroups": [1201] }
+  ]}
+  ```
+
+  Keys are never logged, never sent to plugins, and never returned by the
+  web API. The UI shows only the ALG/KID, a fingerprint and use counts.
+  Warn when the file is readable by others.
+- **Call flow**: a grant says only "encrypted"; the KID arrives on the
+  voice channel. When the system has keys, an encrypted call is recorded
+  tentatively. The tracker's `Cipher` event then decides: no key → the
+  transmission is dropped as before; key → it is kept and the call marked
+  `decrypted`. `encrypted` keeps meaning "encrypted on the air".
+- **Capture** (`.sdr` / frames): store the encrypted bits plus the real
+  ALGID/KID/MI, never the key. That keeps the archive faithful, and a
+  capture can be decrypted again offline after a fix, by someone holding the
+  key. (To decide: the alternative is decrypted bits, which are simpler to
+  play back.)
+
+## Testing without a keyed system
+
+No public P25 recording with a matching key exists; the old OP25 samples
+are gone. So:
+
+1. The crypto primitives are checked against the published vectors
+   (FIPS 46 / SP 800-67 DES, FIPS-197 / SP 800-38A AES-OFB, RFC 6229 RC4).
+2. Round trip: take clear voice from our DCFD / WMATA captures, encrypt the
+   IMBE / AMBE bits with a known key and MI, re-encode the FEC, and write
+   the sync into the HDU / LDU2 / MAC_PTT / ESS (`p25::synth`).
+3. Cross-check: run the same synthetic IQ through OP25 master (`-k
+   keys.json`) and dsd-fme (`-1` / `-H`). Matching audio proves that our
+   offsets agree with the tools used in the field. The round trip alone
+   only proves that we agree with ourselves.
+4. In the field: ship it marked experimental, per algorithm. Ask testers
+   for the dashboard's ciphers line and a ciphertext capture.
+
+## Open questions for item 3
+
+- **A whole LDU2 lost** (not just its sync): the tracker advances the MI
+  once per LDU2 it hears. If a fade eats an entire LDU2, the next LDU1
+  goes out under the wrong keystream until the next good LDU2. Fix: count
+  superframes by LDU1/LDU2 alternation, or by time (360 ms), and step the
+  LFSR once per missed superframe.
+- **Keys shorter than the cipher's** (OP25 pads them with leading
+  zeros): accept and pad them the same way, or refuse them? Pad them, with
+  a warning, so that OP25 key files work.
+- `p25::synth` (item 5) needs a Reed–Solomon *encoder* (RS(24,12),
+  RS(24,16), RS(36,20) and the Phase 2 RS(63,35) / RS(44,16)). Only
+  decoders exist so far.
+
+## Log
+
+- 2026-10-12: plan written; branch started.
+- 2026-10-12: items 1 and 2 done.
+  - The crypto primitives pass RFC 6229 (RC4), FIPS 81 (DES), SP 800-38A
+    (AES-128/256 OFB) and the offset-layout tests.
+  - Checked on real air: the reference capture `captures/p2-*.cu8` holds
+    DCFD's encrypted traffic, which is **AES-256 (0x84)** under key IDs
+    0x370E, 0x4319, 0xD42A and 0x0009, on both Phase 1 and Phase 2. All
+    233 superframe-to-superframe MI transitions in it (179 Phase 1 LDU2s,
+    54 Phase 2 ESS) equal `next_mi()` of the MI before. That confirms the
+    LFSR, the byte order, both MI parsers and when each sync takes effect.
+    Four of those pairs are a unit test (`lfsr_predicts_the_air`).
+  - Bit order: our IMBE `[u8; 88]` and AMBE `[u8; 49]` match OP25's
+    `imbe_pack` / `pack_cw` MSB-first packing, so the XOR runs on them
+    directly.
+  - The regression captures replay the same as main, apart from the new
+    `algid` / `key_id` fields in each call's JSON.

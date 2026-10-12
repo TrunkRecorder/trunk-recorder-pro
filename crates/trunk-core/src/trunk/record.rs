@@ -160,7 +160,7 @@ pub fn call_record(call: &Call, info: &ConcludeInfo) -> (String, String) {
     let _ = write!(
         j,
         "{{\"call_num\":{},\"freq\":{},\"freq_error\":{},\"signal\":{},\"noise\":{},\"snr\":{},\"clean_voice_pct\":{},\"source_num\":0,\"recorder_num\":{},\"tdma_slot\":{},\"phase2_tdma\":{},\
-\"start_time\":{},\"stop_time\":{},\"start_time_ms\":{},\"stop_time_ms\":{},\"emergency\":{},\"priority\":{},\"mode\":{},\"duplex\":{},\"encrypted\":{},\
+\"start_time\":{},\"stop_time\":{},\"start_time_ms\":{},\"stop_time_ms\":{},\"emergency\":{},\"priority\":{},\"mode\":{},\"duplex\":{},\"encrypted\":{},\"algid\":{},\"key_id\":{},\
 \"call_length\":{},\"call_length_ms\":{},\"talkgroup\":{},\"talkgroup_tag\":\"{}\",\"talkgroup_description\":\"{}\",\"talkgroup_group_tag\":\"{}\",\
 \"talkgroup_group\":\"{}\",\"color_code\":{},\"ran\":{},\"tone_mode\":\"{}\",\"tone_detected\":\"{}\",\"tone_confidence\":{:.3},\
 \"audio_type\":\"{}\",\"short_name\":\"{}\",",
@@ -183,6 +183,9 @@ pub fn call_record(call: &Call, info: &ConcludeInfo) -> (String, String) {
         call.mode as u8,
         call.duplex as u8,
         call.encrypted as u8,
+        // The cipher its encryption sync named (-1: none heard).
+        call.cipher.map_or(-1, |c| c.algid as i32),
+        call.cipher.map_or(-1, |c| c.keyid as i32),
         secs.round() as i64,
         (secs * 1000.0).round() as i64,
         call.talkgroup,

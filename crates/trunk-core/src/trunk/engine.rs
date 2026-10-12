@@ -1529,6 +1529,12 @@ impl Engine {
                         }
                     }
                 }
+                TrackerOut::Cipher(cipher) => {
+                    if let Some(c) = t.calls.call_mut(id).filter(|c| c.cipher != Some(cipher)) {
+                        c.cipher = Some(cipher);
+                        self.call_events.push(CallEvent::Update(c.clone()));
+                    }
+                }
                 // (Only conventional FM asks for it.)
                 TrackerOut::Subaudible(_) => {}
                 TrackerOut::Alias(a) => {
