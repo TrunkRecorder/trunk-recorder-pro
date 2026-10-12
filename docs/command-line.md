@@ -331,6 +331,7 @@ stdout with a summary on stderr. Where a tool takes `--rate`, `--fs` is accepted
 | `tool nxdnscan` | Every NXDN carrier in a capture |
 | `tool nxdn` | One NXDN channel's messages |
 | `tool nxdnsynth` | Make a synthetic NXDN capture |
+| `tool p25synth` | Make a synthetic P25 Phase 1 capture, encrypted with a key of yours or clear |
 | `tool snr` | Weak-signal curves: decode a strong channel again with noise added |
 | `tool revoice` | Run a call's saved vocoder frames through the vocoder again |
 
@@ -403,6 +404,32 @@ synthetic capture, handy for checking a setup when there's no NXDN on the air ne
 - `typeC` (the default): a control channel at centre + 18.75 kHz granting group 3001 on
   channel 12, whose call is at centre + 68.75 kHz
 - `typeD`: repeaters at centre + 12.5 and + 62.5 kHz, the call on the second
+
+### tool p25synth
+
+```bash
+trunk-pro tool p25synth <out.cu8|out.cf32> [--center 851000000] [--freq centre+100000]
+                        [--rate 2400000] [--keys keys.json] [--mi HEX] [--voice call.frames.jsonl]
+                        [--superframes 10] [--wav out.wav] [--nac 659] [--tg 1201]
+```
+
+Writes one P25 Phase 1 transmission (a header, then 180 ms voice frames, then a terminator) on
+`--freq`. With `--keys`, the voice is encrypted with the first key in that
+[keys file](configuration/systems.md#encryption-keys-keys), under its algorithm and key ID, with
+`--mi` (16 hex digits) as the first message indicator. Without it the transmission is clear.
+`--voice` takes the voice from a call saved with **Save vocoder frames** (`.sdr` or
+`.frames.jsonl`); otherwise the frames are made up and sound like noise. `--wav` also writes the
+transmission as 48 kHz discriminator audio, the input DSD-style decoders take.
+
+Use it to check decryption without an encrypted system on the air:
+
+```bash
+trunk-pro tool p25synth test.cu8 --keys keys.json --voice call.frames.jsonl
+trunk-pro replay test.cu8 --center 851000000 --rate 2400000 --p25 851100000 --keys keys.json
+```
+
+The call should be saved with `"decrypted": 1` and sound like the call `--voice` came from.
+Replay it with a different key and it's noise.
 
 ### tool snr
 

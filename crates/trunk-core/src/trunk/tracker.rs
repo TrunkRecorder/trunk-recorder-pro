@@ -303,22 +303,10 @@ impl VoiceTracker {
 mod tests {
     use super::*;
     use crate::p25::crypt::ALGID_ADP;
+    use crate::p25::voice::imbe_bits_to_params;
 
     fn tracker(keys: Option<Keyring>) -> VoiceTracker {
         VoiceTracker::new(mbe::lcg(1), mbe::Profile::Enhanced, keys.map(Arc::new))
-    }
-
-    /// imbe_params_to_bits, backwards.
-    fn params(bits: &[u8; 88]) -> [u32; 8] {
-        const W: [usize; 8] = [12, 12, 12, 12, 11, 11, 11, 7];
-        let mut u = [0u32; 8];
-        let mut p = 0;
-        for k in 0..8 {
-            u[k] = bits[p..p + W[k]].iter().fold(0, |v, &b| v << 1 | b as u32);
-            p += W[k];
-        }
-        u[7] <<= 1;
-        u
     }
 
     #[test]
@@ -351,7 +339,7 @@ mod tests {
             let mut bits = clear;
             ks.apply_p1(ldu, k, &mut bits);
             let mut out = Vec::new();
-            t.voice_frame(ldu, k, params(&bits), 0, 0, false, &mut out);
+            t.voice_frame(ldu, k, imbe_bits_to_params(&bits), 0, 0, false, &mut out);
             // Decrypted comes once, before the transmission's first decrypted audio.
             let first = ldu == 0 && k == 0 && t.ks.is_some();
             match out.as_slice() {

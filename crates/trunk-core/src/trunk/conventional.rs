@@ -423,6 +423,9 @@ struct Open {
     /// The call on each slot (FM and P25: slot 0).
     live: [Option<Live>; 2],
     tx: Option<Box<Tx>>,
+    /// Per slot: a cipher heard ahead of any voice (a P25 HDU in a run of
+    /// its own), for the voice that follows it.
+    cipher_ahead: [Option<CipherId>; 2],
 }
 
 struct Chan {
@@ -682,7 +685,7 @@ impl Conventional {
             keys: rules.keys.cloned(),
         });
         let meter = (kind != VoiceKind::Analog).then(|| ChannelFilter::new(rate));
-        ch.open = Some(Open { head, voice, meter, opened_s: now_s, carrier_seen: false, last_carrier_s: now_s, live: [None, None], tx: None });
+        ch.open = Some(Open { head, voice, meter, opened_s: now_s, carrier_seen: false, last_carrier_s: now_s, live: [None, None], tx: None, cipher_ahead: [None; 2] });
         Self::run(ch, &pre, now_s, meter_thr, num, ids, rules, 0.0, out);
     }
 
@@ -716,6 +719,17 @@ impl Conventional {
         for (slot, h) in heard.iter_mut().enumerate() {
             let a = o.voice.air(slot as u8);
             (h.air, h.tg, h.nac, h.color_code, h.ran) = (a.air, a.talkgroup, a.nac, a.color_code, a.ran);
+            // A run with nothing but the cipher is dropped (no voice, no
+            // link control): keep the cipher for the voice after it.
+            let ahead = &mut o.cipher_ahead[slot];
+            if h.audio.is_empty() && h.infos.is_empty() {
+                *ahead = h.cipher.or(*ahead);
+            } else {
+                h.cipher = h.cipher.or(ahead.take());
+            }
+            if !carrier && h.audio.is_empty() {
+                *ahead = None;
+            }
         }
         if ch.routed && ch.cfg.mode == ConvMode::Fm {
             if let Some(code) = Self::route(&ch.rows, &mut o.tx, &mut heard[0], carrier) {
@@ -1122,6 +1136,56 @@ mod tests {
 
     fn fm(freq_hz: f64, tg: u32) -> ConvChannel {
         ConvChannel { freq_hz, mode: ConvMode::Fm, talkgroup: tg, info: None, squelch_db: None, access: None, system: 0 }
+    }
+
+    /// An encrypted P25 transmission on a conventional channel whose system
+    /// has the key: one call, decrypted, naming its cipher (the HDU that
+    /// carries it is often decoded in a run of its own, ahead of the voice).
+    #[test]
+    fn p25_decrypted_calls_name_their_cipher() {
+        use crate::p25::crypt::{Keyring, ALGID_AES_256};
+        use crate::p25::synth::{dibits, imbe, modulate, Tx};
+        use crate::p25::voice::EncryptionSync;
+        let (center, fs, freq) = (155_000_000.0, 2_400_000.0, 155_200_000.0);
+        let key = vec![0x5a; 32];
+        let es = EncryptionSync { algid: ALGID_AES_256, keyid: 0x4319, mi: [9, 8, 7, 6, 5, 4, 3, 2, 0] };
+        let tx = Tx { nac: 0x293, talkgroup: 716, source: 42, cipher: Some((es, key.clone())), voice: (0..72).map(imbe).collect() };
+        let mut x = 3u32;
+        let mut pad = |n: usize| -> Vec<u8> {
+            (0..n)
+                .map(|_| {
+                    x = x.wrapping_mul(1664525).wrapping_add(1013904223);
+                    (x >> 30) as u8
+                })
+                .collect()
+        };
+        let mut d = pad(2400);
+        d.extend(dibits(&tx.frames()));
+        d.extend(pad(2400));
+        let mut ph = 0.0;
+        let mut iq = vec![Complex32::default(); (fs * 0.5) as usize];
+        iq.extend(modulate(&d, fs, freq - center, 0.3, &mut ph));
+        iq.extend(vec![Complex32::default(); (fs * 3.0) as usize]);
+        crate::nxdn::synth::add_noise(&mut iq, 0.003, &mut 9);
+        let mut keys = Keyring::default();
+        keys.add(ALGID_AES_256, Some(0x4319), key, vec![]).unwrap();
+        let sys = crate::trunk::ConvSystem { keys: Some(Arc::new(keys)), ..conv_system("conv") };
+        let cfg = EngineConfig {
+            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
+            conventional: vec![ConvChannel { mode: ConvMode::P25, ..fm(freq, 9) }],
+            conv_systems: vec![sys],
+            ..Default::default()
+        };
+        let mut e = Engine::new(cfg).unwrap();
+        for c in iq.chunks(32_768) {
+            e.push_iq(0, c);
+        }
+        e.finish();
+        let calls: Vec<Call> = e.drain_events().into_iter().filter_map(|ev| if let Event::Concluded(k) = ev { Some(k.call) } else { None }).collect();
+        let [c] = &calls[..] else { panic!("{} calls", calls.len()) };
+        assert_eq!(c.talkgroup, 716);
+        assert!(c.encrypted && c.decrypted);
+        assert_eq!(c.cipher, Some(CipherId { algid: ALGID_AES_256, keyid: 0x4319 }));
     }
 
     #[test]

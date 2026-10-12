@@ -279,13 +279,13 @@ impl Default for FramerOptions {
 
 const SYNC: u64 = 0x5575_F5FF_77FF;
 const INV: u64 = 0xAAAA_AAAA_AAAA;
-static SYNC_BITS: [u8; 48] = [
+pub(crate) static SYNC_BITS: [u8; 48] = [
     0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 1, 1, 1, 1, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1,
     1, 1,
 ];
 
 /// Frame length in dibits including status symbols; TSDU at its 3-TSBK maximum.
-fn frame_dibits(duid: u8) -> usize {
+pub(crate) fn frame_dibits(duid: u8) -> usize {
     match duid {
         HDU => 396,
         TDU => 72,

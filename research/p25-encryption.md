@@ -31,6 +31,8 @@ the TIA-102 descriptions. OP25 and dsd-neo are GPL and are not ported.
       flag, decrypted transmissions kept, live listen allowed, and
       `algid`/`keyId`/`decrypted` in the plugin protocol
 - [ ] 5. `p25::synth` and cross-checks against OP25 master and dsd-fme
+      (synth, RS encoder, round trips and `tool p25synth` done; the
+      cross-checks are being run)
 - [ ] 6. Phase 2 decryption
 - [ ] 7. Late entry: decrypt the first superframe by running the LFSR
       backwards. Import OP25 `keys.json` and dsd-fme CSV key files
@@ -214,7 +216,43 @@ are gone. So:
   bumped and nothing was published. Bump to 0.2.2 and publish when
   releasing.
 
-## Handoff (2026-10-12, updated after item 4)
+## Handoff (2026-10-12, updated during item 5)
+
+**Item 5** (so far) added:
+
+- `p25/fec.rs`: `rs_encode` (any of the shortened RS codes over GF(64),
+  the decoder's layout) and `hamming1063_encode`. Tests: every P25 RS
+  code round-trips and corrects up to its limit.
+- `p25/voice.rs`: `imbe_header_encode` (u0..u7 → the 144-bit codeword,
+  PN masks included), `imbe_bits_to_params` (moved from the tracker's
+  test), `bytes_to_hexbits`.
+- `p25/synth.rs` (new): `Tx` (NAC, talkgroup, source, optional cipher +
+  key, IMBE voice) → HDU, LDU1/LDU2 pairs, TDU as dibits, each LDU2 with
+  the next superframe's MI by the LFSR; `modulate` (C4FM, raised-cosine
+  α 0.2 frequency pulses); `imbe(n)` test frames. Tests run IQ through
+  the real Phase 1 voice decoder (`trunk::voice::build`, receivers,
+  framer, tracker): every cipher decrypts back to the bits sent; wrong
+  key ≠ clear; no key → nothing; an LDU2 with a broken ES is predicted by
+  the LFSR with no loss; a lost LDU2 mutes exactly the superframe it was
+  for; in noise (≈ 1 bit corrected per codeword) 102 of 108 frames are
+  exact.
+- `dsp/filters.rs`: `rc` (moved from `msd.rs`).
+- `trunk/conventional.rs`: **bug fix.** A conventional call never got its
+  cipher: the HDU (which carries it) is often decoded in a run with no
+  voice, and such runs were dropped. Now `Open.cipher_ahead` keeps it
+  for the voice that follows. Test `p25_decrypted_calls_name_their_cipher`
+  (an engine with a synthetic encrypted conventional channel). Trunked
+  calls weren't affected (their call exists from the grant).
+- `trunk-pro tool p25synth` (`p25synth.rs`): writes an encrypted (first
+  key of `--keys`) or clear capture, cu8 or cf32, from a saved call's
+  frames (`--voice`) or made-up ones, and `--wav` 48 kHz discriminator
+  audio for DSD-style decoders. Documented in `docs/command-line.md`.
+
+Not looked into: `replay` of a 240 kS/s capture records nothing (the
+channel at DC or 80 kHz off; any guard). Real sources run ≥ 1 MS/s, and
+960 kS/s works, so it was left.
+
+## Handoff (2026-10-12, after item 4)
 
 **Item 4** added:
 
@@ -345,3 +383,15 @@ it).
     2147; KIDs 0x370E, 0xD42A) was recorded, "decrypted" and saved with
     `decrypted: 1`. The Phase 2 calls stayed encrypted-only. With the
     wrong key the audio is noise; this proves the flow, not the cipher.
+- 2026-10-12: item 5, first part: an RS encoder, `p25::synth` and `tool
+  p25synth`. Round trips through the whole Phase 1 path pass for ADP,
+  DES, 3DES, AES-128 and AES-256.
+  - `tool p25synth --keys` with a real DCFD call's 360 IMBE frames
+    (`captures/reference/…/729-63_859037500.frames.jsonl`), then `replay
+    --p25 --keys --capture-frames`: all 360 frames come back bit-exact
+    under each cipher, and the call JSON has the ALGID and key ID. With a
+    wrong key, 0 of 360 match.
+  - Found and fixed: conventional calls had `algid`/`key_id` −1 (see the
+    handoff).
+  - Checked: `cargo test --workspace` passes, clippy only has warnings of
+    kinds main already has, the wasm build works.

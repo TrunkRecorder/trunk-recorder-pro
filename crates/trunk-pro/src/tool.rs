@@ -43,7 +43,7 @@ use trunk_core::p25::voice::{decode_hdu, decode_ldu1_lc, decode_ldu2_es, decode_
 use crate::{die, Args};
 
 pub fn run(a: &Args) {
-    let mode = a.positional.first().map(String::as_str).unwrap_or_else(|| die("tool cc|voice|frames|p2|smartnet|dmr|dmrscan|nxdn|nxdnscan|nxdnsynth|snr|revoice|sdr … (trunk-pro --help)"));
+    let mode = a.positional.first().map(String::as_str).unwrap_or_else(|| die("tool cc|voice|frames|p2|smartnet|dmr|dmrscan|nxdn|nxdnscan|nxdnsynth|p25synth|snr|revoice|sdr … (trunk-pro --help)"));
     if mode == "p2" {
         return run_p2(a);
     }
@@ -64,6 +64,9 @@ pub fn run(a: &Args) {
     }
     if mode == "nxdnsynth" {
         return crate::nxdntool::run_synth(a);
+    }
+    if mode == "p25synth" {
+        return crate::p25synth::run(a);
     }
     if mode == "sdr" {
         return run_sdr(a);
@@ -290,7 +293,7 @@ fn num_any(a: &Args, key: &str) -> u32 {
 }
 
 /// A frame capture: an `.sdr` file, or `.frames.jsonl`.
-fn load_frames(path: &str) -> Vec<VoiceFrame> {
+pub(crate) fn load_frames(path: &str) -> Vec<VoiceFrame> {
     use trunk_core::mbe::Kind;
     use trunk_core::trunk::frames::{hex_bits, Codec};
     let bytes = std::fs::read(path).unwrap_or_else(|e| die(&format!("{path}: {e}")));
