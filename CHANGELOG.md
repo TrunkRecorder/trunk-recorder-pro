@@ -13,12 +13,15 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 - **Decrypting P25 (experimental):** if you are authorized to monitor an
   encrypted P25 system and hold its keys, give the system a `keys` file
   (ADP, DES, 3DES, AES-128 or AES-256; see Configuration → Systems →
-  Encryption keys). Its encrypted Phase 1 calls are then recorded,
-  decrypted and saved, marked `"decrypted": 1` in the call JSON, and can
-  be played in Listen. Phase 2 is not decrypted yet. A key of the wrong
-  length stops recording from starting, with a message saying which key
-  to fix. Plugins get `algid`, `key_id` and `decrypted` with each call.
-  `trunk-pro replay --keys` does the same for captures.
+  Encryption keys). Its encrypted P25 calls, Phase 1 and Phase 2, are
+  then recorded, decrypted and saved, marked `"decrypted": 1` in the call
+  JSON, and can be played in Listen. A key of the wrong length stops
+  recording from starting, with a message saying which key to fix.
+  Plugins get `algid`, `key_id` and `decrypted` with each call.
+  `trunk-pro replay --keys` does the same for captures, and `trunk-pro
+  tool p25synth` makes an encrypted test capture with a key of yours, to
+  check a setup without an encrypted system on the air. The decryption
+  was checked against OP25 and dsd-fme on such captures.
 
 ## [0.1.9] — 2026-10-09
 

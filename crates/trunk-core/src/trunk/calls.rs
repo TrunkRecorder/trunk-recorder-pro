@@ -129,9 +129,9 @@ pub struct Call {
 }
 
 impl Call {
-    /// Its voice is of a kind that can be decrypted (P25 Phase 1).
+    /// Its voice is of a kind that can be decrypted (P25 Phase 1 or 2).
     pub fn decryptable(&self) -> bool {
-        !self.analog && !self.phase2_tdma && self.color_code.is_none() && self.nxdn.is_none()
+        !self.analog && self.color_code.is_none() && self.nxdn.is_none()
     }
 
     /// Its TDMA slot (0 / 1), for a call on a two-slot channel: P25 Phase 2
@@ -540,10 +540,12 @@ mod tests {
         m.handle(&[enc(0.0, 101, false)], &mut Host, &mut ev);
         assert_eq!(m.calls[0].reason, Some(Reason::Encrypted));
         m.can_decrypt = true;
-        // Phase 1: recorded, to see whether a key fits; Phase 2 not yet.
-        m.handle(&[enc(0.0, 102, false), enc(0.0, 103, true)], &mut Host, &mut ev);
+        // P25: recorded, to see whether a key fits; DMR not yet.
+        let dmr = Message { color_code: Some(1), ..enc(0.0, 104, false) };
+        m.handle(&[enc(0.0, 102, false), enc(0.0, 103, true), dmr], &mut Host, &mut ev);
         assert!(m.calls[1].recording && m.calls[1].reason.is_none());
-        assert_eq!(m.calls[2].reason, Some(Reason::Encrypted));
+        assert!(m.calls[2].recording && m.calls[2].reason.is_none());
+        assert_eq!(m.calls[3].reason, Some(Reason::Encrypted));
     }
 
     #[test]

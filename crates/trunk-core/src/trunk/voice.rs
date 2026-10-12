@@ -204,7 +204,7 @@ pub fn build(spec: &VoiceSpec) -> Box<dyn VoiceDecoder> {
             air: None,
         }),
         VoiceKind::Tdma => {
-            let mut tracker = TdmaTracker::new(spec.seed);
+            let mut tracker = TdmaTracker::new(spec.seed, spec.keys.clone());
             tracker.soft = spec.bank.soft;
             // Decision-feedback differential detection: ~1 dB in noise on Phase 2
             // voice (tool snr); not used on Phase 1, where simulcast didn't like it.

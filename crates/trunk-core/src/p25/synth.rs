@@ -1,6 +1,7 @@
-//! A synthetic P25 Phase 1 transmitter, for tests and `tool p25synth`: a
+//! A synthetic P25 transmitter, for tests and `tool p25synth`: a Phase 1
 //! voice transmission (HDU, LDU1 / LDU2 superframes, TDU), clear or
-//! encrypted with a known key, C4FM-modulated. Every encoder here is the
+//! encrypted with a known key, C4FM-modulated; and a Phase 2 one's voice
+//! bursts as framed slot packets ([`Tx2`]). Every encoder here is the
 //! inverse of a decoder in this module, and those were checked on real air
 //! first, so a decode of its output checks the decryption end to end.
 //!
@@ -12,10 +13,12 @@ use num_complex::Complex32;
 use super::crypt::{next_mi, Algorithm, Keystream, Phase};
 use super::fec::{golay24_encode, hamming1063_encode, rs_encode};
 use super::frame::{encode_nid, frame_dibits, HDU, LDU1, LDU2, SYNC_BITS, TDU};
+use super::phase2::{xor_mask, Packet, BURST_2V, BURST_4V, BURST_DIBITS, SLOT_DIBITS};
 use super::voice::{bytes_to_hexbits, imbe_bits_to_params, imbe_header_encode, EncryptionSync};
+use crate::ambe::encode_vcw;
 use crate::dsp::c4fm::SYMBOL_RATE;
 use crate::dsp::filters::rc;
-use crate::tables::{HDU_CODEWORD_BITS, LDU_LS_DATA_BITS, VOICE_CODEWORD_BITS};
+use crate::tables::{DUID_LOOKUP, HDU_CODEWORD_BITS, ISCH_CODEWORDS, LDU_LS_DATA_BITS, VOICE_CODEWORD_BITS};
 
 /// The status symbols' value (any will do: the decoders skip them).
 const STATUS: u8 = 0b01;
@@ -215,6 +218,117 @@ pub fn imbe(n: usize) -> [u8; 88] {
     })
 }
 
+// ── Phase 2: one logical channel's bursts, as framed slot packets ────────────
+
+/// A Phase 2 transmission on logical channel 0 (no MAC_PTT: a receiver
+/// learns the cipher from the first superframe's ESS, as when it joins
+/// late). Its 4V bursts are in superframe slots 0, 2, 4, 6 and the 2V in 8.
+#[derive(Clone, Debug)]
+pub struct Tx2 {
+    /// The scrambler seed: NAC, System ID, WACN.
+    pub nac: u32,
+    pub sys_id: u32,
+    pub wacn: u32,
+    /// As [`Tx::cipher`].
+    pub cipher: Option<(EncryptionSync, Vec<u8>)>,
+    /// AMBE+2 frames (49 bits) before encryption, filled out to whole
+    /// superframes (18 frames) with zero frames.
+    pub voice: Vec<[u8; 49]>,
+}
+
+impl Tx2 {
+    pub fn superframes(&self) -> usize {
+        self.voice.len().div_ceil(18).max(1)
+    }
+
+    /// The MI superframe `s` is encrypted under.
+    pub fn mi(&self, s: usize) -> Option<[u8; 9]> {
+        let (es, _) = self.cipher.as_ref()?;
+        Some((0..s).fold(es.mi, |mi, _| next_mi(&mi)))
+    }
+
+    /// The voice bursts as slot packets, each with its air time (s).
+    pub fn packets(&self) -> Vec<(Packet, f64)> {
+        let mask = xor_mask(self.nac, self.sys_id, self.wacn);
+        let mut out = Vec::new();
+        for s in 0..self.superframes() {
+            let ks = self.cipher.as_ref().map(|(e, key)| {
+                let alg = Algorithm::from_algid(e.algid).expect("an ALGID the synth can encrypt with");
+                Keystream::new(alg, key, &self.mi(s).unwrap(), Phase::Two).expect("a key of the length its ALGID needs")
+            });
+            // This superframe's ESS: the sync of the next.
+            let next = match &self.cipher {
+                Some((es, _)) => EncryptionSync { mi: self.mi(s + 1).unwrap(), ..*es },
+                None => EncryptionSync { algid: super::crypt::ALGID_CLEAR, keyid: 0, mi: [0; 9] },
+            };
+            let mut b = vec![next.algid];
+            b.extend(next.keyid.to_be_bytes());
+            b.extend(next.mi);
+            let mut ess = [0u8; 63];
+            ess[19..35].copy_from_slice(&bytes_to_hexbits(&b));
+            rs_encode(&mut ess, 28);
+            for burst in 0..5 {
+                let n = if burst < 4 { 4 } else { 2 };
+                let frames: Vec<[u8; 49]> = (0..n)
+                    .map(|j| {
+                        let f = 4 * burst + j;
+                        let mut bits = self.voice.get(18 * s + f).copied().unwrap_or([0; 49]);
+                        if let Some(ks) = &ks {
+                            ks.apply_p2(f, &mut bits);
+                        }
+                        bits
+                    })
+                    .collect();
+                let mut x = [0u8; BURST_DIBITS];
+                let at: &[usize] = if burst < 4 { &[11, 48, 96, 133] } else { &[11, 48] };
+                for (f, &a) in frames.iter().zip(at) {
+                    x[a..a + 36].copy_from_slice(&encode_vcw(f));
+                }
+                let mut put_hexbit = |at: usize, h: u8| {
+                    x[at..at + 3].copy_from_slice(&[h >> 4 & 3, h >> 2 & 3, h & 3]);
+                };
+                if burst < 4 {
+                    for h in 0..4 {
+                        put_hexbit(84 + 3 * h, ess[19 + 4 * burst + h]);
+                    }
+                } else {
+                    let mut j = 84;
+                    for i in 0..28 {
+                        put_hexbit(j, ess[35 + i]);
+                        j += if i == 15 { 4 } else { 3 };
+                    }
+                }
+                let slot = 2 * burst;
+                let mut p = Packet { sf_slot: slot, sample: 0.0, dibits: [0; SLOT_DIBITS], rel: vec![1.0; 2 * SLOT_DIBITS] };
+                p.dibits[..20].copy_from_slice(&isch(slot));
+                for i in 10..BURST_DIBITS {
+                    p.dibits[10 + i] = x[i] ^ mask[slot * SLOT_DIBITS + i];
+                }
+                let kind = if burst < 4 { BURST_4V } else { BURST_2V };
+                let duid = (0..=255u8).find(|&v| DUID_LOOKUP[v as usize] == kind).unwrap();
+                for (k, pos) in [10, 47, 132, 169].into_iter().enumerate() {
+                    p.dibits[10 + pos] = duid >> (6 - 2 * k) & 3;
+                }
+                out.push((p, 0.36 * s as f64 + 0.03 * slot as f64));
+            }
+        }
+        out
+    }
+}
+
+/// A slot's ISCH: the sync word in slots 2, 3, 6, 7, 10, 11, else an
+/// I-ISCH (any: the tracker only needs to know it is one).
+fn isch(slot: usize) -> [u8; 20] {
+    let w = if matches!(slot % 4, 2 | 3) { 0x57_5D57_F7FF } else { ISCH_CODEWORDS.iter().find(|&&(_, v)| v >= 0).unwrap().0 };
+    std::array::from_fn(|i| (w >> (38 - 2 * i) & 3) as u8)
+}
+
+/// A recognisable AMBE+2 frame, as [`imbe`].
+pub fn ambe(n: usize) -> [u8; 49] {
+    let b = imbe(n);
+    std::array::from_fn(|i| b[i])
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -391,11 +505,11 @@ mod tests {
         assert!(h.voice.iter().zip(&t.voice).all(|((b, e), v)| !e && b == v));
     }
 
-    /// An LDU2 lost to a fade takes its sync with it: the superframe after
-    /// it is muted (not guessed), and the next LDU2's sync brings the voice
-    /// back.
+    /// An LDU2 lost to a fade takes its sync with it: the next superframe's
+    /// LDU1 is held for the LDU2 after it, whose sync run back is its own.
+    /// Only the lost LDU2's voice is missing.
     #[test]
-    fn a_lost_ldu2_mutes_until_the_next_sync() {
+    fn a_lost_ldu2_costs_only_its_own_voice() {
         let t = tx(Some((es(ALGID_AES_128, 0x4319), vec![3; 16])), 4);
         let mut frames = t.frames();
         // Superframe 1's LDU2 (frame 4) replaced by noise.
@@ -405,12 +519,22 @@ mod tests {
             *d = (x >> 30) as u8;
         }
         let h = hear(&frames, Some(keyring(ALGID_AES_128, 0x4319, &[3; 16])), 0.0);
-        // Superframes 0 and 3 are heard clear; 1's LDU1 too; 2 is muted.
-        let ok = |i: usize| h.voice[i].0 == t.voice[i] && !h.voice[i].1;
-        assert_eq!(h.voice.len(), t.voice.len() - 9, "the lost LDU2's nine frames are gone");
-        assert!((0..27).all(ok), "superframe 0 and the LDU1 of 1");
-        assert!((27..45).all(|i| h.voice[i].1), "superframe 2: muted");
-        assert!((45..63).all(|i| h.voice[i].0 == t.voice[i + 9] && !h.voice[i].1), "superframe 3");
+        let want: Vec<&[u8; 88]> = t.voice.iter().enumerate().filter(|(i, _)| !(27..36).contains(i)).map(|(_, v)| v).collect();
+        assert_eq!(h.voice.len(), want.len());
+        assert!(h.voice.iter().zip(want).all(|((b, e), v)| !e && b == v));
+    }
+
+    /// Joined late (the HDU and its sync missed): the first LDU1 is held
+    /// for the LDU2, and the whole transmission comes through.
+    #[test]
+    fn a_late_join_decrypts_from_the_first_ldu() {
+        let t = tx(Some((es(ALGID_ADP, 0x1B50), vec![1, 2, 3, 4, 5])), 3);
+        let mut frames = t.frames();
+        frames.remove(0);
+        let h = hear(&frames, Some(keyring(ALGID_ADP, 0x1B50, &[1, 2, 3, 4, 5])), 0.0);
+        assert_eq!(h.cipher, [CipherId { algid: ALGID_ADP, keyid: 0x1B50 }]);
+        assert_eq!(h.voice.len(), t.voice.len());
+        assert!(h.voice.iter().zip(&t.voice).all(|((b, e), v)| !e && b == v));
     }
 
     /// In noise (the FEC correcting about a bit per codeword), the voice

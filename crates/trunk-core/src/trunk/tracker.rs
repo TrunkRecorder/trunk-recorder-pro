@@ -9,7 +9,7 @@ use crate::mbe::{self, Kind, FRAME_SAMPLES};
 use crate::p25::alias::{is_alias_lcw, AliasLc, LcAliases};
 use crate::p25::diversity::{best_es, best_frame, best_imbe, best_lc, Group};
 use crate::p25::frame::{HDU, LDU1, LDU2, TDU, TDULC};
-use crate::p25::crypt::{next_mi, Keyring, Keystream, Phase};
+use crate::p25::crypt::{next_mi, prev_mi, Keyring, Keystream, Phase};
 use crate::p25::voice::{decode_hdu, decode_tdulc, imbe_params_to_bits, ldu_codeword_end_bit, EncryptionSync, ALGID_CLEAR};
 use super::voice::{CipherId, TrackerOut};
 use std::sync::Arc;
@@ -40,6 +40,10 @@ pub struct VoiceTracker {
     decrypting: bool,
     /// The last LDU's DUID and time, to notice LDUs that never arrived.
     last_ldu: Option<(u8, f64)>,
+    /// Encrypted voice with no sync (joined late, or the last LDU2 lost),
+    /// held for the LDU2: its sync is the next superframe's, and the LFSR
+    /// run back gives this one's. (LDU, frame, u, e0, errors, erased.)
+    held: Vec<(usize, usize, [u32; 8], u32, u32, bool)>,
     tgid: Option<u32>,
     /// The unit link control named for the current transmission.
     talker: Option<u32>,
@@ -66,6 +70,7 @@ impl VoiceTracker {
             ks: None,
             decrypting: false,
             last_ldu: None,
+            held: Vec::new(),
             tgid: None,
             talker: None,
             aliases: LcAliases::default(),
@@ -104,8 +109,10 @@ impl VoiceTracker {
                 self.touch(t);
                 if self.lost_ldu2(best.nid.duid, t) {
                     // Its sync is gone with it: wait for the next good one.
+                    // Voice held for it can't be decrypted now.
                     self.es_next = None;
                     self.set_es(None);
+                    self.release_held(out);
                 }
                 self.last_ldu = Some((best.nid.duid, t));
                 if best.nid.duid == LDU1 {
@@ -140,8 +147,13 @@ impl VoiceTracker {
                         self.set_encryption(es.algid as i32, out);
                         if es.algid != ALGID_CLEAR {
                             self.report_cipher(&es, out);
+                            // No sync for this superframe: the LDU2's, run back.
+                            if self.es.is_none() {
+                                self.set_es(Some(EncryptionSync { mi: prev_mi(&es.mi), ..es }));
+                            }
                         }
                     }
+                    self.release_held(out);
                 }
                 // A cut frame (the next sync came early, in every receiver):
                 // from the first codeword that fails its FEC or runs past the
@@ -186,6 +198,8 @@ impl VoiceTracker {
                 self.active = false;
                 self.algid = ALGID_CLEAR as i32;
                 self.set_es(None);
+                // Voice still waiting for a sync that won't come.
+                self.release_held(out);
                 self.last_ldu = None;
             }
             _ => {}
@@ -203,6 +217,7 @@ impl VoiceTracker {
         self.cipher = None;
         self.decrypting = false;
         self.last_ldu = None;
+        self.held.clear();
         self.end_s = t;
         self.call_frames = 0;
     }
@@ -267,11 +282,28 @@ impl VoiceTracker {
         }
     }
 
-    /// IMBE frame `k` of an LDU (`ldu` 0: LDU1, 1: LDU2).
+    /// Vocode the voice held for a sync: decrypted if one came.
+    fn release_held(&mut self, out: &mut Vec<TrackerOut>) {
+        for (ldu, k, u, e0, errs, erased) in std::mem::take(&mut self.held) {
+            self.vocode(ldu, k, u, e0, errs, erased, out);
+        }
+    }
+
+    /// IMBE frame `k` of an LDU (`ldu` 0: LDU1, 1: LDU2): vocoded, or held
+    /// for a sync when it is encrypted under none yet and there are keys.
     #[allow(clippy::too_many_arguments)]
-    fn voice_frame(&mut self, ldu: usize, k: usize, u: [u32; 8], e0: u32, errs: u32, mut erased: bool, out: &mut Vec<TrackerOut>) {
+    fn voice_frame(&mut self, ldu: usize, k: usize, u: [u32; 8], e0: u32, errs: u32, erased: bool, out: &mut Vec<TrackerOut>) {
         self.frames += 1;
         self.call_frames += 1;
+        if self.encrypted && self.ks.is_none() && self.keys.is_some() && ldu == 0 {
+            self.held.push((ldu, k, u, e0, errs, erased));
+            return;
+        }
+        self.vocode(ldu, k, u, e0, errs, erased, out);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn vocode(&mut self, ldu: usize, k: usize, u: [u32; 8], e0: u32, errs: u32, mut erased: bool, out: &mut Vec<TrackerOut>) {
         let mut bits = imbe_params_to_bits(&u);
         if self.encrypted {
             match &self.ks {
@@ -364,9 +396,14 @@ mod tests {
                 assert!(!f.erased);
             }
         }
-        // The sync lost to a fade: muted until the next good one.
+        // The sync lost to a fade: LDU1 voice is held for the next one…
         t.set_es(None);
-        let f = heard(&mut t, 0, 0).expect("muted, not dropped");
+        assert!(heard(&mut t, 0, 0).is_none());
+        // …and muted, not dropped, if none comes; so is LDU2 voice.
+        let mut out = Vec::new();
+        t.release_held(&mut out);
+        assert!(matches!(out.as_slice(), [TrackerOut::Audio(_, f)] if f.erased && f.bits == [0; 88]), "{out:?}");
+        let f = heard(&mut t, 1, 0).expect("muted, not dropped");
         assert!(f.erased && f.bits == [0; 88]);
 
         // No key for it: dropped, as before.

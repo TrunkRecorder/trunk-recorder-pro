@@ -30,12 +30,11 @@ the TIA-102 descriptions. OP25 and dsd-neo are GPL and are not ported.
 - [x] 4. Call flow: tentative admit when the system has keys, a `decrypted`
       flag, decrypted transmissions kept, live listen allowed, and
       `algid`/`keyId`/`decrypted` in the plugin protocol
-- [ ] 5. `p25::synth` and cross-checks against OP25 master and dsd-fme
-      (synth, RS encoder, round trips and `tool p25synth` done; the
-      cross-checks are being run)
-- [ ] 6. Phase 2 decryption
-- [ ] 7. Late entry: decrypt the first superframe by running the LFSR
-      backwards. Import OP25 `keys.json` and dsd-fme CSV key files
+- [x] 5. `p25::synth` and cross-checks against OP25 master and dsd-fme
+- [x] 6. Phase 2 decryption
+- [ ] 7. ~~Late entry: decrypt the first superframe by running the LFSR
+      backwards~~ (done with item 6, both phases). Import OP25 `keys.json`
+      and dsd-fme CSV key files
 - [ ] Later: DMR (Basic Privacy, ARC4 / DES / AES) and NXDN (scrambler,
       DES / AES) on the same keyring
 
@@ -166,6 +165,32 @@ are gone. So:
   `rs_decode_erasures`). Needed: RS(24,12) LDU1 LC, RS(24,16) LDU2 ES,
   RS(36,20) HDU, RS(44,16) Phase 2 ESS, RS(63,35) MAC.
 
+## Decisions made while building items 5 and 6 (open to change)
+
+- **A lost sync costs only the voice lost with it.** Refines the
+  decision above: still no guessing, and still waiting for the next good
+  sync. But that sync (an LDU2's ES, a 2V's ESS) carries the *next*
+  superframe's MI, and the LFSR run back once gives the MI of the
+  superframe it arrived in. So voice that has no sync (joined late, or the
+  previous LDU2 / 2V lost) is held, up to one LDU1 or four 4V bursts, and
+  decrypted when the sync comes. If it never comes (the transmission ends,
+  or another sync is lost first), it is muted as before. The voice held
+  is delayed by up to one superframe (fine for recordings; live audio
+  lags by as much).
+- **Phase 2 joined late with no MAC_PTT:** whether the voice is encrypted
+  is unknown until the first ESS, so it is held until then (with or
+  without keys). Before, that superframe's ciphertext was played as
+  clear. Held voice of a clear call is released at the ESS, in order.
+- **Phase 2 burst count:** a 4V counted as the fifth burst (the op25 count
+  only corrects forward) means the 2V was lost and the 4V starts the next
+  superframe; it is counted as burst 0. A frame whose place in the
+  superframe isn't known is never decrypted (it would index past the
+  keystream).
+- The Phase 2 synth builds bursts as framed slot packets, not IQ (no
+  H-DQPSK modulator) and no MAC_PTT encoder: the tests start without a
+  PTT, which exercises the late-join path. The MAC_PTT's MI parse was
+  already checked on real air (item 2).
+
 ## Decisions made while building item 3 (open to change)
 
 - **Key lookup:** a key that lists `talkgroups` is used for those
@@ -196,9 +221,9 @@ are gone. So:
 ## Decisions made while building item 4 (open to change)
 
 - **Which calls are recorded tentatively:** with keys, an encrypted call is
-  recorded (even with `recordEncrypted` off) when it is P25 Phase 1
-  (`Call::decryptable`). Phase 2, DMR and NXDN are still only followed;
-  widen `decryptable` with item 6. A call with no matching key keeps its
+  recorded (even with `recordEncrypted` off) when it is P25
+  (`Call::decryptable`; Phase 2 since item 6). DMR and NXDN are still only
+  followed. A call with no matching key keeps its
   recorder to the end and is then not saved (empty audio). Releasing the
   recorder as soon as the `Cipher` event shows there is no key would save
   recorders; not done.
@@ -216,9 +241,27 @@ are gone. So:
   bumped and nothing was published. Bump to 0.2.2 and publish when
   releasing.
 
-## Handoff (2026-10-12, updated during item 5)
+## Handoff (2026-10-12, after items 5 and 6)
 
-**Item 5** (so far) added:
+**Item 6** (and the late-entry half of 7) added:
+
+- `p25/crypt.rs`: `prev_mi` (the LFSR backwards; tests, including the
+  real-air pairs run back).
+- `trunk/tdma.rs`: `TdmaTracker::new(seed, keys)`; per slot `ks`,
+  `decrypting`, `last_vb` (`lost_2v`), `unsure` and `held`;
+  `Slot::voice` (decrypt with frame index 4·burst + j, mute, vocode).
+  Tests drive the tracker with `synth::Tx2` packets: clear, every cipher
+  (from a late join), no / wrong key, a broken ESS, a lost 2V.
+- `trunk/tracker.rs`: `held`, `release_held`, `vocode` (split from
+  `voice_frame`); an LDU2's ES run back when the superframe had no sync.
+- `p25/synth.rs`: `Tx2` (Phase 2 bursts as slot packets: DUID, ISCH,
+  AMBE, ESS with RS(44,16), scrambled), `ambe(n)`.
+- `trunk/calls.rs`: `Call::decryptable` takes Phase 2.
+- Docs: systems.md, command-line.md, architecture.md/.html, CHANGELOG.
+- `research/p25-crosscheck/`: the cross-check's scripts, patches to the
+  two tools, keys, and how to build and run them.
+
+**Item 5** added:
 
 - `p25/fec.rs`: `rs_encode` (any of the shortened RS codes over GF(64),
   the decoder's layout) and `hamming1063_encode`. Tests: every P25 RS
@@ -330,15 +373,14 @@ it).
   the new fields. The scripts and captures live in the main checkout.
 - The dashboard card has not been looked at in a browser.
 
-**Remaining**, in order (see Progress above):
+**Remaining** (after items 5 and 6), in order:
 
-1. The Reed–Solomon encoder, then `p25::synth` (item 5): round-trip tests
-   through the whole tracker (today's test drives `voice_frame` directly)
-   and through `replay --keys`, then the cross-checks against OP25 master
-   and dsd-fme. This is what proves the decryption is right; until then it
-   ships marked experimental.
-2. Items 6 (Phase 2; widen `Call::decryptable`) and 7, then DMR / NXDN.
-3. Smaller: release the recorder of a tentatively recorded call once its
+1. Item 7's other half: import OP25 `keys.json` (`{"0x370e": {"algid":
+   "0x84", "key": ["0x00", …]}}`) and dsd-fme key files.
+2. A Phase 2 third-party check would need an H-DQPSK modulator and a
+   MAC_PTT encoder in the synth (OP25 decodes Phase 2 AES-256, ADP, DES).
+3. DMR / NXDN.
+4. Smaller: release the recorder of a tentatively recorded call once its
    `Cipher` shows there's no key; a `keys` field in the web UI; publish
    the SDK.
 
@@ -395,3 +437,45 @@ it).
     handoff).
   - Checked: `cargo test --workspace` passes, clippy only has warnings of
     kinds main already has, the wasm build works.
+- 2026-10-12: item 5 done: **cross-checked against OP25 and dsd-fme.**
+  `tool p25synth` signals (the same real call's 360 IMBE frames, clear and
+  under each cipher) decoded by each tool; decrypted frames compared with
+  the same tool's decode of the clear signal. Full method, commands and
+  patches: `research/p25-crosscheck/`.
+  - OP25 (boatbod master 71abcd0, GNU Radio 3.10.12): ADP, DES-OFB and
+    AES-256 decrypt to 360 of 360 frames, 0 of 31,680 bits wrong. It has
+    no 3DES or AES-128. It decrypts with the MI from each LDU2; all 20
+    logged MI steps follow our LFSR.
+  - dsd-fme (audio_work 4fe32db, mbelib 1.3.2): ADP, DES, 3DES, AES-128,
+    AES-256 all 360 of 360, 0 bits wrong (from OP25's symbols; from our
+    discriminator WAV a few demodulator bit errors, as in its clear
+    decode). Two dsd-fme bugs, not disagreements: its AES keystream is 14
+    blocks where 15 are needed, so bytes 6–10 of frame 17 of each
+    superframe stay ciphertext (with 15: bit-exact); and it mutes 3DES
+    audio (its bits are right).
+  - Both report the ALGID, key ID and MI as sent. No key or a wrong key:
+    about half the bits wrong, garbled or no audio.
+  - OP25 also has an audio bug of its own in decrypted calls (u7 not
+    shifted back before the vocoder); its logged bits are right.
+  - This checks our offsets and ciphers against the tools used in the
+    field, for Phase 1. Phase 2 has no third-party check yet (no Phase 2
+    IQ synth); its layout (`7·f`) and MIs rest on the item 1 tests and
+    the real-air MI checks.
+- 2026-10-12: item 6 done: Phase 2 decrypts, and a late join or a lost
+  sync costs only the voice lost with the sync, in both phases.
+  - Tests: Phase 2 every cipher, no/wrong key, broken ESS, lost 2V;
+    Phase 1 late join (HDU missed: the whole transmission decrypts), lost
+    LDU2 (only its 9 frames missing).
+  - Real air, `replay --keys` with zero AES-256 keys over
+    `captures/p2-*.cu8`: every encrypted call, Phase 1 and now Phase 2
+    (TG 11033, 11037, 11327), recorded with `decrypted: 1` and its
+    ALGID/KID (0x4319, 0x0009 on Phase 2). Wrong key: noise; this proves
+    the flow.
+  - Regression replays (no keys) against item 4: Phase 1, DMR, SmartNet
+    and conventional identical. Phase 2 differs, as intended: clear call
+    2191 gains 8 good frames at its start (heard before the grant reached
+    the slot, now held and released into the call); encrypted calls no
+    longer count the late-joined superframe's ciphertext as audio (one
+    stop time 0.9 s earlier); signal/SNR move by ≤ 1.8 dB on encrypted
+    calls and ≤ 0.3 dB on clear ones, as the measured span follows the
+    voice. Clear calls' frames are otherwise bit-identical.

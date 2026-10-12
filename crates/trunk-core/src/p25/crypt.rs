@@ -147,6 +147,21 @@ pub fn next_mi(mi: &[u8; 9]) -> [u8; 9] {
     out
 }
 
+/// The MI of the superframe before (64 LFSR steps back; the LFSR can be run
+/// backwards, its polynomial having an x⁰ term): what a receiver that joined
+/// late, and heard only the sync for the next superframe, needs for this one.
+pub fn prev_mi(mi: &[u8; 9]) -> [u8; 9] {
+    let mut r = mi64(mi);
+    for _ in 0..64 {
+        // The bit shifted out was the feedback's only unknown term.
+        let top = (r ^ r >> 62 ^ r >> 46 ^ r >> 38 ^ r >> 27 ^ r >> 15) & 1;
+        r = r >> 1 | top << 63;
+    }
+    let mut out = [0u8; 9];
+    out[..8].copy_from_slice(&r.to_be_bytes());
+    out
+}
+
 /// AES's 128-bit IV: the 64 bits the LFSR shifts out over 64 steps (the MI
 /// itself), then its state (the next MI).
 pub fn aes_iv(mi: &[u8; 9]) -> [u8; 16] {
@@ -385,6 +400,20 @@ mod tests {
     }
 
     #[test]
+    fn lfsr_runs_backwards() {
+        let mut x = 0x2545_f491_4f6c_dd1du64;
+        for _ in 0..1000 {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            let mut mi = [0u8; 9];
+            mi[..8].copy_from_slice(&x.to_be_bytes());
+            assert_eq!(next_mi(&prev_mi(&mi)), mi);
+            assert_eq!(prev_mi(&next_mi(&mi)), mi);
+        }
+    }
+
+    #[test]
     fn lfsr_predicts_the_air() {
         // Consecutive superframes' MIs from DCFD's AES-256 traffic
         // (captures/p2-*.cu8, 2026-10-03): Phase 1 LDU2s, then Phase 2 ESS.
@@ -399,6 +428,9 @@ mod tests {
             let mut mi = [0u8; 9];
             mi[..8].copy_from_slice(&hex(a));
             assert_eq!(&next_mi(&mi)[..8], &hex(b)[..], "after {a}");
+            let mut nx = [0u8; 9];
+            nx[..8].copy_from_slice(&hex(b));
+            assert_eq!(&prev_mi(&nx)[..8], &hex(a)[..], "before {b}");
         }
     }
 

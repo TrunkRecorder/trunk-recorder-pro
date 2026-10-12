@@ -137,8 +137,7 @@ or `Preferred NAC` column.
 ## Encryption keys (`keys`)
 
 **Experimental.** If you are authorized to monitor an encrypted P25 system and hold its keys, the
-recorder can decrypt its voice. Only P25 Phase 1 is decrypted so far. Phase 2, DMR and NXDN calls
-stay encrypted.
+recorder can decrypt its voice, P25 Phase 1 and Phase 2. DMR and NXDN calls stay encrypted.
 
 The keys live in a file of their own, never in the config, which the interface reads and edits:
 
@@ -162,10 +161,13 @@ The keys live in a file of their own, never in the config, which the interface r
   fix. The key itself is never shown, logged or sent to plugins.
 - Make the file readable only by you (`chmod 600 keys.json`). The log warns when other users can
   read it.
-- A system with keys records its encrypted Phase 1 calls, even with `recordEncrypted` off, because the
+- A system with keys records its encrypted P25 calls, even with `recordEncrypted` off, because the
   key ID only arrives with the voice. A call whose key isn't in the file is then left out, as an
   encrypted call always is. One that was decrypted is saved with `"decrypted": 1` in its JSON and
   can be played in Listen.
+- A call joined late, or one whose encryption sync was lost to a fade, is decrypted from the next
+  sync on, and the voice just before that sync too: at most the frames lost with the sync are
+  missing.
 - The talkgroup page on the Radio dashboard lists the ciphers heard (algorithm and key ID), which
   tells you which keys a talkgroup needs.
 

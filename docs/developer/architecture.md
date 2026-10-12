@@ -454,7 +454,7 @@ In order, the first that applies wins:
 2. The talkgroup is not in a non-empty talkgroup file (nor a patch member) and `recordUnknown`
    is off → `unknown_tg`.
 3. Encrypted and `recordEncrypted` is off, and the system has no keys for a call of this kind
-   (`CallManager::can_decrypt`, P25 Phase 1 only) → `encrypted`; the engine may **follow** it (open a
+   (`CallManager::can_decrypt`, P25 only) → `encrypted`; the engine may **follow** it (open a
    channel without a recording, to collect units and aliases) while recorder room is spare.
 4. Otherwise `RecorderHost::record(call)` (`SysHost::record`):
    1. `recordings.len() ≥ maxRecorders` → `no_recorder`.
