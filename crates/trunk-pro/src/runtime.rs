@@ -174,6 +174,9 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
     if let Some(p) = cfg.problem() {
         return Err(p);
     }
+    // Encryption keys: a file that can't be read, or a bad key in it, stops the start.
+    let keys = cfg.load_keys(&ctx.config_path)?;
+    warn_readable_keys(&ctx, &cfg);
     open_spool(&ctx, &cfg);
     // The wall clock now, and a monotonic clock from now: the session's
     // `now_ms` is the one plus the other (wall time that never jumps).
@@ -181,6 +184,10 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
     let epoch_at = Instant::now();
     let mut session = Session::new(cfg.clone(), epoch_ms, &|name| fs::read_to_string(bandplan_path(name)).ok(), local_offset)?;
     session.attach(ctx.shared.clone());
+    for (name, ring) in keys {
+        log::info!("{name}: {} encryption key{} loaded", ring.keys().len(), if ring.keys().len() == 1 { "" } else { "s" });
+        session.set_keys(&name, Some(ring));
+    }
     session.load_units(&|name| fs::read_to_string(units_path(name)).ok());
     session.load_heard(&fs::read_to_string(heard_path(&cfg)).unwrap_or_default());
     ctx.plugins.start(&cfg);
@@ -234,6 +241,24 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
 }
 
 /// Where a system's band plan is kept between runs.
+/// Warn about a keys file others can read (the keys are as secret as the radios').
+fn warn_readable_keys(ctx: &Ctx, cfg: &Config) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let settings = cfg.systems.iter().filter(|s| s.active()).map(|s| &s.keys).chain(cfg.conventional.iter().filter(|c| c.enabled).map(|c| &c.keys));
+        for p in settings.filter_map(|k| trunk_app::keys::path(k, &ctx.config_path)) {
+            if fs::metadata(&p).is_ok_and(|m| m.permissions().mode() & 0o077 != 0) {
+                let text = format!("Keys file {} can be read by other users (chmod 600 it)", p.display());
+                log::warn!("{text}");
+                publish(&ctx.hub, json!({ "type": "log", "lines": [{ "timeS": 0, "kind": "error", "text": text }] }));
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = (ctx, cfg);
+}
+
 fn bandplan_path(short_name: &str) -> PathBuf {
     crate::paths::data_dir().join(format!("{short_name}.bandplan"))
 }

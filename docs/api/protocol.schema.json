@@ -754,6 +754,10 @@
         },
         "unitNames": {
           "$ref": "#/definitions/UnitNames"
+        },
+        "keys": {
+          "type": "string",
+          "description": "Desktop: its P25 channels' encryption keys file (as System's)."
         }
       },
       "required": [
@@ -5642,6 +5646,10 @@
         "siteGroup": {
           "type": "string",
           "description": "Multi-site: sites with one group are one system (a call on several is saved once). Absent: grouped by what the control channels say (P25 WACN + System ID, SmartNet System ID)."
+        },
+        "keys": {
+          "type": "string",
+          "description": "Desktop: its P25 encryption keys file, absolute or relative to the config file's folder (read when recording starts; never sent here)."
         },
         "plugins": {
           "type": "object",

@@ -18,6 +18,8 @@
 
 use aes::cipher::{BlockCipherEncrypt, KeyInit};
 
+use super::voice::EncryptionSync;
+
 pub const ALGID_CLEAR: u8 = 0x80;
 pub const ALGID_DES_OFB: u8 = 0x81;
 pub const ALGID_TDES: u8 = 0x83;
@@ -260,6 +262,98 @@ impl Keystream {
     }
 }
 
+// ── Keyring ──────────────────────────────────────────────────────────────────
+
+/// One key of a [`Keyring`].
+#[derive(Clone)]
+pub struct Key {
+    pub alg: Algorithm,
+    /// None: any key ID (only with `talkgroups`).
+    pub keyid: Option<u16>,
+    key: Vec<u8>,
+    /// Used for these talkgroups, under any key ID or the one given (empty:
+    /// by key ID, on any talkgroup).
+    pub talkgroups: Vec<u32>,
+}
+
+impl std::fmt::Debug for Key {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Key").field("alg", &self.alg).field("keyid", &self.keyid).field("talkgroups", &self.talkgroups).finish_non_exhaustive()
+    }
+}
+
+/// What a keyring has for an encryption sync.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Lookup<'a> {
+    Key(Algorithm, &'a [u8]),
+    /// A cipher that can be decrypted, but no key for it.
+    NoKey,
+    /// Clear, or a cipher this can't decrypt.
+    Unsupported,
+}
+
+/// A system's keys. They are never printed, logged or sent anywhere
+/// ([`Key`]'s Debug leaves the key out).
+#[derive(Clone, Debug, Default)]
+pub struct Keyring {
+    keys: Vec<Key>,
+}
+
+impl Keyring {
+    /// Add a key for `algid`. Refused, with what to fix: an ALGID that
+    /// can't be decrypted, a key of the wrong length (keys are never
+    /// padded), neither a key ID nor talkgroups, or a key ID given twice.
+    pub fn add(&mut self, algid: u8, keyid: Option<u16>, key: Vec<u8>, talkgroups: Vec<u32>) -> Result<(), String> {
+        let kid = keyid.map_or("Key without a key ID".to_string(), |k| format!("Key ID {k:#06X}"));
+        let name = algid_name(algid);
+        let Some(alg) = Algorithm::from_algid(algid) else {
+            return Err(format!("{kid}: ALGID {algid:#04X} ({name}) can't be decrypted"));
+        };
+        if key.len() != alg.key_len() {
+            let (need, have) = (alg.key_len(), key.len());
+            return Err(format!("{kid}: {name} ({algid:#04X}) needs a {}-bit key ({} hex digits); this one is {} bits ({} hex digits)", need * 8, need * 2, have * 8, have * 2));
+        }
+        if keyid.is_none() && talkgroups.is_empty() {
+            return Err(format!("{kid}: {name} ({algid:#04X}): give a key ID, talkgroups, or both"));
+        }
+        if keyid.is_some() && talkgroups.is_empty() && self.keys.iter().any(|o| o.alg == alg && o.keyid == keyid && o.talkgroups.is_empty()) {
+            return Err(format!("{kid}: {name} ({algid:#04X}) is given twice"));
+        }
+        self.keys.push(Key { alg, keyid, key, talkgroups });
+        Ok(())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.keys.is_empty()
+    }
+
+    pub fn keys(&self) -> &[Key] {
+        &self.keys
+    }
+
+    /// The key for voice under `algid` / `keyid` on talkgroup `tg`: first a
+    /// key listing the talkgroup (and, if it gives one, the key ID), then
+    /// one by key ID alone.
+    pub fn lookup(&self, algid: u8, keyid: u16, tg: Option<u32>) -> Lookup<'_> {
+        let Some(alg) = Algorithm::from_algid(algid) else { return Lookup::Unsupported };
+        let by_tg = tg.and_then(|tg| self.keys.iter().find(|k| k.alg == alg && k.talkgroups.contains(&tg) && k.keyid.is_none_or(|id| id == keyid)));
+        let by_kid = || self.keys.iter().find(|k| k.alg == alg && k.talkgroups.is_empty() && k.keyid == Some(keyid));
+        match by_tg.or_else(by_kid) {
+            Some(k) => Lookup::Key(alg, &k.key),
+            None => Lookup::NoKey,
+        }
+    }
+
+    /// The keystream for a superframe under `es` on talkgroup `tg` (None:
+    /// clear, no key, or a cipher this can't decrypt).
+    pub fn keystream(&self, es: &EncryptionSync, tg: Option<u32>, phase: Phase) -> Option<Keystream> {
+        match self.lookup(es.algid, es.keyid, tg) {
+            Lookup::Key(alg, key) => Keystream::new(alg, key, &es.mi, phase),
+            _ => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -422,5 +516,27 @@ mod tests {
         }
         assert_eq!(Algorithm::from_algid(ALGID_CLEAR), None);
         assert_eq!(algid_name(0xAA), "ADP");
+    }
+
+    #[test]
+    fn keyring_refuses_bad_keys_and_finds_good_ones() {
+        let mut r = Keyring::default();
+        let e = r.add(ALGID_AES_256, Some(0x0002), vec![1; 16], vec![]).unwrap_err();
+        assert!(e.contains("0x0002") && e.contains("AES-256") && e.contains("256-bit") && e.contains("this one is 128 bits"), "{e}");
+        assert!(r.add(0x9F, Some(1), vec![1; 8], vec![]).unwrap_err().contains("DES-XL"));
+        assert!(r.add(ALGID_ADP, None, vec![1; 5], vec![]).is_err());
+        r.add(ALGID_ADP, Some(0x1B50), vec![1; 5], vec![]).unwrap();
+        assert!(r.add(ALGID_ADP, Some(0x1B50), vec![2; 5], vec![]).unwrap_err().contains("twice"));
+        r.add(ALGID_ADP, None, vec![3; 5], vec![1201]).unwrap();
+        r.add(ALGID_AES_256, Some(0x0002), vec![4; 32], vec![]).unwrap();
+        assert_eq!(r.lookup(ALGID_ADP, 0x1B50, Some(7)), Lookup::Key(Algorithm::Adp, &[1; 5]));
+        // The talkgroup's key, whatever the key ID.
+        assert_eq!(r.lookup(ALGID_ADP, 0x1B50, Some(1201)), Lookup::Key(Algorithm::Adp, &[3; 5]));
+        assert_eq!(r.lookup(ALGID_ADP, 0x0001, Some(1201)), Lookup::Key(Algorithm::Adp, &[3; 5]));
+        assert_eq!(r.lookup(ALGID_ADP, 0x0001, None), Lookup::NoKey);
+        assert_eq!(r.lookup(ALGID_AES_256, 0x1B50, None), Lookup::NoKey);
+        assert_eq!(r.lookup(ALGID_AES_256, 0x0002, None), Lookup::Key(Algorithm::Aes256, &[4; 32]));
+        assert_eq!(r.lookup(0xA0, 0x0002, None), Lookup::Unsupported);
+        assert!(!format!("{r:?}").contains("[4, 4"));
     }
 }

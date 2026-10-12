@@ -26,7 +26,9 @@ the TIA-102 descriptions. OP25 and dsd-neo are GPL and are not ported.
       talkgroup. (The plugin protocol's `algid`/`keyId` move to item 4,
       together with `decrypted`. The tool shows Phase 2 MIs from MAC_PTT
       only; it doesn't assemble the ESS.)
-- [ ] 3. Phase 1 decryption plus the keys file and config
+- [x] 3. Phase 1 decryption plus the keys file and config (the tracker
+      decrypts; the audio is still dropped by `Transmissions::kept` until
+      item 4, so the user docs wait for that)
 - [ ] 4. Call flow: tentative admit when the system has keys, a `decrypted`
       flag, decrypted transmissions kept, live listen allowed, and
       `algid`/`keyId`/`decrypted` in the plugin protocol
@@ -164,14 +166,65 @@ are gone. So:
   `rs_decode_erasures`). Needed: RS(24,12) LDU1 LC, RS(24,16) LDU2 ES,
   RS(36,20) HDU, RS(44,16) Phase 2 ESS, RS(63,35) MAC.
 
-## Handoff (2026-10-12)
+## Decisions made while building item 3 (open to change)
 
-**State of the branch.** `p25-crypt` at commit 3f516d0, one commit on top
-of main's v0.1.9, worktree `../trunk-recorder-lite-crypt`. The working tree
-is clean, apart from an untracked `web/node_modules` symlink to the main
-checkout's (it lets `npm run schema` run; never commit it).
+- **Key lookup:** a key that lists `talkgroups` is used for those
+  talkgroups under any key ID, or only under its own key ID if it gives
+  one. It is tried before the keys matched by key ID alone. A key needs a
+  key ID, talkgroups, or both. The same ALGID and key ID given twice
+  (without talkgroups) is an error.
+- **Keys file format:** `algId` and `keyId` are hex in a string (`"0xAA"`,
+  `"AA"`) or a plain number. The key is hex, and spaces are allowed.
+- **Keys are read when recording starts.** A file that can't be read, or a
+  bad key in it, stops the start with a message naming the system, the
+  file, the key's position, its key ID and what is wrong. Editing the file
+  needs a restart of recording (`Engine::set_keys` exists for a later live
+  reload). On Unix, a file readable by group or others gets a warning in
+  the log.
+- **Lost sync mid-transmission:** once a transmission has been decrypted,
+  voice that can't be (its sync lost) is fed to the vocoder as erasures,
+  which repeat and then mute. That keeps the call's timing. Without a key
+  the frames are dropped, as before.
+- **Frame capture (`.sdr`)** gets the *decrypted* IMBE bits for now (the
+  muted frames get zero bits, flagged erased). The `.sdr` has no field for
+  the ALGID/KID/MI, so ciphertext could not be decrypted again later.
+  Revisit when the capture format can carry the sync.
+- **No key fingerprint yet.** A short hash of a 40-bit ADP key would make it
+  easy to brute-force. If the UI needs one, use something slow, or show
+  only the ALG/KID and the use counts.
 
-**Done (items 1 and 2):** see the log below. Files:
+## Handoff (2026-10-12, updated after item 3)
+
+**State of the branch.** `p25-crypt`, three commits on top of main's v0.1.9
+(items 1–2, these notes, item 3), worktree `../trunk-recorder-lite-crypt`.
+The working tree is clean, apart from an untracked `web/node_modules`
+symlink to the main checkout's (it lets `npm run schema` run; never commit
+it).
+
+**Item 3** added:
+
+- `p25/crypt.rs`: `Keyring` (`add` with the length check and its errors,
+  `lookup`, `keystream`), `Lookup`, `Key` (its Debug leaves out the key).
+- `trunk/tracker.rs`: `VoiceTracker::new(.., keys)`; `set_es` builds the
+  superframe's keystream, `voice_frame` decrypts and `lost_ldu2` drops the
+  sync when an LDU2 went missing (an LDU1 after an LDU1, or a time gap
+  that holds one). Tests: `notices_a_lost_ldu2`,
+  `decrypts_phase1_voice_with_the_key`.
+- `trunk/voice.rs`: `VoiceSpec.keys` (VoiceSpec is no longer `Copy`).
+- `trunk/engine.rs`: `SystemConfig.keys`, `ConvSystem.keys`,
+  `SysHost.keys`, `Engine::set_keys`. `trunk/conventional.rs`:
+  `CallRules.keys`.
+- `trunk-app/src/keys.rs` (new): the keys-file parser, its path rule and
+  its tests. `config.rs`: `keys` on `System` and `Conventional`, and
+  `Config::load_keys`. `session.rs`: `Session::set_keys`.
+- `trunk-pro/src/runtime.rs`: loads the keys at start
+  (`warn_readable_keys`), and logs how many keys each system has.
+- Not done: the web UI has no field for `keys` (hand-edit the config; the
+  setting survives the UI's saves), there are no user docs yet, and the
+  `trunk-pro replay` / `tool` commands take no `--keys` (add it with
+  item 5, to decrypt synthesized or field captures).
+
+**Items 1 and 2:** see the log below. Files:
 
 - `crates/trunk-core/src/p25/crypt.rs`: new; the ciphers, LFSR, keystreams, tests
 - `p25/phase2.rs`: `MacPtt.mi`, `Ess.mi`
@@ -198,18 +251,17 @@ checkout's (it lets `npm run schema` run; never commit it).
 
 **Remaining**, in order (see Progress above):
 
-1. Item 3: Phase 1 decryption, the per-system keys file and config, and
-   the key-length error.
-   - Where keys would reach the decoders: `VoiceSpec`
-     (`trunk/voice.rs`), built in `engine.rs` (trunked) and
-     `conventional.rs` (conventional), from `SystemConfig` / `ConvSystem`.
-   - App config: `trunk-app/src/config.rs`.
-   - Detecting a lost LDU2, per the decision above.
-2. The Reed–Solomon encoder, then `p25::synth` (item 5): round-trip tests,
-   then the cross-checks against OP25 master and dsd-fme.
-3. Item 4: the call flow (`calls.rs` `admit`, `record.rs`
-   `Transmissions`, `engine.rs`, live listen) and the plugin protocol.
-4. Items 6 and 7, then DMR / NXDN.
+1. Item 4: the call flow (`calls.rs` `admit`, `record.rs`
+   `Transmissions::kept`, `engine.rs`, live listen) and the plugin
+   protocol. The tracker needs to say a transmission was decrypted (a
+   `TrackerOut` event, or a flag on `Cipher`) so `kept` keeps it. Then the
+   user docs: `keys` in `docs/configuration/systems.md` and
+   `conventional.md`, plus the CHANGELOG.
+2. The Reed–Solomon encoder, then `p25::synth` (item 5): round-trip tests
+   through the whole tracker (today's test drives `voice_frame` directly),
+   `--keys` for `replay` / `tool`, then the cross-checks against OP25
+   master and dsd-fme.
+3. Items 6 and 7, then DMR / NXDN.
 
 ## Log
 
@@ -229,3 +281,14 @@ checkout's (it lets `npm run schema` run; never commit it).
     directly.
   - The regression captures replay the same as main, apart from the new
     `algid` / `key_id` fields in each call's JSON.
+- 2026-10-12: item 3 done. The Phase 1 tracker decrypts with the system's
+  keyring (ADP, DES, 3DES, AES-128, AES-256), and keys come from a
+  per-system file named by `keys`. A bad key stops the start with a clear
+  error. A lost LDU2 drops the sync until the next good one.
+  - Checked: `cargo test --workspace` passes, clippy has the same warnings
+    as main, and the wasm build works. The replay check against main gives
+    identical WAVs and `.sdr` files; only the call JSONs' `algid`/`key_id`
+    differ (from item 2).
+  - The decryption itself is checked only by unit tests (keystream round
+    trip through `voice_frame`). The whole tracker is untested until the
+    synth (item 5).

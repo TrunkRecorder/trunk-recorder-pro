@@ -264,6 +264,12 @@ impl Session {
         self.engine.set_talkgroups(short_name, trunk_core::trunk::parse_csv(csv))
     }
 
+    /// The encryption keys of the system named `short_name` (trunked or
+    /// conventional): voice channels opened from now on decrypt with them.
+    pub fn set_keys(&mut self, short_name: &str, keys: Option<std::sync::Arc<trunk_core::p25::crypt::Keyring>>) -> bool {
+        self.engine.set_keys(short_name, keys)
+    }
+
     /// A radio's talker alias on the system named `short_name`.
     pub fn unit_alias(&self, short_name: &str, unit: u32) -> Option<String> {
         let sys = match self.engine.systems().iter().position(|s| s.short_name == short_name) {

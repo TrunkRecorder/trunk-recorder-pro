@@ -15,6 +15,8 @@
 //!   analog FM:   discriminator, squelch, MDC1200 / FleetSync unit IDs
 //! ```
 
+use std::sync::Arc;
+
 use num_complex::Complex32;
 
 use super::calls::Call;
@@ -32,6 +34,7 @@ use crate::nxdn::voice::{NxdnVoice, VCH_S};
 use crate::nxdn::Rate;
 use crate::metrics::{Instrumented, Sink};
 use crate::p25::alias::{Alias, AliasLc};
+use crate::p25::crypt::Keyring;
 use crate::p25::diversity::{best_frame, Bank, BankConfig, Group};
 use crate::p25::phase2::{self, Packet};
 
@@ -130,7 +133,7 @@ pub struct VoiceParams {
 }
 
 /// How to make a decoder.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct VoiceSpec {
     pub kind: VoiceKind,
     /// The channel's sample rate, Hz.
@@ -148,6 +151,8 @@ pub struct VoiceSpec {
     /// Analog: also hand out the audio below 300 Hz (CTCSS / DCS) as
     /// [`TrackerOut::Subaudible`].
     pub subaudible: bool,
+    /// The system's keys: P25 voice it has the key for is decrypted.
+    pub keys: Option<Arc<Keyring>>,
 }
 
 /// One voice channel's decoding: channel IQ in, outputs for the calls on
@@ -188,7 +193,7 @@ pub fn build(spec: &VoiceSpec) -> Box<dyn VoiceDecoder> {
     match spec.kind {
         VoiceKind::Fdma => Box::new(P25Fdma {
             bank: Bank::new(spec.rate, spec.bank),
-            tracker: VoiceTracker::new(mbe::lcg(spec.seed), spec.vocoder),
+            tracker: VoiceTracker::new(mbe::lcg(spec.seed), spec.vocoder, spec.keys.clone()),
             groups: Vec::new(),
             t0: spec.t0,
             rate: spec.rate,

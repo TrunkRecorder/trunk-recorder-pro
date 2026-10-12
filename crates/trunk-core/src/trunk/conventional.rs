@@ -43,6 +43,8 @@
 //! smoothed over time, which follows the SDR's passband shape and ignores
 //! signals filling under half a slice.
 
+use std::sync::Arc;
+
 use num_complex::Complex32;
 
 use super::calls::{conventional_index, conventional_system, Call, CallId, CallIds, CallSource, STUCK_CALL_S};
@@ -59,6 +61,7 @@ use crate::dsp::{Channelizer, HeadId};
 use crate::mbe;
 use crate::nxdn::Rate;
 use crate::p25::alias::Alias;
+use crate::p25::crypt::Keyring;
 use crate::p25::diversity::BankConfig;
 
 /// Half-width of the band the detector sums, Hz (a 12.5 kHz channel's signal).
@@ -473,6 +476,8 @@ pub struct CallRules<'a> {
     pub capture_frames: bool,
     /// The system's talkgroup names.
     pub talkgroups: &'a Talkgroups,
+    /// Its encryption keys.
+    pub keys: Option<&'a Arc<Keyring>>,
 }
 
 impl Conventional {
@@ -671,6 +676,7 @@ impl Conventional {
             squelch: meter_thr,
             // For the tone detector.
             subaudible: true,
+            keys: rules.keys.cloned(),
         });
         let meter = (kind != VoiceKind::Analog).then(|| ChannelFilter::new(rate));
         ch.open = Some(Open { head, voice, meter, opened_s: now_s, carrier_seen: false, last_carrier_s: now_s, live: [None, None], tx: None });

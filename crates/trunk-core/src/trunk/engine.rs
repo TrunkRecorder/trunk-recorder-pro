@@ -26,6 +26,7 @@
 //! engine does no I/O.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::sync::Arc;
 
 use num_complex::Complex32;
 
@@ -46,6 +47,7 @@ use crate::dsp::{Channelizer, HeadId};
 use crate::mbe;
 use crate::metrics::{self, Scoped, Sink};
 use crate::p25::alias::{Alias, AliasLc};
+use crate::p25::crypt::Keyring;
 use crate::p25::diversity::BankConfig;
 use crate::dsp::fm::ChannelFilter;
 use crate::smartnet::Bandplan;
@@ -120,6 +122,8 @@ pub struct SystemConfig {
     pub save: SaveRules,
     /// Its own names for its radios (the unit names file).
     pub unit_tags: UnitTags,
+    /// Its encryption keys (P25): voice it has the key for is decrypted.
+    pub keys: Option<Arc<Keyring>>,
 }
 
 impl Default for SystemConfig {
@@ -135,6 +139,7 @@ impl Default for SystemConfig {
             site_group: String::new(),
             save: SaveRules::default(),
             unit_tags: UnitTags::default(),
+            keys: None,
         }
     }
 }
@@ -197,11 +202,13 @@ pub struct ConvSystem {
     pub talkgroups: Talkgroups,
     /// Its names for its radios.
     pub unit_tags: UnitTags,
+    /// Its encryption keys, for its P25 channels.
+    pub keys: Option<Arc<Keyring>>,
 }
 
 impl Default for ConvSystem {
     fn default() -> Self {
-        ConvSystem { short_name: "conv".into(), calls: CallConfig::default(), save: SaveRules::default(), talkgroups: Talkgroups::default(), unit_tags: UnitTags::default() }
+        ConvSystem { short_name: "conv".into(), calls: CallConfig::default(), save: SaveRules::default(), talkgroups: Talkgroups::default(), unit_tags: UnitTags::default(), keys: None }
     }
 }
 
@@ -524,6 +531,7 @@ struct SysHost<'a> {
     radio: &'a mut Radio,
     system: u16,
     bank: BankConfig,
+    keys: Option<Arc<Keyring>>,
 }
 
 impl SysHost<'_> {
@@ -573,6 +581,7 @@ impl SysHost<'_> {
             // Analog squelch: this far above the noise under the channel.
             squelch: (noise * 10f64.powf(ANALOG_SQUELCH_DB / 10.0)) as f32,
             subaudible: false,
+            keys: self.keys.clone(),
         });
         let mut calls = [None, None];
         calls[slot] = Some(call.id);
@@ -697,7 +706,7 @@ struct Trunk {
 
 impl Trunk {
     fn host<'a>(&self, radio: &'a mut Radio) -> SysHost<'a> {
-        SysHost { radio, system: self.idx, bank: self.cfg.bank }
+        SysHost { radio, system: self.idx, bank: self.cfg.bank, keys: self.cfg.keys.clone() }
     }
 
     /// The system this is a site of, and which site: by the configured
@@ -1294,6 +1303,24 @@ impl Engine {
         false
     }
 
+    /// The encryption keys of the system named `short_name` (trunked or
+    /// conventional): voice channels opened from now on decrypt with them.
+    /// False when there's no such system.
+    pub fn set_keys(&mut self, short_name: &str, keys: Option<Arc<Keyring>>) -> bool {
+        if let Some(t) = self.trunks.iter_mut().find(|t| t.cfg.short_name == short_name) {
+            t.cfg.keys = keys.clone();
+            if let Some(c) = self.cfg.systems.iter_mut().find(|c| c.short_name == short_name) {
+                c.keys = keys;
+            }
+            return true;
+        }
+        if let Some(c) = self.cfg.conv_systems.iter_mut().find(|c| c.short_name == short_name) {
+            c.keys = keys;
+            return true;
+        }
+        false
+    }
+
     pub fn status(&self) -> Status {
         let systems: Vec<SystemStatus> = self.trunks.iter().filter(|t| t.running()).map(|t| t.status(&self.radio)).collect();
         Status {
@@ -1429,6 +1456,7 @@ impl Engine {
                 max_call_s: c.calls.max_call_s,
                 capture_frames: cfg.capture_frames,
                 talkgroups: &c.talkgroups,
+                keys: c.keys.as_ref(),
             })
             .collect()
     }

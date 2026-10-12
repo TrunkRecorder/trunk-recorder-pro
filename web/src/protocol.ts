@@ -164,6 +164,8 @@ export interface System {
   /** Multi-site: sites with one group are one system (a call on several is saved once).
    *  Absent: grouped by what the control channels say (P25 WACN + System ID, SmartNet System ID). */
   siteGroup?: string;
+  /** Desktop: its P25 encryption keys file, absolute or relative to the config file's folder (read when recording starts; never sent here). */
+  keys?: string;
   /** Plugins' settings for this system, by plugin id (each plugin's `system_config` schema); a list for several copies of one. */
   plugins?: Record<string, SystemPluginValues>;
 }
@@ -285,6 +287,8 @@ export interface Conventional {
   /** Its own recording rules; each left out is the Recording tab's. */
   recording?: RecordingOverride;
   unitNames?: UnitNames;
+  /** Desktop: its P25 channels' encryption keys file (as System's). */
+  keys?: string;
 }
 
 export interface Config {
