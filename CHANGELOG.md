@@ -9,8 +9,16 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   the ciphers its encrypted P25 calls used, with each algorithm (ADP,
   DES, AES-256, …), key ID, number of calls and when it was last heard.
   Hover over a talkgroup's **ENC** badge to see the same. A call's JSON
-  now has `algid` and `key_id`. This is the first step towards decrypting
-  calls for users who hold the keys.
+  now has `algid` and `key_id`.
+- **Decrypting P25 (experimental):** if you are authorized to monitor an
+  encrypted P25 system and hold its keys, give the system a `keys` file
+  (ADP, DES, 3DES, AES-128 or AES-256; see Configuration → Systems →
+  Encryption keys). Its encrypted Phase 1 calls are then recorded,
+  decrypted and saved, marked `"decrypted": 1` in the call JSON, and can
+  be played in Listen. Phase 2 is not decrypted yet. A key of the wrong
+  length stops recording from starting, with a message saying which key
+  to fix. Plugins get `algid`, `key_id` and `decrypted` with each call.
+  `trunk-pro replay --keys` does the same for captures.
 
 ## [0.1.9] — 2026-10-09
 

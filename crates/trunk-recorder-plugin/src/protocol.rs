@@ -192,6 +192,12 @@ pub struct CallInfo {
     pub tdma_slot: Option<u8>,
     pub analog: bool,
     pub encrypted: bool,
+    /// P25: the cipher an encrypted call's voice named, once heard: the
+    /// algorithm ID (0x84 AES-256, 0xAA ADP, …) and key ID.
+    pub algid: Option<u8>,
+    pub key_id: Option<u16>,
+    /// Some of its encrypted voice was decrypted (the system had the key).
+    pub decrypted: bool,
     pub emergency: bool,
     /// Recorded (false: only followed, or not recorded — see `reason`).
     pub recording: bool,
@@ -255,6 +261,10 @@ pub struct CallRecord {
     pub emergency: bool,
     #[serde(deserialize_with = "flag")]
     pub encrypted: bool,
+    /// Its encrypted voice was decrypted, at least in part (this recorder's
+    /// addition, beside `algid` and `key_id`, which are in `extra`).
+    #[serde(deserialize_with = "flag")]
+    pub decrypted: bool,
     pub priority: i64,
     #[serde(deserialize_with = "flag")]
     pub phase2_tdma: bool,

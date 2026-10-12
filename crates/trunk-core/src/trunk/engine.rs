@@ -1051,6 +1051,7 @@ impl Engine {
                 cfg: sc.clone(),
             };
             t.calls.patches.hold_s = t.cc.patch_hold_s();
+            t.calls.can_decrypt = sc.keys.as_ref().is_some_and(|k| !k.is_empty());
             t.start(&mut radio, &mut events)?;
             trunks.push(t);
         }
@@ -1308,6 +1309,7 @@ impl Engine {
     /// False when there's no such system.
     pub fn set_keys(&mut self, short_name: &str, keys: Option<Arc<Keyring>>) -> bool {
         if let Some(t) = self.trunks.iter_mut().find(|t| t.cfg.short_name == short_name) {
+            t.calls.can_decrypt = keys.as_ref().is_some_and(|k| !k.is_empty());
             t.cfg.keys = keys.clone();
             if let Some(c) = self.cfg.systems.iter_mut().find(|c| c.short_name == short_name) {
                 c.keys = keys;
@@ -1560,6 +1562,15 @@ impl Engine {
                 TrackerOut::Cipher(cipher) => {
                     if let Some(c) = t.calls.call_mut(id).filter(|c| c.cipher != Some(cipher)) {
                         c.cipher = Some(cipher);
+                        self.call_events.push(CallEvent::Update(c.clone()));
+                    }
+                }
+                TrackerOut::Decrypted => {
+                    if let Some(rec) = self.radio.recordings.get_mut(&id) {
+                        rec.tx.mark_decrypted(t.now_s);
+                    }
+                    if let Some(c) = t.calls.call_mut(id).filter(|c| !c.decrypted) {
+                        c.decrypted = true;
                         self.call_events.push(CallEvent::Update(c.clone()));
                     }
                 }

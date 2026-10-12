@@ -33,6 +33,7 @@ anywhere a source covers, including alongside a trunked system.
 | `channelFile` | | `""` | string | A CSV to read the channels from instead (desktop app only). Absolute, or relative to the config file's folder. See [Channel file](#channel-file-channelfile) |
 | `recording` | | `{}` | object | Its own call rules; a rule left out follows the global `recording`. See [recording.md](recording.md#per-system-rules) |
 | `unitNames` | | empty | object | Names for the radios heard on it. See [systems.md](systems.md#unit-names) |
+| `keys` | | `""` | string | A file of encryption keys for its P25 channels. See [systems.md](systems.md#encryption-keys-keys) |
 | `plugins` | | `{}` | object | Its plugin settings, by plugin id. See [plugins.md](plugins.md#per-system-settings) |
 
 At most 256 conventional systems. A frequency belongs to only one of them.

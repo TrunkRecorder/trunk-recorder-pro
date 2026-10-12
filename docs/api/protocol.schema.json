@@ -103,6 +103,10 @@
         "key_id": {
           "type": "number"
         },
+        "decrypted": {
+          "type": "number",
+          "description": "1: its encrypted voice was decrypted, at least in part (absent in calls saved before)."
+        },
         "phase2_tdma": {
           "type": "number"
         },
@@ -422,6 +426,10 @@
         "encrypted": {
           "type": "boolean"
         },
+        "decrypted": {
+          "type": "boolean",
+          "description": "Its encrypted voice is being decrypted (the system has the key)."
+        },
         "emergency": {
           "type": "boolean"
         },
@@ -463,6 +471,7 @@
         "state",
         "reason",
         "encrypted",
+        "decrypted",
         "emergency",
         "startS",
         "sources"

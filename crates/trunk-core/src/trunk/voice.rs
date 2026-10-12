@@ -93,6 +93,9 @@ pub enum TrackerOut {
     /// The transmission's encryption sync named its cipher (once a
     /// transmission, and again if it changes).
     Cipher(CipherId),
+    /// The transmission's voice is being decrypted (once a transmission,
+    /// before its first decrypted audio).
+    Decrypted,
     /// Analog FM voice (a SmartNet analog call, a conventional FM channel): 8 kHz audio, squelched.
     AnalogAudio(Vec<f32>),
     /// Analog FM: the same audio before the 300 Hz high-pass (CTCSS / DCS

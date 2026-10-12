@@ -26,10 +26,8 @@ the TIA-102 descriptions. OP25 and dsd-neo are GPL and are not ported.
       talkgroup. (The plugin protocol's `algid`/`keyId` move to item 4,
       together with `decrypted`. The tool shows Phase 2 MIs from MAC_PTT
       only; it doesn't assemble the ESS.)
-- [x] 3. Phase 1 decryption plus the keys file and config (the tracker
-      decrypts; the audio is still dropped by `Transmissions::kept` until
-      item 4, so the user docs wait for that)
-- [ ] 4. Call flow: tentative admit when the system has keys, a `decrypted`
+- [x] 3. Phase 1 decryption plus the keys file and config
+- [x] 4. Call flow: tentative admit when the system has keys, a `decrypted`
       flag, decrypted transmissions kept, live listen allowed, and
       `algid`/`keyId`/`decrypted` in the plugin protocol
 - [ ] 5. `p25::synth` and cross-checks against OP25 master and dsd-fme
@@ -193,10 +191,56 @@ are gone. So:
   easy to brute-force. If the UI needs one, use something slow, or show
   only the ALG/KID and the use counts.
 
-## Handoff (2026-10-12, updated after item 3)
+## Decisions made while building item 4 (open to change)
 
-**State of the branch.** `p25-crypt`, three commits on top of main's v0.1.9
-(items 1–2, these notes, item 3), worktree `../trunk-recorder-lite-crypt`.
+- **Which calls are recorded tentatively:** with keys, an encrypted call is
+  recorded (even with `recordEncrypted` off) when it is P25 Phase 1
+  (`Call::decryptable`). Phase 2, DMR and NXDN are still only followed;
+  widen `decryptable` with item 6. A call with no matching key keeps its
+  recorder to the end and is then not saved (empty audio). Releasing the
+  recorder as soon as the `Cipher` event shows there is no key would save
+  recorders; not done.
+- **`encrypted` keeps meaning "encrypted on the air".** `decrypted` is a
+  separate flag on the call, in the call JSON (`"decrypted": 0/1`), the
+  dashboard's live calls and the plugin `CallInfo` / `CallRecord`.
+  Listen's `playable` allows a call that is encrypted *and* decrypted.
+- **Upload plugins** (Broadcastify, Rdio Scanner, the template's call
+  log) skip any `encrypted` call, so decrypted calls are not uploaded.
+  That is left as is on purpose: rebroadcasting decrypted traffic is a
+  policy question for the user. If they want it, the plugins can check
+  `decrypted`. That needs the SDK published with the new fields.
+- **SDK:** `trunk-recorder-plugin` gained fields (`CallInfo.algid`,
+  `key_id`, `decrypted`; `CallRecord.decrypted`), but its version was not
+  bumped and nothing was published. Bump to 0.2.2 and publish when
+  releasing.
+
+## Handoff (2026-10-12, updated after item 4)
+
+**Item 4** added:
+
+- `trunk/voice.rs`: `TrackerOut::Decrypted` (once a transmission, before
+  its first decrypted audio; sent by `VoiceTracker::voice_frame`).
+- `trunk/record.rs`: `Transmissions` keeps `TxFlags { encrypted,
+  decrypted }` per transmission; `mark_decrypted`, `current_dropped`
+  (renamed from `current_encrypted`). `kept` drops only encrypted ones that
+  weren't decrypted. The call JSON gets `decrypted`.
+- `trunk/calls.rs`: `Call.decrypted`, `Call::decryptable`,
+  `CallManager.can_decrypt`, and `admit`'s new rule. `engine.rs` sets
+  `can_decrypt` from the keys (also in `set_keys`) and handles `Decrypted`.
+  `conventional.rs` does the same for its calls (live audio too).
+- Plugin protocol, `session.rs` (plugin `CallInfo`, the live-call JSON),
+  `web/src/protocol.ts`, `listen.ts` (`playable`), `dash/Calls.tsx`
+  ("recording (decrypted)").
+- `trunk-pro replay --keys <file>` (every system; `main.rs`) and the
+  ` ENC DEC` tag on its call-end lines.
+- User docs: `configuration/systems.md` (Encryption keys section),
+  `conventional.md`, `recording.md`, `guides/recordings.md`,
+  `command-line.md`, the developer architecture docs, and the CHANGELOG.
+
+**Item 3:**
+
+**State of the branch.** `p25-crypt`, four commits on top of main's v0.1.9
+(items 1–2, these notes, item 3, item 4), worktree `../trunk-recorder-lite-crypt`.
 The working tree is clean, apart from an untracked `web/node_modules`
 symlink to the main checkout's (it lets `npm run schema` run; never commit
 it).
@@ -220,9 +264,8 @@ it).
 - `trunk-pro/src/runtime.rs`: loads the keys at start
   (`warn_readable_keys`), and logs how many keys each system has.
 - Not done: the web UI has no field for `keys` (hand-edit the config; the
-  setting survives the UI's saves), there are no user docs yet, and the
-  `trunk-pro replay` / `tool` commands take no `--keys` (add it with
-  item 5, to decrypt synthesized or field captures).
+  setting survives the UI's saves). `trunk-pro tool` takes no `--keys`
+  (replay does, since item 4).
 
 **Items 1 and 2:** see the log below. Files:
 
@@ -251,17 +294,15 @@ it).
 
 **Remaining**, in order (see Progress above):
 
-1. Item 4: the call flow (`calls.rs` `admit`, `record.rs`
-   `Transmissions::kept`, `engine.rs`, live listen) and the plugin
-   protocol. The tracker needs to say a transmission was decrypted (a
-   `TrackerOut` event, or a flag on `Cipher`) so `kept` keeps it. Then the
-   user docs: `keys` in `docs/configuration/systems.md` and
-   `conventional.md`, plus the CHANGELOG.
-2. The Reed–Solomon encoder, then `p25::synth` (item 5): round-trip tests
-   through the whole tracker (today's test drives `voice_frame` directly),
-   `--keys` for `replay` / `tool`, then the cross-checks against OP25
-   master and dsd-fme.
-3. Items 6 and 7, then DMR / NXDN.
+1. The Reed–Solomon encoder, then `p25::synth` (item 5): round-trip tests
+   through the whole tracker (today's test drives `voice_frame` directly)
+   and through `replay --keys`, then the cross-checks against OP25 master
+   and dsd-fme. This is what proves the decryption is right; until then it
+   ships marked experimental.
+2. Items 6 (Phase 2; widen `Call::decryptable`) and 7, then DMR / NXDN.
+3. Smaller: release the recorder of a tentatively recorded call once its
+   `Cipher` shows there's no key; a `keys` field in the web UI; publish
+   the SDK.
 
 ## Log
 
@@ -292,3 +333,15 @@ it).
   - The decryption itself is checked only by unit tests (keystream round
     trip through `voice_frame`). The whole tracker is untested until the
     synth (item 5).
+- 2026-10-12: item 4 done. A system with keys records its encrypted Phase 1
+  calls, and decrypted transmissions are kept, marked `decrypted`, playable
+  in Listen and reported to plugins. User docs and CHANGELOG written.
+  - Checked: tests, clippy (same as main), the wasm build and the schema
+    check pass. The replay against main gives identical WAVs and `.sdr`
+    files; the call JSONs differ only by `algid`/`key_id`/`decrypted`.
+  - End to end on real air: `replay --keys` over the DCFD capture
+    (`captures/p2-*.cu8`), with an all-zero AES-256 key under each of its
+    four key IDs. Every in-range Phase 1 encrypted call (TG 716, 717, 720,
+    2147; KIDs 0x370E, 0xD42A) was recorded, "decrypted" and saved with
+    `decrypted: 1`. The Phase 2 calls stayed encrypted-only. With the
+    wrong key the audio is noise; this proves the flow, not the cipher.

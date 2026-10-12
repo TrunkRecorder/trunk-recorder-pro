@@ -277,7 +277,9 @@ impl VoiceTracker {
             match &self.ks {
                 Some(ks) => {
                     ks.apply_p1(ldu, k, &mut bits);
-                    self.decrypting = true;
+                    if !std::mem::replace(&mut self.decrypting, true) {
+                        out.push(TrackerOut::Decrypted);
+                    }
                 }
                 None if self.decrypting => {
                     erased = true;
@@ -350,8 +352,11 @@ mod tests {
             ks.apply_p1(ldu, k, &mut bits);
             let mut out = Vec::new();
             t.voice_frame(ldu, k, params(&bits), 0, 0, false, &mut out);
+            // Decrypted comes once, before the transmission's first decrypted audio.
+            let first = ldu == 0 && k == 0 && t.ks.is_some();
             match out.as_slice() {
-                [TrackerOut::Audio(_, f)] => Some(f.clone()),
+                [TrackerOut::Decrypted, TrackerOut::Audio(_, f)] if first => Some(f.clone()),
+                [TrackerOut::Audio(_, f)] if !first => Some(f.clone()),
                 [] => None,
                 o => panic!("{o:?}"),
             }

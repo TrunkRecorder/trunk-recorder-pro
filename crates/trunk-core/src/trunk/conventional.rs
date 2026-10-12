@@ -359,6 +359,8 @@ struct Heard {
     infos: Vec<(Option<u32>, bool, bool)>,
     /// The cipher the encryption sync named, if it did.
     cipher: Option<CipherId>,
+    /// The tracker decrypted voice.
+    decrypted: bool,
     /// Air time of the first voice frame, and the end of the last (digital).
     air: Option<(f64, f64)>,
     /// The talkgroup the air named (FM with tones: the row's).
@@ -379,6 +381,7 @@ impl Heard {
         self.low.append(&mut other.low);
         self.infos.append(&mut other.infos);
         self.cipher = other.cipher.or(self.cipher);
+        self.decrypted |= other.decrypted;
     }
 }
 
@@ -705,6 +708,7 @@ impl Conventional {
                 TrackerOut::Subaudible(l) => h.low.extend_from_slice(&l),
                 TrackerOut::Info { source, emergency, encrypted } => h.infos.push((source, emergency, encrypted)),
                 TrackerOut::Cipher(id) => h.cipher = Some(id),
+                TrackerOut::Decrypted => h.decrypted = true,
                 TrackerOut::Alias(a) => out.push(ConvOut::Alias(conventional_system(ch.cfg.system), a)),
                 TrackerOut::AliasLc(_) => {}
             }
@@ -885,6 +889,7 @@ impl Conventional {
                 reason: None,
                 encrypted: false,
                 cipher: None,
+                decrypted: false,
                 emergency: false,
                 priority: 0,
                 duplex: false,
@@ -957,18 +962,22 @@ impl Conventional {
                 }
             }
         }
+        if h.decrypted {
+            l.tx.mark_decrypted(now_s);
+            changed |= !std::mem::replace(&mut l.call.decrypted, true);
+        }
         if changed {
             out.push(ConvOut::Update(l.call.clone()));
         }
-        // (An encrypted transmission's audio is left out when the call is
-        // saved, as a trunked call's is; it isn't played live.)
+        // (An encrypted transmission's audio, unless decrypted, is left out
+        // when the call is saved, as a trunked call's is; it isn't played live.)
         if !h.audio.is_empty() {
             l.tx.note(l.audio.len(), now_s);
             l.audio.extend_from_slice(&h.audio);
             for f in h.frames {
                 l.frames.push(f);
             }
-            if !l.tx.current_encrypted() {
+            if !l.tx.current_dropped() {
                 out.push(ConvOut::Audio { call_id: l.call.id, system: l.call.system, talkgroup: l.call.talkgroup, samples: h.audio });
             }
         }

@@ -482,6 +482,8 @@ export interface CallView {
   state: "recording" | "monitoring";
   reason: "ignored" | "unknown_tg" | "encrypted" | "no_source" | "no_recorder" | null;
   encrypted: boolean;
+  /** Its encrypted voice is being decrypted (the system has the key). */
+  decrypted: boolean;
   emergency: boolean;
   startS: number;
   sources: number[];
@@ -528,6 +530,8 @@ export interface CallRecord {
   /** The cipher its encryption sync named: P25 ALGID and key ID; -1 when none was heard (absent in calls saved before). */
   algid?: number;
   key_id?: number;
+  /** 1: its encrypted voice was decrypted, at least in part (absent in calls saved before). */
+  decrypted?: number;
   phase2_tdma: number;
   duplex: number;
   /** Its P25 priority and service-option mode bit. */

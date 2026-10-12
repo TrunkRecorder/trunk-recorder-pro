@@ -98,6 +98,8 @@ pub struct Call {
     pub encrypted: bool,
     /// The cipher its voice's encryption sync named (the latest, if more than one).
     pub cipher: Option<CipherId>,
+    /// Some of its encrypted voice was decrypted (its system had the key).
+    pub decrypted: bool,
     pub emergency: bool,
     pub priority: u8,
     pub duplex: bool,
@@ -127,6 +129,11 @@ pub struct Call {
 }
 
 impl Call {
+    /// Its voice is of a kind that can be decrypted (P25 Phase 1).
+    pub fn decryptable(&self) -> bool {
+        !self.analog && !self.phase2_tdma && self.color_code.is_none() && self.nxdn.is_none()
+    }
+
     /// Its TDMA slot (0 / 1), for a call on a two-slot channel: P25 Phase 2
     /// or DMR.
     pub fn slot(&self) -> Option<u8> {
@@ -209,11 +216,14 @@ pub struct CallManager {
     ids: CallIds,
     /// The system's standing patches.
     pub patches: Patches,
+    /// The system has encryption keys: encrypted calls it may be able to
+    /// decrypt are recorded, to find out (the key ID comes with the voice).
+    pub can_decrypt: bool,
 }
 
 impl CallManager {
     pub fn new(cfg: CallConfig, talkgroups: Talkgroups) -> Self {
-        CallManager { calls: Vec::new(), talkgroups, cfg, system: 0, ids: CallIds::default(), patches: Patches::default() }
+        CallManager { calls: Vec::new(), talkgroups, cfg, system: 0, ids: CallIds::default(), patches: Patches::default(), can_decrypt: false }
     }
 
     /// For system `system`, drawing ids from `ids` (shared with the other systems).
@@ -238,7 +248,7 @@ impl CallManager {
                             for c in self.calls.iter_mut() {
                                 if c.note_patch(self.patches.members_of(c.talkgroup)) {
                                     if c.reason == Some(Reason::UnknownTg) {
-                                        Self::admit(c, &self.cfg, &self.talkgroups, host);
+                                        Self::admit(c, &self.cfg, &self.talkgroups, self.can_decrypt, host);
                                     }
                                     ev.push(CallEvent::Update(c.clone()));
                                 }
@@ -386,6 +396,7 @@ impl CallManager {
             reason: None,
             encrypted: m.encrypted || tg.as_ref().is_some_and(|t| t.encrypted_mode()),
             cipher: None,
+            decrypted: false,
             emergency: m.emergency,
             priority: m.priority,
             duplex: m.duplex,
@@ -405,22 +416,22 @@ impl CallManager {
             tone: None,
             tone_set: None,
         };
-        Self::admit(&mut c, &self.cfg, &self.talkgroups, host);
+        Self::admit(&mut c, &self.cfg, &self.talkgroups, self.can_decrypt, host);
         ev.push(CallEvent::Start(c.clone()));
         self.calls.push(c);
     }
 
     /// Record, follow or skip a call: Trunk Recorder's start_recorder()
     /// gates, in its order. A talkgroup not in the file is recorded while
-    /// it's patched with one that is.
-    fn admit(c: &mut Call, cfg: &CallConfig, talkgroups: &Talkgroups, host: &mut dyn RecorderHost) {
+    /// it's patched with one that is. `can_decrypt`: the system has keys.
+    fn admit(c: &mut Call, cfg: &CallConfig, talkgroups: &Talkgroups, can_decrypt: bool, host: &mut dyn RecorderHost) {
         c.reason = None;
         let known = c.talkgroup_info.is_some() || c.patched_talkgroups.iter().any(|g| talkgroups.contains_key(g));
         if c.talkgroup_info.as_ref().is_some_and(|t| t.ignore) {
             c.reason = Some(Reason::Ignored);
         } else if !known && !cfg.record_unknown && !talkgroups.is_empty() {
             c.reason = Some(Reason::UnknownTg);
-        } else if c.encrypted && !cfg.record_encrypted {
+        } else if c.encrypted && !cfg.record_encrypted && !(can_decrypt && c.decryptable()) {
             // No audio to record, but its terminators' link control is in
             // the clear: who spoke, and their talker aliases.
             c.reason = Some(Reason::Encrypted);
@@ -519,6 +530,20 @@ mod tests {
         assert_eq!(ends, [(1, 0.0)]);
         assert_eq!((m.calls.len(), m.calls[0].id, m.calls[0].start_s), (1, 2, 10.0));
         assert!(m.calls[0].recording && m.calls[0].sources[0].src == 7);
+    }
+
+    #[test]
+    fn encrypted_calls_are_recorded_when_the_system_may_decrypt_them() {
+        let enc = |t: f64, tg: u32, phase2: bool| Message { encrypted: true, phase2_tdma: phase2, ..msg(MessageType::Grant, t, tg) };
+        let mut m = CallManager::new(CallConfig::default(), Talkgroups::default());
+        let mut ev = Vec::new();
+        m.handle(&[enc(0.0, 101, false)], &mut Host, &mut ev);
+        assert_eq!(m.calls[0].reason, Some(Reason::Encrypted));
+        m.can_decrypt = true;
+        // Phase 1: recorded, to see whether a key fits; Phase 2 not yet.
+        m.handle(&[enc(0.0, 102, false), enc(0.0, 103, true)], &mut Host, &mut ev);
+        assert!(m.calls[1].recording && m.calls[1].reason.is_none());
+        assert_eq!(m.calls[2].reason, Some(Reason::Encrypted));
     }
 
     #[test]
