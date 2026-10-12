@@ -12,11 +12,12 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   affiliations and registrations are followed like the single-block ones.
   On a site that uses them, control messages a second go up: CLMRN-I
   went from about 12 to 22.
-- **Control channel airtime.** The Decode page and Find my system show how
-  much of a P25 control channel's airtime was decoded, next to the
-  messages a second. It reads the same on every system, unlike messages
-  a second, which are lower where a site sends multi-block messages (one
-  takes the air of two or three).
+- **Control channel coverage.** The Decode page (a tile on each P25
+  system's card, and a chart under Over time) and Find my system show how
+  much of the control channel decoded: an estimate from timing, of the
+  air decoded against the most the channel could carry. It reads the same
+  on every system, unlike messages a second, which are lower where a site
+  sends multi-block messages (one takes the air of two or three).
 
 ## [0.1.9] — 2026-10-09
 

@@ -258,7 +258,7 @@ function MonitorView(props: { m: SurveyMonitor; sug: SurveySuggestion | null; c:
         <Check state={m.good >= 10 ? "ok" : "wait"} label="Control channel">
           {total ? (
             <>
-              decoding {pct} % of {total} messages{air !== null ? ` (${air} % of airtime)` : ""}{m.modulation ? ` · ${m.modulation}` : ""}
+              decoding {pct} % of {total} messages{air !== null ? ` (${air} % coverage)` : ""}{m.modulation ? ` · ${m.modulation}` : ""}
               {m.snrDb !== null ? ` · ${m.snrDb.toFixed(0)} dB SNR` : ""}
             </>
           ) : (
