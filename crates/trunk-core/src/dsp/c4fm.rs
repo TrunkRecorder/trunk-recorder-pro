@@ -1,12 +1,20 @@
-//! Streaming C4FM receiver (freq-finder's demodC4fmTracked without windows):
+//! Streaming C4FM receiver (freq-finder's demodC4fmTracked without windows),
+//! as [`C4fmOptions::default`] sets it up:
 //!
 //! ```text
-//! FM discriminator (Hz) → boxcar (0.9 symbol) → per-block best sampling phase
-//! (max Σ|deviation| over 240 symbols, 2·sps candidates), unwrapped across
-//! blocks and interpolated between block centres → slice on the rails:
-//! centre = midpoint of the 2 %/98 % quantiles of the last ~0.5 s of symbols,
-//! inner/outer threshold = 2/3 of the outer rail.
+//! FM discriminator (Hz) → RRC matched filter (α 0.5 for P25, 0.2 for DMR and
+//! NXDN) → per-block best sampling phase (max Σ|deviation| over 240 symbols,
+//! max(2·sps, 8) candidates), unwrapped across blocks and interpolated
+//! between block centres → slice on the levels: the four clusters' means
+//! over the last 2400 symbols, threshold midway between inner and outer →
+//! multi-symbol detection ([`super::msd`]) while the levels are poorly
+//! separated.
 //! ```
+//!
+//! On a bursty channel (a mobile) quiet samples are left out of the timing
+//! and the levels. [`C4fmOptions::legacy`] is the first receiver: a 0.9-symbol
+//! boxcar, levels from the 2 %/98 % quantiles, thresholds at 2/3 of the outer
+//! rail, no MSD.
 //!
 //! Latency is two blocks (100 ms): block b's symbols need block b+1's phase.
 

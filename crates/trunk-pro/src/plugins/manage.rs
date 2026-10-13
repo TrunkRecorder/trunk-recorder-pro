@@ -56,6 +56,13 @@ pub struct Runtime {
     pub uptime_s: Option<f64>,
     /// Results per minute, the last hour: (minute start, Unix s; [ok, skipped, failed]).
     pub minutes: VecDeque<(i64, [u32; 3])>,
+    /// With copies of it running (a system with several): each copy's state
+    /// and message, and figures, by copy (0: the first). `state`, `message`
+    /// and `metrics` are what they come to.
+    #[serde(skip)]
+    copies: BTreeMap<usize, (&'static str, String)>,
+    #[serde(skip)]
+    copy_metrics: BTreeMap<usize, Metrics>,
 }
 
 impl Default for Runtime {
@@ -76,6 +83,8 @@ impl Default for Runtime {
             dropped: 0,
             uptime_s: None,
             minutes: VecDeque::new(),
+            copies: BTreeMap::new(),
+            copy_metrics: BTreeMap::new(),
         }
     }
 }
@@ -103,6 +112,47 @@ impl Runtime {
                 self.last_fail = Some(t);
             }
         }
+    }
+
+    /// Copy `copy`'s state: the plugin's is the worst of its copies'.
+    fn set_state(&mut self, copy: usize, state: &'static str, message: &str) {
+        self.copies.insert(copy, (state, message.to_string()));
+        let rank = |s: &str| ["off", "starting", "ok", "warning", "error"].iter().position(|x| *x == s).unwrap_or(0);
+        // The worst; of equals, the first copy.
+        let (c, (st, msg)) = self.copies.iter().rev().max_by_key(|(_, (s, _))| rank(s)).unwrap();
+        self.state = st;
+        self.message = if *c == 0 { msg.clone() } else { format!("copy {}: {msg}", c + 1) };
+    }
+
+    /// Copy `copy`'s figures: the plugin's are its copies' together.
+    fn set_metrics(&mut self, copy: usize, m: Metrics) {
+        self.copy_metrics.insert(copy, m);
+        let mut all = self.copy_metrics.values();
+        let mut sum = all.next().cloned().unwrap_or_default();
+        let add = |a: &mut Option<u64>, b: Option<u64>| {
+            if b.is_some() {
+                *a = Some(a.unwrap_or(0) + b.unwrap_or(0));
+            }
+        };
+        let max = |a: &mut Option<f64>, b: Option<f64>| {
+            if b > *a {
+                *a = b;
+            }
+        };
+        for m in all {
+            add(&mut sum.queued, m.queued);
+            add(&mut sum.retrying, m.retrying);
+            add(&mut sum.in_flight, m.in_flight);
+            add(&mut sum.retries, m.retries);
+            add(&mut sum.bytes_sent, m.bytes_sent);
+            max(&mut sum.latency_ms, m.latency_ms);
+            max(&mut sum.last_ok, m.last_ok);
+            if m.last_error > sum.last_error {
+                (sum.last_error, sum.last_error_text) = (m.last_error, m.last_error_text.clone());
+            }
+            sum.endpoints.extend(m.endpoints.iter().cloned());
+        }
+        self.metrics = Some(sum);
     }
 
     /// For the dashboard's series: 0 ok, 1 warning, 2 error (off: nothing).
@@ -286,6 +336,8 @@ impl Plugins {
                 }
                 r.state = if e.enabled { "starting" } else { "off" };
                 r.message.clear();
+                r.copies.clear();
+                r.copy_metrics.clear();
             }
         }
         self.publish_all_runtime();
@@ -301,9 +353,20 @@ impl Plugins {
     pub fn report(&self, sink: &mut dyn Sink) {
         let procs = self.host.read().unwrap().as_ref().map(|h| h.process_stats()).unwrap_or_default();
         let mut rt = self.runtime.lock().unwrap();
+        // Copies of a plugin: their restarts and drops together, up for as long as the newest.
+        let mut seen = BTreeSet::new();
         for p in procs {
-            let r = rt.entry(p.id.clone()).or_default();
-            (r.restarts, r.dropped, r.uptime_s) = (p.restarts, p.dropped, p.uptime_s);
+            let (id, _) = super::parse_label(&p.id);
+            let r = rt.entry(id.to_string()).or_default();
+            if seen.insert(id.to_string()) {
+                (r.restarts, r.dropped, r.uptime_s) = (p.restarts, p.dropped, p.uptime_s);
+            } else {
+                (r.restarts, r.dropped) = (r.restarts + p.restarts, r.dropped + p.dropped);
+                r.uptime_s = match (r.uptime_s, p.uptime_s) {
+                    (Some(a), Some(b)) => Some(a.min(b)),
+                    _ => None,
+                };
+            }
         }
         for (id, r) in rt.iter() {
             let k = format!("plg/{}", key_part(id));
@@ -348,16 +411,26 @@ impl Plugins {
             if let Note::Result { path, outcome, .. } = &n {
                 archive.result(path, *outcome);
             }
-            let id = match &n {
+            let label = match &n {
                 Note::Log { plugin, .. } | Note::State { plugin, .. } | Note::Result { plugin, .. } | Note::Metrics { plugin, .. } => plugin.clone(),
             };
+            // A copy's notes are its plugin's, said to be the copy's.
+            let (id, copy) = super::parse_label(&label);
+            let id = id.to_string();
+            let tell = |text: &str| if copy == 0 { text.to_string() } else { format!("copy {}: {text}", copy + 1) };
             if !id.is_empty() {
                 let mut rt = runtime.lock().unwrap();
                 let r = rt.entry(id.clone()).or_default();
                 match &n {
+                    // Another copy skips the calls of every system it isn't for: not worth counting.
+                    Note::Result { outcome: Outcome::Skipped, .. } if copy > 0 => {
+                        drop(rt);
+                        log(n);
+                        return;
+                    }
                     Note::Log { level, text, .. } => {
                         if *level != Level::Debug {
-                            r.log.push_back(LogEntry { time: now(), level: level_name(*level), text: text.clone() });
+                            r.log.push_back(LogEntry { time: now(), level: level_name(*level), text: tell(text) });
                             if r.log.len() > LOG_LINES {
                                 r.log.pop_front();
                             }
@@ -365,12 +438,13 @@ impl Plugins {
                     }
                     Note::State { state, message, .. } => {
                         let was = r.state;
-                        r.state = match state {
+                        let state = match state {
                             State::Ok => "ok",
                             State::Warning => "warning",
                             State::Error => "error",
                         };
-                        r.message = message.clone();
+                        r.set_state(copy, state, message);
+                        let message = &r.message;
                         // A change of health is an event (not every "ok" of a starting plugin).
                         if was != r.state && !(was == "starting" || was == "off") || r.state == "error" && was != "error" {
                             let e = trunk_app::stats::MonitorEvent::PluginHealth { plugin: id.clone(), state: r.state.to_string(), message: message.clone() };
@@ -386,11 +460,11 @@ impl Plugins {
                             Outcome::Skipped => r.skipped += 1,
                             Outcome::Failed => {
                                 r.failed += 1;
-                                r.last_failure = format!("{path}: {message}");
+                                r.last_failure = tell(&format!("{path}: {message}"));
                             }
                         }
                     }
-                    Note::Metrics { metrics, .. } => r.metrics = Some(metrics.clone()),
+                    Note::Metrics { metrics, .. } => r.set_metrics(copy, metrics.clone()),
                 }
                 publish(&hub, json!({ "type": "pluginRuntime", "id": id, "runtime": r }));
             }

@@ -15,11 +15,16 @@
 //! SmartNet control channel: its messages (and with `--osw` every OSW) as
 //! JSON lines, then OSW counts and the measured carrier offset.
 //!
-//! `tool revoice <call.frames.jsonl> <out.wav> [--profile enhanced|fixed|mbelib]
-//! [--seed 1] [--hard-fec] [--s16]` — vocode a call's frame capture (the
-//! recording setting "Save vocoder frames") again, e.g. with another vocoder
-//! profile; `--hard-fec` uses TIA's repeat thresholds, `--s16` writes raw
-//! 16-bit samples at the vocoder's own scale instead of a WAV.
+//! `tool revoice <call.sdr | call.frames.jsonl> <out.wav> [--profile
+//! enhanced|fixed|mbelib] [--seed 1] [--hard-fec] [--s16]` — vocode a call's
+//! frame capture (the recording setting "Save vocoder frames") again, e.g.
+//! with another vocoder profile; `--hard-fec` uses TIA's repeat thresholds,
+//! `--s16` writes raw 16-bit samples at the vocoder's own scale instead of a
+//! WAV.
+//!
+//! `tool sdr <call.sdr> [--frames]` — an `.sdr` frame capture's call as
+//! MimoSDR projects it (its sidecar JSON), or its frames as `.frames.jsonl`
+//! lines (what the vocoder shootout's decoders read).
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -32,12 +37,13 @@ use trunk_core::mbe::{self, FRAME_SAMPLES};
 use trunk_core::p25::diversity::{best_es, best_frame, best_imbe, best_lc, best_tsbks, Bank, BankConfig, Group};
 use trunk_core::p25::frame::{duid_name, FramerOptions, HDU, LDU1, LDU2, TDULC, TSDU};
 use trunk_core::p25::tsbk::{decode_tsdu, tsbk_opcode, Trellis};
+use trunk_core::trunk::frames::VoiceFrame;
 use trunk_core::p25::voice::{decode_hdu, decode_ldu1_lc, decode_ldu2_es, decode_tdulc, imbe_params_to_bits, ldu_imbe, EncryptionSync, ImbeParams, LinkControl};
 
 use crate::{die, Args};
 
 pub fn run(a: &Args) {
-    let mode = a.positional.first().map(String::as_str).unwrap_or_else(|| die("tool cc|voice|frames|p2|smartnet|dmr|dmrscan|nxdn|nxdnscan|nxdnsynth|snr|revoice … (trunk-pro --help)"));
+    let mode = a.positional.first().map(String::as_str).unwrap_or_else(|| die("tool cc|voice|frames|p2|smartnet|dmr|dmrscan|nxdn|nxdnscan|nxdnsynth|snr|revoice|sdr … (trunk-pro --help)"));
     if mode == "p2" {
         return run_p2(a);
     }
@@ -58,6 +64,9 @@ pub fn run(a: &Args) {
     }
     if mode == "nxdnsynth" {
         return crate::nxdntool::run_synth(a);
+    }
+    if mode == "sdr" {
+        return run_sdr(a);
     }
     if mode == "revoice" {
         return run_revoice(a);
@@ -280,10 +289,57 @@ fn num_any(a: &Args, key: &str) -> u32 {
     })
 }
 
+/// A frame capture: an `.sdr` file, or `.frames.jsonl`.
+fn load_frames(path: &str) -> Vec<VoiceFrame> {
+    use trunk_core::mbe::Kind;
+    use trunk_core::trunk::frames::{hex_bits, Codec};
+    let bytes = std::fs::read(path).unwrap_or_else(|e| die(&format!("{path}: {e}")));
+    if trunk_core::trunk::sdr::is_sdr(&bytes) {
+        return trunk_core::trunk::sdr::sdr_frames(&bytes);
+    }
+    let text = String::from_utf8(bytes).unwrap_or_else(|_| die(&format!("{path}: not an .sdr file or frame JSON lines")));
+    fn not_frame<T>(path: &str, n: usize) -> T {
+        die(&format!("{path}:{}: not a frame record", n + 1))
+    }
+    let mut frames = Vec::new();
+    for (n, line) in text.lines().enumerate().filter(|(_, l)| !l.trim().is_empty()) {
+        let f: serde_json::Value = serde_json::from_str(line).unwrap_or_else(|_| not_frame(path, n));
+        let int = |k: &str| f[k].as_u64().unwrap_or_else(|| not_frame(path, n)) as u32;
+        let (codec, nbits) = match f["codec"].as_str() {
+            Some("imbe") => (Codec::Imbe, 88),
+            Some("ambe") => (Codec::Ambe, 49),
+            _ => not_frame(path, n),
+        };
+        let bits = f["bits"].as_str().and_then(|h| hex_bits(h, nbits)).unwrap_or_else(|| not_frame(path, n));
+        let kind = match f["out"].as_str() {
+            Some("repeat") => Kind::Repeat,
+            Some("muted") => Kind::Muted,
+            Some("erasure") => Kind::Erasure,
+            Some("tone") => Kind::Tone,
+            _ => Kind::Voice,
+        };
+        let e0 = if codec == Codec::Imbe { int("e0") } else { 0 };
+        frames.push(VoiceFrame { codec, bits, e0, errs: int("errs"), erased: f["erased"].as_bool().unwrap_or(false), kind });
+    }
+    frames
+}
+
+/// `tool sdr`: an `.sdr` file's call as MimoSDR sees it (its sidecar JSON),
+/// or with `--frames` its frames as `.frames.jsonl` lines.
+fn run_sdr(a: &Args) {
+    let path = a.positional.get(1).unwrap_or_else(|| die("tool sdr <call.sdr> [--frames]"));
+    if a.flag("frames") {
+        print!("{}", trunk_core::trunk::frames::frames_jsonl(&load_frames(path)));
+        return;
+    }
+    let bytes = std::fs::read(path).unwrap_or_else(|e| die(&format!("{path}: {e}")));
+    println!("{}", trunk_core::trunk::sdr::sdr_sidecar_json(&bytes).unwrap_or_else(|| die(&format!("{path}: no call header"))));
+}
+
 /// `tool revoice`: a frame capture back through the vocoder.
 fn run_revoice(a: &Args) {
-    use trunk_core::trunk::frames::hex_bits;
-    let path = a.positional.get(1).unwrap_or_else(|| die("tool revoice <call.frames.jsonl> <out.wav>"));
+    use trunk_core::trunk::frames::Codec;
+    let path = a.positional.get(1).unwrap_or_else(|| die("tool revoice <call.sdr | call.frames.jsonl> <out.wav>"));
     let out = a.positional.get(2).unwrap_or_else(|| die("tool revoice: no output .wav"));
     let profile = a.get("profile").map_or(mbe::Profile::Enhanced, |p| mbe::Profile::from_name(p).unwrap_or_else(|| die("tool revoice: --profile enhanced|fixed|mbelib")));
     let mbelib = profile == mbe::Profile::Mbelib;
@@ -294,32 +350,21 @@ fn run_revoice(a: &Args) {
     // --s16: raw 16-bit samples at the vocoder's own scale (mbelib's ×7), no limiter.
     let s16 = a.flag("s16");
     let mut pcm: Vec<i16> = Vec::new();
-    let text = std::fs::read_to_string(path).unwrap_or_else(|e| die(&format!("{path}: {e}")));
     let (mut audio, mut kinds, mut differ) = (Vec::new(), BTreeMap::<String, u32>::new(), 0u32);
-    fn not_frame<T>(path: &str, n: usize) -> T {
-        die(&format!("{path}:{}: not a frame record", n + 1))
-    }
-    for (n, line) in text.lines().enumerate().filter(|(_, l)| !l.trim().is_empty()) {
-        let f: serde_json::Value = serde_json::from_str(line).unwrap_or_else(|_| not_frame(path, n));
-        let int = |k: &str| f[k].as_u64().unwrap_or_else(|| not_frame(path, n)) as u32;
-        let codec = f["codec"].as_str().unwrap_or_else(|| not_frame(path, n));
-        let hex = f["bits"].as_str().unwrap_or_else(|| not_frame(path, n));
+    for f in load_frames(path) {
         let mut buf = [0f32; FRAME_SAMPLES];
-        let kind = match codec {
-            "imbe" => {
-                let bits: [u8; 88] = hex_bits(hex, 88).and_then(|b| b.try_into().ok()).unwrap_or_else(|| not_frame(path, n));
-                let erased = f["erased"].as_bool().unwrap_or(false);
-                dec.imbe(&bits, int("e0"), if erased { 0 } else { int("errs") }, erased, &mut buf)
+        let kind = match f.codec {
+            Codec::Imbe => {
+                let bits: [u8; 88] = f.bits[..].try_into().unwrap();
+                dec.imbe(&bits, f.e0, if f.erased { 0 } else { f.errs }, f.erased, &mut buf)
             }
-            "ambe" => {
-                let bits: [u8; 49] = hex_bits(hex, 49).and_then(|b| b.try_into().ok()).unwrap_or_else(|| not_frame(path, n));
-                dec.ambe(&bits, int("errs"), &mut buf)
+            Codec::Ambe => {
+                let bits: [u8; 49] = f.bits[..].try_into().unwrap();
+                dec.ambe(&bits, f.errs, &mut buf)
             }
-            _ => not_frame(path, n),
         };
-        let name = format!("{kind:?}").to_lowercase();
-        differ += (f["out"].as_str() != Some(name.as_str())) as u32;
-        *kinds.entry(name).or_default() += 1;
+        differ += (kind != f.kind) as u32;
+        *kinds.entry(format!("{kind:?}").to_lowercase()).or_default() += 1;
         if s16 {
             pcm.extend(buf.iter().map(|&v| (7.0 * v as f64).round().clamp(-32768.0, 32767.0) as i16));
         }

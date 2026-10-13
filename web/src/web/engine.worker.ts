@@ -20,6 +20,7 @@ export type ToWorker =
   | { type: "surveyRescan" }
   | { type: "surveyStop" }
   | { type: "profileSource"; source: number; centerHz: number }
+  | { type: "olderCalls"; before: number; limit: number }
   | { type: "subscribe"; topics: string[] }
   | { type: "statsQuery"; id: number; series: string[]; range?: string; from?: number; to?: number; points?: number }
   | { type: "radioQuery"; id: number; what: string; system?: string; key?: number; hours?: number; limit?: number };
@@ -411,6 +412,13 @@ onmessage = async (ev: MessageEvent<ToWorker>) => {
     case "radioQuery":
       post(session ? (JSON.parse(session.radio_query(JSON.stringify(m))) as FromRecorder) : ({ type: "radioResult", id: m.id, what: m.what as "summary", error: "Start recording to see the radio system." } as FromRecorder));
       break;
+    case "olderCalls": {
+      // The whole index is small (one line a call): read it, as the recorder reads its day folders.
+      const floor = Date.now() - 24 * 3600 * 1000;
+      const older = (await listCalls(Number.MAX_SAFE_INTEGER)).filter((e) => e.record.start_time_ms < m.before && e.record.start_time_ms >= floor);
+      post({ type: "olderCalls", before: m.before, entries: older.slice(0, m.limit), more: older.length > m.limit });
+      break;
+    }
     case "files":
       files = m.files;
       break;

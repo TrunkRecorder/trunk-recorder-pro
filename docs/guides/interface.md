@@ -1,7 +1,7 @@
 # The web interface
 
 Trunk Recorder Pro is run from your web browser. This page is a tour of the interface: the
-frame around every page, Setup, the Calls page with live listening, events, quitting, where the
+frame around every page, Setup, the Listen page, the Live page, events, quitting, where the
 history is kept, reaching it from another machine, and serving an interface of your own. The
 measurement pages (Overview, RF, Decode, Radio system, Plugins, Platform) and what their numbers
 mean are on [The dashboard](dashboard.md).
@@ -17,10 +17,11 @@ On the left is the list of pages:
 | Page | What it's for |
 |---|---|
 | **Overview** | Every system at a glance, today's numbers, the sources, the computer and the plugins in a line each, and what happened lately |
+| **Listen** | A scanner over the recorded calls: hear them as they're recorded, pick the talkgroups, go back through the day |
 | **RF** | How well the radios hear the air: noise floor, headroom, frequency error, dropped samples, the waterfall |
 | **Decode** | How well signals turn into messages and voice, per system and per frequency |
 | **Radio system** | The system as heard: talkgroups, radios, what happened to calls |
-| **Calls** | Calls on the air now (with live audio), recent calls, the control channel log |
+| **Live** | Calls on the air now (with live audio), the control channel log |
 | **Plugins** | Each plugin's health, and installing and setting them up |
 | **Platform** | The computer: CPU, memory, disks, network |
 | **Setup** | Sources, systems, recording, the log, plugins |
@@ -72,9 +73,56 @@ over; see [Migrating from Trunk Recorder](../migrating-from-trunk-recorder.md). 
 import couldn't finish shows as a to-do list at the top of Setup, with a count on the tab it
 belongs to.
 
-## Calls
+## Listen
 
-The Calls page has three parts.
+Listen works like a scanner app (rdio-scanner and its kin): each call plays once it's recorded,
+one after another. On the left is the display and its buttons, on the right the recent calls and
+the talkgroups to hear.
+
+- **Live feed**: on, each new call you've chosen is queued and played in turn; `Q` is how many
+  are waiting. Off, nothing new plays. A call is heard once it ends, so the feed runs a call's
+  length behind the air. Turning it on also turns off **Listen live** on the Live page (one sound
+  at a time).
+- **Hold sys** / **Hold TG**: only the current call's system, or its talkgroup, plays until you
+  press it again.
+- **Pause** stops the audio and the queue keeps filling; **Replay** plays the current call from
+  the start (or the last one again); **Skip** goes to the next.
+- **Avoid** stops playing the current talkgroup until you press it again; **30 / 60 / 120 min**
+  avoids it for that long.
+- **Save** downloads the call's audio.
+
+The display shows the talkgroup's name, its description, tag and category from the talkgroup
+file, the system, the talkgroup ID, the frequency, the first radio to speak and how far into the
+call it is (click the bar to jump). **Recent** under the buttons is the last five calls played;
+click one to hear it again.
+
+Encrypted calls and calls whose audio wasn't kept (deleted after uploading) are left out. A call
+kept as M4A plays the M4A, else the WAV.
+
+### Calls
+
+The calls recorded, newest first: the 300 newest on disk when the app started, then each new
+one. Click a call to play it now; the feed goes on after it. **Selected talkgroups only** hides the
+calls you wouldn't hear. **Load older** reads further back through the recordings folder, 200
+calls at a time, as far as 24 hours ago.
+
+Load older reads the day folders of the usual layout (`<system>/<year>/<month>/<day>/`): calls
+saved with a [filename format](recordings.md) of your own aren't found.
+
+### Talkgroups
+
+What the feed plays: every system and talkgroup, from the talkgroup files and what's been heard.
+Untick a system or a talkgroup to stop hearing it; the **Groups** and **Tags** chips (the
+talkgroup file's Category and Tag) switch all of theirs at once, and a dashed chip means some are
+on. **All on** and **All off** do everything. Talkgroups heard but not in a file are on until you
+turn them off.
+
+What you pick, holds and avoids are kept in this browser, so another browser (or another
+computer) has its own.
+
+## Live
+
+The Live page has two parts.
 
 ### Active calls
 
@@ -116,21 +164,6 @@ heading shows what's playing (`▶ TG 3747 · <radio>`).
   from another machine too.
 - Safari can pause the audio when you switch tabs or audio devices; a click or key press anywhere
   on the page starts it again.
-
-### Recent calls
-
-The newest saved calls (the 300 newest on disk when the app starts, then each new one, showing up
-to 200). Each row has the start time, the talkgroup, the length, the **Reception** (the call's
-signal over noise; hover for the levels and how much of the voice decoded cleanly), and the radios
-that spoke, in order.
-
-- **Play** plays it in the page; **WAV** and **JSON** download its files.
-- `not kept` means the files were deleted after uploading (see **Keep the audio after
-  uploading** in [Recordings](recordings.md)).
-- Type in **Filter talkgroup or unit…** to find calls by talkgroup number or name, a patched
-  talkgroup, or a radio's ID or name. With several systems, the **All systems** menu picks one.
-
-Under the list is the recordings folder they're saved to.
 
 ### Control channel log
 

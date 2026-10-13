@@ -72,8 +72,10 @@
 //!     Phase 2 slots, a SmartNet control channel, one DMR / NXDN channel,
 //!     every DMR / NXDN carrier in a capture, a synthetic NXDN capture,
 //!     weak-signal curves (each tool's module documents its options).
-//! trunk-pro tool revoice <call.frames.jsonl> <out.wav> [--profile fixed|enhanced|mbelib]
+//! trunk-pro tool revoice <call.sdr | call.frames.jsonl> <out.wav> [--profile fixed|enhanced|mbelib]
 //!     Vocode a call's saved frames again.
+//! trunk-pro tool sdr <call.sdr> [--frames]
+//!     A saved .sdr call's metadata as MimoSDR reads it, or its frames as JSON lines.
 //!
 //! trunk-pro plugin search | install | update | uninstall | list | describe | run …
 //!     Plugins (set up in the config's `plugins`, and each system's): find them in the registry,
@@ -234,8 +236,10 @@ usage:
       A synthetic NXDN capture, for checking a setup.
   trunk-pro tool snr <capture.cu8> --center Hz --rate Hz --freq Hz --kind dmr|p25|smartnet|p2 [--snr 40,20,…]
       Weak-signal curves: one channel decoded again with noise added.
-  trunk-pro tool revoice <call.frames.jsonl> <out.wav> [--profile fixed|enhanced|mbelib]
+  trunk-pro tool revoice <call.sdr | call.frames.jsonl> <out.wav> [--profile fixed|enhanced|mbelib]
       Vocode a call's saved frames (recording setting \"Save vocoder frames\") again.
+  trunk-pro tool sdr <call.sdr> [--frames]
+      A saved .sdr call's metadata as MimoSDR reads it, or (--frames) its frames as JSON lines.
   trunk-pro plugin search | install | update | uninstall | list | describe | run …
       Plugins: find them in the registry, install, update and uninstall them,
       list them, show one's manifest, or run one against calls already on
@@ -597,8 +601,8 @@ fn handle_events(engine: &mut Engine, out_dir: &str, multi: bool, quiet: bool, m
                 let base = dir.join(&k.base_name).display().to_string();
                 let _ = fs::write(format!("{base}.wav"), trunk_core::wav::encode(&k.audio, 8000));
                 let _ = fs::write(format!("{base}.json"), &k.json);
-                if let Some(f) = &k.frames {
-                    let _ = fs::write(format!("{base}.frames.jsonl"), f);
+                if let Some(c) = &k.frames {
+                    let _ = fs::write(format!("{base}.{}", c.ext), &c.bytes);
                 }
                 if !quiet {
                     println!("         wrote {}.wav  ({:.1} s audio)", k.base_name, k.audio.len() as f64 / 8000.0);

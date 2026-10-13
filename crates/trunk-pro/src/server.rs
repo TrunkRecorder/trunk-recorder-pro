@@ -432,8 +432,9 @@ fn percent_decode(s: &str) -> Option<String> {
 
 /// A recorded file, confined to the capture folder (or the RAM spool, while
 /// it waits there for the plugins). A call's .wav that was never written
-/// (only uploaded) is its .m4a.
-async fn call_file(State(ctx): State<Arc<Ctx>>, UrlPath(path): UrlPath<String>) -> Response {
+/// (only uploaded) is its .m4a, and an .m4a not (yet) encoded its .wav.
+/// Byte ranges are served: Safari plays audio only from a server that does.
+async fn call_file(State(ctx): State<Arc<Ctx>>, UrlPath(path): UrlPath<String>, req: Request) -> Response {
     let mut dirs = vec![PathBuf::from(&ctx.config.lock().unwrap().recording.capture_dir)];
     dirs.extend(ctx.spool.lock().unwrap().as_ref().map(|s| s.dir.clone()));
     let rel = Path::new(&path);
@@ -441,14 +442,33 @@ async fn call_file(State(ctx): State<Arc<Ctx>>, UrlPath(path): UrlPath<String>) 
         return StatusCode::BAD_REQUEST.into_response();
     }
     let mut tries: Vec<PathBuf> = vec![rel.to_path_buf()];
-    if rel.extension().is_some_and(|x| x == "wav") {
-        tries.push(rel.with_extension("m4a"));
+    match rel.extension().and_then(|x| x.to_str()) {
+        Some("wav") => tries.push(rel.with_extension("m4a")),
+        Some("m4a") => tries.push(rel.with_extension("wav")),
+        _ => {}
     }
+    let range = req.headers().get(header::RANGE).and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("bytes=")).map(String::from);
     for r in &tries {
         for d in &dirs {
             if let Ok(bytes) = tokio::fs::read(d.join(r)).await {
-                let mime = mime_guess::from_path(r).first_or_octet_stream();
-                return ([(header::CONTENT_TYPE, mime.as_ref().to_string())], bytes).into_response();
+                let mime = mime_guess::from_path(r).first_or_octet_stream().as_ref().to_string();
+                let len = bytes.len();
+                let Some(spec) = range.as_deref() else {
+                    return ([(header::CONTENT_TYPE, mime), (header::ACCEPT_RANGES, "bytes".into())], bytes).into_response();
+                };
+                // One range: `a-b`, `a-` or `-n` (the last n bytes).
+                let (a, b) = spec.split(',').next().unwrap_or("").split_once('-').unwrap_or(("", ""));
+                let (start, end) = match (a.trim().parse::<usize>().ok(), b.trim().parse::<usize>().ok()) {
+                    (Some(s), Some(e)) => (s, e.min(len.saturating_sub(1))),
+                    (Some(s), None) => (s, len.saturating_sub(1)),
+                    (None, Some(n)) => (len.saturating_sub(n), len.saturating_sub(1)),
+                    (None, None) => (1, 0),
+                };
+                if start > end || start >= len {
+                    return (StatusCode::RANGE_NOT_SATISFIABLE, [(header::CONTENT_RANGE, format!("bytes */{len}"))]).into_response();
+                }
+                let headers = [(header::CONTENT_TYPE, mime), (header::ACCEPT_RANGES, "bytes".into()), (header::CONTENT_RANGE, format!("bytes {start}-{end}/{len}"))];
+                return (StatusCode::PARTIAL_CONTENT, headers, bytes[start..=end].to_vec()).into_response();
             }
         }
     }
@@ -781,6 +801,11 @@ async fn command(ctx: &Arc<Ctx>, v: &Value, listen: &mut Option<Listen>, subs: &
         "radioQuery" => {
             let (ctx2, v) = (ctx.clone(), v.clone());
             tokio::task::spawn_blocking(move || radio_query(&ctx2, &v)).await.ok()
+        }
+        "olderCalls" => {
+            let ctx2 = ctx.clone();
+            let (before, limit) = (v["before"].as_i64().unwrap_or(i64::MAX), v["limit"].as_u64().unwrap_or(100).clamp(1, 500) as usize);
+            tokio::task::spawn_blocking(move || runtime::older_calls(&ctx2, before, limit)).await.ok()
         }
         "setConfig" => match serde_json::from_value::<Config>(v["config"].clone()) {
             Ok(mut c) => {

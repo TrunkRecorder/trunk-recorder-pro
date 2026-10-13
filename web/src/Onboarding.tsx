@@ -28,6 +28,7 @@ import {
   type AppState,
 } from "./controller.ts";
 import type { Config, Source, SurveyCandidate, SurveyMonitor, SurveySuggestion, System } from "./protocol.ts";
+import { pluginCopies } from "./protocol.ts";
 import { normalizeTalkgroupCsv, parseRadioReferencePaste, parseTalkgroupCsv, talkgroupsToCsv, type Talkgroup } from "./talkgroups.ts";
 import { openTodos } from "./todo.ts";
 import { Waterfall } from "./Waterfall.tsx";
@@ -1899,7 +1900,12 @@ function ImportReview(props: { s: AppState; c: Config; loaded: Loaded; onBack: (
         plugins[p.id] = { ...had, enabled: had.enabled || installed(p.id), ...(Object.keys(p.config).length ? { settings: { ...had.settings, ...p.config } } : {}) };
         for (const [name, values] of Object.entries(p.systems)) {
           const sys = x.systems.find((y) => y.shortName === name) ?? x.conventional.find((y) => y.shortName === name);
-          if (sys) sys.plugins = { ...sys.plugins, [p.id]: { ...sys.plugins?.[p.id], ...values } };
+          if (sys) {
+            // Into the first copy, when it has several.
+            const [first, ...more] = pluginCopies(sys.plugins?.[p.id]);
+            const merged = { ...first, ...values };
+            sys.plugins = { ...sys.plugins, [p.id]: more.length ? [merged, ...more] : merged };
+          }
         }
       }
       x.plugins = plugins;

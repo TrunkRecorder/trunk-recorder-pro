@@ -28,8 +28,8 @@ pub enum Output {
     /// A concluded call to store at `<rel>.wav` / `<rel>.json` (relative to
     /// the recordings folder); `entry` is its history entry, which the
     /// platform sends as a `concluded` message once the files are stored.
-    /// `frames`: the frame capture, for `<rel>.frames.jsonl`.
-    File { rel: String, system: u16, wav: Vec<u8>, json: String, frames: Option<String>, entry: Value },
+    /// `frames`: the frame capture, for `<rel>.sdr` (NXDN: `<rel>.frames.jsonl`).
+    File { rel: String, system: u16, wav: Vec<u8>, json: String, frames: Option<trunk_core::trunk::Capture>, entry: Value },
     /// An event for plugins (only those [`Session::plugin_topics`] asks for).
     Plugin(HostMessage),
     /// A line for the log (the platform's logger formats and routes it).

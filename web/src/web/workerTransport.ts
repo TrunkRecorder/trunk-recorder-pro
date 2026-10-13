@@ -3,7 +3,7 @@
 // for WebUSB access (it needs a click), and reads recorded calls from OPFS.
 
 import { decodeAudioFrame, type AudioChunk, type Config, type FromRecorder, type ToRecorder } from "../protocol.ts";
-import type { Transport } from "../transport.ts";
+import type { CallExt, Transport } from "../transport.ts";
 import { defaultConfig, storedConfig } from "../config.ts";
 import type { FromWorker, ToWorker } from "./engine.worker.ts";
 import { callBlob } from "./opfs.ts";
@@ -75,7 +75,9 @@ export class WorkerTransport implements Transport {
 
   private urls = new Map<string, string>();
 
-  async callUrl(path: string, ext: "wav" | "json"): Promise<string> {
+  async callUrl(path: string, want: CallExt): Promise<string> {
+    // The browser version keeps WAV only.
+    const ext = want === "m4a" ? "wav" : want;
     const key = `${path}.${ext}`;
     let u = this.urls.get(key);
     if (!u) {

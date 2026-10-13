@@ -12,11 +12,13 @@
 import { useEffect, useState } from "react";
 import {
   addPlugin,
+  addSystemPluginCopy,
   fetchPluginStore,
   installPlugin,
   installPluginFrom,
   pluginOn,
   removePlugin,
+  removeSystemPluginCopy,
   setM4a,
   setPluginEnabled,
   setPluginSettings,
@@ -31,6 +33,7 @@ import {
 import { IconPuzzle, IconUpload, IconWave } from "./Onboarding.tsx";
 import { showTodo } from "./Setup.tsx";
 import { openTodos } from "./todo.ts";
+import { pluginCopies } from "./protocol.ts";
 import type { Config, PluginInfo, PluginInstall, PluginManifest, PluginSchema, PluginStore, PluginValues, PluginsList, StoreListing } from "./protocol.ts";
 
 /** Is version `a` newer than `b`? Semver: a prerelease is older than its release. */
@@ -123,15 +126,20 @@ function systemSetUp(m: PluginManifest, values: PluginValues | undefined, inheri
   return fieldsOf(m.system_config).some(([k]) => !emptyValue(values?.[k]) || !emptyValue(inherited?.[k]));
 }
 
-/** The systems plugins can be set up for: where each is, and its short name (conventional ones with channels). */
-function systemsOf(c: Config): { at: SystemRef; name: string; values: (id: string) => PluginValues | undefined }[] {
-  const out: { at: SystemRef; name: string; values: (id: string) => PluginValues | undefined }[] = c.systems.map((x, i) => ({
+/** …and every copy of it, when it has several. */
+function copiesSetUp(m: PluginManifest, copies: PluginValues[], inherited: PluginValues | undefined): boolean {
+  return copies.length ? copies.every((v) => systemSetUp(m, v, inherited)) : systemSetUp(m, undefined, inherited);
+}
+
+/** The systems plugins can be set up for: where each is, its short name (conventional ones with channels), and its copies of each plugin. */
+function systemsOf(c: Config): { at: SystemRef; name: string; copies: (id: string) => PluginValues[] }[] {
+  const out: { at: SystemRef; name: string; copies: (id: string) => PluginValues[] }[] = c.systems.map((x, i) => ({
     at: i,
     name: x.shortName,
-    values: (id: string) => x.plugins?.[id],
+    copies: (id: string) => pluginCopies(x.plugins?.[id]),
   }));
   c.conventional.forEach((v, k) => {
-    if (v.channels.length) out.push({ at: { conv: k }, name: v.shortName, values: (id) => v.plugins?.[id] });
+    if (v.channels.length) out.push({ at: { conv: k }, name: v.shortName, copies: (id) => pluginCopies(v.plugins?.[id]) });
   });
   return out;
 }
@@ -151,7 +159,7 @@ export function renameSystemRefs(x: Config, from: string, to: string, plugins: P
   for (const p of plugins) {
     if (!p.manifest) continue;
     walk(p.manifest.config, x.plugins?.[p.id]?.settings);
-    for (const sys of [...x.systems, ...x.conventional]) walk(p.manifest.system_config, sys.plugins?.[p.id]);
+    for (const sys of [...x.systems, ...x.conventional]) for (const v of pluginCopies(sys.plugins?.[p.id])) walk(p.manifest.system_config, v);
   }
 }
 
@@ -359,29 +367,72 @@ function SchemaFields(props: { schema: PluginSchema | undefined; values: PluginV
 }
 
 /** On a system's card in Setup: its settings for each plugin that's on and
- * takes some (an upload service's key for this system, say). */
+ * takes some (an upload service's key for this system, say). A plugin can be
+ * added again, for a second copy of it for this system (to upload to two
+ * places, say): it runs again, with those settings, for this system alone. */
 export function SystemPluginSettings(props: { system: SystemRef }) {
   const s = useApp();
+  const [adding, setAdding] = useState(false);
   const c = s.config;
   if (!c || !s.plugins) return null;
   const sys = systemAt(c, props.system);
   const plugins = s.plugins.plugins.filter((p) => pluginOn(c, p.id) && p.manifest && hasFields(p.manifest.system_config));
   if (!sys || !sys.shortName || plugins.length === 0) return null;
+  const add = (id: string) => {
+    addSystemPluginCopy(props.system, id);
+    setAdding(false);
+  };
   return (
     <div className="system-plugins stack" id={typeof props.system === "number" ? `need-sysplug-${sys.shortName}` : `need-convplug-${sys.shortName}`}>
       <h4>Plugins</h4>
-      {plugins.map((p) => {
+      {plugins.flatMap((p) => {
         const m = p.manifest!;
-        const values = sys.plugins?.[p.id];
         const every = c.plugins?.[p.id]?.settings;
-        return (
-          <fieldset className="plugin-group" key={p.id}>
-            <legend>{m.name}</legend>
+        const copies = pluginCopies(sys.plugins?.[p.id]);
+        return (copies.length ? copies : [undefined]).map((values, i) => (
+          <fieldset className="plugin-group" key={`${p.id}-${i}`}>
+            <legend>
+              {m.name}
+              {copies.length > 1 && <span className="muted"> · copy {i + 1}</span>}
+            </legend>
+            {copies.length > 1 && (
+              <div className="plugin-copy-head">
+                <span className="field-hint muted">{i === 0 ? `The first ${m.name} for ${sys.shortName}.` : `${m.name} again, with these settings, for ${sys.shortName} alone.`}</span>
+                <button type="button" className="btn ghost small danger" onClick={() => removeSystemPluginCopy(props.system, p.id, i)} aria-label={`Remove ${m.name} copy ${i + 1}`}>
+                  Remove
+                </button>
+              </div>
+            )}
             {!systemSetUp(m, values, every) && <p className="field-hint warn-text">Not set up for {sys.shortName} yet.</p>}
-            <SchemaFields schema={m.system_config} values={values ?? {}} inherited={every} onChange={(v) => setSystemPluginSettings(props.system, p.id, v)} id={`sp-${p.id}-${sys.shortName}`} />
+            <SchemaFields
+              schema={m.system_config}
+              values={values ?? {}}
+              inherited={every}
+              onChange={(v) => setSystemPluginSettings(props.system, p.id, v, i)}
+              id={`sp-${p.id}-${sys.shortName}${i ? `-${i + 1}` : ""}`}
+            />
           </fieldset>
-        );
+        ));
       })}
+      <div className="plugin-add-copy">
+        {!adding ? (
+          <button type="button" className="btn ghost small" onClick={() => setAdding(true)} title={`Run a plugin again for ${sys.shortName}, with settings of its own`}>
+            + Add plugin
+          </button>
+        ) : (
+          <div className="plugin-add-pick" role="group" aria-label={`Add a plugin to ${sys.shortName}`}>
+            <span className="small muted">Another copy for {sys.shortName}:</span>
+            {plugins.map((p) => (
+              <button type="button" key={p.id} className="btn small" onClick={() => add(p.id)}>
+                {p.manifest!.name}
+              </button>
+            ))}
+            <button type="button" className="btn ghost small" onClick={() => setAdding(false)}>
+              Cancel
+            </button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -455,7 +506,7 @@ function PluginSetupCard(props: { p: PluginInfo; c: Config }) {
             <span className="muted">turn it on first.</span>
           ) : (
             systems.map((x) => {
-              const ok = systemSetUp(m, x.values(p.id), settings);
+              const ok = copiesSetUp(m, x.copies(p.id), settings);
               return (
                 <button
                   key={x.name}

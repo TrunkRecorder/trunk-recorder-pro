@@ -6,8 +6,9 @@ use std::fmt::Write;
 use super::calls::{conventional_index, Call};
 use crate::dsp::tones::Tone;
 use super::frames::FrameErrors;
-use super::frames::frames_jsonl;
+use super::frames::{frames_jsonl, VoiceFrame};
 use super::multisite::Held;
+use super::sdr::{call_sdr, SdrInfo, SdrMode};
 use super::units::{UnitAliases, UnitTags};
 use crate::{loudness, mbe};
 
@@ -307,8 +308,17 @@ pub struct Concluded {
     /// 8 kHz mono in [−1, 1].
     pub audio: Vec<f32>,
     /// With [`EngineConfig::capture_frames`]: the vocoder frames behind
-    /// `audio`, as JSON lines (see [`super::frames::frames_jsonl`]).
-    pub frames: Option<String>,
+    /// `audio` (None for analog: there are none).
+    pub frames: Option<Capture>,
+}
+
+/// A call's frame capture: an `.sdr` file ([`super::sdr`]), or JSON lines
+/// ([`super::frames::frames_jsonl`]) for NXDN, which `.sdr` has no layout for.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Capture {
+    /// The file's extension: `sdr` or `frames.jsonl`.
+    pub ext: &'static str,
+    pub bytes: Vec<u8>,
 }
 
 /// What saving a call needs from its system.
@@ -320,6 +330,52 @@ pub struct SaveContext<'a> {
     /// Its radios' talker aliases, and its unit names file.
     pub units: Option<&'a UnitAliases>,
     pub unit_tags: Option<&'a UnitTags>,
+    /// Its P25 identity, as far as the control channel told it (for the `.sdr` header).
+    pub wacn: Option<u32>,
+    pub sys_id: Option<u32>,
+    pub nac: Option<u16>,
+}
+
+/// The frames as an `.sdr` file when the call's mode has a layout there, else JSON lines.
+fn capture(call: &Call, frames: &[VoiceFrame], audio_len: usize, freq_error_hz: Option<f64>, reception: &Reception, cx: &SaveContext) -> Capture {
+    let mode = if call.nxdn.is_some() {
+        None
+    } else if call.color_code.is_some() {
+        Some(SdrMode::Dmr)
+    } else if call.phase2_tdma {
+        Some(SdrMode::P25Tdma)
+    } else {
+        Some(SdrMode::P25Fdma)
+    };
+    let (first, last) = (call.sources.first().map_or(0, |s| s.src), call.sources.last().map_or(0, |s| s.src));
+    let info = SdrInfo {
+        start_us: ((cx.epoch_ms_at_zero + call.start_s * 1000.0) * 1000.0).round().max(0.0) as u64,
+        duration_ms: (audio_len as f64 * 1000.0 / mbe::SAMPLE_RATE as f64).round() as u32,
+        hz: call.freq_hz as u32,
+        nac: call.color_code.map(u16::from).or(call.nac).or(cx.nac).unwrap_or(0),
+        wacn: cx.wacn.unwrap_or(0),
+        sysid: cx.sys_id.unwrap_or(0) as u16,
+        system: match (cx.wacn, cx.sys_id) {
+            (Some(w), Some(s)) => format!("{w:05X}{s:03X}"),
+            _ => cx.short_name.to_string(),
+        },
+        conventional: conventional_index(call.system).is_some(),
+        slot: call.tdma_slot,
+        tg: call.talkgroup,
+        first_src: first,
+        src: last,
+        encrypted: call.encrypted,
+        emergency: call.emergency,
+        signal_db: reception.signal_db().map(|v| v as f32),
+        floor_db: reception.noise_db().map(|v| v as f32),
+        offset_hz: freq_error_hz.map(|e| e.round() as i32),
+        alias: cx.units.and_then(|u| u.get(last)).unwrap_or("").to_string(),
+        alphatag: call.talkgroup_info.as_ref().map_or(String::new(), |t| t.alpha_tag.clone()),
+    };
+    match mode.and_then(|m| call_sdr(m, frames, &info)) {
+        Some(bytes) => Capture { ext: "sdr", bytes },
+        None => Capture { ext: "frames.jsonl", bytes: frames_jsonl(frames).into_bytes() },
+    }
 }
 
 /// A finished call made ready to save: transmissions shorter than its
@@ -362,6 +418,6 @@ pub fn save_call(h: Held, cx: &SaveContext) -> Result<Concluded, Call> {
             freq_error_hz: freq_error_hz.map_or(0, |e| e.round() as i32),
         },
     );
-    let frames = frames.captured.filter(|_| !audio.is_empty()).map(|f| frames_jsonl(&f));
+    let frames = frames.captured.filter(|f| !audio.is_empty() && !f.is_empty()).map(|f| capture(&call, &f, audio.len(), freq_error_hz, &reception, cx));
     Ok(Concluded { call, json, short_name: cx.short_name.to_string(), base_name, audio, frames })
 }

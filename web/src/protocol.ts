@@ -164,8 +164,8 @@ export interface System {
   /** Multi-site: sites with one group are one system (a call on several is saved once).
    *  Absent: grouped by what the control channels say (P25 WACN + System ID, SmartNet System ID). */
   siteGroup?: string;
-  /** Plugins' settings for this system, by plugin id (each plugin's `system_config` schema). */
-  plugins?: Record<string, PluginValues>;
+  /** Plugins' settings for this system, by plugin id (each plugin's `system_config` schema); a list for several copies of one. */
+  plugins?: Record<string, SystemPluginValues>;
 }
 
 /** A plugin, as the config has it: on or off, and its settings for the whole recorder. */
@@ -245,7 +245,7 @@ export interface Recording extends RecordingRules {
   captureDir: string;
   prerollS: number;
   maxRecorders: number;
-  /** Save each call's vocoder frames (<call>.frames.jsonl) for diagnosis. */
+  /** Save each digital call's vocoder frames (<call>.sdr; NXDN <call>.frames.jsonl) for diagnosis. */
   captureFrames: boolean;
   /** A call heard on several sites of one system: save the best copy only. */
   dropDuplicateCalls: boolean;
@@ -280,8 +280,8 @@ export interface Conventional {
   channels: Channel[];
   /** How the channel file last read (from the recorder). */
   channelFileStatus?: string;
-  /** Plugins' settings for it (one more system to them), by plugin id. */
-  plugins?: Record<string, PluginValues>;
+  /** Plugins' settings for it (one more system to them), by plugin id; a list for several copies of one. */
+  plugins?: Record<string, SystemPluginValues>;
   /** Its own recording rules; each left out is the Recording tab's. */
   recording?: RecordingOverride;
   unitNames?: UnitNames;
@@ -802,6 +802,14 @@ export interface PluginRuntime {
 }
 
 export type PluginValues = Record<string, unknown>;
+/** A system's settings for a plugin: one copy of it, or several (each after
+ * the first runs as a process of its own, for the systems that have it). */
+export type SystemPluginValues = PluginValues | PluginValues[];
+
+/** A system's settings for a plugin, one per copy of it. */
+export function pluginCopies(v: SystemPluginValues | undefined): PluginValues[] {
+  return v === undefined || v === null ? [] : Array.isArray(v) ? v : [v];
+}
 
 /** An installed plugin (or one the config names), and what it is. Whether it's on, and its settings, are in the config. */
 export interface PluginInfo {
@@ -1184,6 +1192,8 @@ export type FromRecorder =
   /** Answers statsQuery: `loading` while the history files are still being read. */
   | { type: "statsResult"; id: number; from: number; to: number; loading: boolean; series: Record<string, SeriesData> }
   | ({ type: "radioResult" } & RadioResultBody)
+  /** Answers olderCalls; `more`: there are older ones still. */
+  | { type: "olderCalls"; before: number; entries: CallEntry[]; more: boolean }
   | { type: "quit" };
 
 export type ToRecorder =
@@ -1224,6 +1234,8 @@ export type ToRecorder =
   /** The history of series (names, or prefixes ending in `*`) over `range` back from now, or `from`–`to` (Unix s), in about `points` points. */
   | { type: "statsQuery"; id: number; series: string[]; range?: "10m" | "1h" | "6h" | "24h" | "7d"; from?: number; to?: number; points?: number }
   /** The radio registry: talkgroups, radios, frequencies heard. `key`: the talkgroup or radio for "tg" / "unit". */
+  /** Calls that started before `before` (Unix ms), newest first, from the last 24 hours (the Listen page's "Load older"). */
+  | { type: "olderCalls"; before: number; limit: number }
   | { type: "radioQuery"; id: number; what: "summary" | "talkgroups" | "units" | "tg" | "unit" | "freqs" | "lengths"; system?: string; key?: number; hours?: number; limit?: number }
   | { type: "quit" };
 

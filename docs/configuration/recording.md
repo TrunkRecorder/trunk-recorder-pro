@@ -42,7 +42,7 @@ under **Recording override**.
 | `filenameFormat` | | `""` | string | Per system. Folders and file names under `captureDir`. See [File names](#file-names) |
 | `dropDuplicateCalls` | | `true` | bool | Multi-site: a call heard on several sites of one system is saved once, keeping the cleanest copy or the talkgroup's Preferred Site. See [systems.md](systems.md#multi-site) |
 | `vocoder` | | `"fixed"` | string | The IMBE voice decoder for P25 Phase 1 (trunked and conventional): `"fixed"` (fixed-point, usually sounds most natural), `"enhanced"` or `"mbelib"`. An unknown value is `"fixed"` |
-| `captureFrames` | | `false` | bool | Also save each call's vocoder frames as `<call>.frames.jsonl`, for diagnosis and `trunk-pro tool revoice` |
+| `captureFrames` | | `false` | bool | Also save each digital call's vocoder frames as `<call>.sdr` (NXDN: `<call>.frames.jsonl`), for diagnosis and `trunk-pro tool revoice` |
 | `m4a` | | see below | object | The M4A encoder for `compressWav` and for plugins that upload M4A |
 | `ramSpool` | | see below | object | Keep files only the upload plugins need in RAM instead of `captureDir` |
 

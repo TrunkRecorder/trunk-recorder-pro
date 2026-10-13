@@ -101,54 +101,112 @@ export function SourceCard({ s, src, i, compact: small }: { s: AppState; src: So
 
 // ── the band ─────────────────────────────────────────────────────────────────
 
-/** Every source's passband on one axis, with the control channels, conventional channels and calls on it. */
-function BandOverview({ s }: { s: AppState }) {
-  if (!s.sources.length) return null;
-  const lo = Math.min(...s.sources.map((x) => x.centerHz - x.rateHz / 2));
-  const hi = Math.max(...s.sources.map((x) => x.centerHz + x.rateHz / 2));
+/** The radio bands, by their edges (Hz); anything between them gets a row per 100 MHz. */
+const BANDS: { lo: number; hi: number; label: string }[] = [
+  { lo: 0, hi: 88e6, label: "VHF low" },
+  { lo: 136e6, hi: 174e6, label: "VHF" },
+  { lo: 216e6, hi: 222e6, label: "220 MHz" },
+  { lo: 380e6, hi: 520e6, label: "UHF" },
+  { lo: 698e6, hi: 806e6, label: "700 MHz" },
+  { lo: 806e6, hi: 902e6, label: "800 MHz" },
+  { lo: 902e6, hi: 960e6, label: "900 MHz" },
+];
+
+/** The band a frequency is in, as a label. */
+function bandOf(hz: number): string {
+  const b = BANDS.find((b) => hz >= b.lo && hz < b.hi);
+  return b ? b.label : `${Math.floor(hz / 1e8) * 100} MHz`;
+}
+
+/** One band's row: its sources' passbands, with the control channels, conventional channels and calls in it. */
+function BandRow({ s, label, sources, ccs, conv, calls }: {
+  s: AppState;
+  label: string;
+  sources: SourceStatus[];
+  ccs: { hz: number; name: string }[];
+  conv: { hz: number; name: string; label: string }[];
+  calls: AppState["calls"];
+}) {
+  // Spans the passbands, and any channel off them; a bare channel or two gets 100 kHz either side.
+  const edges = [...sources.flatMap((x) => [x.centerHz - x.rateHz / 2, x.centerHz + x.rateHz / 2]), ...ccs.map((c) => c.hz), ...conv.map((c) => c.hz), ...calls.map((c) => c.freqHz)];
+  let lo = Math.min(...edges);
+  let hi = Math.max(...edges);
+  if (hi - lo < 200e3) [lo, hi] = [(lo + hi) / 2 - 100e3, (lo + hi) / 2 + 100e3];
   const W = 1000;
   const x = (hz: number) => ((hz - lo) / (hi - lo)) * W;
+  return (
+    <svg viewBox={`0 0 ${W} 74`} className="band-svg" preserveAspectRatio="none" role="img" aria-label={`${label}: sources and channels by frequency`}>
+      <text x={2} y={10} className="axis">
+        {label}
+      </text>
+      {sources.map((src, i) => {
+        // Usable: half the band less the source's guard at each edge (as the recorder reckons it).
+        const half = usableHalfWidth(src.rateHz, sourceGuard(s, src));
+        return (
+          <g key={i}>
+            <rect x={x(src.centerHz - src.rateHz / 2)} width={x(src.centerHz + src.rateHz / 2) - x(src.centerHz - src.rateHz / 2)} y={30} height={20} rx={4} className="band-src" />
+            <rect x={x(src.centerHz - half)} width={x(src.centerHz + half) - x(src.centerHz - half)} y={30} height={20} rx={4} className="band-usable">
+              <title>{`${src.label}: ${mhz(src.centerHz - src.rateHz / 2, 3)}–${mhz(src.centerHz + src.rateHz / 2, 3)} MHz (usable ${mhz(src.centerHz - half, 3)}–${mhz(src.centerHz + half, 3)})`}</title>
+            </rect>
+          </g>
+        );
+      })}
+      {conv.map((c, i) => (
+        <line key={`v${i}`} x1={x(c.hz)} x2={x(c.hz)} y1={30} y2={50} className="band-conv" vectorEffect="non-scaling-stroke">
+          <title>{`${c.name}${c.label ? ` · ${c.label}` : ""} · ${mhz(c.hz)} MHz`}</title>
+        </line>
+      ))}
+      {calls.map((c) => (
+        <line key={`c${c.id}`} x1={x(c.freqHz)} x2={x(c.freqHz)} y1={22} y2={58} className={`band-call ${c.state}`} vectorEffect="non-scaling-stroke">
+          <title>{`${c.systemName} TG ${c.alphaTag || c.talkgroup} · ${mhz(c.freqHz)} MHz · ${c.state}`}</title>
+        </line>
+      ))}
+      {ccs.map((c) => (
+        <g key={`${c.name}${c.hz}`}>
+          <line x1={x(c.hz)} x2={x(c.hz)} y1={14} y2={56} stroke={systemColor(s.config, c.name)} strokeWidth={3} vectorEffect="non-scaling-stroke">
+            <title>{`${c.name} control channel · ${mhz(c.hz)} MHz`}</title>
+          </line>
+        </g>
+      ))}
+      <text x={2} y={70} className="axis">
+        {mhz(lo, 3)}
+      </text>
+      <text x={W - 2} y={70} textAnchor="end" className="axis">
+        {mhz(hi, 3)} MHz
+      </text>
+    </svg>
+  );
+}
+
+/**
+ * Every source's passband, with the control channels, conventional channels
+ * and calls on it: a row per radio band in use, each on its own axis, so a
+ * UHF source and an 800 MHz one aren't slivers at the ends of one.
+ */
+function BandOverview({ s }: { s: AppState }) {
+  if (!s.sources.length) return null;
   const ccs = s.status?.systems.flatMap((y) => (y.controlChannelHz ? [{ hz: y.controlChannelHz, name: y.shortName }] : [])) ?? [];
   const conv = (s.config?.conventional ?? []).flatMap((c) => c.channels.filter((ch) => ch.enabled).map((ch) => ({ hz: ch.freqHz, name: c.shortName, label: ch.name })));
+  // The bands in use, low to high; a source straddling two goes in the one its center's in.
+  const lows = new Map<string, number>();
+  for (const hz of [...s.sources.map((x) => x.centerHz), ...ccs.map((c) => c.hz), ...conv.map((c) => c.hz), ...s.calls.map((c) => c.freqHz)]) {
+    const b = bandOf(hz);
+    lows.set(b, Math.min(lows.get(b) ?? hz, hz));
+  }
+  const bands = [...lows.keys()].sort((a, b) => lows.get(a)! - lows.get(b)!);
   return (
     <Card title="The band" className="band">
-      <svg viewBox={`0 0 ${W} 74`} className="band-svg" preserveAspectRatio="none" role="img" aria-label="sources and channels by frequency">
-        {s.sources.map((src, i) => {
-          // Usable: half the band less the source's guard at each edge (as the recorder reckons it).
-          const half = usableHalfWidth(src.rateHz, sourceGuard(s, src));
-          return (
-            <g key={i}>
-              <rect x={x(src.centerHz - src.rateHz / 2)} width={x(src.centerHz + src.rateHz / 2) - x(src.centerHz - src.rateHz / 2)} y={30} height={20} rx={4} className="band-src" />
-              <rect x={x(src.centerHz - half)} width={x(src.centerHz + half) - x(src.centerHz - half)} y={30} height={20} rx={4} className="band-usable">
-                <title>{`${src.label}: ${mhz(src.centerHz - src.rateHz / 2, 3)}–${mhz(src.centerHz + src.rateHz / 2, 3)} MHz (usable ${mhz(src.centerHz - half, 3)}–${mhz(src.centerHz + half, 3)})`}</title>
-              </rect>
-            </g>
-          );
-        })}
-        {conv.map((c, i) => (
-          <line key={`v${i}`} x1={x(c.hz)} x2={x(c.hz)} y1={30} y2={50} className="band-conv" vectorEffect="non-scaling-stroke">
-            <title>{`${c.name}${c.label ? ` · ${c.label}` : ""} · ${mhz(c.hz)} MHz`}</title>
-          </line>
-        ))}
-        {s.calls.map((c) => (
-          <line key={`c${c.id}`} x1={x(c.freqHz)} x2={x(c.freqHz)} y1={22} y2={58} className={`band-call ${c.state}`} vectorEffect="non-scaling-stroke">
-            <title>{`${c.systemName} TG ${c.alphaTag || c.talkgroup} · ${mhz(c.freqHz)} MHz · ${c.state}`}</title>
-          </line>
-        ))}
-        {ccs.map((c) => (
-          <g key={`${c.name}${c.hz}`}>
-            <line x1={x(c.hz)} x2={x(c.hz)} y1={14} y2={56} stroke={systemColor(s.config, c.name)} strokeWidth={3} vectorEffect="non-scaling-stroke">
-              <title>{`${c.name} control channel · ${mhz(c.hz)} MHz`}</title>
-            </line>
-          </g>
-        ))}
-        <text x={2} y={70} className="axis">
-          {mhz(lo, 3)}
-        </text>
-        <text x={W - 2} y={70} textAnchor="end" className="axis">
-          {mhz(hi, 3)} MHz
-        </text>
-      </svg>
+      {bands.map((b) => (
+        <BandRow
+          key={b}
+          s={s}
+          label={b}
+          sources={s.sources.filter((x) => bandOf(x.centerHz) === b)}
+          ccs={ccs.filter((c) => bandOf(c.hz) === b)}
+          conv={conv.filter((c) => bandOf(c.hz) === b)}
+          calls={s.calls.filter((c) => bandOf(c.freqHz) === b)}
+        />
+      ))}
       <div className="legend small">
         <span>
           <i className="sw-src" />

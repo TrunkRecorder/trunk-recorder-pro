@@ -1625,6 +1625,9 @@ impl Engine {
                 epoch_ms_at_zero: self.cfg.epoch_ms_at_zero,
                 units: self.aliases.of(system),
                 unit_tags: conv.map(|c| &c.unit_tags).or_else(|| trunk.map(|t| &t.cfg.unit_tags)).filter(|t| !t.is_empty() || t.mode != Default::default()),
+                wacn: trunk.and_then(|t| t.identity.wacn()),
+                sys_id: trunk.and_then(|t| t.identity.sys_id()),
+                nac: trunk.and_then(|t| t.identity.nac()),
             },
         );
         match saved {

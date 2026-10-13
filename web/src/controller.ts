@@ -5,7 +5,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { feedSeries } from "./series.ts";
 import { LivePlayer } from "./livePlayer.ts";
-import { conventionalIndex } from "./protocol.ts";
+import { conventionalIndex, pluginCopies } from "./protocol.ts";
 import type {
   MonitorEvent,
   PlatformInfo,
@@ -38,7 +38,7 @@ import type {
   System,
 } from "./protocol.ts";
 import { type ImportTodo, activeSystems, newConventional, newSystem, resolvedCenters, sameSystem, siteName, sourceCovering, usableHalfWidth } from "./config.ts";
-import { WsTransport, type Transport } from "./transport.ts";
+import { WsTransport, type CallExt, type Transport } from "./transport.ts";
 import { parseUnitsCsv, type UnitAliases } from "./units.ts";
 import { withIgnore } from "./talkgroups.ts";
 import type { WorkerTransport } from "./web/workerTransport.ts";
@@ -121,13 +121,14 @@ export interface AppState {
 
 export type SetupTab = "systems" | "conventional" | "radios" | "recording" | "plugins";
 
-export type View = "overview" | "rf" | "decode" | "radio" | "calls" | "plugins" | "platform" | "setup";
-const VIEWS: View[] = ["overview", "rf", "decode", "radio", "calls", "plugins", "platform", "setup"];
+export type View = "overview" | "listen" | "rf" | "decode" | "radio" | "live" | "plugins" | "platform" | "setup";
+const VIEWS: View[] = ["overview", "listen", "rf", "decode", "radio", "live", "plugins", "platform", "setup"];
 
 /** `#/radio/dcfd/tg/101` → ["radio", ["dcfd", "tg", "101"]]; the old `#plugins` too. */
 function routeFromHash(): { view: View; path: string[] } {
   const parts = location.hash.replace(/^#\/?/, "").split("/").filter(Boolean).map(decodeURIComponent);
-  const v = parts[0] as View;
+  // (Live was Calls.)
+  const v = (parts[0] === "calls" ? "live" : parts[0]) as View;
   return VIEWS.includes(v) ? { view: v, path: parts.slice(1) } : { view: "overview", path: [] };
 }
 
@@ -191,7 +192,8 @@ function set(patch: Partial<AppState>): void {
   for (const l of listeners) l();
 }
 
-function subscribe(l: () => void): () => void {
+/** Be told of every change to the state (outside React). */
+export function subscribe(l: () => void): () => void {
   listeners.add(l);
   return () => listeners.delete(l);
 }
@@ -241,16 +243,27 @@ export const web: WorkerTransport | null = import.meta.env.MODE === "web" ? new 
 export const transport: Transport = web ?? new WsTransport();
 
 /** Save a recorded file (a download from the recorder, or out of browser storage). */
-export async function downloadCall(path: string, ext: "wav" | "json"): Promise<void> {
+export async function downloadCall(path: string, ext: CallExt): Promise<void> {
   const a = document.createElement("a");
   a.href = await transport.callUrl(path, ext);
   a.download = `${path.split("/").pop()}.${ext}`;
   a.click();
 }
 
+const messageHooks = new Set<(m: FromRecorder) => void>();
+/** Every message from the recorder, after the state has taken it (the Listen page's calls and older ones). */
+export function onRecorderMessage(f: (m: FromRecorder) => void): void {
+  messageHooks.add(f);
+}
+
 transport.onConnection = (connected) => set({ connected, ...(connected ? {} : { phase: "idle" as Phase }) });
 transport.onAudio = onAudio;
 transport.onMessage = (m: FromRecorder) => {
+  take(m);
+  for (const f of messageHooks) f(m);
+};
+
+function take(m: FromRecorder): void {
   switch (m.type) {
     case "hello":
       set({
@@ -406,7 +419,7 @@ transport.onMessage = (m: FromRecorder) => {
       set({ quit: true, connected: false, phase: "idle" });
       break;
   }
-};
+}
 
 /** Plugin runtimes from hello, waiting for the plugin list. */
 let pendingRuntime: Record<string, import("./protocol.ts").PluginRuntime> | null = null;
@@ -614,17 +627,34 @@ export function setPluginSettings(id: string, settings: PluginValues): void {
     all[id] = p;
   });
 }
-/** A plugin's settings for one system, trunked or conventional. */
-export function setSystemPluginSettings(system: SystemRef, id: string, values: PluginValues): void {
+/** Change a system's copies of plugin `id` (trunked or conventional): one is
+ * kept as an object, several as a list; a lone copy with nothing set, not at all. */
+function editSystemPlugin(system: SystemRef, id: string, f: (copies: PluginValues[]) => PluginValues[]): void {
   updateConfig((x) => {
     const sys = systemAt(x, system);
     if (!sys) return;
     const all = { ...(sys.plugins ?? {}) };
-    if (blank(values)) delete all[id];
-    else all[id] = values;
+    const copies = f([...pluginCopies(all[id])]);
+    if (copies.length === 0 || (copies.length === 1 && blank(copies[0]))) delete all[id];
+    else all[id] = copies.length === 1 ? copies[0] : copies;
     if (Object.keys(all).length) sys.plugins = all;
     else delete sys.plugins;
   });
+}
+/** A plugin's settings for one system: copy `copy` of it (0: the first). */
+export function setSystemPluginSettings(system: SystemRef, id: string, values: PluginValues, copy = 0): void {
+  editSystemPlugin(system, id, (c) => {
+    while (c.length <= copy) c.push({});
+    c[copy] = values;
+    return c;
+  });
+}
+/** Another copy of a plugin for one system, to set up: it runs again, with these settings, for this system alone. */
+export function addSystemPluginCopy(system: SystemRef, id: string): void {
+  editSystemPlugin(system, id, (c) => [...(c.length ? c : [{}]), {}]);
+}
+export function removeSystemPluginCopy(system: SystemRef, id: string, copy: number): void {
+  editSystemPlugin(system, id, (c) => c.filter((_, i) => i !== copy));
 }
 export function addPlugin(path: string): void {
   transport.send({ type: "addPlugin", path });
