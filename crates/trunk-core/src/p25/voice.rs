@@ -132,6 +132,7 @@ pub fn ldu_imbe(fr: &Frame, soft: bool) -> [ImbeParams; 9] {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LinkControl {
     pub lco: u8,
+    /// The manufacturer: 0 for the standard's words (the SF bit set, or MFID 0 or 1).
     pub mfid: u8,
     pub protected: bool,
     pub svc_opts: Option<u8>,
@@ -140,6 +141,15 @@ pub struct LinkControl {
     pub source: Option<u32>,
     /// The word itself (manufacturer-specific formats: talker aliases).
     pub raw: [u8; 9],
+}
+
+impl LinkControl {
+    /// A voice channel user word, naming the call's group (or target) and
+    /// talker: group (0x00) or unit-to-unit (0x03), or Motorola's
+    /// supergroup one (0x00, the patch's supergroup in place of the group).
+    pub fn voice_user(&self) -> bool {
+        matches!((self.mfid, self.lco), (0, 0x00 | 0x03) | (0x90, 0x00))
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -195,8 +205,11 @@ fn ldu_hexbits(fb: &[u8]) -> [u8; 63] {
 }
 
 pub fn parse_lcw(w: &[u8; 9]) -> LinkControl {
-    let mut lc = LinkControl { lco: w[0] & 0x3f, mfid: w[1], protected: w[0] & 0x80 != 0, raw: *w, ..Default::default() };
-    if lc.protected {
+    // SF set: the standard's format, octet 1 no MFID. Otherwise octet 1 names
+    // the manufacturer, whose opcodes mean something else.
+    let mfid = if w[0] & 0x40 != 0 || w[1] <= 1 { 0 } else { w[1] };
+    let mut lc = LinkControl { lco: w[0] & 0x3f, mfid, protected: w[0] & 0x80 != 0, raw: *w, ..Default::default() };
+    if lc.protected || !lc.voice_user() {
         return lc;
     }
     let u24 = |a: usize| ((w[a] as u32) << 16) | ((w[a + 1] as u32) << 8) | w[a + 2] as u32;
@@ -283,4 +296,26 @@ pub fn decode_tdulc(fb: &[u8]) -> Option<LinkControl> {
     }
     let ec = rs_decode(&mut hb, 12, 39);
     (0..=6).contains(&ec).then(|| parse_lcw(&hexbits_to_bytes(&hb, 39)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_manufacturers_link_control_is_not_the_standards() {
+        // Group voice channel user: TG 0x0101 from 0x123456.
+        let lc = parse_lcw(&[0x00, 0x00, 0x00, 0x00, 0x01, 0x01, 0x12, 0x34, 0x56]);
+        assert!(lc.voice_user());
+        assert_eq!((lc.tgid, lc.source), (Some(0x0101), Some(0x123456)));
+        // Motorola's supergroup voice channel user: supergroup 0x0204 from 0x123456.
+        let lc = parse_lcw(&[0x00, 0x90, 0x00, 0x00, 0x02, 0x04, 0x12, 0x34, 0x56]);
+        assert_eq!((lc.tgid, lc.source), (Some(0x0204), Some(0x123456)));
+        // Motorola 0x03 (regroup add) isn't a unit-to-unit voice channel user.
+        let lc = parse_lcw(&[0x03, 0x90, 0x02, 0x04, 0x01, 0x01, 0x01, 0x02, 0x00]);
+        assert!(!lc.voice_user());
+        assert_eq!((lc.target, lc.source), (None, None));
+        // The SF bit: the standard's format, whatever octet 1 holds.
+        assert!(parse_lcw(&[0x43, 0x90, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x07]).voice_user());
+    }
 }

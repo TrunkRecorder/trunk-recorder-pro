@@ -70,7 +70,7 @@ impl VoiceTracker {
                         if lc.protected {
                             let a = if self.algid == ALGID_CLEAR as i32 { ALGID_UNKNOWN } else { self.algid };
                             self.set_encryption(a, out);
-                        } else if lc.lco == 0 || lc.lco == 3 {
+                        } else if lc.voice_user() {
                             if let (Some(cur), Some(tg)) = (self.tgid, lc.tgid) {
                                 if cur != tg && self.call_frames > 0 {
                                     self.start(t, None);

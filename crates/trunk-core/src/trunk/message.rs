@@ -207,87 +207,87 @@ impl TsbkParser {
             m.phase2_tdma = s.is_some();
             m.tdma_slot = s.unwrap_or(0);
         };
+        // MFID 0 or 1: the standard's messages. Any other: the manufacturer's
+        // own, whose opcodes mean something else.
         let mfid = b(80, 0xff);
-        match opcode {
-            0x00 => {
-                if mfid == 0x90 {
-                    m.kind = MessageType::PatchAdd;
-                    let p = Patch { sg: b(64, 0xffff), ga: [b(48, 0xffff), b(32, 0xffff), b(16, 0xffff)] };
-                    m.meta = format!("Moto patch add sg {}: {} {} {}", p.sg, p.ga[0], p.ga[1], p.ga[2]);
-                    m.patch = Some(p);
-                } else {
-                    opts(&mut m);
-                    let ch = b(56, 0xffff);
-                    m.kind = MessageType::Grant;
-                    m.freq_hz = self.channel_to_hz(ch);
-                    m.talkgroup = b(40, 0xffff);
-                    m.source = b(16, 0xffffff) as i64;
-                    set_slot(self, &mut m, ch);
-                    m.meta = format!(
-                        "Grant TG {} {} MHz src {}{}{}",
-                        m.talkgroup,
-                        mhz(m.freq_hz),
-                        m.source,
-                        if m.phase2_tdma { format!(" slot {}", m.tdma_slot) } else { String::new() },
-                        if m.encrypted { " ENC" } else { "" }
-                    );
+        let vendor = if mfid <= 1 { 0 } else { mfid };
+        match (vendor, opcode) {
+            (0x90, 0x00) => {
+                m.kind = MessageType::PatchAdd;
+                let p = Patch { sg: b(64, 0xffff), ga: [b(48, 0xffff), b(32, 0xffff), b(16, 0xffff)] };
+                m.meta = format!("Moto patch add sg {}: {} {} {}", p.sg, p.ga[0], p.ga[1], p.ga[2]);
+                m.patch = Some(p);
+            }
+            (0, 0x00) => {
+                opts(&mut m);
+                let ch = b(56, 0xffff);
+                m.kind = MessageType::Grant;
+                m.freq_hz = self.channel_to_hz(ch);
+                m.talkgroup = b(40, 0xffff);
+                m.source = b(16, 0xffffff) as i64;
+                set_slot(self, &mut m, ch);
+                m.meta = format!(
+                    "Grant TG {} {} MHz src {}{}{}",
+                    m.talkgroup,
+                    mhz(m.freq_hz),
+                    m.source,
+                    if m.phase2_tdma { format!(" slot {}", m.tdma_slot) } else { String::new() },
+                    if m.encrypted { " ENC" } else { "" }
+                );
+            }
+            (0x90, 0x02) => {
+                opts(&mut m);
+                let ch = b(56, 0xffff);
+                m.kind = MessageType::Grant;
+                m.freq_hz = self.channel_to_hz(ch);
+                m.talkgroup = b(40, 0xffff);
+                m.source = b(16, 0xffffff) as i64;
+                set_slot(self, &mut m, ch);
+                m.meta = format!("Patch grant SG {} {} MHz src {}", m.talkgroup, mhz(m.freq_hz), m.source);
+            }
+            (0, 0x02) => {
+                let (ch1, ga1, ch2, ga2) = (b(64, 0xffff), b(48, 0xffff), b(32, 0xffff), b(16, 0xffff));
+                let (f1, f2) = (self.channel_to_hz(ch1), self.channel_to_hz(ch2));
+                m.kind = MessageType::Update;
+                m.freq_hz = f1;
+                m.talkgroup = ga1;
+                set_slot(self, &mut m, ch1);
+                m.meta = format!("Update TG {ga1} {} MHz", mhz(f1));
+                if f1 != f2 && ch2 != 0xffff {
+                    out.push(m.clone());
+                    m.freq_hz = f2;
+                    m.talkgroup = ga2;
+                    set_slot(self, &mut m, ch2);
+                    m.meta = format!("Update TG {ga2} {} MHz", mhz(f2));
                 }
             }
-            0x02 => {
-                if mfid == 0x90 {
-                    opts(&mut m);
-                    let ch = b(56, 0xffff);
-                    m.kind = MessageType::Grant;
-                    m.freq_hz = self.channel_to_hz(ch);
-                    m.talkgroup = b(40, 0xffff);
-                    m.source = b(16, 0xffffff) as i64;
-                    set_slot(self, &mut m, ch);
-                    m.meta = format!("Patch grant SG {} {} MHz src {}", m.talkgroup, mhz(m.freq_hz), m.source);
-                } else {
-                    let (ch1, ga1, ch2, ga2) = (b(64, 0xffff), b(48, 0xffff), b(32, 0xffff), b(16, 0xffff));
-                    let (f1, f2) = (self.channel_to_hz(ch1), self.channel_to_hz(ch2));
-                    m.kind = MessageType::Update;
-                    m.freq_hz = f1;
-                    m.talkgroup = ga1;
-                    set_slot(self, &mut m, ch1);
-                    m.meta = format!("Update TG {ga1} {} MHz", mhz(f1));
-                    if f1 != f2 && ch2 != 0xffff {
-                        out.push(m.clone());
-                        m.freq_hz = f2;
-                        m.talkgroup = ga2;
-                        set_slot(self, &mut m, ch2);
-                        m.meta = format!("Update TG {ga2} {} MHz", mhz(f2));
-                    }
+            (0x90, 0x03) => {
+                let (ch1, sg1, ch2, sg2) = (b(64, 0xffff), b(48, 0xffff), b(32, 0xffff), b(16, 0xffff));
+                let (f1, f2) = (self.channel_to_hz(ch1), self.channel_to_hz(ch2));
+                m.kind = MessageType::Update;
+                m.freq_hz = f1;
+                m.talkgroup = sg1;
+                set_slot(self, &mut m, ch1);
+                m.meta = format!("Patch update SG {sg1} {} MHz", mhz(f1));
+                if f1 != f2 {
+                    out.push(m.clone());
+                    m.freq_hz = f2;
+                    m.talkgroup = sg2;
+                    set_slot(self, &mut m, ch2);
+                    m.meta = format!("Patch update SG {sg2} {} MHz", mhz(f2));
                 }
             }
-            0x03 => {
-                if mfid == 0x90 {
-                    let (ch1, sg1, ch2, sg2) = (b(64, 0xffff), b(48, 0xffff), b(32, 0xffff), b(16, 0xffff));
-                    let (f1, f2) = (self.channel_to_hz(ch1), self.channel_to_hz(ch2));
-                    m.kind = MessageType::Update;
-                    m.freq_hz = f1;
-                    m.talkgroup = sg1;
-                    set_slot(self, &mut m, ch1);
-                    m.meta = format!("Patch update SG {sg1} {} MHz", mhz(f1));
-                    if f1 != f2 {
-                        out.push(m.clone());
-                        m.freq_hz = f2;
-                        m.talkgroup = sg2;
-                        set_slot(self, &mut m, ch2);
-                        m.meta = format!("Patch update SG {sg2} {} MHz", mhz(f2));
-                    }
-                } else {
-                    m.emergency = b(72, 0x80) != 0;
-                    m.encrypted = b(72, 0x40) != 0;
-                    let ch1 = b(48, 0xffff);
-                    m.kind = MessageType::Update;
-                    m.freq_hz = self.channel_to_hz(ch1);
-                    m.talkgroup = b(16, 0xffff);
-                    set_slot(self, &mut m, ch1);
-                    m.meta = format!("Explicit update TG {} {} MHz", m.talkgroup, mhz(m.freq_hz));
-                }
+            (0, 0x03) => {
+                m.emergency = b(72, 0x80) != 0;
+                m.encrypted = b(72, 0x40) != 0;
+                let ch1 = b(48, 0xffff);
+                m.kind = MessageType::Update;
+                m.freq_hz = self.channel_to_hz(ch1);
+                m.talkgroup = b(16, 0xffff);
+                set_slot(self, &mut m, ch1);
+                m.meta = format!("Explicit update TG {} {} MHz", m.talkgroup, mhz(m.freq_hz));
             }
-            0x04 => {
+            (0, 0x04) => {
                 opts(&mut m);
                 let ch = b(64, 0xffff);
                 m.kind = MessageType::UuVGrant;
@@ -297,18 +297,17 @@ impl TsbkParser {
                 set_slot(self, &mut m, ch);
                 m.meta = format!("Unit-to-unit grant {} → {} {} MHz", m.source, m.talkgroup, mhz(m.freq_hz));
             }
-            0x05 => {
-                if mfid == 0x90 {
-                    m.meta = "MOTOROLA_OSP_TRAFFIC_CHANNEL_ID".into();
-                } else {
-                    opts(&mut m);
-                    m.kind = MessageType::UuAnsReq;
-                    m.source = b(16, 0xffffff) as i64;
-                    m.talkgroup = b(40, 0xffffff);
-                    m.meta = format!("Unit-to-unit answer request {} → {}", m.talkgroup, m.source);
-                }
+            (0x90, 0x05) => {
+                m.meta = "MOTOROLA_OSP_TRAFFIC_CHANNEL_ID".into();
             }
-            0x06 => {
+            (0, 0x05) => {
+                opts(&mut m);
+                m.kind = MessageType::UuAnsReq;
+                m.source = b(16, 0xffffff) as i64;
+                m.talkgroup = b(40, 0xffffff);
+                m.meta = format!("Unit-to-unit answer request {} → {}", m.talkgroup, m.source);
+            }
+            (0, 0x06) => {
                 let ch = b(64, 0xffff);
                 m.kind = MessageType::UuVUpdate;
                 m.freq_hz = self.channel_to_hz(ch);
@@ -317,7 +316,7 @@ impl TsbkParser {
                 set_slot(self, &mut m, ch);
                 m.meta = format!("Unit-to-unit update {} → {} {} MHz", m.source, m.talkgroup, mhz(m.freq_hz));
             }
-            0x14 => {
+            (0, 0x14) => {
                 m.emergency = b(72, 0x80) != 0;
                 m.encrypted = b(72, 0x40) != 0;
                 m.duplex = b(72, 0x20) != 0;
@@ -327,19 +326,19 @@ impl TsbkParser {
                 m.freq_hz = self.channel_to_hz(b(56, 0xffff));
                 m.meta = format!("Data grant src {} {} MHz", m.source, mhz(m.freq_hz));
             }
-            0x1f => {
+            (0, 0x1f) => {
                 m.kind = MessageType::CallAlert;
                 m.source = b(16, 0xffffff) as i64;
                 m.talkgroup = b(40, 0xffffff);
                 m.meta = format!("Call alert {} → {}", m.source, m.talkgroup);
             }
-            0x20 => {
+            (0, 0x20) => {
                 m.kind = MessageType::Acknowledge;
                 m.talkgroup = b(40, 0xffff);
                 m.source = b(16, 0xffffff) as i64;
                 m.meta = format!("Acknowledge src {}", m.source);
             }
-            0x28 => {
+            (0, 0x28) => {
                 m.source = b(16, 0xffffff) as i64;
                 m.talkgroup = b(40, 0xffff);
                 // GAV: 0 accepted; failed, denied or refused, the unit isn't on the group.
@@ -351,7 +350,7 @@ impl TsbkParser {
                     gav => m.meta = format!("Affiliation {} → TG {} {}", m.source, m.talkgroup, refusal(gav)),
                 }
             }
-            0x29 | 0x39 => {
+            (0, 0x29 | 0x39) => {
                 let (f1, f2) = (self.channel_to_hz(b(48, 0xffff)), self.channel_to_hz(b(24, 0xffff)));
                 m.meta = format!("Secondary CC rfss {} site {}: {} / {} MHz", b(72, 0xff), b(64, 0xff), mhz(f1), mhz(f2));
                 if f1 != 0 && f2 != 0 {
@@ -361,13 +360,13 @@ impl TsbkParser {
                     m.freq_hz = f2;
                 }
             }
-            0x2b => {
+            (0, 0x2b) => {
                 m.kind = MessageType::Location;
                 m.talkgroup = b(56, 0xffff);
                 m.source = b(16, 0xffffff) as i64;
                 m.meta = format!("Location registration {} TG {}", m.source, m.talkgroup);
             }
-            0x2c => {
+            (0, 0x2c) => {
                 m.source = b(40, 0xffffff) as i64;
                 // RV: 0 accepted; failed, denied or refused, the unit isn't on the system.
                 match b(76, 0x3) {
@@ -378,40 +377,37 @@ impl TsbkParser {
                     rv => m.meta = format!("Registration {} {}", m.source, refusal(rv)),
                 }
             }
-            0x2f => {
+            (0, 0x2f) => {
                 m.kind = MessageType::Deregistration;
                 m.source = b(16, 0xffffff) as i64;
                 m.meta = format!("Deregistration {}", m.source);
             }
-            0x30 => {
-                if mfid == 0xa4 {
-                    let ga = b(16, 0xffffff) & 0xffff;
-                    let sg = b(56, 0xffff);
-                    let add = b(77, 0x01) == 1;
-                    m.kind = if add { MessageType::PatchAdd } else { MessageType::PatchDelete };
-                    m.patch = Some(Patch { sg, ga: [ga, ga, ga] });
-                    m.meta = format!("M/A-COM patch {} sg {sg} TG {ga}", if add { "add" } else { "delete" });
-                } else {
-                    m.meta = "TDMA sync broadcast".into();
-                }
+            (0xa4, 0x30) => {
+                let ga = b(16, 0xffffff) & 0xffff;
+                let sg = b(56, 0xffff);
+                let add = b(77, 0x01) == 1;
+                m.kind = if add { MessageType::PatchAdd } else { MessageType::PatchDelete };
+                m.patch = Some(Patch { sg, ga: [ga, ga, ga] });
+                m.meta = format!("M/A-COM patch {} sg {sg} TG {ga}", if add { "add" } else { "delete" });
             }
-            0x33 => {
-                if mfid == 0 {
-                    let (iden, ct, toff0, spac) = (b(76, 0xf) as u8, b(72, 0xf) as usize, b(58, 0x3fff) as i64, b(48, 0x3ff) as i64);
-                    let mut toff = toff0 & 0x1fff;
-                    if (toff0 >> 13) & 1 == 0 {
-                        toff = -toff;
-                    }
-                    let slots = [1u32, 1, 1, 2, 4, 2].get(ct).copied().unwrap_or(1);
-                    let base = b(16, 0xffffffff) as u64 * 5;
-                    self.tables.insert(
-                        iden,
-                        FreqTable { offset_hz: toff * spac * 125, step_hz: spac as u64 * 125, base_hz: base, phase2_tdma: slots > 1, slots_per_carrier: slots, bandwidth_khz: 6.25 },
-                    );
-                    m.meta = format!("IDEN_UP_TDMA {iden}: base {} MHz, step {} Hz, {slots} slot(s)", mhz(base), spac * 125);
-                }
+            (0, 0x30) => {
+                m.meta = "TDMA sync broadcast".into();
             }
-            0x34 => {
+            (0, 0x33) => {
+                let (iden, ct, toff0, spac) = (b(76, 0xf) as u8, b(72, 0xf) as usize, b(58, 0x3fff) as i64, b(48, 0x3ff) as i64);
+                let mut toff = toff0 & 0x1fff;
+                if (toff0 >> 13) & 1 == 0 {
+                    toff = -toff;
+                }
+                let slots = [1u32, 1, 1, 2, 4, 2].get(ct).copied().unwrap_or(1);
+                let base = b(16, 0xffffffff) as u64 * 5;
+                self.tables.insert(
+                    iden,
+                    FreqTable { offset_hz: toff * spac * 125, step_hz: spac as u64 * 125, base_hz: base, phase2_tdma: slots > 1, slots_per_carrier: slots, bandwidth_khz: 6.25 },
+                );
+                m.meta = format!("IDEN_UP_TDMA {iden}: base {} MHz, step {} Hz, {slots} slot(s)", mhz(base), spac * 125);
+            }
+            (0, 0x34) => {
                 let (iden, bwvu, toff0, spac) = (b(76, 0xf) as u8, b(72, 0xf), b(58, 0x3fff) as i64, b(48, 0x3ff) as i64);
                 let mut toff = toff0 & 0x1fff;
                 if (toff0 >> 13) & 1 == 0 {
@@ -429,14 +425,14 @@ impl TsbkParser {
                 );
                 m.meta = format!("IDEN_UP_VU {iden}: base {} MHz, step {} Hz", mhz(base), spac * 125);
             }
-            0x3a => {
+            (0, 0x3a) => {
                 m.kind = MessageType::SysId;
                 m.sys_id = b(56, 0xfff);
                 m.rfss = b(48, 0xff);
                 m.site = b(40, 0xff);
                 m.meta = format!("RFSS status sysid {:x} rfss {} site {}", m.sys_id, m.rfss, m.site);
             }
-            0x3b => {
+            (0, 0x3b) => {
                 let f1 = self.channel_to_hz(b(24, 0xffff));
                 m.meta = format!("Network status wacn {:x} sysid {:x} CC {} MHz", b(52, 0xfffff), b(40, 0xfff), mhz(f1));
                 if f1 != 0 {
@@ -446,7 +442,7 @@ impl TsbkParser {
                     m.freq_hz = f1;
                 }
             }
-            0x3c => {
+            (0, 0x3c) => {
                 m.kind = MessageType::Adjacent;
                 m.sys_id = b(56, 0xfff);
                 m.rfss = b(48, 0xff);
@@ -454,7 +450,7 @@ impl TsbkParser {
                 m.freq_hz = self.channel_to_hz(b(24, 0xffff));
                 m.meta = format!("Adjacent site rfss {} site {} CC {} MHz", m.rfss, m.site, mhz(m.freq_hz));
             }
-            0x3d => {
+            (0, 0x3d) => {
                 let (iden, bw, toff0, spac) = (b(76, 0xf) as u8, b(67, 0x1ff), b(58, 0x1ff) as i64, b(48, 0x3ff) as i64);
                 let mut toff = toff0 & 0xff;
                 if (toff0 >> 8) & 1 == 0 {
@@ -467,7 +463,8 @@ impl TsbkParser {
                 );
                 m.meta = format!("IDEN_UP {iden}: base {} MHz, step {} Hz", mhz(base), spac * 125);
             }
-            _ => m.meta = format!("TSBK opcode 0x{opcode:02x}"),
+            (0, _) => m.meta = format!("TSBK opcode 0x{opcode:02x}"),
+            (_, _) => m.meta = format!("TSBK opcode 0x{opcode:02x} mfid 0x{mfid:02x}"),
         }
         out.push(m);
         out
@@ -478,17 +475,42 @@ impl TsbkParser {
 mod tests {
     use super::*;
 
+    /// A TSBK from a 96-bit value.
+    fn tsbk(t: u128) -> Tsbk {
+        let mut blk = [0u8; 12];
+        for (i, v) in blk.iter_mut().enumerate() {
+            *v = (t >> (88 - 8 * i)) as u8;
+        }
+        blk
+    }
+
+    /// Opcode `op` from manufacturer `mfid`, with `fields` (octets 2..10).
+    fn msg(op: u8, mfid: u8, fields: [u8; 8]) -> Message {
+        let mut blk = [0u8; 12];
+        blk[0] = 0x80 | op;
+        blk[1] = mfid;
+        blk[2..10].copy_from_slice(&fields);
+        TsbkParser::default().parse(&blk, 0x443, 0.0).pop().unwrap()
+    }
+
+    #[test]
+    fn a_manufacturers_opcode_is_not_the_standards() {
+        // Motorola 0x04 (extended function) and 0x06 (queued) aren't unit-to-unit calls.
+        let f = [0x02, 0x00, 0x00, 0xff, 0xf1, 0x12, 0x34, 0x56];
+        assert_eq!(msg(0x04, 0, f).kind, MessageType::UuVGrant);
+        assert_ne!(msg(0x04, 0x90, f).kind, MessageType::UuVGrant);
+        assert_ne!(msg(0x06, 0x90, f).kind, MessageType::UuVUpdate);
+        // MFID 1 is the standard's too.
+        assert_eq!(msg(0x04, 1, f).kind, MessageType::UuVGrant);
+    }
+
     #[test]
     fn iden_then_grant_resolves_frequency() {
         let mut p = TsbkParser::default();
         // IDEN_UP id 1: base 851.00625 MHz (170201250 × 5 Hz), step 6.25 kHz (50 × 125).
         let base = 851_006_250u64 / 5;
         let t: u128 = (0x3d_u128 << 88) | (1u128 << 76) | (0x001u128 << 58) | (50u128 << 48) | ((base as u128) << 16);
-        let mut blk = [0u8; 12];
-        for (i, v) in blk.iter_mut().enumerate() {
-            *v = (t >> (88 - 8 * i)) as u8;
-        }
-        p.parse(&blk, 0x443, 0.0);
+        p.parse(&tsbk(t), 0x443, 0.0);
         assert_eq!(p.channel_to_hz((1 << 12) | 100), 851_006_250 + 100 * 6250);
     }
 }
