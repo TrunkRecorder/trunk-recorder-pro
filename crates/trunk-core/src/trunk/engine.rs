@@ -813,9 +813,6 @@ impl Trunk {
         self.now_s = self.cc_start_s + self.cc_samples as f64 / rate + moved;
         let mut steps = Vec::new();
         self.cc.push(0, &iq, self.cc_start_s + moved, rate, &mut steps);
-        for (level, text) in self.cc.take_notes() {
-            events.push(Event::Note { system: self.idx, level, text });
-        }
         self.follow(radio, steps, events, call_events);
         if self.now_s - self.last_good_s > CC_HUNT_S && self.cfg.control_channels.len() > 1 {
             let _ = self.tune(radio, self.cc_index + 1, events);

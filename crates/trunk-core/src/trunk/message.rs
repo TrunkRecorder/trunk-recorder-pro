@@ -112,6 +112,15 @@ pub struct FreqTable {
     pub bandwidth_khz: f64,
 }
 
+/// A registration or affiliation response's value other than 0 (accepted).
+fn refusal(v: u32) -> &'static str {
+    match v {
+        1 => "failed",
+        2 => "denied",
+        _ => "refused",
+    }
+}
+
 fn mhz(hz: u64) -> String {
     if hz == 0 {
         "?".into()
@@ -331,10 +340,16 @@ impl TsbkParser {
                 m.meta = format!("Acknowledge src {}", m.source);
             }
             0x28 => {
-                m.kind = MessageType::Affiliation;
                 m.source = b(16, 0xffffff) as i64;
                 m.talkgroup = b(40, 0xffff);
-                m.meta = format!("Affiliation {} → TG {}", m.source, m.talkgroup);
+                // GAV: 0 accepted; failed, denied or refused, the unit isn't on the group.
+                match b(72, 0x3) {
+                    0 => {
+                        m.kind = MessageType::Affiliation;
+                        m.meta = format!("Affiliation {} → TG {}", m.source, m.talkgroup);
+                    }
+                    gav => m.meta = format!("Affiliation {} → TG {} {}", m.source, m.talkgroup, refusal(gav)),
+                }
             }
             0x29 | 0x39 => {
                 let (f1, f2) = (self.channel_to_hz(b(48, 0xffff)), self.channel_to_hz(b(24, 0xffff)));
@@ -353,9 +368,15 @@ impl TsbkParser {
                 m.meta = format!("Location registration {} TG {}", m.source, m.talkgroup);
             }
             0x2c => {
-                m.kind = MessageType::Registration;
                 m.source = b(40, 0xffffff) as i64;
-                m.meta = format!("Registration {}", m.source);
+                // RV: 0 accepted; failed, denied or refused, the unit isn't on the system.
+                match b(76, 0x3) {
+                    0 => {
+                        m.kind = MessageType::Registration;
+                        m.meta = format!("Registration {}", m.source);
+                    }
+                    rv => m.meta = format!("Registration {} {}", m.source, refusal(rv)),
+                }
             }
             0x2f => {
                 m.kind = MessageType::Deregistration;

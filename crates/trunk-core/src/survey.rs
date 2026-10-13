@@ -42,9 +42,8 @@ use num_complex::Complex32;
 
 use crate::dsp::c4fm::SYMBOL_RATE;
 use crate::dsp::{Channelizer, HeadId};
-use crate::p25::diversity::{air_symbols, best_frame, best_pdu, best_tsbks, Bank, BankConfig, Group};
-use crate::p25::frame::{frame_dibits, LDU1, LDU2, PDU, TDU, TSDU};
-use crate::p25::mbt::Pdu;
+use crate::p25::diversity::{best_frame, control_frame, Bank, BankConfig, Group};
+use crate::p25::frame::{LDU1, LDU2};
 use crate::p25::Tsbk;
 use crate::trunk::identity::{IdField, Identity};
 use crate::smartnet::plan::{self, PlanConfig, PlanFinder};
@@ -480,39 +479,13 @@ impl Decode {
         if f.nid.duid == LDU1 || f.nid.duid == LDU2 {
             self.voice += 1;
         }
-        let blocks = match f.nid.duid {
-            TSDU => {
-                let (blocks, missing) = best_tsbks(g);
-                self.bad += missing as u64;
-                self.air += air_symbols(blocks.len() + missing, blocks.len());
-                blocks
-            }
-            PDU => match best_pdu(g) {
-                Pdu::Mbt(m) => {
-                    self.air += air_symbols(m.blocks(), m.blocks());
-                    match m.to_tsbk() {
-                        Some(t) => vec![t],
-                        None => {
-                            self.good += 1;
-                            return;
-                        }
-                    }
-                }
-                Pdu::Other(_) => return,
-                Pdu::Lost => {
-                    self.bad += 1;
-                    return;
-                }
-            },
-            // A TDU between frames is filler: decoded air all the same.
-            TDU => {
-                self.air += frame_dibits(TDU) as u64;
-                return;
-            }
-            _ => return,
-        };
-        for blk in blocks {
+        let cf = control_frame(g, f.nid.duid, self.id.wacn().zip(self.id.sys_id()));
+        self.bad += cf.lost as u64;
+        self.air += cf.air;
+        for blk in cf.blocks {
             self.good += 1;
+            // (An MBT without a TSBK form: counted, not read.)
+            let Ok(blk) = blk else { continue };
             let b = tsbk_bits(&blk);
             if b(80, 0xff) == 0 {
                 match b(88, 0x3f) {
