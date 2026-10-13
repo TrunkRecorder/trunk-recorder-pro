@@ -244,6 +244,9 @@ impl NxdnVoice {
     }
 
     /// Tell the engine the talker's alias, once the VCALL has said who that is.
+    /// It goes to the last VCALL's source: with both a TX_REL and the next
+    /// radio's opening VCALL missed, that radio's alias goes to the one before
+    /// (as a Harris P25 alias, which names no radio either, would).
     fn name_source(&mut self, t: f64, out: &mut Vec<Out>) {
         if let Some(unit) = self.source {
             let Some(alias) = self.alias.take() else { return };
