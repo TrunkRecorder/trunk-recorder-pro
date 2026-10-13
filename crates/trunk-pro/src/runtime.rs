@@ -574,28 +574,25 @@ fn finish_calls(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, rx: 
 fn finish_one(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, f: Finish, encoder: Option<&(plugins::Encoder, u32)>, host: Option<&PluginHost>) {
     let r = f.rules;
     let takers = host.map_or(0, |h| h.call_takers());
-    // (A call no plugin takes is kept whole.)
-    let (keep_audio, keep_json) = (r.audio_archive || takers == 0, r.call_log || takers == 0);
-    let keep_m4a = keep_audio && r.compress_wav;
-    let write_wav = keep_audio || host.is_some_and(|h| h.needs_wav()) || (r.compress_wav && encoder.is_none());
+    let p = plugins::plan(r, takers, host.is_some_and(|h| h.needs_wav()), encoder.is_some());
+    let (keep_audio, keep_json, keep_m4a, write_wav) = (p.keep_audio, p.keep_json, p.keep_m4a, p.write_wav);
     let base = dir.join(&f.rel);
-    let spooling = takers > 0 && !(keep_audio && keep_json && keep_m4a);
     let need = f.json.len() + f.wav.len() / 4 + if write_wav && !keep_audio { f.wav.len() } else { 0 };
-    let spooled = spool.filter(|s| spooling && s.room_for(need as u64)).map(|s| s.dir.join(&f.rel));
+    let spooled = spool.filter(|s| p.spool && s.room_for(need as u64)).map(|s| s.dir.join(&f.rel));
     let at = |kept: bool, ext: &str| PathBuf::from(format!("{}.{ext}", if kept { &base } else { spooled.as_ref().unwrap_or(&base) }.display()));
     let (wav_at, json_at, frames_at, m4a_at) = (at(keep_audio, "wav"), at(keep_json, "json"), at(keep_audio, f.frames.as_ref().map_or("sdr", |c| c.ext)), at(keep_m4a, "m4a"));
     for d in [&wav_at, &json_at, &m4a_at].into_iter().filter_map(|p| p.parent()) {
         let _ = fs::create_dir_all(d);
     }
     let ok = (!write_wav || fs::write(&wav_at, &f.wav).is_ok())
-        && fs::write(&json_at, &f.json).is_ok()
-        && f.frames.as_ref().is_none_or(|c| fs::write(&frames_at, &c.bytes).is_ok());
+        && (!p.write_json || fs::write(&json_at, &f.json).is_ok())
+        && f.frames.as_ref().filter(|_| p.write_frames).is_none_or(|c| fs::write(&frames_at, &c.bytes).is_ok());
     if !ok {
         log::error!("Couldn't write {}", base.display());
         publish(&ctx.hub, json!({ "type": "log", "lines": [{ "timeS": 0, "kind": "error", "text": format!("couldn't write {}", base.display()) }] }));
         return;
     }
-    // Whether its audio and JSON stay once the plugins are done (an upload that fails may keep them after all: call_files).
+    // Whether its audio and JSON stay once the plugins are done (a plugin's failure may keep them after all: archive::settle).
     let mut entry = f.entry;
     entry["audio"] = json!(keep_audio);
     entry["json"] = json!(keep_json);
@@ -611,7 +608,7 @@ fn finish_one(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, f: Fin
         files: trunk_recorder_plugin::CallFiles { json: json_at, wav: wav_at, m4a: None },
         m4a_to: m4a_at,
     };
-    if let Some((e, kbps)) = encoder.filter(|_| r.compress_wav) {
+    if let Some((e, kbps)) = encoder.filter(|_| p.make_m4a) {
         match e.m4a(&audio.wav, &audio.m4a_to, *kbps) {
             Ok(()) => audio.files.m4a = Some(audio.m4a_to.clone()),
             Err(err) => {

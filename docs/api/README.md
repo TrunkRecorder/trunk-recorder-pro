@@ -414,7 +414,7 @@ Every message is a JSON object with a `type`. Exact fields are in
 | `subscribed` | Answers `subscribe` | `topics` |
 | `statsResult` | Answers `statsQuery` | `id`, `from`, `to`, `loading` (the history files are still being read), `series`: name → `{ t0, stepS, v, lo, hi, n }` |
 | `radioResult` | Answers `radioQuery` | `id`, `what`, and by `what`: `rows` (talkgroups / radios / frequencies), `row` and its detail, `systems` (summary), `histogram` |
-| `concluded` | A call was recorded | `entry`: `{ path, record, audio, json }`; `audio` / `json`: whether they stay in the recordings folder once the upload plugins are done (false: deleted after uploading) |
+| `concluded` | A call was recorded | `entry`: `{ path, record, audio, json }`; `audio` / `json`: whether they stay in the recordings folder once the plugins are done (**Keep audio** / **Keep call JSON**; false: deleted then) |
 | `callFiles` | A call's upload plugins are done, and it kept other than its entry said (an upload failed and its files stay) | `path`, `audio`, `json` |
 | `log` | Topic `log` (errors and notices always) | `lines[]`: `{ timeS, kind, text, system? }` — `kind` e.g. `"error"`, `"control"`, `"alias"`, `"plugin"`, or a control-message kind |
 | `unitAlias` | A talker alias was heard | `system` (short name), `unit`, `alias` |
@@ -514,9 +514,9 @@ Each recorded call's files are under the recordings folder at
 
 URL-encode each segment of the path:
 `path.split("/").map(encodeURIComponent).join("/")`. An `<audio>` element can
-play the `.wav` directly. The files can be deleted after their plugins have
-uploaded them (`recording.audioArchive: false`), so older calls in the
-history may have no files.
+play the `.wav` directly. The files can be deleted once the plugins are done
+with them (`recording.audioArchive: false`), so older calls in the history
+may have no files.
 
 `CallRecord` is Trunk Recorder's call JSON, so tools written for Trunk
 Recorder's files read it too. The fields you'll want most: `talkgroup`,

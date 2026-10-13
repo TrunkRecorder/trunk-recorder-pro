@@ -5,6 +5,18 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Archive settings, clearer and predictable.** The three settings that
+  decide what of a call stays in the recordings folder are now under
+  **Archive** in Setup's Recording tab: **Keep audio**, **Keep call JSON**
+  and **Keep when a plugin fails** (the config keys are unchanged). Off, a
+  Keep setting deletes that file once the plugins are done with the call;
+  a plugin that skipped a call is done with it, just as one that uploaded
+  it. Only a failure keeps the files, with **Keep when a plugin fails** on,
+  which is greyed out when both Keep settings are on. Changes: with no
+  plugin taking calls, the Keep settings now apply too (before, every call
+  was kept whole), and Setup says when that means nothing is saved; a call
+  a plugin never answered on counts as failed after an hour (before, it was
+  always kept).
 - **P25: multi-block control channel messages.** Some sites send part of
   their control channel as multi-block (MBT) messages, which were
   dropped. Those sites now show their WACN and System ID (so a site lock

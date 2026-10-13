@@ -567,8 +567,8 @@ export interface CallEntry {
   record: CallRecord;
   /**
    * Whether its audio / its JSON stay in the recordings folder once the
-   * upload plugins are done (Keep the audio / the call JSON after uploading).
-   * False: they're gone, or soon will be. Missing: kept (the browser version).
+   * plugins are done (Keep audio / Keep call JSON). False: they're gone, or
+   * soon will be. Missing: kept (the browser version).
    */
   audio?: boolean;
   json?: boolean;
