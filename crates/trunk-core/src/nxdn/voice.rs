@@ -298,7 +298,7 @@ mod tests {
     }
 
     fn tx(rate: Rate, cipher: u8) -> Tx {
-        Tx { rate, ran: 3, head: CallHead { cc_option: 0, call_type: CALL_CONFERENCE, option: 0, source: 501, destination: 3100 }, cipher, superframes: 4, rf: 2, outbound: true, alias: None }
+        Tx { cipher, ..Tx::new(rate, 3, CallHead { cc_option: 0, call_type: CALL_CONFERENCE, option: 0, source: 501, destination: 3100 }, 2, 4) }
     }
 
     #[test]

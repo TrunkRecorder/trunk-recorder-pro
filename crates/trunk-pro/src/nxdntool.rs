@@ -327,11 +327,11 @@ pub fn run_synth(a: &Args) {
     // (offset Hz, frames)
     let carriers: Vec<(f64, Vec<[u8; 192]>)> = match kind {
         "conv" => {
-            let t = Tx { rate: nxdn, ran: 5, head, cipher: 0, superframes: 15, rf: 2, outbound: true, alias: None };
+            let t = Tx::new(nxdn, 5, head, 2, 15);
             vec![(50_000.0, t.frames())]
         }
         "typeC" => {
-            let t = Tx { rate: nxdn, ran: 5, head, cipher: 0, superframes: 15, rf: 1, outbound: true, alias: None };
+            let t = Tx::new(nxdn, 5, head, 1, 15);
             let mut voice = vec![idle_frame; 4];
             voice.extend(t.frames());
             let sr = Sr { structure: 2, ran: 5 };

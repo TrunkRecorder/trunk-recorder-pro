@@ -99,6 +99,11 @@ pub struct Tx {
 }
 
 impl Tx {
+    /// A clear outbound transmission of `superframes` voice superframes, with no alias.
+    pub fn new(rate: Rate, ran: u8, head: CallHead, rf: u8, superframes: usize) -> Tx {
+        Tx { rate, ran, head, cipher: 0, superframes, rf, outbound: true, alias: None }
+    }
+
     fn lich(&self, fct: u8, option: u8) -> u8 {
         self.rf << 5 | fct << 3 | option << 1 | self.outbound as u8
     }
@@ -220,7 +225,7 @@ mod tests {
     use crate::nxdn::layer3::{Context, Message, CALL_CONFERENCE};
 
     fn tx(rate: Rate) -> Tx {
-        Tx { rate, ran: 9, head: CallHead { cc_option: 0, call_type: CALL_CONFERENCE, option: if rate == Rate::N96 { 2 } else { 0 }, source: 1234, destination: 77 }, cipher: 0, superframes: 5, rf: 2, outbound: true, alias: None }
+        Tx::new(rate, 9, CallHead { cc_option: 0, call_type: CALL_CONFERENCE, option: if rate == Rate::N96 { 2 } else { 0 }, source: 1234, destination: 77 }, 2, 5)
     }
 
     /// Through the 4FSK receiver and framer, at both rates, clean and in
@@ -337,7 +342,7 @@ mod tests {
     }
 
     fn conv_tx(rate: Rate) -> Tx {
-        Tx { rate, ran: 3, head: CallHead { cc_option: 0, call_type: CALL_CONFERENCE, option: if rate == Rate::N96 { 2 } else { 0 }, source: 501, destination: 3100 }, cipher: 0, superframes: 10, rf: 2, outbound: true, alias: None }
+        Tx::new(rate, 3, CallHead { cc_option: 0, call_type: CALL_CONFERENCE, option: if rate == Rate::N96 { 2 } else { 0 }, source: 501, destination: 3100 }, 2, 10)
     }
 
     #[test]
@@ -377,7 +382,7 @@ mod tests {
                 };
                 let (done, _) = run_engine(cfg, &keyed(&tx, fs, freq - center));
                 assert_eq!(done.len(), 1, "{rate:?} {alias}");
-                assert!(done[0].json.contains(&format!("\"src\":501,")), "{}", done[0].json);
+                assert!(done[0].json.contains("\"src\":501,"), "{}", done[0].json);
                 assert!(done[0].json.contains(&format!("\"tag_ota\":\"{alias}\"")), "{rate:?}: {}", done[0].json);
             }
         }
@@ -464,7 +469,7 @@ mod tests {
         let (fs, center) = (240_000.0, 451_043_750.0);
         let (cc, vc) = (451_018_750.0, 451_068_750.0);
         let h = CallHead { cc_option: 0, call_type: CALL_CONFERENCE, option: 0, source: 77, destination: 3001 };
-        let t = Tx { rate: Rate::N48, ran: 5, head: h, cipher: 0, superframes: 10, rf: 1, outbound: true, alias: None };
+        let t = Tx::new(Rate::N48, 5, h, 1, 10);
         let voice = t.frames();
         // Control: site info, the grant to channel 7, then its duplicates while the call lasts.
         let mut ctrl = vec![cac_frame(S { structure: 2, ran: 5 }, &l3::site_info(0x123 << 12 | 0x045, 0x0200, 0, 0, [1, 0]))];
@@ -573,7 +578,7 @@ mod snr_curve {
         let fs = 48_000.0;
         for rate in [Rate::N48, Rate::N96] {
             let bw = if rate == Rate::N48 { 6250.0 } else { 12_500.0 };
-            let t = Tx { rate, ran: 1, head: CallHead { cc_option: 0, call_type: CALL_CONFERENCE, option: 0, source: 1, destination: 2 }, cipher: 0, superframes: 40, rf: 2, outbound: true, alias: None };
+            let t = Tx::new(rate, 1, CallHead { cc_option: 0, call_type: CALL_CONFERENCE, option: 0, source: 1, destination: 2 }, 2, 40);
             let mut x = 3u32;
             let mut d: Vec<u8> = (0..1000)
                 .map(|_| {
