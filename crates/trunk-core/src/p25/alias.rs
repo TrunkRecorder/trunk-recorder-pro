@@ -13,17 +13,8 @@
 //!   talking.
 //! - Harris, Phase 2: MAC message 0xA8, MFID 0xA4, plain ASCII.
 
+use crate::alias::Alias;
 use crate::bits::crc_ccitt_bytes;
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Alias {
-    pub unit: u32,
-    pub alias: String,
-    /// Which decoder ("MotoP25_FDMA", "HarrisP25_TDMA", …) — Trunk Recorder's names.
-    pub source: &'static str,
-    /// The talkgroup it was sent on, when the payload says.
-    pub talkgroup: Option<u32>,
-}
 
 const MOTOROLA: u8 = 0x90;
 const HARRIS: u8 = 0xa4;

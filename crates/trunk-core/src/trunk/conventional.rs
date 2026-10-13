@@ -57,7 +57,7 @@ use crate::dsp::tones::{Tone, ToneDetector};
 use crate::dsp::{Channelizer, HeadId};
 use crate::mbe;
 use crate::nxdn::Rate;
-use crate::p25::alias::Alias;
+use crate::alias::Alias;
 use crate::p25::diversity::BankConfig;
 
 /// Half-width of the band the detector sums, Hz (a 12.5 kHz channel's signal).

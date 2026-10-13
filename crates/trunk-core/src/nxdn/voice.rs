@@ -8,10 +8,10 @@ use super::alias::Aliases;
 use super::channel::{self, SacchAssembler};
 use super::frame::{Body, Frame, Framer, RfChannel};
 use super::layer3::{Context, Message};
+use crate::alias::Alias;
 use crate::ambe::decode_vcw;
 use crate::dsp::Symbol;
 use crate::mbe::{self, Kind, FRAME_SAMPLES};
-use crate::p25::alias::Alias;
 use crate::trunk::frames::{Codec, VoiceFrame};
 use crate::trunk::voice::TrackerOut;
 
