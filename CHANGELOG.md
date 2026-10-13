@@ -22,6 +22,12 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   tool p25synth` makes an encrypted test capture with a key of yours, to
   check a setup without an encrypted system on the air. The decryption
   was checked against OP25 and dsd-fme on such captures.
+- **Fixed:** conventional channels on a source running below about
+  1 MS/s never opened (at 480 kS/s and under, none did): the noise floor
+  was measured in slices narrower than a channel, so a transmission read
+  as noise. Slices are now at least 30 kHz wide. The analog squelch of
+  trunked calls on such sources used the same floor and is fixed too.
+  Sources at 1.92 MS/s and above behave as before.
 
 ## [0.1.9] — 2026-10-09
 

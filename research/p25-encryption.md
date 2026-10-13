@@ -291,9 +291,9 @@ are gone. So:
   frames (`--voice`) or made-up ones, and `--wav` 48 kHz discriminator
   audio for DSD-style decoders. Documented in `docs/command-line.md`.
 
-Not looked into: `replay` of a 240 kS/s capture records nothing (the
-channel at DC or 80 kHz off; any guard). Real sources run ≥ 1 MS/s, and
-960 kS/s works, so it was left.
+`replay` of a 240 kS/s capture recorded nothing: not a decryption
+problem. Fixed after item 6 (`floor_slices`): the conventional noise
+floor's 64 slices were 3.75 kHz wide at 240 kS/s, filled by the signal.
 
 ## Handoff (2026-10-12, after item 4)
 

@@ -43,6 +43,7 @@ use super::units::{AliasBook, UnitAlias, UnitTags};
 use super::identity::Identity;
 use super::control::{self, CarrierPlan, ControlChannel, Protocol, ProtocolStatus, Step};
 use super::voice::{self, VoiceDecoder, VoiceKind, VoiceParams, VoiceSpec};
+use crate::dsp::channelizer::floor_slices;
 use crate::dsp::{Channelizer, HeadId};
 use crate::mbe;
 use crate::metrics::{self, Scoped, Sink};
@@ -566,10 +567,11 @@ impl SysHost<'_> {
         let tune_ppm = s.tune_ppm;
         let (head, pre, start_sample) = s.chz.add_head(s.offset(call.freq_hz as f64), cutoff, r.preroll_s);
         // The noise floor under the channel, from the source's spectrum: analog squelch, and reception.
-        let mut prof = vec![0.0f64; 64];
+        let n = floor_slices(s.cfg.rate_hz);
+        let mut prof = vec![0.0f64; n];
         s.chz.noise_profile(&mut prof);
         let off = call.freq_hz as f64 - s.cfg.center_hz;
-        let slice = (((off + s.cfg.rate_hz / 2.0) / s.cfg.rate_hz * 64.0) as usize).min(63);
+        let slice = (((off + s.cfg.rate_hz / 2.0) / s.cfg.rate_hz * n as f64) as usize).min(n - 1);
         let noise = s.chz.noise_in_band(prof[slice].max(1e-30), ChannelFilter::noise_bandwidth());
         let voice = voice::build(&VoiceSpec {
             kind,

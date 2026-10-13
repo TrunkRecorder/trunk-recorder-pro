@@ -39,9 +39,10 @@
 //! threshold to just above what triggered it, until the band quietens again,
 //! so a neighbour's leakage doesn't reopen the head every block.
 //!
-//! The noise floor is per source: the median of each 1/64 of the band,
-//! smoothed over time, which follows the SDR's passband shape and ignores
-//! signals filling under half a slice.
+//! The noise floor is per source: the median of each 1/64 of the band
+//! (fewer, wider slices at low sample rates: [`floor_slices`]), smoothed over
+//! time, which follows the SDR's passband shape and ignores signals filling
+//! under half a slice.
 
 use std::sync::Arc;
 
@@ -57,6 +58,7 @@ use super::voice::{self, VoiceDecoder, VoiceKind, VoiceSpec};
 use super::frames::VoiceFrame;
 use crate::dsp::fm::{self, ChannelFilter};
 use crate::dsp::tones::{Tone, ToneDetector};
+use crate::dsp::channelizer::floor_slices;
 use crate::dsp::{Channelizer, HeadId};
 use crate::mbe;
 use crate::nxdn::Rate;
@@ -70,8 +72,6 @@ const DETECT_HALF_BW: f64 = 5000.0;
 const HEAD_CUTOFF_HZ: f64 = 7000.0;
 /// Band power smoothing, s.
 const DETECT_TAU_S: f64 = 0.02;
-/// Noise floor slices per source.
-const FLOOR_SLICES: usize = 64;
 /// Noise floor refresh, s, and its smoothing per refresh.
 const FLOOR_EVERY_S: f64 = 0.1;
 const FLOOR_ALPHA: f64 = 0.3;
@@ -511,14 +511,21 @@ impl Conventional {
             };
             let (center, rate, _) = sources[src];
             let offset_hz = c.freq_hz - center;
-            let slice = (((offset_hz + rate / 2.0) / rate * FLOOR_SLICES as f64) as usize).min(FLOOR_SLICES - 1);
+            let n = floor_slices(rate);
+            let slice = (((offset_hz + rate / 2.0) / rate * n as f64) as usize).min(n - 1);
             let bar = c.squelch_db.unwrap_or(cfg.squelch_db);
             chans.push(Chan { cfg: c.clone(), rows, routed, skipped: [None, None], source: src, offset_hz, slice, power: 0.0, bar_db: bar, raised: false, open: None });
         }
         if !outside.is_empty() {
             return Err(format!("Conventional channel(s) outside every source's bandwidth: {} MHz — move a center frequency or disable them.", outside.join(", ")));
         }
-        let floors = sources.iter().map(|_| Floor { slices: vec![0.0; FLOOR_SLICES], scratch: vec![0.0; FLOOR_SLICES], next_s: 0.0, primed: false }).collect();
+        let floors = sources
+            .iter()
+            .map(|&(_, rate, _)| {
+                let n = floor_slices(rate);
+                Floor { slices: vec![0.0; n], scratch: vec![0.0; n], next_s: 0.0, primed: false }
+            })
+            .collect();
         Ok(Conventional { cfg, bank_cfg, chans, floors })
     }
 
@@ -1143,10 +1150,18 @@ mod tests {
     /// carries it is often decoded in a run of its own, ahead of the voice).
     #[test]
     fn p25_decrypted_calls_name_their_cipher() {
+        // Low rates too: their noise-floor slices once filled with the signal,
+        // and no channel opened.
+        for (fs, off) in [(2_400_000.0, 200_000.0), (480_000.0, 50_000.0), (240_000.0, 30_000.0)] {
+            p25_decrypted_call_at(fs, off);
+        }
+    }
+
+    fn p25_decrypted_call_at(fs: f64, off: f64) {
         use crate::p25::crypt::{Keyring, ALGID_AES_256};
         use crate::p25::synth::{dibits, imbe, modulate, Tx};
         use crate::p25::voice::EncryptionSync;
-        let (center, fs, freq) = (155_000_000.0, 2_400_000.0, 155_200_000.0);
+        let (center, freq) = (155_000_000.0, 155_000_000.0 + off);
         let key = vec![0x5a; 32];
         let es = EncryptionSync { algid: ALGID_AES_256, keyid: 0x4319, mi: [9, 8, 7, 6, 5, 4, 3, 2, 0] };
         let tx = Tx { nac: 0x293, talkgroup: 716, source: 42, cipher: Some((es, key.clone())), voice: (0..72).map(imbe).collect() };
@@ -1182,7 +1197,7 @@ mod tests {
         }
         e.finish();
         let calls: Vec<Call> = e.drain_events().into_iter().filter_map(|ev| if let Event::Concluded(k) = ev { Some(k.call) } else { None }).collect();
-        let [c] = &calls[..] else { panic!("{} calls", calls.len()) };
+        let [c] = &calls[..] else { panic!("{fs} S/s: {} calls", calls.len()) };
         assert_eq!(c.talkgroup, 716);
         assert!(c.encrypted && c.decrypted);
         assert_eq!(c.cipher, Some(CipherId { algid: ALGID_AES_256, keyid: 0x4319 }));
