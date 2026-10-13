@@ -405,7 +405,7 @@ svg .label-free { fill: var(--muted); font: 11px var(--mono); }
   <h3>Hunting, AutoTune and patches</h3>
   <ul>
     <li><b>Hunting</b> (<code>CC_HUNT_S</code> = 5 s). If no step decoded cleanly for 5 s and the system lists more than one control channel, <code>tune(next)</code> removes the control head, opens one on the next covered frequency, resets the protocol and forgets the site's identity. Steps from a site that fails the lock never count as good, so a foreign control channel is hunted away from. DMR and NXDN watch every carrier and never hunt.</li>
-    <li><b>AutoTune</b>. Every 10 s, if the control channel decoded in the last second, the engine records ppm = applied ppm + offset/f × 10⁶ (|ppm| ≤ 50; last 20 averaged). With <code>autoTune</code> on, new heads open at f × (1 + ppm·10⁻⁶) − centre, and a P25 control channel more than 150 Hz off is reopened (at most every 200 s). The error is always measured and shown.</li>
+    <li><b>AutoTune</b>. Every 10 s, if the control channel decoded in the last second, the engine records ppm = applied ppm + offset/f × 10⁶, and so does each call of a second or more (|ppm| ≤ 50; the median of the last 20, of both kinds; kept for the next run). With <code>autoTune</code> on, new heads open at f × (1 + ppm·10⁻⁶) − centre, and a P25 control channel more than 150 Hz off is reopened (at most every 200 s). The error is always measured and shown.</li>
     <li><b>Patches</b>. Supergroup → member → last heard. Members expire after 10 s (P25) or 4 s (SmartNet). A call's <code>patched_talkgroups</code> come from <code>members_of(tg)</code>.</li>
   </ul>
 </section>
@@ -1699,7 +1699,7 @@ const CFG = {
   "sources[].gainDb": ["number", "rtlsdr 25.4 · usrp 40 · soapy null", "Tuner gain. Soapy null leaves the device as it is."],
   "sources[].agc": ["bool", "false (soapy true)", "Tuner AGC instead of gainDb."],
   "sources[].ppm": ["number", "rtlsdr required (integer) · others 0", "Crystal correction applied in the driver."],
-  "sources[].autoTune": ["bool", "false", "Apply the frequency error measured on control channels to new heads (section 05)."],
+  "sources[].autoTune": ["bool", "false", "Apply the frequency error measured on control channels and calls to new heads (section 05)."],
   "sources[].guardHz": ["number", "75000", "Unusable edge of the band. Usable half-width = max(rate/2 − guardHz, rate/4)."],
   "sources[].antenna": ["string", "\"\"", "usrp / soapy antenna."],
   "sources[].gainMode": ["linearity · sensitivity · manual", "linearity", "airspy; with gainStep 14, or lnaStep / mixerStep / vgaStep 10 in manual."],

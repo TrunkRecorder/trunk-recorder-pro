@@ -420,8 +420,10 @@ shared `CallIds` counter (one sequence for every system and conventional channel
 ### 5.6 AutoTune
 
 Every 10 s, if the control channel decoded in the last second, the engine reads the receiver's
-frequency offset and records ppm = applied ppm + offset/f × 1e6 (|ppm| ≤ 50 kept, last 20
-averaged). With `autoTune` on, new heads open at `f × (1 + ppm·1e-6) − center`. P25 control
+frequency offset and records ppm = applied ppm + offset/f × 1e6; each call of a second or more
+whose voice decoder reported an offset records its average the same way (|ppm| ≤ 50 kept; the
+median of the last 20, of both kinds, is the score). `Session::load_tune` / `tune_unsaved`
+carry each source's score to the next run, which starts from it. With `autoTune` on, new heads open at `f × (1 + ppm·1e-6) − center`. P25 control
 channels more than 150 Hz off are reopened at the corrected frequency, at most every 200 s. The
 measured error is always reported (`SourceTune`).
 
