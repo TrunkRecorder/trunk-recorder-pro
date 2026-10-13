@@ -276,7 +276,7 @@ fn run_p2(iq: &[Complex32], rate: f64, v: &Variant, key: (u32, u32, u32)) -> Cou
     use trunk_core::trunk::voice::TrackerOut;
     let mut rx = Cqpsk::new(rate, v.cqpsk);
     let mut fr = phase2::Framer::new();
-    let mut tr = TdmaTracker::new(1);
+    let mut tr = TdmaTracker::new(1, None);
     tr.set_key(key.0, key.1, key.2);
     let (mut syms, mut pkts, mut out) = (Vec::new(), Vec::new(), Vec::new());
     let mut n = Count::default();
@@ -391,7 +391,7 @@ pub fn quality(a: &Args) {
         let v = variant(name, "p2");
         let mut rx = Cqpsk::new(rate, v.cqpsk);
         let mut fr = phase2::Framer::new();
-        let mut tr = TdmaTracker::new(1);
+        let mut tr = TdmaTracker::new(1, None);
         tr.set_key(hexarg("nac"), hexarg("sysid"), hexarg("wacn"));
         let (mut syms, mut pkts, mut out) = (Vec::new(), Vec::new(), Vec::new());
         let (mut n, mut clean, mut errs) = (0u64, 0u64, 0u64);

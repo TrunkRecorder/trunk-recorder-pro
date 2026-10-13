@@ -5,6 +5,29 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Encryption heard:** a talkgroup's page on the Radio dashboard lists
+  the ciphers its encrypted P25 calls used, with each algorithm (ADP,
+  DES, AES-256, …), key ID, number of calls and when it was last heard.
+  Hover over a talkgroup's **ENC** badge to see the same. A call's JSON
+  now has `algid` and `key_id`.
+- **Decrypting P25 (experimental):** if you are authorized to monitor an
+  encrypted P25 system and hold its keys, give the system a `keys` file
+  (ADP, DES, 3DES, AES-128 or AES-256; see Configuration → Systems →
+  Encryption keys). Its encrypted P25 calls, Phase 1 and Phase 2, are
+  then recorded, decrypted and saved, marked `"decrypted": 1` in the call
+  JSON, and can be played in Listen. A key of the wrong length stops
+  recording from starting, with a message saying which key to fix.
+  Plugins get `algid`, `key_id` and `decrypted` with each call.
+  `trunk-pro replay --keys` does the same for captures, and `trunk-pro
+  tool p25synth` makes an encrypted test capture with a key of yours, to
+  check a setup without an encrypted system on the air. The decryption
+  was checked against OP25 and dsd-fme on such captures.
+- **Fixed:** conventional channels on a source running below about
+  1 MS/s never opened (at 480 kS/s and under, none did): the noise floor
+  was measured in slices narrower than a channel, so a transmission read
+  as noise. Slices are now at least 30 kHz wide. The analog squelch of
+  trunked calls on such sources used the same floor and is fixed too.
+  Sources at 1.92 MS/s and above behave as before.
 - **Archive settings, clearer and predictable.** The three settings that
   decide what of a call stays in the recordings folder are now under
   **Archive** in Setup's Recording tab: **Keep audio**, **Keep call JSON**

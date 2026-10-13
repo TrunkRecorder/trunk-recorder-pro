@@ -96,6 +96,17 @@
         "encrypted": {
           "type": "number"
         },
+        "algid": {
+          "type": "number",
+          "description": "The cipher its encryption sync named: P25 ALGID and key ID; -1 when none was heard (absent in calls saved before)."
+        },
+        "key_id": {
+          "type": "number"
+        },
+        "decrypted": {
+          "type": "number",
+          "description": "1: its encrypted voice was decrypted, at least in part (absent in calls saved before)."
+        },
         "phase2_tdma": {
           "type": "number"
         },
@@ -421,6 +432,10 @@
         "encrypted": {
           "type": "boolean"
         },
+        "decrypted": {
+          "type": "boolean",
+          "description": "Its encrypted voice is being decrypted (the system has the key)."
+        },
         "emergency": {
           "type": "boolean"
         },
@@ -462,6 +477,7 @@
         "state",
         "reason",
         "encrypted",
+        "decrypted",
         "emergency",
         "startS",
         "sources"
@@ -588,6 +604,37 @@
       ],
       "additionalProperties": false,
       "description": "A channel listened to now, with its power and the noise floor under it."
+    },
+    "CipherSeen": {
+      "type": "object",
+      "properties": {
+        "algid": {
+          "type": "number"
+        },
+        "keyId": {
+          "type": "number"
+        },
+        "name": {
+          "type": "string",
+          "description": "What the ALGID is called (\"ADP\", \"AES-256\", …)."
+        },
+        "calls": {
+          "type": "number"
+        },
+        "last": {
+          "type": "number",
+          "description": "Unix seconds."
+        }
+      },
+      "required": [
+        "algid",
+        "keyId",
+        "name",
+        "calls",
+        "last"
+      ],
+      "additionalProperties": false,
+      "description": "A cipher heard on a talkgroup: P25 ALGID and key ID."
     },
     "Config": {
       "type": "object",
@@ -722,6 +769,10 @@
         },
         "unitNames": {
           "$ref": "#/definitions/UnitNames"
+        },
+        "keys": {
+          "type": "string",
+          "description": "Desktop: its P25 channels' encryption keys file (as System's)."
         }
       },
       "required": [
@@ -5619,6 +5670,10 @@
           "type": "string",
           "description": "Multi-site: sites with one group are one system (a call on several is saved once). Absent: grouped by what the control channels say (P25 WACN + System ID, SmartNet System ID)."
         },
+        "keys": {
+          "type": "string",
+          "description": "Desktop: its P25 encryption keys file, absolute or relative to the config file's folder (read when recording starts; never sent here)."
+        },
         "plugins": {
           "type": "object",
           "additionalProperties": {
@@ -5854,6 +5909,13 @@
         "encPct": {
           "type": "number"
         },
+        "ciphers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/CipherSeen"
+          },
+          "description": "The ciphers its calls' encryption sync named, most recent first."
+        },
         "new": {
           "type": "boolean",
           "description": "First heard in the last day (once the system has a baseline)."
@@ -5877,6 +5939,7 @@
         "secs",
         "totalCalls",
         "encPct",
+        "ciphers",
         "new",
         "hourly"
       ],

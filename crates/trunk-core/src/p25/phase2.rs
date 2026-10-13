@@ -16,6 +16,7 @@
 use std::collections::VecDeque;
 
 use super::fec::{rs_decode, rs_decode_erasures};
+use super::voice::hexbits_to_bytes;
 use crate::dsp::Symbol;
 use crate::tables::{DUID_LOOKUP, ISCH_CODEWORDS, LFSR_SEED_MATRIX};
 
@@ -176,6 +177,8 @@ pub fn decode_acch(burst: &[u8], fast: bool) -> Option<MacPdu> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MacPtt {
+    /// The message indicator of the transmission's first superframe.
+    pub mi: [u8; 9],
     pub algid: u8,
     pub keyid: u16,
     pub source: u32,
@@ -185,6 +188,7 @@ pub struct MacPtt {
 /// MAC_PTT fields (op25 handle_mac_ptt).
 pub fn parse_mac_ptt(b: &[u8]) -> MacPtt {
     MacPtt {
+        mi: b[1..10].try_into().unwrap(),
         algid: b[10],
         keyid: (b[11] as u16) << 8 | b[12] as u16,
         source: (b[13] as u32) << 16 | (b[14] as u32) << 8 | b[15] as u32,
@@ -213,6 +217,8 @@ pub fn read_ess_a(x: &[u8]) -> [u8; 28] {
 pub struct Ess {
     pub algid: u8,
     pub keyid: u16,
+    /// The next superframe's message indicator.
+    pub mi: [u8; 9],
 }
 
 /// op25 handle_4V2V_ess: rs28.decode(ESS_B, ESS_A), ≤ 14 corrections.
@@ -229,7 +235,12 @@ pub fn decode_ess(ess_b: &[u8; 16], ess_a: &[u8; 28]) -> Option<Ess> {
         return None;
     }
     let b = &cw[19..35];
-    Some(Ess { algid: ((b[0] as u16) << 2 | (b[1] as u16) >> 4) as u8, keyid: ((b[1] as u16 & 15) << 12) | (b[2] as u16) << 6 | b[3] as u16 })
+    Some(Ess {
+        algid: ((b[0] as u16) << 2 | (b[1] as u16) >> 4) as u8,
+        keyid: ((b[1] as u16 & 15) << 12) | (b[2] as u16) << 6 | b[3] as u16,
+        // Hexbits 4..16.
+        mi: hexbits_to_bytes(&cw, 23),
+    })
 }
 
 // ── Framer (p25p2_framer.cc + p25p2_sync.cc) ─────────────────────────────────
@@ -415,7 +426,7 @@ mod tests {
         let mut x = descramble(&dibits(PTT), 10, &m);
         let pdu = decode_acch(&x, false).expect("PTT decodes");
         assert_eq!((pdu.opcode, pdu.offset), (MAC_PTT, 0));
-        assert_eq!(parse_mac_ptt(&pdu.bytes), MacPtt { algid: 0x80, keyid: 0, source: 1118562, group: 2207 });
+        assert_eq!(parse_mac_ptt(&pdu.bytes), MacPtt { mi: [0; 9], algid: 0x80, keyid: 0, source: 1118562, group: 2207 });
         // RS(63,35) corrects symbol errors in the payload.
         for i in [20, 60, 70, 150] {
             x[i] ^= 3;

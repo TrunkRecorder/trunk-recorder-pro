@@ -8,7 +8,7 @@ import { systemColor } from "../config.ts";
 import { radioQuery, setTalkgroupIgnore, setView, usePolled, useApp, type AppState } from "../controller.ts";
 import { Bipartite, Card, Choice, Heatmap, HeatStrip, Histogram, Light, RadialEgo, Stat, type Node } from "../charts.tsx";
 import { ago, clockAt, compact, dur, hmm, num } from "../fmt.ts";
-import type { LengthHistogram, RadioResult, TgRow, UnitRow } from "../protocol.ts";
+import type { CipherSeen, LengthHistogram, RadioResult, TgRow, UnitRow } from "../protocol.ts";
 import { aliasOf } from "./Calls.tsx";
 import { dashSystems, K, KIND_LABEL, running, total, useHistory, type DashSystem } from "./data.ts";
 
@@ -193,7 +193,11 @@ function Talkgroups({ sys, rows, hours }: { sys: DashSystem; rows: TgRow[]; hour
                   {r.alphaTag && <span className="tag mono">{r.tg}</span>}
                   {r.new && <span className="badge new">NEW</span>}
                   {!r.known && <span className="badge unknown">NOT IN FILE</span>}
-                  {r.encPct > 50 && <span className="badge enc">ENC</span>}
+                  {r.encPct > 50 && (
+                    <span className="badge enc" title={r.ciphers.map(cipherText).join(", ")}>
+                      ENC
+                    </span>
+                  )}
                   {r.ignore && <span className="badge ign">IGNORED</span>}
                 </td>
                 <td className="mono">{r.calls}</td>
@@ -421,6 +425,7 @@ function TgView({ s, sys, tg }: { s: AppState; sys: DashSystem; tg: number }) {
         </Card>
         <div className="stack">
           <Lengths h={r.lengths} />
+          {row.ciphers.length > 0 && <Ciphers ciphers={row.ciphers} />}
           <Card title="Affiliated with it">
             {(r.affiliated ?? []).length === 0 ? (
               <p className="empty">None right now.</p>
@@ -437,6 +442,41 @@ function TgView({ s, sys, tg }: { s: AppState; sys: DashSystem; tg: number }) {
         </div>
       </div>
     </div>
+  );
+}
+
+const hex = (v: number, digits: number) => `0x${v.toString(16).toUpperCase().padStart(digits, "0")}`;
+const cipherText = (c: CipherSeen) => `${c.name} key ${hex(c.keyId, 4)}`;
+
+/** The ciphers its calls were encrypted with: what a user with keys needs. */
+function Ciphers({ ciphers }: { ciphers: CipherSeen[] }) {
+  return (
+    <Card title="Encryption heard">
+      <div className="table-wrap">
+        <table className="calls">
+          <thead>
+            <tr>
+              <th>Cipher</th>
+              <th>Key ID</th>
+              <th>Calls</th>
+              <th>Last heard</th>
+            </tr>
+          </thead>
+          <tbody>
+            {ciphers.map((c) => (
+              <tr key={`${c.algid}:${c.keyId}`}>
+                <td>
+                  {c.name} <span className="tag mono">{hex(c.algid, 2)}</span>
+                </td>
+                <td className="mono">{hex(c.keyId, 4)}</td>
+                <td className="mono">{c.calls}</td>
+                <td className="small">{ago(c.last)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Card>
   );
 }
 

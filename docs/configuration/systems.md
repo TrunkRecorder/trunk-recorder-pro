@@ -37,6 +37,7 @@ channel. Each site you record from its own control channel is its own entry, wit
 | `expect` | | `{}` | object | Site lock: only follow a control channel with this identity. See [Site lock](#site-lock-expect) |
 | `voiceChannelsHz` | | `[]` | array of numbers | Voice channels Find my system heard. Used only to place Auto sources so they cover them too |
 | `siteGroup` | | `""` | string | Groups sites whose calls are the same calls. See [Multi-site](#multi-site) |
+| `keys` | | `""` | string | P25: a file of encryption keys, absolute or relative to the config file's folder (desktop app only; not in the interface). See [Encryption keys](#encryption-keys-keys) |
 | `recording` | | `{}` | object | This system's own call rules; a rule left out follows the global `recording`. See [recording.md](recording.md#per-system-rules) |
 | `plugins` | | `{}` | object | This system's plugin settings, by plugin id. See [plugins.md](plugins.md#per-system-settings) |
 
@@ -132,6 +133,43 @@ A non-empty `siteGroup` replaces that grouping:
 Give DMR and NXDN Type-D sites a group name, since they announce no system identity. Give systems
 linked by ISSI one too. To prefer a site for a talkgroup, use the talkgroup file's `Preferred Site`
 or `Preferred NAC` column.
+
+## Encryption keys (`keys`)
+
+**Experimental.** If you are authorized to monitor an encrypted P25 system and hold its keys, the
+recorder can decrypt its voice, P25 Phase 1 and Phase 2. DMR and NXDN calls stay encrypted.
+
+The keys live in a file of their own, never in the config, which the interface reads and edits:
+
+```json
+{ "keys": [
+    { "algId": "0xAA", "keyId": "0x1B50", "key": "1234567890" },
+    { "algId": "0x84", "keyId": "0x0002", "key": "<64 hex digits>" },
+    { "algId": "0x84", "key": "<64 hex digits>", "talkgroups": [1201, 1202] }
+]}
+```
+
+| Key | Description |
+|---|---|
+| `algId` | The algorithm: `0xAA` ADP, `0x81` DES-OFB, `0x83` 3DES, `0x89` AES-128, `0x84` AES-256. Hex in a string, or a number |
+| `keyId` | The key ID the radios send. Hex in a string, or a number |
+| `key` | The key in hex, exactly as long as the algorithm needs: ADP 10 digits, DES 16, AES-128 32, 3DES 48, AES-256 64. Spaces are allowed. A shorter key is an error, never padded |
+| `talkgroups` | Optional. Use this key on these talkgroups whatever key ID the air names (or only under its `keyId`, if it gives one). Tried before the keys matched by key ID |
+
+- The file is read when recording starts. After editing it, stop and start recording. A file that
+  can't be read, or a key that is wrong, stops the start with a message saying which key and what to
+  fix. The key itself is never shown, logged or sent to plugins.
+- Make the file readable only by you (`chmod 600 keys.json`). The log warns when other users can
+  read it.
+- A system with keys records its encrypted P25 calls, even with `recordEncrypted` off, because the
+  key ID only arrives with the voice. A call whose key isn't in the file is then left out, as an
+  encrypted call always is. One that was decrypted is saved with `"decrypted": 1` in its JSON and
+  can be played in Listen.
+- A call joined late, or one whose encryption sync was lost to a fade, is decrypted from the next
+  sync on, and the voice just before that sync too: at most the frames lost with the sync are
+  missing.
+- The talkgroup page on the Radio dashboard lists the ciphers heard (algorithm and key ID), which
+  tells you which keys a talkgroup needs.
 
 ## Talkgroup file
 

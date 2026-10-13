@@ -15,6 +15,8 @@
 //!   analog FM:   discriminator, squelch, MDC1200 / FleetSync unit IDs
 //! ```
 
+use std::sync::Arc;
+
 use num_complex::Complex32;
 
 use super::calls::Call;
@@ -34,6 +36,7 @@ use crate::nxdn::voice::{NxdnVoice, VCH_S};
 use crate::nxdn::Rate;
 use crate::metrics::{Instrumented, Sink};
 use crate::p25::alias::AliasLc;
+use crate::p25::crypt::Keyring;
 use crate::p25::diversity::{best_frame, Bank, BankConfig, Group};
 use crate::p25::phase2::{self, Packet};
 
@@ -74,6 +77,14 @@ impl VoiceKind {
     }
 }
 
+/// The cipher a transmission is encrypted with, as its encryption sync named
+/// it (P25: the ALGID and key ID).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct CipherId {
+    pub algid: u8,
+    pub keyid: u16,
+}
+
 /// What a voice tracker heard, for the call on its slot.
 #[derive(Clone, Debug, PartialEq)]
 pub enum TrackerOut {
@@ -81,6 +92,12 @@ pub enum TrackerOut {
     Audio(Vec<f32>, VoiceFrame),
     /// Link control named a source / emergency, or the call turned out encrypted.
     Info { source: Option<u32>, emergency: bool, encrypted: bool },
+    /// The transmission's encryption sync named its cipher (once a
+    /// transmission, and again if it changes).
+    Cipher(CipherId),
+    /// The transmission's voice is being decrypted (once a transmission,
+    /// before its first decrypted audio).
+    Decrypted,
     /// Analog FM voice (a SmartNet analog call, a conventional FM channel): 8 kHz audio, squelched.
     AnalogAudio(Vec<f32>),
     /// Analog FM: the same audio before the 300 Hz high-pass (CTCSS / DCS
@@ -123,7 +140,7 @@ pub struct VoiceParams {
 }
 
 /// How to make a decoder.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct VoiceSpec {
     pub kind: VoiceKind,
     /// The channel's sample rate, Hz.
@@ -141,6 +158,8 @@ pub struct VoiceSpec {
     /// Analog: also hand out the audio below 300 Hz (CTCSS / DCS) as
     /// [`TrackerOut::Subaudible`].
     pub subaudible: bool,
+    /// The system's keys: P25 voice it has the key for is decrypted.
+    pub keys: Option<Arc<Keyring>>,
 }
 
 /// One voice channel's decoding: channel IQ in, outputs for the calls on
@@ -181,7 +200,7 @@ pub fn build(spec: &VoiceSpec) -> Box<dyn VoiceDecoder> {
     match spec.kind {
         VoiceKind::Fdma => Box::new(P25Fdma {
             bank: Bank::new(spec.rate, spec.bank),
-            tracker: VoiceTracker::new(mbe::lcg(spec.seed), spec.vocoder),
+            tracker: VoiceTracker::new(mbe::lcg(spec.seed), spec.vocoder, spec.keys.clone()),
             groups: Vec::new(),
             t0: spec.t0,
             rate: spec.rate,
@@ -189,7 +208,7 @@ pub fn build(spec: &VoiceSpec) -> Box<dyn VoiceDecoder> {
             air: None,
         }),
         VoiceKind::Tdma => {
-            let mut tracker = TdmaTracker::new(spec.seed);
+            let mut tracker = TdmaTracker::new(spec.seed, spec.keys.clone());
             tracker.soft = spec.bank.soft;
             // Decision-feedback differential detection: ~1 dB in noise on Phase 2
             // voice (tool snr); not used on Phase 1, where simulcast didn't like it.

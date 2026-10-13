@@ -312,7 +312,8 @@ frame:
 - Profiles: `fixed` (Pavel Yazev's fixed-point IMBE, the app default for Phase 1), `enhanced`,
   `mbelib`. AMBE always uses `enhanced`.
 - Scaling: ×7/32768, then a tanh soft limiter above −3 dBFS.
-- `record::save_call`: drops transmissions shorter than `minTransmissionS` and encrypted ones,
+- `record::save_call`: drops transmissions shorter than `minTransmissionS` and encrypted ones
+  that weren't decrypted,
   refuses too-short or silent calls, normalises loudness (−12 dBFS speech, about −14 LUFS; gain
   clamped −18..+24 dB; look-ahead limiter at −2.5 dBFS), writes the call JSON. `wav.rs`
   writes 16-bit mono 8 kHz.
@@ -455,7 +456,8 @@ In order, the first that applies wins:
 1. The talkgroup row has `Ignore` (or priority < 0) → not recorded, reason `ignored`.
 2. The talkgroup is not in a non-empty talkgroup file (nor a patch member) and `recordUnknown`
    is off → `unknown_tg`.
-3. Encrypted and `recordEncrypted` is off → `encrypted`; the engine may **follow** it (open a
+3. Encrypted and `recordEncrypted` is off, and the system has no keys for a call of this kind
+   (`CallManager::can_decrypt`, P25 only) → `encrypted`; the engine may **follow** it (open a
    channel without a recording, to collect units and aliases) while recorder room is spare.
 4. Otherwise `RecorderHost::record(call)` (`SysHost::record`):
    1. `recordings.len() ≥ maxRecorders` → `no_recorder`.
@@ -495,6 +497,8 @@ applied after the block (`apply_pending`), so a voice channel never borrows a `T
 - `Audio` / `AnalogAudio` → appended to the `Recording`, `last_audio_s` moved, live
   `Event::Audio` if this copy leads its multi-site conversation;
 - `Info` → source unit, encrypted, emergency → `CallUpdate`;
+- `Cipher` → the call's ALGID / key ID; `Decrypted` → the transmission is kept and the call marked
+  `decrypted`;
 - `Alias` → talker alias learned.
 
 ### 6.5 Ending
@@ -788,6 +792,8 @@ call JSON + WAV on disk → `HostMessage::CallConcluded` → plugin → `PluginM
 | `recording` | bool | has a recorder |
 | `reason` | `Option<Reason>` | why not recorded: `ignored`, `unknown_tg`, `encrypted`, `no_source`, `no_recorder` |
 | `encrypted`, `emergency` | bool | latched |
+| `cipher` | `Option<CipherId>` | the ALGID / key ID its voice named |
+| `decrypted` | bool | some of its voice was decrypted |
 | `priority` | u8 | |
 | `duplex`, `mode`, `analog` | bool | |
 | `start_s`, `last_update_s`, `last_audio_s` | f64 | sample-clock times |
@@ -808,8 +814,9 @@ call JSON + WAV on disk → `HostMessage::CallConcluded` → plugin → `PluginM
 `recorder_num: u32`, `tx: Transmissions`, `freq_error: (f64, u32)`, `reception: Reception`.
 
 **`TrackerOut`**: `Audio(Vec<f32>, VoiceFrame)` (20 ms at 8 kHz), `Info { source, emergency,
-encrypted }`, `AnalogAudio(Vec<f32>)`, `Subaudible(Vec<f32>)`, `Alias(Alias)` (`crate::alias`, any protocol),
-`AliasLc(AliasLc)`, `Position(Position)` (`crate::position`). **`VoiceOut`**: `slot: u8`, `t: f64`, `out: TrackerOut`.
+encrypted }`, `Cipher(CipherId)`, `Decrypted`, `AnalogAudio(Vec<f32>)`, `Subaudible(Vec<f32>)`, `Alias(Alias)`
+(`crate::alias`, any protocol), `AliasLc(AliasLc)`, `Position(Position)` (`crate::position`). **`VoiceOut`**: `slot: u8`,
+`t: f64`, `out: TrackerOut`.
 
 **`VoiceFrame`**: `codec` (Imbe | Ambe), `bits: Vec<u8>`, `e0`, `errs: u32`, `erased: bool`,
 `kind`.
@@ -877,7 +884,8 @@ tag, encrypted, freq_hz }>`, `body: Body` (`Text`, `Recording`, `NotRecording`, 
 Trunk Recorder's keys plus reception figures, in this order: `call_num`, `freq`,
 `freq_error`, `signal`, `noise`, `snr`, `clean_voice_pct`, `source_num` (always 0),
 `recorder_num`, `tdma_slot`, `phase2_tdma`, `start_time`, `stop_time`, `start_time_ms`,
-`stop_time_ms`, `emergency`, `priority`, `mode`, `duplex`, `encrypted`, `call_length`,
+`stop_time_ms`, `emergency`, `priority`, `mode`, `duplex`, `encrypted`, `algid`, `key_id` (−1 if
+none), `decrypted`, `call_length`,
 `call_length_ms`, `talkgroup`, `talkgroup_tag`, `talkgroup_description`,
 `talkgroup_group_tag`, `talkgroup_group`, `color_code` (−1 if none), `ran` (−1 if none),
 `tone_mode`, `tone_detected`, `tone_confidence`, `audio_type` (analog | digital tdma |
@@ -899,7 +907,7 @@ Constants: `API_VERSION` = 1, `EXIT_CONFIG` = 78, conventional system index base
 | `type` | Payload fields |
 |---|---|
 | `hello` | `api`, `host { name, version }`, `config`, `systems: [SystemInfo { index, short_name, kind, config }]`, `capture_dir`, `data_dir`, `audio_formats` |
-| `call.start`, `call.end` | `CallInfo { id, system, short_name, talkgroup, talkgroup_tag, freq_hz, tdma_slot, analog, encrypted, emergency, recording, reason, start_time, units, patched_talkgroups }` |
+| `call.start`, `call.end` | `CallInfo { id, system, short_name, talkgroup, talkgroup_tag, freq_hz, tdma_slot, analog, encrypted, algid, key_id, decrypted, emergency, recording, reason, start_time, units, patched_talkgroups }` |
 | `call.concluded` | `path`, `system`, `call: CallRecord` (the call JSON), `files { json, wav, m4a }` |
 | `unit` | `system`, `short_name`, `kind` (registration, deregistration, affiliation, acknowledge, location, data_grant, answer_request, call_alert, emergency_alarm), `unit`, `talkgroup`, `time` |
 | `audio` | `call_id`, `system`, `short_name`, `talkgroup`, `sample_rate`, `pcm` (base64 i16 LE) |

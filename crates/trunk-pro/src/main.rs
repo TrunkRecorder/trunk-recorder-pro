@@ -22,6 +22,7 @@
 //!     --out calls  --short-name sys1  --talkgroups tg.csv  --bandplan file
 //!     --recorders 32  --preroll 1  --timeout 3  --epoch <unix s>
 //!     --record-encrypted  --keep-silent  --no-unknown  --capture-frames  --quiet
+//!     --keys keys.json (P25 encryption keys for every system: see trunk-app's keys.rs)
 //!     --messages (print every control channel message)
 //!     --min-call s  --max-call s  --min-transmission s (drop short calls, split long
 //!     ones, leave out short transmissions)  --auto-tune (correct the sources'
@@ -68,9 +69,9 @@
 //! trunk-pro tool cc|voice|frames <capture.cu8> --center Hz --rate Hz (--cc Hz | --freq Hz) [options]
 //!     One P25 channel's decode, as JSON lines (the research/native-bench
 //!     format); `frames` only counts the frames of each type.
-//! trunk-pro tool p2 | smartnet | dmr | dmrscan | nxdn | nxdnscan | nxdnsynth | snr …
+//! trunk-pro tool p2 | smartnet | dmr | dmrscan | nxdn | nxdnscan | nxdnsynth | p25synth | snr …
 //!     Phase 2 slots, a SmartNet control channel, one DMR / NXDN channel,
-//!     every DMR / NXDN carrier in a capture, a synthetic NXDN capture,
+//!     every DMR / NXDN carrier in a capture, a synthetic NXDN or P25 capture,
 //!     weak-signal curves (each tool's module documents its options).
 //! trunk-pro tool revoice <call.sdr | call.frames.jsonl> <out.wav> [--profile fixed|enhanced|mbelib]
 //!     Vocode a call's saved frames again.
@@ -87,6 +88,7 @@ mod dmrtool;
 mod logging;
 mod monitor;
 mod nxdntool;
+mod p25synth;
 mod paths;
 mod platform;
 mod snrtool;
@@ -234,6 +236,9 @@ usage:
       One DMR / NXDN channel's messages.
   trunk-pro tool nxdnsynth <out.cu8> --center Hz [--kind conv|typeC|typeD] [--nxdn 48|96]
       A synthetic NXDN capture, for checking a setup.
+  trunk-pro tool p25synth <out.cu8> [--center Hz] [--freq Hz] [--keys keys.json] [--voice call.frames.jsonl] [--wav out.wav]
+      A synthetic P25 Phase 1 transmission, encrypted with the first key of
+      --keys (or clear), for checking decryption (replay --p25 Hz --keys).
   trunk-pro tool snr <capture.cu8> --center Hz --rate Hz --freq Hz --kind dmr|p25|smartnet|p2 [--snr 40,20,…]
       Weak-signal curves: one channel decoded again with noise added.
   trunk-pro tool revoice <call.sdr | call.frames.jsonl> <out.wav> [--profile fixed|enhanced|mbelib]
@@ -419,13 +424,18 @@ fn replay(a: &Args) {
         let sys = parse_system(spec, calls, &talkgroups).unwrap_or_else(|e| die(&format!("--system {spec}: {e}")));
         systems.push(SystemConfig { save, ..sys });
     }
+    // --keys: every system decrypts with the same keys file.
+    let keys = a.get("keys").map(|p| std::sync::Arc::new(trunk_app::keys::load(std::path::Path::new(p)).unwrap_or_else(|e| die(&e))));
+    for s in systems.iter_mut() {
+        s.keys = keys.clone();
+    }
     let multi = systems.len() > 1;
     let cfg = EngineConfig {
         systems,
         sources,
         preroll_s: a.num("preroll", 1.0),
         max_recorders: a.num("recorders", 32.0) as usize,
-        conv_systems: vec![ConvSystem { short_name: "conv".into(), calls, save, talkgroups, ..Default::default() }],
+        conv_systems: vec![ConvSystem { short_name: "conv".into(), calls, save, talkgroups, keys, ..Default::default() }],
         epoch_ms_at_zero: a.num("epoch", 0.0) * 1000.0,
         conventional,
         conv: ConvConfig { squelch_db: a.num("squelch", ConvConfig::default().squelch_db), ..Default::default() },
@@ -589,7 +599,7 @@ fn handle_events(engine: &mut Engine, out_dir: &str, multi: bool, quiet: bool, m
             }
             Event::CallEnd(c) if !quiet => {
                 let srcs: Vec<String> = c.sources.iter().map(|s| s.src.to_string()).collect();
-                println!("{:7.2}s  {}CALL {} end   TG {} srcs [{}]{}", c.last_update_s.max(c.last_audio_s), sys_tag(engine, c.system), c.id, c.talkgroup, srcs.join(","), if c.encrypted { " ENC" } else { "" });
+                println!("{:7.2}s  {}CALL {} end   TG {} srcs [{}]{}", c.last_update_s.max(c.last_audio_s), sys_tag(engine, c.system), c.id, c.talkgroup, srcs.join(","), if c.decrypted { " ENC DEC" } else if c.encrypted { " ENC" } else { "" });
             }
             Event::Duplicate { call, kept } if !quiet => {
                 println!("         {}CALL {} TG {} not saved: a copy of {}CALL {}", sys_tag(engine, call.system), call.id, call.talkgroup, sys_tag(engine, kept.system), kept.id)

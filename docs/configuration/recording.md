@@ -26,7 +26,7 @@ under **Recording override**.
 | `maxRecorders` | | `32` | integer | Calls recorded at once, across all trunked systems. The interface allows 1–64 |
 | `callTimeoutS` | | `3` | number | Per system. A call ends this long after its last grant or audio, s. The interface allows 1–30 |
 | `recordUnknown` | | `true` | bool | Per system. Record talkgroups that aren't in the talkgroup file. Only matters when there is a talkgroup file; a talkgroup patched with a listed one is recorded anyway |
-| `recordEncrypted` | | `false` | bool | Per system. Keep calls flagged encrypted (by the grant or the talkgroup's `Mode`), with their radios, even with no audio. Encrypted transmissions are always left out of the audio. Config only: not in the interface |
+| `recordEncrypted` | | `false` | bool | Per system. Keep calls flagged encrypted (by the grant or the talkgroup's `Mode`), with their radios, even with no audio. Encrypted transmissions are always left out of the audio, unless decrypted (see [systems.md](systems.md#encryption-keys-keys)). Config only: not in the interface |
 | `recordUnitToUnit` | | `true` | bool | Per system. Record P25 unit-to-unit (private) calls |
 | `keepSilentCalls` | | `false` | bool | Per system. Keep calls with no audio (encrypted, or nothing decoded) |
 | `minCallS` | | `0` | number | Per system. Delete calls with less audio than this, s, before they're uploaded. `0` keeps all. The interface allows 0–60 |
@@ -47,7 +47,8 @@ under **Recording override**.
 | `ramSpool` | | see below | object | Keep files only the upload plugins need in RAM instead of `captureDir` |
 
 When a call flagged encrypted at its grant isn't kept (`recordEncrypted` off), it isn't recorded at
-all. One that turns encrypted part-way is kept with its clear transmissions.
+all, unless its system has [encryption keys](systems.md#encryption-keys-keys). One that turns
+encrypted part-way is kept with its clear transmissions.
 
 ### `m4a`
 
