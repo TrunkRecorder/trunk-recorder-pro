@@ -34,8 +34,9 @@ use std::time::Instant;
 
 use trunk_core::dsp::Channelizer;
 use trunk_core::mbe::{self, FRAME_SAMPLES};
-use trunk_core::p25::diversity::{best_es, best_frame, best_imbe, best_lc, best_tsbks, Bank, BankConfig, Group};
-use trunk_core::p25::frame::{duid_name, FramerOptions, HDU, LDU1, LDU2, TDULC, TSDU};
+use trunk_core::p25::diversity::{best_es, best_frame, best_imbe, best_lc, best_pdu, best_tsbks, Bank, BankConfig, Group};
+use trunk_core::p25::frame::{duid_name, FramerOptions, HDU, LDU1, LDU2, PDU, TDULC, TSDU};
+use trunk_core::p25::mbt::Pdu;
 use trunk_core::p25::tsbk::{decode_tsdu, tsbk_opcode, Trellis};
 use trunk_core::trunk::frames::VoiceFrame;
 use trunk_core::p25::voice::{decode_hdu, decode_ldu1_lc, decode_ldu2_es, decode_tdulc, imbe_params_to_bits, ldu_imbe, EncryptionSync, ImbeParams, LinkControl};
@@ -130,6 +131,15 @@ pub fn run(a: &Args) {
                         let _ = writeln!(out, "{{\"t\":{:.3},\"nac\":{},\"op\":{},\"hex\":\"{hex}\"}}", f.sample / rate, f.nid.nac, tsbk_opcode(&t));
                     }
                 }
+                "cc" if f.nid.duid == PDU => match best_pdu(&g) {
+                    Pdu::Mbt(m) => {
+                        st.good += 1;
+                        let hex: String = m.header.iter().chain(&m.data).map(|b| format!("{b:02x}")).collect();
+                        let _ = writeln!(out, "{{\"t\":{:.3},\"nac\":{},\"mbt\":{},\"hex\":\"{hex}\"}}", f.sample / rate, f.nid.nac, m.opcode());
+                    }
+                    Pdu::Other(_) => {}
+                    Pdu::Lost => st.bad += 1,
+                },
                 "voice" => {
                     let chosen = if f.nid.duid == LDU1 || f.nid.duid == LDU2 {
                         Some(if soft_fec { best_imbe(&g) } else { ldu_imbe(f, false) })

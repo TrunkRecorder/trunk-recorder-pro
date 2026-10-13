@@ -176,7 +176,7 @@ impl SurveySession {
                 "freqHz": s.monitoring_hz().map(f64::round), "heardHz": m.heard_hz.round(), "identity": id(&m.identity), "advertisedHz": m.advertised_hz,
                 "secondary": m.secondary, "adjacent": m.adjacent.iter().map(|a| json!({ "rfss": a.rfss, "site": a.site, "sysId": a.sys_id, "freqHz": a.freq_hz })).collect::<Vec<_>>(),
                 "voice": m.voice.iter().map(|v| json!({ "freqHz": v.freq_hz, "grants": v.grants, "tdma": v.tdma })).collect::<Vec<_>>(),
-                "idens": m.idens, "good": m.good, "bad": m.bad, "modulation": m.modulation, "snrDb": m.snr_db.map(|v| (v * 10.0).round() / 10.0),
+                "idens": m.idens, "good": m.good, "bad": m.bad, "airS": (m.air_s * 100.0).round() / 100.0, "modulation": m.modulation, "snrDb": m.snr_db.map(|v| (v * 10.0).round() / 10.0),
                 "offsetHz": m.offset_hz.map(f64::round), "ppm": m.ppm.map(|p| (p * 100.0).round() / 100.0),
                 "gain": {
                     "state": match m.gain.state { GainState::Off => "off", GainState::Waiting => "waiting", GainState::Running => "running", GainState::Done => "done" },

@@ -5,6 +5,19 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **P25: multi-block control channel messages.** Some sites send part of
+  their control channel as multi-block (MBT) messages, which were
+  dropped. Those sites now show their WACN and System ID (so a site lock
+  and multi-site grouping work), and multi-block grants, patch grants,
+  affiliations and registrations are followed like the single-block ones.
+  On a site that uses them, control messages a second go up: CLMRN-I
+  went from about 12 to 22.
+- **Control channel coverage.** The Decode page (a tile on each P25
+  system's card, and a chart under Over time) and Find my system show how
+  much of the control channel decoded: an estimate from timing, of the
+  air decoded against the most the channel could carry. It reads the same
+  on every system, unlike messages a second, which are lower where a site
+  sends multi-block messages (one takes the air of two or three).
 - **NXDN talker aliases:** Kenwood radios' programmed names are read from the
   traffic channel and shown as each radio's name (`tag_ota`, the Calls page,
   `<shortName>.units.csv`), as P25's are. ASCII aliases only; Icom's format

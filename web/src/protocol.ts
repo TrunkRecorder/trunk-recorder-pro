@@ -655,6 +655,8 @@ export interface SurveyMonitor {
   idens: number;
   good: number;
   bad: number;
+  /** Seconds of air the decoded messages account for (P25), of `elapsedS`. */
+  airS?: number;
   modulation: string;
   snrDb: number | null;
   offsetHz: number | null;
