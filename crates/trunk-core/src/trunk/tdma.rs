@@ -11,6 +11,7 @@ use super::voice::{CipherId, TrackerOut};
 use crate::ambe::decode_vcw;
 use crate::mbe::{self, Kind, FRAME_SAMPLES};
 use crate::p25::alias::{is_alias_msg, mac_messages, mac_talker, AliasLc, MacAliases};
+use crate::p25::gps;
 use crate::p25::phase2::{
     decode_acch, decode_ess, duid_decode, isch_lookup, parse_mac_ptt, read_ess_a, read_ess_b, xor_mask, Packet, BURST_2V, BURST_4V,
     BURST_FACCH_S, BURST_FACCH_U, BURST_LCCH_S, BURST_SACCH_S, BURST_SACCH_U, BURST_DIBITS, MAC_ACTIVE, MAC_END_PTT, MAC_HANGTIME, MAC_IDLE, MAC_PTT,
@@ -370,6 +371,9 @@ impl TdmaTracker {
                     }
                     if let Some(a) = s.aliases.msg(&m, s.talker, s.talkgroup) {
                         out.push((c, TrackerOut::Alias(a)));
+                    }
+                    if let Some(p) = gps::mac(&m, s.talker) {
+                        out.push((c, TrackerOut::Position(p)));
                     }
                 }
                 if pdu.opcode == MAC_HANGTIME {

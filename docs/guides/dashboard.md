@@ -90,6 +90,7 @@ How well signals turn into messages and voice. A card per system:
 |---|---|
 | **Control messages** /s | Control channel messages decoded a second, against the usual. How many there should be depends on the system: compare with its own usual. |
 | **Control lost** % | Messages that didn't decode. A few percent is normal; amber over 10%, red over 30%. |
+| **Coverage** % | P25: an estimate from timing of how much of the control channel decoded, against the most it could carry. Unlike messages a second it reads the same on every system: a multi-block message takes two or three TSBKs' air. Frames never caught count against it. 96–98% is healthy. |
 | **Eye opening** | C4FM (P25 Phase 1 and most control channels): how well separated the four symbol levels are. 10 or more is clean, under 4 means errors, about 1 is noise. Simulcast systems read low even when they decode well. |
 | **Phase error**, ° rms | CQPSK (simulcast P25, and Phase 2): how far symbols land from where they should. Under 10° is clean, amber from 15°, red from 20°, about 25° is noise. |
 | **Deviation**, Hz | SmartNet: how far the signal swings. About ±2.4 kHz is normal; less means weak or filtered. |
@@ -103,8 +104,8 @@ Click a system's name for its own page, which adds:
 
 - its identity (NAC, WACN, SysID, site) and calls saved this run;
 - **Channels now**: each open channel's SNR, offset and quality;
-- **Over time**: decoded and lost control messages, voice frames lost, SNR with eye opening or
-  phase error, carrier offset;
+- **Over time**: decoded and lost control messages, control channel coverage (P25), voice frames
+  lost, SNR with eye opening or phase error, carrier offset;
 - **Frequencies, 24 h** (or 7 days): every voice frequency with calls, its source, **In band**
   (0% at the edge of the source's usable band, guard band left out, 100% at its centre), calls, SNR, offset, the share of voice
   frames decoded cleanly and lost, and an hour-by-hour strip. Above the table the page points out

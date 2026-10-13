@@ -160,7 +160,7 @@ CallEntry: a recorded call (rec.history, the "concluded" message)
     start_time_ms, call_length (seconds of audio), freq (Hz),
     emergency (1/0), encrypted (1/0), audio_type ("analog" | "digital" |
     "digital tdma"), srcList [{ src (unit), tag (its name or ""), tag_ota,
-    time (Unix s), pos (s into the audio), emergency }], signal / noise
+    time (Unix s), pos (s into the audio), emergency, lat? lon? (GPS) }], signal / noise
     (dBFS) / snr (dB) (or null), tone_detected, patched_talkgroups?
 
 SystemStatus: one trunked system or site (rec.status.systems)

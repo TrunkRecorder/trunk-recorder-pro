@@ -284,13 +284,23 @@ pub(crate) static SYNC_BITS: [u8; 48] = [
     1, 1,
 ];
 
-/// Frame length in dibits including status symbols; TSDU at its 3-TSBK maximum.
-pub(crate) fn frame_dibits(duid: u8) -> usize {
+/// Frame length in dibits, status symbols included, of a TSDU or PDU of
+/// `blocks` 196-bit blocks: sync, NID and blocks, padded to a status symbol.
+/// Capped at an LDU's length, which the receiver bank holds for.
+pub fn blocks_dibits(blocks: usize) -> usize {
+    let data = 56 + 98 * blocks.min(super::mbt::MAX_BLOCKS);
+    data.div_ceil(35) * 36
+}
+
+/// Frame length in dibits including status symbols; TSDU at its 3-TSBK
+/// maximum, PDU at 3 blocks until its header says how many.
+pub fn frame_dibits(duid: u8) -> usize {
     match duid {
         HDU => 396,
         TDU => 72,
         LDU1 | LDU2 => 864,
         TSDU => 360,
+        PDU => blocks_dibits(3),
         TDULC => 216,
         _ => 0,
     }
@@ -432,9 +442,15 @@ impl Framer {
             }
             self.target = frame_dibits(self.f.nid.duid);
             if self.target == 0 {
-                // PDU or unknown: report the header, don't try to follow it.
+                // Unknown: report the header, don't try to follow it.
                 self.finish(false, frames);
                 return;
+            }
+        }
+        if self.f.nid.duid == PDU && self.f.bits.len() == 112 + 196 {
+            let soft = (self.f.soft.len() >= 112 + 196).then(|| &self.f.soft[112..112 + 196]);
+            if let Some(h) = super::mbt::decode_header(&self.f.bits[112..112 + 196], soft) {
+                self.target = blocks_dibits(1 + super::mbt::blocks_to_follow(&h));
             }
         }
         if self.target != 0 && p + 1 >= self.target {
@@ -513,6 +529,54 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_frame_of_blocks_holds_them_up_to_a_status_symbol() {
+        assert_eq!(blocks_dibits(3), 360); // a full TSDU
+        assert_eq!(blocks_dibits(2), 288);
+        assert_eq!(blocks_dibits(1), 180);
+        for b in 1..=super::super::mbt::MAX_BLOCKS {
+            let n = blocks_dibits(b);
+            assert_eq!(n % 36, 0);
+            assert!(n - n / 36 >= 56 + 98 * b && n <= 864);
+        }
+    }
+
+    /// `body` (NID and blocks, status symbols removed) as a frame of `n`
+    /// dibits: sync, then status symbols where they go, padded with zeros.
+    fn on_air(nac: u16, duid: u8, body: &[u8], n: usize) -> Vec<u8> {
+        let nid = encode_nid(nac, duid);
+        let bits: Vec<u8> = (0..64).map(|i| ((nid >> (63 - i)) & 1) as u8).chain(body.iter().copied()).collect();
+        let mut it = bits.chunks(2).map(|c| c[0] << 1 | c.get(1).copied().unwrap_or(0));
+        let mut d: Vec<u8> = (0..24).map(|k| ((SYNC >> (2 * (23 - k))) & 3) as u8).collect();
+        for p in 24..n {
+            d.push(if (p + 1) % 36 == 0 { 0b01 } else { it.next().unwrap_or(0) });
+        }
+        d
+    }
+
+    #[test]
+    fn a_pdu_is_followed_for_the_blocks_its_header_names() {
+        use super::super::mbt::{self, tests::*, Pdu};
+        let h = ambtc_header(0x3b, [0x12, 0x03, 0xa9], [0, 0]);
+        let pdu = pdu_bits(h, &[0xbe, 0xe0, 0x00, 0x12, 0x34, 0x56, 0x78, 0x70]);
+        assert_eq!(pdu.len(), 112 + 2 * 196);
+        let tsbk = vec![0u8; 3 * 196];
+        let mut air = on_air(0x332, PDU, &pdu[112..], blocks_dibits(2));
+        air.extend(on_air(0x332, TSDU, &tsbk, 360));
+        air.extend(on_air(0x332, TSDU, &tsbk, 360));
+        let mut fr = Framer::new(FramerOptions::default());
+        let mut frames = Vec::new();
+        for (k, &dibit) in air.iter().enumerate() {
+            fr.push(&Symbol { dibit, sample: k as f64, rel_hi: -1.0, rel_lo: -1.0 }, &mut frames);
+        }
+        let duids: Vec<u8> = frames.iter().map(|f| f.nid.duid).collect();
+        assert_eq!(duids, [PDU, TSDU, TSDU]);
+        assert!(frames[0].complete && frames[1].complete);
+        assert_eq!(frames[1].symbol, blocks_dibits(2) as u64);
+        let Pdu::Mbt(m) = mbt::decode(std::iter::once((&frames[0].bits[..], None))) else { panic!("no MBT") };
+        assert_eq!((m.opcode(), &m.data[..3]), (0x3b, &[0xbe, 0xe0, 0x00][..]));
     }
 
     /// A receiver whose first symbols land inside a frame sync: the tail

@@ -201,6 +201,23 @@ fn a_busy_engine_does_not_make_the_radio_look_late() {
     assert!((start - 500.0).abs() < 100.0, "the call starts {start} ms in");
 }
 
+/// AutoTune starts from the last run's score, moved by the ppm set since,
+/// and the file isn't rewritten until something is measured.
+#[test]
+fn autotune_starts_from_the_saved_score() {
+    let mut cfg = conventional_config();
+    cfg.sources[0] = serde_json::from_value(json!({ "type": "rtlsdr", "serial": "", "centerHz": 155000000, "rateHz": 2400000, "gainDb": 25, "agc": false, "ppm": 2, "autoTune": true })).unwrap();
+    let mut s = Session::new(cfg, 1.75e12, &|_| None, |_| 0).unwrap();
+    s.load_tune(r#"{"RTL-SDR (first)": {"errorPpm": 3.0, "atPpm": 1}, "Airspy SN 1": {"errorPpm": -1.0, "atPpm": 0}}"#);
+    assert_eq!(s.tune_unsaved(), None, "nothing new to save");
+    let (mut out, mut msgs) = (Vec::new(), Vec::new());
+    s.poll(1.75e12, &mut out);
+    texts(&mut out, &mut msgs);
+    let status = msgs.iter().find(|m| m["type"] == "status").expect("a status");
+    let src = &status["sources"][0];
+    assert_eq!((src["tunePpm"].as_f64(), src["tuneSeeded"].as_bool()), (Some(4.0), Some(true)), "{src}");
+}
+
 /// Without subscriptions, the costly messages aren't made.
 #[test]
 fn unwatched_topics_are_not_sent() {
@@ -345,7 +362,7 @@ fn the_servers_messages() {
             talkgroup: 101,
             start_s: 0.0,
             last_update_s: 4.0,
-            sources: vec![trunk_core::trunk::CallSource { src: 7, time_s: 0.0, emergency: false }, trunk_core::trunk::CallSource { src: 8, time_s: 2.0, emergency: false }],
+            sources: vec![trunk_core::trunk::CallSource { src: 7, ..Default::default() }, trunk_core::trunk::CallSource { src: 8, time_s: 2.0, ..Default::default() }],
             ..Default::default()
         };
         r.call_start("p25", &c, now - 10);

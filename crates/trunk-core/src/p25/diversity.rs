@@ -10,7 +10,8 @@ use std::collections::VecDeque;
 
 use num_complex::Complex32;
 
-use super::frame::{Frame, Framer, FramerOptions, LDU1, LDU2, TSDU};
+use super::frame::{blocks_dibits, frame_dibits, Frame, Framer, FramerOptions, LDU1, LDU2, PDU, TDU, TSDU};
+use super::mbt::{self, Mbt, Pdu};
 use super::tsbk::{tsbk_last, tsbk_ok, trellis_viterbi, Tsbk};
 use super::voice::{decode_ldu1_lc, decode_ldu2_es, ldu_imbe, EncryptionSync, ImbeParams, LinkControl};
 use crate::dsp::c4fm::{C4fm, C4fmOptions, SYMBOL_RATE};
@@ -266,6 +267,53 @@ pub fn best_tsbks(g: &Group) -> (Vec<Tsbk>, usize) {
     (out, missing)
 }
 
+/// Symbols of air that `good` of a frame's `blocks` blocks account for: the
+/// frame's length shared out over its blocks. (Summed, over the symbol rate
+/// times the time it took: the share of the control channel decoded, which
+/// counting messages can't give where an MBT takes several TSBKs' air.)
+pub fn air_symbols(blocks: usize, good: usize) -> u64 {
+    if blocks == 0 {
+        return 0;
+    }
+    (blocks_dibits(blocks) * good.min(blocks) / blocks) as u64
+}
+
+/// A PDU group's message, from whichever receivers' copies it takes.
+pub fn best_pdu(g: &Group) -> Pdu {
+    mbt::decode(g.iter().filter(|f| f.nid.duid == PDU).map(|f| (&f.bits[..], (!f.soft.is_empty()).then_some(&f.soft[..]))))
+}
+
+/// What a control channel frame (a group of copies) held.
+#[derive(Default)]
+pub struct ControlFrame {
+    /// Its trunking messages: each TSBK, an MBT as the TSBK it stands for
+    /// ([`Mbt::to_tsbk`]) or, when it has none, as itself.
+    pub blocks: Vec<Result<Tsbk, Mbt>>,
+    /// Messages no receiver decoded.
+    pub lost: usize,
+    /// Symbols of air the decoded ones account for ([`air_symbols`]).
+    pub air: u64,
+}
+
+/// A control channel frame group's messages (its frame's DUID `duid`).
+/// `own`: the site's (WACN, System ID), when known (see [`Mbt::to_tsbk`]).
+pub fn control_frame(g: &Group, duid: u8, own: Option<(u32, u32)>) -> ControlFrame {
+    match duid {
+        TSDU => {
+            let (blocks, lost) = best_tsbks(g);
+            ControlFrame { air: air_symbols(blocks.len() + lost, blocks.len()), lost, blocks: blocks.into_iter().map(Ok).collect() }
+        }
+        PDU => match best_pdu(g) {
+            Pdu::Mbt(m) => ControlFrame { air: air_symbols(m.blocks(), m.blocks()), lost: 0, blocks: vec![m.to_tsbk(own).ok_or(m)] },
+            Pdu::Other(_) => ControlFrame::default(),
+            Pdu::Lost => ControlFrame { lost: 1, ..Default::default() },
+        },
+        // A TDU between frames is filler: decoded air all the same.
+        TDU => ControlFrame { air: frame_dibits(TDU) as u64, ..Default::default() },
+        _ => ControlFrame::default(),
+    }
+}
+
 /// Per codeword, the candidate the soft decoder overrode least (cost per
 /// unit of reliability), among the group's LDUs.
 pub fn best_imbe(g: &Group) -> [ImbeParams; 9] {
@@ -309,6 +357,17 @@ pub fn best_es(g: &Group) -> Option<EncryptionSync> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn airtime_is_the_frames_length_shared_over_its_blocks() {
+        // At 4800 symbols/s: three TSBKs fill 75 ms (40 a second at most); an
+        // MBT of header and one data block, 60 ms (2.4 TSBKs' worth).
+        assert_eq!(air_symbols(3, 3), 360);
+        assert_eq!(air_symbols(3, 2), 240);
+        assert_eq!(air_symbols(2, 2), 288);
+        assert_eq!(air_symbols(3, 0), 0);
+        assert_eq!(air_symbols(0, 0), 0);
+    }
 
     #[test]
     fn a_copy_heard_through_a_fade_does_not_win_on_free_flips() {

@@ -40,9 +40,10 @@ use std::f64::consts::PI;
 
 use num_complex::Complex32;
 
+use crate::dsp::c4fm::SYMBOL_RATE;
 use crate::dsp::{Channelizer, HeadId};
-use crate::p25::diversity::{best_frame, best_tsbks, Bank, BankConfig, Group};
-use crate::p25::frame::{LDU1, LDU2, TSDU};
+use crate::p25::diversity::{best_frame, control_frame, Bank, BankConfig, Group};
+use crate::p25::frame::{LDU1, LDU2};
 use crate::p25::Tsbk;
 use crate::trunk::identity::{IdField, Identity};
 use crate::smartnet::plan::{self, PlanConfig, PlanFinder};
@@ -276,6 +277,8 @@ pub struct SystemInfo {
     pub bandplan: String,
     pub good: u64,
     pub bad: u64,
+    /// Seconds of air the decoded messages account for (P25; of `elapsed_s`).
+    pub air_s: f64,
     pub modulation: &'static str,
     pub snr_db: Option<f64>,
     /// Heard − advertised, Hz.
@@ -462,6 +465,8 @@ struct Decode {
     voice: u32,
     good: u64,
     bad: u64,
+    /// Symbols of air the decoded blocks account for.
+    air: u64,
     id: Identity,
 }
 
@@ -474,13 +479,13 @@ impl Decode {
         if f.nid.duid == LDU1 || f.nid.duid == LDU2 {
             self.voice += 1;
         }
-        if f.nid.duid != TSDU {
-            return;
-        }
-        let (blocks, missing) = best_tsbks(g);
-        self.bad += missing as u64;
-        for blk in blocks {
+        let cf = control_frame(g, f.nid.duid, self.id.wacn().zip(self.id.sys_id()));
+        self.bad += cf.lost as u64;
+        self.air += cf.air;
+        for blk in cf.blocks {
             self.good += 1;
+            // (An MBT without a TSBK form: counted, not read.)
+            let Ok(blk) = blk else { continue };
             let b = tsbk_bits(&blk);
             if b(80, 0xff) == 0 {
                 match b(88, 0x3f) {
@@ -1112,6 +1117,7 @@ impl Monitor {
         i.identity = self.dec.id.clone();
         i.good = self.dec.good;
         i.bad = self.dec.bad;
+        i.air_s = self.dec.air as f64 / SYMBOL_RATE;
         i.modulation = modulation(&self.labels, &self.bank.frames_per_rx());
         i.snr_db = self.snr.map(|r| 10.0 * r.log10());
         i.elapsed_s = t;

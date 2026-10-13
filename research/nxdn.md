@@ -122,7 +122,15 @@ Findings along the way:
   repeater is watched anyway).
 - **Not decoded**: full-rate (EFR) voice (never seen on the air, per
   DSD-FME), data calls, encrypted voice (scrambler, DES, AES: marked and
-  left out of the audio), Kenwood talker alias (PROP_FORM), inbound CAC.
+  left out of the audio), inbound CAC, talker aliases in anything but
+  Kenwood's ASCII format (Shift-JIS / Big5 builds, Icom's message 0xE7).
+- **Kenwood talker aliases** (`nxdn::alias`): PROP_FORM, MFID 0x68, `82 04`,
+  four characters a segment; a 16-bit sum of the alias bytes ends it. Seen on
+  a live NXDN48 Type-C site (replayed as conventional); trunked and NXDN96
+  only on synthesized traffic.
+  An alias is credited to the source of the last VCALL heard: if a
+  transmission's TX_REL and the next one's opening VCALL are both missed,
+  the next radio's alias goes to the last one (as Harris P25's would).
 - **Weak signals** are measured only on synthesized voice
   (`cargo test -p trunk-core --release nxdn_snr_curve -- --ignored
   --nocapture`; SNR in the channel's own bandwidth, voice codewords

@@ -639,7 +639,7 @@ mod tests {
             talkgroup: tg,
             start_s: start,
             last_update_s: end,
-            sources: units.iter().map(|&(src, t)| CallSource { src, time_s: t, emergency: false }).collect(),
+            sources: units.iter().map(|&(src, t)| CallSource { src, time_s: t, ..Default::default() }).collect(),
             ..Default::default()
         }
     }

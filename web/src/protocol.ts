@@ -457,10 +457,12 @@ export interface SourceStatus {
   /** When it was, Unix seconds. */
   lastErrorS?: number | null;
   ended: boolean;
-  /** Its frequency error as measured on the control channels, ppm (+: signals come in high); null until measured. */
+  /** Its frequency error, ppm (+: signals come in high): the median of its last control channel and call measurements; null until measured. */
   errorPpm?: number | null;
   /** The correction autoTune applies now, ppm. */
   tunePpm?: number;
+  /** The correction is an earlier run's score (nothing measured yet). */
+  tuneSeeded?: boolean;
 }
 
 export interface CallView {
@@ -565,9 +567,9 @@ export interface CallRecord {
   errorList: { pos: number; len: number; frames: number; error_count: number; bad_frames: number; max_frame_errors: number }[];
   /**
    * The radios that talked: `time` Unix s, `pos` s into the audio. `tag`: the unit's name (the unit names
-   * file or the alias heard, by the system's mode); `tag_ota`: the alias heard.
+   * file or the alias heard, by the system's mode); `tag_ota`: the alias heard. `lat`, `lon`: where the radio said it was (GPS, decimal degrees), when it did.
    */
-  srcList: { src: number; time: number; pos: number; emergency: number; signal_system: string; tag: string; tag_ota: string }[];
+  srcList: { src: number; time: number; pos: number; emergency: number; signal_system: string; tag: string; tag_ota: string; lat?: number; lon?: number }[];
 }
 
 /** A recorded call: `path` (no extension) under the capture folder. */
@@ -576,8 +578,8 @@ export interface CallEntry {
   record: CallRecord;
   /**
    * Whether its audio / its JSON stay in the recordings folder once the
-   * upload plugins are done (Keep the audio / the call JSON after uploading).
-   * False: they're gone, or soon will be. Missing: kept (the browser version).
+   * plugins are done (Keep audio / Keep call JSON). False: they're gone, or
+   * soon will be. Missing: kept (the browser version).
    */
   audio?: boolean;
   json?: boolean;
@@ -666,6 +668,8 @@ export interface SurveyMonitor {
   idens: number;
   good: number;
   bad: number;
+  /** Seconds of air the decoded messages account for (P25), of `elapsedS`. */
+  airS?: number;
   modulation: string;
   snrDb: number | null;
   offsetHz: number | null;

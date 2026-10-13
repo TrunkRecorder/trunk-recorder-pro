@@ -223,6 +223,8 @@ function MonitorView(props: { m: SurveyMonitor; sug: SurveySuggestion | null; c:
   const { m, sug, c } = props;
   const total = m.good + m.bad;
   const pct = total ? Math.round((100 * m.good) / total) : 0;
+  // Of the air, not of the messages: an MBT takes several TSBKs' worth.
+  const air = m.airS && m.elapsedS >= 2 ? Math.min(100, Math.round((100 * m.airS) / m.elapsedS)) : null;
   const src = c.sources[props.source];
   const rtl = src?.type === "rtlsdr";
   const id = m.identity;
@@ -256,7 +258,7 @@ function MonitorView(props: { m: SurveyMonitor; sug: SurveySuggestion | null; c:
         <Check state={m.good >= 10 ? "ok" : "wait"} label="Control channel">
           {total ? (
             <>
-              decoding {pct} % of {total} messages{m.modulation ? ` · ${m.modulation}` : ""}
+              decoding {pct} % of {total} messages{air !== null ? ` (${air} % coverage)` : ""}{m.modulation ? ` · ${m.modulation}` : ""}
               {m.snrDb !== null ? ` · ${m.snrDb.toFixed(0)} dB SNR` : ""}
             </>
           ) : (

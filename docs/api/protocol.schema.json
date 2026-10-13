@@ -22,7 +22,7 @@
         },
         "audio": {
           "type": "boolean",
-          "description": "Whether its audio / its JSON stay in the recordings folder once the upload plugins are done (Keep the audio / the call JSON after uploading). False: they're gone, or soon will be. Missing: kept (the browser version)."
+          "description": "Whether its audio / its JSON stay in the recordings folder once the plugins are done (Keep audio / Keep call JSON). False: they're gone, or soon will be. Missing: kept (the browser version)."
         },
         "json": {
           "type": "boolean"
@@ -293,6 +293,12 @@
               },
               "tag_ota": {
                 "type": "string"
+              },
+              "lat": {
+                "type": "number"
+              },
+              "lon": {
+                "type": "number"
               }
             },
             "required": [
@@ -306,7 +312,7 @@
             ],
             "additionalProperties": false
           },
-          "description": "The radios that talked: `time` Unix s, `pos` s into the audio. `tag`: the unit's name (the unit names file or the alias heard, by the system's mode); `tag_ota`: the alias heard."
+          "description": "The radios that talked: `time` Unix s, `pos` s into the audio. `tag`: the unit's name (the unit names file or the alias heard, by the system's mode); `tag_ota`: the alias heard. `lat`, `lon`: where the radio said it was (GPS, decimal degrees), when it did."
         }
       },
       "required": [
@@ -4809,11 +4815,15 @@
             "number",
             "null"
           ],
-          "description": "Its frequency error as measured on the control channels, ppm (+: signals come in high); null until measured."
+          "description": "Its frequency error, ppm (+: signals come in high): the median of its last control channel and call measurements; null until measured."
         },
         "tunePpm": {
           "type": "number",
           "description": "The correction autoTune applies now, ppm."
+        },
+        "tuneSeeded": {
+          "type": "boolean",
+          "description": "The correction is an earlier run's score (nothing measured yet)."
         }
       },
       "required": [
@@ -5214,6 +5224,10 @@
         },
         "bad": {
           "type": "number"
+        },
+        "airS": {
+          "type": "number",
+          "description": "Seconds of air the decoded messages account for (P25), of `elapsedS`."
         },
         "modulation": {
           "type": "string"

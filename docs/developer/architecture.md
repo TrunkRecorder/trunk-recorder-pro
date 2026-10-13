@@ -263,7 +263,8 @@ frame:
 2. Frame: 192 symbols = FSW 10 (0xCDF59) + LICH 8 + 174. PN9 descrambling.
 3. LICH (7 bits + parity) picks the channel. CAC / SACCH / SCCH / FACCH1 / UDCH: K=5 rate-½
    convolutional code with puncturing and interleave, 16-state soft Viterbi + CRC.
-4. Layer 3 messages for Type-C and Type-D trunking.
+4. Layer 3 messages for Type-C and Type-D trunking. Kenwood talker aliases (PROP_FORM, MFID
+   0x68) in the SACCH and FACCH1 are put together in `nxdn::alias` and sent as `TrackerOut::Alias`.
 5. Voice: four VCH codewords per frame → AMBE+2 (EFR full-rate voice is not decoded).
 
 ### 4.5 SmartNet control channel
@@ -420,8 +421,10 @@ shared `CallIds` counter (one sequence for every system and conventional channel
 ### 5.6 AutoTune
 
 Every 10 s, if the control channel decoded in the last second, the engine reads the receiver's
-frequency offset and records ppm = applied ppm + offset/f × 1e6 (|ppm| ≤ 50 kept, last 20
-averaged). With `autoTune` on, new heads open at `f × (1 + ppm·1e-6) − center`. P25 control
+frequency offset and records ppm = applied ppm + offset/f × 1e6; each call of a second or more
+whose voice decoder reported an offset records its average the same way (|ppm| ≤ 50 kept; the
+median of the last 20, of both kinds, is the score). `Session::load_tune` / `tune_unsaved`
+carry each source's score to the next run, which starts from it. With `autoTune` on, new heads open at `f × (1 + ppm·1e-6) − center`. P25 control
 channels more than 150 Hz off are reopened at the corrected frequency, at most every 200 s. The
 measured error is always reported (`SourceTune`).
 
@@ -589,7 +592,7 @@ then earliest start. The others become `Duplicate` events.
 | The engine (CPU can't keep up) | Source queue fills → sources block → driver loses samples → `dropped` in status, gap filled, calls carry on with a hole; load shown on the dashboard. |
 | One browser | Its WebSocket task falls behind the 4,096-message ring and skips messages. Recording and other browsers are unaffected. |
 | Disk / finish thread | Finish queue fills (1,024 calls) → the engine writes calls itself without M4A, which slows decoding until it drains. |
-| One plugin | Its 1,024-line queue fills → its events are dropped and counted. The engine and other plugins are unaffected. The Archive keeps files a plugin never answered for (gives up after 1 h). |
+| One plugin | Its 1,024-line queue fills → its events are dropped and counted. The engine and other plugins are unaffected. A call it never answered for counts as failed after 1 h. |
 | M4A encoder | Encode queue fills → calls go to plugins as WAV. |
 | A radio stalls | No data for 1 s → silence filled in by `Session::poll` so calls on that source time out; the driver reopens after 2–3 s. |
 
@@ -666,8 +669,9 @@ stdin from the 1,024-line queue, and a stderr reader. Events are serialised once
 For each call the finish thread calls `archive.expect(call, takers)`, where takers = live
 processes subscribed to `call.concluded`. Each `call.result` counts down. At zero the call's
 `audioArchive`, `callLog`, `archiveFilesOnFailure` and `compressWav` rules are applied (delete,
-or move out of the RAM spool). A call no plugin takes keeps all its files. An unsettled call is
-kept after 1 h.
+or move out of the RAM spool): `ok` and `skipped` count the same, and only a `failed` keeps the
+files (with `archiveFilesOnFailure`). An unsettled call counts as failed after 1 h. With no
+takers, `archive::plan` writes only what the Keep rules keep, and the call settles at once.
 
 ### 8.6 RAM spool
 
@@ -810,8 +814,9 @@ call JSON + WAV on disk → `HostMessage::CallConcluded` → plugin → `PluginM
 `recorder_num: u32`, `tx: Transmissions`, `freq_error: (f64, u32)`, `reception: Reception`.
 
 **`TrackerOut`**: `Audio(Vec<f32>, VoiceFrame)` (20 ms at 8 kHz), `Info { source, emergency,
-encrypted }`, `Cipher(CipherId)`, `Decrypted`, `AnalogAudio(Vec<f32>)`, `Subaudible(Vec<f32>)`, `Alias(Alias)`,
-`AliasLc(AliasLc)`. **`VoiceOut`**: `slot: u8`, `t: f64`, `out: TrackerOut`.
+encrypted }`, `Cipher(CipherId)`, `Decrypted`, `AnalogAudio(Vec<f32>)`, `Subaudible(Vec<f32>)`, `Alias(Alias)`
+(`crate::alias`, any protocol), `AliasLc(AliasLc)`, `Position(Position)` (`crate::position`). **`VoiceOut`**: `slot: u8`,
+`t: f64`, `out: TrackerOut`.
 
 **`VoiceFrame`**: `codec` (Imbe | Ambe), `bits: Vec<u8>`, `e0`, `errs: u32`, `erased: bool`,
 `kind`.
@@ -838,6 +843,7 @@ encrypted }`, `Cipher(CipherId)`, `Decrypted`, `AnalogAudio(Vec<f32>)`, `Subaudi
 | `CallStart` / `CallUpdate` / `CallEnd` | `Call` | call lifecycle |
 | `Audio` | `call_id`, `system`, `talkgroup`, `samples: Vec<f32>` | live audio, 8 kHz |
 | `UnitAlias` | `system`, `unit`, `alias`, `talkgroup` | talker alias heard |
+| `UnitPosition` | `system`, `unit`, `lat`, `lon`, `talkgroup` | a radio on a call gave a new GPS position |
 | `Concluded` | `Concluded` | a call to save |
 | `NotSaved` | `Call` | too short / silent |
 | `Duplicate` | `call`, `kept` | another site's copy kept |
@@ -886,7 +892,7 @@ none), `decrypted`, `call_length`,
 digital), `short_name`, `patched_talkgroups` (only when more than one), `freqList` [{freq,
 time, pos, len, error_count, spike_count}], `errorList` [{pos, len, frames, error_count,
 bad_frames, max_frame_errors}], `srcList` [{src, time, pos, emergency, signal_system, tag,
-tag_ota}].
+tag_ota, lat?, lon?}].
 
 ### 9.7 Plugin protocol (`trunk-recorder-plugin/src/protocol.rs`)
 
@@ -903,7 +909,7 @@ Constants: `API_VERSION` = 1, `EXIT_CONFIG` = 78, conventional system index base
 | `hello` | `api`, `host { name, version }`, `config`, `systems: [SystemInfo { index, short_name, kind, config }]`, `capture_dir`, `data_dir`, `audio_formats` |
 | `call.start`, `call.end` | `CallInfo { id, system, short_name, talkgroup, talkgroup_tag, freq_hz, tdma_slot, analog, encrypted, algid, key_id, decrypted, emergency, recording, reason, start_time, units, patched_talkgroups }` |
 | `call.concluded` | `path`, `system`, `call: CallRecord` (the call JSON), `files { json, wav, m4a }` |
-| `unit` | `system`, `short_name`, `kind` (registration, deregistration, affiliation, acknowledge, location, data_grant, answer_request, call_alert), `unit`, `talkgroup`, `time` |
+| `unit` | `system`, `short_name`, `kind` (registration, deregistration, affiliation, acknowledge, location, data_grant, answer_request, call_alert, emergency_alarm), `unit`, `talkgroup`, `time` |
 | `audio` | `call_id`, `system`, `short_name`, `talkgroup`, `sample_rate`, `pcm` (base64 i16 LE) |
 | `status` | `time`, `systems [{ index, short_name, control_channel_hz, decode_rate, active_calls, recording }]` |
 | `shutdown` | `grace_s` |
@@ -1014,7 +1020,7 @@ same frequency).
 | `normalizeAudio` | true | yes | |
 | `digitalLevelDb`, `analogLevelDb` | 0 | yes | ±40 |
 | `compressWav` | false | yes | keep M4A instead of WAV |
-| `audioArchive`, `callLog` | true | yes | keep audio / JSON after upload |
+| `audioArchive`, `callLog` | true | yes | keep audio / JSON once the plugins are done |
 | `archiveFilesOnFailure` | true | yes | |
 | `filenameFormat` | "" | yes | "" = `<short>/<Y>/<M>/<D>/<tg>-<epoch>_<freq>` |
 | `dropDuplicateCalls` | true | | multi-site dedupe |

@@ -6,6 +6,8 @@ pub mod crypt;
 pub mod diversity;
 pub mod fec;
 pub mod frame;
+pub mod gps;
+pub mod mbt;
 pub mod phase2;
 pub mod synth;
 pub mod tsbk;

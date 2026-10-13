@@ -23,6 +23,8 @@ use super::calls::Call;
 use super::frames::VoiceFrame;
 use super::tdma::TdmaTracker;
 use super::tracker::VoiceTracker;
+use crate::alias::Alias;
+use crate::position::Position;
 use crate::dmr::voice::{DmrVoice, VOICE_BURST_S};
 use crate::dsp::c4fm::C4fm;
 use crate::dsp::cqpsk::{self, Cqpsk};
@@ -33,7 +35,7 @@ use crate::mbe;
 use crate::nxdn::voice::{NxdnVoice, VCH_S};
 use crate::nxdn::Rate;
 use crate::metrics::{Instrumented, Sink};
-use crate::p25::alias::{Alias, AliasLc};
+use crate::p25::alias::AliasLc;
 use crate::p25::crypt::Keyring;
 use crate::p25::diversity::{best_frame, Bank, BankConfig, Group};
 use crate::p25::phase2::{self, Packet};
@@ -105,6 +107,8 @@ pub enum TrackerOut {
     Alias(Alias),
     /// What a terminator / MAC message showed of talker aliases (counted).
     AliasLc(AliasLc),
+    /// The talker's GPS position.
+    Position(Position),
 }
 
 /// What one decoder produced: an output for the call on `slot`, from air
@@ -312,6 +316,9 @@ impl VoiceDecoder for P25Tdma {
             self.tracker.packet(p, t, &mut self.tout);
             out.extend(self.tout.drain(..).map(|(slot, o)| VoiceOut { slot: slot as u8, t, out: o }));
         }
+    }
+    fn offset_hz(&self) -> Option<f32> {
+        self.rx.offset_hz()
     }
     fn set_params(&mut self, p: &VoiceParams) {
         if let Some((nac, sys, wacn)) = p.tdma_key {

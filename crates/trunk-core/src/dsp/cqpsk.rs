@@ -472,12 +472,18 @@ mod tests {
     /// 864) as π/4-DQPSK at 48 kHz, `off` Hz above the channel, with complex
     /// noise of standard deviation `sigma` per component.
     fn signal(off: f64, sigma: f32) -> (Vec<usize>, Vec<Complex32>) {
-        let (rate, sps) = (48_000.0, 10usize);
+        signal_with(10, 0x5575_F5FF_77FF, 24, 864, 8, off, sigma)
+    }
+
+    /// `frames` frames of `frame` dibits, each starting with the `sync_len`-dibit
+    /// `sync`, at 48 kHz with `sps` samples a symbol.
+    fn signal_with(sps: usize, sync: u64, sync_len: usize, frame: usize, frames: usize, off: f64, sigma: f32) -> (Vec<usize>, Vec<Complex32>) {
+        let rate = 48_000.0;
         let mut dibits = Vec::new();
         let mut lfsr = 0xACE1u16;
-        for _ in 0..8 {
-            dibits.extend((0..24).rev().map(|i| ((0x5575_F5FF_77FFu64 >> (2 * i)) & 3) as usize));
-            for _ in 24..864 {
+        for _ in 0..frames {
+            dibits.extend((0..sync_len).rev().map(|i| ((sync >> (2 * i)) & 3) as usize));
+            for _ in sync_len..frame {
                 for _ in 0..2 {
                     lfsr = (lfsr >> 1) ^ (-((lfsr & 1) as i16) as u16 & 0xB400);
                 }
@@ -521,6 +527,21 @@ mod tests {
         let (_, iq) = signal(off, 0.0);
         let mut rx = Cqpsk::new(rate, Options::default());
         assert_eq!(rx.offset_hz(), None);
+        let mut out = Vec::new();
+        for c in iq.chunks(4800) {
+            rx.push(c, &mut out);
+        }
+        assert!(rx.syncs > 2, "syncs {}", rx.syncs);
+        let got = rx.offset_hz().expect("an offset once synced");
+        assert!((got - off as f32).abs() < 30.0, "offset {got}");
+    }
+
+    /// Phase 2 (6000 baud, its 40-bit S-ISCH sync) reads its offset back too.
+    #[test]
+    fn reports_a_phase_2_carrier_offset() {
+        let off = -650.0;
+        let (_, iq) = signal_with(8, 0x57_5D57_F7FF, 20, 360, 16, off, 0.02);
+        let mut rx = Cqpsk::new(48_000.0, Options { baud: crate::p25::phase2::SYMBOL_RATE, df_beta: 0.5, ..Default::default() });
         let mut out = Vec::new();
         for c in iq.chunks(4800) {
             rx.push(c, &mut out);

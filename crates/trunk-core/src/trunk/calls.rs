@@ -16,6 +16,7 @@ use super::patches::Patches;
 use super::talkgroups::{Talkgroup, Talkgroups};
 use super::voice::CipherId;
 use crate::dsp::tones::{Tone, ToneHeard};
+use crate::position::Position;
 
 pub type CallId = u32;
 
@@ -74,12 +75,14 @@ impl Reason {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct CallSource {
     pub src: u32,
     /// Sample-clock seconds this source was first heard on the call.
     pub time_s: f64,
     pub emergency: bool,
+    /// Where the radio said it was (GPS) while it talked: latitude, longitude.
+    pub position: Option<(f64, f64)>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -282,8 +285,18 @@ impl CallManager {
         if src == 0 || c.sources.last().is_some_and(|s| s.src == src) {
             return false;
         }
-        c.sources.push(CallSource { src, time_s, emergency });
+        c.sources.push(CallSource { src, time_s, emergency, position: None });
         true
+    }
+
+    /// A voice channel gave a radio's position: kept on its latest entry
+    /// (returns true if it moved).
+    pub fn note_position(c: &mut Call, p: &Position) -> bool {
+        let Some(s) = c.sources.iter_mut().rev().find(|s| s.src == p.unit) else { return false };
+        let at = Some((p.lat, p.lon));
+        let new = s.position != at;
+        s.position = at;
+        new
     }
 
     /// Advance the clock: end calls that have gone quiet, and split those
@@ -406,7 +419,7 @@ impl CallManager {
             start_s: m.time_s,
             last_update_s: m.time_s,
             last_audio_s: m.time_s,
-            sources: if m.source > 0 { vec![CallSource { src: m.source as u32, time_s: m.time_s, emergency: m.emergency }] } else { vec![] },
+            sources: if m.source > 0 { vec![CallSource { src: m.source as u32, time_s: m.time_s, emergency: m.emergency, position: None }] } else { vec![] },
             talkgroup_info: tg.clone(),
             patched_talkgroups: self.patches.members_of(m.talkgroup),
             color_code: m.color_code,

@@ -190,6 +190,7 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
     }
     session.load_units(&|name| fs::read_to_string(units_path(name)).ok());
     session.load_heard(&fs::read_to_string(heard_path(&cfg)).unwrap_or_default());
+    session.load_tune(&fs::read_to_string(tune_path()).unwrap_or_default());
     ctx.plugins.start(&cfg);
     let stop = Arc::new(AtomicBool::new(false));
     let (tx, rx) = mpsc::sync_channel::<SourceMsg>(256);
@@ -318,6 +319,19 @@ const REGISTRY_EVERY: Duration = Duration::from_secs(15 * 60);
 /// Where the codes conventional frequencies carried are kept ([`trunk_app::heard`]).
 pub(crate) fn heard_path(cfg: &trunk_app::Config) -> PathBuf {
     crate::paths::data_dir().join(Session::heard_file(cfg))
+}
+
+/// AutoTune's scores from earlier runs ([`Session::tune_unsaved`]).
+fn tune_path() -> PathBuf {
+    crate::paths::data_dir().join("tune.json")
+}
+
+/// Keep the sources' AutoTune scores for the next run, when they changed.
+fn save_tune(session: &mut Session) {
+    if let Some(json) = session.tune_unsaved() {
+        let _ = fs::create_dir_all(crate::paths::data_dir());
+        let _ = trunk_app::config::write_atomic(&tune_path(), &json);
+    }
 }
 
 /// Save the talker aliases systems learned, and the codes conventional
@@ -452,6 +466,7 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Rec
     // Band plans (and DMR channel tables) as last saved: learned ones survive a crash or kill too.
     let mut saved_plans: std::collections::HashMap<String, String> = Default::default();
     let mut plans_at = Instant::now();
+    let mut tune_at = Instant::now();
     let mut registry_at = Instant::now();
     let mut topics_gen = u64::MAX;
     loop {
@@ -503,6 +518,10 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Rec
         deliver(&ctx, &mut out, plugins.as_ref(), &rules, &fin);
         drop(plugins);
         save_units(&mut session);
+        if tune_at.elapsed() >= Duration::from_secs(60) {
+            tune_at = Instant::now();
+            save_tune(&mut session);
+        }
         if plans_at.elapsed() >= Duration::from_secs(10) {
             plans_at = Instant::now();
             save_bandplans(&session, &mut saved_plans);
@@ -535,6 +554,7 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Rec
         let _ = trunk_app::config::write_atomic(&bandplan_path(&name), plan);
     }
     save_units(&mut session);
+    save_tune(&mut session);
     save_registry(&ctx.shared);
     stop.store(true, Ordering::Relaxed);
     ctx.set_phase("idle", None, ended_all);
@@ -579,28 +599,25 @@ fn finish_calls(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, rx: 
 fn finish_one(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, f: Finish, encoder: Option<&(plugins::Encoder, u32)>, host: Option<&PluginHost>) {
     let r = f.rules;
     let takers = host.map_or(0, |h| h.call_takers());
-    // (A call no plugin takes is kept whole.)
-    let (keep_audio, keep_json) = (r.audio_archive || takers == 0, r.call_log || takers == 0);
-    let keep_m4a = keep_audio && r.compress_wav;
-    let write_wav = keep_audio || host.is_some_and(|h| h.needs_wav()) || (r.compress_wav && encoder.is_none());
+    let p = plugins::plan(r, takers, host.is_some_and(|h| h.needs_wav()), encoder.is_some());
+    let (keep_audio, keep_json, keep_m4a, write_wav) = (p.keep_audio, p.keep_json, p.keep_m4a, p.write_wav);
     let base = dir.join(&f.rel);
-    let spooling = takers > 0 && !(keep_audio && keep_json && keep_m4a);
     let need = f.json.len() + f.wav.len() / 4 + if write_wav && !keep_audio { f.wav.len() } else { 0 };
-    let spooled = spool.filter(|s| spooling && s.room_for(need as u64)).map(|s| s.dir.join(&f.rel));
+    let spooled = spool.filter(|s| p.spool && s.room_for(need as u64)).map(|s| s.dir.join(&f.rel));
     let at = |kept: bool, ext: &str| PathBuf::from(format!("{}.{ext}", if kept { &base } else { spooled.as_ref().unwrap_or(&base) }.display()));
     let (wav_at, json_at, frames_at, m4a_at) = (at(keep_audio, "wav"), at(keep_json, "json"), at(keep_audio, f.frames.as_ref().map_or("sdr", |c| c.ext)), at(keep_m4a, "m4a"));
     for d in [&wav_at, &json_at, &m4a_at].into_iter().filter_map(|p| p.parent()) {
         let _ = fs::create_dir_all(d);
     }
     let ok = (!write_wav || fs::write(&wav_at, &f.wav).is_ok())
-        && fs::write(&json_at, &f.json).is_ok()
-        && f.frames.as_ref().is_none_or(|c| fs::write(&frames_at, &c.bytes).is_ok());
+        && (!p.write_json || fs::write(&json_at, &f.json).is_ok())
+        && f.frames.as_ref().filter(|_| p.write_frames).is_none_or(|c| fs::write(&frames_at, &c.bytes).is_ok());
     if !ok {
         log::error!("Couldn't write {}", base.display());
         publish(&ctx.hub, json!({ "type": "log", "lines": [{ "timeS": 0, "kind": "error", "text": format!("couldn't write {}", base.display()) }] }));
         return;
     }
-    // Whether its audio and JSON stay once the plugins are done (an upload that fails may keep them after all: call_files).
+    // Whether its audio and JSON stay once the plugins are done (a plugin's failure may keep them after all: archive::settle).
     let mut entry = f.entry;
     entry["audio"] = json!(keep_audio);
     entry["json"] = json!(keep_json);
@@ -616,7 +633,7 @@ fn finish_one(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, f: Fin
         files: trunk_recorder_plugin::CallFiles { json: json_at, wav: wav_at, m4a: None },
         m4a_to: m4a_at,
     };
-    if let Some((e, kbps)) = encoder.filter(|_| r.compress_wav) {
+    if let Some((e, kbps)) = encoder.filter(|_| p.make_m4a) {
         match e.m4a(&audio.wav, &audio.m4a_to, *kbps) {
             Ok(()) => audio.files.m4a = Some(audio.m4a_to.clone()),
             Err(err) => {

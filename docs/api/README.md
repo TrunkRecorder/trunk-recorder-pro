@@ -414,7 +414,7 @@ Every message is a JSON object with a `type`. Exact fields are in
 | `subscribed` | Answers `subscribe` | `topics` |
 | `statsResult` | Answers `statsQuery` | `id`, `from`, `to`, `loading` (the history files are still being read), `series`: name → `{ t0, stepS, v, lo, hi, n }` |
 | `radioResult` | Answers `radioQuery` | `id`, `what`, and by `what`: `rows` (talkgroups / radios / frequencies), `row` and its detail, `systems` (summary), `histogram` |
-| `concluded` | A call was recorded | `entry`: `{ path, record, audio, json }`; `audio` / `json`: whether they stay in the recordings folder once the upload plugins are done (false: deleted after uploading) |
+| `concluded` | A call was recorded | `entry`: `{ path, record, audio, json }`; `audio` / `json`: whether they stay in the recordings folder once the plugins are done (**Keep audio** / **Keep call JSON**; false: deleted then) |
 | `callFiles` | A call's upload plugins are done, and it kept other than its entry said (an upload failed and its files stay) | `path`, `audio`, `json` |
 | `log` | Topic `log` (errors and notices always) | `lines[]`: `{ timeS, kind, text, system? }` — `kind` e.g. `"error"`, `"control"`, `"alias"`, `"plugin"`, or a control-message kind |
 | `unitAlias` | A talker alias was heard | `system` (short name), `unit`, `alias` |
@@ -514,9 +514,9 @@ Each recorded call's files are under the recordings folder at
 
 URL-encode each segment of the path:
 `path.split("/").map(encodeURIComponent).join("/")`. An `<audio>` element can
-play the `.wav` directly. The files can be deleted after their plugins have
-uploaded them (`recording.audioArchive: false`), so older calls in the
-history may have no files.
+play the `.wav` directly. The files can be deleted once the plugins are done
+with them (`recording.audioArchive: false`), so older calls in the history
+may have no files.
 
 `CallRecord` is Trunk Recorder's call JSON, so tools written for Trunk
 Recorder's files read it too. The fields you'll want most: `talkgroup`,
@@ -631,6 +631,7 @@ the day). The live values come in `stats` (and `host`); the history answers
 | `sys/<short>/cc/good`, `bad` | Control messages decoded / lost a second |
 | `sys/<short>/cc/locked`, `snr`, `signal`, `noise`, `offset`, `sep`, `phaseErr` | Decoding (1/0), the channel's SNR and levels, its carrier offset (Hz), the C4FM receiver's eye opening, the CQPSK receiver's phase error (RMS degrees: under 10 clean, ~25 noise) |
 | `sys/<short>/cc/syncs`, `nidFails`, `flywheels`, `eqResets` | P25 framing: syncs found, headers failed, frames carried over a missed sync, equaliser resets (a second) |
+| `sys/<short>/cc/airSym` | P25: symbols of control channel air decoded a second; over 4800, the coverage |
 | `sys/<short>/calls`, `airMs`, `audioBytes`, `active`, `recording` | Calls ending a second, airtime (ms a second), audio written, calls on the air and being recorded now |
 | `sys/<short>/why/<reason>` | Calls starting a second by what happened to them: `recorded`, `monitored`, `ignored`, `encrypted`, `unknown_tg`, `no_source`, `no_recorder` |
 | `sys/<short>/voice/frames`, `errors`, `bad` | Voice frames decoded, bit errors corrected, frames lost (a second) |

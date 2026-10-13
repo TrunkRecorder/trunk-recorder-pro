@@ -8,7 +8,7 @@
 //! the one vocabulary the call manager speaks.
 //!
 //! ```text
-//! P25:      receiver bank → framer → TSBKs → TsbkParser → Message
+//! P25:      receiver bank → framer → TSBKs (and MBTs) → TsbkParser → Message
 //! SmartNet: 2FSK → OSW framer → Parser → Message
 //! DMR:      every carrier of the site: 4FSK → bursts → CSBK / link control → Message
 //! NXDN:     every carrier of the site: 4FSK → frames → CAC / VCALL / SCCH → Message
@@ -26,8 +26,7 @@ use super::voice::VoiceParams;
 use crate::dmr;
 use crate::metrics::{Instrumented, Sink};
 use crate::nxdn;
-use crate::p25::diversity::{best_frame, best_tsbks, Bank, BankConfig, Group};
-use crate::p25::frame::TSDU;
+use crate::p25::diversity::{best_frame, control_frame, Bank, BankConfig, Group};
 use crate::smartnet;
 
 /// One-sided channel filter cutoff of a P25 control channel, Hz.
@@ -154,6 +153,9 @@ pub fn build(cfg: &SystemConfig, rate: f64) -> Box<dyn ControlChannel> {
             nac_votes: BTreeMap::new(),
             good: 0,
             bad: 0,
+            air: 0,
+            callsign: None,
+            notes: Vec::new(),
             t0: 0.0,
             rate,
         }),
@@ -180,6 +182,11 @@ struct P25 {
     nac_votes: BTreeMap<u16, u32>,
     good: u64,
     bad: u64,
+    /// Symbols of air the decoded blocks account for (see [`crate::p25::diversity::air_symbols`]).
+    air: u64,
+    /// The site's callsign (Motorola's base station ID), and news of it.
+    callsign: Option<String>,
+    notes: Vec<(NoteLevel, String)>,
     /// The last push's start time and rate (for the flush).
     t0: f64,
     rate: f64,
@@ -191,15 +198,16 @@ impl P25 {
             let f = best_frame(g);
             *self.nac_votes.entry(f.nid.nac).or_default() += 1;
             self.identity.set_opt(IdField::Nac, self.nac_votes.iter().max_by_key(|&(_, &c)| c).map(|(&n, _)| n as u32));
-            if f.nid.duid != TSDU {
-                continue;
-            }
-            let (blocks, missing) = best_tsbks(g);
-            self.bad += missing as u64;
             let t = self.t0 + f.sample / self.rate;
-            for blk in &blocks {
+            let cf = control_frame(g, f.nid.duid, self.identity.wacn().zip(self.identity.sys_id()));
+            self.bad += cf.lost as u64;
+            self.air += cf.air;
+            for blk in &cf.blocks {
                 self.good += 1;
-                let msgs = self.parser.parse(blk, f.nid.nac, t);
+                let msgs = match blk {
+                    Ok(tsbk) => self.parser.parse(tsbk, f.nid.nac, t),
+                    Err(m) => vec![TsbkParser::unknown_mbt(m, f.nid.nac, t)],
+                };
                 for m in &msgs {
                     match m.kind {
                         MessageType::Status => {
@@ -210,6 +218,10 @@ impl P25 {
                             self.identity.set(IdField::SysId, m.sys_id);
                             self.identity.set(IdField::Rfss, m.rfss);
                             self.identity.set(IdField::Site, m.site);
+                        }
+                        MessageType::BaseStationId if m.callsign != self.callsign => {
+                            self.callsign = m.callsign.clone();
+                            self.notes.push((NoteLevel::Info, format!("Site callsign {}", m.callsign.as_deref().unwrap_or(""))));
                         }
                         _ => {}
                     }
@@ -226,6 +238,8 @@ impl ControlChannel for P25 {
     }
     fn report(&self, sink: &mut dyn Sink) {
         self.bank.report(sink);
+        // A rate: over the symbol rate, the share of the channel's air decoded.
+        sink.counter("airSym", self.air);
     }
     fn plan(&self) -> CarrierPlan {
         CarrierPlan::Hunt { cutoff_hz: P25_CUTOFF_HZ }
@@ -233,9 +247,13 @@ impl ControlChannel for P25 {
     fn restart(&mut self, rate: f64) {
         self.bank = Bank::new(rate, self.bank_cfg);
     }
+    fn take_notes(&mut self) -> Vec<(NoteLevel, String)> {
+        std::mem::take(&mut self.notes)
+    }
     fn forget_site(&mut self) {
         self.identity = Identity::default();
         self.nac_votes.clear();
+        self.callsign = None;
     }
     fn push(&mut self, _carrier: usize, iq: &[Complex32], t0: f64, rate: f64, out: &mut Vec<Step>) {
         (self.t0, self.rate) = (t0, rate);

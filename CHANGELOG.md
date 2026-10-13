@@ -28,6 +28,47 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   as noise. Slices are now at least 30 kHz wide. The analog squelch of
   trunked calls on such sources used the same floor and is fixed too.
   Sources at 1.92 MS/s and above behave as before.
+- **Archive settings, clearer and predictable.** The three settings that
+  decide what of a call stays in the recordings folder are now under
+  **Archive** in Setup's Recording tab: **Keep audio**, **Keep call JSON**
+  and **Keep when a plugin fails** (the config keys are unchanged). Off, a
+  Keep setting deletes that file once the plugins are done with the call;
+  a plugin that skipped a call is done with it, just as one that uploaded
+  it. Only a failure keeps the files, with **Keep when a plugin fails** on,
+  which is greyed out when both Keep settings are on. Changes: with no
+  plugin taking calls, the Keep settings now apply too (before, every call
+  was kept whole), and Setup says when that means nothing is saved; a call
+  a plugin never answered on counts as failed after an hour (before, it was
+  always kept).
+- **P25: multi-block control channel messages.** Some sites send part of
+  their control channel as multi-block (MBT) messages, which were
+  dropped. Those sites now show their WACN and System ID (so a site lock
+  and multi-site grouping work), and multi-block grants, patch grants,
+  affiliations and registrations are followed like the single-block ones.
+  On a site that uses them, control messages a second go up: CLMRN-I
+  went from about 12 to 22.
+- **Control channel coverage.** The Decode page (a tile on each P25
+  system's card, and a chart under Over time) and Find my system show how
+  much of the control channel decoded: an estimate from timing, of the
+  air decoded against the most the channel could carry. It reads the same
+  on every system, unlike messages a second, which are lower where a site
+  sends multi-block messages (one takes the air of two or three).
+- **P25: manufacturers' messages.** Motorola and L3Harris radios' GPS
+  positions, sent while they talk, are kept on the radio in the call JSON
+  (`lat`, `lon` in `srcList`). Motorola patch deletes end a patch when the
+  site says so; Motorola's base station ID logs the site's callsign;
+  Motorola emergency alarms are logged and sent to plugins as unit events
+  (`emergency_alarm`); denied and queued requests are logged with the
+  reason. On Phase 2, a Motorola patched call names its talker.
+- **P25 fixes.** On Motorola systems, a supergroup being set up (and a
+  queued request) was taken for a unit-to-unit call, and a patch-add in a
+  voice channel's link control for a talker. An L3Harris regroup of a
+  radio was taken for a talkgroup patch; an encrypted L3Harris patch is
+  now marked. A refused registration or affiliation isn't counted as one.
+- **NXDN talker aliases:** Kenwood radios' programmed names are read from the
+  traffic channel and shown as each radio's name (`tag_ota`, the Calls page,
+  `<shortName>.units.csv`), as P25's are. ASCII aliases only; Icom's format
+  isn't read.
 
 ## [0.1.9] — 2026-10-09
 

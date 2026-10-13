@@ -250,14 +250,15 @@ pub fn call_record(call: &Call, info: &ConcludeInfo) -> (String, String) {
     for (i, s) in call.sources.iter().enumerate() {
         let _ = write!(
             j,
-            "{}{{\"src\":{},\"time\":{},\"pos\":{},\"emergency\":{},\"signal_system\":\"\",\"tag\":\"{}\",\"tag_ota\":\"{}\"}}",
+            "{}{{\"src\":{},\"time\":{},\"pos\":{},\"emergency\":{},\"signal_system\":\"\",\"tag\":\"{}\",\"tag_ota\":\"{}\"{}}}",
             if i > 0 { "," } else { "" },
             s.src,
             ms(s.time_s).div_euclid(1000),
             ((s.time_s - call.start_s) * 100.0).round().max(0.0) / 100.0,
             s.emergency as u8,
             esc(&UnitTags::name(info.unit_tags, info.units, s.src).unwrap_or_default()),
-            esc(info.units.and_then(|u| u.get(s.src)).unwrap_or(""))
+            esc(info.units.and_then(|u| u.get(s.src)).unwrap_or("")),
+            s.position.map_or(String::new(), |(lat, lon)| format!(",\"lat\":{lat:.6},\"lon\":{lon:.6}"))
         );
     }
     j.push_str("]}");
@@ -306,6 +307,35 @@ mod tests {
         tx.mark_decrypted(0.0);
         tx.note(0, 0.1);
         assert!(!tx.current_dropped());
+    }
+
+    #[test]
+    fn a_sources_position_is_in_the_call_json() {
+        use crate::position::Position;
+        use crate::trunk::calls::CallManager;
+        let mut call = Call { talkgroup: 101, ..Default::default() };
+        for src in [7, 8] {
+            CallManager::note_source(&mut call, src, 0.0, false);
+        }
+        assert!(CallManager::note_position(&mut call, &Position { unit: 8, lat: 30.0529, lon: -83.17565, source: "HarrisP25_TDMA" }));
+        assert!(!CallManager::note_position(&mut call, &Position { unit: 8, lat: 30.0529, lon: -83.17565, source: "HarrisP25_TDMA" }), "the same again");
+        assert!(!CallManager::note_position(&mut call, &Position { unit: 9, lat: 1.0, lon: 1.0, source: "HarrisP25_TDMA" }), "not on the call");
+        let errors = FrameErrors::default();
+        let info = ConcludeInfo {
+            short_name: "s",
+            epoch_ms_at_zero: 0.0,
+            audio_seconds: 1.0,
+            errors: &errors,
+            recorder_num: 0,
+            end_s: 1.0,
+            units: None,
+            unit_tags: None,
+            freq_error_hz: 0,
+            reception: Reception::default(),
+        };
+        let (json, _) = call_record(&call, &info);
+        assert!(json.contains("\"src\":7,") && json.matches("\"lat\"").count() == 1, "{json}");
+        assert!(json.contains("\"tag_ota\":\"\",\"lat\":30.052900,\"lon\":-83.175650}]"), "{json}");
     }
 }
 

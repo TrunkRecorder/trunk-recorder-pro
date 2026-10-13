@@ -429,7 +429,7 @@ function AutoTune(props: { src: Source; i: number; edit: EditSource }) {
     <div className="field wide">
       <Toggle
         label="AutoTune"
-        hint="follows crystal drift using the control channel (P25, SmartNet)"
+        hint="follows crystal drift using its control channels and digital calls"
         checked={!!src.autoTune}
         onChange={(v) =>
           edit((x) => {
@@ -1935,7 +1935,15 @@ type NumRule = { [K in keyof RecordingRules]: RecordingRules[K] extends number ?
  * (in brackets). `desktop`: about files, which the browser keeps itself.
  */
 type Rule =
-  | { key: BoolRule; kind: "bool"; label: string; hint?: string; desktop?: boolean }
+  | {
+      key: BoolRule;
+      kind: "bool";
+      label: string;
+      hint?: string;
+      desktop?: boolean;
+      /** Why it does nothing with these settings (greyed out), if it doesn't. */
+      inactive?: (r: RecordingRules) => string | undefined;
+    }
   | { key: NumRule; kind: "num"; label: string; hint?: string; min: number; max: number; zero?: string }
   | { key: "filenameFormat"; kind: "text"; label: string };
 
@@ -1978,9 +1986,22 @@ const RULE_GROUPS: { title: string; rules: Rule[] }[] = [
     rules: [
       { key: "filenameFormat", kind: "text", label: "Folders and file names" },
       { key: "compressWav", kind: "bool", label: "Also save an M4A", hint: "a tenth the size; needs ffmpeg or afconvert", desktop: true },
-      { key: "audioArchive", kind: "bool", label: "Keep the audio after uploading", hint: "off: deleted once uploaded", desktop: true },
-      { key: "callLog", kind: "bool", label: "Keep the call JSON after uploading", desktop: true },
-      { key: "archiveFilesOnFailure", kind: "bool", label: "Keep everything when an upload fails", hint: "even with the two above off", desktop: true },
+    ],
+  },
+  {
+    // What stays in the recordings folder once the plugins are done with a call (docs/guides/recordings.md).
+    title: "Archive",
+    rules: [
+      { key: "audioArchive", kind: "bool", label: "Keep audio", hint: "off: deleted once the plugins are done with the call", desktop: true },
+      { key: "callLog", kind: "bool", label: "Keep call JSON", hint: "off: deleted once the plugins are done with the call", desktop: true },
+      {
+        key: "archiveFilesOnFailure",
+        kind: "bool",
+        label: "Keep when a plugin fails",
+        hint: "keeps the audio and JSON when any plugin reports a failure",
+        desktop: true,
+        inactive: (r) => (r.audioArchive && r.callLog ? "both are kept anyway" : undefined),
+      },
     ],
   },
 ];
@@ -2004,13 +2025,20 @@ function CallRules(props: { c: Config }) {
       </header>
       <div className="stack">
         <p className="muted small">Defaults for every system; each can override them.</p>
-        {RULE_GROUPS.map((g) => (
+        {RULE_GROUPS.filter((g) => g.rules.some(ruleShown)).map((g) => (
           <div key={g.title} className="rule-group">
             <h3>{g.title}</h3>
             <div className="grid2">
               {g.rules.filter(ruleShown).map((rule) =>
                 rule.kind === "bool" ? (
-                  <Toggle key={rule.key} label={rule.label} hint={rule.hint} checked={!!r[rule.key]} onChange={(v) => set(rule.key, v)} />
+                  <Toggle
+                    key={rule.key}
+                    label={rule.label}
+                    hint={rule.inactive?.(r) ?? rule.hint}
+                    checked={!!r[rule.key]}
+                    disabled={!!rule.inactive?.(r)}
+                    onChange={(v) => set(rule.key, v)}
+                  />
                 ) : rule.kind === "num" ? (
                   <Field key={rule.key} label={rule.label} hint={rule.hint}>
                     <DecInput
@@ -2033,6 +2061,11 @@ function CallRules(props: { c: Config }) {
                 ),
               )}
             </div>
+            {g.title === "Archive" && (!r.audioArchive || !r.callLog) && !Object.values(props.c.plugins ?? {}).some((p) => p.enabled) && (
+              <p className="muted small">
+                No plugin is on, so there's nothing to wait for: {!r.audioArchive && !r.callLog ? "calls aren't saved at all" : !r.audioArchive ? "calls' audio isn't saved at all" : "calls' JSON isn't saved at all"}.
+              </p>
+            )}
           </div>
         ))}
       </div>
@@ -2055,6 +2088,8 @@ function RecordingOverridePanel(props: { c: Config; value: RecordingOverride | u
     });
   const rules = RULE_GROUPS.flatMap((g) => g.rules).filter(ruleShown);
   const mine = rules.filter((r) => own[r.key] !== undefined);
+  // The settings this system ends up with (its own, else the Recording tab's).
+  const effective = { ...base, ...own } as RecordingRules;
   return (
     <details className="help override">
       <summary>
@@ -2077,10 +2112,15 @@ function RecordingOverridePanel(props: { c: Config; value: RecordingOverride | u
               />
             );
           return (
-            <Field key={rule.key} label={rule.label} hint={mineNow ? `Default: ${ruleValue(rule, base[rule.key])}` : undefined}>
+            <Field
+              key={rule.key}
+              label={rule.label}
+              hint={(rule.kind === "bool" && rule.inactive?.(effective)) || (mineNow ? `Default: ${ruleValue(rule, base[rule.key])}` : undefined)}
+            >
               {rule.kind === "bool" ? (
                 <select
                   className={mineNow ? "overridden" : ""}
+                  disabled={!!rule.inactive?.(effective)}
                   value={own[rule.key] === undefined ? "" : own[rule.key] ? "on" : "off"}
                   onChange={(e) => set(rule.key, e.target.value === "" ? undefined : e.target.value === "on")}
                 >

@@ -96,7 +96,7 @@ file, the system, the talkgroup ID, the frequency, the first radio to speak and 
 call it is (click the bar to jump). **Recent** under the buttons is the last five calls played;
 click one to hear it again.
 
-Encrypted calls and calls whose audio wasn't kept (deleted after uploading) are left out. A call
+Encrypted calls and calls whose audio wasn't kept (**Keep audio** off) are left out. A call
 kept as M4A plays the M4A, else the WAV.
 
 ### Calls

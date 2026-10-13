@@ -19,6 +19,13 @@ function ratio(a: SeriesData | undefined, b: SeriesData | undefined, mul = 1): S
   return { t0: a.t0, stepS: a.stepS, v: a.v.map((x, i) => f(x, b.v[i])), lo: a.v.map(() => null), hi: a.v.map(() => null), n: a.n };
 }
 
+/** `a` times `mul` (its averages and each step's lowest and highest), capped at `cap`. */
+function scaled(a: SeriesData | undefined, mul: number, cap = Infinity): SeriesData | null {
+  if (!a) return null;
+  const f = (x: number | null) => (x === null ? null : Math.min(cap, x * mul));
+  return { ...a, v: a.v.map(f), lo: a.lo.map(f), hi: a.hi.map(f) };
+}
+
 /** Voice frames that couldn't be decoded, %, over the last `sinceS` (live). */
 export function voiceBadPct(name: string, sinceS = 600): number | null {
   const f = recentAvg(K.sys(name, "voice/frames"), sinceS) ?? 0;
@@ -85,6 +92,11 @@ function DecodeCard({ s, x, usual, freqs }: { s: AppState; x: DashSystem; usual:
   const good = recentAvg(k("cc/good"), 60) ?? 0;
   const bad = recentAvg(k("cc/bad"), 60) ?? 0;
   const lost = good + bad > 0 ? (100 * bad) / (good + bad) : null;
+  // P25: symbols of air decoded a second, over 4800: the share of the
+  // channel accounted for, which messages a second can't show where an MBT
+  // takes several TSBKs' air.
+  const airSym = recentAvg(k("cc/airSym"), 60);
+  const air = airSym === null ? null : Math.min(100, airSym / 48);
   const vbad = voiceBadPct(x.name);
   const vf = recentAvg(k("voice/frames"), 600) ?? 0;
   const ve = recentAvg(k("voice/errors"), 600) ?? 0;
@@ -127,6 +139,15 @@ function DecodeCard({ s, x, usual, freqs }: { s: AppState; x: DashSystem; usual:
               spark={<LiveSpark k={k("cc/bad")} color="var(--serious)" lo={0} />}
               hint="Control messages not decoded. A few % is normal."
             />
+            {x.kind === "p25" && (
+              <Stat
+                label="Coverage"
+                value={air === null ? "—" : num(air, 1)}
+                unit="%"
+                spark={<LiveSpark k={k("cc/airSym")} mul={1 / 48} lo={0} hi={100} title="Coverage, last 10 min (0–100 %)" />}
+                hint="An estimate from timing: the control channel's air that decoded, against the most it could carry over that time. Unlike messages a second, it reads the same on every system (a multi-block message takes two or three TSBKs' air). Frames never caught count against it. 96–98 % is healthy."
+              />
+            )}
             {x.kind === "smartnet" ? (
               <Stat label="Deviation" value={num(val(s, k("cc/deviation")), 0)} unit="Hz" sub={`carrier ${signed(val(s, k("cc/offset")), 0)} Hz`} hint="Normal is about ±2.4 kHz; less means weak or filtered." />
             ) : cqpsk ? (
@@ -197,7 +218,7 @@ function SystemDetail({ s, name }: { s: AppState; name: string }) {
   const [range, setRange] = useState<StatsRange>("24h");
   useTopic(`decode:${name}`);
   const k = (n: string) => K.sys(name, n);
-  const hist = useHistory([k("cc/good"), k("cc/bad"), k("cc/sep"), k("cc/phaseErr"), k("cc/snr"), k("cc/offset"), k("voice/frames"), k("voice/bad")], range, 360);
+  const hist = useHistory([k("cc/good"), k("cc/bad"), k("cc/airSym"), k("cc/sep"), k("cc/phaseErr"), k("cc/snr"), k("cc/offset"), k("voice/frames"), k("voice/bad")], range, 360);
   const usual = useUsual([k("cc/good")]);
   const freqs = usePolled(`dfreqs:${name}:${range}`, () => radioQuery({ what: "freqs", system: name, hours: range === "7d" ? 168 : 24 }), 120_000);
   const rows = (freqs?.rows ?? []) as FreqRow[];
@@ -277,6 +298,19 @@ function SystemDetail({ s, name }: { s: AppState; name: string }) {
               lines={[line(k("cc/good"), "Decoded /s", "var(--series-1)", { band: true }), line(k("cc/bad"), "Lost /s", "var(--serious)")]}
               zero
               marks={usual[k("cc/good")] ? [{ v: usual[k("cc/good")]!.avg, label: "usual" }] : []}
+            />
+          </Card>
+        )}
+        {x.kind === "p25" && (
+          <Card title="Control channel coverage">
+            {/* Symbols of air decoded a second, over 4800: the share of the
+                channel accounted for. Unlike "Lost /s" it counts frames never
+                synced on, and weighs a message by its air. */}
+            <TimeSeries
+              lines={[{ label: "Coverage, %", color: "var(--series-1)", data: scaled(hist?.[k("cc/airSym")], 1 / 48, 100), band: true }]}
+              hi={100}
+              fmt={(v) => v.toFixed(1)}
+              empty="No coverage measured yet."
             />
           </Card>
         )}

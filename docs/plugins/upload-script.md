@@ -99,15 +99,15 @@ Some things to know about those paths:
   elsewhere: see [M4A audio](README.md#m4a-audio)). Without one, the third path is where it would
   be, and there's no file there.
 - **The WAV may not be there either.** When there's an M4A encoder and the call's audio isn't kept
-  (**Keep the audio after uploading** off), the recorder doesn't write the WAV at all for plugins
+  (**Keep audio** off), the recorder doesn't write the WAV at all for plugins
   that take M4A, and this one does. If your script needs the WAV, leave that setting on, or have
   the script use the M4A.
 - **With a RAM spool**, files that are only kept for the plugins are in the spool folder, not the
   recordings folder. Use the paths you're given rather than building your own.
 - **The files may be deleted after your script finishes.** Once every plugin that takes recorded
-  calls has reported on a call, the recorder applies your **Files** settings: with **Keep the audio
-  after uploading** or **Keep the call JSON after uploading** off, those files go then. A script
-  that wants to keep a copy should copy it. See
+  calls has answered on a call, the recorder applies your **Archive** settings: with **Keep audio**
+  or **Keep call JSON** off, those files go then. A script that wants to keep a copy should copy
+  it. See
   [What happens to the files](README.md#what-happens-to-the-files).
 
 Scripts run one call at a time on each of two threads, so two calls can be running at once.
@@ -126,7 +126,7 @@ Scripts run one call at a time on each of two threads, so two calls can be runni
 - **A run over the time limit** is stopped (on Linux and macOS, along with anything it started),
   and the call is marked failed (*took longer than 300 s, so it was stopped*).
 
-A failed run keeps the call's files if **Keep everything when an upload fails** is on.
+A failed run keeps the call's files if **Keep when a plugin fails** is on.
 
 ## Coming from Trunk Recorder
 

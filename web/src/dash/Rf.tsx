@@ -66,9 +66,9 @@ export function SourceCard({ s, src, i, compact: small }: { s: AppState; src: So
           label="Frequency error"
           value={src.errorPpm == null ? "—" : signed(src.errorPpm, 2)}
           unit="ppm"
-          sub={autoTuneOf(cfg) ? `AutoTune corrects ${signed(src.tunePpm ?? 0, 2)}` : src.errorPpm == null ? "needs a control channel" : "not corrected (AutoTune off)"}
+          sub={autoTuneOf(cfg) ? `AutoTune corrects ${signed(src.tunePpm ?? 0, 2)}${src.tuneSeeded ? " (last run's)" : ""}` : src.errorPpm == null ? "needs a digital call or control channel" : "not corrected (AutoTune off)"}
           spark={small ? undefined : <LiveSpark k={K.src(src.label, "ppm")} color="var(--series-2)" minSpan={1} title="Measured error, last 10 min" />}
-          hint="Measured on control channels. Steady: set ppm; drifting: temperature."
+          hint="The median of the last 20 measurements, on control channels and digital calls (P25, NXDN). Steady: set ppm; drifting: temperature."
         />
         <Stat
           label="Dropped"
