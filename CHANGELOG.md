@@ -18,6 +18,10 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   air decoded against the most the channel could carry. It reads the same
   on every system, unlike messages a second, which are lower where a site
   sends multi-block messages (one takes the air of two or three).
+- **NXDN talker aliases:** Kenwood radios' programmed names are read from the
+  traffic channel and shown as each radio's name (`tag_ota`, the Calls page,
+  `<shortName>.units.csv`), as P25's are. ASCII aliases only; Icom's format
+  isn't read.
 
 ## [0.1.9] — 2026-10-09
 

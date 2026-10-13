@@ -21,6 +21,7 @@ use super::calls::Call;
 use super::frames::VoiceFrame;
 use super::tdma::TdmaTracker;
 use super::tracker::VoiceTracker;
+use crate::alias::Alias;
 use crate::dmr::voice::{DmrVoice, VOICE_BURST_S};
 use crate::dsp::c4fm::C4fm;
 use crate::dsp::cqpsk::{self, Cqpsk};
@@ -31,7 +32,7 @@ use crate::mbe;
 use crate::nxdn::voice::{NxdnVoice, VCH_S};
 use crate::nxdn::Rate;
 use crate::metrics::{Instrumented, Sink};
-use crate::p25::alias::{Alias, AliasLc};
+use crate::p25::alias::AliasLc;
 use crate::p25::diversity::{best_frame, Bank, BankConfig, Group};
 use crate::p25::phase2::{self, Packet};
 

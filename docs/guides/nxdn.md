@@ -121,7 +121,21 @@ Encrypted transmissions (scrambler, DES or AES) are marked and left out of the a
 and DMR. A call that was all encrypted is kept, without audio, only when `recordEncrypted` is
 `true` in the config file.
 
-Not decoded: full-rate (EFR) voice, data calls, and Kenwood talker aliases.
+Not decoded: full-rate (EFR) voice and data calls.
+
+## Talker aliases
+
+Kenwood NEXEDGE radios can send their programmed name ("E12 CAPT") while they talk, a few
+characters at a time in the SACCH and FACCH1 of the traffic channel. Trunk Recorder Pro puts
+the pieces together once the call has named its radio, checks the alias's checksum, and learns it
+as it does a P25 talker alias: it appears as the radio's `tag_ota` in the call JSON and on the
+**Calls** page, and is kept in `<shortName>.units.csv`. See
+[Talker aliases](talkgroups-and-units.md#talker-aliases) for the file and for how a unit names
+file combines with it. It works on trunked (Type-C) and conventional channels, at both rates.
+
+Only plain ASCII aliases are read: one with other characters (a Japanese or Chinese name in
+Shift-JIS or Big5, say) is dropped, as is one whose checksum doesn't match. Icom's version
+isn't read either.
 
 ## What the dashboard shows
 

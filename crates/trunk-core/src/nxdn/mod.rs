@@ -8,6 +8,7 @@
 //!   → voice: AMBE+2 codewords (crate::ambe, as DMR) → mbe
 //! ```
 
+pub mod alias;
 pub mod channel;
 pub mod fec;
 pub mod frame;

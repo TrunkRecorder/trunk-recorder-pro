@@ -1136,7 +1136,7 @@ const DSP = [
       ["PN9 descramble", "x⁹ + x⁴ + 1", "One bit per symbol of the body."],
       ["LICH", "7 bits + parity", "Says which channel the frame carries; a fresh lock is dropped if its LICH fails."],
       ["Channel decoding", "K=5 conv. · 16-state soft Viterbi + CRC", "CAC (155 bits), SACCH (26), SCCH (25), FACCH1 (80), UDCH (184), each punctured and interleaved."],
-      ["Layer 3 / voice", "messages · AMBE+2", "Layer 3 messages drive trunking (VCallAssgn, SiteInfo, AdjSiteInfo…). Four VCH codewords per voice frame go to AMBE+2. EFR full-rate voice is not decoded."]
+      ["Layer 3 / voice", "messages · AMBE+2", "Layer 3 messages drive trunking (VCallAssgn, SiteInfo, AdjSiteInfo…); Kenwood talker aliases (PROP_FORM) are put together and handed to the engine as P25's are. Four VCH codewords per voice frame go to AMBE+2. EFR full-rate voice is not decoded."]
     ] },
   { id: "sn", tab: "SmartNet control", intro: "Motorola SmartNet / SmartZone control channel: 3,600 baud 2FSK outbound signalling words (OSWs).",
     nodes: [
