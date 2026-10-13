@@ -212,6 +212,14 @@ impl Source {
             Source::Rtlsdr { rate_hz, .. } | Source::Usrp { rate_hz, .. } | Source::Airspy { rate_hz, .. } | Source::Soapy { rate_hz, .. } | Source::File { rate_hz, .. } => *rate_hz,
         }
     }
+    /// The frequency correction set for it, ppm (a file: 0).
+    pub fn ppm(&self) -> f64 {
+        match self {
+            Source::Rtlsdr { ppm, .. } => *ppm as f64,
+            Source::Usrp { ppm, .. } | Source::Airspy { ppm, .. } | Source::Soapy { ppm, .. } => *ppm,
+            Source::File { .. } => 0.0,
+        }
+    }
     pub fn auto_tune(&self) -> bool {
         match self {
             Source::Rtlsdr { auto_tune, .. } | Source::Usrp { auto_tune, .. } | Source::Airspy { auto_tune, .. } | Source::Soapy { auto_tune, .. } | Source::File { auto_tune, .. } => *auto_tune,

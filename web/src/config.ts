@@ -933,8 +933,8 @@ export function importTrunkRecorderConfig(
   for (const s of sources) {
     const dev = typeof s.device === "string" ? s.device : "";
     const center = typeof s.center === "number" ? s.center : 0;
-    // Trunk Recorder's "error" is a fixed offset in Hz; here it is ppm.
-    const ppm = typeof s.ppm === "number" ? s.ppm : typeof s.error === "number" && center ? Math.round((s.error / center) * 1e6 * 100) / 100 : 0;
+    // Trunk Recorder's "error" is a fixed offset in Hz it tunes up by (+ = signals come in high); here it is ppm, the other way.
+    const ppm = typeof s.ppm === "number" ? s.ppm : typeof s.error === "number" && center ? Math.round((-s.error / center) * 1e6 * 100) / 100 : 0;
     const gain = typeof s.gain === "number" ? s.gain : undefined;
     const agc = s.agc === true;
     const autoTune = s.autoTune === true ? { autoTune: true } : {};

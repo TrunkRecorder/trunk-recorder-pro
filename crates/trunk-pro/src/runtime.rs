@@ -183,6 +183,8 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
     session.attach(ctx.shared.clone());
     session.load_units(&|name| fs::read_to_string(units_path(name)).ok());
     session.load_heard(&fs::read_to_string(heard_path(&cfg)).unwrap_or_default());
+    let saved = load_tune();
+    session.seed_tune(&|label| saved.get(label).and_then(|v| Some((v["errorPpm"].as_f64()?, v["atPpm"].as_f64()?))));
     ctx.plugins.start(&cfg);
     let stop = Arc::new(AtomicBool::new(false));
     let (tx, rx) = mpsc::sync_channel::<SourceMsg>(256);
@@ -293,6 +295,30 @@ const REGISTRY_EVERY: Duration = Duration::from_secs(15 * 60);
 /// Where the codes conventional frequencies carried are kept ([`trunk_app::heard`]).
 pub(crate) fn heard_path(cfg: &trunk_app::Config) -> PathBuf {
     crate::paths::data_dir().join(Session::heard_file(cfg))
+}
+
+/// AutoTune's scores from earlier runs, by source label: `{errorPpm, atPpm, t}`.
+fn tune_path() -> PathBuf {
+    crate::paths::data_dir().join("tune.json")
+}
+
+fn load_tune() -> serde_json::Map<String, Value> {
+    fs::read_to_string(tune_path()).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).and_then(|v| v.as_object().cloned()).unwrap_or_default()
+}
+
+/// Keep each source's AutoTune score for the next run (other sources' are left as they were).
+fn save_tune(session: &Session) {
+    let scores = session.tune_scores();
+    if scores.is_empty() {
+        return;
+    }
+    let mut all = load_tune();
+    let t = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    for (label, e, at) in scores {
+        all.insert(label, json!({ "errorPpm": (e * 1000.0).round() / 1000.0, "atPpm": at, "t": t }));
+    }
+    let _ = fs::create_dir_all(crate::paths::data_dir());
+    let _ = trunk_app::config::write_atomic(&tune_path(), &serde_json::to_string_pretty(&Value::Object(all)).unwrap_or_default());
 }
 
 /// Save the talker aliases systems learned, and the codes conventional
@@ -427,6 +453,7 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Rec
     // Band plans (and DMR channel tables) as last saved: learned ones survive a crash or kill too.
     let mut saved_plans: std::collections::HashMap<String, String> = Default::default();
     let mut plans_at = Instant::now();
+    let mut tune_at = Instant::now();
     let mut registry_at = Instant::now();
     let mut topics_gen = u64::MAX;
     loop {
@@ -478,6 +505,10 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Rec
         deliver(&ctx, &mut out, plugins.as_ref(), &rules, &fin);
         drop(plugins);
         save_units(&mut session);
+        if tune_at.elapsed() >= Duration::from_secs(60) {
+            tune_at = Instant::now();
+            save_tune(&session);
+        }
         if plans_at.elapsed() >= Duration::from_secs(10) {
             plans_at = Instant::now();
             save_bandplans(&session, &mut saved_plans);
@@ -510,6 +541,7 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Rec
         let _ = trunk_app::config::write_atomic(&bandplan_path(&name), plan);
     }
     save_units(&mut session);
+    save_tune(&session);
     save_registry(&ctx.shared);
     stop.store(true, Ordering::Relaxed);
     ctx.set_phase("idle", None, ended_all);
