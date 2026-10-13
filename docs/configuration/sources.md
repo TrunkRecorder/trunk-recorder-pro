@@ -56,10 +56,12 @@ little wider.
 *f* / (1 + ppm × 10⁻⁶). On an RTL-SDR it must be a whole number; on the other types a fraction is
 fine.
 
-The error is measured all the time on P25 and SmartNet control channels, and Setup shows it under the
-ppm field with a button to set the correction. With `autoTune` on, the measured error (an average of
-the last 20 measurements) is applied by itself: new voice channels open at the corrected frequency,
-and a P25 control channel more than 150 Hz off is reopened at it (at most every 200 s).
+The error is measured all the time, on P25 and SmartNet control channels and on digital calls (P25,
+NXDN) a second or longer, and Setup shows it under the ppm field with a button to set the correction.
+With `autoTune` on, the measured error (the median of the last 20 measurements) is applied by itself:
+new voice channels open at the corrected frequency, and a P25 control channel more than 150 Hz off is
+reopened at it (at most every 200 s). Each source's error is kept for the next run (`tune.json` in
+the data folder), which starts from it until it measures its own.
 
 ## `"type": "rtlsdr"`
 

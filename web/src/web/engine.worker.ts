@@ -247,6 +247,14 @@ async function saveHeard(s: WebSession, cfg: Config): Promise<void> {
   if (json) await writeText(heardFile(cfg), json).catch(() => {});
 }
 
+/** AutoTune's scores, for the next run. */
+const TUNE_FILE = "tune.json";
+
+async function saveTune(s: WebSession): Promise<void> {
+  const json = s.tune_unsaved();
+  if (json) await writeText(TUNE_FILE, json).catch(() => {});
+}
+
 async function saveUnits(changed: string): Promise<void> {
   if (changed === "{}") return;
   for (const [name, csv] of Object.entries(JSON.parse(changed) as Record<string, string>)) {
@@ -271,6 +279,7 @@ async function start(): Promise<void> {
     session = new WebSession(JSON.stringify(cfg), wallMs(), JSON.stringify(plans));
     session.load_units(JSON.stringify(await savedUnits(cfg)));
     session.load_heard((await readText(heardFile(cfg))) ?? "");
+    session.load_tune((await readText(TUNE_FILE)) ?? "");
     session.load_registry((await readText(REGISTRY_FILE)) ?? "{}");
     session.set_topics(JSON.stringify(topics));
     session.set_want_audio(listen.on);
@@ -297,9 +306,10 @@ async function start(): Promise<void> {
       deliver(session.poll(wallMs()));
       void saveUnits(session.units_changed());
       void saveHeard(session, cfg);
-      // The registry is rewritten whole: once a minute at most.
+      // The registry is rewritten whole: once a minute at most (AutoTune's scores with it).
       if (performance.now() - registrySaved > 60_000) {
         registrySaved = performance.now();
+        void saveTune(session);
         void saveRegistry(session);
       }
     }, 50);
@@ -360,6 +370,7 @@ async function stop(ended = false): Promise<void> {
   await saveUnits(s.units_changed());
   await saveRegistry(s);
   if (config) await saveHeard(s, config);
+  await saveTune(s);
   for (const [name, plan] of Object.entries(JSON.parse(s.bandplans()) as Record<string, string>)) {
     await writeText(`bandplan-${name}.txt`, plan).catch(() => {});
   }

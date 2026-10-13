@@ -453,13 +453,11 @@ export interface SourceStatus {
   /** When it was, Unix seconds. */
   lastErrorS?: number | null;
   ended: boolean;
-  /** Its frequency error, ppm (+: signals come in high): the running score of its last calls and control channel measurements; null until measured. */
+  /** Its frequency error, ppm (+: signals come in high): the median of its last control channel and call measurements; null until measured. */
   errorPpm?: number | null;
   /** The correction autoTune applies now, ppm. */
   tunePpm?: number;
-  /** Calls and control channel measurements in the score; the correction is an earlier run's score (nothing measured yet). */
-  tuneCalls?: number;
-  tuneControl?: number;
+  /** The correction is an earlier run's score (nothing measured yet). */
   tuneSeeded?: boolean;
 }
 

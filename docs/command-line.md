@@ -177,7 +177,7 @@ trunk-pro replay --source cap1.cu8,center,rate[,format] [--source …] --cc Hz[,
 | `--source file,center,rate[,format]` | | A capture with its own centre and rate; repeat for several radios. They're fed in step, as they would be live. |
 | `--format cu8\|cs16\|cf32` | from the extension | Sample format: `cu8` (rtl_sdr), `cs16` (`.cs16`, `.sc16`), `cf32` (`.cf32`, `.cfile`, `.fc32`). Anything else is refused. |
 | `--guard Hz` | 75000 | Left unused at each edge of a source's band (the guard band) |
-| `--auto-tune` | off | Correct the sources' frequency error as measured on the control channels. The error is reported at the end either way. |
+| `--auto-tune` | off | Correct the sources' frequency error as measured on the control channels and calls. The error is reported at the end either way. |
 
 ### A trunked system
 

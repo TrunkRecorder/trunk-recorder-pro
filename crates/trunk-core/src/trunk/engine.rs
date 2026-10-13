@@ -353,26 +353,21 @@ impl Sink for Quality {
 pub struct SourceTune {
     /// Its running score, ppm, against the source's ppm as set (+ = signals
     /// come in high): setting the source's ppm to `ppm − error_ppm` removes it
-    /// (as Setup suggests). The last calls' and control channel measurements'
-    /// trimmed means, by how many of each. None until one was measured.
+    /// (as Setup suggests). The median of its last measurements, control
+    /// channels' and calls' together. None until one was measured.
     pub error_ppm: Option<f64>,
     /// The correction applied to channels opened now, ppm (0 without autoTune).
     pub applied_ppm: f64,
-    /// Calls and control channel measurements in the score.
-    pub calls: usize,
-    pub control: usize,
     /// The correction comes from an earlier run's score (nothing measured yet).
     pub seeded: bool,
 }
 
-/// Measurements kept of each kind (Trunk Recorder keeps the last 20 calls).
+/// Measurements kept, control channels' and calls' together (Trunk Recorder
+/// keeps the last 20). Their median is the score: a mis-lock or an
+/// off-frequency transmitter doesn't move it, drift does.
 const TUNE_KEEP: usize = 20;
-/// A call counts once its voice was measured this long, s.
+/// A call counts once it lasted this long, s.
 const TUNE_CALL_MIN_S: f64 = 1.0;
-/// Once this many calls are in the score, one further than TUNE_CALL_OUTLIER_PPM
-/// from their mean is left out (a mis-lock, an off-frequency transmitter).
-const TUNE_CALL_SETTLED: usize = 5;
-const TUNE_CALL_OUTLIER_PPM: f64 = 2.0;
 /// A control channel is measured this often, s.
 const TUNE_EVERY_S: f64 = 10.0;
 /// A P25 control channel is reopened at the corrected frequency when it is
@@ -383,10 +378,9 @@ const TUNE_RETUNE_S: f64 = 200.0;
 struct Source {
     cfg: SourceConfig,
     chz: Channelizer,
-    /// Recent frequency errors measured on its control channels, ppm.
+    /// Recent frequency errors measured on it, ppm: its control channels'
+    /// (every TUNE_EVERY_S) and its calls' (one each).
     errors: VecDeque<f64>,
-    /// And on its calls' voice channels, a call each.
-    calls: VecDeque<f64>,
     /// The score an earlier run left, ppm, until something is measured.
     seed: Option<f64>,
     /// The correction new channels get, ppm.
@@ -400,53 +394,29 @@ struct Source {
     clock_offset_s: f64,
 }
 
-/// The mean of `v` without its highest and lowest tenth.
-fn trimmed_mean(v: &VecDeque<f64>) -> Option<f64> {
-    if v.is_empty() {
-        return None;
-    }
-    let mut x: Vec<f64> = v.iter().copied().collect();
-    x.sort_by(f64::total_cmp);
-    let cut = x.len() / 10;
-    let x = &x[cut..x.len() - cut];
-    Some(x.iter().sum::<f64>() / x.len() as f64)
-}
-
 impl Source {
-    /// A control channel measurement, ppm.
+    /// A frequency error measured on it (a control channel, a call), ppm.
     fn measured(&mut self, ppm: f64) {
-        if ppm.is_finite() && ppm.abs() <= 50.0 {
-            Self::keep(&mut self.errors, ppm);
-            self.retune();
-        }
-    }
-    /// A call's voice, ppm.
-    fn measured_call(&mut self, ppm: f64) {
         if !ppm.is_finite() || ppm.abs() > 50.0 {
             return;
         }
-        if self.calls.len() >= TUNE_CALL_SETTLED && trimmed_mean(&self.calls).is_some_and(|m| (ppm - m).abs() > TUNE_CALL_OUTLIER_PPM) {
-            return;
+        self.errors.push_back(ppm);
+        if self.errors.len() > TUNE_KEEP {
+            self.errors.pop_front();
         }
-        Self::keep(&mut self.calls, ppm);
         self.retune();
-    }
-    fn keep(v: &mut VecDeque<f64>, ppm: f64) {
-        v.push_back(ppm);
-        if v.len() > TUNE_KEEP {
-            v.pop_front();
-        }
     }
     fn retune(&mut self) {
         if self.cfg.auto_tune {
             self.tune_ppm = self.error_ppm().or(self.seed).unwrap_or(0.0);
         }
     }
-    /// The running score: each kind's trimmed mean, weighted by how many it has.
+    /// The running score: the median of the measurements kept.
     fn error_ppm(&self) -> Option<f64> {
-        let parts = [(trimmed_mean(&self.errors), self.errors.len()), (trimmed_mean(&self.calls), self.calls.len())];
-        let n: usize = parts.iter().filter(|p| p.0.is_some()).map(|p| p.1).sum();
-        (n > 0).then(|| parts.iter().filter_map(|&(m, k)| m.map(|m| m * k as f64)).sum::<f64>() / n as f64)
+        let mut x: Vec<f64> = self.errors.iter().copied().collect();
+        x.sort_by(f64::total_cmp);
+        let n = x.len();
+        (n > 0).then(|| (x[(n - 1) / 2] + x[n / 2]) / 2.0)
     }
     /// Its time on the engine's clock: its sample clock, plus its offset.
     fn time(&self) -> f64 {
@@ -483,10 +453,8 @@ struct Recording {
     /// How far off its channel the voice came in, Hz from the nominal
     /// frequency: the sum of the measurements and their number.
     freq_error: (f64, u32),
-    /// Seconds of voice measured, its source, and its frequency (AutoTune).
-    freq_error_s: f64,
+    /// The source it is on (AutoTune).
     source: usize,
-    freq_hz: f64,
     reception: Reception,
 }
 
@@ -545,7 +513,6 @@ impl Radio {
         let Some(ch) = self.channels.get_mut(&key) else { return };
         let s = &self.sources[ch.source];
         let iq: &[Complex32] = if flush { &[] } else { s.chz.output(ch.head).unwrap_or(&[]) };
-        let secs = iq.len() as f64 / s.chz.output_rate();
         let params = self.voice_params.get(ch.system as usize).copied().unwrap_or_default();
         self.tout.clear();
         Self::run_channel(ch, iq, &params, &mut self.tout, flush);
@@ -568,7 +535,6 @@ impl Radio {
                 if let Some(r) = self.recordings.get_mut(id) {
                     r.freq_error.0 += err;
                     r.freq_error.1 += 1;
-                    r.freq_error_s += secs;
                 }
             }
         }
@@ -659,9 +625,7 @@ impl SysHost<'_> {
                 recorder_num,
                 tx: Transmissions::default(),
                 freq_error: (0.0, 0),
-                freq_error_s: 0.0,
                 source: src,
-                freq_hz: call.freq_hz as f64,
                 reception: Reception::default(),
             },
         );
@@ -1056,7 +1020,7 @@ impl Engine {
         let spans: Vec<(f64, f64, f64)> = cfg.sources.iter().map(|s| (s.center_hz, s.rate_hz, s.usable_half_width())).collect();
         let conv = Conventional::new(&cfg.conventional, &spans, ConvConfig { vocoder: cfg.vocoder, ..cfg.conv }, cfg.bank)?;
         let sources: Vec<Source> =
-            cfg.sources.iter().map(|s| Source { cfg: s.clone(), chz: Channelizer::new(s.rate_hz, MIN_CHANNEL_RATE, history), errors: VecDeque::new(), calls: VecDeque::new(), seed: None, tune_ppm: 0.0, in_gap: false, half: None, clock_offset_s: 0.0 }).collect();
+            cfg.sources.iter().map(|s| Source { cfg: s.clone(), chz: Channelizer::new(s.rate_hz, MIN_CHANNEL_RATE, history), errors: VecDeque::new(), seed: None, tune_ppm: 0.0, in_gap: false, half: None, clock_offset_s: 0.0 }).collect();
         let rate = sources[0].chz.output_rate();
         let ids = CallIds::default();
         let mut radio = Radio {
@@ -1370,7 +1334,7 @@ impl Engine {
                 .radio
                 .sources
                 .iter()
-                .map(|s| SourceTune { error_ppm: s.error_ppm(), applied_ppm: s.tune_ppm, calls: s.calls.len(), control: s.errors.len(), seeded: s.seed.is_some() && s.error_ppm().is_none() })
+                .map(|s| SourceTune { error_ppm: s.error_ppm(), applied_ppm: s.tune_ppm, seeded: s.seed.is_some() && s.errors.is_empty() })
                 .collect(),
         }
     }
@@ -1674,13 +1638,15 @@ impl Engine {
     fn conclude(&mut self, call: &Call) {
         let held = self.radio.recordings.remove(&call.id).map(|rec| {
             self.radio.free_nums.push(rec.recorder_num);
-            // AutoTune: every call (each site's copy) scores its source.
-            if rec.freq_error.1 > 0 && rec.freq_error_s >= TUNE_CALL_MIN_S && rec.freq_hz > 0.0 {
+            let freq_error_hz = (rec.freq_error.1 > 0).then(|| rec.freq_error.0 / rec.freq_error.1 as f64);
+            // AutoTune: every call that lasted (each site's copy, encrypted
+            // ones too) scores its source.
+            if let Some(hz) = freq_error_hz.filter(|_| call.freq_hz > 0 && call.last_update_s - call.start_s >= TUNE_CALL_MIN_S) {
                 if let Some(s) = self.radio.sources.get_mut(rec.source) {
-                    s.measured_call(rec.freq_error.0 / rec.freq_error.1 as f64 / rec.freq_hz * 1e6);
+                    s.measured(hz / call.freq_hz as f64 * 1e6);
                 }
             }
-            Held { call: call.clone(), audio: rec.audio, frames: rec.frames, recorder_num: rec.recorder_num, tx: rec.tx, reception: rec.reception, freq_error_hz: (rec.freq_error.1 > 0).then(|| rec.freq_error.0 / rec.freq_error.1 as f64) }
+            Held { call: call.clone(), audio: rec.audio, frames: rec.frames, recorder_num: rec.recorder_num, tx: rec.tx, reception: rec.reception, freq_error_hz }
         });
         let trunks = &self.trunks;
         let Some(copies) = self.multisite.conclude(call.id, held, |system, tg| trunks.get(system as usize).is_some_and(|t| t.preferred_for(tg))) else { return };
@@ -1746,41 +1712,27 @@ mod tests {
 
     fn tuned_source(auto_tune: bool) -> Source {
         let cfg = SourceConfig { center_hz: 770e6, rate_hz: 2.4e6, auto_tune, guard_hz: DEFAULT_GUARD_HZ };
-        Source { chz: Channelizer::new(cfg.rate_hz, MIN_CHANNEL_RATE, 0.1), cfg, errors: VecDeque::new(), calls: VecDeque::new(), seed: None, tune_ppm: 0.0, in_gap: false, half: None, clock_offset_s: 0.0 }
+        Source { chz: Channelizer::new(cfg.rate_hz, MIN_CHANNEL_RATE, 0.1), cfg, errors: VecDeque::new(), seed: None, tune_ppm: 0.0, in_gap: false, half: None, clock_offset_s: 0.0 }
     }
 
-    /// A source with no control channel tunes from its calls; one call far
-    /// off the rest is left out once a few are in.
+    /// The score is the median of the last measurements: a few far off
+    /// (a mis-lock) don't move it, drift does; without AutoTune nothing is corrected.
     #[test]
-    fn autotune_scores_calls_on_any_source() {
+    fn autotune_scores_the_median_of_its_last_measurements() {
         let mut s = tuned_source(true);
-        for i in 0..6 {
-            s.measured_call(3.6 + 0.02 * i as f64);
+        for ppm in [3.6, 3.62, 3.64, 12.0, 3.66, -9.0, 3.68] {
+            s.measured(ppm);
         }
-        assert!((s.tune_ppm - 3.65).abs() < 0.05, "{}", s.tune_ppm);
-        s.measured_call(12.0);
-        assert_eq!(s.calls.len(), 6, "an outlier isn't kept");
+        assert_eq!(s.tune_ppm, 3.64);
         for _ in 0..30 {
-            s.measured_call(3.0);
+            s.measured(3.0);
         }
-        assert_eq!(s.calls.len(), TUNE_KEEP);
-        assert!((s.tune_ppm - 3.0).abs() < 1e-9, "the last 20 calls: {}", s.tune_ppm);
-    }
-
-    /// Calls and control channel measurements count by how many of each;
-    /// measured without AutoTune, nothing is corrected.
-    #[test]
-    fn autotune_weighs_calls_and_control_channels() {
-        let mut s = tuned_source(true);
-        for _ in 0..20 {
-            s.measured(1.0);
-        }
-        for _ in 0..5 {
-            s.measured_call(2.0);
-        }
-        assert!((s.error_ppm().unwrap() - 1.2).abs() < 1e-9);
+        assert_eq!((s.errors.len(), s.tune_ppm), (TUNE_KEEP, 3.0), "the last 20");
+        s.measured(f64::NAN);
+        s.measured(80.0);
+        assert_eq!(s.errors.len(), TUNE_KEEP, "nothing absurd is kept");
         let mut off = tuned_source(false);
-        off.measured_call(2.0);
+        off.measured(2.0);
         assert_eq!((off.error_ppm(), off.tune_ppm), (Some(2.0), 0.0));
     }
 
@@ -1792,9 +1744,9 @@ mod tests {
         e.seed_tune(0, 2.5);
         let t = e.status().sources[0];
         assert_eq!((t.applied_ppm, t.error_ppm, t.seeded), (2.5, None, true));
-        e.radio.sources[0].measured_call(1.0);
+        e.radio.sources[0].measured(1.0);
         let t = e.status().sources[0];
-        assert_eq!((t.applied_ppm, t.calls, t.seeded), (1.0, 1, false));
+        assert_eq!((t.applied_ppm, t.seeded), (1.0, false));
     }
 
     /// An engine on one source, with a conventional channel (so it runs).
