@@ -158,6 +158,14 @@ struct Counts {
     vocoded: BTreeMap<String, u64>,
 }
 
+/// A message, and its octets in hex when it is manufacturer-specific and not
+/// decoded (to help with the next one).
+fn parsed(o: &[u8], ctx: Context, dfa: bool) -> (Message, Option<String>) {
+    let m = Message::parse(o, ctx, dfa);
+    let raw = matches!(m, Message::PropForm { .. }).then(|| o.iter().map(|b| format!("{b:02x}")).collect());
+    (m, raw)
+}
+
 pub fn run(a: &Args) {
     let (cap, fs, center) = capture(a, "nxdn");
     let freq = a.num("freq", 0.0);
@@ -197,7 +205,7 @@ pub fn run(a: &Args) {
             let t = f.sample / rate;
             let lich = f.lich();
             let mut line = format!("{{\"t\":{t:.3},\"sync\":{}", f.sync_errs.map_or("null".into(), |e| e.to_string()));
-            let mut msgs: Vec<(&str, Message)> = Vec::new();
+            let mut msgs: Vec<(&str, (Message, Option<String>))> = Vec::new();
             if let Some((l, inner)) = lich {
                 c.lich += 1;
                 let _ = write!(line, ",\"lich\":\"{:02x}\",\"lich_inner\":{inner}", l.raw);
@@ -209,13 +217,13 @@ pub fn run(a: &Args) {
                         c.cac.0 += 1;
                         let _ = write!(line, ",\"cac\":{{\"ran\":{},\"structure\":{},\"errs\":{errs}}}", sr.ran, sr.structure);
                         let dual = sr.structure & 1 != 0;
-                        let first = Message::parse(&o, Context::Control, dfa);
-                        if let Message::SiteInfo { access, .. } = &first {
+                        let first = parsed(&o, Context::Control, dfa);
+                        if let Message::SiteInfo { access, .. } = &first.0 {
                             dfa = access.dfa;
                         }
                         msgs.push(("cac", first));
                         if dual {
-                            msgs.push(("cac", Message::parse(&o[9..], Context::Control, dfa)));
+                            msgs.push(("cac", parsed(&o[9..], Context::Control, dfa)));
                         }
                     }
                 } else {
@@ -228,7 +236,7 @@ pub fn run(a: &Args) {
                                     let _ = write!(line, ",\"sacch\":{{\"ran\":{},\"structure\":{},\"errs\":{}}}", s.sr.ran, s.sr.structure, s.errs);
                                     if superframe {
                                         if let Some(o) = sf.push(&s) {
-                                            msgs.push(("sacch", Message::parse(&o, Context::Traffic, dfa)));
+                                            msgs.push(("sacch", parsed(&o, Context::Traffic, dfa)));
                                         }
                                     }
                                 }
@@ -239,7 +247,7 @@ pub fn run(a: &Args) {
                                     c.facch1.1 += 1;
                                     if let Some((o, _)) = channel::facch1(f, h) {
                                         c.facch1.0 += 1;
-                                        msgs.push(("facch1", Message::parse(&o, Context::Traffic, dfa)));
+                                        msgs.push(("facch1", parsed(&o, Context::Traffic, dfa)));
                                     }
                                 } else {
                                     for k in 0..2 {
@@ -266,7 +274,7 @@ pub fn run(a: &Args) {
                             if let Some((_, o, _)) = channel::udch(f) {
                                 c.udch.0 += 1;
                                 if l.body() == Body::Facch2 {
-                                    msgs.push(("facch2", Message::parse(&o, Context::Traffic, dfa)));
+                                    msgs.push(("facch2", parsed(&o, Context::Traffic, dfa)));
                                 }
                             }
                         }
@@ -277,8 +285,11 @@ pub fn run(a: &Args) {
             if all {
                 writeln!(out, "{line}").unwrap();
             }
-            for (ch, m) in msgs {
-                let s = format!("{m:?}");
+            for (ch, (m, raw)) in msgs {
+                let mut s = format!("{m:?}");
+                if let Some(raw) = raw {
+                    let _ = write!(s, " raw={raw}");
+                }
                 if s != last_msg || all {
                     writeln!(out, "{{\"t\":{t:.3},\"ch\":\"{ch}\",\"msg\":\"{}\",\"detail\":{:?}}}", m.name(), s).unwrap();
                     last_msg = s;
@@ -316,11 +327,11 @@ pub fn run_synth(a: &Args) {
     // (offset Hz, frames)
     let carriers: Vec<(f64, Vec<[u8; 192]>)> = match kind {
         "conv" => {
-            let t = Tx { rate: nxdn, ran: 5, head, cipher: 0, superframes: 15, rf: 2, outbound: true };
+            let t = Tx::new(nxdn, 5, head, 2, 15);
             vec![(50_000.0, t.frames())]
         }
         "typeC" => {
-            let t = Tx { rate: nxdn, ran: 5, head, cipher: 0, superframes: 15, rf: 1, outbound: true };
+            let t = Tx::new(nxdn, 5, head, 1, 15);
             let mut voice = vec![idle_frame; 4];
             voice.extend(t.frames());
             let sr = Sr { structure: 2, ran: 5 };

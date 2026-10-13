@@ -263,7 +263,8 @@ frame:
 2. Frame: 192 symbols = FSW 10 (0xCDF59) + LICH 8 + 174. PN9 descrambling.
 3. LICH (7 bits + parity) picks the channel. CAC / SACCH / SCCH / FACCH1 / UDCH: K=5 rate-½
    convolutional code with puncturing and interleave, 16-state soft Viterbi + CRC.
-4. Layer 3 messages for Type-C and Type-D trunking.
+4. Layer 3 messages for Type-C and Type-D trunking. Kenwood talker aliases (PROP_FORM, MFID
+   0x68) in the SACCH and FACCH1 are put together in `nxdn::alias` and sent as `TrackerOut::Alias`.
 5. Voice: four VCH codewords per frame → AMBE+2 (EFR full-rate voice is not decoded).
 
 ### 4.5 SmartNet control channel
@@ -804,7 +805,7 @@ call JSON + WAV on disk → `HostMessage::CallConcluded` → plugin → `PluginM
 `recorder_num: u32`, `tx: Transmissions`, `freq_error: (f64, u32)`, `reception: Reception`.
 
 **`TrackerOut`**: `Audio(Vec<f32>, VoiceFrame)` (20 ms at 8 kHz), `Info { source, emergency,
-encrypted }`, `AnalogAudio(Vec<f32>)`, `Subaudible(Vec<f32>)`, `Alias(Alias)`,
+encrypted }`, `AnalogAudio(Vec<f32>)`, `Subaudible(Vec<f32>)`, `Alias(Alias)` (`crate::alias`, any protocol),
 `AliasLc(AliasLc)`. **`VoiceOut`**: `slot: u8`, `t: f64`, `out: TrackerOut`.
 
 **`VoiceFrame`**: `codec` (Imbe | Ambe), `bits: Vec<u8>`, `e0`, `errs: u32`, `erased: bool`,
