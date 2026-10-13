@@ -5,6 +5,8 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+## [0.1.10] — 2026-10-13
+
 - **Encryption heard:** a talkgroup's page on the Radio dashboard lists
   the ciphers its encrypted P25 calls used, with each algorithm (ADP,
   DES, AES-256, …), key ID, number of calls and when it was last heard.
