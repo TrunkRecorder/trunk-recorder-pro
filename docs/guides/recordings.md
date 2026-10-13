@@ -148,7 +148,7 @@ It is written on a single line.
 | `patched_talkgroups` | Only when the talkgroup was patched with others: all of them |
 | `freqList` | One entry for the call: `freq`, `time`, `pos` (0), `len` (seconds of audio), `error_count` (FEC errors), `spike_count` (0) |
 | `errorList` | Per 10 s of audio: `pos`, `len`, `frames`, `error_count`, `bad_frames` (repeated, muted or erased), `max_frame_errors` |
-| `srcList` | Each radio heard: `src` (unit ID), `time`, `pos` (seconds into the call), `emergency`, `signal_system` (empty), `tag` (its name), `tag_ota` (its talker alias) |
+| `srcList` | Each radio heard: `src` (unit ID), `time`, `pos` (seconds into the call), `emergency`, `signal_system` (empty), `tag` (its name), `tag_ota` (its talker alias), and `lat` and `lon` when it sent its GPS position (P25, Motorola and L3Harris radios) |
 
 Compared with Trunk Recorder's JSON:
 

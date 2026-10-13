@@ -22,6 +22,7 @@ use super::frames::VoiceFrame;
 use super::tdma::TdmaTracker;
 use super::tracker::VoiceTracker;
 use crate::alias::Alias;
+use crate::position::Position;
 use crate::dmr::voice::{DmrVoice, VOICE_BURST_S};
 use crate::dsp::c4fm::C4fm;
 use crate::dsp::cqpsk::{self, Cqpsk};
@@ -89,6 +90,8 @@ pub enum TrackerOut {
     Alias(Alias),
     /// What a terminator / MAC message showed of talker aliases (counted).
     AliasLc(AliasLc),
+    /// The talker's GPS position.
+    Position(Position),
 }
 
 /// What one decoder produced: an output for the call on `slot`, from air

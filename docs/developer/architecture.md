@@ -806,7 +806,7 @@ call JSON + WAV on disk → `HostMessage::CallConcluded` → plugin → `PluginM
 
 **`TrackerOut`**: `Audio(Vec<f32>, VoiceFrame)` (20 ms at 8 kHz), `Info { source, emergency,
 encrypted }`, `AnalogAudio(Vec<f32>)`, `Subaudible(Vec<f32>)`, `Alias(Alias)` (`crate::alias`, any protocol),
-`AliasLc(AliasLc)`. **`VoiceOut`**: `slot: u8`, `t: f64`, `out: TrackerOut`.
+`AliasLc(AliasLc)`, `Position(Position)` (`crate::position`). **`VoiceOut`**: `slot: u8`, `t: f64`, `out: TrackerOut`.
 
 **`VoiceFrame`**: `codec` (Imbe | Ambe), `bits: Vec<u8>`, `e0`, `errs: u32`, `erased: bool`,
 `kind`.
@@ -833,6 +833,7 @@ encrypted }`, `AnalogAudio(Vec<f32>)`, `Subaudible(Vec<f32>)`, `Alias(Alias)` (`
 | `CallStart` / `CallUpdate` / `CallEnd` | `Call` | call lifecycle |
 | `Audio` | `call_id`, `system`, `talkgroup`, `samples: Vec<f32>` | live audio, 8 kHz |
 | `UnitAlias` | `system`, `unit`, `alias`, `talkgroup` | talker alias heard |
+| `UnitPosition` | `system`, `unit`, `lat`, `lon`, `talkgroup` | a radio on a call gave a new GPS position |
 | `Concluded` | `Concluded` | a call to save |
 | `NotSaved` | `Call` | too short / silent |
 | `Duplicate` | `call`, `kept` | another site's copy kept |
@@ -880,7 +881,7 @@ Trunk Recorder's keys plus reception figures, in this order: `call_num`, `freq`,
 digital), `short_name`, `patched_talkgroups` (only when more than one), `freqList` [{freq,
 time, pos, len, error_count, spike_count}], `errorList` [{pos, len, frames, error_count,
 bad_frames, max_frame_errors}], `srcList` [{src, time, pos, emergency, signal_system, tag,
-tag_ota}].
+tag_ota, lat?, lon?}].
 
 ### 9.7 Plugin protocol (`trunk-recorder-plugin/src/protocol.rs`)
 
@@ -897,7 +898,7 @@ Constants: `API_VERSION` = 1, `EXIT_CONFIG` = 78, conventional system index base
 | `hello` | `api`, `host { name, version }`, `config`, `systems: [SystemInfo { index, short_name, kind, config }]`, `capture_dir`, `data_dir`, `audio_formats` |
 | `call.start`, `call.end` | `CallInfo { id, system, short_name, talkgroup, talkgroup_tag, freq_hz, tdma_slot, analog, encrypted, emergency, recording, reason, start_time, units, patched_talkgroups }` |
 | `call.concluded` | `path`, `system`, `call: CallRecord` (the call JSON), `files { json, wav, m4a }` |
-| `unit` | `system`, `short_name`, `kind` (registration, deregistration, affiliation, acknowledge, location, data_grant, answer_request, call_alert), `unit`, `talkgroup`, `time` |
+| `unit` | `system`, `short_name`, `kind` (registration, deregistration, affiliation, acknowledge, location, data_grant, answer_request, call_alert, emergency_alarm), `unit`, `talkgroup`, `time` |
 | `audio` | `call_id`, `system`, `short_name`, `talkgroup`, `sample_rate`, `pcm` (base64 i16 LE) |
 | `status` | `time`, `systems [{ index, short_name, control_channel_hz, decode_rate, active_calls, recording }]` |
 | `shutdown` | `grace_s` |

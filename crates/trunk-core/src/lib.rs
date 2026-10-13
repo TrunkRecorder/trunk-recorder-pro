@@ -16,6 +16,7 @@ pub mod dsp;
 pub mod loudness;
 pub mod mbe;
 pub mod nxdn;
+pub mod position;
 pub mod metrics;
 pub mod p25;
 pub mod smartnet;

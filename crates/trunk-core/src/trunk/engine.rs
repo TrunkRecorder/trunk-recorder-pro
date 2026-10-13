@@ -232,6 +232,8 @@ pub enum Event {
     Audio { call_id: CallId, system: u16, talkgroup: u32, samples: Vec<f32> },
     /// System `system` heard a radio's talker alias it didn't know (or knew by another name).
     UnitAlias { system: u16, unit: u32, alias: String, talkgroup: u32 },
+    /// A radio on a call of system `system` gave a new GPS position (decimal degrees).
+    UnitPosition { system: u16, unit: u32, lat: f64, lon: f64, talkgroup: u32 },
     Concluded(Concluded),
     /// A recorded call wasn't saved: no audio, or less than its system's minimum.
     NotSaved(Call),
@@ -813,6 +815,9 @@ impl Trunk {
         self.now_s = self.cc_start_s + self.cc_samples as f64 / rate + moved;
         let mut steps = Vec::new();
         self.cc.push(0, &iq, self.cc_start_s + moved, rate, &mut steps);
+        for (level, text) in self.cc.take_notes() {
+            events.push(Event::Note { system: self.idx, level, text });
+        }
         self.follow(radio, steps, events, call_events);
         if self.now_s - self.last_good_s > CC_HUNT_S && self.cfg.control_channels.len() > 1 {
             let _ = self.tune(radio, self.cc_index + 1, events);
@@ -1446,6 +1451,7 @@ impl Engine {
                     self.events.push(Event::CallEnd(call));
                 }
                 ConvOut::Alias(system, a) => self.learn_alias(system, a, None),
+                ConvOut::Position(system, p, talkgroup) => self.events.push(Event::UnitPosition { system, unit: p.unit, lat: p.lat, lon: p.lon, talkgroup }),
                 ConvOut::Skipped { freq_hz, code } => self.events.push(Event::ConvSkipped { freq_hz, code }),
             }
         }
@@ -1532,6 +1538,14 @@ impl Engine {
                 }
                 // (Only conventional FM asks for it.)
                 TrackerOut::Subaudible(_) => {}
+                TrackerOut::Position(p) => {
+                    if let Some(c) = t.calls.call_mut(id) {
+                        if CallManager::note_position(c, &p) {
+                            self.events.push(Event::UnitPosition { system: sys, unit: p.unit, lat: p.lat, lon: p.lon, talkgroup: c.talkgroup });
+                            self.call_events.push(CallEvent::Update(c.clone()));
+                        }
+                    }
+                }
                 TrackerOut::Alias(a) => {
                     let tg = t
                         .calls

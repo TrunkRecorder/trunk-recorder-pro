@@ -201,6 +201,8 @@ pub fn mac_messages(pdu: &[u8]) -> Vec<MacMsg<'_>> {
             0x08 => (0, at(1) & 0x3f),
             0x11 => (0, ((at(1) & 3) + 1) * 2 + 2),
             0x12 => (0, ((at(1) & 3) + 1) * 3 + 2),
+            // Motorola's abbreviated supergroup voice channel user has no length octet.
+            0x80 if at(1) == MOTOROLA as usize => (MOTOROLA, 8),
             _ if op >> 6 == 2 => (at(1) as u8, at(2) & 0x3f),
             _ => (0, MAC_MSG_LEN[op as usize] as usize),
         };
@@ -259,13 +261,16 @@ impl MacAliases {
 }
 
 /// A unit a MAC message names as talking: Group Voice Channel User,
-/// abbreviated (0x01) or extended (0x21).
+/// abbreviated (0x01) or extended (0x21), or Motorola's for a supergroup
+/// (0x80, 0xA0; op25 and SDRTrunk agree on the layouts).
 pub fn mac_talker(m: &MacMsg) -> Option<u32> {
     let b = m.bytes;
     let u24 = |i: usize| Some((*b.get(i)? as u32) << 16 | (*b.get(i + 1)? as u32) << 8 | *b.get(i + 2)? as u32);
-    match m.op {
-        0x01 => u24(4),
-        0x21 => u24(11),
+    match (m.op, m.mfid) {
+        (0x01, 0) => u24(4),
+        (0x21, 0) => u24(11),
+        (0x80, MOTOROLA) => u24(5),
+        (0xa0, MOTOROLA) => u24(6),
         _ => None,
     }
 }
@@ -453,6 +458,19 @@ mod tests {
         assert_eq!((msgs[0].op, msgs[0].mfid, msgs[0].bytes.len()), (0xa8, HARRIS, 11));
         let mut m = MacAliases::default();
         assert_eq!(m.msg(&msgs[0], Some(5), None).map(|x| (x.unit, x.alias)), Some((5, "DISPATCH".into())));
+    }
+
+    #[test]
+    fn motorola_supergroup_voice_users_name_the_talker() {
+        // A PDU's payload (from its octet 1): 0x80, Motorola, options,
+        // supergroup 0x0204, source 0x123456; then an extended one from 0x0a0b0c.
+        let mut pdu = vec![0x00, 0x80, MOTOROLA, 0x00, 0x02, 0x04, 0x12, 0x34, 0x56];
+        pdu.extend([0xa0, MOTOROLA, 16, 0x00, 0x02, 0x04, 0x0a, 0x0b, 0x0c, 0, 0, 0, 0, 0, 0, 0]);
+        let msgs = mac_messages(&pdu);
+        assert_eq!(msgs.iter().map(|m| (m.op, m.bytes.len())).collect::<Vec<_>>(), [(0x80, 8), (0xa0, 16)]);
+        assert_eq!(msgs.iter().map(mac_talker).collect::<Vec<_>>(), [Some(0x123456), Some(0x0a0b0c)]);
+        // The same opcode from another manufacturer names nobody.
+        assert_eq!(mac_talker(&MacMsg { op: 0x80, mfid: HARRIS, bytes: &pdu[1..9] }), None);
     }
 
     #[test]

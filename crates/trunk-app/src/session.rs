@@ -629,7 +629,7 @@ impl Session {
                 let name = self.system_name(system).to_string();
                 if self.plugin_topics.units {
                     if let Some(kind) = unit_kind(m.kind) {
-                        let talkgroup = matches!(kind, "affiliation" | "location" | "answer_request" | "call_alert").then_some(m.talkgroup);
+                        let talkgroup = matches!(kind, "affiliation" | "location" | "answer_request" | "call_alert" | "emergency_alarm").then_some(m.talkgroup);
                         if m.source >= 0 {
                             let e = UnitEvent { system, short_name: name.clone(), kind: kind.into(), unit: m.source as u32, talkgroup, time: self.wall(m.time_s) };
                             out.push(Output::Plugin(HostMessage::Unit(e)));
@@ -699,6 +699,15 @@ impl Session {
                 self.records.push(Record::text(Level::Info, Some(&name), format!("Unit {unit} is \"{alias}\" (TG {talkgroup})")));
                 self.log.push(json!({ "timeS": self.engine.status().now_s, "kind": "alias", "text": format!("Unit {unit} is \"{alias}\" (TG {talkgroup})"), "system": name }));
                 out.push(Output::Text(json!({ "type": "unitAlias", "system": name, "unit": unit, "alias": alias }).to_string()));
+            }
+            Event::UnitPosition { system, unit, lat, lon, talkgroup } => {
+                // (Each transmission may move it: a trace line, as control messages are.)
+                let name = self.system_name(system).to_string();
+                let text = format!("Unit {unit} at {lat:.5}, {lon:.5} (TG {talkgroup})");
+                self.records.push(Record::text(Level::Trace, Some(&name), text.clone()));
+                if self.logging() {
+                    self.log.push(json!({ "timeS": self.engine.status().now_s, "kind": "position", "text": text, "system": name }));
+                }
             }
             Event::Duplicate { call, kept } => {
                 let tag = call.talkgroup_info.as_ref().map_or(String::new(), |t| format!(" {}", t.alpha_tag));
@@ -871,6 +880,7 @@ fn unit_kind(k: MessageType) -> Option<&'static str> {
         MessageType::DataGrant => "data_grant",
         MessageType::UuAnsReq => "answer_request",
         MessageType::CallAlert => "call_alert",
+        MessageType::EmergencyAlarm => "emergency_alarm",
         _ => return None,
     })
 }

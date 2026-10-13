@@ -9,6 +9,7 @@ use crate::mbe::{self, Kind, FRAME_SAMPLES};
 use crate::p25::alias::{is_alias_lcw, AliasLc, LcAliases};
 use crate::p25::diversity::{best_es, best_frame, best_imbe, best_lc, Group};
 use crate::p25::frame::{HDU, LDU1, LDU2, TDU, TDULC};
+use crate::p25::gps::LcPositions;
 use crate::p25::voice::{decode_hdu, decode_tdulc, imbe_params_to_bits, ldu_codeword_end_bit, ALGID_CLEAR};
 use super::voice::TrackerOut;
 
@@ -25,6 +26,7 @@ pub struct VoiceTracker {
     /// The unit link control named for the current transmission.
     talker: Option<u32>,
     aliases: LcAliases,
+    positions: LcPositions,
     call_frames: u64,
     end_s: f64,
     /// Vocoder frames / repeated or muted, over the channel's life.
@@ -42,6 +44,7 @@ impl VoiceTracker {
             tgid: None,
             talker: None,
             aliases: LcAliases::default(),
+            positions: LcPositions::default(),
             call_frames: 0,
             end_s: 0.0,
             frames: 0,
@@ -70,7 +73,7 @@ impl VoiceTracker {
                         if lc.protected {
                             let a = if self.algid == ALGID_CLEAR as i32 { ALGID_UNKNOWN } else { self.algid };
                             self.set_encryption(a, out);
-                        } else if lc.lco == 0 || lc.lco == 3 {
+                        } else if lc.voice_user() {
                             if let (Some(cur), Some(tg)) = (self.tgid, lc.tgid) {
                                 if cur != tg && self.call_frames > 0 {
                                     self.start(t, None);
@@ -87,8 +90,13 @@ impl VoiceTracker {
                                 self.set_encryption(ALGID_UNKNOWN, out);
                             }
                             out.push(TrackerOut::Info { source: lc.source, emergency: svc & 0x80 != 0, encrypted: self.encrypted });
-                        } else if let Some(a) = self.aliases.lcw(&lc.raw, self.talker, self.tgid) {
-                            out.push(TrackerOut::Alias(a));
+                        } else {
+                            if let Some(a) = self.aliases.lcw(&lc.raw, self.talker, self.tgid) {
+                                out.push(TrackerOut::Alias(a));
+                            }
+                            if let Some(p) = self.positions.lcw(&lc.raw, lc.mfid, self.talker) {
+                                out.push(TrackerOut::Position(p));
+                            }
                         }
                     }
                 } else if let Some(es) = best_es(g) {
@@ -128,6 +136,9 @@ impl VoiceTracker {
                     }
                     if let Some(a) = self.aliases.lcw(&lc.raw, self.talker, self.tgid) {
                         out.push(TrackerOut::Alias(a));
+                    }
+                    if let Some(p) = self.positions.lcw(&lc.raw, lc.mfid, self.talker) {
+                        out.push(TrackerOut::Position(p));
                     }
                 }
                 self.active = false;

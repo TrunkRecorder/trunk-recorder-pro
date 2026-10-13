@@ -554,9 +554,9 @@ export interface CallRecord {
   errorList: { pos: number; len: number; frames: number; error_count: number; bad_frames: number; max_frame_errors: number }[];
   /**
    * The radios that talked: `time` Unix s, `pos` s into the audio. `tag`: the unit's name (the unit names
-   * file or the alias heard, by the system's mode); `tag_ota`: the alias heard.
+   * file or the alias heard, by the system's mode); `tag_ota`: the alias heard. `lat`, `lon`: where the radio said it was (GPS, decimal degrees), when it did.
    */
-  srcList: { src: number; time: number; pos: number; emergency: number; signal_system: string; tag: string; tag_ota: string }[];
+  srcList: { src: number; time: number; pos: number; emergency: number; signal_system: string; tag: string; tag_ota: string; lat?: number; lon?: number }[];
 }
 
 /** A recorded call: `path` (no extension) under the capture folder. */

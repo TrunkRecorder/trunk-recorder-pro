@@ -45,7 +45,7 @@
 
 use num_complex::Complex32;
 
-use super::calls::{conventional_index, conventional_system, Call, CallId, CallIds, CallSource, STUCK_CALL_S};
+use super::calls::{conventional_index, conventional_system, Call, CallId, CallIds, CallManager, CallSource, STUCK_CALL_S};
 use super::frames::CallFrames;
 use super::record::{Reception, Transmissions};
 use super::talkgroups::{Talkgroup, Talkgroups};
@@ -58,6 +58,7 @@ use crate::dsp::{Channelizer, HeadId};
 use crate::mbe;
 use crate::nxdn::Rate;
 use crate::alias::Alias;
+use crate::position::Position;
 use crate::p25::diversity::BankConfig;
 
 /// Half-width of the band the detector sums, Hz (a 12.5 kHz channel's signal).
@@ -321,6 +322,8 @@ pub enum ConvOut {
     End { call: Call, audio: Vec<f32>, frames: CallFrames, recorder_num: u32, tx: Transmissions, reception: Reception },
     /// A radio's talker alias, heard on a P25 channel of conventional system `.0` ([`Call::system`]).
     Alias(u16, Alias),
+    /// A radio's new position, on a call (its system and talkgroup).
+    Position(u16, Position, u32),
     /// A transmission no row took, and the code it carried (as a row's
     /// Tone would say it; "" for none).
     Skipped { freq_hz: u64, code: String },
@@ -353,6 +356,8 @@ struct Heard {
     frames: Vec<VoiceFrame>,
     /// (source, emergency, encrypted) from link control.
     infos: Vec<(Option<u32>, bool, bool)>,
+    /// Talkers' GPS positions.
+    positions: Vec<Position>,
     /// Air time of the first voice frame, and the end of the last (digital).
     air: Option<(f64, f64)>,
     /// The talkgroup the air named (FM with tones: the row's).
@@ -372,6 +377,7 @@ impl Heard {
         self.audio.append(&mut other.audio);
         self.low.append(&mut other.low);
         self.infos.append(&mut other.infos);
+        self.positions.append(&mut other.positions);
     }
 }
 
@@ -695,6 +701,7 @@ impl Conventional {
                 TrackerOut::Subaudible(l) => h.low.extend_from_slice(&l),
                 TrackerOut::Info { source, emergency, encrypted } => h.infos.push((source, emergency, encrypted)),
                 TrackerOut::Alias(a) => out.push(ConvOut::Alias(conventional_system(ch.cfg.system), a)),
+                TrackerOut::Position(p) => h.positions.push(p),
                 TrackerOut::AliasLc(_) => {}
             }
         }
@@ -936,9 +943,15 @@ impl Conventional {
             }
             if let Some(s) = src {
                 if s != 0 && l.call.sources.last().is_none_or(|x| x.src != s) {
-                    l.call.sources.push(CallSource { src: s, time_s: now_s, emergency });
+                    l.call.sources.push(CallSource { src: s, time_s: now_s, emergency, position: None });
                     changed = true;
                 }
+            }
+        }
+        for p in h.positions {
+            if CallManager::note_position(&mut l.call, &p) {
+                out.push(ConvOut::Position(l.call.system, p, l.call.talkgroup));
+                changed = true;
             }
         }
         if changed {
