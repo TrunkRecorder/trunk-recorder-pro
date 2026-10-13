@@ -629,7 +629,7 @@ impl Session {
                 let name = self.system_name(system).to_string();
                 if self.plugin_topics.units {
                     if let Some(kind) = unit_kind(m.kind) {
-                        let talkgroup = matches!(kind, "affiliation" | "location" | "answer_request" | "call_alert").then_some(m.talkgroup);
+                        let talkgroup = matches!(kind, "affiliation" | "location" | "answer_request" | "call_alert" | "emergency_alarm").then_some(m.talkgroup);
                         if m.source >= 0 {
                             let e = UnitEvent { system, short_name: name.clone(), kind: kind.into(), unit: m.source as u32, talkgroup, time: self.wall(m.time_s) };
                             out.push(Output::Plugin(HostMessage::Unit(e)));
@@ -871,6 +871,7 @@ fn unit_kind(k: MessageType) -> Option<&'static str> {
         MessageType::DataGrant => "data_grant",
         MessageType::UuAnsReq => "answer_request",
         MessageType::CallAlert => "call_alert",
+        MessageType::EmergencyAlarm => "emergency_alarm",
         _ => return None,
     })
 }

@@ -338,11 +338,13 @@ pub struct UnitEvent {
     pub system: u16,
     pub short_name: String,
     /// "registration" | "deregistration" | "affiliation" | "acknowledge" |
-    /// "location" | "data_grant" | "answer_request" | "call_alert"
+    /// "location" | "data_grant" | "answer_request" | "call_alert" |
+    /// "emergency_alarm"
     pub kind: String,
     /// Radio ID.
     pub unit: u32,
-    /// The talkgroup involved (affiliation, location, answer request, call alert).
+    /// The talkgroup involved (affiliation, location, answer request, call
+    /// alert, emergency alarm).
     pub talkgroup: Option<u32>,
     /// Unix seconds.
     pub time: f64,

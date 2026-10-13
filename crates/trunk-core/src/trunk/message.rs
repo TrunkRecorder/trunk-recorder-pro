@@ -31,6 +31,14 @@ pub enum MessageType {
     CallAlert,
     /// A neighbouring site (`sys_id`, `rfss`, `site`, its control channel `freq_hz`).
     Adjacent,
+    /// A request refused (`source` the unit that asked; `talkgroup` a group call's group).
+    Deny,
+    /// A request waiting for its turn (as [`MessageType::Deny`]).
+    Queued,
+    /// A radio's emergency button (`source`, on `talkgroup`).
+    EmergencyAlarm,
+    /// The site's base station ID (`callsign`).
+    BaseStationId,
     #[default]
     Unknown,
 }
@@ -57,6 +65,10 @@ impl MessageType {
             UuVUpdate => "uu_v_update",
             CallAlert => "call_alert",
             Adjacent => "adjacent",
+            Deny => "deny",
+            Queued => "queued",
+            EmergencyAlarm => "emergency_alarm",
+            BaseStationId => "base_station_id",
             Unknown => "unknown",
         }
     }
@@ -98,6 +110,8 @@ pub struct Message {
     pub nxdn: Option<crate::nxdn::Rate>,
     pub ran: Option<u8>,
     pub opcode: u8,
+    /// Motorola: the site's callsign (its CW ID), from its base station ID.
+    pub callsign: Option<String>,
     /// Human-readable summary, as Trunk Recorder logs it.
     pub meta: String,
 }
@@ -110,6 +124,69 @@ pub struct FreqTable {
     pub phase2_tdma: bool,
     pub slots_per_carrier: u32,
     pub bandwidth_khz: f64,
+}
+
+/// What a deny or queued response's service type (the request's opcode) asked for.
+fn service_name(service: u32) -> String {
+    match service {
+        0x00 => "group voice".into(),
+        0x04 => "unit-to-unit voice".into(),
+        0x05 => "unit-to-unit answer".into(),
+        0x08 => "telephone".into(),
+        0x10..=0x14 => "data".into(),
+        0x28 => "affiliation".into(),
+        0x2c => "registration".into(),
+        s => format!("service 0x{s:02x}"),
+    }
+}
+
+/// Why a request was refused: the standard's reasons, or (`custom`)
+/// Motorola's and L3Harris's own.
+fn deny_reason(r: u32, custom: bool) -> String {
+    let s = match (custom, r) {
+        (true, 0x00) => "secure request on a clear supergroup",
+        (true, 0x01) => "clear request on a secure supergroup",
+        (true, _) => return format!("reason 0x{r:02x}"),
+        (_, 0x10) => "requesting unit not valid",
+        (_, 0x11) => "requesting unit not authorized",
+        (_, 0x20) => "target unit not valid",
+        (_, 0x21) => "target unit not authorized",
+        (_, 0x2f) => "target unit refused the call",
+        (_, 0x30) => "target group not valid",
+        (_, 0x31) => "target group not authorized",
+        (_, 0x40) => "invalid dialing",
+        (_, 0x41) => "telephone number not authorized",
+        (_, 0x42) => "PSTN not valid",
+        (_, 0x50) => "call timeout",
+        (_, 0x51) => "landline terminated the call",
+        (_, 0x52) => "subscriber unit terminated the call",
+        (_, 0x5f) => "call preempted",
+        (_, 0x60) => "site access denied",
+        (_, 0x67) => "PTT collide",
+        (_, 0x77) => "PTT bonk",
+        (_, 0xf0) => "call options not valid for the service",
+        (_, 0xf1) => "protection option not valid",
+        (_, 0xf2) => "duplex option not valid",
+        (_, 0xf3) => "circuit or packet mode not valid",
+        (_, 0xff) => "system doesn't support the service",
+        _ => return format!("reason 0x{r:02x}"),
+    };
+    s.into()
+}
+
+/// Why a request was queued.
+fn queued_reason(r: u32) -> String {
+    match r {
+        0x10 => "requesting unit busy in another service".into(),
+        0x20 => "target unit busy in another service".into(),
+        0x2f => "target unit queued the call".into(),
+        0x30 => "target group already active".into(),
+        0x40 => "no channel free".into(),
+        0x41 => "no telephone line free".into(),
+        0x42 => "no data channel free".into(),
+        0x50 => "a superseding service is active".into(),
+        _ => format!("reason 0x{r:02x}"),
+    }
 }
 
 /// An encryption algorithm ID, by name.
@@ -248,6 +325,13 @@ impl TsbkParser {
                     if m.encrypted { " ENC" } else { "" }
                 );
             }
+            // Motorola patch delete: the supergroup and the groups leaving it.
+            (0x90, 0x01) => {
+                m.kind = MessageType::PatchDelete;
+                let p = Patch { sg: b(64, 0xffff), ga: [b(48, 0xffff), b(32, 0xffff), b(16, 0xffff)] };
+                m.meta = format!("Moto patch delete sg {}: {} {} {}", p.sg, p.ga[0], p.ga[1], p.ga[2]);
+                m.patch = Some(p);
+            }
             (0x90, 0x02) => {
                 opts(&mut m);
                 let ch = b(56, 0xffff);
@@ -299,6 +383,56 @@ impl TsbkParser {
                 m.talkgroup = b(16, 0xffff);
                 set_slot(self, &mut m, ch1);
                 m.meta = format!("Explicit update TG {} {} MHz", m.talkgroup, mhz(m.freq_hz));
+            }
+            // Motorola extended function: class, operand, arguments, target
+            // radio. Class 2 regroups a radio onto a supergroup (operand 0) or
+            // off it (1): no talkgroup is patched.
+            (0x90, 0x04) => {
+                let (class, operand, args, target) = (b(72, 0xff), b(64, 0xff), b(40, 0xffffff), b(16, 0xffffff));
+                m.source = target as i64;
+                m.meta = match (class, operand) {
+                    (0x02, 0 | 1) => format!("Moto regroup sg {}: unit {target} {}", args & 0xffff, if operand == 0 { "joins" } else { "leaves" }),
+                    _ => format!("Moto extended function class 0x{class:02x} operand 0x{operand:02x} args 0x{args:06x} unit {target}"),
+                };
+            }
+            // Deny and queued responses, the standard's and Motorola's (the
+            // same layout; Motorola's RC bit marks a reason of its own): the
+            // service asked for (its request's opcode), why, more (a group
+            // call's group), and the unit that asked.
+            (0, 0x21 | 0x27) | (0x90, 0x06 | 0x07) => {
+                let deny = opcode == 0x27 || opcode == 0x07;
+                let (service, reason, info) = (b(72, 0x3f), b(64, 0xff), b(40, 0xffffff));
+                m.kind = if deny { MessageType::Deny } else { MessageType::Queued };
+                m.source = b(16, 0xffffff) as i64;
+                let group = service == 0x00;
+                if group {
+                    m.talkgroup = info & 0xffff;
+                }
+                let why = if deny { deny_reason(reason, vendor == 0x90 && b(79, 1) == 1) } else { queued_reason(reason) };
+                m.meta = format!(
+                    "{} {} for unit {}{}: {why}",
+                    if deny { "Denied" } else { "Queued" },
+                    service_name(service),
+                    m.source,
+                    if group { format!(" on TG {}", m.talkgroup) } else { String::new() }
+                );
+            }
+            // Motorola emergency alarm: the group and the radio.
+            (0x90, 0x0a) => {
+                m.kind = MessageType::EmergencyAlarm;
+                m.emergency = true;
+                m.talkgroup = b(40, 0xffff);
+                m.source = b(16, 0xffffff) as i64;
+                m.meta = format!("Emergency alarm from {} on TG {}", m.source, m.talkgroup);
+            }
+            // Motorola base station ID: the site's callsign, eight 6-bit
+            // characters (+ 43 for ASCII; 0 none), and its channel.
+            (0x90, 0x0b) => {
+                let callsign: String = (0..8).map(|i| b(74 - 6 * i, 0x3f)).filter(|&c| c != 0).map(|c| (c as u8 + 43) as char).collect();
+                m.kind = MessageType::BaseStationId;
+                m.freq_hz = self.channel_to_hz(b(16, 0xffff));
+                m.meta = format!("Base station ID {callsign} {} MHz", mhz(m.freq_hz));
+                m.callsign = Some(callsign);
             }
             (0, 0x04) => {
                 opts(&mut m);
@@ -541,6 +675,37 @@ mod tests {
         // A radio target (G clear): unit 0x800065 joins; nothing is patched.
         let m = msg(0x30, 0xa4, [0x20, 0xfe, 0x4d, 0x00, 0x00, 0x80, 0x00, 0x65]);
         assert_eq!((m.kind, m.patch, m.source), (MessageType::Unknown, None, 0x800065));
+    }
+
+    #[test]
+    fn motorola_control_messages() {
+        // Patch delete: TG 101 leaves supergroup 2001.
+        let m = msg(0x01, 0x90, [0x07, 0xd1, 0x00, 0x65, 0, 0, 0, 0]);
+        assert_eq!((m.kind, m.patch.map(|p| (p.sg, p.ga))), (MessageType::PatchDelete, Some((2001, [101, 0, 0]))));
+        // Emergency alarm: unit 0x123456 on TG 0x0101.
+        let m = msg(0x0a, 0x90, [0, 0, 0, 0x01, 0x01, 0x12, 0x34, 0x56]);
+        assert_eq!((m.kind, m.source, m.talkgroup, m.emergency), (MessageType::EmergencyAlarm, 0x123456, 0x0101, true));
+        // Base station ID "WQAB123": each character − 43, six bits apiece.
+        let cs = b"WQAB123";
+        let bits = cs.iter().fold(0u64, |a, &c| a << 6 | (c - 43) as u64) << 6; // and an empty eighth
+        let mut f = [0u8; 8];
+        f[..6].copy_from_slice(&bits.to_be_bytes()[2..]);
+        let m = msg(0x0b, 0x90, f);
+        assert_eq!((m.kind, m.callsign.as_deref()), (MessageType::BaseStationId, Some("WQAB123")));
+    }
+
+    #[test]
+    fn deny_and_queued_responses() {
+        // Standard deny: group voice on TG 0x0101 for unit 0x123456, target group not authorized.
+        let m = msg(0x27, 0, [0x00, 0x31, 0x00, 0x01, 0x01, 0x12, 0x34, 0x56]);
+        assert_eq!((m.kind, m.source, m.talkgroup), (MessageType::Deny, 0x123456, 0x0101));
+        assert!(m.meta.ends_with("target group not authorized"), "{}", m.meta);
+        // Motorola's own reason (RC set): a clear request on a secure supergroup.
+        let m = msg(0x07, 0x90, [0x80, 0x01, 0x00, 0x01, 0x01, 0x12, 0x34, 0x56]);
+        assert!(m.kind == MessageType::Deny && m.meta.ends_with("clear request on a secure supergroup"), "{}", m.meta);
+        // Queued, no channel free.
+        let m = msg(0x21, 0, [0x00, 0x40, 0x00, 0x01, 0x01, 0x12, 0x34, 0x56]);
+        assert!(m.kind == MessageType::Queued && m.meta.ends_with("no channel free"), "{}", m.meta);
     }
 
     #[test]
