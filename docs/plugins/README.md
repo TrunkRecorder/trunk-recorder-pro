@@ -193,13 +193,20 @@ The M4A made for the plugins is deleted once they're done with it, unless you al
 
 ## What happens to the files
 
-The upload plugins report what became of each call. Once every plugin that takes recorded calls
-has reported on one, the recorder applies your **Files** settings in Setup's **Recording** tab:
-with **Keep the audio after uploading** or **Keep the call JSON after uploading** off, those
-files are deleted then, and with **Keep everything when an upload fails** on, a failed upload
-keeps them all. A call that no plugin takes keeps its files whatever those settings say. A call
-whose plugins haven't all reported within an hour keeps its files too. The details are in
-[Recordings](../guides/recordings.md).
+Every plugin that takes recorded calls answers on each one: done, skipped or failed. Once all of
+them have answered, the recorder applies the **Archive** settings in Setup's **Recording** tab:
+
+| Setting | On | Off |
+|---|---|---|
+| **Keep audio** | The audio is kept once the plugins are done | It's deleted once the plugins are done |
+| **Keep call JSON** | The call JSON is kept | It's deleted once the plugins are done |
+| **Keep when a plugin fails** | If any plugin reports a failure, the audio and JSON are kept anyway | Failures change nothing |
+
+**Done and skipped count the same**: a plugin that skipped a call (a system it has no settings
+for, say) is finished with it, and the call's files go if the Keep settings say so. A plugin that
+hasn't answered within an hour counts as having failed. With no plugin taking calls, the Keep
+settings alone decide. The details are in
+[The archive](../guides/recordings.md#the-archive-whats-kept-and-whats-deleted).
 
 ## Seeing how plugins are doing
 

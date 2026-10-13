@@ -113,8 +113,9 @@ Lines on stdout that aren't protocol messages become log lines, and so does ever
 
 **If you subscribe to `call.concluded`, send a `call.result` for every call.** The recorder keeps
 each call's files until every plugin taking recorded calls has reported on it, then deletes what
-the user's **Files** settings don't keep. For a call your plugin never reports on, the recorder
-waits an hour, then gives up and keeps all its files; it's counted as neither done nor failed.
+the user's **Archive** settings don't keep. `ok` and `skipped` count the same there: the plugin is
+finished with the call. Only `failed` matters, and keeps the files when the user has **Keep when a
+plugin fails** on. A call your plugin never reports on counts as failed after an hour.
 
 ### Audio
 

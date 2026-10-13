@@ -588,7 +588,7 @@ then earliest start. The others become `Duplicate` events.
 | The engine (CPU can't keep up) | Source queue fills → sources block → driver loses samples → `dropped` in status, gap filled, calls carry on with a hole; load shown on the dashboard. |
 | One browser | Its WebSocket task falls behind the 4,096-message ring and skips messages. Recording and other browsers are unaffected. |
 | Disk / finish thread | Finish queue fills (1,024 calls) → the engine writes calls itself without M4A, which slows decoding until it drains. |
-| One plugin | Its 1,024-line queue fills → its events are dropped and counted. The engine and other plugins are unaffected. The Archive keeps files a plugin never answered for (gives up after 1 h). |
+| One plugin | Its 1,024-line queue fills → its events are dropped and counted. The engine and other plugins are unaffected. A call it never answered for counts as failed after 1 h. |
 | M4A encoder | Encode queue fills → calls go to plugins as WAV. |
 | A radio stalls | No data for 1 s → silence filled in by `Session::poll` so calls on that source time out; the driver reopens after 2–3 s. |
 
@@ -665,8 +665,9 @@ stdin from the 1,024-line queue, and a stderr reader. Events are serialised once
 For each call the finish thread calls `archive.expect(call, takers)`, where takers = live
 processes subscribed to `call.concluded`. Each `call.result` counts down. At zero the call's
 `audioArchive`, `callLog`, `archiveFilesOnFailure` and `compressWav` rules are applied (delete,
-or move out of the RAM spool). A call no plugin takes keeps all its files. An unsettled call is
-kept after 1 h.
+or move out of the RAM spool): `ok` and `skipped` count the same, and only a `failed` keeps the
+files (with `archiveFilesOnFailure`). An unsettled call counts as failed after 1 h. With no
+takers, `archive::plan` writes only what the Keep rules keep, and the call settles at once.
 
 ### 8.6 RAM spool
 
@@ -1011,7 +1012,7 @@ same frequency).
 | `normalizeAudio` | true | yes | |
 | `digitalLevelDb`, `analogLevelDb` | 0 | yes | ±40 |
 | `compressWav` | false | yes | keep M4A instead of WAV |
-| `audioArchive`, `callLog` | true | yes | keep audio / JSON after upload |
+| `audioArchive`, `callLog` | true | yes | keep audio / JSON once the plugins are done |
 | `archiveFilesOnFailure` | true | yes | |
 | `filenameFormat` | "" | yes | "" = `<short>/<Y>/<M>/<D>/<tg>-<epoch>_<freq>` |
 | `dropDuplicateCalls` | true | | multi-site dedupe |

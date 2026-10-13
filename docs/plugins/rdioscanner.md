@@ -100,7 +100,8 @@ are marked skipped.
   details, or another HTTP 4xx error other than 408 or 429. The call is marked failed and not tried
   again.
 
-Whether a failed call's files are kept follows your **Files** settings: see
+Whether a failed call's files are kept follows your **Archive** settings (**Keep when a plugin
+fails**): see
 [What happens to the files](README.md#what-happens-to-the-files).
 
 ## Coming from Trunk Recorder

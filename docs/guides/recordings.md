@@ -109,7 +109,7 @@ make folders (`{time:%Y/%m}`).
 
 | File | When |
 |---|---|
-| `<name>.wav` | 8 kHz mono 16-bit PCM. Written unless nothing keeps or needs it (see [What's kept](#whats-kept-and-whats-deleted)) |
+| `<name>.wav` | 8 kHz mono 16-bit PCM. Written unless nothing keeps or needs it (see [The archive](#the-archive-whats-kept-and-whats-deleted)) |
 | `<name>.json` | The [call JSON](#the-call-json) |
 | `<name>.m4a` | With **Also save an M4A**, or when an upload plugin wants M4A |
 | `<name>.sdr` | With **Save vocoder frames**, for digital calls (NXDN: `<name>.frames.jsonl`) |
@@ -200,31 +200,53 @@ as WAV only`. If encoding a call fails, the error is logged and the call keeps i
 The WAV is fed to the encoder from memory. If the call's WAV isn't being kept, it is never written
 to disk at all.
 
-## What's kept and what's deleted
+## The archive: what's kept and what's deleted
 
-Trunk Recorder's three settings decide what stays in the recordings folder after upload plugins
-have handled a call:
+Three settings in Setup's **Recording** tab, under **Archive**, decide what of a call stays in the
+recordings folder once the plugins are done with it. Each system can set them again for itself
+(its **Recording override**).
 
-| Setting | Key | Default | Effect |
-|---|---|---|---|
-| **Keep the audio after uploading** | `audioArchive` | on | Off: the WAV (and frames file) is deleted once every upload plugin has finished with the call |
-| **Keep the call JSON after uploading** | `callLog` | on | Off: the JSON is deleted then |
-| **Keep everything when an upload fails** | `archiveFilesOnFailure` | on | If any plugin reports a failure, everything is kept, whatever the two above say |
+| Setting | Key | Default | On | Off |
+|---|---|---|---|---|
+| **Keep audio** | `audioArchive` | on | The audio (WAV, frames file, and the M4A with **Also save an M4A**) is kept once the plugins are done | It's deleted once the plugins are done |
+| **Keep call JSON** | `callLog` | on | The call JSON is kept | It's deleted once the plugins are done |
+| **Keep when a plugin fails** | `archiveFilesOnFailure` | on | If any plugin reports a failure, the call's audio and JSON are kept anyway | Failures change nothing |
 
-How they work together:
+What "the plugins are done" means:
 
-- **They only matter when an upload plugin is running.** "After uploading" means after every
-  enabled plugin that takes finished calls has reported back. With no such plugin, every call is
-  kept whole, whatever these say: deleting the files would leave nothing of the call.
-- **An M4A made only for a plugin** (with **Also save an M4A** off) is deleted afterwards too,
-  unless it is the only audio the call has.
-- **A call no plugin reports on within an hour** keeps its files.
-- With **Also save an M4A** on and **Keep the audio after uploading** off, both the WAV and the M4A
-  are deleted after uploading.
+- **Every plugin that takes finished calls answers on each call**: done (it uploaded, streamed or
+  handled it), skipped (it deliberately didn't, for example a system it has no settings for, an
+  encrypted call or a filtered talkgroup) or failed (it gave up). **Done and skipped count the
+  same**: the plugin is finished with the call. Only a failure matters, and only with **Keep when a
+  plugin fails** on.
+- **Nothing is deleted until every one of them has answered.**
+- **A plugin that hasn't answered within an hour counts as having failed.**
+- **With no plugin taking calls there's nothing to wait for**: the two Keep settings alone decide,
+  as soon as the call ends. With **Keep audio** off and no plugin, a call's audio is never saved at
+  all; Setup says so under the settings.
+- **Keep when a plugin fails** is greyed out when **Keep audio** and **Keep call JSON** are both
+  on: everything is kept anyway.
 
-So, to upload calls without keeping them, turn off the first two and leave the third on: calls
-whose upload failed stay, so you can see what went wrong. These are desktop settings; they aren't
-shown in the browser version. Plugins and their settings are covered in [Plugins](../plugins/README.md).
+Some examples:
+
+- **Keep everything** (the default): leave all three on. Plugins get each call and the recordings
+  folder keeps it all.
+- **Upload calls without keeping them:** turn off **Keep audio** and **Keep call JSON**, and leave
+  **Keep when a plugin fails** on. Calls a plugin failed on stay, so you can see what went wrong and
+  send them again. Calls the plugins skipped (a system they have no settings for, say) are deleted
+  like the rest: if a system's calls should be kept, turn its **Keep audio** back on in its
+  Recording override.
+- **Keep only the call log:** turn off **Keep audio** and leave **Keep call JSON** on.
+
+Also:
+
+- **An M4A made only for a plugin** (with **Also save an M4A** off) is deleted with the rest of
+  what isn't kept, and when the audio is kept, unless it's the only audio the call has.
+- **Nothing that won't be kept is written** when no plugin takes calls. With plugins, the files
+  they need are written (to the RAM spool, if it's on) and deleted once they're done.
+
+These are desktop settings; the browser version keeps calls itself and doesn't show them. Plugins
+and their settings are covered in [Plugins](../plugins/README.md).
 
 ## The RAM spool
 
@@ -244,9 +266,9 @@ MB** (256 by default). It takes effect the next time recording starts.
 - **Other systems (Windows):** there's no automatic spool; set `ramSpool.dir` to a RAM-backed
   folder if you have one.
 
-What goes in it: only the files that won't be kept, because of the settings above. Files that will
-be kept go straight to the recordings folder. If an upload fails and **Keep everything when an
-upload fails** is on, the call's files are moved from the spool to the recordings folder.
+What goes in it: only the files that may be deleted, because of the archive settings above. Files
+that will be kept go straight to the recordings folder. If a plugin fails and **Keep when a plugin
+fails** is on, the call's files are moved from the spool to the recordings folder.
 
 When things go wrong, nothing is lost:
 

@@ -141,7 +141,8 @@ next call.
   The call is marked skipped, not failed.
 - **A system without an API key.** Its calls are marked skipped.
 
-Whether a failed call's files are kept follows your **Files** settings: see
+Whether a failed call's files are kept follows your **Archive** settings (**Keep when a plugin
+fails**): see
 [What happens to the files](README.md#what-happens-to-the-files).
 
 ## Coming from Trunk Recorder

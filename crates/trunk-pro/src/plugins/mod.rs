@@ -31,7 +31,7 @@ mod host;
 pub mod manage;
 pub mod store;
 
-pub use archive::{Archive, FileRules};
+pub use archive::{plan, Archive, FileRules};
 pub use encode::Encoder;
 pub use host::{CallAudio, Note, PluginHost, Spec};
 
