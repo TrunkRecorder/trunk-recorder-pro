@@ -112,6 +112,19 @@ pub struct FreqTable {
     pub bandwidth_khz: f64,
 }
 
+/// An encryption algorithm ID, by name.
+fn algid_name(algid: u32) -> String {
+    match algid {
+        0x80 => "clear".into(),
+        0x81 => "DES-OFB".into(),
+        0x83 => "3DES".into(),
+        0x84 => "AES-256".into(),
+        0x85 => "AES-128".into(),
+        0xaa => "ADP".into(),
+        a => format!("ALGID 0x{a:02x}"),
+    }
+}
+
 /// A registration or affiliation response's value other than 0 (accepted).
 fn refusal(v: u32) -> &'static str {
     match v {
@@ -382,13 +395,25 @@ impl TsbkParser {
                 m.source = b(16, 0xffffff) as i64;
                 m.meta = format!("Deregistration {}", m.source);
             }
+            // L3Harris group regroup (explicit encryption): options (simulselect,
+            // talkgroup target, activate, sequence number), supergroup, key
+            // ID, target. A talkgroup target is its algorithm ID and the group.
             (0xa4, 0x30) => {
-                let ga = b(16, 0xffffff) & 0xffff;
-                let sg = b(56, 0xffff);
-                let add = b(77, 0x01) == 1;
-                m.kind = if add { MessageType::PatchAdd } else { MessageType::PatchDelete };
-                m.patch = Some(Patch { sg, ga: [ga, ga, ga] });
-                m.meta = format!("M/A-COM patch {} sg {sg} TG {ga}", if add { "add" } else { "delete" });
+                let (opts, sg, key, target) = (b(72, 0xff), b(56, 0xffff), b(40, 0xffff), b(16, 0xffffff));
+                let what = if opts & 0x80 != 0 { "simulselect" } else { "patch" };
+                let add = opts & 0x20 != 0;
+                if opts & 0x40 != 0 {
+                    let (tg, algid) = (target & 0xffff, target >> 16);
+                    m.kind = if add { MessageType::PatchAdd } else { MessageType::PatchDelete };
+                    m.patch = Some(Patch { sg, ga: [tg, tg, tg] });
+                    m.encrypted = algid != 0 && algid != 0x80;
+                    let enc = if m.encrypted { format!(" {} key 0x{key:04x}", algid_name(algid)) } else { String::new() };
+                    m.meta = format!("L3Harris {what} {} sg {sg} TG {tg}{enc}", if add { "add" } else { "delete" });
+                } else {
+                    // A radio regrouped onto the supergroup: no talkgroup patched.
+                    m.source = target as i64;
+                    m.meta = format!("L3Harris {what} sg {sg}: unit {target} {}", if add { "joins" } else { "leaves" });
+                }
             }
             (0, 0x30) => {
                 m.meta = "TDMA sync broadcast".into();
@@ -502,6 +527,20 @@ mod tests {
         assert_ne!(msg(0x06, 0x90, f).kind, MessageType::UuVUpdate);
         // MFID 1 is the standard's too.
         assert_eq!(msg(0x04, 1, f).kind, MessageType::UuVGrant);
+    }
+
+    #[test]
+    fn l3harris_regroups_name_talkgroups_or_radios() {
+        // Patch, talkgroup target, activate: TG 101 (ALGID 0x80, clear) into supergroup 65101.
+        let m = msg(0x30, 0xa4, [0x60, 0xfe, 0x4d, 0x00, 0x00, 0x80, 0x00, 0x65]);
+        assert_eq!((m.kind, m.patch.map(|p| (p.sg, p.ga[0])), m.encrypted), (MessageType::PatchAdd, Some((65101, 101)), false));
+        // AES-256, key 0x0123, deactivate.
+        let m = msg(0x30, 0xa4, [0x40, 0xfe, 0x4d, 0x01, 0x23, 0x84, 0x00, 0x65]);
+        assert_eq!((m.kind, m.encrypted), (MessageType::PatchDelete, true));
+        assert!(m.meta.contains("AES-256 key 0x0123"), "{}", m.meta);
+        // A radio target (G clear): unit 0x800065 joins; nothing is patched.
+        let m = msg(0x30, 0xa4, [0x20, 0xfe, 0x4d, 0x00, 0x00, 0x80, 0x00, 0x65]);
+        assert_eq!((m.kind, m.patch, m.source), (MessageType::Unknown, None, 0x800065));
     }
 
     #[test]
