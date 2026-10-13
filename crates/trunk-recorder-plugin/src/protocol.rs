@@ -316,6 +316,11 @@ pub struct SrcEntry {
     pub tag: String,
     /// Its talker alias, heard over the air.
     pub tag_ota: String,
+    /// Where it said it was (GPS, decimal degrees), when it did.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lat: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lon: Option<f64>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }

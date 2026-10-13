@@ -700,6 +700,15 @@ impl Session {
                 self.log.push(json!({ "timeS": self.engine.status().now_s, "kind": "alias", "text": format!("Unit {unit} is \"{alias}\" (TG {talkgroup})"), "system": name }));
                 out.push(Output::Text(json!({ "type": "unitAlias", "system": name, "unit": unit, "alias": alias }).to_string()));
             }
+            Event::UnitPosition { system, unit, lat, lon, talkgroup } => {
+                // (Each transmission may move it: a trace line, as control messages are.)
+                let name = self.system_name(system).to_string();
+                let text = format!("Unit {unit} at {lat:.5}, {lon:.5} (TG {talkgroup})");
+                self.records.push(Record::text(Level::Trace, Some(&name), text.clone()));
+                if self.logging() {
+                    self.log.push(json!({ "timeS": self.engine.status().now_s, "kind": "position", "text": text, "system": name }));
+                }
+            }
             Event::Duplicate { call, kept } => {
                 let tag = call.talkgroup_info.as_ref().map_or(String::new(), |t| format!(" {}", t.alpha_tag));
                 let text = format!(

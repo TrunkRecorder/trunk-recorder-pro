@@ -1639,7 +1639,7 @@ const OBJ = [
     ["start_time · stop_time · *_ms", "", "Unix s / ms"], ["emergency · priority · mode · duplex · encrypted", "", ""], ["call_length · call_length_ms", "", ""],
     ["talkgroup · talkgroup_tag · talkgroup_description · talkgroup_group_tag · talkgroup_group", "", ""], ["color_code · ran", "", "−1 if none"], ["tone_mode · tone_detected · tone_confidence", "", "conventional"],
     ["audio_type", "", "analog · digital tdma · digital"], ["short_name", "", ""], ["patched_talkgroups", "", "only when more than one"],
-    ["freqList", "[{freq, time, pos, len, error_count, spike_count}]", ""], ["errorList", "[{pos, len, frames, error_count, bad_frames, max_frame_errors}]", ""], ["srcList", "[{src, time, pos, emergency, signal_system, tag, tag_ota}]", ""]]],
+    ["freqList", "[{freq, time, pos, len, error_count, spike_count}]", ""], ["errorList", "[{pos, len, frames, error_count, bad_frames, max_frame_errors}]", ""], ["srcList", "[{src, time, pos, emergency, signal_system, tag, tag_ota, lat?, lon?}]", ""]]],
   ["Manifest", "plugin", "trunk-recorder-plugin/src/protocol.rs", "What a plugin prints for --describe.", [
     ["id · name · version · description", "String", ""], ["api", "u32", "1 ≤ api ≤ API_VERSION"], ["subscribe", "Vec<String>", "call.start, call.end, call.concluded, unit, audio, status"], ["audio_formats", "Vec<String>", "m4a, wav"],
     ["config · system_config", "Option<JSON Schema>", "the Plugins page's forms"], ["homepage · repository · authors · license", "", ""]]],

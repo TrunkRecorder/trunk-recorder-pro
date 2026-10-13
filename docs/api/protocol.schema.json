@@ -282,6 +282,12 @@
               },
               "tag_ota": {
                 "type": "string"
+              },
+              "lat": {
+                "type": "number"
+              },
+              "lon": {
+                "type": "number"
               }
             },
             "required": [
@@ -295,7 +301,7 @@
             ],
             "additionalProperties": false
           },
-          "description": "The radios that talked: `time` Unix s, `pos` s into the audio. `tag`: the unit's name (the unit names file or the alias heard, by the system's mode); `tag_ota`: the alias heard."
+          "description": "The radios that talked: `time` Unix s, `pos` s into the audio. `tag`: the unit's name (the unit names file or the alias heard, by the system's mode); `tag_ota`: the alias heard. `lat`, `lon`: where the radio said it was (GPS, decimal degrees), when it did."
         }
       },
       "required": [

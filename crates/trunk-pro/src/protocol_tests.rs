@@ -345,7 +345,7 @@ fn the_servers_messages() {
             talkgroup: 101,
             start_s: 0.0,
             last_update_s: 4.0,
-            sources: vec![trunk_core::trunk::CallSource { src: 7, time_s: 0.0, emergency: false }, trunk_core::trunk::CallSource { src: 8, time_s: 2.0, emergency: false }],
+            sources: vec![trunk_core::trunk::CallSource { src: 7, ..Default::default() }, trunk_core::trunk::CallSource { src: 8, time_s: 2.0, ..Default::default() }],
             ..Default::default()
         };
         r.call_start("p25", &c, now - 10);
