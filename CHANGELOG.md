@@ -18,6 +18,18 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   air decoded against the most the channel could carry. It reads the same
   on every system, unlike messages a second, which are lower where a site
   sends multi-block messages (one takes the air of two or three).
+- **P25: manufacturers' messages.** Motorola and L3Harris radios' GPS
+  positions, sent while they talk, are kept on the radio in the call JSON
+  (`lat`, `lon` in `srcList`). Motorola patch deletes end a patch when the
+  site says so; Motorola's base station ID logs the site's callsign;
+  Motorola emergency alarms are logged and sent to plugins as unit events
+  (`emergency_alarm`); denied and queued requests are logged with the
+  reason. On Phase 2, a Motorola patched call names its talker.
+- **P25 fixes.** On Motorola systems, a supergroup being set up (and a
+  queued request) was taken for a unit-to-unit call, and a patch-add in a
+  voice channel's link control for a talker. An L3Harris regroup of a
+  radio was taken for a talkgroup patch; an encrypted L3Harris patch is
+  now marked. A refused registration or affiliation isn't counted as one.
 - **NXDN talker aliases:** Kenwood radios' programmed names are read from the
   traffic channel and shown as each radio's name (`tag_ota`, the Calls page,
   `<shortName>.units.csv`), as P25's are. ASCII aliases only; Icom's format
