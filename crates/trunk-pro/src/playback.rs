@@ -74,23 +74,23 @@ fn mtime_s(m: &fs::Metadata) -> i64 {
 }
 
 /// The call JSONs under `dir` that may be in [from_s, to_s]: (start, path).
-/// A folder not touched since a day before `from_s` holds no later call.
-fn list_calls(dir: &Path, system: Option<&str>, from_s: i64, to_s: i64) -> Vec<(i64, PathBuf)> {
+/// Every folder is searched (a filename format can put calls anywhere), the
+/// recordings folder itself included. A folder with no subfolders is skipped
+/// when it hasn't changed since a day before `from_s`: adding a call changes
+/// it. (A folder that has subfolders can't be told that way: a call added
+/// deeper doesn't change it.)
+fn list_calls(dir: &Path, from_s: i64, to_s: i64) -> Vec<(i64, PathBuf)> {
     let mut out = Vec::new();
-    // (The recordings folder itself is searched too: a filename format with no folder saves calls in it.)
     let mut stack: Vec<(PathBuf, usize)> = vec![(dir.to_path_buf(), 0)];
-    // At the top, the system's own folder when there is one (a custom layout may put its calls anywhere).
-    let own = system.map(|s| dir.join(s)).filter(|p| p.is_dir());
     while let Some((d, depth)) = stack.pop() {
         let Ok(rd) = fs::read_dir(&d) else { continue };
+        let (mut has_dirs, mut files) = (false, Vec::new());
         for e in rd.flatten() {
             let p = e.path();
             let Ok(ft) = e.file_type() else { continue };
             if ft.is_dir() {
-                // (A folder at the top is never skipped for its age: its subfolders are the days.)
-                let old = depth > 0 && e.metadata().is_ok_and(|m| mtime_s(&m) < from_s - 86_400);
-                let other_system = depth == 0 && own.as_ref().is_some_and(|o| *o != p);
-                if depth < MAX_DEPTH && !old && !other_system {
+                has_dirs = true;
+                if depth < MAX_DEPTH {
                     stack.push((p, depth + 1));
                 }
             } else if p.extension().is_some_and(|x| x == "json") {
@@ -100,10 +100,14 @@ fn list_calls(dir: &Path, system: Option<&str>, from_s: i64, to_s: i64) -> Vec<(
                 };
                 // (An hour of slack: the name is the start, a record's time may differ.)
                 if s >= from_s - 3600 && s <= to_s + 3600 {
-                    out.push((s, p));
+                    files.push((s, p));
                 }
             }
         }
+        if !has_dirs && fs::metadata(&d).is_ok_and(|m| mtime_s(&m) < from_s - 86_400) {
+            continue;
+        }
+        out.extend(files);
     }
     out.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
     out
@@ -130,30 +134,33 @@ struct UnitStat {
 
 /// The radios that spoke on a call, with an alias if the record has one.
 fn units_of(record: &Value) -> Vec<(u32, String)> {
-    record["srcList"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|s| {
-            let src = s["src"].as_u64().filter(|&u| u > 0)? as u32;
-            let tag = ["tag", "tag_ota"].iter().filter_map(|k| s[*k].as_str()).find(|t| !t.is_empty()).unwrap_or("");
-            Some((src, tag.to_string()))
-        })
-        .collect()
+    // (srcList is a timeline: a radio that spoke twice is in it twice, but is one radio on the call.)
+    let mut out: Vec<(u32, String)> = Vec::new();
+    for s in record["srcList"].as_array().into_iter().flatten() {
+        let Some(src) = s["src"].as_u64().filter(|&u| u > 0).map(|u| u as u32) else { continue };
+        let tag = ["tag", "tag_ota"].iter().filter_map(|k| s[*k].as_str()).find(|t| !t.is_empty()).unwrap_or("");
+        match out.iter_mut().find(|(u, _)| *u == src) {
+            Some((_, alias)) if alias.is_empty() => *alias = tag.to_string(),
+            Some(_) => {}
+            None => out.push((src, tag.to_string())),
+        }
+    }
+    out
 }
 
 /// The `playbackResult` for `req` over the recordings in `dir`. `known(system,
 /// talkgroup)`: whether the system's talkgroup file lists it.
 pub fn query(dir: &Path, known: &dyn Fn(&str, u32) -> bool, req: &Value, now_ms: i64) -> Value {
     let q = Query::from_json(req, now_ms);
-    let found = list_calls(dir, q.system.as_deref(), q.from_ms.div_euclid(1000), q.to_ms.div_euclid(1000));
+    let found = list_calls(dir, q.from_ms.div_euclid(1000), q.to_ms.div_euclid(1000));
     let first_page = q.before_ms.is_none();
     let mut tgs: HashMap<(String, u32), TgStat> = HashMap::new();
     let mut units: HashMap<(String, u32), UnitStat> = HashMap::new();
     let mut systems: std::collections::BTreeSet<String> = Default::default();
     let mut page: Vec<Value> = Vec::new();
     let (mut total, mut more, mut read, mut matched_ms) = (0usize, false, 0usize, (i64::MAX, 0i64));
-    for (_, p) in &found {
+    let mut page_second: Option<i64> = None;
+    for (name_s, p) in &found {
         if read >= MAX_READ {
             break;
         }
@@ -219,7 +226,10 @@ pub fn query(dir: &Path, known: &dyn Fn(&str, u32) -> bool, req: &Value, now_ms:
         if q.before_ms.is_some_and(|b| start >= b) {
             continue;
         }
-        if page.len() < q.limit {
+        // A page is cut between seconds, never inside one: the next page starts before the oldest call
+        // here (in ms), so calls of the same second that were left off would never be shown.
+        if page.len() < q.limit || page_second == Some(*name_s) {
+            page_second = Some(*name_s);
             let audio = ["wav", "m4a"].iter().any(|x| p.with_extension(x).exists());
             page.push(json!({ "path": rel.with_extension("").to_string_lossy().replace('\\', "/"), "record": record, "audio": audio, "json": true }));
         } else {
@@ -335,5 +345,65 @@ mod tests {
         let p2 = ask(with(json!({ "limit": 3, "before": oldest })));
         assert_eq!((p2["entries"].as_array().unwrap().len(), p2["more"].clone(), p2["talkgroups"].clone()), (2, json!(false), Value::Null));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn fresh(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("trunk-pro-playback-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn call(dir: &Path, rel: &str, tg: u32, start_ms: i64, src: &[u32]) {
+        let path = dir.join(rel);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let list: Vec<Value> = src.iter().map(|u| json!({ "src": u })).collect();
+        fs::write(path, json!({ "short_name": "metro", "talkgroup": tg, "start_time_ms": start_ms, "call_length_ms": 1000, "srcList": list }).to_string()).unwrap();
+    }
+
+    /// Folders that look old (a year folder's time doesn't change when a call is added to a day below it)
+    /// and folders of a layout of the user's own are searched all the same.
+    #[test]
+    fn every_folder_is_searched() {
+        let dir = fresh("folders");
+        let t0 = 1_791_000_000;
+        call(&dir, &format!("metro/2026/10/14/1-{t0}_1.json"), 1, t0 * 1000, &[]);
+        call(&dir, &format!("by-hand/9-{t0}_1.json"), 9, t0 * 1000, &[]);
+        let old = UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000);
+        for d in ["metro/2026", "metro/2026/10", "metro"] {
+            fs::File::open(dir.join(d)).unwrap().set_modified(old).unwrap();
+        }
+        let r = query(&dir, &|_, _| true, &json!({ "from": (t0 - 100) * 1000, "system": "metro" }), (t0 + 100) * 1000);
+        // (Both are metro's by their records; the second is in a folder that isn't named for it.)
+        assert_eq!(r["total"], 2, "{r}");
+    }
+
+    /// A page ends between seconds, and a radio that spoke twice is one radio on the call.
+    #[test]
+    fn pages_lose_no_call_and_radios_count_once() {
+        let dir = fresh("pages");
+        let t0 = 1_791_000_000;
+        // Three calls in one second (two at the page's end), one before.
+        for (i, ms) in [t0 * 1000 + 900, t0 * 1000 + 500, t0 * 1000 + 100].into_iter().enumerate() {
+            call(&dir, &format!("metro/{i}-{t0}_1.json"), 1, ms, &[5, 6, 5]);
+        }
+        call(&dir, &format!("metro/9-{}_1.json", t0 - 60), 1, (t0 - 60) * 1000, &[5]);
+        let ask = |extra: Value| {
+            let mut v = json!({ "from": (t0 - 100) * 1000, "limit": 2 });
+            for (k, x) in extra.as_object().unwrap() {
+                v[k] = x.clone();
+            }
+            query(&dir, &|_, _| true, &v, (t0 + 100) * 1000)
+        };
+        let p1 = ask(json!({}));
+        assert_eq!(p1["entries"].as_array().unwrap().len(), 3, "the second's calls come whole");
+        assert_eq!(p1["more"], true);
+        let oldest = p1["entries"][2]["record"]["start_time_ms"].as_i64().unwrap();
+        let p2 = ask(json!({ "before": oldest }));
+        assert_eq!(p2["entries"].as_array().unwrap().len(), 1);
+        assert_eq!(p2["more"], false);
+        // Radio 5 was on all four calls, 6 on three, however often they spoke.
+        let calls = |unit: u64| p1["units"].as_array().unwrap().iter().find(|u| u["unit"] == unit).unwrap()["calls"].clone();
+        assert_eq!((calls(5), calls(6)), (json!(4), json!(3)));
     }
 }
