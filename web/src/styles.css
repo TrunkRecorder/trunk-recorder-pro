@@ -1,3 +1,5 @@
+/* The interface's style: tokens, type, layout patterns and wording are
+   described in docs/developer/ui-style.md. Keep the two in step. */
 :root {
   --bg: #0d1117;
   --panel: #151b23;

@@ -1,6 +1,7 @@
 // The setup page's layout, in three levels: a section (a heading over its
 // cards), a card (one system, source or panel) and, inside a card, groups of
 // related settings, each named on the left with what it is for.
+// The rules for using them: docs/developer/ui-style.md.
 
 import { useId, useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
 
