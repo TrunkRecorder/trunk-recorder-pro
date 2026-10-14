@@ -5,7 +5,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { feedSeries } from "./series.ts";
 import { LivePlayer } from "./livePlayer.ts";
-import { conventionalIndex, pluginCopies } from "./protocol.ts";
+import { conventionalIndex, copyOverride, copyOwn, OVERRIDE, pluginCopies } from "./protocol.ts";
 import type {
   MonitorEvent,
   PlatformInfo,
@@ -645,7 +645,17 @@ function editSystemPlugin(system: SystemRef, id: string, f: (copies: PluginValue
 export function setSystemPluginSettings(system: SystemRef, id: string, values: PluginValues, copy = 0): void {
   editSystemPlugin(system, id, (c) => {
     while (c.length <= copy) c.push({});
-    c[copy] = values;
+    const over = copyOverride(c[copy]);
+    c[copy] = blank(over) ? copyOwn(values) : { ...copyOwn(values), [OVERRIDE]: over };
+    return c;
+  });
+}
+/** The plugin's own settings that a system's copy of it overrides (another server, say); empty: none. */
+export function setSystemPluginOverride(system: SystemRef, id: string, over: PluginValues, copy = 0): void {
+  editSystemPlugin(system, id, (c) => {
+    while (c.length <= copy) c.push({});
+    const own = copyOwn(c[copy]);
+    c[copy] = blank(over) ? own : { ...own, [OVERRIDE]: over };
     return c;
   });
 }
