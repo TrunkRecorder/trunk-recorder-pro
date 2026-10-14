@@ -404,4 +404,24 @@ mod tests {
         let other = held(2, 1, 20, 0, 0);
         assert_eq!(pick(&[h, other], &[false; 2], &[burst_s * 2.0, 0.0]), Some(1));
     }
+
+    #[test]
+    fn a_call_decrypted_from_its_second_transmission_keeps_only_that_part() {
+        // This site missed the key for the first transmission, then had it.
+        let mut late = held(1, 0, 100, 0, 0);
+        late.tx.note(0, 0.0);
+        late.tx.mark_encrypted(0.0);
+        late.tx.note(50 * FRAME_SAMPLES, 5.0);
+        late.tx.mark_encrypted(5.0);
+        late.tx.mark_decrypted(5.0);
+        let frame_s = FRAME_SAMPLES as f64 / SAMPLE_RATE as f64;
+        assert!((late.clean_s(0.0) - 50.0 * frame_s).abs() < 1e-9, "only the decrypted second half is kept");
+        let clear = held(2, 1, 100, 0, 0);
+        assert_eq!(pick(&[late.clone(), clear.clone()], &[false; 2], &[0.0; 2]), Some(1));
+        assert_eq!(pick(&[late.clone(), clear], &[true, false], &[0.0; 2]), Some(1), "preferred, but half the audio");
+        // Equally usable: the preferred site's copy wins over the one that started earlier.
+        let other = held(3, 1, 50, 0, 0);
+        assert_eq!(pick(&[late.clone(), other.clone()], &[false; 2], &[0.0; 2]), Some(0), "earliest start without a preference");
+        assert_eq!(pick(&[late, other], &[false, true], &[0.0; 2]), Some(1));
+    }
 }
