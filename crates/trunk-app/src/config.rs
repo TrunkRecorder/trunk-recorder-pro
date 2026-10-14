@@ -339,7 +339,8 @@ pub struct System {
     #[serde(skip_serializing_if = "String::is_empty")]
     pub keys_password_file: String,
     /// Plugins' settings for this system, by plugin id (as each plugin's
-    /// `system_config` schema describes them); a list for several copies of one.
+    /// `system_config` schema describes them), with `override` for the plugin's
+    /// own settings they change for it; a list for several copies of one.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub plugins: BTreeMap<String, serde_json::Value>,
     /// Keys this version doesn't know (a newer version's, a hand edit's):

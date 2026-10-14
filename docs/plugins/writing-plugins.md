@@ -69,8 +69,9 @@ The lifecycle, as the recorder (the "host") sees it:
 2. **Start.** When recording starts, the recorder runs the executable with no arguments, in its
    data folder (`plugin-data/<id>/`) as its working folder (in a process group of its own on Linux
    and macOS), and writes `hello`: the
-   plugin's settings, every system (short name, kind, and the plugin's settings for it), the
-   recordings folder, the data folder, and the audio formats calls will carry.
+   plugin's settings, every system (short name, kind, the plugin's settings for it, and, when
+   the system overrides some of the plugin's own settings, those settings as they are for it:
+   `settings`), the recordings folder, the data folder, and the audio formats calls will carry.
 3. **Ready.** The plugin answers `ready` once its settings are good. If they aren't, it sends an
    error `status` saying what to fix and exits with status **78**: the recorder shows the message
    and doesn't restart it until its settings change or recording starts again.
@@ -174,13 +175,21 @@ The main pieces:
 | `run::<P>()` | Answers `--describe` (and `--version`), parses `hello` and your settings, calls your methods, and exits with 78 when `start` returns `Err` |
 | `Setup` | What `start` gets: `config`, `systems` (each with `index`, `short_name`, `kind` and your `SystemConfig` or `None`), `capture_dir`, `data_dir`, `audio_formats`; `system_named()` and `has_format()` |
 | `Host` | The way back, usable from any thread: `info`/`warn`/`error`/`debug`, `status`, `call_result`, `metrics`. Never `println!` in a plugin: stdout belongs to the protocol |
-| `CallQueue`, `QueueOptions`, `Attempt` | An upload queue on worker threads (2 by default) with retries after 10 s, 1 min, 5 min and 15 min, a warning status while calls wait, `call.result`s and `metrics` sent for you, and calls still waiting at shutdown saved to the data folder (`QueueOptions::saved_in`) and resumed next start. Your closure returns `Attempt::Done`, `Skip`, `Retry` or `Fail` |
+| `CallQueue`, `QueueOptions`, `Attempt` | An upload queue on worker threads (2 by default) with retries after 10 s, 1 min, 5 min and 15 min, a warning status while calls wait, `call.result`s and `metrics` sent for you, and calls still waiting at shutdown saved to the data folder (`QueueOptions::saved_in`) and resumed next start. Your closure returns `Attempt::Done`, `Skip`, `Retry` or `Fail`. `CallQueue::start_by` also takes a closure naming each call's lane (the server it goes to): each lane gets workers, retries and an endpoint status of its own |
 | `TalkgroupFilter` | Trunk Recorder's talkgroup allow and deny patterns (`507*`, `12?45`); `filter::patterns` deserializes a list that mixes numbers and strings |
 | `Multipart` | A `multipart/form-data` body for any HTTP client |
 | `testing` | Run a plugin without the recorder (below) |
 
 Four of the five published plugins use `CallQueue` (simplestream, which is live, doesn't), and each
 is short enough to read in one sitting.
+
+### Settings for each system
+
+A system can override any of your recorder-wide settings (`Config`) for itself, such as sending its
+calls to another server. Read them for a system from `System::settings`, which is your `Config` with
+that system's overrides applied, and use `Setup::config` only for what isn't any one system's. An
+uploader that builds one client per server and starts its `CallQueue` with `start_by`, keyed by
+server, handles it all.
 
 ### Settings and the form
 
