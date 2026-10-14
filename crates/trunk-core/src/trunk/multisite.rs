@@ -250,13 +250,15 @@ impl MultiSite {
 /// [`PREFERRED_SHARE`] of the best clean audio, else the most clean audio;
 /// ties to the fewest FEC errors, then the earliest start.
 pub fn pick(copies: &[Held], preferred: &[bool], min_tx: &[f64]) -> Option<usize> {
-    let best = copies.iter().zip(min_tx).map(|(h, &m)| h.clean_s(m)).fold(0.0, f64::max);
+    // (A missing entry is no minimum.)
+    let clean = |i: usize| copies[i].clean_s(min_tx.get(i).copied().unwrap_or(0.0));
+    let best = (0..copies.len()).map(clean).fold(0.0, f64::max);
     let rank = |i: &usize| {
         let h = &copies[*i];
-        (h.clean_s(min_tx[*i]), std::cmp::Reverse(h.kept_errors(min_tx[*i]).total_errors()), -h.call.start_s)
+        (clean(*i), std::cmp::Reverse(h.kept_errors(min_tx.get(*i).copied().unwrap_or(0.0)).total_errors()), -h.call.start_s)
     };
     let cmp = |a: &usize, b: &usize| rank(a).partial_cmp(&rank(b)).unwrap_or(std::cmp::Ordering::Equal);
-    let pref = (0..copies.len()).filter(|&i| preferred.get(i) == Some(&true) && copies[i].clean_s(min_tx[i]) >= best * PREFERRED_SHARE).max_by(cmp);
+    let pref = (0..copies.len()).filter(|&i| preferred.get(i) == Some(&true) && clean(i) >= best * PREFERRED_SHARE).max_by(cmp);
     pref.or_else(|| (0..copies.len()).max_by(cmp))
 }
 
