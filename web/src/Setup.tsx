@@ -1152,7 +1152,7 @@ function ConventionalPanel(props: { c: Config; k: number }) {
                       Tone
                     </th>
                     <th>Name</th>
-                    <th title="Calls are filed under it; P25 uses the on-air one">Talkgroup</th>
+                    <th title="Calls are filed under it, whatever the air names. Blank: digital channels use the on-air one">Talkgroup</th>
                     <th title="dB above the noise floor">Squelch</th>
                     <th />
                   </tr>

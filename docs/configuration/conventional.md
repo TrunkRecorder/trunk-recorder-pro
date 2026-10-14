@@ -58,7 +58,7 @@ Notes:
 | `description` | | `""` | string | Description in the call JSON |
 | `tag` | | `""` | string | Tag in the call JSON |
 | `group` | | `""` | string | Category in the call JSON |
-| `talkgroup` | | see below | integer | The number its calls are filed under |
+| `talkgroup` | | see below | integer | The number its calls are filed under, whatever the air names |
 | `tone` | | `""` (any) | string | Record only transmissions carrying this code. See [Tones and codes](#tones-and-codes) |
 | `squelchDb` | | the system's | number | This channel's own squelch, dB above the noise floor |
 | `enabled` | | `true` | bool | `false` keeps the row without recording it |
@@ -69,11 +69,12 @@ A channel with no `talkgroup` is filed under its frequency in kHz (154.430 MHz â
 row on the same frequency gets that with a digit added: `1543251`, `1543252`â€¦ (counted among all rows
 on the frequency, enabled or not, so switching one off renumbers nothing).
 
-Digital calls keep what the air says:
+A row with a `talkgroup` files every call under it, whatever the radio sends. A row without one
+keeps what the air says, on digital channels:
 
 - **P25** calls are filed under the talkgroup the radio sends, unless several rows split the
   frequency.
-- **DMR and NXDN** calls always keep the talkgroup (group) the air names, when it names one; the rows
+- **DMR and NXDN** calls keep the talkgroup (group) the air names, when it names one; the rows
   give those talkgroups names. A DMR or NXDN row with no `talkgroup` takes the `TG` in its `tone`.
 
 ### Tones and codes

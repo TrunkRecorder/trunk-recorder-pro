@@ -1799,7 +1799,7 @@ mod tests {
     /// An engine on one source, with a conventional channel (so it runs).
     fn plain_engine() -> Engine {
         use super::super::conventional::{ConvChannel, ConvMode};
-        let ch = ConvChannel { freq_hz: 155.2e6, mode: ConvMode::Fm, talkgroup: 1, info: None, squelch_db: None, access: None, system: 0 };
+        let ch = ConvChannel { freq_hz: 155.2e6, mode: ConvMode::Fm, talkgroup: 1, talkgroup_set: false, info: None, squelch_db: None, access: None, system: 0 };
         Engine::new(EngineConfig { sources: vec![SourceConfig { center_hz: 155e6, rate_hz: 2.4e6, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ }], conventional: vec![ch], ..Default::default() }).unwrap()
     }
 

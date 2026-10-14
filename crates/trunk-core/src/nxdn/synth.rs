@@ -417,6 +417,8 @@ mod tests {
         let (none, skipped) = calls(vec![row("RAN 9", 1, "A")]);
         assert!(none.is_empty());
         assert_eq!(skipped, ["RAN 3 TG 3100"]);
+        let set = ConvChannel { talkgroup_set: true, ..row("RAN 3", 7, "Fixed") };
+        assert_eq!(calls(vec![set]).0, [(7, Some("Fixed".to_string()))]);
     }
 
     #[test]
