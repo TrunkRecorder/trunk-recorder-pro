@@ -82,6 +82,11 @@ and any that are set apply together. In the interface: Setup → Recording → R
 - Only a call's own files go (`.wav`, `.m4a`, `.json`, `.sdr` and `.frames.jsonl`), all of a call's
   together, the oldest call first. Other files in the folder are never touched, and neither are
   hidden ones. Folders left empty are removed; `captureDir` itself stays.
+- **What counts as a call:** files named as the recorder names them (`<talkgroup>-<start>_<freq>`),
+  or any whose call JSON has a call's fields (`talkgroup`, `start_time`, `call_length`), which is
+  how a call with its own `filenameFormat` is known. With a custom `filenameFormat` and **Keep call
+  JSON** off, nothing identifies a call's audio, so it is left alone.
+- The folder is the one recording was started with: a change to `captureDir` applies at the next Start.
 - **The size limits count call files only.** `maxDiskPct` is a share of the disk's capacity, not of
   what is free: other data on the disk doesn't make it delete more.
 - A call changed in the last ten minutes is never deleted: it may still be recording, or waiting

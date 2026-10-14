@@ -4,7 +4,9 @@
 //! the setting each time, so changes apply at once.
 //!
 //! Only a call's own files go (see [`SUFFIXES`]), all of a call's together,
-//! oldest call first; nothing else in the folder is touched. A call changed
+//! oldest call first; nothing else in the folder is touched. A set of files
+//! is a call when its name is the recorder's own (`<talkgroup>-<start>_<freq>`),
+//! or one of them is a call JSON (a custom `filenameFormat` has no fixed name). A call changed
 //! in the last [`RECENT`] may still be recording, or waiting for a plugin,
 //! and stays. Folders left empty go, the recordings folder itself not.
 
@@ -49,6 +51,27 @@ pub struct Report {
     pub why: Vec<&'static str>,
 }
 
+/// Whether `stem` is the recorder's own name for a call: `<talkgroup>-<start>_<freq>`,
+/// the frequency with a slot or part number after it (`.0`, `.1`).
+fn is_call_name(stem: &str) -> bool {
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    let Some((tg, rest)) = stem.split_once('-') else { return false };
+    let Some((start, freq)) = rest.split_once('_') else { return false };
+    digits(tg) && digits(start) && freq.split('.').all(digits)
+}
+
+/// Whether the file is a call's JSON: an object with a call's fields.
+fn is_call_json(p: &Path) -> bool {
+    use std::io::Read;
+    let mut text = String::new();
+    // (A call's JSON is a few KB; a larger file isn't one.)
+    let Ok(f) = fs::File::open(p) else { return false };
+    if f.take(64 * 1024).read_to_string(&mut text).is_err() {
+        return false;
+    }
+    serde_json::from_str::<serde_json::Value>(&text).is_ok_and(|v| ["talkgroup", "start_time", "call_length"].iter().all(|k| v.get(k).is_some_and(|x| x.is_number())))
+}
+
 /// The calls under `dir`, oldest first.
 fn scan(dir: &Path) -> Vec<Call> {
     let mut by_call: HashMap<String, Call> = HashMap::new();
@@ -75,7 +98,15 @@ fn scan(dir: &Path) -> Vec<Call> {
             }
         }
     }
-    let mut calls: Vec<Call> = by_call.into_values().collect();
+    // Files that merely end like a call's aren't one.
+    let mut calls: Vec<Call> = by_call
+        .into_iter()
+        .filter(|(key, c)| {
+            let stem = Path::new(key).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            is_call_name(&stem) || c.files.iter().any(|(p, _)| p.extension().is_some_and(|e| e == "json") && is_call_json(p))
+        })
+        .map(|(_, c)| c)
+        .collect();
     calls.sort_by_key(|c| c.newest);
     calls
 }
@@ -94,7 +125,8 @@ fn plan(calls: &[Call], r: &Retention, disk_total: Option<u64>, now: SystemTime)
     // Oldest first, so what follows the first call too recent to remove is too.
     let removable = |c: &Call| now.duration_since(c.newest).is_ok_and(|d| d >= RECENT);
     if let Some(days) = r.age_limit_days() {
-        let age = Duration::from_secs_f64(days * 86_400.0);
+        // (A limit too big to be a Duration is no limit.)
+        let age = Duration::try_from_secs_f64(days * 86_400.0).unwrap_or(Duration::MAX);
         for (i, c) in calls.iter().enumerate() {
             if removable(c) && now.duration_since(c.newest).is_ok_and(|d| d > age) {
                 gone[i] = true;
@@ -174,9 +206,11 @@ pub fn start(ctx: Arc<Ctx>) {
     let _ = std::thread::Builder::new().name("retention".into()).spawn(move || {
         std::thread::sleep(FIRST);
         loop {
+            // The folder the running session records to, which an edit of `captureDir` doesn't change until the next Start.
             let (dir, r) = {
                 let c = ctx.config.lock().unwrap();
-                (c.recording.capture_dir.clone(), c.recording.retention.clone())
+                let dir = ctx.session_dir.lock().unwrap().clone().map_or_else(|| c.recording.capture_dir.clone(), |d| d.display().to_string());
+                (dir, c.recording.retention.clone())
             };
             if r.active() && !dir.is_empty() {
                 let dir = PathBuf::from(dir);
@@ -303,5 +337,37 @@ mod tests {
         assert!(!root.join("a/2026/01").exists(), "emptied folders go");
         assert!(root.exists() && new.exists(), "the recordings folder and busy ones stay");
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn only_a_calls_own_files_are_calls() {
+        assert!(is_call_name("5-1791952226_851012500") && is_call_name("1125-1791952226_852650000.1") && is_call_name("5-1_2.0.1"));
+        for no in ["notes", "audio", "5-1791952226", "-1_2", "a-1_2", "5-1_", "5-1_2.x", "5-1_2."] {
+            assert!(!is_call_name(no), "{no}");
+        }
+        let root = std::env::temp_dir().join(format!("trunk-prune-id-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let now = SystemTime::now();
+        let call_json = br#"{"talkgroup":5,"start_time":1,"call_length":3,"freq":851000000}"#;
+        // A custom-named call, known by its JSON; stray files with call-like endings.
+        fs::create_dir_all(&root).unwrap();
+        for (n, body) in [("kcpd-dispatch.json", &call_json[..]), ("kcpd-dispatch.wav", b"x"), ("notes.json", br#"{"a":1}"#), ("audio.wav", b"x"), ("list.json", b"[1,2]")] {
+            fs::write(root.join(n), body).unwrap();
+            set_age(&root.join(n), now, 24 * 90);
+        }
+        let rep = pass(&root, &limits(30.0, 0.0, 0.0), None, now);
+        assert_eq!((rep.calls, rep.files), (1, 2));
+        assert!(!root.join("kcpd-dispatch.wav").exists() && !root.join("kcpd-dispatch.json").exists());
+        for keep in ["notes.json", "audio.wav", "list.json"] {
+            assert!(root.join(keep).exists(), "{keep}");
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_age_too_big_to_be_a_duration_is_no_limit() {
+        let now = SystemTime::now();
+        let calls = vec![call(5000, 1, now)];
+        assert!(plan(&calls, &limits(1e308, 0.0, 0.0), None, now).0.is_empty());
     }
 }
