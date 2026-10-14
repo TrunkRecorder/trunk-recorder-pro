@@ -161,8 +161,8 @@ onRecorderMessage((m) => {
 
 // ── playing ──────────────────────────────────────────────────────────────────
 
-/** Whether a call can be played: it has audio and isn't encrypted. */
-export const playable = (c: CallEntry) => c.audio !== false && !c.record.encrypted;
+/** Whether a call can be played: it has audio, and isn't encrypted unless we held its key (then it was decrypted). */
+export const playable = (c: CallEntry) => c.audio !== false && (!c.record.encrypted || !!c.record.decrypted);
 
 const audio = typeof Audio === "undefined" ? null : new Audio();
 let token = 0;

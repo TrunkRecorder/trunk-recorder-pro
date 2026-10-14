@@ -297,6 +297,7 @@ function Calls({ s }: { s: AppState }) {
                     <span className="lc-name">
                       {labelOf(c)}
                       {c.record.emergency ? <span className="badge bad">EMERG</span> : null}
+                      {c.record.encrypted && c.record.decrypted ? <span className="badge enc" title="Encrypted on the air; decrypted with your key">DECRYPTED</span> : null}
                     </span>
                     <span className="muted small lc-sub">
                       {multi ? `${systemOf(c)} · ` : ""}
@@ -305,7 +306,7 @@ function Calls({ s }: { s: AppState }) {
                     </span>
                   </span>
                   <span className="mono small muted">{(c.record.call_length_ms / 1000).toFixed(0)} s</span>
-                  <span className="lc-state small">{playing ? "▶ playing" : c.record.encrypted ? "encrypted" : c.audio === false ? "no audio" : ""}</span>
+                  <span className="lc-state small">{playing ? "▶ playing" : c.record.encrypted && !c.record.decrypted ? "encrypted" : c.audio === false ? "no audio" : ""}</span>
                 </button>
               </li>
             );
