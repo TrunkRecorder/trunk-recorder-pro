@@ -1696,7 +1696,7 @@ impl Engine {
             Held { call: call.clone(), audio: rec.audio, frames: rec.frames, recorder_num: rec.recorder_num, tx: rec.tx, reception: rec.reception, freq_error_hz }
         });
         let trunks = &self.trunks;
-        let Some(copies) = self.multisite.conclude(call.id, held, |system, tg| trunks.get(system as usize).is_some_and(|t| t.preferred_for(tg))) else { return };
+        let Some(copies) = self.multisite.conclude(call.id, held, |system, tg| trunks.get(system as usize).is_some_and(|t| t.preferred_for(tg)), |system| trunks.get(system as usize).map_or(0.0, |t| t.cfg.save.min_transmission_s)) else { return };
         // The best copy its site's rules keep is saved; the rest are its duplicates.
         // (None kept: each was reported not saved.)
         let mut kept: Option<Call> = None;
