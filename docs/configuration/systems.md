@@ -151,7 +151,7 @@ The keys live in a file of their own, never in the config, which the interface r
 
 | Key | Description |
 |---|---|
-| `algId` | The algorithm: `0xAA` ADP, `0x81` DES-OFB, `0x83` 3DES, `0x89` AES-128, `0x84` AES-256. Hex in a string, or a number |
+| `algId` | The algorithm: `0xAA` ADP, `0x81` DES-OFB, `0x83` 3DES, `0x85` AES-128 (`0x89` is read as the same), `0x84` AES-256. Hex in a string, or a number |
 | `keyId` | The key ID the radios send. Hex in a string, or a number |
 | `key` | The key in hex, exactly as long as the algorithm needs: ADP 10 digits, DES 16, AES-128 32, 3DES 48, AES-256 64. Spaces are allowed. A shorter key is an error, never padded |
 | `talkgroups` | Optional. Use this key on these talkgroups whatever key ID the air names (or only under its `keyId`, if it gives one). Tried before the keys matched by key ID |

@@ -24,7 +24,10 @@ pub const ALGID_CLEAR: u8 = 0x80;
 pub const ALGID_DES_OFB: u8 = 0x81;
 pub const ALGID_TDES: u8 = 0x83;
 pub const ALGID_AES_256: u8 = 0x84;
-pub const ALGID_AES_128: u8 = 0x89;
+/// AES-128's ALGID in TIA-102.BAAC-C's table ($85).
+pub const ALGID_AES_128: u8 = 0x85;
+/// The AES-128 ALGID this decoder read before, kept so keys files that name it still work.
+pub const ALGID_AES_128_ALT: u8 = 0x89;
 pub const ALGID_ADP: u8 = 0xAA;
 
 /// What an ALGID is called (TIA-102.BAAC's reserved values, and the
@@ -37,9 +40,9 @@ pub fn algid_name(algid: u8) -> &'static str {
         0x82 => "2-key 3DES",
         0x83 => "3DES",
         0x84 => "AES-256",
-        0x85 => "AES-128 ECB",
+        0x85 => "AES-128",
         0x88 => "AES-CBC",
-        0x89 => "AES-128",
+        0x89 => "AES-128 (0x89)",
         0x9F => "DES-XL",
         0xA0 => "DVI-XL",
         0xA1 => "DVP-XL",
@@ -71,7 +74,7 @@ impl Algorithm {
             ALGID_ADP => Some(Algorithm::Adp),
             ALGID_DES_OFB => Some(Algorithm::DesOfb),
             ALGID_TDES => Some(Algorithm::Tdes),
-            ALGID_AES_128 => Some(Algorithm::Aes128),
+            ALGID_AES_128 | ALGID_AES_128_ALT => Some(Algorithm::Aes128),
             ALGID_AES_256 => Some(Algorithm::Aes256),
             _ => None,
         }
@@ -570,5 +573,18 @@ mod tests {
         assert_eq!(r.lookup(ALGID_AES_256, 0x0002, None), Lookup::Key(Algorithm::Aes256, &[4; 32]));
         assert_eq!(r.lookup(0xA0, 0x0002, None), Lookup::Unsupported);
         assert!(!format!("{r:?}").contains("[4, 4"));
+    }
+
+    #[test]
+    fn aes_128_is_algid_0x85_and_0x89_is_read_as_the_same() {
+        assert_eq!(Algorithm::from_algid(0x85), Some(Algorithm::Aes128));
+        assert_eq!(Algorithm::from_algid(0x89), Some(Algorithm::Aes128));
+        assert_eq!(Algorithm::Aes128.algid(), 0x85);
+        assert_eq!(algid_name(0x85), "AES-128");
+        let mut ring = Keyring::default();
+        ring.add(0x89, Some(1), vec![7; 16], vec![]).unwrap();
+        for id in [0x85, 0x89] {
+            assert!(matches!(ring.lookup(id, 1, None), Lookup::Key(Algorithm::Aes128, _)), "{id:#04X}");
+        }
     }
 }
