@@ -94,6 +94,7 @@ mod platform;
 mod snrtool;
 mod plugins;
 mod profile;
+mod prune;
 mod radio;
 mod runtime;
 mod sdr;
@@ -749,8 +750,10 @@ fn serve(a: &Args) {
         engine_cmds: Mutex::new(Vec::new()),
         host_last: Mutex::new(None),
         spool: Mutex::new(None),
+        session_dir: Mutex::new(None),
     });
     monitor::start(ctx.clone());
+    prune::start(ctx.clone());
     // What each call kept once its plugins are done, for the history list.
     let weak = Arc::downgrade(&ctx);
     ctx.plugins.archive.on_settle(Box::new(move |rel, audio, json| {

@@ -763,6 +763,8 @@ pub struct Recording {
     pub m4a: M4a,
     /// Calls waiting for the upload plugins kept in memory, not on the disk.
     pub ram_spool: RamSpool,
+    /// How much of the recordings folder to keep: the oldest calls are deleted past these.
+    pub retention: Retention,
     /// Keys this version doesn't know (a newer version's, a hand edit's):
     /// kept, and saved back as they were.
     #[serde(flatten)]
@@ -846,7 +848,52 @@ impl Default for Recording {
             vocoder: "fixed".into(),
             m4a: M4a::default(),
             ram_spool: RamSpool::default(),
+            retention: Retention::default(),
         }
+    }
+}
+
+/// Limits on what the recordings folder keeps; each is off at 0 (or less),
+/// and any that are set apply together. Past one, the oldest calls are
+/// deleted (the desktop app; a call changed in the last 10 minutes stays).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Retention {
+    /// Delete calls older than this many days.
+    pub max_age_days: f64,
+    /// Delete the oldest calls while the folder is over this many GB (10^9 bytes).
+    pub max_size_gb: f64,
+    /// The same, as a percentage of the capacity of the disk the folder is on.
+    pub max_disk_pct: f64,
+}
+
+/// The share of its disk the recordings folder may be limited to: from 1 % to this.
+pub const RETENTION_MAX_DISK_PCT: f64 = 95.0;
+pub const RETENTION_MIN_DISK_PCT: f64 = 1.0;
+
+impl Retention {
+    fn set(v: f64) -> Option<f64> {
+        (v.is_finite() && v > 0.0).then_some(v)
+    }
+
+    /// The age limit, days, when set.
+    pub fn age_limit_days(&self) -> Option<f64> {
+        Self::set(self.max_age_days)
+    }
+
+    /// The size limit, GB, when set.
+    pub fn size_limit_gb(&self) -> Option<f64> {
+        Self::set(self.max_size_gb)
+    }
+
+    /// The share-of-the-disk limit, %, when set (1 to [`RETENTION_MAX_DISK_PCT`]).
+    pub fn disk_limit_pct(&self) -> Option<f64> {
+        Self::set(self.max_disk_pct).map(|p| p.clamp(RETENTION_MIN_DISK_PCT, RETENTION_MAX_DISK_PCT))
+    }
+
+    /// Whether any limit is set.
+    pub fn active(&self) -> bool {
+        self.age_limit_days().is_some() || self.size_limit_gb().is_some() || self.disk_limit_pct().is_some()
     }
 }
 
@@ -1634,6 +1681,21 @@ mod tests {
         assert!(c.problem().unwrap().contains("Two systems are named \"police\""));
         c.systems[0].short_name = "county".into();
         assert_eq!(c.problem(), None);
+    }
+
+    #[test]
+    fn retention_is_off_until_set_and_a_disk_share_is_capped() {
+        let c: Config = serde_json::from_str(r#"{ "recording": { "preroll_s": 1 } }"#).unwrap();
+        assert!(!c.recording.retention.active());
+        let c: Config = serde_json::from_str(r#"{ "recording": { "retention": { "maxAgeDays": 30, "maxDiskPct": 99 } } }"#).unwrap();
+        let r = &c.recording.retention;
+        assert!(r.active());
+        assert_eq!((r.age_limit_days(), r.size_limit_gb(), r.disk_limit_pct()), (Some(30.0), None, Some(RETENTION_MAX_DISK_PCT)));
+        assert_eq!(serde_json::to_value(&c.recording).unwrap()["retention"]["maxAgeDays"], 30.0);
+        let r = Retention { max_disk_pct: 0.1, ..Default::default() };
+        assert_eq!(r.disk_limit_pct(), Some(RETENTION_MIN_DISK_PCT), "a share under 1 % is 1 %");
+        let r = Retention { max_age_days: -5.0, max_size_gb: f64::NAN, max_disk_pct: 0.0 };
+        assert!(!r.active());
     }
 
     #[test]

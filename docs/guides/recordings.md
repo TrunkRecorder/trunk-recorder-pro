@@ -250,6 +250,20 @@ Also:
 These are desktop settings; the browser version keeps calls itself and doesn't show them. Plugins
 and their settings are covered in [Plugins](../plugins/README.md).
 
+## Deleting old calls
+
+Nothing deletes old calls unless you ask. On the Recording tab, under **Recorder**, set any of:
+
+- **Keep calls for, days**: older calls are deleted.
+- **Keep at most, GB**: when the recordings folder is bigger, the oldest calls are deleted until it
+  fits.
+- **Keep at most, % of the disk**: the same, with the limit a share of the capacity of the disk the
+  folder is on (up to 95).
+
+`0` leaves a limit off, and those you set apply together. It checks every ten minutes, never deletes
+a call changed in the last ten minutes, and only deletes calls' own files (audio, JSON, M4A and
+vocoder frames). The details are in [`retention`](../configuration/recording.md#retention).
+
 ## The RAM spool
 
 A call that is only uploaded, then deleted, still gets written to disk and erased again. On an SSD

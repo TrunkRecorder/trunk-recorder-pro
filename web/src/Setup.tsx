@@ -2416,6 +2416,38 @@ export function Setup() {
                 </>
               )}
             </Group>
+            {!web && (
+              <Group title="Keeping calls" hint="Old calls are deleted when a limit is passed, the oldest first. 0 turns a limit off." cols={3}>
+                <Field label="Keep calls for, days" hint="Older calls are deleted. 0: no limit">
+                  <input
+                    className="mono"
+                    type="number"
+                    min={0}
+                    value={c.recording.retention?.maxAgeDays ?? 0}
+                    onChange={(e) => updateConfig((x) => void (x.recording.retention = { maxSizeGb: 0, maxDiskPct: 0, ...x.recording.retention, maxAgeDays: Math.max(0, Number(e.target.value) || 0) }))}
+                  />
+                </Field>
+                <Field label="Keep at most, GB" hint="The oldest calls go first. 0: no limit">
+                  <input
+                    className="mono"
+                    type="number"
+                    min={0}
+                    value={c.recording.retention?.maxSizeGb ?? 0}
+                    onChange={(e) => updateConfig((x) => void (x.recording.retention = { maxAgeDays: 0, maxDiskPct: 0, ...x.recording.retention, maxSizeGb: Math.max(0, Number(e.target.value) || 0) }))}
+                  />
+                </Field>
+                <Field label="Keep at most, % of the disk" hint="Of the disk the folder is on (up to 95). 0: no limit">
+                  <input
+                    className="mono"
+                    type="number"
+                    min={0}
+                    max={95}
+                    value={c.recording.retention?.maxDiskPct ?? 0}
+                    onChange={(e) => updateConfig((x) => void (x.recording.retention = { maxAgeDays: 0, maxSizeGb: 0, ...x.recording.retention, maxDiskPct: ((v) => (v > 0 ? Math.max(1, Math.min(95, v)) : 0))(Number(e.target.value) || 0) }))}
+                  />
+                </Field>
+              </Group>
+            )}
             <Group title="Recording" hint="How many calls at once, and how each one is decoded." cols={3}>
               <Field label="Recorders" hint="Calls recorded at once">
                 <input className="mono" value={c.recording.maxRecorders} onChange={(e) => updateConfig((x) => void (x.recording.maxRecorders = Math.max(1, Math.min(64, Number(e.target.value) || 32))))} />

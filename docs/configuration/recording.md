@@ -45,6 +45,7 @@ under **Recording override**.
 | `captureFrames` | | `false` | bool | Also save each digital call's vocoder frames as `<call>.sdr` (NXDN: `<call>.frames.jsonl`), for diagnosis and `trunk-pro tool revoice` |
 | `m4a` | | see below | object | The M4A encoder for `compressWav` and for plugins that upload M4A |
 | `ramSpool` | | see below | object | Keep files only the upload plugins need in RAM instead of `captureDir` |
+| `retention` | | see below | object | Delete the oldest calls from `captureDir` past an age, a size or a share of its disk |
 
 When a call flagged encrypted at its grant isn't kept (`recordEncrypted` off), it isn't recorded at
 all, unless its system has [encryption keys](systems.md#encryption-keys-keys). One that turns
@@ -59,6 +60,43 @@ encrypted part-way is kept with its clear transmissions.
 
 Each call is encoded once, and the same `.m4a` serves `compressWav` and every plugin. Changing
 `m4a` while recording restarts the plugins.
+
+### `retention`
+
+Deletes the oldest calls from `captureDir` once the folder is past a limit. Each limit is off at `0`,
+and any that are set apply together. In the interface: Setup → Recording → Recorder.
+
+| Key | Required | Default | Type | Description |
+|---|:---:|---|---|---|
+| `maxAgeDays` | | `0` | number | Delete calls older than this many days |
+| `maxSizeGb` | | `0` | number | Delete the oldest calls while the folder is over this many GB (10⁹ bytes) |
+| `maxDiskPct` | | `0` | number | The same, as a percentage of the capacity of the disk `captureDir` is on, from `1` to `95` (a value outside is taken as the nearest) |
+
+```json
+{ "recording": { "retention": { "maxAgeDays": 90, "maxDiskPct": 80 } } }
+```
+
+- A pass runs a minute after the recorder starts and every ten minutes after. The setting is read
+  each time, so a change applies without a restart. Each pass that deletes anything says how much
+  in the log.
+- Only a call's own files go (`.wav`, `.m4a`, `.json`, `.sdr` and `.frames.jsonl`), all of a call's
+  together, the oldest call first. Other files in the folder are never touched, and neither are
+  hidden ones. Folders left empty are removed; `captureDir` itself stays.
+- **What counts as a call:** files named as the recorder names them (`<talkgroup>-<start>_<freq>`),
+  or any whose call JSON has a call's fields (`talkgroup`, `start_time`, `call_length`), which is
+  how a call with its own `filenameFormat` is known. With a custom `filenameFormat` and **Keep call
+  JSON** off, nothing identifies a call's audio, so it is left alone.
+- The folder is the one recording was started with: a change to `captureDir` applies at the next Start.
+- **The size limits count call files only.** `maxDiskPct` is a share of the disk's capacity, not of
+  what is free: other data on the disk doesn't make it delete more.
+- A call changed in the last ten minutes is never deleted: it may still be recording, or waiting
+  for an upload plugin.
+- A call's age is when its newest file last changed.
+- If both a size and a share of the disk are set, the smaller limit wins. A share can't be worked
+  out when the disk's size isn't known, and is then skipped.
+- It deletes by file time, so files that were copied without keeping their times look new. A file
+  whose time can't be read counts as just written.
+- Calls it deletes stay in the interface's history list, marked as without audio.
 
 ### `ramSpool`
 

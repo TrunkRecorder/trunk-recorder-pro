@@ -89,6 +89,8 @@ pub struct Ctx {
     pub host_last: Mutex<Option<Value>>,
     /// The RAM spool (`recording.ramSpool`), as last opened.
     pub spool: Mutex<Option<Arc<crate::spool::Spool>>>,
+    /// The recordings folder the running session was started with (`captureDir` as it was at Start); none when idle.
+    pub session_dir: Mutex<Option<PathBuf>>,
 }
 
 /// Something for the running session to do.
@@ -440,6 +442,7 @@ fn open_spool(ctx: &Ctx, cfg: &Config) {
 fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Receiver<SourceMsg>, stop: Arc<AtomicBool>, epoch: (f64, Instant)) {
     ctx.set_phase("running", None, false);
     let dir = PathBuf::from(&cfg.recording.capture_dir);
+    *ctx.session_dir.lock().unwrap() = Some(dir.clone());
     // Each system's file rules, by a call's `system` (trunked or conventional).
     let rules = {
         let cfg = cfg.clone();
@@ -557,6 +560,7 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Rec
     save_tune(&mut session);
     save_registry(&ctx.shared);
     stop.store(true, Ordering::Relaxed);
+    *ctx.session_dir.lock().unwrap() = None;
     ctx.set_phase("idle", None, ended_all);
 }
 
