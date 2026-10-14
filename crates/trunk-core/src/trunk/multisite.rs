@@ -68,18 +68,34 @@ pub struct Held {
 }
 
 impl Held {
-    /// Seconds of audio decoded cleanly: the vocoder frames not repeated,
-    /// muted or lost (analog: all of it). Encrypted: none.
+    /// Seconds of audio decoded cleanly and kept: the vocoder frames not
+    /// repeated, muted or lost (analog: all of it), less the transmissions
+    /// the saved call leaves out as encrypted and not decrypted — what a
+    /// vocoder makes of ciphertext can look clean. Encrypted, no key: none.
+    ///
+    /// Frame errors are kept per interval, not per transmission, so the
+    /// dropped audio is taken off in proportion.
     pub fn clean_s(&self) -> f64 {
         if self.audio.is_empty() {
             return 0.0;
         }
+        let kept = self.kept_share();
         let iv = &self.frames.errors.intervals;
         if iv.is_empty() {
-            return self.audio.len() as f64 / SAMPLE_RATE as f64;
+            return kept * self.audio.len() as f64 / SAMPLE_RATE as f64;
         }
         let good: u32 = iv.iter().map(|i| i.frames - i.bad_frames).sum();
-        good as f64 * FRAME_SAMPLES as f64 / SAMPLE_RATE as f64
+        kept * good as f64 * FRAME_SAMPLES as f64 / SAMPLE_RATE as f64
+    }
+
+    /// The share of the audio the saved call keeps: all but its encrypted
+    /// transmissions that weren't decrypted.
+    fn kept_share(&self) -> f64 {
+        let len = self.audio.len();
+        match self.tx.kept(len, 0.0, SAMPLE_RATE) {
+            Some(parts) if len > 0 => parts.iter().map(|r| r.len()).sum::<usize>() as f64 / len as f64,
+            _ => 1.0,
+        }
     }
 }
 
@@ -324,5 +340,27 @@ mod tests {
         silent.call.encrypted = true;
         assert_eq!(pick(&[silent.clone(), held(2, 0, 0, 0, 0)], &[false, false]), Some(0), "nothing to choose by: the first to start");
         assert_eq!(pick(&[], &[]), None);
+    }
+
+    #[test]
+    fn audio_left_out_as_undecrypted_does_not_count_as_clean() {
+        // One site decrypted its whole call; the other heard the second
+        // transmission encrypted and without its key (noise that decodes "clean").
+        let mut whole = held(1, 0, 100, 0, 0);
+        whole.tx.note(0, 0.0);
+        whole.tx.mark_encrypted(0.0);
+        whole.tx.mark_decrypted(0.0);
+        whole.tx.note(50 * FRAME_SAMPLES, 5.0);
+        whole.tx.mark_encrypted(5.0);
+        whole.tx.mark_decrypted(5.0);
+        let mut cut = held(2, 1, 100, 0, 0);
+        cut.tx.note(0, 0.0);
+        cut.tx.note(50 * FRAME_SAMPLES, 5.0);
+        cut.tx.mark_encrypted(5.0);
+        assert!(whole.clean_s() > cut.clean_s());
+        assert!((cut.clean_s() - whole.clean_s() / 2.0).abs() < 1e-9, "half of it is left out");
+        assert_eq!(pick(&[cut.clone(), whole.clone()], &[false; 2]), Some(1));
+        // The site the talkgroup file prefers doesn't keep a call that lost half its audio.
+        assert_eq!(pick(&[cut, whole], &[true, false]), Some(1));
     }
 }
