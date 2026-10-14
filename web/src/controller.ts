@@ -121,8 +121,8 @@ export interface AppState {
 
 export type SetupTab = "systems" | "conventional" | "radios" | "recording" | "plugins";
 
-export type View = "overview" | "listen" | "rf" | "decode" | "radio" | "live" | "plugins" | "platform" | "setup";
-const VIEWS: View[] = ["overview", "listen", "rf", "decode", "radio", "live", "plugins", "platform", "setup"];
+export type View = "overview" | "listen" | "playback" | "rf" | "decode" | "radio" | "live" | "plugins" | "platform" | "setup";
+const VIEWS: View[] = ["overview", "listen", "playback", "rf", "decode", "radio", "live", "plugins", "platform", "setup"];
 
 /** `#/radio/dcfd/tg/101` → ["radio", ["dcfd", "tg", "101"]]; the old `#plugins` too. */
 function routeFromHash(): { view: View; path: string[] } {

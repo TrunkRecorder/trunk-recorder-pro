@@ -95,6 +95,12 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   voice channel's link control for a talker. An L3Harris regroup of a
   radio was taken for a talkgroup patch; an encrypted L3Harris patch is
   now marked. A refused registration or affiliation isn't counted as one.
+- **Playback**, a new page beside Listen: search everything the recorder has
+  saved, not just the last 24 hours, by system, talkgroup, radio ID, a name or
+  alias, and a span of time, and play what turns up (one call after the next,
+  in time order if you like). Lists the talkgroups and radios heard in the
+  span, and **Only talkgroups not in my list** answers "what's this new
+  talkgroup?". The app only, for now; the browser version has Listen.
 - **NXDN talker aliases:** Kenwood radios' programmed names are read from the
   traffic channel and shown as each radio's name (`tag_ota`, the Calls page,
   `<shortName>.units.csv`), as P25's are. ASCII aliases only; Icom's format

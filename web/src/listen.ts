@@ -6,6 +6,7 @@
 
 import { useRef, useSyncExternalStore } from "react";
 import { onRecorderMessage, setListen, shallowEqual, snapshot, subscribe, transport } from "./controller.ts";
+import { onPlay, stopPlayback } from "./playback.ts";
 import type { CallEntry } from "./protocol.ts";
 
 /** What to hear, kept in this browser. Talkgroups are `<system>:<talkgroup>`. */
@@ -265,8 +266,9 @@ export function setFeed(on: boolean): void {
     set({ feed: false, queue: [], missed: 0, playing: null, paused: false, played: was ? [was, ...state.played].slice(0, PLAYED_MAX) : state.played });
     return;
   }
-  // One sound at a time: the Live page's live audio stops.
+  // One sound at a time: the Live page's live audio and the Playback page stop.
   if (snapshot().listen) setListen(false);
+  stopPlayback();
   // (A click: the browser now lets audio play.)
   audio?.play().catch(() => {});
   audio?.pause();
@@ -366,6 +368,9 @@ onRecorderMessage((m) => {
       break;
   }
 });
+
+// Playback started on the Playback page: the feed stops.
+onPlay(() => setFeed(false));
 
 // Live audio switched on on the Live page: the feed stops (one sound at a time).
 subscribe(() => {

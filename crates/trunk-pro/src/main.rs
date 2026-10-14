@@ -91,6 +91,7 @@ mod nxdntool;
 mod p25synth;
 mod paths;
 mod platform;
+mod playback;
 mod snrtool;
 mod plugins;
 mod profile;

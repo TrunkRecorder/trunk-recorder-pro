@@ -1239,7 +1239,57 @@ export type FromRecorder =
   | ({ type: "radioResult" } & RadioResultBody)
   /** Answers olderCalls; `more`: there are older ones still. */
   | { type: "olderCalls"; before: number; entries: CallEntry[]; more: boolean }
+  /** Answers playbackQuery. `talkgroups` and `units` (beside the calls) come with the first page only (no `before`), else null. */
+  | ({ type: "playbackResult" } & PlaybackResultBody)
   | { type: "quit" };
+
+/** A talkgroup heard in a playback search's span (not narrowed by the talkgroup chosen). */
+export interface PlaybackTalkgroup {
+  system: string;
+  talkgroup: number;
+  alphaTag: string;
+  description: string;
+  group: string;
+  calls: number;
+  encrypted: number;
+  /** Seconds of audio. */
+  seconds: number;
+  /** Unix ms. */
+  firstMs: number;
+  lastMs: number;
+  /** Whether the system's talkgroup file lists it (always true on a conventional system). */
+  known: boolean;
+}
+
+/** A radio heard on the calls a playback search found. */
+export interface PlaybackUnit {
+  system: string;
+  unit: number;
+  /** Its talker alias as recorded, or "". */
+  alias: string;
+  calls: number;
+  lastMs: number;
+}
+
+export interface PlaybackResultBody {
+  /** The query's `id`. */
+  id: number;
+  from: number;
+  to: number;
+  before: number | null;
+  /** Newest first. */
+  entries: CallEntry[];
+  /** There are more matches older than these. */
+  more: boolean;
+  /** Calls matching, all pages (first page only counts those after `before` too). */
+  total: number;
+  /** Too many calls in the span to read: the oldest were left out. */
+  truncated: boolean;
+  /** Every system heard in the span. */
+  systems: string[];
+  talkgroups: PlaybackTalkgroup[] | null;
+  units: PlaybackUnit[] | null;
+}
 
 export type ToRecorder =
   | { type: "setConfig"; config: Config }
@@ -1281,6 +1331,12 @@ export type ToRecorder =
   /** The radio registry: talkgroups, radios, frequencies heard. `key`: the talkgroup or radio for "tg" / "unit". */
   /** Calls that started before `before` (Unix ms), newest first, from the last 24 hours (the Listen page's "Load older"). */
   | { type: "olderCalls"; before: number; limit: number }
+  /**
+   * Search the recordings folder (the Playback page), newest first: `from` / `to` (Unix ms; default the last 24 hours),
+   * one `system` (short name), `talkgroup`, radio `unit`, `text` (a name or alias), `newOnly` (talkgroups the
+   * system's talkgroup file lacks), `limit` calls (default 100, at most 500) and, for the next page, `before` (Unix ms).
+   */
+  | { type: "playbackQuery"; id: number; system?: string; talkgroup?: number; unit?: number; text?: string; newOnly?: boolean; from?: number; to?: number; before?: number; limit?: number }
   | { type: "radioQuery"; id: number; what: "summary" | "talkgroups" | "units" | "tg" | "unit" | "freqs" | "lengths"; system?: string; key?: number; hours?: number; limit?: number }
   | { type: "quit" };
 

@@ -10,6 +10,7 @@ import { Setup } from "./Setup.tsx";
 import { Light } from "./charts.tsx";
 import { LivePage } from "./dash/Calls.tsx";
 import { ListenPage } from "./dash/Listen.tsx";
+import { PlaybackPage } from "./dash/Playback.tsx";
 import { pageHealth, type Health } from "./dash/data.ts";
 import { Overview } from "./dash/Overview.tsx";
 import { RfPage } from "./dash/Rf.tsx";
@@ -25,6 +26,7 @@ const ICON: Record<View, ReactNode> = {
   decode: <path d="M3 5h14M3 10h9M3 15h12M14 9l3 1.5-3 1.5" fill="none" strokeWidth="1.6" />,
   radio: <path d="M10 10m-2 0a2 2 0 1 0 4 0a2 2 0 1 0-4 0M5 5a7 7 0 0 0 0 10M15 5a7 7 0 0 1 0 10M2.5 2.5a10.5 10.5 0 0 0 0 15M17.5 2.5a10.5 10.5 0 0 1 0 15" fill="none" strokeWidth="1.6" />,
   listen: <path d="M3 11a7 7 0 0 1 14 0v4a2 2 0 0 1-2 2h-1v-6h3M3 11v4a2 2 0 0 0 2 2h1v-6H3" fill="none" strokeWidth="1.6" />,
+  playback: <path d="M4 3h12v14H4zM8 7l5 3-5 3zM4 6h12" fill="none" strokeWidth="1.6" />,
   live: <path d="M4 3h3l2 4-2 1.5a10 10 0 0 0 4.5 4.5L13 11l4 2v3a1 1 0 0 1-1 1A14 14 0 0 1 3 4a1 1 0 0 1 1-1z" fill="none" strokeWidth="1.6" />,
   plugins: <path d="M7 2v4M13 2v4M5 6h10v4a5 5 0 0 1-10 0zM10 15v3" fill="none" strokeWidth="1.6" />,
   platform: <path d="M3 4h14v9H3zM7 17h6M10 13v4" fill="none" strokeWidth="1.6" />,
@@ -37,6 +39,7 @@ const LABEL: Record<View, string> = {
   decode: "Decode",
   radio: "Radio system",
   listen: "Listen",
+  playback: "Playback",
   live: "Live",
   plugins: "Plugins",
   platform: "Platform",
@@ -44,7 +47,7 @@ const LABEL: Record<View, string> = {
 };
 
 function Nav({ view, health }: { view: View; health: Record<string, Health> }) {
-  const pages: View[] = ["overview", "listen", "rf", "decode", "radio", "live", ...(web ? [] : (["plugins", "platform"] as View[])), "setup"];
+  const pages: View[] = ["overview", "listen", ...(web ? [] : (["playback"] as View[])), "rf", "decode", "radio", "live", ...(web ? [] : (["plugins", "platform"] as View[])), "setup"];
   return (
     <nav className="rail-nav" aria-label="Sections">
       {pages.map((p) => {
@@ -76,6 +79,8 @@ function Page({ view }: { view: View }) {
       return <RadioPage />;
     case "listen":
       return <ListenPage />;
+    case "playback":
+      return web ? null : <PlaybackPage />;
     case "live":
       return <LivePage s={s} />;
     case "plugins":

@@ -684,6 +684,17 @@ pub(crate) fn radio_query(ctx: &Ctx, v: &Value) -> Value {
     out
 }
 
+/// `playbackQuery`: the recordings folder searched ([`crate::playback`]); a
+/// talkgroup is "known" when its system's talkgroup file lists it (a
+/// conventional system has none to be missing from).
+pub(crate) fn playback_query(ctx: &Ctx, v: &Value) -> Value {
+    let cfg = ctx.config.lock().unwrap().clone();
+    let tables = trunk_app::stats::talkgroup_tables(&cfg);
+    let conventional: std::collections::HashSet<&str> = cfg.conventional.iter().map(|c| c.short_name.as_str()).collect();
+    let known = |system: &str, tg: u32| conventional.contains(system) || tables.get(system).is_none_or(|t| t.contains_key(&tg));
+    crate::playback::query(Path::new(&cfg.recording.capture_dir), &known, v, unix_now() * 1000)
+}
+
 async fn session(ctx: Arc<Ctx>, mut socket: WebSocket) {
     let mut rx = ctx.hub.subscribe();
     let found = tokio::task::spawn_blocking(|| (json!(sdr::devices()), crate::radio::radios_json(false))).await;
@@ -806,6 +817,10 @@ async fn command(ctx: &Arc<Ctx>, v: &Value, listen: &mut Option<Listen>, subs: &
             let ctx2 = ctx.clone();
             let (before, limit) = (v["before"].as_i64().unwrap_or(i64::MAX), v["limit"].as_u64().unwrap_or(100).clamp(1, 500) as usize);
             tokio::task::spawn_blocking(move || runtime::older_calls(&ctx2, before, limit)).await.ok()
+        }
+        "playbackQuery" => {
+            let (ctx2, v) = (ctx.clone(), v.clone());
+            tokio::task::spawn_blocking(move || playback_query(&ctx2, &v)).await.ok()
         }
         "setConfig" => match serde_json::from_value::<Config>(v["config"].clone()) {
             Ok(mut c) => {
