@@ -4,6 +4,23 @@ import type { Channel, Config, Conventional, LogSettings, RecordingOverride, Sit
 import { normalizeTalkgroupCsv, splitCsvLine } from "./talkgroups.ts";
 import { dmrTalkgroup, parseAccess, sameTone } from "./tones.ts";
 
+/**
+ * What a running session was started with, as far as a restart matters: the
+ * settings the recorder reads only when it starts. Left out are those it takes
+ * while recording (talkgroup files, plugins and their settings, the log, the
+ * dashboard's monitor, the web server's origins / home / interfaces) and what
+ * only matters when the app launches (server address, start on launch).
+ */
+export function restartKey(c: Config): string {
+  const { m4a: _m, ...recording } = c.recording;
+  return JSON.stringify({
+    sources: c.sources,
+    systems: c.systems.map(({ plugins: _a, talkgroupsCsv: _t, talkgroupsName: _n, ...s }) => s),
+    conventional: c.conventional.map(({ plugins: _a, channelFileStatus: _f, ...s }) => s),
+    recording,
+  });
+}
+
 /** A new RTL-SDR's gain, dB (higher overloads its front end near strong transmitters). */
 export const RTL_DEFAULT_GAIN_DB = 25.4;
 

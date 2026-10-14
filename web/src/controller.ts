@@ -37,7 +37,7 @@ import type {
   SurveySuggestion,
   System,
 } from "./protocol.ts";
-import { type ImportTodo, activeSystems, newConventional, newSystem, resolvedCenters, sameSystem, siteName, sourceCovering, usableHalfWidth } from "./config.ts";
+import { type ImportTodo, activeSystems, restartKey, newConventional, newSystem, resolvedCenters, sameSystem, siteName, sourceCovering, usableHalfWidth } from "./config.ts";
 import { WsTransport, type CallExt, type Transport } from "./transport.ts";
 import { parseUnitsCsv, type UnitAliases } from "./units.ts";
 import { withIgnore } from "./talkgroups.ts";
@@ -87,6 +87,8 @@ export interface AppState {
   profiling: number | null;
   /** Bumped when the config is replaced from outside the form (fields re-read it). */
   configEpoch: number;
+  /** Settings changed since this run started that only apply after a restart. */
+  restartNeeded: boolean;
   /** The plugins (desktop app); null until the recorder says. */
   plugins: PluginsList | null;
   /** The plugin registry's list; null until asked for. */
@@ -169,6 +171,7 @@ let state: AppState = {
   profile: null,
   profiling: null,
   configEpoch: 0,
+  restartNeeded: false,
   plugins: null,
   pluginStore: null,
   pluginInstalls: {},
@@ -187,8 +190,15 @@ let state: AppState = {
 };
 
 const listeners = new Set<() => void>();
+/** restartKey of the config the current run started with (null: not running). */
+let runKey: string | null = null;
+
 function set(patch: Partial<AppState>): void {
   state = { ...state, ...patch };
+  if (state.phase === "idle") runKey = null;
+  else if (runKey === null && state.config) runKey = restartKey(state.config);
+  const restartNeeded = runKey !== null && !!state.config && restartKey(state.config) !== runKey;
+  if (restartNeeded !== state.restartNeeded) state = { ...state, restartNeeded };
   for (const l of listeners) l();
 }
 
@@ -936,9 +946,16 @@ export function addNxdnChannel(freqHz: number, rate: "nxdn48" | "nxdn96", ran: n
 
 export function start(): void {
   flushConfig();
+  // The recorder reads the config now: what it runs with from here.
+  runKey = state.config ? restartKey(state.config) : null;
   set({ error: null, ended: false });
   transport.send({ type: "start" });
   if (state.listen) player.resume();
+}
+
+/** Stop and start again, so the run takes the settings changed since it began (the recorder stops a run before starting one). */
+export function restart(): void {
+  start();
 }
 
 /** Stop recording and end the desktop app (the web build has nothing to quit). */

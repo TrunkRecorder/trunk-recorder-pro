@@ -2439,10 +2439,10 @@ export function Setup() {
             </Group>
             {!web && (
               <Group title="Startup and diagnostics">
-                <Toggle label="Start recording when the app starts" checked={c.server.autoStart} onChange={(v) => updateConfig((x) => void (x.server.autoStart = v))} />
+                <Toggle label="Start recording when the app starts" hint="Used the next time the app launches" checked={c.server.autoStart} onChange={(v) => updateConfig((x) => void (x.server.autoStart = v))} />
                 <Toggle
                   label="Save vocoder frames"
-                  hint="As <call>.sdr, for diagnostics and MimoSDR"
+                  hint="As <call>.sdr, for diagnostics and MimoSDR · needs a restart"
                   checked={c.recording.captureFrames}
                   onChange={(v) => updateConfig((x) => void (x.recording.captureFrames = v))}
                 />

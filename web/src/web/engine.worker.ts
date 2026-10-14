@@ -263,7 +263,9 @@ async function saveUnits(changed: string): Promise<void> {
 }
 
 async function start(): Promise<void> {
-  if (running || !config) return;
+  // A Restart while running: end the session first, so the new one reads the current config.
+  if (running) await stop();
+  if (!config) return;
   await surveyStop();
   setPhase("starting");
   try {
