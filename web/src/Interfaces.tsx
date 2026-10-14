@@ -4,6 +4,7 @@
 
 import { useEffect, useState } from "react";
 import { updateConfig, useApp } from "./controller.ts";
+import { Group } from "./SetupLayout.tsx";
 import type { CustomInterface, InterfacesInfo } from "./protocol.ts";
 
 const NAME = /^[A-Za-z0-9_-]{1,64}$/;
@@ -55,30 +56,38 @@ export function InterfacesPanel() {
   const home = server.home ?? "";
 
   return (
-    <section className="panel" aria-labelledby="ui-title">
-      <header className="panel-head">
-        <h2 id="ui-title">Interfaces</h2>
+    <section className="set-card" aria-labelledby="ui-title">
+      <header className="set-card-head">
+        <div className="set-card-title">
+          <h3 id="ui-title">Interfaces</h3>
+          <span className="set-card-sub">Your own pages, served by the recorder</span>
+        </div>
+        <span className="spacer" />
         <a className="btn small" href="/ui/" target="_blank" rel="noreferrer">
           All interfaces
         </a>
       </header>
-      <div className="stack">
-        <p className="muted small">
-          Folders with an <code>index.html</code>, served at <code>/ui/&lt;name&gt;/</code>.{" "}
-          <a href="/api/docs" target="_blank" rel="noreferrer">API</a> · <a href="/api/llms.txt" target="_blank" rel="noreferrer">llms.txt</a> ·{" "}
-          <a href="/ui/" target="_blank" rel="noreferrer">Examples</a>
-        </p>
+      <Group
+        title="Pages"
+        hint={
+          <>
+            Folders with an <code>index.html</code>, served at <code>/ui/&lt;name&gt;/</code>.{" "}
+            <a href="/api/docs" target="_blank" rel="noreferrer">API</a> · <a href="/api/llms.txt" target="_blank" rel="noreferrer">llms.txt</a> ·{" "}
+            <a href="/ui/" target="_blank" rel="noreferrer">Examples</a>
+          </>
+        }
+      >
         {list.map((i, k) => {
           const p = problem(i, k);
           return (
-            <div key={k} className="row wrap" style={{ alignItems: "flex-start", gap: 8 }}>
-              <div className="field" style={{ width: "12em" }}>
+            <div key={k} className="ui-row">
+              <div className="field">
                 <label className="field-label" htmlFor={`ui-name-${k}`}>
                   Name
                 </label>
                 <input id={`ui-name-${k}`} className="mono" value={i.name} onChange={(e) => edit(k, { name: e.target.value.trim() })} />
               </div>
-              <div className="field" style={{ flex: 1, minWidth: "16em" }}>
+              <div className="field">
                 <label className="field-label" htmlFor={`ui-path-${k}`}>
                   Folder
                 </label>
@@ -91,31 +100,33 @@ export function InterfacesPanel() {
                   )}
                 </span>
               </div>
-              <button className="btn small danger" style={{ marginTop: 22 }} onClick={() => remove(k)} aria-label={`Remove ${i.name}`}>
+              <button className="btn ghost small danger" onClick={() => remove(k)} aria-label={`Remove ${i.name}`}>
                 Remove
               </button>
             </div>
           );
         })}
-        <div className="row wrap" style={{ gap: 12, alignItems: "flex-end" }}>
+        <div className="wide">
           <button className="btn" onClick={add}>
             Add an interface
           </button>
-          <div className="field">
-            <label className="field-label" htmlFor="ui-home">
-              Show at /
-            </label>
-            <select id="ui-home" value={home} onChange={(e) => updateConfig((x) => void (x.server.home = e.target.value))}>
-              <option value="">This interface</option>
-              {list.map((i) => (
-                <option key={i.name} value={i.name}>
-                  {i.name}
-                </option>
-              ))}
-            </select>
-            <span className="field-hint">Built-in is always at /builtin/{info && typeof info.home === "object" ? ` (--ui ${info.home.folder} is at / now)` : ""}</span>
-          </div>
         </div>
+        <div className="field">
+          <label className="field-label" htmlFor="ui-home">
+            Show at /
+          </label>
+          <select id="ui-home" value={home} onChange={(e) => updateConfig((x) => void (x.server.home = e.target.value))}>
+            <option value="">This interface</option>
+            {list.map((i) => (
+              <option key={i.name} value={i.name}>
+                {i.name}
+              </option>
+            ))}
+          </select>
+          <span className="field-hint">Built-in is always at /builtin/{info && typeof info.home === "object" ? ` (--ui ${info.home.folder} is at / now)` : ""}</span>
+        </div>
+      </Group>
+      <Group title="API access" hint="Pages served from elsewhere that may use the recorder's API." cols={1}>
         <div className="field">
           <label className="field-label" htmlFor="ui-origins">
             Other pages allowed to use the API
@@ -141,7 +152,7 @@ export function InterfacesPanel() {
             One origin per line (scheme://host:port). <code>null</code>: local files; <code>*</code>: any page — private networks only.
           </span>
         </div>
-      </div>
+      </Group>
     </section>
   );
 }

@@ -33,6 +33,7 @@ import {
 } from "./controller.ts";
 import { IconPuzzle, IconUpload, IconWave } from "./Onboarding.tsx";
 import { showTodo } from "./Setup.tsx";
+import { Group, Section } from "./SetupLayout.tsx";
 import { openTodos } from "./todo.ts";
 import { copyOverride, copyOwn, pluginCopies } from "./protocol.ts";
 import type { Config, PluginInfo, PluginInstall, PluginManifest, PluginSchema, PluginStore, PluginValues, PluginsList, StoreListing } from "./protocol.ts";
@@ -528,14 +529,16 @@ export function PluginSetupPanel() {
   if (!c) return null;
   const plugins = [...(list?.plugins ?? [])].sort((a, b) => (a.manifest?.name ?? a.id).localeCompare(b.manifest?.name ?? b.id));
   return (
-    <section className="panel" aria-labelledby="setup-plugins" id="need-plugins">
-      <header className="panel-head">
-        <h2 id="setup-plugins">Plugins</h2>
-        <button className="btn ghost" onClick={() => setView("plugins")}>
+    <Section
+      id="need-plugins"
+      title="Plugins"
+      hint="They upload or stream each call. Settings for one system alone are on that system's card."
+      actions={
+        <button className="btn" onClick={() => setView("plugins")}>
           Find and install plugins…
         </button>
-      </header>
-      <p className="muted small plugins-intro">Per-system settings are on each system's card.</p>
+      }
+    >
       {!list ? (
         <p className="muted">Loading…</p>
       ) : (
@@ -553,7 +556,7 @@ export function PluginSetupPanel() {
           )}
         </div>
       )}
-    </section>
+    </Section>
   );
 }
 
@@ -652,55 +655,61 @@ export function M4aSettings() {
   const [kbps, setKbps] = useState(String(a.bitrateKbps));
   useEffect(() => setKbps(String(a.bitrateKbps)), [a.bitrateKbps]);
   return (
-    <section className="panel" aria-labelledby="m4a-title">
-      <header className="panel-head">
-        <h2 id="m4a-title">M4A audio</h2>
+    <section className="set-card" aria-labelledby="m4a-title">
+      <header className="set-card-head">
+        <div className="set-card-title">
+          <h3 id="m4a-title">M4A audio</h3>
+          <span className="set-card-sub">About a tenth the size of WAV</span>
+        </div>
+        <span className="spacer" />
         {found ? <span className="chip ok">{found}</span> : <span className={`chip ${wanted.length ? "bad" : ""}`}>{a.encoder === "none" ? "off" : "no encoder found"}</span>}
       </header>
-      <div className="stack">
-        <p className="muted small">
-          About a tenth the size of WAV. Used by some plugins and <b>Also save an M4A</b>.{" "}
-          {wanted.length > 0 && !found && (
-            <span className="bad-text">
-              {wanted.map((p) => p.manifest!.name).join(", ")} {wanted.length > 1 ? "need" : "needs"} it: install ffmpeg.
-            </span>
-          )}
-        </p>
-        <div className="grid2">
-          <div className="field">
-            <label className="field-label" htmlFor="m4a-encoder">
-              Encoder
-            </label>
-            <select id="m4a-encoder" value={a.encoder} onChange={(e) => setM4a({ encoder: e.target.value })}>
-              <option value="auto">Automatic (ffmpeg, then afconvert, then fdkaac)</option>
-              <option value="ffmpeg">ffmpeg</option>
-              <option value="afconvert">afconvert (macOS)</option>
-              <option value="fdkaac">fdkaac</option>
-              <option value="none">None: WAV only</option>
-            </select>
-          </div>
-          <div className="field">
-            <label className="field-label" htmlFor="m4a-kbps">
-              Bitrate, kbps
-            </label>
-            <input
-              id="m4a-kbps"
-              className="mono"
-              type="number"
-              min={8}
-              max={320}
-              value={kbps}
-              onChange={(e) => setKbps(e.target.value)}
-              onBlur={() => {
-                const k = Math.round(Number(kbps));
-                if (k >= 8 && k <= 320 && k !== a.bitrateKbps) setM4a({ bitrateKbps: k });
-                else setKbps(String(a.bitrateKbps));
-              }}
-            />
-            <span className="field-hint">Trunk Recorder uses 32.</span>
-          </div>
+      <Group
+        title="Encoding"
+        hint={
+          <>
+            Used by the plugins that upload M4A, and by <b>Also save an M4A</b>.{" "}
+            {wanted.length > 0 && !found && (
+              <span className="bad-text">
+                {wanted.map((p) => p.manifest!.name).join(", ")} {wanted.length > 1 ? "need" : "needs"} it: install ffmpeg.
+              </span>
+            )}
+          </>
+        }
+      >
+        <div className="field">
+          <label className="field-label" htmlFor="m4a-encoder">
+            Encoder
+          </label>
+          <select id="m4a-encoder" value={a.encoder} onChange={(e) => setM4a({ encoder: e.target.value })}>
+            <option value="auto">Automatic (ffmpeg, then afconvert, then fdkaac)</option>
+            <option value="ffmpeg">ffmpeg</option>
+            <option value="afconvert">afconvert (macOS)</option>
+            <option value="fdkaac">fdkaac</option>
+            <option value="none">None: WAV only</option>
+          </select>
         </div>
-      </div>
+        <div className="field">
+          <label className="field-label" htmlFor="m4a-kbps">
+            Bitrate, kbps
+          </label>
+          <input
+            id="m4a-kbps"
+            className="mono"
+            type="number"
+            min={8}
+            max={320}
+            value={kbps}
+            onChange={(e) => setKbps(e.target.value)}
+            onBlur={() => {
+              const k = Math.round(Number(kbps));
+              if (k >= 8 && k <= 320 && k !== a.bitrateKbps) setM4a({ bitrateKbps: k });
+              else setKbps(String(a.bitrateKbps));
+            }}
+          />
+          <span className="field-hint">Trunk Recorder uses 32.</span>
+        </div>
+      </Group>
     </section>
   );
 }
