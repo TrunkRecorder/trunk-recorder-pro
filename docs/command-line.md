@@ -514,6 +514,7 @@ trunk-pro plugin run openmhz ~/TrunkRecorderPro/dcfd --limit 3
 | `TRUNK_PRO_UHD` | The UHD library file to load for USRPs, instead of searching for it |
 | `TRUNK_PRO_AIRSPY` | The libairspy library file to load, instead of searching |
 | `TRUNK_PRO_SOAPY` | The SoapySDR library file to load, instead of searching |
+| `TRUNK_PRO_SDRPLAY_API` | The SDRplay API library file (`libsdrplay_api`), used to run two SDRplay radios in one process, instead of searching |
 | `NO_COLOR` | When set (and `log.color` is empty), the log isn't coloured |
 | `XDG_CONFIG_HOME` | Linux: where the default config folder goes (`$XDG_CONFIG_HOME/trunk-pro`) |
 | `HOME` (or `USERPROFILE`) | Your home folder: the default config folder (macOS, Linux) and recordings folder (`~/TrunkRecorderPro`), and `~/` in paths |
