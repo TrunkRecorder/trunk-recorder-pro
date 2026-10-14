@@ -5,6 +5,10 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Delete old calls:** Setup → Recording → Recorder has **Keep calls for, days**, **Keep at most,
+  GB** and **Keep at most, % of the disk** (`recording.retention`). Past any that are set, the
+  oldest calls are deleted from the recordings folder, checked every ten minutes. Off by default.
+
 ## [0.1.10] — 2026-10-13
 
 - **Encryption heard:** a talkgroup's page on the Radio dashboard lists
