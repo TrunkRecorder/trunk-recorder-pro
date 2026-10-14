@@ -5,6 +5,14 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Two SDRplay radios in one process:** a second RSP source no longer
+  fails with `SelectDevice() failed`. SoapySDRPlay3 opens one SDRplay API
+  session per process, which can select only one radio, so trunk-pro now
+  opens one more session for each further SDRplay source (as SDRTrunk
+  does). Two radios on one USB bus can still run out of bandwidth: at
+  rates above 2.5 MS/s, or 2 MS/s and below (the radio then runs at
+  6 MS/s), put them on separate USB controllers.
+
 ## [0.1.10] — 2026-10-13
 
 - **Encryption heard:** a talkgroup's page on the Radio dashboard lists

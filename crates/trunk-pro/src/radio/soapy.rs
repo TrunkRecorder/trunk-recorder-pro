@@ -397,6 +397,72 @@ pub fn run_with(source: usize, mut cfg: SoapyConfig, tx: SyncSender<SourceMsg>, 
     }
 }
 
+/// The SDRplay API won't select a second radio in a `sdrplay_api_Open()`
+/// session that already has one, and SoapySDRPlay3 opens a single session per
+/// process, so a second RSP fails with "SelectDevice() failed". As SDRTrunk
+/// does, open another session just before a radio is opened while another is
+/// in use, once per source (a retry reuses it). Sessions are never closed:
+/// closing one makes the others unusable. The open and the select must not
+/// interleave with another radio's, hence the lock held until `made()`.
+fn is_sdrplay(args: &str) -> bool {
+    args.split(',').any(|kv| kv.trim().eq_ignore_ascii_case("driver=sdrplay"))
+}
+
+struct SdrplaySlot {
+    live: bool,
+    _opening: Option<std::sync::MutexGuard<'static, ()>>,
+}
+
+static SDRPLAY_OPENING: Mutex<()> = Mutex::new(());
+static SDRPLAY: Mutex<(usize, Vec<usize>)> = Mutex::new((0, Vec::new())); // (radios in use, sources that opened a session)
+
+impl SdrplaySlot {
+    /// `args` that aren't an SDRplay (or no API library to open sessions with) take no slot.
+    fn take(source: usize, args: &str) -> SdrplaySlot {
+        let none = SdrplaySlot { live: false, _opening: None };
+        if !is_sdrplay(args) {
+            return none;
+        }
+        static OPEN: OnceLock<Option<(Library, unsafe extern "C" fn() -> c_int)>> = OnceLock::new();
+        let Some((_, open)) = OPEN
+            .get_or_init(|| {
+                let names = super::candidates("libsdrplay_api.so.3", "libsdrplay_api.dylib", &["sdrplay_api.dll", r"C:\Program Files\SDRplay\API\x64\sdrplay_api.dll"]);
+                let names: Vec<&str> = names.iter().map(String::as_str).collect();
+                let (lib, _) = super::load("TRUNK_PRO_SDRPLAY_API", &names, "sdrplay_api", false).ok()?;
+                // SAFETY: sdrplay_api_Open() takes no arguments; this is the library the module loads, so the same sessions.
+                let open = unsafe { *lib.get::<unsafe extern "C" fn() -> c_int>(b"sdrplay_api_Open\0").ok()? };
+                Some((lib, open))
+            })
+            .as_ref()
+        else {
+            return none;
+        };
+        let guard = SDRPLAY_OPENING.lock().unwrap_or_else(|e| e.into_inner());
+        let mut st = SDRPLAY.lock().unwrap();
+        if st.0 > 0 && !st.1.contains(&source) {
+            // SAFETY: see above.
+            if unsafe { open() } == 0 {
+                st.1.push(source);
+            }
+        }
+        st.0 += 1;
+        SdrplaySlot { live: true, _opening: Some(guard) }
+    }
+
+    /// The radio is open (or failed to): let the next one open.
+    fn made(&mut self) {
+        self._opening = None;
+    }
+}
+
+impl Drop for SdrplaySlot {
+    fn drop(&mut self) {
+        if self.live {
+            SDRPLAY.lock().unwrap().0 -= 1;
+        }
+    }
+}
+
 /// Owns the device and stream so every exit path releases them.
 struct Device<'a> {
     a: &'a Api,
@@ -458,10 +524,12 @@ fn stream_once(source: usize, cfg: &SoapyConfig, tx: &SyncSender<SourceMsg>, sto
     // Modules load here rather than inside make, so a broken one is reported.
     modules();
     let args = CString::new(cfg.args.as_str()).map_err(|e| e.to_string())?;
+    let mut sdrplay = SdrplaySlot::take(source, &cfg.args);
     let mut d = Device { a, dev: std::ptr::null_mut(), stream: std::ptr::null_mut(), active: false };
     // SAFETY: SoapySDR C API calls on the device and stream `d` owns.
     unsafe {
         d.dev = (a.make)(args.as_ptr());
+        sdrplay.made();
         if d.dev.is_null() {
             let why = a.last_error.map(|f| cstr(f())).filter(|s| !s.is_empty()).unwrap_or_else(|| "no matching device".into());
             return Err(format!("SoapySDR open {}: {why}", if cfg.args.is_empty() { "(first)" } else { &cfg.args }));
@@ -600,6 +668,10 @@ mod tests {
         assert!(abi_at_least_08("1.0"));
         assert_eq!(module_name("/opt/homebrew/lib/SoapySDR/modules0.8/librtlsdrSupport.so"), "rtlsdr");
         assert_eq!(module_name(r"C:\PothosSDR\lib\SoapySDR\modules0.8\sdrPlaySupport.dll"), "sdrPlay");
+        assert!(is_sdrplay("driver=sdrplay,serial=240522FF60"));
+        assert!(is_sdrplay("serial=1, driver=sdrplay"));
+        assert!(!is_sdrplay("driver=hackrf"));
+        assert!(!is_sdrplay(""));
         assert_eq!(pairs("LNA=32, VGA = 20,,bad"), vec![("LNA".into(), "32".into()), ("VGA".into(), "20".into())]);
     }
 }
