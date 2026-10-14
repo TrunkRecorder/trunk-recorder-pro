@@ -303,8 +303,11 @@ pub fn find() -> Result<Vec<serde_json::Value>, String> {
     let a = api()?;
     modules();
     let mut n = 0usize;
+    // The SDRplay module's search shares state with its open: not while a source is opening.
+    let opening = SDRPLAY_OPENING.lock().unwrap_or_else(|e| e.into_inner());
     // SAFETY: an empty args string; the list is freed below.
     let list = unsafe { (a.enumerate)(c"".as_ptr(), &mut n) };
+    drop(opening);
     if list.is_null() {
         return Ok(vec![]);
     }
@@ -409,12 +412,9 @@ fn explicit_driver(args: &str) -> Option<String> {
     args.split(',').find_map(|kv| kv.split_once('=').filter(|(k, _)| k.trim().eq_ignore_ascii_case("driver")).map(|(_, v)| v.trim().to_ascii_lowercase()))
 }
 
-/// Whether `args` open an SDRplay: they name the driver, or (empty args, a
-/// bare `serial=…`) the first device they match is one.
-fn is_sdrplay(a: &Api, args: &str) -> bool {
-    if let Some(d) = explicit_driver(args) {
-        return d == "sdrplay";
-    }
+/// Whether the first device `args` match (empty args, a bare `serial=…`) is an SDRplay.
+/// Call with `SDRPLAY_OPENING` held: SoapySDRPlay3's device search shares unsynchronized state with its open.
+fn first_match_is_sdrplay(a: &Api, args: &str) -> bool {
     let Ok(cargs) = CString::new(args) else { return false };
     let mut n = 0usize;
     // SAFETY: NUL-terminated args; the list is read and freed below.
@@ -441,7 +441,13 @@ impl SdrplaySlot {
     /// `args` that aren't an SDRplay (or no API library to open sessions with) take no slot.
     fn take(a: &Api, source: usize, args: &str) -> SdrplaySlot {
         let none = SdrplaySlot { live: false, _opening: None };
-        if !is_sdrplay(a, args) {
+        let explicit = explicit_driver(args);
+        if explicit.as_deref().is_some_and(|d| d != "sdrplay") {
+            return none;
+        }
+        // Held until `made()`; dropped here for a device that isn't an SDRplay.
+        let guard = SDRPLAY_OPENING.lock().unwrap_or_else(|e| e.into_inner());
+        if explicit.is_none() && !first_match_is_sdrplay(a, args) {
             return none;
         }
         static OPEN: OnceLock<Option<(Library, unsafe extern "C" fn() -> c_int)>> = OnceLock::new();
@@ -458,7 +464,6 @@ impl SdrplaySlot {
         else {
             return none;
         };
-        let guard = SDRPLAY_OPENING.lock().unwrap_or_else(|e| e.into_inner());
         let mut st = SDRPLAY.lock().unwrap();
         if st.0 > 0 && !st.1.contains(&source) {
             // SAFETY: see above.
