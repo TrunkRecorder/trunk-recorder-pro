@@ -1,4 +1,4 @@
-node_modules/
+node_modules
 dist/
 captures/
 *.cu8
@@ -10,7 +10,7 @@ research/native-bench/cpp/bench-novec
 research/native-bench/cpp/p25tool
 research/native-bench/cpp/recorder
 /target
-web/node_modules/
+web/node_modules
 web/dist/
 web/dist-web/
 web/src/web/pkg/

@@ -25,6 +25,34 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   state are overwritten when they are dropped, so a freed page doesn't keep a
   key for a crash dump or a memory scan to find.
 
+## [0.1.11] — 2026-10-14
+
+- **Setup, reorganized.** Each Setup tab is now sections of cards, and
+  each card's settings are in named groups with a line on what they are
+  for: a system's Basics, On the air, Talkgroups and units, Sites and
+  Overrides; a radio's Device, Tuning, Gain and Frequency correction; the
+  Recording tab's Recorder, Call rules and Advanced (M4A audio, Log,
+  Interfaces). Headings step down in size from section to card to group,
+  so it's clearer what belongs together. System, conventional and radio
+  cards fold to a one-line header (name, type, whether its control
+  channel is covered, Record), with Expand all / Collapse all; with
+  several, they start folded, and each is remembered in the browser.
+  Show, from an import's to-do list or a plugin's system chips, opens the
+  card it points into. Nothing about the settings themselves changed.
+- **A system can override a plugin's settings.** Each plugin on a system's
+  card in Setup now has a section for that system's own values of the
+  plugin's settings, such as the server it uploads to; anything left empty
+  stays as set for every system. It works for a single copy of a plugin or
+  for each of several, so one system can upload to two Rdio Scanner servers.
+  In the config this is `override` in the system's settings for the plugin.
+  A required setting, such as Rdio Scanner's server, can be left empty for
+  the whole recorder when every system that uses the plugin sets it.
+- **Plugin SDK 0.3.0.** Each system in `Setup` carries `settings`: the
+  plugin's settings with that system's overrides. `CallQueue::start_by`
+  gives each server a queue of its own (workers, retries, capacity and
+  endpoint status), so a server that's down doesn't hold up the others.
+  Breaking: `System` takes the config type too, `System<C, S>`.
+
 ## [0.1.10] — 2026-10-13
 
 - **Encryption heard:** a talkgroup's page on the Radio dashboard lists

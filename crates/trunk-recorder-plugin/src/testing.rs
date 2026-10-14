@@ -147,7 +147,7 @@ pub fn hello(dir: &Path, config: Value) -> Hello {
         api: API_VERSION,
         host: HostInfo { name: "test".into(), version: "0".into() },
         config,
-        systems: vec![SystemInfo { index: 0, short_name: "sys1".into(), kind: "p25".into(), config: Value::Null }],
+        systems: vec![SystemInfo { index: 0, short_name: "sys1".into(), kind: "p25".into(), config: Value::Null, ..Default::default() }],
         capture_dir: dir.to_path_buf(),
         data_dir,
         audio_formats: vec!["wav".into(), format::M4A.into()],
