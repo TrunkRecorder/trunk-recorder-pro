@@ -348,6 +348,7 @@ async function pumpRtl(source: number, rtl: WebRtl): Promise<void> {
 async function pumpFile(source: number, f: File, rateHz: number, realtime: boolean): Promise<void> {
   const chunk = 1 << 17; // 64 k samples
   const t0 = performance.now();
+  const mine = session;
   for (let off = 0; running && off < f.size; off += chunk) {
     const bytes = new Uint8Array(await f.slice(off, Math.min(f.size, off + chunk)).arrayBuffer());
     if (!running || !session) return;
@@ -358,7 +359,10 @@ async function pumpFile(source: number, f: File, rateHz: number, realtime: boole
     const wait = realtime ? due - (performance.now() - t0) : 0;
     await new Promise((r) => setTimeout(r, Math.max(0, wait)));
   }
-  if (running && session?.source_ended(source)) await stop(true);
+  // In line with Stop and Restart; and only this run's: a restart may have begun a new one meanwhile.
+  await serialized(async () => {
+    if (running && session === mine && session?.source_ended(source)) await stop(true);
+  });
 }
 
 async function teardown(): Promise<void> {
