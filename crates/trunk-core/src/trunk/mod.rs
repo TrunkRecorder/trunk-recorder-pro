@@ -28,3 +28,4 @@ pub use message::{Message, MessageType, Patch, TsbkParser};
 pub use patches::Patches;
 pub use talkgroups::{parse_csv, Talkgroup, Talkgroups};
 pub use units::{UnitAlias, UnitAliases, UnitTags, UnitTagsMode};
+pub use voice::CipherId;

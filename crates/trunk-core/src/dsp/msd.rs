@@ -40,21 +40,12 @@ pub enum Pulse {
     Rc(f64),
 }
 
-fn rc_at(t: f64, a: f64) -> f64 {
-    let s = if t.abs() < 1e-9 { 1.0 } else { (PI * t).sin() / (PI * t) };
-    let d = 1.0 - (2.0 * a * t).powi(2);
-    if d.abs() < 1e-9 {
-        PI / 4.0 * s
-    } else {
-        s * (PI * a * t).cos() / d
-    }
-}
 
 impl Pulse {
     fn at(self, t: f64) -> f64 {
         match self {
             Pulse::Rrc(a) => filters::rrc(t, a),
-            Pulse::Rc(a) => rc_at(t, a),
+            Pulse::Rc(a) => filters::rc(t, a),
         }
     }
 }

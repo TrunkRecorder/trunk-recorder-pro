@@ -61,7 +61,7 @@ export function PatchedWith({ tgs }: { tgs: TalkgroupName[] }) {
 }
 
 export function reasonText(c: CallView): string {
-  if (c.state === "recording") return c.encrypted ? "recording (encrypted)" : "recording";
+  if (c.state === "recording") return c.decrypted ? "recording (decrypted)" : c.encrypted ? "recording (encrypted)" : "recording";
   switch (c.reason) {
     case "encrypted":
       return "encrypted — not recorded";

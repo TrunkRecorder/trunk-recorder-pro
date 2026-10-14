@@ -7,6 +7,7 @@ pub mod channels;
 pub mod config;
 pub mod filename;
 pub mod heard;
+pub mod keys;
 pub mod log;
 pub mod profile;
 pub mod samples;

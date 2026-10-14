@@ -330,6 +330,10 @@ pub struct System {
     /// ISSI, or to keep a site out of its system's group.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub site_group: String,
+    /// Its encryption keys file (P25; see [`crate::keys`]), absolute or
+    /// relative to the config file's folder. Empty: none.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub keys: String,
     /// Plugins' settings for this system, by plugin id (as each plugin's
     /// `system_config` schema describes them), with `override` for the plugin's
     /// own settings they change for it; a list for several copies of one.
@@ -403,6 +407,7 @@ impl Default for System {
     fn default() -> Self {
         System {
             other: BTreeMap::new(),
+            keys: String::new(),
             short_name: "sys1".into(),
             name: String::new(),
             kind: "p25".into(),
@@ -519,6 +524,9 @@ pub struct Conventional {
     /// Names for the radios heard on them.
     #[serde(skip_serializing_if = "UnitNames::is_empty")]
     pub unit_names: UnitNames,
+    /// Its encryption keys file, for its P25 channels (as [`System::keys`]).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub keys: String,
     /// Keys this version doesn't know (a newer version's, a hand edit's):
     /// kept, and saved back as they were.
     #[serde(flatten)]
@@ -554,6 +562,7 @@ impl Default for Conventional {
     fn default() -> Self {
         Conventional {
             other: BTreeMap::new(),
+            keys: String::new(),
             short_name: "conv".into(),
             name: String::new(),
             enabled: true,
@@ -1185,6 +1194,19 @@ impl Config {
         Some(if p.is_absolute() { p } else { config_path.parent().unwrap_or(Path::new(".")).join(p) })
     }
 
+    /// Read the keys files of the systems that name one: (short name, its
+    /// keys), for [`crate::session::Session::set_keys`]. An error names the
+    /// file and what is wrong in it (never a key).
+    pub fn load_keys(&self, config_path: &Path) -> Result<Vec<(String, std::sync::Arc<trunk_core::p25::crypt::Keyring>)>, String> {
+        let trunked = self.active_systems().map(|s| (&s.short_name, &s.keys));
+        let conv = self.conventional.iter().filter(|c| c.enabled).map(|c| (&c.short_name, &c.keys));
+        trunked
+            .chain(conv)
+            .filter_map(|(name, setting)| crate::keys::path(setting, config_path).map(|p| (name, p)))
+            .map(|(name, p)| crate::keys::load(&p).map(|r| (name.clone(), std::sync::Arc::new(r))).map_err(|e| format!("{name}: {e}")))
+            .collect()
+    }
+
     /// Read every conventional system's linked channel file (errors are in
     /// each one's `channel_file_status`).
     pub fn load_channel_files(&mut self, config_path: &Path) {
@@ -1467,6 +1489,8 @@ impl Config {
                     Protocol::P25
                 },
                 site_group: s.site_group.trim().to_string(),
+                // (Read by the app: [`Config::load_keys`].)
+                keys: None,
             })
             .collect();
         // A conventional system's P25 / DMR channels look up the talkgroup names
@@ -1488,6 +1512,7 @@ impl Config {
                     save: r.save_rules(),
                     talkgroups: named.map(|s| s.talkgroups.clone()).unwrap_or_default(),
                     unit_tags: v.unit_names.engine(),
+                    keys: None,
                 }
             })
             .collect();

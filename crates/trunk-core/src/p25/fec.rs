@@ -5,6 +5,8 @@
 //! * Hamming(10,6) — LDU link-control / encryption-sync hexbits
 //! * Reed-Solomon over GF(2⁶) — LC (24,12), ES (24,16), HDU (36,20), as ezpwd's RS<63,k>
 //!
+//! The encoders build test signals (`p25::synth`).
+//!
 //! Encoders are op25's; the syndrome → error-pattern tables are built from
 //! them. The soft decoders (Chase-II Golay, maximum-likelihood Hamming) cut
 //! wrong IMBE codewords from 7.6 % to 2.2 % on synthetic simulcast.
@@ -173,14 +175,21 @@ pub fn golay23_decode_soft(r: u32, w: &[f32]) -> Fec {
     Fec { data: best_cw >> 11, errs: ((best_cw ^ r) & 0x7fffff).count_ones() as i32, cost: best }
 }
 
-/// op25_hamming.h hmg1063EncTbl / hmg1063Dec: the corrected 6-bit hexbit.
+/// op25_hamming.h hmg1063EncTbl: a hexbit's 4 parity bits.
+const HMG1063_ENC: [u8; 64] = [
+    0, 12, 3, 15, 7, 11, 4, 8, 11, 7, 8, 4, 12, 0, 15, 3, 13, 1, 14, 2, 10, 6, 9, 5, 6, 10, 5, 9, 1, 13, 2, 14, 14, 2, 13, 1, 9, 5, 10, 6,
+    5, 9, 6, 10, 2, 14, 1, 13, 3, 15, 0, 12, 4, 8, 7, 11, 8, 4, 11, 7, 15, 3, 12, 0,
+];
+
+/// The 10-bit Hamming(10,6) word for a hexbit: data, then parity.
+pub fn hamming1063_encode(data6: u8) -> u32 {
+    ((data6 as u32 & 63) << 4) | HMG1063_ENC[(data6 & 63) as usize] as u32
+}
+
+/// op25_hamming.h hmg1063Dec: the corrected 6-bit hexbit.
 pub fn hamming1063_decode(data6: u32, parity4: u32) -> u8 {
-    const ENC: [u8; 64] = [
-        0, 12, 3, 15, 7, 11, 4, 8, 11, 7, 8, 4, 12, 0, 15, 3, 13, 1, 14, 2, 10, 6, 9, 5, 6, 10, 5, 9, 1, 13, 2, 14, 14, 2, 13, 1, 9, 5, 10,
-        6, 5, 9, 6, 10, 2, 14, 1, 13, 3, 15, 0, 12, 4, 8, 7, 11, 8, 4, 11, 7, 15, 3, 12, 0,
-    ];
     const DEC: [u8; 16] = [0, 0, 0, 2, 0, 0, 0, 4, 0, 0, 0, 8, 1, 16, 32, 0];
-    ((data6 as u8) ^ DEC[(ENC[(data6 & 63) as usize] ^ (parity4 & 15) as u8) as usize]) & 63
+    ((data6 as u8) ^ DEC[(HMG1063_ENC[(data6 & 63) as usize] ^ (parity4 & 15) as u8) as usize]) & 63
 }
 
 // ── Reed-Solomon over GF(64): primitive 0x43, first root α¹ (ezpwd) ──────────
@@ -229,6 +238,39 @@ fn gdiv(a: i32, b: i32) -> i32 {
 #[inline]
 fn gpow(e: i32) -> i32 {
     gf().exp[e.rem_euclid(63) as usize] as i32
+}
+
+/// Fill in the parity of a 63-symbol codeword (data in `cw[..63 − nroots]`,
+/// a shortened code's unused symbols zero; `nroots` parity last), so that
+/// [`rs_decode`] finds no errors: c(x) = d(x)·x^nroots + (d(x)·x^nroots mod
+/// g(x)), g(x) = Π (x − α^j), j = 1..=nroots.
+pub fn rs_encode(cw: &mut [u8; 63], nroots: usize) {
+    let mut g = vec![0i32; nroots + 1];
+    g[0] = 1;
+    for j in 1..=nroots {
+        let r = gpow(j as i32);
+        for i in (1..=j).rev() {
+            g[i] = g[i - 1] ^ gmul(g[i], r);
+        }
+        g[0] = gmul(g[0], r);
+    }
+    // g[i] is the coefficient of x^i; g[nroots] = 1. Long division, highest
+    // power (cw[0]) first.
+    let k = 63 - nroots;
+    let mut rem = vec![0i32; nroots];
+    for &d in &cw[..k] {
+        let f = d as i32 ^ rem[0];
+        rem.rotate_left(1);
+        rem[nroots - 1] = 0;
+        if f != 0 {
+            for i in 0..nroots {
+                rem[i] ^= gmul(f, g[nroots - 1 - i]);
+            }
+        }
+    }
+    for (c, r) in cw[k..].iter_mut().zip(rem) {
+        *c = r as u8;
+    }
 }
 
 /// Decode a 63-symbol codeword in place (data first, `nroots` parity last).
@@ -336,6 +378,55 @@ pub fn rs_decode_erasures(cw: &mut [u8; 63], nroots: usize, erasures: &[usize], 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every P25 RS code (shortened, data after the zeros): an encoded word
+    /// decodes clean, and up to its correction limit of errors comes back.
+    #[test]
+    fn rs_encode_round_trips() {
+        let mut x = 0x2545_f491u32;
+        let mut rnd = move || {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            x
+        };
+        // (n, k): LDU1 LC, LDU2 ES, HDU, Phase 2 ESS, MAC.
+        for (n, k) in [(24, 12), (24, 16), (36, 20), (44, 16), (63, 35)] {
+            let nroots = n - k;
+            for _ in 0..200 {
+                let mut cw = [0u8; 63];
+                for c in &mut cw[63 - n..63 - nroots] {
+                    *c = (rnd() & 63) as u8;
+                }
+                rs_encode(&mut cw, nroots);
+                let sent = cw;
+                assert_eq!(rs_decode(&mut cw, nroots, 63 - n), 0, "RS({n},{k})");
+                let errs = 1 + rnd() as usize % (nroots / 2);
+                let mut hit = Vec::new();
+                while hit.len() < errs {
+                    let p = 63 - n + rnd() as usize % n;
+                    if !hit.contains(&p) {
+                        hit.push(p);
+                        cw[p] ^= 1 + (rnd() % 63) as u8;
+                    }
+                }
+                assert_eq!(rs_decode(&mut cw, nroots, 63 - n), errs as i32, "RS({n},{k}) {errs} errors");
+                assert_eq!(cw, sent);
+            }
+        }
+    }
+
+    #[test]
+    fn hamming1063_round_trips_and_corrects() {
+        for d in 0..64u8 {
+            let w = hamming1063_encode(d);
+            assert_eq!(hamming1063_decode(w >> 4, w & 15), d);
+            for b in 0..10 {
+                let e = w ^ (1 << b);
+                assert_eq!(hamming1063_decode(e >> 4, e & 15), d, "{d} bit {b}");
+            }
+        }
+    }
 
     #[test]
     fn hamming15_soft_matches_brute_force() {

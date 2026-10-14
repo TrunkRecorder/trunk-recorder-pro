@@ -269,6 +269,12 @@ impl Session {
         self.engine.set_talkgroups(short_name, trunk_core::trunk::parse_csv(csv))
     }
 
+    /// The encryption keys of the system named `short_name` (trunked or
+    /// conventional): voice channels opened from now on decrypt with them.
+    pub fn set_keys(&mut self, short_name: &str, keys: Option<std::sync::Arc<trunk_core::p25::crypt::Keyring>>) -> bool {
+        self.engine.set_keys(short_name, keys)
+    }
+
     /// A radio's talker alias on the system named `short_name`.
     pub fn unit_alias(&self, short_name: &str, unit: u32) -> Option<String> {
         let sys = match self.engine.systems().iter().position(|s| s.short_name == short_name) {
@@ -610,6 +616,9 @@ impl Session {
             tdma_slot: c.slot(),
             analog: c.analog,
             encrypted: c.encrypted,
+            algid: c.cipher.map(|k| k.algid),
+            key_id: c.cipher.map(|k| k.keyid),
+            decrypted: c.decrypted,
             emergency: c.emergency,
             recording: c.recording,
             reason: c.reason.map(|r| r.as_str().to_string()),
@@ -948,6 +957,7 @@ fn call_view(c: &Call, system_name: &str, patched: Vec<Value>) -> Value {
         "state": if c.recording { "recording" } else { "monitoring" },
         "reason": c.reason.map(|r| r.as_str()),
         "encrypted": c.encrypted,
+        "decrypted": c.decrypted,
         "emergency": c.emergency,
         "startS": c.start_s,
         "sources": c.sources.iter().map(|s| s.src).collect::<Vec<_>>(),

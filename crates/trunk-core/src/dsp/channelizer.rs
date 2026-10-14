@@ -62,6 +62,23 @@ pub struct Channelizer {
     next_id: HeadId,
 }
 
+/// Narrowest noise-floor slice ([`floor_slices`]), Hz: a 12.5 kHz channel
+/// fills under half of one, so a slice's median stays on the noise.
+const MIN_FLOOR_SLICE_HZ: f64 = 30_000.0;
+
+/// How many slices to measure the noise floor of a band `fs` wide in
+/// ([`Channelizer::noise_profile`]): 64, or fewer (a power of two) where 64
+/// would make them narrower than [`MIN_FLOOR_SLICE_HZ`]. A slice filled by a
+/// signal reads the signal as the floor (64 slices at 480 kS/s are 7.5 kHz:
+/// no conventional channel ever opened).
+pub fn floor_slices(fs: f64) -> usize {
+    let mut n = 64;
+    while n > 1 && fs / (n as f64) < MIN_FLOOR_SLICE_HZ {
+        n /= 2;
+    }
+    n
+}
+
 /// The largest power-of-two decimation of `fs` that still delivers at least
 /// `min_output_rate`, capped at N/64 (M ≥ 64 bins per head).
 pub fn output_rate(fs: f64, min_output_rate: f64, fft_size: usize) -> f64 {
@@ -383,6 +400,13 @@ impl Channelizer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn floor_slices_stay_wide_enough() {
+        for (fs, n) in [(3_200_000.0, 64), (2_400_000.0, 64), (2_048_000.0, 64), (1_024_000.0, 32), (960_000.0, 32), (480_000.0, 16), (240_000.0, 8), (20_000.0, 1)] {
+            assert_eq!(floor_slices(fs), n, "{fs}");
+        }
+    }
 
     fn tone(fs: f64, hz: f64, n: usize) -> Vec<Complex32> {
         (0..n).map(|i| {

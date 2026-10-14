@@ -1175,7 +1175,7 @@ const DSP = [
       ["Concealment", "TIA-102.BABA-A", "IMBE repeats a frame that fails or has too many errors, fades after 4 repeats or a high error rate; AMBE repeats above 3 errors."],
       ["Scale and limit", "×7/32768 · tanh above −3 dBFS", "A soft limiter instead of clipping."],
       ["Recording", "audio · frames · transmissions", "The call's buffer. Gaps over 0.5 s separate transmissions."],
-      ["save_call", "SaveRules", "Drops transmissions shorter than <code>minTransmissionS</code> and encrypted ones; refuses a call too short or silent (unless <code>keepSilentCalls</code> / <code>recordEncrypted</code>)."],
+      ["save_call", "SaveRules", "Drops transmissions shorter than <code>minTransmissionS</code> and encrypted ones that weren't decrypted; refuses a call too short or silent (unless <code>keepSilentCalls</code> / <code>recordEncrypted</code>)."],
       ["Loudness", "−12 dBFS speech (≈ −14 LUFS)", "BS.1770-style gated measurement; gain −18..+24 dB plus the system's level; look-ahead limiter at −2.5 dBFS."],
       ["JSON + WAV", "Trunk Recorder fields + reception", "16-bit mono 8 kHz WAV and the call JSON (section 09)."]
     ] }
@@ -1286,7 +1286,7 @@ const PROTO = {
       { id: "m", x: D, y: 105, w: 270, label: "Matching call?", sub: "talkgroup · freq · slot · phase 2", cls: "k-dec", text: "If one exists it is refreshed: <code>last_update_s</code>, patches, encrypted / emergency latched on, a new talking unit added. Nothing is admitted again." },
       { id: "ign", x: D, y: 190, w: 270, label: "Ignored talkgroup?", sub: "CSV Ignore or priority < 0", cls: "k-dec", text: "Reason <code>ignored</code>." },
       { id: "unk", x: D, y: 275, w: 270, label: "Unknown talkgroup?", sub: "and recordUnknown off", cls: "k-dec", text: "Not in a non-empty talkgroup file and not a member of a known patch. Reason <code>unknown_tg</code>. A later PatchAdd can re-admit it." },
-      { id: "enc", x: D, y: 360, w: 270, label: "Encrypted?", sub: "and recordEncrypted off", cls: "k-dec", text: "Reason <code>encrypted</code>. The engine may still <b>follow</b> it: open the channel with no recording, to collect talking units and aliases, if recordings plus followed channels are below <code>maxRecorders</code> (never for analog)." },
+      { id: "enc", x: D, y: 360, w: 270, label: "Encrypted?", sub: "and recordEncrypted off", cls: "k-dec", text: "Unless the system has keys and the call is P25 (it is then recorded, to see whether a key fits): reason <code>encrypted</code>. The engine may still <b>follow</b> it: open the channel with no recording, to collect talking units and aliases, if recordings plus followed channels are below <code>maxRecorders</code> (never for analog)." },
       { id: "pool", x: D, y: 445, w: 270, label: "Recorder free?", sub: "recordings < maxRecorders", cls: "k-dec", text: "Reason <code>no_recorder</code> otherwise. No priority, no preemption, no retry: the call is monitored until it times out." },
       { id: "src", x: D, y: 530, w: 270, label: "Source covers it?", sub: "Radio::source_for(freq)", cls: "k-dec", text: "The first source whose usable band holds the frequency. Reason <code>no_source</code> otherwise." },
       { id: "take", x: D, y: 615, w: 270, label: "Take a recorder", sub: "lowest free number · Recording", text: "The recorder number (the JSON's <code>recorder_num</code>) comes from <code>free_nums</code>; a <code>Recording</code> is inserted; <code>open_channel</code> runs." },

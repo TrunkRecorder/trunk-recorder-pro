@@ -164,6 +164,8 @@ export interface System {
   /** Multi-site: sites with one group are one system (a call on several is saved once).
    *  Absent: grouped by what the control channels say (P25 WACN + System ID, SmartNet System ID). */
   siteGroup?: string;
+  /** Desktop: its P25 encryption keys file, absolute or relative to the config file's folder (read when recording starts; never sent here). */
+  keys?: string;
   /** Plugins' settings for this system, by plugin id (each plugin's `system_config` schema); a list for several copies of one. */
   plugins?: Record<string, SystemPluginValues>;
 }
@@ -285,6 +287,8 @@ export interface Conventional {
   /** Its own recording rules; each left out is the Recording tab's. */
   recording?: RecordingOverride;
   unitNames?: UnitNames;
+  /** Desktop: its P25 channels' encryption keys file (as System's). */
+  keys?: string;
 }
 
 export interface Config {
@@ -480,6 +484,8 @@ export interface CallView {
   state: "recording" | "monitoring";
   reason: "ignored" | "unknown_tg" | "encrypted" | "no_source" | "no_recorder" | null;
   encrypted: boolean;
+  /** Its encrypted voice is being decrypted (the system has the key). */
+  decrypted: boolean;
   emergency: boolean;
   startS: number;
   sources: number[];
@@ -523,6 +529,11 @@ export interface CallRecord {
   /** 1 / 0. */
   emergency: number;
   encrypted: number;
+  /** The cipher its encryption sync named: P25 ALGID and key ID; -1 when none was heard (absent in calls saved before). */
+  algid?: number;
+  key_id?: number;
+  /** 1: its encrypted voice was decrypted, at least in part (absent in calls saved before). */
+  decrypted?: number;
   phase2_tdma: number;
   duplex: number;
   /** Its P25 priority and service-option mode bit. */
@@ -1051,10 +1062,23 @@ export interface TgRow {
   secs: number;
   totalCalls: number;
   encPct: number;
+  /** The ciphers its calls' encryption sync named, most recent first. */
+  ciphers: CipherSeen[];
   /** First heard in the last day (once the system has a baseline). */
   new: boolean;
   /** Calls per hour, oldest first. */
   hourly: number[];
+}
+
+/** A cipher heard on a talkgroup: P25 ALGID and key ID. */
+export interface CipherSeen {
+  algid: number;
+  keyId: number;
+  /** What the ALGID is called ("ADP", "AES-256", …). */
+  name: string;
+  calls: number;
+  /** Unix seconds. */
+  last: number;
 }
 
 /** A radio as heard (radioQuery units / unit). */

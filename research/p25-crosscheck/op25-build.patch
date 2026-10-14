@@ -1,0 +1,25 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 29001da0..d3d76252 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -8,8 +8,6 @@ enable_testing()
+ #policy setup
+ cmake_policy(SET CMP0011 NEW)
+ cmake_policy(SET CMP0012 NEW)
+-cmake_policy(SET CMP0026 OLD)
+-cmake_policy(SET CMP0045 OLD)
+ 
+ set_property(GLOBAL PROPERTY ALLOW_DUPLICATE_CUSTOM_TARGETS 1)
+ 
+diff --git a/op25/gr-op25_repeater/lib/op25_audio.h b/op25/gr-op25_repeater/lib/op25_audio.h
+index c3933676..1059f6d2 100644
+--- a/op25/gr-op25_repeater/lib/op25_audio.h
++++ b/op25/gr-op25_repeater/lib/op25_audio.h
+@@ -81,6 +81,7 @@ private:
+ public:
+     op25_audio(const char* udp_host, int port, log_ts& logger, int debug, int msgq_id);
+     op25_audio(const char* destination, log_ts& logger, int debug, int msgq_id);
++    op25_audio(const op25_audio&) = delete; /* crosscheck: macOS libc++ build fix */
+     void stop();
+     ~op25_audio();
+ 

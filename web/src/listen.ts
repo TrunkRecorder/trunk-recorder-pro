@@ -111,8 +111,8 @@ export const tgKey = (system: string, talkgroup: number) => `${system}:${talkgro
 /** Its talkgroup and any patched with it. */
 const talkgroupsOf = (c: CallEntry) => [c.record.talkgroup, ...(c.record.patched_talkgroups ?? [])];
 
-/** Whether a call can be played at all: it has audio, and it's not encrypted. */
-export const playable = (c: CallEntry) => c.audio !== false && !c.record.encrypted;
+/** Whether a call can be played at all: it has audio, and it's not encrypted (or was decrypted). */
+export const playable = (c: CallEntry) => c.audio !== false && (!c.record.encrypted || !!c.record.decrypted);
 
 export function avoided(sel: Selection, key: string, now = Date.now()): boolean {
   const until = sel.avoid[key];

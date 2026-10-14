@@ -1,6 +1,6 @@
-//! FIR prototypes shared by the receivers: the root-raised-cosine pulse and
-//! the Blackman windowed-sinc low-pass. Taps are made in f64, normalised to
-//! unit DC gain and only then rounded to f32.
+//! FIR prototypes shared by the receivers: the raised-cosine and
+//! root-raised-cosine pulses and the Blackman windowed-sinc low-pass. Taps
+//! are made in f64, normalised to unit DC gain and only then rounded to f32.
 
 use std::f64::consts::PI;
 
@@ -12,6 +12,17 @@ pub fn rrc(t: f64, alpha: f64) -> f64 {
         alpha / 2f64.sqrt() * ((1.0 + 2.0 / PI) * (PI / (4.0 * alpha)).sin() + (1.0 - 2.0 / PI) * (PI / (4.0 * alpha)).cos())
     } else {
         ((PI * t * (1.0 - alpha)).sin() + 4.0 * alpha * t * (PI * t * (1.0 + alpha)).cos()) / (PI * t * (1.0 - (4.0 * alpha * t).powi(2)))
+    }
+}
+
+/// The raised-cosine pulse at `t` symbols from its centre, roll-off `a` (peak 1).
+pub fn rc(t: f64, a: f64) -> f64 {
+    let s = if t.abs() < 1e-9 { 1.0 } else { (PI * t).sin() / (PI * t) };
+    let d = 1.0 - (2.0 * a * t).powi(2);
+    if d.abs() < 1e-9 {
+        PI / 4.0 * s
+    } else {
+        s * (PI * a * t).cos() / d
     }
 }
 
