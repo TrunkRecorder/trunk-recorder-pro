@@ -85,6 +85,7 @@
 //! ```
 
 mod dmrtool;
+mod keystate;
 mod logging;
 mod monitor;
 mod nxdntool;
@@ -755,6 +756,7 @@ fn serve(a: &Args) {
         engine_cmds: Mutex::new(Vec::new()),
         host_last: Mutex::new(None),
         spool: Mutex::new(None),
+        keys: Default::default(),
     });
     monitor::start(ctx.clone());
     // What each call kept once its plugins are done, for the history list.

@@ -12,6 +12,7 @@ name = "trunk-pro"
 path = "src/main.rs"
 
 [dependencies]
+zeroize = "1"
 trunk-core.workspace = true
 trunk-app.workspace = true
 trunk-recorder-plugin.workspace = true

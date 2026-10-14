@@ -89,12 +89,16 @@ pub struct Ctx {
     pub host_last: Mutex<Option<Value>>,
     /// The RAM spool (`recording.ramSpool`), as last opened.
     pub spool: Mutex<Option<Arc<crate::spool::Spool>>>,
+    /// Key containers unlocked with a typed password ([`crate::keystate`]).
+    pub keys: crate::keystate::KeyState,
 }
 
 /// Something for the running session to do.
 pub enum EngineCmd {
     /// A system's talkgroup file changed (an Ignore flag set from the dashboard).
     Talkgroups { short_name: String, csv: String },
+    /// A system's keys changed (a container unlocked or locked): its calls use them from now on, those in progress too.
+    Keys { short_name: String, ring: Option<Arc<trunk_core::p25::crypt::Keyring>> },
 }
 
 impl Ctx {
@@ -175,7 +179,7 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
         return Err(p);
     }
     // Encryption keys: a file that can't be read, or a bad key in it, stops the start.
-    let keys = cfg.load_keys(&ctx.config_path)?;
+    let keys = cfg.load_keys(&ctx.config_path, &|p| ctx.keys.held(p))?;
     warn_readable_keys(&ctx, &cfg);
     open_spool(&ctx, &cfg);
     // The wall clock now, and a monotonic clock from now: the session's
@@ -184,12 +188,18 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
     let epoch_at = Instant::now();
     let mut session = Session::new(cfg.clone(), epoch_ms, &|name| fs::read_to_string(bandplan_path(name)).ok(), local_offset)?;
     session.attach(ctx.shared.clone());
-    for (name, ring, skipped) in keys {
-        for s in skipped {
+    for k in keys {
+        let name = k.name;
+        for s in k.skipped {
             log::warn!("{name}: key left out: {s}");
         }
-        log::info!("{name}: {} encryption key{} loaded", ring.keys().len(), if ring.keys().len() == 1 { "" } else { "s" });
-        session.set_keys(&name, Some(ring));
+        match k.ring {
+            Some(ring) => {
+                log::info!("{name}: {} encryption key{} loaded", ring.keys().len(), if ring.keys().len() == 1 { "" } else { "s" });
+                session.set_keys(&name, Some(ring));
+            }
+            None => log::info!("{name}: key container {} is locked: unlock it in the interface (Keys)", k.file),
+        }
     }
     session.load_units(&|name| fs::read_to_string(units_path(name)).ok());
     session.load_heard(&fs::read_to_string(heard_path(&cfg)).unwrap_or_default());
@@ -513,6 +523,12 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Rec
                 EngineCmd::Talkgroups { short_name, csv } => {
                     if session.set_talkgroups(&short_name, &csv) {
                         log::info!("[{short_name}] Talkgroups updated");
+                    }
+                }
+                EngineCmd::Keys { short_name, ring } => {
+                    let n = ring.as_ref().map_or(0, |r| r.keys().len());
+                    if session.set_keys(&short_name, ring) {
+                        log::info!("[{short_name}] {n} encryption key{} held", if n == 1 { "" } else { "s" });
                     }
                 }
             }

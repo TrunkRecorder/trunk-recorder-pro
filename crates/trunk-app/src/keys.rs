@@ -133,6 +133,27 @@ pub struct Loaded {
     pub ring: Keyring,
     /// Container keys left out, as "name (reason)" (never a key).
     pub skipped: Vec<String>,
+    /// A container's keys that were loaded: algorithm, key ID, name (never the key).
+    pub held: Vec<Held>,
+}
+
+/// A key a container gave, as the interface lists it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Held {
+    pub alg_id: u8,
+    pub key_id: u16,
+    pub name: String,
+}
+
+/// Whether the bytes of a keys file are JSON (else a container).
+fn is_json(bytes: &[u8]) -> bool {
+    bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes).iter().find(|b| !b.is_ascii_whitespace()) == Some(&b'{')
+}
+
+/// Whether the keys file at `p` is a KFDtool container (else JSON).
+pub fn is_container(p: &Path) -> Result<bool, String> {
+    let bytes = zeroize::Zeroizing::new(std::fs::read(p).map_err(|e| format!("Keys file {}: {e}", p.display()))?);
+    Ok(!is_json(&bytes))
 }
 
 /// Read the keys file at `p`: JSON, or a KFDtool container (anything that
@@ -140,28 +161,41 @@ pub struct Loaded {
 pub fn load(p: &Path, password_file: Option<&Path>) -> Result<Loaded, String> {
     let at = |e: String| format!("Keys file {}: {e}", p.display());
     let bytes = zeroize::Zeroizing::new(std::fs::read(p).map_err(|e| at(e.to_string()))?);
-    let json = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(&bytes).iter().find(|b| !b.is_ascii_whitespace()) == Some(&b'{');
-    if json {
+    if is_json(&bytes) {
         if password_file.is_some() {
             return Err(at("is a JSON keys file, which takes no keysPasswordFile".into()));
         }
         let text = std::str::from_utf8(&bytes).map_err(|_| at("not UTF-8".into()))?;
-        return parse(text.strip_prefix('\u{feff}').unwrap_or(text)).map(|ring| Loaded { ring, skipped: vec![] }).map_err(at);
+        return parse(text.strip_prefix('\u{feff}').unwrap_or(text)).map(|ring| Loaded { ring, skipped: vec![], held: vec![] }).map_err(at);
     }
     let Some(pw) = password_file else {
         return Err(at("is a key container, which needs keysPasswordFile (a file holding its password)".into()));
     };
-    let pw = password(pw)?;
-    let c = crate::ekc::parse(&bytes, &pw).map_err(|e| at(e.to_string()))?;
+    open_bytes(p, &bytes, &password(pw)?)
+}
+
+/// Open the container at `p` with a password typed in.
+pub fn open(p: &Path, password: &str) -> Result<Loaded, String> {
+    let bytes = zeroize::Zeroizing::new(std::fs::read(p).map_err(|e| format!("Keys file {}: {e}", p.display()))?);
+    if is_json(&bytes) {
+        return Err(format!("Keys file {}: is a JSON keys file, which has no password", p.display()));
+    }
+    open_bytes(p, &bytes, password)
+}
+
+fn open_bytes(p: &Path, bytes: &[u8], password: &str) -> Result<Loaded, String> {
+    let c = crate::ekc::parse(bytes, password).map_err(|e| format!("Keys file {}: {e}", p.display()))?;
     let mut ring = Keyring::default();
+    let mut held = Vec::new();
     let mut skipped: Vec<String> = c.skipped.iter().map(|s| format!("{} ({})", s.name, s.reason)).collect();
     for k in &c.keys {
         // An algorithm that can't be decrypted (DES-XL, say) isn't an error: the radios' other keys are still wanted.
-        if let Err(e) = ring.add(k.algid, Some(k.kid), k.bytes.to_vec(), vec![]) {
-            skipped.push(format!("{} ({e})", k.name));
+        match ring.add(k.algid, Some(k.kid), k.bytes.to_vec(), vec![]) {
+            Ok(()) => held.push(Held { alg_id: k.algid, key_id: k.kid, name: k.name.clone() }),
+            Err(e) => skipped.push(format!("{} ({e})", k.name)),
         }
     }
-    Ok(Loaded { ring, skipped })
+    Ok(Loaded { ring, skipped, held })
 }
 
 #[cfg(test)]

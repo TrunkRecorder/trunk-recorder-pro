@@ -19,6 +19,8 @@ import type {
   Conventional,
   Device,
   DirListing,
+  HeldKey,
+  KeysStatus,
   EngineStatus,
   FromRecorder,
   LogLine,
@@ -44,6 +46,14 @@ import { withIgnore } from "./talkgroups.ts";
 import type { WorkerTransport } from "./web/workerTransport.ts";
 
 export interface AppState {
+  /** Which key containers wait for a password and which are open (desktop app); null until the recorder says. */
+  keys: KeysStatus | null;
+  /** The keys held, by algorithm, key id and name, as of `keys.version`; only the recorder's own computer is told. */
+  heldKeys: HeldKey[];
+  /** The keys held aren't listed to this browser (it is on another computer). */
+  heldKeysRestricted: boolean;
+  /** The recorder says this connection may unlock and lock the containers. */
+  canUnlockKeys: boolean;
   connected: boolean;
   /** The recorder was told to quit (desktop app). */
   quit: boolean;
@@ -137,6 +147,10 @@ const TAB_KEY = "trp.setupTab";
 const TODO_KEY = "trp.importTodo";
 
 let state: AppState = {
+  keys: null,
+  heldKeys: [],
+  heldKeysRestricted: false,
+  canUnlockKeys: false,
   connected: false,
   quit: false,
   version: "",
@@ -285,6 +299,9 @@ function take(m: FromRecorder): void {
         host: m.host ?? state.host,
       });
       if (m.host) feedSeries(m.host.t, m.host.values);
+      // (A new connection may be to a restarted recorder whose key list version is the same number: ask again.)
+      set({ keys: null, heldKeys: [], heldKeysRestricted: false, canUnlockKeys: false });
+      if (m.keys) take(m.keys);
       if (m.pluginRuntime) pendingRuntime = m.pluginRuntime;
       if (state.listen) transport.send({ type: "listen", on: true, system: state.listenSystem, talkgroup: state.listenTalkgroup });
       // (A new connection: it watches nothing until told.)
@@ -349,6 +366,24 @@ function take(m: FromRecorder): void {
     case "error":
       set({ error: m.message });
       break;
+    case "keys": {
+      // Every status asks again: the list (when what is held changed), and what this connection may
+      // do (which the recorder decides, and the config can change without the keys changing).
+      const { type: _, ...keys } = m;
+      if (keys.containers.length) transport.send({ type: "keysQuery" });
+      set({ keys, ...(keys.containers.every((c) => c.count === 0) ? { heldKeys: [] } : {}) });
+      break;
+    }
+    case "keysList":
+      set({ heldKeys: m.keys, heldKeysRestricted: !!m.restricted, canUnlockKeys: !!m.canUnlock });
+      break;
+    case "keysResult": {
+      const done = m.id === undefined ? undefined : keysWaiting.get(m.id);
+      if (m.id !== undefined) keysWaiting.delete(m.id);
+      if (done) done(m);
+      else if (!m.ok && m.message) set({ error: m.message });
+      break;
+    }
     case "notice":
       set({ notice: m.message });
       break;
@@ -979,3 +1014,31 @@ function onAudio(a: AudioChunk): void {
   if (state.nowPlaying?.callId !== a.callId) set({ nowPlaying: { system: name, talkgroup: a.talkgroup, callId: a.callId } });
   player.enqueue(a.samples, 8000);
 }
+
+// ── key containers ───────────────────────────────────────────────────────────
+
+type KeysAnswer = { ok: boolean; message: string | null };
+const keysWaiting = new Map<number, (r: KeysAnswer) => void>();
+let nextKeysId = 1;
+
+function keysCommand(msg: { type: "keysUnlock"; file: string; password: string } | { type: "keysLock"; file?: string }): Promise<KeysAnswer> {
+  return new Promise((resolve) => {
+    // (Answers are matched by id: one that comes after its timeout is not taken for the next command's.)
+    const id = nextKeysId++;
+    // (Not queued for a reconnect: a password mustn't be sent later than the person pressed Unlock.)
+    if (!transport.sendNow?.({ ...msg, id })) {
+      resolve({ ok: false, message: "Not connected to the recorder." });
+      return;
+    }
+    keysWaiting.set(id, resolve);
+    setTimeout(() => {
+      if (keysWaiting.delete(id)) resolve({ ok: false, message: "No answer from the recorder." });
+    }, 20_000);
+  });
+}
+
+/** Open key container `file` (as a system's `keys` names it) with its password (only from the recorder's own computer). The password is not kept here. */
+export const unlockKeys = (file: string, password: string) => keysCommand({ type: "keysUnlock", file, password });
+/** Forget the keys of container `file` (all, without it). */
+export const lockKeys = (file?: string) => keysCommand({ type: "keysLock", file });
+export const askKeys = () => transport.send({ type: "keysQuery" });

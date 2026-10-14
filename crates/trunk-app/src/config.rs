@@ -957,6 +957,12 @@ pub struct Server {
     /// What / shows: "" the built-in interface, else an interface's name.
     /// The built-in one is at /builtin/ either way.
     pub home: String,
+    /// Let a computer on the private network, not only this one, unlock and
+    /// lock the key containers from the interface. Off: only a browser on the
+    /// recorder's own computer may. On plain HTTP the password isn't encrypted
+    /// on the way, and only this computer can change the setting.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub allow_lan_unlock: bool,
     /// Keys this version doesn't know (a newer version's, a hand edit's):
     /// kept, and saved back as they were.
     #[serde(flatten)]
@@ -965,7 +971,7 @@ pub struct Server {
 
 impl Default for Server {
     fn default() -> Self {
-        Server { bind: "127.0.0.1".into(), port: 8080, auto_start: false, allowed_origins: vec![], interfaces: vec![], home: String::new(), other: BTreeMap::new() }
+        Server { bind: "127.0.0.1".into(), port: 8080, auto_start: false, allowed_origins: vec![], interfaces: vec![], home: String::new(), allow_lan_unlock: false, other: BTreeMap::new() }
     }
 }
 
@@ -1006,6 +1012,19 @@ pub struct CallSystem<'a> {
     pub kind: &'static str,
     /// Its plugin settings, by plugin id.
     pub plugins: &'a BTreeMap<String, serde_json::Value>,
+}
+
+/// A system's keys, as [`Config::load_keys`] read them.
+pub struct SystemKeys {
+    pub name: String,
+    /// The `keys` setting, as written.
+    pub file: String,
+    /// None: a key container still locked (`locked_path`).
+    pub ring: Option<std::sync::Arc<trunk_core::p25::crypt::Keyring>>,
+    /// Container keys left out (never the key).
+    pub skipped: Vec<String>,
+    /// The container (resolved) that needs a typed password, when the system's `keys` is one with no password file.
+    pub locked_path: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -1202,21 +1221,28 @@ impl Config {
         Some(if p.is_absolute() { p } else { config_path.parent().unwrap_or(Path::new(".")).join(p) })
     }
 
-    /// Read the keys files of the systems that name one: (short name, its
-    /// keys, container keys left out), for [`crate::session::Session::set_keys`].
-    /// An error names the file and what is wrong in it (never a key).
-    #[allow(clippy::type_complexity)]
-    pub fn load_keys(&self, config_path: &Path) -> Result<Vec<(String, std::sync::Arc<trunk_core::p25::crypt::Keyring>, Vec<String>)>, String> {
+    /// Read the keys files of the systems that name one, for
+    /// [`crate::session::Session::set_keys`]. A container with no
+    /// `keysPasswordFile` is "locked" until a password is typed in: `held`
+    /// gives the keys already unlocked from it (by its resolved path). An
+    /// error names the file and what is wrong in it (never a key).
+    pub fn load_keys(&self, config_path: &Path, held: &dyn Fn(&Path) -> Option<std::sync::Arc<trunk_core::p25::crypt::Keyring>>) -> Result<Vec<SystemKeys>, String> {
         let trunked = self.active_systems().map(|s| (&s.short_name, &s.keys, &s.keys_password_file));
         let conv = self.conventional.iter().filter(|c| c.enabled).map(|c| (&c.short_name, &c.keys, &c.keys_password_file));
-        trunked
-            .chain(conv)
-            .filter_map(|(name, setting, pw)| crate::keys::path(setting, config_path).map(|p| (name, p, crate::keys::path(pw, config_path))))
-            .map(|(name, p, pw)| {
-                let l = crate::keys::load(&p, pw.as_deref()).map_err(|e| format!("{name}: {e}"))?;
-                Ok((name.clone(), std::sync::Arc::new(l.ring), l.skipped))
-            })
-            .collect()
+        let mut out = Vec::new();
+        for (name, setting, pw) in trunked.chain(conv) {
+            let Some(p) = crate::keys::path(setting, config_path) else { continue };
+            let pw = crate::keys::path(pw, config_path);
+            let at = |e: String| format!("{name}: {e}");
+            if pw.is_none() && crate::keys::is_container(&p).map_err(at)? {
+                let ring = held(&p);
+                out.push(SystemKeys { name: name.clone(), file: setting.trim().to_string(), ring, skipped: vec![], locked_path: Some(p) });
+                continue;
+            }
+            let l = crate::keys::load(&p, pw.as_deref()).map_err(at)?;
+            out.push(SystemKeys { name: name.clone(), file: setting.trim().to_string(), ring: Some(std::sync::Arc::new(l.ring)), skipped: l.skipped, locked_path: None });
+        }
+        Ok(out)
     }
 
     /// Read every conventional system's linked channel file (errors are in

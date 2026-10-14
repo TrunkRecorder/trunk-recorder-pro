@@ -33,6 +33,7 @@ import {
 } from "./config.ts";
 import { currentView, dismissTodo, downloadText, findRadios, openGuide, refreshDevices, setChannelFile, setNotice, setSetupTab, setView, updateConfig, useApp, web, type SetupTab } from "./controller.ts";
 import { InterfacesPanel } from "./Interfaces.tsx";
+import { KeysPanel } from "./Keys.tsx";
 import { M4aSettings, PluginSetupPanel, renameSystemRefs, SystemPluginSettings } from "./Plugins.tsx";
 import { IconAntenna, IconDongle, IconFolder, IconPuzzle, IconTower } from "./Onboarding.tsx";
 import type { AirspyGainMode, Channel, Config, Conventional, HeardCode, LogSettings, Recording, RecordingOverride, RecordingRules, SiteIdentity, SoapyState, Source, System, UnitNames } from "./protocol.ts";
@@ -2358,6 +2359,7 @@ export function Setup() {
       )}
       {tab === "recording" && <CallRules c={c} />}
       {tab === "recording" && !web && <LogPanel c={c} />}
+      {tab === "recording" && !web && <KeysPanel />}
       {tab === "recording" && !web && <M4aSettings />}
       {tab === "recording" && !web && <InterfacesPanel />}
 

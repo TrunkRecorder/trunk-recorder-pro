@@ -307,6 +307,8 @@ export interface Config {
     autoStart: boolean;
     /** Web pages from other origins that may use the API ("http://host:port", "null" a file, "*" any). */
     allowedOrigins?: string[];
+    /** Config file only: let a private-network address, not only the recorder's own computer, unlock and lock key containers (plain HTTP: the password is not encrypted on the way). */
+    allowLanUnlock?: boolean;
     /** Interfaces of your own, served at /ui/<name>/ (docs/api). */
     interfaces?: CustomInterface[];
     /** What / shows: "" the built-in interface (always at /builtin/ too), else an interface's name. */
@@ -1160,6 +1162,32 @@ export interface RadioResultBody {
   histogram?: LengthHistogram;
 }
 
+/** Which key containers (KFDtool `.ekc`) the systems name that wait for a typed password (those with no `keysPasswordFile`). */
+export interface KeysStatus {
+  containers: KeyContainer[];
+  /** Counts every change of what is held, to know when to ask keysQuery again. */
+  version: number;
+}
+
+export interface KeyContainer {
+  /** The systems' `keys` setting, as written. */
+  file: string;
+  /** The systems that use it (short names). */
+  systems: string[];
+  state: "locked" | "unlocked";
+  /** Keys held from it. */
+  count: number;
+}
+
+/** A key held: which, not what. */
+export interface HeldKey {
+  file: string;
+  /** The P25 algorithm id (0x81 DES-OFB, 0x84 AES-256, 0xAA ADP). */
+  algId: number;
+  keyId: number;
+  name: string;
+}
+
 export type FromRecorder =
   | {
       type: "hello";
@@ -1183,8 +1211,16 @@ export type FromRecorder =
       host?: { type: "host"; t: number; values: Record<string, number>; platform: PlatformInfo } | null;
       /** Every plugin's runtime, by id (desktop app). */
       pluginRuntime?: Record<string, PluginRuntime>;
+      /** Which key containers are locked or open (desktop app). */
+      keys?: { type: "keys" } & KeysStatus;
     }
   | { type: "radios"; radios: Radios }
+  /** Which key containers wait for a password and which are open changed. Never the keys. */
+  | ({ type: "keys" } & KeysStatus)
+  /** Answers keysQuery: the keys held by algorithm, key id and name (never the keys), to a connection from the recorder's own computer only; `restricted` otherwise. `canUnlock`: whether this connection may unlock and lock (decided from where it is from and `server.allowLanUnlock`). */
+  | { type: "keysList"; version: number; keys: HeldKey[]; restricted?: boolean; canUnlock?: boolean }
+  /** Answers keysUnlock / keysLock, with the `id` the command carried. */
+  | { type: "keysResult"; id?: number; ok: boolean; message: string | null }
   | ({ type: "state" } & PhaseState)
   | { type: "config"; config: Config }
   | { type: "status"; status: EngineStatus; sources: SourceStatus[]; load: number; calls: CallView[] }
@@ -1230,6 +1266,12 @@ export type FromRecorder =
 
 export type ToRecorder =
   | { type: "setConfig"; config: Config }
+  /** The keys held, as a keysList (answered in full only to the recorder's own computer). */
+  | { type: "keysQuery" }
+  /** Open the key container `file` (a system's `keys` setting, as written) with its password. Only from the recorder's own computer (not over a network or a proxy), unless `server.allowLanUnlock`; the password is neither stored nor sent back. */
+  | { type: "keysUnlock"; file: string; password: string; id?: number }
+  /** Forget the keys of container `file` (all, without it): calls in progress stop decrypting. Same rule as keysUnlock. */
+  | { type: "keysLock"; file?: string; id?: number }
   | { type: "start" }
   | { type: "stop" }
   | { type: "devices" }

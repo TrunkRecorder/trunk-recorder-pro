@@ -26,8 +26,8 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Path as UrlPath, Request, State};
-use axum::http::{header, HeaderValue, StatusCode, Uri};
+use axum::extract::{ConnectInfo, Path as UrlPath, Request, State};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode, Uri};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::get;
@@ -103,7 +103,7 @@ pub async fn serve(ctx: Arc<Ctx>, listener: std::net::TcpListener) -> std::io::R
         // Let the sessions deliver it before the connections close.
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     };
-    axum::serve(listener, app).with_graceful_shutdown(shutdown).await
+    axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>()).with_graceful_shutdown(shutdown).await
 }
 
 /// SIGHUP: reopen the log file (logrotate moved it).
@@ -475,8 +475,171 @@ async fn call_file(State(ctx): State<Arc<Ctx>>, UrlPath(path): UrlPath<String>, 
     StatusCode::NOT_FOUND.into_response()
 }
 
-async fn ws(State(ctx): State<Arc<Ctx>>, up: WebSocketUpgrade) -> Response {
-    up.on_upgrade(move |socket| session(ctx, socket))
+async fn ws(State(ctx): State<Arc<Ctx>>, ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>, headers: HeaderMap, up: WebSocketUpgrade) -> Response {
+    let peer = Peer::new(addr, &headers);
+    up.on_upgrade(move |socket| session(ctx, socket, peer))
+}
+
+/// Who a WebSocket is from, kept for as long as it lasts; what it may do is decided from this and
+/// the config as it is when it asks (`server.allowLanUnlock` turned off takes effect at once).
+#[derive(Clone)]
+struct Peer {
+    addr: std::net::SocketAddr,
+    /// It came through a reverse proxy (which says so in a header), so its address isn't the visitor's.
+    proxied: bool,
+    /// The host the request was made to (`Host`, without its port). A proxy that sends none of the
+    /// forwarding headers still passes its own public name on, which no browser at this computer uses.
+    host: Option<String>,
+}
+
+impl Peer {
+    fn new(addr: std::net::SocketAddr, headers: &HeaderMap) -> Peer {
+        const PROXIED: [&str; 5] = ["forwarded", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "x-real-ip"];
+        let host = headers.get(header::HOST).and_then(|h| h.to_str().ok()).map(host_name);
+        Peer { addr, proxied: PROXIED.iter().any(|h| headers.contains_key(*h)), host }
+    }
+
+    /// From the computer the recorder runs on itself: the loopback address, not through a proxy that says
+    /// so, and asked for by a loopback name (`localhost`, `127.0.0.1`, `[::1]`). A same-computer reverse proxy
+    /// that hides itself still passes its public name in `Host`, so it is not taken for a browser here.
+    fn loopback(&self) -> bool {
+        !self.proxied && self.addr.ip().to_canonical().is_loopback() && self.host.as_deref().is_some_and(is_loopback_name)
+    }
+
+    /// May see which keys are held, and unlock and lock the containers: [`Peer::loopback`], or, when
+    /// `server.allowLanUnlock` is on, from a private-network address (not through a proxy) that asked
+    /// for a name or address on this network, not a public name.
+    fn may_unlock(&self, allow_lan: bool) -> bool {
+        self.loopback() || (allow_lan && !self.proxied && is_private(&self.addr.ip().to_canonical()) && self.host.as_deref().is_some_and(is_local_host))
+    }
+}
+
+/// A private-network address: RFC 1918, link-local, or an IPv6 unique-local one.
+fn is_private(ip: &std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(a) => a.is_private() || a.is_link_local(),
+        std::net::IpAddr::V6(a) => a.is_unique_local() || a.is_unicast_link_local(),
+    }
+}
+
+/// A host that is on this network: a loopback, private or link-local address, `localhost`, a
+/// name with no dot, or one under a name reserved for local use. A name that merely resolves to
+/// a private address doesn't count (it isn't looked up).
+fn is_local_host(h: &str) -> bool {
+    let h = h.trim().trim_end_matches('.').to_ascii_lowercase();
+    if h.is_empty() {
+        return false;
+    }
+    if let Ok(ip) = h.parse::<std::net::IpAddr>() {
+        return is_private(&ip.to_canonical()) || ip.to_canonical().is_loopback();
+    }
+    !h.contains('.') || ["local", "localhost", "lan", "internal", "home.arpa", "localdomain"].iter().any(|s| h.ends_with(&format!(".{s}")))
+}
+
+/// Whether `peer` may handle the keys now (the config as it is this moment).
+fn may_unlock(ctx: &Ctx, peer: &Peer) -> bool {
+    peer.may_unlock(ctx.config.lock().unwrap().server.allow_lan_unlock)
+}
+
+const NOT_HERE: &str = "Keys can only be unlocked from the computer the recorder runs on (open the interface at http://localhost, use keysPasswordFile, or set server.allowLanUnlock).";
+
+/// A `keysUnlock` message, its password in wiped storage.
+struct Unlock {
+    id: Option<f64>,
+    file: String,
+    password: zeroize::Zeroizing<String>,
+}
+
+impl Unlock {
+    fn parse(text: &str) -> Option<Unlock> {
+        #[derive(serde::Deserialize)]
+        struct Raw {
+            r#type: String,
+            id: Option<f64>,
+            #[serde(default)]
+            file: String,
+            #[serde(default)]
+            password: String,
+        }
+        if !text.contains("keysUnlock") {
+            return None;
+        }
+        let mut raw: Raw = serde_json::from_str(text).ok()?;
+        (raw.r#type == "keysUnlock").then(|| Unlock { id: raw.id, file: raw.file, password: zeroize::Zeroizing::new(std::mem::take(&mut raw.password)) })
+    }
+}
+
+/// The answer to a keys command, carrying its `id` when it had one.
+fn keys_result(id: Option<f64>, result: Result<(), String>) -> Value {
+    let mut r = json!({ "type": "keysResult", "ok": result.is_ok(), "message": result.err() });
+    if let Some(id) = id {
+        r["id"] = json!(id);
+    }
+    r
+}
+
+/// The key containers the systems name that need a typed password: (as written, resolved path,
+/// the systems that use it).
+pub(crate) fn containers(ctx: &Ctx) -> Vec<(String, PathBuf, Vec<String>)> {
+    let cfg = ctx.config.lock().unwrap().clone();
+    let named = cfg.systems.iter().filter(|s| s.active()).map(|s| (&s.short_name, &s.keys, &s.keys_password_file)).chain(cfg.conventional.iter().filter(|c| c.enabled).map(|c| (&c.short_name, &c.keys, &c.keys_password_file)));
+    let mut out: Vec<(String, PathBuf, Vec<String>)> = Vec::new();
+    for (name, setting, pw) in named {
+        let Some(p) = trunk_app::keys::path(setting, &ctx.config_path) else { continue };
+        if !pw.trim().is_empty() || !trunk_app::keys::is_container(&p).unwrap_or(false) {
+            continue;
+        }
+        match out.iter_mut().find(|c| c.1 == p) {
+            Some(c) => c.2.push(name.clone()),
+            None => out.push((setting.trim().to_string(), p, vec![name.clone()])),
+        }
+    }
+    out
+}
+
+/// What is held changed (unlocked, locked, or the config named other containers): the running
+/// session takes each system's keys (a call in progress too), and browsers are told.
+pub(crate) fn keys_changed(ctx: &Ctx) {
+    let list = containers(ctx);
+    {
+        // (Only the latest for a system is kept: each carries what is held at the moment.)
+        let mut cmds = ctx.engine_cmds.lock().unwrap();
+        for (_, path, systems) in &list {
+            let ring = ctx.keys.held(path);
+            for s in systems {
+                cmds.retain(|c| !matches!(c, runtime::EngineCmd::Keys { short_name, .. } if short_name == s));
+                cmds.push(runtime::EngineCmd::Keys { short_name: s.clone(), ring: ring.clone() });
+            }
+        }
+    }
+    publish(&ctx.hub, ctx.keys.status_json(&list));
+}
+
+/// `keysUnlock`: open the container `u.file` names with the password.
+async fn keys_unlock(ctx: &Arc<Ctx>, peer: &Peer, u: Unlock) -> Value {
+    if !may_unlock(ctx, peer) {
+        return keys_result(u.id, Err(NOT_HERE.into()));
+    }
+    let ctx2 = ctx.clone();
+    let (file, password, id) = (u.file, u.password, u.id);
+    let result = tokio::task::spawn_blocking(move || {
+        // (The state is read before the config: a config change that comes after drops this work, not the other way about.)
+        let started = ctx2.keys.generation();
+        let list = containers(&ctx2);
+        let Some((_, path, systems)) = list.iter().find(|c| c.0 == file.trim()) else {
+            return Err("No system names that key container.".to_string());
+        };
+        let skipped = ctx2.keys.unlock(started, path, &password)?;
+        for s in skipped {
+            log::warn!("{file}: key left out: {s}");
+        }
+        log::info!("{file}: key container unlocked for {}", systems.join(", "));
+        keys_changed(&ctx2);
+        Ok(())
+    })
+    .await
+    .unwrap_or_else(|_| Err("internal error".into()));
+    keys_result(id, result)
 }
 
 /// End a running survey (frees its radio) and tell the browsers.
@@ -602,6 +765,7 @@ pub(crate) fn hello_json(ctx: &Ctx, devices: Value, radios: Value) -> Value {
         "phase": ctx.phase.lock().unwrap().to_json(),
         "history": history,
         "units": units,
+        "keys": ctx.keys.status_json(&containers(ctx)),
         // The codes conventional frequencies carried, as saved.
         "heard": std::fs::read_to_string(crate::runtime::heard_path(&config)).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).unwrap_or(json!({})),
         "radios": radios,
@@ -684,7 +848,7 @@ pub(crate) fn radio_query(ctx: &Ctx, v: &Value) -> Value {
     out
 }
 
-async fn session(ctx: Arc<Ctx>, mut socket: WebSocket) {
+async fn session(ctx: Arc<Ctx>, mut socket: WebSocket, peer: Peer) {
     let mut rx = ctx.hub.subscribe();
     let found = tokio::task::spawn_blocking(|| (json!(sdr::devices()), crate::radio::radios_json(false))).await;
     let (devices, radios) = found.unwrap_or((Value::Null, Value::Null));
@@ -723,8 +887,17 @@ async fn session(ctx: Arc<Ctx>, mut socket: WebSocket) {
             },
             msg = socket.recv() => match msg {
                 Some(Ok(Message::Text(t))) => {
+                    // An unlock's password goes from the message straight into storage that is
+                    // wiped, never into a `Value`.
+                    if let Some(unlock) = Unlock::parse(&t) {
+                        let reply = keys_unlock(&ctx, &peer, unlock).await;
+                        if socket.send(Message::Text(reply.to_string().into())).await.is_err() {
+                            return;
+                        }
+                        continue;
+                    }
                     let Ok(v) = serde_json::from_str::<Value>(&t) else { continue };
-                    if let Some(reply) = command(&ctx, &v, &mut listen, &mut subs).await {
+                    if let Some(reply) = command(&ctx, &v, &mut listen, &mut subs, &peer).await {
                         if socket.send(Message::Text(reply.to_string().into())).await.is_err() {
                             return;
                         }
@@ -785,7 +958,7 @@ impl Listen {
     }
 }
 
-async fn command(ctx: &Arc<Ctx>, v: &Value, listen: &mut Option<Listen>, subs: &mut Subs) -> Option<Value> {
+async fn command(ctx: &Arc<Ctx>, v: &Value, listen: &mut Option<Listen>, subs: &mut Subs, peer: &Peer) -> Option<Value> {
     match v["type"].as_str()? {
         // What this connection watches: costly messages (waterfalls, the
         // control channel log, detail views) only go to those that ask.
@@ -807,14 +980,60 @@ async fn command(ctx: &Arc<Ctx>, v: &Value, listen: &mut Option<Listen>, subs: &
             let (before, limit) = (v["before"].as_i64().unwrap_or(i64::MAX), v["limit"].as_u64().unwrap_or(100).clamp(1, 500) as usize);
             tokio::task::spawn_blocking(move || runtime::older_calls(&ctx2, before, limit)).await.ok()
         }
+        // The key containers (docs/configuration/systems.md). Which keys are held, and unlocking
+        // and locking them, are for the computer the recorder runs on only (or, with
+        // `server.allowLanUnlock`, the private network): a LAN browser sees which containers are
+        // locked or open, never what is in them.
+        "keysQuery" => {
+            let list = containers(ctx);
+            let can = may_unlock(ctx, peer);
+            Some(if peer.loopback() {
+                let mut l = ctx.keys.list_json(&list);
+                l["canUnlock"] = json!(can);
+                l
+            } else {
+                json!({ "type": "keysList", "version": 0, "keys": [], "restricted": true, "canUnlock": can })
+            })
+        }
+        // (An unlock with its password is taken before this, in `session`.)
+        "keysUnlock" => Some(keys_result(v["id"].as_f64(), Err("Enter the container's password.".into()))),
+        "keysLock" => {
+            if !may_unlock(ctx, peer) {
+                return Some(keys_result(v["id"].as_f64(), Err(NOT_HERE.into())));
+            }
+            let list = containers(ctx);
+            let file = v["file"].as_str().map(str::trim);
+            let path = file.and_then(|f| list.iter().find(|c| c.0 == f).map(|c| c.1.clone()));
+            if file.is_some() && path.is_none() {
+                return Some(keys_result(v["id"].as_f64(), Err("No system names that key container.".into())));
+            }
+            ctx.keys.lock(path.as_deref());
+            keys_changed(ctx);
+            Some(keys_result(v["id"].as_f64(), Ok(())))
+        }
         "setConfig" => match serde_json::from_value::<Config>(v["config"].clone()) {
             Ok(mut c) => {
+                // Who may unlock the key containers is the config file's: a computer other than the
+                // recorder's own can't change it from here.
+                if !peer.loopback() {
+                    let cur = ctx.config.lock().unwrap().server.allow_lan_unlock;
+                    if c.server.allow_lan_unlock != cur {
+                        log::warn!("A settings change from another computer tried to change server.allowLanUnlock (set in the config file only): left as it was");
+                    }
+                    c.server.allow_lan_unlock = cur;
+                }
                 // While linked, a conventional system's channels are its file's
                 // (re-read: a spreadsheet may have changed it). Files are linked
                 // with "channelFile".
                 c.load_channel_files(&ctx.config_path);
                 let saved = c.save(&ctx.config_path);
                 let old = std::mem::replace(&mut *ctx.config.lock().unwrap(), c.clone());
+                // Containers no system names any more are forgotten (an unlock still opening one is dropped), and
+                // the running session takes the keys its systems have now.
+                if old.systems != c.systems || old.conventional != c.conventional {
+                    ctx.keys.retain(&containers(ctx).into_iter().map(|c| c.1).collect::<Vec<_>>());
+                    keys_changed(ctx);
+                }
                 // A talkgroup file changed while recording (an Ignore flag set): the session takes it now.
                 if ctx.runner.lock().unwrap().is_some() {
                     let mut cmds = ctx.engine_cmds.lock().unwrap();
@@ -1051,6 +1270,69 @@ async fn command(ctx: &Arc<Ctx>, v: &Value, listen: &mut Option<Listen>, subs: &
 #[cfg(test)]
 mod tests {
     use super::{admit, folder_file, interface_path, percent_decode, Listen};
+    use super::{HeaderMap, HeaderValue, Peer};
+
+    fn is_local(peer: &std::net::SocketAddr, headers: &HeaderMap, allow_lan: bool) -> bool {
+        Peer::new(*peer, headers).may_unlock(allow_lan)
+    }
+
+    /// Unlocking keys is for a connection from this computer itself: not a LAN address,
+    /// not a proxy's (which names its visitors in a header).
+    #[test]
+    fn only_a_direct_loopback_connection_is_local() {
+        use std::net::SocketAddr;
+        let peer = |a: &str| a.parse::<SocketAddr>().unwrap();
+        let host = |h: &'static str| {
+            let mut m = HeaderMap::new();
+            m.insert(header::HOST, HeaderValue::from_static(h));
+            m
+        };
+        let here = host("localhost:8080");
+        assert!(is_local(&peer("127.0.0.1:5000"), &here, false));
+        assert!(is_local(&peer("[::1]:5000"), &host("[::1]:8080"), false));
+        assert!(is_local(&peer("[::ffff:127.0.0.1]:5000"), &host("127.0.0.1:8080"), false), "a loopback address as IPv6 writes it");
+        assert!(!is_local(&peer("192.168.1.20:5000"), &here, false));
+        assert!(!is_local(&peer("172.17.0.1:5000"), &here, false), "a container's gateway");
+        assert!(!is_local(&peer("[2001:db8::1]:5000"), &here, false));
+        for h in ["x-forwarded-for", "X-Real-IP", "forwarded", "x-forwarded-host"] {
+            let mut headers = host("localhost:8080");
+            headers.insert(axum::http::HeaderName::from_bytes(h.as_bytes()).unwrap(), HeaderValue::from_static("203.0.113.9"));
+            assert!(!is_local(&peer("127.0.0.1:5000"), &headers, true), "{h}");
+        }
+        // A same-computer reverse proxy that sends no forwarding header still asks for its public name.
+        assert!(!is_local(&peer("127.0.0.1:5000"), &host("recorder.example.com"), false));
+        assert!(!is_local(&peer("127.0.0.1:5000"), &host("recorder.example.com"), true));
+        assert!(!is_local(&peer("127.0.0.1:5000"), &host("192.168.1.2:8080"), false), "loopback, but not asked for by a loopback name");
+        assert!(!is_local(&peer("127.0.0.1:5000"), &HeaderMap::new(), true), "no Host at all");
+    }
+
+    #[test]
+    fn a_private_address_may_unlock_only_when_the_config_allows_it() {
+        use std::net::SocketAddr;
+        let peer = |a: &str| a.parse::<SocketAddr>().unwrap();
+        let host = |h: &'static str| {
+            let mut m = HeaderMap::new();
+            m.insert(header::HOST, HeaderValue::from_static(h));
+            m
+        };
+        let lan = host("192.168.1.2:8765");
+        for a in ["192.168.1.20:5000", "10.1.2.3:5000", "172.20.5.7:5000", "169.254.1.1:5000", "[fd00::5]:5000", "[fe80::1]:5000"] {
+            assert!(is_local(&peer(a), &lan, true), "{a}");
+            assert!(!is_local(&peer(a), &lan, false), "{a}");
+        }
+        for a in ["8.8.8.8:5000", "203.0.113.9:5000", "[2001:db8::1]:5000", "172.32.0.1:5000"] {
+            assert!(!is_local(&peer(a), &lan, true), "{a}: a public address never");
+        }
+        // A name on this network is fine (a LAN host name, `.local`); a public name is a proxy's.
+        assert!(is_local(&peer("192.168.1.20:5000"), &host("tdarr:8765"), true));
+        assert!(is_local(&peer("192.168.1.20:5000"), &host("radiobox.local:8765"), true));
+        assert!(!is_local(&peer("192.168.1.20:5000"), &host("recorder.example.com"), true), "a proxy on the LAN asking for its public name");
+        assert!(!is_local(&peer("192.168.1.20:5000"), &HeaderMap::new(), true), "no Host at all");
+        let mut proxied = host("192.168.1.2:8765");
+        proxied.insert(axum::http::HeaderName::from_static("x-forwarded-for"), HeaderValue::from_static("192.168.1.9"));
+        assert!(!is_local(&peer("192.168.1.20:5000"), &proxied, true), "not through a proxy");
+    }
+
     use serde_json::json;
     use axum::http::{header, StatusCode, Uri};
     use std::path::Path;

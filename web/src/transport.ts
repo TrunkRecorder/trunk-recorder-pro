@@ -16,6 +16,8 @@ export interface Transport {
   close?(): void;
   /** A URL for a recorded file (desktop: the server's /calls/; web: a blob from OPFS). An "m4a" not kept is its WAV. */
   callUrl(path: string, ext: CallExt): Promise<string>;
+  /** Send now or not at all: false when the connection isn't open (nothing is kept to send later; for commands that carry a secret). */
+  sendNow?(msg: ToRecorder): boolean;
 }
 
 export class WsTransport implements Transport {
@@ -55,6 +57,12 @@ export class WsTransport implements Transport {
       this.retryMs = Math.min(5000, this.retryMs * 2);
     };
     this.ws = ws;
+  }
+
+  sendNow(msg: ToRecorder): boolean {
+    if (this.ws?.readyState !== WebSocket.OPEN) return false;
+    this.ws.send(JSON.stringify(msg));
+    return true;
   }
 
   close(): void {

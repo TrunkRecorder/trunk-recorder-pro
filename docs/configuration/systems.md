@@ -188,7 +188,32 @@ Conventional systems take both settings too.
 - Every voice key in the container is used by key ID on any talkgroup. Key-encryption keys, and
   algorithms that can't be decrypted (DES-XL), are listed in the log and left out; the rest still
   load. A container with the wrong password, or a damaged one, stops the start.
-- `keysPasswordFile` with a JSON keys file, or a container without `keysPasswordFile`, is an error.
+- `keysPasswordFile` with a JSON keys file is an error.
+
+#### Typing the password in the interface
+
+A container with **no** `keysPasswordFile` is not an error: the recorder starts, records the system as
+it would without keys, and waits. **Setup → Recording → Key containers** lists each such container, the
+systems that use it, and a password box. Unlock it and its keys are held in memory, for calls that begin
+from then on **and calls in progress** (decrypted from the next encryption sync). **Lock** forgets them
+and stops decrypting at once, in calls in progress too, which are muted from then on, not passed on as
+heard. Several systems naming one container share it.
+
+- The password is sent once, over the WebSocket, straight into memory that is wiped when it is dropped.
+  It is never stored, logged, shown again or sent back, and the keys are never sent to any browser: the
+  interface is told which keys are held (algorithm, key ID and the container's name for it), never the
+  keys.
+- Only a browser on the recorder's own computer may unlock, lock, or see which keys are held: the
+  connection must come from the loopback address, not through a reverse proxy, and ask for `localhost`,
+  `127.0.0.1` or `[::1]`. From another computer, open the interface through an SSH port forward
+  (`ssh -L 8080:localhost:8080 host`, then `http://localhost:8080`).
+- `server.allowLanUnlock: true` in the config file also lets a computer on a private network (RFC 1918,
+  link-local, unique-local; not through a proxy, and asking for a name or address on that network)
+  unlock and lock. **The interface is plain HTTP, so the password is not encrypted on the way**; use it on
+  a network you trust, or not at all. Such a computer is never shown which keys are held. The setting
+  can only be changed in the config file, not from the interface when it is open from another computer.
+- Tries are at least a second apart, and a wrong password changes nothing.
+- A container is forgotten when no system names it any more, and when the app quits.
 
 ## Talkgroup file
 

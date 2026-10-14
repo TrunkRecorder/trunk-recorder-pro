@@ -13,6 +13,12 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   refused. Keys the recorder can't decrypt (key-encryption keys, DES-XL)
   are listed in the log and left out. `replay` takes
   `--keys-password-file` too.
+- **Unlock a key container from the interface:** a container with no
+  `keysPasswordFile` waits for its password, typed into Setup → Recording →
+  Key containers. The keys are held in memory only, reach calls in progress,
+  and **Lock** takes them away at once. Only a browser on the recorder's own
+  computer may unlock (or, with `server.allowLanUnlock`, one on the private
+  network); no browser is ever sent a key.
 
 - **Encryption keys are wiped from memory:** the keys in a system's keyring,
   the keys file's text and its parsed contents, and the cipher's key-derived
