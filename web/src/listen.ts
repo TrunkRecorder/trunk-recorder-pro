@@ -6,6 +6,7 @@
 
 import { useRef, useSyncExternalStore } from "react";
 import { onRecorderMessage, setListen, shallowEqual, snapshot, subscribe, transport } from "./controller.ts";
+import { onPlay, stopPlayback } from "./playback.ts";
 import type { CallEntry } from "./protocol.ts";
 
 /** What to hear, kept in this browser. Talkgroups are `<system>:<talkgroup>`. */
@@ -214,6 +215,8 @@ let token = 0;
 
 async function play(c: CallEntry): Promise<void> {
   if (!audio) return;
+  // One sound at a time, however this call was started: not the Playback page's.
+  stopPlayback();
   const mine = ++token;
   const was = state.playing;
   set({ playing: c, position: 0, duration: c.record.call_length_ms / 1000, played: was && was !== c ? [was, ...state.played.filter((x) => x !== was)].slice(0, PLAYED_MAX) : state.played });
@@ -265,8 +268,9 @@ export function setFeed(on: boolean): void {
     set({ feed: false, queue: [], missed: 0, playing: null, paused: false, played: was ? [was, ...state.played].slice(0, PLAYED_MAX) : state.played });
     return;
   }
-  // One sound at a time: the Live page's live audio stops.
+  // One sound at a time: the Live page's live audio and the Playback page stop.
   if (snapshot().listen) setListen(false);
+  stopPlayback();
   // (A click: the browser now lets audio play.)
   audio?.play().catch(() => {});
   audio?.pause();
@@ -367,7 +371,19 @@ onRecorderMessage((m) => {
   }
 });
 
+// Playback started on the Playback page: the feed stops.
+onPlay(() => {
+  if (state.feed) return setFeed(false);
+  // (A call picked by hand from the list plays without the feed.)
+  token++;
+  audio?.pause();
+  if (state.playing) set({ playing: null, paused: false, position: 0, duration: 0 });
+});
+
 // Live audio switched on on the Live page: the feed stops (one sound at a time).
 subscribe(() => {
-  if (snapshot().listen && state.feed) setFeed(false);
+  if (snapshot().listen) {
+    if (state.feed) setFeed(false);
+    stopPlayback();
+  }
 });

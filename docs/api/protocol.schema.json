@@ -2754,6 +2754,98 @@
         },
         {
           "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "number",
+              "description": "The query's `id`."
+            },
+            "from": {
+              "type": "number"
+            },
+            "to": {
+              "type": "number"
+            },
+            "before": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "entries": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/CallEntry"
+              },
+              "description": "Newest first."
+            },
+            "more": {
+              "type": "boolean",
+              "description": "There are more matches older than these."
+            },
+            "total": {
+              "type": "number",
+              "description": "Calls matching, all pages (first page only counts those after `before` too)."
+            },
+            "truncated": {
+              "type": "boolean",
+              "description": "Too many calls in the span to read: the oldest were left out."
+            },
+            "systems": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Every system heard in the span."
+            },
+            "talkgroups": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/definitions/PlaybackTalkgroup"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "units": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/definitions/PlaybackUnit"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "playbackResult"
+            }
+          },
+          "required": [
+            "before",
+            "entries",
+            "from",
+            "id",
+            "more",
+            "systems",
+            "talkgroups",
+            "to",
+            "total",
+            "truncated",
+            "type",
+            "units"
+          ]
+        },
+        {
+          "type": "object",
           "properties": {
             "type": {
               "type": "string",
@@ -3538,6 +3630,92 @@
       ],
       "additionalProperties": false,
       "description": "The computer, as last sampled (desktop app). Missing values are listed in `unavailable`."
+    },
+    "PlaybackTalkgroup": {
+      "type": "object",
+      "properties": {
+        "system": {
+          "type": "string"
+        },
+        "talkgroup": {
+          "type": "number"
+        },
+        "alphaTag": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "group": {
+          "type": "string"
+        },
+        "calls": {
+          "type": "number"
+        },
+        "encrypted": {
+          "type": "number"
+        },
+        "seconds": {
+          "type": "number",
+          "description": "Seconds of audio."
+        },
+        "firstMs": {
+          "type": "number",
+          "description": "Unix ms."
+        },
+        "lastMs": {
+          "type": "number"
+        },
+        "known": {
+          "type": "boolean",
+          "description": "Whether the system's talkgroup file lists it (always true on a conventional system)."
+        }
+      },
+      "required": [
+        "system",
+        "talkgroup",
+        "alphaTag",
+        "description",
+        "group",
+        "calls",
+        "encrypted",
+        "seconds",
+        "firstMs",
+        "lastMs",
+        "known"
+      ],
+      "additionalProperties": false,
+      "description": "A talkgroup heard in a playback search's span (not narrowed by the talkgroup chosen)."
+    },
+    "PlaybackUnit": {
+      "type": "object",
+      "properties": {
+        "system": {
+          "type": "string"
+        },
+        "unit": {
+          "type": "number"
+        },
+        "alias": {
+          "type": "string",
+          "description": "Its talker alias as recorded, or \"\"."
+        },
+        "calls": {
+          "type": "number"
+        },
+        "lastMs": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "system",
+        "unit",
+        "alias",
+        "calls",
+        "lastMs"
+      ],
+      "additionalProperties": false,
+      "description": "A radio heard on the calls a playback search found."
     },
     "PluginEndpoint": {
       "type": "object",
@@ -6380,6 +6558,50 @@
             "type",
             "before",
             "limit"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "playbackQuery"
+            },
+            "id": {
+              "type": "number"
+            },
+            "system": {
+              "type": "string"
+            },
+            "talkgroup": {
+              "type": "number"
+            },
+            "unit": {
+              "type": "number"
+            },
+            "text": {
+              "type": "string"
+            },
+            "newOnly": {
+              "type": "boolean"
+            },
+            "from": {
+              "type": "number"
+            },
+            "to": {
+              "type": "number"
+            },
+            "before": {
+              "type": "number"
+            },
+            "limit": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "id"
           ],
           "additionalProperties": false
         },

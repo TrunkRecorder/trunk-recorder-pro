@@ -21,6 +21,7 @@ export type ToWorker =
   | { type: "surveyStop" }
   | { type: "profileSource"; source: number; centerHz: number }
   | { type: "olderCalls"; before: number; limit: number }
+  | { type: "playbackQuery"; id: number }
   | { type: "subscribe"; topics: string[] }
   | { type: "statsQuery"; id: number; series: string[]; range?: string; from?: number; to?: number; points?: number }
   | { type: "radioQuery"; id: number; what: string; system?: string; key?: number; hours?: number; limit?: number };
@@ -430,6 +431,10 @@ onmessage = async (ev: MessageEvent<ToWorker>) => {
       post({ type: "olderCalls", before: m.before, entries: older.slice(0, m.limit), more: older.length > m.limit });
       break;
     }
+    // (The Playback page is for the installed app: this build's calls are the Listen page's.)
+    case "playbackQuery":
+      post({ type: "playbackResult", id: m.id, from: 0, to: 0, before: null, entries: [], more: false, total: 0, truncated: false, systems: [], talkgroups: [], units: [] });
+      break;
     case "files":
       files = m.files;
       break;
