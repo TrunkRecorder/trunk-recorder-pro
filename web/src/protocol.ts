@@ -1082,6 +1082,8 @@ export interface UnitRow {
   /** [radio, calls together], most first. */
   partners: [number, number][];
   new: boolean;
+  /** Transmissions per hour over the hours asked (unit: the week), oldest first. */
+  hourly: number[];
 }
 
 /** A frequency's voice decoding (radioQuery freqs). */
@@ -1142,8 +1144,9 @@ export interface RadioResultBody {
   tg?: number;
   unit?: number;
   row?: TgRow | UnitRow | null;
-  /** tg: calls per hour over the week; who talks on it; who's affiliated with it; its call lengths. */
+  /** tg / unit: calls (a radio's transmissions) per hour over the week, oldest first. */
   week?: number[];
+  /** tg: who talks on it; who's affiliated with it; its call lengths. */
   talkers?: { unit: number; alias: string; n: number; lastTx: number }[];
   affiliated?: { unit: number; alias: string }[];
   lengths?: LengthHistogram;
