@@ -109,7 +109,8 @@ export function requestFor(f: Filters, now: number, id: number, before?: number)
     ...(f.unit !== null ? { unit: f.unit } : {}),
     ...(f.text.trim() ? { text: f.text.trim() } : {}),
     ...(f.newOnly ? { newOnly: true } : {}),
-    from: now - span.ms,
+    // ("Everything" is from the epoch: no bound on how old.)
+    from: f.span === "all" ? 0 : now - span.ms,
     to: now + 60_000,
     limit: PAGE,
     ...(before !== undefined ? { before } : {}),
@@ -203,10 +204,10 @@ function neighbour(c: CallEntry, step: 1 | -1): CallEntry | null {
   return null;
 }
 
-/** The current call is over: the next one if autoplay, else stop. */
-function next(): void {
+/** The current call is over: the next one if autoplay (or `manual`: it was skipped), else stop. */
+function next(manual = false): void {
   const was = state.playing;
-  const n = was && state.autoplay ? neighbour(was, 1) : null;
+  const n = was && (manual || state.autoplay) ? neighbour(was, 1) : null;
   if (n) void play(n);
   else {
     token++;
@@ -216,7 +217,7 @@ function next(): void {
 
 export const skipNext = () => {
   audio?.pause();
-  next();
+  next(true);
 };
 
 export function skipBack(): void {
@@ -254,7 +255,7 @@ export const setAutoplay = (autoplay: boolean) => set({ autoplay });
 export const setChrono = (chrono: boolean) => set({ chrono });
 
 if (audio) {
-  audio.onended = next;
+  audio.onended = () => next();
   audio.onerror = () => {
     if (state.playing) next();
   };

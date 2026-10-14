@@ -77,6 +77,14 @@ function Player({ s }: { s: AppState }) {
         aria-valuemin={0}
         aria-valuemax={Math.round(p.duration)}
         aria-valuenow={Math.round(p.position)}
+        tabIndex={0}
+        onKeyDown={(e) => {
+          // The keys of a slider: arrows 5 s, Home / End the ends.
+          const to = e.key === "ArrowRight" || e.key === "ArrowUp" ? p.position + 5 : e.key === "ArrowLeft" || e.key === "ArrowDown" ? p.position - 5 : e.key === "Home" ? 0 : e.key === "End" ? p.duration : null;
+          if (to === null) return;
+          e.preventDefault();
+          seek(Math.max(0, Math.min(p.duration, to)));
+        }}
         onClick={(e) => {
           const b = e.currentTarget.getBoundingClientRect();
           seek(((e.clientX - b.left) / b.width) * p.duration);

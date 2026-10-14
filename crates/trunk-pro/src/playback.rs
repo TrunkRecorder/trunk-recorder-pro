@@ -57,7 +57,8 @@ impl Query {
 
 /// A call's system: its record's short name, else the folder it is in.
 fn system_of(record: &Value, rel: &Path) -> String {
-    record["short_name"].as_str().filter(|s| !s.is_empty()).map(String::from).unwrap_or_else(|| rel.components().next().map(|c| c.as_os_str().to_string_lossy().into_owned()).unwrap_or_default())
+    let folder = || if rel.components().count() > 1 { rel.components().next().map(|c| c.as_os_str().to_string_lossy().into_owned()) } else { None };
+    record["short_name"].as_str().filter(|s| !s.is_empty()).map(String::from).or_else(folder).unwrap_or_default()
 }
 
 /// A call file's start (Unix s) as its name has it (`<talkgroup>-<start>_<freq>`),
@@ -76,22 +77,20 @@ fn mtime_s(m: &fs::Metadata) -> i64 {
 /// A folder not touched since a day before `from_s` holds no later call.
 fn list_calls(dir: &Path, system: Option<&str>, from_s: i64, to_s: i64) -> Vec<(i64, PathBuf)> {
     let mut out = Vec::new();
-    let mut stack: Vec<(PathBuf, usize)> = Vec::new();
-    if let Ok(rd) = fs::read_dir(dir) {
-        let tops: Vec<PathBuf> = rd.flatten().filter(|e| e.file_type().is_ok_and(|t| t.is_dir())).map(|e| e.path()).collect();
-        // The system's own folder, when there is one (a custom layout may put its calls anywhere).
-        let own: Vec<&PathBuf> = tops.iter().filter(|p| system.is_some_and(|s| p.file_name().is_some_and(|n| n == s))).collect();
-        let chosen: Vec<PathBuf> = if own.is_empty() { tops.clone() } else { own.into_iter().cloned().collect() };
-        stack.extend(chosen.into_iter().map(|p| (p, 1)));
-    }
+    // (The recordings folder itself is searched too: a filename format with no folder saves calls in it.)
+    let mut stack: Vec<(PathBuf, usize)> = vec![(dir.to_path_buf(), 0)];
+    // At the top, the system's own folder when there is one (a custom layout may put its calls anywhere).
+    let own = system.map(|s| dir.join(s)).filter(|p| p.is_dir());
     while let Some((d, depth)) = stack.pop() {
         let Ok(rd) = fs::read_dir(&d) else { continue };
         for e in rd.flatten() {
             let p = e.path();
             let Ok(ft) = e.file_type() else { continue };
             if ft.is_dir() {
-                let old = e.metadata().is_ok_and(|m| mtime_s(&m) < from_s - 86_400);
-                if depth < MAX_DEPTH && !old {
+                // (A folder at the top is never skipped for its age: its subfolders are the days.)
+                let old = depth > 0 && e.metadata().is_ok_and(|m| mtime_s(&m) < from_s - 86_400);
+                let other_system = depth == 0 && own.as_ref().is_some_and(|o| *o != p);
+                if depth < MAX_DEPTH && !old && !other_system {
                     stack.push((p, depth + 1));
                 }
             } else if p.extension().is_some_and(|x| x == "json") {
@@ -284,6 +283,8 @@ mod tests {
         write(&dir, "metro", &format!("101-{}_851", t0 + 60), 101, t0 + 60, &[8], "Dispatch");
         write(&dir, "metro", &format!("999-{}_852", t0 + 120), 999, t0 + 120, &[8, 9], "");
         write(&dir, "county", &format!("5-{}_853", t0 + 30), 5, t0 + 30, &[7], "Fire");
+        // A filename format with no folder: the call is in the recordings folder itself.
+        fs::write(dir.join(format!("7-{}_854.json", t0 + 90)), json!({ "short_name": "county", "talkgroup": 7, "start_time_ms": (t0 + 90) * 1000, "call_length_ms": 1000, "srcList": [] }).to_string()).unwrap();
         let known = |s: &str, t: u32| !(s == "metro" && t == 999);
         let ask = |v: Value| query(&dir, &known, &v, (t0 + 600) * 1000);
         let base = json!({ "id": 1, "from": (t0 - 100) * 1000 });
@@ -296,19 +297,22 @@ mod tests {
         };
 
         let all = ask(base.clone());
-        assert_eq!(all["total"], 4);
-        assert_eq!(all["entries"].as_array().unwrap().len(), 4);
+        assert_eq!(all["total"], 5);
+        assert_eq!(all["entries"].as_array().unwrap().len(), 5);
         // Newest first; the path is the call without its extension.
         assert_eq!(all["entries"][0]["record"]["talkgroup"], 999);
         assert!(all["entries"][0]["path"].as_str().unwrap().starts_with("metro/2026/10/14/999-"));
         assert_eq!(all["entries"][0]["audio"], true);
         assert_eq!(all["systems"], json!(["county", "metro"]));
-        assert_eq!(all["talkgroups"].as_array().unwrap().len(), 3);
+        assert_eq!(all["talkgroups"].as_array().unwrap().len(), 4);
+        assert_eq!(all["entries"][1]["path"], format!("7-{}_854", t0 + 90));
 
-        assert_eq!(ask(with(json!({ "system": "county" })))["total"], 1);
+        assert_eq!(ask(with(json!({ "system": "county" })))["total"], 2);
         assert_eq!(ask(with(json!({ "system": "metro", "talkgroup": 101 })))["total"], 2);
         assert_eq!(ask(with(json!({ "unit": 8 })))["total"], 2);
         assert_eq!(ask(with(json!({ "unit": 7 })))["total"], 2);
+        // The time span from the epoch: everything.
+        assert_eq!(ask(with(json!({ "from": 0 })))["total"], 5);
         assert_eq!(ask(with(json!({ "text": "fire" })))["total"], 1);
         assert_eq!(ask(with(json!({ "text": "unit 9" })))["total"], 1);
 
@@ -324,12 +328,12 @@ mod tests {
         assert_eq!(ask(with(json!({ "system": "metro", "talkgroup": 101 })))["talkgroups"].as_array().unwrap().len(), 2);
 
         // Time span, and pages.
-        assert_eq!(ask(with(json!({ "from": (t0 + 50) * 1000 })))["total"], 2);
+        assert_eq!(ask(with(json!({ "from": (t0 + 50) * 1000 })))["total"], 3);
         let p1 = ask(with(json!({ "limit": 3 })));
         assert_eq!((p1["entries"].as_array().unwrap().len(), p1["more"].clone()), (3, json!(true)));
         let oldest = p1["entries"][2]["record"]["start_time_ms"].as_i64().unwrap();
         let p2 = ask(with(json!({ "limit": 3, "before": oldest })));
-        assert_eq!((p2["entries"].as_array().unwrap().len(), p2["more"].clone(), p2["talkgroups"].clone()), (1, json!(false), Value::Null));
+        assert_eq!((p2["entries"].as_array().unwrap().len(), p2["more"].clone(), p2["talkgroups"].clone()), (2, json!(false), Value::Null));
         let _ = fs::remove_dir_all(&dir);
     }
 }

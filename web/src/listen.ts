@@ -374,5 +374,8 @@ onPlay(() => setFeed(false));
 
 // Live audio switched on on the Live page: the feed stops (one sound at a time).
 subscribe(() => {
-  if (snapshot().listen && state.feed) setFeed(false);
+  if (snapshot().listen) {
+    if (state.feed) setFeed(false);
+    stopPlayback();
+  }
 });
