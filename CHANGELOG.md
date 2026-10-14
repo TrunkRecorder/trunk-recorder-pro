@@ -5,7 +5,7 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
-- **Phase 2 and DMR tone frames now play as tones:** a dispatch tone-out sent
+- **Phase 2, DMR and NXDN tone frames now play as tones:** a dispatch tone-out sent
   as AMBE+2 tone frames (a pure tone or a pair, with a tone ID and a level)
   came out as silence with a click at each frame edge, because the decoder
   took the tone ID for part of a pitch and faded to nothing. It now reads the
