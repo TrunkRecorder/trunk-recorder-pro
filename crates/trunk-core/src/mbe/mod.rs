@@ -7,6 +7,7 @@
 
 pub mod fixed;
 mod fixed_tables;
+mod tone_table;
 
 use std::f64::consts::{E, PI};
 use std::sync::Arc;
@@ -161,6 +162,16 @@ struct SynthOpts {
 }
 const ENHANCED: SynthOpts =
     SynthOpts { c_env: 0.7, low_blend: 0.4, w_rand: 0.25, kernel_d: 19, kernel_gamma: 0.6, interp_tol: 0.2, hf_lift_db: 3.0, hf_lift_f1: 2200.0 };
+
+/// The enhanced synthesis for a tone: no high-frequency lift, no random phase,
+/// so a tone keeps the level its frame names.
+const TONE_SYNTH: SynthOpts = SynthOpts { hf_lift_db: 0.0, w_rand: 0.0, ..ENHANCED };
+
+/// Scales Eq. 209's amplitude to this synthesis's units (the output is ×7
+/// before the limiter). Fitted so a steady tone has the level the reference
+/// vocoder gives it: about 34,600 · 10^(0.03555 · (level − 127)) in 16-bit
+/// units, measured at four IDs and levels.
+const TONE_GAIN: f64 = 0.3018;
 
 fn hf_gain(w: f64, o: &SynthOpts) -> f64 {
     if o.hf_lift_db == 0.0 {
@@ -580,7 +591,31 @@ fn decode_imbe4400_parms(d: &[u8; 88], cur: &mut Parms, prev: &mut Parms) -> boo
 enum Ambe {
     Voice,
     Erasure,
+    /// A frame mbelib's pitch test reads as a tone but that isn't a valid tone frame.
     Tone,
+    /// A tone frame (TIA-102.BABA-A §2.10): Annex T tone ID and 7-bit level.
+    ToneFrame(u8, u8),
+}
+
+/// Read a tone frame out of mbelib's ambe_d (û0 12 bits, û1 12, û2 11, û3 14,
+/// most significant first). Its signature is û0(11..6) all ones and û3(3..0)
+/// zero; the 8-bit tone ID is sent four times (û1(11..4); û1(3..0) with
+/// û2(10..7); û2(6..0) with û3(13); û3(12..5)) and read by bitwise majority,
+/// ties to the first copy, which the Golay code protects; the level is
+/// û0(5..0) then û3(4). mbelib looks at the same bits as a pitch and takes
+/// most tone frames for an erasure.
+fn tone_frame(d: &[u8; 49]) -> Option<(u8, u8)> {
+    if d[..6].contains(&0) || d[45..].contains(&1) {
+        return None;
+    }
+    let num = |a: usize, n: usize| d[a..a + n].iter().fold(0u32, |v, &b| v << 1 | b as u32);
+    let copies = [num(12, 8), num(20, 4) << 4 | num(24, 4), num(28, 7) << 1 | num(35, 1), num(36, 8)];
+    let mut id = 0u32;
+    for bit in 0..8 {
+        let ones: u32 = copies.iter().map(|c| c >> bit & 1).sum();
+        id |= (if ones == 2 { copies[0] >> bit & 1 } else { (ones > 2) as u32 }) << bit;
+    }
+    Some((id as u8, (num(6, 6) << 1 | num(44, 1)) as u8))
 }
 
 /// mbe_decodeAmbe2450Parms.
@@ -598,6 +633,9 @@ fn decode_ambe2450_parms(d: &[u8; 49], cur: &mut Parms, prev: &mut Parms) -> Amb
     let mut l_count = 0usize;
 
     cur.repeat = prev.repeat;
+    if let Some((id, level)) = tone_frame(d) {
+        return Ambe::ToneFrame(id, level);
+    }
     let b0 = (bit(0) << 6) | (bit(1) << 5) | (bit(2) << 4) | (bit(3) << 3) | (bit(37) << 2) | (bit(38) << 1) | bit(39);
     match b0 {
         120..=123 => return Ambe::Erasure,
@@ -767,6 +805,8 @@ pub struct Decoder {
     repeat_et: f64,
     /// The fixed-point IMBE decoder ([`Profile::Fixed`]).
     fixed: Option<Box<fixed::FixedImbe>>,
+    /// The tone (ID, level) the AMBE+2 stream is playing, held through a tone frame the FEC damaged.
+    last_tone: Option<(u8, u8)>,
 }
 
 /// Repeat thresholds for soft-decision FEC counts (the default). A soft
@@ -794,6 +834,7 @@ impl Decoder {
             repeat_e0: SOFT_REPEAT.0,
             repeat_et: SOFT_REPEAT.1,
             fixed: (profile == Profile::Fixed).then(|| Box::new(fixed::FixedImbe::new())),
+            last_tone: None,
         };
         d.reset();
         d
@@ -812,6 +853,7 @@ impl Decoder {
         if let Some(f) = self.fixed.as_mut() {
             f.reset();
         }
+        self.last_tone = None;
     }
 
     /// 88 information bits → 160 samples at mbelib's float scale (apply
@@ -892,14 +934,40 @@ impl Decoder {
             }
             Ambe::Tone => {
                 self.cur.repeat = 0;
-                kind = Kind::Tone;
+                kind = Kind::Erasure;
+            }
+            // mbelib (and so the mbelib profile) plays no tone: the frame is silence.
+            Ambe::ToneFrame(..) if !enhanced => {
+                self.cur.repeat = 0;
+                kind = Kind::Erasure;
+            }
+            Ambe::ToneFrame(id, level) => {
+                // A tone frame the FEC damaged keeps the tone going rather than guessing a new one.
+                let (id, level, kind) = if errs > 3 {
+                    match self.last_tone {
+                        Some((i, l)) => (i, l, Kind::Repeat),
+                        None => (255, 0, Kind::Erasure),
+                    }
+                } else {
+                    (id, level, Kind::Tone)
+                };
+                if self.tone(id, level, out) {
+                    self.last_tone = (id != 255).then_some((id, level));
+                    return kind;
+                }
+                self.last_tone = None;
+                self.fade_out(out);
+                return Kind::Erasure;
             }
             Ambe::Voice if errs > 3 => {
                 move_parms(&self.prev, &mut self.cur);
                 self.cur.repeat += 1;
                 kind = Kind::Repeat;
             }
-            Ambe::Voice => self.cur.repeat = 0,
+            Ambe::Voice => {
+                self.cur.repeat = 0;
+                self.last_tone = None;
+            }
         }
         if r == Ambe::Voice {
             if self.cur.repeat <= 3 {
@@ -943,6 +1011,43 @@ impl Decoder {
         move_parms(&self.cur, &mut self.enh);
     }
 
+    /// Synthesize a tone frame (TIA-102.BABA-A §2.10.3): the Annex T row for
+    /// `id` names the fundamental and the one or two harmonics that carry the
+    /// tone, each voiced at `16384 · 10^(0.03555 · (level − 127))` (Eq. 209) and
+    /// everything else silent, through the ordinary voiced synthesis (so the
+    /// tone is continuous across frames, and crossfades with the speech around
+    /// it). Tone frames don't touch the speech predictor's previous frame.
+    /// ID 255 is silence. False: a reserved ID, nothing was made.
+    fn tone(&mut self, id: u8, level: u8, out: &mut [f32; FRAME_SAMPLES]) -> bool {
+        let (f0, l1, l2) = tone_table::ANNEX_T[id as usize];
+        if id != 255 && f0 <= 0.0 {
+            return false;
+        }
+        let l = ((3812.5 / f0).floor() as usize).clamp(9, 56);
+        let magnitude = if id == 255 { 0.0 } else { TONE_GAIN * 16384.0 * 10f64.powf(0.03555 * (level as f64 - 127.0)) };
+        let cur = &mut self.cur;
+        cur.w0 = 2.0 * PI * f0 / 8000.0;
+        cur.l = l;
+        cur.repeat = 0;
+        for k in 0..=56 {
+            cur.ml[k] = 0.0;
+            cur.log2ml[k] = 0.0;
+            cur.vl[k] = (k >= 1 && k <= l) as i8;
+        }
+        for h in [l1 as usize, l2 as usize] {
+            if (1..=l).contains(&h) {
+                cur.ml[h] = magnitude;
+            }
+        }
+        if self.profile == Profile::Mbelib {
+            synthesize_speech(out, &mut self.cur, &mut self.enh, self.uvq, &mut self.rand, None, None);
+        } else {
+            synthesize_speech(out, &mut self.cur, &mut self.enh, self.uvq, &mut self.rand, Some(&TONE_SYNTH), Some(&mut self.uv));
+        }
+        move_parms(&self.cur, &mut self.enh);
+        true
+    }
+
     /// A zero-amplitude frame holding the last good pitch: the previous
     /// frame fades out through the synthesis window.
     fn fade_out(&mut self, out: &mut [f32; FRAME_SAMPLES]) {
@@ -960,6 +1065,162 @@ impl Decoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ambe_d for a tone frame: û0 = 0x3F signature then level(6..1), û1 = ID
+    /// copy 1 and the high nibble of copy 2, û2 = low nibble of copy 2 and the
+    /// top 7 bits of copy 3, û3 = ID(0), copy 4, level(0) and four zeros.
+    fn tone_bits(id: u8, level: u8) -> [u8; 49] {
+        let (i, a) = (id as u16, level as u16);
+        let u = [0x3F << 6 | a >> 1, i << 4 | i >> 4, (i & 15) << 7 | i >> 1, (i & 1) << 13 | i << 5 | (a & 1) << 4];
+        let mut d = [0u8; 49];
+        let mut p = 0;
+        for (v, w) in u.iter().zip([12, 12, 11, 14]) {
+            for b in (0..w).rev() {
+                d[p] = (v >> b & 1) as u8;
+                p += 1;
+            }
+        }
+        d
+    }
+
+    fn bits(s: &str) -> [u8; 49] {
+        let mut d = [0u8; 49];
+        for (b, c) in d.iter_mut().zip(s.chars()) {
+            *b = (c == '1') as u8;
+        }
+        d
+    }
+
+    /// Amplitude of the sinusoid at `hz` in `x` (16-bit units, after the ×7).
+    fn level_at(x: &[f32], hz: f64) -> f64 {
+        let w = 2.0 * PI * hz / 8000.0;
+        let (mut re, mut im) = (0.0, 0.0);
+        for (n, &s) in x.iter().enumerate() {
+            re += 7.0 * s as f64 * (w * n as f64).cos();
+            im += 7.0 * s as f64 * (w * n as f64).sin();
+        }
+        2.0 * (re * re + im * im).sqrt() / x.len() as f64
+    }
+
+    /// `frames` steady frames of one tone through a decoder; the audio of the last 20.
+    fn play_tone(dec: &mut Decoder, id: u8, level: u8, frames: usize) -> (Vec<f32>, Kind) {
+        let (mut audio, mut kind) = (Vec::new(), Kind::Voice);
+        for k in 0..frames {
+            let mut out = [0f32; FRAME_SAMPLES];
+            kind = dec.ambe(&tone_bits(id, level), 0, &mut out);
+            if k + 20 >= frames {
+                audio.extend_from_slice(&out);
+            }
+        }
+        (audio, kind)
+    }
+
+    /// Frames the reference vocoder's encoder makes for tone IDs and levels
+    /// (blip25-vocoder's `encode_tone_frame_info`, TIA-102.BABA-A Table 20).
+    #[test]
+    fn tone_frames_are_read_by_the_standard_layout() {
+        for (s, want) in [
+            ("1111111111110010000000100000001000000010000010000", (32, 127)),
+            ("1111111100100010000000100000001000000010000000000", (32, 100)),
+            ("1111111101110000110100001101000011010000110100000", (13, 110)),
+            ("1111111111000100000001000000010000000100000000000", (64, 120)),
+            ("1111111110011000000010000000100000001000000010000", (128, 115)),
+        ] {
+            assert_eq!(tone_frame(&bits(s)), Some(want), "{s}");
+            assert_eq!(tone_bits(want.0, want.1), bits(s), "the test's encoder matches the reference's");
+        }
+        // Not tone frames: no signature, or a nonzero trailer.
+        let mut d = tone_bits(32, 100);
+        d[3] = 0;
+        assert_eq!(tone_frame(&d), None);
+        let mut d = tone_bits(32, 100);
+        d[47] = 1;
+        assert_eq!(tone_frame(&d), None);
+        assert_eq!(tone_frame(&[0; 49]), None);
+    }
+
+    #[test]
+    fn a_tone_id_is_the_majority_of_its_four_copies() {
+        let d = tone_bits(0b0010_0000, 100);
+        let mut one = d;
+        one[13] ^= 1; // copy 1, bit 6 wrong
+        assert_eq!(tone_frame(&one), Some((32, 100)));
+        let mut two = d;
+        two[36] ^= 1; // copy 4's top bit...
+        two[37] ^= 1; // ...and bit 6
+        assert_eq!(tone_frame(&two), Some((32, 100)), "two of four wrong in different bits");
+        // Two copies against two: copy 1, the Golay-protected one, decides.
+        let mut tie = d;
+        tie[12] ^= 1; // copy 1 bit 7 flipped
+        tie[36] ^= 1; // copy 4 bit 7 flipped the same way
+        let id = tone_frame(&tie).unwrap().0;
+        assert_eq!(id >> 7, 1, "copies 1 and 4 outvote 2 and 3 ({id})");
+    }
+
+    /// A steady tone has the level, pitch and purity the reference gives it.
+    #[test]
+    fn tone_frames_play_as_their_tone() {
+        // (ID, level, Hz, the reference vocoder's amplitude there)
+        for (id, level, hz, want) in [(32u8, 100u8, 1000.0, 3795.7), (32, 60, 1000.0, 143.6), (13, 110, 406.25, 8608.7), (64, 120, 2000.0, 19503.3)] {
+            let mut dec = Decoder::new(lcg(1), Profile::Enhanced);
+            let (audio, kind) = play_tone(&mut dec, id, level, 40);
+            assert_eq!(kind, Kind::Tone);
+            let got = level_at(&audio, hz);
+            assert!((got / want - 1.0).abs() < 0.04, "ID {id} level {level}: {got:.1} against the reference's {want}");
+            // Pure: nearly all the energy is in that one sinusoid.
+            let energy: f64 = audio.iter().map(|&s| (7.0 * s as f64).powi(2)).sum::<f64>() / audio.len() as f64;
+            assert!(((got * got / 2.0) / energy - 1.0).abs() < 0.03, "ID {id}: {:.3} of the energy is the tone", got * got / 2.0 / energy);
+        }
+    }
+
+    /// Both components of a dual tone, at the same level.
+    #[test]
+    fn dual_tone_frames_play_both_tones() {
+        let mut dec = Decoder::new(lcg(1), Profile::Enhanced);
+        let (audio, _) = play_tone(&mut dec, 128, 115, 40);
+        let (a, b) = (level_at(&audio, 942.0), level_at(&audio, 1334.5));
+        assert!((a / 12859.9 - 1.0).abs() < 0.04, "{a}");
+        assert!((b / a - 1.0).abs() < 0.04, "the second tone is {b:.0} against {a:.0}");
+    }
+
+    /// No clicks: a steady tone is smooth across frame boundaries.
+    #[test]
+    fn a_tone_is_continuous_across_frames() {
+        let mut dec = Decoder::new(lcg(1), Profile::Enhanced);
+        let (audio, _) = play_tone(&mut dec, 32, 100, 40);
+        let a = level_at(&audio, 1000.0);
+        let max_step = (0..audio.len() - 1).map(|n| (7.0 * (audio[n + 1] - audio[n]) as f64).abs()).fold(0.0, f64::max);
+        let sine_step = a * 2.0 * (PI * 1000.0 / 8000.0).sin();
+        assert!(max_step < sine_step * 1.05, "largest step {max_step:.0}, a sinusoid's {sine_step:.0}");
+    }
+
+    #[test]
+    fn tone_frames_with_trouble() {
+        let mut out = [0f32; FRAME_SAMPLES];
+        let mut dec = Decoder::new(lcg(1), Profile::Enhanced);
+        for _ in 0..10 {
+            dec.ambe(&tone_bits(32, 100), 0, &mut out);
+        }
+        // Damaged by the FEC: the tone goes on.
+        let kind = dec.ambe(&tone_bits(40, 100), 6, &mut out);
+        assert_eq!(kind, Kind::Repeat);
+        assert!(level_at(&out, 1000.0) > 3000.0, "still the 1000 Hz tone");
+        // A reserved ID is not played.
+        assert_eq!(dec.ambe(&tone_bits(1, 100), 0, &mut out), Kind::Erasure);
+        // Silence.
+        let mut dec = Decoder::new(lcg(1), Profile::Enhanced);
+        for _ in 0..10 {
+            dec.ambe(&tone_bits(32, 100), 0, &mut out);
+        }
+        for _ in 0..3 {
+            assert_eq!(dec.ambe(&tone_bits(255, 100), 0, &mut out), Kind::Tone);
+        }
+        assert!(level_at(&out, 1000.0) < 1.0, "ID 255 is silence");
+        // The mbelib profile plays no tone, as mbelib doesn't.
+        let mut mb = Decoder::new(lcg(1), Profile::Mbelib);
+        assert_eq!(mb.ambe(&tone_bits(32, 100), 0, &mut out), Kind::Erasure);
+        assert!(out.iter().all(|&s| s == 0.0));
+    }
 
     /// 200 frames of one steady frame (harmonics voiced where
     /// `l % voiced_mod == 0`; 0: all unvoiced) through the enhanced synthesis,

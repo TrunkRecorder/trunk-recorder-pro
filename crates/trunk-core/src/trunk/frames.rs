@@ -32,9 +32,10 @@ pub struct VoiceFrame {
 }
 
 impl VoiceFrame {
-    /// Repeated, muted or otherwise not synthesized as sent.
+    /// Repeated, muted or otherwise not synthesized as sent (a tone frame,
+    /// played as its tone, is as sent).
     pub fn bad(&self) -> bool {
-        self.erased || self.kind != Kind::Voice
+        self.erased || !matches!(self.kind, Kind::Voice | Kind::Tone)
     }
 }
 
