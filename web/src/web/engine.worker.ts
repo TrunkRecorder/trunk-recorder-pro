@@ -262,6 +262,13 @@ async function saveUnits(changed: string): Promise<void> {
   }
 }
 
+/** Start and stop requests run one at a time: a Restart (or a double click) waits for the whole of the one before it. */
+let lifecycle: Promise<void> = Promise.resolve();
+function serialized(f: () => Promise<void>): Promise<void> {
+  lifecycle = lifecycle.then(f, f);
+  return lifecycle;
+}
+
 async function start(): Promise<void> {
   // A Restart while running: end the session first, so the new one reads the current config.
   if (running) await stop();
@@ -436,10 +443,10 @@ onmessage = async (ev: MessageEvent<ToWorker>) => {
       files = m.files;
       break;
     case "start":
-      await start();
+      await serialized(start);
       break;
     case "stop":
-      await stop();
+      await serialized(() => stop());
       break;
     case "devices":
       post({ type: "devices", devices: await devices() });
