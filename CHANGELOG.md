@@ -5,6 +5,8 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+## [0.1.11] — 2026-10-14
+
 - **Setup, reorganized.** Each Setup tab is now sections of cards, and
   each card's settings are in named groups with a line on what they are
   for: a system's Basics, On the air, Talkgroups and units, Sites and
