@@ -387,7 +387,7 @@ mod tests {
 
     #[test]
     fn transmissions_shorter_than_the_sites_minimum_are_not_counted() {
-        // Frames: a 10-frame burst (bad), then 50 clean ones in a second transmission.
+        // Frames: a 10-frame burst of clean ones, then 50 bad (repeated) ones in a second transmission.
         let mut h = held(1, 0, 0, 0, 0);
         for k in 0..60 {
             let kind = if k < 10 { Kind::Voice } else { Kind::Repeat };
