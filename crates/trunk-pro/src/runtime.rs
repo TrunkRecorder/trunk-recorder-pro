@@ -598,7 +598,8 @@ fn finish_calls(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, rx: 
 /// from memory.
 fn finish_one(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, f: Finish, encoder: Option<&(plugins::Encoder, u32)>, host: Option<&PluginHost>) {
     let r = f.rules;
-    let takers = host.map_or(0, |h| h.call_takers());
+    let decrypted = plugins::guard::call_json_decrypted(&f.json);
+    let takers = host.map_or(0, |h| h.call_takers(decrypted));
     let p = plugins::plan(r, takers, host.is_some_and(|h| h.needs_wav()), encoder.is_some());
     let (keep_audio, keep_json, keep_m4a, write_wav) = (p.keep_audio, p.keep_json, p.keep_m4a, p.write_wav);
     let base = dir.join(&f.rel);
@@ -659,9 +660,9 @@ fn deliver(ctx: &Ctx, out: &mut Vec<Output>, plugins: Option<&PluginHost>, rules
             Output::Text(t) => {
                 let _ = ctx.hub.send(Arc::new(Out::Text(t)));
             }
-            Output::Audio { short_name, tg, frame, .. } => {
+            Output::Audio { short_name, tg, frame, decrypted, .. } => {
                 if let Some(p) = plugins {
-                    p.audio_frame(&frame);
+                    p.audio_frame(&frame, decrypted);
                 }
                 let _ = ctx.hub.send(Arc::new(Out::Audio { short_name, tg, frame }));
             }

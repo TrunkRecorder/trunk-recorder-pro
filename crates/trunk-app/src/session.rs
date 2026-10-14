@@ -24,7 +24,8 @@ pub enum Output {
     /// for talkgroup `tg` of `system` — that system's number for this run
     /// (`status.systems[].index`, or 65535 and down for conventional
     /// systems) — whose short name, its identity, is `short_name`.
-    Audio { system: u16, short_name: String, tg: u32, frame: Vec<u8> },
+    /// `decrypted`: of an encrypted call (we hold its key): not for public services.
+    Audio { system: u16, short_name: String, tg: u32, frame: Vec<u8>, decrypted: bool },
     /// A concluded call to store at `<rel>.wav` / `<rel>.json` (relative to
     /// the recordings folder); `entry` is its history entry, which the
     /// platform sends as a `concluded` message once the files are stored.
@@ -700,7 +701,7 @@ impl Session {
                 self.records.push(Record::text(level, Some(&name), text.clone()));
                 self.log.push(json!({ "timeS": self.engine.status().now_s, "kind": kind, "text": text, "system": name }))
             }
-            Event::Audio { call_id, system, talkgroup, samples } => {
+            Event::Audio { call_id, system, talkgroup, samples, decrypted } => {
                 if !self.want_audio {
                     return;
                 }
@@ -712,7 +713,7 @@ impl Session {
                 for s in samples {
                     frame.extend_from_slice(&((s.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes());
                 }
-                out.push(Output::Audio { system, short_name: self.system_name(system).to_string(), tg: talkgroup, frame });
+                out.push(Output::Audio { system, short_name: self.system_name(system).to_string(), tg: talkgroup, frame, decrypted });
             }
             Event::ConvSkipped { freq_hz, code } => {
                 let ms = self.wall(self.engine.status().now_s) * 1000.0;

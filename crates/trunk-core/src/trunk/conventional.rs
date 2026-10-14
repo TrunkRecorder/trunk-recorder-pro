@@ -321,7 +321,7 @@ impl Default for ConvConfig {
 pub enum ConvOut {
     Start(Call),
     Update(Call),
-    Audio { call_id: CallId, system: u16, talkgroup: u32, samples: Vec<f32> },
+    Audio { call_id: CallId, system: u16, talkgroup: u32, samples: Vec<f32>, decrypted: bool },
     /// `recorder_num`: the index of the channel (frequency) it came on.
     End { call: Call, audio: Vec<f32>, frames: CallFrames, recorder_num: u32, tx: Transmissions, reception: Reception },
     /// A radio's talker alias, heard on a P25 channel of conventional system `.0` ([`Call::system`]).
@@ -1012,7 +1012,7 @@ impl Conventional {
                 l.frames.push(f);
             }
             if !l.tx.current_dropped() {
-                out.push(ConvOut::Audio { call_id: l.call.id, system: l.call.system, talkgroup: l.call.talkgroup, samples: h.audio });
+                out.push(ConvOut::Audio { call_id: l.call.id, system: l.call.system, talkgroup: l.call.talkgroup, samples: h.audio, decrypted: l.call.encrypted || l.call.decrypted });
             }
         }
     }

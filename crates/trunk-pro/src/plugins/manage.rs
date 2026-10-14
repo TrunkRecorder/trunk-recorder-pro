@@ -191,6 +191,10 @@ pub struct Plugins {
     pub archive: Arc<Archive>,
     /// What the running recording's plugins were started with, to restart them.
     env: Mutex<Option<(Vec<SystemInfo>, PathBuf)>>,
+    /// Each plugin's `shareDecrypted` as the latest settings change left it (None: none yet, the config's own
+    /// are used). Kept apart from the config snapshot a start or a reload is handed, which may be older
+    /// than a revocation that came while recording was still starting (when `reload` has nothing to restart).
+    share: Mutex<Option<BTreeMap<String, String>>>,
     runtime: Arc<Mutex<BTreeMap<String, Runtime>>>,
     /// Manifests by executable (and its modification time): `--describe` runs once per build.
     manifests: Mutex<HashMap<PathBuf, Described>>,
@@ -210,6 +214,7 @@ impl Plugins {
             host: RwLock::new(None),
             archive: Arc::default(),
             env: Mutex::new(None),
+            share: Mutex::new(None),
             runtime: Arc::new(Mutex::new(BTreeMap::new())),
             manifests: Mutex::new(HashMap::new()),
             store: Mutex::new(None),
@@ -274,6 +279,23 @@ impl Plugins {
         json!({ "type": "plugins", "plugins": plugins, "encoderFound": found })
     }
 
+    /// What lets plugins be given decrypted calls has changed (call before `reload`, always: whether or not
+    /// recording is up): hosts built from now on, a start in progress included, use it.
+    pub fn set_share(&self, cfg: &Config) {
+        *self.share.lock().unwrap() = Some(cfg.plugins.iter().map(|(id, p)| (id.clone(), p.share_decrypted.clone())).collect());
+    }
+
+    /// `cfg`, with the latest `shareDecrypted` of each plugin (see [`Plugins::set_share`]).
+    fn current(&self, cfg: &Config) -> Config {
+        let mut c = cfg.clone();
+        if let Some(share) = self.share.lock().unwrap().as_ref() {
+            for (id, p) in &mut c.plugins {
+                p.share_decrypted = share.get(id).cloned().unwrap_or_default();
+            }
+        }
+        c
+    }
+
     /// Start the config's enabled plugins for a recording.
     pub fn start(&self, cfg: &Config) {
         *self.env.lock().unwrap() = Some((super::systems_of(cfg), PathBuf::from(&cfg.recording.capture_dir)));
@@ -326,7 +348,7 @@ impl Plugins {
     fn new_host(&self, cfg: &Config, fresh: bool, go: Arc<AtomicBool>) -> Option<PluginHost> {
         let (systems, capture_dir) = self.env.lock().unwrap().clone()?;
         let notes = self.notes();
-        let specs = Spec::enabled(cfg);
+        let specs = Spec::enabled(&self.current(cfg));
         {
             let mut rt = self.runtime.lock().unwrap();
             for (id, e) in &cfg.plugins {

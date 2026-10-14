@@ -208,6 +208,38 @@ hasn't answered within an hour counts as having failed. With no plugin taking ca
 settings alone decide. The details are in
 [The archive](../guides/recordings.md#the-archive-whats-kept-and-whats-deleted).
 
+## Decrypted calls
+
+> **Uploading decrypted calls is risky.** A call decrypted with [keys you hold](../configuration/systems.md#encryption-keys-keys)
+> is what the system's owner chose to encrypt. Sent to a public service (OpenMHz, Broadcastify) it can be
+> heard by anyone, can't be taken back, and may be against the law or your agreement with the system's
+> owner. A server of your own isn't safe by being yours: it may be reachable from outside, or pass calls on.
+
+So **no plugin is given a decrypted call** (its live audio, its WAV or M4A, its JSON) unless you allow
+that plugin, one by one, in the config file, by writing this sentence exactly in its entry:
+
+```json
+"plugins": {
+  "rdioscanner": {
+    "enabled": true,
+    "settings": { "server": "http://192.168.1.5:3000" },
+    "shareDecrypted": "I accept that decrypted calls will be sent to this plugin and may become public, and I am authorized to share them"
+  }
+}
+```
+
+- This holds for **every** plugin, one on your own network too. There is no exception.
+- Anything else in its place (`true`, `"yes"`, another sentence) leaves the plugin withheld. It is not in the
+  Plugins page on purpose.
+- You are told every time: a withheld plugin says so in the log once per run (what it sends to, and how to allow
+  it); an allowed one logs `RECEIVES DECRYPTED CALLS` each time it starts, naming where it sends to (each address
+  marked **on your network** or **OUTSIDE your network**).
+- What is withheld is the call's audio and files; the call's other details (talkgroup, units, `algid`, `key_id`)
+  go as before. A call no plugin may take is kept as when no plugin is set up. Calls that weren't decrypted
+  are not affected.
+- A change to `shareDecrypted` takes effect at once, restarting the plugins. `trunk-pro plugin run` follows the same
+  rules, and only for the executable the config names for that plugin.
+
 ## Seeing how plugins are doing
 
 ### The Plugins page

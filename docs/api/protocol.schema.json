@@ -3964,6 +3964,10 @@
         "path": {
           "type": "string",
           "description": "Run this executable instead of the installed plugin (a build of the user's own)."
+        },
+        "shareDecrypted": {
+          "type": "string",
+          "description": "Config file only: the sentence (docs/plugins/README.md, \"Decrypted calls\") that lets this plugin be given calls decrypted with the recorder's keys. Without it, none are."
         }
       },
       "required": [

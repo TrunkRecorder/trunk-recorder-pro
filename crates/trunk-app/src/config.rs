@@ -815,6 +815,10 @@ pub struct PluginSetup {
     /// Run this executable instead of the installed plugin (a build of your own).
     #[serde(skip_serializing_if = "String::is_empty")]
     pub path: String,
+    /// The sentence the documentation gives (plugins README, "Decrypted calls") that lets this plugin be given calls
+    /// decrypted with the recorder's keys (their audio and files). Without it, none are: uploading them is risky.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub share_decrypted: String,
 }
 
 impl Default for Recording {

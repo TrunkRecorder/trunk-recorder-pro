@@ -5,6 +5,14 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Decrypted calls aren't uploaded unless you say so, plugin by plugin.** A call decrypted with your keys
+  is no longer given (its live audio, files and JSON) to any plugin (OpenMHz, Broadcastify, Rdio Scanner,
+  a stream, a script) unless that plugin's entry says, in so many words, that it may
+  (`plugins.<id>.shareDecrypted`, in the config file). A plugin on your own network needs it too. The log says
+  so for a plugin that is withheld and, on every start, for one that is allowed. Voice and calls of a call that
+  expires in the same moment as its decryption are treated as decrypted. See
+  [Decrypted calls](docs/plugins/README.md#decrypted-calls).
+
 ## [0.1.10] — 2026-10-13
 
 - **Encryption heard:** a talkgroup's page on the Radio dashboard lists

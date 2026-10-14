@@ -177,6 +177,8 @@ export interface PluginSetup {
   settings?: PluginValues;
   /** Run this executable instead of the installed plugin (a build of the user's own). */
   path?: string;
+  /** Config file only: the sentence (docs/plugins/README.md, "Decrypted calls") that lets this plugin be given calls decrypted with the recorder's keys. Without it, none are. */
+  shareDecrypted?: string;
 }
 
 /** The settings each system can set again for itself (crates/trunk-app/src/config.rs RecordingOverride). */

@@ -750,6 +750,7 @@ fn edit_config(ctx: &Ctx, f: impl FnOnce(&mut crate::config::Config)) -> Result<
     let c = cfg.clone();
     drop(cfg);
     publish(&ctx.hub, json!({ "type": "config", "config": c }));
+    ctx.plugins.set_share(&c);
     if crate::plugins::changed(&old, &c) {
         ctx.plugins.reload(&c);
     }
@@ -815,6 +816,8 @@ async fn command(ctx: &Arc<Ctx>, v: &Value, listen: &mut Option<Listen>, subs: &
                 c.load_channel_files(&ctx.config_path);
                 let saved = c.save(&ctx.config_path);
                 let old = std::mem::replace(&mut *ctx.config.lock().unwrap(), c.clone());
+                // (At once, before anything else is awaited: a recording that is still starting builds its plugins from this.)
+                ctx.plugins.set_share(&c);
                 // A talkgroup file changed while recording (an Ignore flag set): the session takes it now.
                 if ctx.runner.lock().unwrap().is_some() {
                     let mut cmds = ctx.engine_cmds.lock().unwrap();

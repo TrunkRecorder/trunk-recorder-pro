@@ -31,6 +31,7 @@ The top-level `plugins` object is keyed by plugin id. Each entry:
 | `enabled` | | `false` | bool | Run it while recording |
 | `settings` | | `null` | any | Its settings for the whole recorder, as the plugin's own schema describes them (the `config` schema in its manifest; `trunk-pro plugin describe <executable>` prints it) |
 | `path` | | `""` | string | Run this executable instead of the installed one: a build of your own, while developing a plugin. Use an absolute path |
+| `shareDecrypted` | | `""` | string | Lets this plugin be given calls decrypted with your keys (their audio and files), by being exactly the sentence in [Decrypted calls](../plugins/README.md#decrypted-calls). Without it, none are. Config file only: the Plugins page doesn't offer it |
 
 A plugin with no entry is off. Unknown keys in an entry are dropped on save.
 

@@ -68,6 +68,9 @@ struct Plugin {
     started: Mutex<Option<Instant>>,
     /// When everything queued for it, `shutdown` last, was written to it.
     drained_at: Arc<Mutex<Option<Instant>>>,
+    /// Whether it may be given decrypted calls, and whether it was said when one was withheld.
+    decrypted: super::guard::Verdict,
+    withheld_said: AtomicBool,
 }
 
 struct Shared {
@@ -85,6 +88,8 @@ const DRAIN_MAX: Duration = Duration::from_secs(30);
 struct EncodeJob {
     call: ConcludedCall,
     audio: CallAudio,
+    /// The call was decrypted with our keys (see [`super::guard`]).
+    decrypted: bool,
 }
 
 /// A concluded call's audio, for the plugins.
@@ -146,6 +151,8 @@ pub struct Spec {
     pub systems: BTreeMap<String, Value>,
     /// Its data folder (None: the usual, in the config folder).
     pub data_dir: Option<PathBuf>,
+    /// Whether it may be given decrypted calls ([`super::guard`]).
+    pub decrypted: super::guard::Verdict,
 }
 
 impl Spec {
@@ -155,13 +162,17 @@ impl Spec {
             .iter()
             .filter(|(_, p)| p.enabled)
             .flat_map(|(id, p)| {
-                (0..super::copies(cfg, id)).map(move |copy| Spec {
-                    id: id.clone(),
-                    copy,
-                    exe: executable(id, p),
-                    config: p.settings.clone(),
-                    systems: super::system_settings(cfg, id, copy),
-                    data_dir: None,
+                (0..super::copies(cfg, id)).map(move |copy| {
+                    let systems = super::system_settings(cfg, id, copy);
+                    Spec {
+                        id: id.clone(),
+                        copy,
+                        exe: executable(id, p),
+                        config: p.settings.clone(),
+                        decrypted: super::guard::judge(id, &p.share_decrypted, &p.settings, &systems),
+                        systems,
+                        data_dir: None,
+                    }
                 })
             })
             .collect()
@@ -189,6 +200,10 @@ impl PluginHost {
                     }
                     // From here on a copy goes by its label: its notes, its data folder.
                     s.id = super::copy_label(&s.id, s.copy);
+                    // Said every time it starts, where it can't be missed.
+                    if let super::guard::Verdict::Acknowledged(to) = &s.decrypted {
+                        notes(Note::Log { plugin: s.id.clone(), level: Level::Warn, text: format!("RECEIVES DECRYPTED CALLS (plugins.{0}.shareDecrypted): every call decrypted with your keys is sent to it, and it sends to {to}. Remove plugins.{0}.shareDecrypted to stop.", super::parse_label(&s.id).0) });
+                    }
                     // Not set up yet (the interface says so too): it would only fail.
                     let unset = unset_required(m.config.as_ref(), &s.config);
                     if !unset.is_empty() {
@@ -256,6 +271,8 @@ impl PluginHost {
                 restarts: AtomicU64::new(0),
                 started: Mutex::new(None),
                 drained_at: Arc::new(Mutex::new(None)),
+                decrypted: s.decrypted,
+                withheld_said: AtomicBool::new(false),
             });
         }
         let shared = Arc::new(Shared { plugins, stopping: AtomicBool::new(false), go, notes });
@@ -317,17 +334,18 @@ impl PluginHost {
             HostMessage::CallEnd(_) => topic::CALL_END,
             HostMessage::Unit(_) => topic::UNIT,
             HostMessage::Status(_) => topic::STATUS,
-            HostMessage::Audio(_) => topic::AUDIO,
-            HostMessage::CallConcluded(_) => topic::CALL_CONCLUDED,
+            // (Audio and concluded calls carry what may be a decrypted call: they go only by
+            // `audio_frame` and `concluded`, which ask the guard. Never through here.)
             _ => return,
         };
         if self.shared.plugins.iter().any(|p| p.manifest.subscribes(t)) {
-            self.shared.dispatch(t, &line(m));
+            self.shared.dispatch(t, &line(m), false);
         }
     }
 
     /// A live audio frame (the session's `[2][u16 system][u32 call][u32 tg][i16…]`).
-    pub fn audio_frame(&self, frame: &[u8]) {
+    /// `decrypted`: it is of a call encrypted on the air (the plugins that may not have such are not given it).
+    pub fn audio_frame(&self, frame: &[u8], decrypted: bool) {
         if !self.audio || frame.len() < 11 {
             return;
         }
@@ -337,13 +355,14 @@ impl PluginHost {
         let pcm = trunk_recorder_plugin::base64::encode(&frame[11..]);
         let short_name = self.names.get(&system).cloned().unwrap_or_default();
         let chunk = AudioChunk { call_id, system, short_name, talkgroup, sample_rate: 8000, pcm };
-        self.shared.dispatch(topic::AUDIO, &line(&HostMessage::Audio(chunk)));
+        self.shared.dispatch(topic::AUDIO, &line(&HostMessage::Audio(chunk)), decrypted);
     }
 
     /// The plugins that take concluded calls (each reports on every one);
     /// not one that gave up (a config error).
-    pub fn call_takers(&self) -> usize {
-        self.shared.plugins.iter().filter(|p| p.manifest.subscribes(topic::CALL_CONCLUDED) && p.tx.lock().unwrap().is_some()).count()
+    /// (`decrypted`: a call decrypted with our keys, which some plugins may not be given.)
+    pub fn call_takers(&self, decrypted: bool) -> usize {
+        self.shared.plugins.iter().filter(|p| p.manifest.subscribes(topic::CALL_CONCLUDED) && p.tx.lock().unwrap().is_some() && (!decrypted || p.decrypted.allowed())).count()
     }
 
     /// Some plugin takes the WAV file: one that doesn't ask for M4A, does
@@ -358,24 +377,29 @@ impl PluginHost {
     /// `audio` says. An .m4a is made here when there isn't one and a plugin
     /// wants it.
     pub fn concluded(&self, system: u16, rel: &str, json: &str, mut audio: CallAudio) {
-        if self.call_takers() == 0 {
+        let record: CallRecord = serde_json::from_str(json).unwrap_or_default();
+        // (A call JSON that can't be read is withheld like a decrypted call, not released.)
+        let decrypted = super::guard::call_json_decrypted(json);
+        if self.call_takers(decrypted) == 0 {
+            if decrypted {
+                self.shared.say_all_withheld(topic::CALL_CONCLUDED);
+            }
             return;
         }
-        let record: CallRecord = serde_json::from_str(json).unwrap_or_default();
         let call = |files: &CallFiles| ConcludedCall { path: rel.to_string(), system, call: record.clone(), files: files.clone() };
         match &self.encode_tx {
             Some(tx) if audio.files.m4a.is_none() => {
-                if let Err(TrySendError::Full(mut job) | TrySendError::Disconnected(mut job)) = tx.try_send(EncodeJob { call: call(&audio.files), audio }) {
+                if let Err(TrySendError::Full(mut job) | TrySendError::Disconnected(mut job)) = tx.try_send(EncodeJob { call: call(&audio.files), audio, decrypted }) {
                     self.shared.note_log("", Level::Warn, "M4A encoding is behind: a call goes out as WAV only");
                     job.audio.write_wav();
-                    self.shared.dispatch(topic::CALL_CONCLUDED, &line(&HostMessage::CallConcluded(job.call)));
+                    self.shared.dispatch(topic::CALL_CONCLUDED, &line(&HostMessage::CallConcluded(job.call)), decrypted);
                 }
             }
             _ => {
                 if audio.files.m4a.is_none() {
                     audio.write_wav();
                 }
-                self.shared.dispatch(topic::CALL_CONCLUDED, &line(&HostMessage::CallConcluded(call(&audio.files))));
+                self.shared.dispatch(topic::CALL_CONCLUDED, &line(&HostMessage::CallConcluded(call(&audio.files))), decrypted);
             }
         }
     }
@@ -481,8 +505,34 @@ impl Shared {
         (self.notes)(Note::Log { plugin: plugin.to_string(), level, text: text.into() });
     }
 
-    fn dispatch(&self, t: &str, l: &Arc<str>) {
+    /// Say, once a run, that `p` is not given decrypted calls, why, and how to allow it.
+    fn say_withheld(&self, p: &Plugin) {
+        let super::guard::Verdict::Withheld(why) = &p.decrypted else { return };
+        if !p.withheld_said.swap(true, Ordering::Relaxed) {
+            self.note_log(
+                &p.id,
+                Level::Warn,
+                format!("is NOT given decrypted calls: {why}. Sending decrypted calls out is risky (a call uploaded can't be taken back, and may become public). Only if you are sure and authorized, set plugins.{}.shareDecrypted to \"{}\" in the config file", super::parse_label(&p.id).0, super::guard::PHRASE),
+            );
+        }
+    }
+
+    /// A decrypted call came and no plugin that takes calls may have it: say so for each (they are
+    /// otherwise passed over without a word, as nothing is sent to them at all).
+    fn say_all_withheld(&self, t: &str) {
         for p in self.plugins.iter().filter(|p| p.manifest.subscribes(t)) {
+            self.say_withheld(p);
+        }
+    }
+
+    /// `decrypted`: what is sent is a call decrypted with our keys (or its audio), which only the
+    /// plugins [`super::guard`] allows are given.
+    fn dispatch(&self, t: &str, l: &Arc<str>, decrypted: bool) {
+        for p in self.plugins.iter().filter(|p| p.manifest.subscribes(t)) {
+            if decrypted && !p.decrypted.allowed() {
+                self.say_withheld(p);
+                continue;
+            }
             let Some(tx) = p.tx.lock().unwrap().clone() else {
                 continue;
             };
@@ -502,7 +552,7 @@ fn encode_worker(rx: &Mutex<Receiver<EncodeJob>>, sh: &Shared, e: &Encoder, kbps
     let mut last_error: Option<Instant> = None;
     loop {
         let job = rx.lock().unwrap().recv();
-        let Ok(EncodeJob { mut call, mut audio }) = job else {
+        let Ok(EncodeJob { mut call, mut audio, decrypted }) = job else {
             return;
         };
         match e.m4a(&audio.wav, &audio.m4a_to, kbps) {
@@ -515,7 +565,7 @@ fn encode_worker(rx: &Mutex<Receiver<EncodeJob>>, sh: &Shared, e: &Encoder, kbps
                 }
             }
         }
-        sh.dispatch(topic::CALL_CONCLUDED, &line(&HostMessage::CallConcluded(call)));
+        sh.dispatch(topic::CALL_CONCLUDED, &line(&HostMessage::CallConcluded(call)), decrypted);
     }
 }
 
@@ -697,5 +747,59 @@ mod tests {
         assert_eq!(unset_required(Some(&schema), &serde_json::json!({ "apiKey": "", "n": 3 })), ["API key", "url"]);
         assert!(unset_required(Some(&schema), &serde_json::json!({ "apiKey": "k", "url": "http://x" })).is_empty());
         assert!(unset_required(None, &Value::Null).is_empty());
+    }
+
+    fn test_plugin(id: &str, decrypted: super::super::guard::Verdict) -> (Plugin, Receiver<Arc<str>>) {
+        let (tx, rx) = mpsc::sync_channel::<Arc<str>>(8);
+        let manifest = Manifest { id: id.into(), subscribe: vec![topic::CALL_CONCLUDED.into(), topic::AUDIO.into()], ..Default::default() };
+        let p = Plugin {
+            id: id.into(),
+            manifest,
+            exe: PathBuf::new(),
+            data_dir: PathBuf::new(),
+            hello: "".into(),
+            tx: Mutex::new(Some(tx)),
+            child: Mutex::new(None),
+            dropped: AtomicU64::new(0),
+            last_drop_note: Mutex::new(None),
+            restarts: AtomicU64::new(0),
+            started: Mutex::new(None),
+            drained_at: Arc::new(Mutex::new(None)),
+            decrypted,
+            withheld_said: AtomicBool::new(false),
+        };
+        (p, rx)
+    }
+
+    /// A decrypted call (or its live audio) reaches only the plugins allowed it; a clear one reaches all.
+    #[test]
+    fn a_decrypted_call_goes_only_to_the_plugins_allowed_it() {
+        use super::super::guard::Verdict;
+        let (allowed, local_rx) = test_plugin("rdioscanner", Verdict::Acknowledged("192.168.1.5 (on your network)".into()));
+        let (public, public_rx) = test_plugin("openmhz", Verdict::Withheld("it sends to api.openmhz.com, which isn't on this network".into()));
+        let said = Arc::new(Mutex::new(Vec::<String>::new()));
+        let log = said.clone();
+        let sh = Shared {
+            plugins: vec![allowed, public],
+            stopping: AtomicBool::new(false),
+            go: Arc::new(AtomicBool::new(true)),
+            notes: Arc::new(move |n| {
+                if let Note::Log { plugin, text, .. } = n {
+                    log.lock().unwrap().push(format!("{plugin}: {text}"));
+                }
+            }),
+        };
+        let msg: Arc<str> = "x\n".into();
+        sh.dispatch(topic::CALL_CONCLUDED, &msg, false);
+        assert!(local_rx.try_recv().is_ok() && public_rx.try_recv().is_ok(), "a clear call goes to both");
+        sh.dispatch(topic::CALL_CONCLUDED, &msg, true);
+        sh.dispatch(topic::AUDIO, &msg, true);
+        sh.say_all_withheld(topic::CALL_CONCLUDED);
+        assert!(local_rx.try_recv().is_ok() && local_rx.try_recv().is_ok(), "the plugin that was allowed gets the call and its audio");
+        assert!(public_rx.try_recv().is_err(), "the public one gets neither");
+        // It is told once, with how to allow it, never the key.
+        let said = said.lock().unwrap();
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert!(said[0].starts_with("openmhz: is NOT given decrypted calls") && said[0].contains("plugins.openmhz.shareDecrypted"), "{said:?}");
     }
 }
