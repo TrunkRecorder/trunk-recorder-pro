@@ -220,7 +220,7 @@ function TalkgroupList({ s }: { s: AppState }) {
         <span className="muted small">{rows.length}</span>
       </summary>
       <ul className="pb-list">
-        {rows.slice(0, 200).map((t) => {
+        {rows.map((t) => {
           const on = l.f.talkgroup === t.talkgroup && (l.f.system === null || l.f.system === t.system);
           return (
             <li key={`${t.system}:${t.talkgroup}`}>
@@ -327,7 +327,7 @@ function Calls({ s }: { s: AppState }) {
             {p.loading ? "Loading…" : "Load older"}
           </button>
         )}
-        {p.calls.length > 0 && !p.more && <span className="muted small">That's every call that matches.</span>}
+        {p.calls.length > 0 && !p.more && !p.truncated && <span className="muted small">That's every call that matches.</span>}
       </footer>
     </section>
   );

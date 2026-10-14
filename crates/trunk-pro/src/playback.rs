@@ -157,10 +157,11 @@ pub fn query(dir: &Path, known: &dyn Fn(&str, u32) -> bool, req: &Value, now_ms:
     let mut tgs: HashMap<(String, u32), TgStat> = HashMap::new();
     let mut units: HashMap<(String, u32), UnitStat> = HashMap::new();
     let mut systems: std::collections::BTreeSet<String> = Default::default();
-    let mut page: Vec<Value> = Vec::new();
-    let (mut total, mut more, mut read, mut matched_ms) = (0usize, false, 0usize, (i64::MAX, 0i64));
-    let mut page_second: Option<i64> = None;
-    for (name_s, p) in &found {
+    // The calls found: (their own start, ms; their file). Ordered, and paged, by that start, not by
+    // the file's name or time (a custom filename format has neither right).
+    let mut matches: Vec<(i64, PathBuf)> = Vec::new();
+    let mut read = 0usize;
+    for (_, p) in &found {
         if read >= MAX_READ {
             break;
         }
@@ -208,9 +209,7 @@ pub fn query(dir: &Path, known: &dyn Fn(&str, u32) -> bool, req: &Value, now_ms:
             for (r, alias) in &radios {
                 if units.len() < 4 * MAX_UNITS || units.contains_key(&(system.clone(), *r)) {
                     let u = units.entry((system.clone(), *r)).or_default();
-                    if u.calls == 0 {
-                        u.last_ms = start;
-                    }
+                    u.last_ms = u.last_ms.max(start);
                     if u.alias.is_empty() {
                         u.alias = alias.clone();
                     }
@@ -221,23 +220,27 @@ pub fn query(dir: &Path, known: &dyn Fn(&str, u32) -> bool, req: &Value, now_ms:
         if !(by_tg && by_unit) {
             continue;
         }
-        total += 1;
-        matched_ms = (matched_ms.0.min(start), matched_ms.1.max(start));
-        if q.before_ms.is_some_and(|b| start >= b) {
-            continue;
-        }
-        // A page is cut between seconds, never inside one: the next page starts before the oldest call
-        // here (in ms), so calls of the same second that were left off would never be shown.
-        if page.len() < q.limit || page_second == Some(*name_s) {
-            page_second = Some(*name_s);
-            let audio = ["wav", "m4a"].iter().any(|x| p.with_extension(x).exists());
-            page.push(json!({ "path": rel.with_extension("").to_string_lossy().replace('\\', "/"), "record": record, "audio": audio, "json": true }));
-        } else {
-            more = true;
-        }
+        matches.push((start, p.clone()));
     }
-    // (Files are read newest first by their names, records sorted by their own start: they agree but for a second.)
-    page.sort_by_key(|e| std::cmp::Reverse(e["record"]["start_time_ms"].as_i64().unwrap_or(0)));
+    matches.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    let total = matches.len();
+    let after: Vec<&(i64, PathBuf)> = matches.iter().filter(|m| q.before_ms.is_none_or(|b| m.0 < b)).collect();
+    // A page ends between starts, never inside calls of one millisecond: the next page is those
+    // before the oldest here, so the ones left off would never be shown.
+    let mut end = after.len().min(q.limit);
+    while end < after.len() && end > 0 && after[end].0 == after[end - 1].0 {
+        end += 1;
+    }
+    let more = end < after.len();
+    let page: Vec<Value> = after[..end]
+        .iter()
+        .filter_map(|(_, p)| {
+            let record = fs::read_to_string(p).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok())?;
+            let rel = p.strip_prefix(dir).ok()?;
+            let audio = ["wav", "m4a"].iter().any(|x| p.with_extension(x).exists());
+            Some(json!({ "path": rel.with_extension("").to_string_lossy().replace('\\', "/"), "record": record, "audio": audio, "json": true }))
+        })
+        .collect();
     let mut talkgroups: Vec<Value> = tgs
         .into_iter()
         .map(|((system, tg), t)| {
@@ -383,8 +386,8 @@ mod tests {
     fn pages_lose_no_call_and_radios_count_once() {
         let dir = fresh("pages");
         let t0 = 1_791_000_000;
-        // Three calls in one second (two at the page's end), one before.
-        for (i, ms) in [t0 * 1000 + 900, t0 * 1000 + 500, t0 * 1000 + 100].into_iter().enumerate() {
+        // Three calls starting the same millisecond (two fit the page), one before.
+        for (i, ms) in [t0 * 1000 + 500; 3].into_iter().enumerate() {
             call(&dir, &format!("metro/{i}-{t0}_1.json"), 1, ms, &[5, 6, 5]);
         }
         call(&dir, &format!("metro/9-{}_1.json", t0 - 60), 1, (t0 - 60) * 1000, &[5]);
@@ -396,12 +399,19 @@ mod tests {
             query(&dir, &|_, _| true, &v, (t0 + 100) * 1000)
         };
         let p1 = ask(json!({}));
-        assert_eq!(p1["entries"].as_array().unwrap().len(), 3, "the second's calls come whole");
+        assert_eq!(p1["entries"].as_array().unwrap().len(), 3, "calls of one instant come whole");
         assert_eq!(p1["more"], true);
         let oldest = p1["entries"][2]["record"]["start_time_ms"].as_i64().unwrap();
         let p2 = ask(json!({ "before": oldest }));
         assert_eq!(p2["entries"].as_array().unwrap().len(), 1);
         assert_eq!(p2["more"], false);
+        // Pages follow the calls' own start, whatever their files are named: the newest comes first.
+        let dir2 = fresh("order");
+        call(&dir2, &format!("metro/1-{}_1.json", t0 + 100), 1, t0 * 1000, &[]);
+        call(&dir2, &format!("metro/2-{}_1.json", t0), 2, (t0 + 100) * 1000, &[]);
+        let r = query(&dir2, &|_, _| true, &json!({ "from": (t0 - 100) * 1000, "limit": 1 }), (t0 + 200) * 1000);
+        assert_eq!(r["entries"][0]["record"]["talkgroup"], 2, "{r}");
+        assert_eq!(r["more"], true);
         // Radio 5 was on all four calls, 6 on three, however often they spoke.
         let calls = |unit: u64| p1["units"].as_array().unwrap().iter().find(|u| u["unit"] == unit).unwrap()["calls"].clone();
         assert_eq!((calls(5), calls(6)), (json!(4), json!(3)));

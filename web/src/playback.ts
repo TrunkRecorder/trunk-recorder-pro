@@ -97,6 +97,8 @@ export function usePlayback<T>(pick: (s: PlaybackState) => T): T {
 
 const PAGE = 100;
 let queryId = 0;
+/** When the search was made: its pages all look at the same span, however long it's open. */
+let searchedAt = 0;
 
 /** The request for `f`, from `before` (the next page) or the newest. */
 export function requestFor(f: Filters, now: number, id: number, before?: number) {
@@ -132,7 +134,8 @@ export function clearFilters(): void {
 export function search(): void {
   const id = ++queryId;
   set({ loading: true });
-  transport.send(requestFor(state.filters, Date.now(), id));
+  searchedAt = Date.now();
+  transport.send(requestFor(state.filters, searchedAt, id));
 }
 
 /** The next page of the search, older calls. */
@@ -140,7 +143,7 @@ export function loadMore(): void {
   const oldest = state.calls.at(-1)?.record.start_time_ms;
   if (state.loading || oldest === undefined) return;
   set({ loading: true });
-  transport.send(requestFor(state.filters, Date.now(), ++queryId, oldest));
+  transport.send(requestFor(state.filters, searchedAt, ++queryId, oldest));
 }
 
 onRecorderMessage((m) => {
@@ -171,6 +174,8 @@ let token = 0;
 export async function play(c: CallEntry): Promise<void> {
   if (!audio) return;
   const mine = ++token;
+  // (The call playing stops now, not when the next one's file is found.)
+  audio.pause();
   // One sound at a time: not the scanner, not live audio.
   stopOthers?.();
   if (snapshot().listen) setListen(false);
