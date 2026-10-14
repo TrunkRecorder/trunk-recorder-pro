@@ -5,6 +5,10 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Conventional talkgroups:** a talkgroup set on a conventional channel
+  now overrides the talkgroup a P25, DMR or NXDN radio sends: every call
+  on that channel is filed under it. Leave **Talkgroup** blank to keep
+  using the one on the air.
 ## [0.1.11] — 2026-10-14
 
 - **Setup, reorganized.** Each Setup tab is now sections of cards, and

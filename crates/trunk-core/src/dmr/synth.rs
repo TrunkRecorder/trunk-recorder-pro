@@ -326,6 +326,9 @@ mod tests {
         assert_eq!(skipped, ["CC 5 TS 2 TG 4321"]);
         // … with one: it takes the rest.
         assert_eq!(calls(vec![row("CC3", 1, "A"), row("", 3, "Other")]), [(4321, Some("Other".to_string()))]);
+        // A configured talkgroup overrides the air's.
+        let set = ConvChannel { talkgroup_set: true, ..row("CC 5", 7, "Fixed") };
+        assert_eq!(calls(vec![set]), [(7, Some("Fixed".to_string()))]);
     }
 
     #[test]

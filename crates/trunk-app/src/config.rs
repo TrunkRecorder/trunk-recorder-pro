@@ -614,10 +614,10 @@ pub struct Channel {
     /// Short name (Trunk Recorder's alpha tag).
     #[serde(default)]
     pub name: String,
-    /// Talkgroup number the calls are filed under; default the frequency in
-    /// kHz (further rows on the frequency: that and a digit, see
-    /// [`ConvChannel::default_talkgroup_at`]). P25 files calls under the
-    /// talkgroup the air names, when it does.
+    /// Talkgroup number the calls are filed under, whatever the air names.
+    /// Unset: digital calls take the talkgroup the air names, when it does;
+    /// else the frequency in kHz (further rows on the frequency: that and a
+    /// digit, see [`ConvChannel::default_talkgroup_at`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub talkgroup: Option<u32>,
     /// The code it records ([`Access`]): FM's CTCSS tone or DCS code in Trunk
@@ -682,6 +682,7 @@ impl Channel {
             freq_hz: self.freq_hz,
             mode: self.conv_mode(),
             talkgroup: tg,
+            talkgroup_set: self.talkgroup.is_some(),
             info: named.then(|| Talkgroup {
                 number: tg,
                 mode: if self.mode == ChannelMode::Fm { "A".into() } else { "D".into() },

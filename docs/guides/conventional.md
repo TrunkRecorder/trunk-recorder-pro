@@ -61,8 +61,9 @@ panel that appears:
 The **Talkgroup** column is the number calls are filed under: in file names, the call JSON and
 uploads. Leave it blank and it defaults to the frequency in kHz (154.430 MHz becomes 154430),
 which stays the same however you reorder the list. A second row on the same frequency gets that
-number with a digit added (1543251, 1543252, ...). P25 channels use the talkgroup the radio sends
-when there is a single row on the frequency, and DMR and NXDN calls keep the talkgroup on the air.
+number with a digit added (1543251, 1543252, ...). A talkgroup you type in overrides whatever the
+radios send. Left blank, P25 channels use the talkgroup the radio sends when there is a single row
+on the frequency, and DMR and NXDN calls keep the talkgroup on the air.
 
 **Tone** limits a row to transmissions carrying one CTCSS tone, DCS code, NAC, colour code or RAN.
 Leave it blank to record everything on the frequency. Splitting a shared frequency is covered in

@@ -31,9 +31,12 @@
 //! - P25: every frame carries the NAC, so nothing is held; on a frequency
 //!   with several rows, filed under the row's talkgroup (conventional radios
 //!   mostly send a talkgroup that says little, often 1).
-//! - DMR: per slot; filed under the talkgroup on the air, as always (the row
-//!   gives the names).
+//! - DMR: per slot; filed under the talkgroup on the air (the row gives the
+//!   names).
 //! - NXDN: by RAN and / or group, as DMR by colour code and talkgroup.
+//!
+//! A row whose talkgroup was configured ([`ConvChannel::talkgroup_set`])
+//! files every call under it, whatever the air names.
 //!
 //! A detection the carrier meter doesn't confirm raises that channel's open
 //! threshold to just above what triggered it, until the band quietens again,
@@ -129,8 +132,12 @@ impl ConvMode {
 pub struct ConvChannel {
     pub freq_hz: f64,
     pub mode: ConvMode,
-    /// The talkgroup number calls are filed under (P25: when the air names none).
+    /// The talkgroup number calls are filed under (digital: when the air
+    /// names none, unless `talkgroup_set`).
     pub talkgroup: u32,
+    /// The talkgroup was configured: calls are filed under it whatever the
+    /// air names (else it is a default, and the air's wins).
+    pub talkgroup_set: bool,
     /// Name, description, tag, group for the call record.
     pub info: Option<Talkgroup>,
     /// Open threshold, dB above the noise floor (None: [`ConvConfig::squelch_db`]).
@@ -285,7 +292,7 @@ impl ConvChannel {
     /// A channel filed under its default talkgroup: the frequency in kHz
     /// (154.430 MHz → 154430), stable however the list is ordered.
     pub fn new(freq_hz: f64, mode: ConvMode) -> Self {
-        ConvChannel { freq_hz, mode, talkgroup: Self::default_talkgroup(freq_hz), info: None, squelch_db: None, access: None, system: 0 }
+        ConvChannel { freq_hz, mode, talkgroup: Self::default_talkgroup(freq_hz), talkgroup_set: false, info: None, squelch_db: None, access: None, system: 0 }
     }
 
     pub fn default_talkgroup(freq_hz: f64) -> u32 {
@@ -879,9 +886,10 @@ impl Conventional {
             return;
         }
         let o = ch.open.as_mut().unwrap();
-        // The talkgroup: link control's (or the row's, see route), else the row's.
+        // The talkgroup: a configured one; else link control's (or the
+        // row's, see route); else the row's default.
         let row = h.row.map_or(&ch.cfg, |r| &ch.rows[r]);
-        let air_tg = h.tg;
+        let air_tg = if row.talkgroup_set { Some(row.talkgroup) } else { h.tg };
         let tg = air_tg.unwrap_or(row.talkgroup);
         if let Some(l) = &o.live[slot] {
             let too_long = max_call_s > 0.0 && now_s - l.call.start_s > max_call_s;
@@ -1155,7 +1163,7 @@ mod tests {
     }
 
     fn fm(freq_hz: f64, tg: u32) -> ConvChannel {
-        ConvChannel { freq_hz, mode: ConvMode::Fm, talkgroup: tg, info: None, squelch_db: None, access: None, system: 0 }
+        ConvChannel { freq_hz, mode: ConvMode::Fm, talkgroup: tg, talkgroup_set: false, info: None, squelch_db: None, access: None, system: 0 }
     }
 
     /// An encrypted P25 transmission on a conventional channel whose system
