@@ -866,8 +866,9 @@ pub struct Retention {
     pub max_disk_pct: f64,
 }
 
-/// The largest share of its disk the recordings folder may be limited to.
+/// The share of its disk the recordings folder may be limited to: from 1 % to this.
 pub const RETENTION_MAX_DISK_PCT: f64 = 95.0;
+pub const RETENTION_MIN_DISK_PCT: f64 = 1.0;
 
 impl Retention {
     fn set(v: f64) -> Option<f64> {
@@ -884,9 +885,9 @@ impl Retention {
         Self::set(self.max_size_gb)
     }
 
-    /// The share-of-the-disk limit, %, when set (at most [`RETENTION_MAX_DISK_PCT`]).
+    /// The share-of-the-disk limit, %, when set (1 to [`RETENTION_MAX_DISK_PCT`]).
     pub fn disk_limit_pct(&self) -> Option<f64> {
-        Self::set(self.max_disk_pct).map(|p| p.min(RETENTION_MAX_DISK_PCT))
+        Self::set(self.max_disk_pct).map(|p| p.clamp(RETENTION_MIN_DISK_PCT, RETENTION_MAX_DISK_PCT))
     }
 
     /// Whether any limit is set.
@@ -1690,6 +1691,8 @@ mod tests {
         assert!(r.active());
         assert_eq!((r.age_limit_days(), r.size_limit_gb(), r.disk_limit_pct()), (Some(30.0), None, Some(RETENTION_MAX_DISK_PCT)));
         assert_eq!(serde_json::to_value(&c.recording).unwrap()["retention"]["maxAgeDays"], 30.0);
+        let r = Retention { max_disk_pct: 0.1, ..Default::default() };
+        assert_eq!(r.disk_limit_pct(), Some(RETENTION_MIN_DISK_PCT), "a share under 1 % is 1 %");
         let r = Retention { max_age_days: -5.0, max_size_gb: f64::NAN, max_disk_pct: 0.0 };
         assert!(!r.active());
     }

@@ -2344,7 +2344,7 @@ export function Setup() {
                   min={0}
                   max={95}
                   value={c.recording.retention?.maxDiskPct ?? 0}
-                  onChange={(e) => updateConfig((x) => void (x.recording.retention = { maxAgeDays: 0, maxSizeGb: 0, ...x.recording.retention, maxDiskPct: Math.max(0, Math.min(95, Number(e.target.value) || 0)) }))}
+                  onChange={(e) => updateConfig((x) => void (x.recording.retention = { maxAgeDays: 0, maxSizeGb: 0, ...x.recording.retention, maxDiskPct: ((v) => (v > 0 ? Math.max(1, Math.min(95, v)) : 0))(Number(e.target.value) || 0) }))}
                 />
               </Field>
             </div>

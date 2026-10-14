@@ -265,7 +265,7 @@ export interface Recording extends RecordingRules {
    * Desktop: delete the oldest calls from the recordings folder past these
    * limits; each is off at 0, and those set apply together. `maxSizeGb`:
    * GB of 10^9 bytes; `maxDiskPct`: share of the capacity of the disk the
-   * folder is on (up to 95).
+   * folder is on (1 to 95).
    */
   retention?: { maxAgeDays: number; maxSizeGb: number; maxDiskPct: number };
 }

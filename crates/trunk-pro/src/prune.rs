@@ -35,6 +35,8 @@ const GB: f64 = 1e9;
 /// One call's files.
 #[derive(Debug)]
 struct Call {
+    /// Its path with the file type taken off.
+    stem: PathBuf,
     files: Vec<(PathBuf, u64)>,
     /// The latest any of its files changed.
     newest: SystemTime,
@@ -49,6 +51,8 @@ pub struct Report {
     pub bytes: u64,
     /// Why, as the log tells it.
     pub why: Vec<&'static str>,
+    /// Each call deleted whole, as its path under the folder with the file type taken off (as the history lists it).
+    pub deleted: Vec<String>,
 }
 
 /// Whether `stem` is the recorder's own name for a call: `<talkgroup>-<start>_<freq>`,
@@ -90,8 +94,9 @@ fn scan(dir: &Path) -> Vec<Call> {
             } else if m.is_file() {
                 let Some(stem) = SUFFIXES.iter().find_map(|s| name.strip_suffix(s)) else { continue };
                 let key = d.join(stem).display().to_string();
-                let t = m.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-                let c = by_call.entry(key).or_insert_with(|| Call { files: Vec::new(), newest: SystemTime::UNIX_EPOCH, bytes: 0 });
+                // (A file with no time is taken as just written: it stays.)
+                let t = m.modified().unwrap_or_else(|_| SystemTime::now());
+                let c = by_call.entry(key).or_insert_with(|| Call { stem: d.join(stem), files: Vec::new(), newest: SystemTime::UNIX_EPOCH, bytes: 0 });
                 c.files.push((p, m.len()));
                 c.newest = c.newest.max(t);
                 c.bytes += m.len();
@@ -167,7 +172,7 @@ pub fn pass(dir: &Path, r: &Retention, disk_total: Option<u64>, now: SystemTime)
     let mut rep = Report { why, ..Default::default() };
     let mut parents = std::collections::BTreeSet::new();
     for i in doomed {
-        let mut removed = 0;
+        let (mut removed, mut failed) = (0, false);
         for (p, len) in &calls[i].files {
             match fs::remove_file(p) {
                 Ok(()) => {
@@ -179,10 +184,18 @@ pub fn pass(dir: &Path, r: &Retention, disk_total: Option<u64>, now: SystemTime)
                     }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => log::warn!("Retention: couldn't delete {}: {e}", p.display()),
+                Err(e) => {
+                    failed = true;
+                    log::warn!("Retention: couldn't delete {}: {e}", p.display());
+                }
             }
         }
         rep.calls += usize::from(removed > 0);
+        if removed > 0 && !failed {
+            if let Ok(rel) = calls[i].stem.strip_prefix(dir) {
+                rep.deleted.push(rel.to_string_lossy().replace('\\', "/"));
+            }
+        }
     }
     // Folders that emptied, deepest first, up to (not including) `dir`.
     let mut dirs: Vec<PathBuf> = parents.into_iter().flat_map(|p| p.ancestors().take_while(|a| *a != dir).map(Path::to_path_buf).collect::<Vec<_>>()).collect();
@@ -215,6 +228,9 @@ pub fn start(ctx: Arc<Ctx>) {
             if r.active() && !dir.is_empty() {
                 let dir = PathBuf::from(dir);
                 let rep = pass(&dir, &r, disk_total(&dir), SystemTime::now());
+                for rel in &rep.deleted {
+                    crate::runtime::call_files(&ctx, rel, false, false);
+                }
                 if rep.files > 0 {
                     log::info!("Retention: deleted {} call(s), {} file(s), {:.1} MB from {} ({})", rep.calls, rep.files, rep.bytes as f64 / 1e6, dir.display(), rep.why.join(", "));
                 }
@@ -229,7 +245,7 @@ mod tests {
     use super::*;
 
     fn call(age_h: u64, bytes: u64, now: SystemTime) -> Call {
-        Call { files: vec![(PathBuf::from(format!("/x/{age_h}-{bytes}.wav")), bytes)], newest: now - Duration::from_secs(age_h * 3600), bytes }
+        Call { stem: PathBuf::from(format!("/x/{age_h}-{bytes}")), files: vec![(PathBuf::from(format!("/x/{age_h}-{bytes}.wav")), bytes)], newest: now - Duration::from_secs(age_h * 3600), bytes }
     }
 
     fn limits(days: f64, gb: f64, pct: f64) -> Retention {
@@ -326,6 +342,7 @@ mod tests {
         set_age(&new.join("5-200_851.0.json"), now, 2);
         let rep = pass(&root, &limits(30.0, 0.0, 0.0), None, now);
         assert_eq!((rep.calls, rep.files, rep.bytes), (1, 4, 40));
+        assert_eq!(rep.deleted, ["a/2026/01/01/5-100_851.0"], "as the history lists it");
         assert!(old.join("notes.txt").exists(), "other files stay, and so does their folder");
         assert!(!old.join("5-100_851.0.wav").exists() && !old.join("5-100_851.0.json").exists());
         assert!(new.join("5-200_851.0.wav").exists() && new.join("5-200_851.0.json").exists());

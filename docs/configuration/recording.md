@@ -70,7 +70,7 @@ and any that are set apply together. In the interface: Setup → Recording → R
 |---|:---:|---|---|---|
 | `maxAgeDays` | | `0` | number | Delete calls older than this many days |
 | `maxSizeGb` | | `0` | number | Delete the oldest calls while the folder is over this many GB (10⁹ bytes) |
-| `maxDiskPct` | | `0` | number | The same, as a percentage of the capacity of the disk `captureDir` is on. At most `95` |
+| `maxDiskPct` | | `0` | number | The same, as a percentage of the capacity of the disk `captureDir` is on, from `1` to `95` (a value outside is taken as the nearest) |
 
 ```json
 { "recording": { "retention": { "maxAgeDays": 90, "maxDiskPct": 80 } } }
@@ -94,7 +94,9 @@ and any that are set apply together. In the interface: Setup → Recording → R
 - A call's age is when its newest file last changed.
 - If both a size and a share of the disk are set, the smaller limit wins. A share can't be worked
   out when the disk's size isn't known, and is then skipped.
-- It deletes by file time, so files that were copied without keeping their times look new.
+- It deletes by file time, so files that were copied without keeping their times look new. A file
+  whose time can't be read counts as just written.
+- Calls it deletes stay in the interface's history list, marked as without audio.
 
 ### `ramSpool`
 
