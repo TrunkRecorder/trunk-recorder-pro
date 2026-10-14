@@ -5,6 +5,11 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Encryption keys are wiped from memory:** the keys in a system's keyring,
+  the keys file's text and its parsed contents, and the cipher's key-derived
+  state are overwritten when they are dropped, so a freed page doesn't keep a
+  key for a crash dump or a memory scan to find.
+
 ## [0.1.10] — 2026-10-13
 
 - **Encryption heard:** a talkgroup's page on the Radio dashboard lists
