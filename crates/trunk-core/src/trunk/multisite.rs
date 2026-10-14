@@ -18,7 +18,7 @@
 use std::collections::HashMap;
 
 use super::calls::{Call, CallId};
-use super::frames::CallFrames;
+use super::frames::{CallFrames, FrameErrors};
 use super::talkgroups::Talkgroup;
 use crate::mbe::{FRAME_SAMPLES, SAMPLE_RATE};
 
@@ -68,34 +68,37 @@ pub struct Held {
 }
 
 impl Held {
+    /// The frame errors of the audio the saved call keeps: all but its
+    /// transmissions that were encrypted and not decrypted (what a vocoder
+    /// makes of ciphertext can look clean). A site's minimum transmission
+    /// length isn't known here, so short transmissions count.
+    fn kept_errors(&self) -> std::borrow::Cow<'_, FrameErrors> {
+        let len = self.audio.len();
+        self.tx
+            .kept(len, 0.0, SAMPLE_RATE)
+            .and_then(|parts| self.frames.errors_within(&parts, len))
+            .map_or(std::borrow::Cow::Borrowed(&self.frames.errors), std::borrow::Cow::Owned)
+    }
+
     /// Seconds of audio decoded cleanly and kept: the vocoder frames not
     /// repeated, muted or lost (analog: all of it), less the transmissions
-    /// the saved call leaves out as encrypted and not decrypted — what a
-    /// vocoder makes of ciphertext can look clean. Encrypted, no key: none.
-    ///
-    /// Frame errors are kept per interval, not per transmission, so the
-    /// dropped audio is taken off in proportion.
+    /// the saved call leaves out as encrypted and not decrypted. Encrypted,
+    /// no key: none.
     pub fn clean_s(&self) -> f64 {
         if self.audio.is_empty() {
             return 0.0;
         }
-        let kept = self.kept_share();
-        let iv = &self.frames.errors.intervals;
-        if iv.is_empty() {
-            return kept * self.audio.len() as f64 / SAMPLE_RATE as f64;
+        let len = self.audio.len();
+        let parts = self.tx.kept(len, 0.0, SAMPLE_RATE);
+        let kept = parts.as_ref().and_then(|p| self.frames.errors_within(p, len));
+        let iv = &kept.as_ref().unwrap_or(&self.frames.errors).intervals;
+        if kept.is_none() && iv.is_empty() {
+            // No frames to go by (analog): what's kept is all clean.
+            let n = parts.map_or(len, |p| p.iter().map(|r| r.len()).sum());
+            return n as f64 / SAMPLE_RATE as f64;
         }
         let good: u32 = iv.iter().map(|i| i.frames - i.bad_frames).sum();
-        kept * good as f64 * FRAME_SAMPLES as f64 / SAMPLE_RATE as f64
-    }
-
-    /// The share of the audio the saved call keeps: all but its encrypted
-    /// transmissions that weren't decrypted.
-    fn kept_share(&self) -> f64 {
-        let len = self.audio.len();
-        match self.tx.kept(len, 0.0, SAMPLE_RATE) {
-            Some(parts) if len > 0 => parts.iter().map(|r| r.len()).sum::<usize>() as f64 / len as f64,
-            _ => 1.0,
-        }
+        good as f64 * FRAME_SAMPLES as f64 / SAMPLE_RATE as f64
     }
 }
 
@@ -247,7 +250,7 @@ pub fn pick(copies: &[Held], preferred: &[bool]) -> Option<usize> {
     let best = copies.iter().map(Held::clean_s).fold(0.0, f64::max);
     let rank = |i: &usize| {
         let h = &copies[*i];
-        (h.clean_s(), std::cmp::Reverse(h.frames.errors.total_errors()), -h.call.start_s)
+        (h.clean_s(), std::cmp::Reverse(h.kept_errors().total_errors()), -h.call.start_s)
     };
     let cmp = |a: &usize, b: &usize| rank(a).partial_cmp(&rank(b)).unwrap_or(std::cmp::Ordering::Equal);
     let pref = (0..copies.len()).filter(|&i| preferred.get(i) == Some(&true) && copies[i].clean_s() >= best * PREFERRED_SHARE).max_by(cmp);
@@ -340,6 +343,21 @@ mod tests {
         silent.call.encrypted = true;
         assert_eq!(pick(&[silent.clone(), held(2, 0, 0, 0, 0)], &[false, false]), Some(0), "nothing to choose by: the first to start");
         assert_eq!(pick(&[], &[]), None);
+    }
+
+    #[test]
+    fn clean_frames_are_counted_in_the_kept_transmissions_only() {
+        // The kept transmission is all bad frames, the one left out all good ones.
+        let mut h = held(1, 0, 0, 0, 0);
+        for k in 0..100 {
+            let kind = if k < 50 { Kind::Repeat } else { Kind::Voice };
+            h.frames.push(VoiceFrame { codec: Codec::Imbe, bits: vec![0; 88], e0: 0, errs: 0, erased: false, kind });
+        }
+        h.audio = vec![0.1; 100 * FRAME_SAMPLES];
+        h.tx.note(0, 0.0);
+        h.tx.note(50 * FRAME_SAMPLES, 5.0);
+        h.tx.mark_encrypted(5.0);
+        assert_eq!(h.clean_s(), 0.0, "the good frames are in the part that is left out");
     }
 
     #[test]

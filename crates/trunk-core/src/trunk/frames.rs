@@ -204,12 +204,34 @@ impl CallFrames {
         }
     }
 
+    /// Whether this call's digital audio is its frames one after another
+    /// (analog has no frames), so frames can be matched to sample ranges.
+    fn frames_match(&self, audio_len: usize) -> bool {
+        !self.stats.is_empty() && self.stats.len() * FRAME_SAMPLES == audio_len
+    }
+
+    /// The error summary of only the frames whose audio is in `ranges`
+    /// (sample ranges of the call's `audio_len` samples), the call itself
+    /// untouched. None when frames can't be matched to audio (analog).
+    pub fn errors_within(&self, ranges: &[std::ops::Range<usize>], audio_len: usize) -> Option<FrameErrors> {
+        if !self.frames_match(audio_len) {
+            return None;
+        }
+        let mut errors = FrameErrors::default();
+        for (k, &st) in self.stats.iter().enumerate() {
+            if ranges.iter().any(|r| r.contains(&(k * FRAME_SAMPLES))) {
+                errors.add_stat(st);
+            }
+        }
+        Some(errors)
+    }
+
     /// Keep only the frames whose audio is in `ranges` (sample ranges of the
     /// call's `audio_len` samples), the error summary redone for them. A
     /// call's digital audio is its frames one after another; when it isn't
     /// (analog: no frames), nothing changes.
     pub fn keep(&mut self, ranges: &[std::ops::Range<usize>], audio_len: usize) {
-        if self.stats.is_empty() || self.stats.len() * FRAME_SAMPLES != audio_len {
+        if !self.frames_match(audio_len) {
             return;
         }
         let kept = |k: usize| ranges.iter().any(|r| r.contains(&(k * FRAME_SAMPLES)));
