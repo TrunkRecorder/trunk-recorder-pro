@@ -249,6 +249,8 @@ function TalkgroupList({ s }: { s: AppState }) {
 function UnitList({ s }: { s: AppState }) {
   const l = usePlayback((x) => ({ units: x.units, f: x.filters }));
   if (!l.units.length) return null;
+  // (A radio's ID is its system's: the same number on two systems is two radios.)
+  const multi = new Set(l.units.map((u) => u.system)).size > 1;
   const pick = (u: PlaybackUnit) => setFilters(l.f.unit === u.unit ? { unit: null } : { unit: u.unit, ...(l.f.system ? {} : { system: u.system }) });
   return (
     <details className="pb-facet">
@@ -258,14 +260,17 @@ function UnitList({ s }: { s: AppState }) {
       </summary>
       <ul className="pb-list">
         {l.units.map((u) => {
-          const on = l.f.unit === u.unit;
+          const on = l.f.unit === u.unit && (l.f.system === null || l.f.system === u.system);
           const name = aliasOf(s, u.system, u.unit, u.alias || undefined);
           return (
             <li key={`${u.system}:${u.unit}`}>
               <button className={on ? "playing" : ""} onClick={() => pick(u)} aria-pressed={on}>
                 <span className="lc-tg">
                   <span className="lc-name">{name ?? u.unit}</span>
-                  <span className="muted small lc-sub">{name ? `Radio ${u.unit} · ` : ""}last {day(u.lastMs)}</span>
+                  <span className="muted small lc-sub">
+                    {multi ? `${u.system} · ` : ""}
+                    {name ? `Radio ${u.unit} · ` : ""}last {day(u.lastMs)}
+                  </span>
                 </span>
                 <span className="mono small muted">{u.calls}</span>
               </button>

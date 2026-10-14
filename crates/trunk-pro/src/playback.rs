@@ -93,7 +93,8 @@ fn list_calls(dir: &Path, from_s: i64, to_s: i64) -> Vec<(i64, PathBuf)> {
                 if depth < MAX_DEPTH {
                     stack.push((p, depth + 1));
                 }
-            } else if p.extension().is_some_and(|x| x == "json") {
+            } else if ft.is_file() && p.extension().is_some_and(|x| x == "json") {
+                // (`is_file` is false for a link: one could lead out of the recordings folder.)
                 let s = match start_from_name(&p) {
                     Some(s) => s,
                     None => e.metadata().map_or(0, |m| mtime_s(&m)),
@@ -415,5 +416,20 @@ mod tests {
         // Radio 5 was on all four calls, 6 on three, however often they spoke.
         let calls = |unit: u64| p1["units"].as_array().unwrap().iter().find(|u| u["unit"] == unit).unwrap()["calls"].clone();
         assert_eq!((calls(5), calls(6)), (json!(4), json!(3)));
+    }
+
+    /// A link in the recordings folder isn't followed: it could lead anywhere.
+    #[cfg(unix)]
+    #[test]
+    fn links_are_not_followed() {
+        let dir = fresh("links");
+        let outside = fresh("links-outside");
+        let t0 = 1_791_000_000;
+        call(&outside, "secret.json", 1, t0 * 1000, &[]);
+        call(&dir, &format!("metro/1-{t0}_1.json"), 1, t0 * 1000, &[]);
+        std::os::unix::fs::symlink(outside.join("secret.json"), dir.join(format!("metro/2-{t0}_1.json"))).unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("metro/elsewhere")).unwrap();
+        let r = query(&dir, &|_, _| true, &json!({ "from": (t0 - 100) * 1000 }), (t0 + 100) * 1000);
+        assert_eq!(r["total"], 1, "{r}");
     }
 }

@@ -215,6 +215,8 @@ let token = 0;
 
 async function play(c: CallEntry): Promise<void> {
   if (!audio) return;
+  // One sound at a time, however this call was started: not the Playback page's.
+  stopPlayback();
   const mine = ++token;
   const was = state.playing;
   set({ playing: c, position: 0, duration: c.record.call_length_ms / 1000, played: was && was !== c ? [was, ...state.played.filter((x) => x !== was)].slice(0, PLAYED_MAX) : state.played });
@@ -370,7 +372,13 @@ onRecorderMessage((m) => {
 });
 
 // Playback started on the Playback page: the feed stops.
-onPlay(() => setFeed(false));
+onPlay(() => {
+  if (state.feed) return setFeed(false);
+  // (A call picked by hand from the list plays without the feed.)
+  token++;
+  audio?.pause();
+  if (state.playing) set({ playing: null, paused: false, position: 0, duration: 0 });
+});
 
 // Live audio switched on on the Live page: the feed stops (one sound at a time).
 subscribe(() => {
