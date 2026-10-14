@@ -2,7 +2,7 @@
 name = "trunk-recorder-plugin"
 description = "Plugins for Trunk Recorder Pro: the wire protocol between the recorder and a plugin process, and an SDK for writing plugins in Rust."
 # The crate's version tracks the plugin API, not the app's.
-version = "0.2.1"
+version = "0.3.0"
 edition.workspace = true
 # Kept as low as edition 2024 allows: plugin authors build against this.
 rust-version = "1.85"

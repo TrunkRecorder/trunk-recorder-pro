@@ -17,7 +17,10 @@ use crate::schema;
 pub trait Plugin: Sized {
     /// The plugin's settings. `#[serde(default)]` on the struct lets a user
     /// leave any of them empty. The settings form is drawn from its schema
-    /// (see [`crate::schema`]). [`NoConfig`] for none.
+    /// (see [`crate::schema`]). [`NoConfig`] for none. A system can override
+    /// any of them (another server for it, say): read them for a system from
+    /// [`System::settings`], and from [`Setup::config`] only for what isn't
+    /// any one system's.
     type Config: DeserializeOwned + JsonSchema;
     /// Settings for each system, when the plugin needs some (an API key per
     /// system, say). [`NoConfig`] for none.
@@ -48,9 +51,11 @@ pub use crate::schema::NoConfig;
 /// What [`Plugin::start`] gets.
 #[derive(Clone, Debug)]
 pub struct Setup<C, S> {
+    /// The plugin's settings for the whole recorder (each system's, with
+    /// its overrides: [`System::settings`]).
     pub config: C,
-    /// Every system, with the plugin's settings for it (`None`: left empty).
-    pub systems: Vec<System<S>>,
+    /// Every system, with the plugin's settings for it.
+    pub systems: Vec<System<C, S>>,
     pub host: HostInfo,
     pub capture_dir: PathBuf,
     /// The plugin's own folder, kept across restarts and upgrades.
@@ -62,12 +67,12 @@ pub struct Setup<C, S> {
 impl<C, S> Setup<C, S> {
     /// The system an event's `system` names. (Its number is for this run
     /// only; keep anything you store by [`System::short_name`].)
-    pub fn system(&self, index: u16) -> Option<&System<S>> {
+    pub fn system(&self, index: u16) -> Option<&System<C, S>> {
         self.systems.iter().find(|s| s.index == index)
     }
     /// The system with this short name — its identity: every event carries
     /// it (`short_name`, or a concluded call's `call.short_name`).
-    pub fn system_named(&self, short_name: &str) -> Option<&System<S>> {
+    pub fn system_named(&self, short_name: &str) -> Option<&System<C, S>> {
         self.systems.iter().find(|s| s.short_name == short_name)
     }
     /// Whether `call.concluded` will carry `format` ([`format`](mod@format)).
@@ -77,14 +82,18 @@ impl<C, S> Setup<C, S> {
 }
 
 #[derive(Clone, Debug)]
-pub struct System<S> {
+pub struct System<C, S> {
     /// The number events carry for it, for this run only.
     pub index: u16,
     /// Its identity: unique among the recorder's systems, and what users know it by.
     pub short_name: String,
     /// "p25" | "smartnet" | "dmr" | "nxdn" | "conventional"
     pub kind: String,
+    /// The plugin's settings for this system (`None`: left empty).
     pub config: Option<S>,
+    /// The plugin's own settings ([`Setup::config`]) as they are for this
+    /// system, with any it overrides.
+    pub settings: C,
 }
 
 /// The way back to the recorder: logs, health, results. Cheap to clone and
@@ -245,14 +254,18 @@ fn start<P: Plugin>(host: Host, hello: Hello) -> Result<P, String> {
     if hello.api != 0 && hello.api < API_VERSION {
         return Err(format!("this plugin needs a newer recorder (plugin API {API_VERSION}, the recorder has {})", hello.api));
     }
-    let config: P::Config = parse(hello.config, "settings")?;
+    let config: P::Config = parse(hello.config.clone(), "settings")?;
     let mut systems = Vec::new();
     for s in hello.systems {
+        let settings = match s.settings {
+            Value::Null => parse::<P::Config>(hello.config.clone(), "settings")?,
+            v => parse::<P::Config>(v, &format!("settings for {}", s.short_name))?,
+        };
         let config = match s.config {
             Value::Null => None,
             v => Some(parse::<P::SystemConfig>(v, &format!("settings for {}", s.short_name))?),
         };
-        systems.push(System { index: s.index, short_name: s.short_name, kind: s.kind, config });
+        systems.push(System { index: s.index, short_name: s.short_name, kind: s.kind, config, settings });
     }
     let setup = Setup { config, systems, host: hello.host, capture_dir: hello.capture_dir, data_dir: hello.data_dir, audio_formats: hello.audio_formats };
     P::start(host, setup)
@@ -289,4 +302,47 @@ macro_rules! manifest {
             ..Default::default()
         }
     }};
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testing;
+    use serde_json::json;
+
+    #[derive(serde::Deserialize, schemars::JsonSchema, Default)]
+    #[serde(default)]
+    struct Config {
+        server: String,
+        retries: u32,
+    }
+
+    /// Says each system's server.
+    struct Servers;
+
+    impl Plugin for Servers {
+        type Config = Config;
+        type SystemConfig = NoConfig;
+        fn manifest() -> Manifest {
+            Manifest { id: "servers".into(), ..Default::default() }
+        }
+        fn start(host: Host, setup: Setup<Config, NoConfig>) -> Result<Self, String> {
+            for s in &setup.systems {
+                host.info(format!("{} {} {}", s.short_name, s.settings.server, s.settings.retries));
+            }
+            Ok(Servers)
+        }
+    }
+
+    /// A system's settings are the plugin's with what it overrides.
+    #[test]
+    fn a_system_can_override_the_plugins_settings() {
+        let dir = testing::temp_dir("sdk");
+        let mut h = testing::hello(&dir, json!({ "server": "https://a", "retries": 3 }));
+        h.systems.push(SystemInfo { index: 1, short_name: "sys2".into(), kind: "p25".into(), settings: json!({ "server": "https://b", "retries": 3 }), ..Default::default() });
+        let out = testing::run::<Servers>([HostMessage::Hello(h)]);
+        assert!(out.ready());
+        let said: Vec<String> = out.logs().into_iter().map(|(_, t)| t).collect();
+        assert_eq!(said, ["sys1 https://a 3", "sys2 https://b 3"]);
+    }
 }

@@ -5728,7 +5728,7 @@
           }
         }
       ],
-      "description": "A system's settings for a plugin: one copy of it, or several (each after the first runs as a process of its own, for the systems that have it)."
+      "description": "A system's settings for a plugin: one copy of it, or several (each after the first runs as a process of its own, for the systems that have it). `override` in one holds the plugin's own settings it changes for this system (another server, say); those it leaves out are the plugin's."
     },
     "SystemStatus": {
       "type": "object",
