@@ -349,9 +349,10 @@ async function pumpFile(source: number, f: File, rateHz: number, realtime: boole
   const chunk = 1 << 17; // 64 k samples
   const t0 = performance.now();
   const mine = session;
-  for (let off = 0; running && off < f.size; off += chunk) {
+  for (let off = 0; running && session === mine && off < f.size; off += chunk) {
     const bytes = new Uint8Array(await f.slice(off, Math.min(f.size, off + chunk)).arrayBuffer());
-    if (!running || !session) return;
+    // (A restart during the read: these bytes are the old run's.)
+    if (!running || !session || session !== mine) return;
     const t = performance.now();
     session.push(source, bytes, 0, wallMs());
     session.add_busy_ms(performance.now() - t);
