@@ -71,6 +71,9 @@ built for the old one would break.
 
 `web/`: `npm run dev` serves the interface with hot reload on :5173, talking to
 a running `trunk-pro` on :8080.
+How the interface looks and is organized (type, tokens, Setup's sections,
+cards and groups, wording) is in [Interface style](developer/ui-style.md);
+new screens should follow it.
 
 The browser version additionally needs the `wasm32-unknown-unknown` target and
 `wasm-bindgen-cli` at the version in `Cargo.lock` (0.2.129):

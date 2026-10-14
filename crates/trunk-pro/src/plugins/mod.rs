@@ -12,6 +12,11 @@
 //! }
 //! ```
 //!
+//! A system can override some of a plugin's settings for itself (another
+//! server for it, say): `"openmhz": { "apiKey": "…", "override": { "server": "…" } }`.
+//! The plugin is told of each system's settings, the plugin's with its
+//! overrides, along with its own ([`host`] does the merging).
+//!
 //! A system can have several copies of a plugin (a list of settings in place
 //! of one, `"openmhz": [{ "apiKey": "a" }, { "apiKey": "b" }]`, to upload it
 //! to two places, say). Each copy after the first runs as a process of its
@@ -193,7 +198,7 @@ pub fn describe(exe: &Path) -> Result<Manifest, String> {
 pub fn systems_of(cfg: &crate::config::Config) -> Vec<trunk_recorder_plugin::SystemInfo> {
     cfg.call_systems()
         .into_iter()
-        .map(|s| trunk_recorder_plugin::SystemInfo { index: s.index, short_name: s.short_name.to_string(), kind: s.kind.into(), config: Value::Null })
+        .map(|s| trunk_recorder_plugin::SystemInfo { index: s.index, short_name: s.short_name.to_string(), kind: s.kind.into(), ..Default::default() })
         .collect()
 }
 

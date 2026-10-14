@@ -147,7 +147,8 @@ pub struct Spec {
     pub copy: usize,
     pub exe: PathBuf,
     pub config: Value,
-    /// Its settings for each system, by short name.
+    /// Its settings for each system, by short name; [`OVERRIDE`] in one
+    /// overrides some of `config` for that system.
     pub systems: BTreeMap<String, Value>,
     /// Its data folder (None: the usual, in the config folder).
     pub data_dir: Option<PathBuf>,
@@ -204,15 +205,45 @@ impl PluginHost {
                     if let super::guard::Verdict::Acknowledged(to) = &s.decrypted {
                         notes(Note::Log { plugin: s.id.clone(), level: Level::Warn, text: format!("RECEIVES DECRYPTED CALLS (plugins.{0}.shareDecrypted): every call decrypted with your keys is sent to it, and it sends to {to}. Remove plugins.{0}.shareDecrypted to stop.", super::parse_label(&s.id).0) });
                     }
+                    // Each system's settings, and the plugin's as they are for it.
+                    let mut settings = BTreeMap::new();
+                    // Required settings left empty, and for which systems ("": for none).
+                    let mut unset: Vec<(String, Vec<String>)> = Vec::new();
+                    let mut note_unset = |field: String, system: &str| match unset.iter_mut().find(|(f, _)| *f == field) {
+                        Some((_, on)) => on.push(system.to_string()),
+                        None => unset.push((field, vec![system.to_string()])),
+                    };
+                    let mut systems = BTreeMap::new();
+                    for (name, entry) in std::mem::take(&mut s.systems) {
+                        let (own, merged, unknown) = resolve(m.config.as_ref(), &s.config, entry);
+                        for k in unknown {
+                            notes(Note::Log { plugin: s.id.clone(), level: Level::Warn, text: format!("{name}: \"{k}\" isn't one of its settings, so it can't be overridden; ignored") });
+                        }
+                        for f in unset_required(m.config.as_ref(), merged.as_ref().unwrap_or(&s.config)) {
+                            note_unset(f, &name);
+                        }
+                        if let Some(v) = merged {
+                            settings.insert(name.clone(), v);
+                        }
+                        systems.insert(name, own);
+                    }
+                    s.systems = systems;
+                    // (Used by no system: its own settings decide.)
+                    if s.systems.is_empty() {
+                        unset_required(m.config.as_ref(), &s.config).into_iter().for_each(|f| note_unset(f, ""));
+                    }
                     // Not set up yet (the interface says so too): it would only fail.
-                    let unset = unset_required(m.config.as_ref(), &s.config);
                     if !unset.is_empty() {
-                        let text = format!("not started: {} {} set", unset.join(", "), if unset.len() == 1 { "isn't" } else { "aren't" });
+                        let what: Vec<String> = unset
+                            .iter()
+                            .map(|(f, on)| if on.iter().all(|x| x.is_empty()) { f.clone() } else { format!("{f} (for {})", on.join(", ")) })
+                            .collect();
+                        let text = format!("not started: {} {} set", what.join(", "), if unset.len() == 1 { "isn't" } else { "aren't" });
                         notes(Note::State { plugin: s.id.clone(), state: State::Warning, message: text.clone() });
                         notes(Note::Log { plugin: s.id, level: Level::Warn, text });
                         continue;
                     }
-                    ready.push((s, m));
+                    ready.push((s, m, settings));
                 }
                 Err(e) => {
                     notes(Note::State { plugin: s.id.clone(), state: State::Error, message: e.clone() });
@@ -220,10 +251,10 @@ impl PluginHost {
                 }
             }
         }
-        let wants_m4a = ready.iter().any(|(_, m)| m.subscribes(topic::CALL_CONCLUDED) && m.wants_format(format::M4A));
+        let wants_m4a = ready.iter().any(|(_, m, _)| m.subscribes(topic::CALL_CONCLUDED) && m.wants_format(format::M4A));
         let encoder = if wants_m4a { Encoder::find(&audio.encoder) } else { None };
         if wants_m4a && encoder.is_none() {
-            let who: Vec<&str> = ready.iter().filter(|(_, m)| m.wants_format(format::M4A)).map(|(s, _)| s.id.as_str()).collect();
+            let who: Vec<&str> = ready.iter().filter(|(_, m, _)| m.wants_format(format::M4A)).map(|(s, _, _)| s.id.as_str()).collect();
             let text = if audio.encoder == "none" {
                 format!("M4A encoding is off: {} get WAV only", who.join(", "))
             } else {
@@ -235,7 +266,7 @@ impl PluginHost {
         let mut live_audio = false;
         let mut plugins = Vec::new();
         let mut queues = Vec::new();
-        for (s, m) in ready {
+        for (s, m, settings) in ready {
             topics.calls |= m.subscribes(topic::CALL_START) || m.subscribes(topic::CALL_END);
             topics.units |= m.subscribes(topic::UNIT);
             topics.status |= m.subscribes(topic::STATUS);
@@ -250,7 +281,14 @@ impl PluginHost {
                 api: API_VERSION,
                 host: HostInfo { name: "trunk-pro".into(), version: env!("CARGO_PKG_VERSION").into() },
                 config: s.config,
-                systems: systems.iter().map(|y| SystemInfo { config: s.systems.get(&y.short_name).cloned().unwrap_or(Value::Null), ..y.clone() }).collect(),
+                systems: systems
+                    .iter()
+                    .map(|y| SystemInfo {
+                        config: s.systems.get(&y.short_name).cloned().unwrap_or(Value::Null),
+                        settings: settings.get(&y.short_name).cloned().unwrap_or(Value::Null),
+                        ..y.clone()
+                    })
+                    .collect(),
                 capture_dir: capture_dir.to_path_buf(),
                 data_dir: data_dir.clone(),
                 audio_formats: formats,
@@ -461,6 +499,32 @@ impl Drop for PluginHost {
 /// list, or `"x-required": true` — that `values` leaves empty, by title, as
 /// the interface's "Needs setting up" finds them. Per-system settings don't
 /// count: a plugin skips a system that isn't set up.
+/// The key in a system's settings for a plugin that holds the plugin's own
+/// settings it overrides: `{ "apiKey": "…", "override": { "server": "…" } }`.
+pub const OVERRIDE: &str = "override";
+
+/// A system's settings for a plugin (`entry`): its own (without
+/// [`OVERRIDE`]); the plugin's (`config`) with what it overrides (None: it
+/// overrides none); and the keys it overrides that the plugin's `schema`
+/// has no setting for (left out).
+fn resolve(schema: Option<&Value>, config: &Value, mut entry: Value) -> (Value, Option<Value>, Vec<String>) {
+    let over = match entry.as_object_mut().and_then(|o| o.remove(OVERRIDE)) {
+        Some(Value::Object(o)) if !o.is_empty() => o,
+        _ => return (entry, None, Vec::new()),
+    };
+    let props = schema.and_then(|s| s.get("properties")).and_then(Value::as_object);
+    let mut merged = config.as_object().cloned().unwrap_or_default();
+    let mut unknown = Vec::new();
+    for (k, v) in over {
+        if !props.is_some_and(|p| p.contains_key(&k)) {
+            unknown.push(k);
+        } else if !v.is_null() {
+            merged.insert(k, v);
+        }
+    }
+    (entry, Some(Value::Object(merged)), unknown)
+}
+
 fn unset_required(schema: Option<&Value>, values: &Value) -> Vec<String> {
     let Some(schema) = schema else { return Vec::new() };
     let props = schema.get("properties").and_then(Value::as_object);
@@ -801,5 +865,82 @@ mod tests {
         let said = said.lock().unwrap();
         assert_eq!(said.len(), 1, "{said:?}");
         assert!(said[0].starts_with("openmhz: is NOT given decrypted calls") && said[0].contains("plugins.openmhz.shareDecrypted"), "{said:?}");
+    }
+
+    /// What a system overrides of a plugin's settings, kept apart from its own.
+    #[test]
+    fn a_system_overrides_the_plugins_settings() {
+        use serde_json::json;
+        let schema = json!({ "properties": { "server": { "type": "string" }, "retries": { "type": "integer" } } });
+        let config = json!({ "server": "https://a", "retries": 3 });
+        let (own, merged, unknown) = resolve(Some(&schema), &config, json!({ "apiKey": "k", "override": { "server": "https://b", "colour": "red" } }));
+        assert_eq!(own, json!({ "apiKey": "k" }));
+        assert_eq!(merged, Some(json!({ "server": "https://b", "retries": 3 })));
+        assert_eq!(unknown, ["colour"]);
+        assert_eq!(resolve(Some(&schema), &config, json!({ "apiKey": "k" })), (json!({ "apiKey": "k" }), None, vec![]));
+        assert_eq!(resolve(Some(&schema), &config, json!({ "apiKey": "k", "override": {} })).1, None);
+        // Nothing for the whole recorder: the override is all there is.
+        assert_eq!(resolve(Some(&schema), &Value::Null, json!({ "override": { "server": "https://b" } })).1, Some(json!({ "server": "https://b" })));
+    }
+
+    /// A plugin (a shell script) that keeps the hello it's sent.
+    #[cfg(unix)]
+    fn hello_keeper(dir: &Path) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let exe = dir.join("keeper");
+        let manifest = r#"{"id":"keeper","name":"Keeper","version":"1.0.0","api":1,"subscribe":["call.concluded"],
+            "config":{"type":"object","properties":{"server":{"type":"string","title":"Server","x-required":true}}}}"#.replace('\n', " ");
+        std::fs::write(&exe, format!("#!/bin/sh\nif [ \"$1\" = --describe ]; then echo '{manifest}'; exit 0; fi\nread line\necho \"$line\" > hello.json\necho '{{\"type\":\"ready\"}}'\ncat > /dev/null\n")).unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        exe
+    }
+
+    /// Each system gets the plugin's settings with its overrides; a required
+    /// one may come from the systems instead of the plugin's own settings.
+    #[cfg(unix)]
+    #[test]
+    fn systems_get_the_settings_they_override() {
+        use serde_json::json;
+        let dir = std::env::temp_dir().join(format!("trunk-pro-host-override-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = hello_keeper(&dir);
+        let notes_seen = Arc::new(Mutex::new(Vec::new()));
+        let seen = notes_seen.clone();
+        let notes: Notes = Arc::new(move |n| seen.lock().unwrap().push(n));
+        let systems: Vec<SystemInfo> = ["a", "b"].iter().enumerate().map(|(i, n)| SystemInfo { index: i as u16, short_name: n.to_string(), kind: "p25".into(), ..Default::default() }).collect();
+        let spec = |config: Value, a: Value, b: Value, data: &str| Spec {
+            id: "keeper".into(),
+            copy: 0,
+            exe: exe.clone(),
+            config,
+            systems: BTreeMap::from([("a".to_string(), a), ("b".to_string(), b)]),
+            data_dir: Some(dir.join(data)),
+            decrypted: super::super::guard::Verdict::Withheld(String::new()),
+        };
+        let audio = super::super::AudioSettings::default();
+
+        // No server for the recorder, but each system names one.
+        let s = spec(Value::Null, json!({ "k": 1, "override": { "server": "https://a" } }), json!({ "override": { "server": "https://b" } }), "both");
+        let mut host = PluginHost::start(vec![s], &audio, &systems, &dir, notes.clone());
+        assert!(!host.is_empty(), "{:?}", notes_seen.lock().unwrap());
+        let hello = dir.join("both/hello.json");
+        let t0 = Instant::now();
+        while !hello.exists() && t0.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        host.shutdown(Duration::from_secs(1));
+        let h: Value = serde_json::from_str(&std::fs::read_to_string(&hello).unwrap()).unwrap();
+        assert_eq!(h["systems"][0]["config"], json!({ "k": 1 }), "the override isn't the system's own setting");
+        assert_eq!(h["systems"][0]["settings"], json!({ "server": "https://a" }));
+        assert_eq!(h["systems"][1]["settings"], json!({ "server": "https://b" }));
+
+        // One system without: not started, and it's named.
+        let s = spec(Value::Null, json!({ "override": { "server": "https://a" } }), json!({ "k": 2 }), "one");
+        let host = PluginHost::start(vec![s], &audio, &systems, &dir, notes.clone());
+        assert!(host.is_empty());
+        let said = notes_seen.lock().unwrap().iter().rev().find_map(|n| if let Note::State { message, .. } = n { Some(message.clone()) } else { None });
+        assert_eq!(said.as_deref(), Some("not started: Server (for b) isn't set"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
