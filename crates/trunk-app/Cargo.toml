@@ -12,4 +12,13 @@ trunk-core.workspace = true
 trunk-recorder-plugin.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-zeroize = "1"
+# KFDtool's encrypted key container (`ekc`): PBKDF2-HMAC-SHA512, AES-256-CBC, compressed XML. Pure Rust.
+pbkdf2 = "0.13.0"
+sha2 = "0.11.1"
+hmac = "0.13.0"
+aes = { version = "0.9.3", features = ["zeroize"] }
+cbc = { version = "0.2.1", features = ["zeroize"] }
+roxmltree = "0.21.1"
+base64 = "0.23.1"
+zeroize = "1.9.1"
+flate2 = { version = "1.1.10", default-features = false, features = ["rust_backend"] }

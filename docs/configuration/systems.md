@@ -171,6 +171,25 @@ The keys live in a file of their own, never in the config, which the interface r
 - The talkgroup page on the Radio dashboard lists the ciphers heard (algorithm and key ID), which
   tells you which keys a talkgroup needs.
 
+### Keys in a KFDtool container
+
+`keys` can name a KFDtool key container (`.ekc`) instead of a JSON file. The container is encrypted
+with its own password, so keys at rest are never in the clear on the recorder, and the password sits
+in a separate file named by `keysPasswordFile` (relative to the config file's folder, or absolute).
+Conventional systems take both settings too.
+
+```json
+{ "keys": "keys.ekc", "keysPasswordFile": "/run/secrets/keys-password" }
+```
+
+- The password file holds the password on its first line. On Unix it must not be readable by
+  others (`chmod 600`), except under `/run/secrets`, where the container runtime sets the modes;
+  otherwise the start is refused.
+- Every voice key in the container is used by key ID on any talkgroup. Key-encryption keys, and
+  algorithms that can't be decrypted (DES-XL), are listed in the log and left out; the rest still
+  load. A container with the wrong password, or a damaged one, stops the start.
+- `keysPasswordFile` with a JSON keys file, or a container without `keysPasswordFile`, is an error.
+
 ## Talkgroup file
 
 `talkgroupsCsv` holds a Trunk Recorder talkgroup file, as text. RadioReference's talkgroup CSV export

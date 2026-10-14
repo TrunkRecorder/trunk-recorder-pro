@@ -773,6 +773,10 @@
         "keys": {
           "type": "string",
           "description": "Desktop: its P25 channels' encryption keys file (as System's)."
+        },
+        "keysPasswordFile": {
+          "type": "string",
+          "description": "Desktop: the password file for `keys`, when that is a key container (as System's)."
         }
       },
       "required": [
@@ -5673,6 +5677,10 @@
         "keys": {
           "type": "string",
           "description": "Desktop: its P25 encryption keys file, absolute or relative to the config file's folder (read when recording starts; never sent here)."
+        },
+        "keysPasswordFile": {
+          "type": "string",
+          "description": "Desktop: the file holding the password of `keys` when that is a KFDtool key container (`.ekc`); never sent here."
         },
         "plugins": {
           "type": "object",

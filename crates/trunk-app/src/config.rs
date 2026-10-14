@@ -334,6 +334,10 @@ pub struct System {
     /// relative to the config file's folder. Empty: none.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub keys: String,
+    /// The file holding the password of `keys`, when that is a KFDtool key
+    /// container (`.ekc`) rather than a JSON file. Empty: none.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub keys_password_file: String,
     /// Plugins' settings for this system, by plugin id (as each plugin's
     /// `system_config` schema describes them); a list for several copies of one.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
@@ -407,6 +411,7 @@ impl Default for System {
         System {
             other: BTreeMap::new(),
             keys: String::new(),
+            keys_password_file: String::new(),
             short_name: "sys1".into(),
             name: String::new(),
             kind: "p25".into(),
@@ -526,6 +531,9 @@ pub struct Conventional {
     /// Its encryption keys file, for its P25 channels (as [`System::keys`]).
     #[serde(skip_serializing_if = "String::is_empty")]
     pub keys: String,
+    /// The password file for `keys`, when that is a key container (as [`System::keys_password_file`]).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub keys_password_file: String,
     /// Keys this version doesn't know (a newer version's, a hand edit's):
     /// kept, and saved back as they were.
     #[serde(flatten)]
@@ -562,6 +570,7 @@ impl Default for Conventional {
         Conventional {
             other: BTreeMap::new(),
             keys: String::new(),
+            keys_password_file: String::new(),
             short_name: "conv".into(),
             name: String::new(),
             enabled: true,
@@ -1194,15 +1203,19 @@ impl Config {
     }
 
     /// Read the keys files of the systems that name one: (short name, its
-    /// keys), for [`crate::session::Session::set_keys`]. An error names the
-    /// file and what is wrong in it (never a key).
-    pub fn load_keys(&self, config_path: &Path) -> Result<Vec<(String, std::sync::Arc<trunk_core::p25::crypt::Keyring>)>, String> {
-        let trunked = self.active_systems().map(|s| (&s.short_name, &s.keys));
-        let conv = self.conventional.iter().filter(|c| c.enabled).map(|c| (&c.short_name, &c.keys));
+    /// keys, container keys left out), for [`crate::session::Session::set_keys`].
+    /// An error names the file and what is wrong in it (never a key).
+    #[allow(clippy::type_complexity)]
+    pub fn load_keys(&self, config_path: &Path) -> Result<Vec<(String, std::sync::Arc<trunk_core::p25::crypt::Keyring>, Vec<String>)>, String> {
+        let trunked = self.active_systems().map(|s| (&s.short_name, &s.keys, &s.keys_password_file));
+        let conv = self.conventional.iter().filter(|c| c.enabled).map(|c| (&c.short_name, &c.keys, &c.keys_password_file));
         trunked
             .chain(conv)
-            .filter_map(|(name, setting)| crate::keys::path(setting, config_path).map(|p| (name, p)))
-            .map(|(name, p)| crate::keys::load(&p).map(|r| (name.clone(), std::sync::Arc::new(r))).map_err(|e| format!("{name}: {e}")))
+            .filter_map(|(name, setting, pw)| crate::keys::path(setting, config_path).map(|p| (name, p, crate::keys::path(pw, config_path))))
+            .map(|(name, p, pw)| {
+                let l = crate::keys::load(&p, pw.as_deref()).map_err(|e| format!("{name}: {e}"))?;
+                Ok((name.clone(), std::sync::Arc::new(l.ring), l.skipped))
+            })
             .collect()
     }
 

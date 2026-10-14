@@ -166,6 +166,8 @@ export interface System {
   siteGroup?: string;
   /** Desktop: its P25 encryption keys file, absolute or relative to the config file's folder (read when recording starts; never sent here). */
   keys?: string;
+  /** Desktop: the file holding the password of `keys` when that is a KFDtool key container (`.ekc`); never sent here. */
+  keysPasswordFile?: string;
   /** Plugins' settings for this system, by plugin id (each plugin's `system_config` schema); a list for several copies of one. */
   plugins?: Record<string, SystemPluginValues>;
 }
@@ -289,6 +291,8 @@ export interface Conventional {
   unitNames?: UnitNames;
   /** Desktop: its P25 channels' encryption keys file (as System's). */
   keys?: string;
+  /** Desktop: the password file for `keys`, when that is a key container (as System's). */
+  keysPasswordFile?: string;
 }
 
 export interface Config {

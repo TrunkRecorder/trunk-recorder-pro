@@ -184,7 +184,10 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
     let epoch_at = Instant::now();
     let mut session = Session::new(cfg.clone(), epoch_ms, &|name| fs::read_to_string(bandplan_path(name)).ok(), local_offset)?;
     session.attach(ctx.shared.clone());
-    for (name, ring) in keys {
+    for (name, ring, skipped) in keys {
+        for s in skipped {
+            log::warn!("{name}: key left out: {s}");
+        }
         log::info!("{name}: {} encryption key{} loaded", ring.keys().len(), if ring.keys().len() == 1 { "" } else { "s" });
         session.set_keys(&name, Some(ring));
     }
