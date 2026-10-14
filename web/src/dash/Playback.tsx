@@ -93,13 +93,13 @@ function Player({ s }: { s: AppState }) {
         <span style={{ width: `${pct}%`, background: systemColor(s.config, system) }} />
       </div>
       <div className="row pb-controls">
-        <button className="btn ghost" onClick={skipBack} title="Start of this call, or the call before">
+        <button className="btn ghost" onClick={skipBack} title="Start of this call, or the call before" aria-label="Previous call">
           ⏮
         </button>
         <button className="btn primary" onClick={togglePause}>
           {p.paused ? "Play" : "Pause"}
         </button>
-        <button className="btn ghost" onClick={skipNext} title="The next call in the list">
+        <button className="btn ghost" onClick={skipNext} title="The next call in the list" aria-label="Next call">
           ⏭
         </button>
         <button className="btn ghost" onClick={stopPlayback}>
@@ -339,7 +339,7 @@ export function PlaybackPage() {
   // Search on opening, and again once the recorder is reachable.
   useEffect(() => {
     if (s.connected && !searched) search();
-  }, [s.connected]);
+  }, [s.connected, searched]);
   return (
     <div className="playback">
       <div className="pb-main">

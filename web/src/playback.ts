@@ -157,7 +157,8 @@ onRecorderMessage((m) => {
     truncated: first ? m.truncated : state.truncated || m.truncated,
     searched: true,
     loading: false,
-    systems: m.systems.length || first ? m.systems : state.systems,
+    // (Later pages carry no systems of their own: keep the first page's.)
+    systems: first || m.systems.length > 0 ? m.systems : state.systems,
     talkgroups: m.talkgroups ?? state.talkgroups,
     units: m.units ?? state.units,
   });
