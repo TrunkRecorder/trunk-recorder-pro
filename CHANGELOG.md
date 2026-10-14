@@ -5,6 +5,20 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **A system can override a plugin's settings.** Each plugin on a system's
+  card in Setup now has a section for that system's own values of the
+  plugin's settings, such as the server it uploads to; anything left empty
+  stays as set for every system. It works for a single copy of a plugin or
+  for each of several, so one system can upload to two Rdio Scanner servers.
+  In the config this is `override` in the system's settings for the plugin.
+  A required setting, such as Rdio Scanner's server, can be left empty for
+  the whole recorder when every system that uses the plugin sets it.
+- **Plugin SDK 0.3.0.** Each system in `Setup` carries `settings`: the
+  plugin's settings with that system's overrides. `CallQueue::start_by`
+  gives each server a queue of its own (workers, retries, capacity and
+  endpoint status), so a server that's down doesn't hold up the others.
+  Breaking: `System` takes the config type too, `System<C, S>`.
+
 - **Archive settings, clearer and predictable.** The three settings that
   decide what of a call stays in the recordings folder are now under
   **Archive** in Setup's Recording tab: **Keep audio**, **Keep call JSON**

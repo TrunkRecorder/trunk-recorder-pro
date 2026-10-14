@@ -1154,3 +1154,8 @@ table.calls tr.ignored td { opacity: 0.55; }
 .tg-cell:hover { background: var(--panel-2); }
 .tg-cell-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tg-cell.avoided .tg-cell-name { color: var(--warn); text-decoration: line-through; }
+.plugin-override { margin-top: 8px; }
+.plugin-override > summary { cursor: pointer; font-size: 13px; padding: 4px 0; }
+.plugin-override[open] > summary { margin-bottom: 6px; }
+.plugin-override > .field-hint { margin: 0 0 8px; }
+.plugin-override > .btn { margin-top: 8px; }

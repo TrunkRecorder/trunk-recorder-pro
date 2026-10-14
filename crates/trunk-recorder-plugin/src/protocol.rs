@@ -132,7 +132,8 @@ pub struct Hello {
     /// The recorder's protocol version.
     pub api: u32,
     pub host: HostInfo,
-    /// The plugin's settings, as the user entered them (see [`Manifest::config`]).
+    /// The plugin's settings, as the user entered them (see [`Manifest::config`]);
+    /// each system's, with its overrides, are in [`SystemInfo::settings`].
     pub config: Value,
     /// Every system calls can come from, including conventional channels.
     pub systems: Vec<SystemInfo>,
@@ -173,6 +174,11 @@ pub struct SystemInfo {
     /// The plugin's settings for this system (see [`Manifest::system_config`]);
     /// null when the user left them empty.
     pub config: Value,
+    /// The plugin's own settings ([`Hello::config`]) as they are for this
+    /// system: a system can override some of them (another server, say).
+    /// Null: as in `Hello::config`.
+    #[serde(skip_serializing_if = "Value::is_null")]
+    pub settings: Value,
 }
 
 /// A call as it starts or ends.

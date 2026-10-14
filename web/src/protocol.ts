@@ -807,12 +807,29 @@ export interface PluginRuntime {
 
 export type PluginValues = Record<string, unknown>;
 /** A system's settings for a plugin: one copy of it, or several (each after
- * the first runs as a process of its own, for the systems that have it). */
+ * the first runs as a process of its own, for the systems that have it).
+ * `override` in one holds the plugin's own settings it changes for this
+ * system (another server, say); those it leaves out are the plugin's. */
 export type SystemPluginValues = PluginValues | PluginValues[];
+
+/** The key in a system's settings for a plugin that holds the plugin settings it overrides. */
+export const OVERRIDE = "override";
 
 /** A system's settings for a plugin, one per copy of it. */
 export function pluginCopies(v: SystemPluginValues | undefined): PluginValues[] {
   return v === undefined || v === null ? [] : Array.isArray(v) ? v : [v];
+}
+
+/** A copy's own settings (without what it overrides). */
+export function copyOwn(v: PluginValues | undefined): PluginValues {
+  const { [OVERRIDE]: _, ...own } = v ?? {};
+  return own;
+}
+
+/** The plugin settings a copy overrides. */
+export function copyOverride(v: PluginValues | undefined): PluginValues {
+  const o = v?.[OVERRIDE];
+  return o && typeof o === "object" && !Array.isArray(o) ? (o as PluginValues) : {};
 }
 
 /** An installed plugin (or one the config names), and what it is. Whether it's on, and its settings, are in the config. */

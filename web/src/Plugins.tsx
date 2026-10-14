@@ -22,6 +22,7 @@ import {
   setM4a,
   setPluginEnabled,
   setPluginSettings,
+  setSystemPluginOverride,
   setSystemPluginSettings,
   settingsOpened,
   setView,
@@ -33,7 +34,7 @@ import {
 import { IconPuzzle, IconUpload, IconWave } from "./Onboarding.tsx";
 import { showTodo } from "./Setup.tsx";
 import { openTodos } from "./todo.ts";
-import { pluginCopies } from "./protocol.ts";
+import { copyOverride, copyOwn, pluginCopies } from "./protocol.ts";
 import type { Config, PluginInfo, PluginInstall, PluginManifest, PluginSchema, PluginStore, PluginValues, PluginsList, StoreListing } from "./protocol.ts";
 
 /** Is version `a` newer than `b`? Semver: a prerelease is older than its release. */
@@ -126,9 +127,35 @@ function systemSetUp(m: PluginManifest, values: PluginValues | undefined, inheri
   return fieldsOf(m.system_config).some(([k]) => !emptyValue(values?.[k]) || !emptyValue(inherited?.[k]));
 }
 
+/** …and one copy of it: its own settings, and the plugin's with what it overrides. */
+function copySetUp(m: PluginManifest, copy: PluginValues | undefined, every: PluginValues | undefined): boolean {
+  return systemSetUp(m, copyOwn(copy), every) && missing(m.config, copyOverride(copy), every).length === 0;
+}
+
 /** …and every copy of it, when it has several. */
-function copiesSetUp(m: PluginManifest, copies: PluginValues[], inherited: PluginValues | undefined): boolean {
-  return copies.length ? copies.every((v) => systemSetUp(m, v, inherited)) : systemSetUp(m, undefined, inherited);
+function copiesSetUp(m: PluginManifest, copies: PluginValues[], every: PluginValues | undefined): boolean {
+  return copies.length ? copies.every((v) => copySetUp(m, v, every)) : copySetUp(m, undefined, every);
+}
+
+/** The plugin's required settings left empty for the whole recorder that
+ * some system it's set up for doesn't fill in either (with no system set up
+ * for it: all of them). */
+function pluginNeeds(m: PluginManifest, c: Config, id: string): string[] {
+  const every = c.plugins?.[id]?.settings;
+  const copies = systemsOf(c).flatMap((x) => x.copies(id));
+  const unset = requiredOf(m.config).filter((k) => emptyValue(every?.[k]));
+  return copies.length ? unset.filter((k) => copies.some((v) => emptyValue(copyOverride(v)[k]))) : unset;
+}
+
+const labelOf = (schema: PluginSchema | undefined, k: string) => schema?.properties?.[k]?.title ?? spell(k);
+
+/** Where a copy sends things, when it overrides that: the host of the first web address it overrides. */
+function destinationOf(m: PluginManifest, over: PluginValues): string | null {
+  for (const [k, f] of fieldsOf(m.config)) {
+    const v = over[k];
+    if (f.format === "uri" && typeof v === "string" && isUrl(v)) return new URL(v).host;
+  }
+  return null;
 }
 
 /** The systems plugins can be set up for: where each is, its short name (conventional ones with channels), and its copies of each plugin. */
@@ -159,7 +186,11 @@ export function renameSystemRefs(x: Config, from: string, to: string, plugins: P
   for (const p of plugins) {
     if (!p.manifest) continue;
     walk(p.manifest.config, x.plugins?.[p.id]?.settings);
-    for (const sys of [...x.systems, ...x.conventional]) for (const v of pluginCopies(sys.plugins?.[p.id])) walk(p.manifest.system_config, v);
+    for (const sys of [...x.systems, ...x.conventional])
+      for (const v of pluginCopies(sys.plugins?.[p.id])) {
+        walk(p.manifest.system_config, v);
+        walk(p.manifest.config, copyOverride(v));
+      }
   }
 }
 
@@ -341,8 +372,16 @@ function SchemaField(props: { name: string; schema: PluginSchema; value: unknown
   );
 }
 
-function SchemaFields(props: { schema: PluginSchema | undefined; values: PluginValues; onChange: (v: PluginValues) => void; id: string; inherited?: PluginValues }) {
-  const required = requiredOf(props.schema);
+function SchemaFields(props: {
+  schema: PluginSchema | undefined;
+  values: PluginValues;
+  onChange: (v: PluginValues) => void;
+  id: string;
+  inherited?: PluginValues;
+  /** The fields to mark as needed (by default, those the schema requires). */
+  required?: string[];
+}) {
+  const required = props.required ?? requiredOf(props.schema);
   return (
     <div className="stack plugin-fields">
       {fieldsOf(props.schema).map(([k, f]) => (
@@ -367,16 +406,20 @@ function SchemaFields(props: { schema: PluginSchema | undefined; values: PluginV
 }
 
 /** On a system's card in Setup: its settings for each plugin that's on and
- * takes some (an upload service's key for this system, say). A plugin can be
- * added again, for a second copy of it for this system (to upload to two
- * places, say): it runs again, with those settings, for this system alone. */
+ * takes some (an upload service's key for this system, say), and any of the
+ * plugin's own settings it changes for this system (another server, say). A
+ * plugin can be added again, for a second copy of it for this system (to
+ * upload to two places, say): it runs again, with those settings, for this
+ * system alone. */
 export function SystemPluginSettings(props: { system: SystemRef }) {
   const s = useApp();
   const [adding, setAdding] = useState(false);
   const c = s.config;
   if (!c || !s.plugins) return null;
   const sys = systemAt(c, props.system);
-  const plugins = s.plugins.plugins.filter((p) => pluginOn(c, p.id) && p.manifest && hasFields(p.manifest.system_config));
+  const plugins = s.plugins.plugins.filter((p) => pluginOn(c, p.id) && p.manifest && (hasFields(p.manifest.system_config) || hasFields(p.manifest.config)));
+  // A copy of its own makes sense for a plugin that's told which systems are its.
+  const copyable = plugins.filter((p) => hasFields(p.manifest!.system_config));
   if (!sys || !sys.shortName || plugins.length === 0) return null;
   const add = (id: string) => {
     addSystemPluginCopy(props.system, id);
@@ -389,51 +432,91 @@ export function SystemPluginSettings(props: { system: SystemRef }) {
         const m = p.manifest!;
         const every = c.plugins?.[p.id]?.settings;
         const copies = pluginCopies(sys.plugins?.[p.id]);
-        return (copies.length ? copies : [undefined]).map((values, i) => (
-          <fieldset className="plugin-group" key={`${p.id}-${i}`}>
-            <legend>
-              {m.name}
-              {copies.length > 1 && <span className="muted"> · copy {i + 1}</span>}
-            </legend>
-            {copies.length > 1 && (
-              <div className="plugin-copy-head">
-                <span className="field-hint muted">{i === 0 ? `The first ${m.name} for ${sys.shortName}.` : `${m.name} again, with these settings, for ${sys.shortName} alone.`}</span>
-                <button type="button" className="btn ghost small danger" onClick={() => removeSystemPluginCopy(props.system, p.id, i)} aria-label={`Remove ${m.name} copy ${i + 1}`}>
-                  Remove
-                </button>
-              </div>
-            )}
-            {!systemSetUp(m, values, every) && <p className="field-hint warn-text">Not set up for {sys.shortName} yet.</p>}
-            <SchemaFields
-              schema={m.system_config}
-              values={values ?? {}}
-              inherited={every}
-              onChange={(v) => setSystemPluginSettings(props.system, p.id, v, i)}
-              id={`sp-${p.id}-${sys.shortName}${i ? `-${i + 1}` : ""}`}
-            />
-          </fieldset>
-        ));
+        const idOf = (i: number) => `sp-${p.id}-${sys.shortName}${i ? `-${i + 1}` : ""}`;
+        return (copies.length ? copies : [undefined]).map((values, i) => {
+          const over = copyOverride(values);
+          const to = destinationOf(m, over);
+          return (
+            <fieldset className="plugin-group" key={`${p.id}-${i}`}>
+              <legend>
+                {m.name}
+                {copies.length > 1 && <span className="muted"> · copy {i + 1}</span>}
+                {to && <span className="muted"> · to {to}</span>}
+              </legend>
+              {copies.length > 1 && (
+                <div className="plugin-copy-head">
+                  <span className="field-hint muted">{i === 0 ? `The first ${m.name} for ${sys.shortName}.` : `${m.name} again, with these settings, for ${sys.shortName} alone.`}</span>
+                  <button type="button" className="btn ghost small danger" onClick={() => removeSystemPluginCopy(props.system, p.id, i)} aria-label={`Remove ${m.name} copy ${i + 1}`}>
+                    Remove
+                  </button>
+                </div>
+              )}
+              {hasFields(m.system_config) && (
+                <>
+                  {!copySetUp(m, values, every) && <p className="field-hint warn-text">Not set up for {sys.shortName} yet.</p>}
+                  <SchemaFields
+                    schema={m.system_config}
+                    values={copyOwn(values)}
+                    inherited={every}
+                    onChange={(v) => setSystemPluginSettings(props.system, p.id, v, i)}
+                    id={idOf(i)}
+                  />
+                </>
+              )}
+              {hasFields(m.config) && <PluginOverride m={m} over={over} every={every} system={sys.shortName} id={`${idOf(i)}-ov`} onChange={(v) => setSystemPluginOverride(props.system, p.id, v, i)} />}
+            </fieldset>
+          );
+        });
       })}
-      <div className="plugin-add-copy">
-        {!adding ? (
-          <button type="button" className="btn ghost small" onClick={() => setAdding(true)} title={`Run a plugin again for ${sys.shortName}, with settings of its own`}>
-            + Add plugin
-          </button>
-        ) : (
-          <div className="plugin-add-pick" role="group" aria-label={`Add a plugin to ${sys.shortName}`}>
-            <span className="small muted">Another copy for {sys.shortName}:</span>
-            {plugins.map((p) => (
-              <button type="button" key={p.id} className="btn small" onClick={() => add(p.id)}>
-                {p.manifest!.name}
-              </button>
-            ))}
-            <button type="button" className="btn ghost small" onClick={() => setAdding(false)}>
-              Cancel
+      {copyable.length > 0 && (
+        <div className="plugin-add-copy">
+          {!adding ? (
+            <button type="button" className="btn ghost small" onClick={() => setAdding(true)} title={`Run a plugin again for ${sys.shortName}, with settings of its own`}>
+              + Add plugin
             </button>
-          </div>
-        )}
-      </div>
+          ) : (
+            <div className="plugin-add-pick" role="group" aria-label={`Add a plugin to ${sys.shortName}`}>
+              <span className="small muted">Another copy for {sys.shortName}:</span>
+              {copyable.map((p) => (
+                <button type="button" key={p.id} className="btn small" onClick={() => add(p.id)}>
+                  {p.manifest!.name}
+                </button>
+              ))}
+              <button type="button" className="btn ghost small" onClick={() => setAdding(false)}>
+                Cancel
+              </button>
+            </div>
+          )}
+        </div>
+      )}
     </div>
+  );
+}
+
+/** A system's copy of a plugin: the plugin's own settings, to change for
+ * this system alone. Those left empty are as for every system (shown as
+ * the placeholder). */
+function PluginOverride(props: { m: PluginManifest; over: PluginValues; every: PluginValues | undefined; system: string; id: string; onChange: (v: PluginValues) => void }) {
+  const { m, over, every } = props;
+  const changed = fieldsOf(m.config).filter(([k]) => !emptyValue(over[k]) || typeof over[k] === "boolean");
+  const [open, setOpen] = useState(changed.length > 0 || missing(m.config, over, every).length > 0);
+  return (
+    <details className="plugin-override" open={open} onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}>
+      <summary>
+        {m.name} settings for {props.system}
+        <span className="muted">
+          {" "}
+          · {changed.length === 0 ? "as for every system" : `${changed.map(([k]) => labelOf(m.config, k)).join(", ")} changed`}
+        </span>
+      </summary>
+      <p className="field-hint">Change any of {m.name}'s settings for {props.system} alone. Empty ones are as for every system.</p>
+      <SchemaFields schema={m.config} values={over} inherited={every} onChange={props.onChange} id={props.id} />
+      {changed.length > 0 && (
+        <button type="button" className="btn ghost small" onClick={() => props.onChange({})}>
+          As for every system
+        </button>
+      )}
+    </details>
   );
 }
 
@@ -483,7 +566,7 @@ function PluginSetupCard(props: { p: PluginInfo; c: Config }) {
   const recording = s.phase === "running" || s.phase === "starting";
   const st = stateOf(p, on, recording);
   const imported = openTodos(s).find((t) => t.target === `plugin-${p.id}`);
-  const needs = m ? missing(m.config, settings) : [];
+  const needs = m ? pluginNeeds(m, c, p.id) : [];
   const systems = systemsOf(c);
   const perSystem = !!m && hasFields(m.system_config);
   return (
@@ -494,7 +577,7 @@ function PluginSetupCard(props: { p: PluginInfo; c: Config }) {
       {p.problem && <p className="small bad-text">{p.problem}</p>}
       {m && hasFields(m.config) && (
         <div className="plugin-settings stack">
-          <SchemaFields schema={m.config} values={settings ?? {}} onChange={(v) => setPluginSettings(p.id, v)} id={`pg-${p.id}`} />
+          <SchemaFields schema={m.config} values={settings ?? {}} onChange={(v) => setPluginSettings(p.id, v)} id={`pg-${p.id}`} required={needs} />
         </div>
       )}
       {m && perSystem && (
@@ -653,7 +736,7 @@ function PluginCard(props: { p: PluginInfo; recording: boolean; listing?: StoreL
   const message = p.problem ?? (on && r.message && r.message !== "running" ? r.message : "");
   const counted = r.ok + r.skipped + r.failed > 0;
   const needsM4a = m?.audio_formats.includes("m4a");
-  const needs = on && m ? missing(m.config, s.config?.plugins?.[p.id]?.settings) : [];
+  const needs = on && m && s.config ? pluginNeeds(m, s.config, p.id) : [];
   // A newer version in the registry (not for a build of the user's own, or a plugin from elsewhere).
   const update = listing && m && !p.custom && !p.unlistedFrom && !listing.unavailable && newer(listing.version, m.version) ? listing : null;
 

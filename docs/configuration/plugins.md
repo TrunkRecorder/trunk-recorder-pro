@@ -49,6 +49,39 @@ key and the system's name or ID on the service.
 Plugins know each system by its `shortName`. Renaming a system in Setup carries its plugin settings
 with it; renaming it by hand in the file is fine too, since the settings live inside the system.
 
+### Overriding the recorder-wide settings
+
+`override` in a system's settings for a plugin changes any of the plugin's recorder-wide `settings`
+for that system alone, such as sending its calls to another server. Settings it leaves out are the
+recorder-wide ones. A required setting, such as Rdio Scanner's server, can be left empty
+recorder-wide when every system that uses the plugin overrides it.
+
+```json
+{ "shortName": "dcfd", "type": "p25",
+  "plugins": { "rdioscanner": { "apiKey": "...", "systemId": 3,
+                                "override": { "server": "https://rdio.example.org" } } } }
+```
+
+In Setup, each plugin on a system's card has a *settings for this system* section for this. Keys
+the plugin has no setting for are ignored, with a warning in its log. An uploader keeps a separate
+queue for each server it sends to, so a server that's down doesn't hold up uploads to the others.
+
+### Several copies of a plugin
+
+A list in place of one object runs the plugin more than once for the system, to upload to two
+places, say. Each copy has its own settings, and its own `override`:
+
+```json
+"plugins": { "rdioscanner": [
+  { "apiKey": "...", "systemId": 3 },
+  { "apiKey": "...", "systemId": 1, "override": { "server": "https://club.example.org" } }
+] }
+```
+
+The second copy (and any after it) runs as a process of its own, `rdioscanner#2`, with its own data
+folder (`plugin-data/rdioscanner#2/`), for the systems that have a second copy. In Setup, **Add
+plugin** on a system's card adds one.
+
 ## When changes apply
 
 Changing any plugin setting, recorder-wide or per system, or `recording.m4a`, restarts the running
