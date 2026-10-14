@@ -404,8 +404,29 @@ pub fn run_with(source: usize, mut cfg: SoapyConfig, tx: SyncSender<SourceMsg>, 
 /// in use, once per source (a retry reuses it). Sessions are never closed:
 /// closing one makes the others unusable. The open and the select must not
 /// interleave with another radio's, hence the lock held until `made()`.
-fn is_sdrplay(args: &str) -> bool {
-    args.split(',').any(|kv| kv.trim().eq_ignore_ascii_case("driver=sdrplay"))
+/// The `driver=` in device arguments, if they name one.
+fn explicit_driver(args: &str) -> Option<String> {
+    args.split(',').find_map(|kv| kv.split_once('=').filter(|(k, _)| k.trim().eq_ignore_ascii_case("driver")).map(|(_, v)| v.trim().to_ascii_lowercase()))
+}
+
+/// Whether `args` open an SDRplay: they name the driver, or (empty args, a
+/// bare `serial=…`) the first device they match is one.
+fn is_sdrplay(a: &Api, args: &str) -> bool {
+    if let Some(d) = explicit_driver(args) {
+        return d == "sdrplay";
+    }
+    let Ok(cargs) = CString::new(args) else { return false };
+    let mut n = 0usize;
+    // SAFETY: NUL-terminated args; the list is read and freed below.
+    unsafe {
+        let list = (a.enumerate)(cargs.as_ptr(), &mut n);
+        if list.is_null() {
+            return false;
+        }
+        let found = n > 0 && kwargs(&*list).iter().any(|(k, v)| k == "driver" && v.eq_ignore_ascii_case("sdrplay"));
+        (a.kwargs_list_clear)(list, n);
+        found
+    }
 }
 
 struct SdrplaySlot {
@@ -418,9 +439,9 @@ static SDRPLAY: Mutex<(usize, Vec<usize>)> = Mutex::new((0, Vec::new())); // (ra
 
 impl SdrplaySlot {
     /// `args` that aren't an SDRplay (or no API library to open sessions with) take no slot.
-    fn take(source: usize, args: &str) -> SdrplaySlot {
+    fn take(a: &Api, source: usize, args: &str) -> SdrplaySlot {
         let none = SdrplaySlot { live: false, _opening: None };
-        if !is_sdrplay(args) {
+        if !is_sdrplay(a, args) {
             return none;
         }
         static OPEN: OnceLock<Option<(Library, unsafe extern "C" fn() -> c_int)>> = OnceLock::new();
@@ -524,7 +545,7 @@ fn stream_once(source: usize, cfg: &SoapyConfig, tx: &SyncSender<SourceMsg>, sto
     // Modules load here rather than inside make, so a broken one is reported.
     modules();
     let args = CString::new(cfg.args.as_str()).map_err(|e| e.to_string())?;
-    let mut sdrplay = SdrplaySlot::take(source, &cfg.args);
+    let mut sdrplay = SdrplaySlot::take(a, source, &cfg.args);
     let mut d = Device { a, dev: std::ptr::null_mut(), stream: std::ptr::null_mut(), active: false };
     // SAFETY: SoapySDR C API calls on the device and stream `d` owns.
     unsafe {
@@ -668,10 +689,11 @@ mod tests {
         assert!(abi_at_least_08("1.0"));
         assert_eq!(module_name("/opt/homebrew/lib/SoapySDR/modules0.8/librtlsdrSupport.so"), "rtlsdr");
         assert_eq!(module_name(r"C:\PothosSDR\lib\SoapySDR\modules0.8\sdrPlaySupport.dll"), "sdrPlay");
-        assert!(is_sdrplay("driver=sdrplay,serial=240522FF60"));
-        assert!(is_sdrplay("serial=1, driver=sdrplay"));
-        assert!(!is_sdrplay("driver=hackrf"));
-        assert!(!is_sdrplay(""));
+        assert_eq!(explicit_driver("driver=sdrplay,serial=240522FF60").as_deref(), Some("sdrplay"));
+        assert_eq!(explicit_driver("serial=1, Driver= SDRplay").as_deref(), Some("sdrplay"));
+        assert_eq!(explicit_driver("driver=hackrf").as_deref(), Some("hackrf"));
+        assert_eq!(explicit_driver("serial=240522FF60"), None);
+        assert_eq!(explicit_driver(""), None);
         assert_eq!(pairs("LNA=32, VGA = 20,,bad"), vec![("LNA".into(), "32".into()), ("VGA".into(), "20".into())]);
     }
 }

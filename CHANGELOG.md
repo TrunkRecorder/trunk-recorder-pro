@@ -9,9 +9,10 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   fails with `SelectDevice() failed`. SoapySDRPlay3 opens one SDRplay API
   session per process, which can select only one radio, so trunk-pro now
   opens one more session for each further SDRplay source (as SDRTrunk
-  does). Two radios on one USB bus can still run out of bandwidth: at
-  rates above 2.5 MS/s, or 2 MS/s and below (the radio then runs at
-  6 MS/s), put them on separate USB controllers.
+  does). Two radios on one USB bus can still run out of bandwidth: 3 + 3
+  MS/s failed in testing, and 2.5 + 6 MS/s worked. A source at 2 MS/s or
+  below runs its radio at 6 MS/s; use separate USB controllers if a
+  pair doesn't fit.
 
 ## [0.1.10] — 2026-10-13
 
