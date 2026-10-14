@@ -207,15 +207,14 @@ pub fn query(dir: &Path, known: &dyn Fn(&str, u32) -> bool, req: &Value, now_ms:
             t.first_ms = if t.first_ms == 0 { start } else { t.first_ms.min(start) };
         }
         if first_page && by_tg {
+            // (Every radio is counted, then the busiest are kept: one first heard in older calls may be among them.)
             for (r, alias) in &radios {
-                if units.len() < 4 * MAX_UNITS || units.contains_key(&(system.clone(), *r)) {
-                    let u = units.entry((system.clone(), *r)).or_default();
-                    u.last_ms = u.last_ms.max(start);
-                    if u.alias.is_empty() {
-                        u.alias = alias.clone();
-                    }
-                    u.calls += 1;
+                let u = units.entry((system.clone(), *r)).or_default();
+                u.last_ms = u.last_ms.max(start);
+                if u.alias.is_empty() {
+                    u.alias = alias.clone();
                 }
+                u.calls += 1;
             }
         }
         if !(by_tg && by_unit) {
