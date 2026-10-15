@@ -24,13 +24,14 @@ pub enum Output {
     /// for talkgroup `tg` of `system` — that system's number for this run
     /// (`status.systems[].index`, or 65535 and down for conventional
     /// systems) — whose short name, its identity, is `short_name`.
-    /// `decrypted`: of an encrypted call (we hold its key): not for public services.
+    /// `decrypted`: of a call decrypted with our keys.
     Audio { system: u16, short_name: String, tg: u32, frame: Vec<u8>, decrypted: bool },
     /// A concluded call to store at `<rel>.wav` / `<rel>.json` (relative to
     /// the recordings folder); `entry` is its history entry, which the
     /// platform sends as a `concluded` message once the files are stored.
     /// `frames`: the frame capture, for `<rel>.sdr` (NXDN: `<rel>.frames.jsonl`).
-    File { rel: String, system: u16, wav: Vec<u8>, json: String, frames: Option<trunk_core::trunk::Capture>, entry: Value },
+    /// `decrypted`: some of it was decrypted with our keys.
+    File { rel: String, system: u16, wav: Vec<u8>, json: String, frames: Option<trunk_core::trunk::Capture>, entry: Value, decrypted: bool },
     /// An event for plugins (only those [`Session::plugin_topics`] asks for).
     Plugin(HostMessage),
     /// A line for the log (the platform's logger formats and routes it).
@@ -734,7 +735,7 @@ impl Session {
                     filename::render(&format, &record, k.call.system, offset)
                 };
                 let entry = json!({ "path": rel, "record": record });
-                out.push(Output::File { rel, system: k.call.system, wav: trunk_core::wav::encode(&k.audio, 8000), json: k.json, frames: k.frames, entry });
+                out.push(Output::File { rel, system: k.call.system, wav: trunk_core::wav::encode(&k.audio, 8000), json: k.json, frames: k.frames, entry, decrypted: k.call.decrypted });
                 let f = |key: &str| record[key].as_f64();
                 let body = Body::Concluded { length_s: k.audio.len() as f64 / 8000.0, signal_db: f("signal"), noise_db: f("noise"), snr_db: f("snr"), clean_pct: f("clean_voice_pct") };
                 let r = self.call_record(Level::Info, &k.call, body);

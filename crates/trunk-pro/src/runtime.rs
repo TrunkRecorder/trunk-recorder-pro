@@ -570,6 +570,8 @@ struct Finish {
     /// Its history entry (`{path, record}`).
     entry: Value,
     rules: FileRules,
+    /// Some of it was decrypted with our keys: only plugins with `shareDecrypted` take it.
+    decrypted: bool,
 }
 
 /// Each call: its files, then (once they're on disk) the `concluded`
@@ -598,8 +600,7 @@ fn finish_calls(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, rx: 
 /// from memory.
 fn finish_one(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, f: Finish, encoder: Option<&(plugins::Encoder, u32)>, host: Option<&PluginHost>) {
     let r = f.rules;
-    let decrypted = plugins::guard::call_json_decrypted(&f.json);
-    let takers = host.map_or(0, |h| h.call_takers(decrypted));
+    let takers = host.map_or(0, |h| h.call_takers(f.decrypted));
     let p = plugins::plan(r, takers, host.is_some_and(|h| h.needs_wav()), encoder.is_some());
     let (keep_audio, keep_json, keep_m4a, write_wav) = (p.keep_audio, p.keep_json, p.keep_m4a, p.write_wav);
     let base = dir.join(&f.rel);
@@ -649,7 +650,7 @@ fn finish_one(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, f: Fin
     }
     ctx.plugins.archive.expect(&f.rel, takers, r, &base, spooled.as_deref());
     if let Some(h) = host {
-        h.concluded(f.system, &f.rel, &f.json, audio);
+        h.concluded(f.system, &f.rel, &f.json, audio, f.decrypted);
     }
 }
 
@@ -676,7 +677,7 @@ fn deliver(ctx: &Ctx, out: &mut Vec<Output>, plugins: Option<&PluginHost>, rules
                 let _ = ctx.hub.send(Arc::new(Out::Topic { topic, text }));
             }
             Output::Rollup(r) => ctx.store.add(r),
-            Output::File { rel, system, wav, json, frames, entry } => finish(Finish { rel, system, wav, json, frames, entry, rules: rules(system) }, plugins),
+            Output::File { rel, system, wav, json, frames, entry, decrypted } => finish(Finish { rel, system, wav, json, frames, entry, rules: rules(system), decrypted }, plugins),
         }
     }
 }

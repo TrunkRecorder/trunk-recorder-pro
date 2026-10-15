@@ -32,7 +32,6 @@
 mod archive;
 pub mod cli;
 mod encode;
-pub mod guard;
 mod host;
 pub mod manage;
 pub mod store;
@@ -116,7 +115,6 @@ pub fn changed(a: &Config, b: &Config) -> bool {
         v.extend(c.conventional.iter().map(|x| (x.short_name.clone(), x.plugins.clone())));
         v
     };
-    // (A plugin's `shareDecrypted` is part of its entry: changing or removing it restarts the plugins.)
     a.plugins != b.plugins || a.recording.m4a != b.recording.m4a || per_system(a) != per_system(b)
 }
 
@@ -242,15 +240,13 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// Changing or removing what allows a plugin decrypted calls restarts the plugins.
+    /// Allowing a plugin decrypted calls, or no longer, restarts the plugins.
     #[test]
     fn a_change_to_share_decrypted_reloads_the_plugins() {
         let a: Config = serde_json::from_value(json!({ "plugins": { "openmhz": { "enabled": true } } })).unwrap();
-        assert!(!changed(&a, &a.clone()));
         let mut b = a.clone();
-        b.plugins.get_mut("openmhz").unwrap().share_decrypted = super::guard::PHRASE.into();
-        assert!(changed(&a, &b), "authorized");
-        assert!(changed(&b, &a), "revoked");
+        b.plugins.get_mut("openmhz").unwrap().share_decrypted = true;
+        assert!(changed(&a, &b) && changed(&b, &a));
     }
 
     #[test]

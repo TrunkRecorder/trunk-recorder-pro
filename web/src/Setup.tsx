@@ -134,7 +134,7 @@ function TodoPanel() {
   );
 }
 
-function Toggle(props: { label: string; checked: boolean; onChange: (v: boolean) => void; hint?: string; disabled?: boolean }) {
+export function Toggle(props: { label: string; checked: boolean; onChange: (v: boolean) => void; hint?: string; disabled?: boolean }) {
   return (
     <label className={`toggle${props.disabled ? " disabled" : ""}`}>
       <input type="checkbox" checked={props.checked} disabled={props.disabled} onChange={(e) => props.onChange(e.target.checked)} />

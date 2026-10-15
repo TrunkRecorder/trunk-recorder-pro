@@ -5,13 +5,11 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
-- **Decrypted calls aren't uploaded unless you say so, plugin by plugin.** A call decrypted with your keys
-  is no longer given (its live audio, files and JSON) to any plugin (OpenMHz, Broadcastify, Rdio Scanner,
-  a stream, a script) unless that plugin's entry says, in so many words, that it may
-  (`plugins.<id>.shareDecrypted`, in the config file). A plugin on your own network needs it too. The log says
-  so for a plugin that is withheld and, on every start, for one that is allowed. Voice and calls of a call that
-  expires in the same moment as its decryption are treated as decrypted. See
-  [Decrypted calls](docs/plugins/README.md#decrypted-calls).
+- **Decrypted calls go only to the plugins you allow.** A call decrypted with your keys (its live
+  audio, files and JSON) is no longer given to every plugin: turn on **Share decrypted calls** on a
+  plugin's card in Setup → Plugins (`plugins.<id>.shareDecrypted`) for each one that should have
+  them. Voice of a call that ends in the same moment it is decrypted is no longer taken for clear.
+  See [Decrypted calls](docs/plugins/README.md#decrypted-calls).
 
 ## [0.1.11] — 2026-10-14
 
