@@ -239,6 +239,7 @@ config folder above; with `--config elsewhere/config.json`, it's `elsewhere/`.
 | `plugins/<id>/` | Installed plugins |
 | `plugin-data/<id>/` | Each plugin's own data (calls waiting to upload, for example), and its working folder |
 | `plugin-registry.json` | The plugin store's cached index |
+| `plugin-hold/` | Finished calls waiting out a [plugin delay](plugins.md#delays), one `.json` each. Deleting one drops that call for its plugin |
 | `logs/` | Log files, when `log.file` is on and `log.dir` is empty |
 | `spool/` | macOS only: where the RAM spool's RAM disk is mounted, when `recording.ramSpool` is on |
 

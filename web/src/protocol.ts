@@ -168,6 +168,23 @@ export interface System {
   keys?: string;
   /** Plugins' settings for this system, by plugin id (each plugin's `system_config` schema); a list for several copies of one. */
   plugins?: Record<string, SystemPluginValues>;
+  /** How long plugins wait for its calls; these come before the whole recorder's (see DelayRule). */
+  pluginDelays?: DelayRule[];
+}
+
+/**
+ * Plugins wait this long for the calls its fields pick, each left out
+ * picking all. When several apply, one that narrows another (a system's
+ * over every system's, a talkgroup's over its system's, a plugin's over
+ * every plugin's) replaces it; of the rest, the longest wins.
+ */
+export interface DelayRule {
+  /** Plugin ids (one copy: "openmhz#2"). Absent: every plugin. */
+  plugins?: string[];
+  /** Numbers, ranges ("1000-1099") and patterns ("507*"). Absent: every talkgroup. */
+  talkgroups?: string[];
+  /** Seconds (0: none, as for what it narrows). */
+  delayS: number;
 }
 
 /** A plugin, as the config has it: on or off, and its settings for the whole recorder. */
@@ -286,6 +303,8 @@ export interface Conventional {
   channelFileStatus?: string;
   /** Plugins' settings for it (one more system to them), by plugin id; a list for several copies of one. */
   plugins?: Record<string, SystemPluginValues>;
+  /** How long plugins wait for its calls (as System's). */
+  pluginDelays?: DelayRule[];
   /** Its own recording rules; each left out is the Recording tab's. */
   recording?: RecordingOverride;
   unitNames?: UnitNames;
@@ -328,6 +347,8 @@ export interface Config {
   };
   /** The plugins, by id (desktop app). Their settings for each system are in the system. */
   plugins?: Record<string, PluginSetup>;
+  /** How long plugins wait for calls, on every system (desktop app); a system's own come first. */
+  pluginDelays?: DelayRule[];
   /** Encryption key sources, by name; a system names one in its `keys` (desktop app). */
   keys?: Record<string, KeySource>;
   /** The log (desktop app). */
@@ -832,6 +853,8 @@ export interface PluginRuntime {
   restarts?: number;
   dropped?: number;
   uptimeS?: number | null;
+  /** Finished calls waiting out a delay for it. */
+  held?: number;
   /** Results per minute, the last hour: [minute start (Unix s), [ok, skipped, failed]]. */
   minutes?: [number, [number, number, number]][];
 }
@@ -958,7 +981,7 @@ export interface DirListing {
 //   all/{calls,airMs,audioBytes}  day/{calls,airS,audioBytes}  eng/{load,recording,channels,recorders}
 //   plat/{cpu,proCpu,proCores,proMem,mem,memAvail,swap,memPsi,memLevel,load1,temp,throttledUs,piThrottled}
 //   plat/disk/<recordings|data>/{free,freePct}  net/{rx,tx,errors,up,rtt,dns}  net/probe/<target>/{up,rtt}
-//   plg/<id>/{state,ok,skipped,failed,dropped,restarts,queued,latency,bytes}
+//   plg/<id>/{state,ok,skipped,failed,dropped,restarts,held,queued,latency,bytes}
 // Running totals arrive as rates per second; everything else as it is.
 
 /** What a dashboard watches: `spectrum:<source>`, `log`, `rf:<source>`, `decode:<shortName>`, `platform`. */

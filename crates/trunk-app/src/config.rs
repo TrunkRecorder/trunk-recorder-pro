@@ -339,6 +339,10 @@ pub struct System {
     /// own settings they change for it; a list for several copies of one.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub plugins: BTreeMap<String, serde_json::Value>,
+    /// How long plugins wait for its calls (all, some talkgroups', some
+    /// plugins'): see [`DelayRule`]. These come before the whole recorder's.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub plugin_delays: Vec<DelayRule>,
     /// Keys this version doesn't know (a newer version's, a hand edit's):
     /// kept, and saved back as they were.
     #[serde(flatten)]
@@ -435,6 +439,7 @@ impl Default for System {
             ran: None,
             site_group: String::new(),
             plugins: BTreeMap::new(),
+            plugin_delays: vec![],
         }
     }
 }
@@ -518,6 +523,9 @@ pub struct Conventional {
     /// plugins they're one more system); a list for several copies of one.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub plugins: BTreeMap<String, serde_json::Value>,
+    /// How long plugins wait for their calls, as a trunked system's ([`System::plugin_delays`]).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub plugin_delays: Vec<DelayRule>,
     /// Their own recording rules; what's left out is as in [`Config::recording`].
     #[serde(skip_serializing_if = "RecordingOverride::is_empty")]
     pub recording: RecordingOverride,
@@ -571,6 +579,7 @@ impl Default for Conventional {
             channels: vec![],
             channel_file_status: String::new(),
             plugins: BTreeMap::new(),
+            plugin_delays: vec![],
             recording: RecordingOverride::default(),
             unit_names: UnitNames::default(),
         }
@@ -821,6 +830,40 @@ pub struct PluginSetup {
     pub share_decrypted: bool,
 }
 
+/// Plugins wait this long for some calls: those its fields pick, each left
+/// out picking all. In the config's `pluginDelays` (every system) and in a
+/// system's (that system).
+///
+/// ```json
+/// "pluginDelays": [{ "plugins": ["openmhz"], "delayS": 120 }],
+/// "systems": [{ "shortName": "dcfd", …, "pluginDelays": [
+///     { "delayS": 600 },
+///     { "talkgroups": ["1000-1099", "2*"], "delayS": 1800 },
+///     { "plugins": ["openmhz"], "delayS": 0 } ] }]
+/// ```
+///
+/// When several apply, one that narrows another (picks only what it picks:
+/// a system's over every system's, one talkgroup's over its system's)
+/// replaces it, and of the rest the longest wins (trunk-pro's
+/// `plugins::delay` has the rules and examples).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct DelayRule {
+    /// The plugins it's for, by id (one copy of one: `openmhz#2`). Empty: every plugin.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub plugins: Vec<String>,
+    /// The talkgroups it's for: numbers, ranges (`1000-1099`) and patterns
+    /// (`507*`, `12?45`). Empty: every talkgroup (and a system's events that have none).
+    #[serde(skip_serializing_if = "Vec::is_empty", deserialize_with = "trunk_recorder_plugin::filter::patterns")]
+    pub talkgroups: Vec<String>,
+    /// How long, s (0: none, as for something it narrows).
+    pub delay_s: f64,
+    /// Keys this version doesn't know (a newer version's, a hand edit's):
+    /// kept, and saved back as they were.
+    #[serde(flatten)]
+    pub other: BTreeMap<String, serde_json::Value>,
+}
+
 impl Default for Recording {
     fn default() -> Self {
         Recording {
@@ -1001,6 +1044,8 @@ pub struct CallSystem<'a> {
     pub kind: &'static str,
     /// Its plugin settings, by plugin id.
     pub plugins: &'a BTreeMap<String, serde_json::Value>,
+    /// How long plugins wait for its calls.
+    pub plugin_delays: &'a [DelayRule],
 }
 
 /// Where a set of encryption keys comes from (see [`crate::keys`]). Only file
@@ -1044,6 +1089,10 @@ pub struct Config {
     /// The plugins, by id: on or off, and their settings for the whole recorder.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub plugins: BTreeMap<String, PluginSetup>,
+    /// How long plugins wait for calls, for every system ([`DelayRule`]);
+    /// a system's own come first.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub plugin_delays: Vec<DelayRule>,
     /// Encryption key sources, by name; a system names one in its `keys`.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub keys: BTreeMap<String, KeySource>,
@@ -1126,6 +1175,7 @@ impl Default for Config {
             recording: Recording::default(),
             server: Server::default(),
             plugins: BTreeMap::new(),
+            plugin_delays: vec![],
             keys: BTreeMap::new(),
             log: LogSettings::default(),
             monitor: MonitorSettings::default(),
@@ -1553,10 +1603,11 @@ impl Config {
                     "p25"
                 },
                 plugins: &s.plugins,
+                plugin_delays: &s.plugin_delays,
             })
             .collect();
         for (k, c) in self.conventional.iter().enumerate().filter(|(_, c)| c.enabled && !c.channels.is_empty()) {
-            v.push(CallSystem { index: trunk_core::trunk::conventional_system(k), short_name: &c.short_name, kind: "conventional", plugins: &c.plugins });
+            v.push(CallSystem { index: trunk_core::trunk::conventional_system(k), short_name: &c.short_name, kind: "conventional", plugins: &c.plugins, plugin_delays: &c.plugin_delays });
         }
         v
     }

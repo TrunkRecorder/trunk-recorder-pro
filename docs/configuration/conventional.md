@@ -35,6 +35,7 @@ anywhere a source covers, including alongside a trunked system.
 | `unitNames` | | empty | object | Names for the radios heard on it. See [systems.md](systems.md#unit-names) |
 | `keys` | | `""` | string | The encryption keys its P25 channels decrypt with, a key source's name. See [systems.md](systems.md#encryption-keys-keys) |
 | `plugins` | | `{}` | object | Its plugin settings, by plugin id. See [plugins.md](plugins.md#per-system-settings) |
+| `pluginDelays` | | `[]` | array | How long plugins wait for its calls. See [plugins.md](plugins.md#delays) |
 
 At most 256 conventional systems. A frequency belongs to only one of them.
 

@@ -797,6 +797,12 @@ input.ob-picker-path:hover, input.ob-picker-path:focus { border-color: var(--lin
 .rule-group + .rule-group { border-top: 1px solid var(--line); padding-top: 12px; }
 .help.override { margin-top: 10px; }
 .help.override > .grid3 { margin-top: 8px; }
+/* Plugin delays (Delays.tsx): rules as a small table, then what they come to. */
+.help.override > .table-wrap { margin: 8px 0; }
+.setup table.channels.delays td:first-child input { min-width: 150px; }
+.delay-effect { margin-top: 10px; }
+.delay-effect ul { margin: 4px 0 0; padding-left: 18px; color: var(--text); }
+.plugin-delay .field input { max-width: 8em; }
 .field select.overridden, .field input.overridden { border-color: var(--accent); }
 .field input.narrow { width: 6em; }
 .field input.invalid { border-color: var(--bad); }

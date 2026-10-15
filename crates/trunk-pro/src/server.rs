@@ -752,6 +752,7 @@ fn edit_config(ctx: &Ctx, f: impl FnOnce(&mut crate::config::Config)) -> Result<
     let c = cfg.clone();
     drop(cfg);
     publish(&ctx.hub, json!({ "type": "config", "config": c }));
+    ctx.plugins.set_delays(&c);
     if crate::plugins::changed(&old, &c) {
         ctx.plugins.reload(&c);
     }
@@ -833,6 +834,8 @@ async fn command(ctx: &Arc<Ctx>, v: &Value, listen: &mut Option<Listen>, subs: &
                 if old.keys != c.keys || old.systems != c.systems || old.conventional != c.conventional {
                     crate::unlock::config_changed(ctx, &c);
                 }
+                // Their delays apply at once, to what's waiting too (no restart).
+                ctx.plugins.set_delays(&c);
                 // Plugins' settings changed while recording: they restart with them.
                 if crate::plugins::changed(&old, &c) {
                     let ctx2 = ctx.clone();

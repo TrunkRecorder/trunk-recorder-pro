@@ -5,6 +5,13 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Plugin delays.** Plugins can be given calls late: for a whole system, some of its talkgroups,
+  one plugin on every system, or one plugin on one system (`pluginDelays`, at the top of the config
+  and in each system). A rule that narrows another replaces it; otherwise the longest delay wins.
+  Held calls are kept on disk until they're given, so a restart doesn't lose them; a delayed call's
+  live audio isn't streamed. In Setup, under a system's Overrides and on each plugin's card. See
+  [Delays](docs/configuration/plugins.md#delays).
+
 - **Key sources.** The config's new top-level `keys` names each keys file once, and a system's
   `keys` names a source instead of a file, so systems on the same radios share one and it is read
   once. A config whose systems name a file is read as one source per file, named after it.

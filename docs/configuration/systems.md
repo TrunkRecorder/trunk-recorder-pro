@@ -40,6 +40,7 @@ channel. Each site you record from its own control channel is its own entry, wit
 | `keys` | | `""` | string | P25: the encryption keys it decrypts with, a key source's name (desktop app only; not in the interface). See [Encryption keys](#encryption-keys-keys) |
 | `recording` | | `{}` | object | This system's own call rules; a rule left out follows the global `recording`. See [recording.md](recording.md#per-system-rules) |
 | `plugins` | | `{}` | object | This system's plugin settings, by plugin id. See [plugins.md](plugins.md#per-system-settings) |
+| `pluginDelays` | | `[]` | array | How long plugins wait for this system's calls (all of them, some talkgroups', some plugins'). See [plugins.md](plugins.md#delays) |
 
 ## P25 and SmartNet
 

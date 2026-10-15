@@ -706,6 +706,13 @@
           },
           "description": "The plugins, by id (desktop app). Their settings for each system are in the system."
         },
+        "pluginDelays": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/DelayRule"
+          },
+          "description": "How long plugins wait for calls, on every system (desktop app); a system's own come first."
+        },
         "keys": {
           "type": "object",
           "additionalProperties": {
@@ -770,6 +777,13 @@
           },
           "description": "Plugins' settings for it (one more system to them), by plugin id; a list for several copies of one."
         },
+        "pluginDelays": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/DelayRule"
+          },
+          "description": "How long plugins wait for its calls (as System's)."
+        },
         "recording": {
           "$ref": "#/definitions/RecordingOverride",
           "description": "Its own recording rules; each left out is the Recording tab's."
@@ -809,6 +823,34 @@
       ],
       "additionalProperties": false,
       "description": "An interface of your own: a folder with an index.html, served as it is on disk at /ui/<name>/."
+    },
+    "DelayRule": {
+      "type": "object",
+      "properties": {
+        "plugins": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Plugin ids (one copy: \"openmhz#2\"). Absent: every plugin."
+        },
+        "talkgroups": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Numbers, ranges (\"1000-1099\") and patterns (\"507*\"). Absent: every talkgroup."
+        },
+        "delayS": {
+          "type": "number",
+          "description": "Seconds (0: none, as for what it narrows)."
+        }
+      },
+      "required": [
+        "delayS"
+      ],
+      "additionalProperties": false,
+      "description": "Plugins wait this long for the calls its fields pick, each left out picking all. When several apply, one that narrows another (a system's over every system's, a talkgroup's over its system's, a plugin's over every plugin's) replaces it; of the rest, the longest wins."
     },
     "Device": {
       "type": "object",
@@ -3922,6 +3964,10 @@
             "null"
           ]
         },
+        "held": {
+          "type": "number",
+          "description": "Finished calls waiting out a delay for it."
+        },
         "minutes": {
           "type": "array",
           "items": {
@@ -5775,6 +5821,13 @@
             "$ref": "#/definitions/SystemPluginValues"
           },
           "description": "Plugins' settings for this system, by plugin id (each plugin's `system_config` schema); a list for several copies of one."
+        },
+        "pluginDelays": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/DelayRule"
+          },
+          "description": "How long plugins wait for its calls; these come before the whole recorder's (see DelayRule)."
         }
       },
       "required": [
