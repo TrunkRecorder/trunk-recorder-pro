@@ -12,6 +12,9 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   container (`.ekc`), with `passwordFile` naming a file that holds its password. A password file
   others can read is refused. Keys the recorder can't decrypt (key-encryption keys, DES-XL) are
   listed in the log and left out. `replay` takes `--keys-password-file` too.
+- **Unlock a key container in the interface.** A container with no `passwordFile` no longer stops
+  the start: Setup → Recording → Key containers asks for its password. Unlocked keys are held in
+  memory until Lock or the app stops, and reach calls already in progress.
 
 - **Decrypted calls go only to the plugins you allow.** A call decrypted with your keys (its live
   audio, files and JSON) is no longer given to every plugin: turn on **Share decrypted calls** on a

@@ -206,7 +206,21 @@ JSON file. It is encrypted with its own password, which goes in a separate file 
 - Every voice key in the container is used by key ID on any talkgroup. Key-encryption keys, and
   algorithms that can't be decrypted (DES-XL), are listed in the log and left out; the rest still
   load. A container with the wrong password, or a damaged one, stops the start.
-- `passwordFile` with a JSON keys file, or a container without `passwordFile`, is an error.
+- `passwordFile` with a JSON keys file is an error.
+
+#### Unlocking a container in the interface
+
+A container with no `passwordFile` doesn't stop recording from starting: its systems run without
+keys, and **Setup → Recording → Key containers** asks for its password. **Unlock** decrypts it in
+memory, and its systems decrypt from then on, calls in progress too (from their next encryption
+sync). **Lock** forgets the keys and they stop at once. The password is never saved or logged.
+
+- The keys last until Lock or until the app stops. After a restart, a crash or an update, the
+  container is locked again until someone types the password, and its encrypted calls are left
+  out as any encrypted call is. Use `passwordFile` for a recorder that must decrypt unattended.
+- Anyone who can open the interface can unlock and lock it. The interface is plain HTTP, so a
+  password typed on another computer crosses the network unencrypted; by default the interface
+  is only reachable from the recorder's own computer (`server.bind`).
 
 ## Talkgroup file
 

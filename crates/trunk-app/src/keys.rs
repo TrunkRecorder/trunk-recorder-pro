@@ -135,13 +135,22 @@ pub struct Loaded {
     pub skipped: Vec<String>,
 }
 
+/// Whether a keys file's bytes are JSON (else a key container).
+fn is_json(bytes: &[u8]) -> bool {
+    bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes).iter().find(|b| !b.is_ascii_whitespace()) == Some(&b'{')
+}
+
+/// Whether the file at `p` is a key container (false: JSON, or it can't be read).
+pub fn is_container(p: &Path) -> bool {
+    std::fs::read(p).map(zeroize::Zeroizing::new).is_ok_and(|b| !is_json(&b))
+}
+
 /// Read the keys file at `p`: JSON, or a KFDtool container (anything that
 /// doesn't start with `{`), whose password is in the file `password_file` names.
 pub fn load(p: &Path, password_file: Option<&Path>) -> Result<Loaded, String> {
     let at = |e: String| format!("Keys file {}: {e}", p.display());
     let bytes = zeroize::Zeroizing::new(std::fs::read(p).map_err(|e| at(e.to_string()))?);
-    let json = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(&bytes).iter().find(|b| !b.is_ascii_whitespace()) == Some(&b'{');
-    if json {
+    if is_json(&bytes) {
         if password_file.is_some() {
             return Err(at("is a JSON keys file, which takes no passwordFile".into()));
         }
@@ -151,8 +160,21 @@ pub fn load(p: &Path, password_file: Option<&Path>) -> Result<Loaded, String> {
     let Some(pw) = password_file else {
         return Err(at("is a key container, which needs passwordFile (a file holding its password)".into()));
     };
-    let pw = password(pw)?;
-    let c = crate::ekc::parse(&bytes, &pw).map_err(|e| at(e.to_string()))?;
+    open_bytes(&bytes, &password(pw)?).map_err(at)
+}
+
+/// Open the key container at `p` with a password typed in.
+pub fn open(p: &Path, password: &str) -> Result<Loaded, String> {
+    let at = |e: String| format!("Keys file {}: {e}", p.display());
+    let bytes = zeroize::Zeroizing::new(std::fs::read(p).map_err(|e| at(e.to_string()))?);
+    if is_json(&bytes) {
+        return Err(at("is a JSON keys file, which has no password".into()));
+    }
+    open_bytes(&bytes, password).map_err(at)
+}
+
+fn open_bytes(bytes: &[u8], password: &str) -> Result<Loaded, String> {
+    let c = crate::ekc::parse(bytes, password).map_err(|e| e.to_string())?;
     let mut ring = Keyring::default();
     let mut skipped: Vec<String> = c.skipped.iter().map(|s| format!("{} ({})", s.name, s.reason)).collect();
     for k in &c.keys {

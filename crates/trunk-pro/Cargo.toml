@@ -12,6 +12,8 @@ name = "trunk-pro"
 path = "src/main.rs"
 
 [dependencies]
+# A key container's password, typed into the interface, is wiped after use.
+zeroize = "1"
 trunk-core.workspace = true
 trunk-app.workspace = true
 trunk-recorder-plugin.workspace = true

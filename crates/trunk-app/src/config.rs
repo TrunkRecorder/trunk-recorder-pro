@@ -1024,7 +1024,8 @@ pub struct KeySource {
 pub struct LoadedKeys {
     pub name: String,
     pub systems: Vec<String>,
-    pub ring: std::sync::Arc<trunk_core::p25::crypt::Keyring>,
+    /// None: a container with no `passwordFile`, not unlocked yet (see [`Config::lockable`]).
+    pub ring: Option<std::sync::Arc<trunk_core::p25::crypt::Keyring>>,
     /// Container keys left out, as "name (reason)" (never a key).
     pub skipped: Vec<String>,
 }
@@ -1258,26 +1259,54 @@ impl Config {
     /// Read the key sources the systems name, each once: its keys and the
     /// systems that use them, for [`crate::session::Session::set_keys`]. A
     /// source no system names isn't read. An error names the source, the
-    /// file and what is wrong in it (never a key).
-    pub fn load_keys(&self, config_path: &Path) -> Result<Vec<LoadedKeys>, String> {
+    /// file and what is wrong in it (never a key). A container with no
+    /// `passwordFile` is locked: its keys are `unlocked`'s, if it has them.
+    pub fn load_keys(&self, config_path: &Path, unlocked: &dyn Fn(&str) -> Option<std::sync::Arc<trunk_core::p25::crypt::Keyring>>) -> Result<Vec<LoadedKeys>, String> {
         let mut out: Vec<LoadedKeys> = Vec::new();
-        let named = self.active_systems().map(|s| (&s.short_name, s.keys.trim())).chain(self.conventional.iter().filter(|c| c.enabled).map(|c| (&c.short_name, c.keys.trim())));
-        for (system, name) in named.filter(|(_, k)| !k.is_empty()) {
+        for (system, name) in self.key_users() {
             if let Some(l) = out.iter_mut().find(|l| l.name == name) {
                 l.systems.push(system.clone());
                 continue;
             }
             let src = self.keys.get(name).ok_or_else(|| format!("{system}: no key source \"{name}\" (keys)"))?;
             let file = crate::keys::path(&src.file, config_path).ok_or_else(|| format!("Key source {name}: no file"))?;
-            let l = crate::keys::load(&file, crate::keys::path(&src.password_file, config_path).as_deref()).map_err(|e| format!("Key source {name}: {e}"))?;
-            out.push(LoadedKeys { name: name.to_string(), systems: vec![system.clone()], ring: std::sync::Arc::new(l.ring), skipped: l.skipped });
+            let (ring, skipped) = if src.password_file.trim().is_empty() && crate::keys::is_container(&file) {
+                (unlocked(name), vec![])
+            } else {
+                let l = crate::keys::load(&file, crate::keys::path(&src.password_file, config_path).as_deref()).map_err(|e| format!("Key source {name}: {e}"))?;
+                (Some(std::sync::Arc::new(l.ring)), l.skipped)
+            };
+            out.push(LoadedKeys { name: name.to_string(), systems: vec![system.clone()], ring, skipped });
         }
         Ok(out)
     }
 
+    /// (A system that records, the key source it names), for each that names one.
+    fn key_users(&self) -> impl Iterator<Item = (&String, &str)> {
+        let trunked = self.active_systems().map(|s| (&s.short_name, s.keys.trim()));
+        trunked.chain(self.conventional.iter().filter(|c| c.enabled).map(|c| (&c.short_name, c.keys.trim()))).filter(|(_, k)| !k.is_empty())
+    }
+
+    /// The key sources the systems name that are unlocked from the interface (a
+    /// container with no `passwordFile`): name, file (resolved), the systems.
+    pub fn lockable(&self, config_path: &Path) -> Vec<(String, PathBuf, Vec<String>)> {
+        let mut out: Vec<(String, PathBuf, Vec<String>)> = Vec::new();
+        for (system, name) in self.key_users() {
+            if let Some(l) = out.iter_mut().find(|l| l.0 == name) {
+                l.2.push(system.clone());
+                continue;
+            }
+            let Some(src) = self.keys.get(name).filter(|s| s.password_file.trim().is_empty()) else { continue };
+            if let Some(file) = crate::keys::path(&src.file, config_path).filter(|f| crate::keys::is_container(f)) {
+                out.push((name.to_string(), file, vec![system.clone()]));
+            }
+        }
+        out
+    }
+
     /// The keys files of the key sources the systems name (absolute).
     pub fn key_files(&self, config_path: &Path) -> Vec<PathBuf> {
-        let named: Vec<&str> = self.active_systems().map(|s| s.keys.trim()).chain(self.conventional.iter().filter(|c| c.enabled).map(|c| c.keys.trim())).collect();
+        let named: Vec<&str> = self.key_users().map(|(_, k)| k).collect();
         self.keys.iter().filter(|(n, _)| named.contains(&n.as_str())).filter_map(|(_, s)| crate::keys::path(&s.file, config_path)).collect()
     }
 
@@ -1670,11 +1699,12 @@ mod tests {
         let mut c = Config { systems: vec![sys("a", "county"), sys("b", "county"), sys("c", "")], ..Default::default() };
         c.keys.insert("county".into(), KeySource { file: "k.json".into(), ..Default::default() });
         c.keys.insert("unused".into(), KeySource { file: "missing.json".into(), ..Default::default() });
-        let l = c.load_keys(&dir.join("config.json")).unwrap();
+        let l = c.load_keys(&dir.join("config.json"), &|_| None).unwrap();
         assert_eq!(l.len(), 1);
-        assert_eq!((l[0].name.as_str(), l[0].systems.clone(), l[0].ring.keys().len()), ("county", vec!["a".to_string(), "b".to_string()], 1));
+        assert_eq!((l[0].name.as_str(), l[0].systems.clone(), l[0].ring.as_ref().unwrap().keys().len()), ("county", vec!["a".to_string(), "b".to_string()], 1));
+        assert!(c.lockable(&dir.join("config.json")).is_empty(), "a JSON file has no password");
         c.systems[2].keys = "nope".into();
-        assert!(c.load_keys(&dir.join("config.json")).err().unwrap().contains("no key source \"nope\""));
+        assert!(c.load_keys(&dir.join("config.json"), &|_| None).err().unwrap().contains("no key source \"nope\""));
     }
 
     #[test]

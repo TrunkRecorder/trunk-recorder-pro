@@ -1416,6 +1416,27 @@
                 "$ref": "#/definitions/PluginRuntime"
               },
               "description": "Every plugin's runtime, by id (desktop app)."
+            },
+            "keys": {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "keys"
+                },
+                "sources": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/definitions/LockableKeys"
+                  }
+                }
+              },
+              "required": [
+                "type",
+                "sources"
+              ],
+              "additionalProperties": false,
+              "description": "Key containers waiting for a password, and which are unlocked (desktop app)."
             }
           },
           "required": [
@@ -1427,6 +1448,26 @@
             "devices",
             "phase",
             "history"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "keys"
+            },
+            "sources": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/LockableKeys"
+              }
+            }
+          },
+          "required": [
+            "type",
+            "sources"
           ],
           "additionalProperties": false
         },
@@ -2884,6 +2925,31 @@
         "counts"
       ],
       "additionalProperties": false
+    },
+    "LockableKeys": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "systems": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The systems that decrypt with it."
+        },
+        "unlocked": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "systems",
+        "unlocked"
+      ],
+      "additionalProperties": false,
+      "description": "A key source that is a key container with no password file: unlocked with a password typed in (desktop)."
     },
     "LogLine": {
       "type": "object",
@@ -6112,6 +6178,44 @@
             "on",
             "system",
             "talkgroup"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "unlockKeys"
+            },
+            "source": {
+              "type": "string"
+            },
+            "password": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "source",
+            "password"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "lockKeys"
+            },
+            "source": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "source"
           ],
           "additionalProperties": false
         },

@@ -89,12 +89,16 @@ pub struct Ctx {
     pub host_last: Mutex<Option<Value>>,
     /// The RAM spool (`recording.ramSpool`), as last opened.
     pub spool: Mutex<Option<Arc<crate::spool::Spool>>>,
+    /// Key containers unlocked from the interface ([`crate::unlock`]).
+    pub unlocked: crate::unlock::Unlocked,
 }
 
 /// Something for the running session to do.
 pub enum EngineCmd {
     /// A system's talkgroup file changed (an Ignore flag set from the dashboard).
     Talkgroups { short_name: String, csv: String },
+    /// A system's keys changed (a key container unlocked or locked): calls in progress take them too.
+    Keys { short_name: String, ring: Option<Arc<trunk_core::p25::crypt::Keyring>> },
 }
 
 impl Ctx {
@@ -175,7 +179,7 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
         return Err(p);
     }
     // Encryption keys: a file that can't be read, or a bad key in it, stops the start.
-    let keys = cfg.load_keys(&ctx.config_path)?;
+    let keys = cfg.load_keys(&ctx.config_path, &|name| crate::unlock::held(&ctx, &cfg, name))?;
     warn_readable_keys(&ctx, &cfg);
     open_spool(&ctx, &cfg);
     // The wall clock now, and a monotonic clock from now: the session's
@@ -188,10 +192,14 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
         for s in &k.skipped {
             log::warn!("Key source {}: key left out: {s}", k.name);
         }
-        let n = k.ring.keys().len();
+        let Some(ring) = k.ring else {
+            log::warn!("Key source {} is locked: unlock it in Setup → Recording to decrypt {}", k.name, k.systems.join(", "));
+            continue;
+        };
+        let n = ring.keys().len();
         log::info!("Key source {}: {n} encryption key{} loaded, for {}", k.name, if n == 1 { "" } else { "s" }, k.systems.join(", "));
         for s in &k.systems {
-            session.set_keys(s, Some(k.ring.clone()));
+            session.set_keys(s, Some(ring.clone()));
         }
     }
     session.load_units(&|name| fs::read_to_string(units_path(name)).ok());
@@ -516,6 +524,9 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Rec
                     if session.set_talkgroups(&short_name, &csv) {
                         log::info!("[{short_name}] Talkgroups updated");
                     }
+                }
+                EngineCmd::Keys { short_name, ring } => {
+                    session.set_keys(&short_name, ring);
                 }
             }
         }

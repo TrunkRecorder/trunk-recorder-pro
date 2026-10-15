@@ -293,6 +293,14 @@ export interface Conventional {
   keys?: string;
 }
 
+/** A key source that is a key container with no password file: unlocked with a password typed in (desktop). */
+export interface LockableKeys {
+  name: string;
+  /** The systems that decrypt with it. */
+  systems: string[];
+  unlocked: boolean;
+}
+
 /** Where a set of encryption keys comes from: file names only, never a key (desktop). */
 export interface KeySource {
   /** A keys file (JSON) or a KFDtool key container (`.ekc`), absolute or relative to the config file's folder. */
@@ -1208,7 +1216,11 @@ export type FromRecorder =
       host?: { type: "host"; t: number; values: Record<string, number>; platform: PlatformInfo } | null;
       /** Every plugin's runtime, by id (desktop app). */
       pluginRuntime?: Record<string, PluginRuntime>;
+      /** Key containers waiting for a password, and which are unlocked (desktop app). */
+      keys?: { type: "keys"; sources: LockableKeys[] };
     }
+  /** Which key containers are unlocked, after an unlock, a lock or a config change. */
+  | { type: "keys"; sources: LockableKeys[] }
   | { type: "radios"; radios: Radios }
   | ({ type: "state" } & PhaseState)
   | { type: "config"; config: Config }
@@ -1265,6 +1277,10 @@ export type ToRecorder =
   | { type: "readTrConfig"; path: string }
   /** Live audio: on/off, optionally one system's (its short name) and/or one talkgroup's. */
   | { type: "listen"; on: boolean; system: string | null; talkgroup: number | null }
+  /** Open a key container (a key source with no password file) with its password; held in memory only. */
+  | { type: "unlockKeys"; source: string; password: string }
+  /** Forget a key container's keys: its systems stop decrypting at once. */
+  | { type: "lockKeys"; source: string }
   /** Link the conventional channels to a CSV (created from the list if new), reload it (same path), or unlink (""). */
   | { type: "channelFile"; index: number; path: string }
   /** Find a system: scan `bands` with source `source`, then monitor the best control channel. */

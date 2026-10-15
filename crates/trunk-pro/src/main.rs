@@ -105,6 +105,7 @@ mod statstore;
 mod protocol_tests;
 mod survey;
 mod tool;
+mod unlock;
 
 pub use trunk_app::config;
 
@@ -755,6 +756,7 @@ fn serve(a: &Args) {
         engine_cmds: Mutex::new(Vec::new()),
         host_last: Mutex::new(None),
         spool: Mutex::new(None),
+        unlocked: Default::default(),
     });
     monitor::start(ctx.clone());
     // What each call kept once its plugins are done, for the history list.
