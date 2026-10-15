@@ -27,6 +27,10 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   state are overwritten when they are dropped, so a freed page doesn't keep a
   key for a crash dump or a memory scan to find.
 
+- **No CTCSS hum on analog audio.** The voice high-pass now removes every CTCSS tone. The higher
+  tones (roughly 150–254 Hz) used to come through as a low hum; a 250 Hz tone was cut by only
+  10 dB, and every tone is now cut by about 50 dB or more.
+
 ## [0.1.11] — 2026-10-14
 
 - **Setup, reorganized.** Each Setup tab is now sections of cards, and
