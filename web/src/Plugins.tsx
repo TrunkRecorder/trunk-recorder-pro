@@ -22,6 +22,7 @@ import {
   setM4a,
   setPluginEnabled,
   setPluginSettings,
+  setPluginShareDecrypted,
   setSystemPluginOverride,
   setSystemPluginSettings,
   settingsOpened,
@@ -31,8 +32,9 @@ import {
   type AppState,
   type SystemRef,
 } from "./controller.ts";
+import { activeSystems } from "./config.ts";
 import { IconPuzzle, IconUpload, IconWave } from "./Onboarding.tsx";
-import { showTodo } from "./Setup.tsx";
+import { showTodo, Toggle } from "./Setup.tsx";
 import { Group, Section } from "./SetupLayout.tsx";
 import { openTodos } from "./todo.ts";
 import { copyOverride, copyOwn, pluginCopies } from "./protocol.ts";
@@ -160,6 +162,11 @@ function destinationOf(m: PluginManifest, over: PluginValues): string | null {
 }
 
 /** The systems plugins can be set up for: where each is, its short name (conventional ones with channels), and its copies of each plugin. */
+/** Some system that records names encryption keys (only then can a call be decrypted). */
+function hasKeys(c: Config): boolean {
+  return activeSystems(c).some((s) => !!s.keys?.trim()) || c.conventional.some((x) => x.enabled && !!x.keys?.trim());
+}
+
 function systemsOf(c: Config): { at: SystemRef; name: string; copies: (id: string) => PluginValues[] }[] {
   const out: { at: SystemRef; name: string; copies: (id: string) => PluginValues[] }[] = c.systems.map((x, i) => ({
     at: i,
@@ -606,6 +613,14 @@ function PluginSetupCard(props: { p: PluginInfo; c: Config }) {
             })
           )}
         </div>
+      )}
+      {on && hasKeys(c) && (m?.subscribe.includes("audio") || m?.subscribe.includes("call.concluded")) && (
+        <Toggle
+          label="Share decrypted calls"
+          hint="Calls decrypted with your keys go to it too. Once sent they can't be taken back, and may become public."
+          checked={!!c.plugins?.[p.id]?.shareDecrypted}
+          onChange={(v) => setPluginShareDecrypted(p.id, v)}
+        />
       )}
       {recording && on && <p className="small muted">Changes restart it.</p>}
     </article>

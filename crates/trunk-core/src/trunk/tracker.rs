@@ -244,6 +244,15 @@ impl VoiceTracker {
         self.set_es(es);
     }
 
+    /// The system's keys changed (a container unlocked, or locked): the voice
+    /// from now on, a call in progress too, is decrypted with these (none, or
+    /// no keys: not).
+    pub fn set_keys(&mut self, keys: Option<Arc<Keyring>>) {
+        self.keys = keys.filter(|k| !k.is_empty());
+        let es = self.es;
+        self.set_es(es);
+    }
+
     /// The voice from now on is under `es`: its keystream, when the system
     /// has the key.
     fn set_es(&mut self, es: Option<EncryptionSync>) {
@@ -424,5 +433,22 @@ mod tests {
         let mut t = tracker(None);
         begin(&mut t);
         assert!(heard(&mut t, 0, 0).is_none());
+
+        // Unlocked in the middle of the call: decrypted from the next frame. Locked again: not, at once.
+        let frame = |t: &mut VoiceTracker, ldu: usize, k: usize| {
+            let mut bits = clear;
+            ks.apply_p1(ldu, k, &mut bits);
+            let mut out = Vec::new();
+            t.voice_frame(ldu, k, imbe_bits_to_params(&bits), 0, 0, false, &mut out);
+            out
+        };
+        t.set_keys(Some(Arc::new(keys.clone())));
+        assert!(matches!(frame(&mut t, 1, 0).as_slice(), [TrackerOut::Decrypted, TrackerOut::Audio(_, f)] if f.bits == clear));
+        // (What was decrypted is muted from then on, never passed on as it was heard.)
+        let muted = |out: Vec<TrackerOut>| out.is_empty() || matches!(out.as_slice(), [TrackerOut::Audio(_, f)] if f.erased && f.bits == [0; 88]);
+        t.set_keys(None);
+        assert!(muted(frame(&mut t, 1, 1)));
+        t.set_keys(Some(Arc::new(Keyring::default())));
+        assert!(muted(frame(&mut t, 1, 2)));
     }
 }

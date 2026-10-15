@@ -164,7 +164,7 @@ export interface System {
   /** Multi-site: sites with one group are one system (a call on several is saved once).
    *  Absent: grouped by what the control channels say (P25 WACN + System ID, SmartNet System ID). */
   siteGroup?: string;
-  /** Desktop: its P25 encryption keys file, absolute or relative to the config file's folder (read when recording starts; never sent here). */
+  /** Desktop: the P25 encryption keys it decrypts with, a key source's name (Config's `keys`). */
   keys?: string;
   /** Plugins' settings for this system, by plugin id (each plugin's `system_config` schema); a list for several copies of one. */
   plugins?: Record<string, SystemPluginValues>;
@@ -177,6 +177,8 @@ export interface PluginSetup {
   settings?: PluginValues;
   /** Run this executable instead of the installed plugin (a build of the user's own). */
   path?: string;
+  /** Give it calls decrypted with the recorder's keys (their audio and files). Off: none are. */
+  shareDecrypted?: boolean;
 }
 
 /** The settings each system can set again for itself (crates/trunk-app/src/config.rs RecordingOverride). */
@@ -287,8 +289,24 @@ export interface Conventional {
   /** Its own recording rules; each left out is the Recording tab's. */
   recording?: RecordingOverride;
   unitNames?: UnitNames;
-  /** Desktop: its P25 channels' encryption keys file (as System's). */
+  /** Desktop: the encryption keys its P25 channels decrypt with (as System's). */
   keys?: string;
+}
+
+/** A key source that is a key container with no password file: unlocked with a password typed in (desktop). */
+export interface LockableKeys {
+  name: string;
+  /** The systems that decrypt with it. */
+  systems: string[];
+  unlocked: boolean;
+}
+
+/** Where a set of encryption keys comes from: file names only, never a key (desktop). */
+export interface KeySource {
+  /** A keys file (JSON) or a KFDtool key container (`.ekc`), absolute or relative to the config file's folder. */
+  file: string;
+  /** A container's password, in a file of its own. */
+  passwordFile?: string;
 }
 
 export interface Config {
@@ -310,6 +328,8 @@ export interface Config {
   };
   /** The plugins, by id (desktop app). Their settings for each system are in the system. */
   plugins?: Record<string, PluginSetup>;
+  /** Encryption key sources, by name; a system names one in its `keys` (desktop app). */
+  keys?: Record<string, KeySource>;
   /** The log (desktop app). */
   log?: LogSettings;
   /** What the dashboard watches on the computer (desktop app). */
@@ -1196,7 +1216,11 @@ export type FromRecorder =
       host?: { type: "host"; t: number; values: Record<string, number>; platform: PlatformInfo } | null;
       /** Every plugin's runtime, by id (desktop app). */
       pluginRuntime?: Record<string, PluginRuntime>;
+      /** Key containers waiting for a password, and which are unlocked (desktop app). */
+      keys?: { type: "keys"; sources: LockableKeys[] };
     }
+  /** Which key containers are unlocked, after an unlock, a lock or a config change. */
+  | { type: "keys"; sources: LockableKeys[] }
   | { type: "radios"; radios: Radios }
   | ({ type: "state" } & PhaseState)
   | { type: "config"; config: Config }
@@ -1253,6 +1277,10 @@ export type ToRecorder =
   | { type: "readTrConfig"; path: string }
   /** Live audio: on/off, optionally one system's (its short name) and/or one talkgroup's. */
   | { type: "listen"; on: boolean; system: string | null; talkgroup: number | null }
+  /** Open a key container (a key source with no password file) with its password; held in memory only. */
+  | { type: "unlockKeys"; source: string; password: string }
+  /** Forget a key container's keys: its systems stop decrypting at once. */
+  | { type: "lockKeys"; source: string }
   /** Link the conventional channels to a CSV (created from the list if new), reload it (same path), or unlink (""). */
   | { type: "channelFile"; index: number; path: string }
   /** Find a system: scan `bands` with source `source`, then monitor the best control channel. */

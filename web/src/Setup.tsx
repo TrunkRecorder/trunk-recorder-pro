@@ -31,11 +31,11 @@ import {
   usableHalfWidth,
   siteLockFields,
 } from "./config.ts";
-import { currentView, dismissTodo, downloadText, findRadios, openGuide, refreshDevices, setChannelFile, setNotice, setSetupTab, setView, updateConfig, useApp, web, type SetupTab } from "./controller.ts";
+import { currentView, dismissTodo, downloadText, findRadios, openGuide, refreshDevices, setChannelFile, setNotice, setSetupTab, setView, unlockKeys, updateConfig, useApp, web, type SetupTab } from "./controller.ts";
 import { InterfacesPanel } from "./Interfaces.tsx";
 import { M4aSettings, PluginSetupPanel, renameSystemRefs, SystemPluginSettings } from "./Plugins.tsx";
 import { IconAntenna, IconDongle, IconFolder, IconPuzzle, IconTower } from "./Onboarding.tsx";
-import type { AirspyGainMode, Channel, Config, Conventional, HeardCode, LogSettings, Recording, RecordingOverride, RecordingRules, SiteIdentity, SoapyState, Source, System, UnitNames } from "./protocol.ts";
+import type { AirspyGainMode, Channel, Config, Conventional, HeardCode, LockableKeys, LogSettings, Recording, RecordingOverride, RecordingRules, SiteIdentity, SoapyState, Source, System, UnitNames } from "./protocol.ts";
 import { DEFAULT_FORMAT, FilenameEditor } from "./FilenameEditor.tsx";
 import { GuardBand } from "./Rolloff.tsx";
 import { SurveyPanel } from "./Survey.tsx";
@@ -134,7 +134,45 @@ function TodoPanel() {
   );
 }
 
-function Toggle(props: { label: string; checked: boolean; onChange: (v: boolean) => void; hint?: string; disabled?: boolean }) {
+/** A key container waiting for its password, or unlocked. */
+function KeyContainer(props: { k: LockableKeys }) {
+  const { k } = props;
+  const [password, setPassword] = useState("");
+  const state = <span className={`chip ${k.unlocked ? "ok" : "warn"}`}>{k.unlocked ? "Unlocked" : "Locked"}</span>;
+  return (
+    <section className="set-card">
+      <Group title={k.name} hint={`For ${k.systems.join(", ")}`} actions={state} cols={1}>
+        {k.unlocked ? (
+          <div className="row">
+            <span className="muted small">Its systems decrypt with these keys until you lock them or the app quits.</span>
+            <button className="btn" onClick={() => unlockKeys(k.name, null)}>
+              Lock
+            </button>
+          </div>
+        ) : (
+          <form
+            className="row"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (!password) return;
+              unlockKeys(k.name, password);
+              setPassword("");
+            }}
+          >
+            <Field label="Password">
+              <input type="password" autoComplete="off" value={password} onChange={(e) => setPassword(e.target.value)} />
+            </Field>
+            <button className="btn primary" type="submit" disabled={!password}>
+              Unlock
+            </button>
+          </form>
+        )}
+      </Group>
+    </section>
+  );
+}
+
+export function Toggle(props: { label: string; checked: boolean; onChange: (v: boolean) => void; hint?: string; disabled?: boolean }) {
   return (
     <label className={`toggle${props.disabled ? " disabled" : ""}`}>
       <input type="checkbox" checked={props.checked} disabled={props.disabled} onChange={(e) => props.onChange(e.target.checked)} />
@@ -2449,6 +2487,13 @@ export function Setup() {
               </Group>
             )}
           </section>
+        </Section>
+      )}
+      {tab === "recording" && !web && s.lockable.length > 0 && (
+        <Section title="Key containers" hint="Encryption keys in a KFDtool container with no password file. Unlocked keys stay in memory until you lock them or the app quits; the password is never saved.">
+          {s.lockable.map((k) => (
+            <KeyContainer key={k.name} k={k} />
+          ))}
         </Section>
       )}
       {tab === "recording" && (
