@@ -124,14 +124,14 @@ export interface AppState {
 
 export type SetupTab = "systems" | "conventional" | "radios" | "recording" | "plugins";
 
-export type View = "overview" | "listen" | "rf" | "decode" | "radio" | "live" | "plugins" | "platform" | "setup";
-const VIEWS: View[] = ["overview", "listen", "rf", "decode", "radio", "live", "plugins", "platform", "setup"];
+export type View = "overview" | "listen" | "rf" | "decode" | "radio" | "calls" | "plugins" | "platform" | "setup";
+const VIEWS: View[] = ["overview", "listen", "rf", "decode", "radio", "calls", "plugins", "platform", "setup"];
 
 /** `#/radio/dcfd/tg/101` → ["radio", ["dcfd", "tg", "101"]]; the old `#plugins` too. */
 function routeFromHash(): { view: View; path: string[] } {
   const parts = location.hash.replace(/^#\/?/, "").split("/").filter(Boolean).map(decodeURIComponent);
-  // (Live was Calls.)
-  const v = (parts[0] === "calls" ? "live" : parts[0]) as View;
+  // (Calls was Live.)
+  const v = (parts[0] === "live" ? "calls" : parts[0]) as View;
   return VIEWS.includes(v) ? { view: v, path: parts.slice(1) } : { view: "overview", path: [] };
 }
 
