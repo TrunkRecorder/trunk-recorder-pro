@@ -2,10 +2,11 @@
 //! (libairspy) and anything with a SoapySDR module. Nothing links against
 //! them: each library is looked for at run time, so the same binary records
 //! from RTL-SDRs out of the box and from these once their driver is
-//! installed. `TRUNK_PRO_UHD` / `TRUNK_PRO_AIRSPY` / `TRUNK_PRO_SOAPY` /
-//! `TRUNK_PRO_SDRPLAY_API` name a library file to use instead of searching.
+//! installed. `TRUNK_PRO_UHD` / `TRUNK_PRO_AIRSPY` / `TRUNK_PRO_SOAPY` name a
+//! library file to use instead of searching.
 
 pub mod airspy;
+mod sdrplay;
 pub mod soapy;
 pub mod uhd;
 

@@ -294,15 +294,6 @@ pub fn search_paths() -> Vec<String> {
     a.list_search_paths.map(|f| unsafe { strings(a, f) }).unwrap_or_default()
 }
 
-/// Arguments that open exactly the device an enumeration result describes.
-fn device_args(kv: &[(String, String)]) -> String {
-    let get = |k: &str| kv.iter().find(|(key, v)| key == k && !v.is_empty()).map(|(_, v)| v.clone());
-    match (get("driver"), get("serial")) {
-        (Some(d), Some(s)) => format!("driver={d},serial={s}"),
-        _ => kv.iter().filter(|(k, _)| k != "label").map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(","),
-    }
-}
-
 /// Drivers this recorder has its own source for: better used that way.
 const NATIVE: &[(&str, &str)] = &[("rtlsdr", "RTL-SDR"), ("airspy", "Airspy"), ("uhd", "USRP")];
 
@@ -313,7 +304,7 @@ pub fn find() -> Result<Vec<serde_json::Value>, String> {
     modules();
     let mut n = 0usize;
     // The SDRplay module's search shares state with its open: not while a source is opening.
-    let opening = SDRPLAY_OPENING.lock().unwrap_or_else(|e| e.into_inner());
+    let opening = super::sdrplay::OPENING.lock().unwrap_or_else(|e| e.into_inner());
     // SAFETY: an empty args string; the list is freed below.
     let list = unsafe { (a.enumerate)(c"".as_ptr(), &mut n) };
     drop(opening);
@@ -326,7 +317,10 @@ pub fn find() -> Result<Vec<serde_json::Value>, String> {
         let kv = unsafe { kwargs(&*list.add(i)) };
         let get = |k: &str| kv.iter().find(|(key, v)| key == k && !v.is_empty()).map(|(_, v)| v.clone());
         let driver = get("driver").unwrap_or_default();
-        let args = device_args(&kv);
+        let args = match get("serial") {
+            Some(s) if !driver.is_empty() => format!("driver={driver},serial={s}"),
+            _ => kv.iter().filter(|(k, _)| k != "label").map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(","),
+        };
         let mut label = get("label").unwrap_or_else(|| driver.clone());
         if let Some((_, native)) = NATIVE.iter().find(|(d, _)| *d == driver) {
             label.push_str(&format!(" — the {native} source is recommended"));
@@ -406,109 +400,6 @@ pub fn run_with(source: usize, mut cfg: SoapyConfig, tx: SyncSender<SourceMsg>, 
     }
 }
 
-/// The SDRplay API won't select a second radio in a `sdrplay_api_Open()`
-/// session that already has one, and SoapySDRPlay3 opens a single session per
-/// process, so a second RSP fails with "SelectDevice() failed". As SDRTrunk
-/// does, open another session just before a radio is opened while another is
-/// in use, once per source (a retry reuses it). Sessions are never closed:
-/// closing one makes the others unusable. The open and the select must not
-/// interleave with another radio's, hence the lock held until `made()`.
-/// The `driver=` in device arguments, if they name one.
-fn explicit_driver(args: &str) -> Option<String> {
-    args.split(',').find_map(|kv| kv.split_once('=').filter(|(k, _)| k.trim().eq_ignore_ascii_case("driver")).map(|(_, v)| v.trim().to_ascii_lowercase()))
-}
-
-/// The first device `args` match (empty args, a bare `serial=…`): its driver, and arguments that open that same device.
-/// Call with `SDRPLAY_OPENING` held: SoapySDRPlay3's device search shares unsynchronized state with its open.
-fn first_match(a: &Api, args: &str) -> Option<(String, String)> {
-    let cargs = CString::new(args).ok()?;
-    let mut n = 0usize;
-    // SAFETY: NUL-terminated args; the list is read and freed below.
-    unsafe {
-        let list = (a.enumerate)(cargs.as_ptr(), &mut n);
-        if list.is_null() {
-            return None;
-        }
-        let first = (n > 0).then(|| kwargs(&*list));
-        (a.kwargs_list_clear)(list, n);
-        let kv = first?;
-        let driver = kv.iter().find(|(k, _)| k == "driver").map(|(_, v)| v.clone()).unwrap_or_default();
-        Some((driver, device_args(&kv)))
-    }
-}
-
-struct SdrplaySlot {
-    /// Arguments for `make` that name the device found by the fallback detection (None: use the source's own).
-    make_args: Option<String>,
-    live: bool,
-    _opening: Option<std::sync::MutexGuard<'static, ()>>,
-}
-
-static SDRPLAY_OPENING: Mutex<()> = Mutex::new(());
-static SDRPLAY: Mutex<(usize, Vec<usize>)> = Mutex::new((0, Vec::new())); // (radios in use, sources that opened a session)
-
-impl SdrplaySlot {
-    /// `args` that aren't an SDRplay (or no API library to open sessions with) take no slot.
-    fn take(a: &Api, source: usize, args: &str) -> SdrplaySlot {
-        let mut none = SdrplaySlot { make_args: None, live: false, _opening: None };
-        let explicit = explicit_driver(args);
-        if explicit.as_deref().is_some_and(|d| d != "sdrplay") {
-            return none;
-        }
-        // Held until `made()`; dropped here for a device that isn't an SDRplay.
-        let guard = SDRPLAY_OPENING.lock().unwrap_or_else(|e| e.into_inner());
-        let mut make_args = None;
-        if explicit.is_none() {
-            match first_match(a, args) {
-                Some((driver, found)) => {
-                    none.make_args = Some(found.clone());
-                    if !driver.eq_ignore_ascii_case("sdrplay") {
-                        return none;
-                    }
-                    make_args = Some(found);
-                }
-                None => return none,
-            }
-        }
-        static OPEN: OnceLock<Option<(Library, unsafe extern "C" fn() -> c_int)>> = OnceLock::new();
-        let Some((_, open)) = OPEN
-            .get_or_init(|| {
-                let names = super::candidates("libsdrplay_api.so.3", "libsdrplay_api.dylib", &["sdrplay_api.dll", r"C:\Program Files\SDRplay\API\x64\sdrplay_api.dll"]);
-                let names: Vec<&str> = names.iter().map(String::as_str).collect();
-                let (lib, _) = super::load("TRUNK_PRO_SDRPLAY_API", &names, "sdrplay_api", false).ok()?;
-                // SAFETY: sdrplay_api_Open() takes no arguments; this is the library the module loads, so the same sessions.
-                let open = unsafe { *lib.get::<unsafe extern "C" fn() -> c_int>(b"sdrplay_api_Open\0").ok()? };
-                Some((lib, open))
-            })
-            .as_ref()
-        else {
-            return none;
-        };
-        let mut st = SDRPLAY.lock().unwrap();
-        if st.0 > 0 && !st.1.contains(&source) {
-            // SAFETY: see above.
-            if unsafe { open() } == 0 {
-                st.1.push(source);
-            }
-        }
-        st.0 += 1;
-        SdrplaySlot { make_args, live: true, _opening: Some(guard) }
-    }
-
-    /// The radio is open (or failed to): let the next one open.
-    fn made(&mut self) {
-        self._opening = None;
-    }
-}
-
-impl Drop for SdrplaySlot {
-    fn drop(&mut self) {
-        if self.live {
-            SDRPLAY.lock().unwrap().0 -= 1;
-        }
-    }
-}
-
 /// Owns the device and stream so every exit path releases them.
 struct Device<'a> {
     a: &'a Api,
@@ -569,8 +460,8 @@ fn stream_once(source: usize, cfg: &SoapyConfig, tx: &SyncSender<SourceMsg>, sto
     let a = api()?;
     // Modules load here rather than inside make, so a broken one is reported.
     modules();
-    let mut sdrplay = SdrplaySlot::take(a, source, &cfg.args);
-    let args = CString::new(sdrplay.make_args.as_deref().unwrap_or(&cfg.args)).map_err(|e| e.to_string())?;
+    let args = CString::new(cfg.args.as_str()).map_err(|e| e.to_string())?;
+    let mut sdrplay = super::sdrplay::before_open(source, &cfg.args);
     let mut d = Device { a, dev: std::ptr::null_mut(), stream: std::ptr::null_mut(), active: false };
     // SAFETY: SoapySDR C API calls on the device and stream `d` owns.
     unsafe {
@@ -714,14 +605,6 @@ mod tests {
         assert!(abi_at_least_08("1.0"));
         assert_eq!(module_name("/opt/homebrew/lib/SoapySDR/modules0.8/librtlsdrSupport.so"), "rtlsdr");
         assert_eq!(module_name(r"C:\PothosSDR\lib\SoapySDR\modules0.8\sdrPlaySupport.dll"), "sdrPlay");
-        assert_eq!(explicit_driver("driver=sdrplay,serial=240522FF60").as_deref(), Some("sdrplay"));
-        assert_eq!(explicit_driver("serial=1, Driver= SDRplay").as_deref(), Some("sdrplay"));
-        assert_eq!(explicit_driver("driver=hackrf").as_deref(), Some("hackrf"));
-        assert_eq!(explicit_driver("serial=240522FF60"), None);
-        assert_eq!(explicit_driver(""), None);
-        let kv = |v: &[(&str, &str)]| v.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<Vec<_>>();
-        assert_eq!(device_args(&kv(&[("driver", "sdrplay"), ("label", "SDRplay Dev0"), ("serial", "240522FF60")])), "driver=sdrplay,serial=240522FF60");
-        assert_eq!(device_args(&kv(&[("driver", "audio"), ("label", "Dummy"), ("device_id", "0")])), "driver=audio,device_id=0");
         assert_eq!(pairs("LNA=32, VGA = 20,,bad"), vec![("LNA".into(), "32".into()), ("VGA".into(), "20".into())]);
     }
 }

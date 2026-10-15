@@ -8,9 +8,10 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 - **Two SDRplay radios in one process:** a second RSP source no longer
   fails with `SelectDevice() failed`. SoapySDRPlay3 opens one SDRplay API
   session per process, which can select only one radio, so trunk-pro now
-  opens one more session for each further SDRplay source (as SDRTrunk
-  does). Two radios on one USB bus can still run out of bandwidth: 3 + 3
-  MS/s failed in testing, and 2.5 + 6 MS/s worked. A source at 2 MS/s or
+  opens one more session for each further source with `driver=sdrplay`
+  in its device arguments (as SDRTrunk does). Two radios on one USB bus
+  can still run out of bandwidth: 3 + 3 MS/s failed in testing, and
+  2.5 + 6 MS/s worked. A source at 2 MS/s or
   below runs its radio at 6 MS/s; use separate USB controllers if a
   pair doesn't fit.
 

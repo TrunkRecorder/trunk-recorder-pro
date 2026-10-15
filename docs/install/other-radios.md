@@ -70,7 +70,6 @@ an environment variable:
 | `TRUNK_PRO_UHD` | UHD, e.g. `/opt/uhd/lib/libuhd.so.4.6.0` |
 | `TRUNK_PRO_AIRSPY` | libairspy |
 | `TRUNK_PRO_SOAPY` | SoapySDR |
-| `TRUNK_PRO_SDRPLAY_API` | The SDRplay API (`libsdrplay_api`), for two SDRplay radios in one process |
 
 ```bash
 TRUNK_PRO_UHD=/opt/uhd/lib/libuhd.so.4.6.0 trunk-pro devices --usrp
