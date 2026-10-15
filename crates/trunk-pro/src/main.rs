@@ -766,6 +766,9 @@ fn serve(a: &Args) {
             runtime::call_files(&ctx, rel, audio, json);
         }
     }));
+    // Calls held back from plugins by the run before (the archive is told of them, so after on_settle).
+    let cfg = ctx.config.lock().unwrap().clone();
+    ctx.plugins.open_hold(&cfg);
     runtime::load_history(ctx.clone());
     {
         let c = ctx.config.lock().unwrap();

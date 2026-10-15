@@ -30,7 +30,7 @@
 //! }
 //! ```
 
-#[cfg(feature = "sdk")]
+// (The recorder matches talkgroups as plugins do: its plugin delays.)
 pub mod filter;
 mod multipart;
 pub mod protocol;
@@ -42,7 +42,6 @@ pub mod schema;
 mod sdk;
 #[cfg(feature = "sdk")]
 pub mod testing;
-#[cfg(feature = "sdk")]
 pub use filter::TalkgroupFilter;
 #[cfg(feature = "sdk")]
 pub use queue::{Attempt, CallQueue, QueueOptions};

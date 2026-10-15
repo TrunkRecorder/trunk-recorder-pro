@@ -33,6 +33,7 @@ import {
   type SystemRef,
 } from "./controller.ts";
 import { activeSystems } from "./config.ts";
+import { EveryDelays, PluginDelay } from "./Delays.tsx";
 import { IconPuzzle, IconUpload, IconWave } from "./Onboarding.tsx";
 import { showTodo, Toggle } from "./Setup.tsx";
 import { Group, Section } from "./SetupLayout.tsx";
@@ -553,6 +554,7 @@ export function PluginSetupPanel() {
           {plugins.map((p) => (
             <PluginSetupCard key={p.id} p={p} c={c} />
           ))}
+          {plugins.some((p) => pluginOn(c, p.id)) && <EveryDelays />}
           {plugins.length === 0 && (
             <p className="empty">
               No plugins installed yet.{" "}
@@ -622,7 +624,8 @@ function PluginSetupCard(props: { p: PluginInfo; c: Config }) {
           onChange={(v) => setPluginShareDecrypted(p.id, v)}
         />
       )}
-      {recording && on && <p className="small muted">Changes restart it.</p>}
+      {on && (m?.subscribe.includes("audio") || m?.subscribe.includes("call.concluded")) && <PluginDelay p={p} c={c} />}
+      {recording && on && <p className="small muted">Changes restart it (delays don't).</p>}
     </article>
   );
 }
@@ -794,6 +797,11 @@ function PluginCard(props: { p: PluginInfo; recording: boolean; listing?: StoreL
           {r.skipped > 0 && ` · ${r.skipped} skipped`}
           {r.failed > 0 && <span className="bad-text"> · {r.failed} failed</span>}
           {r.failed > 0 && r.lastFailure && <span className="plugin-last-failure"> — last: {r.lastFailure}</span>}
+        </p>
+      )}
+      {(r.held ?? 0) > 0 && (
+        <p className="small muted" title="Its delays hold these back; they go when their time is up, after a restart too">
+          {r.held} call{r.held === 1 ? "" : "s"} waiting out a delay
         </p>
       )}
       {m && (

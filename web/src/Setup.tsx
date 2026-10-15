@@ -34,6 +34,7 @@ import {
 import { currentView, dismissTodo, downloadText, findRadios, openGuide, refreshDevices, setChannelFile, setNotice, setSetupTab, setView, unlockKeys, updateConfig, useApp, web, type SetupTab } from "./controller.ts";
 import { InterfacesPanel } from "./Interfaces.tsx";
 import { M4aSettings, PluginSetupPanel, renameSystemRefs, SystemPluginSettings } from "./Plugins.tsx";
+import { SystemDelays } from "./Delays.tsx";
 import { IconAntenna, IconDongle, IconFolder, IconPuzzle, IconTower } from "./Onboarding.tsx";
 import type { AirspyGainMode, Channel, Config, Conventional, HeardCode, LockableKeys, LogSettings, Recording, RecordingOverride, RecordingRules, SiteIdentity, SoapyState, Source, System, UnitNames } from "./protocol.ts";
 import { DEFAULT_FORMAT, FilenameEditor } from "./FilenameEditor.tsx";
@@ -1406,8 +1407,9 @@ function ConventionalPanel(props: { c: Config; k: number }) {
         </Group>
       )}
       {chans.length > 0 && (
-        <Group title="Overrides" hint="This system's own plugin settings and call rules. Anything left at Default follows the Recording tab." cols={1}>
+        <Group title="Overrides" hint="This system's own plugin settings, plugin delays and call rules. Anything left at Default follows the Recording tab." cols={1}>
           <SystemPluginSettings system={{ conv: k }} />
+          <SystemDelays system={{ conv: k }} />
           <RecordingOverridePanel
             c={c}
             value={conv.recording}
@@ -1912,8 +1914,9 @@ function SystemCard(props: { c: Config; i: number }) {
           </details>
         )}
       </Group>
-      <Group title="Overrides" hint="This system's own plugin settings and call rules. Anything left at Default follows the Recording tab." cols={1}>
+      <Group title="Overrides" hint="This system's own plugin settings, plugin delays and call rules. Anything left at Default follows the Recording tab." cols={1}>
         <SystemPluginSettings system={i} />
+        <SystemDelays system={i} />
         <RecordingOverridePanel
           c={c}
           value={sys.recording}

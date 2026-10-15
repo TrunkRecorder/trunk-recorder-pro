@@ -18,19 +18,26 @@
 //!
 //! With a RAM spool ([`crate::spool`]), the files that may be deleted wait
 //! there: those kept after all (a failure) move to the recordings folder.
+//!
+//! A call held back from a plugin ([`super::hold`]) isn't given up on while
+//! it waits: that plugin's [`GIVE_UP`] counts from when it's given the call.
+//! The hold keeps what the archive needs of it ([`Ticket`]) with the call,
+//! so it's settled the same after a restart.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use serde::{Deserialize, Serialize};
 use trunk_recorder_plugin::Outcome;
 
 /// A call not settled after this counts as failed (a plugin lost it).
 const GIVE_UP: Duration = Duration::from_secs(3600);
 
 /// A call's file rules (its system's recording settings).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FileRules {
     /// Keep an .m4a of it.
     pub compress_wav: bool,
@@ -89,6 +96,8 @@ impl FileRules {
 struct Pending {
     /// Plugins still to report.
     left: usize,
+    /// Of those, the ones it's held back from (not given up on meanwhile).
+    held: usize,
     failed: bool,
     rules: FileRules,
     /// The files, without the extension.
@@ -96,6 +105,17 @@ struct Pending {
     /// The same in the spool, where the ones only for the plugins are.
     spooled: Option<PathBuf>,
     since: Instant,
+}
+
+/// What the archive is to do with a call's files once its plugins are done,
+/// kept with a held call so that's done after a restart too ([`Archive::restore`]).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Ticket {
+    pub rules: FileRules,
+    pub base: PathBuf,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spooled: Option<PathBuf>,
 }
 
 /// Told what a call kept once its plugins are done: (its path, audio kept, JSON kept).
@@ -122,10 +142,10 @@ impl Archive {
     /// Call `rel` (at `base`, and `spooled`) goes to `plugins` plugins, each
     /// of which will report on it. With none, it's settled now.
     pub fn expect(&self, rel: &str, plugins: usize, rules: FileRules, base: &Path, spooled: Option<&Path>) {
-        let x = Pending { left: plugins, failed: false, rules, base: base.to_path_buf(), spooled: spooled.map(Path::to_path_buf), since: Instant::now() };
+        let x = Pending { left: plugins, held: 0, failed: false, rules, base: base.to_path_buf(), spooled: spooled.map(Path::to_path_buf), since: Instant::now() };
         let mut p = self.pending.lock().unwrap();
         // Calls a plugin never reported on: failed.
-        let lost: Vec<(String, Pending)> = p.extract_if(|_, x| x.since.elapsed() >= GIVE_UP).collect();
+        let lost: Vec<(String, Pending)> = p.extract_if(|_, x| x.held == 0 && x.since.elapsed() >= GIVE_UP).collect();
         let now = if plugins == 0 {
             Some(x)
         } else {
@@ -144,6 +164,33 @@ impl Archive {
         if let Some(x) = now {
             settle(&x);
         }
+    }
+
+    /// What's to be done with call `rel`'s files (None: nothing waits on its plugins).
+    pub fn ticket(&self, rel: &str) -> Option<Ticket> {
+        self.pending.lock().unwrap().get(rel).map(|x| Ticket { rules: x.rules, base: x.base.clone(), spooled: x.spooled.clone() })
+    }
+
+    /// Call `rel` is held back from one of its plugins.
+    pub fn hold(&self, rel: &str) {
+        if let Some(x) = self.pending.lock().unwrap().get_mut(rel) {
+            x.held += 1;
+        }
+    }
+
+    /// Call `rel` was given to a plugin it was held back from (whose hour to report starts now).
+    pub fn release(&self, rel: &str) {
+        if let Some(x) = self.pending.lock().unwrap().get_mut(rel) {
+            x.held = x.held.saturating_sub(1);
+            x.since = Instant::now();
+        }
+    }
+
+    /// After a restart: call `rel` is still held back from `plugins` plugins.
+    /// (Those that had it already are forgotten with the run before.)
+    pub fn restore(&self, rel: &str, plugins: usize, t: Ticket) {
+        let x = Pending { left: plugins, held: plugins, failed: false, rules: t.rules, base: t.base, spooled: t.spooled, since: Instant::now() };
+        self.pending.lock().unwrap().insert(rel.to_string(), x);
     }
 
     /// A plugin reported on call `rel`.

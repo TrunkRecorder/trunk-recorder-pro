@@ -24,6 +24,8 @@ use serde_json::{json, Value};
 use trunk_core::metrics::{key_part, Sink};
 use trunk_recorder_plugin::{Level, Manifest, Metrics, Outcome, State, SystemInfo};
 
+use super::delay::Delays;
+use super::hold::Hold;
 use super::host::Notes;
 use super::store::{self, Catalog};
 use super::{describe, executable, plugins_dir, Archive, Encoder, Note, PluginHost, Spec};
@@ -54,6 +56,8 @@ pub struct Runtime {
     pub restarts: u64,
     pub dropped: u64,
     pub uptime_s: Option<f64>,
+    /// Finished calls waiting out a delay for it (its copies' too).
+    pub held: usize,
     /// Results per minute, the last hour: (minute start, Unix s; [ok, skipped, failed]).
     pub minutes: VecDeque<(i64, [u32; 3])>,
     /// With copies of it running (a system with several): each copy's state
@@ -82,6 +86,7 @@ impl Default for Runtime {
             restarts: 0,
             dropped: 0,
             uptime_s: None,
+            held: 0,
             minutes: VecDeque::new(),
             copies: BTreeMap::new(),
             copy_metrics: BTreeMap::new(),
@@ -189,6 +194,8 @@ pub struct Plugins {
     pub host: RwLock<Option<PluginHost>>,
     /// Calls whose files wait on the plugins' results.
     pub archive: Arc<Archive>,
+    /// What plugins are to have late (their delays), until it's due.
+    pub hold: Arc<Hold>,
     /// What the running recording's plugins were started with, to restart them.
     env: Mutex<Option<(Vec<SystemInfo>, PathBuf)>>,
     runtime: Arc<Mutex<BTreeMap<String, Runtime>>>,
@@ -205,17 +212,38 @@ pub struct Plugins {
 
 impl Plugins {
     pub fn new(hub: Hub, monitor: Arc<trunk_app::stats::Shared>) -> Plugins {
-        Plugins {
+        let archive: Arc<Archive> = Arc::default();
+        let p = Plugins {
             monitor,
             host: RwLock::new(None),
-            archive: Arc::default(),
+            hold: Hold::new(archive.clone()),
+            archive,
             env: Mutex::new(None),
             runtime: Arc::new(Mutex::new(BTreeMap::new())),
             manifests: Mutex::new(HashMap::new()),
             store: Mutex::new(None),
             installing: Mutex::new(BTreeSet::new()),
             hub,
-        }
+        };
+        p.hold.set_notes(p.notes());
+        p
+    }
+
+    /// Keep held calls on disk from now on, take back those the run before
+    /// left there, and time them by `cfg`'s delays.
+    pub fn open_hold(&self, cfg: &Config) {
+        self.set_delays(cfg);
+        self.hold.open(&crate::paths::data_dir().join("plugin-hold"));
+    }
+
+    /// The config's plugin delays changed (or may have): what's held is timed by them.
+    pub fn set_delays(&self, cfg: &Config) {
+        self.hold.set_delays(Delays::of(cfg));
+    }
+
+    /// The longest plugin delay: how long a call's files may wait for its plugins, besides their own time.
+    pub fn longest_delay(&self) -> Duration {
+        self.hold.longest()
     }
 
     /// The installed plugins (in the plugins folder) and those the config names.
@@ -277,13 +305,17 @@ impl Plugins {
     /// Start the config's enabled plugins for a recording.
     pub fn start(&self, cfg: &Config) {
         *self.env.lock().unwrap() = Some((super::systems_of(cfg), PathBuf::from(&cfg.recording.capture_dir)));
+        self.set_delays(cfg);
         let host = self.new_host(cfg, true, Arc::new(AtomicBool::new(true)));
+        self.hold.attach(host.as_ref().map(PluginHost::outlet));
         *self.host.write().unwrap() = host;
     }
 
     /// Stop the plugins (recording ended): they get `grace` to finish.
     pub fn stop(&self, grace: Duration) {
         *self.env.lock().unwrap() = None;
+        // (Before it stops: what's due meanwhile waits for the next recording.)
+        self.hold.detach();
         let old = self.host.write().unwrap().take();
         if let Some(mut h) = old {
             h.shutdown(grace);
@@ -308,7 +340,10 @@ impl Plugins {
             return;
         }
         let go = Arc::new(AtomicBool::new(false));
+        self.set_delays(cfg);
         let new = self.new_host(cfg, false, go.clone());
+        // What's held goes to the new plugins (queued until they start).
+        self.hold.attach(new.as_ref().map(PluginHost::outlet));
         let old = std::mem::replace(&mut *self.host.write().unwrap(), new);
         match old {
             Some(mut h) => {
@@ -344,7 +379,7 @@ impl Plugins {
         if specs.is_empty() {
             return None;
         }
-        let host = PluginHost::start_when(specs, &cfg.recording.m4a, &systems, &capture_dir, notes, go);
+        let host = PluginHost::start_when(specs, &cfg.recording.m4a, &systems, &capture_dir, notes, go, Some(self.hold.clone()));
         (!host.is_empty()).then_some(host)
     }
 
@@ -352,7 +387,28 @@ impl Plugins {
     /// its process's restarts, drops and uptime folded into its runtime.
     pub fn report(&self, sink: &mut dyn Sink) {
         let procs = self.host.read().unwrap().as_ref().map(|h| h.process_stats()).unwrap_or_default();
+        let mut held: BTreeMap<String, usize> = BTreeMap::new();
+        for (label, n) in self.hold.calls() {
+            *held.entry(super::parse_label(&label).0.to_string()).or_default() += n;
+        }
         let mut rt = self.runtime.lock().unwrap();
+        // (Told as it changes: it moves without the plugin saying anything.)
+        let mut changed = Vec::new();
+        for (id, r) in rt.iter_mut() {
+            let n = held.remove(id).unwrap_or(0);
+            if r.held != n {
+                r.held = n;
+                changed.push(json!({ "type": "pluginRuntime", "id": id, "runtime": r }));
+            }
+        }
+        for (id, n) in held {
+            let r = rt.entry(id.clone()).or_default();
+            r.held = n;
+            changed.push(json!({ "type": "pluginRuntime", "id": id, "runtime": r }));
+        }
+        for v in changed {
+            publish(&self.hub, v);
+        }
         // Copies of a plugin: their restarts and drops together, up for as long as the newest.
         let mut seen = BTreeSet::new();
         for p in procs {
@@ -377,6 +433,7 @@ impl Plugins {
             sink.counter(&format!("{k}/failed"), r.failed);
             sink.counter(&format!("{k}/dropped"), r.dropped);
             sink.counter(&format!("{k}/restarts"), r.restarts);
+            sink.gauge(&format!("{k}/held"), r.held as f64);
             if let Some(m) = &r.metrics {
                 if let Some(q) = m.queued {
                     sink.gauge(&format!("{k}/queued"), q as f64);
