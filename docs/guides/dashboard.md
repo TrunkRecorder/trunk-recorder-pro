@@ -135,7 +135,8 @@ last two are calls you missed; see the reasons table on [the Calls page](interfa
 Then: **On the air now**, **Busiest … by hour** (talkgroups, by calls), **Busiest … radios by
 hour** (by transmissions), **Who talks on what** (talkgroups and the busiest radios, linked by how
 often each radio talks on each), the **Talkgroups** table, the **Radios** table (each with its
-activity **By hour**), and **Call lengths**.
+activity **By hour**; over 7 days, **By 6 hours**: midnight to 6, 6 to noon, and so on), and
+**Call lengths**.
 
 The **Talkgroups** table can show **All**, **New**, **Unknown**, **Ignored** or **Encrypted** (more
 than half their calls encrypted), sorted by **Airtime**, **Calls**, **Latest** or **Newest**. The

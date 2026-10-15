@@ -52,6 +52,33 @@ const dayHourLabel = (i: number) => `${String(i).padStart(2, "0")}:00–${String
 /** A radio's name: its alias, else its number. */
 const unitName = (s: AppState, sys: DashSystem, r: UnitRow) => aliasOf(s, sys.name, r.unit) || r.alias || String(r.unit);
 
+/** Hours per cell in a table's strip: a week of hours is too many cells for a column. */
+const stripBlock = (hours: number) => (hours > 24 ? 6 : 1);
+
+/**
+ * A table row's activity by hour (oldest first, ending this hour); past a
+ * day, in blocks of hours on the local clock (00–06, 06–12 …), the first and
+ * the last (this one, so far) maybe partial.
+ */
+function HourStrip({ v, hours, noun }: { v: number[]; hours: number; noun: string }) {
+  const block = stripBlock(hours);
+  const nowH = Math.floor(Date.now() / 3600_000);
+  const time = (d: Date) => d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const cells: { n: number; from: Date; to: Date; key: string }[] = [];
+  v.forEach((n, j) => {
+    const from = new Date((nowH - (v.length - 1 - j)) * 3600_000);
+    const key = `${from.toDateString()} ${Math.floor(from.getHours() / block)}`;
+    const to = new Date(from.getTime() + 3600_000);
+    const last = cells.at(-1);
+    if (last?.key === key) {
+      last.n += n;
+      last.to = to;
+    } else cells.push({ n, from, to, key });
+  });
+  const titles = cells.map((c) => `${clockAt(c.from.getTime() / 1000)}${block > 1 ? `–${time(c.to)}` : ""}: ${c.n} ${noun}${c.n === 1 ? "" : "s"}`);
+  return <HeatStrip v={cells.map((c) => c.n)} titles={titles} label={`${noun}s by ${block > 1 ? `${block} hours` : "hour"}`} />;
+}
+
 function TgName({ r }: { r: { tg: number; alphaTag: string } }) {
   return r.alphaTag ? (
     <span className="tg-name" title={`Talkgroup ${r.tg}`}>
@@ -198,7 +225,7 @@ function Talkgroups({ sys, rows, hours }: { sys: DashSystem; rows: TgRow[]; hour
               <th>Talkgroup</th>
               <th>Calls</th>
               <th>Airtime</th>
-              <th>By hour</th>
+              <th>{stripBlock(hours) > 1 ? `By ${stripBlock(hours)} hours` : "By hour"}</th>
               <th>Last heard</th>
               <th />
             </tr>
@@ -221,7 +248,7 @@ function Talkgroups({ sys, rows, hours }: { sys: DashSystem; rows: TgRow[]; hour
                 <td className="mono">{r.calls}</td>
                 <td className="mono">{dur(r.secs)}</td>
                 <td className="spark-cell">
-                  <HeatStrip v={r.hourly} titles={r.hourly.map((v, i) => `${hourLabel(hours)(i)}: ${v} calls`)} />
+                  <HourStrip v={r.hourly} hours={hours} noun="call" />
                 </td>
                 <td className="small">{ago(r.last)}</td>
                 <td>
@@ -251,7 +278,7 @@ function Units({ s, sys, rows, total: n, hours }: { s: AppState; sys: DashSystem
               <th>Affiliated</th>
               <th>Transmitted</th>
               <th>Talks on</th>
-              <th>By hour</th>
+              <th>{stripBlock(hours) > 1 ? `By ${stripBlock(hours)} hours` : "By hour"}</th>
               <th>Last heard</th>
             </tr>
           </thead>
@@ -270,7 +297,7 @@ function Units({ s, sys, rows, total: n, hours }: { s: AppState; sys: DashSystem
                   </td>
                   <td className="small">{r.tgs.slice(0, 3).map(([tg, k]) => `${tg}×${k}`).join(" · ") || "—"}</td>
                   <td className="spark-cell">
-                    <HeatStrip v={r.hourly} titles={r.hourly.map((v, i) => `${hourLabel(hours)(i)}: ${v} transmission${v === 1 ? "" : "s"}`)} />
+                    <HourStrip v={r.hourly} hours={hours} noun="transmission" />
                   </td>
                   <td className="small">{ago(r.lastTx ?? r.last)}</td>
                 </tr>
