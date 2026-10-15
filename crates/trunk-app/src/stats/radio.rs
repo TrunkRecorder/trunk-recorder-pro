@@ -68,6 +68,8 @@ pub struct Unit {
     pub tgs: Vec<(u32, u32)>,
     /// Its latest transmissions: (Unix s, talkgroup, seconds).
     pub recent: VecDeque<(i64, u32, f32)>,
+    /// (hour = Unix s / 3600, transmissions, seconds), oldest first, last week only.
+    pub hours: VecDeque<(i64, (u32, f32))>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
@@ -276,6 +278,10 @@ impl Registry {
             while u.recent.len() > MAX_RECENT_TX {
                 u.recent.pop_front();
             }
+            bump_hour(&mut u.hours, at.div_euclid(3600), |v: &mut (u32, f32)| {
+                v.0 += 1;
+                v.1 += turn;
+            }, || (0, 0.0));
         }
         for w in srcs.windows(2) {
             s.pair(w[0].src, w[1].src, t);
@@ -448,12 +454,13 @@ fn is_new(s: &SystemRadio, first: i64, now: i64) -> bool {
     first > now - NEW_S && first - s.created >= BASELINE_S
 }
 
-/// A talkgroup's per-hour activity over the last `hours`, oldest first: (calls, seconds).
-fn hourly(g: &Tg, now: i64, hours: i64) -> (Vec<u32>, Vec<f32>) {
+/// A talkgroup's calls or a radio's transmissions per hour over the last
+/// `hours`, oldest first: (count, seconds).
+fn hourly(per_hour: &VecDeque<(i64, (u32, f32))>, now: i64, hours: i64) -> (Vec<u32>, Vec<f32>) {
     let h1 = now.div_euclid(3600);
     let h0 = h1 - hours + 1;
     let (mut c, mut sec) = (vec![0u32; hours as usize], vec![0f32; hours as usize]);
-    for &(h, (n, x)) in &g.hours {
+    for &(h, (n, x)) in per_hour {
         if h >= h0 && h <= h1 {
             c[(h - h0) as usize] = n;
             sec[(h - h0) as usize] = (x * 10.0).round() / 10.0;
@@ -464,7 +471,7 @@ fn hourly(g: &Tg, now: i64, hours: i64) -> (Vec<u32>, Vec<f32>) {
 
 fn tg_row(name: &str, s: &SystemRadio, tg: u32, g: &Tg, now: i64, hours: i64, names: &Names) -> Value {
     let info = (names.tg)(name, tg);
-    let (c, sec) = hourly(g, now, hours);
+    let (c, sec) = hourly(&g.hours, now, hours);
     json!({
         "tg": tg,
         "alphaTag": info.as_ref().map_or("", |i| i.alpha_tag.as_str()),
@@ -511,7 +518,8 @@ fn partners(s: &SystemRadio, unit: u32, n: usize) -> Vec<(u32, u32)> {
     p
 }
 
-fn unit_row(name: &str, s: &SystemRadio, id: u32, u: &Unit, now: i64, names: &Names, partners_n: usize) -> Value {
+#[allow(clippy::too_many_arguments)]
+fn unit_row(name: &str, s: &SystemRadio, id: u32, u: &Unit, now: i64, hours: i64, names: &Names, partners_n: usize) -> Value {
     json!({
         "unit": id,
         "alias": (names.unit)(name, id).unwrap_or_default(),
@@ -521,6 +529,7 @@ fn unit_row(name: &str, s: &SystemRadio, id: u32, u: &Unit, now: i64, names: &Na
         "tgs": u.tgs,
         "partners": if partners_n > 0 { partners(s, id, partners_n) } else { Vec::new() },
         "new": is_new(s, u.first, now),
+        "hourly": hourly(&u.hours, now, hours).0,
     })
 }
 
@@ -530,7 +539,7 @@ fn units(name: &str, s: &SystemRadio, now: i64, hours: i64, limit: usize, names:
     rows.sort_by(|a, b| b.1.last_tx.cmp(&a.1.last_tx).then(b.1.last.cmp(&a.1.last)));
     let total = rows.len();
     // Partners only for the first rows (a scan of the pairs each).
-    let rows: Vec<Value> = rows.into_iter().take(limit).enumerate().map(|(i, (k, u))| unit_row(name, s, k, u, now, names, if i < 100 { 3 } else { 0 })).collect();
+    let rows: Vec<Value> = rows.into_iter().take(limit).enumerate().map(|(i, (k, u))| unit_row(name, s, k, u, now, hours, names, if i < 100 { 3 } else { 0 })).collect();
     json!({ "hours": hours, "total": total, "rows": rows })
 }
 
@@ -545,7 +554,7 @@ fn tg_detail(name: &str, s: &SystemRadio, tg: u32, now: i64, hours: i64, names: 
     json!({
         "tg": tg,
         "row": tg_row(name, s, tg, g, now, hours, names),
-        "week": hourly(g, now, HOURS).0,
+        "week": hourly(&g.hours, now, HOURS).0,
         "talkers": talkers.iter().map(|&(u, n, t)| json!({ "unit": u, "alias": alias(u), "n": n, "lastTx": t })).collect::<Vec<_>>(),
         "affiliated": affiliated.iter().map(|&u| json!({ "unit": u, "alias": alias(u) })).collect::<Vec<_>>(),
         "lengths": histogram(s.lengths.iter().filter(|l| l.1 == tg && l.0 > now - hours * 3600).map(|l| l.2)),
@@ -558,7 +567,8 @@ fn unit_detail(name: &str, s: &SystemRadio, id: u32, now: i64, names: &Names) ->
     let partners = partners(s, id, 24);
     json!({
         "unit": id,
-        "row": unit_row(name, s, id, u, now, names, 0),
+        "row": unit_row(name, s, id, u, now, HOURS, names, 0),
+        "week": hourly(&u.hours, now, HOURS).0,
         "recent": u.recent.iter().rev().map(|&(t, tg, secs)| json!({ "t": t, "tg": tg, "alphaTag": tg_name(tg), "secs": (secs * 10.0).round() / 10.0 })).collect::<Vec<_>>(),
         "affiliations": s.affiliations.iter().rev().filter(|a| a.1 == id).take(50).map(|&(t, _, tg)| json!({ "t": t, "tg": tg, "alphaTag": tg_name(tg) })).collect::<Vec<_>>(),
         "tgs": u.tgs.iter().map(|&(tg, n)| json!({ "tg": tg, "alphaTag": tg_name(tg), "n": n })).collect::<Vec<_>>(),
@@ -681,6 +691,15 @@ mod tests {
         let q = r.query(&json!({ "what": "unit", "system": "dcfd", "key": 7 }), t0 + 7300, &n);
         assert_eq!(q["row"]["alias"], "E7");
         assert_eq!(q["partners"][0]["unit"], 8);
+        // Its transmission, two hours back on the week.
+        let week = q["week"].as_array().unwrap();
+        assert_eq!(week.len(), HOURS as usize);
+        assert_eq!(week.iter().map(|v| v.as_u64().unwrap()).sum::<u64>(), 1);
+        assert_eq!(week[HOURS as usize - 1 - ((t0 + 7300) / 3600 - t0 / 3600) as usize], 1);
+        let q = r.query(&json!({ "what": "units", "system": "dcfd", "hours": 24 }), t0 + 7300, &n);
+        let nine = q["rows"].as_array().unwrap().iter().find(|r| r["unit"] == 9).unwrap();
+        assert_eq!(nine["hourly"].as_array().unwrap().len(), 24);
+        assert_eq!(nine["hourly"][23], 1, "radio 9 transmitted this hour");
         let q = r.query(&json!({ "what": "summary" }), t0 + 7300, &n);
         assert_eq!(q["systems"]["dcfd"]["unknownTgs24h"], 1);
         assert_eq!(q["systems"]["dcfd"]["newTgs"][0]["tg"], 200);
