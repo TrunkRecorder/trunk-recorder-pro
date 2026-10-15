@@ -365,7 +365,7 @@ function SystemView({ s, sys }: { s: AppState; sys: DashSystem }) {
         <ActiveNow s={s} sys={sys} />
       </div>
       {busy.length > 0 && (
-        <Card title={`Busiest ${busy.length} by hour`}>
+        <Card title={`Busiest ${busy.length} talkgroup${busy.length === 1 ? "" : "s"} by hour`}>
           <Heatmap
             rows={busy.map((r) => ({ label: r.alphaTag || String(r.tg), sub: `${r.calls} calls`, v: r.hourly }))}
             colLabel={hourLabel(h)}
