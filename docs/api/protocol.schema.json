@@ -2609,7 +2609,7 @@
               "items": {
                 "type": "number"
               },
-              "description": "tg: calls per hour over the week; who talks on it; who's affiliated with it; its call lengths."
+              "description": "tg / unit: calls (a radio's transmissions) per hour over the week, oldest first."
             },
             "talkers": {
               "type": "array",
@@ -2636,7 +2636,8 @@
                   "lastTx"
                 ],
                 "additionalProperties": false
-              }
+              },
+              "description": "tg: who talks on it; who's affiliated with it; its call lengths."
             },
             "affiliated": {
               "type": "array",
@@ -6668,6 +6669,13 @@
         },
         "new": {
           "type": "boolean"
+        },
+        "hourly": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "Transmissions per hour over the hours asked (unit: the week), oldest first."
         }
       },
       "required": [
@@ -6683,7 +6691,8 @@
         "reg",
         "tgs",
         "partners",
-        "new"
+        "new",
+        "hourly"
       ],
       "additionalProperties": false,
       "description": "A radio as heard (radioQuery units / unit)."

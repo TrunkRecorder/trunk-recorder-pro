@@ -1,7 +1,7 @@
 # The web interface
 
 Trunk Recorder Pro is run from your web browser. This page is a tour of the interface: the
-frame around every page, Setup, the Listen page, the Live page, events, quitting, where the
+frame around every page, Setup, the Listen page, the Calls page, events, quitting, where the
 history is kept, reaching it from another machine, and serving an interface of your own. The
 measurement pages (Overview, RF, Decode, Radio system, Plugins, Platform) and what their numbers
 mean are on [The dashboard](dashboard.md).
@@ -21,7 +21,7 @@ On the left is the list of pages:
 | **RF** | How well the radios hear the air: noise floor, headroom, frequency error, dropped samples, the waterfall |
 | **Decode** | How well signals turn into messages and voice, per system and per frequency |
 | **Radio system** | The system as heard: talkgroups, radios, what happened to calls |
-| **Live** | Calls on the air now (with live audio), the control channel log |
+| **Calls** | Calls on the air now (with live audio), every call heard and its details, the control channel log |
 | **Plugins** | Each plugin's health, and installing and setting them up |
 | **Platform** | The computer: CPU, memory, disks, network |
 | **Setup** | Sources, systems, recording, the log, plugins |
@@ -120,9 +120,10 @@ turn them off.
 What you pick, holds and avoids are kept in this browser, so another browser (or another
 computer) has its own.
 
-## Live
+## Calls
 
-The Live page has two parts.
+The Calls page has four parts: the calls on the air now, the calls heard, one call's details,
+and the control channel log. (It was called Live; `#/live` links still open it.)
 
 ### Active calls
 
@@ -164,6 +165,45 @@ heading shows what's playing (`▶ TG 3747 · <radio>`).
   from another machine too.
 - Safari can pause the audio when you switch tabs or audio devices; a click or key press anywhere
   on the page starts it again.
+
+### Heard calls
+
+Every call recorded, newest first: the same calls as Listen's list, the 300 newest on disk when
+the app started, then each new one. **Load older** goes further back, as far as 24 hours ago, and
+the table shows the newest 500.
+
+| Column | What it shows |
+|---|---|
+| **Time** | When it started; the day too when it wasn't today |
+| **System** | Only with more than one system |
+| **Talkgroup** | Its number and name, `EMERG` for an emergency call |
+| **Length** | How long the audio is |
+| **Units** | The first radio that talked (its name when known), and `+2` when two more did |
+| **Freq, MHz** | The voice channel |
+| **SNR, dB** | The call's signal over the noise under it |
+| | `Encrypted` (no audio), `Decrypted`, `Patched`, `No audio` (not kept; see [Recordings](recordings.md)) |
+
+▶ plays a call and ❚❚ pauses it. It plays through Listen's player, so live audio stops, and Listen's
+display shows it. Type in the box to find a talkgroup or a unit by number or name; **Emergency**
+and **Encrypted** show only those calls, and the system chips one system's.
+
+### A call's details
+
+Click a call to open its details at the side; click it again, ✕ or Esc to close them, and ↑ / ↓
+to step through the list.
+
+- **The player**, with a mark where each radio started talking. Click the bar to play from there.
+  **Save audio** and **Save JSON** download the call's files.
+- **Call**: the talkgroup (click it for the talkgroup on the Radio system page), when it started,
+  its length, the frequency and how far off it was, the mode (slot, colour code, RAN, tone),
+  what it was patched with.
+- **Reception**: the signal and noise (dBFS), the SNR, and for digital calls the share of voice
+  frames decoded cleanly.
+- **Encryption** (encrypted calls only): the algorithm and key ID the call named, and whether it
+  was decrypted. See [Encrypted calls](p25.md#encrypted-calls).
+- **Who talked**: each radio, when in the call it started, and where it said it was (GPS) when it
+  did. Click one to play from there.
+- **Frequencies**: the voice channels it was on, with the errors and spikes on each.
 
 ### Control channel log
 

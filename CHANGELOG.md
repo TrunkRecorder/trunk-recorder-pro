@@ -27,6 +27,12 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   state are overwritten when they are dropped, so a freed page doesn't keep a
   key for a crash dump or a memory scan to find.
 
+- **Radio activity by hour:** the Radio dashboard shows the busiest
+  radios hour by hour over the last 24 hours or 7 days, as it does for
+  talkgroups, and the Radios table has a **By hour** column. A radio's
+  page shows its last 7 days by day and hour. Radios are counted from
+  this version on, so the history starts empty.
+
 ## [0.1.11] — 2026-10-14
 
 - **Setup, reorganized.** Each Setup tab is now sections of cards, and

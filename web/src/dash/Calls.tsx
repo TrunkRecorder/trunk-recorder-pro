@@ -1,5 +1,5 @@
-// Live: the calls on the air now (with live audio), and the control
-// channel's log (made only while it's open). Recorded calls are on Listen.
+// The calls on the air now (with live audio), and the control channel's log
+// (made only while it's open): the Calls page's panels (CallsPage.tsx).
 
 import { useState } from "react";
 import { formatMhz, systemColor } from "../config.ts";
@@ -254,15 +254,5 @@ export function Log({ s }: { s: AppState }) {
           ))}
       </pre>
     </details>
-  );
-}
-
-/** The Live page: on the air now, and the log. */
-export function LivePage({ s }: { s: AppState }) {
-  return (
-    <>
-      <ActiveCalls s={s} />
-      <Log s={s} />
-    </>
   );
 }

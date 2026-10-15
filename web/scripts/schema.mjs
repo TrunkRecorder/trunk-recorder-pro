@@ -5,11 +5,12 @@
 
 import { createGenerator } from "ts-json-schema-generator";
 import { readFileSync, writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 const out = new URL("../../docs/api/protocol.schema.json", import.meta.url);
 const gen = createGenerator({
-  path: new URL("../src/protocol.ts", import.meta.url).pathname,
-  tsconfig: new URL("../tsconfig.json", import.meta.url).pathname,
+  path: fileURLToPath(new URL("../src/protocol.ts", import.meta.url)),
+  tsconfig: fileURLToPath(new URL("../tsconfig.json", import.meta.url)),
   skipTypeCheck: true,
   additionalProperties: false,
   expose: "export",

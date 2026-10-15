@@ -10,7 +10,7 @@ The interface has three kinds of screen, each with its own density:
 
 | Kind | Where | What it's for | Density |
 | --- | --- | --- | --- |
-| **Dashboard** | Overview, Listen, RF, Decode, Radio system, Live, Plugins, Platform | Watching the recorder: figures, charts, status | Dense; figures are the largest type |
+| **Dashboard** | Overview, Listen, RF, Decode, Radio system, Calls, Plugins, Platform | Watching the recorder: figures, charts, status | Dense; figures are the largest type |
 | **Setup** | Setup (its tabs) | Changing settings | Roomy; headings and labels lead |
 | **Guide** | The setup guide (`Onboarding.tsx`, `.ob-*`) | One question at a time, for someone new | Large type, line art, one column |
 

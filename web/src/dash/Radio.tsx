@@ -1,7 +1,7 @@
-// The radio system as heard: which talkgroups are busy (and which are new,
-// unknown, or ignored), which radios are on the air, what they're
-// affiliated with and who they talk with — and, for one talkgroup or one
-// radio, its week and its connections.
+// The radio system as heard: which talkgroups and radios are busy (and
+// which talkgroups are new, unknown, or ignored), which radios are on the
+// air, what they're affiliated with and who they talk with — and, for one
+// talkgroup or one radio, its week and its connections.
 
 import { useMemo, useState } from "react";
 import { systemColor } from "../config.ts";
@@ -33,6 +33,54 @@ const hourLabel = (hours: number) => (i: number) => {
   const t = (Math.floor(Date.now() / 3600_000) - (hours - 1 - i)) * 3600;
   return clockAt(t);
 };
+
+/** A week of hours (oldest first, ending this hour) laid out by local day (a row each, today at the bottom) and local hour. */
+function byDayHour(week: number[]): { label: string; v: number[] }[] {
+  const nowH = Math.floor(Date.now() / 3600_000);
+  const byDay = new Map<string, { label: string; v: number[] }>();
+  week.forEach((v, j) => {
+    const d = new Date((nowH - (week.length - 1) + j) * 3600_000);
+    const k = d.toDateString();
+    if (!byDay.has(k)) byDay.set(k, { label: d.toLocaleDateString([], { weekday: "short", day: "numeric" }), v: Array(24).fill(0) });
+    byDay.get(k)!.v[d.getHours()] += v;
+  });
+  return [...byDay.values()];
+}
+
+const dayHourLabel = (i: number) => `${String(i).padStart(2, "0")}:00–${String(i + 1).padStart(2, "0")}:00`;
+
+/** A radio's name: its alias, else its number. */
+const unitName = (s: AppState, sys: DashSystem, r: UnitRow) => aliasOf(s, sys.name, r.unit) || r.alias || String(r.unit);
+
+/** Rows in the system's "Busiest radios by hour". */
+const BUSY_RADIOS = 10;
+
+/** Hours per cell in a table's strip: a week of hours is too many cells for a column. */
+const stripBlock = (hours: number) => (hours > 24 ? 6 : 1);
+
+/**
+ * A table row's activity by hour (oldest first, ending this hour); past a
+ * day, in blocks of hours on the local clock (00–06, 06–12 …), the first and
+ * the last (this one, so far) maybe partial.
+ */
+function HourStrip({ v, hours, noun }: { v: number[]; hours: number; noun: string }) {
+  const block = stripBlock(hours);
+  const nowH = Math.floor(Date.now() / 3600_000);
+  const time = (d: Date) => d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const cells: { n: number; from: Date; to: Date; key: string }[] = [];
+  v.forEach((n, j) => {
+    const from = new Date((nowH - (v.length - 1 - j)) * 3600_000);
+    const key = `${from.toDateString()} ${Math.floor(from.getHours() / block)}`;
+    const to = new Date(from.getTime() + 3600_000);
+    const last = cells.at(-1);
+    if (last?.key === key) {
+      last.n += n;
+      last.to = to;
+    } else cells.push({ n, from, to, key });
+  });
+  const titles = cells.map((c) => `${clockAt(c.from.getTime() / 1000)}${block > 1 ? `–${time(c.to)}` : ""}: ${c.n} ${noun}${c.n === 1 ? "" : "s"}`);
+  return <HeatStrip v={cells.map((c) => c.n)} titles={titles} label={`${noun}s by ${block > 1 ? `${block} hours` : "hour"}`} />;
+}
 
 function TgName({ r }: { r: { tg: number; alphaTag: string } }) {
   return r.alphaTag ? (
@@ -180,7 +228,7 @@ function Talkgroups({ sys, rows, hours }: { sys: DashSystem; rows: TgRow[]; hour
               <th>Talkgroup</th>
               <th>Calls</th>
               <th>Airtime</th>
-              <th>By hour</th>
+              <th>{stripBlock(hours) > 1 ? `By ${stripBlock(hours)} hours` : "By hour"}</th>
               <th>Last heard</th>
               <th />
             </tr>
@@ -203,7 +251,7 @@ function Talkgroups({ sys, rows, hours }: { sys: DashSystem; rows: TgRow[]; hour
                 <td className="mono">{r.calls}</td>
                 <td className="mono">{dur(r.secs)}</td>
                 <td className="spark-cell">
-                  <HeatStrip v={r.hourly} titles={r.hourly.map((v, i) => `${hourLabel(hours)(i)}: ${v} calls`)} />
+                  <HourStrip v={r.hourly} hours={hours} noun="call" />
                 </td>
                 <td className="small">{ago(r.last)}</td>
                 <td>
@@ -219,7 +267,7 @@ function Talkgroups({ sys, rows, hours }: { sys: DashSystem; rows: TgRow[]; hour
   );
 }
 
-function Units({ s, sys, rows, total: n }: { s: AppState; sys: DashSystem; rows: UnitRow[]; total: number }) {
+function Units({ s, sys, rows, total: n, hours }: { s: AppState; sys: DashSystem; rows: UnitRow[]; total: number; hours: number }) {
   const [q, setQ] = useState("");
   const f = q.trim().toLowerCase();
   const shown = rows.filter((r) => !f || String(r.unit).includes(f) || (aliasOf(s, sys.name, r.unit) ?? r.alias).toLowerCase().includes(f));
@@ -233,6 +281,7 @@ function Units({ s, sys, rows, total: n }: { s: AppState; sys: DashSystem; rows:
               <th>Affiliated</th>
               <th>Transmitted</th>
               <th>Talks on</th>
+              <th>{stripBlock(hours) > 1 ? `By ${stripBlock(hours)} hours` : "By hour"}</th>
               <th>Last heard</th>
             </tr>
           </thead>
@@ -250,6 +299,9 @@ function Units({ s, sys, rows, total: n }: { s: AppState; sys: DashSystem; rows:
                     {r.tx} · {dur(r.txSecs)}
                   </td>
                   <td className="small">{r.tgs.slice(0, 3).map(([tg, k]) => `${tg}×${k}`).join(" · ") || "—"}</td>
+                  <td className="spark-cell">
+                    <HourStrip v={r.hourly} hours={hours} noun="transmission" />
+                  </td>
                   <td className="small">{ago(r.lastTx ?? r.last)}</td>
                 </tr>
               );
@@ -269,7 +321,7 @@ function Network({ s, sys, tgs, units }: { s: AppState; sys: DashSystem; tgs: Tg
   const tgTop = [...tgSet].sort((a, b) => b[1] - a[1]).slice(0, 14);
   const name = (tg: number) => tgs.find((r) => r.tg === tg)?.alphaTag || String(tg);
   const left: Node[] = tgTop.map(([tg, n]) => ({ id: `t${tg}`, label: name(tg), weight: n }));
-  const right: Node[] = top.map((u) => ({ id: `u${u.unit}`, label: aliasOf(s, sys.name, u.unit) || u.alias || String(u.unit), weight: u.tx }));
+  const right: Node[] = top.map((u) => ({ id: `u${u.unit}`, label: unitName(s, sys, u), weight: u.tx }));
   const edges = top.flatMap((u) => u.tgs.filter(([tg]) => tgSet.has(tg) && tgTop.some((t) => t[0] === tg)).map(([tg, n]) => ({ a: `t${tg}`, b: `u${u.unit}`, w: n })));
   if (left.length < 2 || right.length < 2) return null;
   return (
@@ -311,6 +363,12 @@ function SystemView({ s, sys }: { s: AppState; sys: DashSystem }) {
   const calls = tgs.reduce((a, r) => a + r.calls, 0);
   const secs = tgs.reduce((a, r) => a + r.secs, 0);
   const busy = [...tgs].sort((a, b) => b.calls - a.calls).slice(0, 40);
+  const txs = (r: UnitRow) => r.hourly.reduce((a, b) => a + b, 0);
+  const busyUnits = units
+    .map((r) => ({ r, n: txs(r) }))
+    .filter((x) => x.n > 0)
+    .sort((a, b) => b.n - a.n)
+    .slice(0, BUSY_RADIOS);
   const error = tgsR?.error;
   return (
     <div className="stack">
@@ -337,7 +395,7 @@ function SystemView({ s, sys }: { s: AppState; sys: DashSystem }) {
         <ActiveNow s={s} sys={sys} />
       </div>
       {busy.length > 0 && (
-        <Card title={`Busiest ${busy.length} by hour`}>
+        <Card title={`Busiest ${busy.length} talkgroup${busy.length === 1 ? "" : "s"} by hour`}>
           <Heatmap
             rows={busy.map((r) => ({ label: r.alphaTag || String(r.tg), sub: `${r.calls} calls`, v: r.hourly }))}
             colLabel={hourLabel(h)}
@@ -346,10 +404,20 @@ function SystemView({ s, sys }: { s: AppState; sys: DashSystem }) {
           />
         </Card>
       )}
+      {busyUnits.length > 0 && (
+        <Card title={`Busiest ${busyUnits.length} radio${busyUnits.length === 1 ? "" : "s"} by hour`}>
+          <Heatmap
+            rows={busyUnits.map(({ r, n }) => ({ label: unitName(s, sys, r), sub: `${n} tx`, v: r.hourly }))}
+            colLabel={hourLabel(h)}
+            valueText={(v) => `${v} transmission${v === 1 ? "" : "s"}`}
+            onRow={(i) => setView("radio", sys.name, "unit", busyUnits[i].r.unit)}
+          />
+        </Card>
+      )}
       <Network s={s} sys={sys} tgs={tgs} units={units} />
       <Talkgroups sys={sys} rows={tgs} hours={h} />
       <div className="columns">
-        <Units s={s} sys={sys} rows={units} total={unitsR?.total ?? units.length} />
+        <Units s={s} sys={sys} rows={units} total={unitsR?.total ?? units.length} hours={h} />
         <Lengths h={lenR?.histogram} />
       </div>
     </div>
@@ -363,17 +431,7 @@ function TgView({ s, sys, tg }: { s: AppState; sys: DashSystem; tg: number }) {
   const row = r?.row as TgRow | null | undefined;
   if (!r) return <p className="empty">Loading…</p>;
   if (!row) return <p className="empty">Talkgroup {tg} hasn't been heard on {sys.name}.</p>;
-  // The week's hours laid out by local day (a row each, today at the bottom) and local hour.
-  const week = r.week ?? [];
-  const nowH = Math.floor(Date.now() / 3600_000);
-  const byDay = new Map<string, { label: string; v: number[] }>();
-  week.forEach((v, j) => {
-    const d = new Date((nowH - (week.length - 1) + j) * 3600_000);
-    const k = d.toDateString();
-    if (!byDay.has(k)) byDay.set(k, { label: d.toLocaleDateString([], { weekday: "short", day: "numeric" }), v: Array(24).fill(0) });
-    byDay.get(k)!.v[d.getHours()] += v;
-  });
-  const days = [...byDay.values()];
+  const days = byDayHour(r.week ?? []);
   const talkers = r.talkers ?? [];
   const maxN = Math.max(1, ...talkers.map((t) => t.n));
   return (
@@ -403,7 +461,7 @@ function TgView({ s, sys, tg }: { s: AppState; sys: DashSystem; tg: number }) {
         <Stat label="Affiliated now" value={(r.affiliated ?? []).length} sub="radios" />
       </div>
       <Card title="Last 7 days">
-        <Heatmap rows={days} colLabel={(i) => `${String(i).padStart(2, "0")}:00–${String(i + 1).padStart(2, "0")}:00`} valueText={(v) => `${v} calls`} rowH={22} />
+        <Heatmap rows={days} colLabel={dayHourLabel} valueText={(v) => `${v} calls`} rowH={22} />
       </Card>
       <div className="columns">
         <Card title="Who talks here">
@@ -519,6 +577,13 @@ function UnitView({ s, sys, unit }: { s: AppState; sys: DashSystem; unit: number
         />
         <Stat label="Talks with" value={partners.length} sub="radios" />
       </div>
+      <Card title="Last 7 days">
+        {(r.week ?? []).some((v) => v > 0) ? (
+          <Heatmap rows={byDayHour(r.week ?? [])} colLabel={dayHourLabel} valueText={(v) => `${v} transmission${v === 1 ? "" : "s"}`} rowH={22} />
+        ) : (
+          <p className="empty">Not heard transmitting in the last 7 days.</p>
+        )}
+      </Card>
       <div className="columns">
         <Card title="Talkgroups and radios">
           {tgs.length + partners.length === 0 ? (
