@@ -5,6 +5,7 @@
 
 pub mod channels;
 pub mod config;
+pub mod ekc;
 pub mod filename;
 pub mod heard;
 pub mod keys;

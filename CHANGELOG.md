@@ -5,6 +5,14 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Key sources.** The config's new top-level `keys` names each keys file once, and a system's
+  `keys` names a source instead of a file, so systems on the same radios share one and it is read
+  once. A config whose systems name a file is read as one source per file, named after it.
+- **Encryption keys from a KFDtool container:** a key source's `file` can be a KFDtool key
+  container (`.ekc`), with `passwordFile` naming a file that holds its password. A password file
+  others can read is refused. Keys the recorder can't decrypt (key-encryption keys, DES-XL) are
+  listed in the log and left out. `replay` takes `--keys-password-file` too.
+
 - **Decrypted calls go only to the plugins you allow.** A call decrypted with your keys (its live
   audio, files and JSON) is no longer given to every plugin: turn on **Share decrypted calls** on a
   plugin's card in Setup → Plugins (`plugins.<id>.shareDecrypted`) for each one that should have

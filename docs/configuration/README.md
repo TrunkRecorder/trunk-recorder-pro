@@ -77,6 +77,7 @@ with `--config` files in different folders never share band plans, talker aliase
 | `log` | | see page | object | How much is logged and where to. [server-and-log.md](server-and-log.md#log) |
 | `monitor` | | see page | object | The dashboard's internet checks. [server-and-log.md](server-and-log.md#monitor) |
 | `plugins` | | `{}` | object | Which plugins run and their recorder-wide settings, by plugin id. [plugins.md](plugins.md) |
+| `keys` | | `{}` | object | P25 encryption key sources, by name: where each set of keys is read from. [Encryption keys](systems.md#encryption-keys-keys) |
 
 ## A minimal config
 

@@ -164,7 +164,7 @@ export interface System {
   /** Multi-site: sites with one group are one system (a call on several is saved once).
    *  Absent: grouped by what the control channels say (P25 WACN + System ID, SmartNet System ID). */
   siteGroup?: string;
-  /** Desktop: its P25 encryption keys file, absolute or relative to the config file's folder (read when recording starts; never sent here). */
+  /** Desktop: the P25 encryption keys it decrypts with, a key source's name (Config's `keys`). */
   keys?: string;
   /** Plugins' settings for this system, by plugin id (each plugin's `system_config` schema); a list for several copies of one. */
   plugins?: Record<string, SystemPluginValues>;
@@ -289,8 +289,16 @@ export interface Conventional {
   /** Its own recording rules; each left out is the Recording tab's. */
   recording?: RecordingOverride;
   unitNames?: UnitNames;
-  /** Desktop: its P25 channels' encryption keys file (as System's). */
+  /** Desktop: the encryption keys its P25 channels decrypt with (as System's). */
   keys?: string;
+}
+
+/** Where a set of encryption keys comes from: file names only, never a key (desktop). */
+export interface KeySource {
+  /** A keys file (JSON) or a KFDtool key container (`.ekc`), absolute or relative to the config file's folder. */
+  file: string;
+  /** A container's password, in a file of its own. */
+  passwordFile?: string;
 }
 
 export interface Config {
@@ -312,6 +320,8 @@ export interface Config {
   };
   /** The plugins, by id (desktop app). Their settings for each system are in the system. */
   plugins?: Record<string, PluginSetup>;
+  /** Encryption key sources, by name; a system names one in its `keys` (desktop app). */
+  keys?: Record<string, KeySource>;
   /** The log (desktop app). */
   log?: LogSettings;
   /** What the dashboard watches on the computer (desktop app). */

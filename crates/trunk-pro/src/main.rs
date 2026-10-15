@@ -22,7 +22,7 @@
 //!     --out calls  --short-name sys1  --talkgroups tg.csv  --bandplan file
 //!     --recorders 32  --preroll 1  --timeout 3  --epoch <unix s>
 //!     --record-encrypted  --keep-silent  --no-unknown  --capture-frames  --quiet
-//!     --keys keys.json (P25 encryption keys for every system: see trunk-app's keys.rs)
+//!     --keys keys.json|keys.ekc [--keys-password-file F] (P25 encryption keys for every system: see trunk-app's keys.rs)
 //!     --messages (print every control channel message)
 //!     --min-call s  --max-call s  --min-transmission s (drop short calls, split long
 //!     ones, leave out short transmissions)  --auto-tune (correct the sources'
@@ -424,8 +424,14 @@ fn replay(a: &Args) {
         let sys = parse_system(spec, calls, &talkgroups).unwrap_or_else(|e| die(&format!("--system {spec}: {e}")));
         systems.push(SystemConfig { save, ..sys });
     }
-    // --keys: every system decrypts with the same keys file.
-    let keys = a.get("keys").map(|p| std::sync::Arc::new(trunk_app::keys::load(std::path::Path::new(p)).unwrap_or_else(|e| die(&e))));
+    // --keys: every system decrypts with the same keys file (a KFDtool container, with --keys-password-file).
+    let keys = a.get("keys").map(|p| {
+        let l = trunk_app::keys::load(std::path::Path::new(p), a.get("keys-password-file").map(std::path::Path::new)).unwrap_or_else(|e| die(&e));
+        for s in &l.skipped {
+            eprintln!("--keys: key left out: {s}");
+        }
+        std::sync::Arc::new(l.ring)
+    });
     for s in systems.iter_mut() {
         s.keys = keys.clone();
     }
