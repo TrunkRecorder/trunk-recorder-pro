@@ -415,6 +415,19 @@ pub struct SystemStatus {
     pub decode_rate: f64,
     pub active_calls: u32,
     pub recording: u32,
+    /// The system's identity, as far as its control channel has stated it
+    /// (none until it has): P25 NAC, WACN, system ID, RFSS and site; site
+    /// also for SmartNet when its OBT sends one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nac: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wacn: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sys_id: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rfss: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub site: Option<u32>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -642,5 +655,18 @@ mod tests {
         assert_eq!(v["patched_talkgroups"], serde_json::json!([101, 65001]));
         let unpatched = serde_json::to_value(CallRecord::default()).unwrap();
         assert!(unpatched.get("patched_talkgroups").is_none());
+    }
+
+    #[test]
+    fn system_identity_is_there_once_stated() {
+        // From a recorder that doesn't send it: none of it.
+        let s: SystemStatus = serde_json::from_str(r#"{"index":0,"short_name":"county","decode_rate":39.8}"#).unwrap();
+        assert_eq!((s.nac, s.wacn, s.sys_id, s.rfss, s.site), (None, None, None, None, None));
+        // Nothing stated yet: nothing written.
+        let v = serde_json::to_value(&s).unwrap();
+        assert!(["nac", "wacn", "sys_id", "rfss", "site"].iter().all(|k| v.get(k).is_none()), "{v}");
+        let s = SystemStatus { nac: Some(0x3A0), wacn: Some(0xBEE00), sys_id: Some(0x3AB), rfss: Some(1), site: Some(5), ..s };
+        let v = serde_json::to_value(&s).unwrap();
+        assert_eq!((v["nac"].as_u64(), v["wacn"].as_u64(), v["site"].as_u64()), (Some(0x3A0), Some(0xBEE00), Some(5)));
     }
 }
