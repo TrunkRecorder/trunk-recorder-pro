@@ -15,16 +15,34 @@
 //! - `talkgroups`: use this key for these talkgroups, under any key ID (or
 //!   the one given). Without it, the key is used by key ID on any talkgroup.
 //!
-//! Keys are never logged, sent to plugins or shown in the interface.
+//! Keys are never logged, sent to plugins or shown in the interface, and
+//! the memory that held them (the file's text, the parsed keys) is wiped.
 
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
+use zeroize::{Zeroize, Zeroizing};
 use trunk_core::p25::crypt::Keyring;
 
 /// Read a keys file's text.
 pub fn parse(text: &str) -> Result<Keyring, String> {
-    let v: Value = serde_json::from_str(text).map_err(|e| format!("not JSON: {e}"))?;
+    let mut v: Value = serde_json::from_str(text).map_err(|e| format!("not JSON: {e}"))?;
+    let ring = read(&v);
+    wipe(&mut v);
+    ring
+}
+
+/// Overwrite the strings of a parsed keys file (the keys are among them).
+fn wipe(v: &mut Value) {
+    match v {
+        Value::String(s) => s.zeroize(),
+        Value::Array(a) => a.iter_mut().for_each(wipe),
+        Value::Object(o) => o.iter_mut().for_each(|(_, v)| wipe(v)),
+        _ => {}
+    }
+}
+
+fn read(v: &Value) -> Result<Keyring, String> {
     let Some(list) = v.get("keys").and_then(Value::as_array) else {
         return Err("no \"keys\" list".into());
     };
@@ -61,7 +79,7 @@ fn number(v: Option<&Value>, name: &str, max: u64) -> Result<Option<u64>, String
 }
 
 fn hex(s: &str) -> Result<Vec<u8>, String> {
-    let digits: Vec<u8> = s.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
+    let digits: Zeroizing<Vec<u8>> = Zeroizing::new(s.bytes().filter(|b| !b.is_ascii_whitespace()).collect());
     if !digits.len().is_multiple_of(2) {
         return Err(format!("the key has an odd number of hex digits ({})", digits.len()));
     }
@@ -83,7 +101,7 @@ pub fn path(setting: &str, config_path: &Path) -> Option<PathBuf> {
 
 /// Read the keys file at `p`.
 pub fn load(p: &Path) -> Result<Keyring, String> {
-    let text = std::fs::read_to_string(p).map_err(|e| format!("Keys file {}: {e}", p.display()))?;
+    let text = Zeroizing::new(std::fs::read_to_string(p).map_err(|e| format!("Keys file {}: {e}", p.display()))?);
     parse(&text).map_err(|e| format!("Keys file {}: {e}", p.display()))
 }
 
