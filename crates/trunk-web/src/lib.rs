@@ -70,7 +70,7 @@ fn to_js(out: &mut Vec<Output>, history: &mut History) -> Array {
                 set(&obj, "t", "text");
                 set(&obj, "json", t);
             }
-            Output::Audio { system, short_name, tg, frame } => {
+            Output::Audio { system, short_name, tg, frame, .. } => {
                 set(&obj, "t", "audio");
                 set(&obj, "system", system);
                 set(&obj, "shortName", short_name);

@@ -617,6 +617,16 @@ export function setPluginEnabled(id: string, enabled: boolean): void {
     all[id] = { ...(all[id] ?? { enabled: false }), enabled };
   });
 }
+/** Whether a plugin is given calls decrypted with the recorder's keys. */
+export function setPluginShareDecrypted(id: string, share: boolean): void {
+  updateConfig((x) => {
+    const all = (x.plugins ??= {});
+    const p = { ...(all[id] ?? { enabled: false }) };
+    if (share) p.shareDecrypted = true;
+    else delete p.shareDecrypted;
+    all[id] = p;
+  });
+}
 /** A plugin's settings for the whole recorder. */
 export function setPluginSettings(id: string, settings: PluginValues): void {
   updateConfig((x) => {

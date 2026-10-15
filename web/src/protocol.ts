@@ -177,6 +177,8 @@ export interface PluginSetup {
   settings?: PluginValues;
   /** Run this executable instead of the installed plugin (a build of the user's own). */
   path?: string;
+  /** Give it calls decrypted with the recorder's keys (their audio and files). Off: none are. */
+  shareDecrypted?: boolean;
 }
 
 /** The settings each system can set again for itself (crates/trunk-app/src/config.rs RecordingOverride). */

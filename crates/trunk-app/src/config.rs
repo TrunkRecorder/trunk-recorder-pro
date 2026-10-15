@@ -816,6 +816,9 @@ pub struct PluginSetup {
     /// Run this executable instead of the installed plugin (a build of your own).
     #[serde(skip_serializing_if = "String::is_empty")]
     pub path: String,
+    /// Give it calls decrypted with the recorder's keys (their audio and files). Off: none are.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub share_decrypted: bool,
 }
 
 impl Default for Recording {
@@ -1192,6 +1195,11 @@ impl Config {
         }
         let p = PathBuf::from(f);
         Some(if p.is_absolute() { p } else { config_path.parent().unwrap_or(Path::new(".")).join(p) })
+    }
+
+    /// Some system that records names encryption keys.
+    pub fn has_keys(&self) -> bool {
+        self.active_systems().any(|s| !s.keys.trim().is_empty()) || self.conventional.iter().any(|c| c.enabled && !c.keys.trim().is_empty())
     }
 
     /// Read the keys files of the systems that name one: (short name, its

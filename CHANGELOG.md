@@ -5,6 +5,12 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Decrypted calls go only to the plugins you allow.** A call decrypted with your keys (its live
+  audio, files and JSON) is no longer given to every plugin: turn on **Share decrypted calls** on a
+  plugin's card in Setup → Plugins (`plugins.<id>.shareDecrypted`) for each one that should have
+  them. Voice of a call that ends in the same moment it is decrypted is no longer taken for clear.
+  See [Decrypted calls](docs/plugins/README.md#decrypted-calls).
+
 - **Encryption keys are wiped from memory:** the keys in a system's keyring,
   the keys file's text and its parsed contents, and the cipher's key-derived
   state are overwritten when they are dropped, so a freed page doesn't keep a
