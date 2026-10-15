@@ -1338,19 +1338,27 @@ impl Engine {
     }
 
     /// The encryption keys of the system named `short_name` (trunked or
-    /// conventional): voice channels opened from now on decrypt with them.
+    /// conventional): its voice channels decrypt with them, those open now
+    /// from their next encryption sync (with none, at once).
     /// False when there's no such system.
     pub fn set_keys(&mut self, short_name: &str, keys: Option<Arc<Keyring>>) -> bool {
         if let Some(t) = self.trunks.iter_mut().find(|t| t.cfg.short_name == short_name) {
             t.calls.can_decrypt = keys.as_ref().is_some_and(|k| !k.is_empty());
             t.cfg.keys = keys.clone();
+            // Channels already open (one is reused by the next call on its frequency) change too:
+            // unlocking reaches them, and locking takes the keys from them at once.
+            let idx = t.idx;
+            for ch in self.radio.channels.iter_mut().filter(|((s, _), _)| *s == idx).map(|(_, c)| c) {
+                ch.voice.set_keys(keys.clone());
+            }
             if let Some(c) = self.cfg.systems.iter_mut().find(|c| c.short_name == short_name) {
                 c.keys = keys;
             }
             return true;
         }
-        if let Some(c) = self.cfg.conv_systems.iter_mut().find(|c| c.short_name == short_name) {
-            c.keys = keys;
+        if let Some(k) = self.cfg.conv_systems.iter().position(|c| c.short_name == short_name) {
+            self.conv.set_system_keys(k, keys.as_ref());
+            self.cfg.conv_systems[k].keys = keys;
             return true;
         }
         false

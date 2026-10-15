@@ -584,6 +584,13 @@ impl Conventional {
         self.chans.is_empty()
     }
 
+    /// The keys of conventional system `system` changed: its open channels decrypt with them from now on.
+    pub fn set_system_keys(&mut self, system: usize, keys: Option<&Arc<Keyring>>) {
+        for o in self.chans.iter_mut().filter(|c| c.cfg.system == system).filter_map(|c| c.open.as_mut()) {
+            o.voice.set_keys(keys.cloned());
+        }
+    }
+
     /// Heads open now.
     pub fn open_count(&self) -> usize {
         self.chans.iter().filter(|c| c.open.is_some()).count()
