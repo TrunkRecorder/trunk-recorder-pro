@@ -52,6 +52,9 @@ const dayHourLabel = (i: number) => `${String(i).padStart(2, "0")}:00–${String
 /** A radio's name: its alias, else its number. */
 const unitName = (s: AppState, sys: DashSystem, r: UnitRow) => aliasOf(s, sys.name, r.unit) || r.alias || String(r.unit);
 
+/** Rows in the system's "Busiest radios by hour". */
+const BUSY_RADIOS = 10;
+
 /** Hours per cell in a table's strip: a week of hours is too many cells for a column. */
 const stripBlock = (hours: number) => (hours > 24 ? 6 : 1);
 
@@ -365,7 +368,7 @@ function SystemView({ s, sys }: { s: AppState; sys: DashSystem }) {
     .map((r) => ({ r, n: txs(r) }))
     .filter((x) => x.n > 0)
     .sort((a, b) => b.n - a.n)
-    .slice(0, 40);
+    .slice(0, BUSY_RADIOS);
   const error = tgsR?.error;
   return (
     <div className="stack">
