@@ -461,12 +461,12 @@ fn stream_once(source: usize, cfg: &SoapyConfig, tx: &SyncSender<SourceMsg>, sto
     // Modules load here rather than inside make, so a broken one is reported.
     modules();
     let args = CString::new(cfg.args.as_str()).map_err(|e| e.to_string())?;
-    let mut sdrplay = super::sdrplay::before_open(source, &cfg.args);
+    let mut sdrplay = super::sdrplay::before_open(&cfg.args);
     let mut d = Device { a, dev: std::ptr::null_mut(), stream: std::ptr::null_mut(), active: false };
     // SAFETY: SoapySDR C API calls on the device and stream `d` owns.
     unsafe {
         d.dev = (a.make)(args.as_ptr());
-        sdrplay.made();
+        sdrplay.made(!d.dev.is_null());
         if d.dev.is_null() {
             let why = a.last_error.map(|f| cstr(f())).filter(|s| !s.is_empty()).unwrap_or_else(|| "no matching device".into());
             return Err(format!("SoapySDR open {}: {why}", if cfg.args.is_empty() { "(first)" } else { &cfg.args }));

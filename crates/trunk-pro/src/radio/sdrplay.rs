@@ -2,10 +2,12 @@
 //! second radio in a `sdrplay_api_Open()` session that already has one, and
 //! SoapySDRPlay3 opens a single session per process, so a second RSP fails
 //! with "SelectDevice() failed". As SDRTrunk does, open another session just
-//! before a radio is opened while another is in use, once per source (a retry
-//! reuses it). Sessions are never closed: closing one makes the others
-//! unusable. The open and the select must not interleave with another
-//! radio's, hence the lock held until `made()`.
+//! before a radio is opened while another is in use and the API's current
+//! session (the one opened or released last) has a radio on it. A session that
+//! stays idle (a failed open, a radio released) is reused, so retries and
+//! restarts don't pile them up. Sessions are never closed: closing one makes
+//! the others unusable. The open and the select must not interleave with
+//! another radio's, hence the lock held until `made()`.
 //!
 //! The API library is the one SoapySDRPlay3 already loaded, never another
 //! copy: sessions opened in a different copy wouldn't help.
@@ -18,37 +20,43 @@ use libloading::Library;
 /// Held while an SDRplay radio opens. SoapySDRPlay3's device search shares
 /// unsynchronized state with its open, so the device search takes it too.
 pub static OPENING: Mutex<()> = Mutex::new(());
-static IN_USE: Mutex<(usize, Vec<usize>)> = Mutex::new((0, Vec::new())); // (radios in use, sources that opened a session)
+static IN_USE: Mutex<(usize, bool)> = Mutex::new((0, true)); // (radios in use, the API's current session has no radio on it)
 
 /// One source's claim, from before its radio opens until it closes.
 pub struct Slot {
     live: bool,
+    /// The radio opened (so its release leaves the current session idle).
+    opened: bool,
     opening: Option<MutexGuard<'static, ()>>,
 }
 
 /// Call before `make`, after the Soapy modules have loaded. Only sources whose
 /// arguments name `driver=sdrplay` take part.
-pub fn before_open(source: usize, args: &str) -> Slot {
-    let none = Slot { live: false, opening: None };
+pub fn before_open(args: &str) -> Slot {
+    let none = Slot { live: false, opened: false, opening: None };
     if !names_sdrplay(args) {
         return none;
     }
     let Some(open) = session_open() else { return none };
     let opening = OPENING.lock().unwrap_or_else(|e| e.into_inner());
     let mut st = IN_USE.lock().unwrap();
-    if st.0 > 0 && !st.1.contains(&source) {
+    if st.0 > 0 && !st.1 {
         // SAFETY: sdrplay_api_Open() takes no arguments.
         if unsafe { open() } == 0 {
-            st.1.push(source);
+            st.1 = true;
         }
     }
     st.0 += 1;
-    Slot { live: true, opening: Some(opening) }
+    Slot { live: true, opened: false, opening: Some(opening) }
 }
 
 impl Slot {
     /// The radio is open (or failed to): let the next one open.
-    pub fn made(&mut self) {
+    pub fn made(&mut self, opened: bool) {
+        if self.live && opened {
+            self.opened = true;
+            IN_USE.lock().unwrap().1 = false;
+        }
         self.opening = None;
     }
 }
@@ -56,7 +64,11 @@ impl Slot {
 impl Drop for Slot {
     fn drop(&mut self) {
         if self.live {
-            IN_USE.lock().unwrap().0 -= 1;
+            let mut st = IN_USE.lock().unwrap();
+            st.0 -= 1;
+            if self.opened {
+                st.1 = true; // the radio is released first (see `stream_once`): its session is the current one, idle
+            }
         }
     }
 }
