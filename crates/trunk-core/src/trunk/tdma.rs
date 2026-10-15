@@ -153,6 +153,16 @@ pub struct TdmaTracker {
 }
 
 impl TdmaTracker {
+    /// The system's keys changed (a container unlocked, or locked): each slot's
+    /// voice from now on is decrypted with these (none, or no keys: not).
+    pub fn set_keys(&mut self, keys: Option<Arc<Keyring>>) {
+        self.keys = keys.filter(|k| !k.is_empty());
+        for s in &mut self.slots {
+            let es = s.es.take();
+            s.set_es(es, &self.keys);
+        }
+    }
+
     /// `keys`: the system's, to decrypt the voice it has keys for.
     pub fn new(seed: u32, keys: Option<Arc<Keyring>>) -> Self {
         TdmaTracker {
