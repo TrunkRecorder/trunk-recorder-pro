@@ -303,8 +303,11 @@ pub fn find() -> Result<Vec<serde_json::Value>, String> {
     let a = api()?;
     modules();
     let mut n = 0usize;
+    // The SDRplay module's search shares state with its open: not while a source is opening.
+    let opening = super::sdrplay::OPENING.lock().unwrap_or_else(|e| e.into_inner());
     // SAFETY: an empty args string; the list is freed below.
     let list = unsafe { (a.enumerate)(c"".as_ptr(), &mut n) };
+    drop(opening);
     if list.is_null() {
         return Ok(vec![]);
     }
@@ -458,10 +461,12 @@ fn stream_once(source: usize, cfg: &SoapyConfig, tx: &SyncSender<SourceMsg>, sto
     // Modules load here rather than inside make, so a broken one is reported.
     modules();
     let args = CString::new(cfg.args.as_str()).map_err(|e| e.to_string())?;
+    let mut sdrplay = super::sdrplay::before_open(&cfg.args);
     let mut d = Device { a, dev: std::ptr::null_mut(), stream: std::ptr::null_mut(), active: false };
     // SAFETY: SoapySDR C API calls on the device and stream `d` owns.
     unsafe {
         d.dev = (a.make)(args.as_ptr());
+        sdrplay.made(!d.dev.is_null());
         if d.dev.is_null() {
             let why = a.last_error.map(|f| cstr(f())).filter(|s| !s.is_empty()).unwrap_or_else(|| "no matching device".into());
             return Err(format!("SoapySDR open {}: {why}", if cfg.args.is_empty() { "(first)" } else { &cfg.args }));

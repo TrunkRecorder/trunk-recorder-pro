@@ -6,6 +6,7 @@
 //! library file to use instead of searching.
 
 pub mod airspy;
+mod sdrplay;
 pub mod soapy;
 pub mod uhd;
 
