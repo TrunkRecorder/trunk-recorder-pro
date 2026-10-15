@@ -16,7 +16,7 @@
 //!   the one given). Without it, the key is used by key ID on any talkgroup.
 //!
 //! A KFDtool key container (`.ekc`) can be named instead, with the file
-//! holding its password in `keysPasswordFile` (see [`password`]): the keys
+//! holding its password in `passwordFile` (see [`password`]): the keys
 //! stay encrypted on disk, and the password sits apart from them. Every
 //! voice key in it is used by key ID on any talkgroup; keys for algorithms
 //! that can't be decrypted (key-encryption keys, DES-XL) are listed in the
@@ -143,13 +143,13 @@ pub fn load(p: &Path, password_file: Option<&Path>) -> Result<Loaded, String> {
     let json = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(&bytes).iter().find(|b| !b.is_ascii_whitespace()) == Some(&b'{');
     if json {
         if password_file.is_some() {
-            return Err(at("is a JSON keys file, which takes no keysPasswordFile".into()));
+            return Err(at("is a JSON keys file, which takes no passwordFile".into()));
         }
         let text = std::str::from_utf8(&bytes).map_err(|_| at("not UTF-8".into()))?;
         return parse(text.strip_prefix('\u{feff}').unwrap_or(text)).map(|ring| Loaded { ring, skipped: vec![] }).map_err(at);
     }
     let Some(pw) = password_file else {
-        return Err(at("is a key container, which needs keysPasswordFile (a file holding its password)".into()));
+        return Err(at("is a key container, which needs passwordFile (a file holding its password)".into()));
     };
     let pw = password(pw)?;
     let c = crate::ekc::parse(&bytes, &pw).map_err(|e| at(e.to_string()))?;
@@ -226,7 +226,7 @@ mod tests {
         assert!(e.contains("wrong password"), "{e}");
         assert!(!e.contains("testing"), "the password is never in an error: {e}");
         let e = load(Path::new(CONTAINER), None).err().unwrap();
-        assert!(e.contains("keysPasswordFile"), "{e}");
+        assert!(e.contains("passwordFile"), "{e}");
         let empty = scratch("empty", "\n", 0o600);
         assert!(load(Path::new(CONTAINER), Some(&empty)).err().unwrap().contains("empty"));
     }
@@ -239,7 +239,7 @@ mod tests {
         std::fs::write(&f, r#"{ "keys": [{ "algId": "AA", "keyId": 1, "key": "1234567890" }] }"#).unwrap();
         assert_eq!(load(&f, None).unwrap().ring.keys().len(), 1);
         let pw = scratch("json", "x\n", 0o600);
-        assert!(load(&f, Some(&pw)).err().unwrap().contains("takes no keysPasswordFile"));
+        assert!(load(&f, Some(&pw)).err().unwrap().contains("takes no passwordFile"));
     }
 
     #[cfg(unix)]

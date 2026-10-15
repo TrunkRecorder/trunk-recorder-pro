@@ -41,9 +41,7 @@ impl fmt::Display for EkcError {
         match self {
             EkcError::NotAContainer(e) => write!(f, "not a key container: {e}"),
             EkcError::Unsupported(e) => write!(f, "unsupported key container: {e}"),
-            EkcError::WrongPasswordOrCorrupt => f.write_str(
-                "could not decrypt the key container (wrong password, or a damaged file)",
-            ),
+            EkcError::WrongPasswordOrCorrupt => f.write_str("could not decrypt the key container (wrong password, or a damaged file)"),
         }
     }
 }
@@ -67,11 +65,7 @@ pub struct Key {
 
 impl fmt::Debug for Key {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "Key({:#04X}/{:#06X} {:?})",
-            self.algid, self.kid, self.name
-        )
+        write!(f, "Key({:#04X}/{:#06X} {:?})", self.algid, self.kid, self.name)
     }
 }
 
@@ -89,20 +83,11 @@ fn bad(e: impl fmt::Display) -> EkcError {
 fn decompress(data: &[u8]) -> Result<Vec<u8>, EkcError> {
     let mut out = Vec::new();
     let r = if data.starts_with(&[0x1f, 0x8b]) {
-        flate2::read::GzDecoder::new(data)
-            .take(MAX_XML + 1)
-            .read_to_end(&mut out)
-    } else if data.len() >= 2
-        && data[0] & 0x0f == 8
-        && (u16::from(data[0]) << 8 | u16::from(data[1])).is_multiple_of(31)
-    {
-        flate2::read::ZlibDecoder::new(data)
-            .take(MAX_XML + 1)
-            .read_to_end(&mut out)
+        flate2::read::GzDecoder::new(data).take(MAX_XML + 1).read_to_end(&mut out)
+    } else if data.len() >= 2 && data[0] & 0x0f == 8 && (u16::from(data[0]) << 8 | u16::from(data[1])).is_multiple_of(31) {
+        flate2::read::ZlibDecoder::new(data).take(MAX_XML + 1).read_to_end(&mut out)
     } else {
-        flate2::read::DeflateDecoder::new(data)
-            .take(MAX_XML + 1)
-            .read_to_end(&mut out)
+        flate2::read::DeflateDecoder::new(data).take(MAX_XML + 1).read_to_end(&mut out)
     };
     r.map_err(|e| bad(format!("decompressing: {e}")))?;
     if out.len() as u64 > MAX_XML {
@@ -112,34 +97,24 @@ fn decompress(data: &[u8]) -> Result<Vec<u8>, EkcError> {
 }
 
 fn child<'a, 'i>(n: Node<'a, 'i>, name: &str) -> Option<Node<'a, 'i>> {
-    n.children()
-        .find(|c| c.is_element() && c.tag_name().name() == name)
+    n.children().find(|c| c.is_element() && c.tag_name().name() == name)
 }
 
 fn text<'a>(n: Node<'a, '_>, name: &str) -> Result<&'a str, EkcError> {
-    child(n, name)
-        .and_then(|c| c.text())
-        .map(str::trim)
-        .ok_or_else(|| bad(format!("no {name}")))
+    child(n, name).and_then(|c| c.text()).map(str::trim).ok_or_else(|| bad(format!("no {name}")))
 }
 
 fn check_version(root: Node, what: &str) -> Result<(), EkcError> {
-    let v = root
-        .attribute("version")
-        .ok_or_else(|| bad(format!("{what} has no version")))?;
+    let v = root.attribute("version").ok_or_else(|| bad(format!("{what} has no version")))?;
     match v.split('.').next().and_then(|m| m.parse::<u32>().ok()) {
         Some(1) => Ok(()),
-        _ => Err(EkcError::Unsupported(format!(
-            "{what} version {v} (this reads 1.x)"
-        ))),
+        _ => Err(EkcError::Unsupported(format!("{what} version {v} (this reads 1.x)"))),
     }
 }
 
 fn b64(s: &str) -> Result<Vec<u8>, EkcError> {
     let s: String = s.chars().filter(|c| !c.is_whitespace()).collect();
-    base64::engine::general_purpose::STANDARD
-        .decode(s)
-        .map_err(bad)
+    base64::engine::general_purpose::STANDARD.decode(s).map_err(bad)
 }
 
 fn hex(s: &str) -> Option<Vec<u8>> {
@@ -147,10 +122,7 @@ fn hex(s: &str) -> Option<Vec<u8>> {
     if s.is_empty() || !s.len().is_multiple_of(2) {
         return None;
     }
-    (0..s.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok())
-        .collect()
+    (0..s.len()).step_by(2).map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok()).collect()
 }
 
 /// Read a container with its password.
@@ -170,30 +142,21 @@ pub fn parse(file: &[u8], password: &str) -> Result<Container, EkcError> {
     let kd = child(root, "KeyDerivation").ok_or_else(|| bad("no KeyDerivation"))?;
     let (alg, hash) = (text(kd, "DerivationAlgorithm")?, text(kd, "HashAlgorithm")?);
     if alg != "PBKDF2" || hash != "SHA512" {
-        return Err(EkcError::Unsupported(format!(
-            "key derivation {alg} with {hash}"
-        )));
+        return Err(EkcError::Unsupported(format!("key derivation {alg} with {hash}")));
     }
     let salt = b64(text(kd, "Salt")?)?;
     let iterations: u32 = text(kd, "IterationCount")?.parse().map_err(bad)?;
     let key_len: usize = text(kd, "KeyLength")?.parse().map_err(bad)?;
     if iterations == 0 || iterations > MAX_ITERATIONS || key_len != 32 {
-        return Err(EkcError::Unsupported(format!(
-            "{iterations} iterations, {key_len}-byte key"
-        )));
+        return Err(EkcError::Unsupported(format!("{iterations} iterations, {key_len}-byte key")));
     }
 
     let enc = child(root, "EncryptedData").ok_or_else(|| bad("no EncryptedData"))?;
-    let method = child(enc, "EncryptionMethod")
-        .and_then(|m| m.attribute("Algorithm"))
-        .unwrap_or("");
+    let method = child(enc, "EncryptionMethod").and_then(|m| m.attribute("Algorithm")).unwrap_or("");
     if method != AES256_CBC {
         return Err(EkcError::Unsupported(format!("cipher {method}")));
     }
-    let cipher_value = child(enc, "CipherData")
-        .and_then(|c| child(c, "CipherValue"))
-        .and_then(|c| c.text())
-        .ok_or_else(|| bad("no CipherValue"))?;
+    let cipher_value = child(enc, "CipherData").and_then(|c| child(c, "CipherValue")).and_then(|c| c.text()).ok_or_else(|| bad("no CipherValue"))?;
     let cv = b64(cipher_value)?;
     if cv.len() < 32 || !cv.len().is_multiple_of(16) {
         return Err(bad("cipher text is not whole AES blocks"));
@@ -229,29 +192,16 @@ pub fn parse(file: &[u8], password: &str) -> Result<Container, EkcError> {
         return Ok(out);
     };
     for item in keys.children().filter(Node::is_element) {
-        let field = |n: &str| {
-            item.children()
-                .find(|c| c.is_element() && c.tag_name().name() == n)
-                .and_then(|c| c.text())
-                .map(str::trim)
-        };
+        let field = |n: &str| item.children().find(|c| c.is_element() && c.tag_name().name() == n).and_then(|c| c.text()).map(str::trim);
         let name = field("Name").unwrap_or("").to_string();
         let flag = |n: &str| field(n) == Some("true");
-        let mut skip = |reason| {
-            out.skipped.push(Skipped {
-                name: name.clone(),
-                reason,
-            })
-        };
+        let mut skip = |reason| out.skipped.push(Skipped { name: name.clone(), reason });
         // A key-encryption key wraps other keys over the air; it decrypts no voice.
         if flag("KeyTypeKek") {
             skip("a key-encryption key");
             continue;
         }
-        let (Some(algid), Some(kid)) = (
-            field("AlgorithmId").and_then(|v| v.parse::<u8>().ok()),
-            field("KeyId").and_then(|v| v.parse::<u16>().ok()),
-        ) else {
+        let (Some(algid), Some(kid)) = (field("AlgorithmId").and_then(|v| v.parse::<u8>().ok()), field("KeyId").and_then(|v| v.parse::<u16>().ok())) else {
             skip("an algorithm id or key id out of range");
             continue;
         };
@@ -263,12 +213,7 @@ pub fn parse(file: &[u8], password: &str) -> Result<Container, EkcError> {
             skip("a second key for the same algorithm and key id");
             continue;
         }
-        out.keys.push(Key {
-            algid,
-            kid,
-            name: name.clone(),
-            bytes: Zeroizing::new(bytes),
-        });
+        out.keys.push(Key { algid, kid, name: name.clone(), bytes: Zeroizing::new(bytes) });
     }
     Ok(out)
 }
@@ -285,46 +230,22 @@ mod tests {
     fn reads_a_kfdtool_container() {
         let c = parse(FILE, PASSWORD).unwrap();
         assert!(c.skipped.is_empty());
-        let mut got: Vec<(u8, u16, &str, usize)> = c
-            .keys
-            .iter()
-            .map(|k| (k.algid, k.kid, k.name.as_str(), k.bytes.len()))
-            .collect();
+        let mut got: Vec<(u8, u16, &str, usize)> = c.keys.iter().map(|k| (k.algid, k.kid, k.name.as_str(), k.bytes.len())).collect();
         got.sort();
         // ADP is a 40-bit key, DES a 56-bit one in 8 bytes, AES-256 32 bytes.
-        assert_eq!(
-            got,
-            [
-                (0x81, 1237, "DES-OFB_Key", 8),
-                (0x84, 1235, "AES-256_Key", 32),
-                (0x9f, 1236, "DES-XL_Key", 8),
-                (0xaa, 1234, "ADP_Key", 5)
-            ]
-        );
+        assert_eq!(got, [(0x81, 1237, "DES-OFB_Key", 8), (0x84, 1235, "AES-256_Key", 32), (0x9f, 1236, "DES-XL_Key", 8), (0xaa, 1234, "ADP_Key", 5)]);
     }
 
     #[test]
     fn a_wrong_password_is_refused() {
-        assert_eq!(
-            parse(FILE, "testing1235").unwrap_err(),
-            EkcError::WrongPasswordOrCorrupt
-        );
-        assert_eq!(
-            parse(FILE, "").unwrap_err(),
-            EkcError::WrongPasswordOrCorrupt
-        );
+        assert_eq!(parse(FILE, "testing1235").unwrap_err(), EkcError::WrongPasswordOrCorrupt);
+        assert_eq!(parse(FILE, "").unwrap_err(), EkcError::WrongPasswordOrCorrupt);
     }
 
     #[test]
     fn damaged_files_are_errors_not_panics() {
-        assert!(matches!(
-            parse(b"", PASSWORD),
-            Err(EkcError::NotAContainer(_))
-        ));
-        assert!(matches!(
-            parse(b"hello, world", PASSWORD),
-            Err(EkcError::NotAContainer(_))
-        ));
+        assert!(matches!(parse(b"", PASSWORD), Err(EkcError::NotAContainer(_))));
+        assert!(matches!(parse(b"hello, world", PASSWORD), Err(EkcError::NotAContainer(_))));
         for cut in [5, 40, FILE.len() / 2, FILE.len() - 1] {
             assert!(parse(&FILE[..cut], PASSWORD).is_err());
         }

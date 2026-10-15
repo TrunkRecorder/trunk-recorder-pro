@@ -37,7 +37,7 @@ channel. Each site you record from its own control channel is its own entry, wit
 | `expect` | | `{}` | object | Site lock: only follow a control channel with this identity. See [Site lock](#site-lock-expect) |
 | `voiceChannelsHz` | | `[]` | array of numbers | Voice channels Find my system heard. Used only to place Auto sources so they cover them too |
 | `siteGroup` | | `""` | string | Groups sites whose calls are the same calls. See [Multi-site](#multi-site) |
-| `keys` | | `""` | string | P25: a file of encryption keys, absolute or relative to the config file's folder (desktop app only; not in the interface). See [Encryption keys](#encryption-keys-keys) |
+| `keys` | | `""` | string | P25: the encryption keys it decrypts with, a key source's name (desktop app only; not in the interface). See [Encryption keys](#encryption-keys-keys) |
 | `recording` | | `{}` | object | This system's own call rules; a rule left out follows the global `recording`. See [recording.md](recording.md#per-system-rules) |
 | `plugins` | | `{}` | object | This system's plugin settings, by plugin id. See [plugins.md](plugins.md#per-system-settings) |
 
@@ -139,7 +139,26 @@ or `Preferred NAC` column.
 **Experimental.** If you are authorized to monitor an encrypted P25 system and hold its keys, the
 recorder can decrypt its voice, P25 Phase 1 and Phase 2. DMR and NXDN calls stay encrypted.
 
-The keys live in a file of their own, never in the config, which the interface reads and edits:
+The keys live in a file of their own, never in the config, which the interface reads and edits. The
+config's top-level `keys` names each such file once, as a **key source**, and each system that
+decrypts names its source in its own `keys` (systems on one county's radios share one):
+
+```json
+{
+  "keys": { "county": { "file": "county.json" } },
+  "systems": [{ "shortName": "fire", "keys": "county", ... }, { "shortName": "pd", "keys": "county", ... }]
+}
+```
+
+| Key source key | Description |
+|---|---|
+| `file` | A keys file (below) or a [KFDtool key container](#keys-in-a-kfdtool-container), absolute or relative to the config file's folder. Which it is, is read from the file |
+| `passwordFile` | A container's password, in a file of its own. See [Keys in a KFDtool container](#keys-in-a-kfdtool-container) |
+
+A config from before key sources, whose systems named their keys file in `keys`, is read as one source
+per file, named after it.
+
+A keys file:
 
 ```json
 { "keys": [
@@ -173,22 +192,21 @@ The keys live in a file of their own, never in the config, which the interface r
 
 ### Keys in a KFDtool container
 
-`keys` can name a KFDtool key container (`.ekc`) instead of a JSON file. The container is encrypted
-with its own password, so keys at rest are never in the clear on the recorder, and the password sits
-in a separate file named by `keysPasswordFile` (relative to the config file's folder, or absolute).
-Conventional systems take both settings too.
+A key source's `file` can be a KFDtool key container (`.ekc`), the file KFDtool exports, instead of a
+JSON file. It is encrypted with its own password, which goes in a separate file named by `passwordFile`:
 
 ```json
-{ "keys": "keys.ekc", "keysPasswordFile": "/run/secrets/keys-password" }
+"keys": { "county": { "file": "county.ekc", "passwordFile": "/run/secrets/county-password" } }
 ```
 
 - The password file holds the password on its first line. On Unix it must not be readable by
   others (`chmod 600`), except under `/run/secrets`, where the container runtime sets the modes;
-  otherwise the start is refused.
+  otherwise the start is refused. Kept apart from the container (a Docker or systemd secret), it
+  means the keys are never in the clear on disk.
 - Every voice key in the container is used by key ID on any talkgroup. Key-encryption keys, and
   algorithms that can't be decrypted (DES-XL), are listed in the log and left out; the rest still
   load. A container with the wrong password, or a damaged one, stops the start.
-- `keysPasswordFile` with a JSON keys file, or a container without `keysPasswordFile`, is an error.
+- `passwordFile` with a JSON keys file, or a container without `passwordFile`, is an error.
 
 ## Talkgroup file
 

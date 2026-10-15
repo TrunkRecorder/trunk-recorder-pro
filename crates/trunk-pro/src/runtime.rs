@@ -184,12 +184,15 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
     let epoch_at = Instant::now();
     let mut session = Session::new(cfg.clone(), epoch_ms, &|name| fs::read_to_string(bandplan_path(name)).ok(), local_offset)?;
     session.attach(ctx.shared.clone());
-    for (name, ring, skipped) in keys {
-        for s in skipped {
-            log::warn!("{name}: key left out: {s}");
+    for k in keys {
+        for s in &k.skipped {
+            log::warn!("Key source {}: key left out: {s}", k.name);
         }
-        log::info!("{name}: {} encryption key{} loaded", ring.keys().len(), if ring.keys().len() == 1 { "" } else { "s" });
-        session.set_keys(&name, Some(ring));
+        let n = k.ring.keys().len();
+        log::info!("Key source {}: {n} encryption key{} loaded, for {}", k.name, if n == 1 { "" } else { "s" }, k.systems.join(", "));
+        for s in &k.systems {
+            session.set_keys(s, Some(k.ring.clone()));
+        }
     }
     session.load_units(&|name| fs::read_to_string(units_path(name)).ok());
     session.load_heard(&fs::read_to_string(heard_path(&cfg)).unwrap_or_default());
@@ -250,8 +253,7 @@ fn warn_readable_keys(ctx: &Ctx, cfg: &Config) {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let settings = cfg.systems.iter().filter(|s| s.active()).map(|s| &s.keys).chain(cfg.conventional.iter().filter(|c| c.enabled).map(|c| &c.keys));
-        for p in settings.filter_map(|k| trunk_app::keys::path(k, &ctx.config_path)) {
+        for p in cfg.key_files(&ctx.config_path) {
             if fs::metadata(&p).is_ok_and(|m| m.permissions().mode() & 0o077 != 0) {
                 let text = format!("Keys file {} can be read by other users (chmod 600 it)", p.display());
                 log::warn!("{text}");

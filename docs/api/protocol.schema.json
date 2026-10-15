@@ -706,6 +706,13 @@
           },
           "description": "The plugins, by id (desktop app). Their settings for each system are in the system."
         },
+        "keys": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/KeySource"
+          },
+          "description": "Encryption key sources, by name; a system names one in its `keys` (desktop app)."
+        },
         "log": {
           "$ref": "#/definitions/LogSettings",
           "description": "The log (desktop app)."
@@ -772,11 +779,7 @@
         },
         "keys": {
           "type": "string",
-          "description": "Desktop: its P25 channels' encryption keys file (as System's)."
-        },
-        "keysPasswordFile": {
-          "type": "string",
-          "description": "Desktop: the password file for `keys`, when that is a key container (as System's)."
+          "description": "Desktop: the encryption keys its P25 channels decrypt with (as System's)."
         }
       },
       "required": [
@@ -2840,6 +2843,24 @@
         "site"
       ],
       "additionalProperties": false
+    },
+    "KeySource": {
+      "type": "object",
+      "properties": {
+        "file": {
+          "type": "string",
+          "description": "A keys file (JSON) or a KFDtool key container (`.ekc`), absolute or relative to the config file's folder."
+        },
+        "passwordFile": {
+          "type": "string",
+          "description": "A container's password, in a file of its own."
+        }
+      },
+      "required": [
+        "file"
+      ],
+      "additionalProperties": false,
+      "description": "Where a set of encryption keys comes from: file names only, never a key (desktop)."
     },
     "LengthHistogram": {
       "type": "object",
@@ -5676,11 +5697,7 @@
         },
         "keys": {
           "type": "string",
-          "description": "Desktop: its P25 encryption keys file, absolute or relative to the config file's folder (read when recording starts; never sent here)."
-        },
-        "keysPasswordFile": {
-          "type": "string",
-          "description": "Desktop: the file holding the password of `keys` when that is a KFDtool key container (`.ekc`); never sent here."
+          "description": "Desktop: the P25 encryption keys it decrypts with, a key source's name (Config's `keys`)."
         },
         "plugins": {
           "type": "object",

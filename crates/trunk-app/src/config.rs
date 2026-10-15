@@ -330,14 +330,10 @@ pub struct System {
     /// ISSI, or to keep a site out of its system's group.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub site_group: String,
-    /// Its encryption keys file (P25; see [`crate::keys`]), absolute or
-    /// relative to the config file's folder. Empty: none.
+    /// The encryption keys it decrypts with (P25): a key source's name, in
+    /// [`Config::keys`]. Empty: none.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub keys: String,
-    /// The file holding the password of `keys`, when that is a KFDtool key
-    /// container (`.ekc`) rather than a JSON file. Empty: none.
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub keys_password_file: String,
     /// Plugins' settings for this system, by plugin id (as each plugin's
     /// `system_config` schema describes them), with `override` for the plugin's
     /// own settings they change for it; a list for several copies of one.
@@ -412,7 +408,6 @@ impl Default for System {
         System {
             other: BTreeMap::new(),
             keys: String::new(),
-            keys_password_file: String::new(),
             short_name: "sys1".into(),
             name: String::new(),
             kind: "p25".into(),
@@ -529,12 +524,9 @@ pub struct Conventional {
     /// Names for the radios heard on them.
     #[serde(skip_serializing_if = "UnitNames::is_empty")]
     pub unit_names: UnitNames,
-    /// Its encryption keys file, for its P25 channels (as [`System::keys`]).
+    /// The encryption keys its P25 channels decrypt with (as [`System::keys`]).
     #[serde(skip_serializing_if = "String::is_empty")]
     pub keys: String,
-    /// The password file for `keys`, when that is a key container (as [`System::keys_password_file`]).
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub keys_password_file: String,
     /// Keys this version doesn't know (a newer version's, a hand edit's):
     /// kept, and saved back as they were.
     #[serde(flatten)]
@@ -571,7 +563,6 @@ impl Default for Conventional {
         Conventional {
             other: BTreeMap::new(),
             keys: String::new(),
-            keys_password_file: String::new(),
             short_name: "conv".into(),
             name: String::new(),
             enabled: true,
@@ -1009,6 +1000,32 @@ pub struct CallSystem<'a> {
     pub plugins: &'a BTreeMap<String, serde_json::Value>,
 }
 
+/// Where a set of encryption keys comes from (see [`crate::keys`]). Only file
+/// names: the keys themselves are never in the config.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct KeySource {
+    /// A keys file (JSON) or a KFDtool key container (`.ekc`), absolute or
+    /// relative to the config file's folder; which, is read from the file.
+    pub file: String,
+    /// A container's password, in a file of its own. Empty: none.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub password_file: String,
+    /// Keys this version doesn't know (a newer version's, a hand edit's):
+    /// kept, and saved back as they were.
+    #[serde(flatten)]
+    pub other: BTreeMap<String, serde_json::Value>,
+}
+
+/// A key source as [`Config::load_keys`] read it, and the systems that use it.
+pub struct LoadedKeys {
+    pub name: String,
+    pub systems: Vec<String>,
+    pub ring: std::sync::Arc<trunk_core::p25::crypt::Keyring>,
+    /// Container keys left out, as "name (reason)" (never a key).
+    pub skipped: Vec<String>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Config {
@@ -1023,6 +1040,9 @@ pub struct Config {
     /// The plugins, by id: on or off, and their settings for the whole recorder.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub plugins: BTreeMap<String, PluginSetup>,
+    /// Encryption key sources, by name; a system names one in its `keys`.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub keys: BTreeMap<String, KeySource>,
     /// The log: how much, where to, and how lines read.
     pub log: LogSettings,
     /// The dashboard's watch on the computer (desktop app).
@@ -1102,6 +1122,7 @@ impl Default for Config {
             recording: Recording::default(),
             server: Server::default(),
             plugins: BTreeMap::new(),
+            keys: BTreeMap::new(),
             log: LogSettings::default(),
             monitor: MonitorSettings::default(),
         }
@@ -1175,7 +1196,30 @@ impl Config {
             Err(e) => return Err(format!("{}: {e}", path.display())),
         };
         c.load_channel_files(path);
+        c.migrate_keys();
         Ok(c)
+    }
+
+    /// Before key sources, a system's `keys` named its keys file: such a file
+    /// becomes a source (named after it), which the system names instead.
+    fn migrate_keys(&mut self) {
+        let named = self.systems.iter_mut().map(|s| &mut s.keys).chain(self.conventional.iter_mut().map(|c| &mut c.keys));
+        for k in named {
+            let file = k.trim().to_string();
+            if file.is_empty() || self.keys.contains_key(&file) {
+                continue;
+            }
+            let name = match self.keys.iter().find(|(_, s)| s.file == file) {
+                Some((n, _)) => n.clone(),
+                None => {
+                    let stem = Path::new(&file).file_stem().and_then(|s| s.to_str()).unwrap_or("keys").to_string();
+                    let name = (1..).map(|i| if i == 1 { stem.clone() } else { format!("{stem}-{i}") }).find(|n| !self.keys.contains_key(n)).unwrap();
+                    self.keys.insert(name.clone(), KeySource { file, ..Default::default() });
+                    name
+                }
+            };
+            *k = name;
+        }
     }
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
         if let Some(d) = path.parent() {
@@ -1203,21 +1247,30 @@ impl Config {
         Some(if p.is_absolute() { p } else { config_path.parent().unwrap_or(Path::new(".")).join(p) })
     }
 
-    /// Read the keys files of the systems that name one: (short name, its
-    /// keys, container keys left out), for [`crate::session::Session::set_keys`].
-    /// An error names the file and what is wrong in it (never a key).
-    #[allow(clippy::type_complexity)]
-    pub fn load_keys(&self, config_path: &Path) -> Result<Vec<(String, std::sync::Arc<trunk_core::p25::crypt::Keyring>, Vec<String>)>, String> {
-        let trunked = self.active_systems().map(|s| (&s.short_name, &s.keys, &s.keys_password_file));
-        let conv = self.conventional.iter().filter(|c| c.enabled).map(|c| (&c.short_name, &c.keys, &c.keys_password_file));
-        trunked
-            .chain(conv)
-            .filter_map(|(name, setting, pw)| crate::keys::path(setting, config_path).map(|p| (name, p, crate::keys::path(pw, config_path))))
-            .map(|(name, p, pw)| {
-                let l = crate::keys::load(&p, pw.as_deref()).map_err(|e| format!("{name}: {e}"))?;
-                Ok((name.clone(), std::sync::Arc::new(l.ring), l.skipped))
-            })
-            .collect()
+    /// Read the key sources the systems name, each once: its keys and the
+    /// systems that use them, for [`crate::session::Session::set_keys`]. A
+    /// source no system names isn't read. An error names the source, the
+    /// file and what is wrong in it (never a key).
+    pub fn load_keys(&self, config_path: &Path) -> Result<Vec<LoadedKeys>, String> {
+        let mut out: Vec<LoadedKeys> = Vec::new();
+        let named = self.active_systems().map(|s| (&s.short_name, s.keys.trim())).chain(self.conventional.iter().filter(|c| c.enabled).map(|c| (&c.short_name, c.keys.trim())));
+        for (system, name) in named.filter(|(_, k)| !k.is_empty()) {
+            if let Some(l) = out.iter_mut().find(|l| l.name == name) {
+                l.systems.push(system.clone());
+                continue;
+            }
+            let src = self.keys.get(name).ok_or_else(|| format!("{system}: no key source \"{name}\" (keys)"))?;
+            let file = crate::keys::path(&src.file, config_path).ok_or_else(|| format!("Key source {name}: no file"))?;
+            let l = crate::keys::load(&file, crate::keys::path(&src.password_file, config_path).as_deref()).map_err(|e| format!("Key source {name}: {e}"))?;
+            out.push(LoadedKeys { name: name.to_string(), systems: vec![system.clone()], ring: std::sync::Arc::new(l.ring), skipped: l.skipped });
+        }
+        Ok(out)
+    }
+
+    /// The keys files of the key sources the systems name (absolute).
+    pub fn key_files(&self, config_path: &Path) -> Vec<PathBuf> {
+        let named: Vec<&str> = self.active_systems().map(|s| s.keys.trim()).chain(self.conventional.iter().filter(|c| c.enabled).map(|c| c.keys.trim())).collect();
+        self.keys.iter().filter(|(n, _)| named.contains(&n.as_str())).filter_map(|(_, s)| crate::keys::path(&s.file, config_path)).collect()
     }
 
     /// Read every conventional system's linked channel file (errors are in
@@ -1571,6 +1624,50 @@ pub fn auto_center(ccs: &[f64], rate_hz: f64, guard_hz: f64) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A system's `keys` that named a file (before key sources) becomes a source named after the file;
+    /// systems that named the same file share it, and one already a source's name is left as it is.
+    #[test]
+    fn a_keys_file_named_by_a_system_becomes_a_key_source() {
+        let dir = std::env::temp_dir().join(format!("trunk-config-keys-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg = dir.join("config.json");
+        std::fs::write(
+            &cfg,
+            serde_json::json!({
+                "keys": { "keys": { "file": "other.json" } },
+                "systems": [{ "shortName": "a", "keys": "keys.json" }, { "shortName": "b", "keys": "keys.json" }, { "shortName": "c", "keys": "keys" }],
+                "conventional": [{ "shortName": "v", "keys": "/etc/radio/county.ekc" }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let c = Config::load(&cfg).unwrap();
+        let named: Vec<&str> = c.systems.iter().map(|s| s.keys.as_str()).collect();
+        assert_eq!(named, ["keys-2", "keys-2", "keys"]);
+        assert_eq!(c.keys["keys-2"].file, "keys.json");
+        assert_eq!(c.conventional[0].keys, "county");
+        assert_eq!(c.keys["county"].file, "/etc/radio/county.ekc");
+        assert_eq!(c.keys.len(), 3);
+    }
+
+    /// A source is read once however many systems name it; one no system names isn't read at all.
+    #[test]
+    fn a_key_source_is_read_once_for_the_systems_that_name_it() {
+        let dir = std::env::temp_dir().join(format!("trunk-config-keysrc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("k.json"), r#"{ "keys": [{ "algId": "0xAA", "keyId": 1, "key": "1234567890" }] }"#).unwrap();
+        let cc = vec![851_012_500.0];
+        let sys = |n: &str, k: &str| System { short_name: n.into(), keys: k.into(), control_channels_hz: cc.clone(), ..Default::default() };
+        let mut c = Config { systems: vec![sys("a", "county"), sys("b", "county"), sys("c", "")], ..Default::default() };
+        c.keys.insert("county".into(), KeySource { file: "k.json".into(), ..Default::default() });
+        c.keys.insert("unused".into(), KeySource { file: "missing.json".into(), ..Default::default() });
+        let l = c.load_keys(&dir.join("config.json")).unwrap();
+        assert_eq!(l.len(), 1);
+        assert_eq!((l[0].name.as_str(), l[0].systems.clone(), l[0].ring.keys().len()), ("county", vec!["a".to_string(), "b".to_string()], 1));
+        c.systems[2].keys = "nope".into();
+        assert!(c.load_keys(&dir.join("config.json")).err().unwrap().contains("no key source \"nope\""));
+    }
 
     #[test]
     fn usrp_label_names_the_device() {
