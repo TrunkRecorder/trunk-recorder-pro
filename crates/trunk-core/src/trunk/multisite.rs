@@ -68,6 +68,17 @@ pub struct Held {
 }
 
 impl Held {
+    /// Leave out what the saved call won't have: transmissions shorter than
+    /// `min_tx_s` and encrypted ones not decrypted ([`super::record::Transmissions::kept`]),
+    /// their frames and the error summary with them.
+    pub fn trim(&mut self, min_tx_s: f64) {
+        if let Some(ranges) = self.tx.kept(self.audio.len(), min_tx_s, SAMPLE_RATE) {
+            self.frames.keep(&ranges, self.audio.len());
+            self.audio = ranges.iter().flat_map(|r| self.audio[r.clone()].iter().copied()).collect();
+            self.tx = Default::default();
+        }
+    }
+
     /// Seconds of audio decoded cleanly: the vocoder frames not repeated,
     /// muted or lost (analog: all of it). Encrypted: none.
     pub fn clean_s(&self) -> f64 {
@@ -324,5 +335,43 @@ mod tests {
         silent.call.encrypted = true;
         assert_eq!(pick(&[silent.clone(), held(2, 0, 0, 0, 0)], &[false, false]), Some(0), "nothing to choose by: the first to start");
         assert_eq!(pick(&[], &[]), None);
+    }
+
+    #[test]
+    fn copies_are_ranked_by_the_audio_they_keep() {
+        let frame_s = FRAME_SAMPLES as f64 / SAMPLE_RATE as f64;
+        // The good frames are in a transmission left out (encrypted, no key).
+        let mut h = held(1, 0, 0, 0, 0);
+        for k in 0..100 {
+            let kind = if k < 50 { Kind::Repeat } else { Kind::Voice };
+            h.frames.push(VoiceFrame { codec: Codec::Imbe, bits: vec![0; 88], e0: 0, errs: 0, erased: false, kind });
+        }
+        h.audio = vec![0.1; 100 * FRAME_SAMPLES];
+        h.tx.note(0, 0.0);
+        h.tx.note(50 * FRAME_SAMPLES, 5.0);
+        h.tx.mark_encrypted(5.0);
+        h.trim(0.0);
+        assert_eq!(h.clean_s(), 0.0);
+        // Decrypted from its second transmission only: half of it, which loses to a whole clear copy even preferred.
+        let mut late = held(1, 0, 100, 0, 0);
+        late.tx.note(0, 0.0);
+        late.tx.mark_encrypted(0.0);
+        late.tx.note(50 * FRAME_SAMPLES, 5.0);
+        late.tx.mark_encrypted(5.0);
+        late.tx.mark_decrypted(5.0);
+        late.trim(0.0);
+        assert!((late.clean_s() - 50.0 * frame_s).abs() < 1e-9);
+        assert_eq!(pick(&[late.clone(), held(2, 1, 100, 0, 0)], &[true, false]), Some(1));
+        // A burst under the site's minimum isn't counted.
+        let mut burst = held(1, 0, 10, 50, 0);
+        burst.tx.note(0, 0.0);
+        burst.tx.note(10 * FRAME_SAMPLES, 5.0);
+        burst.trim(20.0 * frame_s);
+        assert_eq!(burst.clean_s(), 0.0);
+        assert_eq!(burst.audio.len(), 50 * FRAME_SAMPLES);
+        // Trimmed once: saving it again changes nothing.
+        let before = burst.audio.len();
+        burst.trim(20.0 * frame_s);
+        assert_eq!(burst.audio.len(), before);
     }
 }
