@@ -766,6 +766,14 @@ function PluginCard(props: { p: PluginInfo; recording: boolean; listing?: StoreL
   const needs = on && m && s.config ? pluginNeeds(m, s.config, p.id) : [];
   // A newer version in the registry (not for a build of the user's own, or a plugin from elsewhere).
   const update = listing && m && !p.custom && !p.unlistedFrom && !listing.unavailable && newer(listing.version, m.version) ? listing : null;
+  // The same again (a forced pull): the user's file, the GitHub repository's latest release, or the registry's version.
+  const reinstall = p.custom
+    ? { go: () => addPlugin(p.path), what: `Take ${p.path} again, for a rebuilt copy.` }
+    : p.unlistedFrom
+      ? { go: () => installPluginFrom(p.unlistedFrom!), what: `Install ${p.unlistedFrom}'s latest release again.` }
+      : listing && !listing.unavailable && !update
+        ? { go: () => installPlugin(p.id), what: `Download v${listing.version} from the registry again.` }
+        : null;
 
   // Just installed from this browser: on to setting it up.
   useEffect(() => {
@@ -836,13 +844,8 @@ function PluginCard(props: { p: PluginInfo; recording: boolean; listing?: StoreL
             </button>
           )
         )}
-        {!install && p.unlistedFrom && (
-          <button className="btn" onClick={() => installPluginFrom(p.unlistedFrom!)} title={`Install ${p.unlistedFrom}'s latest release again. Its settings stay.${recording && on ? " It restarts with it." : ""}`}>
-            Reinstall
-          </button>
-        )}
-        {p.custom && (
-          <button className="btn" onClick={() => addPlugin(p.path)} title={`Take ${p.path} again, for a rebuilt copy. Its settings stay.${recording && on ? " It restarts with it." : ""}`}>
+        {!install && reinstall && (
+          <button className="btn" onClick={reinstall.go} title={`${reinstall.what} Its settings stay.${recording && on ? " It restarts with it." : ""}`}>
             Reinstall
           </button>
         )}
