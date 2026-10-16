@@ -87,9 +87,10 @@ pub enum AliasLc {
     MacFragment,
 }
 
-/// A link control word that is part of a talker alias (Motorola or Harris).
+/// A link control word that is part of a talker alias (Motorola or Harris):
+/// a manufacturer's, so its MFID is explicit (SF clear, AABF-D §7.2).
 pub fn is_alias_lcw(w: &[u8; 9]) -> bool {
-    matches!((w[0] & 0x3f, w[1]), (0x15 | 0x17, MOTOROLA) | (0x32..=0x35, HARRIS))
+    w[0] & 0x40 == 0 && matches!((w[0] & 0x3f, w[1]), (0x15 | 0x17, MOTOROLA) | (0x32..=0x35, HARRIS))
 }
 
 /// A MAC message that is part of a talker alias (Motorola or Harris).

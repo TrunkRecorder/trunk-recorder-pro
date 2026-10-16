@@ -39,7 +39,8 @@ use trunk_core::p25::frame::{duid_name, FramerOptions, HDU, LDU1, LDU2, PDU, TDU
 use trunk_core::p25::mbt::Pdu;
 use trunk_core::p25::tsbk::{decode_tsdu, tsbk_opcode, Trellis};
 use trunk_core::trunk::frames::VoiceFrame;
-use trunk_core::p25::voice::{decode_hdu, decode_ldu1_lc, decode_ldu2_es, decode_tdulc, imbe_params_to_bits, ldu_imbe, EncryptionSync, ImbeParams, LinkControl};
+use trunk_core::p25::voice::{decode_hdu, decode_ldu1_lc, decode_ldu2_es, decode_tdulc, imbe_params_to_bits, ldu_imbe, EncryptionSync, ImbeParams};
+use trunk_core::p25::lc::LinkControl;
 
 use crate::{die, Args};
 
@@ -216,10 +217,10 @@ fn lc_json(key: &str, lc: Option<LinkControl>) -> String {
             lc.mfid,
             lc.raw.iter().map(|b| format!("{b:02x}")).collect::<String>(),
             lc.protected as u8,
-            lc.svc_opts.map_or(-1, |v| v as i64),
-            n(lc.tgid),
-            n(lc.target),
-            n(lc.source)
+            lc.opts().map_or(-1, |o| o.0 as i64),
+            n(lc.group()),
+            n(lc.target()),
+            n(lc.source())
         ),
     }
 }

@@ -29,19 +29,25 @@ pub const ALGID_AES_256: u8 = 0x84;
 pub const ALGID_AES_128: u8 = 0x89;
 pub const ALGID_ADP: u8 = 0xAA;
 
-/// What an ALGID is called (TIA-102.BAAC's reserved values, and the
+/// What an ALGID is called (TIA-102.BAAC-C §2.8's values, and the
 /// manufacturers' that are seen on the air).
+///
+/// $85 is the standard's AES-128, but no TIA document defines voice under
+/// it: AAAD-B (2015) has voice annexes for $81, $83 and $84 only, and $85 is
+/// the algorithm of link layer authentication's key (AACD-A), used there in
+/// ECB mode (AACE-A). AES-128 voice on the air is Motorola's $89, in AAAD-B
+/// §4's OFB (as OP25 and dsd-fme decrypt it). So $85 isn't decrypted.
 pub fn algid_name(algid: u8) -> &'static str {
     match algid {
-        0x00..=0x05 | 0x41 => "Type 1",
+        0x00..=0x04 | 0x41 => "Type 1",
         0x80 => "clear",
         0x81 => "DES-OFB",
         0x82 => "2-key 3DES",
         0x83 => "3DES",
         0x84 => "AES-256",
-        0x85 => "AES-128 ECB",
+        0x85 => "AES-128",
         0x88 => "AES-CBC",
-        0x89 => "AES-128",
+        0x89 => "AES-128 (Motorola)",
         0x9F => "DES-XL",
         0xA0 => "DVI-XL",
         0xA1 => "DVP-XL",
@@ -219,8 +225,10 @@ fn rc4(key: &[u8], n: usize) -> Vec<u8> {
 #[derive(Clone)]
 pub struct Keystream {
     phase: Phase,
-    /// From the first voice byte (the discard dropped).
-    ks: Vec<u8>,
+    /// From the first voice byte (the discard dropped). Wiped when dropped,
+    /// as the keys are: with the MI it would give the voice of anything
+    /// else sent under the same key and MI.
+    ks: Zeroizing<Vec<u8>>,
 }
 
 impl std::fmt::Debug for Keystream {
@@ -251,7 +259,7 @@ impl Keystream {
             Algorithm::Aes256 => block_cipher::<aes::Aes256, 16>(key, aes_iv(mi), blocks(16)),
         };
         ks.drain(..alg.discard());
-        Some(Keystream { phase, ks })
+        Some(Keystream { phase, ks: Zeroizing::new(ks) })
     }
 
     /// Where Phase 1 frame `k` of LDU `ldu` (0: LDU1, 1: LDU2) starts.
@@ -272,12 +280,78 @@ impl Keystream {
         self.xor(Self::p1_offset(ldu, k), bits);
     }
 
+    /// Decrypt (or encrypt) LDU1's link control word: its octets L1..L8
+    /// under keystream octets 4..11 (AAAD-B Tables 5-2, 5-5; 1..3 are
+    /// reserved), less an explicit MFID's, which is sent clear. Its P bit
+    /// stays as it was.
+    pub fn apply_lc(&self, w: &mut [u8; 9]) {
+        debug_assert_eq!(self.phase, Phase::One);
+        for i in super::lc::encrypted_octets(w) {
+            w[i] ^= self.ks[2 + i];
+        }
+    }
+
     /// Decrypt (or encrypt) AMBE+2 frame `f` (0–17) of the superframe: its
     /// 49 bits (decode_vcw).
     pub fn apply_p2(&self, f: usize, bits: &mut [u8; 49]) {
         debug_assert_eq!(self.phase, Phase::Two);
         self.xor(7 * f, bits);
     }
+}
+
+// ── Whether a key is the right one ───────────────────────────────────────────
+
+/// Whether a transmission's key decrypts it to voice. A wrong key's output
+/// is noise, and noise often names a frame no vocoder sends: full-rate IMBE
+/// reserves pitch values b0 208..=255 (BABA-A §1.9: 3 frames in 16 of
+/// noise), half-rate AMBE+2 marks erasures and tones. Real voice almost never
+/// does (a gateway passes an erasure on now and then). So a key is taken as
+/// right once two superframes (36 frames) have come with at most one such
+/// frame (a wrong key passes 1 time in 190), and wrong as soon as three have
+/// and they are a tenth of the frames or more.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct KeyCheck {
+    frames: u32,
+    invalid: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Verdict {
+    Unsure,
+    Right,
+    Wrong,
+}
+
+impl KeyCheck {
+    /// One decrypted frame, and whether it could be voice: the verdict so far.
+    pub fn frame(&mut self, voice: bool) -> Verdict {
+        self.frames += 1;
+        self.invalid += !voice as u32;
+        self.verdict()
+    }
+    pub fn verdict(&self) -> Verdict {
+        if self.invalid >= 3 && self.invalid * 10 >= self.frames {
+            Verdict::Wrong
+        } else if self.frames >= 36 && self.invalid <= 1 {
+            Verdict::Right
+        } else {
+            Verdict::Unsure
+        }
+    }
+    /// The verdict when the transmission ends before one came: right if a
+    /// superframe's worth came with none invalid (a wrong key: 1 in 40).
+    pub fn at_end(&self) -> Verdict {
+        match self.verdict() {
+            Verdict::Unsure if self.frames >= 18 && self.invalid == 0 => Verdict::Right,
+            v => v,
+        }
+    }
+}
+
+/// Whether full-rate IMBE frame `u` (u0..u7) could be voice: its pitch b0
+/// (u0's top eight bits) a value the encoder sends (BABA-A: 0..=207).
+pub fn imbe_voice(u: &[u32; 8]) -> bool {
+    u[0] >> 4 < 208
 }
 
 // ── Keyring ──────────────────────────────────────────────────────────────────
@@ -293,6 +367,33 @@ pub struct Key {
     /// Used for these talkgroups, under any key ID or the one given (empty:
     /// by key ID, on any talkgroup).
     pub talkgroups: Vec<u32>,
+}
+
+impl Key {
+    /// Whether it decrypts voice under `alg`, as which cipher and key: its
+    /// own, and DES and 3DES for each other (AAAD-B B.1: 3DES with K1 = K2 =
+    /// K3 is DES under K1, and is sent as $81; a DES key is 3DES's that way).
+    fn serves(&self, alg: Algorithm) -> Option<(Algorithm, &[u8])> {
+        let k = &self.key[..];
+        match (self.alg, alg) {
+            (a, b) if a == b => Some((a, k)),
+            (Algorithm::Tdes, Algorithm::DesOfb) if k[..8] == k[8..16] && k[8..16] == k[16..] => Some((Algorithm::DesOfb, &k[..8])),
+            (Algorithm::DesOfb, Algorithm::Tdes) => Some((Algorithm::DesOfb, k)),
+            _ => None,
+        }
+    }
+
+    /// Something worth telling whoever loaded it: a DES key byte whose parity
+    /// bit (the LSB; odd parity) is wrong, which a key fill device or the
+    /// KMF would refuse (AACD-A, AACA-A), likely a mistyped key. Decryption
+    /// doesn't use those bits.
+    pub fn warning(&self) -> Option<String> {
+        if !matches!(self.alg, Algorithm::DesOfb | Algorithm::Tdes) || self.key.iter().all(|b| b.count_ones() % 2 == 1) {
+            return None;
+        }
+        let kid = self.keyid.map_or("A key without a key ID".to_string(), |k| format!("Key ID {k:#06X}"));
+        Some(format!("{kid}: a DES key byte has the wrong parity (each byte's bit count should be odd): check it was typed right"))
+    }
 }
 
 impl std::fmt::Debug for Key {
@@ -350,15 +451,20 @@ impl Keyring {
         &self.keys
     }
 
+    /// What is worth telling whoever loaded the keys ([`Key::warning`]).
+    pub fn warnings(&self) -> impl Iterator<Item = String> + '_ {
+        self.keys.iter().filter_map(Key::warning)
+    }
+
     /// The key for voice under `algid` / `keyid` on talkgroup `tg`: first a
     /// key listing the talkgroup (and, if it gives one, the key ID), then
     /// one by key ID alone.
     pub fn lookup(&self, algid: u8, keyid: u16, tg: Option<u32>) -> Lookup<'_> {
         let Some(alg) = Algorithm::from_algid(algid) else { return Lookup::Unsupported };
-        let by_tg = tg.and_then(|tg| self.keys.iter().find(|k| k.alg == alg && k.talkgroups.contains(&tg) && k.keyid.is_none_or(|id| id == keyid)));
-        let by_kid = || self.keys.iter().find(|k| k.alg == alg && k.talkgroups.is_empty() && k.keyid == Some(keyid));
+        let by_tg = tg.and_then(|tg| self.keys.iter().find_map(|k| k.serves(alg).filter(|_| k.talkgroups.contains(&tg) && k.keyid.is_none_or(|id| id == keyid))));
+        let by_kid = || self.keys.iter().find_map(|k| k.serves(alg).filter(|_| k.talkgroups.is_empty() && k.keyid == Some(keyid)));
         match by_tg.or_else(by_kid) {
-            Some(k) => Lookup::Key(alg, &k.key),
+            Some((alg, key)) => Lookup::Key(alg, key),
             None => Lookup::NoKey,
         }
     }
@@ -408,7 +514,7 @@ mod tests {
     fn spec_keystream(alg: Algorithm, key: &str, out: &[&str], blocks: usize, phase: Phase) -> Keystream {
         let ks = Keystream::new(alg, &hex(key), &mi9(v::MI), phase).unwrap();
         let out: Vec<u8> = out[..blocks].iter().flat_map(|r| hex(r)).collect();
-        assert_eq!(ks.ks, out[alg.discard()..], "{alg:?} {phase:?}: output registers");
+        assert_eq!(ks.ks[..], out[alg.discard()..], "{alg:?} {phase:?}: output registers");
         ks
     }
 

@@ -10,11 +10,12 @@ use std::collections::VecDeque;
 
 use num_complex::Complex32;
 
-use super::frame::{blocks_dibits, frame_dibits, Frame, Framer, FramerOptions, LDU1, LDU2, PDU, TDU, TSDU};
+use super::frame::{blocks_dibits, frame_dibits, Frame, Framer, FramerOptions, HDU, LDU1, LDU2, PDU, TDU, TSDU};
 use super::mbt::{self, Pdu};
 use super::osp::{self, Osp};
 use super::tsbk::{tsbk_last, tsbk_ok, trellis_viterbi, Tsbk};
-use super::voice::{decode_ldu1_lc, decode_ldu2_es, ldu_imbe, EncryptionSync, ImbeParams, LinkControl};
+use super::lc::LinkControl;
+use super::voice::{decode_hdu, decode_ldu1_lc, decode_ldu2_es, ldu_imbe, EncryptionSync, HduInfo, ImbeParams};
 use crate::dsp::c4fm::{C4fm, C4fmOptions, SYMBOL_RATE};
 use crate::dsp::cqpsk::{self, Cqpsk};
 use crate::dsp::{Receiver, Symbol};
@@ -76,6 +77,13 @@ pub struct Bank {
 }
 
 impl Bank {
+    /// The site's NAC, for the framers' NID recovery ([`Framer::expect_nac`]).
+    pub fn expect_nac(&mut self, nac: Option<u16>) {
+        for r in &mut self.rx {
+            r.framer.expect_nac(nac);
+        }
+    }
+
     pub fn new(rate: f64, cfg: BankConfig) -> Self {
         Self::with_c4fm(rate, cfg, C4fmOptions::default())
     }
@@ -346,6 +354,10 @@ fn imbe_score(p: &ImbeParams) -> f32 {
     (p.cost + p.erased as f32 * mean / 2.0) / mean
 }
 
+/// The HDU, from whichever receivers' copy decodes.
+pub fn best_hdu(g: &Group) -> Option<HduInfo> {
+    g.iter().filter(|f| f.nid.duid == HDU).find_map(|f| decode_hdu(&f.raw))
+}
 pub fn best_lc(g: &Group) -> Option<LinkControl> {
     g.iter().filter(|f| f.nid.duid == LDU1).find_map(|f| decode_ldu1_lc(&f.raw))
 }

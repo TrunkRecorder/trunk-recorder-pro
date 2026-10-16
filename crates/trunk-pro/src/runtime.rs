@@ -196,6 +196,9 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
             log::warn!("Key source {} is locked: unlock it in Setup → Recording to decrypt {}", k.name, k.systems.join(", "));
             continue;
         };
+        for w in ring.warnings() {
+            log::warn!("Key source {}: {w}", k.name);
+        }
         let n = ring.keys().len();
         log::info!("Key source {}: {n} encryption key{} loaded, for {}", k.name, if n == 1 { "" } else { "s" }, k.systems.join(", "));
         for s in &k.systems {

@@ -9,6 +9,7 @@ pub mod diversity;
 pub mod fec;
 pub mod frame;
 pub mod gps;
+pub mod lc;
 pub mod mbt;
 pub mod osp;
 pub mod phase2;

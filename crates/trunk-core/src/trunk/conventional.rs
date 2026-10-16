@@ -328,6 +328,8 @@ pub enum ConvOut {
     Alias(u16, Alias),
     /// A radio's new position, on a call (its system and talkgroup).
     Position(u16, Position, u32),
+    /// A key of conventional system `.0` that decrypts its voice to noise.
+    WrongKey(u16, CipherId),
     /// A transmission no row took, and the code it carried (as a row's
     /// Tone would say it; "" for none).
     Skipped { freq_hz: u64, code: String },
@@ -734,6 +736,7 @@ impl Conventional {
                 TrackerOut::Decrypted => h.decrypted = true,
                 TrackerOut::Alias(a) => out.push(ConvOut::Alias(conventional_system(ch.cfg.system), a)),
                 TrackerOut::Position(p) => h.positions.push(p),
+                TrackerOut::WrongKey(c) => out.push(ConvOut::WrongKey(conventional_system(ch.cfg.system), c)),
                 TrackerOut::AliasLc(_) => {}
             }
         }

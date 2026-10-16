@@ -44,6 +44,9 @@ pub fn unlock(ctx: &Ctx, name: &str, password: &str) -> Result<(), String> {
     for s in &loaded.skipped {
         log::warn!("Key source {name}: key left out: {s}");
     }
+    for w in loaded.ring.warnings() {
+        log::warn!("Key source {name}: {w}");
+    }
     let ring = Arc::new(loaded.ring);
     log::info!("Key source {name}: unlocked, {} key{}, for {}", ring.keys().len(), if ring.keys().len() == 1 { "" } else { "s" }, systems.join(", "));
     ctx.unlocked.lock().unwrap().insert(name.to_string(), (file, ring.clone()));

@@ -95,9 +95,13 @@ pub enum TrackerOut {
     /// The transmission's encryption sync named its cipher (once a
     /// transmission, and again if it changes).
     Cipher(CipherId),
-    /// The transmission's voice is being decrypted (once a transmission,
-    /// before its first decrypted audio).
+    /// The transmission's voice is being decrypted: once a transmission,
+    /// when its key has decrypted enough of it to voice to be sure
+    /// ([`crate::p25::crypt::KeyCheck`]).
     Decrypted,
+    /// The key for this cipher decrypts the transmission to noise: not the
+    /// right key. Its voice is left out.
+    WrongKey(CipherId),
     /// Analog FM voice (a SmartNet analog call, a conventional FM channel): 8 kHz audio, squelched.
     AnalogAudio(Vec<f32>),
     /// Analog FM: the same audio before the 300 Hz high-pass (CTCSS / DCS
@@ -137,6 +141,9 @@ pub struct AirInfo {
 pub struct VoiceParams {
     /// P25 Phase 2 scrambling: (NAC, System ID, WACN).
     pub tdma_key: Option<(u32, u32, u32)>,
+    /// P25: the site's NAC. Phase 1 frames with another are another site's
+    /// (a co-channel one), not the call's.
+    pub nac: Option<u16>,
 }
 
 /// How to make a decoder.
@@ -170,8 +177,9 @@ pub trait VoiceDecoder: Send {
     fn push(&mut self, iq: &[Complex32], out: &mut Vec<VoiceOut>);
     /// End of input: decode what the receivers still hold.
     fn flush(&mut self, _out: &mut Vec<VoiceOut>) {}
-    /// Which slots are being recorded (DMR vocodes only those).
-    fn listen(&mut self, _slots: [bool; 2]) {}
+    /// The talkgroup (or radio) each slot's call was granted for; None:
+    /// no call there, and nothing to vocode (decoders that can, don't).
+    fn listen(&mut self, _slots: [Option<u32>; 2]) {}
     /// The system's keys changed: P25 voice is decrypted with these from now on, calls in progress
     /// too (a call is decrypted from its next encryption sync; with none, it stops at once).
     fn set_keys(&mut self, _keys: Option<Arc<Keyring>>) {}
@@ -209,6 +217,7 @@ pub fn build(spec: &VoiceSpec) -> Box<dyn VoiceDecoder> {
             rate: spec.rate,
             nac: None,
             air: None,
+            site_nac: None,
         }),
         VoiceKind::Tdma => {
             let mut tracker = TdmaTracker::new(spec.seed, spec.keys.clone());
@@ -236,6 +245,8 @@ struct P25Fdma {
     /// The last push's NAC, and the air it heard voice in.
     nac: Option<u16>,
     air: Option<(f64, f64)>,
+    /// The site's NAC, once its control channel said.
+    site_nac: Option<u16>,
 }
 
 impl P25Fdma {
@@ -244,6 +255,9 @@ impl P25Fdma {
         let mut tout = Vec::new();
         for g in &self.groups {
             let best = best_frame(g);
+            if self.site_nac.is_some_and(|n| n != best.nid.nac) {
+                continue;
+            }
             self.nac = Some(best.nid.nac);
             let t = self.t0 + best.sample / self.rate;
             tout.clear();
@@ -260,6 +274,15 @@ impl P25Fdma {
 impl VoiceDecoder for P25Fdma {
     fn kind(&self) -> VoiceKind {
         VoiceKind::Fdma
+    }
+    fn listen(&mut self, slots: [Option<u32>; 2]) {
+        self.tracker.set_granted(slots[0]);
+    }
+    fn set_params(&mut self, p: &VoiceParams) {
+        if self.site_nac != p.nac {
+            self.site_nac = p.nac;
+            self.bank.expect_nac(p.nac);
+        }
     }
     fn set_keys(&mut self, keys: Option<Arc<Keyring>>) {
         self.tracker.set_keys(keys);
@@ -370,8 +393,8 @@ impl VoiceDecoder for Dmr {
             out.push(VoiceOut { slot: v.slot, t: v.t, out: v.out });
         }
     }
-    fn listen(&mut self, slots: [bool; 2]) {
-        self.voice.vocode = slots;
+    fn listen(&mut self, slots: [Option<u32>; 2]) {
+        self.voice.vocode = slots.map(|s| s.is_some());
     }
     fn air(&self, slot: u8) -> AirInfo {
         AirInfo { talkgroup: self.voice.talkgroup(slot), nac: None, color_code: self.voice.color_code(slot), ran: None, air: self.air[slot as usize & 1] }

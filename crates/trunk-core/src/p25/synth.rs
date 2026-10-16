@@ -210,12 +210,16 @@ pub fn modulate(dibits: &[u8], fs: f64, offset_hz: f64, amp: f32, phase: &mut f6
 /// is a frame to the vocoder; what matters is that it comes back the same).
 pub fn imbe(n: usize) -> [u8; 88] {
     let mut x = 0x9e37_79b9u32 ^ (n as u32).wrapping_mul(0x85eb_ca6b);
-    std::array::from_fn(|_| {
+    let mut bits: [u8; 88] = std::array::from_fn(|_| {
         x ^= x << 13;
         x ^= x >> 17;
         x ^= x << 5;
         (x & 1) as u8
-    })
+    });
+    // A pitch an encoder sends (b0, the first 8 bits, below 208): a clear
+    // MSB keeps it under 128.
+    bits[0] = 0;
+    bits
 }
 
 // ── Phase 2: one logical channel's bursts, as framed slot packets ────────────
@@ -372,7 +376,7 @@ mod tests {
         let h = decode_hdu(&f[0].raw).expect("HDU");
         assert_eq!((h.es, h.tgid, h.mfid), (es(ALGID_AES_256, 0x370E), 1201, 0));
         let lc = decode_ldu1_lc(&f[1].raw).expect("LC");
-        assert_eq!((lc.lco, lc.svc_opts, lc.tgid, lc.source), (0, Some(0x40), Some(1201), Some(1_234_567)));
+        assert_eq!((lc.lco, lc.opts().map(|o| o.0), lc.group(), lc.source()), (0, Some(0x40), Some(1201), Some(1_234_567)));
         for s in 0..3 {
             let e = decode_ldu2_es(&f[2 + 2 * s].raw).expect("ES");
             assert_eq!(e, EncryptionSync { mi: t.mi(s + 1).unwrap(), ..es(ALGID_AES_256, 0x370E) });
@@ -392,6 +396,7 @@ mod tests {
     struct Heard {
         cipher: Vec<CipherId>,
         decrypted: usize,
+        wrong_key: usize,
         /// The audio frames' bits and erasure flags.
         voice: Vec<([u8; 88], bool)>,
     }
@@ -434,11 +439,12 @@ mod tests {
             v.push(c, &mut out);
         }
         v.flush(&mut out);
-        let mut h = Heard { cipher: Vec::new(), decrypted: 0, voice: Vec::new() };
+        let mut h = Heard { cipher: Vec::new(), decrypted: 0, wrong_key: 0, voice: Vec::new() };
         for o in out {
             match o.out {
                 TrackerOut::Cipher(c) => h.cipher.push(c),
                 TrackerOut::Decrypted => h.decrypted += 1,
+                TrackerOut::WrongKey(_) => h.wrong_key += 1,
                 TrackerOut::Audio(_, f) => h.voice.push((f.bits.try_into().unwrap(), f.erased)),
                 _ => {}
             }
@@ -470,13 +476,15 @@ mod tests {
         }
     }
 
-    /// The wrong key decrypts to something else; no key, nothing is heard.
+    /// The wrong key decrypts to noise, found out within the first
+    /// superframe: never reported decrypted, and its voice stops; no key,
+    /// nothing is heard.
     #[test]
     fn without_the_right_key_the_voice_stays_secret() {
         let t = tx(Some((es(ALGID_AES_256, 0x0009), vec![1; 32])), 2);
         let h = hear(&t.frames(), Some(keyring(ALGID_AES_256, 0x0009, &[2; 32])), 0.0);
-        assert_eq!(h.voice.len(), t.voice.len());
-        assert!(h.voice.iter().zip(&t.voice).all(|((b, _), v)| b != v));
+        assert_eq!((h.decrypted, h.wrong_key), (0, 1));
+        assert!(h.voice.len() < 18 && h.voice.iter().zip(&t.voice).all(|((b, _), v)| b != v));
         for keys in [None, Some(Keyring::default()), Some(keyring(ALGID_AES_256, 0x000A, &[1; 32]))] {
             let h = hear(&t.frames(), keys, 0.0);
             assert_eq!((h.decrypted, h.voice.len()), (0, 0));
@@ -534,7 +542,11 @@ mod tests {
         let h = hear(&frames, Some(keyring(ALGID_ADP, 0x1B50, &[1, 2, 3, 4, 5])), 0.0);
         assert_eq!(h.cipher, [CipherId { algid: ALGID_ADP, keyid: 0x1B50 }]);
         assert_eq!(h.voice.len(), t.voice.len());
-        assert!(h.voice.iter().zip(&t.voice).all(|((b, e), v)| !e && b == v));
+        // (u7, the last 7 bits, has no FEC: a symbol the receivers get wrong
+        // there passes unseen, which is theirs to answer for, not decryption's.)
+        for (i, ((b, e), v)) in h.voice.iter().zip(&t.voice).enumerate() {
+            assert!(!e && b[..81] == v[..81], "frame {i}");
+        }
     }
 
     /// In noise (the FEC correcting about a bit per codeword), the voice

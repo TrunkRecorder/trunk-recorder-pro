@@ -280,7 +280,7 @@ impl ControlChannel for P25 {
             (Some(nac), Some(sys), Some(wacn)) => Some((nac as u32, sys, wacn)),
             _ => None,
         };
-        VoiceParams { tdma_key }
+        VoiceParams { tdma_key, nac: id.nac().map(|n| n as u16) }
     }
     fn site_group(&self, id: &Identity) -> Option<String> {
         Some(format!("p25:{:x}.{:x}", id.wacn()?, id.sys_id()?))
