@@ -18,7 +18,7 @@
 use std::collections::HashMap;
 
 use super::calls::{Call, CallId};
-use super::frames::{CallFrames, FrameErrors};
+use super::frames::CallFrames;
 use super::talkgroups::Talkgroup;
 use crate::mbe::{FRAME_SAMPLES, SAMPLE_RATE};
 
@@ -68,33 +68,26 @@ pub struct Held {
 }
 
 impl Held {
-    /// The frame errors of the audio the saved call keeps: all but its
-    /// transmissions that were encrypted and not decrypted (what a vocoder
-    /// makes of ciphertext can look clean) and those shorter than the
-    /// site's `min_tx_s`, as `save_call` leaves them out.
-    fn kept_errors(&self, min_tx_s: f64) -> std::borrow::Cow<'_, FrameErrors> {
-        let len = self.audio.len();
-        self.tx
-            .kept(len, min_tx_s, SAMPLE_RATE)
-            .and_then(|parts| self.frames.errors_within(&parts, len))
-            .map_or(std::borrow::Cow::Borrowed(&self.frames.errors), std::borrow::Cow::Owned)
+    /// Leave out what the saved call won't have: transmissions shorter than
+    /// `min_tx_s` and encrypted ones not decrypted ([`super::record::Transmissions::kept`]),
+    /// their frames and the error summary with them.
+    pub fn trim(&mut self, min_tx_s: f64) {
+        if let Some(ranges) = self.tx.kept(self.audio.len(), min_tx_s, SAMPLE_RATE) {
+            self.frames.keep(&ranges, self.audio.len());
+            self.audio = ranges.iter().flat_map(|r| self.audio[r.clone()].iter().copied()).collect();
+            self.tx = Default::default();
+        }
     }
 
-    /// Seconds of audio decoded cleanly and kept: the vocoder frames not
-    /// repeated, muted or lost (analog: all of it), less the transmissions
-    /// the saved call leaves out (see `kept_errors`). Encrypted, no key: none.
-    pub fn clean_s(&self, min_tx_s: f64) -> f64 {
+    /// Seconds of audio decoded cleanly: the vocoder frames not repeated,
+    /// muted or lost (analog: all of it). Encrypted: none.
+    pub fn clean_s(&self) -> f64 {
         if self.audio.is_empty() {
             return 0.0;
         }
-        let len = self.audio.len();
-        let parts = self.tx.kept(len, min_tx_s, SAMPLE_RATE);
-        let kept = parts.as_ref().and_then(|p| self.frames.errors_within(p, len));
-        let iv = &kept.as_ref().unwrap_or(&self.frames.errors).intervals;
-        if kept.is_none() && iv.is_empty() {
-            // No frames to go by (analog): what's kept is all clean.
-            let n = parts.map_or(len, |p| p.iter().map(|r| r.len()).sum());
-            return n as f64 / SAMPLE_RATE as f64;
+        let iv = &self.frames.errors.intervals;
+        if iv.is_empty() {
+            return self.audio.len() as f64 / SAMPLE_RATE as f64;
         }
         let good: u32 = iv.iter().map(|i| i.frames - i.bad_frames).sum();
         good as f64 * FRAME_SAMPLES as f64 / SAMPLE_RATE as f64
@@ -223,10 +216,9 @@ impl MultiSite {
     /// recorded). When it was the last of its copies: all of them, the one
     /// to save first ([`pick`]), then the others, best first — the next to
     /// try when one isn't kept (too short for its site's rules).
-    /// `min_tx_s(system)`: the shortest transmission that site's rules keep.
     /// `prefers(system, tg)`: whether `system`'s site is the one the
     /// talkgroup file wants `tg` from.
-    pub fn conclude(&mut self, id: CallId, held: Option<Held>, prefers: impl Fn(u16, &Talkgroup) -> bool, min_tx_s: impl Fn(u16) -> f64) -> Option<Vec<Held>> {
+    pub fn conclude(&mut self, id: CallId, held: Option<Held>, prefers: impl Fn(u16, &Talkgroup) -> bool) -> Option<Vec<Held>> {
         let mut copies = match self.end(id, held) {
             Ended::Alone(None) | Ended::Waiting => return None,
             Ended::Alone(Some(h)) => vec![h],
@@ -235,13 +227,10 @@ impl MultiSite {
         // The talkgroup's preferred site, by any site's talkgroup file.
         let prefs: Vec<&Talkgroup> = copies.iter().filter_map(|h| h.call.talkgroup_info.as_ref()).collect();
         let preferred: Vec<bool> = copies.iter().map(|h| prefs.iter().any(|tg| prefers(h.call.system, tg))).collect();
-        let min_tx: Vec<f64> = copies.iter().map(|h| min_tx_s(h.call.system)).collect();
-        let k = pick(&copies, &preferred, &min_tx)?;
+        let k = pick(&copies, &preferred)?;
         let first = copies.remove(k);
-        let mut rest: Vec<(f64, Held)> = copies.into_iter().map(|h| (h.clean_s(min_tx_s(h.call.system)), h)).collect();
-        rest.sort_by(|a, b| b.0.total_cmp(&a.0));
-        let mut copies = vec![first];
-        copies.extend(rest.into_iter().map(|(_, h)| h));
+        copies.sort_by(|a, b| b.clean_s().total_cmp(&a.clean_s()));
+        copies.insert(0, first);
         Some(copies)
     }
 }
@@ -249,16 +238,14 @@ impl MultiSite {
 /// Which copy to keep: a preferred one (`preferred[i]`) holding
 /// [`PREFERRED_SHARE`] of the best clean audio, else the most clean audio;
 /// ties to the fewest FEC errors, then the earliest start.
-pub fn pick(copies: &[Held], preferred: &[bool], min_tx: &[f64]) -> Option<usize> {
-    // (A missing entry is no minimum.)
-    let clean = |i: usize| copies[i].clean_s(min_tx.get(i).copied().unwrap_or(0.0));
-    let best = (0..copies.len()).map(clean).fold(0.0, f64::max);
+pub fn pick(copies: &[Held], preferred: &[bool]) -> Option<usize> {
+    let best = copies.iter().map(Held::clean_s).fold(0.0, f64::max);
     let rank = |i: &usize| {
         let h = &copies[*i];
-        (clean(*i), std::cmp::Reverse(h.kept_errors(min_tx.get(*i).copied().unwrap_or(0.0)).total_errors()), -h.call.start_s)
+        (h.clean_s(), std::cmp::Reverse(h.frames.errors.total_errors()), -h.call.start_s)
     };
     let cmp = |a: &usize, b: &usize| rank(a).partial_cmp(&rank(b)).unwrap_or(std::cmp::Ordering::Equal);
-    let pref = (0..copies.len()).filter(|&i| preferred.get(i) == Some(&true) && clean(i) >= best * PREFERRED_SHARE).max_by(cmp);
+    let pref = (0..copies.len()).filter(|&i| preferred.get(i) == Some(&true) && copies[i].clean_s() >= best * PREFERRED_SHARE).max_by(cmp);
     pref.or_else(|| (0..copies.len()).max_by(cmp))
 }
 
@@ -340,19 +327,20 @@ mod tests {
     #[test]
     fn keeps_the_cleanest_copy_unless_a_preferred_one_is_nearly_as_good() {
         let copies = [held(1, 0, 100, 20, 0), held(2, 1, 110, 0, 5), held(3, 2, 110, 0, 1)];
-        assert_eq!(pick(&copies, &[false; 3], &[0.0; 3]), Some(2), "ties go to fewer FEC errors");
-        assert_eq!(pick(&copies, &[true, false, false], &[0.0; 3]), Some(0), "100 of 110 clean is enough");
+        assert_eq!(pick(&copies, &[false; 3]), Some(2), "ties go to fewer FEC errors");
+        assert_eq!(pick(&copies, &[true, false, false]), Some(0), "100 of 110 clean is enough");
         let copies = [held(1, 0, 50, 70, 0), held(2, 1, 110, 0, 0)];
-        assert_eq!(pick(&copies, &[true, false], &[0.0; 2]), Some(1), "a preferred site that faded loses");
+        assert_eq!(pick(&copies, &[true, false]), Some(1), "a preferred site that faded loses");
         let mut silent = held(1, 0, 0, 0, 0);
         silent.call.encrypted = true;
-        assert_eq!(pick(&[silent.clone(), held(2, 0, 0, 0, 0)], &[false, false], &[0.0; 2]), Some(0), "nothing to choose by: the first to start");
-        assert_eq!(pick(&[], &[], &[]), None);
+        assert_eq!(pick(&[silent.clone(), held(2, 0, 0, 0, 0)], &[false, false]), Some(0), "nothing to choose by: the first to start");
+        assert_eq!(pick(&[], &[]), None);
     }
 
     #[test]
-    fn clean_frames_are_counted_in_the_kept_transmissions_only() {
-        // The kept transmission is all bad frames, the one left out all good ones.
+    fn copies_are_ranked_by_the_audio_they_keep() {
+        let frame_s = FRAME_SAMPLES as f64 / SAMPLE_RATE as f64;
+        // The good frames are in a transmission left out (encrypted, no key).
         let mut h = held(1, 0, 0, 0, 0);
         for k in 0..100 {
             let kind = if k < 50 { Kind::Repeat } else { Kind::Voice };
@@ -362,66 +350,28 @@ mod tests {
         h.tx.note(0, 0.0);
         h.tx.note(50 * FRAME_SAMPLES, 5.0);
         h.tx.mark_encrypted(5.0);
-        assert_eq!(h.clean_s(0.0), 0.0, "the good frames are in the part that is left out");
-    }
-
-    #[test]
-    fn audio_left_out_as_undecrypted_does_not_count_as_clean() {
-        // One site decrypted its whole call; the other heard the second
-        // transmission encrypted and without its key (noise that decodes "clean").
-        let mut whole = held(1, 0, 100, 0, 0);
-        whole.tx.note(0, 0.0);
-        whole.tx.mark_encrypted(0.0);
-        whole.tx.mark_decrypted(0.0);
-        whole.tx.note(50 * FRAME_SAMPLES, 5.0);
-        whole.tx.mark_encrypted(5.0);
-        whole.tx.mark_decrypted(5.0);
-        let mut cut = held(2, 1, 100, 0, 0);
-        cut.tx.note(0, 0.0);
-        cut.tx.note(50 * FRAME_SAMPLES, 5.0);
-        cut.tx.mark_encrypted(5.0);
-        assert!(whole.clean_s(0.0) > cut.clean_s(0.0));
-        assert!((cut.clean_s(0.0) - whole.clean_s(0.0) / 2.0).abs() < 1e-9, "half of it is left out");
-        assert_eq!(pick(&[cut.clone(), whole.clone()], &[false; 2], &[0.0; 2]), Some(1));
-        // The site the talkgroup file prefers doesn't keep a call that lost half its audio.
-        assert_eq!(pick(&[cut, whole], &[true, false], &[0.0; 2]), Some(1));
-    }
-
-    #[test]
-    fn transmissions_shorter_than_the_sites_minimum_are_not_counted() {
-        // Frames: a 10-frame burst of clean ones, then 50 bad (repeated) ones in a second transmission.
-        let mut h = held(1, 0, 0, 0, 0);
-        for k in 0..60 {
-            let kind = if k < 10 { Kind::Voice } else { Kind::Repeat };
-            h.frames.push(VoiceFrame { codec: Codec::Imbe, bits: vec![0; 88], e0: 0, errs: 0, erased: false, kind });
-        }
-        h.audio = vec![0.1; 60 * FRAME_SAMPLES];
-        h.tx.note(0, 0.0);
-        h.tx.note(10 * FRAME_SAMPLES, 5.0);
-        let burst_s = 10.0 * FRAME_SAMPLES as f64 / SAMPLE_RATE as f64;
-        assert!((h.clean_s(0.0) - burst_s).abs() < 1e-9, "short burst counts with no minimum");
-        assert_eq!(h.clean_s(burst_s * 2.0), 0.0, "and is left out by a site that drops it");
-        let other = held(2, 1, 20, 0, 0);
-        assert_eq!(pick(&[h, other], &[false; 2], &[burst_s * 2.0, 0.0]), Some(1));
-    }
-
-    #[test]
-    fn a_call_decrypted_from_its_second_transmission_keeps_only_that_part() {
-        // This site missed the key for the first transmission, then had it.
+        h.trim(0.0);
+        assert_eq!(h.clean_s(), 0.0);
+        // Decrypted from its second transmission only: half of it, which loses to a whole clear copy even preferred.
         let mut late = held(1, 0, 100, 0, 0);
         late.tx.note(0, 0.0);
         late.tx.mark_encrypted(0.0);
         late.tx.note(50 * FRAME_SAMPLES, 5.0);
         late.tx.mark_encrypted(5.0);
         late.tx.mark_decrypted(5.0);
-        let frame_s = FRAME_SAMPLES as f64 / SAMPLE_RATE as f64;
-        assert!((late.clean_s(0.0) - 50.0 * frame_s).abs() < 1e-9, "only the decrypted second half is kept");
-        let clear = held(2, 1, 100, 0, 0);
-        assert_eq!(pick(&[late.clone(), clear.clone()], &[false; 2], &[0.0; 2]), Some(1));
-        assert_eq!(pick(&[late.clone(), clear], &[true, false], &[0.0; 2]), Some(1), "preferred, but half the audio");
-        // Equally usable: the preferred site's copy wins over the one that started earlier.
-        let other = held(3, 1, 50, 0, 0);
-        assert_eq!(pick(&[late.clone(), other.clone()], &[false; 2], &[0.0; 2]), Some(0), "earliest start without a preference");
-        assert_eq!(pick(&[late, other], &[false, true], &[0.0; 2]), Some(1));
+        late.trim(0.0);
+        assert!((late.clean_s() - 50.0 * frame_s).abs() < 1e-9);
+        assert_eq!(pick(&[late.clone(), held(2, 1, 100, 0, 0)], &[true, false]), Some(1));
+        // A burst under the site's minimum isn't counted.
+        let mut burst = held(1, 0, 10, 50, 0);
+        burst.tx.note(0, 0.0);
+        burst.tx.note(10 * FRAME_SAMPLES, 5.0);
+        burst.trim(20.0 * frame_s);
+        assert_eq!(burst.clean_s(), 0.0);
+        assert_eq!(burst.audio.len(), 50 * FRAME_SAMPLES);
+        // Trimmed once: saving it again changes nothing.
+        let before = burst.audio.len();
+        burst.trim(20.0 * frame_s);
+        assert_eq!(burst.audio.len(), before);
     }
 }

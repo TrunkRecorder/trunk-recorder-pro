@@ -1717,10 +1717,13 @@ impl Engine {
                 call.encrypted = true;
                 call.decrypted = true;
             }
-            Held { call, audio: rec.audio, frames: rec.frames, recorder_num: rec.recorder_num, tx: rec.tx, reception: rec.reception, freq_error_hz }
+            let mut h = Held { call, audio: rec.audio, frames: rec.frames, recorder_num: rec.recorder_num, tx: rec.tx, reception: rec.reception, freq_error_hz };
+            // Now, so copies of a multi-site call are ranked by the audio they'd be saved with.
+            h.trim(self.trunks.get(h.call.system as usize).map_or(0.0, |t| t.cfg.save.min_transmission_s));
+            h
         });
         let trunks = &self.trunks;
-        let Some(copies) = self.multisite.conclude(call.id, held, |system, tg| trunks.get(system as usize).is_some_and(|t| t.preferred_for(tg)), |system| trunks.get(system as usize).map_or(0.0, |t| t.cfg.save.min_transmission_s)) else { return };
+        let Some(copies) = self.multisite.conclude(call.id, held, |system, tg| trunks.get(system as usize).is_some_and(|t| t.preferred_for(tg))) else { return };
         // The best copy its site's rules keep is saved; the rest are its duplicates.
         // (None kept: each was reported not saved.)
         let mut kept: Option<Call> = None;
