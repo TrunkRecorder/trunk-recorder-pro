@@ -343,7 +343,7 @@ mod tests {
     #[test]
     fn every_ctcss_tone_is_rejected() {
         let rate = 39_062.5;
-        for tone in [67.0, 100.0, 151.4, 192.8, 203.5, 225.7, 241.8, 250.3, 254.1] {
+        for tone in super::super::tones::CTCSS.map(|t| t as f64 / 10.0) {
             let n = (rate * 2.0) as usize;
             let mut ph = 0.0f64;
             let iq: Vec<Complex32> = (0..n)
@@ -374,7 +374,7 @@ mod tests {
             let y: Vec<f32> = x.iter().map(|&v| hpf.iter_mut().fold(v, |s, h| h.step(s))).collect();
             10.0 * (tone_power(&y[8000..], AUDIO_RATE, hz) / 0.5).log10()
         };
-        for hz in [67.0, 151.4, 203.5, 254.1] {
+        for hz in super::super::tones::CTCSS.map(|t| t as f64 / 10.0) {
             assert!(gain(hz) < -45.0, "{hz} Hz only {:.1} dB down", -gain(hz));
         }
         for hz in [288.5, 313.0, 400.0, 1000.0, 3000.0] {
