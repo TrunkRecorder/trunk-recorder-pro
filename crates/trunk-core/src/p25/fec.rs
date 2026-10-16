@@ -383,6 +383,39 @@ pub fn rs_decode_erasures(cw: &mut [u8; 63], nroots: usize, erasures: &[usize], 
     locs.len() as i32
 }
 
+/// [`rs_decode_erasures`], and failing that, again with the least reliable
+/// symbols (`rel`, one per symbol: higher, surer) erased as well, two more
+/// each try: a soft errors-and-erasures decoder, as BBAC §5.6 recommends. It
+/// stops with `margin` roots unspent, so a word too damaged isn't simply
+/// rewritten to the nearest codeword.
+pub fn rs_decode_soft(cw: &mut [u8; 63], nroots: usize, erasures: &[usize], shortened_below: usize, rel: &[f32; 63], margin: usize) -> i32 {
+    let heard = *cw;
+    let r = rs_decode_erasures(cw, nroots, erasures, shortened_below);
+    if r >= 0 {
+        return r;
+    }
+    let mut doubtful: Vec<usize> = (shortened_below..63).filter(|p| !erasures.contains(p)).collect();
+    doubtful.sort_by(|&a, &b| rel[a].total_cmp(&rel[b]));
+    let room = nroots.saturating_sub(erasures.len() + margin);
+    let mut e = erasures.to_vec();
+    for k in (2..=room).step_by(2) {
+        e.truncate(erasures.len());
+        e.extend(&doubtful[..k]);
+        *cw = heard;
+        let r = rs_decode_erasures(cw, nroots, &e, shortened_below);
+        if r >= 0 {
+            return r;
+        }
+    }
+    *cw = heard;
+    -1
+}
+
+/// A hexbit's reliability: its least reliable bit's.
+pub fn hexbit_rel(bits: &[f32]) -> f32 {
+    bits.iter().copied().fold(f32::INFINITY, f32::min)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

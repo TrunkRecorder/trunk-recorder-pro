@@ -13,12 +13,12 @@ use num_complex::Complex32;
 use super::crypt::{next_mi, Algorithm, Keystream, Phase};
 use super::fec::{golay24_encode, hamming1063_encode, rs_encode};
 use super::frame::{encode_nid, frame_dibits, HDU, LDU1, LDU2, SYNC_BITS, TDU};
-use super::phase2::{xor_mask, Packet, BURST_2V, BURST_4V, BURST_DIBITS, SLOT_DIBITS};
+use super::phase2::{crc12, duid_codeword, xor_mask, Packet, BURST_2V, BURST_4V, BURST_DIBITS, BURST_FACCH_S, BURST_SACCH_S, SLOT_DIBITS};
 use super::voice::{bytes_to_hexbits, imbe_bits_to_params, imbe_header_encode, EncryptionSync};
 use crate::ambe::encode_vcw;
 use crate::dsp::c4fm::SYMBOL_RATE;
 use crate::dsp::filters::rc;
-use crate::tables::{DUID_LOOKUP, HDU_CODEWORD_BITS, ISCH_CODEWORDS, LDU_LS_DATA_BITS, VOICE_CODEWORD_BITS};
+use crate::tables::{HDU_CODEWORD_BITS, ISCH_CODEWORDS, LDU_LS_DATA_BITS, VOICE_CODEWORD_BITS};
 
 /// The status symbols' value (any will do: the decoders skip them).
 const STATUS: u8 = 0b01;
@@ -303,20 +303,65 @@ impl Tx2 {
                     }
                 }
                 let slot = 2 * burst;
-                let mut p = Packet { sf_slot: slot, sample: 0.0, dibits: [0; SLOT_DIBITS], rel: vec![1.0; 2 * SLOT_DIBITS] };
+                let mut p = Packet { sf_slot: slot, sample: 0.0, dibits: [0; SLOT_DIBITS], rel: vec![1.0; 2 * SLOT_DIBITS], ultraframe: None };
                 p.dibits[..20].copy_from_slice(&isch(slot));
                 for i in 10..BURST_DIBITS {
                     p.dibits[10 + i] = x[i] ^ mask[slot * SLOT_DIBITS + i];
                 }
                 let kind = if burst < 4 { BURST_4V } else { BURST_2V };
-                let duid = (0..=255u8).find(|&v| DUID_LOOKUP[v as usize] == kind).unwrap();
-                for (k, pos) in [10, 47, 132, 169].into_iter().enumerate() {
-                    p.dibits[10 + pos] = duid >> (6 - 2 * k) & 3;
-                }
+                put_duid(&mut p, kind);
                 out.push((p, 0.36 * s as f64 + 0.03 * slot as f64));
             }
         }
         out
+    }
+}
+
+impl Tx2 {
+    /// MAC PDU `pdu` (its payload: 18 octets on a FACCH, 21 on a SACCH, the
+    /// rest zero) in superframe slot `slot`, as burst type `kind` (SACCH or
+    /// FACCH, scrambled or not): BBAC §5.6.1's coding, [`super::phase2::decode_acch`]
+    /// backwards.
+    pub fn mac_packet(&self, slot: usize, kind: i8, pdu: &[u8], ultraframe: Option<u8>) -> Packet {
+        let fast = matches!(kind, BURST_FACCH_S | super::phase2::BURST_FACCH_U);
+        let (first, info) = if fast { (9, 26) } else { (5, 30) };
+        let payload = 6 * info - 12;
+        let mut bits: Vec<u8> = (0..payload).map(|i| pdu.get(i / 8).map_or(0, |b| b >> (7 - i % 8) & 1)).collect();
+        let crc = crc12(&bits, payload);
+        bits.extend((0..12).rev().map(|b| (crc >> b & 1) as u8));
+        let mut cw = [0u8; 63];
+        for (j, h) in bits.chunks(6).enumerate() {
+            cw[first + j] = h.iter().fold(0, |v, &b| v << 1 | b);
+        }
+        rs_encode(&mut cw, 28);
+        // What goes on air: the shortened symbols left out, the punctured too.
+        let sent: Vec<u8> = cw[first..if fast { 54 } else { 57 }].iter().flat_map(|h| (0..6).rev().map(move |b| h >> b & 1)).collect();
+        let runs: &[(usize, usize)] = if fast { &[(11, 36), (48, 31), (100, 32), (133, 36)] } else { &[(11, 36), (48, 84), (133, 36)] };
+        let mut x = [0u8; BURST_DIBITS];
+        let mut it = sent.chunks(2);
+        for &(s, n) in runs {
+            for d in &mut x[s..s + n] {
+                let c = it.next().unwrap();
+                *d = c[0] << 1 | c[1];
+            }
+        }
+        let mut p = Packet { sf_slot: slot, sample: 0.0, dibits: [0; SLOT_DIBITS], rel: vec![1.0; 2 * SLOT_DIBITS], ultraframe };
+        p.dibits[..20].copy_from_slice(&isch(slot));
+        let scrambled = matches!(kind, BURST_SACCH_S | BURST_FACCH_S);
+        let mask = xor_mask(self.nac, self.sys_id, self.wacn);
+        for i in 0..BURST_DIBITS {
+            p.dibits[10 + i] = if scrambled { x[i] ^ mask[slot * SLOT_DIBITS + i] } else { x[i] };
+        }
+        put_duid(&mut p, kind);
+        p
+    }
+}
+
+/// A burst type's DUID dibits (burst positions 10, 47, 132, 169).
+fn put_duid(p: &mut Packet, kind: i8) {
+    let duid = duid_codeword(kind);
+    for (k, pos) in [10, 47, 132, 169].into_iter().enumerate() {
+        p.dibits[10 + pos] = duid >> (6 - 2 * k) & 3;
     }
 }
 

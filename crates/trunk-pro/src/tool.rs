@@ -398,6 +398,7 @@ fn run_p2(a: &Args) {
     use trunk_core::dsp::cqpsk::{self, Cqpsk};
     use trunk_core::dsp::Receiver;
     use trunk_core::ambe::decode_vcw;
+    use trunk_core::p25::mac::{parse_mac_ptt, MAC_PTT};
     use trunk_core::p25::phase2::{self, *};
 
     let path = a.positional.get(1).unwrap_or_else(|| die("tool p2: no capture"));
@@ -474,7 +475,7 @@ fn run_p2(a: &Args) {
                     }
                     line.push(']');
                 } else if matches!(kind, BURST_SACCH_S | BURST_SACCH_U | BURST_FACCH_S | BURST_FACCH_U) {
-                    match decode_acch(&x, kind == BURST_FACCH_S || kind == BURST_FACCH_U) {
+                    match decode_acch(&x, None, kind == BURST_FACCH_S || kind == BURST_FACCH_U) {
                         Some(pdu) => {
                             macs += 1;
                             let _ = write!(line, ",\"mac\":{{\"op\":{},\"offset\":{},\"hex\":\"{}\"}}", pdu.opcode, pdu.offset, hex(&pdu.bytes));

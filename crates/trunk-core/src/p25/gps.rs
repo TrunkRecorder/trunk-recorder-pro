@@ -17,7 +17,7 @@
 
 use crate::position::Position;
 
-use super::alias::MacMsg;
+use super::mac::MacMsg;
 
 const MOTOROLA: u8 = 0x90;
 const HARRIS: u8 = 0xa4;

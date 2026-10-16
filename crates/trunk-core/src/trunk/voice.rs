@@ -115,6 +115,33 @@ pub enum TrackerOut {
     Position(Position),
 }
 
+/// What a P25 transmission's voice is, as far as is known.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Encryption {
+    /// Joined late: no header (HDU, MAC_PTT), and no sync yet.
+    Unknown,
+    /// Link control or a voice channel user message says encrypted (its
+    /// protected bit), and no sync has said yet.
+    Hinted,
+    /// A sync (HDU / LDU2, MAC_PTT / ESS) said: clear, or under this ALGID.
+    /// A sync overrules a hint.
+    Clear,
+    Encrypted(u8),
+}
+
+impl Encryption {
+    pub(super) fn encrypted(self) -> bool {
+        matches!(self, Encryption::Hinted | Encryption::Encrypted(_))
+    }
+    pub(super) fn from_sync(es: &crate::p25::voice::EncryptionSync) -> Self {
+        if es.algid == crate::p25::voice::ALGID_CLEAR { Encryption::Clear } else { Encryption::Encrypted(es.algid) }
+    }
+    /// A hint, which only an unknown (or hinted) state takes.
+    pub(super) fn hinted(self) -> Self {
+        if matches!(self, Encryption::Unknown | Encryption::Hinted) { Encryption::Hinted } else { self }
+    }
+}
+
 /// What one decoder produced: an output for the call on `slot`, from air
 /// time `t` (s, the source's sample clock).
 #[derive(Debug)]
@@ -327,6 +354,9 @@ struct P25Tdma {
 impl VoiceDecoder for P25Tdma {
     fn kind(&self) -> VoiceKind {
         VoiceKind::Tdma
+    }
+    fn listen(&mut self, slots: [Option<u32>; 2]) {
+        self.tracker.listen(slots);
     }
     fn set_keys(&mut self, keys: Option<Arc<Keyring>>) {
         self.tracker.set_keys(keys);

@@ -299,16 +299,51 @@ impl Keystream {
     }
 }
 
+// ── Encryption syncs from one superframe to the next ─────────────────────────
+
+/// Each superframe's encryption sync from the one the air brought for it
+/// (Phase 1's LDU2, Phase 2's ESS). One that doesn't run on from the last
+/// (the MI LFSR, the same cipher and key; AAAD-B §3: the LFSR lets a
+/// receiver check) is doubted, a likely miscorrection: the LFSR's
+/// prediction stands until the next one runs on from it.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SyncCheck {
+    doubt: Option<EncryptionSync>,
+}
+
+impl SyncCheck {
+    /// The next superframe's sync: `heard` checked against `cur`, this one's.
+    pub fn next(&mut self, cur: Option<EncryptionSync>, heard: Option<EncryptionSync>) -> Option<EncryptionSync> {
+        let follows = |a: &EncryptionSync, b: &EncryptionSync| a.algid == b.algid && a.keyid == b.keyid && next_mi(&a.mi) == b.mi;
+        let heard = heard?;
+        let Some(cur) = cur else {
+            self.doubt = None;
+            return Some(heard);
+        };
+        if follows(&cur, &heard) || self.doubt.is_some_and(|d| follows(&d, &heard)) {
+            self.doubt = None;
+            return Some(heard);
+        }
+        self.doubt = Some(heard);
+        Some(EncryptionSync { mi: next_mi(&cur.mi), ..cur })
+    }
+
+    pub fn reset(&mut self) {
+        self.doubt = None;
+    }
+}
+
 // ── Whether a key is the right one ───────────────────────────────────────────
 
-/// Whether a transmission's key decrypts it to voice. A wrong key's output
-/// is noise, and noise often names a frame no vocoder sends: full-rate IMBE
-/// reserves pitch values b0 208..=255 (BABA-A §1.9: 3 frames in 16 of
-/// noise), half-rate AMBE+2 marks erasures and tones. Real voice almost never
-/// does (a gateway passes an erasure on now and then). So a key is taken as
-/// right once two superframes (36 frames) have come with at most one such
-/// frame (a wrong key passes 1 time in 190), and wrong as soon as three have
-/// and they are a tenth of the frames or more.
+/// Whether a transmission's key decrypts it to voice (Phase 1). A wrong
+/// key's output is noise, and full-rate IMBE reserves the pitch values b0
+/// 208..=255 (BABA-A): 3 frames in 16 of noise name one. Real voice almost
+/// never does (a gateway passes an erasure on now and then). So a key is
+/// taken as right once two superframes (36 frames) have come with at most
+/// one such frame (a wrong key passes 1 time in 190), and wrong as soon as
+/// three have and they are a tenth of the frames or more. (Half-rate AMBE+2
+/// has no such tell: noise lands on its erasure and tone codes 1 time in 30,
+/// too seldom to judge a key by in a few superframes.)
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct KeyCheck {
     frames: u32,

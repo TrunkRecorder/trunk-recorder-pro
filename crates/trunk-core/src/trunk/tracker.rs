@@ -7,40 +7,17 @@
 use super::frames::{Codec, VoiceFrame};
 use crate::mbe::{self, Kind, FRAME_SAMPLES};
 use crate::p25::alias::{is_alias_lcw, AliasLc, LcAliases};
-use crate::p25::crypt::{imbe_voice, next_mi, prev_mi, KeyCheck, Keyring, Keystream, Phase, Verdict};
+use crate::p25::crypt::{imbe_voice, next_mi, prev_mi, KeyCheck, Keyring, Keystream, Phase, SyncCheck, Verdict};
 use crate::p25::diversity::{best_es, best_frame, best_hdu, best_imbe, best_lc, Group};
 use crate::p25::frame::{HDU, LDU1, LDU2, TDU, TDULC};
 use crate::p25::gps::LcPositions;
 use crate::p25::lc::{self, Lc, LinkControl};
 use crate::p25::voice::{decode_tdulc, imbe_bits_to_params, imbe_params_to_bits, ldu_codeword_end_bit, EncryptionSync, ALGID_CLEAR};
-use super::voice::{CipherId, TrackerOut};
+use super::voice::{CipherId, Encryption, TrackerOut};
 use std::sync::Arc;
 
 /// An LDU's length, s (1728 symbols at 4800 baud).
 const LDU_S: f64 = 0.18;
-
-/// What a transmission's voice is, as far as is known.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Voice {
-    /// Joined late: no HDU, and no LDU2 yet.
-    Unknown,
-    /// Link control says encrypted (its P bit, or protected service), and
-    /// no sync has said yet.
-    Hinted,
-    /// A sync (HDU, LDU2) said: clear, or under this ALGID. A sync overrules
-    /// link control.
-    Clear,
-    Encrypted(u8),
-}
-
-impl Voice {
-    fn encrypted(self) -> bool {
-        matches!(self, Voice::Hinted | Voice::Encrypted(_))
-    }
-    fn from_sync(es: &EncryptionSync) -> Self {
-        if es.algid == ALGID_CLEAR { Voice::Clear } else { Voice::Encrypted(es.algid) }
-    }
-}
 
 /// A unit address that names a radio: not "no one" or "everyone" (BAAC-C §2.4).
 fn radio(id: u32) -> Option<u32> {
@@ -50,16 +27,14 @@ fn radio(id: u32) -> Option<u32> {
 pub struct VoiceTracker {
     dec: mbe::Decoder,
     active: bool,
-    voice: Voice,
+    voice: Encryption,
     /// The encryption sync the current superframe's voice is under (the
     /// HDU's, then each LDU2's for the superframe after it), and the one the
     /// last LDU2 brought.
     es: Option<EncryptionSync>,
     es_next: Option<EncryptionSync>,
-    /// An LDU2's sync that didn't follow from the one before (AAAD-B §3: the
-    /// MI LFSR lets a receiver check): taken once the next LDU2 runs on from
-    /// it, until then thought a miscorrection.
-    doubt: Option<EncryptionSync>,
+    /// Each LDU2's sync checked against the MI LFSR's prediction.
+    chain: SyncCheck,
     /// The cipher last reported for this transmission.
     cipher: Option<CipherId>,
     /// The system's keys, and the keystream of the superframe `es` is for.
@@ -106,10 +81,10 @@ impl VoiceTracker {
         VoiceTracker {
             dec: mbe::Decoder::new(rng, vocoder),
             active: false,
-            voice: Voice::Unknown,
+            voice: Encryption::Unknown,
             es: None,
             es_next: None,
-            doubt: None,
+            chain: SyncCheck::default(),
             cipher: None,
             keys,
             ks: None,
@@ -169,7 +144,7 @@ impl VoiceTracker {
                 // The HDU's sync is the first superframe's; without it, the
                 // first LDU2 says what the voice is.
                 if let Some(h) = h {
-                    self.set_voice(Voice::from_sync(&h.es), out);
+                    self.set_voice(Encryption::from_sync(&h.es), out);
                     if h.es.algid != ALGID_CLEAR {
                         self.set_es(Some(h.es));
                         self.report_cipher(&h.es, out);
@@ -191,9 +166,9 @@ impl VoiceTracker {
                         self.link_control(lc, t, out);
                     }
                 } else {
-                    self.es_next = self.next_sync(best_es(g));
+                    self.es_next = self.chain.next(self.es, best_es(g));
                     if let Some(es) = self.es_next {
-                        self.set_voice(Voice::from_sync(&es), out);
+                        self.set_voice(Encryption::from_sync(&es), out);
                         if es.algid != ALGID_CLEAR {
                             self.report_cipher(&es, out);
                             // No sync for this superframe: the LDU2's, run back.
@@ -329,12 +304,11 @@ impl VoiceTracker {
 
     /// Link control says the voice is encrypted: until a sync says.
     fn hint(&mut self, out: &mut Vec<TrackerOut>) {
-        if matches!(self.voice, Voice::Unknown | Voice::Hinted) {
-            self.set_voice(Voice::Hinted, out);
-        }
+        let v = self.voice.hinted();
+        self.set_voice(v, out);
     }
 
-    fn set_voice(&mut self, v: Voice, out: &mut Vec<TrackerOut>) {
+    fn set_voice(&mut self, v: Encryption, out: &mut Vec<TrackerOut>) {
         let was = self.voice.encrypted();
         self.voice = v;
         if self.active && v.encrypted() && !was {
@@ -342,36 +316,17 @@ impl VoiceTracker {
         }
     }
 
-    /// The next superframe's sync from an LDU2's. One that doesn't run on
-    /// from this superframe's (the MI LFSR, the same cipher and key) is
-    /// taken only when the LDU2 after it runs on from it: until then the
-    /// LFSR's prediction stands.
-    fn next_sync(&mut self, heard: Option<EncryptionSync>) -> Option<EncryptionSync> {
-        let follows = |a: &EncryptionSync, b: &EncryptionSync| a.algid == b.algid && a.keyid == b.keyid && next_mi(&a.mi) == b.mi;
-        let heard = heard?;
-        let Some(cur) = self.es else {
-            self.doubt = None;
-            return Some(heard);
-        };
-        if follows(&cur, &heard) || self.doubt.is_some_and(|d| follows(&d, &heard)) {
-            self.doubt = None;
-            return Some(heard);
-        }
-        self.doubt = Some(heard);
-        Some(EncryptionSync { mi: next_mi(&cur.mi), ..cur })
-    }
-
     fn start(&mut self, t: f64, tgid: Option<u32>) {
         self.dec.reset();
         self.active = true;
-        self.voice = Voice::Unknown;
+        self.voice = Encryption::Unknown;
         self.tgid = tgid;
         self.patch_word = false;
         self.target = None;
         self.talker = None;
         self.set_es(None);
         self.es_next = None;
-        self.doubt = None;
+        self.chain.reset();
         self.cipher = None;
         self.decrypting = false;
         self.check = KeyCheck::default();
@@ -467,7 +422,7 @@ impl VoiceTracker {
     fn voice_frame(&mut self, ldu: usize, k: usize, u: [u32; 8], e0: u32, errs: u32, erased: bool, out: &mut Vec<TrackerOut>) {
         self.frames += 1;
         self.call_frames += 1;
-        let unsure = self.voice == Voice::Unknown;
+        let unsure = self.voice == Encryption::Unknown;
         let waiting = self.voice.encrypted() && self.ks.is_none() && self.keys.is_some();
         if ldu == 0 && (unsure || waiting) {
             self.held.push((ldu, k, u, e0, errs, erased));
@@ -581,7 +536,7 @@ mod tests {
 
     fn begin(t: &mut VoiceTracker, es: EncryptionSync) {
         t.start(0.0, Some(100));
-        t.voice = Voice::Encrypted(es.algid);
+        t.voice = Encryption::Encrypted(es.algid);
         t.set_es(Some(es));
     }
 
@@ -654,11 +609,11 @@ mod tests {
         t.start(0.0, None);
         t.hint(&mut out);
         assert!(t.voice.encrypted());
-        t.set_voice(Voice::from_sync(&EncryptionSync { algid: ALGID_CLEAR, keyid: 0, mi: [0; 9] }), &mut out);
-        assert_eq!(t.voice, Voice::Clear);
+        t.set_voice(Encryption::from_sync(&EncryptionSync { algid: ALGID_CLEAR, keyid: 0, mi: [0; 9] }), &mut out);
+        assert_eq!(t.voice, Encryption::Clear);
         // From then on a hint changes nothing.
         t.hint(&mut out);
-        assert_eq!(t.voice, Voice::Clear);
+        assert_eq!(t.voice, Encryption::Clear);
     }
 
     /// An LDU2 sync off the LFSR's chain (AAAD-B §3) is doubted: the
@@ -669,13 +624,13 @@ mod tests {
         let mut t = tracker(None);
         begin(&mut t, es);
         let next = EncryptionSync { mi: next_mi(&es.mi), ..es };
-        assert_eq!(t.next_sync(Some(next)), Some(next));
+        assert_eq!(t.chain.next(t.es, Some(next)), Some(next));
         let odd = EncryptionSync { mi: [9, 9, 9, 9, 9, 9, 9, 9, 0], ..es };
-        assert_eq!(t.next_sync(Some(odd)), Some(next), "the prediction");
+        assert_eq!(t.chain.next(t.es, Some(odd)), Some(next), "the prediction");
         // The next superframe's runs on from the odd one: it was right.
         t.set_es(Some(next));
         let after = EncryptionSync { mi: next_mi(&odd.mi), ..es };
-        assert_eq!(t.next_sync(Some(after)), Some(after));
+        assert_eq!(t.chain.next(t.es, Some(after)), Some(after));
     }
 
     /// Protected link control is read with the key (AAAD-B Table 5-2): the talker.
