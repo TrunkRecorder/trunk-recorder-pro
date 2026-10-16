@@ -648,6 +648,11 @@ impl Session {
                     decode_rate: (rate * 10.0).round() / 10.0,
                     active_calls: y.active_calls as u32,
                     recording: y.recording as u32,
+                    nac: y.identity.get(IdField::Nac),
+                    wacn: y.identity.get(IdField::Wacn),
+                    sys_id: y.identity.get(IdField::SysId),
+                    rfss: y.identity.get(IdField::Rfss),
+                    site: y.identity.get(IdField::Site),
                 }
             })
             .collect();
