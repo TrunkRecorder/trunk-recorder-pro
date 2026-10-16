@@ -5,6 +5,8 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+## [0.1.14] — 2026-10-16
+
 - **Interfaces for people who listen, from an interface store.** Besides its own interface, the
   recorder now serves other web interfaces — a player, a scanner wall, a phone page — each on a
   port of its own, so each is a separate site to the browser. The new **Interfaces** page
@@ -14,6 +16,8 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   `trunk-pro interface …` does the same from the command line. See
   [docs/interfaces](docs/interfaces/README.md). The store shows each interface's screenshots
   (fetched and checked by the recorder) and who made it; plugin cards show their author too.
+  The first listed is [Trunkamp](https://github.com/ge0metrix/TrunkAmp) by ge0metrix, a
+  Winamp-style player.
 - **Listen access.** An interface gets **listen** access unless you give it **control**: it sees
   and plays everything, and can't change settings, start or stop, quit, or manage plugins; the
   config it sees leaves out plugin settings and key sources. The recorder's own port keeps full

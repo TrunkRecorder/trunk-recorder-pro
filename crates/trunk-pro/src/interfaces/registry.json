@@ -1,4 +1,35 @@
 {
   "format": 1,
-  "interfaces": []
+  "interfaces": [
+    {
+      "id": "trunkamp",
+      "name": "Trunkamp",
+      "description": "A Winamp-style player: live audio and recorded calls, with an equalizer.",
+      "repository": "https://github.com/ge0metrix/TrunkAmp",
+      "homepage": "https://github.com/ge0metrix/TrunkAmp",
+      "license": "MIT",
+      "tier": "community",
+      "version": "1.0.4",
+      "api": 1,
+      "access": "listen",
+      "tag": "v1.0.4",
+      "commit": "fccb49e0d0ebd14ef5a203120964c92f9e275a4d",
+      "asset": {
+        "url": "https://github.com/ge0metrix/TrunkAmp/releases/download/v1.0.4/trunkamp-1.0.4.zip",
+        "sha256": "9fcd272605230c9285220c6695ae309e689c612a978cc3d7a50537d7c271fad4"
+      },
+      "screenshots": [
+        {
+          "url": "https://github.com/ge0metrix/TrunkAmp/releases/download/v1.0.4/trunkamp-1.0.4-Full.png",
+          "sha256": "6f4fb0b9ed4a799b90db8e8b44e1b10470b7b626ac04e909326b1f07fed10841",
+          "caption": "The player, with the playlist"
+        },
+        {
+          "url": "https://github.com/ge0metrix/TrunkAmp/releases/download/v1.0.4/trunkamp-1.0.4-Phone.png",
+          "sha256": "0b1be8ff3e8975312f28be6bf2b0c19f4526b2b19a43fe9538cd04a62a6cddbb",
+          "caption": "At phone width"
+        }
+      ]
+    }
+  ]
 }
