@@ -311,6 +311,12 @@ frame:
   frame.
 - Profiles: `fixed` (Pavel Yazev's fixed-point IMBE, the app default for Phase 1), `enhanced`,
   `mbelib`. AMBE always uses `enhanced`.
+- AMBE+2 tone frames (`û0(11..6)` all ones, `û3(3..0)` zero; BABA-A §2.10): the tone ID (sent four
+  times, bitwise majority) indexes Annex T (`mbe/tone_table.rs`) for the fundamental and the one or
+  two harmonics; those are voiced at `16384·10^(0.03555·(level−127))` and the rest silent, through
+  the ordinary voiced synthesis. A damaged one (> 3 errors) goes on with the playing tone if its ID
+  names it, else repeats it up to 3 times. Checked in `Decoder::ambe` before mbelib's parameter
+  decode, so the `mbelib` profile reads them as mbelib does.
 - Scaling: ×7/32768, then a tanh soft limiter above −3 dBFS.
 - `record::save_call`: drops transmissions shorter than `minTransmissionS` and encrypted ones
   that weren't decrypted,

@@ -262,7 +262,7 @@ impl NxdnVoice {
         let v = decode_vcw(d, Some(r));
         let mut buf = [0f32; FRAME_SAMPLES];
         let kind = self.dec.ambe(&v.bits, v.errs, &mut buf);
-        if kind != Kind::Voice {
+        if !matches!(kind, Kind::Voice | Kind::Tone) {
             self.bad_vch += 1;
         }
         mbe::to_limited(&mut buf);
