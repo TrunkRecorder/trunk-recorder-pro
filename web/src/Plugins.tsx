@@ -22,6 +22,8 @@ import {
   setM4a,
   setPluginEnabled,
   setPluginSettings,
+  setPluginShareDecrypted,
+  setSystemPluginOverride,
   setSystemPluginSettings,
   settingsOpened,
   setView,
@@ -30,10 +32,13 @@ import {
   type AppState,
   type SystemRef,
 } from "./controller.ts";
+import { activeSystems } from "./config.ts";
+import { EveryDelays, PluginDelay } from "./Delays.tsx";
 import { IconPuzzle, IconUpload, IconWave } from "./Onboarding.tsx";
-import { showTodo } from "./Setup.tsx";
+import { showTodo, Toggle } from "./Setup.tsx";
+import { Group, Section } from "./SetupLayout.tsx";
 import { openTodos } from "./todo.ts";
-import { pluginCopies } from "./protocol.ts";
+import { copyOverride, copyOwn, pluginCopies } from "./protocol.ts";
 import type { Config, PluginInfo, PluginInstall, PluginManifest, PluginSchema, PluginStore, PluginValues, PluginsList, StoreListing } from "./protocol.ts";
 
 /** Is version `a` newer than `b`? Semver: a prerelease is older than its release. */
@@ -126,12 +131,43 @@ function systemSetUp(m: PluginManifest, values: PluginValues | undefined, inheri
   return fieldsOf(m.system_config).some(([k]) => !emptyValue(values?.[k]) || !emptyValue(inherited?.[k]));
 }
 
+/** …and one copy of it: its own settings, and the plugin's with what it overrides. */
+function copySetUp(m: PluginManifest, copy: PluginValues | undefined, every: PluginValues | undefined): boolean {
+  return systemSetUp(m, copyOwn(copy), every) && missing(m.config, copyOverride(copy), every).length === 0;
+}
+
 /** …and every copy of it, when it has several. */
-function copiesSetUp(m: PluginManifest, copies: PluginValues[], inherited: PluginValues | undefined): boolean {
-  return copies.length ? copies.every((v) => systemSetUp(m, v, inherited)) : systemSetUp(m, undefined, inherited);
+function copiesSetUp(m: PluginManifest, copies: PluginValues[], every: PluginValues | undefined): boolean {
+  return copies.length ? copies.every((v) => copySetUp(m, v, every)) : copySetUp(m, undefined, every);
+}
+
+/** The plugin's required settings left empty for the whole recorder that
+ * some system it's set up for doesn't fill in either (with no system set up
+ * for it: all of them). */
+function pluginNeeds(m: PluginManifest, c: Config, id: string): string[] {
+  const every = c.plugins?.[id]?.settings;
+  const copies = systemsOf(c).flatMap((x) => x.copies(id));
+  const unset = requiredOf(m.config).filter((k) => emptyValue(every?.[k]));
+  return copies.length ? unset.filter((k) => copies.some((v) => emptyValue(copyOverride(v)[k]))) : unset;
+}
+
+const labelOf = (schema: PluginSchema | undefined, k: string) => schema?.properties?.[k]?.title ?? spell(k);
+
+/** Where a copy sends things, when it overrides that: the host of the first web address it overrides. */
+function destinationOf(m: PluginManifest, over: PluginValues): string | null {
+  for (const [k, f] of fieldsOf(m.config)) {
+    const v = over[k];
+    if (f.format === "uri" && typeof v === "string" && isUrl(v)) return new URL(v).host;
+  }
+  return null;
 }
 
 /** The systems plugins can be set up for: where each is, its short name (conventional ones with channels), and its copies of each plugin. */
+/** Some system that records names encryption keys (only then can a call be decrypted). */
+function hasKeys(c: Config): boolean {
+  return activeSystems(c).some((s) => !!s.keys?.trim()) || c.conventional.some((x) => x.enabled && !!x.keys?.trim());
+}
+
 function systemsOf(c: Config): { at: SystemRef; name: string; copies: (id: string) => PluginValues[] }[] {
   const out: { at: SystemRef; name: string; copies: (id: string) => PluginValues[] }[] = c.systems.map((x, i) => ({
     at: i,
@@ -159,7 +195,11 @@ export function renameSystemRefs(x: Config, from: string, to: string, plugins: P
   for (const p of plugins) {
     if (!p.manifest) continue;
     walk(p.manifest.config, x.plugins?.[p.id]?.settings);
-    for (const sys of [...x.systems, ...x.conventional]) for (const v of pluginCopies(sys.plugins?.[p.id])) walk(p.manifest.system_config, v);
+    for (const sys of [...x.systems, ...x.conventional])
+      for (const v of pluginCopies(sys.plugins?.[p.id])) {
+        walk(p.manifest.system_config, v);
+        walk(p.manifest.config, copyOverride(v));
+      }
   }
 }
 
@@ -341,8 +381,16 @@ function SchemaField(props: { name: string; schema: PluginSchema; value: unknown
   );
 }
 
-function SchemaFields(props: { schema: PluginSchema | undefined; values: PluginValues; onChange: (v: PluginValues) => void; id: string; inherited?: PluginValues }) {
-  const required = requiredOf(props.schema);
+function SchemaFields(props: {
+  schema: PluginSchema | undefined;
+  values: PluginValues;
+  onChange: (v: PluginValues) => void;
+  id: string;
+  inherited?: PluginValues;
+  /** The fields to mark as needed (by default, those the schema requires). */
+  required?: string[];
+}) {
+  const required = props.required ?? requiredOf(props.schema);
   return (
     <div className="stack plugin-fields">
       {fieldsOf(props.schema).map(([k, f]) => (
@@ -367,16 +415,20 @@ function SchemaFields(props: { schema: PluginSchema | undefined; values: PluginV
 }
 
 /** On a system's card in Setup: its settings for each plugin that's on and
- * takes some (an upload service's key for this system, say). A plugin can be
- * added again, for a second copy of it for this system (to upload to two
- * places, say): it runs again, with those settings, for this system alone. */
+ * takes some (an upload service's key for this system, say), and any of the
+ * plugin's own settings it changes for this system (another server, say). A
+ * plugin can be added again, for a second copy of it for this system (to
+ * upload to two places, say): it runs again, with those settings, for this
+ * system alone. */
 export function SystemPluginSettings(props: { system: SystemRef }) {
   const s = useApp();
   const [adding, setAdding] = useState(false);
   const c = s.config;
   if (!c || !s.plugins) return null;
   const sys = systemAt(c, props.system);
-  const plugins = s.plugins.plugins.filter((p) => pluginOn(c, p.id) && p.manifest && hasFields(p.manifest.system_config));
+  const plugins = s.plugins.plugins.filter((p) => pluginOn(c, p.id) && p.manifest && (hasFields(p.manifest.system_config) || hasFields(p.manifest.config)));
+  // A copy of its own makes sense for a plugin that's told which systems are its.
+  const copyable = plugins.filter((p) => hasFields(p.manifest!.system_config));
   if (!sys || !sys.shortName || plugins.length === 0) return null;
   const add = (id: string) => {
     addSystemPluginCopy(props.system, id);
@@ -389,51 +441,91 @@ export function SystemPluginSettings(props: { system: SystemRef }) {
         const m = p.manifest!;
         const every = c.plugins?.[p.id]?.settings;
         const copies = pluginCopies(sys.plugins?.[p.id]);
-        return (copies.length ? copies : [undefined]).map((values, i) => (
-          <fieldset className="plugin-group" key={`${p.id}-${i}`}>
-            <legend>
-              {m.name}
-              {copies.length > 1 && <span className="muted"> · copy {i + 1}</span>}
-            </legend>
-            {copies.length > 1 && (
-              <div className="plugin-copy-head">
-                <span className="field-hint muted">{i === 0 ? `The first ${m.name} for ${sys.shortName}.` : `${m.name} again, with these settings, for ${sys.shortName} alone.`}</span>
-                <button type="button" className="btn ghost small danger" onClick={() => removeSystemPluginCopy(props.system, p.id, i)} aria-label={`Remove ${m.name} copy ${i + 1}`}>
-                  Remove
-                </button>
-              </div>
-            )}
-            {!systemSetUp(m, values, every) && <p className="field-hint warn-text">Not set up for {sys.shortName} yet.</p>}
-            <SchemaFields
-              schema={m.system_config}
-              values={values ?? {}}
-              inherited={every}
-              onChange={(v) => setSystemPluginSettings(props.system, p.id, v, i)}
-              id={`sp-${p.id}-${sys.shortName}${i ? `-${i + 1}` : ""}`}
-            />
-          </fieldset>
-        ));
+        const idOf = (i: number) => `sp-${p.id}-${sys.shortName}${i ? `-${i + 1}` : ""}`;
+        return (copies.length ? copies : [undefined]).map((values, i) => {
+          const over = copyOverride(values);
+          const to = destinationOf(m, over);
+          return (
+            <fieldset className="plugin-group" key={`${p.id}-${i}`}>
+              <legend>
+                {m.name}
+                {copies.length > 1 && <span className="muted"> · copy {i + 1}</span>}
+                {to && <span className="muted"> · to {to}</span>}
+              </legend>
+              {copies.length > 1 && (
+                <div className="plugin-copy-head">
+                  <span className="field-hint muted">{i === 0 ? `The first ${m.name} for ${sys.shortName}.` : `${m.name} again, with these settings, for ${sys.shortName} alone.`}</span>
+                  <button type="button" className="btn ghost small danger" onClick={() => removeSystemPluginCopy(props.system, p.id, i)} aria-label={`Remove ${m.name} copy ${i + 1}`}>
+                    Remove
+                  </button>
+                </div>
+              )}
+              {hasFields(m.system_config) && (
+                <>
+                  {!copySetUp(m, values, every) && <p className="field-hint warn-text">Not set up for {sys.shortName} yet.</p>}
+                  <SchemaFields
+                    schema={m.system_config}
+                    values={copyOwn(values)}
+                    inherited={every}
+                    onChange={(v) => setSystemPluginSettings(props.system, p.id, v, i)}
+                    id={idOf(i)}
+                  />
+                </>
+              )}
+              {hasFields(m.config) && <PluginOverride m={m} over={over} every={every} system={sys.shortName} id={`${idOf(i)}-ov`} onChange={(v) => setSystemPluginOverride(props.system, p.id, v, i)} />}
+            </fieldset>
+          );
+        });
       })}
-      <div className="plugin-add-copy">
-        {!adding ? (
-          <button type="button" className="btn ghost small" onClick={() => setAdding(true)} title={`Run a plugin again for ${sys.shortName}, with settings of its own`}>
-            + Add plugin
-          </button>
-        ) : (
-          <div className="plugin-add-pick" role="group" aria-label={`Add a plugin to ${sys.shortName}`}>
-            <span className="small muted">Another copy for {sys.shortName}:</span>
-            {plugins.map((p) => (
-              <button type="button" key={p.id} className="btn small" onClick={() => add(p.id)}>
-                {p.manifest!.name}
-              </button>
-            ))}
-            <button type="button" className="btn ghost small" onClick={() => setAdding(false)}>
-              Cancel
+      {copyable.length > 0 && (
+        <div className="plugin-add-copy">
+          {!adding ? (
+            <button type="button" className="btn ghost small" onClick={() => setAdding(true)} title={`Run a plugin again for ${sys.shortName}, with settings of its own`}>
+              + Add plugin
             </button>
-          </div>
-        )}
-      </div>
+          ) : (
+            <div className="plugin-add-pick" role="group" aria-label={`Add a plugin to ${sys.shortName}`}>
+              <span className="small muted">Another copy for {sys.shortName}:</span>
+              {copyable.map((p) => (
+                <button type="button" key={p.id} className="btn small" onClick={() => add(p.id)}>
+                  {p.manifest!.name}
+                </button>
+              ))}
+              <button type="button" className="btn ghost small" onClick={() => setAdding(false)}>
+                Cancel
+              </button>
+            </div>
+          )}
+        </div>
+      )}
     </div>
+  );
+}
+
+/** A system's copy of a plugin: the plugin's own settings, to change for
+ * this system alone. Those left empty are as for every system (shown as
+ * the placeholder). */
+function PluginOverride(props: { m: PluginManifest; over: PluginValues; every: PluginValues | undefined; system: string; id: string; onChange: (v: PluginValues) => void }) {
+  const { m, over, every } = props;
+  const changed = fieldsOf(m.config).filter(([k]) => !emptyValue(over[k]) || typeof over[k] === "boolean");
+  const [open, setOpen] = useState(changed.length > 0 || missing(m.config, over, every).length > 0);
+  return (
+    <details className="plugin-override" open={open} onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}>
+      <summary>
+        {m.name} settings for {props.system}
+        <span className="muted">
+          {" "}
+          · {changed.length === 0 ? "as for every system" : `${changed.map(([k]) => labelOf(m.config, k)).join(", ")} changed`}
+        </span>
+      </summary>
+      <p className="field-hint">Change any of {m.name}'s settings for {props.system} alone. Empty ones are as for every system.</p>
+      <SchemaFields schema={m.config} values={over} inherited={every} onChange={props.onChange} id={props.id} />
+      {changed.length > 0 && (
+        <button type="button" className="btn ghost small" onClick={() => props.onChange({})}>
+          As for every system
+        </button>
+      )}
+    </details>
   );
 }
 
@@ -445,14 +537,16 @@ export function PluginSetupPanel() {
   if (!c) return null;
   const plugins = [...(list?.plugins ?? [])].sort((a, b) => (a.manifest?.name ?? a.id).localeCompare(b.manifest?.name ?? b.id));
   return (
-    <section className="panel" aria-labelledby="setup-plugins" id="need-plugins">
-      <header className="panel-head">
-        <h2 id="setup-plugins">Plugins</h2>
-        <button className="btn ghost" onClick={() => setView("plugins")}>
+    <Section
+      id="need-plugins"
+      title="Plugins"
+      hint="They upload or stream each call. Settings for one system alone are on that system's card."
+      actions={
+        <button className="btn" onClick={() => setView("plugins")}>
           Find and install plugins…
         </button>
-      </header>
-      <p className="muted small plugins-intro">Per-system settings are on each system's card.</p>
+      }
+    >
       {!list ? (
         <p className="muted">Loading…</p>
       ) : (
@@ -460,6 +554,7 @@ export function PluginSetupPanel() {
           {plugins.map((p) => (
             <PluginSetupCard key={p.id} p={p} c={c} />
           ))}
+          {plugins.some((p) => pluginOn(c, p.id)) && <EveryDelays />}
           {plugins.length === 0 && (
             <p className="empty">
               No plugins installed yet.{" "}
@@ -470,7 +565,7 @@ export function PluginSetupPanel() {
           )}
         </div>
       )}
-    </section>
+    </Section>
   );
 }
 
@@ -483,7 +578,7 @@ function PluginSetupCard(props: { p: PluginInfo; c: Config }) {
   const recording = s.phase === "running" || s.phase === "starting";
   const st = stateOf(p, on, recording);
   const imported = openTodos(s).find((t) => t.target === `plugin-${p.id}`);
-  const needs = m ? missing(m.config, settings) : [];
+  const needs = m ? pluginNeeds(m, c, p.id) : [];
   const systems = systemsOf(c);
   const perSystem = !!m && hasFields(m.system_config);
   return (
@@ -494,7 +589,7 @@ function PluginSetupCard(props: { p: PluginInfo; c: Config }) {
       {p.problem && <p className="small bad-text">{p.problem}</p>}
       {m && hasFields(m.config) && (
         <div className="plugin-settings stack">
-          <SchemaFields schema={m.config} values={settings ?? {}} onChange={(v) => setPluginSettings(p.id, v)} id={`pg-${p.id}`} />
+          <SchemaFields schema={m.config} values={settings ?? {}} onChange={(v) => setPluginSettings(p.id, v)} id={`pg-${p.id}`} required={needs} />
         </div>
       )}
       {m && perSystem && (
@@ -521,7 +616,16 @@ function PluginSetupCard(props: { p: PluginInfo; c: Config }) {
           )}
         </div>
       )}
-      {recording && on && <p className="small muted">Changes restart it.</p>}
+      {on && hasKeys(c) && (m?.subscribe.includes("audio") || m?.subscribe.includes("call.concluded")) && (
+        <Toggle
+          label="Share decrypted calls"
+          hint="Calls decrypted with your keys go to it too. Once sent they can't be taken back, and may become public."
+          checked={!!c.plugins?.[p.id]?.shareDecrypted}
+          onChange={(v) => setPluginShareDecrypted(p.id, v)}
+        />
+      )}
+      {on && (m?.subscribe.includes("audio") || m?.subscribe.includes("call.concluded")) && <PluginDelay p={p} c={c} />}
+      {recording && on && <p className="small muted">Changes restart it (delays don't).</p>}
     </article>
   );
 }
@@ -569,55 +673,61 @@ export function M4aSettings() {
   const [kbps, setKbps] = useState(String(a.bitrateKbps));
   useEffect(() => setKbps(String(a.bitrateKbps)), [a.bitrateKbps]);
   return (
-    <section className="panel" aria-labelledby="m4a-title">
-      <header className="panel-head">
-        <h2 id="m4a-title">M4A audio</h2>
+    <section className="set-card" aria-labelledby="m4a-title">
+      <header className="set-card-head">
+        <div className="set-card-title">
+          <h3 id="m4a-title">M4A audio</h3>
+          <span className="set-card-sub">About a tenth the size of WAV</span>
+        </div>
+        <span className="spacer" />
         {found ? <span className="chip ok">{found}</span> : <span className={`chip ${wanted.length ? "bad" : ""}`}>{a.encoder === "none" ? "off" : "no encoder found"}</span>}
       </header>
-      <div className="stack">
-        <p className="muted small">
-          About a tenth the size of WAV. Used by some plugins and <b>Also save an M4A</b>.{" "}
-          {wanted.length > 0 && !found && (
-            <span className="bad-text">
-              {wanted.map((p) => p.manifest!.name).join(", ")} {wanted.length > 1 ? "need" : "needs"} it: install ffmpeg.
-            </span>
-          )}
-        </p>
-        <div className="grid2">
-          <div className="field">
-            <label className="field-label" htmlFor="m4a-encoder">
-              Encoder
-            </label>
-            <select id="m4a-encoder" value={a.encoder} onChange={(e) => setM4a({ encoder: e.target.value })}>
-              <option value="auto">Automatic (ffmpeg, then afconvert, then fdkaac)</option>
-              <option value="ffmpeg">ffmpeg</option>
-              <option value="afconvert">afconvert (macOS)</option>
-              <option value="fdkaac">fdkaac</option>
-              <option value="none">None: WAV only</option>
-            </select>
-          </div>
-          <div className="field">
-            <label className="field-label" htmlFor="m4a-kbps">
-              Bitrate, kbps
-            </label>
-            <input
-              id="m4a-kbps"
-              className="mono"
-              type="number"
-              min={8}
-              max={320}
-              value={kbps}
-              onChange={(e) => setKbps(e.target.value)}
-              onBlur={() => {
-                const k = Math.round(Number(kbps));
-                if (k >= 8 && k <= 320 && k !== a.bitrateKbps) setM4a({ bitrateKbps: k });
-                else setKbps(String(a.bitrateKbps));
-              }}
-            />
-            <span className="field-hint">Trunk Recorder uses 32.</span>
-          </div>
+      <Group
+        title="Encoding"
+        hint={
+          <>
+            Used by the plugins that upload M4A, and by <b>Also save an M4A</b>.{" "}
+            {wanted.length > 0 && !found && (
+              <span className="bad-text">
+                {wanted.map((p) => p.manifest!.name).join(", ")} {wanted.length > 1 ? "need" : "needs"} it: install ffmpeg.
+              </span>
+            )}
+          </>
+        }
+      >
+        <div className="field">
+          <label className="field-label" htmlFor="m4a-encoder">
+            Encoder
+          </label>
+          <select id="m4a-encoder" value={a.encoder} onChange={(e) => setM4a({ encoder: e.target.value })}>
+            <option value="auto">Automatic (ffmpeg, then afconvert, then fdkaac)</option>
+            <option value="ffmpeg">ffmpeg</option>
+            <option value="afconvert">afconvert (macOS)</option>
+            <option value="fdkaac">fdkaac</option>
+            <option value="none">None: WAV only</option>
+          </select>
         </div>
-      </div>
+        <div className="field">
+          <label className="field-label" htmlFor="m4a-kbps">
+            Bitrate, kbps
+          </label>
+          <input
+            id="m4a-kbps"
+            className="mono"
+            type="number"
+            min={8}
+            max={320}
+            value={kbps}
+            onChange={(e) => setKbps(e.target.value)}
+            onBlur={() => {
+              const k = Math.round(Number(kbps));
+              if (k >= 8 && k <= 320 && k !== a.bitrateKbps) setM4a({ bitrateKbps: k });
+              else setKbps(String(a.bitrateKbps));
+            }}
+          />
+          <span className="field-hint">Trunk Recorder uses 32.</span>
+        </div>
+      </Group>
     </section>
   );
 }
@@ -653,7 +763,7 @@ function PluginCard(props: { p: PluginInfo; recording: boolean; listing?: StoreL
   const message = p.problem ?? (on && r.message && r.message !== "running" ? r.message : "");
   const counted = r.ok + r.skipped + r.failed > 0;
   const needsM4a = m?.audio_formats.includes("m4a");
-  const needs = on && m ? missing(m.config, s.config?.plugins?.[p.id]?.settings) : [];
+  const needs = on && m && s.config ? pluginNeeds(m, s.config, p.id) : [];
   // A newer version in the registry (not for a build of the user's own, or a plugin from elsewhere).
   const update = listing && m && !p.custom && !p.unlistedFrom && !listing.unavailable && newer(listing.version, m.version) ? listing : null;
 
@@ -687,6 +797,11 @@ function PluginCard(props: { p: PluginInfo; recording: boolean; listing?: StoreL
           {r.skipped > 0 && ` · ${r.skipped} skipped`}
           {r.failed > 0 && <span className="bad-text"> · {r.failed} failed</span>}
           {r.failed > 0 && r.lastFailure && <span className="plugin-last-failure"> — last: {r.lastFailure}</span>}
+        </p>
+      )}
+      {(r.held ?? 0) > 0 && (
+        <p className="small muted" title="Its delays hold these back; they go when their time is up, after a restart too">
+          {r.held} call{r.held === 1 ? "" : "s"} waiting out a delay
         </p>
       )}
       {m && (

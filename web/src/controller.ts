@@ -5,7 +5,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { feedSeries } from "./series.ts";
 import { LivePlayer } from "./livePlayer.ts";
-import { conventionalIndex, pluginCopies } from "./protocol.ts";
+import { conventionalIndex, copyOverride, copyOwn, OVERRIDE, pluginCopies } from "./protocol.ts";
 import type {
   MonitorEvent,
   PlatformInfo,
@@ -27,6 +27,7 @@ import type {
   PluginsList,
   PluginStore,
   PluginValues,
+  LockableKeys,
   Radios,
   SourceStatus,
   SiteIdentity,
@@ -58,6 +59,8 @@ export interface AppState {
   devices: Device[];
   /** Optional drivers (desktop app); null in the web build. */
   radios: Radios | null;
+  /** Key containers waiting for a password, and which are unlocked. */
+  lockable: LockableKeys[];
   /** A USRP search is running. */
   findingRadios: boolean;
   status: EngineStatus | null;
@@ -149,6 +152,7 @@ let state: AppState = {
   config: null,
   devices: [],
   radios: null,
+  lockable: [],
   findingRadios: false,
   status: null,
   sources: [],
@@ -276,6 +280,7 @@ function take(m: FromRecorder): void {
         heard: m.heard ?? {},
         units: Object.fromEntries(Object.entries(m.units ?? {}).map(([name, csv]) => [name, parseUnitsCsv(csv)])),
         radios: m.radios ?? null,
+        lockable: m.keys?.sources ?? [],
         phase: m.phase.phase,
         error: m.phase.error,
         ended: m.phase.ended,
@@ -337,6 +342,9 @@ function take(m: FromRecorder): void {
       break;
     case "radios":
       set({ radios: m.radios, findingRadios: false });
+      break;
+    case "keys":
+      set({ lockable: m.sources });
       break;
     case "trConfig":
       set({ trConfig: m });
@@ -617,6 +625,16 @@ export function setPluginEnabled(id: string, enabled: boolean): void {
     all[id] = { ...(all[id] ?? { enabled: false }), enabled };
   });
 }
+/** Whether a plugin is given calls decrypted with the recorder's keys. */
+export function setPluginShareDecrypted(id: string, share: boolean): void {
+  updateConfig((x) => {
+    const all = (x.plugins ??= {});
+    const p = { ...(all[id] ?? { enabled: false }) };
+    if (share) p.shareDecrypted = true;
+    else delete p.shareDecrypted;
+    all[id] = p;
+  });
+}
 /** A plugin's settings for the whole recorder. */
 export function setPluginSettings(id: string, settings: PluginValues): void {
   updateConfig((x) => {
@@ -645,7 +663,17 @@ function editSystemPlugin(system: SystemRef, id: string, f: (copies: PluginValue
 export function setSystemPluginSettings(system: SystemRef, id: string, values: PluginValues, copy = 0): void {
   editSystemPlugin(system, id, (c) => {
     while (c.length <= copy) c.push({});
-    c[copy] = values;
+    const over = copyOverride(c[copy]);
+    c[copy] = blank(over) ? copyOwn(values) : { ...copyOwn(values), [OVERRIDE]: over };
+    return c;
+  });
+}
+/** The plugin's own settings that a system's copy of it overrides (another server, say); empty: none. */
+export function setSystemPluginOverride(system: SystemRef, id: string, over: PluginValues, copy = 0): void {
+  editSystemPlugin(system, id, (c) => {
+    while (c.length <= copy) c.push({});
+    const own = copyOwn(c[copy]);
+    c[copy] = blank(over) ? own : { ...own, [OVERRIDE]: over };
     return c;
   });
 }
@@ -920,6 +948,11 @@ export function addNxdnChannel(freqHz: number, rate: "nxdn48" | "nxdn96", ran: n
   });
   set({ configEpoch: state.configEpoch + 1 });
   return name;
+}
+
+/** Open key container `source` with its password, or (no password) lock it again. */
+export function unlockKeys(source: string, password: string | null): void {
+  transport.send(password === null ? { type: "lockKeys", source } : { type: "unlockKeys", source, password });
 }
 
 // ── run ──────────────────────────────────────────────────────────────────────

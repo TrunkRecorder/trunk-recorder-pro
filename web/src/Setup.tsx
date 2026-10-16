@@ -31,14 +31,16 @@ import {
   usableHalfWidth,
   siteLockFields,
 } from "./config.ts";
-import { currentView, dismissTodo, downloadText, findRadios, openGuide, refreshDevices, setChannelFile, setNotice, setSetupTab, setView, updateConfig, useApp, web, type SetupTab } from "./controller.ts";
+import { currentView, dismissTodo, downloadText, findRadios, openGuide, refreshDevices, setChannelFile, setNotice, setSetupTab, setView, unlockKeys, updateConfig, useApp, web, type SetupTab } from "./controller.ts";
 import { InterfacesPanel } from "./Interfaces.tsx";
 import { M4aSettings, PluginSetupPanel, renameSystemRefs, SystemPluginSettings } from "./Plugins.tsx";
+import { SystemDelays } from "./Delays.tsx";
 import { IconAntenna, IconDongle, IconFolder, IconPuzzle, IconTower } from "./Onboarding.tsx";
-import type { AirspyGainMode, Channel, Config, Conventional, HeardCode, LogSettings, Recording, RecordingOverride, RecordingRules, SiteIdentity, SoapyState, Source, System, UnitNames } from "./protocol.ts";
+import type { AirspyGainMode, Channel, Config, Conventional, HeardCode, LockableKeys, LogSettings, Recording, RecordingOverride, RecordingRules, SiteIdentity, SoapyState, Source, System, UnitNames } from "./protocol.ts";
 import { DEFAULT_FORMAT, FilenameEditor } from "./FilenameEditor.tsx";
 import { GuardBand } from "./Rolloff.tsx";
 import { SurveyPanel } from "./Survey.tsx";
+import { addCard, Card, ExpandAll, forgetCard, Group, Section, setCardOpen, Switch } from "./SetupLayout.tsx";
 import { TalkgroupsField } from "./TalkgroupsField.tsx";
 import { unitNameCount } from "./units.ts";
 import { openTodos } from "./todo.ts";
@@ -62,6 +64,11 @@ function useNeed(): (target: string) => string | undefined {
   return (target) => todos.find((t) => t.target === target)?.text;
 }
 
+/** How many of an import's to-dos are at these fields (`<kind>-<name>`). */
+function useTodosAt(kinds: string[], name: string): number {
+  return openTodos(useApp()).filter((t) => kinds.some((k) => t.target === `${k}-${name}`)).length;
+}
+
 /** The setup tab a to-do's field is on. */
 function tabOf(target: string): SetupTab {
   if (target.startsWith("plugin")) return "plugins";
@@ -82,6 +89,12 @@ export function showTodo(target: string, tries = 0): void {
   const el = document.getElementById(`need-${target}`);
   // Not drawn yet (a plugin just installed, say): a moment more.
   if (!el && tries < 30) return void setTimeout(() => showTodo(target, tries + 1), 100);
+  // In a folded card: open it, then look again.
+  const card = el?.closest<HTMLElement>("[data-card]");
+  if (card?.dataset.collapsed) {
+    setCardOpen(card.dataset.card!, true);
+    return void setTimeout(() => showTodo(target, tries), 60);
+  }
   if (el instanceof HTMLDetailsElement) el.open = true;
   el?.scrollIntoView({ behavior: "smooth", block: "center" });
   el?.classList.remove("flash");
@@ -122,13 +135,51 @@ function TodoPanel() {
   );
 }
 
-function Toggle(props: { label: string; checked: boolean; onChange: (v: boolean) => void; hint?: string; disabled?: boolean }) {
+/** A key container waiting for its password, or unlocked. */
+function KeyContainer(props: { k: LockableKeys }) {
+  const { k } = props;
+  const [password, setPassword] = useState("");
+  const state = <span className={`chip ${k.unlocked ? "ok" : "warn"}`}>{k.unlocked ? "Unlocked" : "Locked"}</span>;
+  return (
+    <section className="set-card">
+      <Group title={k.name} hint={`For ${k.systems.join(", ")}`} actions={state} cols={1}>
+        {k.unlocked ? (
+          <div className="row">
+            <span className="muted small">Its systems decrypt with these keys until you lock them or the app quits.</span>
+            <button className="btn" onClick={() => unlockKeys(k.name, null)}>
+              Lock
+            </button>
+          </div>
+        ) : (
+          <form
+            className="row"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (!password) return;
+              unlockKeys(k.name, password);
+              setPassword("");
+            }}
+          >
+            <Field label="Password">
+              <input type="password" autoComplete="off" value={password} onChange={(e) => setPassword(e.target.value)} />
+            </Field>
+            <button className="btn primary" type="submit" disabled={!password}>
+              Unlock
+            </button>
+          </form>
+        )}
+      </Group>
+    </section>
+  );
+}
+
+export function Toggle(props: { label: string; checked: boolean; onChange: (v: boolean) => void; hint?: string; disabled?: boolean }) {
   return (
     <label className={`toggle${props.disabled ? " disabled" : ""}`}>
       <input type="checkbox" checked={props.checked} disabled={props.disabled} onChange={(e) => props.onChange(e.target.checked)} />
-      <span>
-        {props.label}
-        {props.hint && <span className="field-hint"> — {props.hint}</span>}
+      <span className="toggle-text">
+        <span>{props.label}</span>
+        {props.hint && <span className="field-hint">{props.hint}</span>}
       </span>
     </label>
   );
@@ -573,37 +624,56 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
   const radios = s.radios;
   const needs = useNeed()(`src-${i}`);
 
+  const kindLabel = KINDS.find((k) => k.kind === src.type)?.label ?? src.type;
+  const tuned = src.centerHz || auto;
+
   return (
-    <div className={`source-card${needs ? " needs" : ""}`} id={`need-src-${i}`}>
-      {needs && <div className="field-needs">{needs}</div>}
-      <div className="row source-head">
-        <strong>Source {i + 1}</strong>
-        <div className="seg small" role="radiogroup" aria-label={`Source ${i + 1} kind`}>
-          {KINDS.filter((k) => !k.desktop || !web).map((k) => (
-            <button key={k.kind} role="radio" aria-checked={src.type === k.kind} className={src.type === k.kind ? "on" : ""} onClick={() => setKind(k.kind)}>
-              {k.label}
-            </button>
-          ))}
-        </div>
-        <span className="spacer" />
-        {c.sources.length > 1 && (
+    <Card
+      cardKey={`src-${i}`}
+      n={c.sources.length}
+      className={`source-card${needs ? " needs" : ""}`}
+      id={`need-src-${i}`}
+      head={
+        <>
+          <div className="set-card-title">
+            <h3>Source {i + 1}</h3>
+            <span className="set-card-sub">
+              {kindLabel}
+              {tuned ? ` · ${formatMhz(tuned, 3)} MHz` : ""} · {(src.rateHz / 1e6).toFixed(src.rateHz % 1e5 ? 3 : 1)} MSPS
+            </span>
+          </div>
+          {needs && <span className="chip warn">to finish</span>}
+        </>
+      }
+      actions={
+        c.sources.length > 1 && (
           <button
             className="btn ghost small"
             onClick={() => {
               web?.removeFile(i);
+              forgetCard("src-", i, c.sources.length);
               updateConfig((x) => void x.sources.splice(i, 1));
             }}
           >
             Remove
           </button>
-        )}
-      </div>
-      <div className="grid2">
+        )
+      }
+      note={needs && <div className="field-needs set-card-needs">{needs}</div>}
+    >
+      <Group title="Device" hint={src.type === "file" ? "A capture to replay instead of a radio." : "Which radio, and how it is connected."}>
+        <div className="field wide">
+          <span className="field-label">Kind</span>
+          <div className="seg small" role="radiogroup" aria-label={`Source ${i + 1} kind`}>
+            {KINDS.filter((k) => !k.desktop || !web).map((k) => (
+              <button key={k.kind} role="radio" aria-checked={src.type === k.kind} className={src.type === k.kind ? "on" : ""} onClick={() => setKind(k.kind)}>
+                {k.label}
+              </button>
+            ))}
+          </div>
+        </div>
         {src.type === "rtlsdr" && (
-          <Field
-            label="Dongle"
-            hint={s.devices.length ? undefined : web ? "No dongle connected" : "No dongle found"}
-          >
+          <Field label="Dongle" hint={s.devices.length ? undefined : web ? "No dongle connected" : "No dongle found"}>
             <div className="row">
               <select value={src.serial} onChange={(e) => edit((x) => x.type === "rtlsdr" && void (x.serial = e.target.value))}>
                 <option value="">First available</option>
@@ -643,7 +713,7 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
             >
               <div className="row">
                 <input
-                  className="mono"
+                  className="mono grow"
                   list={`usrp-${i}`}
                   value={src.args}
                   placeholder="first found"
@@ -662,6 +732,11 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
               </div>
             </Field>
           ))}
+        {src.type === "usrp" && (
+          <Field label="Antenna" hint="e.g. RX2, TX/RX">
+            <input className="mono" value={src.antenna} placeholder="default" onChange={(e) => edit((x) => x.type === "usrp" && void (x.antenna = e.target.value.trim()))} />
+          </Field>
+        )}
         {src.type === "airspy" &&
           (radios && !radios.airspy.available ? (
             <DriverMissing kind="airspy" detail={radios.airspy.detail} />
@@ -684,6 +759,9 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
               </div>
             </Field>
           ))}
+        {src.type === "airspy" && (
+          <Toggle label="Bias-T" hint="Powers an LNA via the antenna cable" checked={src.biasTee} onChange={(v) => edit((x) => x.type === "airspy" && void (x.biasTee = v))} />
+        )}
         {src.type === "soapy" &&
           (radios?.soapy && !radios.soapy.available ? (
             <DriverMissing kind="soapy" detail={radios.soapy.detail} />
@@ -701,7 +779,7 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
               >
                 <div className="row">
                   <input
-                    className="mono"
+                    className="mono grow"
                     list={`soapy-${i}`}
                     value={src.args}
                     placeholder="first found"
@@ -719,6 +797,12 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
                     {s.findingRadios ? "Searching…" : "Find"}
                   </button>
                 </div>
+              </Field>
+              <Field label="Antenna">
+                <input className="mono" value={src.antenna} placeholder="default" onChange={(e) => edit((x) => x.type === "soapy" && void (x.antenna = e.target.value.trim()))} />
+              </Field>
+              <Field label="Device settings" hint="key=value, e.g. biastee=true (see SoapySDRUtil --probe)" wide>
+                <input className="mono" value={src.settings} placeholder="none" onChange={(e) => edit((x) => x.type === "soapy" && void (x.settings = e.target.value))} />
               </Field>
               {radios?.soapy && <SoapyModules soapy={radios.soapy} />}
             </>
@@ -760,6 +844,18 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
               />
             </Field>
           ))}
+        {src.type === "file" && !web && (
+          <Field label="Sample format">
+            <select value={src.format ?? "cu8"} onChange={(e) => edit((x) => x.type === "file" && void (x.format = e.target.value as "cu8" | "cs16" | "cf32"))}>
+              <option value="cu8">cu8 — rtl_sdr (unsigned 8-bit)</option>
+              <option value="cs16">cs16 — signed 16-bit</option>
+              <option value="cf32">cf32 — float (GNU Radio, UHD)</option>
+            </select>
+          </Field>
+        )}
+        {src.type === "file" && <Toggle label="Real-time pace" hint="Off: as fast as it decodes" checked={src.realtime} onChange={(v) => edit((x) => x.type === "file" && void (x.realtime = v))} />}
+      </Group>
+      <Group title="Tuning" hint="The slice of spectrum it hears. Systems and channels inside the shaded band are recorded.">
         <Field
           label="Center frequency, MHz"
           hint={src.centerHz ? undefined : auto ? `Auto: ${formatMhz(auto, 4)} MHz` : "Auto: no uncovered system to place over"}
@@ -778,75 +874,50 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
             onChange={(hz) => edit((x) => void (x.rateHz = hz))}
           />
         </Field>
-        {src.type === "rtlsdr" && (
-          <>
+        <GuardBand c={c} i={i} fresh={props.fresh} onFreshDone={props.onFreshDone} />
+        {center ? (
+          <div className="wide">
+            <CoverageBar c={c} center={center} rateHz={src.rateHz} guardHz={src.guardHz} />
+          </div>
+        ) : null}
+      </Group>
+      {src.type !== "file" && (
+        <Group title="Gain" hint={src.type === "airspy" ? "A preset, or each stage set by hand." : "Too little loses weak signals; too much overloads near strong ones."}>
+          {src.type === "rtlsdr" && (
             <Field label="Gain, dB" hint={src.agc ? "A fixed gain usually works better" : "Most dongles: 0–49.6"}>
               <div className="row">
                 <GainInput label="Gain, dB" value={src.gainDb} disabled={src.agc} onChange={(v) => v !== null && edit((x) => x.type === "rtlsdr" && void (x.gainDb = v))} />
                 <Toggle label="AGC" checked={src.agc} onChange={(v) => edit((x) => x.type === "rtlsdr" && void (x.agc = v))} />
               </div>
             </Field>
-            <PpmField src={src} edit={edit} />
-          </>
-        )}
-        {src.type === "usrp" && (
-          <>
+          )}
+          {src.type === "usrp" && (
             <Field label="Gain, dB" hint={src.agc ? "AGC: B200 / B210 and E3xx only" : "B200/B210: 0–76"}>
               <div className="row">
                 <GainInput label="Gain, dB" value={src.gainDb} disabled={src.agc} onChange={(v) => edit((x) => x.type === "usrp" && void (x.gainDb = v || 0))} />
                 <Toggle label="AGC" checked={src.agc} onChange={(v) => edit((x) => x.type === "usrp" && void (x.agc = v))} />
               </div>
             </Field>
-            <Field label="Antenna" hint="e.g. RX2, TX/RX">
-              <input className="mono" value={src.antenna} placeholder="default" onChange={(e) => edit((x) => x.type === "usrp" && void (x.antenna = e.target.value.trim()))} />
-            </Field>
-            <PpmField src={src} edit={edit} />
-          </>
-        )}
-        {src.type === "airspy" && <AirspyGainFields src={src} edit={edit} />}
-        {src.type === "airspy" && (
-          <>
-            <PpmField src={src} edit={edit} />
-            <Toggle label="Bias-T" hint="powers an LNA via the antenna cable" checked={src.biasTee} onChange={(v) => edit((x) => x.type === "airspy" && void (x.biasTee = v))} />
-          </>
-        )}
-        {src.type === "soapy" && (
-          <>
-            <Field label="Gain, dB">
-              <div className="row">
-                <GainInput label="Gain, dB" value={src.gainDb} placeholder={src.agc ? "AGC" : "as is"} disabled={src.agc} onChange={(v) => edit((x) => x.type === "soapy" && void (x.gainDb = v))} />
-                <Toggle label="AGC" checked={src.agc} onChange={(v) => edit((x) => x.type === "soapy" && void (x.agc = v))} />
-              </div>
-            </Field>
-            <Field label="Antenna">
-              <input className="mono" value={src.antenna} placeholder="default" onChange={(e) => edit((x) => x.type === "soapy" && void (x.antenna = e.target.value.trim()))} />
-            </Field>
-            <GainStages i={i} gains={src.gains} disabled={src.agc} edit={edit} />
-            <Field label="Device settings" hint="key=value, e.g. biastee=true (see SoapySDRUtil --probe)">
-              <input className="mono" value={src.settings} placeholder="none" onChange={(e) => edit((x) => x.type === "soapy" && void (x.settings = e.target.value))} />
-            </Field>
-            <PpmField src={src} edit={edit} />
-          </>
-        )}
-        {src.type === "file" && (
-          <>
-            {!web && (
-              <Field label="Sample format">
-                <select value={src.format ?? "cu8"} onChange={(e) => edit((x) => x.type === "file" && void (x.format = e.target.value as "cu8" | "cs16" | "cf32"))}>
-                  <option value="cu8">cu8 — rtl_sdr (unsigned 8-bit)</option>
-                  <option value="cs16">cs16 — signed 16-bit</option>
-                  <option value="cf32">cf32 — float (GNU Radio, UHD)</option>
-                </select>
+          )}
+          {src.type === "airspy" && <AirspyGainFields src={src} edit={edit} />}
+          {src.type === "soapy" && (
+            <>
+              <Field label="Gain, dB">
+                <div className="row">
+                  <GainInput label="Gain, dB" value={src.gainDb} placeholder={src.agc ? "AGC" : "as is"} disabled={src.agc} onChange={(v) => edit((x) => x.type === "soapy" && void (x.gainDb = v))} />
+                  <Toggle label="AGC" checked={src.agc} onChange={(v) => edit((x) => x.type === "soapy" && void (x.agc = v))} />
+                </div>
               </Field>
-            )}
-            <Toggle label="Real-time pace" hint="off = as fast as it decodes" checked={src.realtime} onChange={(v) => edit((x) => x.type === "file" && void (x.realtime = v))} />
-          </>
-        )}
+              <GainStages i={i} gains={src.gains} disabled={src.agc} edit={edit} />
+            </>
+          )}
+        </Group>
+      )}
+      <Group title="Frequency correction" hint="Its crystal's error, so channels land where they should.">
+        {src.type !== "file" && <PpmField src={src} edit={edit} />}
         <AutoTune src={src} i={i} edit={edit} />
-        <GuardBand c={c} i={i} fresh={props.fresh} onFreshDone={props.onFreshDone} />
-      </div>
-      {center ? <CoverageBar c={c} center={center} rateHz={src.rateHz} guardHz={src.guardHz} /> : null}
-    </div>
+      </Group>
+    </Card>
   );
 }
 
@@ -901,21 +972,29 @@ function ConventionalTab(props: { c: Config }) {
   const { c } = props;
   const s = useApp();
   return (
-    <>
+    <Section
+      title="Conventional systems"
+      hint="Single frequencies (analog FM, P25, DMR or NXDN), kept together as a system with its own folder."
+      actions={
+        <>
+          <ExpandAll prefix="conv-" n={c.conventional.length} />
+          <button
+            className="btn"
+            onClick={() => {
+              addCard("conv-", c.conventional.length);
+              updateConfig((x) => void x.conventional.push(newConventional(x)));
+            }}
+          >
+            Add a conventional system
+          </button>
+        </>
+      }
+    >
       {c.conventional.map((_, k) => (
         <ConventionalPanel key={`${k}-${c.conventional.length}-${s.configEpoch}`} c={c} k={k} />
       ))}
-      <section className="panel">
-        <div className="row">
-          <p className="muted small grow">
-            {c.conventional.length ? null : "No conventional systems yet."}
-          </p>
-          <button className="btn" onClick={() => updateConfig((x) => void x.conventional.push(newConventional(x)))}>
-            Add a conventional system
-          </button>
-        </div>
-      </section>
-    </>
+      {!c.conventional.length && <p className="set-empty">No conventional systems yet.</p>}
+    </Section>
   );
 }
 
@@ -985,54 +1064,98 @@ function ConventionalPanel(props: { c: Config; k: number }) {
   };
   const exportCsv = () => downloadText(`${conv.shortName || "channels"}-channels.csv`, channelsToCsv(chans));
   const enabled = chans.filter((ch) => ch.enabled).length;
+  const todo = useTodosAt(["channels", "squelch", "convunits", "convplug"], name);
   const optNum = (v: string): number | undefined => (v.trim() === "" || !Number.isFinite(Number(v)) ? undefined : Number(v));
 
   return (
-    <section className={`panel${conv.enabled ? "" : " off"}`} id={`need-conv-${name}`}>
-      <header className="panel-head">
-        <h2>
-          {conv.name?.trim() || name || "(no name)"} <span className="muted small">{chans.length} channel{chans.length === 1 ? "" : "s"}</span>
-        </h2>
-        <div className="row">
-          <label className="toggle small">
-            <input type="checkbox" checked={conv.enabled} onChange={(e) => edit((x) => void (x.enabled = e.target.checked))} />
-            <span>Record</span>
-          </label>
+    <Card
+      cardKey={`conv-${k}`}
+      n={c.conventional.length}
+      className={conv.enabled ? undefined : "off"}
+      id={`need-conv-${name}`}
+      head={
+        <>
+          <div className="set-card-title">
+            <h3>{conv.name?.trim() || name || "(no name)"}</h3>
+            <span className="set-card-sub">
+              {conv.name?.trim() && name ? `${name} · ` : ""}
+              {chans.length} channel{chans.length === 1 ? "" : "s"}
+              {chans.length ? `, ${enabled} on` : ""}
+            </span>
+          </div>
+          {todo > 0 && <span className="chip warn">{todo} to finish</span>}
+        </>
+      }
+      actions={
+        <>
+          <Switch label="Record" checked={conv.enabled} onChange={(v) => edit((x) => void (x.enabled = v))} />
           <button
-            className="btn ghost"
+            className="btn ghost small"
             onClick={() => {
-              if (window.confirm(`Remove ${name || "this conventional system"} and its ${chans.length} channel${chans.length === 1 ? "" : "s"}? Its recordings stay on disk.`))
+              if (window.confirm(`Remove ${name || "this conventional system"} and its ${chans.length} channel${chans.length === 1 ? "" : "s"}? Its recordings stay on disk.`)) {
+                forgetCard("conv-", k, c.conventional.length);
                 updateConfig((x) => void x.conventional.splice(k, 1));
+              }
             }}
           >
             Remove
           </button>
-          {!linked && (
-            <button className="btn ghost" onClick={() => csvRef.current?.click()}>
-              Import CSV…
+          <input
+            ref={csvRef}
+            type="file"
+            accept=".csv,text/csv"
+            hidden
+            onChange={(e) => {
+              void onCsv(e.target.files?.[0]);
+              e.target.value = "";
+            }}
+          />
+        </>
+      }
+    >
+      <Group title="Basics" hint="The short name is its calls' folder." cols={3}>
+        <Field label="Short name" hint={dupName ? "Already used — each needs its own folder" : undefined}>
+          <input
+            value={conv.shortName}
+            onChange={(e) => {
+              const to = e.target.value.replace(/[^\w.-]/g, "");
+              updateConfig((x) => {
+                renameSystemRefs(x, x.conventional[k].shortName, to, plugins);
+                x.conventional[k].shortName = to;
+              });
+            }}
+          />
+        </Field>
+        <Field label="Name">
+          <input value={conv.name ?? ""} placeholder="County Fire" onChange={(e) => edit((x) => void (e.target.value ? (x.name = e.target.value) : delete x.name))} />
+        </Field>
+        <Field needs={need(`squelch-${name}`)} anchor={`squelch-${name}`} label="Squelch, dB above noise" hint="For channels without their own">
+          <input className="mono" value={conv.squelchDb} onChange={(e) => edit((x) => void (x.squelchDb = Math.max(3, Math.min(40, Number(e.target.value) || 8))))} />
+        </Field>
+      </Group>
+      <Group
+        title="Channels"
+        hint="Each frequency, with the tone, NAC, colour code or RAN it records. Several rows can share a frequency."
+        full
+        cols={1}
+        actions={
+          <>
+            {!linked && (
+              <button className="btn ghost small" onClick={() => csvRef.current?.click()}>
+                Import CSV…
+              </button>
+            )}
+            <button className="btn ghost small" disabled={!chans.length} onClick={exportCsv}>
+              Export CSV
             </button>
-          )}
-          <button className="btn ghost" disabled={!chans.length} onClick={exportCsv}>
-            Export CSV
-          </button>
-          {!linked && (
-            <button className="btn ghost" onClick={() => add([{ freqHz: 0, mode: bulkMode, name: "", enabled: true }])}>
-              Add a channel
-            </button>
-          )}
-        </div>
-        <input
-          ref={csvRef}
-          type="file"
-          accept=".csv,text/csv"
-          hidden
-          onChange={(e) => {
-            void onCsv(e.target.files?.[0]);
-            e.target.value = "";
-          }}
-        />
-      </header>
-      <div className="stack">
+            {!linked && (
+              <button className="btn small" onClick={() => add([{ freqHz: 0, mode: bulkMode, name: "", enabled: true }])}>
+                Add a channel
+              </button>
+            )}
+          </>
+        }
+      >
         {pending && (
           <div className="banner">
             <div>
@@ -1063,82 +1186,46 @@ function ConventionalPanel(props: { c: Config; k: number }) {
             </div>
           </div>
         )}
-        {!web &&
-          (linked ? (
-            <div className="banner">
-              <div>
-                Channels come from <code>{conv.channelFile}</code>, re-read each time recording starts.
-              </div>
-              {conv.channelFileStatus && <div className="small mono">{conv.channelFileStatus}</div>}
-              <div className="row">
-                <button className="btn" onClick={() => setChannelFile(k, conv.channelFile ?? "")}>
-                  Reload
-                </button>
-                <button className="btn ghost" onClick={() => setChannelFile(k, "")} title="Stop reading the file; keep the channels here">
-                  Unlink
-                </button>
-              </div>
+        {linked && (
+          <div className="banner">
+            <div>
+              Channels come from <code>{conv.channelFile}</code>, re-read each time recording starts.
             </div>
-          ) : (
-            <Field
-              needs={need(`channels-${name}`)}
-              anchor={`channels-${name}`}
-              label="Channel file (optional)"
-              hint="A CSV to edit in a spreadsheet; created from this list if new"
-              wide
-            >
-              <div className="row">
-                <input className="mono grow" value={filePath} placeholder="channels.csv" onChange={(e) => setFilePath(e.target.value)} />
-                <button className="btn" disabled={!filePath.trim()} onClick={() => setChannelFile(k, filePath.trim())}>
-                  Use this file
-                </button>
-              </div>
-            </Field>
-          ))}
-        <div className="grid3">
-          <Field label="Short name" hint={dupName ? "Already used — each needs its own folder" : "Its calls' folder name"}>
-            <input
-              value={conv.shortName}
-              onChange={(e) => {
-                const to = e.target.value.replace(/[^\w.-]/g, "");
-                updateConfig((x) => {
-                  renameSystemRefs(x, x.conventional[k].shortName, to, plugins);
-                  x.conventional[k].shortName = to;
-                });
-              }}
-            />
+            {conv.channelFileStatus && <div className="small mono">{conv.channelFileStatus}</div>}
+            <div className="row">
+              <button className="btn" onClick={() => setChannelFile(k, conv.channelFile ?? "")}>
+                Reload
+              </button>
+              <button className="btn ghost" onClick={() => setChannelFile(k, "")} title="Stop reading the file; keep the channels here">
+                Unlink
+              </button>
+            </div>
+          </div>
+        )}
+        {!linked && (
+          <Field label="Add frequencies, MHz" hint="Several at once, separated by commas or spaces">
+            <div className="row">
+              <input className="mono grow" value={bulk} placeholder="154.430, 155.100, 460.125" onChange={(e) => setBulk(e.target.value)} />
+              <select value={bulkMode} onChange={(e) => setBulkMode(e.target.value as Channel["mode"])} aria-label="Mode for the added channels">
+                <option value="fm">Analog FM</option>
+                <option value="p25">P25</option>
+                <option value="dmr">DMR</option>
+                <option value="nxdn48">NXDN48 (6.25 kHz)</option>
+                <option value="nxdn96">NXDN96 (12.5 kHz)</option>
+              </select>
+              <button
+                className="btn"
+                disabled={!parseFreqList(bulk).length}
+                onClick={() => {
+                  add(parseFreqList(bulk).map((freqHz) => ({ freqHz, mode: bulkMode, name: "", enabled: true })));
+                  setBulk("");
+                }}
+              >
+                Add
+              </button>
+            </div>
           </Field>
-          <Field label="Name">
-            <input value={conv.name ?? ""} placeholder="County Fire" onChange={(e) => edit((x) => void (e.target.value ? (x.name = e.target.value) : delete x.name))} />
-          </Field>
-          <Field needs={need(`squelch-${name}`)} anchor={`squelch-${name}`} label="Squelch, dB above noise" hint="For channels without their own">
-            <input className="mono" value={conv.squelchDb} onChange={(e) => edit((x) => void (x.squelchDb = Math.max(3, Math.min(40, Number(e.target.value) || 8))))} />
-          </Field>
-          {!linked && (
-            <Field label="Add frequencies, MHz" wide>
-              <div className="row">
-                <input className="mono grow" value={bulk} placeholder="154.430, 155.100, 460.125" onChange={(e) => setBulk(e.target.value)} />
-                <select value={bulkMode} onChange={(e) => setBulkMode(e.target.value as Channel["mode"])} aria-label="Mode for the added channels">
-                  <option value="fm">Analog FM</option>
-                  <option value="p25">P25</option>
-                  <option value="dmr">DMR</option>
-                  <option value="nxdn48">NXDN48 (6.25 kHz)</option>
-                  <option value="nxdn96">NXDN96 (12.5 kHz)</option>
-                </select>
-                <button
-                  className="btn"
-                  disabled={!parseFreqList(bulk).length}
-                  onClick={() => {
-                    add(parseFreqList(bulk).map((freqHz) => ({ freqHz, mode: bulkMode, name: "", enabled: true })));
-                    setBulk("");
-                  }}
-                >
-                  Add
-                </button>
-              </div>
-            </Field>
-          )}
-        </div>
+        )}
         {chans.length > 0 && (
           <>
             <div className="table-wrap channels-wrap">
@@ -1258,12 +1345,9 @@ function ConventionalPanel(props: { c: Config; k: number }) {
                   </tbody>
                 </table>
               </div>
+            {!linked && (
               <div className="row">
-                <span className="muted small">
-                  {chans.length} channel{chans.length === 1 ? "" : "s"}, {enabled} on
-                </span>
                 <span className="spacer" />
-                {!linked && (
                 <button
                   className="btn ghost small danger"
                   onClick={() => {
@@ -1273,40 +1357,26 @@ function ConventionalPanel(props: { c: Config; k: number }) {
                     }
                   }}
                 >
-                  Remove all
+                  Remove all channels
                 </button>
-              )}
-            </div>
+              </div>
+            )}
           </>
         )}
-        {chans.length > 0 && (
-          <div className="grid2">
-            <UnitNamesField
-              value={conv.unitNames}
-              anchor={`convunits-${name}`}
-              needs={need(`convunits-${name}`)}
-              onChange={(u) =>
-                edit((x) => {
-                  if (u) x.unitNames = u;
-                  else delete x.unitNames;
-                })
-              }
-            />
-          </div>
-        )}
-        {chans.length > 0 && <SystemPluginSettings system={{ conv: k }} />}
-        {chans.length > 0 && (
-          <RecordingOverridePanel
-            c={c}
-            value={conv.recording}
-            onChange={(fn) =>
-              edit((x) => {
-                x.recording = { ...x.recording };
-                fn(x.recording);
-                if (!Object.keys(x.recording).length) delete x.recording;
-              })
-            }
-          />
+        {!web && !linked && (
+          <Field
+            needs={need(`channels-${name}`)}
+            anchor={`channels-${name}`}
+            label="Channel file (optional)"
+            hint="A CSV to edit in a spreadsheet instead, re-read at each start; created from this list if new"
+          >
+            <div className="row">
+              <input className="mono grow" value={filePath} placeholder="channels.csv" onChange={(e) => setFilePath(e.target.value)} />
+              <button className="btn" disabled={!filePath.trim()} onClick={() => setChannelFile(k, filePath.trim())}>
+                Use this file
+              </button>
+            </div>
+          </Field>
         )}
         <details className="help">
           <summary>CSV format</summary>
@@ -1320,8 +1390,40 @@ function ConventionalPanel(props: { c: Config; k: number }) {
             off). Trunk Recorder's channel file reads as is; its <code>Squelch</code> column (an absolute level) isn't used.
           </p>
         </details>
-      </div>
-    </section>
+      </Group>
+      {chans.length > 0 && (
+        <Group title="Units" hint="Names for the radios heard on these channels." cols={1}>
+          <UnitNamesField
+            value={conv.unitNames}
+            anchor={`convunits-${name}`}
+            needs={need(`convunits-${name}`)}
+            onChange={(u) =>
+              edit((x) => {
+                if (u) x.unitNames = u;
+                else delete x.unitNames;
+              })
+            }
+          />
+        </Group>
+      )}
+      {chans.length > 0 && (
+        <Group title="Overrides" hint="This system's own plugin settings, plugin delays and call rules. Anything left at Default follows the Recording tab." cols={1}>
+          <SystemPluginSettings system={{ conv: k }} />
+          <SystemDelays system={{ conv: k }} />
+          <RecordingOverridePanel
+            c={c}
+            value={conv.recording}
+            onChange={(fn) =>
+              edit((x) => {
+                x.recording = { ...x.recording };
+                fn(x.recording);
+                if (!Object.keys(x.recording).length) delete x.recording;
+              })
+            }
+          />
+        </Group>
+      )}
+    </Card>
   );
 }
 
@@ -1589,6 +1691,8 @@ function SmartnetFields(props: { sys: System; edit: (fn: (x: System) => void) =>
   );
 }
 
+const SYSTEM_TYPES: Record<System["type"], string> = { p25: "P25", smartnet: "SmartNet / SmartZone", dmr: "DMR (trunked)", nxdn: "NXDN (trunked)" };
+
 function SystemCard(props: { c: Config; i: number }) {
   const { c, i } = props;
   const sys = c.systems[i];
@@ -1623,47 +1727,67 @@ function SystemCard(props: { c: Config; i: number }) {
   const ccOn = [...new Set(sys.controlChannelsHz.map((f) => sourceCovering(c, centers, f)).filter((k) => k >= 0))];
   const voiceIn = sys.voiceChannelsHz.filter((f) => sourceCovering(c, centers, f) >= 0).length;
 
+  const todo = useTodosAt(["cc", "tg", "units", "site", "sysplug"], sys.shortName);
+  const multiSite = sys.type === "dmr" || (sys.type === "nxdn" && sys.nxdnType === "typeD");
+
   return (
-    <div className={`system-card${sys.enabled ? "" : " off"}`} style={{ ["--sys-color" as string]: color }} id={`need-sys-${sys.shortName}`}>
-      <div className="row sys-head">
-        <span className="sys-dot" style={{ background: color }} />
-        <strong>{sys.shortName || "(no name)"}</strong>
-        {sys.enabled && sys.controlChannelsHz.length > 0 ? (
-          ccOn.length ? (
-            <span className="chip ok">control channel on source {ccOn.map((k) => k + 1).join(", ")}</span>
-          ) : (
-            <span className="chip bad">no control channel inside a source</span>
-          )
-        ) : null}
-        {sys.enabled && sys.voiceChannelsHz.length > 0 && (
-          <span className={`chip ${voiceIn === sys.voiceChannelsHz.length ? "ok" : "warn"}`} title="Voice channels found by the survey, inside a source">
-            voice {voiceIn}/{sys.voiceChannelsHz.length} covered
-          </span>
-        )}
-        {siblings.length > 0 && (
-          <span
-            className="chip"
-            title={`${groupWhy} — ${c.recording.dropDuplicateCalls ? "calls saved once" : "every site's copy saved"}`}
+    <Card
+      cardKey={`sys-${i}`}
+      n={c.systems.length}
+      className={`system-card${sys.enabled ? "" : " off"}`}
+      style={{ ["--sys-color" as string]: color }}
+      id={`need-sys-${sys.shortName}`}
+      head={
+        <>
+          <span className="sys-dot" style={{ background: color }} />
+          <div className="set-card-title">
+            <h3>{sys.shortName || "(no name)"}</h3>
+            <span className="set-card-sub">
+              {sys.name?.trim() ? `${sys.name.trim()} · ` : ""}
+              {SYSTEM_TYPES[sys.type]}
+            </span>
+          </div>
+          <div className="row set-card-chips">
+            {todo > 0 && <span className="chip warn">{todo} to finish</span>}
+            {sys.enabled && sys.controlChannelsHz.length > 0 ? (
+              ccOn.length ? (
+                <span className="chip ok">control channel on source {ccOn.map((k) => k + 1).join(", ")}</span>
+              ) : (
+                <span className="chip bad">no control channel inside a source</span>
+              )
+            ) : null}
+            {sys.enabled && sys.voiceChannelsHz.length > 0 && (
+              <span className={`chip ${voiceIn === sys.voiceChannelsHz.length ? "ok" : "warn"}`} title="Voice channels found by the survey, inside a source">
+                voice {voiceIn}/{sys.voiceChannelsHz.length} covered
+              </span>
+            )}
+            {siblings.length > 0 && (
+              <span className="chip" title={`${groupWhy} — ${c.recording.dropDuplicateCalls ? "calls saved once" : "every site's copy saved"}`}>
+                multi-site with {siblings.map((x) => x.shortName).join(", ")}
+              </span>
+            )}
+          </div>
+        </>
+      }
+      actions={
+        <>
+          <Switch label="Record" checked={sys.enabled} onChange={(v) => edit((x) => void (x.enabled = v))} />
+          <button
+            className="btn ghost small"
+            onClick={() => {
+              if (confirm(`Remove ${sys.shortName}? Its recordings stay on disk.`)) {
+                forgetCard("sys-", i, c.systems.length);
+                updateConfig((x) => void x.systems.splice(i, 1));
+              }
+            }}
           >
-            multi-site with {siblings.map((x) => x.shortName).join(", ")}
-          </span>
-        )}
-        <span className="spacer" />
-        <label className="toggle small">
-          <input type="checkbox" checked={sys.enabled} onChange={(e) => edit((x) => void (x.enabled = e.target.checked))} />
-          <span>Record</span>
-        </label>
-        <button
-          className="btn ghost small"
-          onClick={() => {
-            if (confirm(`Remove ${sys.shortName}? Its recordings stay on disk.`)) updateConfig((x) => void x.systems.splice(i, 1));
-          }}
-        >
-          Remove
-        </button>
-      </div>
-      <div className="grid2">
-        <Field label="Short name" hint={dupName ? "Already used — each needs its own folder" : "Its calls' folder name"}>
+            Remove
+          </button>
+        </>
+      }
+    >
+      <Group title="Basics" hint="The short name is its calls' folder.">
+        <Field label="Short name" hint={dupName ? "Already used — each needs its own folder" : undefined}>
           <input
             value={sys.shortName}
             onChange={(e) => {
@@ -1689,19 +1813,24 @@ function SystemCard(props: { c: Config; i: number }) {
               })
             }
           >
-            <option value="p25">P25</option>
-            <option value="smartnet">SmartNet / SmartZone</option>
-            <option value="dmr">DMR (trunked)</option>
-            <option value="nxdn">NXDN (trunked)</option>
+            {Object.entries(SYSTEM_TYPES).map(([k, label]) => (
+              <option key={k} value={k}>
+                {label}
+              </option>
+            ))}
           </select>
         </Field>
-        {sys.type !== "dmr" && sys.type !== "nxdn" && <Field label={sys.type === "smartnet" ? "P25 voice modulation" : "Modulation"}>
-          <select value={sys.modulation} onChange={(e) => edit((x) => void (x.modulation = e.target.value as System["modulation"]))}>
-            <option value="auto">Auto (both receivers)</option>
-            <option value="fsk4">C4FM (fsk4)</option>
-            <option value="qpsk">CQPSK / LSM simulcast (qpsk)</option>
-          </select>
-        </Field>}
+        {sys.type !== "dmr" && sys.type !== "nxdn" && (
+          <Field label={sys.type === "smartnet" ? "P25 voice modulation" : "Modulation"}>
+            <select value={sys.modulation} onChange={(e) => edit((x) => void (x.modulation = e.target.value as System["modulation"]))}>
+              <option value="auto">Auto (both receivers)</option>
+              <option value="fsk4">C4FM (fsk4)</option>
+              <option value="qpsk">CQPSK / LSM simulcast (qpsk)</option>
+            </select>
+          </Field>
+        )}
+      </Group>
+      <Group title="On the air" hint="Where the recorder finds it.">
         <Field
           needs={need(`cc-${sys.shortName}`)}
           anchor={`cc-${sys.shortName}`}
@@ -1726,6 +1855,11 @@ function SystemCard(props: { c: Config; i: number }) {
             }}
           />
         </Field>
+        {sys.type === "smartnet" && <SmartnetFields sys={sys} edit={edit} />}
+        {sys.type === "dmr" && <DmrFields sys={sys} edit={edit} />}
+        {sys.type === "nxdn" && <NxdnFields sys={sys} edit={edit} />}
+      </Group>
+      <Group title="Talkgroups and units" hint="Names for what is heard, and which talkgroups are recorded.">
         <TalkgroupsField sys={sys} index={i} needs={need(`tg-${sys.shortName}`)} anchor={`tg-${sys.shortName}`} />
         <UnitNamesField
           value={sys.unitNames}
@@ -1738,20 +1872,12 @@ function SystemCard(props: { c: Config; i: number }) {
             })
           }
         />
-        {sys.type === "smartnet" && <SmartnetFields sys={sys} edit={edit} />}
-        {sys.type === "dmr" && <DmrFields sys={sys} edit={edit} />}
-        {sys.type === "nxdn" && <NxdnFields sys={sys} edit={edit} />}
-        <Field
-          label="Site group"
-          hint={
-            sys.type === "dmr" || (sys.type === "nxdn" && sys.nxdnType === "typeD")
-              ? "Same name on each site: calls saved once"
-              : "Only to join ISSI-linked systems or split a site"
-          }
-        >
+      </Group>
+      <Group title="Sites" hint={multiSite ? "Systems with the same site group save a call heard on several sites once." : "Sites of one system are matched from the air; a site lock follows only one."}>
+        <Field label="Site group" hint={multiSite ? "Same name on each site: calls saved once" : "Only to join ISSI-linked systems or split a site"}>
           <input
             value={sys.siteGroup ?? ""}
-            placeholder={sys.type === "dmr" || (sys.type === "nxdn" && sys.nxdnType === "typeD") ? "none" : "from the air"}
+            placeholder={multiSite ? "none" : "from the air"}
             onChange={(e) =>
               edit((x) => {
                 if (e.target.value.trim()) x.siteGroup = e.target.value;
@@ -1760,47 +1886,50 @@ function SystemCard(props: { c: Config; i: number }) {
             }
           />
         </Field>
-      </div>
-      <SystemPluginSettings system={i} />
-      <RecordingOverridePanel
-        c={c}
-        value={sys.recording}
-        onChange={(fn) =>
-          edit((x) => {
-            x.recording = { ...x.recording };
-            fn(x.recording);
-            if (!Object.keys(x.recording).length) delete x.recording;
-          })
-        }
-      />
-      {lockFields.length > 0 && (
-        <details className={`help${need(`site-${sys.shortName}`) ? " needs" : ""}`} id={`need-site-${sys.shortName}`} open={need(`site-${sys.shortName}`) ? true : undefined}>
-          <summary>
-            Site lock{locked ? <span className="muted"> — only {siteText(lockedTo)}</span> : <span className="muted"> — off</span>}
-          </summary>
-          <p className="muted small">
-            {need(`site-${sys.shortName}`) && (
-              <>
-                <span className="field-needs">{need(`site-${sys.shortName}`)}</span>{" "}
-              </>
+        {lockFields.length > 0 && (
+          <details className={`help wide${need(`site-${sys.shortName}`) ? " needs" : ""}`} id={`need-site-${sys.shortName}`} open={need(`site-${sys.shortName}`) ? true : undefined}>
+            <summary>
+              Site lock{locked ? <span className="muted"> — only {siteText(lockedTo)}</span> : <span className="muted"> — off</span>}
+            </summary>
+            <p className="muted small">
+              {need(`site-${sys.shortName}`) && (
+                <>
+                  <span className="field-needs">{need(`site-${sys.shortName}`)}</span>{" "}
+                </>
+              )}
+              Follow only a control channel announcing this site. Empty = any; {sys.type === "smartnet" || sys.type === "nxdn" ? "System ID in hex" : "NAC, WACN and System ID in hex"}.
+            </p>
+            <div className="id-grid">
+              {LOCK_INPUTS.filter((x) => lockFields.includes(x.key)).map((x) => (
+                <Field key={x.key} label={x.label}>
+                  <NumInput label={x.label} hex={x.hex} value={sys.expect[x.key]} onChange={(v) => setExpect(x.key, v)} />
+                </Field>
+              ))}
+            </div>
+            {locked && (
+              <button className="btn ghost small" onClick={() => edit((x) => void (x.expect = {}))}>
+                Clear the lock
+              </button>
             )}
-            Follow only a control channel announcing this site. Empty = any; {sys.type === "smartnet" || sys.type === "nxdn" ? "System ID in hex" : "NAC, WACN and System ID in hex"}.
-          </p>
-          <div className="id-grid">
-            {LOCK_INPUTS.filter((x) => lockFields.includes(x.key)).map((x) => (
-              <Field key={x.key} label={x.label}>
-                <NumInput label={x.label} hex={x.hex} value={sys.expect[x.key]} onChange={(v) => setExpect(x.key, v)} />
-              </Field>
-            ))}
-          </div>
-          {locked && (
-            <button className="btn ghost small" onClick={() => edit((x) => void (x.expect = {}))}>
-              Clear the lock
-            </button>
-          )}
-        </details>
-      )}
-    </div>
+          </details>
+        )}
+      </Group>
+      <Group title="Overrides" hint="This system's own plugin settings, plugin delays and call rules. Anything left at Default follows the Recording tab." cols={1}>
+        <SystemPluginSettings system={i} />
+        <SystemDelays system={i} />
+        <RecordingOverridePanel
+          c={c}
+          value={sys.recording}
+          onChange={(fn) =>
+            edit((x) => {
+              x.recording = { ...x.recording };
+              fn(x.recording);
+              if (!Object.keys(x.recording).length) delete x.recording;
+            })
+          }
+        />
+      </Group>
+    </Card>
   );
 }
 
@@ -1859,55 +1988,19 @@ function LogPanel(props: { c: Config }) {
   const l: LogSettings = props.c.log ?? defaultLog();
   const set = (patch: Partial<LogSettings>) => updateConfig((x) => void (x.log = { ...l, ...patch }));
   return (
-    <section className="panel">
-      <header className="panel-head">
-        <h2>Log</h2>
-      </header>
-      <div className="stack">
-        <p className="muted small">
-          <code>--log-level</code> on the command line overrides Level.
-        </p>
-        <div className="grid3">
-          <Field label="Level" hint="Debug adds unrecorded calls; trace, every control message">
-            <select value={l.level} onChange={(e) => set({ level: e.target.value as LogSettings["level"] })}>
-              {["trace", "debug", "info", "warning", "error", "fatal"].map((v) => (
-                <option key={v} value={v}>
-                  {v}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Frequencies as">
-            <select value={l.frequencyFormat} onChange={(e) => set({ frequencyFormat: e.target.value as LogSettings["frequencyFormat"] })}>
-              <option value="mhz">857.987500 MHz</option>
-              <option value="hz">857987500 Hz</option>
-              <option value="exp">8.579875e+08</option>
-            </select>
-          </Field>
-          <Field label="Talkgroups as">
-            <select value={l.talkgroupDisplayFormat} onChange={(e) => set({ talkgroupDisplayFormat: e.target.value as LogSettings["talkgroupDisplayFormat"] })}>
-              <option value="id">3747</option>
-              <option value="id_tag">3747 (DCFD Disp)</option>
-              <option value="tag_id">(DCFD Disp) 3747</option>
-            </select>
-          </Field>
-          <Field label="Colour">
-            <select value={l.color} onChange={(e) => set({ color: e.target.value })}>
-              <option value="">Console, on a terminal</option>
-              <option value="console">Console</option>
-              <option value="logfile">Log files</option>
-              <option value="all">Both</option>
-              <option value="none">None</option>
-            </select>
-          </Field>
-          <Field label="Decode rate warning, msg/s" hint="Fewer is logged as an error; −1 always logs it">
-            <DecInput label="Decode rate warning" value={l.controlWarnRatePerS} onChange={(v) => set({ controlWarnRatePerS: v ?? 10 })} />
-          </Field>
+    <section className="set-card">
+      <header className="set-card-head">
+        <div className="set-card-title">
+          <h3>Log</h3>
+          <span className="set-card-sub">Applied at once</span>
         </div>
-        <Toggle label="To the console" hint="stderr" checked={l.console} onChange={(v) => set({ console: v })} />
-        <Toggle label="To files" hint="a new one daily and at 100 MB" checked={l.file} onChange={(v) => set({ file: v })} />
+      </header>
+      <Group title="Where it goes">
+        <Toggle label="To the console" hint="Standard error (stderr)" checked={l.console} onChange={(v) => set({ console: v })} />
+        <Toggle label="To the system log" checked={l.syslog} onChange={(v) => set({ syslog: v })} />
+        <Toggle label="To files" hint="A new one daily and at 100 MB" checked={l.file} onChange={(v) => set({ file: v })} />
         {l.file && (
-          <div className="grid2">
+          <>
             <Field label="Folder" hint="Relative to the config file">
               <input className="mono" value={l.dir} placeholder="logs" onChange={(e) => set({ dir: e.target.value })} />
             </Field>
@@ -1917,11 +2010,54 @@ function LogPanel(props: { c: Config }) {
               checked={l.syslogFriendly}
               onChange={(v) => set({ syslogFriendly: v })}
             />
-          </div>
+          </>
         )}
-        <Toggle label="To the system log" checked={l.syslog} onChange={(v) => set({ syslog: v })} />
+      </Group>
+      <Group
+        title="What it says"
+        hint={
+          <>
+            <code>--log-level</code> on the command line overrides Level.
+          </>
+        }
+      >
+        <Field label="Level" hint="Debug adds unrecorded calls; trace, every control message">
+          <select value={l.level} onChange={(e) => set({ level: e.target.value as LogSettings["level"] })}>
+            {["trace", "debug", "info", "warning", "error", "fatal"].map((v) => (
+              <option key={v} value={v}>
+                {v}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label="Decode rate warning, msg/s" hint="Fewer is logged as an error; −1 always logs it">
+          <DecInput label="Decode rate warning" value={l.controlWarnRatePerS} onChange={(v) => set({ controlWarnRatePerS: v ?? 10 })} />
+        </Field>
+        <Field label="Frequencies as">
+          <select value={l.frequencyFormat} onChange={(e) => set({ frequencyFormat: e.target.value as LogSettings["frequencyFormat"] })}>
+            <option value="mhz">857.987500 MHz</option>
+            <option value="hz">857987500 Hz</option>
+            <option value="exp">8.579875e+08</option>
+          </select>
+        </Field>
+        <Field label="Talkgroups as">
+          <select value={l.talkgroupDisplayFormat} onChange={(e) => set({ talkgroupDisplayFormat: e.target.value as LogSettings["talkgroupDisplayFormat"] })}>
+            <option value="id">3747</option>
+            <option value="id_tag">3747 (DCFD Disp)</option>
+            <option value="tag_id">(DCFD Disp) 3747</option>
+          </select>
+        </Field>
+        <Field label="Colour">
+          <select value={l.color} onChange={(e) => set({ color: e.target.value })}>
+            <option value="">Console, on a terminal</option>
+            <option value="console">Console</option>
+            <option value="logfile">Log files</option>
+            <option value="all">Both</option>
+            <option value="none">None</option>
+          </select>
+        </Field>
         <Toggle label="States as words" hint="“Monitoring”, not a number" checked={l.statusAsString} onChange={(v) => set({ statusAsString: v })} />
-      </div>
+      </Group>
     </section>
   );
 }
@@ -1947,9 +2083,10 @@ type Rule =
   | { key: NumRule; kind: "num"; label: string; hint?: string; min: number; max: number; zero?: string }
   | { key: "filenameFormat"; kind: "text"; label: string };
 
-const RULE_GROUPS: { title: string; rules: Rule[] }[] = [
+const RULE_GROUPS: { title: string; hint?: string; rules: Rule[] }[] = [
   {
     title: "What is recorded",
+    hint: "Which calls are picked up, and when one ends.",
     rules: [
       { key: "recordUnknown", kind: "bool", label: "Talkgroups not in the talkgroup file" },
       { key: "recordUnitToUnit", kind: "bool", label: "Unit-to-unit calls", hint: "private calls between two radios" },
@@ -1958,6 +2095,7 @@ const RULE_GROUPS: { title: string; rules: Rule[] }[] = [
   },
   {
     title: "Which calls are kept",
+    hint: "Calls too short to be worth keeping, and long ones split.",
     rules: [
       { key: "minCallS", kind: "num", label: "Shortest call, s", hint: "Shorter calls are deleted, not uploaded", min: 0, max: 60, zero: "keep all" },
       {
@@ -1975,6 +2113,7 @@ const RULE_GROUPS: { title: string; rules: Rule[] }[] = [
   },
   {
     title: "Audio",
+    hint: "Loudness, for calls that sound alike.",
     rules: [
       { key: "normalizeAudio", kind: "bool", label: "Even out call loudness" },
       { key: "digitalLevelDb", kind: "num", label: "Digital Level Adjustment, dB", min: -20, max: 20 },
@@ -1983,6 +2122,7 @@ const RULE_GROUPS: { title: string; rules: Rule[] }[] = [
   },
   {
     title: "Files",
+    hint: "Where each call is saved, and in what format.",
     rules: [
       { key: "filenameFormat", kind: "text", label: "Folders and file names" },
       { key: "compressWav", kind: "bool", label: "Also save an M4A", hint: "a tenth the size; needs ffmpeg or afconvert", desktop: true },
@@ -1991,6 +2131,7 @@ const RULE_GROUPS: { title: string; rules: Rule[] }[] = [
   {
     // What stays in the recordings folder once the plugins are done with a call (docs/guides/recordings.md).
     title: "Archive",
+    hint: "What stays in the recordings folder once the plugins are done with a call.",
     rules: [
       { key: "audioArchive", kind: "bool", label: "Keep audio", hint: "off: deleted once the plugins are done with the call", desktop: true },
       { key: "callLog", kind: "bool", label: "Keep call JSON", hint: "off: deleted once the plugins are done with the call", desktop: true },
@@ -2019,56 +2160,47 @@ function CallRules(props: { c: Config }) {
   const r = props.c.recording;
   const set = <K extends keyof RecordingRules>(k: K, v: RecordingRules[K]) => updateConfig((x) => void ((x.recording as RecordingRules)[k] = v));
   return (
-    <section className="panel">
-      <header className="panel-head">
-        <h2>Call rules</h2>
-      </header>
-      <div className="stack">
-        <p className="muted small">Defaults for every system; each can override them.</p>
-        {RULE_GROUPS.filter((g) => g.rules.some(ruleShown)).map((g) => (
-          <div key={g.title} className="rule-group">
-            <h3>{g.title}</h3>
-            <div className="grid2">
-              {g.rules.filter(ruleShown).map((rule) =>
-                rule.kind === "bool" ? (
-                  <Toggle
-                    key={rule.key}
-                    label={rule.label}
-                    hint={rule.inactive?.(r) ?? rule.hint}
-                    checked={!!r[rule.key]}
-                    disabled={!!rule.inactive?.(r)}
-                    onChange={(v) => set(rule.key, v)}
-                  />
-                ) : rule.kind === "num" ? (
-                  <Field key={rule.key} label={rule.label} hint={rule.hint}>
-                    <DecInput
-                      label={rule.label}
-                      value={r[rule.key]}
-                      placeholder={rule.zero ? `0 = ${rule.zero}` : undefined}
-                      onChange={(v) => set(rule.key, Math.max(rule.min, Math.min(rule.max, v ?? 0)))}
-                    />
-                  </Field>
-                ) : (
-                  <FilenameEditor
-                    key={rule.key}
-                    label={rule.label}
-                    value={r.filenameFormat}
-                    fallback={DEFAULT_FORMAT}
-                    fallbackName="Trunk Recorder's layout"
-                    root={web ? undefined : props.c.recording.captureDir}
-                    onChange={(v) => set("filenameFormat", v.trim() ? v : "")}
-                  />
-                ),
-              )}
-            </div>
-            {g.title === "Archive" && (!r.audioArchive || !r.callLog) && !Object.values(props.c.plugins ?? {}).some((p) => p.enabled) && (
-              <p className="muted small">
-                No plugin is on, so there's nothing to wait for: {!r.audioArchive && !r.callLog ? "calls aren't saved at all" : !r.audioArchive ? "calls' audio isn't saved at all" : "calls' JSON isn't saved at all"}.
-              </p>
-            )}
-          </div>
-        ))}
-      </div>
+    <section className="set-card">
+      {RULE_GROUPS.filter((g) => g.rules.some(ruleShown)).map((g) => (
+        <Group key={g.title} title={g.title} hint={g.hint}>
+          {g.rules.filter(ruleShown).map((rule) =>
+            rule.kind === "bool" ? (
+              <Toggle
+                key={rule.key}
+                label={rule.label}
+                hint={rule.inactive?.(r) ?? rule.hint}
+                checked={!!r[rule.key]}
+                disabled={!!rule.inactive?.(r)}
+                onChange={(v) => set(rule.key, v)}
+              />
+            ) : rule.kind === "num" ? (
+              <Field key={rule.key} label={rule.label} hint={rule.hint}>
+                <DecInput
+                  label={rule.label}
+                  value={r[rule.key]}
+                  placeholder={rule.zero ? `0 = ${rule.zero}` : undefined}
+                  onChange={(v) => set(rule.key, Math.max(rule.min, Math.min(rule.max, v ?? 0)))}
+                />
+              </Field>
+            ) : (
+              <FilenameEditor
+                key={rule.key}
+                label={rule.label}
+                value={r.filenameFormat}
+                fallback={DEFAULT_FORMAT}
+                fallbackName="Trunk Recorder's layout"
+                root={web ? undefined : props.c.recording.captureDir}
+                onChange={(v) => set("filenameFormat", v.trim() ? v : "")}
+              />
+            ),
+          )}
+          {g.title === "Archive" && (!r.audioArchive || !r.callLog) && !Object.values(props.c.plugins ?? {}).some((p) => p.enabled) && (
+            <p className="muted small wide">
+              No plugin is on, so there's nothing to wait for: {!r.audioArchive && !r.callLog ? "calls aren't saved at all" : !r.audioArchive ? "calls' audio isn't saved at all" : "calls' JSON isn't saved at all"}.
+            </p>
+          )}
+        </Group>
+      ))}
     </section>
   );
 }
@@ -2210,49 +2342,59 @@ export function Setup() {
       <TodoPanel />
       <SetupTabs c={c} tab={tab} />
       {tab === "systems" && (
-      <>
-      <SurveyPanel c={c} />
-      <section className="panel">
-        <header className="panel-head">
-          <h2>Systems</h2>
-          <div className="row">
-            <button className="btn ghost" onClick={() => updateConfig((x) => void x.systems.push(newSystem(x)))}>
-              Add a system
-            </button>
-            <button className="btn ghost" onClick={() => openGuide("import")}>
-              Import Trunk Recorder config…
-            </button>
-          </div>
-        </header>
-        <div className="stack">
-          {c.systems.map((_, i) => (
-            <SystemCard key={`${i}-${c.systems.length}-${s.configEpoch}`} c={c} i={i} />
-          ))}
-          {c.systems.length === 0 ? (
-            <p className="empty small">No trunked systems yet.</p>
-          ) : null}
-        </div>
-      </section>
-      </>
+        <>
+          <Section
+            title="Trunked systems"
+            hint="P25, SmartNet, DMR and NXDN systems, followed through their control channels."
+            actions={
+              <>
+                <ExpandAll prefix="sys-" n={c.systems.length} />
+                <button className="btn ghost" onClick={() => openGuide("import")}>
+                  Import Trunk Recorder config…
+                </button>
+                <button
+                  className="btn"
+                  onClick={() => {
+                    addCard("sys-", c.systems.length);
+                    updateConfig((x) => void x.systems.push(newSystem(x)));
+                  }}
+                >
+                  Add a system
+                </button>
+              </>
+            }
+          >
+            {c.systems.map((_, i) => (
+              <SystemCard key={`${i}-${c.systems.length}-${s.configEpoch}`} c={c} i={i} />
+            ))}
+            {c.systems.length === 0 && <p className="set-empty">No trunked systems yet. Add one, import a Trunk Recorder config, or find one on the air below.</p>}
+          </Section>
+          <SurveyPanel c={c} />
+        </>
       )}
 
       {tab === "conventional" && <ConventionalTab c={c} />}
 
       {tab === "radios" && (
-      <section className="panel">
-        <header className="panel-head">
-          <h2>Radios</h2>
-          <button
-            className="btn ghost"
-            onClick={() => {
-              setFreshSource(c.sources.length);
-              updateConfig((x) => void x.sources.push(newDongle()));
-            }}
-          >
-            Add a source
-          </button>
-        </header>
-        <div className="stack">
+        <Section
+          title="Radios"
+          hint="Each source hears a slice of spectrum; the systems and channels inside it are recorded."
+          actions={
+            <>
+              <ExpandAll prefix="src-" n={c.sources.length} />
+              <button
+                className="btn"
+                onClick={() => {
+                  setFreshSource(c.sources.length);
+                  addCard("src-", c.sources.length);
+                  updateConfig((x) => void x.sources.push(newDongle()));
+                }}
+              >
+                Add a source
+              </button>
+            </>
+          }
+        >
           {c.sources.map((_, i) => (
             <SourceCard key={`${i}-${s.configEpoch}`} c={c} i={i} fresh={freshSource === i} onFreshDone={() => setFreshSource(null)} />
           ))}
@@ -2270,96 +2412,105 @@ export function Setup() {
                 <li>For several dongles or long unattended runs, the desktop app is sturdier.</li>
               </ul>
             ) : (
-            <ul>
-              <li>
-                <b>Windows:</b> install the WinUSB driver for “Bulk-In, Interface 0” with Zadig.
-              </li>
-              <li>
-                <b>Linux:</b> add a udev rule giving your user access to USB 0bda:2838 and 0bda:2832, and unload the DVB driver (<code>sudo rmmod dvb_usb_rtl28xxu</code>) if it holds the dongle.
-              </li>
-              <li>
-                <b>macOS:</b> works as-is. Quit other SDR apps that hold the dongle.
-              </li>
-            </ul>
+              <ul>
+                <li>
+                  <b>Windows:</b> install the WinUSB driver for “Bulk-In, Interface 0” with Zadig.
+                </li>
+                <li>
+                  <b>Linux:</b> add a udev rule giving your user access to USB 0bda:2838 and 0bda:2832, and unload the DVB driver (<code>sudo rmmod dvb_usb_rtl28xxu</code>) if it holds the dongle.
+                </li>
+                <li>
+                  <b>macOS:</b> works as-is. Quit other SDR apps that hold the dongle.
+                </li>
+              </ul>
             )}
           </details>
-        </div>
-      </section>
+        </Section>
       )}
 
       {tab === "recording" && (
-      <section className="panel">
-        <header className="panel-head">
-          <h2>Recorder</h2>
-        </header>
-        <div className="stack">
-          {web ? (
-            <p className="muted small">Calls are kept in this browser; <i>Recorded calls</i> exports them.</p>
-          ) : (
-            <Field label="Recordings folder" wide>
-              <input className="mono" value={c.recording.captureDir} onChange={(e) => updateConfig((x) => void (x.recording.captureDir = e.target.value))} />
-            </Field>
-          )}
-          {!web && (
-            <Toggle
-              label="Keep calls waiting to upload in memory"
-              hint="a RAM disk, not the recordings folder; from the next start"
-              checked={c.recording.ramSpool?.enabled ?? false}
-              onChange={(v) => updateConfig((x) => void (x.recording.ramSpool = { sizeMb: 256, ...x.recording.ramSpool, enabled: v }))}
-            />
-          )}
-          {!web && c.recording.ramSpool?.enabled && (
-            <Field label="RAM spool size, MB" hint="When full, calls go to the recordings folder">
-              <input
-                className="mono"
-                value={c.recording.ramSpool.sizeMb}
-                onChange={(e) => updateConfig((x) => void (x.recording.ramSpool = { ...x.recording.ramSpool!, sizeMb: Math.max(16, Math.min(8192, Number(e.target.value) || 256)) }))}
+        <Section title="Recorder" hint="Where calls go and how the recorder runs.">
+          <section className="set-card">
+            <Group title="Storage" hint={web ? undefined : "The RAM spool spares an SSD the writes of calls that are uploaded, then deleted."}>
+              {web ? (
+                <p className="muted small wide">Calls are kept in this browser; <i>Recorded calls</i> exports them.</p>
+              ) : (
+                <>
+                  <Field label="Recordings folder" wide>
+                    <input className="mono" value={c.recording.captureDir} onChange={(e) => updateConfig((x) => void (x.recording.captureDir = e.target.value))} />
+                  </Field>
+                  <Toggle
+                    label="Keep calls waiting to upload in memory"
+                    hint="A RAM disk, not the recordings folder; from the next start"
+                    checked={c.recording.ramSpool?.enabled ?? false}
+                    onChange={(v) => updateConfig((x) => void (x.recording.ramSpool = { sizeMb: 256, ...x.recording.ramSpool, enabled: v }))}
+                  />
+                  {c.recording.ramSpool?.enabled && (
+                    <Field label="RAM spool size, MB" hint="When full, calls go to the recordings folder">
+                      <input
+                        className="mono"
+                        value={c.recording.ramSpool.sizeMb}
+                        onChange={(e) => updateConfig((x) => void (x.recording.ramSpool = { ...x.recording.ramSpool!, sizeMb: Math.max(16, Math.min(8192, Number(e.target.value) || 256)) }))}
+                      />
+                    </Field>
+                  )}
+                </>
+              )}
+            </Group>
+            <Group title="Recording" hint="How many calls at once, and how each one is decoded." cols={3}>
+              <Field label="Recorders" hint="Calls recorded at once">
+                <input className="mono" value={c.recording.maxRecorders} onChange={(e) => updateConfig((x) => void (x.recording.maxRecorders = Math.max(1, Math.min(64, Number(e.target.value) || 32))))} />
+              </Field>
+              <Field label="Pre-roll, s" hint="Audio kept from before each grant">
+                <input className="mono" value={c.recording.prerollS} onChange={(e) => updateConfig((x) => void (x.recording.prerollS = Math.max(0, Math.min(3, Number(e.target.value) || 0))))} />
+              </Field>
+              <Field label="P25 voice decoder" hint="Fixed-point usually sounds most natural">
+                <select value={c.recording.vocoder ?? "fixed"} onChange={(e) => updateConfig((x) => void (x.recording.vocoder = e.target.value as "fixed" | "enhanced" | "mbelib"))}>
+                  <option value="fixed">Fixed-point</option>
+                  <option value="enhanced">Enhanced</option>
+                  <option value="mbelib">mbelib</option>
+                </select>
+              </Field>
+              <Toggle
+                label="Save a call heard on several sites once"
+                hint="Keeps the cleanest copy, or the Preferred Site's"
+                checked={c.recording.dropDuplicateCalls ?? true}
+                onChange={(v) => updateConfig((x) => void (x.recording.dropDuplicateCalls = v))}
               />
-            </Field>
-          )}
-          <div className="grid3">
-            <Field label="Recorders" hint="Calls recorded at once">
-              <input className="mono" value={c.recording.maxRecorders} onChange={(e) => updateConfig((x) => void (x.recording.maxRecorders = Math.max(1, Math.min(64, Number(e.target.value) || 32))))} />
-            </Field>
-            <Field label="Pre-roll, s" hint="Audio kept from before each grant">
-              <input className="mono" value={c.recording.prerollS} onChange={(e) => updateConfig((x) => void (x.recording.prerollS = Math.max(0, Math.min(3, Number(e.target.value) || 0))))} />
-            </Field>
-            <Field label="P25 voice decoder" hint="Fixed-point usually sounds most natural">
-              <select value={c.recording.vocoder ?? "fixed"} onChange={(e) => updateConfig((x) => void (x.recording.vocoder = e.target.value as "fixed" | "enhanced" | "mbelib"))}>
-                <option value="fixed">Fixed-point</option>
-                <option value="enhanced">Enhanced</option>
-                <option value="mbelib">mbelib</option>
-              </select>
-            </Field>
-          </div>
-          <Toggle
-            label="Save a call heard on several sites once"
-            hint="keeps the cleanest copy, or the Preferred Site's"
-            checked={c.recording.dropDuplicateCalls ?? true}
-            onChange={(v) => updateConfig((x) => void (x.recording.dropDuplicateCalls = v))}
-          />
-          {!web && (
-            <Toggle
-              label="Start recording when the app starts"
-              checked={c.server.autoStart}
-              onChange={(v) => updateConfig((x) => void (x.server.autoStart = v))}
-            />
-          )}
-          {!web && (
-            <Toggle
-              label="Save vocoder frames"
-              hint="as <call>.sdr, for diagnostics and MimoSDR"
-              checked={c.recording.captureFrames}
-              onChange={(v) => updateConfig((x) => void (x.recording.captureFrames = v))}
-            />
-          )}
-        </div>
-      </section>
+            </Group>
+            {!web && (
+              <Group title="Startup and diagnostics">
+                <Toggle label="Start recording when the app starts" checked={c.server.autoStart} onChange={(v) => updateConfig((x) => void (x.server.autoStart = v))} />
+                <Toggle
+                  label="Save vocoder frames"
+                  hint="As <call>.sdr, for diagnostics and MimoSDR"
+                  checked={c.recording.captureFrames}
+                  onChange={(v) => updateConfig((x) => void (x.recording.captureFrames = v))}
+                />
+              </Group>
+            )}
+          </section>
+        </Section>
       )}
-      {tab === "recording" && <CallRules c={c} />}
-      {tab === "recording" && !web && <LogPanel c={c} />}
-      {tab === "recording" && !web && <M4aSettings />}
-      {tab === "recording" && !web && <InterfacesPanel />}
+      {tab === "recording" && !web && s.lockable.length > 0 && (
+        <Section title="Key containers" hint="Encryption keys in a KFDtool container with no password file. Unlocked keys stay in memory until you lock them or the app quits; the password is never saved.">
+          {s.lockable.map((k) => (
+            <KeyContainer key={k.name} k={k} />
+          ))}
+        </Section>
+      )}
+      {tab === "recording" && (
+        <Section title="Call rules" hint="Defaults for every system; each system can override them on its card.">
+          <CallRules c={c} />
+        </Section>
+      )}
+      {tab === "recording" && !web && (
+        <Section title="Advanced" hint="Audio encoding, the log, and other pages that use the recorder.">
+          <M4aSettings />
+          <LogPanel c={c} />
+          <InterfacesPanel />
+        </Section>
+      )}
 
       {tab === "plugins" && !web && <PluginSetupPanel />}
     </div>

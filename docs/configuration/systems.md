@@ -37,9 +37,10 @@ channel. Each site you record from its own control channel is its own entry, wit
 | `expect` | | `{}` | object | Site lock: only follow a control channel with this identity. See [Site lock](#site-lock-expect) |
 | `voiceChannelsHz` | | `[]` | array of numbers | Voice channels Find my system heard. Used only to place Auto sources so they cover them too |
 | `siteGroup` | | `""` | string | Groups sites whose calls are the same calls. See [Multi-site](#multi-site) |
-| `keys` | | `""` | string | P25: a file of encryption keys, absolute or relative to the config file's folder (desktop app only; not in the interface). See [Encryption keys](#encryption-keys-keys) |
+| `keys` | | `""` | string | P25: the encryption keys it decrypts with, a key source's name (desktop app only; not in the interface). See [Encryption keys](#encryption-keys-keys) |
 | `recording` | | `{}` | object | This system's own call rules; a rule left out follows the global `recording`. See [recording.md](recording.md#per-system-rules) |
 | `plugins` | | `{}` | object | This system's plugin settings, by plugin id. See [plugins.md](plugins.md#per-system-settings) |
+| `pluginDelays` | | `[]` | array | How long plugins wait for this system's calls (all of them, some talkgroups', some plugins'). See [plugins.md](plugins.md#delays) |
 
 ## P25 and SmartNet
 
@@ -139,7 +140,26 @@ or `Preferred NAC` column.
 **Experimental.** If you are authorized to monitor an encrypted P25 system and hold its keys, the
 recorder can decrypt its voice, P25 Phase 1 and Phase 2. DMR and NXDN calls stay encrypted.
 
-The keys live in a file of their own, never in the config, which the interface reads and edits:
+The keys live in a file of their own, never in the config, which the interface reads and edits. The
+config's top-level `keys` names each such file once, as a **key source**, and each system that
+decrypts names its source in its own `keys` (systems on one county's radios share one):
+
+```json
+{
+  "keys": { "county": { "file": "county.json" } },
+  "systems": [{ "shortName": "fire", "keys": "county", ... }, { "shortName": "pd", "keys": "county", ... }]
+}
+```
+
+| Key source key | Description |
+|---|---|
+| `file` | A keys file (below) or a [KFDtool key container](#keys-in-a-kfdtool-container), absolute or relative to the config file's folder. Which it is, is read from the file |
+| `passwordFile` | A container's password, in a file of its own. See [Keys in a KFDtool container](#keys-in-a-kfdtool-container) |
+
+A config from before key sources, whose systems named their keys file in `keys`, is read as one source
+per file, named after it.
+
+A keys file:
 
 ```json
 { "keys": [
@@ -170,6 +190,38 @@ The keys live in a file of their own, never in the config, which the interface r
   missing.
 - The talkgroup page on the Radio dashboard lists the ciphers heard (algorithm and key ID), which
   tells you which keys a talkgroup needs.
+
+### Keys in a KFDtool container
+
+A key source's `file` can be a KFDtool key container (`.ekc`), the file KFDtool exports, instead of a
+JSON file. It is encrypted with its own password, which goes in a separate file named by `passwordFile`:
+
+```json
+"keys": { "county": { "file": "county.ekc", "passwordFile": "/run/secrets/county-password" } }
+```
+
+- The password file holds the password on its first line. On Unix it must not be readable by
+  others (`chmod 600`), except under `/run/secrets`, where the container runtime sets the modes;
+  otherwise the start is refused. Kept apart from the container (a Docker or systemd secret), it
+  means the keys are never in the clear on disk.
+- Every voice key in the container is used by key ID on any talkgroup. Key-encryption keys, and
+  algorithms that can't be decrypted (DES-XL), are listed in the log and left out; the rest still
+  load. A container with the wrong password, or a damaged one, stops the start.
+- `passwordFile` with a JSON keys file is an error.
+
+#### Unlocking a container in the interface
+
+A container with no `passwordFile` doesn't stop recording from starting: its systems run without
+keys, and **Setup → Recording → Key containers** asks for its password. **Unlock** decrypts it in
+memory, and its systems decrypt from then on, calls in progress too (from their next encryption
+sync). **Lock** forgets the keys and they stop at once. The password is never saved or logged.
+
+- The keys last until Lock or until the app stops. After a restart, a crash or an update, the
+  container is locked again until someone types the password, and its encrypted calls are left
+  out as any encrypted call is. Use `passwordFile` for a recorder that must decrypt unattended.
+- Anyone who can open the interface can unlock and lock it. The interface is plain HTTP, so a
+  password typed on another computer crosses the network unencrypted; by default the interface
+  is only reachable from the recorder's own computer (`server.bind`).
 
 ## Talkgroup file
 

@@ -1,3 +1,5 @@
+/* The interface's style: tokens, type, layout patterns and wording are
+   described in docs/developer/ui-style.md. Keep the two in step. */
 :root {
   --bg: #0d1117;
   --panel: #151b23;
@@ -601,57 +603,130 @@ input.ob-picker-path { font: 15px var(--mono); padding: 7px 10px; border-radius:
 input.ob-picker-path:hover, input.ob-picker-path:focus { border-color: var(--line); background: var(--bg); outline: none; }
 .plugin-card.needs > .field-needs { margin-bottom: 8px; }
 
-/* ── the setup page, in the setup guide's style: roomy, larger type, tabs ── */
-.setup { gap: 22px; font-size: 15px; line-height: 1.5; }
-.setup .stack { gap: 16px; }
-.setup .muted.small, .setup .small, .setup .field-hint, .setup .help { font-size: 13.5px; }
+/* ── the setup page ───────────────────────────────────────────────────────────
+   Three levels, each a step down in type: a section (a heading over its cards,
+   SetupLayout.tsx), a card (one system, source or panel), and inside a card,
+   groups of related settings named on the left. Then each field's label, and
+   its hint. */
+.setup {
+  --fs-section: 22px; --fs-card: 17px; --fs-group: 14.5px; --fs-label: 13px; --fs-hint: 12.5px;
+  --text-2: color-mix(in srgb, var(--text) 78%, var(--muted));
+  gap: 36px; font-size: 14px; line-height: 1.5; max-width: 1120px;
+}
+.setup .stack { gap: 14px; }
+.setup .muted.small, .setup .small, .setup .field-hint, .setup .help { font-size: var(--fs-hint); }
 .setup .field { gap: 6px; }
-.setup .field-label { font-size: 14px; font-weight: 600; color: var(--text); }
-.setup .field input, .setup .field select, .setup input.mono, .setup select, .setup textarea { font-size: 15px; padding: 9px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--text); }
+.setup .field-label { font-size: var(--fs-label); font-weight: 550; color: var(--text-2); }
+.setup .field input, .setup .field select, .setup input.mono, .setup select, .setup textarea { font-size: 14px; padding: 8px 11px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--text); }
+.setup .field input:focus, .setup select:focus, .setup textarea:focus, .setup input.mono:focus { border-color: var(--accent); outline: none; }
 .setup .grid2, .setup .grid3 { gap: 18px 24px; }
-.setup .btn { border-radius: 10px; padding: 8px 16px; font-weight: 550; }
-.setup .btn.primary { padding: 9px 22px; }
-.setup .btn.small { padding: 4px 11px; font-size: 13px; border-radius: 8px; }
-.setup .toggle { gap: 10px; }
-.setup .toggle input { width: 18px; height: 18px; }
-.setup .chip { padding: 3px 12px; font-size: 13px; border: 0; background: color-mix(in srgb, var(--muted) 14%, transparent); }
+.setup .btn { border-radius: 8px; padding: 7px 14px; font-weight: 550; }
+.setup .btn.primary { padding: 8px 20px; }
+.setup .btn.small { padding: 4px 10px; font-size: 12.5px; border-radius: 7px; }
+.setup .toggle { align-items: flex-start; gap: 10px; }
+.setup .toggle input { flex: none; width: 16px; height: 16px; margin: 2px 0 0; }
+.toggle-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.toggle-text .field-hint { display: block; }
+.toggle-text .field-hint::first-letter { text-transform: uppercase; }
+.setup .chip { padding: 2px 10px; font-size: 12px; border: 0; background: color-mix(in srgb, var(--muted) 14%, transparent); }
 .setup .chip.ok { background: color-mix(in srgb, var(--ok) 13%, transparent); }
 .setup .chip.warn { background: color-mix(in srgb, var(--warn) 15%, transparent); }
 .setup .chip.bad { background: color-mix(in srgb, var(--bad) 13%, transparent); }
-.setup .seg { gap: 4px; padding: 4px; border-radius: 12px; background: var(--bg); overflow: visible; }
-.setup .seg button { border-radius: 9px; padding: 7px 14px; font-size: 14px; }
+.setup .seg { gap: 3px; padding: 3px; margin: 0; border-radius: 10px; background: var(--bg); overflow: visible; flex-wrap: wrap; align-self: flex-start; }
+.setup .seg button { border-radius: 7px; padding: 6px 13px; font-size: 13.5px; }
 .setup .seg button.on { background: var(--accent); color: var(--accent-ink); box-shadow: none; font-weight: 600; }
 .setup .seg.small button { padding: 5px 11px; font-size: 13px; }
-.setup .system-card, .setup .source-card { border-radius: 16px; padding: 20px 22px; gap: 16px; background: var(--panel-2); }
-.setup .system-card { border-left-width: 5px; }
-.setup .system-card .sys-head strong, .setup .source-head strong { font-size: 18px; font-weight: 650; }
-.setup details.help { border: 1px solid var(--line); border-radius: 14px; padding: 12px 16px; background: var(--bg); color: var(--muted); }
-.setup details.help > summary { font-weight: 550; color: var(--text); font-size: 14px; }
+.setup details.help { border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; background: var(--bg); color: var(--muted); }
+.setup details.help > summary { font-weight: 550; color: var(--text); font-size: 13.5px; }
 .setup details.help[open] > summary { margin-bottom: 10px; }
-.setup .banner { border-radius: 14px; }
-.setup .empty { font-size: 15px; }
-.setup .coverage { height: 22px; border-radius: 8px; }
+.setup .banner { border-radius: 10px; margin: 0; }
+.setup .empty { font-size: 14px; }
+.setup .coverage { height: 22px; border-radius: 6px; }
 .setup table.calls td, .setup table.calls th { padding-top: 8px; padding-bottom: 8px; }
 .setup .todo-panel { border-width: 2px; }
 .setup .todo-list li { padding: 14px 0; }
 
-.setup-tabs { position: sticky; top: 70px; z-index: 4; display: flex; gap: 4px; padding: 6px; border-radius: 18px; background: color-mix(in srgb, var(--panel) 94%, transparent); backdrop-filter: blur(8px); border: 1px solid var(--line); }
-.setup-tabs button { flex: 1 1 auto; display: flex; align-items: center; justify-content: center; gap: 7px; min-width: 0; padding: 11px 8px; white-space: nowrap; border: 0; border-radius: 13px; background: transparent; color: var(--muted); font: inherit; font-size: 15px; font-weight: 550; cursor: pointer; transition: background 0.15s, color 0.15s; }
-.setup-tabs button:hover:not(.on) { background: var(--panel-2); color: var(--text); }
-.setup-tabs button.on { background: var(--accent); color: var(--accent-ink); }
-.setup-tabs button:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 60%, transparent); outline-offset: 2px; }
-.setup-tabs .icon { width: 21px; height: 21px; flex: none; }
-.setup-tabs button > span:not([class]) { overflow: hidden; text-overflow: ellipsis; }
-.setup-tabs .on .icon .ln, .setup-tabs .on .icon .acs { stroke: var(--accent-ink); }
-.setup-tabs .on .icon .ac { fill: var(--accent-ink); }
-.tab-count { padding: 0 8px; border-radius: 999px; font-size: 13px; background: color-mix(in srgb, currentColor 14%, transparent); }
+/* The tabs: a quiet row along a rule, the one showing underlined. */
+.setup-tabs { position: sticky; top: 70px; z-index: 4; display: flex; gap: 2px; margin-bottom: -8px; border-bottom: 1px solid var(--line); background: var(--bg); overflow-x: auto; scrollbar-width: none; }
+.setup-tabs button { flex: none; display: flex; align-items: center; gap: 8px; padding: 12px 14px 13px; white-space: nowrap; border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 14.5px; font-weight: 550; cursor: pointer; box-shadow: inset 0 -2px 0 transparent; transition: color 0.15s, box-shadow 0.15s; }
+.setup-tabs button:hover:not(.on) { color: var(--text); box-shadow: inset 0 -2px 0 var(--line); }
+.setup-tabs button.on { color: var(--text); box-shadow: inset 0 -2px 0 var(--accent); }
+.setup-tabs button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 6px; }
+.setup-tabs .icon { width: 19px; height: 19px; flex: none; }
+.setup-tabs button:not(.on) .icon { opacity: 0.6; }
+.tab-count { padding: 0 7px; border-radius: 999px; font-size: 12px; font-weight: 600; color: var(--muted); background: color-mix(in srgb, var(--muted) 16%, transparent); }
+.setup-tabs .on .tab-count { color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, transparent); }
 .tab-todo { display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 6px; border-radius: 999px; font-size: 12px; font-weight: 700; background: var(--warn); color: #1a1205; }
-@media (max-width: 700px) { .setup-tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); position: static; } .setup-tabs button { font-size: 15px; padding: 10px; } }
-.setup table input, .setup table select { padding: 5px 8px; font-size: 14px; border-radius: 8px; }
+@media (max-width: 900px) { .setup-tabs { position: static; } }
+
+/* A section: its heading, what it is for and its actions, over its cards. */
+.set-section { display: flex; flex-direction: column; gap: 16px; }
+.set-section-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px 24px; flex-wrap: wrap; }
+.set-section-title { min-width: 0; }
+.set-section-head h2 { font-size: var(--fs-section); font-weight: 650; letter-spacing: -0.015em; line-height: 1.2; color: var(--text); text-transform: none; }
+.set-section-head p { margin: 5px 0 0; font-size: 14px; color: var(--muted); max-width: 72ch; }
+.set-empty { margin: 0; padding: 28px 20px; text-align: center; border: 1px dashed var(--line); border-radius: 14px; color: var(--muted); }
+
+/* A card: a head (name, what it is, its switch), then its groups. */
+.setup .set-card { display: flex; flex-direction: column; gap: 0; padding: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; container-type: inline-size; }
+.setup .set-card.off { opacity: 1; }
+.setup .set-card.off > :not(.set-card-head) { opacity: 0.55; }
+.setup .system-card.set-card { border-left: 4px solid var(--sys-color, var(--line)); }
+.set-card-head { display: flex; align-items: center; gap: 10px 14px; flex-wrap: wrap; padding: 16px 22px; border-bottom: 1px solid var(--line); }
+.set-card-head .sys-dot { margin: 0; align-self: center; }
+.set-card-title { display: flex; flex-direction: column; min-width: 0; }
+.set-card-title h3 { margin: 0; font-size: var(--fs-card); font-weight: 650; letter-spacing: -0.01em; line-height: 1.25; overflow-wrap: anywhere; }
+.set-card-sub { font-size: 13px; color: var(--muted); }
+.set-card-chips { gap: 6px; }
+.set-card-needs { padding: 14px 22px 0; }
+.setup .set-card .switch { font-size: 13.5px; }
+.setup .set-card .switch-track { width: 38px; height: 22px; }
+.setup .set-card .switch-track::after { width: 16px; height: 16px; }
+.setup .set-card .switch input:checked + .switch-track::after { transform: translateX(16px); }
+
+/* A group: its name and purpose on the left, its settings on the right. */
+.set-group { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 14px 36px; padding: 22px; }
+.set-group + .set-group { border-top: 1px solid var(--line); }
+.set-group.full { grid-template-columns: minmax(0, 1fr); }
+.set-group-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px 16px; flex-wrap: wrap; min-width: 0; }
+.set-group-head h4 { margin: 0; font-size: var(--fs-group); font-weight: 650; line-height: 1.35; color: var(--text); }
+.set-group-head p { margin: 4px 0 0; font-size: var(--fs-hint); line-height: 1.45; color: var(--muted); max-width: 60ch; }
+.set-group-head p code { font-size: 0.95em; }
+.set-group-body { display: grid; gap: 18px 20px; align-content: start; min-width: 0; }
+.set-group-body.cols-1 { grid-template-columns: minmax(0, 1fr); }
+.set-group-body.cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.set-group-body.cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.set-group-body > .wide, .set-group-body > .toggle, .set-group-body > .help, .set-group-body > .banner, .set-group-body > .id-grid, .set-group-body > .system-plugins, .set-group-body > p { grid-column: 1 / -1; }
+.set-group-body > .help, .set-group-body > p { margin: 0; }
+.set-group-body > .toggle + .toggle { margin-top: -6px; }
+.set-group-body .id-grid { grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px 16px; }
+.set-group .system-plugins { border-top: 0; margin: 0; padding: 0; }
+.set-group .system-plugins h4 { font-size: var(--fs-label); font-weight: 550; color: var(--text-2); }
+@container (max-width: 760px) {
+  .set-group { grid-template-columns: minmax(0, 1fr); gap: 14px; padding: 20px 18px; }
+  .set-card-head { padding: 14px 18px; }
+}
+@container (max-width: 540px) {
+  .set-group-body.cols-2, .set-group-body.cols-3 { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* Panels from elsewhere (Find my system, M4A, interfaces, the import's to-dos): cards too. */
+.setup .panel { border-radius: 14px; padding: 18px 22px; }
+.setup .panel-head { margin-bottom: 12px; }
+.setup .panel-head h2 { font-size: var(--fs-card); font-weight: 650; letter-spacing: -0.01em; text-transform: none; color: var(--text); }
+.setup .plugin-card { border-radius: 14px; padding: 18px 22px; gap: 10px; background: var(--panel); }
+.setup .plugin-card.off { background: transparent; }
+.setup .plugin-head { display: flex; align-items: center; gap: 14px; }
+.setup .plugin-head strong { font-size: var(--fs-card); font-weight: 650; }
+.setup .plugin-state { align-self: flex-start; padding: 1px 10px; border-radius: 999px; font-size: 12.5px; font-weight: 550; background: color-mix(in srgb, currentColor 13%, transparent); }
+.setup .plugin-group { border-radius: 10px; padding: 10px 16px 16px; background: var(--bg); }
+
+.setup table input, .setup table select { padding: 5px 8px; font-size: 13.5px; border-radius: 7px; }
 .setup table select { min-width: 112px; }
-.setup .toggle input { flex: none; }
 .setup table.channels td:nth-child(2) input { min-width: 112px; }
 .setup table.channels input.narrow { width: 5em; }
+.setup .table-wrap.channels-wrap { border: 1px solid var(--line); border-radius: 10px; }
+.setup table.channels th { background: var(--panel); }
 
 /* ── the Plugins page, in the setup guide's style ── */
 .plugins-page { max-width: 960px; gap: 22px; font-size: 15px; line-height: 1.5; }
@@ -722,6 +797,12 @@ input.ob-picker-path:hover, input.ob-picker-path:focus { border-color: var(--lin
 .rule-group + .rule-group { border-top: 1px solid var(--line); padding-top: 12px; }
 .help.override { margin-top: 10px; }
 .help.override > .grid3 { margin-top: 8px; }
+/* Plugin delays (Delays.tsx): rules as a small table, then what they come to. */
+.help.override > .table-wrap { margin: 8px 0; }
+.setup table.channels.delays td:first-child input { min-width: 150px; }
+.delay-effect { margin-top: 10px; }
+.delay-effect ul { margin: 4px 0 0; padding-left: 18px; color: var(--text); }
+.plugin-delay .field input { max-width: 8em; }
 .field select.overridden, .field input.overridden { border-color: var(--accent); }
 .field input.narrow { width: 6em; }
 .field input.invalid { border-color: var(--bad); }
@@ -1154,3 +1235,29 @@ table.calls tr.ignored td { opacity: 0.55; }
 .tg-cell:hover { background: var(--panel-2); }
 .tg-cell-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tg-cell.avoided .tg-cell-name { color: var(--warn); text-decoration: line-through; }
+.plugin-override { margin-top: 8px; }
+.plugin-override > summary { cursor: pointer; font-size: 13px; padding: 4px 0; }
+.plugin-override[open] > summary { margin-bottom: 6px; }
+.plugin-override > .field-hint { margin: 0 0 8px; }
+.plugin-override > .btn { margin-top: 8px; }
+.set-group-body > .ui-row { grid-column: 1 / -1; }
+.ui-row { display: grid; grid-template-columns: minmax(0, 12em) minmax(0, 1fr) auto; gap: 12px; align-items: start; }
+.ui-row > .btn { margin-top: 26px; }
+.setup .panel-head:last-child { margin-bottom: 0; }
+.set-group-head a { color: var(--accent); }
+.setup .plugin-group legend { font-family: inherit; font-size: 13.5px; font-weight: 650; }
+
+/* A card that folds to its head (SetupLayout's Card): the head is the toggle. */
+.set-card-head.foldable { gap: 12px; padding: 0 22px 0 0; flex-wrap: nowrap; }
+.set-card-toggle { flex: 1; min-width: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; padding: 16px 0 16px 14px; border: 0; border-radius: 13px 0 0 13px; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.set-card-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.set-card-chevron { flex: none; width: 16px; height: 16px; margin-right: -4px; color: var(--muted); transition: transform 0.15s, color 0.15s; }
+.set-card-toggle[aria-expanded="true"] .set-card-chevron { transform: rotate(90deg); }
+.set-card-toggle:hover .set-card-chevron { color: var(--text); }
+.set-card-toggle:hover h3 { color: var(--accent); }
+.set-card-actions { flex: none; gap: 12px; flex-wrap: nowrap; }
+.setup .set-card.collapsed .set-card-head { border-bottom: 0; }
+.setup .set-card.collapsed:hover { border-color: color-mix(in srgb, var(--accent) 35%, var(--line)); }
+.setup .system-card.set-card.collapsed:hover { border-left-color: var(--sys-color, var(--line)); }
+@media (prefers-reduced-motion: reduce) { .set-card-chevron { transition: none; } }
+@container (max-width: 760px) { .set-card-head.foldable { padding: 0 18px 0 0; } .set-card-toggle { padding: 14px 0 14px 12px; } }

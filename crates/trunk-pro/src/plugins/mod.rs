@@ -12,6 +12,11 @@
 //! }
 //! ```
 //!
+//! A system can override some of a plugin's settings for itself (another
+//! server for it, say): `"openmhz": { "apiKey": "…", "override": { "server": "…" } }`.
+//! The plugin is told of each system's settings, the plugin's with its
+//! overrides, along with its own ([`host`] does the merging).
+//!
 //! A system can have several copies of a plugin (a list of settings in place
 //! of one, `"openmhz": [{ "apiKey": "a" }, { "apiKey": "b" }]`, to upload it
 //! to two places, say). Each copy after the first runs as a process of its
@@ -26,7 +31,9 @@
 
 mod archive;
 pub mod cli;
+pub mod delay;
 mod encode;
+pub mod hold;
 mod host;
 pub mod manage;
 pub mod store;
@@ -92,14 +99,26 @@ pub fn parse_label(label: &str) -> (&str, usize) {
     }
 }
 
-/// Forget plugin `id`: its entry and its settings for every system.
+/// Forget plugin `id`: its entry, its settings for every system, and its
+/// delays (a rule for it and others is for the others now; one for it alone
+/// goes, rather than coming to be for every plugin).
 pub fn forget(cfg: &mut Config, id: &str) {
     cfg.plugins.remove(id);
+    let forget_delays = |rules: &mut Vec<crate::config::DelayRule>| {
+        rules.retain_mut(|r| {
+            let had = !r.plugins.is_empty();
+            r.plugins.retain(|p| parse_label(p).0 != id);
+            !had || !r.plugins.is_empty()
+        })
+    };
+    forget_delays(&mut cfg.plugin_delays);
     for s in &mut cfg.systems {
         s.plugins.remove(id);
+        forget_delays(&mut s.plugin_delays);
     }
     for c in &mut cfg.conventional {
         c.plugins.remove(id);
+        forget_delays(&mut c.plugin_delays);
     }
 }
 
@@ -191,7 +210,7 @@ pub fn describe(exe: &Path) -> Result<Manifest, String> {
 pub fn systems_of(cfg: &crate::config::Config) -> Vec<trunk_recorder_plugin::SystemInfo> {
     cfg.call_systems()
         .into_iter()
-        .map(|s| trunk_recorder_plugin::SystemInfo { index: s.index, short_name: s.short_name.to_string(), kind: s.kind.into(), config: Value::Null })
+        .map(|s| trunk_recorder_plugin::SystemInfo { index: s.index, short_name: s.short_name.to_string(), kind: s.kind.into(), ..Default::default() })
         .collect()
 }
 
@@ -235,6 +254,15 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// Allowing a plugin decrypted calls, or no longer, restarts the plugins.
+    #[test]
+    fn a_change_to_share_decrypted_reloads_the_plugins() {
+        let a: Config = serde_json::from_value(json!({ "plugins": { "openmhz": { "enabled": true } } })).unwrap();
+        let mut b = a.clone();
+        b.plugins.get_mut("openmhz").unwrap().share_decrypted = true;
+        assert!(changed(&a, &b) && changed(&b, &a));
+    }
+
     #[test]
     fn what_plugins_get_from_the_config() {
         let c: Config = serde_json::from_value(json!({
@@ -256,6 +284,10 @@ mod tests {
         assert!(!specs[0].systems.contains_key("wmata"), "wmata has no settings");
         assert_eq!(specs[0].systems.len(), 1, "no conventional channels, so no conventional system");
         assert_eq!(executable("mine", &c.plugins["mine"]), PathBuf::from("/builds/mine"));
+        let mut with_delays = c.clone();
+        with_delays.plugin_delays = serde_json::from_value(json!([{ "plugins": ["openmhz"], "delayS": 60 }, { "plugins": ["openmhz#2", "mine"], "delayS": 60 }, { "delayS": 5 }])).unwrap();
+        forget(&mut with_delays, "openmhz");
+        assert_eq!(with_delays.plugin_delays, serde_json::from_value::<Vec<crate::config::DelayRule>>(json!([{ "plugins": ["mine"], "delayS": 60 }, { "delayS": 5 }])).unwrap(), "a rule for it alone goes; it leaves the others");
         let mut gone = c.clone();
         forget(&mut gone, "openmhz");
         assert!(!gone.plugins.contains_key("openmhz") && gone.systems[0].plugins.is_empty() && gone.conventional[0].plugins.is_empty());

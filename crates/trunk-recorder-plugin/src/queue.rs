@@ -15,8 +15,14 @@
 //! // in call_concluded:   queue.push(call);
 //! // in shutdown:         self.queue.shutdown(grace);
 //! ```
+//!
+//! A plugin that sends calls to more than one place (a system's settings can
+//! name a server of its own) starts it with [`CallQueue::start_by`] and says
+//! which place each call goes to: each place is a lane of its own, with its
+//! own workers, retries, capacity and endpoint status, so one that's down
+//! doesn't hold up the others.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
@@ -43,16 +49,17 @@ pub enum Attempt {
 pub struct QueueOptions {
     /// How long to wait before each retry; after the last, the call fails.
     pub retry_after: Vec<Duration>,
-    /// Calls worked on at once.
+    /// Calls worked on at once (in each lane).
     pub threads: usize,
     /// Where to save calls still waiting at shutdown (None: they fail).
     pub save_to: Option<PathBuf>,
-    /// Calls waiting beyond this are refused (reported as failed).
+    /// Calls waiting beyond this (in a lane) are refused (reported as failed).
     pub capacity: usize,
     /// A name for the status line, e.g. "upload" → "3 uploads waiting to retry".
     pub noun: &'static str,
     /// The service the work goes to ("Broadcastify Calls"), for the
-    /// dashboard's endpoint status. None: the plugin's own name is shown.
+    /// dashboard's endpoint status ("Broadcastify Calls at <lane>" for a
+    /// lane). None: the plugin's own name is shown (or the lane's).
     pub endpoint: Option<String>,
 }
 
@@ -67,6 +74,16 @@ impl QueueOptions {
     pub fn saved_in(data_dir: &Path) -> Self {
         QueueOptions { save_to: Some(data_dir.join("queue.jsonl")), ..Default::default() }
     }
+
+    /// The endpoint status's name for `lane`.
+    fn endpoint_name(&self, lane: &str) -> Option<String> {
+        match (&self.endpoint, lane) {
+            (Some(e), "") => Some(e.clone()),
+            (Some(e), l) => Some(format!("{e} at {l}")),
+            (None, "") => None,
+            (None, l) => Some(l.to_string()),
+        }
+    }
 }
 
 struct Item {
@@ -76,19 +93,32 @@ struct Item {
     last_error: String,
 }
 
+/// The calls for one place, and how it's answering.
 #[derive(Default)]
-struct Inner {
+struct Lane {
     ready: VecDeque<Item>,
     waiting: Vec<Item>,
     busy: usize,
-    closing: Option<Instant>,
-    /// The waiting count last reported in a status.
-    reported: usize,
     last_error: String,
     stats: Tally,
 }
 
-/// What the queue has done, for [`Metrics`].
+#[derive(Default)]
+struct Inner {
+    lanes: BTreeMap<String, Lane>,
+    closing: Option<Instant>,
+    /// The waiting count last reported in a status.
+    reported: usize,
+    /// The last error of any lane, for the status line.
+    last_error: String,
+    /// Something changed since metrics last went out.
+    changed: bool,
+    sent: Option<Instant>,
+    /// Each lane's state when metrics last went out.
+    sent_states: Vec<EndpointState>,
+}
+
+/// What a lane has done, for [`Metrics`].
 #[derive(Default)]
 struct Tally {
     retries: u64,
@@ -101,9 +131,6 @@ struct Tally {
     tried: bool,
     /// Unix s of the first try (the clock for "silent" before any success).
     first_try: Option<f64>,
-    changed: bool,
-    sent: Option<Instant>,
-    sent_state: EndpointState,
 }
 
 /// Metrics go out at most this often, and at least this often while something changes.
@@ -118,7 +145,7 @@ fn unix_now() -> f64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
 }
 
-impl Inner {
+impl Lane {
     fn endpoint_state(&self) -> EndpointState {
         let t = &self.stats;
         if !t.tried {
@@ -134,41 +161,61 @@ impl Inner {
             EndpointState::Up
         }
     }
+}
 
-    fn metrics(&self, o: &QueueOptions) -> Metrics {
-        let t = &self.stats;
-        let state = self.endpoint_state();
-        Metrics {
-            queued: Some((self.ready.len() + self.waiting.len()) as u64),
-            retrying: Some(self.waiting.len() as u64),
-            in_flight: Some(self.busy as u64),
-            retries: Some(t.retries),
-            bytes_sent: Some(t.bytes),
-            latency_ms: t.latency_ms.map(|l| (l * 10.0).round() / 10.0),
-            last_ok: t.last_ok,
-            last_error: t.last_error,
-            last_error_text: self.last_error.clone(),
-            endpoints: o
-                .endpoint
-                .as_ref()
-                .map(|name| Endpoint { name: name.clone(), state, latency_ms: t.latency_ms, last_ok: t.last_ok, last_error: if state == EndpointState::Up { String::new() } else { self.last_error.clone() } })
-                .into_iter()
-                .collect(),
-            ..Default::default()
-        }
+impl Inner {
+    fn states(&self) -> Vec<EndpointState> {
+        self.lanes.values().map(Lane::endpoint_state).collect()
     }
 
-    /// Send metrics when something changed and it's been a while (or the
+    fn waiting(&self) -> usize {
+        self.lanes.values().map(|l| l.waiting.len()).sum()
+    }
+
+    /// The lanes' figures together, and each lane's endpoint.
+    fn metrics(&self, o: &QueueOptions) -> Metrics {
+        let mut m = Metrics { queued: Some(0), retrying: Some(0), in_flight: Some(0), retries: Some(0), bytes_sent: Some(0), ..Default::default() };
+        let add = |a: &mut Option<u64>, b: usize| *a = Some(a.unwrap_or(0) + b as u64);
+        let later = |a: &mut Option<f64>, b: Option<f64>| {
+            if b > *a {
+                *a = b;
+            }
+        };
+        for (name, l) in &self.lanes {
+            let t = &l.stats;
+            add(&mut m.queued, l.ready.len() + l.waiting.len());
+            add(&mut m.retrying, l.waiting.len());
+            add(&mut m.in_flight, l.busy);
+            add(&mut m.retries, t.retries as usize);
+            add(&mut m.bytes_sent, t.bytes as usize);
+            let latency = t.latency_ms.map(|l| (l * 10.0).round() / 10.0);
+            // The slowest place is the one to know about.
+            later(&mut m.latency_ms, latency);
+            later(&mut m.last_ok, t.last_ok);
+            if t.last_error > m.last_error {
+                m.last_error = t.last_error;
+                m.last_error_text = l.last_error.clone();
+            }
+            if let Some(n) = o.endpoint_name(name) {
+                let state = l.endpoint_state();
+                let last_error = if state == EndpointState::Up { String::new() } else { l.last_error.clone() };
+                m.endpoints.push(Endpoint { name: n, state, latency_ms: t.latency_ms, last_ok: t.last_ok, last_error });
+            }
+        }
+        m
+    }
+
+    /// Send metrics when something changed and it's been a while (or a
     /// service's state changed: at once).
     fn report(&mut self, host: &Host, o: &QueueOptions) {
-        let state = self.endpoint_state();
-        let since = self.stats.sent.map_or(Duration::MAX, |t| t.elapsed());
-        let due = (self.stats.changed && since >= METRICS_MIN) || since >= METRICS_MAX || state != self.stats.sent_state;
+        let states = self.states();
+        let since = self.sent.map_or(Duration::MAX, |t| t.elapsed());
+        let due = (self.changed && since >= METRICS_MIN) || since >= METRICS_MAX || states != self.sent_states;
         if due {
             host.metrics(&self.metrics(o));
-            self.stats.sent = Some(Instant::now());
-            self.stats.sent_state = state;
-            self.stats.changed = false;
+            self.sent = Some(Instant::now());
+            self.sent_states = states;
+            self.changed = false;
         }
     }
 }
@@ -178,11 +225,16 @@ struct Shared {
     wake: Condvar,
 }
 
+type Work = dyn Fn(&ConcludedCall) -> Attempt + Send + Sync;
+type LaneOf = dyn Fn(&ConcludedCall) -> String + Send + Sync;
+
 pub struct CallQueue {
     shared: Arc<Shared>,
-    workers: Vec<JoinHandle<()>>,
+    workers: Mutex<Vec<JoinHandle<()>>>,
     host: Host,
     opts: QueueOptions,
+    work: Arc<Work>,
+    lane_of: Box<LaneOf>,
 }
 
 impl CallQueue {
@@ -192,48 +244,74 @@ impl CallQueue {
     where
         F: Fn(&ConcludedCall) -> Attempt + Send + Sync + 'static,
     {
+        Self::start_by(host, opts, |_| String::new(), work)
+    }
+
+    /// [`start`](Self::start), with each call put in the lane `lane` names
+    /// (the server it goes to, say): each lane has `opts.threads` workers of
+    /// its own, and its own retries and endpoint status. Calls saved by the
+    /// last shutdown are put in the lane `lane` names for them now.
+    pub fn start_by<L, F>(host: Host, opts: QueueOptions, lane: L, work: F) -> CallQueue
+    where
+        L: Fn(&ConcludedCall) -> String + Send + Sync + 'static,
+        F: Fn(&ConcludedCall) -> Attempt + Send + Sync + 'static,
+    {
         let shared = Arc::new(Shared { inner: Mutex::new(Inner::default()), wake: Condvar::new() });
-        if let Some(path) = &opts.save_to {
+        let q = CallQueue { shared, workers: Mutex::new(Vec::new()), host, opts, work: Arc::new(work), lane_of: Box::new(lane) };
+        if let Some(path) = &q.opts.save_to {
             let saved = load(path);
             if !saved.is_empty() {
-                host.info(format!("{} {}(s) left from last time", saved.len(), opts.noun));
+                q.host.info(format!("{} {}(s) left from last time", saved.len(), q.opts.noun));
                 let now = Instant::now();
-                shared.inner.lock().unwrap().ready.extend(saved.into_iter().map(|call| Item { call, tries: 0, due: now, last_error: String::new() }));
+                let mut g = q.shared.inner.lock().unwrap();
+                for call in saved {
+                    let key = (q.lane_of)(&call);
+                    q.lane(&mut g, &key).ready.push_back(Item { call, tries: 0, due: now, last_error: String::new() });
+                }
             }
             let _ = std::fs::remove_file(path);
         }
-        let work = Arc::new(work);
-        let workers = (0..opts.threads.max(1))
-            .map(|i| {
-                let (sh, h, w, o) = (shared.clone(), host.clone(), work.clone(), opts.clone());
-                std::thread::Builder::new().name(format!("queue-{i}")).spawn(move || worker(&sh, &h, &*w, &o)).expect("thread")
-            })
-            .collect();
-        CallQueue { shared, workers, host, opts }
+        q
+    }
+
+    /// Lane `key`, started (its workers) if it's new.
+    fn lane<'a>(&self, g: &'a mut Inner, key: &str) -> &'a mut Lane {
+        if !g.lanes.contains_key(key) {
+            g.lanes.insert(key.to_string(), Lane::default());
+            let mut workers = self.workers.lock().unwrap();
+            for i in 0..self.opts.threads.max(1) {
+                let (sh, h, w, o, k) = (self.shared.clone(), self.host.clone(), self.work.clone(), self.opts.clone(), key.to_string());
+                let name = if key.is_empty() { format!("queue-{i}") } else { format!("queue-{key}-{i}") };
+                workers.push(std::thread::Builder::new().name(name).spawn(move || worker(&sh, &k, &h, &*w, &o)).expect("thread"));
+            }
+        }
+        g.lanes.get_mut(key).unwrap()
     }
 
     pub fn push(&self, call: ConcludedCall) {
+        let key = (self.lane_of)(&call);
         let mut g = self.shared.inner.lock().unwrap();
         if g.closing.is_some() {
             drop(g);
             self.host.call_result(&call.path, Outcome::Failed, "recorder stopping", "");
             return;
         }
-        if g.ready.len() + g.waiting.len() >= self.opts.capacity {
+        let lane = self.lane(&mut g, &key);
+        if lane.ready.len() + lane.waiting.len() >= self.opts.capacity {
             drop(g);
             self.host.call_result(&call.path, Outcome::Failed, format!("too many {}s waiting", self.opts.noun), "");
             return;
         }
-        g.ready.push_back(Item { call, tries: 0, due: Instant::now(), last_error: String::new() });
-        g.stats.changed = true;
+        lane.ready.push_back(Item { call, tries: 0, due: Instant::now(), last_error: String::new() });
+        g.changed = true;
         drop(g);
-        self.shared.wake.notify_one();
+        self.shared.wake.notify_all();
     }
 
     /// Calls queued or being worked on.
     pub fn len(&self) -> usize {
         let g = self.shared.inner.lock().unwrap();
-        g.ready.len() + g.waiting.len() + g.busy
+        g.lanes.values().map(|l| l.ready.len() + l.waiting.len() + l.busy).sum()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -243,19 +321,21 @@ impl CallQueue {
     /// Work what's ready until `grace` is nearly up; save the rest (or fail it).
     /// Call it from [`crate::Plugin::shutdown`]; calls pushed after it are refused.
     pub fn shutdown(&mut self, grace: Duration) {
-        if self.workers.is_empty() {
-            return;
-        }
         // Leave a little of the grace period for saving.
         let deadline = Instant::now() + grace.mul_f64(0.8);
-        self.shared.inner.lock().unwrap().closing = Some(deadline);
+        {
+            let mut g = self.shared.inner.lock().unwrap();
+            if g.closing.is_some() {
+                return;
+            }
+            g.closing = Some(deadline);
+        }
         self.shared.wake.notify_all();
-        for w in self.workers.drain(..) {
+        for w in std::mem::take(&mut *self.workers.lock().unwrap()) {
             let _ = w.join();
         }
         let mut g = self.shared.inner.lock().unwrap();
-        let g = &mut *g;
-        let left: Vec<Item> = g.ready.drain(..).chain(g.waiting.drain(..)).collect();
+        let left: Vec<Item> = g.lanes.values_mut().flat_map(|l| l.ready.drain(..).chain(l.waiting.drain(..)).collect::<Vec<_>>()).collect();
         if left.is_empty() {
             return;
         }
@@ -272,43 +352,47 @@ impl CallQueue {
     }
 }
 
-fn worker(sh: &Shared, host: &Host, work: &(dyn Fn(&ConcludedCall) -> Attempt + Send + Sync), o: &QueueOptions) {
+/// Work lane `key`'s calls.
+fn worker(sh: &Shared, key: &str, host: &Host, work: &Work, o: &QueueOptions) {
     let mut g = sh.inner.lock().unwrap();
     loop {
         let now = Instant::now();
+        let closing = g.closing;
+        let lane = g.lanes.get_mut(key).expect("lane");
         // Retries that are due go to the front: they've waited longest.
         let mut i = 0;
-        while i < g.waiting.len() {
-            if g.waiting[i].due <= now {
-                let it = g.waiting.swap_remove(i);
-                g.ready.push_front(it);
+        while i < lane.waiting.len() {
+            if lane.waiting[i].due <= now {
+                let it = lane.waiting.swap_remove(i);
+                lane.ready.push_front(it);
             } else {
                 i += 1;
             }
         }
-        if let Some(deadline) = g.closing {
+        if let Some(deadline) = closing {
             // Stopping: work what's ready (retries not yet due are saved) until the deadline.
-            if now >= deadline || g.ready.is_empty() {
+            if now >= deadline || lane.ready.is_empty() {
                 return;
             }
         }
-        let Some(mut it) = g.ready.pop_front() else {
+        let Some(mut it) = lane.ready.pop_front() else {
+            let next = lane.waiting.iter().map(|w| w.due).min();
             g.report(host, o);
-            let next = g.waiting.iter().map(|w| w.due).min();
             let wait = next.map_or(Duration::from_secs(1), |t| t.saturating_duration_since(now)).min(Duration::from_secs(1));
             g = sh.wake.wait_timeout(g, wait).unwrap().0;
             continue;
         };
-        g.busy += 1;
+        lane.busy += 1;
         drop(g);
         let started = Instant::now();
         let r = work(&it.call);
         let took_ms = started.elapsed().as_secs_f64() * 1000.0;
         g = sh.inner.lock().unwrap();
-        g.busy -= 1;
+        g.changed = true;
+        let lane = g.lanes.get_mut(key).expect("lane");
+        lane.busy -= 1;
         {
-            let t = &mut g.stats;
-            t.changed = true;
+            let t = &mut lane.stats;
             t.first_try.get_or_insert_with(unix_now);
             match &r {
                 Attempt::Done { .. } => {
@@ -328,26 +412,34 @@ fn worker(sh: &Shared, host: &Host, work: &(dyn Fn(&ConcludedCall) -> Attempt + 
                 Attempt::Skip(_) => {}
             }
         }
-        if let Attempt::Fail(m) = &r {
-            g.last_error = m.clone();
-        }
+        // What went wrong, and where (when there's more than one place).
+        let said = |m: &str| if key.is_empty() { m.to_string() } else { format!("{key}: {m}") };
+        let mut error = None;
         match r {
             Attempt::Done { url } => host.call_result(&it.call.path, Outcome::Ok, "", url),
             Attempt::Skip(m) => host.call_result(&it.call.path, Outcome::Skipped, m, ""),
-            Attempt::Fail(m) => host.call_result(&it.call.path, Outcome::Failed, m, ""),
+            Attempt::Fail(m) => {
+                lane.last_error = m.clone();
+                error = Some(said(&m));
+                host.call_result(&it.call.path, Outcome::Failed, m, "");
+            }
             Attempt::Retry(m) => match o.retry_after.get(it.tries) {
                 Some(d) => {
                     it.tries += 1;
                     it.due = Instant::now() + *d;
                     it.last_error = m.clone();
-                    g.last_error = m;
-                    g.waiting.push(it);
+                    lane.last_error = m.clone();
+                    error = Some(said(&m));
+                    lane.waiting.push(it);
                 }
                 None => host.call_result(&it.call.path, Outcome::Failed, format!("gave up after {} tries: {m}", it.tries + 1), ""),
             },
         }
+        if let Some(e) = error {
+            g.last_error = e;
+        }
         // Say when calls start or stop waiting on retries (not on every change).
-        let n = g.waiting.len();
+        let n = g.waiting();
         if (n == 0) != (g.reported == 0) || n >= g.reported * 2 && n >= 10 {
             g.reported = n;
             if n == 0 {
@@ -489,5 +581,57 @@ mod tests {
         q.shutdown(Duration::from_secs(1));
         assert_eq!(out.output().results()[0].1, Outcome::Ok);
         assert!(!dir.join("queue.jsonl").exists());
+    }
+
+    /// Two places: one that hangs and is down doesn't hold up the other,
+    /// and each has its own endpoint status.
+    #[test]
+    fn a_lane_that_is_down_holds_up_no_other() {
+        let dir = testing::temp_dir("queue");
+        let (host, out) = testing::capture();
+        let opts = QueueOptions { endpoint: Some("Example".into()), retry_after: vec![Duration::from_secs(3600)], ..quick(&dir) };
+        let mut q = CallQueue::start_by(
+            host,
+            opts,
+            |c| if c.call.short_name == "down" { "down.example".into() } else { "up.example".into() },
+            |c| {
+                if c.call.short_name == "down" {
+                    std::thread::sleep(Duration::from_millis(300));
+                    Attempt::Retry("timed out".into())
+                } else {
+                    Attempt::Done { url: String::new() }
+                }
+            },
+        );
+        q.push(testing::call(&dir, "down", 1));
+        std::thread::sleep(Duration::from_millis(20));
+        let up = testing::call(&dir, "up", 2);
+        q.push(up.clone());
+        let t0 = Instant::now();
+        while out.output().results().is_empty() && t0.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(t0.elapsed() < Duration::from_millis(250), "the up lane waited on the down one");
+        assert_eq!(out.output().results(), vec![(up.path, Outcome::Ok, String::new(), String::new())]);
+        // The down lane's try ends; it waits to retry, and says where.
+        while q.len() > 1 || out.output().status().is_none() {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(out.output().status(), Some((State::Warning, "1 call waiting to retry: down.example: timed out".into())));
+        let m = q.shared.inner.lock().unwrap().metrics(&q.opts);
+        let ends: Vec<(&str, EndpointState)> = m.endpoints.iter().map(|e| (e.name.as_str(), e.state)).collect();
+        assert_eq!(ends, [("Example at down.example", EndpointState::Degraded), ("Example at up.example", EndpointState::Up)]);
+        assert_eq!((m.queued, m.retrying), (Some(1), Some(1)));
+        q.shutdown(Duration::from_secs(1));
+        // Saved, and put back in its lane next time.
+        let (host, out) = testing::capture();
+        let mut q = CallQueue::start_by(host, quick(&dir), |c| c.call.short_name.clone(), |_| Attempt::Done { url: String::new() });
+        assert_eq!(q.shared.inner.lock().unwrap().lanes.keys().collect::<Vec<_>>(), ["down"]);
+        let t0 = Instant::now();
+        while !q.is_empty() && t0.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        q.shutdown(Duration::from_secs(1));
+        assert_eq!(out.output().results()[0].1, Outcome::Ok);
     }
 }
