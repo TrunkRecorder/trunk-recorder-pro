@@ -27,7 +27,7 @@ under **Recording override**.
 | `callTimeoutS` | | `3` | number | Per system. A call ends this long after its last grant or audio, s. The interface allows 1–30 |
 | `recordUnknown` | | `true` | bool | Per system. Record talkgroups that aren't in the talkgroup file. Only matters when there is a talkgroup file; a talkgroup patched with a listed one is recorded anyway |
 | `recordEncrypted` | | `false` | bool | Per system. Keep calls flagged encrypted (by the grant or the talkgroup's `Mode`), with their radios, even with no audio. Encrypted transmissions are always left out of the audio, unless decrypted (see [systems.md](systems.md#encryption-keys-keys)). Config only: not in the interface |
-| `recordUnitToUnit` | | `true` | bool | Per system. Record P25 unit-to-unit (private) calls |
+| `recordUnitToUnit` | | `true` | bool | Per system. Record P25 individual calls: unit-to-unit (private) and telephone interconnect |
 | `keepSilentCalls` | | `false` | bool | Per system. Keep calls with no audio (encrypted, or nothing decoded) |
 | `minCallS` | | `0` | number | Per system. Delete calls with less audio than this, s, before they're uploaded. `0` keeps all. The interface allows 0–60 |
 | `maxCallS` | | `0` | number | Per system. Save a call this long and carry on in a new one, s; nothing is lost. `0`: parts of 600 s, so a stuck carrier never records without bound. The interface allows 0–3600 |

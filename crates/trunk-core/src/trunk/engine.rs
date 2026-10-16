@@ -721,7 +721,7 @@ struct Trunk {
     identity: Identity,
     /// Why this control channel is not ours, while it isn't.
     mismatch: Option<String>,
-    adjacent: std::collections::BTreeMap<(u32, u32), AdjacentSite>,
+    adjacent: std::collections::BTreeMap<(u32, u32, u32), AdjacentSite>,
     /// AutoTune: the correction its control channel was opened with, ppm;
     /// when it was last measured, and last reopened.
     cc_ppm: f64,
@@ -906,7 +906,7 @@ impl Trunk {
         for st in steps {
             self.identity = st.identity;
             for m in st.msgs.iter().filter(|m| m.kind == MessageType::Adjacent && m.freq_hz > 0) {
-                self.adjacent.insert((m.rfss, m.site), AdjacentSite { sys_id: m.sys_id, rfss: m.rfss, site: m.site, freq_hz: m.freq_hz });
+                self.adjacent.insert((m.sys_id, m.rfss, m.site), AdjacentSite { sys_id: m.sys_id, rfss: m.rfss, site: m.site, freq_hz: m.freq_hz });
             }
             if lock {
                 let conflict = self.identity.conflict(&self.cfg.expect, fields);

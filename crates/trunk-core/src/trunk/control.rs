@@ -8,7 +8,7 @@
 //! the one vocabulary the call manager speaks.
 //!
 //! ```text
-//! P25:      receiver bank → framer → TSBKs (and MBTs) → TsbkParser → Message
+//! P25:      receiver bank → framer → TSBKs (and MBTs) → Osp → P25Parser → Message
 //! SmartNet: 2FSK → OSW framer → Parser → Message
 //! DMR:      every carrier of the site: 4FSK → bursts → CSBK / link control → Message
 //! NXDN:     every carrier of the site: 4FSK → frames → CAC / VCALL / SCCH → Message
@@ -20,7 +20,7 @@ use num_complex::Complex32;
 
 use super::engine::{NoteLevel, SmartnetConfig, SystemConfig};
 use super::identity::{IdField, Identity};
-use super::message::{Message, MessageType, TsbkParser};
+use super::message::{Message, MessageType, P25Parser};
 use super::patches;
 use super::voice::VoiceParams;
 use crate::dmr;
@@ -148,7 +148,7 @@ pub fn build(cfg: &SystemConfig, rate: f64) -> Box<dyn ControlChannel> {
         Protocol::P25 => Box::new(P25 {
             bank_cfg: cfg.bank,
             bank: Bank::new(rate, cfg.bank),
-            parser: TsbkParser::default(),
+            parser: P25Parser::default(),
             identity: Identity::default(),
             nac_votes: BTreeMap::new(),
             good: 0,
@@ -176,7 +176,7 @@ pub fn build(cfg: &SystemConfig, rate: f64) -> Box<dyn ControlChannel> {
 struct P25 {
     bank_cfg: BankConfig,
     bank: Bank,
-    parser: TsbkParser,
+    parser: P25Parser,
     identity: Identity,
     /// (Ordered: a tie goes to the higher NAC, every run.)
     nac_votes: BTreeMap<u16, u32>,
@@ -199,15 +199,12 @@ impl P25 {
             *self.nac_votes.entry(f.nid.nac).or_default() += 1;
             self.identity.set_opt(IdField::Nac, self.nac_votes.iter().max_by_key(|&(_, &c)| c).map(|(&n, _)| n as u32));
             let t = self.t0 + f.sample / self.rate;
-            let cf = control_frame(g, f.nid.duid, self.identity.wacn().zip(self.identity.sys_id()));
+            let cf = control_frame(g, f.nid.duid);
             self.bad += cf.lost as u64;
             self.air += cf.air;
-            for blk in &cf.blocks {
+            for o in &cf.osps {
                 self.good += 1;
-                let msgs = match blk {
-                    Ok(tsbk) => self.parser.parse(tsbk, f.nid.nac, t),
-                    Err(m) => vec![TsbkParser::unknown_mbt(m, f.nid.nac, t)],
-                };
+                let msgs = self.parser.parse(o, f.nid.nac, t);
                 for m in &msgs {
                     match m.kind {
                         MessageType::Status => {

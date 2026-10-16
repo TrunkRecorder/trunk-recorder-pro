@@ -243,8 +243,9 @@ impl CallManager {
                 MessageType::Grant => self.grant(m, false, host, ev),
                 MessageType::Update if self.cfg.new_call_from_update => self.grant(m, false, host, ev),
                 MessageType::Update => self.update(m, ev),
-                MessageType::UuVGrant if self.cfg.record_unit_to_unit => self.grant(m, true, host, ev),
-                MessageType::UuVUpdate if self.cfg.record_unit_to_unit => self.update(m, ev),
+                // Individual calls: unit-to-unit, and a radio's telephone call.
+                MessageType::UuVGrant | MessageType::PhoneGrant if self.cfg.record_unit_to_unit => self.grant(m, true, host, ev),
+                MessageType::UuVUpdate | MessageType::PhoneUpdate if self.cfg.record_unit_to_unit => self.update(m, ev),
                 MessageType::PatchAdd => {
                     if let Some(p) = m.patch {
                         if self.patches.add(&p, m.time_s) {

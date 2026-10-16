@@ -242,7 +242,7 @@ impl Stats {
             Event::Message { msg, .. } => {
                 if !matches!(
                     msg.kind,
-                    MessageType::Affiliation | MessageType::Location | MessageType::Registration | MessageType::Deregistration | MessageType::UuVGrant | MessageType::UuAnsReq | MessageType::Grant | MessageType::Update
+                    MessageType::Affiliation | MessageType::Location | MessageType::Registration | MessageType::Deregistration | MessageType::UuVGrant | MessageType::UuAnsReq | MessageType::PhoneGrant | MessageType::Grant | MessageType::Update
                 ) {
                     return;
                 }

@@ -11,7 +11,8 @@ use std::collections::VecDeque;
 use num_complex::Complex32;
 
 use super::frame::{blocks_dibits, frame_dibits, Frame, Framer, FramerOptions, LDU1, LDU2, PDU, TDU, TSDU};
-use super::mbt::{self, Mbt, Pdu};
+use super::mbt::{self, Pdu};
+use super::osp::{self, Osp};
 use super::tsbk::{tsbk_last, tsbk_ok, trellis_viterbi, Tsbk};
 use super::voice::{decode_ldu1_lc, decode_ldu2_es, ldu_imbe, EncryptionSync, ImbeParams, LinkControl};
 use crate::dsp::c4fm::{C4fm, C4fmOptions, SYMBOL_RATE};
@@ -286,9 +287,8 @@ pub fn best_pdu(g: &Group) -> Pdu {
 /// What a control channel frame (a group of copies) held.
 #[derive(Default)]
 pub struct ControlFrame {
-    /// Its trunking messages: each TSBK, an MBT as the TSBK it stands for
-    /// ([`Mbt::to_tsbk`]) or, when it has none, as itself.
-    pub blocks: Vec<Result<Tsbk, Mbt>>,
+    /// Its trunking messages: each TSBK's, or the MBT's.
+    pub osps: Vec<Osp>,
     /// Messages no receiver decoded.
     pub lost: usize,
     /// Symbols of air the decoded ones account for ([`air_symbols`]).
@@ -296,15 +296,14 @@ pub struct ControlFrame {
 }
 
 /// A control channel frame group's messages (its frame's DUID `duid`).
-/// `own`: the site's (WACN, System ID), when known (see [`Mbt::to_tsbk`]).
-pub fn control_frame(g: &Group, duid: u8, own: Option<(u32, u32)>) -> ControlFrame {
+pub fn control_frame(g: &Group, duid: u8) -> ControlFrame {
     match duid {
         TSDU => {
             let (blocks, lost) = best_tsbks(g);
-            ControlFrame { air: air_symbols(blocks.len() + lost, blocks.len()), lost, blocks: blocks.into_iter().map(Ok).collect() }
+            ControlFrame { air: air_symbols(blocks.len() + lost, blocks.len()), lost, osps: blocks.iter().map(osp::from_tsbk).collect() }
         }
         PDU => match best_pdu(g) {
-            Pdu::Mbt(m) => ControlFrame { air: air_symbols(m.blocks(), m.blocks()), lost: 0, blocks: vec![m.to_tsbk(own).ok_or(m)] },
+            Pdu::Mbt(m) => ControlFrame { air: air_symbols(m.blocks(), m.blocks()), lost: 0, osps: vec![osp::from_mbt(&m)] },
             Pdu::Other(_) => ControlFrame::default(),
             Pdu::Lost => ControlFrame { lost: 1, ..Default::default() },
         },

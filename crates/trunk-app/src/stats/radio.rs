@@ -319,7 +319,7 @@ impl Registry {
                 }
                 None
             }
-            MessageType::UuVGrant | MessageType::UuAnsReq => {
+            MessageType::UuVGrant | MessageType::UuAnsReq | MessageType::PhoneGrant => {
                 let s = self.sys(system, t);
                 s.unit(unit, t);
                 if m.talkgroup != 0 {
