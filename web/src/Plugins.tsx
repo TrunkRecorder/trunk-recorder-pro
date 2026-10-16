@@ -836,6 +836,11 @@ function PluginCard(props: { p: PluginInfo; recording: boolean; listing?: StoreL
             </button>
           )
         )}
+        {!install && p.unlistedFrom && (
+          <button className="btn" onClick={() => installPluginFrom(p.unlistedFrom!)} title={`Install ${p.unlistedFrom}'s latest release again. Its settings stay.${recording && on ? " It restarts with it." : ""}`}>
+            Reinstall
+          </button>
+        )}
         {p.custom && (
           <button className="btn" onClick={() => addPlugin(p.path)} title={`Take ${p.path} again, for a rebuilt copy. Its settings stay.${recording && on ? " It restarts with it." : ""}`}>
             Reinstall
@@ -1138,7 +1143,7 @@ export function PluginsPage() {
               p={p}
               recording={recording}
               listing={s.pluginStore?.plugins.find((l) => l.id === p.id)}
-              install={s.pluginInstalls[p.id]}
+              install={s.pluginInstalls[p.id] ?? (p.unlistedFrom ? s.pluginInstalls[p.unlistedFrom] : undefined)}
             />
           ))}
           {plugins.length === 0 && <p className="empty">No plugins yet.</p>}
