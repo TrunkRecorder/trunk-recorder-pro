@@ -17,6 +17,7 @@ use chrono::{Local, Offset, TimeZone};
 use serde_json::{json, Value};
 use tokio::sync::broadcast;
 use trunk_app::{Output, Session};
+use trunk_core::prof::{self, Stage};
 
 use crate::config::{AirspyGain, Config, SampleFormat, Source};
 use crate::plugins::{self, FileRules, PluginHost};
@@ -483,8 +484,11 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Rec
         std::thread::Builder::new().name("finish".into()).spawn(move || finish_calls(&ctx, &dir, spool.as_deref(), fin_rx, &m4a)).expect("thread")
     };
     // Calls are written on the finish thread, so a slow disk doesn't hold up decoding.
+    let (fin_queued, fin_inline) = (std::cell::Cell::new(0u64), std::cell::Cell::new(0u64));
     let fin = |f: Finish, plugins: Option<&PluginHost>| {
+        fin_queued.set(fin_queued.get() + 1);
         if let Err(mpsc::TrySendError::Full(f)) = fin_tx.try_send(f) {
+            fin_inline.set(fin_inline.get() + 1);
             // (Behind on writing or encoding: this one is written here, without its M4A, rather than waiting.)
             finish_one(&ctx, &dir, spool.as_deref(), Finish { rules: FileRules { compress_wav: false, ..f.rules }, ..f }, None, plugins);
         }
@@ -500,17 +504,20 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Rec
     let mut tune_at = Instant::now();
     let mut registry_at = Instant::now();
     let mut topics_gen = u64::MAX;
+    let mut meter = crate::perf::EngineMeter::new(cfg.sources.iter().map(|s| s.label()).collect());
     loop {
         if stop.load(Ordering::Relaxed) {
             break;
         }
         match rx.recv_timeout(Duration::from_millis(50)) {
             Ok(SourceMsg::Data { source, bytes, dropped, at }) => {
+                meter.received(source, bytes.len() as u64 / 2, dropped, at);
                 let t = Instant::now();
                 session.push(source, &bytes, dropped, at_ms(at));
                 session.add_busy_ms(t.elapsed().as_secs_f64() * 1000.0);
             }
             Ok(SourceMsg::Iq { source, samples, dropped, at }) => {
+                meter.received(source, samples.len() as u64, dropped, at);
                 let t = Instant::now();
                 session.push_iq(source, &samples, dropped, at_ms(at));
                 session.add_busy_ms(t.elapsed().as_secs_f64() * 1000.0);
@@ -527,6 +534,7 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Rec
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
         }
+        let _hk = prof::span(Stage::Housekeeping);
         // (The plugins can be swapped meanwhile: their settings changed.)
         let plugins = ctx.plugins.host.read().unwrap();
         session.plugin_topics = plugins.as_ref().map_or(Default::default(), |p| p.topics);
@@ -549,7 +557,9 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Rec
             }
         }
         session.poll(now_ms(), &mut out);
+        let t = prof::span(Stage::Deliver);
         deliver(&ctx, &mut out, plugins.as_ref(), &rules, &fin);
+        drop(t);
         drop(plugins);
         save_units(&mut session);
         if tune_at.elapsed() >= Duration::from_secs(60) {
@@ -564,7 +574,10 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Rec
             registry_at = Instant::now();
             save_registry(&ctx.shared);
         }
+        (meter.finish_queued, meter.finish_inline) = (fin_queued.get(), fin_inline.get());
+        meter.tick(|| session.load());
     }
+    drop(meter);
     ctx.set_phase("stopping", None, false);
     // What the sources had already sent (up to the queue's 256 blocks: about
     // 2.5 s of 10 ms USRP / Soapy blocks, about 14 s of RTL-SDR's at
@@ -633,6 +646,7 @@ fn finish_calls(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, rx: 
 /// written only when it's kept or a plugin takes it: an .m4a is encoded
 /// from memory.
 fn finish_one(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, f: Finish, encoder: Option<&(plugins::Encoder, u32)>, host: Option<&PluginHost>) {
+    let _t = prof::span(Stage::FinishWrite);
     let r = f.rules;
     let takers = host.map_or(0, |h| h.call_takers(f.decrypted));
     let p = plugins::plan(r, takers, host.is_some_and(|h| h.needs_wav()), encoder.is_some());
@@ -670,7 +684,10 @@ fn finish_one(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, f: Fin
         m4a_to: m4a_at,
     };
     if let Some((e, kbps)) = encoder.filter(|_| p.make_m4a) {
-        match e.m4a(&audio.wav, &audio.m4a_to, *kbps) {
+        let t = prof::span(Stage::FinishEncode);
+        let made = e.m4a(&audio.wav, &audio.m4a_to, *kbps);
+        drop(t);
+        match made {
             Ok(()) => audio.files.m4a = Some(audio.m4a_to.clone()),
             Err(err) => {
                 log::error!("M4A of {}: {err}", f.rel);

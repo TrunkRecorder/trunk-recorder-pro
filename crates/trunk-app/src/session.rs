@@ -10,6 +10,7 @@ use crate::filename;
 use crate::log::{Body, CallState, CallTag, Level, Record};
 use crate::heard::HeardCodes;
 use trunk_core::dsp::tones::Tone;
+use trunk_core::prof::{self, Stage};
 use trunk_core::Complex32;
 
 use crate::config::{Config, Source};
@@ -304,6 +305,8 @@ impl Session {
     /// before these (fed as silence, so time keeps up); `at_ms`: when the
     /// driver handed them over, on `poll`'s clock.
     pub fn push(&mut self, source: usize, bytes: &[u8], dropped: u64, at_ms: f64) {
+        let _s = prof::source(source);
+        let _t = prof::span(Stage::SessionPush);
         self.gap(source, dropped);
         self.engine.push_u8(source, bytes);
         self.meas.meter(source).u8(bytes);
@@ -312,6 +315,8 @@ impl Session {
 
     /// Float IQ from `source` (USRP, Airspy, float captures); as [`push`](Self::push).
     pub fn push_iq(&mut self, source: usize, iq: &[Complex32], dropped: u64, at_ms: f64) {
+        let _s = prof::source(source);
+        let _t = prof::span(Stage::SessionPush);
         self.gap(source, dropped);
         self.engine.push_iq(source, iq);
         self.meas.meter(source).iq(iq);
@@ -375,6 +380,11 @@ impl Session {
         }
     }
 
+    /// What each source runs each block now (for the performance report).
+    pub fn load(&self) -> Vec<trunk_core::trunk::SourceLoad> {
+        self.engine.load()
+    }
+
     /// Time spent decoding (for the load figure), measured by the caller.
     pub fn add_busy_ms(&mut self, ms: f64) {
         self.busy_ms += ms;
@@ -402,6 +412,7 @@ impl Session {
     /// jumping (the epoch plus a monotonic clock): sources' clocks are
     /// measured against it.
     pub fn poll(&mut self, now_ms: f64, out: &mut Vec<Output>) {
+        let _t = prof::span(Stage::SessionPoll);
         let start = *self.start_ms.get_or_insert(now_ms);
         let dt = (now_ms - self.last_poll_ms.unwrap_or(now_ms)).max(0.0) / 1000.0;
         self.last_poll_ms = Some(now_ms);
@@ -414,6 +425,7 @@ impl Session {
         self.log_rates_and_status(out);
         out.extend(self.records.drain(..).map(Output::Log));
         if now_ms - self.last_spec_ms >= 150.0 {
+            let _t = prof::span(Stage::SessionSpectrum);
             self.last_spec_ms = now_ms;
             // Only for sources someone has a waterfall open on.
             for (i, s) in self.engine.sources().iter().enumerate() {
@@ -425,6 +437,7 @@ impl Session {
                 out.push(Output::Topic { topic, text: json!({ "type": "spectrum", "source": i, "centerHz": s.center_hz, "rateHz": s.rate_hz, "bins": bins }).to_string() });
             }
         }
+        let _t = prof::span(Stage::SessionStatus);
         {
             let cfg = &self.cfg;
             let name = |sys: u16| cfg.short_name_of(sys).unwrap_or("conv").to_string();

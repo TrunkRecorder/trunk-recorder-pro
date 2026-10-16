@@ -96,6 +96,7 @@ mod monitor;
 mod nxdntool;
 mod p25synth;
 mod paths;
+mod perf;
 mod platform;
 mod snrtool;
 mod plugins;
@@ -706,6 +707,8 @@ fn fatal(msg: &str) -> ! {
 fn serve(a: &Args) {
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
+    // (Before any thread that's timed: the performance report.)
+    perf::enable();
     let config_path = paths::config_path(a.get("config"));
     paths::init(&config_path);
     let cfg = config::Config::load(&config_path).unwrap_or_else(|e| fatal(&e));
@@ -784,6 +787,7 @@ fn serve(a: &Args) {
         unlocked: Default::default(),
     });
     monitor::start(ctx.clone());
+    perf::start(ctx.clone());
     // What each call kept once its plugins are done, for the history list.
     let weak = Arc::downgrade(&ctx);
     ctx.plugins.archive.on_settle(Box::new(move |rel, audio, json| {
