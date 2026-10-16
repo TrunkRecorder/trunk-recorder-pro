@@ -82,9 +82,15 @@
 //!     Plugins (set up in the config's `plugins`, and each system's): find them in the registry,
 //!     install, update and uninstall them, list them, show one's manifest, or
 //!     run one against calls already on disk.
+//!
+//! trunk-pro interface search | install | update | add | uninstall | list …
+//!     Interfaces besides the built-in one (the config's `server.interfaces`), each on a
+//!     port of its own: find them in the store, install, update, add a folder of your own.
 //! ```
 
+mod access;
 mod dmrtool;
+mod interfaces;
 mod logging;
 mod monitor;
 mod nxdntool;
@@ -101,6 +107,7 @@ mod server;
 mod spool;
 mod spotlight;
 mod statstore;
+mod store;
 #[cfg(test)]
 mod protocol_tests;
 mod survey;
@@ -191,8 +198,8 @@ usage:
   trunk-pro [serve] [--port 8080] [--bind 127.0.0.1] [--config file.json] [--no-open] [--start] [--ui folder]
       Start the recorder and open its web interface (the default). Use
       --bind 0.0.0.0 to reach it from other machines (no authentication!).
-      --ui serves your own interface (a folder with an index.html) at /;
-      the built-in one stays at /builtin/. See /api/docs.
+      --ui serves a folder with an index.html as an interface for this run,
+      on the next free port, and opens it. See docs/interfaces.
       --start begins recording with the saved settings at once.
       --log-level debug: more in the log (stderr; files and syslog as set up).
   trunk-pro devices [--usrp]
@@ -250,6 +257,10 @@ usage:
       Plugins: find them in the registry, install, update and uninstall them,
       list them, show one's manifest, or run one against calls already on
       disk (`trunk-pro plugin` for the options).
+  trunk-pro interface search | install | update | add | uninstall | list …
+      Interfaces besides the built-in one, each on a port of its own: find
+      them in the store, install and update them, add a folder of your own
+      (`trunk-pro interface` for the options).
   trunk-pro --version
 
 Docs: https://github.com/TrunkRecorder/trunk-recorder-pro
@@ -270,6 +281,7 @@ fn main() {
         Some("survey") => survey::cli(&Args::parse(&argv[1..])),
         Some("rolloff") => profile::cli(&Args::parse(&argv[1..])),
         Some("plugin") => plugins::cli::run(&Args::parse(&argv[1..])),
+        Some("interface") => interfaces::cli::run(&Args::parse(&argv[1..])),
         _ => die(USAGE),
     }
 }
@@ -706,7 +718,8 @@ fn serve(a: &Args) {
     };
     let bind = a.get("bind").unwrap_or(&cfg.server.bind);
     let addr: std::net::SocketAddr = format!("{bind}:{port}").parse().unwrap_or_else(|e| fatal(&format!("bind address: {e}")));
-    let url = format!("http://{}:{}", if addr.ip().is_unspecified() { "localhost".into() } else { addr.ip().to_string() }, addr.port());
+    let host = if addr.ip().is_unspecified() { "localhost".into() } else { addr.ip().to_string() };
+    let url = format!("http://{host}:{}", addr.port());
     let listener = match std::net::TcpListener::bind(addr) {
         Ok(l) => l,
         Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
@@ -723,15 +736,23 @@ fn serve(a: &Args) {
         }
         Err(e) => fatal(&format!("web server on {addr}: {e}")),
     };
-    // An interface of the user's own at / (docs/api), for this run.
-    let home_dir = a.get("ui").map(|d| {
-        let d = Path::new(d);
-        let d = std::fs::canonicalize(d).unwrap_or_else(|e| fatal(&format!("--ui {}: {e}", d.display())));
+    // A folder served as an interface for this run (an author's test bench), on a port of its own.
+    let dev = a.get("ui").map(|d| {
+        let d = std::fs::canonicalize(d).unwrap_or_else(|e| fatal(&format!("--ui {d}: {e}")));
         if !d.join("index.html").is_file() {
             fatal(&format!("--ui {}: no index.html there", d.display()));
         }
-        d
+        let id = match interfaces::Manifest::read(&d) {
+            Ok(Some(m)) => m.id,
+            Ok(None) => interfaces::slug(&d.file_name().unwrap_or_default().to_string_lossy()),
+            Err(e) => fatal(&format!("--ui {}: {e}", d.display())),
+        };
+        let mut s = cfg.server.clone();
+        s.port = port;
+        s.interfaces.remove(&id);
+        interfaces::Dev { id, folder: d, port: s.free_port(&[]) }
     });
+    let ui_url = dev.as_ref().map(|d| format!("http://{host}:{}/", d.port));
     let (hub, _) = tokio::sync::broadcast::channel(4096);
     // The dashboard's measurements: the radio registry (from earlier runs) and a week of history.
     let shared = trunk_app::stats::Shared::new();
@@ -750,7 +771,8 @@ fn serve(a: &Args) {
         survey: Mutex::new(None),
         survey_last: Mutex::new(None),
         plugins: plugins::manage::Plugins::new(hub.clone(), shared.clone()),
-        home_dir,
+        bind: addr.ip(),
+        interfaces: interfaces::Interfaces::new(hub.clone(), dev, addr.port()),
         shared,
         series,
         store,
@@ -794,8 +816,11 @@ fn serve(a: &Args) {
             }
         }
     }
+    if let Some(u) = &ui_url {
+        log::info!("--ui: your interface is at {u}");
+    }
     if !a.flag("no-open") {
-        open_browser(&url);
+        open_browser(ui_url.as_deref().unwrap_or(&url));
     }
     let rt = tokio::runtime::Runtime::new().unwrap_or_else(|e| fatal(&e.to_string()));
     if let Err(e) = rt.block_on(server::serve(ctx.clone(), listener)) {

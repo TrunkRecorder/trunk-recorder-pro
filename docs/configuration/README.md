@@ -73,7 +73,7 @@ with `--config` files in different folders never share band plans, talker aliase
 | `systems` | | `[]` | array | Trunked systems, one entry per site. [systems.md](systems.md) |
 | `conventional` | | `[]` | array | Conventional systems, each a group of single-frequency channels. [conventional.md](conventional.md) |
 | `recording` | | see page | object | Where calls go and which are kept. [recording.md](recording.md) |
-| `server` | | see page | object | The web interface's address and port, custom interfaces. [server-and-log.md](server-and-log.md#server) |
+| `server` | | see page | object | The built-in interface's address and port; the other interfaces, each on a port of its own. [server-and-log.md](server-and-log.md#server) |
 | `log` | | see page | object | How much is logged and where to. [server-and-log.md](server-and-log.md#log) |
 | `monitor` | | see page | object | The dashboard's internet checks. [server-and-log.md](server-and-log.md#monitor) |
 | `plugins` | | `{}` | object | Which plugins run and their recorder-wide settings, by plugin id. [plugins.md](plugins.md) |
@@ -222,7 +222,7 @@ then Start). A few apply at once:
 | A trunked system's talkgroup file (`talkgroupsCsv`): an Ignore or Priority change takes effect immediately | Sources, systems, conventional channels, squelch | `server.bind`, `server.port` |
 | Plugin settings (`plugins`, each system's `plugins`) and `recording.m4a`: running plugins restart with them | Recording rules, `filenameFormat`, `captureDir` | `monitor.probeHosts` |
 | `log` settings | `recording.ramSpool` (the interface says "from the next start") | |
-| `server.allowedOrigins`, `server.interfaces`, `server.home` | A linked `channelFile` is re-read at every Start | |
+| `server.allowedOrigins`, `server.interfaces` (an interface moves to its new port at once) | A linked `channelFile` is re-read at every Start | |
 
 ## Files kept beside the config
 
@@ -239,6 +239,8 @@ config folder above; with `--config elsewhere/config.json`, it's `elsewhere/`.
 | `plugins/<id>/` | Installed plugins |
 | `plugin-data/<id>/` | Each plugin's own data (calls waiting to upload, for example), and its working folder |
 | `plugin-registry.json` | The plugin store's cached index |
+| `interfaces/<id>/` | Interfaces installed from the interface store |
+| `interface-registry.json` | The interface store's cached index |
 | `plugin-hold/` | Finished calls waiting out a [plugin delay](plugins.md#delays), one `.json` each. Deleting one drops that call for its plugin |
 | `logs/` | Log files, when `log.file` is on and `log.dir` is empty |
 | `spool/` | macOS only: where the RAM spool's RAM disk is mounted, when `recording.ramSpool` is on |

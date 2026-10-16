@@ -407,9 +407,10 @@ VoiceDecoder::report, ControlChannel::report (`sep`) ─► Engine::channels() �
 
 ```text
 main ─► serve()
-         ├─ Ctx (Arc): config (Mutex), lifecycle, phase, history, runner, survey, plugins, hub,
-         │             shared (registry + monitor), series + store (stats history), topics, engine_cmds
-         ├─ tokio runtime ─► axum server: /api/ws, /calls/, /builtin/, /ui/, /api/*
+         ├─ Ctx (Arc): config (Mutex), lifecycle, phase, history, runner, survey, plugins, interfaces,
+         │             hub, shared (registry + monitor), series + store (stats history), topics, engine_cmds
+         ├─ tokio runtime ─► axum server on server.port: the built-in UI + the API (/api/ws, /api/*, /calls/)
+         │                    one listener per other interface (interfaces::serve): its folder + the API
          │                    one task per WebSocket; blocking commands via spawn_blocking
          ├─ monitor thread: the computer and plugins every 2 s (net-probe thread beside it)
          ├─ stats-load / stats-store threads: history files in, rollups out
@@ -499,18 +500,28 @@ is generated from it (`npm run schema`), and
     `log` (`log`), `rfDetail` (`rf:<i>`), `decodeDetail`
     (`decode:<shortName>`).
   - Replies to the sender only: `devices`, `radios`, `dir`, `trConfig`,
-    `pluginStore`, `subscribed`, `statsResult`, `radioResult`, `error`,
-    `notice`.
+    `pluginStore`, `interfaceStore`, `subscribed`, `statsResult`,
+    `radioResult`, `error`, `notice`.
+  - By access (`access.rs`): `runtime::publish` marks plugin, interface and
+    key messages control-only (`Out::Control`) and sends `config` both whole
+    and without plugin settings and key sources (`Out::Config`); a session
+    passes on what its access may have.
 - **Client → recorder.** `setConfig`, `start`, `stop`, `listen`,
   `channelFile`, `devices`, `findRadios`, `listDir`, `readTrConfig`,
   `survey*`, `plugins`, `addPlugin`, `removePlugin`, `pluginStore`,
-  `installPlugin`, `subscribe`, `statsQuery`, `radioQuery`, `quit`.
-- **HTTP routes.**
+  `installPlugin`, `interfaces`, `interfaceStore`, `installInterface`,
+  `addInterface`, `removeInterface`, `subscribe`, `statsQuery`,
+  `radioQuery`, `quit`. A listen-only connection may send only `subscribe`,
+  `statsQuery`, `radioQuery`, `olderCalls` and `listen`.
+- **HTTP routes**, on every interface's port (`server::api`):
   - `/api/ws`, `/api/version`, `/api/docs`, `/api/schema`, `/api/protocol.ts`,
-    `/api/interfaces`, `/api/*` (the docs/api folder).
+    `/api/*` (the docs/api folder).
   - `/calls/<path>` (the recordings folder).
-  - `/builtin/` (the embedded interface), `/ui/<name>/` (interfaces from
-    disk), and `/` (the home interface).
+  - Everything else: the embedded interface on `server.port`; the
+    interface's folder on its own port. A request's port is its `Door`, and
+    a WebSocket's access follows from it (`access.rs`): control on the
+    built-in port, the config's `server.interfaces.<id>.access` on an
+    interface's.
 
 ### 10. Plugins (`trunk-pro/src/plugins/`, `trunk-recorder-plugin`)
 

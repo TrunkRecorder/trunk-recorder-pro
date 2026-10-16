@@ -981,20 +981,22 @@ impl Recording {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Server {
+    /// The address the recorder's interfaces listen on (all of them).
     pub bind: String,
+    /// The built-in interface's port: the recorder's own, for whoever runs it.
     pub port: u16,
     /// Start recording when the app starts (headless machines, after a reboot).
     pub auto_start: bool,
-    /// Web pages from other origins that may use the interface's API (a
-    /// custom interface served elsewhere): "http://host:port" as the browser
-    /// sends it, "null" a page opened from a file, "*" any. Its own pages
-    /// and programs that aren't browsers always may.
+    /// Web pages from other origins that may use the built-in interface's
+    /// API (a page served elsewhere): "http://host:port" as the browser sends
+    /// it, "null" a page opened from a file, "*" any. Its own pages and
+    /// programs that aren't browsers always may.
     pub allowed_origins: Vec<String>,
-    /// Interfaces of the user's own (docs/api), served at /ui/<name>/.
-    pub interfaces: Vec<Interface>,
-    /// What / shows: "" the built-in interface, else an interface's name.
-    /// The built-in one is at /builtin/ either way.
-    pub home: String,
+    /// The other interfaces, by id: web pages installed from the interface
+    /// store or folders of the user's own, each served on a port of its own
+    /// with the recorder's API beside it (docs/interfaces).
+    #[serde(deserialize_with = "interfaces_map")]
+    pub interfaces: BTreeMap<String, Interface>,
     /// Keys this version doesn't know (a newer version's, a hand edit's):
     /// kept, and saved back as they were.
     #[serde(flatten)]
@@ -1003,29 +1005,111 @@ pub struct Server {
 
 impl Default for Server {
     fn default() -> Self {
-        Server { bind: "127.0.0.1".into(), port: 8080, auto_start: false, allowed_origins: vec![], interfaces: vec![], home: String::new(), other: BTreeMap::new() }
+        Server { bind: "127.0.0.1".into(), port: 8080, auto_start: false, allowed_origins: vec![], interfaces: BTreeMap::new(), other: BTreeMap::new() }
     }
 }
 
-/// An interface of the user's own: a folder of web pages (index.html and
-/// whatever it uses), served as it is on disk at /ui/<name>/.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase", default)]
-pub struct Interface {
-    /// Its address: /ui/<name>/ (letters, digits, - and _).
-    pub name: String,
-    /// The folder, absolute or relative to the config file's.
-    pub path: String,
-}
+impl Server {
+    /// The first port above the built-in interface's that nothing in the
+    /// config uses (nor `taken`).
+    pub fn free_port(&self, taken: &[u16]) -> u16 {
+        let used = |p: u16| p == self.port || taken.contains(&p) || self.interfaces.values().any(|i| i.port == p);
+        (self.port.saturating_add(1)..=u16::MAX).chain(1024..self.port).find(|p| !used(*p)).unwrap_or(0)
+    }
 
-impl Interface {
-    /// Why its name can't be used, if it can't.
-    pub fn name_problem(name: &str) -> Option<String> {
-        if name.is_empty() || name.len() > 64 || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-            return Some(format!("Interface name \"{name}\": use letters, digits, - and _ (it's the address /ui/{name}/)."));
+    /// Give each interface without a port (0: one written by hand, or from
+    /// before ports) the next free one.
+    pub fn assign_ports(&mut self) {
+        let ids: Vec<String> = self.interfaces.iter().filter(|(_, i)| i.port == 0).map(|(id, _)| id.clone()).collect();
+        for id in ids {
+            let p = self.free_port(&[]);
+            self.interfaces.get_mut(&id).unwrap().port = p;
+        }
+    }
+
+    /// Why interface `id` can't be served as the config has it, if it can't
+    /// (its id, or its port: the built-in one's, or another's before it).
+    pub fn interface_problem(&self, id: &str) -> Option<String> {
+        let i = self.interfaces.get(id)?;
+        if !Interface::valid_id(id) {
+            return Some(format!("\"{id}\" can't be an interface's id: use lowercase letters, digits and -."));
+        }
+        if i.port == 0 {
+            return Some("It needs a port.".into());
+        }
+        if i.port == self.port {
+            return Some(format!("Port {} is the built-in interface's.", i.port));
+        }
+        if let Some((other, _)) = self.interfaces.iter().find(|(o, x)| x.port == i.port && x.enabled && o.as_str() < id) {
+            return Some(format!("Port {} is {other}'s too.", i.port));
         }
         None
     }
+}
+
+/// An interface served besides the built-in one: its own web page (static
+/// files, run in the browser), on a port of its own. The recorder's API is
+/// served beside it, so the page reaches it at `/api/` as it would on the
+/// built-in interface's port, with what `access` allows.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Interface {
+    /// Its port (0: the next free one is given it on load).
+    pub port: u16,
+    /// Served (false: kept, but not served).
+    pub enabled: bool,
+    /// What the page may do through the API.
+    pub access: ApiAccess,
+    /// A folder of the user's own, absolute, `~/…` or relative to the config
+    /// file's folder; empty: the copy installed from the store.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub path: String,
+}
+
+impl Default for Interface {
+    fn default() -> Self {
+        Interface { port: 0, enabled: true, access: ApiAccess::Listen, path: String::new() }
+    }
+}
+
+impl Interface {
+    /// An id is its folder's name too: lowercase letters, digits and -.
+    pub fn valid_id(id: &str) -> bool {
+        !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-') && !id.starts_with('-')
+    }
+}
+
+/// What a page may do with the recorder's API.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "camelCase")]
+pub enum ApiAccess {
+    /// See what the recorder does and play its calls, live and recorded;
+    /// change nothing. Its settings for plugins and keys aren't shown.
+    #[default]
+    Listen,
+    /// Everything the built-in interface can do: change the config, start
+    /// and stop, install plugins, quit.
+    Control,
+}
+
+/// `server.interfaces`: a map by id; a list (from before ports: `{name,
+/// path}` each, served at /ui/<name>/) becomes one, its ports given on load.
+fn interfaces_map<'de, D: serde::Deserializer<'de>>(d: D) -> Result<BTreeMap<String, Interface>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Either {
+        Map(BTreeMap<String, Interface>),
+        List(Vec<Old>),
+    }
+    #[derive(Deserialize)]
+    struct Old {
+        name: String,
+        path: String,
+    }
+    Ok(match Either::deserialize(d)? {
+        Either::Map(m) => m,
+        Either::List(l) => l.into_iter().map(|o| (o.name.to_ascii_lowercase().replace('_', "-"), Interface { path: o.path, ..Default::default() })).collect(),
+    })
 }
 
 /// A new RTL-SDR's gain, dB. Higher gains overload the front end near
@@ -1251,6 +1335,9 @@ impl Config {
         };
         c.load_channel_files(path);
         c.migrate_keys();
+        // `home` (what / showed) went with interfaces at /ui/<name>/: / is the built-in one's.
+        c.server.other.remove("home");
+        c.server.assign_ports();
         Ok(c)
     }
 

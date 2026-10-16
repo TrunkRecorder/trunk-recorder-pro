@@ -31,7 +31,6 @@ import {
   siteLockFields,
 } from "./config.ts";
 import { currentView, dismissTodo, downloadText, findRadios, openGuide, refreshDevices, setChannelFile, setNotice, setSetupTab, setView, unlockKeys, updateConfig, useApp, web, type SetupTab } from "./controller.ts";
-import { InterfacesPanel } from "./Interfaces.tsx";
 import { M4aSettings, PluginSetupPanel, renameSystemRefs, SystemPluginSettings } from "./Plugins.tsx";
 import { SystemDelays } from "./Delays.tsx";
 import { IconAntenna, IconDongle, IconFolder, IconPuzzle, IconTower } from "./Onboarding.tsx";
@@ -2328,10 +2327,9 @@ export function Setup() {
         </Section>
       )}
       {tab === "recording" && !web && (
-        <Section title="Advanced" hint="Audio encoding, the log, and other pages that use the recorder.">
+        <Section title="Advanced" hint="Audio encoding and the log.">
           <M4aSettings />
           <LogPanel c={c} />
-          <InterfacesPanel />
         </Section>
       )}
 

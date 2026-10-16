@@ -41,55 +41,8 @@ import { numberList, textList } from "./fieldText.ts";
 import { Group, Section, Switch } from "./SetupLayout.tsx";
 import { openTodos } from "./todo.ts";
 import { copyOverride, copyOwn, pluginCopies } from "./protocol.ts";
-import type { Config, PluginInfo, PluginInstall, PluginManifest, PluginSchema, PluginStore, PluginValues, PluginsList, StoreListing } from "./protocol.ts";
-
-/** Is version `a` newer than `b`? Semver: a prerelease is older than its release. */
-function newer(a: string, b: string): boolean {
-  const parse = (v: string) => {
-    const [core, pre] = v.replace(/^v/, "").split("+")[0].split(/-(.*)/s);
-    const n = core.split(".").map(Number);
-    return n.length === 3 && n.every(Number.isInteger) ? { n, pre: pre ?? null } : null;
-  };
-  const x = parse(a);
-  const y = parse(b);
-  if (!x || !y) return false;
-  for (let i = 0; i < 3; i++) if (x.n[i] !== y.n[i]) return x.n[i] > y.n[i];
-  if (x.pre === null || y.pre === null) return x.pre === null && y.pre !== null;
-  return x.pre > y.pre;
-}
-
-const STAGES: Record<PluginInstall["stage"], string> = {
-  finding: "Finding it…",
-  downloading: "Downloading…",
-  checking: "Checking it…",
-  installing: "Installing…",
-  done: "Installed",
-  failed: "Didn't install",
-};
-
-/** The tier, as a chip. */
-function TierChip(props: { tier: StoreListing["tier"] | "unreviewed"; title?: string }) {
-  switch (props.tier) {
-    case "official":
-      return (
-        <span className="chip ok" title={props.title ?? "From the recorder's authors; reviewed"}>
-          Official
-        </span>
-      );
-    case "community":
-      return (
-        <span className="chip" title={props.title ?? "Third-party; reviewed"}>
-          Community
-        </span>
-      );
-    default:
-      return (
-        <span className="chip warn" title={props.title ?? "Not from the registry; unreviewed"}>
-          Not reviewed
-        </span>
-      );
-  }
-}
+import type { Config, PluginInfo, PluginInstall, PluginManifest, PluginSchema, PluginValues, PluginsList, StoreListing } from "./protocol.ts";
+import { Author, newer, STAGES, StoreSource, TierChip, webUrl } from "./StoreParts.tsx";
 
 /** "apiKey" → "Api key": a label for a field the plugin didn't title. */
 function spell(key: string): string {
@@ -778,6 +731,7 @@ function PluginCard(props: { p: PluginInfo; recording: boolean; listing?: StoreL
           <>
             {listing && !p.custom && !p.unlistedFrom && <TierChip tier={listing.tier} />}
             {update && <span className="chip warn">v{update.version} available</span>}
+            <Author repository={m?.repository || p.unlistedFrom} />
           </>
         }
       />
@@ -800,10 +754,10 @@ function PluginCard(props: { p: PluginInfo; recording: boolean; listing?: StoreL
         <p className="small muted plugin-meta">
           {needsM4a && "Uploads M4A audio · "}
           {m.subscribe.length ? `Hears ${m.subscribe.map((t) => TOPIC_NAMES[t] ?? t).join(", ")}` : "Hears nothing"}
-          {(m.homepage || m.repository) && (
+          {webUrl(m.homepage || m.repository) && (
             <>
               {" · "}
-              <a href={m.homepage || m.repository} target="_blank" rel="noreferrer">
+              <a href={webUrl(m.homepage || m.repository)} target="_blank" rel="noreferrer">
                 {m.homepage ? "Website" : "Source"}
               </a>
             </>
@@ -913,26 +867,6 @@ function AddPlugin() {
   );
 }
 
-/** "3 minutes ago", for when the list was fetched. */
-function ago(t: number): string {
-  const s = Math.max(0, Date.now() / 1000 - t);
-  if (s < 60) return "just now";
-  if (s < 3600) return `${Math.round(s / 60)} min ago`;
-  if (s < 86400) return `${Math.round(s / 3600)} h ago`;
-  return new Date(t * 1000).toLocaleDateString();
-}
-
-function StoreSource(props: { store: PluginStore }) {
-  const st = props.store;
-  if (st.source === "registry") return <p className="muted small">Registry checked {st.fetched ? ago(st.fetched) : "now"}.</p>;
-  const when = st.source === "saved" && st.fetched ? `the list from ${new Date(st.fetched * 1000).toLocaleString()}` : "the built-in list";
-  return (
-    <p className="small warn-text" title={st.problem ?? undefined}>
-      Registry unreachable; showing {when}.
-    </p>
-  );
-}
-
 /** One of the registry's plugins: what it is, and Install / Update / Installed. */
 function StoreCard(props: { l: StoreListing; installed?: PluginInfo; install?: PluginInstall; recording: boolean }) {
   const { l, installed, install } = props;
@@ -974,6 +908,7 @@ function StoreCard(props: { l: StoreListing; installed?: PluginInfo; install?: P
             <strong id={`sn-${l.id}`}>{l.name}</strong>
             <span className="chip">v{l.version}</span>
             <TierChip tier={l.tier} />
+            <Author repository={l.repository} />
           </div>
         </div>
         {action}
@@ -983,13 +918,13 @@ function StoreCard(props: { l: StoreListing; installed?: PluginInfo; install?: P
         {l.license && `${l.license} · `}
         {l.homepage && (
           <>
-            <a href={l.homepage} target="_blank" rel="noreferrer">
+            <a href={webUrl(l.homepage)} target="_blank" rel="noreferrer">
               Website
             </a>
             {" · "}
           </>
         )}
-        <a href={l.repository} target="_blank" rel="noreferrer">
+        <a href={webUrl(l.repository)} target="_blank" rel="noreferrer">
           Source
         </a>
       </p>

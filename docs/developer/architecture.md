@@ -1045,8 +1045,9 @@ Other keys there are dropped.
 
 ### 10.8 `server`
 
-`bind` 127.0.0.1, `port` 8080, `autoStart` false, `allowedOrigins` [], `interfaces`
-[{name, path}], `home` "" (built-in UI).
+`bind` 127.0.0.1, `port` 8080, `autoStart` false, `allowedOrigins` [], `interfaces` {} (by id:
+`port`, `enabled` true, `access` "listen", `path` ""; a port of 0 gets the next free one on load;
+the old list form `[{name, path}]` is read as this map, and `home` is dropped).
 
 ### 10.9 `log`
 
@@ -1366,9 +1367,16 @@ hub skips the oldest without notice.
 | Route | Serves |
 |---|---|
 | `/api/ws` | the WebSocket |
-| `/api/version`, `/api/schema`, `/api/protocol.ts`, `/api/docs`, `/api/interfaces`, `/api/*` | version, schema, TypeScript types, API docs and examples, custom interfaces |
+| `/api/version`, `/api/schema`, `/api/protocol.ts`, `/api/docs`, `/api/*` | version (and interface API), schema, TypeScript types, API docs and examples |
 | `/calls/<path>` | recordings (folder, then RAM spool), WAV ↔ M4A substitution, Range requests |
-| `/builtin/`, `/ui/<name>/`, `/` | the embedded interface, interfaces from disk, the home interface |
+| everything else | on `server.port` the embedded interface; on an interface's port, its folder (no hidden files) |
+
+These are served on the built-in interface's port and, the same, on each other interface's
+(`server.interfaces`, a listener each, kept by `interfaces::serve::reconcile` as the config
+changes). The port a request came in on decides what a WebSocket may do (`access.rs`): control
+on the built-in port; on an interface's, its `access` — `listen` may only `subscribe`, query,
+page through calls and `listen`, gets no plugin, interface or key messages, and sees the config
+without plugin settings and key sources.
 
 Every request passes a guard. Programs that aren't browsers send no `Origin` and are let in. A
 browser page must be the recorder's own origin or listed in `server.allowedOrigins` (which also

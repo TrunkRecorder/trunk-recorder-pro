@@ -1261,3 +1261,23 @@ table.calls tr.ignored td { opacity: 0.55; }
 .setup .system-card.set-card.collapsed:hover { border-left-color: var(--sys-color, var(--line)); }
 @media (prefers-reduced-motion: reduce) { .set-card-chevron { transition: none; } }
 @container (max-width: 760px) { .set-card-head.foldable { padding: 0 18px 0 0; } .set-card-toggle { padding: 14px 0 14px 12px; } }
+
+/* Interfaces (Interfaces.tsx): the ports table and a card's access menu. */
+.iface-ports { display: flex; flex-direction: column; border-top: 1px solid var(--line); margin-bottom: 10px; }
+.iface-ports-row { display: grid; grid-template-columns: minmax(140px, 1fr) auto minmax(0, 1.4fr); gap: 12px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.iface-ports-row a { color: var(--accent); overflow-wrap: anywhere; }
+.iface-port { display: inline-flex; align-items: center; gap: 8px; }
+.iface-port input { width: 7ch; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; font: inherit; font-family: var(--mono); color: inherit; }
+.iface-port input[aria-invalid="true"] { border-color: var(--bad); }
+.iface-access { display: inline-flex; align-items: center; gap: 6px; }
+@media (max-width: 640px) { .iface-ports-row { grid-template-columns: 1fr auto; } .iface-ports-row > :last-child { grid-column: 1 / -1; } }
+
+/* Store cards: screenshots (StoreParts.tsx). */
+.shots { display: flex; gap: 8px; overflow-x: auto; padding: 2px 0 4px; }
+.shot { flex: none; padding: 0; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); cursor: zoom-in; overflow: hidden; }
+.shot img { display: block; height: 120px; width: auto; max-width: 240px; object-fit: cover; }
+.shot:hover, .shot:focus-visible { border-color: var(--accent); }
+.shot-view { position: fixed; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center; padding: 16px; background: color-mix(in srgb, var(--bg) 85%, transparent); }
+.shot-view figure { margin: 0; max-width: min(1200px, 100%); max-height: 100%; display: flex; flex-direction: column; gap: 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 10px; }
+.shot-view img { max-width: 100%; max-height: calc(100vh - 120px); object-fit: contain; border-radius: 6px; }
+.shot-view figcaption { gap: 8px; }

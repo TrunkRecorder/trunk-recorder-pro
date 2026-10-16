@@ -70,6 +70,8 @@ export class WorkerTransport implements Transport {
       msg.type === "installPlugin"
     )
       return;
+    // Nor other interfaces: the browser build has no server to serve them.
+    if (msg.type === "interfaces" || msg.type === "interfaceStore" || msg.type === "installInterface" || msg.type === "addInterface" || msg.type === "removeInterface") return;
     if (msg.type === "start" || msg.type === "surveyStart" || msg.type === "profileSource") this.post({ type: "files", files: this.files });
     this.post(msg);
   }

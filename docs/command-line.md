@@ -32,6 +32,7 @@ tools. Most people only ever run `trunk-pro` with no arguments and do the rest i
 | [`rolloff`](#rolloff) | Measure how a radio's band edges sag, and the guard band to use |
 | [`tool …`](#tool) | Diagnostics: one channel's decode, scans, weak-signal curves, re-vocoding |
 | [`plugin …`](#plugin) | Find, install, update, remove and test plugins |
+| [`interface …`](#interface) | Find, install, update and remove interfaces, or add a folder of your own |
 
 ## Running the app (`serve`)
 
@@ -48,11 +49,11 @@ you press **Start** in the interface, or right away with `--start` or the config
 | Option | Default | What it does |
 |---|---|---|
 | `--config file.json` | the app's config folder | The config file to use. Everything the app learns and installs (band plans, unit names, plugins, stats history, logs) is kept in the folder this file is in, so two recorders with their own configs never share them. |
-| `--port n` | `server.port` (8080) | The web interface's port, for this run only. |
+| `--port n` | `server.port` (8080) | The built-in interface's port, for this run only. |
 | `--bind address` | `server.bind` (`127.0.0.1`) | The address to listen on, for this run only. `0.0.0.0` makes the interface reachable from other machines. There is no login: see [Remote access](guides/interface.md#remote-access). |
 | `--no-open` | | Don't open a browser (headless machines, services). |
 | `--start` | `server.autoStart` | Start recording at once with the saved settings. If the settings can't start, the reason is logged as `Not started: …` and the app keeps running. |
-| `--ui folder` | | Serve an interface of your own (a folder with an `index.html`) at `/` for this run. The built-in interface stays at `/builtin/`. See [Interfaces of your own](guides/interface.md#interfaces-of-your-own). |
+| `--ui folder` | | Serve a folder with an `index.html` as an interface for this run, with control access, on the first free port above the built-in interface's, and open it instead of the built-in one. Nothing is saved. See [Interfaces](interfaces/README.md). |
 | `--log-level level` | `log.level` (`info`) | `trace`, `debug`, `info`, `warning` (or `warn`), `error` or `fatal`. Overrides the config's level for this run. |
 
 Where the default config lives:
@@ -506,6 +507,33 @@ settings from the config.
 trunk-pro plugin search upload
 trunk-pro plugin install openmhz
 trunk-pro plugin run openmhz ~/TrunkRecorderPro/dcfd --limit 3
+```
+
+## interface
+
+```bash
+trunk-pro interface search | install | update | add | uninstall | list …
+```
+
+Interfaces besides the built-in one, each served on a port of its own (see
+[Interfaces](interfaces/README.md)). Installed ones are kept beside the config, in `interfaces/`;
+each is listed in the config's `server.interfaces`. Every subcommand takes `--config file.json`. A
+running recorder picks up what these write when it restarts; its Interfaces page does the same
+at once.
+
+| Subcommand | What it does |
+|---|---|
+| `interface search [text]` | The interfaces in the store (github.com/TrunkRecorder/interfaces), or those whose id, name or description contains `text`; which you have, whether an update is out, and which ask for control. |
+| `interface install <id \| owner/repo> [--tag v1.2.0] [--port n]` | Install an interface from the store, or from a GitHub repository's release (its latest, or `--tag`). It's served on the first free port, or `--port`. One from outside the store gets listen access whatever it asks for. |
+| `interface update [id…]` | Install newer versions of installed interfaces (all, or these). |
+| `interface add <folder> [--port n]` | Serve a folder of your own. Its `interface.json`, if any, gives its id and the access it gets; otherwise the folder's name is its id. |
+| `interface uninstall <id>` | Stop serving it and forget it. An installed copy is deleted; a folder of your own is left alone. |
+| `interface list` | Every interface: its port, access, address or why it isn't served, and its folder. |
+
+```bash
+trunk-pro interface search player
+trunk-pro interface install trunkamp
+trunk-pro interface add ~/wall-display --port 8090
 ```
 
 ## Environment variables

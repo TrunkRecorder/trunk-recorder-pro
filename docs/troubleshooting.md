@@ -32,6 +32,7 @@ Other things that stop it at start, each with its message:
 | `--port x: a port number, 1–65535` | A number in that range |
 | `bind address: …` | `--bind` or `server.bind` must be an IP address (`127.0.0.1`, `0.0.0.0`), not a host name |
 | `--ui <folder>: no index.html there` | Point `--ui` at a folder with an `index.html` |
+| `Interface <id>: can't serve it on port <n>: …` | Another program has the port (or it's below 1024): pick another on the Interfaces page |
 
 Started from Finder, Explorer or a desktop launcher, these show as a dialog (macOS) or a
 notification (Linux) titled "Trunk Recorder Pro couldn't start".
@@ -302,8 +303,9 @@ and choose the recordings folder. The app checks again once a day. If it can't t
 Refused a page from http://192.168.1.50:3000: add it to server.allowedOrigins in the config to let it use the interface.
 ```
 
-The app only lets its own pages drive it, so other web pages can't. Add the page's origin to
-**Other pages allowed to use the API** in Setup → Recording → Interfaces. See
+The app only lets its own pages drive it, so other web pages can't. Each interface it serves
+uses the API on its own port: a page on port 8081 is refused on 8080. For a page served by
+something else, add its origin to **Pages served elsewhere** on the Interfaces page. See
 [Remote access](guides/interface.md#remote-access).
 
 ## Where is the log?
