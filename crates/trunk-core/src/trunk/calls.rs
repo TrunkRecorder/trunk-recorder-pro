@@ -80,6 +80,9 @@ pub struct CallSource {
     pub src: u32,
     /// Sample-clock seconds this source was first heard on the call.
     pub time_s: f64,
+    /// Where in the saved audio it starts talking (sample index), once the
+    /// call's audio is put together ([`super::multisite::Held::trim`]).
+    pub audio_pos: Option<usize>,
     pub emergency: bool,
     /// Where the radio said it was (GPS) while it talked: latitude, longitude.
     pub position: Option<(f64, f64)>,
@@ -285,7 +288,7 @@ impl CallManager {
         if src == 0 || c.sources.last().is_some_and(|s| s.src == src) {
             return false;
         }
-        c.sources.push(CallSource { src, time_s, emergency, position: None });
+        c.sources.push(CallSource { src, time_s, audio_pos: None, emergency, position: None });
         true
     }
 
@@ -419,7 +422,7 @@ impl CallManager {
             start_s: m.time_s,
             last_update_s: m.time_s,
             last_audio_s: m.time_s,
-            sources: if m.source > 0 { vec![CallSource { src: m.source as u32, time_s: m.time_s, emergency: m.emergency, position: None }] } else { vec![] },
+            sources: if m.source > 0 { vec![CallSource { src: m.source as u32, time_s: m.time_s, audio_pos: None, emergency: m.emergency, position: None }] } else { vec![] },
             talkgroup_info: tg.clone(),
             patched_talkgroups: self.patches.members_of(m.talkgroup),
             color_code: m.color_code,

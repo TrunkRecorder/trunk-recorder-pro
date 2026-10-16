@@ -71,8 +71,15 @@ impl Held {
     /// Leave out what the saved call won't have: transmissions shorter than
     /// `min_tx_s` and encrypted ones not decrypted ([`super::record::Transmissions::kept`]),
     /// their frames and the error summary with them.
+    /// Each source is placed in the audio first, and moves with it.
     pub fn trim(&mut self, min_tx_s: f64) {
+        self.tx.place(&mut self.call.sources, self.audio.len());
         if let Some(ranges) = self.tx.kept(self.audio.len(), min_tx_s, SAMPLE_RATE) {
+            // Kept audio before it (a source in a part left out starts where the next kept part does).
+            let moved = |p: usize| ranges.iter().map(|r| p.clamp(r.start, r.end) - r.start).sum::<usize>();
+            for s in &mut self.call.sources {
+                s.audio_pos = s.audio_pos.map(moved);
+            }
             self.frames.keep(&ranges, self.audio.len());
             self.audio = ranges.iter().flat_map(|r| self.audio[r.clone()].iter().copied()).collect();
             self.tx = Default::default();
@@ -373,5 +380,36 @@ mod tests {
         let before = burst.audio.len();
         burst.trim(20.0 * frame_s);
         assert_eq!(burst.audio.len(), before);
+    }
+
+    #[test]
+    fn sources_are_placed_by_where_they_are_in_the_audio() {
+        use crate::trunk::calls::CallSource;
+        // Three transmissions with dead air between: 2 s at 0 s, a 0.4 s key-up at 10 s, 3 s at 20 s.
+        let mut h = held(1, 0, 0, 0, 0);
+        for (t0, secs) in [(0.0, 2.0), (10.0, 0.4), (20.0, 3.0)] {
+            let mut t = t0;
+            let end = h.audio.len() + (secs * SAMPLE_RATE as f64) as usize;
+            while h.audio.len() < end {
+                h.tx.note(h.audio.len(), t);
+                h.audio.extend(std::iter::repeat_n(0.1, FRAME_SAMPLES * 9));
+                t += 0.18;
+            }
+        }
+        // Granted at -0.5 s; one source heard mid-way through the first, one at the key-up, one in the gap before the last.
+        let src = |src, time_s| CallSource { src, time_s, ..Default::default() };
+        h.call.start_s = -0.5;
+        h.call.sources = vec![src(7, -0.5), src(8, 1.0), src(9, 10.0), src(10, 15.0)];
+        let mut all = h.clone();
+        all.trim(0.0);
+        let at: Vec<_> = all.call.sources.iter().map(|s| s.audio_pos.unwrap()).collect();
+        // (Audio comes 9 frames, 1440 samples, at a time: the first transmission is 12 of those, the key-up 3.)
+        let chunk = 9 * FRAME_SAMPLES;
+        assert_eq!(at, [0, 6 * chunk, 12 * chunk, 15 * chunk], "the key-up starts where the first transmission ends, not 10.5 s in");
+        // The key-up left out: who keyed it starts where the next kept audio does.
+        h.trim(1.0);
+        let at: Vec<_> = h.call.sources.iter().map(|s| s.audio_pos.unwrap()).collect();
+        assert_eq!(at, [0, 6 * chunk, 12 * chunk, 12 * chunk]);
+        assert_eq!(h.audio.len(), 12 * chunk + 17 * chunk);
     }
 }
