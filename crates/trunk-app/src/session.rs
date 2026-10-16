@@ -4,6 +4,7 @@
 //! wall clock (`now_ms`), the local date for folder names, and does the I/O.
 
 use serde_json::{json, Value};
+use std::collections::VecDeque;
 use trunk_core::trunk::{heard_code, Call, Engine, Event, IdField, Identity, MessageType, NoteLevel, ProtocolStatus};
 
 use crate::filename;
@@ -50,6 +51,11 @@ const RATE_EVERY_S: f64 = 10.0;
 /// place ([`Engine::push_gap`]), so time goes on: calls on it end, and its
 /// clock stays in step with the others'. ms of wall clock.
 const QUIET_MS: f64 = 1000.0;
+/// A source's delivered rate is measured over this long, ms ([`RateMeter`]).
+const RATE_WINDOW_MS: f64 = 5000.0;
+/// The rate's window starts at a buffer's arrival at most this long after
+/// [`RATE_WINDOW_MS`] ago (it keeps the marks this far apart), ms.
+const RATE_MARK_MS: f64 = 100.0;
 /// A source's last error is shown this long after it, s.
 const ERROR_SHOWN_S: f64 = 300.0;
 /// The most silence fed for one gap, s: a driver's count of samples lost.
@@ -89,6 +95,7 @@ struct SourceStats {
     /// When it came, Unix s (the error is shown for [`ERROR_SHOWN_S`]).
     last_error_s: f64,
     rate_measured: f64,
+    rate: RateMeter,
     ended: bool,
     /// Pushed to since the last poll.
     fed: bool,
@@ -164,6 +171,40 @@ impl ClockFit {
     }
 }
 
+/// A source's delivered rate over [`RATE_WINDOW_MS`], timed from one
+/// buffer's arrival to another's. Drivers hand samples over in chunks (an
+/// RTL-SDR's are 131,072, 55 ms at 2.4 MS/s); a window timed by the status
+/// tick counts whole ones in or out of it and swings by one.
+#[derive(Default, Clone)]
+struct RateMeter {
+    /// (When a buffer came, ms; samples to its end), oldest first.
+    marks: VecDeque<(f64, u64)>,
+    /// The newest buffer's.
+    last: Option<(f64, u64)>,
+}
+
+impl RateMeter {
+    fn fed(&mut self, at_ms: f64, samples: u64) {
+        self.last = Some((at_ms, samples));
+        if self.marks.back().is_none_or(|m| at_ms - m.0 >= RATE_MARK_MS) {
+            self.marks.push_back((at_ms, samples));
+        }
+    }
+
+    /// Samples a second as of `now_ms`, once there's a second's worth.
+    fn rate(&mut self, now_ms: f64) -> Option<f64> {
+        let (t1, n1) = self.last?;
+        // Quiet since its last buffer: measured to now, so the rate falls.
+        let end = if now_ms - t1 > QUIET_MS { now_ms } else { t1 };
+        while self.marks.len() > 1 && end - self.marks[1].0 >= RATE_WINDOW_MS {
+            self.marks.pop_front();
+        }
+        let (t0, n0) = *self.marks.front()?;
+        let dt = (end - t0) / 1000.0;
+        (dt >= 1.0).then(|| (n1 - n0) as f64 / dt)
+    }
+}
+
 pub struct Session {
     cfg: Config,
     engine: Engine,
@@ -179,7 +220,6 @@ pub struct Session {
     last_poll_ms: Option<f64>,
     last_status_ms: f64,
     last_spec_ms: f64,
-    rate_mark: (f64, Vec<u64>),
     /// Build audio frames (skip when nobody is listening).
     pub want_audio: bool,
     pub plugin_topics: PluginTopics,
@@ -210,7 +250,6 @@ impl Session {
                 engine.load_bandplan(i, &b);
             }
         }
-        let n = cfg.sources.len();
         // (A capture played as fast as it can be has no wall clock to keep to.)
         let stats = cfg
             .sources
@@ -231,7 +270,6 @@ impl Session {
             last_poll_ms: None,
             last_status_ms: 0.0,
             last_spec_ms: 0.0,
-            rate_mark: (0.0, vec![0; n]),
             want_audio: true,
             plugin_topics: PluginTopics::default(),
             epoch_ms,
@@ -322,6 +360,7 @@ impl Session {
         let rate = self.engine.sources()[source].rate_hz;
         let s = &mut self.stats[source];
         s.samples += n;
+        s.rate.fed(at_ms, s.samples);
         s.clock.samples += n;
         s.clock.observe(at_ms, self.epoch_ms, rate);
         s.fed = true;
@@ -432,13 +471,10 @@ impl Session {
         }
         if now_ms - self.last_status_ms >= 500.0 {
             self.last_status_ms = now_ms;
-            let dt = (now_ms - self.rate_mark.0) / 1000.0;
-            if dt >= 1.0 {
-                for (i, s) in self.stats.iter_mut().enumerate() {
-                    s.rate_measured = (s.samples - self.rate_mark.1[i]) as f64 / dt;
-                    self.rate_mark.1[i] = s.samples;
+            for s in &mut self.stats {
+                if let Some(r) = s.rate.rate(now_ms) {
+                    s.rate_measured = r;
                 }
-                self.rate_mark.0 = now_ms;
             }
             self.flush_log(out);
             if self.heard.take_unshown() {
