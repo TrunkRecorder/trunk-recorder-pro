@@ -104,17 +104,21 @@ impl ChannelFilter {
     }
 }
 
-/// 10th-order Chebyshev II high-pass at 8 kHz: 50 dB down from 255 Hz, so every
-/// CTCSS tone (67–254.1 Hz) goes; flat from 350 Hz, 6 dB down at 300 Hz. A 300 Hz
-/// Butterworth is only 10 dB down at 250 Hz. An elliptic is steeper but rings
-/// at the band edge, and MDC1200 / FleetSync bursts decode less often through it.
-/// Sections as [b0, b1, b2, a1, a2] (scipy.signal.cheby2(10, 50, 255, 'high', fs=8000)).
-const HPF_SOS: [[f64; 5]; 5] = [
-    [0.6428600453328048, -1.285084987489046, 0.6428600453328047, -1.7422481356384292, 0.7599759824637152],
-    [1.0, -1.9916945897748721, 0.9999999999999997, -1.7568555700937203, 0.7812526332603749],
-    [1.0, -1.9799112163574606, 0.9999999999999999, -1.7872628287977754, 0.822867317368415],
-    [1.0, -1.9681972065735547, 0.9999999999999999, -1.8351743767747561, 0.8828741755898225],
-    [1.0, -1.9609919654397203, 0.9999999999999998, -1.9015113974791924, 0.9581045010270175],
+/// 13th-order Chebyshev II high-pass at 8 kHz: 50 dB down from 256 Hz, so every
+/// CTCSS tone (67–254.1 Hz) goes; 3 dB down at 288.5 Hz (the lowest two-tone
+/// paging tone), flat from 310 Hz; odd order, so DC from a mistuned carrier
+/// goes too. A 300 Hz Butterworth is only 10 dB down at 250 Hz. An elliptic is
+/// steeper but rings at the band edge (MDC1200 / FleetSync decode less often),
+/// and a linear-phase FIR's pre-ring smears voice into an unkey burst.
+/// Sections as [b0, b1, b2, a1, a2] (scipy.signal.cheby2(13, 50, 256, 'high', fs=8000)).
+const HPF_SOS: [[f64; 5]; 7] = [
+    [0.649971201753611, -0.649971201753611, 0.0, -0.9009186289848935, 0.0],
+    [1.0, -1.9976703966479996, 0.9999999999999998, -1.804773049479563, 0.8167223030504506],
+    [1.0, -1.9912294244377715, 1.0, -1.813831989552296, 0.8317473057395659],
+    [1.0, -1.9821827093882347, 1.0, -1.829691361845757, 0.8561967602247423],
+    [1.0, -1.9726225689301102, 0.9999999999999997, -1.8532315922396563, 0.8891899815764512],
+    [1.0, -1.964731673139806, 1.0, -1.8851956447367968, 0.9294929908328667],
+    [1.0, -1.9602896689698817, 1.0, -1.925772087226872, 0.9754894659150795],
 ];
 
 #[derive(Clone, Copy)]
@@ -358,6 +362,23 @@ mod tests {
             let pt = tone_power(tail, AUDIO_RATE, tone);
             let db = 10.0 * (pt / p1k).log10();
             assert!(db < -40.0, "{tone} Hz CTCSS only {:.1} dB below voice", -db);
+        }
+    }
+
+    #[test]
+    fn high_pass_edges() {
+        // The filter alone at 8 kHz: gain at `hz`, dB.
+        let gain = |hz: f64| {
+            let mut hpf = HPF_SOS.map(Biquad::new);
+            let x: Vec<f32> = (0..16_000).map(|i| (2.0 * PI * hz * i as f64 / AUDIO_RATE).sin() as f32).collect();
+            let y: Vec<f32> = x.iter().map(|&v| hpf.iter_mut().fold(v, |s, h| h.step(s))).collect();
+            10.0 * (tone_power(&y[8000..], AUDIO_RATE, hz) / 0.5).log10()
+        };
+        for hz in [67.0, 151.4, 203.5, 254.1] {
+            assert!(gain(hz) < -45.0, "{hz} Hz only {:.1} dB down", -gain(hz));
+        }
+        for hz in [288.5, 313.0, 400.0, 1000.0, 3000.0] {
+            assert!(gain(hz) > -3.5, "{hz} Hz {:.1} dB down", -gain(hz));
         }
     }
 
