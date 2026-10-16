@@ -8,6 +8,7 @@
 //! the 2V's two).
 
 use super::frames::{Codec, VoiceFrame};
+use super::calls::Flags;
 use super::voice::{CipherId, Encryption, TrackerOut};
 use crate::ambe::decode_vcw;
 use crate::mbe::{self, Kind, FRAME_SAMPLES};
@@ -67,10 +68,10 @@ struct Slot {
     /// voice is under.
     held: Vec<(Option<usize>, [u8; 49], u32)>,
     end_s: f64,
-    /// Who is talking (MAC_PTT, voice channel user messages), and whether
-    /// as an emergency, until the transmission ends.
+    /// Who is talking (MAC_PTT, voice channel user messages), and what its
+    /// messages said of the transmission, until it ends.
     talker: Option<u32>,
-    emergency: bool,
+    flags: Flags,
     /// The group the MAC_PTT named, and the one the slot was granted for: a
     /// key by talkgroup is found with them.
     talkgroup: Option<u32>,
@@ -99,7 +100,7 @@ impl Slot {
             held: Vec::new(),
             end_s: 0.0,
             talker: None,
-            emergency: false,
+            flags: Flags::default(),
             talkgroup: None,
             granted: None,
             listened: true,
@@ -122,7 +123,7 @@ impl Slot {
         self.last_vb = None;
         self.held.clear();
         self.talker = None;
-        self.emergency = false;
+        self.flags = Flags::default();
         self.talkgroup = None;
         self.set_es(None, keys);
     }
@@ -189,7 +190,7 @@ impl Slot {
         let was = self.voice.encrypted();
         self.voice = v;
         if self.active && v.encrypted() && !was {
-            out.push((c, TrackerOut::Info { source: None, emergency: false, encrypted: true }));
+            out.push((c, TrackerOut::Info { source: None, flags: Flags { encrypted: true, ..Default::default() } }));
         }
     }
 
@@ -201,13 +202,17 @@ impl Slot {
         }
     }
 
-    /// A talker named (MAC_PTT, a voice channel user message): told when it
-    /// is new, or newly an emergency.
-    fn talker(&mut self, c: usize, source: Option<u32>, emergency: bool, out: &mut Vec<(usize, TrackerOut)>) {
+    /// A talker named (MAC_PTT, a voice channel user message) and what the
+    /// message said (its service options): told when it is new, or says
+    /// something new. (Encrypted as the voice is: a sync overrules a
+    /// message's protected bit.)
+    fn talker(&mut self, c: usize, source: Option<u32>, flags: Flags, out: &mut Vec<(usize, TrackerOut)>) {
         let (Some(src), true) = (source, self.active) else { return };
-        if self.talker != Some(src) || (emergency && !self.emergency) {
-            (self.talker, self.emergency) = (Some(src), self.emergency || emergency);
-            out.push((c, TrackerOut::Info { source: Some(src), emergency, encrypted: self.voice.encrypted() }));
+        let flags = Flags { encrypted: self.voice.encrypted(), ..flags };
+        let merged = if self.talker == Some(src) { self.flags.merge(flags) } else { flags };
+        if self.talker != Some(src) || merged != self.flags {
+            (self.talker, self.flags) = (Some(src), merged);
+            out.push((c, TrackerOut::Info { source: Some(src), flags: merged }));
         }
     }
 
@@ -437,7 +442,7 @@ impl TdmaTracker {
                         s.set_es(Some(es), keys);
                         s.report_cipher(c, &es, out);
                     }
-                    s.talker(c, radio(ptt.source), false, out);
+                    s.talker(c, radio(ptt.source), Flags::default(), out);
                 }
                 s.first4v = pdu.first_4v(next).or(s.first4v);
             }
@@ -462,7 +467,7 @@ impl TdmaTracker {
                     // The 4th superframe's SACCH names the inbound talker, for
                     // it to check: listeners take the first three's (BBAC §3.2.2).
                     if !(sacch && p.ultraframe == Some(3)) {
-                        s.talker(c, m.talker().and_then(radio), opts.emergency(), out);
+                        s.talker(c, m.talker().and_then(radio), opts.into(), out);
                     }
                     if opts.protected() {
                         let v = s.voice.hinted();
@@ -471,7 +476,7 @@ impl TdmaTracker {
                 }
                 Mac::PatchVoiceUser { .. } => {
                     if !(sacch && p.ultraframe == Some(3)) {
-                        s.talker(c, m.talker().and_then(radio), false, out);
+                        s.talker(c, m.talker().and_then(radio), Flags::default(), out);
                     }
                 }
                 // Unscrambled, with what scrambling is seeded from: the voice
@@ -653,7 +658,7 @@ mod tests {
         let mut p = tx.packets();
         p.push((tx.mac_packet(11, BURST_SACCH_S, &vcu(0x123456), Some(3)), 0.35));
         p.push((tx.mac_packet(11, BURST_SACCH_S, &vcu(0x654321), Some(0)), 0.36));
-        let infos: Vec<(Option<u32>, bool)> = outs(&mut t, &p).into_iter().filter_map(|o| if let TrackerOut::Info { source, emergency, .. } = o { Some((source, emergency)) } else { None }).collect();
+        let infos: Vec<(Option<u32>, bool)> = outs(&mut t, &p).into_iter().filter_map(|o| if let TrackerOut::Info { source, flags } = o { Some((source, flags.emergency)) } else { None }).collect();
         assert_eq!(infos, [(Some(0x654321), true)]);
     }
 

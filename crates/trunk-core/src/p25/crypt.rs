@@ -474,6 +474,10 @@ impl Keyring {
         if keyid.is_some() && talkgroups.is_empty() && self.keys.iter().any(|o| o.alg == alg && o.keyid == keyid && o.talkgroups.is_empty()) {
             return Err(format!("{kid}: {name} ({algid:#04X}) is given twice"));
         }
+        // Two keys for one talkgroup (and key ID, or any): only the first would ever be used.
+        if let Some(tg) = talkgroups.iter().find(|tg| self.keys.iter().any(|o| o.alg == alg && o.keyid == keyid && o.talkgroups.contains(tg))) {
+            return Err(format!("{kid}: {name} ({algid:#04X}) is given twice for talkgroup {tg}"));
+        }
         self.keys.push(Key { alg, keyid, key: Zeroizing::new(key), talkgroups });
         Ok(())
     }
@@ -798,6 +802,7 @@ mod tests {
         r.add(ALGID_ADP, Some(0x1B50), vec![1; 5], vec![]).unwrap();
         assert!(r.add(ALGID_ADP, Some(0x1B50), vec![2; 5], vec![]).unwrap_err().contains("twice"));
         r.add(ALGID_ADP, None, vec![3; 5], vec![1201]).unwrap();
+        assert!(r.add(ALGID_ADP, None, vec![5; 5], vec![1201, 1202]).unwrap_err().contains("talkgroup 1201"));
         r.add(ALGID_AES_256, Some(0x0002), vec![4; 32], vec![]).unwrap();
         assert_eq!(r.lookup(ALGID_ADP, 0x1B50, Some(7)), Lookup::Key(Algorithm::Adp, &[1; 5]));
         // The talkgroup's key, whatever the key ID.

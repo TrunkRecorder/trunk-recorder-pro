@@ -622,10 +622,21 @@ impl Session {
             key_id: c.cipher.map(|k| k.keyid),
             decrypted: c.decrypted,
             emergency: c.emergency,
+            duplex: c.duplex,
+            packet: c.mode,
+            priority: c.priority,
             recording: c.recording,
             reason: c.reason.map(|r| r.as_str().to_string()),
             start_time: self.wall(c.start_s),
             units: c.sources.iter().map(|s| s.src).collect(),
+            sources: c
+                .sources
+                .iter()
+                .map(|s| {
+                    let f = s.flags;
+                    trunk_recorder_plugin::CallSource { unit: s.src, time: self.wall(s.time_s), emergency: f.emergency, encrypted: f.encrypted, duplex: f.duplex, packet: f.packet, priority: f.priority }
+                })
+                .collect(),
             patched_talkgroups: c.patched_talkgroups.clone(),
         }
     }
@@ -683,7 +694,7 @@ impl Session {
                     if let Some(kind) = unit_kind(m.kind) {
                         let talkgroup = matches!(kind, "affiliation" | "location" | "answer_request" | "call_alert" | "emergency_alarm").then_some(m.talkgroup);
                         if m.source >= 0 {
-                            let e = UnitEvent { system, short_name: name.clone(), kind: kind.into(), unit: m.source as u32, talkgroup, time: self.wall(m.time_s) };
+                            let e = UnitEvent { system, short_name: name.clone(), kind: kind.into(), unit: m.source as u32, talkgroup, emergency: m.emergency, time: self.wall(m.time_s) };
                             out.push(Output::Plugin(HostMessage::Unit(e)));
                         }
                     }

@@ -3,6 +3,7 @@
 //! as the P25 trackers, tagged with the slot, so a call can be recorded on
 //! each slot independently.
 
+use crate::trunk::Flags;
 use super::burst::{Burst, Framer};
 use super::slot::{Channel, LcFrom, SlotEvent};
 use crate::dsp::Symbol;
@@ -118,13 +119,13 @@ impl DmrVoice {
                     s.emergency |= lc.emergency();
                 }
                 if fresh {
-                    push(TrackerOut::Info { source: (src != 0).then_some(src), emergency: s.emergency, encrypted: s.encrypted });
+                    push(TrackerOut::Info { source: (src != 0).then_some(src), flags: Flags { emergency: s.emergency, encrypted: s.encrypted, ..Default::default() } });
                 }
             }
             SlotEvent::Privacy { .. } => {
                 if !s.encrypted {
                     s.encrypted = true;
-                    push(TrackerOut::Info { source: None, emergency: s.emergency, encrypted: true });
+                    push(TrackerOut::Info { source: None, flags: Flags { emergency: s.emergency, encrypted: true, ..Default::default() } });
                 }
             }
             SlotEvent::Voice { frame, pos } => {

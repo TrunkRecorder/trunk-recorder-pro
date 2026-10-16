@@ -90,7 +90,7 @@ far behind loses events (counted on the dashboard) rather than slowing the recor
 
 | Topic | Message | When |
 |---|---|---|
-| `call.start` | `CallInfo` | A call starts: talkgroup and its tag, frequency, TDMA slot, analog / encrypted / emergency flags, whether it's recorded (and why not), the radios heard so far, patched talkgroups |
+| `call.start` | `CallInfo` | A call starts: talkgroup and its tag, frequency, TDMA slot, analog / encrypted / emergency flags and the grant's duplex / packet / priority, whether it's recorded (and why not), the radios heard so far (`sources`: each with what its own transmission said of itself — emergency, encrypted, duplex, packet, priority), patched talkgroups |
 | `call.end` | `CallInfo` | A call ends; its files follow in `call.concluded` |
 | `call.concluded` | `ConcludedCall` | A recorded call's files are on disk: its path key, its call JSON (Trunk Recorder's format) and the paths of its `.json`, `.wav` and, when asked for, `.m4a` |
 | `unit` | `UnitEvent` | A radio registered, deregistered, affiliated, acknowledged, reported its location, got a data grant, or sent an answer request or call alert |

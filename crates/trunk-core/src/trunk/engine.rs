@@ -1611,26 +1611,24 @@ impl Engine {
                         self.events.push(Event::Audio { call_id: id, system: sys, talkgroup: tg, samples, decrypted: false });
                     }
                 }
-                TrackerOut::Info { source, emergency, encrypted } => {
+                TrackerOut::Info { source, flags } => {
                     let now = t.now_s;
-                    if encrypted {
+                    if flags.encrypted {
                         if let Some(rec) = self.radio.recordings.get_mut(&id) {
                             rec.tx.mark_encrypted(now);
                         }
                     }
                     if let Some(c) = t.calls.call_mut(id) {
                         let mut changed = false;
-                        if encrypted && !c.encrypted {
+                        if flags.encrypted && !c.encrypted {
                             c.encrypted = true;
                             changed = true;
                         }
-                        if emergency && !c.emergency {
+                        if flags.emergency && !c.emergency {
                             c.emergency = true;
                             changed = true;
                         }
-                        if let Some(src) = source {
-                            changed |= CallManager::note_source(c, src, now, emergency);
-                        }
+                        changed |= CallManager::note_source(c, source, now, flags);
                         if changed {
                             self.call_events.push(CallEvent::Update(c.clone()));
                         }

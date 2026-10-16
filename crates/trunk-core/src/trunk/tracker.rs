@@ -13,6 +13,7 @@ use crate::p25::frame::{HDU, LDU1, LDU2, TDU, TDULC};
 use crate::p25::gps::LcPositions;
 use crate::p25::lc::{self, Lc, LinkControl};
 use crate::p25::voice::{decode_tdulc, imbe_bits_to_params, imbe_params_to_bits, ldu_codeword_end_bit, EncryptionSync, ALGID_CLEAR};
+use super::calls::Flags;
 use super::voice::{CipherId, Encryption, TrackerOut};
 use std::sync::Arc;
 
@@ -256,7 +257,7 @@ impl VoiceTracker {
             Lc::SourceIdExtension { id, .. } => {
                 if let (None, Some(id)) = (self.talker, radio(id)) {
                     self.talker = Some(id);
-                    out.push(TrackerOut::Info { source: Some(id), emergency: false, encrypted: self.voice.encrypted() });
+                    out.push(TrackerOut::Info { source: Some(id), flags: Flags { encrypted: self.voice.encrypted(), ..Default::default() } });
                 }
             }
             _ => self.other_lc(&lc, out),
@@ -289,7 +290,9 @@ impl VoiceTracker {
         if opts.protected() {
             self.hint(out);
         }
-        out.push(TrackerOut::Info { source, emergency: opts.emergency(), encrypted: self.voice.encrypted() });
+        // (Encrypted as the voice is: a sync overrules the word's protected bit.)
+        let flags = Flags { encrypted: self.voice.encrypted(), ..opts.into() };
+        out.push(TrackerOut::Info { source, flags });
     }
 
     /// Words of the manufacturers' own: talker aliases and positions.
@@ -312,7 +315,7 @@ impl VoiceTracker {
         let was = self.voice.encrypted();
         self.voice = v;
         if self.active && v.encrypted() && !was {
-            out.push(TrackerOut::Info { source: None, emergency: false, encrypted: true });
+            out.push(TrackerOut::Info { source: None, flags: Flags { encrypted: true, ..Default::default() } });
         }
     }
 

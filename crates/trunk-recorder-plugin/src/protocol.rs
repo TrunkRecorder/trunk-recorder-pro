@@ -205,6 +205,11 @@ pub struct CallInfo {
     /// Some of its encrypted voice was decrypted (the system had the key).
     pub decrypted: bool,
     pub emergency: bool,
+    /// Full duplex, packet mode and priority (P25's service options: 1
+    /// lowest, 4 the default, 7 highest; 0 not given), as the grant said.
+    pub duplex: bool,
+    pub packet: bool,
+    pub priority: u8,
     /// Recorded (false: only followed, or not recorded — see `reason`).
     pub recording: bool,
     /// Why it isn't recorded: "encrypted", "unknown_tg", "no_recorder", "no_source", …
@@ -213,9 +218,31 @@ pub struct CallInfo {
     pub start_time: f64,
     /// Radios heard on the call so far.
     pub units: Vec<u32>,
+    /// The same radios, in order, with what each one's transmission said of
+    /// itself.
+    pub sources: Vec<CallSource>,
     /// Talkgroups patched with this one so far, its own included, ascending;
     /// empty when it isn't patched.
     pub patched_talkgroups: Vec<u32>,
+}
+
+/// A radio heard on a call, and what its transmission said of itself: P25's
+/// service options (from the grant, link control and Phase 2's voice
+/// channel user messages), or the flags other protocols have.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CallSource {
+    pub unit: u32,
+    /// Unix seconds it was first heard on the call.
+    pub time: f64,
+    pub emergency: bool,
+    pub encrypted: bool,
+    /// Full duplex (half otherwise).
+    pub duplex: bool,
+    /// Packet mode (circuit otherwise).
+    pub packet: bool,
+    /// 1 lowest, 4 the default, 7 highest; 0 not given.
+    pub priority: u8,
 }
 
 /// A recorded call whose files are on disk.
@@ -325,8 +352,19 @@ pub struct SrcEntry {
     pub time: i64,
     /// Seconds into the audio.
     pub pos: f64,
+    /// What its transmission said of itself (this recorder's: Trunk
+    /// Recorder writes only `emergency` here).
     #[serde(deserialize_with = "flag")]
     pub emergency: bool,
+    #[serde(deserialize_with = "flag")]
+    pub encrypted: bool,
+    #[serde(deserialize_with = "flag")]
+    pub duplex: bool,
+    /// Packet mode.
+    #[serde(deserialize_with = "flag")]
+    pub mode: bool,
+    /// 1 lowest, 4 the default, 7 highest; 0 not given.
+    pub priority: i64,
     pub signal_system: String,
     /// The radio's name from the unit tags file.
     pub tag: String,
@@ -367,6 +405,9 @@ pub struct UnitEvent {
     /// The talkgroup involved (affiliation, location, answer request, call
     /// alert, emergency alarm).
     pub talkgroup: Option<u32>,
+    /// The message said it is an emergency (an emergency alarm, a data
+    /// grant's options).
+    pub emergency: bool,
     /// Unix seconds.
     pub time: f64,
 }

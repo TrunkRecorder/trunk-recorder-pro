@@ -83,9 +83,55 @@ pub struct CallSource {
     /// Where in the saved audio it starts talking (sample index), once the
     /// call's audio is put together ([`super::multisite::Held::trim`]).
     pub audio_pos: Option<usize>,
-    pub emergency: bool,
+    /// What its transmission said of itself (the grant's, then the voice
+    /// channel's words while it talked).
+    pub flags: Flags,
     /// Where the radio said it was (GPS) while it talked: latitude, longitude.
     pub position: Option<(f64, f64)>,
+}
+
+/// What a radio's transmission said of itself: P25's service options
+/// (AABC-D §2.3.24: in grants, link control and Phase 2's voice channel user
+/// messages), or the emergency and encryption flags other protocols have.
+/// Kept per source: one talker's emergency isn't the next one's.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Flags {
+    pub emergency: bool,
+    /// Encrypted (P25: protected).
+    pub encrypted: bool,
+    /// Full duplex (half otherwise).
+    pub duplex: bool,
+    /// Packet mode (circuit otherwise).
+    pub packet: bool,
+    /// P25's priority level: 1 lowest, 4 the default, 7 highest; 0 not given.
+    pub priority: u8,
+}
+
+impl Flags {
+    /// A control channel message's, for the radio it names.
+    pub fn of(m: &Message) -> Self {
+        Flags { emergency: m.emergency, encrypted: m.encrypted, duplex: m.duplex, packet: m.mode, priority: m.priority }
+    }
+    pub fn emergency(emergency: bool) -> Self {
+        Flags { emergency, ..Default::default() }
+    }
+    /// Another word about the same transmission: a flag either set is set;
+    /// the priority is the latest one given.
+    pub fn merge(self, o: Flags) -> Flags {
+        Flags {
+            emergency: self.emergency || o.emergency,
+            encrypted: self.encrypted || o.encrypted,
+            duplex: self.duplex || o.duplex,
+            packet: self.packet || o.packet,
+            priority: if o.priority != 0 { o.priority } else { self.priority },
+        }
+    }
+}
+
+impl From<crate::p25::osp::ServiceOptions> for Flags {
+    fn from(o: crate::p25::osp::ServiceOptions) -> Self {
+        Flags { emergency: o.emergency(), encrypted: o.protected(), duplex: o.duplex(), packet: o.packet(), priority: o.priority() }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -284,12 +330,17 @@ impl CallManager {
         }
     }
 
-    /// A voice channel named a source radio (returns true if it was new).
-    pub fn note_source(c: &mut Call, src: u32, time_s: f64, emergency: bool) -> bool {
-        if src == 0 || c.sources.last().is_some_and(|s| s.src == src) {
-            return false;
+    /// The radio talking now (`src`; none: whoever was last) and what its
+    /// transmission said of itself. Returns whether that changed the call:
+    /// a new source, or a flag the source hadn't.
+    pub fn note_source(c: &mut Call, src: Option<u32>, time_s: f64, flags: Flags) -> bool {
+        let src = src.filter(|&s| s != 0);
+        if let Some(s) = c.sources.last_mut().filter(|s| src.is_none_or(|src| s.src == src)) {
+            let merged = s.flags.merge(flags);
+            return std::mem::replace(&mut s.flags, merged) != merged;
         }
-        c.sources.push(CallSource { src, time_s, audio_pos: None, emergency, position: None });
+        let Some(src) = src else { return false };
+        c.sources.push(CallSource { src, time_s, audio_pos: None, flags, position: None });
         true
     }
 
@@ -377,7 +428,7 @@ impl CallManager {
             changed = true;
         }
         if m.source > 0 {
-            changed |= Self::note_source(c, m.source as u32, m.time_s, m.emergency);
+            changed |= Self::note_source(c, Some(m.source as u32), m.time_s, Flags::of(m));
         }
         changed
     }
@@ -423,7 +474,7 @@ impl CallManager {
             start_s: m.time_s,
             last_update_s: m.time_s,
             last_audio_s: m.time_s,
-            sources: if m.source > 0 { vec![CallSource { src: m.source as u32, time_s: m.time_s, audio_pos: None, emergency: m.emergency, position: None }] } else { vec![] },
+            sources: if m.source > 0 { vec![CallSource { src: m.source as u32, time_s: m.time_s, audio_pos: None, flags: Flags::of(m), position: None }] } else { vec![] },
             talkgroup_info: tg.clone(),
             patched_talkgroups: self.patches.members_of(m.talkgroup),
             color_code: m.color_code,
@@ -584,5 +635,23 @@ mod tests {
         let info = ConcludeInfo { short_name: "s", epoch_ms_at_zero: 0.0, audio_seconds: 1.0, errors: &errors, recorder_num: 0, end_s: 1.0, units: None, unit_tags: None, freq_error_hz: 0, reception: Default::default() };
         assert!(call_record(&m.calls[0], &info).0.contains("\"short_name\":\"s\",\"patched_talkgroups\":[101,65001],\"freqList\""));
         assert!(!call_record(&m.calls[1], &info).0.contains("patched"));
+    }
+
+    /// Each radio keeps what its own transmission said: the grant's options
+    /// for the one it names, the voice channel's for the rest, and a word
+    /// naming no one is about whoever is talking.
+    #[test]
+    fn each_source_keeps_its_own_flags() {
+        let mut m = CallManager::new(CallConfig::default(), Talkgroups::default());
+        let mut ev = Vec::new();
+        let grant = Message { emergency: true, duplex: true, priority: 7, ..msg(MessageType::Grant, 0.0, 101) };
+        m.handle(&[grant], &mut Host, &mut ev);
+        let c = &mut m.calls[0];
+        assert_eq!(c.sources[0].flags, Flags { emergency: true, duplex: true, priority: 7, ..Default::default() });
+        assert!(CallManager::note_source(c, Some(8), 1.0, Flags { encrypted: true, priority: 4, ..Default::default() }));
+        assert!(CallManager::note_source(c, None, 1.5, Flags::emergency(true)), "a new flag for the one talking");
+        assert!(!CallManager::note_source(c, Some(8), 2.0, Flags::emergency(true)), "nothing new");
+        let flags: Vec<(u32, Flags)> = c.sources.iter().map(|s| (s.src, s.flags)).collect();
+        assert_eq!(flags, [(7, Flags { emergency: true, duplex: true, priority: 7, ..Default::default() }), (8, Flags { emergency: true, encrypted: true, priority: 4, ..Default::default() })]);
     }
 }

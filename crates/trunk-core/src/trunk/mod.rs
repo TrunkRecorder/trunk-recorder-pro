@@ -18,7 +18,7 @@ pub mod tracker;
 pub mod units;
 pub mod voice;
 
-pub use calls::{conventional_index, conventional_system, Call, CallConfig, CallId, CallSource, CONVENTIONAL, MAX_CONVENTIONAL};
+pub use calls::{conventional_index, conventional_system, Call, CallConfig, CallId, CallSource, Flags, CONVENTIONAL, MAX_CONVENTIONAL};
 pub use control::{Protocol, ProtocolStatus};
 pub use conventional::{check_channels, heard_code, Access, ConvChannel, ConvConfig, ConvMode};
 pub use identity::{IdField, Identity};

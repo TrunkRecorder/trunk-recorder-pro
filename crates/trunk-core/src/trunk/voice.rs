@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use num_complex::Complex32;
 
-use super::calls::Call;
+use super::calls::{Call, Flags};
 use super::frames::VoiceFrame;
 use super::tdma::TdmaTracker;
 use super::tracker::VoiceTracker;
@@ -90,8 +90,9 @@ pub struct CipherId {
 pub enum TrackerOut {
     /// 20 ms of 8 kHz audio in [−1, 1], and the vocoder frame it came from.
     Audio(Vec<f32>, VoiceFrame),
-    /// Link control named a source / emergency, or the call turned out encrypted.
-    Info { source: Option<u32>, emergency: bool, encrypted: bool },
+    /// Who is talking (none: whoever was), and what the voice channel says
+    /// of the transmission: an emergency, encrypted, …
+    Info { source: Option<u32>, flags: Flags },
     /// The transmission's encryption sync named its cipher (once a
     /// transmission, and again if it changes).
     Cipher(CipherId),
@@ -496,7 +497,7 @@ impl VoiceDecoder for Analog {
         let mut found = Vec::new();
         self.ids.push(&audio, &mut found);
         for u in found {
-            out.push(VoiceOut { slot: 0, t: 0.0, out: TrackerOut::Info { source: Some(u.unit), emergency: u.emergency, encrypted: false } });
+            out.push(VoiceOut { slot: 0, t: 0.0, out: TrackerOut::Info { source: Some(u.unit), flags: Flags::emergency(u.emergency) } });
         }
         if !audio.is_empty() {
             out.push(VoiceOut { slot: 0, t: 0.0, out: TrackerOut::AnalogAudio(audio) });
