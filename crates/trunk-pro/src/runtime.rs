@@ -26,6 +26,10 @@ use crate::sdr::{self, RtlConfig, SourceMsg};
 /// A message for every connected browser.
 pub enum Out {
     Text(String),
+    /// Only for connections with control access ([`crate::access`]).
+    Control(String),
+    /// The config: as it is, and as a listen-only connection sees it.
+    Config { full: String, listen: String },
     /// Only for browsers that subscribed to `topic` (see [`trunk_app::stats::Topics`]).
     Topic { topic: String, text: String },
     /// Live audio (binary frame) for talkgroup `tg` of the system with short
@@ -35,8 +39,17 @@ pub enum Out {
 
 pub type Hub = broadcast::Sender<Arc<Out>>;
 
+/// Send `v` to the browsers that may have it ([`crate::access`]).
 pub fn publish(hub: &Hub, v: Value) {
-    let _ = hub.send(Arc::new(Out::Text(v.to_string())));
+    let out = match v["type"].as_str().unwrap_or("") {
+        "config" => {
+            let listen = serde_json::json!({ "type": "config", "config": crate::access::redact_config(v["config"].clone()) });
+            Out::Config { full: v.to_string(), listen: listen.to_string() }
+        }
+        t if crate::access::control_only(t) => Out::Control(v.to_string()),
+        _ => Out::Text(v.to_string()),
+    };
+    let _ = hub.send(Arc::new(out));
 }
 
 #[derive(Clone, Debug, Default)]
@@ -73,8 +86,10 @@ pub struct Ctx {
     /// Its latest snapshot, for browsers that connect meanwhile.
     pub survey_last: Mutex<Option<Value>>,
     pub plugins: plugins::manage::Plugins,
-    /// `--ui <folder>`: the interface / shows, over `server.home`.
-    pub home_dir: Option<PathBuf>,
+    /// The address every interface listens on (`--bind`, else `server.bind`).
+    pub bind: std::net::IpAddr,
+    /// The interfaces besides the built-in one, and their listeners.
+    pub interfaces: crate::interfaces::Interfaces,
     /// The radio registry and the event monitor: outlive recordings.
     pub shared: Arc<trunk_app::stats::Shared>,
     /// The dashboard's minute history (a week), and where new minutes go.

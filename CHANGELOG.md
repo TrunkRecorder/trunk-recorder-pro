@@ -5,6 +5,26 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Interfaces for people who listen, from an interface store.** Besides its own interface, the
+  recorder now serves other web interfaces — a player, a scanner wall, a phone page — each on a
+  port of its own, so each is a separate site to the browser. The new **Interfaces** page
+  installs them from the interface store ([TrunkRecorder/interfaces](https://github.com/TrunkRecorder/interfaces),
+  checksums pinned as the plugin store's are) or a GitHub release, adds folders of your own,
+  updates and removes them, and sets their ports; changes take effect at once, no restart.
+  `trunk-pro interface …` does the same from the command line. See
+  [docs/interfaces](docs/interfaces/README.md). The store shows each interface's screenshots
+  (fetched and checked by the recorder) and who made it; plugin cards show their author too.
+- **Listen access.** An interface gets **listen** access unless you give it **control**: it sees
+  and plays everything, and can't change settings, start or stop, quit, or manage plugins; the
+  config it sees leaves out plugin settings and key sources. The recorder's own port keeps full
+  control. Share a listener's interface without sharing the controls.
+- **Changed:** interfaces are no longer served at `/ui/<name>/`, `/builtin/` and `/ui/` are gone,
+  and `/` is always the recorder's own interface (`server.home` is dropped). `server.interfaces`
+  is now a map by id (`port`, `enabled`, `access`, `path`); an old list is read and given ports.
+  `--ui <folder>` serves the folder on the next free port and opens it. `/api/interfaces` is
+  replaced by the `interfaces` message. The interface panel moved from Setup to the Interfaces
+  page.
+
 ## [0.1.13] — 2026-10-16
 
 - **P25 decoding checked against the TIA-102 standards.** The control channel, Phase 1 voice,

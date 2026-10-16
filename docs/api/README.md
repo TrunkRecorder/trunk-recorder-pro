@@ -15,22 +15,19 @@ one talkgroup, a program that logs calls or forwards them somewhere.
 [`protocol.ts`](../../web/src/protocol.ts) is the exact definition of every
 message. Both guides defer to it.
 
-A running recorder serves all of this:
+A running recorder serves all of this, on the built-in interface's port and on
+every other interface's ([Serving your interface](#serving-your-interface)):
 
 | URL | What |
 |---|---|
-| `/` | The home interface: the built-in one, or yours ([Serving your interface](#serving-your-interface)) |
-| `/builtin/` | The built-in interface, always |
-| `/ui/` | Every interface, the examples and these docs, as links |
-| `/ui/<name>/` | Your interface `<name>` |
+| `/` | The interface this port is for: the built-in one on the recorder's port (8080), yours on its own |
 | `GET /api/docs` | This page (Markdown) |
 | `GET /api/llms.txt` | The LLM guide |
 | `GET /api/client.js` | The client library ([client.js](#clientjs)) |
 | `GET /api/examples/…` | The examples, runnable: e.g. `/api/examples/wall.html` |
 | `GET /api/protocol.ts` | Every message, as TypeScript types with comments: **the definition** |
 | `GET /api/schema` | The same as JSON Schema (draft-07): `definitions.FromRecorder` / `definitions.ToRecorder` |
-| `GET /api/interfaces` | The interfaces configured, and any problem with each (`InterfacesInfo`) |
-| `GET /api/version` | `{"app": "trunk-pro", "version": "…"}` |
+| `GET /api/version` | `{"app": "trunk-pro", "version": "…", "api": 1}` (`api`: the interface API version) |
 | `WS /api/ws` | The connection: JSON messages both ways, plus binary live audio |
 | `GET /calls/<path>.wav` / `.json` | A recorded call's audio and details |
 
@@ -90,7 +87,7 @@ Make a folder with this `index.html`:
 Then serve it from the recorder:
 
 ```bash
-trunk-pro --ui ./my-folder      # your page at http://localhost:8080/, the built-in one at /builtin/
+trunk-pro --ui ./my-folder      # your page on the next free port, http://localhost:8081/
 ```
 
 Edit the file and reload: the recorder serves the folder as it is on disk.
@@ -114,51 +111,79 @@ ws.onmessage = (ev) => {
 
 ## Serving your interface
 
-The simplest way to run an interface is to let the recorder serve it. Its
-pages are then on the recorder's own origin, so they need no access settings,
-and `/api/client.js`, `/api/ws` and `/calls/` are right there.
+Let the recorder serve your interface. Each interface gets **a port of its
+own** (8081, 8082, … beside the built-in interface's 8080), and the
+recorder's API is served on that port too: `/api/client.js`, `/api/ws` and
+`/calls/` are right there, on the page's own origin, so it needs no access
+settings. And because each port is a site of its own to the browser, your
+page can't read the built-in interface's storage, or another interface's,
+nor they yours.
 
 An interface is **a folder with an `index.html`**, plus whatever else it uses:
-scripts, styles, images, more pages. There's no build step unless you want
-one. A bundler's output folder (`dist/`) works too; build with relative
-paths (Vite: `base: "./"`).
+scripts, styles, images, more pages. There's no server side: everything runs
+in the browser. There's no build step unless you want one; a bundler's output
+folder (`dist/`) works too.
 
-**In the config** (Setup → Recording → Interfaces, or the config file):
+**On the Interfaces page** (or `trunk-pro interface add <folder>`): **Add a
+folder…** serves it on the next free port, at once. In the config file:
 
 ```json
 "server": {
-  "interfaces": [
-    { "name": "wall", "path": "/home/me/wall-display" },
-    { "name": "scanner", "path": "ui/scanner" }
-  ],
-  "home": "wall"
+  "port": 8080,
+  "interfaces": {
+    "wall": { "port": 8081, "enabled": true, "access": "listen", "path": "/home/me/wall-display" }
+  }
 }
 ```
 
-- Each interface is served at `/ui/<name>/`. A name is letters, digits, `-`
-  and `_`.
-- `path` is the folder: absolute, `~/…`, or relative to the config file's
-  folder.
-- `home` says what `/` shows: `""` (the default) for the built-in interface,
-  or an interface's name. The built-in interface is at `/builtin/` either way,
-  so setup is always one link away.
-- Changes take effect at once. No restart needed.
+- The key is its id: lowercase letters, digits and `-`. `path` is the
+  folder: absolute, `~/…`, or relative to the config file's folder. Without
+  `path`, it's the copy installed from the interface store.
+- `access` is what the page may do with the API: `"listen"` (the default)
+  or `"control"`. See [Access](#access).
+- Changes to ports, `enabled` and `access` take effect at once. No restart.
 
-**For one run:** `trunk-pro --ui <folder>` shows that folder at `/`, over
-`home`. Nothing is saved, which makes it handy while developing.
+**For one run:** `trunk-pro --ui <folder>` serves the folder on the next free
+port with control access, and opens it. Nothing is saved, which makes it
+handy while developing.
+
+**An `interface.json`** beside `index.html` names it and says what it needs.
+It's optional for a folder of your own, and required to publish it in the
+interface store ([docs/interfaces/publishing.md](../interfaces/publishing.md)):
+
+```json
+{ "id": "wall", "name": "Wall display", "version": "1.0.0", "description": "Every system's calls, big.", "api": 1, "access": "listen" }
+```
 
 **How files are served:**
-- `/ui/wall/` is the folder's `index.html`, and `/ui/wall/app.js` its
-  `app.js`. A subfolder serves its own `index.html`.
-- A path with no extension that isn't a file (`/ui/wall/settings`) gets the
+- `/` is the folder's `index.html`, and `/app.js` its `app.js`. A subfolder
+  serves its own `index.html`.
+- A path with no extension that isn't a file (`/settings`) gets the
   folder's `index.html`. Pages that route themselves this way work; hash
   routes (`#/settings`) work anywhere.
+- `/api/…` and `/calls/…` are the recorder's: don't put files there.
 - Files are read on every request, with `Cache-Control: no-cache`: edit, then
   reload.
-- Nothing outside the folder is served, symbolic links included.
+- Nothing outside the folder is served, symbolic links included, and no
+  hidden files (names starting with `.`).
 
-`/ui/` lists every interface (with problems, such as a missing folder), the
-examples, and these docs. `/api/interfaces` gives the same as JSON.
+### Access
+
+What a page may do depends on the port it came from:
+
+| | `listen` (an interface's default) | `control` (the built-in interface) |
+|---|---|---|
+| Status, calls on the air, recorded calls, live audio, the dashboard's figures and queries | ✓ | ✓ |
+| The config | without plugin settings and key sources | all of it |
+| `setConfig`, `start`, `stop`, `quit`, plugins, interfaces, keys, the survey, files on the recorder's computer | refused with an `error` | ✓ |
+
+A listen-only connection may send `subscribe`, `statsQuery`, `radioQuery`,
+`olderCalls` and `listen`. Its `hello` has no `configPath`, `keys` or
+`pluginRuntime`, and it isn't sent `plugins`, `pluginRuntime`,
+`pluginStore`, `pluginInstall`, `interfaces`, `interfaceStore`,
+`interfaceInstall` or `keys`. An interface that needs more says
+`"access": "control"` in its `interface.json`; the store shows that before
+it's installed, and the user can change it either way at any time.
 
 ## client.js
 
@@ -279,15 +304,17 @@ computer. Two things keep that safe:
   you trust, or put it behind a reverse proxy that adds authentication.
 - **Web pages from other sites are refused.** Every web page a browser shows
   could otherwise reach `ws://localhost:8080`. A browser sends the page's
-  origin with each request. The recorder accepts its own pages (including
-  every interface it serves) and anything that isn't a browser (no `Origin`
-  header: scripts, Node, curl). It answers any other origin with **403** and
-  logs `Refused a page from …` once.
+  origin with each request. Each port accepts its own pages and anything that
+  isn't a browser (no `Origin` header: scripts, Node, curl). It answers any
+  other origin with **403** and logs `Refused a page from …` once. So an
+  interface on port 8081 uses the API on 8081, with its own access: it can't
+  borrow the built-in interface's by connecting to 8080.
 
 To use the API from a page the recorder **doesn't** serve (a dev server, a
 page on another machine, a file), add the page's origin to `allowedOrigins`
-in the `server` section of the config, or under Setup → Recording →
-Interfaces:
+in the `server` section of the config, or on the Interfaces page under
+**Pages served elsewhere**. Such a page gets control access on the port it
+uses:
 
 ```json
 "server": {
@@ -429,6 +456,9 @@ Every message is a JSON object with a `type`. Exact fields are in
 | `sourceProfile` | Answers `profileSource` | `source`, then `error`, or `centerHz`, `rateHz`, `spectrum` / `floor` (1024 points, dB, −rate/2 … +rate/2), `rows` (a waterfall), `referenceDb`, `lowHz` / `highHz` (how far in the floor is 3 dB down), `lowDropDb` / `highDropDb`, `suggestedGuardHz` |
 | `pluginRuntime` | A plugin's totals changed | `id`, `runtime` (state, counts, recent log; `metrics` — queue, upload time, endpoints — when the plugin reports them; restarts, events dropped, uptime; results per minute for the last hour) |
 | `pluginStore` | Answers `pluginStore` | the plugin registry's listings |
+| `interfaces` | After `plugins`; after interface changes; answers `interfaces` | `interfaces` (`InterfaceInfo[]`: each one's port, access, whether it's served and why not), `api` |
+| `interfaceStore` | Answers `interfaceStore` | the interface store's listings |
+| `interfaceInstall` | As an install goes | `key`, `id`, `stage`, `message` (as `pluginInstall`) |
 | `pluginInstall` | An install's progress | `key`, `id`, `stage` (`finding` … `done` / `failed`), `message` |
 | `error` | A command failed | `message`, for the user |
 | `notice` | A command worked and has something to say | `message` |
@@ -458,6 +488,11 @@ aren't understood are ignored.
 | `addPlugin` | `path` | Add a plugin executable of your own. |
 | `removePlugin` | `id` | Remove a plugin. |
 | `pluginStore` | `refresh?` | The plugin registry's list (→ `pluginStore`). |
+| `interfaces` | — | List the interfaces again (→ `interfaces`). |
+| `interfaceStore` | `refresh?` | The interface store's list (→ `interfaceStore`). |
+| `installInterface` | `id`, or `repository` and `tag?` | Install or update an interface; a new one is served at once on the next free port. |
+| `addInterface` | `path` | Serve a folder on the recorder's computer as an interface. |
+| `removeInterface` | `id` | Stop serving it and forget it; an installed copy is deleted. |
 | `installPlugin` | `id`, or `repository` + `tag?` | Install or update a plugin (→ `pluginInstall` as it goes). |
 | `subscribe` | `topics` | What this connection watches (replaces the last): `spectrum:<source>`, `log`, `rf:<source>`, `decode:<shortName>`, `platform` (→ `subscribed`). |
 | `statsQuery` | `id`, `series` (names, or prefixes ending in `*`), `range` (`10m` / `1h` / `6h` / `24h` / `7d`) or `from` / `to` (Unix s), `points?` | The minute history of series, averaged down to about `points` steps (→ `statsResult`). |
@@ -611,7 +646,7 @@ loop:
 
 1. Make the folder.
 2. Run `trunk-pro --ui <folder>`, or add the folder as an interface.
-3. Open `http://localhost:8080/`, check it, and iterate.
+3. Open the address it prints (`http://localhost:8081/`), check it, and iterate.
 
 The recorder serves the files as they are on disk, so a reload shows each
 change.
@@ -662,7 +697,10 @@ types stay true to the recorder you're running.
 The protocol can grow: new message types, new fields. Write clients that
 ignore what they don't know. Fields may be removed or renamed between
 versions; the changes are noted in CHANGELOG.md. `hello.version` (or
-`GET /api/version`) says which version you're talking to.
+`GET /api/version`) says which version you're talking to, and `hello.api`
+(`/api/version`'s `api`) the interface API version an `interface.json`'s
+`api` is checked against: an interface that needs a newer one isn't
+installed.
 
 Since 0.2, `spectrum` and the control channel `log` lines come only to
 connections that `subscribe` to them.

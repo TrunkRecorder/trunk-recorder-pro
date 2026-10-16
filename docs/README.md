@@ -75,6 +75,8 @@ LimeSDR...).
 - [Plugins](plugins/README.md): uploading to [OpenMHz](plugins/openmhz.md),
   [Broadcastify](plugins/broadcastify.md) and [Rdio Scanner](plugins/rdioscanner.md),
   [streaming](plugins/simplestream.md), [running a script](plugins/upload-script.md)
+- [Interfaces](interfaces/README.md): pages for people who listen (a player, a scanner wall),
+  each on a port of its own, from the interface store or a folder of your own
 - [Coming from Trunk Recorder](migrating-from-trunk-recorder.md): importing your config, and what
   is different
 - [Troubleshooting](troubleshooting.md)
@@ -94,6 +96,8 @@ LimeSDR...).
 
 - [Development](development.md): building from source, making a release, the code layout and how
   it was verified
+- [Building an interface](api/README.md) and [publishing it](interfaces/publishing.md) in the
+  interface store
 - [Architecture](architecture.md): how it works, from SDR to audio file
 - [Architecture explainer](developer/architecture.html): interactive diagrams of the sample path,
   DSP chains, trunking, recorders, back-pressure, plugins, data objects, config, clocks,

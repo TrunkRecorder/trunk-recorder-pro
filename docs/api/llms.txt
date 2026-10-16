@@ -24,15 +24,22 @@ Unless the user asks otherwise, deliver an interface the recorder serves:
 - Import the client library from the recorder:
     import { TrunkClient, LivePlayer, escapeHtml } from "/api/client.js";
 - Refer to your own files with relative paths ("./app.js", "style.css"). The
-  folder is served at /ui/<name>/, or at / when it's the home interface.
-- Refer to the recorder with absolute paths: /api/…, /calls/….
+  folder is served at the root of a port of its own (http://host:8081/), and
+  the recorder's API beside it on that port.
+- Refer to the recorder with absolute paths: /api/…, /calls/…. Never
+  hard-code a port.
+- Add an interface.json beside index.html:
+    {"id": "<lowercase-id>", "name": "…", "version": "0.1.0", "description": "…", "api": 1, "access": "listen"}
+  "listen" (the default) can see and play everything and change nothing:
+  setConfig, start, stop, quit and the plugin / interface / key commands are
+  refused, and the config comes without plugin settings and key sources.
+  Ask for "control" only if the interface must change the recorder.
 - Tell the user how to run it, in one of two ways:
     trunk-pro --ui /path/to/folder
-      Shows it at http://localhost:8080/ for this run. The built-in
-      interface stays at /builtin/.
-    Setup → Recording → Interfaces → Add, then open /ui/<name>/.
-      Or in the config: "server": {"interfaces": [{"name": "…", "path": "…"}],
-      "home": "<name>"}.
+      Serves it on the next free port for this run (with control) and
+      opens it.
+    The Interfaces page → Add a folder… (or trunk-pro interface add <folder>),
+      then Open. It keeps being served, on a port of its own.
   The recorder serves the files as they are on disk: edit, then reload.
 - Make it work at phone width as well as on a desktop.
 

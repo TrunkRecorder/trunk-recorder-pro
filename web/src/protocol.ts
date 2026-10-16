@@ -335,15 +335,15 @@ export interface Config {
   conventional: Conventional[];
   recording: Recording;
   server: {
+    /** The address every interface listens on. */
     bind: string;
+    /** The built-in interface's port. */
     port: number;
     autoStart: boolean;
-    /** Web pages from other origins that may use the API ("http://host:port", "null" a file, "*" any). */
+    /** Web pages from other origins that may use the built-in interface's API ("http://host:port", "null" a file, "*" any). */
     allowedOrigins?: string[];
-    /** Interfaces of your own, served at /ui/<name>/ (docs/api). */
-    interfaces?: CustomInterface[];
-    /** What / shows: "" the built-in interface (always at /builtin/ too), else an interface's name. */
-    home?: string;
+    /** The other interfaces, by id, each on a port of its own (desktop app; docs/interfaces). */
+    interfaces?: Record<string, InterfaceSetup>;
   };
   /** The plugins, by id (desktop app). Their settings for each system are in the system. */
   plugins?: Record<string, PluginSetup>;
@@ -362,21 +362,100 @@ export interface MonitorSettings {
   probeHosts: string[];
 }
 
-/** An interface of your own: a folder with an index.html, served as it is on disk at /ui/<name>/. */
-export interface CustomInterface {
-  /** Its address: /ui/<name>/ (letters, digits, - and _). */
-  name: string;
-  /** The folder: absolute, ~/…, or relative to the config file's folder. */
-  path: string;
+/**
+ * What a page may do with the recorder's API. "listen": see what the recorder does and play its
+ * calls, change nothing (its config comes without plugin settings and key sources). "control":
+ * everything the built-in interface can.
+ */
+export type ApiAccess = "listen" | "control";
+
+/** An interface besides the built-in one: static web files, served with the API beside them on a port of its own. */
+export interface InterfaceSetup {
+  port: number;
+  /** Served (false: kept, not served). */
+  enabled: boolean;
+  access: ApiAccess;
+  /** A folder of your own (absolute, ~/…, or relative to the config file's folder); absent: the copy installed from the store. */
+  path?: string;
 }
 
-/** GET /api/interfaces (HTTP, not a message). */
-export interface InterfacesInfo {
-  /** What / shows: "builtin", an interface's name, or the folder given with --ui. */
-  home: "builtin" | string | { folder: string };
-  /** The built-in interface's address: /builtin/. */
-  builtin: string;
-  interfaces: (CustomInterface & { folder: string; url: string; problem: string | null })[];
+/** What an interface says it is: interface.json in its folder. */
+export interface InterfaceManifest {
+  /** Lowercase letters, digits and -. */
+  id: string;
+  name: string;
+  version: string;
+  description: string;
+  /** The interface API it's written for (hello's `api`). */
+  api: number;
+  /** What it needs. */
+  access: ApiAccess;
+  license?: string;
+  homepage?: string;
+  repository?: string;
+  /** Pictures of it: files in its folder (PNG, JPEG or WebP, at most 6). The built-in interface's port serves
+   * installed ones at /interfaces/<id>/screenshots/<n>. */
+  screenshots?: { path: string; caption?: string }[];
+}
+
+/** An interface on this recorder, and how it's doing. Its port, access and on/off are the config's. */
+export interface InterfaceInfo {
+  id: string;
+  /** The folder it's served from. */
+  folder: string;
+  /** Installed from the store (false: a folder of your own). */
+  installed: boolean;
+  /** Served this run only (`trunk-pro --ui <folder>`); not in the config. */
+  dev: boolean;
+  /** Its interface.json (null: it has none). */
+  manifest: InterfaceManifest | null;
+  /** The repository it was installed from. */
+  repository: string | null;
+  /** Installed from the store's list (false: a GitHub release nobody reviewed, or a folder of your own). */
+  reviewed: boolean;
+  port: number;
+  access: ApiAccess;
+  /** Being served on its port now. */
+  serving: boolean;
+  /** Why it isn't served (no index.html, its port taken…); null when it's fine or off. */
+  problem: string | null;
+}
+
+export interface InterfacesList {
+  interfaces: InterfaceInfo[];
+  /** The interface API this recorder speaks. */
+  api: number;
+}
+
+/** An interface in the store (crates/trunk-pro/src/interfaces/store.rs): one release of it, pinned. */
+export interface InterfaceListing {
+  id: string;
+  name: string;
+  description: string;
+  repository: string;
+  homepage?: string;
+  license: string;
+  tier: "official" | "community" | "unlisted";
+  version: string;
+  api: number;
+  /** What it needs: installed with this access. */
+  access: ApiAccess;
+  tag: string;
+  commit: string;
+  /** Its release archive (web files: the same on every computer). */
+  asset: { url: string; sha256: string };
+  /** Pictures of it, each a file of its release. The built-in interface's port serves them, checked, at /store/screenshots/<sha256>. */
+  screenshots?: { url: string; sha256: string; caption?: string }[];
+  /** Why this recorder can't install it (a newer interface API); null when it can. */
+  unavailable: string | null;
+}
+
+/** The interface store's list, and where it came from (as PluginStore). */
+export interface InterfaceStore {
+  source: "registry" | "saved" | "built-in";
+  fetched: number | null;
+  problem: string | null;
+  interfaces: InterfaceListing[];
 }
 
 export interface Device {
@@ -939,7 +1018,7 @@ export interface PluginStore {
   plugins: StoreListing[];
 }
 
-/** An install as it goes. `key` is what was asked for: an id, or a repository. */
+/** An install (of a plugin or an interface) as it goes. `key` is what was asked for: an id, or a repository. */
 export interface PluginInstall {
   key: string;
   /** The plugin's id, once known. */
@@ -1221,8 +1300,10 @@ export type FromRecorder =
       type: "hello";
       version: string;
       platform: string;
+      /** With listen access, without plugin settings and key sources. */
       config: Config;
-      configPath: string;
+      /** The config file (control access only). */
+      configPath?: string;
       devices: Device[];
       phase: PhaseState & { type: "state" };
       history: CallEntry[];
@@ -1237,8 +1318,10 @@ export type FromRecorder =
       events?: MonitorEvent[];
       /** The computer as last sampled (desktop app). */
       host?: { type: "host"; t: number; values: Record<string, number>; platform: PlatformInfo } | null;
-      /** Every plugin's runtime, by id (desktop app). */
+      /** Every plugin's runtime, by id (desktop app; control access only). */
       pluginRuntime?: Record<string, PluginRuntime>;
+      /** The interface API this recorder speaks (desktop app; docs/interfaces). */
+      api?: number;
       /** Key containers waiting for a password, and which are unlocked (desktop app). */
       keys?: { type: "keys"; sources: LockableKeys[] };
     }
@@ -1270,6 +1353,10 @@ export type FromRecorder =
   | { type: "pluginRuntime"; id: string; runtime: PluginRuntime }
   | ({ type: "pluginStore" } & PluginStore)
   | ({ type: "pluginInstall" } & PluginInstall)
+  /** Control access only (as the plugin messages). */
+  | ({ type: "interfaces" } & InterfacesList)
+  | ({ type: "interfaceStore" } & InterfaceStore)
+  | ({ type: "interfaceInstall" } & PluginInstall)
   /** Every second while recording: each series' value now (see the series names above). */
   | { type: "stats"; t: number; values: Record<string, number> }
   /** Every 2 s (desktop app): the computer's and the plugins' series, and the computer's own figures. */
@@ -1325,6 +1412,18 @@ export type ToRecorder =
   | { type: "installPlugin"; id: string }
   /** Install a plugin from a GitHub release that isn't in the registry (its latest, or `tag`). */
   | { type: "installPlugin"; repository: string; tag?: string }
+  /** The interfaces besides the built-in one (answered with `interfaces`). */
+  | { type: "interfaces" }
+  /** The interface store's list; `refresh` fetches it again now. */
+  | { type: "interfaceStore"; refresh?: boolean }
+  /** Install (or update) an interface from the store; a new one is served at once on the next free port. */
+  | { type: "installInterface"; id: string }
+  /** Install an interface from a GitHub release that isn't in the store (its latest, or `tag`); it may only listen until given control. */
+  | { type: "installInterface"; repository: string; tag?: string }
+  /** Serve a folder on the recorder's computer as an interface (its interface.json names it, else the folder does). */
+  | { type: "addInterface"; path: string }
+  /** Stop serving an interface and forget it; an installed copy is deleted. */
+  | { type: "removeInterface"; id: string }
   /** What this connection watches (replaces the last): costly messages only go to those that ask. */
   | { type: "subscribe"; topics: Topic[] }
   /** The history of series (names, or prefixes ending in `*`) over `range` back from now, or `from`–`to` (Unix s), in about `points` points. */

@@ -273,7 +273,8 @@ fn ctx(cfg: Config, dir: &Path) -> Arc<crate::runtime::Ctx> {
         survey: Mutex::new(None),
         survey_last: Mutex::new(None),
         plugins: crate::plugins::manage::Plugins::new(hub.clone(), shared.clone()),
-        home_dir: None,
+        bind: std::net::Ipv4Addr::LOCALHOST.into(),
+        interfaces: crate::interfaces::Interfaces::new(hub.clone(), None, 8080),
         shared,
         series: series.clone(),
         store: crate::statstore::Store::start(dir.join("stats"), series),
@@ -351,8 +352,8 @@ fn the_servers_messages() {
     cfg.sources.extend(more.sources);
     cfg.systems = more.systems;
     cfg.server.allowed_origins = vec!["http://localhost:3000".into()];
-    cfg.server.interfaces = vec![trunk_app::config::Interface { name: "wall".into(), path: "ui/wall".into() }];
-    cfg.server.home = "wall".into();
+    cfg.server.interfaces.insert("wall".into(), trunk_app::config::Interface { port: 8081, path: "ui/wall".into(), ..Default::default() });
+    cfg.server.interfaces.insert("trunkamp".into(), trunk_app::config::Interface { port: 8082, access: trunk_app::config::ApiAccess::Control, ..Default::default() });
 
     let ctx = ctx(cfg.clone(), &dir);
     // Something in the registry and the history to ask about.
@@ -406,6 +407,9 @@ fn the_servers_messages() {
         json!({ "type": "radios", "radios": crate::radio::radios_json(false) }),
         ctx.plugins.list_json(&cfg),
         crate::plugins::manage::store_message(&crate::plugins::store::built_in()),
+        ctx.interfaces.list_json(&cfg, &ctx.config_path),
+        crate::interfaces::store::message(&crate::interfaces::store::REGISTRY.built_in()),
+        json!({ "type": "interfaceInstall", "key": "trunkamp", "id": "trunkamp", "stage": "downloading", "message": null }),
         crate::server::dir_json(&dir.display().to_string()),
         crate::server::dir_json(&dir.join("missing").display().to_string()),
         crate::server::tr_config_json(&dir.display().to_string()),
@@ -436,7 +440,9 @@ fn sources() -> Vec<(String, String)> {
     files
 }
 
-/// Each `json!({ "type": "…"` (or `["type"] = json!("…")`) in the code: a message sent.
+/// Each `json!({ "type": "…"` (or `["type"] = json!("…")`) in the code: a
+/// message sent; and the progress messages a [`crate::store::Shelf`] sends
+/// for an install (`.install(&self.hub, "…"`).
 fn sent_types() -> BTreeSet<String> {
     let mut found = BTreeSet::new();
     for (_, text) in sources() {
@@ -446,6 +452,15 @@ fn sent_types() -> BTreeSet<String> {
             let after = &rest[i + 9..];
             let name: String = after.chars().take_while(|c| c.is_ascii_alphanumeric()).collect();
             if before.ends_with("json!({") {
+                found.insert(name);
+            }
+            rest = after;
+        }
+        let mut rest = text.as_str();
+        while let Some(i) = rest.find(".install(&self.hub, \"") {
+            let after = &rest[i + 21..];
+            let name: String = after.chars().take_while(|c| c.is_ascii_alphanumeric()).collect();
+            if !name.is_empty() {
                 found.insert(name);
             }
             rest = after;

@@ -25,6 +25,9 @@ import type {
   Phase,
   PluginInstall,
   PluginsList,
+  InterfaceSetup,
+  InterfacesList,
+  InterfaceStore,
   PluginStore,
   PluginValues,
   LockableKeys,
@@ -98,6 +101,12 @@ export interface AppState {
   pluginInstalls: Record<string, PluginInstall>;
   /** A plugin this browser just installed: its settings open. */
   pluginJustInstalled: string | null;
+  /** The interfaces besides this one (desktop app); null until the recorder says. */
+  interfaces: InterfacesList | null;
+  /** The interface store's list, once asked for. */
+  interfaceStore: InterfaceStore | null;
+  /** Interface installs under way, by what was asked for. */
+  interfaceInstalls: Record<string, PluginInstall>;
   /** Which page is showing, and what in it (`#/rf/0` → page "rf", path ["0"]). */
   view: View;
   path: string[];
@@ -124,8 +133,8 @@ export interface AppState {
 
 export type SetupTab = "systems" | "conventional" | "radios" | "recording" | "plugins";
 
-export type View = "overview" | "listen" | "rf" | "decode" | "radio" | "live" | "plugins" | "platform" | "setup";
-const VIEWS: View[] = ["overview", "listen", "rf", "decode", "radio", "live", "plugins", "platform", "setup"];
+export type View = "overview" | "listen" | "rf" | "decode" | "radio" | "live" | "plugins" | "interfaces" | "platform" | "setup";
+const VIEWS: View[] = ["overview", "listen", "rf", "decode", "radio", "live", "plugins", "interfaces", "platform", "setup"];
 
 /** `#/radio/dcfd/tg/101` → ["radio", ["dcfd", "tg", "101"]]; the old `#plugins` too. */
 function routeFromHash(): { view: View; path: string[] } {
@@ -177,6 +186,9 @@ let state: AppState = {
   pluginStore: null,
   pluginInstalls: {},
   pluginJustInstalled: null,
+  interfaces: null,
+  interfaceStore: null,
+  interfaceInstalls: {},
   ...routeFromHash(),
   stats: null,
   host: null,
@@ -419,6 +431,26 @@ function take(m: FromRecorder): void {
         }
       } else installs[inst.key] = inst;
       set({ pluginInstalls: installs });
+      break;
+    }
+    case "interfaces": {
+      const { type: _, ...list } = m;
+      set({ interfaces: list });
+      break;
+    }
+    case "interfaceStore": {
+      const { type: _, ...store } = m;
+      set({ interfaceStore: store });
+      break;
+    }
+    case "interfaceInstall": {
+      const { type: _, ...inst } = m;
+      const installs = { ...state.interfaceInstalls };
+      if (inst.stage === "done" || inst.stage === "failed") {
+        delete installs[inst.key];
+        if (askedInstalls.delete(inst.key)) set(inst.stage === "done" ? { notice: inst.message } : { error: inst.message });
+      } else installs[inst.key] = inst;
+      set({ interfaceInstalls: installs });
       break;
     }
     case "quit":
@@ -713,6 +745,42 @@ export function installPluginFrom(repository: string, tag?: string): void {
   set({ pluginInstalls: { ...state.pluginInstalls, [key]: { key, id: "", stage: "finding", message: null } } });
   transport.send({ type: "installPlugin", repository: key, ...(tag?.trim() ? { tag: tag.trim() } : {}) });
 }
+// ── interfaces ───────────────────────────────────────────────────────────────
+// The other interfaces (docs/interfaces): each served on a port of its own,
+// set up in the config's server.interfaces (port, on or off, access).
+
+/** The interface store's list (fetched again now with `refresh`). */
+export function fetchInterfaceStore(refresh = false): void {
+  transport.send({ type: "interfaceStore", refresh });
+}
+/** Install (or update) an interface from the store. */
+export function installInterface(id: string): void {
+  askedInstalls.add(id);
+  set({ interfaceInstalls: { ...state.interfaceInstalls, [id]: { key: id, id, stage: "finding", message: null } } });
+  transport.send({ type: "installInterface", id });
+}
+/** Install an interface from a GitHub release that isn't in the store. */
+export function installInterfaceFrom(repository: string, tag?: string): void {
+  const key = repository.trim();
+  askedInstalls.add(key);
+  set({ interfaceInstalls: { ...state.interfaceInstalls, [key]: { key, id: "", stage: "finding", message: null } } });
+  transport.send({ type: "installInterface", repository: key, ...(tag?.trim() ? { tag: tag.trim() } : {}) });
+}
+/** Serve a folder of your own as an interface. */
+export function addInterface(path: string): void {
+  transport.send({ type: "addInterface", path });
+}
+export function removeInterface(id: string): void {
+  transport.send({ type: "removeInterface", id });
+}
+/** Change an interface's port, on/off or access: served so as soon as it's saved. */
+export function setInterface(id: string, patch: Partial<InterfaceSetup>): void {
+  updateConfig((x) => {
+    const i = x.server.interfaces?.[id];
+    if (i) x.server.interfaces![id] = { ...i, ...patch };
+  });
+}
+
 export function settingsOpened(): void {
   set({ pluginJustInstalled: null });
 }

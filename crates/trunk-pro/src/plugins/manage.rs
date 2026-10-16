@@ -17,7 +17,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -28,6 +28,7 @@ use super::delay::Delays;
 use super::hold::Hold;
 use super::host::Notes;
 use super::store::{self, Catalog};
+use crate::store::Shelf;
 use super::{describe, executable, plugins_dir, Archive, Encoder, Note, PluginHost, Spec};
 use crate::config::{Config, PluginSetup};
 use crate::runtime::{publish, Hub};
@@ -180,10 +181,6 @@ pub struct LogEntry {
 }
 
 const LOG_LINES: usize = 50;
-/// How long the registry's list is used before it's fetched again; sooner
-/// when it couldn't be fetched.
-const STORE_FRESH: Duration = Duration::from_secs(15 * 60);
-const STORE_RETRY: Duration = Duration::from_secs(60);
 
 /// An executable's modification time, and what `--describe` said then.
 type Described = (Option<SystemTime>, Result<Manifest, String>);
@@ -201,10 +198,8 @@ pub struct Plugins {
     runtime: Arc<Mutex<BTreeMap<String, Runtime>>>,
     /// Manifests by executable (and its modification time): `--describe` runs once per build.
     manifests: Mutex<HashMap<PathBuf, Described>>,
-    /// The registry's list, and when it was got.
-    store: Mutex<Option<(Instant, Catalog)>>,
-    /// Installs under way, by their key (the id, or the repository asked for).
-    installing: Mutex<BTreeSet<String>>,
+    /// The registry's list, and the installs under way.
+    shelf: Shelf<store::Index>,
     hub: Hub,
     /// Where health changes go as events (the dashboard's feed, alert watchers).
     monitor: Arc<trunk_app::stats::Shared>,
@@ -221,8 +216,7 @@ impl Plugins {
             env: Mutex::new(None),
             runtime: Arc::new(Mutex::new(BTreeMap::new())),
             manifests: Mutex::new(HashMap::new()),
-            store: Mutex::new(None),
-            installing: Mutex::new(BTreeSet::new()),
+            shelf: Shelf::new(&store::REGISTRY),
             hub,
         };
         p.hold.set_notes(p.notes());
@@ -565,16 +559,7 @@ impl Plugins {
 
     /// The registry's list: fetched again when it's old, or when `refresh`.
     pub fn catalog(&self, refresh: bool) -> Catalog {
-        let mut c = self.store.lock().unwrap();
-        if let Some((t, cat)) = c.as_ref() {
-            let fresh = if cat.source == "registry" { STORE_FRESH } else { STORE_RETRY };
-            if !refresh && t.elapsed() < fresh {
-                return cat.clone();
-            }
-        }
-        let cat = store::catalog();
-        *c = Some((Instant::now(), cat.clone()));
-        cat
+        self.shelf.catalog(refresh)
     }
 
     /// The `pluginStore` message.
@@ -588,21 +573,10 @@ impl Plugins {
     /// the server reloads the plugins, so a running one restarts with it.
     pub fn install(&self, v: &Value, cfg: &Config) {
         let key = v["id"].as_str().or(v["repository"].as_str()).unwrap_or_default().trim().to_string();
-        let say = |id: &str, stage: &str, message: Option<&str>| publish(&self.hub, json!({ "type": "pluginInstall", "key": key, "id": id, "stage": stage, "message": message }));
-        if !self.installing.lock().unwrap().insert(key.clone()) {
-            return say("", "failed", Some("That's being installed already."));
-        }
-        let mut id = String::new();
-        let r = self.install_one(v, cfg, &mut id, &|id, stage| say(id, stage, None));
-        self.installing.lock().unwrap().remove(&key);
-        match r {
-            Ok(notice) => say(&id, "done", Some(&notice)),
-            Err(e) => say(&id, "failed", Some(&e)),
-        }
+        self.shelf.install(&self.hub, "pluginInstall", &key, |id, stage| self.install_one(v, cfg, id, stage));
     }
 
     fn install_one(&self, v: &Value, cfg: &Config, id_out: &mut String, stage: &dyn Fn(&str, &'static str)) -> Result<String, String> {
-        stage("", "finding");
         let listing = match v["id"].as_str() {
             Some(id) => self.catalog(false).find(id).cloned().ok_or_else(|| format!("{id} isn't in the plugin registry"))?,
             None => {

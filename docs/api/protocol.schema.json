@@ -11,6 +11,14 @@
         "manual"
       ]
     },
+    "ApiAccess": {
+      "type": "string",
+      "enum": [
+        "listen",
+        "control"
+      ],
+      "description": "What a page may do with the recorder's API. \"listen\": see what the recorder does and play its calls, change nothing (its config comes without plugin settings and key sources). \"control\": everything the built-in interface can."
+    },
     "CallEntry": {
       "type": "object",
       "properties": {
@@ -665,10 +673,12 @@
           "type": "object",
           "properties": {
             "bind": {
-              "type": "string"
+              "type": "string",
+              "description": "The address every interface listens on."
             },
             "port": {
-              "type": "number"
+              "type": "number",
+              "description": "The built-in interface's port."
             },
             "autoStart": {
               "type": "boolean"
@@ -678,18 +688,14 @@
               "items": {
                 "type": "string"
               },
-              "description": "Web pages from other origins that may use the API (\"http://host:port\", \"null\" a file, \"*\" any)."
+              "description": "Web pages from other origins that may use the built-in interface's API (\"http://host:port\", \"null\" a file, \"*\" any)."
             },
             "interfaces": {
-              "type": "array",
-              "items": {
-                "$ref": "#/definitions/CustomInterface"
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/definitions/InterfaceSetup"
               },
-              "description": "Interfaces of your own, served at /ui/<name>/ (docs/api)."
-            },
-            "home": {
-              "type": "string",
-              "description": "What / shows: \"\" the built-in interface (always at /builtin/ too), else an interface's name."
+              "description": "The other interfaces, by id, each on a port of its own (desktop app; docs/interfaces)."
             }
           },
           "required": [
@@ -804,25 +810,6 @@
       ],
       "additionalProperties": false,
       "description": "A conventional system (Trunk Recorder's conventional / conventionalP25 / conventionalDMR): energy-detected channels with their own short name, squelch, channel file, recording rules, unit names and upload settings. A frequency belongs to one system."
-    },
-    "CustomInterface": {
-      "type": "object",
-      "properties": {
-        "name": {
-          "type": "string",
-          "description": "Its address: /ui/<name>/ (letters, digits, - and _)."
-        },
-        "path": {
-          "type": "string",
-          "description": "The folder: absolute, ~/…, or relative to the config file's folder."
-        }
-      },
-      "required": [
-        "name",
-        "path"
-      ],
-      "additionalProperties": false,
-      "description": "An interface of your own: a folder with an index.html, served as it is on disk at /ui/<name>/."
     },
     "DelayRule": {
       "type": "object",
@@ -1211,10 +1198,12 @@
               "type": "string"
             },
             "config": {
-              "$ref": "#/definitions/Config"
+              "$ref": "#/definitions/Config",
+              "description": "With listen access, without plugin settings and key sources."
             },
             "configPath": {
-              "type": "string"
+              "type": "string",
+              "description": "The config file (control access only)."
             },
             "devices": {
               "type": "array",
@@ -1457,7 +1446,11 @@
               "additionalProperties": {
                 "$ref": "#/definitions/PluginRuntime"
               },
-              "description": "Every plugin's runtime, by id (desktop app)."
+              "description": "Every plugin's runtime, by id (desktop app; control access only)."
+            },
+            "api": {
+              "type": "number",
+              "description": "The interface API this recorder speaks (desktop app; docs/interfaces)."
             },
             "keys": {
               "type": "object",
@@ -1486,7 +1479,6 @@
             "version",
             "platform",
             "config",
-            "configPath",
             "devices",
             "phase",
             "history"
@@ -2288,6 +2280,115 @@
         },
         {
           "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "interfaces": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/InterfaceInfo"
+              }
+            },
+            "api": {
+              "type": "number",
+              "description": "The interface API this recorder speaks."
+            },
+            "type": {
+              "type": "string",
+              "const": "interfaces"
+            }
+          },
+          "required": [
+            "api",
+            "interfaces",
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "source": {
+              "type": "string",
+              "enum": [
+                "registry",
+                "saved",
+                "built-in"
+              ]
+            },
+            "fetched": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "problem": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "interfaces": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/InterfaceListing"
+              }
+            },
+            "type": {
+              "type": "string",
+              "const": "interfaceStore"
+            }
+          },
+          "required": [
+            "fetched",
+            "interfaces",
+            "problem",
+            "source",
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "key": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string",
+              "description": "The plugin's id, once known."
+            },
+            "stage": {
+              "type": "string",
+              "enum": [
+                "finding",
+                "downloading",
+                "checking",
+                "installing",
+                "done",
+                "failed"
+              ]
+            },
+            "message": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "interfaceInstall"
+            }
+          },
+          "required": [
+            "id",
+            "key",
+            "message",
+            "stage",
+            "type"
+          ]
+        },
+        {
+          "type": "object",
           "properties": {
             "type": {
               "type": "string",
@@ -2926,6 +3027,281 @@
         "site"
       ],
       "additionalProperties": false
+    },
+    "InterfaceInfo": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "folder": {
+          "type": "string",
+          "description": "The folder it's served from."
+        },
+        "installed": {
+          "type": "boolean",
+          "description": "Installed from the store (false: a folder of your own)."
+        },
+        "dev": {
+          "type": "boolean",
+          "description": "Served this run only (`trunk-pro --ui <folder>`); not in the config."
+        },
+        "manifest": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/InterfaceManifest"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Its interface.json (null: it has none)."
+        },
+        "repository": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The repository it was installed from."
+        },
+        "reviewed": {
+          "type": "boolean",
+          "description": "Installed from the store's list (false: a GitHub release nobody reviewed, or a folder of your own)."
+        },
+        "port": {
+          "type": "number"
+        },
+        "access": {
+          "$ref": "#/definitions/ApiAccess"
+        },
+        "serving": {
+          "type": "boolean",
+          "description": "Being served on its port now."
+        },
+        "problem": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Why it isn't served (no index.html, its port taken…); null when it's fine or off."
+        }
+      },
+      "required": [
+        "id",
+        "folder",
+        "installed",
+        "dev",
+        "manifest",
+        "repository",
+        "reviewed",
+        "port",
+        "access",
+        "serving",
+        "problem"
+      ],
+      "additionalProperties": false,
+      "description": "An interface on this recorder, and how it's doing. Its port, access and on/off are the config's."
+    },
+    "InterfaceListing": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "repository": {
+          "type": "string"
+        },
+        "homepage": {
+          "type": "string"
+        },
+        "license": {
+          "type": "string"
+        },
+        "tier": {
+          "type": "string",
+          "enum": [
+            "official",
+            "community",
+            "unlisted"
+          ]
+        },
+        "version": {
+          "type": "string"
+        },
+        "api": {
+          "type": "number"
+        },
+        "access": {
+          "$ref": "#/definitions/ApiAccess",
+          "description": "What it needs: installed with this access."
+        },
+        "tag": {
+          "type": "string"
+        },
+        "commit": {
+          "type": "string"
+        },
+        "asset": {
+          "type": "object",
+          "properties": {
+            "url": {
+              "type": "string"
+            },
+            "sha256": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "url",
+            "sha256"
+          ],
+          "additionalProperties": false,
+          "description": "Its release archive (web files: the same on every computer)."
+        },
+        "screenshots": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "url": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string"
+              },
+              "caption": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "url",
+              "sha256"
+            ],
+            "additionalProperties": false
+          },
+          "description": "Pictures of it, each a file of its release. The built-in interface's port serves them, checked, at /store/screenshots/<sha256>."
+        },
+        "unavailable": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Why this recorder can't install it (a newer interface API); null when it can."
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "description",
+        "repository",
+        "license",
+        "tier",
+        "version",
+        "api",
+        "access",
+        "tag",
+        "commit",
+        "asset",
+        "unavailable"
+      ],
+      "additionalProperties": false,
+      "description": "An interface in the store (crates/trunk-pro/src/interfaces/store.rs): one release of it, pinned."
+    },
+    "InterfaceManifest": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Lowercase letters, digits and -."
+        },
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "api": {
+          "type": "number",
+          "description": "The interface API it's written for (hello's `api`)."
+        },
+        "access": {
+          "$ref": "#/definitions/ApiAccess",
+          "description": "What it needs."
+        },
+        "license": {
+          "type": "string"
+        },
+        "homepage": {
+          "type": "string"
+        },
+        "repository": {
+          "type": "string"
+        },
+        "screenshots": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "caption": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "additionalProperties": false
+          },
+          "description": "Pictures of it: files in its folder (PNG, JPEG or WebP, at most 6). The built-in interface's port serves installed ones at /interfaces/<id>/screenshots/<n>."
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "version",
+        "description",
+        "api",
+        "access"
+      ],
+      "additionalProperties": false,
+      "description": "What an interface says it is: interface.json in its folder."
+    },
+    "InterfaceSetup": {
+      "type": "object",
+      "properties": {
+        "port": {
+          "type": "number"
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "Served (false: kept, not served)."
+        },
+        "access": {
+          "$ref": "#/definitions/ApiAccess"
+        },
+        "path": {
+          "type": "string",
+          "description": "A folder of your own (absolute, ~/…, or relative to the config file's folder); absent: the copy installed from the store."
+        }
+      },
+      "required": [
+        "port",
+        "enabled",
+        "access"
+      ],
+      "additionalProperties": false,
+      "description": "An interface besides the built-in one: static web files, served with the API beside them on a port of its own."
     },
     "KeySource": {
       "type": "object",
@@ -6482,6 +6858,106 @@
           "required": [
             "type",
             "repository"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "interfaces"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "interfaceStore"
+            },
+            "refresh": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "installInterface"
+            },
+            "id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "installInterface"
+            },
+            "repository": {
+              "type": "string"
+            },
+            "tag": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "repository"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "addInterface"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "path"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "removeInterface"
+            },
+            "id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id"
           ],
           "additionalProperties": false
         },
