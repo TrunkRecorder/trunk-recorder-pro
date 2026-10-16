@@ -266,13 +266,19 @@ pub fn call_record(call: &Call, info: &ConcludeInfo) -> (String, String) {
     for (i, s) in call.sources.iter().enumerate() {
         let _ = write!(
             j,
-            "{}{{\"src\":{},\"time\":{},\"pos\":{},\"emergency\":{},\"signal_system\":\"\",\"tag\":\"{}\",\"tag_ota\":\"{}\"{}}}",
+            "{}{{\"src\":{},\"time\":{},\"pos\":{},\"emergency\":{},\"encrypted\":{},\"duplex\":{},\"mode\":{},\"priority\":{},\"signal_system\":\"\",\"tag\":\"{}\",\"tag_ota\":\"{}\"{}}}",
             if i > 0 { "," } else { "" },
             s.src,
             ms(s.time_s).div_euclid(1000),
             // Seconds into the saved audio, as Trunk Recorder's (the WAV's length when it was heard).
             (s.audio_pos.unwrap_or(0) as f64 / mbe::SAMPLE_RATE as f64 * 100.0).round() / 100.0,
-            s.emergency as u8,
+            // What its transmission said of itself (the call's own flags are
+            // above; these are this radio's): Trunk Recorder's names.
+            s.flags.emergency as u8,
+            s.flags.encrypted as u8,
+            s.flags.duplex as u8,
+            s.flags.packet as u8,
+            s.flags.priority,
             esc(&UnitTags::name(info.unit_tags, info.units, s.src).unwrap_or_default()),
             esc(info.units.and_then(|u| u.get(s.src)).unwrap_or("")),
             s.position.map_or(String::new(), |(lat, lon)| format!(",\"lat\":{lat:.6},\"lon\":{lon:.6}"))
@@ -329,10 +335,10 @@ mod tests {
     #[test]
     fn a_sources_position_is_in_the_call_json() {
         use crate::position::Position;
-        use crate::trunk::calls::CallManager;
+        use crate::trunk::calls::{CallManager, Flags};
         let mut call = Call { talkgroup: 101, ..Default::default() };
         for src in [7, 8] {
-            CallManager::note_source(&mut call, src, 0.0, false);
+            CallManager::note_source(&mut call, Some(src), 0.0, Default::default());
         }
         assert!(CallManager::note_position(&mut call, &Position { unit: 8, lat: 30.0529, lon: -83.17565, source: "HarrisP25_TDMA" }));
         assert!(!CallManager::note_position(&mut call, &Position { unit: 8, lat: 30.0529, lon: -83.17565, source: "HarrisP25_TDMA" }), "the same again");
@@ -352,6 +358,11 @@ mod tests {
         };
         let (json, _) = call_record(&call, &info);
         assert!(json.contains("\"src\":7,") && json.matches("\"lat\"").count() == 1, "{json}");
+        // Each source's own flags.
+        CallManager::note_source(&mut call, Some(8), 0.0, Flags { emergency: true, priority: 7, ..Default::default() });
+        let (json, _) = call_record(&call, &info);
+        assert!(json.contains("\"src\":7,\"time\":0,\"pos\":0,\"emergency\":0,\"encrypted\":0,\"duplex\":0,\"mode\":0,\"priority\":0,"), "{json}");
+        assert!(json.contains("\"src\":8,\"time\":0,\"pos\":0,\"emergency\":1,\"encrypted\":0,\"duplex\":0,\"mode\":0,\"priority\":7,"), "{json}");
         assert!(json.contains("\"tag_ota\":\"\",\"lat\":30.052900,\"lon\":-83.175650}]"), "{json}");
     }
 }

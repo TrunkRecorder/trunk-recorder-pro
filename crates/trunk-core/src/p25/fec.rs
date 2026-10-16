@@ -186,10 +186,13 @@ pub fn hamming1063_encode(data6: u8) -> u32 {
     ((data6 as u32 & 63) << 4) | HMG1063_ENC[(data6 & 63) as usize] as u32
 }
 
-/// op25_hamming.h hmg1063Dec: the corrected 6-bit hexbit.
-pub fn hamming1063_decode(data6: u32, parity4: u32) -> u8 {
+/// op25_hamming.h hmg1063Dec: the corrected 6-bit hexbit, or none when the
+/// syndrome is one no single error gives (5, 6, 9, 10, 15: two errors at
+/// least, which the shortened code detects but can't place).
+pub fn hamming1063_decode(data6: u32, parity4: u32) -> Option<u8> {
     const DEC: [u8; 16] = [0, 0, 0, 2, 0, 0, 0, 4, 0, 0, 0, 8, 1, 16, 32, 0];
-    ((data6 as u8) ^ DEC[(HMG1063_ENC[(data6 & 63) as usize] ^ (parity4 & 15) as u8) as usize]) & 63
+    let syn = (HMG1063_ENC[(data6 & 63) as usize] ^ (parity4 & 15) as u8) as usize;
+    (!matches!(syn, 5 | 6 | 9 | 10 | 15)).then(|| ((data6 as u8) ^ DEC[syn]) & 63)
 }
 
 // ── Reed-Solomon over GF(64): primitive 0x43, first root α¹ (ezpwd) ──────────
@@ -281,7 +284,8 @@ pub fn rs_decode(cw: &mut [u8; 63], nroots: usize, shortened_below: usize) -> i3
 }
 
 /// [`rs_decode`] with known-bad positions (`erasures`): errors-and-erasures
-/// Berlekamp–Massey. The count returned includes the erasures corrected.
+/// Berlekamp–Massey, within the code's capacity (2·errors + erasures ≤
+/// `nroots`). The count returned includes the erasures corrected.
 pub fn rs_decode_erasures(cw: &mut [u8; 63], nroots: usize, erasures: &[usize], shortened_below: usize) -> i32 {
     let n = 63i32;
     let s: Vec<i32> = (0..nroots)
@@ -349,6 +353,10 @@ pub fn rs_decode_erasures(cw: &mut [u8; 63], nroots: usize, erasures: &[usize], 
     if locs.len() != deg {
         return -1;
     }
+    let errors = locs.iter().filter(|p| !erasures.contains(p)).count();
+    if 2 * errors + ne > nroots {
+        return -1;
+    }
     let omega: Vec<i32> = (0..nroots)
         .map(|i| (0..=i.min(deg)).fold(0, |v, j| v ^ gmul(lambda[j], s[i - j])))
         .collect();
@@ -373,6 +381,39 @@ pub fn rs_decode_erasures(cw: &mut [u8; 63], nroots: usize, erasures: &[usize], 
         cw[p] ^= gdiv(num, den) as u8;
     }
     locs.len() as i32
+}
+
+/// [`rs_decode_erasures`], and failing that, again with the least reliable
+/// symbols (`rel`, one per symbol: higher, surer) erased as well, two more
+/// each try: a soft errors-and-erasures decoder, as BBAC §5.6 recommends. It
+/// stops with `margin` roots unspent, so a word too damaged isn't simply
+/// rewritten to the nearest codeword.
+pub fn rs_decode_soft(cw: &mut [u8; 63], nroots: usize, erasures: &[usize], shortened_below: usize, rel: &[f32; 63], margin: usize) -> i32 {
+    let heard = *cw;
+    let r = rs_decode_erasures(cw, nroots, erasures, shortened_below);
+    if r >= 0 {
+        return r;
+    }
+    let mut doubtful: Vec<usize> = (shortened_below..63).filter(|p| !erasures.contains(p)).collect();
+    doubtful.sort_by(|&a, &b| rel[a].total_cmp(&rel[b]));
+    let room = nroots.saturating_sub(erasures.len() + margin);
+    let mut e = erasures.to_vec();
+    for k in (2..=room).step_by(2) {
+        e.truncate(erasures.len());
+        e.extend(&doubtful[..k]);
+        *cw = heard;
+        let r = rs_decode_erasures(cw, nroots, &e, shortened_below);
+        if r >= 0 {
+            return r;
+        }
+    }
+    *cw = heard;
+    -1
+}
+
+/// A hexbit's reliability: its least reliable bit's.
+pub fn hexbit_rel(bits: &[f32]) -> f32 {
+    bits.iter().copied().fold(f32::INFINITY, f32::min)
 }
 
 #[cfg(test)]
@@ -416,16 +457,48 @@ mod tests {
         }
     }
 
+    /// Errors and erasures: 2e + f ≤ nroots comes back; one error more is refused.
+    #[test]
+    fn rs_erasures_within_capacity() {
+        let mut cw = [0u8; 63];
+        for (i, c) in cw[39..51].iter_mut().enumerate() {
+            *c = i as u8 * 5 + 1;
+        }
+        rs_encode(&mut cw, 12);
+        let sent = cw;
+        // RS(24,12,13): 8 erasures and 2 errors (2·2 + 8 = 12).
+        let erasures: Vec<usize> = (40..48).collect();
+        let mut bad = sent;
+        for &p in &erasures {
+            bad[p] ^= 0x15;
+        }
+        bad[50] ^= 7;
+        bad[60] ^= 9;
+        let mut d = bad;
+        assert_eq!(rs_decode_erasures(&mut d, 12, &erasures, 39), 10);
+        assert_eq!(d, sent);
+        // A third error is past it.
+        bad[55] ^= 3;
+        assert!(rs_decode_erasures(&mut bad, 12, &erasures, 39) < 0 || bad != sent);
+    }
+
     #[test]
     fn hamming1063_round_trips_and_corrects() {
         for d in 0..64u8 {
             let w = hamming1063_encode(d);
-            assert_eq!(hamming1063_decode(w >> 4, w & 15), d);
+            assert_eq!(hamming1063_decode(w >> 4, w & 15), Some(d));
             for b in 0..10 {
                 let e = w ^ (1 << b);
-                assert_eq!(hamming1063_decode(e >> 4, e & 15), d, "{d} bit {b}");
+                assert_eq!(hamming1063_decode(e >> 4, e & 15), Some(d), "{d} bit {b}");
             }
         }
+        // A (10,6,3) code: some two-bit errors land on syndromes no single
+        // error gives, and are reported, not miscorrected.
+        let detected = (0..10).flat_map(|a| (a + 1..10).map(move |b| (1u32 << a) | (1 << b))).filter(|&e| {
+            let w = hamming1063_encode(0x2a) ^ e;
+            hamming1063_decode(w >> 4, w & 15).is_none()
+        });
+        assert!(detected.count() > 0);
     }
 
     #[test]

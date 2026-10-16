@@ -48,7 +48,7 @@ use std::sync::Arc;
 
 use num_complex::Complex32;
 
-use super::calls::{conventional_index, conventional_system, Call, CallId, CallIds, CallManager, CallSource, STUCK_CALL_S};
+use super::calls::{conventional_index, conventional_system, Call, CallId, CallIds, CallManager, Flags, STUCK_CALL_S};
 use super::frames::CallFrames;
 use super::record::{Reception, Transmissions};
 use super::voice::CipherId;
@@ -328,6 +328,8 @@ pub enum ConvOut {
     Alias(u16, Alias),
     /// A radio's new position, on a call (its system and talkgroup).
     Position(u16, Position, u32),
+    /// A key of conventional system `.0` that decrypts its voice to noise.
+    WrongKey(u16, CipherId),
     /// A transmission no row took, and the code it carried (as a row's
     /// Tone would say it; "" for none).
     Skipped { freq_hz: u64, code: String },
@@ -359,7 +361,7 @@ struct Heard {
     low: Vec<f32>,
     frames: Vec<VoiceFrame>,
     /// (source, emergency, encrypted) from link control.
-    infos: Vec<(Option<u32>, bool, bool)>,
+    infos: Vec<(Option<u32>, Flags)>,
     /// The cipher the encryption sync named, if it did.
     cipher: Option<CipherId>,
     /// The tracker decrypted voice.
@@ -729,11 +731,12 @@ impl Conventional {
                 }
                 TrackerOut::AnalogAudio(a) => h.audio.extend_from_slice(&a),
                 TrackerOut::Subaudible(l) => h.low.extend_from_slice(&l),
-                TrackerOut::Info { source, emergency, encrypted } => h.infos.push((source, emergency, encrypted)),
+                TrackerOut::Info { source, flags } => h.infos.push((source, flags)),
                 TrackerOut::Cipher(id) => h.cipher = Some(id),
                 TrackerOut::Decrypted => h.decrypted = true,
                 TrackerOut::Alias(a) => out.push(ConvOut::Alias(conventional_system(ch.cfg.system), a)),
                 TrackerOut::Position(p) => h.positions.push(p),
+                TrackerOut::WrongKey(c) => out.push(ConvOut::WrongKey(conventional_system(ch.cfg.system), c)),
                 TrackerOut::AliasLc(_) => {}
             }
         }
@@ -978,24 +981,19 @@ impl Conventional {
             l.call.cipher = h.cipher;
             changed = true;
         }
-        for (src, emergency, encrypted) in h.infos {
-            if encrypted {
+        for (src, flags) in h.infos {
+            if flags.encrypted {
                 l.tx.mark_encrypted(now_s);
             }
-            if encrypted && !l.call.encrypted {
+            if flags.encrypted && !l.call.encrypted {
                 l.call.encrypted = true;
                 changed = true;
             }
-            if emergency && !l.call.emergency {
+            if flags.emergency && !l.call.emergency {
                 l.call.emergency = true;
                 changed = true;
             }
-            if let Some(s) = src {
-                if s != 0 && l.call.sources.last().is_none_or(|x| x.src != s) {
-                    l.call.sources.push(CallSource { src: s, time_s: now_s, audio_pos: None, emergency, position: None });
-                    changed = true;
-                }
-            }
+            changed |= CallManager::note_source(&mut l.call, src, now_s, flags);
         }
         if h.decrypted {
             l.tx.mark_decrypted(now_s);

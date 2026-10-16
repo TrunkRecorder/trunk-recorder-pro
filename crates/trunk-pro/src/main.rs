@@ -431,6 +431,9 @@ fn replay(a: &Args) {
         for s in &l.skipped {
             eprintln!("--keys: key left out: {s}");
         }
+        for w in l.ring.warnings() {
+            eprintln!("--keys: {w}");
+        }
         std::sync::Arc::new(l.ring)
     });
     for s in systems.iter_mut() {

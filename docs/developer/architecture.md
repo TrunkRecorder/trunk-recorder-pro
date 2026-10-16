@@ -502,7 +502,9 @@ Decoder outputs (`VoiceOut { slot, t, out: TrackerOut }`) are queued in `radio.p
 applied after the block (`apply_pending`), so a voice channel never borrows a `Trunk` mutably:
 - `Audio` / `AnalogAudio` → appended to the `Recording`, `last_audio_s` moved, live
   `Event::Audio` if this copy leads its multi-site conversation;
-- `Info` → source unit, encrypted, emergency → `CallUpdate`;
+- `Info` → the source unit and its flags (merged into the source talking when it names none), the
+  call's encrypted / emergency latches → `CallUpdate`;
+- `WrongKey` → a warning note, once a key;
 - `Cipher` → the call's ALGID / key ID; `Decrypted` → the transmission is kept and the call marked
   `decrypted`;
 - `Alias` → talker alias learned.
@@ -803,7 +805,7 @@ call JSON + WAV on disk → `HostMessage::CallConcluded` → plugin → `PluginM
 | `priority` | u8 | |
 | `duplex`, `mode`, `analog` | bool | |
 | `start_s`, `last_update_s`, `last_audio_s` | f64 | sample-clock times |
-| `sources` | `Vec<CallSource { src: u32, time_s: f64, emergency: bool }>` | units heard |
+| `sources` | `Vec<CallSource { src: u32, time_s: f64, flags: Flags, audio_pos, position }>` | units heard; `Flags { emergency, encrypted, duplex, packet, priority }` is what each one's transmission said of itself (the grant's service options, then link control's / Phase 2's voice channel user messages) |
 | `talkgroup_info` | `Option<Talkgroup>` | from the CSV |
 | `patched_talkgroups` | `Vec<u32>` | |
 | `color_code`, `nxdn`, `ran`, `nac` | options | protocol details |
@@ -813,14 +815,14 @@ call JSON + WAV on disk → `HostMessage::CallConcluded` → plugin → `PluginM
 
 **`RecorderHost`** trait: `record`, `follow`, `release`, `record_continued`.
 
-**`Channel`** (engine, internal): `system`, `source`, `head`, `calls: [Option<CallId>; 2]`,
+**`Channel`** (engine, internal): `system`, `source`, `head`, `calls: [Option<OnSlot { id, talkgroup }>; 2]`,
 `voice: Box<dyn VoiceDecoder>`, `freq_hz`, `tune_ppm`, `meter`, `noise`.
 
 **`Recording`** (engine, internal): `audio: Vec<f32>`, `frames: CallFrames`,
 `recorder_num: u32`, `tx: Transmissions`, `freq_error: (f64, u32)`, `reception: Reception`.
 
-**`TrackerOut`**: `Audio(Vec<f32>, VoiceFrame)` (20 ms at 8 kHz), `Info { source, emergency,
-encrypted }`, `Cipher(CipherId)`, `Decrypted`, `AnalogAudio(Vec<f32>)`, `Subaudible(Vec<f32>)`, `Alias(Alias)`
+**`TrackerOut`**: `Audio(Vec<f32>, VoiceFrame)` (20 ms at 8 kHz), `Info { source, flags }`,
+`Cipher(CipherId)`, `Decrypted` (once the key check passes), `WrongKey(CipherId)`, `AnalogAudio(Vec<f32>)`, `Subaudible(Vec<f32>)`, `Alias(Alias)`
 (`crate::alias`, any protocol), `AliasLc(AliasLc)`, `Position(Position)` (`crate::position`). **`VoiceOut`**: `slot: u8`,
 `t: f64`, `out: TrackerOut`.
 
@@ -897,8 +899,9 @@ none), `decrypted`, `call_length`,
 `tone_mode`, `tone_detected`, `tone_confidence`, `audio_type` (analog | digital tdma |
 digital), `short_name`, `patched_talkgroups` (only when more than one), `freqList` [{freq,
 time, pos, len, error_count, spike_count}], `errorList` [{pos, len, frames, error_count,
-bad_frames, max_frame_errors}], `srcList` [{src, time, pos, emergency, signal_system, tag,
-tag_ota, lat?, lon?}].
+bad_frames, max_frame_errors}], `srcList` [{src, time, pos, emergency, encrypted, duplex, mode,
+priority, signal_system, tag, tag_ota, lat?, lon?}] (each source's own flags: what its
+transmission said of itself).
 
 ### 9.7 Plugin protocol (`trunk-recorder-plugin/src/protocol.rs`)
 
@@ -913,9 +916,9 @@ Constants: `API_VERSION` = 1, `EXIT_CONFIG` = 78, conventional system index base
 | `type` | Payload fields |
 |---|---|
 | `hello` | `api`, `host { name, version }`, `config`, `systems: [SystemInfo { index, short_name, kind, config }]`, `capture_dir`, `data_dir`, `audio_formats` |
-| `call.start`, `call.end` | `CallInfo { id, system, short_name, talkgroup, talkgroup_tag, freq_hz, tdma_slot, analog, encrypted, algid, key_id, decrypted, emergency, recording, reason, start_time, units, patched_talkgroups }` |
+| `call.start`, `call.end` | `CallInfo { id, system, short_name, talkgroup, talkgroup_tag, freq_hz, tdma_slot, analog, encrypted, algid, key_id, decrypted, emergency, duplex, packet, priority, recording, reason, start_time, units, sources: [CallSource { unit, time, emergency, encrypted, duplex, packet, priority }], patched_talkgroups }` |
 | `call.concluded` | `path`, `system`, `call: CallRecord` (the call JSON), `files { json, wav, m4a }` |
-| `unit` | `system`, `short_name`, `kind` (registration, deregistration, affiliation, acknowledge, location, data_grant, answer_request, call_alert, emergency_alarm), `unit`, `talkgroup`, `time` |
+| `unit` | `system`, `short_name`, `kind` (registration, deregistration, affiliation, acknowledge, location, data_grant, answer_request, call_alert, emergency_alarm), `unit`, `talkgroup`, `emergency`, `time` |
 | `audio` | `call_id`, `system`, `short_name`, `talkgroup`, `sample_rate`, `pcm` (base64 i16 LE) |
 | `status` | `time`, `systems [{ index, short_name, control_channel_hz, decode_rate, active_calls, recording, nac, wacn, sys_id, rfss, site }]` (the identity fields once the control channel has stated them) |
 | `shutdown` | `grace_s` |

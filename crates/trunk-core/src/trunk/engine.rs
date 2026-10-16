@@ -42,7 +42,7 @@ use super::voice::TrackerOut;
 use super::units::{AliasBook, UnitAlias, UnitTags};
 use super::identity::Identity;
 use super::control::{self, CarrierPlan, ControlChannel, Protocol, ProtocolStatus, Step};
-use super::voice::{self, VoiceDecoder, VoiceKind, VoiceParams, VoiceSpec};
+use super::voice::{self, CipherId, VoiceDecoder, VoiceKind, VoiceParams, VoiceSpec};
 use crate::alias::Alias;
 use crate::dsp::channelizer::floor_slices;
 use crate::dsp::{Channelizer, HeadId};
@@ -443,7 +443,7 @@ struct Channel {
     source: usize,
     head: HeadId,
     /// The call on each TDMA slot (Phase 1: slot 0).
-    calls: [Option<CallId>; 2],
+    calls: [Option<OnSlot>; 2],
     voice: Box<dyn VoiceDecoder>,
     freq_hz: f64,
     /// The correction it was opened with, ppm.
@@ -451,6 +451,19 @@ struct Channel {
     /// Its power, and the noise floor under it when it opened ([`Reception`]).
     meter: ChannelFilter,
     noise: f64,
+}
+
+/// A call on a voice channel's slot, and the talkgroup it was granted for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct OnSlot {
+    id: CallId,
+    talkgroup: u32,
+}
+
+impl OnSlot {
+    fn of(c: &Call) -> Self {
+        OnSlot { id: c.id, talkgroup: c.talkgroup }
+    }
 }
 
 struct Recording {
@@ -502,7 +515,7 @@ impl Radio {
     fn run_channel(ch: &mut Channel, iq: &[Complex32], params: &VoiceParams, tout: &mut Vec<(usize, TrackerOut)>, flush: bool) {
         ch.voice.set_params(params);
         // Vocode only the slots somebody is recording.
-        ch.voice.listen([ch.calls[0].is_some(), ch.calls[1].is_some()]);
+        ch.voice.listen(ch.calls.map(|c| c.map(|c| c.talkgroup)));
         let mut out = Vec::new();
         ch.voice.push(iq, &mut out);
         if flush {
@@ -514,8 +527,8 @@ impl Radio {
     /// Hand a channel's outputs to the calls on its slots.
     fn route(ch: &Channel, tout: &mut Vec<(usize, TrackerOut)>, pending: &mut Vec<(u16, CallId, TrackerOut)>) {
         for (slot, o) in tout.drain(..) {
-            if let Some(id) = ch.calls[slot & 1] {
-                pending.push((ch.system, id, o));
+            if let Some(c) = ch.calls[slot & 1] {
+                pending.push((ch.system, c.id, o));
             }
         }
     }
@@ -533,8 +546,8 @@ impl Radio {
         let on_air = [voiced(0), voiced(1)];
         if !iq.is_empty() && (on_air[0] || on_air[1]) {
             let p = ch.meter.meter(iq) as f64;
-            for (slot, id) in ch.calls.iter().enumerate() {
-                if let Some(r) = id.filter(|_| on_air[slot]).and_then(|id| self.recordings.get_mut(&id)) {
+            for (slot, c) in ch.calls.iter().enumerate() {
+                if let Some(r) = c.filter(|_| on_air[slot]).and_then(|c| self.recordings.get_mut(&c.id)) {
                     r.reception.signal(p);
                     r.reception.noise(ch.noise);
                 }
@@ -543,8 +556,8 @@ impl Radio {
         Self::route(ch, &mut self.tout, &mut self.pending);
         if let Some(off) = ch.voice.offset_hz() {
             let err = off as f64 + ch.tune_ppm * 1e-6 * ch.freq_hz;
-            for id in ch.calls.iter().flatten() {
-                if let Some(r) = self.recordings.get_mut(id) {
+            for c in ch.calls.iter().flatten() {
+                if let Some(r) = self.recordings.get_mut(&c.id) {
                     r.freq_error.0 += err;
                     r.freq_error.1 += 1;
                 }
@@ -571,7 +584,7 @@ impl SysHost<'_> {
         let key = (self.system, call.freq_hz);
         if let Some(ch) = r.channels.get_mut(&key) {
             if ch.voice.kind() == kind {
-                ch.calls[slot] = Some(call.id);
+                ch.calls[slot] = Some(OnSlot::of(call));
                 return;
             }
             // The frequency carries another kind of call now (P25 Dynamic
@@ -612,7 +625,7 @@ impl SysHost<'_> {
             keys: self.keys.clone(),
         });
         let mut calls = [None, None];
-        calls[slot] = Some(call.id);
+        calls[slot] = Some(OnSlot::of(call));
         let mut ch = Channel { system: self.system, source: src, head, calls, voice, freq_hz: call.freq_hz as f64, tune_ppm, meter: ChannelFilter::new(rate), noise };
         // Pre-roll: decode the replayed air now.
         let params = r.voice_params.get(self.system as usize).copied().unwrap_or_default();
@@ -667,7 +680,7 @@ impl RecorderHost for SysHost<'_> {
         // Only with a recorder's worth of room to spare, and never on analog.
         // A recording's channel is counted with its recording, not again.
         let r = &*self.radio;
-        let following = r.channels.values().filter(|ch| !ch.calls.iter().flatten().any(|id| r.recordings.contains_key(id))).count();
+        let following = r.channels.values().filter(|ch| !ch.calls.iter().flatten().any(|c| r.recordings.contains_key(&c.id))).count();
         if call.analog || r.recordings.len() + following >= r.max_recorders {
             return false;
         }
@@ -683,7 +696,7 @@ impl RecorderHost for SysHost<'_> {
         let r = &mut *self.radio;
         let Some(ch) = r.channels.get_mut(&key) else { return };
         for c in ch.calls.iter_mut() {
-            if *c == Some(call.id) {
+            if c.is_some_and(|c| c.id == call.id) {
                 *c = None;
             }
         }
@@ -721,7 +734,7 @@ struct Trunk {
     identity: Identity,
     /// Why this control channel is not ours, while it isn't.
     mismatch: Option<String>,
-    adjacent: std::collections::BTreeMap<(u32, u32), AdjacentSite>,
+    adjacent: std::collections::BTreeMap<(u32, u32, u32), AdjacentSite>,
     /// AutoTune: the correction its control channel was opened with, ppm;
     /// when it was last measured, and last reopened.
     cc_ppm: f64,
@@ -906,7 +919,7 @@ impl Trunk {
         for st in steps {
             self.identity = st.identity;
             for m in st.msgs.iter().filter(|m| m.kind == MessageType::Adjacent && m.freq_hz > 0) {
-                self.adjacent.insert((m.rfss, m.site), AdjacentSite { sys_id: m.sys_id, rfss: m.rfss, site: m.site, freq_hz: m.freq_hz });
+                self.adjacent.insert((m.sys_id, m.rfss, m.site), AdjacentSite { sys_id: m.sys_id, rfss: m.rfss, site: m.site, freq_hz: m.freq_hz });
             }
             if lock {
                 let conflict = self.identity.conflict(&self.cfg.expect, fields);
@@ -932,9 +945,10 @@ impl Trunk {
                 // hold the grants — a call still going is granted again.
                 continue;
             }
-            if let Some(k) = self.cc.voice_params(&self.identity).tdma_key {
-                radio.voice_params[self.idx as usize].tdma_key = Some(k);
-            }
+            let p = self.cc.voice_params(&self.identity);
+            let vp = &mut radio.voice_params[self.idx as usize];
+            vp.tdma_key = p.tdma_key.or(vp.tdma_key);
+            vp.nac = p.nac.or(vp.nac);
             let mut host = self.host(radio);
             self.calls.handle(&st.msgs, &mut host, call_events);
         }
@@ -1004,6 +1018,8 @@ pub struct Engine {
     aliases: AliasBook,
     /// Copies of one call on several sites.
     multisite: MultiSite,
+    /// (system, ALGID, key ID) of keys found to decrypt to noise, told once.
+    wrong_keys: BTreeSet<(u16, u8, u16)>,
     now_s: f64,
     events: Vec<Event>,
     call_events: Vec<CallEvent>,
@@ -1101,6 +1117,7 @@ impl Engine {
             conv_concluded: 0,
             aliases,
             multisite: MultiSite::default(),
+            wrong_keys: BTreeSet::new(),
             now_s: 0.0,
             events,
             call_events: Vec::new(),
@@ -1138,6 +1155,15 @@ impl Engine {
     }
 
     /// Note a talker alias heard on a call of `system`'s.
+    /// A key decrypted voice to noise: say so, once a key.
+    fn wrong_key(told: &mut BTreeSet<(u16, u8, u16)>, events: &mut Vec<Event>, system: u16, c: CipherId, talkgroup: Option<u32>) {
+        if told.insert((system, c.algid, c.keyid)) {
+            let on = talkgroup.map_or(String::new(), |tg| format!(" (talkgroup {tg})"));
+            let text = format!("Key ID {:#06X} ({}) decrypts this system's voice{on} to noise: it isn't the key the radios use", c.keyid, crate::p25::crypt::algid_name(c.algid));
+            events.push(Event::Note { system, level: NoteLevel::Warning, text });
+        }
+    }
+
     fn learn_alias(&mut self, system: u16, a: Alias, call_tg: Option<u32>) {
         let tg = a.talkgroup.or(call_tg);
         let (now_s, wacn, sys_id) = match self.trunks.get(system as usize) {
@@ -1521,6 +1547,7 @@ impl Engine {
                     self.events.push(Event::CallEnd(call));
                 }
                 ConvOut::Alias(system, a) => self.learn_alias(system, a, None),
+                ConvOut::WrongKey(system, c) => Self::wrong_key(&mut self.wrong_keys, &mut self.events, system, c, None),
                 ConvOut::Position(system, p, talkgroup) => self.events.push(Event::UnitPosition { system, unit: p.unit, lat: p.lat, lon: p.lon, talkgroup }),
                 ConvOut::Skipped { freq_hz, code } => self.events.push(Event::ConvSkipped { freq_hz, code }),
             }
@@ -1584,26 +1611,24 @@ impl Engine {
                         self.events.push(Event::Audio { call_id: id, system: sys, talkgroup: tg, samples, decrypted: false });
                     }
                 }
-                TrackerOut::Info { source, emergency, encrypted } => {
+                TrackerOut::Info { source, flags } => {
                     let now = t.now_s;
-                    if encrypted {
+                    if flags.encrypted {
                         if let Some(rec) = self.radio.recordings.get_mut(&id) {
                             rec.tx.mark_encrypted(now);
                         }
                     }
                     if let Some(c) = t.calls.call_mut(id) {
                         let mut changed = false;
-                        if encrypted && !c.encrypted {
+                        if flags.encrypted && !c.encrypted {
                             c.encrypted = true;
                             changed = true;
                         }
-                        if emergency && !c.emergency {
+                        if flags.emergency && !c.emergency {
                             c.emergency = true;
                             changed = true;
                         }
-                        if let Some(src) = source {
-                            changed |= CallManager::note_source(c, src, now, emergency);
-                        }
+                        changed |= CallManager::note_source(c, source, now, flags);
                         if changed {
                             self.call_events.push(CallEvent::Update(c.clone()));
                         }
@@ -1614,6 +1639,10 @@ impl Engine {
                         c.cipher = Some(cipher);
                         self.call_events.push(CallEvent::Update(c.clone()));
                     }
+                }
+                TrackerOut::WrongKey(c) => {
+                    let tg = t.calls.calls.iter().find(|c| c.id == id).map(|c| c.talkgroup);
+                    Self::wrong_key(&mut self.wrong_keys, &mut self.events, sys, c, tg);
                 }
                 TrackerOut::Decrypted => {
                     if let Some(rec) = self.radio.recordings.get_mut(&id) {
@@ -1864,7 +1893,7 @@ mod tests {
         let calls = &e.trunks[0].calls.calls;
         assert_eq!(calls.len(), 1);
         assert!(calls[0].recording && calls[0].start_s > 2.0, "{:?}", calls[0]);
-        assert_eq!(e.radio.channels[&(0, f)].calls[0], Some(calls[0].id), "the channel is still open, for the new part");
+        assert_eq!(e.radio.channels[&(0, f)].calls[0].map(|c| c.id), Some(calls[0].id), "the channel is still open, for the new part");
     }
 
     #[test]
@@ -1963,7 +1992,7 @@ mod tests {
         let ch = &e.radio.channels[&(0, f)];
         assert_eq!(ch.voice.kind(), VoiceKind::Tdma);
         let tg202 = e.trunks[0].calls.calls.iter().find(|c| c.talkgroup == 202).unwrap().id;
-        assert_eq!(ch.calls, [None, Some(tg202)]);
+        assert_eq!(ch.calls.map(|c| c.map(|c| c.id)), [None, Some(tg202)]);
         // The same kind again shares it, on its own slot.
         grant(&mut e, f, 1.5, 303, true, 0);
         assert_eq!(e.radio.channels.len(), 1);

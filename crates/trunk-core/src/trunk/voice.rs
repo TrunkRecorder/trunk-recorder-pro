@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use num_complex::Complex32;
 
-use super::calls::Call;
+use super::calls::{Call, Flags};
 use super::frames::VoiceFrame;
 use super::tdma::TdmaTracker;
 use super::tracker::VoiceTracker;
@@ -90,14 +90,19 @@ pub struct CipherId {
 pub enum TrackerOut {
     /// 20 ms of 8 kHz audio in [−1, 1], and the vocoder frame it came from.
     Audio(Vec<f32>, VoiceFrame),
-    /// Link control named a source / emergency, or the call turned out encrypted.
-    Info { source: Option<u32>, emergency: bool, encrypted: bool },
+    /// Who is talking (none: whoever was), and what the voice channel says
+    /// of the transmission: an emergency, encrypted, …
+    Info { source: Option<u32>, flags: Flags },
     /// The transmission's encryption sync named its cipher (once a
     /// transmission, and again if it changes).
     Cipher(CipherId),
-    /// The transmission's voice is being decrypted (once a transmission,
-    /// before its first decrypted audio).
+    /// The transmission's voice is being decrypted: once a transmission,
+    /// when its key has decrypted enough of it to voice to be sure
+    /// ([`crate::p25::crypt::KeyCheck`]).
     Decrypted,
+    /// The key for this cipher decrypts the transmission to noise: not the
+    /// right key. Its voice is left out.
+    WrongKey(CipherId),
     /// Analog FM voice (a SmartNet analog call, a conventional FM channel): 8 kHz audio, squelched.
     AnalogAudio(Vec<f32>),
     /// Analog FM: the same audio before the 300 Hz high-pass (CTCSS / DCS
@@ -109,6 +114,33 @@ pub enum TrackerOut {
     AliasLc(AliasLc),
     /// The talker's GPS position.
     Position(Position),
+}
+
+/// What a P25 transmission's voice is, as far as is known.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Encryption {
+    /// Joined late: no header (HDU, MAC_PTT), and no sync yet.
+    Unknown,
+    /// Link control or a voice channel user message says encrypted (its
+    /// protected bit), and no sync has said yet.
+    Hinted,
+    /// A sync (HDU / LDU2, MAC_PTT / ESS) said: clear, or under this ALGID.
+    /// A sync overrules a hint.
+    Clear,
+    Encrypted(u8),
+}
+
+impl Encryption {
+    pub(super) fn encrypted(self) -> bool {
+        matches!(self, Encryption::Hinted | Encryption::Encrypted(_))
+    }
+    pub(super) fn from_sync(es: &crate::p25::voice::EncryptionSync) -> Self {
+        if es.algid == crate::p25::voice::ALGID_CLEAR { Encryption::Clear } else { Encryption::Encrypted(es.algid) }
+    }
+    /// A hint, which only an unknown (or hinted) state takes.
+    pub(super) fn hinted(self) -> Self {
+        if matches!(self, Encryption::Unknown | Encryption::Hinted) { Encryption::Hinted } else { self }
+    }
 }
 
 /// What one decoder produced: an output for the call on `slot`, from air
@@ -137,6 +169,9 @@ pub struct AirInfo {
 pub struct VoiceParams {
     /// P25 Phase 2 scrambling: (NAC, System ID, WACN).
     pub tdma_key: Option<(u32, u32, u32)>,
+    /// P25: the site's NAC. Phase 1 frames with another are another site's
+    /// (a co-channel one), not the call's.
+    pub nac: Option<u16>,
 }
 
 /// How to make a decoder.
@@ -170,8 +205,9 @@ pub trait VoiceDecoder: Send {
     fn push(&mut self, iq: &[Complex32], out: &mut Vec<VoiceOut>);
     /// End of input: decode what the receivers still hold.
     fn flush(&mut self, _out: &mut Vec<VoiceOut>) {}
-    /// Which slots are being recorded (DMR vocodes only those).
-    fn listen(&mut self, _slots: [bool; 2]) {}
+    /// The talkgroup (or radio) each slot's call was granted for; None:
+    /// no call there, and nothing to vocode (decoders that can, don't).
+    fn listen(&mut self, _slots: [Option<u32>; 2]) {}
     /// The system's keys changed: P25 voice is decrypted with these from now on, calls in progress
     /// too (a call is decrypted from its next encryption sync; with none, it stops at once).
     fn set_keys(&mut self, _keys: Option<Arc<Keyring>>) {}
@@ -209,6 +245,7 @@ pub fn build(spec: &VoiceSpec) -> Box<dyn VoiceDecoder> {
             rate: spec.rate,
             nac: None,
             air: None,
+            site_nac: None,
         }),
         VoiceKind::Tdma => {
             let mut tracker = TdmaTracker::new(spec.seed, spec.keys.clone());
@@ -236,6 +273,8 @@ struct P25Fdma {
     /// The last push's NAC, and the air it heard voice in.
     nac: Option<u16>,
     air: Option<(f64, f64)>,
+    /// The site's NAC, once its control channel said.
+    site_nac: Option<u16>,
 }
 
 impl P25Fdma {
@@ -244,6 +283,9 @@ impl P25Fdma {
         let mut tout = Vec::new();
         for g in &self.groups {
             let best = best_frame(g);
+            if self.site_nac.is_some_and(|n| n != best.nid.nac) {
+                continue;
+            }
             self.nac = Some(best.nid.nac);
             let t = self.t0 + best.sample / self.rate;
             tout.clear();
@@ -260,6 +302,15 @@ impl P25Fdma {
 impl VoiceDecoder for P25Fdma {
     fn kind(&self) -> VoiceKind {
         VoiceKind::Fdma
+    }
+    fn listen(&mut self, slots: [Option<u32>; 2]) {
+        self.tracker.set_granted(slots[0]);
+    }
+    fn set_params(&mut self, p: &VoiceParams) {
+        if self.site_nac != p.nac {
+            self.site_nac = p.nac;
+            self.bank.expect_nac(p.nac);
+        }
     }
     fn set_keys(&mut self, keys: Option<Arc<Keyring>>) {
         self.tracker.set_keys(keys);
@@ -304,6 +355,9 @@ struct P25Tdma {
 impl VoiceDecoder for P25Tdma {
     fn kind(&self) -> VoiceKind {
         VoiceKind::Tdma
+    }
+    fn listen(&mut self, slots: [Option<u32>; 2]) {
+        self.tracker.listen(slots);
     }
     fn set_keys(&mut self, keys: Option<Arc<Keyring>>) {
         self.tracker.set_keys(keys);
@@ -370,8 +424,8 @@ impl VoiceDecoder for Dmr {
             out.push(VoiceOut { slot: v.slot, t: v.t, out: v.out });
         }
     }
-    fn listen(&mut self, slots: [bool; 2]) {
-        self.voice.vocode = slots;
+    fn listen(&mut self, slots: [Option<u32>; 2]) {
+        self.voice.vocode = slots.map(|s| s.is_some());
     }
     fn air(&self, slot: u8) -> AirInfo {
         AirInfo { talkgroup: self.voice.talkgroup(slot), nac: None, color_code: self.voice.color_code(slot), ran: None, air: self.air[slot as usize & 1] }
@@ -443,7 +497,7 @@ impl VoiceDecoder for Analog {
         let mut found = Vec::new();
         self.ids.push(&audio, &mut found);
         for u in found {
-            out.push(VoiceOut { slot: 0, t: 0.0, out: TrackerOut::Info { source: Some(u.unit), emergency: u.emergency, encrypted: false } });
+            out.push(VoiceOut { slot: 0, t: 0.0, out: TrackerOut::Info { source: Some(u.unit), flags: Flags::emergency(u.emergency) } });
         }
         if !audio.is_empty() {
             out.push(VoiceOut { slot: 0, t: 0.0, out: TrackerOut::AnalogAudio(audio) });

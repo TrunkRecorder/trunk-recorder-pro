@@ -39,7 +39,8 @@ use trunk_core::p25::frame::{duid_name, FramerOptions, HDU, LDU1, LDU2, PDU, TDU
 use trunk_core::p25::mbt::Pdu;
 use trunk_core::p25::tsbk::{decode_tsdu, tsbk_opcode, Trellis};
 use trunk_core::trunk::frames::VoiceFrame;
-use trunk_core::p25::voice::{decode_hdu, decode_ldu1_lc, decode_ldu2_es, decode_tdulc, imbe_params_to_bits, ldu_imbe, EncryptionSync, ImbeParams, LinkControl};
+use trunk_core::p25::voice::{decode_hdu, decode_ldu1_lc, decode_ldu2_es, decode_tdulc, imbe_params_to_bits, ldu_imbe, EncryptionSync, ImbeParams};
+use trunk_core::p25::lc::LinkControl;
 
 use crate::{die, Args};
 
@@ -216,10 +217,10 @@ fn lc_json(key: &str, lc: Option<LinkControl>) -> String {
             lc.mfid,
             lc.raw.iter().map(|b| format!("{b:02x}")).collect::<String>(),
             lc.protected as u8,
-            lc.svc_opts.map_or(-1, |v| v as i64),
-            n(lc.tgid),
-            n(lc.target),
-            n(lc.source)
+            lc.opts().map_or(-1, |o| o.0 as i64),
+            n(lc.group()),
+            n(lc.target()),
+            n(lc.source())
         ),
     }
 }
@@ -397,6 +398,7 @@ fn run_p2(a: &Args) {
     use trunk_core::dsp::cqpsk::{self, Cqpsk};
     use trunk_core::dsp::Receiver;
     use trunk_core::ambe::decode_vcw;
+    use trunk_core::p25::mac::{parse_mac_ptt, MAC_PTT};
     use trunk_core::p25::phase2::{self, *};
 
     let path = a.positional.get(1).unwrap_or_else(|| die("tool p2: no capture"));
@@ -473,7 +475,7 @@ fn run_p2(a: &Args) {
                     }
                     line.push(']');
                 } else if matches!(kind, BURST_SACCH_S | BURST_SACCH_U | BURST_FACCH_S | BURST_FACCH_U) {
-                    match decode_acch(&x, kind == BURST_FACCH_S || kind == BURST_FACCH_U) {
+                    match decode_acch(&x, None, kind == BURST_FACCH_S || kind == BURST_FACCH_U) {
                         Some(pdu) => {
                             macs += 1;
                             let _ = write!(line, ",\"mac\":{{\"op\":{},\"offset\":{},\"hex\":\"{}\"}}", pdu.opcode, pdu.offset, hex(&pdu.bytes));
