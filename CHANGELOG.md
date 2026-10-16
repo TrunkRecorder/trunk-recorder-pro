@@ -12,8 +12,9 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   frame by TIA-102.BABA-A §2.10 and plays the Annex T tone at the level it
   names, continuous from frame to frame (checked against the reference
   vocoder's amplitude to within 4 %). A tone frame the FEC damaged keeps the
-  tone going, and tone frames no longer count as bad frames. The mbelib
-  profile still plays none, as mbelib doesn't.
+  tone going if its four ID copies still name it, and otherwise repeats it up
+  to 3 times, as voice does. Tone frames no longer count as bad frames. The
+  mbelib profile still plays none, as mbelib doesn't.
 
 ## [0.1.11] — 2026-10-14
 

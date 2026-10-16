@@ -167,11 +167,11 @@ const ENHANCED: SynthOpts =
 /// so a tone keeps the level its frame names.
 const TONE_SYNTH: SynthOpts = SynthOpts { hf_lift_db: 0.0, w_rand: 0.0, ..ENHANCED };
 
-/// Scales Eq. 209's amplitude to this synthesis's units (the output is ×7
-/// before the limiter). Fitted so a steady tone has the level the reference
-/// vocoder gives it: about 34,600 · 10^(0.03555 · (level − 127)) in 16-bit
-/// units, measured at four IDs and levels.
-const TONE_GAIN: f64 = 0.3018;
+/// Scales Eq. 209's amplitude (16384 at level 127) to this synthesis's units:
+/// a steady tone at level 127 comes out of the reference vocoder at about
+/// 34,600 in 16-bit units (measured at four IDs and levels), and this
+/// synthesis's output is ×7 before the limiter.
+const TONE_GAIN: f64 = 34_600.0 / (16384.0 * 7.0);
 
 fn hf_gain(w: f64, o: &SynthOpts) -> f64 {
     if o.hf_lift_db == 0.0 {
@@ -591,19 +591,16 @@ fn decode_imbe4400_parms(d: &[u8; 88], cur: &mut Parms, prev: &mut Parms) -> boo
 enum Ambe {
     Voice,
     Erasure,
-    /// A frame mbelib's pitch test reads as a tone but that isn't a valid tone frame.
     Tone,
-    /// A tone frame (TIA-102.BABA-A §2.10): Annex T tone ID and 7-bit level.
-    ToneFrame(u8, u8),
 }
 
 /// Read a tone frame out of mbelib's ambe_d (û0 12 bits, û1 12, û2 11, û3 14,
 /// most significant first). Its signature is û0(11..6) all ones and û3(3..0)
 /// zero; the 8-bit tone ID is sent four times (û1(11..4); û1(3..0) with
 /// û2(10..7); û2(6..0) with û3(13); û3(12..5)) and read by bitwise majority,
-/// ties to the first copy, which the Golay code protects; the level is
-/// û0(5..0) then û3(4). mbelib looks at the same bits as a pitch and takes
-/// most tone frames for an erasure.
+/// ties to the first copy, which the Golay code protects (it votes twice);
+/// the level is û0(5..0) then û3(4). mbelib looks at the same bits as a
+/// pitch and takes most tone frames for an erasure.
 fn tone_frame(d: &[u8; 49]) -> Option<(u8, u8)> {
     if d[..6].contains(&0) || d[45..].contains(&1) {
         return None;
@@ -612,8 +609,8 @@ fn tone_frame(d: &[u8; 49]) -> Option<(u8, u8)> {
     let copies = [num(12, 8), num(20, 4) << 4 | num(24, 4), num(28, 7) << 1 | num(35, 1), num(36, 8)];
     let mut id = 0u32;
     for bit in 0..8 {
-        let ones: u32 = copies.iter().map(|c| c >> bit & 1).sum();
-        id |= (if ones == 2 { copies[0] >> bit & 1 } else { (ones > 2) as u32 }) << bit;
+        let votes: u32 = copies.iter().chain(&copies[..1]).map(|c| c >> bit & 1).sum();
+        id |= ((votes > 2) as u32) << bit;
     }
     Some((id as u8, (num(6, 6) << 1 | num(44, 1)) as u8))
 }
@@ -633,9 +630,6 @@ fn decode_ambe2450_parms(d: &[u8; 49], cur: &mut Parms, prev: &mut Parms) -> Amb
     let mut l_count = 0usize;
 
     cur.repeat = prev.repeat;
-    if let Some((id, level)) = tone_frame(d) {
-        return Ambe::ToneFrame(id, level);
-    }
     let b0 = (bit(0) << 6) | (bit(1) << 5) | (bit(2) << 4) | (bit(3) << 3) | (bit(37) << 2) | (bit(38) << 1) | bit(39);
     match b0 {
         120..=123 => return Ambe::Erasure,
@@ -747,8 +741,10 @@ pub enum Kind {
     Voice,
     Repeat,
     Muted,
-    /// AMBE erasure / tone frame (silence here).
+    /// An AMBE erasure frame, a reserved tone ID, or a tone frame on the
+    /// `mbelib` profile: silence.
     Erasure,
+    /// An AMBE+2 tone frame, played as its tone (ID 255: silence).
     Tone,
 }
 
@@ -805,8 +801,8 @@ pub struct Decoder {
     repeat_et: f64,
     /// The fixed-point IMBE decoder ([`Profile::Fixed`]).
     fixed: Option<Box<fixed::FixedImbe>>,
-    /// The tone (ID, level) the AMBE+2 stream is playing, held through a tone frame the FEC damaged.
-    last_tone: Option<(u8, u8)>,
+    /// The tone (ID, level) the last AMBE+2 frame played, for a tone frame the FEC damaged.
+    tone: Option<(u8, u8)>,
 }
 
 /// Repeat thresholds for soft-decision FEC counts (the default). A soft
@@ -834,7 +830,7 @@ impl Decoder {
             repeat_e0: SOFT_REPEAT.0,
             repeat_et: SOFT_REPEAT.1,
             fixed: (profile == Profile::Fixed).then(|| Box::new(fixed::FixedImbe::new())),
-            last_tone: None,
+            tone: None,
         };
         d.reset();
         d
@@ -853,7 +849,7 @@ impl Decoder {
         if let Some(f) = self.fixed.as_mut() {
             f.reset();
         }
-        self.last_tone = None;
+        self.tone = None;
     }
 
     /// 88 information bits → 160 samples at mbelib's float scale (apply
@@ -922,52 +918,28 @@ impl Decoder {
     /// 49 AMBE+2 information bits (mbelib's ambe_d, after FEC) → 160 samples.
     /// Repeat rules are mbelib's (`errs` > 3 repeats; Trunk Recorder left
     /// Phase 2's thresholds alone). "Enhanced" fades where mbelib cuts to
-    /// silence and resets: past 3 repeats, and on tone / erasure frames.
+    /// silence and resets: past 3 repeats, and on erasure frames. It also
+    /// plays tone frames ([`Decoder::tone`]); mbelib doesn't, and reads them
+    /// as a pitch.
     pub fn ambe(&mut self, d: &[u8; 49], errs: u32, out: &mut [f32; FRAME_SAMPLES]) -> Kind {
         let enhanced = self.profile != Profile::Mbelib;
+        if enhanced && let Some((id, level)) = tone_frame(d) {
+            return self.tone(id, level, errs, out);
+        }
+        self.tone = None;
         let r = decode_ambe2450_parms(d, &mut self.cur, &mut self.prev);
         let mut kind = Kind::Voice;
         match r {
-            Ambe::Erasure => {
+            Ambe::Erasure | Ambe::Tone => {
                 self.cur.repeat = 0;
                 kind = Kind::Erasure;
-            }
-            Ambe::Tone => {
-                self.cur.repeat = 0;
-                kind = Kind::Erasure;
-            }
-            // mbelib (and so the mbelib profile) plays no tone: the frame is silence.
-            Ambe::ToneFrame(..) if !enhanced => {
-                self.cur.repeat = 0;
-                kind = Kind::Erasure;
-            }
-            Ambe::ToneFrame(id, level) => {
-                // A tone frame the FEC damaged keeps the tone going rather than guessing a new one.
-                let (id, level, kind) = if errs > 3 {
-                    match self.last_tone {
-                        Some((i, l)) => (i, l, Kind::Repeat),
-                        None => (255, 0, Kind::Erasure),
-                    }
-                } else {
-                    (id, level, Kind::Tone)
-                };
-                if self.tone(id, level, out) {
-                    self.last_tone = (id != 255).then_some((id, level));
-                    return kind;
-                }
-                self.last_tone = None;
-                self.fade_out(out);
-                return Kind::Erasure;
             }
             Ambe::Voice if errs > 3 => {
                 move_parms(&self.prev, &mut self.cur);
                 self.cur.repeat += 1;
                 kind = Kind::Repeat;
             }
-            Ambe::Voice => {
-                self.cur.repeat = 0;
-                self.last_tone = None;
-            }
+            Ambe::Voice => self.cur.repeat = 0,
         }
         if r == Ambe::Voice {
             if self.cur.repeat <= 3 {
@@ -1011,41 +983,52 @@ impl Decoder {
         move_parms(&self.cur, &mut self.enh);
     }
 
-    /// Synthesize a tone frame (TIA-102.BABA-A §2.10.3): the Annex T row for
-    /// `id` names the fundamental and the one or two harmonics that carry the
-    /// tone, each voiced at `16384 · 10^(0.03555 · (level − 127))` (Eq. 209) and
+    /// A tone frame (TIA-102.BABA-A §2.10.3): the Annex T row for `id` names
+    /// the fundamental and the one or two harmonics that carry the tone, each
+    /// voiced at `16384 · 10^(0.03555 · (level − 127))` (Eq. 209) and
     /// everything else silent, through the ordinary voiced synthesis (so the
     /// tone is continuous across frames, and crossfades with the speech around
     /// it). Tone frames don't touch the speech predictor's previous frame.
-    /// ID 255 is silence. False: a reserved ID, nothing was made.
-    fn tone(&mut self, id: u8, level: u8, out: &mut [f32; FRAME_SAMPLES]) -> bool {
-        let (f0, l1, l2) = tone_table::ANNEX_T[id as usize];
-        if id != 255 && f0 <= 0.0 {
-            return false;
+    ///
+    /// A frame the FEC damaged (`errs` > 3) has its level in doubt, but not an
+    /// ID whose four copies name the tone already playing: that tone goes on.
+    /// Any other damaged frame repeats the tone, as voice does, up to 3 times,
+    /// then fades. ID 255 fades to silence; a reserved ID is an erasure.
+    fn tone(&mut self, mut id: u8, mut level: u8, errs: u32, out: &mut [f32; FRAME_SAMPLES]) -> Kind {
+        let (mut kind, mut repeat) = (Kind::Tone, 0);
+        let playing = self.tone.take();
+        if errs > 3 {
+            match playing {
+                Some((i, l)) if i == id => level = l,
+                Some((i, l)) if self.cur.repeat < 3 => (id, level, kind, repeat) = (i, l, Kind::Repeat, self.cur.repeat + 1),
+                _ => {
+                    self.fade_out(out);
+                    return Kind::Muted;
+                }
+            }
         }
+        let Some((f0, h1, h2)) = tone_table::annex_t(id) else {
+            self.fade_out(out);
+            return if id == 255 { Kind::Tone } else { Kind::Erasure };
+        };
         let l = ((3812.5 / f0).floor() as usize).clamp(9, 56);
-        let magnitude = if id == 255 { 0.0 } else { TONE_GAIN * 16384.0 * 10f64.powf(0.03555 * (level as f64 - 127.0)) };
+        let magnitude = TONE_GAIN * 16384.0 * 10f64.powf(0.03555 * (level as f64 - 127.0));
         let cur = &mut self.cur;
         cur.w0 = 2.0 * PI * f0 / 8000.0;
         cur.l = l;
-        cur.repeat = 0;
+        cur.repeat = repeat;
         for k in 0..=56 {
             cur.ml[k] = 0.0;
             cur.log2ml[k] = 0.0;
-            cur.vl[k] = (k >= 1 && k <= l) as i8;
+            cur.vl[k] = (1..=l).contains(&k) as i8;
         }
-        for h in [l1 as usize, l2 as usize] {
-            if (1..=l).contains(&h) {
-                cur.ml[h] = magnitude;
-            }
+        for h in [h1, h2] {
+            cur.ml[h] = magnitude;
         }
-        if self.profile == Profile::Mbelib {
-            synthesize_speech(out, &mut self.cur, &mut self.enh, self.uvq, &mut self.rand, None, None);
-        } else {
-            synthesize_speech(out, &mut self.cur, &mut self.enh, self.uvq, &mut self.rand, Some(&TONE_SYNTH), Some(&mut self.uv));
-        }
+        synthesize_speech(out, &mut self.cur, &mut self.enh, self.uvq, &mut self.rand, Some(&TONE_SYNTH), Some(&mut self.uv));
         move_parms(&self.cur, &mut self.enh);
-        true
+        self.tone = Some((id, level));
+        kind
     }
 
     /// A zero-amplitude frame holding the last good pitch: the previous
@@ -1201,10 +1184,19 @@ mod tests {
         for _ in 0..10 {
             dec.ambe(&tone_bits(32, 100), 0, &mut out);
         }
-        // Damaged by the FEC: the tone goes on.
-        let kind = dec.ambe(&tone_bits(40, 100), 6, &mut out);
-        assert_eq!(kind, Kind::Repeat);
-        assert!(level_at(&out, 1000.0) > 3000.0, "still the 1000 Hz tone");
+        // Damaged by the FEC, naming another tone: the tone repeats, 3 times, then fades.
+        for _ in 0..3 {
+            assert_eq!(dec.ambe(&tone_bits(40, 100), 6, &mut out), Kind::Repeat);
+            assert!(level_at(&out, 1000.0) > 3000.0, "still the 1000 Hz tone");
+        }
+        assert_eq!(dec.ambe(&tone_bits(40, 100), 6, &mut out), Kind::Muted);
+        assert_eq!(dec.ambe(&tone_bits(32, 100), 6, &mut out), Kind::Muted, "nothing left to repeat");
+        // Damaged but naming the tone playing: it goes on, at its level, as long as it lasts.
+        dec.ambe(&tone_bits(32, 100), 0, &mut out);
+        for _ in 0..10 {
+            assert_eq!(dec.ambe(&tone_bits(32, 20), 6, &mut out), Kind::Tone);
+        }
+        assert!(level_at(&out, 1000.0) > 3000.0, "level 100, not the damaged frames' 20");
         // A reserved ID is not played.
         assert_eq!(dec.ambe(&tone_bits(1, 100), 0, &mut out), Kind::Erasure);
         // Silence.
@@ -1216,7 +1208,7 @@ mod tests {
             assert_eq!(dec.ambe(&tone_bits(255, 100), 0, &mut out), Kind::Tone);
         }
         assert!(level_at(&out, 1000.0) < 1.0, "ID 255 is silence");
-        // The mbelib profile plays no tone, as mbelib doesn't.
+        // The mbelib profile reads the frame as mbelib does: ID 32 sits where its erasure code goes.
         let mut mb = Decoder::new(lcg(1), Profile::Mbelib);
         assert_eq!(mb.ambe(&tone_bits(32, 100), 0, &mut out), Kind::Erasure);
         assert!(out.iter().all(|&s| s == 0.0));
