@@ -602,6 +602,8 @@ pub(crate) fn hello_json(ctx: &Ctx, devices: Value, radios: Value) -> Value {
         "phase": ctx.phase.lock().unwrap().to_json(),
         "history": history,
         "units": units,
+        // Key containers waiting for a password, and which are unlocked.
+        "keys": crate::unlock::status_json(ctx),
         // The codes conventional frequencies carried, as saved.
         "heard": std::fs::read_to_string(crate::runtime::heard_path(&config)).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).unwrap_or(json!({})),
         "radios": radios,
@@ -750,6 +752,7 @@ fn edit_config(ctx: &Ctx, f: impl FnOnce(&mut crate::config::Config)) -> Result<
     let c = cfg.clone();
     drop(cfg);
     publish(&ctx.hub, json!({ "type": "config", "config": c }));
+    ctx.plugins.set_delays(&c);
     if crate::plugins::changed(&old, &c) {
         ctx.plugins.reload(&c);
     }
@@ -828,6 +831,11 @@ async fn command(ctx: &Arc<Ctx>, v: &Value, listen: &mut Option<Listen>, subs: &
                     crate::logging::configure(&c.log, ctx.config_path.parent().unwrap_or(std::path::Path::new(".")));
                 }
                 publish(&ctx.hub, json!({ "type": "config", "config": c }));
+                if old.keys != c.keys || old.systems != c.systems || old.conventional != c.conventional {
+                    crate::unlock::config_changed(ctx, &c);
+                }
+                // Their delays apply at once, to what's waiting too (no restart).
+                ctx.plugins.set_delays(&c);
                 // Plugins' settings changed while recording: they restart with them.
                 if crate::plugins::changed(&old, &c) {
                     let ctx2 = ctx.clone();
@@ -839,6 +847,18 @@ async fn command(ctx: &Arc<Ctx>, v: &Value, listen: &mut Option<Listen>, subs: &
         },
         // Link conventional system `index`'s channels to a CSV (created from
         // its list if new), reload it (the same path again), or unlink ("").
+        // A key container with no passwordFile, unlocked with a password typed in, or locked again
+        // (docs/configuration/systems.md). The password is never kept.
+        "unlockKeys" => {
+            let (ctx2, name) = (ctx.clone(), v["source"].as_str().unwrap_or("").to_string());
+            let password = zeroize::Zeroizing::new(v["password"].as_str().unwrap_or("").to_string());
+            let r = tokio::task::spawn_blocking(move || crate::unlock::unlock(&ctx2, &name, &password)).await.unwrap_or_else(|e| Err(e.to_string()));
+            r.err().map(|e| json!({ "type": "error", "message": e }))
+        }
+        "lockKeys" => {
+            crate::unlock::lock(ctx, v["source"].as_str().unwrap_or(""));
+            None
+        }
         "channelFile" => {
             let path = v["path"].as_str().unwrap_or("").to_string();
             let k = v["index"].as_u64().unwrap_or(0) as usize;

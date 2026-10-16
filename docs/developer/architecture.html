@@ -1550,7 +1550,7 @@ const SEQ = [
   ["p", "log", "Any time.", `{"type":"log","level":"info","message":"uploaded in 412 ms"}`],
   ["p", "metrics", "Queue depth, retries, latency, endpoint health, for the Plugins page.", `{"type":"metrics","queued":0,"retrying":0,"latencyMs":412,"endpoints":[{"name":"openmhz","state":"up"}]}`],
   ["p", "call.result", "ok, skipped or failed. The Archive counts these to decide when files can go.", `{"type":"call.result","path":"county-p25/…","outcome":"ok","url":"https://…"}`],
-  ["h", "status", "Every 5 s: control channel, decode rate, active and recording calls per system.", `{"type":"status","time":1791500005,"systems":[{"index":0,"short_name":"county-p25","decode_rate":39.8,…}]}`],
+  ["h", "status", "Every 5 s: control channel, decode rate, active and recording calls per system, and its identity (NAC, WACN, system ID, RFSS, site) once stated.", `{"type":"status","time":1791500005,"systems":[{"index":0,"short_name":"county-p25","decode_rate":39.8,…}]}`],
   ["p", "status", "The plugin's own state for the interface.", `{"type":"status","state":"warning","message":"3 calls waiting to retry"}`],
   ["h", "shutdown", "Queued behind any pending events; stdin closes after it. The grace starts when the plugin reads it.", `{"type":"shutdown","grace_s":10}`]
 ];
@@ -1647,7 +1647,7 @@ const OBJ = [
     ["hello", "api, host, config, systems [SystemInfo { index, short_name, kind, config }], capture_dir, data_dir, audio_formats", ""],
     ["call.start · call.end", "CallInfo { id, system, short_name, talkgroup, talkgroup_tag, freq_hz, tdma_slot, analog, encrypted, emergency, recording, reason, start_time, units, patched_talkgroups }", ""],
     ["call.concluded", "path, system, call: CallRecord, files { json, wav, m4a }", "CallRecord = the call JSON, extra keys kept"], ["unit", "system, short_name, kind, unit, talkgroup, time", ""],
-    ["audio", "call_id, system, short_name, talkgroup, sample_rate, pcm (base64 i16)", ""], ["status", "time, systems [{ index, short_name, control_channel_hz, decode_rate, active_calls, recording }]", ""], ["shutdown", "grace_s", ""]]],
+    ["audio", "call_id, system, short_name, talkgroup, sample_rate, pcm (base64 i16)", ""], ["status", "time, systems [{ index, short_name, control_channel_hz, decode_rate, active_calls, recording, nac, wacn, sys_id, rfss, site }]", ""], ["shutdown", "grace_s", ""]]],
   ["PluginMessage", "plugin", "trunk-recorder-plugin/src/protocol.rs", "Plugin → recorder, one JSON line on stdout.", [
     ["ready", "", "after hello"], ["log", "level, message", ""], ["status", "state (ok · warning · error), message", ""], ["call.result", "path, outcome (ok · skipped · failed), message, url", "one per call.concluded"],
     ["metrics", "queued, retrying, inFlight, retries, bytesSent, latencyMs, lastOk, lastError, lastErrorText, endpoints [{ name, state, latencyMs, lastOk, lastError }], extra", "all optional"]]]

@@ -27,6 +27,7 @@ import type {
   PluginsList,
   PluginStore,
   PluginValues,
+  LockableKeys,
   Radios,
   SourceStatus,
   SiteIdentity,
@@ -58,6 +59,8 @@ export interface AppState {
   devices: Device[];
   /** Optional drivers (desktop app); null in the web build. */
   radios: Radios | null;
+  /** Key containers waiting for a password, and which are unlocked. */
+  lockable: LockableKeys[];
   /** A USRP search is running. */
   findingRadios: boolean;
   status: EngineStatus | null;
@@ -151,6 +154,7 @@ let state: AppState = {
   config: null,
   devices: [],
   radios: null,
+  lockable: [],
   findingRadios: false,
   status: null,
   sources: [],
@@ -286,6 +290,7 @@ function take(m: FromRecorder): void {
         heard: m.heard ?? {},
         units: Object.fromEntries(Object.entries(m.units ?? {}).map(([name, csv]) => [name, parseUnitsCsv(csv)])),
         radios: m.radios ?? null,
+        lockable: m.keys?.sources ?? [],
         phase: m.phase.phase,
         error: m.phase.error,
         ended: m.phase.ended,
@@ -347,6 +352,9 @@ function take(m: FromRecorder): void {
       break;
     case "radios":
       set({ radios: m.radios, findingRadios: false });
+      break;
+    case "keys":
+      set({ lockable: m.sources });
       break;
     case "trConfig":
       set({ trConfig: m });
@@ -625,6 +633,16 @@ export function setPluginEnabled(id: string, enabled: boolean): void {
   updateConfig((x) => {
     const all = (x.plugins ??= {});
     all[id] = { ...(all[id] ?? { enabled: false }), enabled };
+  });
+}
+/** Whether a plugin is given calls decrypted with the recorder's keys. */
+export function setPluginShareDecrypted(id: string, share: boolean): void {
+  updateConfig((x) => {
+    const all = (x.plugins ??= {});
+    const p = { ...(all[id] ?? { enabled: false }) };
+    if (share) p.shareDecrypted = true;
+    else delete p.shareDecrypted;
+    all[id] = p;
   });
 }
 /** A plugin's settings for the whole recorder. */
@@ -940,6 +958,11 @@ export function addNxdnChannel(freqHz: number, rate: "nxdn48" | "nxdn96", ran: n
   });
   set({ configEpoch: state.configEpoch + 1 });
   return name;
+}
+
+/** Open key container `source` with its password, or (no password) lock it again. */
+export function unlockKeys(source: string, password: string | null): void {
+  transport.send(password === null ? { type: "lockKeys", source } : { type: "unlockKeys", source, password });
 }
 
 // ── run ──────────────────────────────────────────────────────────────────────

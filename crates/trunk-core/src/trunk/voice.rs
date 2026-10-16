@@ -172,6 +172,9 @@ pub trait VoiceDecoder: Send {
     fn flush(&mut self, _out: &mut Vec<VoiceOut>) {}
     /// Which slots are being recorded (DMR vocodes only those).
     fn listen(&mut self, _slots: [bool; 2]) {}
+    /// The system's keys changed: P25 voice is decrypted with these from now on, calls in progress
+    /// too (a call is decrypted from its next encryption sync; with none, it stops at once).
+    fn set_keys(&mut self, _keys: Option<Arc<Keyring>>) {}
     /// What the control channel says voice needs (Phase 2: the scrambler key).
     fn set_params(&mut self, _p: &VoiceParams) {}
     /// Analog: the carrier power that opens the squelch.
@@ -258,6 +261,9 @@ impl VoiceDecoder for P25Fdma {
     fn kind(&self) -> VoiceKind {
         VoiceKind::Fdma
     }
+    fn set_keys(&mut self, keys: Option<Arc<Keyring>>) {
+        self.tracker.set_keys(keys);
+    }
     fn report(&self, sink: &mut dyn Sink) {
         self.bank.report(sink);
     }
@@ -298,6 +304,9 @@ struct P25Tdma {
 impl VoiceDecoder for P25Tdma {
     fn kind(&self) -> VoiceKind {
         VoiceKind::Tdma
+    }
+    fn set_keys(&mut self, keys: Option<Arc<Keyring>>) {
+        self.tracker.set_keys(keys);
     }
     fn report(&self, sink: &mut dyn Sink) {
         if let Some(e) = self.rx.phase_error_deg() {

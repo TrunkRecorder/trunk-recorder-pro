@@ -911,7 +911,7 @@ Constants: `API_VERSION` = 1, `EXIT_CONFIG` = 78, conventional system index base
 | `call.concluded` | `path`, `system`, `call: CallRecord` (the call JSON), `files { json, wav, m4a }` |
 | `unit` | `system`, `short_name`, `kind` (registration, deregistration, affiliation, acknowledge, location, data_grant, answer_request, call_alert, emergency_alarm), `unit`, `talkgroup`, `time` |
 | `audio` | `call_id`, `system`, `short_name`, `talkgroup`, `sample_rate`, `pcm` (base64 i16 LE) |
-| `status` | `time`, `systems [{ index, short_name, control_channel_hz, decode_rate, active_calls, recording }]` |
+| `status` | `time`, `systems [{ index, short_name, control_channel_hz, decode_rate, active_calls, recording, nac, wacn, sys_id, rfss, site }]` (the identity fields once the control channel has stated them) |
 | `shutdown` | `grace_s` |
 
 **`PluginMessage`** (tag `type`): `ready`; `log { level, message }`; `status { state: ok |

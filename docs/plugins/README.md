@@ -208,6 +208,21 @@ hasn't answered within an hour counts as having failed. With no plugin taking ca
 settings alone decide. The details are in
 [The archive](../guides/recordings.md#the-archive-whats-kept-and-whats-deleted).
 
+## Decrypted calls
+
+A call decrypted with [keys you hold](../configuration/systems.md#encryption-keys-keys) is what the system's
+owner chose to encrypt, so **no plugin is given one** (its live audio, its WAV or M4A, its JSON) unless you
+turn on **Share decrypted calls** on that plugin's card in Setup → Plugins (`"shareDecrypted": true` in its
+entry). The switch is there only when a system has keys.
+
+- A call sent to a public service (OpenMHz, Broadcastify) can be heard by anyone and can't be taken back,
+  and may be against the law or your agreement with the system's owner. A server of your own may be
+  reachable from outside, or pass calls on.
+- A plugin that isn't allowed says so in the log, once a run, the first time a decrypted call passes it by.
+  One that is allowed says so each time it starts.
+- Only the audio and files are held back: the call's other details (talkgroup, units, `algid`, `key_id`) go
+  as before. A call no plugin may take is kept as when no plugin is set up.
+
 ## Seeing how plugins are doing
 
 ### The Plugins page

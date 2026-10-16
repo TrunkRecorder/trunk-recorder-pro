@@ -237,7 +237,8 @@ pub enum Event {
     CallUpdate(Call),
     CallEnd(Call),
     /// Live audio for a recording call.
-    Audio { call_id: CallId, system: u16, talkgroup: u32, samples: Vec<f32> },
+    /// `decrypted`: the call is encrypted on the air, so this audio is of a cipher we hold the key for.
+    Audio { call_id: CallId, system: u16, talkgroup: u32, samples: Vec<f32>, decrypted: bool },
     /// System `system` heard a radio's talker alias it didn't know (or knew by another name).
     UnitAlias { system: u16, unit: u32, alias: String, talkgroup: u32 },
     /// A radio on a call of system `system` gave a new GPS position (decimal degrees).
@@ -464,6 +465,9 @@ struct Recording {
     /// The source it is on (AutoTune).
     source: usize,
     reception: Reception,
+    /// Some of its voice was decrypted: kept here as well as on the call, which may be gone by the time the voice
+    /// arrives (a call that expires in the same block), so the audio and the saved call are still known for what they are.
+    decrypted: bool,
 }
 
 /// The radio side every system shares: sources and their channelizers, the
@@ -638,6 +642,7 @@ impl SysHost<'_> {
                 freq_error: (0.0, 0),
                 source: src,
                 reception: Reception::default(),
+                decrypted: false,
             },
         );
         self.open_channel(call, src);
@@ -1333,19 +1338,27 @@ impl Engine {
     }
 
     /// The encryption keys of the system named `short_name` (trunked or
-    /// conventional): voice channels opened from now on decrypt with them.
+    /// conventional): its voice channels decrypt with them, those open now
+    /// from their next encryption sync (with none, at once).
     /// False when there's no such system.
     pub fn set_keys(&mut self, short_name: &str, keys: Option<Arc<Keyring>>) -> bool {
         if let Some(t) = self.trunks.iter_mut().find(|t| t.cfg.short_name == short_name) {
             t.calls.can_decrypt = keys.as_ref().is_some_and(|k| !k.is_empty());
             t.cfg.keys = keys.clone();
+            // Channels already open (one is reused by the next call on its frequency) change too:
+            // unlocking reaches them, and locking takes the keys from them at once.
+            let idx = t.idx;
+            for ch in self.radio.channels.iter_mut().filter(|((s, _), _)| *s == idx).map(|(_, c)| c) {
+                ch.voice.set_keys(keys.clone());
+            }
             if let Some(c) = self.cfg.systems.iter_mut().find(|c| c.short_name == short_name) {
                 c.keys = keys;
             }
             return true;
         }
-        if let Some(c) = self.cfg.conv_systems.iter_mut().find(|c| c.short_name == short_name) {
-            c.keys = keys;
+        if let Some(k) = self.cfg.conv_systems.iter().position(|c| c.short_name == short_name) {
+            self.conv.set_system_keys(k, keys.as_ref());
+            self.cfg.conv_systems[k].keys = keys;
             return true;
         }
         false
@@ -1502,7 +1515,7 @@ impl Engine {
             match o {
                 ConvOut::Start(c) => self.events.push(Event::CallStart(c)),
                 ConvOut::Update(c) => self.events.push(Event::CallUpdate(c)),
-                ConvOut::Audio { call_id, system, talkgroup, samples } => self.events.push(Event::Audio { call_id, system, talkgroup, samples }),
+                ConvOut::Audio { call_id, system, talkgroup, samples, decrypted } => self.events.push(Event::Audio { call_id, system, talkgroup, samples, decrypted }),
                 ConvOut::End { call, audio, frames, recorder_num, tx, reception } => {
                     self.write_call(Held { call: call.clone(), audio, frames, recorder_num, tx, reception, freq_error_hz: None });
                     self.events.push(Event::CallEnd(call));
@@ -1552,10 +1565,13 @@ impl Engine {
                     rec.tx.note(rec.audio.len(), t.now_s);
                     rec.audio.extend_from_slice(&samples);
                     rec.frames.push(frame);
+                    let known_decrypted = rec.decrypted;
                     t.calls.note_audio(id, t.now_s);
-                    let tg = t.calls.calls.iter().find(|c| c.id == id).map_or(0, |c| c.talkgroup);
+                    // Fail closed: a call that is gone already (it expired in this same block) is not known to be
+                    // clear, and its voice is not given to a plugin as if it were.
+                    let (tg, decrypted) = t.calls.calls.iter().find(|c| c.id == id).map_or((0, true), |c| (c.talkgroup, c.encrypted || c.decrypted || known_decrypted));
                     if self.multisite.audio_lead(id, t.now_s) {
-                        self.events.push(Event::Audio { call_id: id, system: sys, talkgroup: tg, samples });
+                        self.events.push(Event::Audio { call_id: id, system: sys, talkgroup: tg, samples, decrypted });
                     }
                 }
                 TrackerOut::AnalogAudio(samples) => {
@@ -1565,7 +1581,7 @@ impl Engine {
                     t.calls.note_audio(id, t.now_s);
                     let tg = t.calls.calls.iter().find(|c| c.id == id).map_or(0, |c| c.talkgroup);
                     if self.multisite.audio_lead(id, t.now_s) {
-                        self.events.push(Event::Audio { call_id: id, system: sys, talkgroup: tg, samples });
+                        self.events.push(Event::Audio { call_id: id, system: sys, talkgroup: tg, samples, decrypted: false });
                     }
                 }
                 TrackerOut::Info { source, emergency, encrypted } => {
@@ -1602,6 +1618,7 @@ impl Engine {
                 TrackerOut::Decrypted => {
                     if let Some(rec) = self.radio.recordings.get_mut(&id) {
                         rec.tx.mark_decrypted(t.now_s);
+                        rec.decrypted = true;
                     }
                     if let Some(c) = t.calls.call_mut(id).filter(|c| !c.decrypted) {
                         c.decrypted = true;
@@ -1693,7 +1710,17 @@ impl Engine {
                     s.measured(hz / call.freq_hz as f64 * 1e6);
                 }
             }
-            Held { call: call.clone(), audio: rec.audio, frames: rec.frames, recorder_num: rec.recorder_num, tx: rec.tx, reception: rec.reception, freq_error_hz }
+            // (A call whose record never learned it was decrypted, because it was already gone when the news came, is saved
+            // as the decrypted call it is.)
+            let mut call = call.clone();
+            if rec.decrypted {
+                call.encrypted = true;
+                call.decrypted = true;
+            }
+            let mut h = Held { call, audio: rec.audio, frames: rec.frames, recorder_num: rec.recorder_num, tx: rec.tx, reception: rec.reception, freq_error_hz };
+            // Now, so copies of a multi-site call are ranked by the audio they'd be saved with.
+            h.trim(self.trunks.get(h.call.system as usize).map_or(0.0, |t| t.cfg.save.min_transmission_s));
+            h
         });
         let trunks = &self.trunks;
         let Some(copies) = self.multisite.conclude(call.id, held, |system, tg| trunks.get(system as usize).is_some_and(|t| t.preferred_for(tg))) else { return };
@@ -1941,6 +1968,40 @@ mod tests {
         grant(&mut e, f, 1.5, 303, true, 0);
         assert_eq!(e.radio.channels.len(), 1);
         assert!(e.radio.channels[&(0, f)].calls.iter().all(Option::is_some));
+    }
+
+    /// Decrypted voice for a call that expired in the same block is still known for what it is: not passed on as
+    /// clear (a plugin that may not have decrypted calls must not get it), and the call is saved as decrypted.
+    #[test]
+    fn decrypted_voice_for_a_call_that_is_already_gone_is_not_taken_for_clear() {
+        use crate::trunk::frames::{Codec, VoiceFrame};
+        let cfg = EngineConfig {
+            systems: vec![SystemConfig { short_name: "d".into(), control_channels: vec![851.0125e6], ..Default::default() }],
+            sources: vec![SourceConfig { center_hz: 851e6, rate_hz: 2.4e6, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ }],
+            ..Default::default()
+        };
+        let mut e = Engine::new(cfg).unwrap();
+        {
+            let Engine { trunks, radio, call_events, .. } = &mut e;
+            let mut host = trunks[0].host(radio);
+            let m = Message { kind: MessageType::Grant, time_s: 0.0, talkgroup: 101, freq_hz: 851_500_000, ..Default::default() };
+            trunks[0].calls.handle(&[m], &mut host, call_events);
+        }
+        let call = e.trunks[0].calls.calls[0].clone();
+        let id = call.id;
+        let frame = || VoiceFrame { codec: Codec::Imbe, bits: vec![0; 88], e0: 0, errs: 0, erased: false, kind: crate::mbe::Kind::Voice };
+        // The call is removed (by the control-channel tick) before the voice output is applied.
+        e.trunks[0].calls.calls.clear();
+        e.radio.pending.push((0, id, TrackerOut::Decrypted));
+        e.radio.pending.push((0, id, TrackerOut::Audio(vec![0.0; 160], frame())));
+        e.apply_pending();
+        let audio: Vec<bool> = e.drain_events().iter().filter_map(|x| if let Event::Audio { decrypted, .. } = x { Some(*decrypted) } else { None }).collect();
+        assert_eq!(audio, [true], "its audio is not passed on as clear");
+        // And the call, concluded from the snapshot taken before the news, is saved as decrypted.
+        e.conclude(&call);
+        let ev = e.drain_events();
+        let k = ev.iter().find_map(|x| if let Event::Concluded(k) = x { Some(k) } else { None }).expect("the call is saved");
+        assert!(k.json.contains("\"decrypted\":1"), "{}", k.json);
     }
 
     fn saved(ev: &[Event]) -> Vec<CallId> {

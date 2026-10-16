@@ -22,6 +22,7 @@ import {
   setM4a,
   setPluginEnabled,
   setPluginSettings,
+  setPluginShareDecrypted,
   setSystemPluginOverride,
   setSystemPluginSettings,
   settingsOpened,
@@ -31,8 +32,10 @@ import {
   type AppState,
   type SystemRef,
 } from "./controller.ts";
+import { activeSystems } from "./config.ts";
+import { EveryDelays, PluginDelay } from "./Delays.tsx";
 import { IconPuzzle, IconUpload, IconWave } from "./Onboarding.tsx";
-import { showTodo } from "./Setup.tsx";
+import { showTodo, Toggle } from "./Setup.tsx";
 import { Group, Section } from "./SetupLayout.tsx";
 import { openTodos } from "./todo.ts";
 import { copyOverride, copyOwn, pluginCopies } from "./protocol.ts";
@@ -160,6 +163,11 @@ function destinationOf(m: PluginManifest, over: PluginValues): string | null {
 }
 
 /** The systems plugins can be set up for: where each is, its short name (conventional ones with channels), and its copies of each plugin. */
+/** Some system that records names encryption keys (only then can a call be decrypted). */
+function hasKeys(c: Config): boolean {
+  return activeSystems(c).some((s) => !!s.keys?.trim()) || c.conventional.some((x) => x.enabled && !!x.keys?.trim());
+}
+
 function systemsOf(c: Config): { at: SystemRef; name: string; copies: (id: string) => PluginValues[] }[] {
   const out: { at: SystemRef; name: string; copies: (id: string) => PluginValues[] }[] = c.systems.map((x, i) => ({
     at: i,
@@ -546,6 +554,7 @@ export function PluginSetupPanel() {
           {plugins.map((p) => (
             <PluginSetupCard key={p.id} p={p} c={c} />
           ))}
+          {plugins.some((p) => pluginOn(c, p.id)) && <EveryDelays />}
           {plugins.length === 0 && (
             <p className="empty">
               No plugins installed yet.{" "}
@@ -607,7 +616,16 @@ function PluginSetupCard(props: { p: PluginInfo; c: Config }) {
           )}
         </div>
       )}
-      {recording && on && <p className="small muted">Changes restart it.</p>}
+      {on && hasKeys(c) && (m?.subscribe.includes("audio") || m?.subscribe.includes("call.concluded")) && (
+        <Toggle
+          label="Share decrypted calls"
+          hint="Calls decrypted with your keys go to it too. Once sent they can't be taken back, and may become public."
+          checked={!!c.plugins?.[p.id]?.shareDecrypted}
+          onChange={(v) => setPluginShareDecrypted(p.id, v)}
+        />
+      )}
+      {on && (m?.subscribe.includes("audio") || m?.subscribe.includes("call.concluded")) && <PluginDelay p={p} c={c} />}
+      {recording && on && <p className="small muted">Changes restart it (delays don't).</p>}
     </article>
   );
 }
@@ -779,6 +797,11 @@ function PluginCard(props: { p: PluginInfo; recording: boolean; listing?: StoreL
           {r.skipped > 0 && ` · ${r.skipped} skipped`}
           {r.failed > 0 && <span className="bad-text"> · {r.failed} failed</span>}
           {r.failed > 0 && r.lastFailure && <span className="plugin-last-failure"> — last: {r.lastFailure}</span>}
+        </p>
+      )}
+      {(r.held ?? 0) > 0 && (
+        <p className="small muted" title="Its delays hold these back; they go when their time is up, after a restart too">
+          {r.held} call{r.held === 1 ? "" : "s"} waiting out a delay
         </p>
       )}
       {m && (

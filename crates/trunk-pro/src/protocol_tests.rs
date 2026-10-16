@@ -282,6 +282,7 @@ fn ctx(cfg: Config, dir: &Path) -> Arc<crate::runtime::Ctx> {
         engine_cmds: Mutex::new(Vec::new()),
         host_last: Mutex::new(None),
         spool: Mutex::new(None),
+        unlocked: Default::default(),
     })
 }
 
@@ -517,4 +518,39 @@ fn messages_to_the_recorder() {
         json!({ "type": "radioQuery", "id": 4, "what": "unit", "system": "dcfd", "key": 1234 }),
     ];
     check_all("ToRecorder", &msgs);
+}
+
+/// A key container with no passwordFile starts locked; a wrong password changes nothing, the right
+/// one unlocks it, Lock forgets it, and so does a config that no longer names its file.
+#[test]
+fn a_key_container_is_unlocked_and_locked_from_the_interface() {
+    let dir = std::env::temp_dir().join(format!("trunk-pro-unlock-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let ekc = concat!(env!("CARGO_MANIFEST_DIR"), "/../trunk-app/src/testdata/dummy-test-keys.ekc");
+    let mut cfg = Config::default();
+    cfg.keys.insert("county".into(), crate::config::KeySource { file: ekc.into(), ..Default::default() });
+    cfg.systems.push(crate::config::System { short_name: "fire".into(), keys: "county".into(), control_channels_hz: vec![851_012_500.0], ..Default::default() });
+    let c = ctx(cfg.clone(), &dir);
+    let unlocked = |c: &crate::runtime::Ctx| crate::unlock::status_json(c)["sources"][0]["unlocked"].as_bool();
+    assert_eq!(crate::unlock::status_json(&c)["sources"][0]["systems"], json!(["fire"]));
+    assert_eq!(unlocked(&c), Some(false));
+    let e = crate::unlock::unlock(&c, "county", "nope").unwrap_err();
+    assert!(e.contains("wrong password") && !e.contains("nope"), "{e}");
+    assert_eq!(unlocked(&c), Some(false));
+    assert!(crate::unlock::unlock(&c, "elsewhere", "testing1234").is_err());
+    crate::unlock::unlock(&c, "county", "testing1234").unwrap();
+    assert_eq!(unlocked(&c), Some(true));
+    // A start reads the keys it holds.
+    let keys = cfg.load_keys(&c.config_path, &|n| crate::unlock::held(&c, &cfg, n)).unwrap();
+    assert_eq!(keys[0].ring.as_ref().map(|r| r.keys().len()), Some(3));
+    check_all("FromRecorder", &[crate::unlock::status_json(&c)]);
+    crate::unlock::lock(&c, "county");
+    assert_eq!(unlocked(&c), Some(false));
+    assert!(cfg.load_keys(&c.config_path, &|n| crate::unlock::held(&c, &cfg, n)).unwrap()[0].ring.is_none(), "locked");
+    // Unlocked, then the source names another file: forgotten.
+    crate::unlock::unlock(&c, "county", "testing1234").unwrap();
+    let mut moved = cfg.clone();
+    moved.keys.get_mut("county").unwrap().file = "elsewhere.ekc".into();
+    crate::unlock::config_changed(&c, &moved);
+    assert!(c.unlocked.lock().unwrap().is_empty());
 }

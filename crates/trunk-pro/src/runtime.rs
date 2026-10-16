@@ -89,12 +89,16 @@ pub struct Ctx {
     pub host_last: Mutex<Option<Value>>,
     /// The RAM spool (`recording.ramSpool`), as last opened.
     pub spool: Mutex<Option<Arc<crate::spool::Spool>>>,
+    /// Key containers unlocked from the interface ([`crate::unlock`]).
+    pub unlocked: crate::unlock::Unlocked,
 }
 
 /// Something for the running session to do.
 pub enum EngineCmd {
     /// A system's talkgroup file changed (an Ignore flag set from the dashboard).
     Talkgroups { short_name: String, csv: String },
+    /// A system's keys changed (a key container unlocked or locked): calls in progress take them too.
+    Keys { short_name: String, ring: Option<Arc<trunk_core::p25::crypt::Keyring>> },
 }
 
 impl Ctx {
@@ -175,7 +179,7 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
         return Err(p);
     }
     // Encryption keys: a file that can't be read, or a bad key in it, stops the start.
-    let keys = cfg.load_keys(&ctx.config_path)?;
+    let keys = cfg.load_keys(&ctx.config_path, &|name| crate::unlock::held(&ctx, &cfg, name))?;
     warn_readable_keys(&ctx, &cfg);
     open_spool(&ctx, &cfg);
     // The wall clock now, and a monotonic clock from now: the session's
@@ -184,9 +188,19 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
     let epoch_at = Instant::now();
     let mut session = Session::new(cfg.clone(), epoch_ms, &|name| fs::read_to_string(bandplan_path(name)).ok(), local_offset)?;
     session.attach(ctx.shared.clone());
-    for (name, ring) in keys {
-        log::info!("{name}: {} encryption key{} loaded", ring.keys().len(), if ring.keys().len() == 1 { "" } else { "s" });
-        session.set_keys(&name, Some(ring));
+    for k in keys {
+        for s in &k.skipped {
+            log::warn!("Key source {}: key left out: {s}", k.name);
+        }
+        let Some(ring) = k.ring else {
+            log::warn!("Key source {} is locked: unlock it in Setup → Recording to decrypt {}", k.name, k.systems.join(", "));
+            continue;
+        };
+        let n = ring.keys().len();
+        log::info!("Key source {}: {n} encryption key{} loaded, for {}", k.name, if n == 1 { "" } else { "s" }, k.systems.join(", "));
+        for s in &k.systems {
+            session.set_keys(s, Some(ring.clone()));
+        }
     }
     session.load_units(&|name| fs::read_to_string(units_path(name)).ok());
     session.load_heard(&fs::read_to_string(heard_path(&cfg)).unwrap_or_default());
@@ -247,8 +261,7 @@ fn warn_readable_keys(ctx: &Ctx, cfg: &Config) {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let settings = cfg.systems.iter().filter(|s| s.active()).map(|s| &s.keys).chain(cfg.conventional.iter().filter(|c| c.enabled).map(|c| &c.keys));
-        for p in settings.filter_map(|k| trunk_app::keys::path(k, &ctx.config_path)) {
+        for p in cfg.key_files(&ctx.config_path) {
             if fs::metadata(&p).is_ok_and(|m| m.permissions().mode() & 0o077 != 0) {
                 let text = format!("Keys file {} can be read by other users (chmod 600 it)", p.display());
                 log::warn!("{text}");
@@ -512,6 +525,9 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Rec
                         log::info!("[{short_name}] Talkgroups updated");
                     }
                 }
+                EngineCmd::Keys { short_name, ring } => {
+                    session.set_keys(&short_name, ring);
+                }
             }
         }
         session.poll(now_ms(), &mut out);
@@ -570,6 +586,8 @@ struct Finish {
     /// Its history entry (`{path, record}`).
     entry: Value,
     rules: FileRules,
+    /// Some of it was decrypted with our keys: only plugins with `shareDecrypted` take it.
+    decrypted: bool,
 }
 
 /// Each call: its files, then (once they're on disk) the `concluded`
@@ -598,7 +616,7 @@ fn finish_calls(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, rx: 
 /// from memory.
 fn finish_one(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, f: Finish, encoder: Option<&(plugins::Encoder, u32)>, host: Option<&PluginHost>) {
     let r = f.rules;
-    let takers = host.map_or(0, |h| h.call_takers());
+    let takers = host.map_or(0, |h| h.call_takers(f.decrypted));
     let p = plugins::plan(r, takers, host.is_some_and(|h| h.needs_wav()), encoder.is_some());
     let (keep_audio, keep_json, keep_m4a, write_wav) = (p.keep_audio, p.keep_json, p.keep_m4a, p.write_wav);
     let base = dir.join(&f.rel);
@@ -648,7 +666,7 @@ fn finish_one(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, f: Fin
     }
     ctx.plugins.archive.expect(&f.rel, takers, r, &base, spooled.as_deref());
     if let Some(h) = host {
-        h.concluded(f.system, &f.rel, &f.json, audio);
+        h.concluded(f.system, &f.rel, &f.json, audio, f.decrypted);
     }
 }
 
@@ -659,9 +677,9 @@ fn deliver(ctx: &Ctx, out: &mut Vec<Output>, plugins: Option<&PluginHost>, rules
             Output::Text(t) => {
                 let _ = ctx.hub.send(Arc::new(Out::Text(t)));
             }
-            Output::Audio { short_name, tg, frame, .. } => {
+            Output::Audio { short_name, tg, frame, decrypted, .. } => {
                 if let Some(p) = plugins {
-                    p.audio_frame(&frame);
+                    p.audio_frame(&frame, decrypted);
                 }
                 let _ = ctx.hub.send(Arc::new(Out::Audio { short_name, tg, frame }));
             }
@@ -675,7 +693,7 @@ fn deliver(ctx: &Ctx, out: &mut Vec<Output>, plugins: Option<&PluginHost>, rules
                 let _ = ctx.hub.send(Arc::new(Out::Topic { topic, text }));
             }
             Output::Rollup(r) => ctx.store.add(r),
-            Output::File { rel, system, wav, json, frames, entry } => finish(Finish { rel, system, wav, json, frames, entry, rules: rules(system) }, plugins),
+            Output::File { rel, system, wav, json, frames, entry, decrypted } => finish(Finish { rel, system, wav, json, frames, entry, rules: rules(system), decrypted }, plugins),
         }
     }
 }

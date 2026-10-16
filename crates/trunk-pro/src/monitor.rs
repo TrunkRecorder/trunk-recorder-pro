@@ -107,7 +107,8 @@ impl SpoolWatch {
     fn watch(&mut self, ctx: &Ctx, s: &crate::spool::Spool, capture: &Path, sink: &mut dyn Sink, p: &mut Value) {
         if self.swept.is_none_or(|t| t.elapsed() >= SWEEP_EVERY) {
             self.swept = Some(Instant::now());
-            let n = s.sweep(capture, crate::spool::STALE);
+            // (A call held back from a plugin waits that much longer.)
+            let n = s.sweep(capture, crate::spool::STALE + ctx.plugins.longest_delay());
             if n > 0 {
                 log::warn!("{n} file(s) left in the RAM spool by calls no plugin finished: moved to {}", capture.display());
             }
