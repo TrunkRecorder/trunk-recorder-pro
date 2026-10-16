@@ -22,7 +22,16 @@ work differently here.
      **Choose file…** next to them. Pick each one, or skip it and add it later in Setup.
    - A dongle that isn't plugged in or isn't free can be swapped for one that is.
    - **Good to know** lists what changed meaning on the way.
-4. Press **Import**. This **replaces your current systems and radios**. Anything left to finish
+4. When you already have systems set up, choose what the import does with them:
+   - **Add to it** (the default) adds this config's radios, systems and conventional channels to
+     yours. Use it when your Trunk Recorder setup is split over several configs (say one each for
+     700 MHz, 800 MHz and VHF): import them one after another. A radio already here (the same
+     device, centre and rate) isn't added twice, and a system already here (the same short name
+     and kind, and for a trunked system a control channel in common) is left as it is. Your
+     Recording and log settings stay; where this config's differ, they become its systems' own.
+   - **Replace it** replaces your radios, conventional channels and Recording and log settings
+     with this config's, and your trunked systems too when it has any.
+5. Press **Import**. Anything left to finish
    (a site lock, a squelch to check, a missing file, a plugin to install, a control channel no radio
    reaches) is listed on the Setup page and highlighted where it needs doing.
 

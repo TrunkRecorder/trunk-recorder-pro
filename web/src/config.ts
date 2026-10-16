@@ -909,18 +909,30 @@ export function trConfigFiles(text: string): { file: string; kind: "talkgroups" 
 /** "talkgroups/dc.csv" → "dc.csv". */
 const baseName = (path: string) => path.split(/[\\/]/).pop() ?? path;
 
+/** Which device a source is, when it names one (null: the first free, or a file). */
+const deviceOf = (s: Source): string | null =>
+  s.type === "rtlsdr" || s.type === "airspy" ? (s.serial ? `${s.type}:${s.serial}` : null) : s.type === "usrp" || s.type === "soapy" ? (s.args ? `${s.type}:${s.args}` : null) : null;
+
 /**
  * Import a Trunk Recorder config.json: its sources (one per dongle / SDR),
  * every P25 system (each site is a system here too) and its conventional
  * channels — with the talkgroup and channel files it names, from `files`
  * (by the name the config gives). What couldn't be finished is in `todo`;
  * `notes` say what changed meaning on the way.
+ *
+ * `merge`: added to `base` instead of replacing its radios and systems (a
+ * setup split over several Trunk Recorder configs, imported one by one).
+ * A system already there (same short name and kind, and for a trunked one a
+ * control channel in common) is left as it is; the Recording and log
+ * settings stay `base`'s, and the config's that differ become its systems'
+ * own. `added`: the sources (indices) and systems (short names) it brought.
  */
 export function importTrunkRecorderConfig(
   text: string,
   base: Config,
   files: Record<string, string> = {},
-): { config: Config; notes: string[]; todo: ImportTodo[]; plugins: PluginImport[] } {
+  merge = false,
+): { config: Config; notes: string[]; todo: ImportTodo[]; plugins: PluginImport[]; added: { sources: number[]; systems: string[] } } {
   const j = JSON.parse(text) as Record<string, unknown>;
   const notes: string[] = [];
   const todo: ImportTodo[] = [];
@@ -1026,15 +1038,43 @@ export function importTrunkRecorderConfig(
       ...autoTune,
     });
   }
-  if (imported.length) cfg.sources = imported;
+  const addedSources: number[] = [];
+  if (!merge) {
+    if (imported.length) cfg.sources = imported;
+    addedSources.push(...cfg.sources.keys());
+  } else {
+    for (const src of imported) {
+      const dev = deviceOf(src);
+      const same = dev === null ? undefined : cfg.sources.find((x) => deviceOf(x) === dev);
+      if (same && same.centerHz === src.centerHz && same.rateHz === src.rateHz) continue;
+      if (same) notes.push(`${dev!.replace(":", " ")} is already one of your radios, centred elsewhere: one device can't be both — change or remove one.`);
+      addedSources.push(cfg.sources.push(src) - 1);
+    }
+    if (imported.length > addedSources.length) notes.push(`${imported.length - addedSources.length} of its radios ${imported.length - addedSources.length === 1 ? "is" : "are"} already here.`);
+  }
+  // A system of this config already in `base` (merging): left as it is.
+  const already: string[] = [];
+  const existing = (sys: Record<string, unknown>, list: (System | Conventional)[], same: (x: System | Conventional) => boolean) => {
+    if (!merge || typeof sys.shortName !== "string") return undefined;
+    const name = sys.shortName.replace(/[^\w.-]/g, "");
+    const x = list.find((y) => y.shortName === name && same(y));
+    if (x) {
+      already.push(x.shortName);
+      systemNames.set(sys, x.shortName);
+      if (!names.has(sys.shortName)) names.set(sys.shortName, x.shortName);
+    }
+    return x;
+  };
+  const mine: { recording?: RecordingOverride }[] = [];
   const p25 = systems.filter((x) => x.type === "p25" || x.type === "smartnet" || x.type === "dmr");
   const conv = systems.filter((x) => x.type === "conventional" || x.type === "conventionalP25" || x.type === "conventionalDMR");
   const skipped = systems.filter((x) => !p25.includes(x) && !conv.includes(x)).map((x) => `${String(x.shortName ?? "?")} (${String(x.type)})`);
   if (skipped.length) notes.push(`Skipped unsupported systems: ${skipped.join(", ")}.`);
   // Each conventional system is one here: its channels (listed, or its channel file), short name and rules.
-  cfg.conventional = [];
+  if (!merge) cfg.conventional = [];
   for (const sys of conv) {
     const mode: Channel["mode"] = sys.type === "conventionalP25" ? "p25" : sys.type === "conventionalDMR" ? "dmr" : "fm";
+    if (existing(sys, cfg.conventional, (y) => (y as Conventional).channels.some((ch) => ch.mode === mode))) continue;
     const channels: Channel[] = [];
     if (Array.isArray(sys.channels)) {
       for (const f of sys.channels as unknown[]) if (typeof f === "number" && f > 0) channels.push({ freqHz: f, mode, name: "", enabled: true });
@@ -1056,6 +1096,7 @@ export function importTrunkRecorderConfig(
     const units = trUnitNames(sys, files, x.shortName, todo);
     if (units) x.unitNames = units;
     cfg.conventional.push(x);
+    mine.push(x);
     if (channels.length) todo.push({ kind: "squelch", system: x.shortName });
     systemNames.set(sys, x.shortName);
     if (typeof sys.shortName === "string" && !names.has(sys.shortName)) names.set(sys.shortName, x.shortName);
@@ -1066,8 +1107,11 @@ export function importTrunkRecorderConfig(
     // its multiSiteSystemName is a site group here (else grouped from the air).
     const multi = p25.filter((x) => x.multiSite === true);
     const isolated: string[] = [];
-    cfg.systems = [];
+    if (!merge) cfg.systems = [];
     for (const sys of p25) {
+      const ccs = Array.isArray(sys.control_channels) ? (sys.control_channels as unknown[]) : [];
+      const kind = sys.type === "smartnet" || sys.type === "dmr" ? sys.type : "p25";
+      if (existing(sys, cfg.systems, (y) => (y as System).type === kind && (y as System).controlChannelsHz.some((f) => ccs.includes(f)))) continue;
       const msName = typeof sys.multiSiteSystemName === "string" ? sys.multiSiteSystemName.trim() : "";
       const ownName = typeof sys.shortName === "string" ? sys.shortName : "";
       const siteGroup = sys.multiSite === true ? msName : multi.length && ownName ? ownName : "";
@@ -1084,6 +1128,7 @@ export function importTrunkRecorderConfig(
         ...(siteGroup ? { siteGroup } : {}),
       });
       cfg.systems.push(x);
+      mine.push(x);
       systemNames.set(sys, x.shortName);
       if (ownName && !names.has(ownName)) names.set(ownName, x.shortName);
       if (typeof sys.talkgroupsFile === "string" && sys.talkgroupsFile) {
@@ -1103,15 +1148,30 @@ export function importTrunkRecorderConfig(
     if (!multi.length && p25.length > 1)
       notes.push("A call heard on several sites of one system is now saved once (Trunk Recorder's multiSite was off) — switch it off under Recording to keep every copy.");
   }
-  const owners = [...cfg.systems.map((x) => x as { recording?: RecordingOverride }), ...cfg.conventional];
+  if (already.length) notes.push(`Already here, left as ${already.length === 1 ? "it is" : "they are"}: ${already.join(", ")}.`);
+  const owners = merge ? mine : [...cfg.systems.map((x) => x as { recording?: RecordingOverride }), ...cfg.conventional];
   // An instance-level format is every system's that has none of its own (a system's own wins, as in Trunk Recorder).
   if (typeof j.filenameFormat === "string" && j.filenameFormat.trim()) {
     const top = j.filenameFormat.trim();
-    if (!owners.length) cfg.recording.filenameFormat = top;
+    if (!owners.length && !merge) cfg.recording.filenameFormat = top;
     for (const o of owners) if (o.recording?.filenameFormat === undefined) o.recording = { ...o.recording, filenameFormat: top };
   }
-  // A setting the same on every system there is the Recording tab's here; the rest stay each system's own.
-  if (owners.length) {
+  if (merge) {
+    // The Recording tab's settings stay; what this config sets the same is dropped, what it sets otherwise is its systems' own.
+    const rec = cfg.recording as unknown as Record<string, unknown>;
+    for (const o of owners) {
+      for (const k of Object.keys(o.recording ?? {}) as (keyof RecordingOverride)[]) if (o.recording![k] === rec[k]) delete o.recording![k];
+      if (o.recording && !Object.keys(o.recording).length) delete o.recording;
+    }
+    const differs = [
+      typeof j.captureDir === "string" && j.captureDir !== cfg.recording.captureDir && "captureDir",
+      typeof j.callTimeout === "number" && j.callTimeout !== cfg.recording.callTimeoutS && "callTimeout",
+      typeof j.recordUUVCalls === "boolean" && j.recordUUVCalls !== cfg.recording.recordUnitToUnit && "recordUUVCalls",
+      typeof j.archiveFilesOnFailure === "boolean" && j.archiveFilesOnFailure !== cfg.recording.archiveFilesOnFailure && "archiveFilesOnFailure",
+    ].filter((k): k is string => !!k);
+    if (differs.length) notes.push(`Its ${differs.join(", ")} ${differs.length === 1 ? "wasn't" : "weren't"} taken: your Recording settings stay.`);
+  } else if (owners.length) {
+    // A setting the same on every system there is the Recording tab's here; the rest stay each system's own.
     const keys = new Set(owners.flatMap((o) => Object.keys(o.recording ?? {}))) as Set<keyof RecordingOverride>;
     for (const k of keys) {
       const vals = owners.map((o) => o.recording?.[k]);
@@ -1122,6 +1182,11 @@ export function importTrunkRecorderConfig(
     }
     for (const o of owners) if (o.recording && !Object.keys(o.recording).length) delete o.recording;
   }
+  if (systems.some((x) => x.conversationMode === false)) notes.push("conversationMode off (one file per transmission) isn't supported: each call is one file.");
+  const { plugins, other } = trPlugins(j, names, systemNames);
+  if (other.length) todo.push({ kind: "plugins", names: other });
+  const added = { sources: addedSources, systems: mine.map((o) => (o as System | Conventional).shortName) };
+  if (merge) return { config: cfg, notes, todo, plugins, added };
   if (typeof j.captureDir === "string") cfg.recording.captureDir = j.captureDir;
   if (typeof j.callTimeout === "number") cfg.recording.callTimeoutS = j.callTimeout;
   if (typeof j.recordUUVCalls === "boolean") cfg.recording.recordUnitToUnit = j.recordUUVCalls;
@@ -1142,8 +1207,5 @@ export function importTrunkRecorderConfig(
   if (tgFormat) log.talkgroupDisplayFormat = tgFormat as LogSettings["talkgroupDisplayFormat"];
   if (log.file && log.dir && !log.dir.startsWith("/")) notes.push(`The log folder "${log.dir}" is now next to the config file.`);
   cfg.log = log;
-  if (systems.some((x) => x.conversationMode === false)) notes.push("conversationMode off (one file per transmission) isn't supported: each call is one file.");
-  const { plugins, other } = trPlugins(j, names, systemNames);
-  if (other.length) todo.push({ kind: "plugins", names: other });
-  return { config: cfg, notes, todo, plugins };
+  return { config: cfg, notes, todo, plugins, added };
 }

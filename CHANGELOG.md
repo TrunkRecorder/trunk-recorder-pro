@@ -5,6 +5,16 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Import several Trunk Recorder configs into one setup.** With systems already set up, the import
+  now asks whether to add the config to them (the default) or replace them, so a setup split over
+  several configs (700 MHz, 800 MHz, VHF…) can be imported one after another. Radios and systems
+  already here aren't added twice; your Recording and log settings stay. See
+  [Running the import](docs/migrating-from-trunk-recorder.md#running-the-import).
+- **`srcList` positions are in the audio.** Each source's `pos` in the call JSON is where it starts
+  in the saved audio, as in Trunk Recorder, not the time since the call was granted: the gaps
+  between transmissions and the transmissions left out (short key-ups, encrypted ones) are no
+  longer counted, so a position can't fall past the end of the file.
+
 - **Plugin delays.** Plugins can be given calls late: for a whole system, some of its talkgroups,
   one plugin on every system, or one plugin on one system (`pluginDelays`, at the top of the config
   and in each system). A rule that narrows another replaces it; otherwise the longest delay wins.

@@ -1856,13 +1856,16 @@ function ImportReview(props: { s: AppState; c: Config; loaded: Loaded; onBack: (
   const [files, setFiles] = useState(loaded.files);
   // Dongles swapped in for ones that aren't free: source index → serial.
   const [swap, setSwap] = useState<Record<number, string>>({});
+  // A setup already here: this config is added to it (one of several Trunk Recorder configs), or replaces it.
+  const has = c.systems.length > 0 || enabledChannels(c).length > 0;
+  const [merge, setMerge] = useState(has);
   const result = useMemo(() => {
     try {
-      return importTrunkRecorderConfig(loaded.text, c, files);
+      return importTrunkRecorderConfig(loaded.text, c, files, merge);
     } catch (e) {
       return { error: e instanceof Error ? e.message : String(e) };
     }
-  }, [loaded, files]);
+  }, [loaded, files, merge]);
   if ("error" in result) {
     return (
       <section className="ob-step">
@@ -1875,12 +1878,14 @@ function ImportReview(props: { s: AppState; c: Config; loaded: Loaded; onBack: (
   const named = trConfigFiles(loaded.text);
   const missing = (file: string) => !(file in files);
   const later = result.todo.filter((t) => t.kind === "siteLock" || t.kind === "plugins" || t.kind === "squelch");
-  const replaces = c.systems.length > 0 || enabledChannels(c).length > 0;
+  // What this config brings (adding: not what was here already).
+  const bringsSource = (i: number) => result.added.sources.includes(i);
+  const brings = (name: string) => !merge || result.added.systems.includes(name);
   const used = (i: number) => new Set(cfg.sources.filter((x, k) => k !== i && x.type === "rtlsdr").map((x) => (x.type === "rtlsdr" ? x.serial : "")));
   const addFile = async (name: string, f: File | undefined) => {
     if (f) setFiles({ ...files, [name]: await f.text() });
   };
-  const convCount = cfg.conventional.reduce((n, v) => n + v.channels.length, 0);
+  const convCount = cfg.conventional.filter((v) => brings(v.shortName)).reduce((n, v) => n + v.channels.length, 0);
   // Systems whose control channel no radio hears (as the radios stand, swaps included).
   const centers = resolvedCenters(cfg);
   const unheard = (x: System) => x.enabled && x.controlChannelsHz.length > 0 && !x.controlChannelsHz.some((f) => sourceCovering(cfg, centers, f) >= 0);
@@ -1913,13 +1918,14 @@ function ImportReview(props: { s: AppState; c: Config; loaded: Loaded; onBack: (
     bumpEpoch();
     // Radios that aren't ready yet join what's left to do.
     const radios: ImportTodo[] = cfg.sources.flatMap((src, index): ImportTodo[] => {
+      if (!bringsSource(index)) return [];
       if (src.type === "rtlsdr" && src.serial && sourceState(src, s).tone !== "ok") return [{ kind: "source", index, serial: src.serial }];
       if ((src.type === "usrp" || src.type === "airspy" || src.type === "soapy") && sourceState(src, s).tone === "bad") return [{ kind: "driver", index, driver: src.type }];
       return [];
     });
     const plugins: ImportTodo[] = web ? [] : result.plugins.map((p) => ({ kind: "plugin", id: p.id, name: s.plugins?.plugins.find((x) => x.id === p.id)?.manifest?.name ?? p.name }));
-    const coverage: ImportTodo[] = cfg.systems.filter(unheard).map((x) => ({ kind: "coverage", system: x.shortName }));
-    setTodo([...result.todo, ...radios, ...coverage, ...plugins]);
+    const coverage: ImportTodo[] = cfg.systems.filter((x) => brings(x.shortName) && unheard(x)).map((x) => ({ kind: "coverage", system: x.shortName }));
+    setTodo([...(merge ? s.todo : []), ...result.todo, ...radios, ...coverage, ...plugins]);
     props.onDone();
   };
 
@@ -1933,6 +1939,7 @@ function ImportReview(props: { s: AppState; c: Config; loaded: Loaded; onBack: (
         </h3>
         <ul className="ob-rows">
           {cfg.sources.map((src, i) => {
+            if (!bringsSource(i)) return null;
             const st = sourceState(src, s);
             const free = s.devices.filter((d) => !d.busy && !used(i).has(d.serial));
             const orig = result.config.sources[i];
@@ -1968,13 +1975,18 @@ function ImportReview(props: { s: AppState; c: Config; loaded: Loaded; onBack: (
               </li>
             );
           })}
+          {result.added.sources.length === 0 && (
+            <li className="ok">
+              <span className="ob-row-main">{merge ? "Its radios are already here" : "Your radios stay"}</span>
+            </li>
+          )}
         </ul>
 
         <h3 className="ob-sub">
           <IconTower /> Systems
         </h3>
         <ul className="ob-rows">
-          {cfg.systems.map((x) => {
+          {cfg.systems.filter((x) => brings(x.shortName)).map((x) => {
             const file = named.find((n) => n.kind === "talkgroups" && n.system === x.shortName)?.file;
             const tgs = x.talkgroupsCsv ? parseTalkgroupCsv(x.talkgroupsCsv).size : 0;
             return (
@@ -2099,7 +2111,18 @@ function ImportReview(props: { s: AppState; c: Config; loaded: Loaded; onBack: (
           </details>
         )}
       </div>
-      {replaces && <div className="ob-note">Replaces your current systems and radios.</div>}
+      {has && (
+        <div className="ob-note">
+          <span>{merge ? "Added to your current systems and radios." : "Replaces your current systems and radios."}</span>
+          <div className="ob-seg" role="radiogroup" aria-label="Your current setup">
+            {[true, false].map((m) => (
+              <button key={String(m)} role="radio" aria-checked={merge === m} className={merge === m ? "on" : ""} onClick={() => setMerge(m)}>
+                {m ? "Add to it" : "Replace it"}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
       <Nav onBack={props.onBack} onNext={apply} nextLabel="Import" />
     </section>
   );
