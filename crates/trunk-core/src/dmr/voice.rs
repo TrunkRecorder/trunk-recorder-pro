@@ -138,7 +138,7 @@ impl DmrVoice {
                 }
                 let mut buf = [0f32; FRAME_SAMPLES];
                 let kind = s.dec.ambe(&frame.bits, frame.errs, &mut buf);
-                if kind != Kind::Voice {
+                if !matches!(kind, Kind::Voice | Kind::Tone) {
                     self.bad_frames += 1;
                 }
                 mbe::to_limited(&mut buf);
