@@ -42,10 +42,10 @@ export function Group(props: { title: string; hint?: ReactNode; actions?: ReactN
 }
 
 /** A card's on/off switch ("Record"). */
-export function Switch(props: { label: string; checked: boolean; onChange: (v: boolean) => void; title?: string }) {
+export function Switch(props: { label: string; checked: boolean; onChange: (v: boolean) => void; title?: string; disabled?: boolean }) {
   return (
     <label className="switch" title={props.title}>
-      <input type="checkbox" role="switch" checked={props.checked} onChange={(e) => props.onChange(e.target.checked)} />
+      <input type="checkbox" role="switch" checked={props.checked} disabled={props.disabled} onChange={(e) => props.onChange(e.target.checked)} />
       <span className="switch-track" aria-hidden="true" />
       <span>{props.label}</span>
     </label>

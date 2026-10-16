@@ -8,6 +8,8 @@
 import { useEffect, useRef, useState } from "react";
 import { activeSystems, DEFAULT_GUARD_HZ, enabledChannels, formatMhz, resolvedCenters, watchedChannels } from "./config.ts";
 import { profileSource, updateConfig, useApp } from "./controller.ts";
+import { decimal, type TextCodec } from "./fieldText.ts";
+import { DraftInput } from "./inputs.tsx";
 import type { Config, Source, SourceProfile } from "./protocol.ts";
 import { color as heat } from "./Waterfall.tsx";
 
@@ -38,6 +40,11 @@ export function GuardBand(props: { c: Config; i: number; fresh?: boolean; onFres
   const src = c.sources[i];
   const guard = src.guardHz ?? DEFAULT_GUARD_HZ;
   const [open, setOpen] = useState(false);
+  // Typed in kHz, snapped to the step (shown snapped once left: "7" on the way to 75 stays).
+  const khzCodec: TextCodec<number | undefined> = {
+    format: (hz) => (hz === undefined ? "" : String(Math.round(hz / 1000))),
+    parse: (t) => (decimal.parse(t) === undefined ? undefined : snap(decimal.parse(t)! * 1000, src.rateHz)),
+  };
   const setGuard = (hz: number) =>
     updateConfig((x) => {
       x.sources[i].guardHz = hz;
@@ -51,17 +58,15 @@ export function GuardBand(props: { c: Config; i: number; fresh?: boolean; onFres
     <div className="field wide">
       <span className="field-label">Guard band</span>
       <div className="row">
-        <input
+        <DraftInput
           type="number"
           className="guard-input"
           min={0}
           max={src.rateHz / 4 / 1000}
           step={5}
-          value={Math.round(guard / 1000)}
-          onChange={(e) => {
-            const v = Number(e.target.value);
-            if (Number.isFinite(v)) setGuard(snap(v * 1000, src.rateHz));
-          }}
+          codec={khzCodec}
+          value={guard}
+          onChange={(hz) => hz !== undefined && setGuard(hz)}
           aria-label="Guard band at each edge, kHz"
         />
         <span className="muted">kHz at each edge</span>

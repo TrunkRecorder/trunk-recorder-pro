@@ -27,6 +27,8 @@ import {
   web,
   type AppState,
 } from "./controller.ts";
+import { cleanShortName } from "./fieldText.ts";
+import { FileInput } from "./inputs.tsx";
 import type { Config, Source, SurveyCandidate, SurveyMonitor, SurveySuggestion, System } from "./protocol.ts";
 import { pluginCopies } from "./protocol.ts";
 import { normalizeTalkgroupCsv, parseRadioReferencePaste, parseTalkgroupCsv, talkgroupsToCsv, type Talkgroup } from "./talkgroups.ts";
@@ -1344,7 +1346,7 @@ function NameStep(props: { c: Config; sys: System; index: number; onNext: () => 
             value={sys.shortName}
             onChange={(e) => {
               setTouched(true);
-              edit((x) => void (x.shortName = e.target.value.replace(/[^\w.-]/g, "")));
+              edit((x) => void (x.shortName = cleanShortName(e.target.value)));
             }}
           />
           <span className={`ob-hint${dup || !sys.shortName ? " bad" : ""}`}>
@@ -1605,7 +1607,7 @@ function TalkgroupsStep(props: { sys: System; index: number; onNext: () => void;
           <button className="ob-btn" onClick={() => fileRef.current?.click()}>
             Choose a CSV file…
           </button>
-          <input ref={fileRef} type="file" accept=".csv,text/csv" hidden onChange={(e) => void onFile(e.target.files?.[0])} />
+          <FileInput inputRef={fileRef} accept=".csv,text/csv" onFile={(f) => void onFile(f)} />
         </div>
       )}
       <Nav onBack={props.onBack} onNext={props.onNext} nextLabel={how === "later" && !loaded ? "Skip for now" : "Continue"} />
@@ -1767,7 +1769,7 @@ function ImportPick(props: { s: AppState; onLoaded: (l: Loaded) => void; onBack?
             Or upload a config.json
           </button>
         )}
-        <input ref={fileRef} type="file" accept=".json,application/json" hidden onChange={(e) => void upload(e.target.files?.[0])} />
+        <FileInput inputRef={fileRef} accept=".json,application/json" onFile={(f) => void upload(f)} />
       </div>
       <Nav onBack={props.onBack} />
     </section>
@@ -2136,7 +2138,7 @@ function FilePick(props: { label: string; onFile: (f: File | undefined) => void 
       <button className="ob-btn small" onClick={() => ref.current?.click()}>
         Choose file…
       </button>
-      <input ref={ref} type="file" accept=".csv,text/csv,text/plain" hidden onChange={(e) => props.onFile(e.target.files?.[0])} />
+      <FileInput inputRef={ref} accept=".csv,text/csv,text/plain" onFile={props.onFile} />
     </span>
   );
 }

@@ -4,6 +4,7 @@
 
 import { useMemo, useRef, useState } from "react";
 import { downloadText, setNotice, updateConfig } from "./controller.ts";
+import { FileInput } from "./inputs.tsx";
 import type { System } from "./protocol.ts";
 import { isEncryptedMode, normalizeTalkgroupCsv, parseRadioReferencePaste, readTalkgroupCsv, talkgroupsToCsv, withHeader, type Talkgroup } from "./talkgroups.ts";
 
@@ -54,17 +55,7 @@ export function TalkgroupsField(props: { sys: System; index: number; needs?: str
           </>
         )}
       </div>
-      <input
-        ref={fileRef}
-        type="file"
-        accept=".csv,.tsv,.txt,text/csv,text/plain"
-        hidden
-        onChange={(e) => {
-          const f = e.target.files?.[0];
-          e.target.value = "";
-          void onFile(f);
-        }}
-      />
+      <FileInput inputRef={fileRef} accept=".csv,.tsv,.txt,text/csv,text/plain" onFile={(f) => void onFile(f)} />
       {tgs.length > 0 && (
         <div className="row tg-facts">
           {ignored > 0 && <span className="chip">{ignored} ignored</span>}
