@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useId, useRef, useState } from "react";
+import { Fragment, useId, useRef, useState } from "react";
 import {
   activeSystems,
   AIRSPY_RATES,
@@ -7,7 +7,6 @@ import {
   defaultLog,
   enabledChannels,
   formatFromPath,
-  formatGain,
   formatMhz,
   mhzCell,
   multiSiteGroup,
@@ -42,21 +41,11 @@ import { GuardBand } from "./Rolloff.tsx";
 import { SurveyPanel } from "./Survey.tsx";
 import { addCard, Card, ExpandAll, forgetCard, Group, Section, setCardOpen, Switch } from "./SetupLayout.tsx";
 import { TalkgroupsField } from "./TalkgroupsField.tsx";
+import { DraftInput, Field, FileInput, NumberInput, Toggle } from "./inputs.tsx";
+import { asTyped, cleanShortName, lcnTable, mhz, mhzList, msps } from "./fieldText.ts";
 import { unitNameCount } from "./units.ts";
 import { openTodos } from "./todo.ts";
 import { parseAccess, sameTone } from "./tones.ts";
-
-/** `needs`: what an import left to fill in here (highlighted); `anchor`: its place, for the to-do list's Show. */
-function Field(props: { label: string; hint?: string; children: React.ReactNode; wide?: boolean; needs?: string; anchor?: string }) {
-  return (
-    <label className={`field${props.wide ? " wide" : ""}${props.needs ? " needs" : ""}`} id={props.anchor && `need-${props.anchor}`}>
-      <span className="field-label">{props.label}</span>
-      {props.children}
-      {props.needs && <span className="field-needs">{props.needs}</span>}
-      {props.hint && <span className="field-hint">{props.hint}</span>}
-    </label>
-  );
-}
 
 /** What an import left to do at a setup field (see todo.ts), or undefined. */
 function useNeed(): (target: string) => string | undefined {
@@ -173,56 +162,6 @@ function KeyContainer(props: { k: LockableKeys }) {
   );
 }
 
-export function Toggle(props: { label: string; checked: boolean; onChange: (v: boolean) => void; hint?: string; disabled?: boolean }) {
-  return (
-    <label className={`toggle${props.disabled ? " disabled" : ""}`}>
-      <input type="checkbox" checked={props.checked} disabled={props.disabled} onChange={(e) => props.onChange(e.target.checked)} />
-      <span className="toggle-text">
-        <span>{props.label}</span>
-        {props.hint && <span className="field-hint">{props.hint}</span>}
-      </span>
-    </label>
-  );
-}
-
-/** A frequency input that keeps the user's text while typing. */
-function MhzInput(props: { hz: number; placeholder?: string; onChange: (hz: number) => void }) {
-  const [text, setText] = useState(props.hz ? formatMhz(props.hz) : "");
-  return (
-    <input
-      className="mono"
-      value={text}
-      placeholder={props.placeholder ?? "MHz"}
-      onChange={(e) => {
-        setText(e.target.value);
-        props.onChange(parseFreqList(e.target.value)[0] ?? 0);
-      }}
-    />
-  );
-}
-
-/** A gain in dB, shown to a tenth (the value kept may be longer); the user's text while typing. Blank = null. */
-function GainInput(props: { value: number | null; placeholder?: string; disabled?: boolean; onChange: (db: number | null) => void; label?: string }) {
-  const [text, setText] = useState<string | null>(null);
-  const shown = props.value === null ? "" : formatGain(props.value);
-  return (
-    <input
-      className="mono"
-      value={text ?? shown}
-      disabled={props.disabled}
-      aria-label={props.label}
-      placeholder={props.placeholder}
-      onFocus={() => setText(shown)}
-      onBlur={() => setText(null)}
-      onChange={(e) => {
-        setText(e.target.value);
-        const v = e.target.value.trim();
-        props.onChange(v === "" ? null : Number(v));
-      }}
-    />
-  );
-}
-
 const TONE_HINT = {
   fm: { placeholder: "any", title: "CTCSS tone or DCS code (151.4 PL, 023 DPL). Empty: any." },
   p25: { placeholder: "any NAC", title: "NAC, hex (293). Empty: any." },
@@ -233,28 +172,20 @@ const TONE_HINT = {
 
 /** A channel's code (CTCSS / DCS, NAC, colour code, RAN): kept as typed, tidied when left. */
 function ToneInput(props: { mode: Channel["mode"]; tone: string; disabled?: boolean; onChange: (tone: string) => void }) {
-  const [text, setText] = useState(props.tone);
-  const parsed = parseAccess(props.mode, text);
+  const parsed = parseAccess(props.mode, props.tone);
   const error = "error" in parsed ? parsed.error : null;
   return (
-    <input
+    <DraftInput
       className={`mono narrow${error ? " invalid" : ""}`}
       disabled={props.disabled}
-      value={text}
+      value={props.tone}
+      codec={asTyped}
       placeholder={TONE_HINT[props.mode].placeholder}
       aria-label="Tone"
       aria-invalid={!!error}
       title={error ?? TONE_HINT[props.mode].title}
-      onChange={(e) => {
-        setText(e.target.value);
-        props.onChange(e.target.value.trim());
-      }}
-      onBlur={() => {
-        if ("tone" in parsed) {
-          setText(parsed.tone);
-          props.onChange(parsed.tone);
-        }
-      }}
+      onChange={props.onChange}
+      onBlur={() => "tone" in parsed && parsed.tone !== props.tone && props.onChange(parsed.tone)}
     />
   );
 }
@@ -337,15 +268,7 @@ function RateInput(props: { hz: number; options: number[]; onChange: (hz: number
   }
   return (
     <>
-      <input
-        className="mono"
-        list={id}
-        defaultValue={props.hz / 1e6}
-        onChange={(e) => {
-          const v = Number(e.target.value);
-          if (v > 0) props.onChange(Math.round(v * 1e6));
-        }}
-      />
+      <DraftInput className="mono" list={id} codec={msps} value={props.hz} onChange={(hz) => hz > 0 && props.onChange(hz)} />
       <datalist id={id}>
         {props.options.map((r) => (
           <option key={r} value={r / 1e6} />
@@ -424,34 +347,11 @@ function SoapyModules(props: { soapy: SoapyState }) {
 
 type EditSource = (fn: (x: Source) => void) => void;
 
-/** A number typed as text (kept while typing); blank = undefined. Negative and decimal numbers too. */
-function DecInput(props: { value: number | undefined; placeholder?: string; disabled?: boolean; label: string; onChange: (v: number | undefined) => void; narrow?: boolean }) {
-  const [text, setText] = useState(props.value === undefined ? "" : String(props.value));
-  useEffect(() => setText((t) => (parse(t) === props.value ? t : props.value === undefined ? "" : String(props.value))), [props.value]); // eslint-disable-line react-hooks/exhaustive-deps
-  function parse(t: string): number | undefined {
-    const v = t.trim().replace(",", ".");
-    return v === "" || !Number.isFinite(Number(v)) ? undefined : Number(v);
-  }
-  return (
-    <input
-      className={`mono${props.narrow ? " narrow" : ""}`}
-      aria-label={props.label}
-      value={text}
-      disabled={props.disabled}
-      placeholder={props.placeholder}
-      onChange={(e) => {
-        setText(e.target.value);
-        props.onChange(parse(e.target.value));
-      }}
-    />
-  );
-}
-
 function PpmField(props: { src: Exclude<Source, { type: "file" }>; edit: EditSource }) {
   const { src, edit } = props;
   return (
     <Field label="Frequency correction, ppm" hint={src.type === "rtlsdr" ? "Whole numbers" : undefined}>
-      <DecInput
+      <NumberInput
         label="Frequency correction, ppm"
         value={src.ppm}
         onChange={(v) =>
@@ -576,7 +476,7 @@ function GainStages(props: { i: number; gains: Record<string, number>; disabled:
         {Object.entries(gains).map(([k, v]) => (
           <span key={k} className="stage">
             <span className="mono small">{k}</span>
-            <DecInput narrow label={`${k} gain, dB`} value={v} disabled={disabled} onChange={(n) => set((g) => void (g[k] = n ?? 0))} />
+            <NumberInput narrow label={`${k} gain, dB`} value={v} disabled={disabled} onChange={(n) => set((g) => void (g[k] = n ?? 0))} />
             <button className="btn ghost small danger" aria-label={`Remove the ${k} stage`} title="Remove" onClick={() => set((g) => void delete g[k])}>
               ×
             </button>
@@ -816,15 +716,11 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
                 </button>
                 <span className="mono">{web.file(i)?.name ?? (src.path ? `${src.path} (choose again)` : "none")}</span>
               </div>
-              <input
-                ref={fileRef}
-                type="file"
-                hidden
-                onChange={(e) => {
-                  const f = e.target.files?.[0] ?? null;
-                  web?.setFile(i, f);
+              <FileInput
+                inputRef={fileRef}
+                onFile={(f) => {
+                  web?.setFile(i, f ?? null);
                   edit((x) => x.type === "file" && void (x.path = f?.name ?? ""));
-                  e.target.value = "";
                 }}
               />
             </Field>
@@ -860,7 +756,7 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
           label="Center frequency, MHz"
           hint={src.centerHz ? undefined : auto ? `Auto: ${formatMhz(auto, 4)} MHz` : "Auto: no uncovered system to place over"}
         >
-          <MhzInput hz={src.centerHz} placeholder={auto ? formatMhz(auto, 4) : "MHz"} onChange={(hz) => edit((x) => void (x.centerHz = hz))} />
+          <DraftInput className="mono" codec={mhz} value={src.centerHz} placeholder={auto ? formatMhz(auto, 4) : "MHz"} onChange={(hz) => edit((x) => void (x.centerHz = hz))} />
         </Field>
         <Field
           label="Sample rate"
@@ -886,7 +782,7 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
           {src.type === "rtlsdr" && (
             <Field label="Gain, dB" hint={src.agc ? "A fixed gain usually works better" : "Most dongles: 0–49.6"}>
               <div className="row">
-                <GainInput label="Gain, dB" value={src.gainDb} disabled={src.agc} onChange={(v) => v !== null && edit((x) => x.type === "rtlsdr" && void (x.gainDb = v))} />
+                <NumberInput gain label="Gain, dB" value={src.gainDb} disabled={src.agc} onChange={(v) => v !== undefined && edit((x) => x.type === "rtlsdr" && void (x.gainDb = v))} />
                 <Toggle label="AGC" checked={src.agc} onChange={(v) => edit((x) => x.type === "rtlsdr" && void (x.agc = v))} />
               </div>
             </Field>
@@ -894,7 +790,7 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
           {src.type === "usrp" && (
             <Field label="Gain, dB" hint={src.agc ? "AGC: B200 / B210 and E3xx only" : "B200/B210: 0–76"}>
               <div className="row">
-                <GainInput label="Gain, dB" value={src.gainDb} disabled={src.agc} onChange={(v) => edit((x) => x.type === "usrp" && void (x.gainDb = v || 0))} />
+                <NumberInput gain label="Gain, dB" value={src.gainDb} disabled={src.agc} onChange={(v) => edit((x) => x.type === "usrp" && void (x.gainDb = v || 0))} />
                 <Toggle label="AGC" checked={src.agc} onChange={(v) => edit((x) => x.type === "usrp" && void (x.agc = v))} />
               </div>
             </Field>
@@ -904,7 +800,7 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
             <>
               <Field label="Gain, dB">
                 <div className="row">
-                  <GainInput label="Gain, dB" value={src.gainDb} placeholder={src.agc ? "AGC" : "as is"} disabled={src.agc} onChange={(v) => edit((x) => x.type === "soapy" && void (x.gainDb = v))} />
+                  <NumberInput gain label="Gain, dB" value={src.gainDb ?? undefined} placeholder={src.agc ? "AGC" : "as is"} disabled={src.agc} onChange={(v) => edit((x) => x.type === "soapy" && void (x.gainDb = v ?? null))} />
                   <Toggle label="AGC" checked={src.agc} onChange={(v) => edit((x) => x.type === "soapy" && void (x.agc = v))} />
                 </div>
               </Field>
@@ -1065,7 +961,6 @@ function ConventionalPanel(props: { c: Config; k: number }) {
   const exportCsv = () => downloadText(`${conv.shortName || "channels"}-channels.csv`, channelsToCsv(chans));
   const enabled = chans.filter((ch) => ch.enabled).length;
   const todo = useTodosAt(["channels", "squelch", "convunits", "convplug"], name);
-  const optNum = (v: string): number | undefined => (v.trim() === "" || !Number.isFinite(Number(v)) ? undefined : Number(v));
 
   return (
     <Card
@@ -1100,16 +995,7 @@ function ConventionalPanel(props: { c: Config; k: number }) {
           >
             Remove
           </button>
-          <input
-            ref={csvRef}
-            type="file"
-            accept=".csv,text/csv"
-            hidden
-            onChange={(e) => {
-              void onCsv(e.target.files?.[0]);
-              e.target.value = "";
-            }}
-          />
+          <FileInput inputRef={csvRef} accept=".csv,text/csv" onFile={(f) => void onCsv(f)} />
         </>
       }
     >
@@ -1118,7 +1004,7 @@ function ConventionalPanel(props: { c: Config; k: number }) {
           <input
             value={conv.shortName}
             onChange={(e) => {
-              const to = e.target.value.replace(/[^\w.-]/g, "");
+              const to = cleanShortName(e.target.value);
               updateConfig((x) => {
                 renameSystemRefs(x, x.conventional[k].shortName, to, plugins);
                 x.conventional[k].shortName = to;
@@ -1130,7 +1016,7 @@ function ConventionalPanel(props: { c: Config; k: number }) {
           <input value={conv.name ?? ""} placeholder="County Fire" onChange={(e) => edit((x) => void (e.target.value ? (x.name = e.target.value) : delete x.name))} />
         </Field>
         <Field needs={need(`squelch-${name}`)} anchor={`squelch-${name}`} label="Squelch, dB above noise" hint="For channels without their own">
-          <input className="mono" value={conv.squelchDb} onChange={(e) => edit((x) => void (x.squelchDb = Math.max(3, Math.min(40, Number(e.target.value) || 8))))} />
+          <NumberInput label="Squelch, dB above noise" value={conv.squelchDb} onChange={(v) => edit((x) => void (x.squelchDb = Math.max(3, Math.min(40, v ?? 8))))} />
         </Field>
       </Group>
       <Group
@@ -1252,7 +1138,7 @@ function ConventionalPanel(props: { c: Config; k: number }) {
                         <input type="checkbox" disabled={linked} checked={ch.enabled} aria-label="Record this channel" onChange={(e) => editRow(i, (x) => void (x.enabled = e.target.checked))} />
                       </td>
                       <td>
-                        {linked ? <span className="mono">{mhzCell(ch.freqHz)}</span> : <MhzInput hz={ch.freqHz} onChange={(hz) => editRow(i, (x) => void (x.freqHz = hz))} />}
+                        {linked ? <span className="mono">{mhzCell(ch.freqHz)}</span> : <DraftInput className="mono" codec={mhz} value={ch.freqHz} placeholder="MHz" aria-label="Frequency, MHz" onChange={(hz) => editRow(i, (x) => void (x.freqHz = hz))} />}
                       </td>
                       <td>
                         <select value={ch.mode} disabled={linked} aria-label="Mode" onChange={(e) => editRow(i, (x) => void (x.mode = e.target.value as Channel["mode"]))}>
@@ -1281,15 +1167,14 @@ function ConventionalPanel(props: { c: Config; k: number }) {
                         <input value={ch.name} disabled={linked} placeholder="Name" aria-label="Name" onChange={(e) => editRow(i, (x) => void (x.name = e.target.value))} />
                       </td>
                       <td>
-                        <input
-                          className="mono narrow"
+                        <NumberInput
+                          narrow
                           disabled={linked}
-                          value={ch.talkgroup ?? ""}
+                          value={ch.talkgroup}
                           placeholder={ch.freqHz ? String(talkgroups[i]) : "auto"}
-                          aria-label="Talkgroup"
-                          onChange={(e) =>
+                          label="Talkgroup"
+                          onChange={(v) =>
                             editRow(i, (x) => {
-                              const v = optNum(e.target.value);
                               if (v === undefined || v <= 0) delete x.talkgroup;
                               else x.talkgroup = Math.round(v);
                             })
@@ -1297,15 +1182,14 @@ function ConventionalPanel(props: { c: Config; k: number }) {
                         />
                       </td>
                       <td>
-                        <input
-                          className="mono narrow"
+                        <NumberInput
+                          narrow
                           disabled={linked}
-                          value={ch.squelchDb ?? ""}
+                          value={ch.squelchDb}
                           placeholder={String(conv.squelchDb)}
-                          aria-label="Squelch, dB above noise"
-                          onChange={(e) =>
+                          label="Squelch, dB above noise"
+                          onChange={(v) =>
                             editRow(i, (x) => {
-                              const v = optNum(e.target.value);
                               if (v === undefined) delete x.squelchDb;
                               else x.squelchDb = Math.max(3, Math.min(40, v));
                             })
@@ -1427,31 +1311,6 @@ function ConventionalPanel(props: { c: Config; k: number }) {
   );
 }
 
-/** A hex or decimal number field; empty = none. */
-function NumInput(props: { value: number | null | undefined; hex?: boolean; placeholder?: string; onChange: (v: number | null) => void; label: string }) {
-  const show = (v: number | null | undefined) => (v === null || v === undefined ? "" : props.hex ? v.toString(16).toUpperCase() : String(v));
-  const [text, setText] = useState(show(props.value));
-  useEffect(() => setText((t) => (parse(t) === (props.value ?? null) ? t : show(props.value))), [props.value]); // eslint-disable-line react-hooks/exhaustive-deps
-  function parse(t: string): number | null {
-    const v = t.trim();
-    if (!v) return null;
-    const n = props.hex ? parseInt(v, 16) : Number(v);
-    return Number.isFinite(n) && n >= 0 ? n : null;
-  }
-  return (
-    <input
-      className="mono"
-      aria-label={props.label}
-      value={text}
-      placeholder={props.placeholder ?? "any"}
-      onChange={(e) => {
-        setText(e.target.value);
-        props.onChange(parse(e.target.value));
-      }}
-    />
-  );
-}
-
 const hexText = (v: number | null | undefined) => (v === null || v === undefined ? "?" : v.toString(16).toUpperCase());
 
 /** "WACN BEE00 · SysID 445 · site 1-3" from what is known. */
@@ -1484,73 +1343,49 @@ export function siteText(id: SiteIdentity): string {
   return parts.join(" · ");
 }
 
-/** A SmartNet system's band plan (Trunk Recorder's settings) and default voice mode. */
-/** "101=452.275, 102=452.3" ↔ { "101": 452275000, … }. */
-function lcnText(t: Record<string, number> | undefined): string {
-  return Object.entries(t ?? {})
-    .map(([k, v]) => `${k}=${(v / 1e6).toFixed(5).replace(/0+$/, "")}`)
-    .join(", ");
-}
-function parseLcn(s: string): Record<string, number> {
-  const t: Record<string, number> = {};
-  for (const part of s.split(/[,;\s]+/)) {
-    const m = /^(\d+)=(\d+(?:\.\d+)?)$/.exec(part.trim());
-    if (m) {
-      const v = Number(m[2]);
-      t[m[1]] = v < 1e5 ? Math.round(v * 1e6) : v;
-    }
-  }
-  return t;
-}
-
 function DmrFields(props: { sys: System; edit: (fn: (x: System) => void) => void }) {
   const { sys, edit } = props;
-  const [chText, setChText] = useState(() => (sys.dmrChannelsHz ?? []).map((f) => (f / 1e6).toFixed(5)).join(", "));
-  const [lcn, setLcn] = useState(() => lcnText(sys.lcnTableHz));
   return (
     <>
       <Field label="Voice frequencies, MHz" hint="Tier III, Capacity Max, Connect Plus" wide>
-        <input
+        <DraftInput
           className="mono"
-          value={chText}
+          codec={mhzList}
+          value={sys.dmrChannelsHz ?? []}
           placeholder="452.275, 452.300"
-          onChange={(e) => {
-            setChText(e.target.value);
-            const list = parseFreqList(e.target.value);
+          onChange={(list) =>
             edit((x) => {
               if (list.length) x.dmrChannelsHz = list;
               else delete x.dmrChannelsHz;
-            });
-          }}
+            })
+          }
         />
       </Field>
       <Field label="Colour code">
-        <input
-          className="mono"
-          value={sys.colorCode ?? ""}
+        <NumberInput
+          label="Colour code"
+          value={sys.colorCode}
           placeholder="auto"
-          onChange={(e) =>
+          onChange={(v) =>
             edit((x) => {
-              const v = parseInt(e.target.value, 10);
-              if (v >= 0 && v <= 15) x.colorCode = v;
+              if (v !== undefined && Number.isInteger(v) && v >= 0 && v <= 15) x.colorCode = v;
               else delete x.colorCode;
             })
           }
         />
       </Field>
       <Field label="Channel table (optional)" hint="Channel = MHz, e.g. 101=452.275" wide>
-        <input
+        <DraftInput
           className="mono"
-          value={lcn}
-          placeholder="learned from the air"
-          onChange={(e) => {
-            setLcn(e.target.value);
-            const t = parseLcn(e.target.value);
+          codec={lcnTable}
+          value={sys.lcnTableHz ?? {}}
+          placeholder={"learned from the air"}
+          onChange={(t) =>
             edit((x) => {
               if (Object.keys(t).length) x.lcnTableHz = t;
               else delete x.lcnTableHz;
-            });
-          }}
+            })
+          }
         />
       </Field>
     </>
@@ -1560,8 +1395,6 @@ function DmrFields(props: { sys: System; edit: (fn: (x: System) => void) => void
 function NxdnFields(props: { sys: System; edit: (fn: (x: System) => void) => void }) {
   const { sys, edit } = props;
   const typeD = sys.nxdnType === "typeD";
-  const [chText, setChText] = useState(() => (sys.nxdnChannelsHz ?? []).map((f) => (f / 1e6).toFixed(5)).join(", "));
-  const [table, setTable] = useState(() => lcnText(sys.lcnTableHz));
   return (
     <>
       <Field label="NXDN type">
@@ -1593,47 +1426,44 @@ function NxdnFields(props: { sys: System; edit: (fn: (x: System) => void) => voi
         </select>
       </Field>
       <Field label="RAN">
-        <input
-          className="mono"
-          value={sys.ran ?? ""}
+        <NumberInput
+          label="RAN"
+          value={sys.ran}
           placeholder="auto"
-          onChange={(e) =>
+          onChange={(v) =>
             edit((x) => {
-              const v = parseInt(e.target.value, 10);
-              if (v >= 0 && v <= 63) x.ran = v;
+              if (v !== undefined && Number.isInteger(v) && v >= 0 && v <= 63) x.ran = v;
               else delete x.ran;
             })
           }
         />
       </Field>
       <Field label={typeD ? "More repeaters, MHz" : "Voice frequencies, MHz"} hint={typeD ? "Optional: may all go above" : "Watched; channel numbers are learned from them"} wide>
-        <input
+        <DraftInput
           className="mono"
-          value={chText}
+          codec={mhzList}
+          value={sys.nxdnChannelsHz ?? []}
           placeholder="451.0125, 451.0375"
-          onChange={(e) => {
-            setChText(e.target.value);
-            const list = parseFreqList(e.target.value);
+          onChange={(list) =>
             edit((x) => {
               if (list.length) x.nxdnChannelsHz = list;
               else delete x.nxdnChannelsHz;
-            });
-          }}
+            })
+          }
         />
       </Field>
       <Field label="Channel table (optional)" hint={typeD ? "Repeater number = MHz, e.g. 1=451.0125" : "Channel number = MHz, e.g. 20=451.0125"} wide>
-        <input
+        <DraftInput
           className="mono"
-          value={table}
+          codec={lcnTable}
+          value={sys.lcnTableHz ?? {}}
           placeholder={typeD ? "none" : "learned from the air"}
-          onChange={(e) => {
-            setTable(e.target.value);
-            const t = parseLcn(e.target.value);
+          onChange={(t) =>
             edit((x) => {
               if (Object.keys(t).length) x.lcnTableHz = t;
               else delete x.lcnTableHz;
-            });
-          }}
+            })
+          }
         />
       </Field>
       {!typeD && (
@@ -1646,12 +1476,13 @@ function NxdnFields(props: { sys: System; edit: (fn: (x: System) => void) => voi
   );
 }
 
+/** A SmartNet system's band plan (Trunk Recorder's settings) and default voice mode. */
 function SmartnetFields(props: { sys: System; edit: (fn: (x: System) => void) => void }) {
   const { sys, edit } = props;
   const custom = (sys.bandplan ?? "").startsWith("400") || sys.bandplan?.toLowerCase() === "obt";
-  const setNum = (k: "bandplanBaseHz" | "bandplanSpacingHz" | "bandplanOffset" | "bandplanHighHz", v: number | null) =>
+  const setNum = (k: "bandplanBaseHz" | "bandplanSpacingHz" | "bandplanOffset" | "bandplanHighHz", v: number | undefined) =>
     edit((x) => {
-      if (v === null) delete x[k];
+      if (v === undefined || v < 0) delete x[k];
       else x[k] = v;
     });
   return (
@@ -1674,16 +1505,16 @@ function SmartnetFields(props: { sys: System; edit: (fn: (x: System) => void) =>
       {custom && (
         <div className="id-grid wide">
           <Field label="Base, Hz" hint="Frequency of the offset channel">
-            <NumInput label="Band plan base" placeholder="489087500" value={sys.bandplanBaseHz} onChange={(v) => setNum("bandplanBaseHz", v)} />
+            <NumberInput label="Band plan base" placeholder="489087500" value={sys.bandplanBaseHz} onChange={(v) => setNum("bandplanBaseHz", v)} />
           </Field>
           <Field label="Spacing, Hz">
-            <NumInput label="Band plan spacing" placeholder="25000" value={sys.bandplanSpacingHz} onChange={(v) => setNum("bandplanSpacingHz", v)} />
+            <NumberInput label="Band plan spacing" placeholder="25000" value={sys.bandplanSpacingHz} onChange={(v) => setNum("bandplanSpacingHz", v)} />
           </Field>
           <Field label="Offset (channel)">
-            <NumInput label="Band plan offset" placeholder="380" value={sys.bandplanOffset} onChange={(v) => setNum("bandplanOffset", v)} />
+            <NumberInput label="Band plan offset" placeholder="380" value={sys.bandplanOffset} onChange={(v) => setNum("bandplanOffset", v)} />
           </Field>
           <Field label="High, Hz" hint="Highest outbound channel">
-            <NumInput label="Band plan high" placeholder="496612500" value={sys.bandplanHighHz} onChange={(v) => setNum("bandplanHighHz", v)} />
+            <NumberInput label="Band plan high" placeholder="496612500" value={sys.bandplanHighHz} onChange={(v) => setNum("bandplanHighHz", v)} />
           </Field>
         </div>
       )}
@@ -1696,15 +1527,14 @@ const SYSTEM_TYPES: Record<System["type"], string> = { p25: "P25", smartnet: "Sm
 function SystemCard(props: { c: Config; i: number }) {
   const { c, i } = props;
   const sys = c.systems[i];
-  const [ccText, setCcText] = useState(() => sys.controlChannelsHz.map((f) => formatMhz(f)).join(", "));
   const need = useNeed();
   const app = useApp();
   const plugins = app.plugins?.plugins ?? [];
   const edit = (fn: (x: System) => void) => updateConfig((x) => fn(x.systems[i]));
-  const setExpect = (k: keyof SiteIdentity, v: number | null) =>
+  const setExpect = (k: keyof SiteIdentity, v: number | undefined) =>
     edit((x) => {
       x.expect = { ...x.expect };
-      if (v === null) delete x.expect[k];
+      if (v === undefined) delete x.expect[k];
       else x.expect[k] = v;
     });
   const color = systemColor(c, sys.shortName);
@@ -1791,7 +1621,7 @@ function SystemCard(props: { c: Config; i: number }) {
           <input
             value={sys.shortName}
             onChange={(e) => {
-              const to = e.target.value.replace(/[^\w.-]/g, "");
+              const to = cleanShortName(e.target.value);
               // Plugin settings that name it follow it.
               updateConfig((x) => {
                 renameSystemRefs(x, x.systems[i].shortName, to, plugins);
@@ -1844,15 +1674,12 @@ function SystemCard(props: { c: Config; i: number }) {
           }
           wide
         >
-          <input
+          <DraftInput
             className="mono"
-            value={ccText}
+            codec={mhzList}
+            value={sys.controlChannelsHz}
             placeholder="857.9875, 858.9875"
-            onChange={(e) => {
-              setCcText(e.target.value);
-              const list = parseFreqList(e.target.value);
-              edit((x) => void (x.controlChannelsHz = list));
-            }}
+            onChange={(list) => edit((x) => void (x.controlChannelsHz = list))}
           />
         </Field>
         {sys.type === "smartnet" && <SmartnetFields sys={sys} edit={edit} />}
@@ -1902,7 +1729,7 @@ function SystemCard(props: { c: Config; i: number }) {
             <div className="id-grid">
               {LOCK_INPUTS.filter((x) => lockFields.includes(x.key)).map((x) => (
                 <Field key={x.key} label={x.label}>
-                  <NumInput label={x.label} hex={x.hex} value={sys.expect[x.key]} onChange={(v) => setExpect(x.key, v)} />
+                  <NumberInput label={x.label} hex={x.hex} value={sys.expect[x.key] ?? undefined} onChange={(v) => setExpect(x.key, v)} />
                 </Field>
               ))}
             </div>
@@ -1965,14 +1792,10 @@ function UnitNamesField(props: { value: UnitNames | undefined; onChange: (u: Uni
           <option value="none">No names</option>
         </select>
       </div>
-      <input
-        ref={ref}
-        type="file"
+      <FileInput
+        inputRef={ref}
         accept=".csv,text/csv,text/plain"
-        hidden
-        onChange={async (e) => {
-          const f = e.target.files?.[0];
-          e.target.value = "";
+        onFile={async (f) => {
           if (!f) return;
           const csv = await f.text();
           set({ csv, name: f.name });
@@ -2031,7 +1854,7 @@ function LogPanel(props: { c: Config }) {
           </select>
         </Field>
         <Field label="Decode rate warning, msg/s" hint="Fewer is logged as an error; −1 always logs it">
-          <DecInput label="Decode rate warning" value={l.controlWarnRatePerS} onChange={(v) => set({ controlWarnRatePerS: v ?? 10 })} />
+          <NumberInput label="Decode rate warning" value={l.controlWarnRatePerS} onChange={(v) => set({ controlWarnRatePerS: v ?? 10 })} />
         </Field>
         <Field label="Frequencies as">
           <select value={l.frequencyFormat} onChange={(e) => set({ frequencyFormat: e.target.value as LogSettings["frequencyFormat"] })}>
@@ -2175,7 +1998,7 @@ function CallRules(props: { c: Config }) {
               />
             ) : rule.kind === "num" ? (
               <Field key={rule.key} label={rule.label} hint={rule.hint}>
-                <DecInput
+                <NumberInput
                   label={rule.label}
                   value={r[rule.key]}
                   placeholder={rule.zero ? `0 = ${rule.zero}` : undefined}
@@ -2261,7 +2084,7 @@ function RecordingOverridePanel(props: { c: Config; value: RecordingOverride | u
                   <option value="off">Off</option>
                 </select>
               ) : (
-                <DecInput
+                <NumberInput
                   label={rule.label}
                   value={own[rule.key]}
                   placeholder={`Default (${ruleValue(rule, base[rule.key])})`}
@@ -2447,10 +2270,10 @@ export function Setup() {
                   />
                   {c.recording.ramSpool?.enabled && (
                     <Field label="RAM spool size, MB" hint="When full, calls go to the recordings folder">
-                      <input
-                        className="mono"
+                      <NumberInput
+                        label="RAM spool size, MB"
                         value={c.recording.ramSpool.sizeMb}
-                        onChange={(e) => updateConfig((x) => void (x.recording.ramSpool = { ...x.recording.ramSpool!, sizeMb: Math.max(16, Math.min(8192, Number(e.target.value) || 256)) }))}
+                        onChange={(v) => updateConfig((x) => void (x.recording.ramSpool = { ...x.recording.ramSpool!, sizeMb: Math.max(16, Math.min(8192, Math.round(v || 256))) }))}
                       />
                     </Field>
                   )}
@@ -2459,10 +2282,10 @@ export function Setup() {
             </Group>
             <Group title="Recording" hint="How many calls at once, and how each one is decoded." cols={3}>
               <Field label="Recorders" hint="Calls recorded at once">
-                <input className="mono" value={c.recording.maxRecorders} onChange={(e) => updateConfig((x) => void (x.recording.maxRecorders = Math.max(1, Math.min(64, Number(e.target.value) || 32))))} />
+                <NumberInput label="Recorders" value={c.recording.maxRecorders} onChange={(v) => updateConfig((x) => void (x.recording.maxRecorders = Math.max(1, Math.min(64, Math.round(v || 32)))))} />
               </Field>
               <Field label="Pre-roll, s" hint="Audio kept from before each grant">
-                <input className="mono" value={c.recording.prerollS} onChange={(e) => updateConfig((x) => void (x.recording.prerollS = Math.max(0, Math.min(3, Number(e.target.value) || 0))))} />
+                <NumberInput label="Pre-roll, s" value={c.recording.prerollS} onChange={(v) => updateConfig((x) => void (x.recording.prerollS = Math.max(0, Math.min(3, v || 0))))} />
               </Field>
               <Field label="P25 voice decoder" hint="Fixed-point usually sounds most natural">
                 <select value={c.recording.vocoder ?? "fixed"} onChange={(e) => updateConfig((x) => void (x.recording.vocoder = e.target.value as "fixed" | "enhanced" | "mbelib"))}>

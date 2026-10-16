@@ -4,6 +4,7 @@
 
 import { useEffect, useState } from "react";
 import { updateConfig, useApp } from "./controller.ts";
+import { Field } from "./inputs.tsx";
 import { Group } from "./SetupLayout.tsx";
 import type { CustomInterface, InterfacesInfo } from "./protocol.ts";
 
@@ -81,25 +82,23 @@ export function InterfacesPanel() {
           const p = problem(i, k);
           return (
             <div key={k} className="ui-row">
-              <div className="field">
-                <label className="field-label" htmlFor={`ui-name-${k}`}>
-                  Name
-                </label>
-                <input id={`ui-name-${k}`} className="mono" value={i.name} onChange={(e) => edit(k, { name: e.target.value.trim() })} />
-              </div>
-              <div className="field">
-                <label className="field-label" htmlFor={`ui-path-${k}`}>
-                  Folder
-                </label>
-                <input id={`ui-path-${k}`} className="mono" value={i.path} placeholder="/home/me/scanner-page" onChange={(e) => edit(k, { path: e.target.value })} />
-                <span className={`field-hint ${p ? "bad-text" : ""}`}>
-                  {p ?? (
+              <Field label="Name">
+                <input className="mono" value={i.name} onChange={(e) => edit(k, { name: e.target.value.trim() })} />
+              </Field>
+              <Field
+                label="Folder"
+                hint={
+                  p ? (
+                    <span className="bad-text">{p}</span>
+                  ) : (
                     <a href={`/ui/${encodeURIComponent(i.name)}/`} target="_blank" rel="noreferrer">
                       Open /ui/{i.name}/
                     </a>
-                  )}
-                </span>
-              </div>
+                  )
+                }
+              >
+                <input className="mono" value={i.path} placeholder="/home/me/scanner-page" onChange={(e) => edit(k, { path: e.target.value })} />
+              </Field>
               <button className="btn ghost small danger" onClick={() => remove(k)} aria-label={`Remove ${i.name}`}>
                 Remove
               </button>
@@ -111,11 +110,8 @@ export function InterfacesPanel() {
             Add an interface
           </button>
         </div>
-        <div className="field">
-          <label className="field-label" htmlFor="ui-home">
-            Show at /
-          </label>
-          <select id="ui-home" value={home} onChange={(e) => updateConfig((x) => void (x.server.home = e.target.value))}>
+        <Field label="Show at /" hint={<>Built-in is always at /builtin/{info && typeof info.home === "object" ? ` (--ui ${info.home.folder} is at / now)` : ""}</>}>
+          <select value={home} onChange={(e) => updateConfig((x) => void (x.server.home = e.target.value))}>
             <option value="">This interface</option>
             {list.map((i) => (
               <option key={i.name} value={i.name}>
@@ -123,8 +119,7 @@ export function InterfacesPanel() {
               </option>
             ))}
           </select>
-          <span className="field-hint">Built-in is always at /builtin/{info && typeof info.home === "object" ? ` (--ui ${info.home.folder} is at / now)` : ""}</span>
-        </div>
+        </Field>
       </Group>
       <Group title="API access" hint="Pages served from elsewhere that may use the recorder's API." cols={1}>
         <div className="field">

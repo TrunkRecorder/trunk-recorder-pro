@@ -35,8 +35,10 @@ import {
 import { activeSystems } from "./config.ts";
 import { EveryDelays, PluginDelay } from "./Delays.tsx";
 import { IconPuzzle, IconUpload, IconWave } from "./Onboarding.tsx";
-import { showTodo, Toggle } from "./Setup.tsx";
-import { Group, Section } from "./SetupLayout.tsx";
+import { showTodo } from "./Setup.tsx";
+import { DraftInput, Toggle } from "./inputs.tsx";
+import { numberList, textList } from "./fieldText.ts";
+import { Group, Section, Switch } from "./SetupLayout.tsx";
 import { openTodos } from "./todo.ts";
 import { copyOverride, copyOwn, pluginCopies } from "./protocol.ts";
 import type { Config, PluginInfo, PluginInstall, PluginManifest, PluginSchema, PluginStore, PluginValues, PluginsList, StoreListing } from "./protocol.ts";
@@ -214,6 +216,9 @@ function isUrl(s: string): boolean {
 
 /** One setting. Empty text means "not set": the value for every system
  * (`inherited`), else the plugin's default, applies — shown as the placeholder. */
+const textByComma = textList(/,/);
+const numbersByComma = numberList(/,/);
+
 function SchemaField(props: { name: string; schema: PluginSchema; value: unknown; onChange: (v: unknown) => void; id: string; inherited?: unknown; required?: boolean }) {
   const { schema: f, value, onChange, id, inherited } = props;
   const label = f.title ?? spell(props.name);
@@ -265,13 +270,7 @@ function SchemaField(props: { name: string; schema: PluginSchema; value: unknown
   if (f.type === "boolean") {
     const on = typeof value === "boolean" ? value : fallback === true;
     return (
-      <label className="toggle" htmlFor={id}>
-        <input id={id} type="checkbox" checked={on} onChange={(e) => onChange(e.target.checked)} />
-        <span>
-          {label}
-          {hint && <span className="field-hint"> — {hint}</span>}
-        </span>
-      </label>
+      <Toggle id={id} label={label} hint={hint} checked={on} onChange={onChange} />
     );
   }
 
@@ -329,16 +328,13 @@ function SchemaField(props: { name: string; schema: PluginSchema; value: unknown
     const items = Array.isArray(value) ? value : [];
     const numeric = f.items?.type === "integer" || f.items?.type === "number";
     control = (
-      <input
+      <DraftInput
         id={id}
         className={numeric ? "mono" : ""}
-        value={items.join(", ")}
+        codec={numeric ? numbersByComma : textByComma}
+        value={items}
         placeholder={Array.isArray(fallback) && fallback.length ? fallback.join(", ") : "Separate with commas"}
-        onChange={(e) => {
-          const parts = e.target.value.split(",").map((x) => x.trim());
-          const vals = numeric ? parts.filter((x) => x !== "").map(Number) : parts.filter((x, i) => x !== "" || i === parts.length - 1);
-          onChange(vals.length ? vals : undefined);
-        }}
+        onChange={(vals) => onChange(vals.length ? vals : undefined)}
       />
     );
     if (numeric && items.some((x) => typeof x === "number" && Number.isNaN(x))) problem = "Numbers, separated with commas";
@@ -654,11 +650,7 @@ function PluginHead(props: { p: PluginInfo; on: boolean; tone: string; state: st
         </div>
         <span className={`plugin-state tone-${props.tone}`}>{props.state}</span>
       </div>
-      <label className="switch" title={p.problem ? "It can't run: see below" : ""}>
-        <input type="checkbox" role="switch" checked={on} disabled={!!p.problem && !on} onChange={(e) => setPluginEnabled(p.id, e.target.checked)} />
-        <span className="switch-track" aria-hidden="true" />
-        <span>{on ? "On" : "Off"}</span>
-      </label>
+      <Switch label={on ? "On" : "Off"} title={p.problem ? "It can't run: see below" : ""} checked={on} disabled={!!p.problem && !on} onChange={(v) => setPluginEnabled(p.id, v)} />
     </div>
   );
 }

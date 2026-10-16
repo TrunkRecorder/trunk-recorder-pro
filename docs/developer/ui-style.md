@@ -214,6 +214,23 @@ A label, the input, and an optional hint below.
 - `needs` / `anchor` mark a field an import left to fill in (`.needs`, a
   warning ring); the to-do list's Show scrolls to it.
 
+### Inputs (`inputs.tsx`, `fieldText.ts`)
+
+An input whose text isn't the value itself (a number, frequencies, a list,
+a channel table, minutes) is a `<DraftInput>` with a codec from
+`fieldText.ts`, or a `<NumberInput>` (`hex`, `gain`, `narrow`). While
+focused it keeps the text as typed and passes each change on, parsed; left,
+it shows the value kept. So:
+
+- Clamp, round or default in the `onChange`, never in the input: a squelch
+  of 12 is typed "1" first, -5 is typed "-" first, and the field must not
+  snap back while that happens.
+- A new kind of text is a new codec in `fieldText.ts`, with a test in
+  `fieldText.test.ts` (`npm test`), not a new input component.
+- A hidden file input is `<FileInput>`: it clears after each pick, so the
+  same file chosen again is read again.
+- A short name is cleaned with `cleanShortName`.
+
 ### Toggle (`<Toggle>`)
 
 A checkbox with the label, and the hint on its own line beneath (first
