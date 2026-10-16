@@ -847,12 +847,12 @@ function PluginCard(props: { p: PluginInfo; recording: boolean; listing?: StoreL
           disabled={!!install}
           onClick={() => {
             const what = p.custom
-              ? `Remove ${m?.name ?? p.id} and its settings? ${p.path} stays.`
+              ? `Uninstall ${m?.name ?? p.id} and delete its settings? Your file ${p.path} stays.`
               : `Uninstall ${m?.name ?? p.id} and delete its settings?`;
             if (confirm(what)) removePlugin(p.id);
           }}
         >
-          {p.custom ? "Remove" : "Uninstall"}
+          Uninstall
         </button>
       </div>
     </article>
