@@ -992,7 +992,7 @@ impl Conventional {
             }
             if let Some(s) = src {
                 if s != 0 && l.call.sources.last().is_none_or(|x| x.src != s) {
-                    l.call.sources.push(CallSource { src: s, time_s: now_s, emergency, position: None });
+                    l.call.sources.push(CallSource { src: s, time_s: now_s, audio_pos: None, emergency, position: None });
                     changed = true;
                 }
             }

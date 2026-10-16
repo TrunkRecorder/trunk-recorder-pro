@@ -97,6 +97,8 @@ pub struct Transmissions {
     /// Announced before the next transmission's audio came.
     next: TxFlags,
     last_s: Option<f64>,
+    /// (time, sample index) of each piece of audio appended.
+    marks: Vec<(f64, usize)>,
 }
 
 impl Transmissions {
@@ -107,6 +109,20 @@ impl Transmissions {
             self.flags.push(std::mem::take(&mut self.next));
         }
         self.last_s = Some(t_s);
+        if self.marks.last().is_none_or(|&(_, a)| a != at) {
+            self.marks.push((t_s, at));
+        }
+    }
+
+    /// Where in the call's `len` samples of audio each source not yet
+    /// placed starts talking: the first audio appended at or after it was
+    /// heard (the gaps between transmissions aren't in the audio, so its
+    /// time since the call started is no guide).
+    pub fn place(&self, sources: &mut [super::calls::CallSource], len: usize) {
+        for s in sources.iter_mut().filter(|s| s.audio_pos.is_none()) {
+            let i = self.marks.partition_point(|&(t, _)| t < s.time_s);
+            s.audio_pos = Some(self.marks.get(i).map_or(len, |&(_, at)| at.min(len)));
+        }
     }
 
     /// The flags of the transmission going on at `t_s`, or (none is) the next one's.
@@ -254,7 +270,8 @@ pub fn call_record(call: &Call, info: &ConcludeInfo) -> (String, String) {
             if i > 0 { "," } else { "" },
             s.src,
             ms(s.time_s).div_euclid(1000),
-            ((s.time_s - call.start_s) * 100.0).round().max(0.0) / 100.0,
+            // Seconds into the saved audio, as Trunk Recorder's (the WAV's length when it was heard).
+            (s.audio_pos.unwrap_or(0) as f64 / mbe::SAMPLE_RATE as f64 * 100.0).round() / 100.0,
             s.emergency as u8,
             esc(&UnitTags::name(info.unit_tags, info.units, s.src).unwrap_or_default()),
             esc(info.units.and_then(|u| u.get(s.src)).unwrap_or("")),
