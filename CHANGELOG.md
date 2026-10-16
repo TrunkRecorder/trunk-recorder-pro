@@ -5,6 +5,8 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+## [0.1.12] — 2026-10-16
+
 - **Import several Trunk Recorder configs into one setup.** With systems already set up, the import
   now asks whether to add the config to them (the default) or replace them, so a setup split over
   several configs (700 MHz, 800 MHz, VHF…) can be imported one after another. Radios and systems
