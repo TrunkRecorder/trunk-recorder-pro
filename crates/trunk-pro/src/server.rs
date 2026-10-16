@@ -1043,6 +1043,9 @@ async fn command(ctx: &Arc<Ctx>, v: &Value, listen: &mut Option<Listen>, subs: &
                 if v["type"] == "addPlugin" {
                     let (id, path, notice) = ctx2.plugins.add(&v, &cfg)?;
                     edit_config(&ctx2, |c| c.plugins.entry(id).or_default().path = path.display().to_string())?;
+                    // A rebuilt copy of a running plugin: it restarts with it.
+                    let cfg = ctx2.config.lock().unwrap().clone();
+                    ctx2.plugins.reload(&cfg);
                     Ok(Some(notice))
                 } else {
                     let id = ctx2.plugins.remove(&v, &cfg)?;

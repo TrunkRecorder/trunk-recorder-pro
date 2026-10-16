@@ -4,7 +4,8 @@
 //! [`super`]); when a saved config changes them while recording, the server
 //! calls [`Plugins::reload`], which swaps in a new [`PluginHost`].
 //!
-//! Browser → server: `plugins` (the list), `addPlugin {path}`, `removePlugin
+//! Browser → server: `plugins` (the list), `addPlugin {path}` (again for a
+//! rebuilt copy: a reinstall), `removePlugin
 //! {id}` (the server forgets it in the config), `pluginStore {refresh?}` (the registry's list),
 //! `installPlugin {id}` (from the registry; also an update) or `installPlugin
 //! {repository, tag?}` (a GitHub release that isn't in it). Server → browser:
@@ -530,19 +531,30 @@ impl Plugins {
     }
 
     /// `addPlugin {path}`: a plugin executable of the user's own (a build).
-    /// Returns its id and path, for the server to put in the config, and a notice.
+    /// Returns its id and path, for the server to put in the config, and a
+    /// notice. Adding one that's already there again takes the file afresh
+    /// (a rebuilt copy): its settings stay.
     pub fn add(&self, v: &Value, cfg: &Config) -> Result<(String, PathBuf, String), String> {
         let path = v["path"].as_str().map(str::trim).filter(|p| !p.is_empty()).ok_or("Which executable?")?;
         let path = PathBuf::from(shellexpand_home(path));
         let path = std::fs::canonicalize(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let before = self.manifest(&path).ok().map(|m| m.version);
         self.manifests.lock().unwrap().remove(&path);
         let m = self.manifest(&path)?;
         let id = m.id.clone();
         let existing = executable(&id, cfg.plugins.get(&id).unwrap_or(&PluginSetup::default()));
-        if existing.is_file() && existing != path {
+        let same = existing == path || std::fs::canonicalize(&existing).is_ok_and(|e| e == path);
+        let have = cfg.plugins.get(&id).is_some_and(|p| !p.path.is_empty());
+        if existing.is_file() && !same {
             return Err(format!("There's already a plugin called {id} ({})", existing.display()));
         }
-        Ok((id, path, format!("Added {} {}. Set it up, then turn it on.", m.name, m.version)))
+        let (name, version) = (&m.name, &m.version);
+        let notice = match before {
+            Some(old) if same && have && &old != version => format!("Reinstalled {name}: {old} to {version}."),
+            _ if same && have => format!("Reinstalled {name} {version}."),
+            _ => format!("Added {name} {version}. Set it up, then turn it on."),
+        };
+        Ok((id, path, notice))
     }
 
     /// `removePlugin {id}`: an installed copy is deleted (a build of the

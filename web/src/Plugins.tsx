@@ -836,6 +836,11 @@ function PluginCard(props: { p: PluginInfo; recording: boolean; listing?: StoreL
             </button>
           )
         )}
+        {p.custom && (
+          <button className="btn" onClick={() => addPlugin(p.path)} title={`Take ${p.path} again, for a rebuilt copy. Its settings stay.${recording && on ? " It restarts with it." : ""}`}>
+            Reinstall
+          </button>
+        )}
         <span className="spacer" />
         <button
           className="btn ghost small danger"
