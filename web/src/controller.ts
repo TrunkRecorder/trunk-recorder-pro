@@ -198,11 +198,14 @@ const listeners = new Set<() => void>();
 let runKey: string | null = null;
 
 function set(patch: Partial<AppState>): void {
+  const was = state;
   state = { ...state, ...patch };
-  if (state.phase === "idle") runKey = null;
-  else if (runKey === null && state.config) runKey = restartKey(state.config);
-  const restartNeeded = runKey !== null && !!state.config && restartKey(state.config) !== runKey;
-  if (restartNeeded !== state.restartNeeded) state = { ...state, restartNeeded };
+  // (Only when the config or phase changed: spectrum and stats come many times a second.)
+  if (state.config !== was.config || state.phase !== was.phase) {
+    const key = state.phase === "idle" || !state.config ? null : restartKey(state.config);
+    runKey = key && (runKey ?? key);
+    state.restartNeeded = key !== runKey;
+  }
   for (const l of listeners) l();
 }
 
@@ -971,14 +974,9 @@ export function start(): void {
   flushConfig();
   // The recorder reads the config now: what it runs with from here.
   runKey = state.config ? restartKey(state.config) : null;
-  set({ error: null, ended: false });
+  set({ error: null, ended: false, restartNeeded: false });
   transport.send({ type: "start" });
   if (state.listen) player.resume();
-}
-
-/** Stop and start again, so the run takes the settings changed since it began (the recorder stops a run before starting one). */
-export function restart(): void {
-  start();
 }
 
 /** Stop recording and end the desktop app (the web build has nothing to quit). */

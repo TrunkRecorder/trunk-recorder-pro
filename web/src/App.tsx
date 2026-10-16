@@ -3,7 +3,7 @@
 
 import { useEffect, useRef, type ReactNode } from "react";
 import { startProblem } from "./config.ts";
-import { closeGuide, dismissError, openGuide, quitApp, restart, setNotice, setView, start, stop, useApp, useSelect, web, type View } from "./controller.ts";
+import { closeGuide, dismissError, openGuide, quitApp, setNotice, setView, start, stop, useApp, useSelect, web, type View } from "./controller.ts";
 import { guideWanted, SetupGuide } from "./Onboarding.tsx";
 import { PluginsPage } from "./Plugins.tsx";
 import { Setup } from "./Setup.tsx";
@@ -157,9 +157,11 @@ export function App() {
             </span>
             {running ? (
               <>
-                <button className="btn ghost" onClick={restart} title="Stop and start again, with the settings as they are now">
-                  Restart
-                </button>
+                {s.restartNeeded && (
+                  <button className="btn ghost" onClick={start} title="Stop and start again, with the settings as they are now">
+                    Restart
+                  </button>
+                )}
                 <button className="btn primary" onClick={stop}>
                   Stop
                 </button>
@@ -196,10 +198,7 @@ export function App() {
           )}
           {running && s.restartNeeded && (
             <div className="banner" role="status">
-              <span>Change requires restart — some settings you changed only apply when recording starts again.</span>
-              <button className="btn primary small" onClick={restart}>
-                Restart now
-              </button>
+              Change requires restart — some settings you changed only apply when recording starts again.
             </div>
           )}
           {s.ended && s.phase === "idle" && <div className="banner">Replay finished.</div>}

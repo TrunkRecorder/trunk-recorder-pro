@@ -39,12 +39,9 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   10 dB, and every tone is now cut by 50 dB or more. Voice and two-tone paging tones from 288 Hz
   up are kept, as before.
 
-- **Restart.** A Restart button beside Stop (while recording) stops and
-  starts again, so a run takes the settings changed since it began. When
-  you change a setting that only applies at start (radios, systems,
-  recording options like saving vocoder frames), a "Change requires
-  restart" banner offers Restart now. Settings the recorder takes live
-  (talkgroup files, plugins and their
+- **Restart.** When you change a setting that only applies at start (radios, systems, recording
+  options) while recording, a "Change requires restart" banner says so and a Restart button
+  appears beside Stop. Settings the recorder takes live (talkgroup files, plugins and their
   delays, the log) don't raise it.
 
 ## [0.1.11] — 2026-10-14
