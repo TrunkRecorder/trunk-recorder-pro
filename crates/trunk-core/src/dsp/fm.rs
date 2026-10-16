@@ -3,7 +3,7 @@
 //! ```text
 //! channel IQ → ChannelFilter (±5.5 kHz; also the carrier power meter)
 //!   → discriminator → de-emphasis (750 µs, unity at 1 kHz)
-//!   → audio low-pass + resample to 8 kHz → 300 Hz high-pass (drops CTCSS;
+//!   → audio low-pass + resample to 8 kHz → 300 Hz high-pass (drops CTCSS, all 67–254 Hz;
 //!     `push_low` also hands over the audio before it, for tones::ToneDetector)
 //!   → squelch gate (carrier power vs a threshold, held 30 ms before it
 //!     opens — a neighbour keying up splatters for an instant — 10 ms ramps)
@@ -104,6 +104,23 @@ impl ChannelFilter {
     }
 }
 
+/// 13th-order Chebyshev II high-pass at 8 kHz: 50 dB down from 256 Hz, so every
+/// CTCSS tone (67–254.1 Hz) goes; 3 dB down at 288.5 Hz (the lowest two-tone
+/// paging tone), flat from 310 Hz; odd order, so DC from a mistuned carrier
+/// goes too. A 300 Hz Butterworth is only 10 dB down at 250 Hz. An elliptic is
+/// steeper but rings at the band edge (MDC1200 / FleetSync decode less often),
+/// and a linear-phase FIR's pre-ring smears voice into an unkey burst.
+/// Sections as [b0, b1, b2, a1, a2] (scipy.signal.cheby2(13, 50, 256, 'high', fs=8000)).
+const HPF_SOS: [[f64; 5]; 7] = [
+    [0.649971201753611, -0.649971201753611, 0.0, -0.9009186289848935, 0.0],
+    [1.0, -1.9976703966479996, 0.9999999999999998, -1.804773049479563, 0.8167223030504506],
+    [1.0, -1.9912294244377715, 1.0, -1.813831989552296, 0.8317473057395659],
+    [1.0, -1.9821827093882347, 1.0, -1.829691361845757, 0.8561967602247423],
+    [1.0, -1.9726225689301102, 0.9999999999999997, -1.8532315922396563, 0.8891899815764512],
+    [1.0, -1.964731673139806, 1.0, -1.8851956447367968, 0.9294929908328667],
+    [1.0, -1.9602896689698817, 1.0, -1.925772087226872, 0.9754894659150795],
+];
+
 #[derive(Clone, Copy)]
 struct Biquad {
     b: [f32; 3],
@@ -112,15 +129,8 @@ struct Biquad {
 }
 
 impl Biquad {
-    fn highpass(rate: f64, f0: f64, q: f64) -> Self {
-        let w0 = 2.0 * PI * f0 / rate;
-        let (c, alpha) = (w0.cos(), w0.sin() / (2.0 * q));
-        let a0 = 1.0 + alpha;
-        Biquad {
-            b: [((1.0 + c) / 2.0 / a0) as f32, (-(1.0 + c) / a0) as f32, ((1.0 + c) / 2.0 / a0) as f32],
-            a: [(-2.0 * c / a0) as f32, ((1.0 - alpha) / a0) as f32],
-            z: [0.0; 2],
-        }
+    fn new(c: [f64; 5]) -> Self {
+        Biquad { b: [c[0] as f32, c[1] as f32, c[2] as f32], a: [c[3] as f32, c[4] as f32], z: [0.0; 2] }
     }
     #[inline]
     fn step(&mut self, x: f32) -> f32 {
@@ -145,7 +155,7 @@ pub struct Nbfm {
     /// Channel-sample position of the next 8 kHz output.
     t_next: f64,
     step: f64,
-    hpf: [Biquad; 3],
+    hpf: [Biquad; HPF_SOS.len()],
     gate: f32,
     ramp: f32,
     /// Channel samples the carrier has been up for, and how many opens the gate.
@@ -170,9 +180,7 @@ impl Nbfm {
         let de_a = 1.0 - (-1.0 / (rate * DEEMPH_TAU)).exp();
         // De-emphasis gain at 1 kHz, undone so a 1 kHz tone keeps its level.
         let de_gain = (1.0 + (2.0 * PI * 1000.0 * DEEMPH_TAU).powi(2)).sqrt();
-        // 6th-order Butterworth high-pass at 300 Hz: CTCSS (67–254 Hz) out.
-        // Section k's Q is 1 / (2 sin((2k − 1)π / 12)).
-        let hpf = [1.0, 3.0, 5.0].map(|k: f64| Biquad::highpass(AUDIO_RATE, 300.0, 1.0 / (2.0 * (k * PI / 12.0).sin())));
+        let hpf = HPF_SOS.map(Biquad::new);
         Nbfm {
             filter: ChannelFilter::new(rate),
             last: Complex32::new(1.0, 0.0),
@@ -330,6 +338,48 @@ mod tests {
         // 2.5 kHz / 5 kHz full scale → amplitude 0.5 → power 0.125.
         assert!((10.0 * (p1k / 0.125).log10()).abs() < 1.0, "1 kHz level {:.1} dB", 10.0 * (p1k / 0.125).log10());
         assert!(10.0 * (p100 / p1k).log10() < -40.0, "CTCSS {:.1} dB below voice", 10.0 * (p1k / p100).log10());
+    }
+
+    #[test]
+    fn every_ctcss_tone_is_rejected() {
+        let rate = 39_062.5;
+        for tone in super::super::tones::CTCSS.map(|t| t as f64 / 10.0) {
+            let n = (rate * 2.0) as usize;
+            let mut ph = 0.0f64;
+            let iq: Vec<Complex32> = (0..n)
+                .map(|i| {
+                    let t = i as f64 / rate;
+                    let f = 2500.0 * (2.0 * PI * 1000.0 * t).sin() + 700.0 * (2.0 * PI * tone * t).sin();
+                    ph += 2.0 * PI * f / rate;
+                    Complex32::from_polar(0.5, ph as f32)
+                })
+                .collect();
+            let mut fm = Nbfm::new(rate);
+            let mut out = Vec::new();
+            fm.push(&iq, 1e-4, &mut out);
+            let tail = &out[out.len() / 2..];
+            let p1k = tone_power(tail, AUDIO_RATE, 1000.0);
+            let pt = tone_power(tail, AUDIO_RATE, tone);
+            let db = 10.0 * (pt / p1k).log10();
+            assert!(db < -40.0, "{tone} Hz CTCSS only {:.1} dB below voice", -db);
+        }
+    }
+
+    #[test]
+    fn high_pass_edges() {
+        // The filter alone at 8 kHz: gain at `hz`, dB.
+        let gain = |hz: f64| {
+            let mut hpf = HPF_SOS.map(Biquad::new);
+            let x: Vec<f32> = (0..16_000).map(|i| (2.0 * PI * hz * i as f64 / AUDIO_RATE).sin() as f32).collect();
+            let y: Vec<f32> = x.iter().map(|&v| hpf.iter_mut().fold(v, |s, h| h.step(s))).collect();
+            10.0 * (tone_power(&y[8000..], AUDIO_RATE, hz) / 0.5).log10()
+        };
+        for hz in super::super::tones::CTCSS.map(|t| t as f64 / 10.0) {
+            assert!(gain(hz) < -45.0, "{hz} Hz only {:.1} dB down", -gain(hz));
+        }
+        for hz in [288.5, 313.0, 400.0, 1000.0, 3000.0] {
+            assert!(gain(hz) > -3.5, "{hz} Hz {:.1} dB down", -gain(hz));
+        }
     }
 
     #[test]

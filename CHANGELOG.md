@@ -5,6 +5,40 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Plugin delays.** Plugins can be given calls late: for a whole system, some of its talkgroups,
+  one plugin on every system, or one plugin on one system (`pluginDelays`, at the top of the config
+  and in each system). A rule that narrows another replaces it; otherwise the longest delay wins.
+  Held calls are kept on disk until they're given, so a restart doesn't lose them; a delayed call's
+  live audio isn't streamed. In Setup, under a system's Overrides and on each plugin's card. See
+  [Delays](docs/configuration/plugins.md#delays).
+
+- **Key sources.** The config's new top-level `keys` names each keys file once, and a system's
+  `keys` names a source instead of a file, so systems on the same radios share one and it is read
+  once. A config whose systems name a file is read as one source per file, named after it.
+- **Encryption keys from a KFDtool container:** a key source's `file` can be a KFDtool key
+  container (`.ekc`), with `passwordFile` naming a file that holds its password. A password file
+  others can read is refused. Keys the recorder can't decrypt (key-encryption keys, DES-XL) are
+  listed in the log and left out. `replay` takes `--keys-password-file` too.
+- **Unlock a key container in the interface.** A container with no `passwordFile` no longer stops
+  the start: Setup → Recording → Key containers asks for its password. Unlocked keys are held in
+  memory until Lock or the app stops, and reach calls already in progress.
+
+- **Decrypted calls go only to the plugins you allow.** A call decrypted with your keys (its live
+  audio, files and JSON) is no longer given to every plugin: turn on **Share decrypted calls** on a
+  plugin's card in Setup → Plugins (`plugins.<id>.shareDecrypted`) for each one that should have
+  them. Voice of a call that ends in the same moment it is decrypted is no longer taken for clear.
+  See [Decrypted calls](docs/plugins/README.md#decrypted-calls).
+
+- **Encryption keys are wiped from memory:** the keys in a system's keyring,
+  the keys file's text and its parsed contents, and the cipher's key-derived
+  state are overwritten when they are dropped, so a freed page doesn't keep a
+  key for a crash dump or a memory scan to find.
+
+- **No CTCSS hum on analog audio.** The voice high-pass now removes every CTCSS tone. The higher
+  tones (roughly 150–254 Hz) used to come through as a low hum; a 250 Hz tone was cut by only
+  10 dB, and every tone is now cut by 50 dB or more. Voice and two-tone paging tones from 288 Hz
+  up are kept, as before.
+
 - **Phase 2, DMR and NXDN tone frames now play as tones:** a dispatch tone-out sent
   as AMBE+2 tone frames (a pure tone or a pair, with a tone ID and a level)
   came out as silence with a click at each frame edge, because the decoder

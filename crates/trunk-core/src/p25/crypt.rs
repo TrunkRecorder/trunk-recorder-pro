@@ -18,6 +18,8 @@
 
 use aes::cipher::{BlockCipherEncrypt, KeyInit};
 
+use zeroize::Zeroizing;
+
 use super::voice::EncryptionSync;
 
 pub const ALGID_CLEAR: u8 = 0x80;
@@ -195,7 +197,8 @@ fn block_cipher<C: BlockCipherEncrypt + KeyInit, const B: usize>(key: &[u8], iv:
 
 /// RC4: `n` bytes of output for `key`.
 fn rc4(key: &[u8], n: usize) -> Vec<u8> {
-    let mut s: [u8; 256] = std::array::from_fn(|i| i as u8);
+    // (The state is the key, scrambled: wiped too.)
+    let mut s = Zeroizing::new(std::array::from_fn::<u8, 256, _>(|i| i as u8));
     let mut j = 0u8;
     for i in 0..256 {
         j = j.wrapping_add(s[i]).wrapping_add(key[i % key.len()]);
@@ -237,10 +240,10 @@ impl Keystream {
         let iv8: [u8; 8] = mi[..8].try_into().unwrap();
         let mut ks = match alg {
             Algorithm::Adp => {
-                let mut k = [0u8; 13];
+                let mut k = Zeroizing::new([0u8; 13]);
                 k[..5].copy_from_slice(key);
                 k[5..].copy_from_slice(&mi[..8]);
-                rc4(&k, need)
+                rc4(&k[..], need)
             }
             Algorithm::DesOfb => block_cipher::<des::Des, 8>(key, iv8, blocks(8)),
             Algorithm::Tdes => block_cipher::<des::TdesEde3, 8>(key, iv8, blocks(8)),
@@ -285,7 +288,8 @@ pub struct Key {
     pub alg: Algorithm,
     /// None: any key ID (only with `talkgroups`).
     pub keyid: Option<u16>,
-    key: Vec<u8>,
+    /// Wiped when the key is dropped.
+    key: Zeroizing<Vec<u8>>,
     /// Used for these talkgroups, under any key ID or the one given (empty:
     /// by key ID, on any talkgroup).
     pub talkgroups: Vec<u32>,
@@ -308,7 +312,7 @@ pub enum Lookup<'a> {
 }
 
 /// A system's keys. They are never printed, logged or sent anywhere
-/// ([`Key`]'s Debug leaves the key out).
+/// ([`Key`]'s Debug leaves the key out), and are wiped from memory when dropped.
 #[derive(Clone, Debug, Default)]
 pub struct Keyring {
     keys: Vec<Key>,
@@ -334,7 +338,7 @@ impl Keyring {
         if keyid.is_some() && talkgroups.is_empty() && self.keys.iter().any(|o| o.alg == alg && o.keyid == keyid && o.talkgroups.is_empty()) {
             return Err(format!("{kid}: {name} ({algid:#04X}) is given twice"));
         }
-        self.keys.push(Key { alg, keyid, key, talkgroups });
+        self.keys.push(Key { alg, keyid, key: Zeroizing::new(key), talkgroups });
         Ok(())
     }
 

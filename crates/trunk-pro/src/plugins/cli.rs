@@ -268,12 +268,13 @@ fn run_calls(a: &Args) {
     let target = a.positional.get(1).unwrap_or_else(|| die("trunk-pro plugin run <executable | id> [calls…]"));
     let (_, cfg) = load_config(a);
     // An executable, or an installed plugin's id (with its settings from the config).
-    let (id, exe, config, systems) = if Path::new(target).is_file() {
+    // (Decrypted calls go to it only as the config allows: an executable named directly gets none.)
+    let (id, exe, config, systems, share_decrypted) = if Path::new(target).is_file() {
         let m = describe(Path::new(target)).unwrap_or_else(|e| die(&e));
-        (m.id, PathBuf::from(target), Value::Null, BTreeMap::new())
+        (m.id, PathBuf::from(target), Value::Null, BTreeMap::new(), false)
     } else {
         match all_plugins(&cfg).get(target) {
-            Some(e) => (target.clone(), executable(target, e), e.settings.clone(), super::system_settings(&cfg, target, 0)),
+            Some(e) => (target.clone(), executable(target, e), e.settings.clone(), super::system_settings(&cfg, target, 0), e.share_decrypted),
             None => die(&format!("{target}: no such file, and no plugin by that id")),
         }
     };
@@ -283,7 +284,7 @@ fn run_calls(a: &Args) {
         None => std::env::temp_dir().join(format!("trunk-pro-plugin-run-{id}")),
     };
     eprintln!("Data folder: {}", data_dir.display());
-    let mut spec = Spec { id, copy: 0, exe, config, systems, data_dir: Some(data_dir) };
+    let mut spec = Spec { id, copy: 0, exe, config, systems, data_dir: Some(data_dir), share_decrypted };
     if let Some(s) = a.get("settings") {
         let v: Value = std::fs::read_to_string(s).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_else(|| die(&format!("{s}: not JSON")));
         spec.config = v.get("config").cloned().unwrap_or(Value::Null);
@@ -325,7 +326,9 @@ fn run_calls(a: &Args) {
         // Its key: relative to the capture folder (absolute when it isn't in there).
         let base = p.with_extension("");
         let rel = base.strip_prefix(&capture_dir).map(Path::to_path_buf).unwrap_or(base.clone());
-        host.concluded(system, &rel.to_string_lossy().replace('\\', "/"), json, super::host::CallAudio::on_disk(&base));
+        // (A call JSON that can't be read is taken for a decrypted one.)
+        let decrypted = serde_json::from_str::<trunk_recorder_plugin::CallRecord>(json).map_or(true, |r| r.decrypted);
+        host.concluded(system, &rel.to_string_lossy().replace('\\', "/"), json, super::host::CallAudio::on_disk(&base), decrypted);
     }
     let grace: f64 = a.get("grace").and_then(|s| s.parse().ok()).unwrap_or(30.0);
     host.shutdown(Duration::from_secs_f64(grace));
