@@ -39,6 +39,17 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   10 dB, and every tone is now cut by 50 dB or more. Voice and two-tone paging tones from 288 Hz
   up are kept, as before.
 
+- **Phase 2, DMR and NXDN tone frames now play as tones:** a dispatch tone-out sent
+  as AMBE+2 tone frames (a pure tone or a pair, with a tone ID and a level)
+  came out as silence with a click at each frame edge, because the decoder
+  took the tone ID for part of a pitch and faded to nothing. It now reads the
+  frame by TIA-102.BABA-A §2.10 and plays the Annex T tone at the level it
+  names, continuous from frame to frame (checked against the reference
+  vocoder's amplitude to within 4 %). A tone frame the FEC damaged keeps the
+  tone going if its four ID copies still name it, and otherwise repeats it up
+  to 3 times, as voice does. Tone frames no longer count as bad frames. The
+  mbelib profile still plays none, as mbelib doesn't.
+
 ## [0.1.11] — 2026-10-14
 
 - **Setup, reorganized.** Each Setup tab is now sections of cards, and
