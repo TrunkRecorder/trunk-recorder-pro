@@ -3,6 +3,8 @@
 
 pub mod alias;
 pub mod crypt;
+#[cfg(test)]
+mod crypt_vectors;
 pub mod diversity;
 pub mod fec;
 pub mod frame;

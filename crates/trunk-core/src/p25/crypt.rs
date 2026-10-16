@@ -376,15 +376,141 @@ impl Keyring {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::p25::crypt_vectors as v;
 
+    /// Hex → bytes (spaces ignored).
     fn hex(s: &str) -> Vec<u8> {
-        (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
+        let s: Vec<u8> = s.bytes().filter(|c| !c.is_ascii_whitespace()).collect();
+        s.chunks(2).map(|c| u8::from_str_radix(std::str::from_utf8(c).unwrap(), 16).unwrap()).collect()
+    }
+
+    fn mi9(s: &str) -> [u8; 9] {
+        let mut mi = [0u8; 9];
+        mi[..8].copy_from_slice(&hex(s));
+        mi
     }
 
     /// Bits → bytes, MSB first (the last byte zero-padded).
     fn pack(bits: &[u8]) -> Vec<u8> {
         bits.chunks(8).map(|c| c.iter().enumerate().fold(0u8, |v, (i, &b)| v | b << (7 - i))).collect()
     }
+
+    /// Bytes → their first `n` bits, MSB first.
+    fn unpack(bytes: &[u8], n: usize) -> Vec<u8> {
+        (0..n).map(|i| bytes[i / 8] >> (7 - i % 8) & 1).collect()
+    }
+
+    // ── TIA-102.AAAD-B's examples ────────────────────────────────────────────
+
+    /// The keystream for an example (MI: Table 3-1's header), checked
+    /// against its output registers: B# 1 thrown away, B# 2..=`blocks` the
+    /// voice's (B# 1 is then the only block that encrypts to B# 2).
+    fn spec_keystream(alg: Algorithm, key: &str, out: &[&str], blocks: usize, phase: Phase) -> Keystream {
+        let ks = Keystream::new(alg, &hex(key), &mi9(v::MI), phase).unwrap();
+        let out: Vec<u8> = out[..blocks].iter().flat_map(|r| hex(r)).collect();
+        assert_eq!(ks.ks, out[alg.discard()..], "{alg:?} {phase:?}: output registers");
+        ks
+    }
+
+    /// An FDMA example's 18 voice frames, and the LSD (00 00 in the clear)
+    /// before each LDU's last frame.
+    fn fdma(ks: &Keystream, cipher: &[&str; 18], lsd: &[&str; 2]) {
+        for f in 0..18 {
+            let mut bits: [u8; 88] = unpack(&hex(v::FDMA_PLAIN[f]), 88).try_into().unwrap();
+            ks.apply_p1(f / 9, f % 9, &mut bits);
+            assert_eq!(pack(&bits), hex(cipher[f]), "voice frame {}", f + 1);
+        }
+        for (ldu, lsd) in lsd.iter().enumerate() {
+            let at = Keystream::p1_offset(ldu, 8) - 2;
+            assert_eq!(ks.ks[at..at + 2], hex(lsd)[..], "LDU{} LSD", ldu + 1);
+        }
+    }
+
+    /// A TDMA example's 18 voice frames.
+    fn tdma(ks: &Keystream, cipher: &[&str; 18]) {
+        for f in 0..18 {
+            let mut bits: [u8; 49] = unpack(&hex(v::TDMA_PLAIN[f]), 49).try_into().unwrap();
+            ks.apply_p2(f, &mut bits);
+            let mut want = hex(cipher[f]);
+            want[6] &= 0x80; // past the 49th bit: not voice
+            assert_eq!(pack(&bits), want, "voice frame {}", f + 1);
+        }
+    }
+
+    /// Table 3-1: each superframe's MI from the last's, and back.
+    #[test]
+    fn table_3_1_mi_chain() {
+        let mut mi = mi9(v::MI);
+        for (i, want) in v::MI_CHAIN.iter().enumerate() {
+            let next = next_mi(&mi);
+            assert_eq!(next, mi9(want), "superframe {}", i + 1);
+            assert_eq!(prev_mi(&next), mi, "superframe {} back", i + 1);
+            mi = next;
+        }
+    }
+
+    /// Table 4-1: AES's 128-bit IV, row by row (each row is Table 3-1's MI
+    /// and the one after).
+    #[test]
+    fn table_4_1_aes_iv() {
+        let mut mi = mi9(v::MI);
+        for (row, next) in v::MI_CHAIN.iter().enumerate() {
+            assert_eq!(aes_iv(&mi)[..], [&mi[..8], &hex(next)[..]].concat()[..], "row {row}");
+            mi = mi9(next);
+        }
+    }
+
+    /// A.4: DES-OFB, FDMA.
+    #[test]
+    fn a4_des_fdma() {
+        fdma(&spec_keystream(Algorithm::DesOfb, v::DES_KEY, &v::DES_OUT, 28, Phase::One), &v::DES_FDMA, &v::DES_FDMA_LSD);
+    }
+
+    /// A.5: DES-OFB, TDMA.
+    #[test]
+    fn a5_des_tdma() {
+        tdma(&spec_keystream(Algorithm::DesOfb, v::DES_KEY, &v::DES_OUT, 17, Phase::Two), &v::DES_TDMA);
+    }
+
+    /// B.4: 3DES-OFB, FDMA. The key is K1 K2 K3 in that order: swapping K1
+    /// and K3 gives another keystream.
+    #[test]
+    fn b4_tdes_fdma() {
+        fdma(&spec_keystream(Algorithm::Tdes, v::TDES_KEY, &v::TDES_OUT, 28, Phase::One), &v::TDES_FDMA, &v::TDES_FDMA_LSD);
+        let k = hex(v::TDES_KEY);
+        let swapped = [&k[16..], &k[8..16], &k[..8]].concat();
+        let ks = Keystream::new(Algorithm::Tdes, &swapped, &mi9(v::MI), Phase::One).unwrap();
+        assert_ne!(ks.ks[..8], hex(v::TDES_OUT[1])[..]);
+    }
+
+    /// B.5: 3DES-OFB, TDMA.
+    #[test]
+    fn b5_tdes_tdma() {
+        tdma(&spec_keystream(Algorithm::Tdes, v::TDES_KEY, &v::TDES_OUT, 17, Phase::Two), &v::TDES_TDMA);
+    }
+
+    /// C.4: AES-256-OFB, FDMA.
+    #[test]
+    fn c4_aes_256_fdma() {
+        fdma(&spec_keystream(Algorithm::Aes256, v::AES_256_KEY, &v::AES_256_OUT, 15, Phase::One), &v::AES_256_FDMA, &v::AES_256_FDMA_LSD);
+    }
+
+    /// C.5: AES-256-OFB, TDMA.
+    #[test]
+    fn c5_aes_256_tdma() {
+        tdma(&spec_keystream(Algorithm::Aes256, v::AES_256_KEY, &v::AES_256_OUT, 9, Phase::Two), &v::AES_256_TDMA);
+    }
+
+    /// A.4 and B.4 with every key byte's DES parity bit (its LSB) flipped:
+    /// the same ciphertext.
+    #[test]
+    fn des_parity_bits_ignored() {
+        let flip = |k: &str| hex(k).iter().map(|b| format!("{:02X}", b ^ 1)).collect::<String>();
+        fdma(&spec_keystream(Algorithm::DesOfb, &flip(v::DES_KEY), &v::DES_OUT, 28, Phase::One), &v::DES_FDMA, &v::DES_FDMA_LSD);
+        fdma(&spec_keystream(Algorithm::Tdes, &flip(v::TDES_KEY), &v::TDES_OUT, 28, Phase::One), &v::TDES_FDMA, &v::TDES_FDMA_LSD);
+    }
+
+    // ── Other references ─────────────────────────────────────────────────────
 
     #[test]
     fn lfsr_matches_bitwise_polynomial() {
@@ -443,8 +569,6 @@ mod tests {
         assert_eq!(next_mi(&[0; 9]), [0; 9]);
         let mi = [0, 0, 0, 0, 0, 0, 0, 1, 0];
         assert_ne!(next_mi(&mi), mi);
-        assert_eq!(&aes_iv(&mi)[..8], &mi[..8]);
-        assert_eq!(&aes_iv(&mi)[8..], &next_mi(&mi)[..8]);
     }
 
     #[test]
@@ -482,47 +606,16 @@ mod tests {
     }
 
     #[test]
-    fn tdes_with_one_key_three_times_is_des() {
-        let k = hex("0123456789abcdef");
-        let k3 = [k.clone(), k.clone(), k.clone()].concat();
-        let iv = *b"\x12\x34\x56\x78\x90\xab\xcd\xef";
-        assert_eq!(block_cipher::<des::TdesEde3, 8>(&k3, iv, 4), block_cipher::<des::Des, 8>(&k, iv, 4));
-    }
-
-    #[test]
-    fn phase1_layout() {
-        // The voice bytes of a superframe: contiguous per LDU, 11 a frame,
-        // the LSD's 2 before frame 8, LDU2 101 bytes on; ADP's first voice
-        // byte is keystream byte 267.
+    fn adp_discards_256_bytes() {
+        // Not in TIA-102.AAAD (ADP is Motorola's); the layout past the
+        // discard is the spec's, as the DES/AES examples check.
         let mi = [1, 2, 3, 4, 5, 6, 7, 8, 9];
         let key = hex("1234567890");
         let ks = Keystream::new(Algorithm::Adp, &key, &mi, Phase::One).unwrap();
-        let mut k13 = key.clone();
-        k13.extend_from_slice(&mi[..8]);
-        let raw = rc4(&k13, 469);
-        for ldu in 0..2 {
-            for k in 0..9 {
-                let mut bits = [0u8; 88];
-                ks.apply_p1(ldu, k, &mut bits);
-                let at = 267 + 101 * ldu + 11 * k + if k == 8 { 2 } else { 0 };
-                assert_eq!(pack(&bits), &raw[at..at + 11], "LDU{} frame {k}", ldu + 1);
-            }
-        }
-    }
-
-    #[test]
-    fn phase2_layout() {
-        let mi = [9, 8, 7, 6, 5, 4, 3, 2, 1];
-        let key = hex("603deb1015ca71be2b73aef0857d77811f352c073b6108d72d9810a30914dff4");
-        let ks = Keystream::new(Algorithm::Aes256, &key, &mi, Phase::Two).unwrap();
-        let raw = block_cipher::<aes::Aes256, 16>(&key, aes_iv(&mi), 9);
-        for f in 0..18 {
-            let mut bits = [0u8; 49];
-            ks.apply_p2(f, &mut bits);
-            let mut want = raw[16 + 7 * f..16 + 7 * f + 7].to_vec();
-            want[6] &= 0x80;
-            assert_eq!(pack(&bits), want, "frame {f}");
-        }
+        let raw = rc4(&[&key[..], &mi[..8]].concat(), 256 + 22);
+        let mut bits = [0u8; 88];
+        ks.apply_p1(0, 0, &mut bits);
+        assert_eq!(pack(&bits), &raw[256 + 11..]);
     }
 
     #[test]
