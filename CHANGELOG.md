@@ -5,6 +5,36 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+## [0.1.13] — 2026-10-16
+
+- **P25 decoding checked against the TIA-102 standards.** The control channel, Phase 1 voice,
+  Phase 2 and encryption were gone through against the standards' own message layouts and test
+  vectors, which the tests now follow. What you'll notice:
+  - **Phase 2 calls hold together.** Grant updates for both slots of a TDMA carrier now come
+    through, so a call being followed no longer ends and starts again partway.
+  - **Phase 2 calls joined late name their talkers.** The source IDs come from the voice channel
+    as well as the call's start, so a call heard after it began no longer has an empty `srcList`.
+  - **Unit-to-unit calls aren't wrongly skipped.** On some systems every unit-to-unit call was
+    taken for encrypted (or an emergency) and skipped.
+  - **Telephone interconnect calls are recorded**, with `recordUnitToUnit`.
+  - **No more noise from encrypted calls joined late.** Voice heard before it's known whether it's
+    encrypted is held until it is, instead of being played as if clear.
+  - **A wrong key is caught.** Phase 1 voice a key decrypts to noise is no longer saved as
+    decrypted: the log says which key ID doesn't fit, and that voice is left out.
+  - **More decoded in weak signal.** Phase 2 signalling survives about twice as many errors, and
+    Phase 1 headers and link control use what the error correction already knows is damaged.
+  - **Keys:** with keys loaded, encrypted link control is read (talkgroup and talker). A 3DES key
+    whose three parts are the same also decrypts DES ($81), as the standard says; DES keys with a
+    mistyped (wrong-parity) byte are warned of; from a KFDtool container, a key in both the active
+    and an inactive keyset is taken from the active one; a second key for the same talkgroup is an
+    error. ALGID $85 is shown as AES-128 and $89 as AES-128 (Motorola).
+- **Each radio's own flags in the call JSON.** Every `srcList` entry now has `encrypted`, `duplex`,
+  `mode` and `priority` beside `emergency`: what that radio's transmission said of itself (its
+  grant, then the voice channel while it talked), so one talker's emergency isn't another's.
+- **Plugins** (SDK 0.3.1, additive): `CallInfo` has `sources`, each radio with those flags, and the
+  call's `duplex`, `packet` and `priority`; `SrcEntry` reads the new `srcList` fields;
+  `UnitEvent` has `emergency`.
+
 ## [0.1.12] — 2026-10-16
 
 - **Import several Trunk Recorder configs into one setup.** With systems already set up, the import
