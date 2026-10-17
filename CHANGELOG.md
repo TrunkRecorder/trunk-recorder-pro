@@ -72,10 +72,6 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   kept doing.
 - **Faster 4FSK receivers.** Multi-symbol detection (P25 C4FM, DMR, NXDN) does the same work in
   7–12 % less time.
-- **Performance report** (temporary). Platform → **Download performance report** gives where the
-  recorder's time goes, thread by thread and stage by stage, to send to the developers when the
-  CPU runs out; also written as `perf-report.json` beside the config every minute. See
-  [Troubleshooting](docs/troubleshooting.md#performance-report).
 
 - **AM channels (airband).** Conventional channels can now be analog AM: VHF airband (118–137 MHz)
   and UHF military air (225–400 MHz). The audio level follows each transmission's own carrier, so

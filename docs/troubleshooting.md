@@ -233,8 +233,7 @@ The radio delivers samples at a fixed rate and the driver has only a small buffe
 doesn't collect them in time, they're lost. Causes, most likely first:
 
 - **CPU.** Check the Platform page and **Decoding load** on the Overview. A lower sample rate,
-  fewer sources, or a faster computer helps. If one core is pinned while others sit idle, send a
-  [performance report](#performance-report).
+  fewer sources, or a faster computer helps.
 - **USB.** Several dongles on one hub or one bus, a long or poor cable, or a Raspberry Pi with a weak
   power supply. Spread dongles across ports. With 4 or more RTL-SDRs on one USB 2.0 bus, set
   **USB transfer size** to 64 KiB on each (`bufLen: 65536`, Trunk Recorder's `buflen`): see
@@ -361,19 +360,6 @@ trunk-pro replay problem.cu8 --center 858500000 --rate 2400000 --cc 857262500
 
 See [Command line](command-line.md) for all of `capture` and `replay`.
 
-## Performance report
-
-When the recorder runs out of CPU (one core pinned, **Decoding load** near 100 %, samples
-dropped), the performance report tells the developers where its time goes. On the **Platform**
-page, click **Download performance report** while it's busy. If you can't reach the interface, take
-`perf-report.json` from the folder your config file is in: it's rewritten every minute.
-
-It covers the last hour: each thread's CPU, each core's, the time each stage of decoding takes on
-each source (the channelizer, voice and control channels, vocoders, conventional channels, call
-handling), and what each source runs. It also has your computer's CPU and OS, and the shape of your
-config: sources' rates and frequencies, how many systems, channels and recorders. It holds no
-keys, passwords, plugin settings, serial numbers or file paths.
-
 ## Reporting a bug
 
 Open an issue at
@@ -387,5 +373,4 @@ Include:
 - your config file. It can hold plugin keys and passwords: remove them first;
 - for a decoding problem, a short capture (see above) and the system's frequencies, or its
   RadioReference page;
-- for a dashboard problem, a screenshot;
-- for CPU or dropped samples, a [performance report](#performance-report).
+- for a dashboard problem, a screenshot.

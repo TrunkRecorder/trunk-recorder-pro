@@ -51,7 +51,6 @@ use crate::metrics::{self, Scoped, Sink};
 use crate::p25::alias::AliasLc;
 use crate::p25::crypt::Keyring;
 use crate::p25::diversity::BankConfig;
-use crate::prof::{self, Stage};
 use crate::dsp::fm::ChannelFilter;
 use crate::smartnet::Bandplan;
 use crate::dmr;
@@ -674,7 +673,6 @@ impl BlockDsp {
             let mut steps = Vec::new();
             {
                 let mut cc = cc.lock().unwrap();
-                let _t = prof::span(Stage::control(cc.name()));
                 cc.push(carrier, &iq, t0, self.rate, &mut steps);
             }
             match out.last_mut().filter(|r| r.site == system) {
@@ -751,14 +749,6 @@ impl Radio {
         // Vocode only the slots somebody is recording.
         ch.voice.listen(ch.calls.map(|c| c.map(|c| c.talkgroup)));
         let mut out = Vec::new();
-        let _t = prof::span(match ch.voice.kind() {
-            VoiceKind::Fdma => Stage::VoiceP25p1,
-            VoiceKind::Tdma => Stage::VoiceP25p2,
-            // (AM is conventional only.)
-            VoiceKind::Analog | VoiceKind::Am => Stage::VoiceAnalog,
-            VoiceKind::Dmr => Stage::VoiceDmr,
-            VoiceKind::Nxdn(_) => Stage::VoiceNxdn,
-        });
         ch.voice.push(iq, &mut out);
         if flush {
             ch.voice.flush(&mut out);
@@ -1263,23 +1253,6 @@ impl Trunk {
     }
 }
 
-/// What one source runs each block ([`Engine::load`]).
-#[derive(Clone, Debug, Default)]
-pub struct SourceLoad {
-    pub rate_hz: f64,
-    pub fft_size: usize,
-    pub decim: usize,
-    /// Channelizer heads (every channel: voice, control, conventional).
-    pub heads: usize,
-    /// Trunked voice channels open, by kind ("p25p1", "p25p2", "dmr", "nxdn", "analog").
-    pub voice: BTreeMap<&'static str, usize>,
-    /// Control-channel carriers (hunted or watched).
-    pub control: usize,
-    /// Conventional channels watched, and open.
-    pub conventional: usize,
-    pub conventional_open: usize,
-}
-
 /// Everything the engine follows calls with (behind [`Engine`]'s lock).
 struct Core {
     cfg: EngineConfig,
@@ -1712,7 +1685,6 @@ impl Core {
     /// A block of `source` was decoded — its voice channels (`dsp`), its
     /// control channels' carriers (`cc`, in system order): follow it.
     fn after_block(&mut self, source: usize, dsp: BlockDsp, cc: Vec<CcResult>) {
-        let _t = prof::span(Stage::TrunkCalls);
         // Voice channels on this source, then its control channels. What
         // the voice channels heard (and channels just opened heard in their
         // pre-roll) reaches the calls after both, once, at this block's time.
@@ -2188,35 +2160,6 @@ impl Engine {
             .collect();
         st
     }
-
-    /// What each source runs each block now.
-    pub fn load(&self) -> Vec<SourceLoad> {
-        let conv: Vec<(usize, usize)> = {
-            let c = self.core();
-            (0..self.shared.rx.len()).map(|i| c.conv.load(i)).collect()
-        };
-        self.shared
-            .rx
-            .iter()
-            .zip(conv)
-            .map(|(r, (conventional, conventional_open))| {
-                let r = r.lock().unwrap();
-                let mut voice: BTreeMap<&'static str, usize> = BTreeMap::new();
-                for ch in r.channels.values() {
-                    let kind = match ch.voice.kind() {
-                        VoiceKind::Fdma => "p25p1",
-                        VoiceKind::Tdma => "p25p2",
-                        VoiceKind::Analog | VoiceKind::Am => "analog",
-                        VoiceKind::Dmr => "dmr",
-                        VoiceKind::Nxdn(_) => "nxdn",
-                    };
-                    *voice.entry(kind).or_default() += 1;
-                }
-                let c = &r.src.chz;
-                SourceLoad { rate_hz: r.src.cfg.rate_hz, fft_size: c.fft_size(), decim: c.decim(), heads: c.head_count(), voice, control: r.taps.len(), conventional, conventional_open }
-            })
-            .collect()
-    }
     /// The other sites' copies of call `id` still going or held, as (call, system).
     pub fn twins(&self, id: CallId) -> Vec<(CallId, u16)> {
         self.core().twins(id)
@@ -2257,7 +2200,6 @@ impl Engine {
 
     /// Feed a source's RTL-SDR native u8 IQ (any length).
     pub fn push_u8(&self, source: usize, data: &[u8]) {
-        let _s = prof::source(source);
         let rx = &self.shared.rx[source];
         // An I byte left from the last buffer goes with this one's first (a
         // buffer of odd length must not swap I and Q from then on).
@@ -2300,7 +2242,6 @@ impl Engine {
 
     /// Feed a source's float IQ.
     pub fn push_iq(&self, source: usize, iq: &[Complex32]) {
-        let _s = prof::source(source);
         let rx = &self.shared.rx[source];
         let mut off = 0;
         while off < iq.len() {
@@ -2327,8 +2268,6 @@ impl Engine {
     /// their noise floor from the silence nor open on it.
     pub fn push_gap(&self, source: usize, n: u64) {
         const CHUNK: u64 = 32768;
-        let _s = prof::source(source);
-        let t = prof::span(Stage::Gap);
         // Faint noise (about −80 dBFS) rather than zeros: receivers' gain
         // control and equalisers see a signal of the kind they always idle on.
         let mut x = 0x9e37_79b9_7f4a_7c15u64 ^ n;
@@ -2339,7 +2278,6 @@ impl Engine {
             (x >> 40) as f32 / (1u64 << 24) as f32 - 0.5
         };
         let quiet: Vec<Complex32> = (0..n.min(CHUNK)).map(|_| Complex32::new(rnd(), rnd()) * 2e-4).collect();
-        drop(t);
         self.shared.rx[source].lock().unwrap().src.in_gap = true;
         let mut left = n;
         while left > 0 {

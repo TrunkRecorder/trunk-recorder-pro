@@ -6,7 +6,7 @@
 
 import { useState } from "react";
 import type { PlatformInfo } from "../protocol.ts";
-import { useApp, useTopic, web, type StatsRange } from "../controller.ts";
+import { useApp, useTopic, type StatsRange } from "../controller.ts";
 import { Card, Choice, HeatStrip, LiveSpark, Meter, Ribbon, Stat, TimeSeries, type Level } from "../charts.tsx";
 import { ago, bytes, clockAt, dur, num, pct } from "../fmt.ts";
 import { platformHealth, total, useHistory } from "./data.ts";
@@ -243,18 +243,6 @@ export function PlatformPage() {
           </ul>
         )}
       </Card>
-      {!web && (
-        <Card title="Performance report">
-          <p className="small">
-            Where the recorder's time goes, thread by thread and stage by stage, over the last hour. Download it while it's busy and send it to the
-            developers: it holds no keys, passwords, plugin settings, serial numbers or file paths.
-          </p>
-          <a className="btn" href="/perf-report.json" download>
-            Download performance report
-          </a>
-          <p className="muted small">Also saved every minute as perf-report.json, beside the config file.</p>
-        </Card>
-      )}
     </div>
   );
 }

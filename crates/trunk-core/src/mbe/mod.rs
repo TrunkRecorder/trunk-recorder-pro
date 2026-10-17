@@ -856,7 +856,6 @@ impl Decoder {
     /// [`to_limited`] or [`to_unit`] for [−1, 1]). `e0`/`et`: FEC errors in u0 / in total;
     /// `erased`: the frame is known lost.
     pub fn imbe(&mut self, d: &[u8; 88], e0: u32, et: u32, erased: bool, out: &mut [f32; FRAME_SAMPLES]) -> Kind {
-        let _t = crate::prof::span(crate::prof::Stage::VocoderImbe);
         if let Some(f) = self.fixed.as_mut() {
             let mut s = [0i16; FRAME_SAMPLES];
             let r = f.decode_checked(&fixed::frame_vector(d), e0, et, erased, self.repeat_e0, self.repeat_et as f32, &mut s);
@@ -923,7 +922,6 @@ impl Decoder {
     /// plays tone frames ([`Decoder::tone`]); mbelib doesn't, and reads them
     /// as a pitch.
     pub fn ambe(&mut self, d: &[u8; 49], errs: u32, out: &mut [f32; FRAME_SAMPLES]) -> Kind {
-        let _t = crate::prof::span(crate::prof::Stage::VocoderAmbe);
         let enhanced = self.profile != Profile::Mbelib;
         if enhanced && let Some((id, level)) = tone_frame(d) {
             return self.tone(id, level, errs, out);
