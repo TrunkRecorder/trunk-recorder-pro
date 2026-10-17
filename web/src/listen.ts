@@ -2,14 +2,22 @@
 // conclude (the live feed), filtered by the systems and talkgroups chosen,
 // with hold, avoid, pause, replay and skip. It all happens in this page: the
 // recorder only sends each call as it concludes, and older ones when asked.
-// Playback lives here, not in the page, so it goes on in other tabs.
+// Playback lives here, not in the page, so it goes on in other tabs. The
+// sites of a multi-site system are heard as one: one talkgroup list, and a
+// call plays whichever site it was kept from.
 
 import { useRef, useSyncExternalStore } from "react";
+import { activeSystems, multiSiteGroup, siteSiblings, type LiveSite } from "./config.ts";
 import { onRecorderMessage, setListen, shallowEqual, snapshot, subscribe, transport } from "./controller.ts";
-import type { CallEntry } from "./protocol.ts";
+import type { CallEntry, Config } from "./protocol.ts";
 
-/** What to hear, kept in this browser. Talkgroups are `<system>:<talkgroup>`. */
+/**
+ * What to hear, kept in this browser. Talkgroups are `<system>:<talkgroup>`,
+ * a system by the name it is heard under (listenName).
+ */
 export interface Selection {
+  /** Sites of one system, by short name: the name they are heard under together (the recorder's group, "p25:bee00.1a2"). */
+  sites: Record<string, string>;
   /** Systems switched off. */
   offSystems: string[];
   /** Talkgroups switched off (any not here is on, new ones too). */
@@ -48,11 +56,13 @@ const CALLS_MAX = 5000;
 export const OLDER_PAGE = 200;
 
 function loadSelection(): Selection {
-  const none: Selection = { offSystems: [], offTalkgroups: [], hold: null, avoid: {} };
+  const none: Selection = { sites: {}, offSystems: [], offTalkgroups: [], hold: null, avoid: {} };
   try {
     const v = JSON.parse(localStorage.getItem(SEL_KEY) ?? "null") as Partial<Selection> | null;
     if (!v || typeof v !== "object") return none;
+    const sites = v.sites && typeof v.sites === "object" ? Object.entries(v.sites).filter(([, g]) => typeof g === "string") : [];
     return {
+      sites: Object.fromEntries(sites) as Record<string, string>,
       offSystems: Array.isArray(v.offSystems) ? v.offSystems.filter((x) => typeof x === "string") : [],
       offTalkgroups: Array.isArray(v.offTalkgroups) ? v.offTalkgroups.filter((x) => typeof x === "string") : [],
       hold: v.hold && typeof v.hold.system === "string" ? { system: v.hold.system, talkgroup: typeof v.hold.talkgroup === "number" ? v.hold.talkgroup : null } : null,
@@ -110,6 +120,15 @@ export function useListen<T>(pick: (s: ListenState) => T): T {
 export const systemOf = (c: CallEntry) => c.record.short_name || c.path.split("/")[0] || "";
 export const tgKey = (system: string, talkgroup: number) => `${system}:${talkgroup}`;
 
+/** The name a system is heard under: the multi-site system it is a site of, else its own. */
+export const listenName = (sel: Selection, system: string) => sel.sites[system] ?? system;
+/** A call's: its site's. */
+export const listenOf = (sel: Selection, c: CallEntry) => listenName(sel, systemOf(c));
+/** The sites heard under `name`, in setup order (none: a system on its own). */
+export const sitesOf = (sel: Selection, name: string) => Object.keys(sel.sites).filter((x) => sel.sites[x] === name);
+/** "site1 + site2" for a multi-site system, else its name. */
+export const listenLabel = (sel: Selection, name: string) => sitesOf(sel, name).join(" + ") || name;
+
 /** Its talkgroup and any patched with it. */
 const talkgroupsOf = (c: CallEntry) => [c.record.talkgroup, ...(c.record.patched_talkgroups ?? [])];
 
@@ -124,7 +143,7 @@ export function avoided(sel: Selection, key: string, now = Date.now()): boolean 
 /** Whether the scanner plays this call (held, or selected and not avoided). */
 export function wanted(sel: Selection, c: CallEntry, now = Date.now()): boolean {
   if (!playable(c)) return false;
-  const system = systemOf(c);
+  const system = listenOf(sel, c);
   if (sel.hold) return sel.hold.system === system && (sel.hold.talkgroup === null || talkgroupsOf(c).includes(sel.hold.talkgroup));
   if (sel.offSystems.includes(system)) return false;
   return talkgroupsOf(c).some((tg) => {
@@ -164,7 +183,9 @@ export function setTalkgroupsOn(keys: string[], on: boolean, known: string[] = [
   const waking = new Set(keys.map(systemOfKey).filter((x) => state.sel.offSystems.includes(x)));
   const others = known.filter((k) => !drop.has(k) && waking.has(systemOfKey(k)));
   off = [...new Set([...off, ...others])];
-  setSelection({ ...state.sel, offSystems: state.sel.offSystems.filter((x) => !waking.has(x)), offTalkgroups: off });
+  // Switched on is heard: an avoid on it goes too.
+  const avoid = Object.fromEntries(Object.entries(state.sel.avoid).filter(([k]) => !drop.has(k)));
+  setSelection({ ...state.sel, offSystems: state.sel.offSystems.filter((x) => !waking.has(x)), offTalkgroups: off, avoid });
 }
 
 /** Everything on (or every listed system and talkgroup off). */
@@ -179,21 +200,21 @@ export function holdSystem(): void {
   const c = subject(state);
   const h = state.sel.hold;
   if (h && h.talkgroup === null) return setSelection({ ...state.sel, hold: null });
-  if (c) setSelection({ ...state.sel, hold: { system: systemOf(c), talkgroup: null } });
+  if (c) setSelection({ ...state.sel, hold: { system: listenOf(state.sel, c), talkgroup: null } });
 }
 
 export function holdTalkgroup(): void {
   const c = subject(state);
   const h = state.sel.hold;
   if (h && h.talkgroup !== null) return setSelection({ ...state.sel, hold: null });
-  if (c) setSelection({ ...state.sel, hold: { system: systemOf(c), talkgroup: c.record.talkgroup } });
+  if (c) setSelection({ ...state.sel, hold: { system: listenOf(state.sel, c), talkgroup: c.record.talkgroup } });
 }
 
 /** Avoid the current talkgroup for `minutes` (0: until let go, and again: let it go). */
 export function avoid(minutes: number): void {
   const c = subject(state);
   if (!c) return;
-  const k = tgKey(systemOf(c), c.record.talkgroup);
+  const k = tgKey(listenOf(state.sel, c), c.record.talkgroup);
   const now = Date.now();
   const { [k]: _, ...rest } = state.sel.avoid;
   // Expired avoids go too.
@@ -201,12 +222,79 @@ export function avoid(minutes: number): void {
   // AVOID again lets it go; a timed one (again) starts its time over.
   const again = minutes === 0 && avoided(state.sel, k, now);
   setSelection({ ...state.sel, avoid: again ? rest : { ...rest, [k]: minutes ? now + minutes * 60_000 : 0 } });
-  if (!again && state.playing && tgKey(systemOf(state.playing), state.playing.record.talkgroup) === k) skip();
+  if (!again && state.playing && tgKey(listenOf(state.sel, state.playing), state.playing.record.talkgroup) === k) skip();
 }
 
 export function letGo(key: string): void {
   const { [key]: _, ...rest } = state.sel.avoid;
   setSelection({ ...state.sel, avoid: rest });
+}
+
+// ── sites heard as one ───────────────────────────────────────────────────────
+
+/**
+ * Which sites are heard as one system now (site → name), from the setup and
+ * what the running recorder's control channels say (`live`). A site whose
+ * system isn't known yet (stopped, or its control channel not decoded yet)
+ * keeps what it had, so the talkgroup list doesn't come apart at each Start.
+ */
+export function sitesNow(c: Config, live: LiveSite[], prev: Record<string, string>): Record<string, string> {
+  const on = activeSystems(c);
+  const heard = (n: string) => live.some((y) => y.shortName === n && y.siteGroup != null);
+  const settled = (n: string) => heard(n) && Object.keys(prev).filter((z) => prev[z] === prev[n]).every(heard);
+  const out: Record<string, string> = {};
+  for (const x of on) {
+    const group = multiSiteGroup(x, live.find((y) => y.shortName === x.shortName));
+    if (group && siteSiblings(c, x, live).some((y) => on.includes(y))) out[x.shortName] = group;
+    else if (prev[x.shortName] && !settled(x.shortName)) out[x.shortName] = prev[x.shortName];
+  }
+  // A system of one site is heard under its own name.
+  for (const [x, g] of Object.entries(out)) if (Object.values(out).filter((y) => y === g).length < 2) delete out[x];
+  return out;
+}
+
+/**
+ * The selection with sites heard as `sites` says: each name's choices from
+ * the names its sites had. A talkgroup is on if any site had it on (heard
+ * whichever site it comes from); a system off only if every site was.
+ */
+export function regrouped(sel: Selection, sites: Record<string, string>): Selection {
+  const was = (x: string) => sel.sites[x] ?? x;
+  const from = new Map<string, Set<string>>();
+  for (const x of new Set([...Object.keys(sel.sites), ...Object.keys(sites)])) {
+    const n = sites[x] ?? x;
+    from.set(n, (from.get(n) ?? new Set()).add(was(x)));
+  }
+  const moved = new Set([...from.values()].flatMap((x) => [...x]));
+  const offSys = new Set(sel.offSystems);
+  const offTg = new Set(sel.offTalkgroups);
+  const offSystems = sel.offSystems.filter((x) => !moved.has(x));
+  const offTalkgroups = sel.offTalkgroups.filter((k) => !moved.has(systemOfKey(k)));
+  const avoid = Object.fromEntries(Object.entries(sel.avoid).filter(([k]) => !moved.has(systemOfKey(k))));
+  const tgOf = (k: string) => k.slice(k.lastIndexOf(":") + 1);
+  let hold = sel.hold;
+  for (const [n, olds] of from) {
+    const os = [...olds];
+    const sysOff = os.every((o) => offSys.has(o));
+    if (sysOff) offSystems.push(n);
+    // Off on a site whose system was off (the others on) counts as off there.
+    const off = (o: string, tg: string) => offTg.has(`${o}:${tg}`) || (!sysOff && offSys.has(o));
+    for (const tg of new Set(sel.offTalkgroups.filter((k) => olds.has(systemOfKey(k))).map(tgOf))) if (os.every((o) => off(o, tg))) offTalkgroups.push(`${n}:${tg}`);
+    for (const [k, until] of Object.entries(sel.avoid)) {
+      if (!olds.has(systemOfKey(k))) continue;
+      const nk = `${n}:${tgOf(k)}`;
+      avoid[nk] = avoid[nk] === 0 || until === 0 ? 0 : Math.max(avoid[nk] ?? 0, until);
+    }
+    if (hold && olds.has(hold.system)) hold = { ...hold, system: n };
+  }
+  return { sites, offSystems: [...new Set(offSystems)], offTalkgroups: [...new Set(offTalkgroups)], hold, avoid };
+}
+
+function regroup(): void {
+  const app = snapshot();
+  if (!app.config) return;
+  const sites = sitesNow(app.config, app.status?.systems ?? [], state.sel.sites);
+  if (!shallowEqual(sites, state.sel.sites)) setSelection(regrouped(state.sel, sites));
 }
 
 // ── playback ─────────────────────────────────────────────────────────────────
@@ -351,6 +439,7 @@ export function loadOlder(): void {
 }
 
 onRecorderMessage((m) => {
+  if (m.type === "hello" || m.type === "config" || m.type === "status") regroup();
   switch (m.type) {
     case "hello":
       set({ calls: merge(state.calls, m.history) });

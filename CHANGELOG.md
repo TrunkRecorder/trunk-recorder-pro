@@ -5,6 +5,12 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Listen hears the sites of one system as one.** A call heard on several sites is saved once,
+  from whichever site had it best — so a talkgroup switched on under one site didn't play the
+  calls kept from another. Sites of one system now share one talkgroup list on Listen ("site1 +
+  site2"), and a talkgroup on plays whichever site it comes from. What was chosen per site carries
+  over: a talkgroup on at any site is on. Also fixed: switching on an avoided talkgroup left it
+  avoided.
 - **The dashboard says which systems are sites of one system again.** Since the dashboard was
   redesigned it didn't: each site's card on Overview, and a system's Decode page, now say
   "multi-site with …" (why, in the tooltip — as Setup's chip says it), and the sites of one
