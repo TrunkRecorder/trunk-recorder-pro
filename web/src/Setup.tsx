@@ -659,7 +659,15 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
             </Field>
           ))}
         {src.type === "airspy" && (
-          <Toggle label="Bias-T" hint="Powers an LNA via the antenna cable" checked={src.biasTee} onChange={(v) => edit((x) => x.type === "airspy" && void (x.biasTee = v))} />
+          <>
+            <Toggle label="Bias-T" hint="Powers an LNA via the antenna cable" checked={src.biasTee} onChange={(v) => edit((x) => x.type === "airspy" && void (x.biasTee = v))} />
+            <Toggle
+              label="Pack samples"
+              hint="12-bit samples on the USB: a quarter less of the bus (an Airspy at 10 MSPS nearly fills a USB 2.0 bus). Off only for old firmware"
+              checked={src.packing ?? true}
+              onChange={(v) => edit((x) => x.type === "airspy" && void (x.packing = v))}
+            />
+          </>
         )}
         {src.type === "soapy" &&
           (radios?.soapy && !radios.soapy.available ? (

@@ -83,6 +83,10 @@ pub enum Source {
         agc: bool,
         #[serde(default)]
         bias_tee: bool,
+        /// 12-bit samples packed on the USB (a quarter less of the bus: an
+        /// Airspy at 10 MS/s nearly fills a USB 2.0 bus by itself).
+        #[serde(default = "yes")]
+        packing: bool,
         #[serde(default)]
         ppm: f64,
         #[serde(default)]

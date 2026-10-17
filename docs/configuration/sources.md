@@ -119,6 +119,7 @@ An Airspy R2 or Mini, through libairspy. libairspy must be installed separately.
 | `vgaStep` | | `10` | integer | Manual mode: VGA (IF) step, 0–15 |
 | `agc` | | `false` | bool | Manual mode: the Airspy's AGC sets the LNA and mixer (the VGA step still applies) |
 | `biasTee` | | `false` | bool | Power an LNA through the antenna cable |
+| `packing` | | `true` | bool | Send 12-bit samples packed over USB: a quarter less of the bus (an Airspy at 10 MSPS nearly fills a USB 2.0 bus by itself). Turn off only for firmware too old to pack |
 | `ppm` | | `0` | number | Frequency correction, ppm |
 | `autoTune` | | `false` | bool | Apply the measured frequency error by itself |
 | `guardHz` | | `75000` | number | Left unused at each edge of the band, Hz |

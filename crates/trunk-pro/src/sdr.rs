@@ -133,7 +133,8 @@ impl IqFrom {
 pub enum SourceMsg {
     /// Raw u8 IQ, samples the driver knows were dropped just before it, and
     /// when the driver handed it over (the source's clock is measured by it).
-    Data { source: usize, bytes: Vec<u8>, dropped: u64, at: Instant },
+    /// (A [`Pooled`] buffer: the driver's thread reuses them, allocating none per transfer.)
+    Data { source: usize, bytes: Pooled<u8>, dropped: u64, at: Instant },
     /// Float IQ (USRP, float captures).
     Iq { source: usize, samples: Vec<num_complex::Complex32>, dropped: u64, at: Instant },
     /// Real samples at twice the IQ rate (an Airspy's ADC, libairspy's INT16_REAL): turned into IQ on the
@@ -198,6 +199,8 @@ fn stream_once(source: usize, cfg: &RtlConfig, tx: &SyncSender<SourceMsg>, stop:
     })?;
     let mut rx = dev.rx_stream().map_err(|e| e.to_string())?;
     rx.start().wait().map_err(|e| e.to_string())?;
+    // (Buffers to copy each transfer into, reused: this thread must keep up with the dongle.)
+    let pool = Pool::default();
     let result = loop {
         if stop.load(Ordering::Relaxed) {
             break Ok(());
@@ -231,7 +234,7 @@ fn stream_once(source: usize, cfg: &RtlConfig, tx: &SyncSender<SourceMsg>, stop:
         }
         match rx.next_block(Some(Duration::from_secs(2))).wait() {
             Ok(Some(block)) => {
-                let msg = SourceMsg::Data { source, bytes: block.raw_bytes().to_vec(), dropped: block.dropped_samples(), at: Instant::now() };
+                let msg = SourceMsg::Data { source, bytes: pool.copy(block.raw_bytes()), dropped: block.dropped_samples(), at: Instant::now() };
                 if tx.send(msg).is_err() {
                     break Ok(());
                 }

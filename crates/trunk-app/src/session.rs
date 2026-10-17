@@ -70,6 +70,11 @@ const CLOCK_SLEW: f64 = 0.001;
 /// radio's backlog after its quiet was filled in): the offset is set to it
 /// at once, s.
 const REANCHOR_S: f64 = 0.25;
+/// A window's least lag this much past the drift's trend: samples lost
+/// that the driver didn't report (an RTL-SDR's FIFO overflowing when its
+/// USB bus is busy; it has no way to say so), s. (A crystal's error is
+/// ~1 ms a window at 100 ppm; the least lag jitters well under that.)
+const LOSS_MIN_S: f64 = 0.005;
 
 /// What plugins subscribe to, so nothing else is built.
 #[derive(Clone, Copy, Debug, Default)]
@@ -101,6 +106,9 @@ struct SourceStats {
     clock: ClockFit,
     /// A [`Feeder`] feeds it from a thread of its own (and fills in its quiet spells there).
     threaded: bool,
+    /// Samples found lost that the driver didn't report ([`ClockFit`]), and how many of them were told.
+    unreported: u64,
+    unreported_told: u64,
 }
 
 /// A source's sample clock against the wall clock. Sample time runs slow or
@@ -126,6 +134,11 @@ struct ClockFit {
     /// The offset being steered to, and the one set.
     target: Option<f64>,
     applied: Option<f64>,
+    /// The last window's least lag and when it ended (ms); the lag's trend
+    /// (the crystal's error, s per s); samples lost unreported, not yet taken.
+    last: Option<(f64, f64)>,
+    slope: Option<f64>,
+    unreported: u64,
 }
 
 impl ClockFit {
@@ -147,9 +160,27 @@ impl ClockFit {
             Some(w) if at_ms - w >= CLOCK_WINDOW_MS => {
                 self.target = self.window_min.take();
                 self.window_ms = Some(at_ms);
+                self.unreported_loss(at_ms, rate);
             }
             Some(_) => {}
         }
+    }
+
+    /// A window closed: its least lag past the trend is samples lost that
+    /// nobody reported; within it, the trend learns (a crystal's drift).
+    fn unreported_loss(&mut self, at_ms: f64, rate: f64) {
+        let Some(lag) = self.target else { return };
+        if let Some((prev, prev_ms)) = self.last {
+            let dt = (at_ms - prev_ms) / 1000.0;
+            let excess = (lag - prev) - self.slope.unwrap_or(0.0) * dt;
+            if excess > LOSS_MIN_S {
+                self.unreported += (excess * rate).round() as u64;
+            } else if excess.abs() <= LOSS_MIN_S && dt > 0.0 {
+                let s = ((lag - prev) / dt).clamp(-2e-4, 2e-4);
+                self.slope = Some(self.slope.map_or(s, |o| o + 0.2 * (s - o)));
+            }
+        }
+        self.last = Some((lag, at_ms));
     }
 
     /// The offset to set after `dt` wall seconds, when it moved, and whether
@@ -218,6 +249,14 @@ impl Feeder {
         s.clock.samples += n;
         s.clock.observe(at_ms, self.epoch_ms, self.rate_hz);
         s.fed = true;
+        // (Lost all the same: counted with what the driver reported, and told once a poll.)
+        let lost = std::mem::take(&mut s.clock.unreported);
+        if lost > 0 {
+            s.unreported += lost;
+            s.dropped += lost;
+            drop(s);
+            self.meter.lock().unwrap().dropped += lost;
+        }
     }
 
     /// `dropped` samples lost: counted, and fed as silence.
@@ -459,6 +498,17 @@ impl Session {
     /// seconds since the last poll.
     fn steer_clocks(&mut self, dt: f64) {
         for i in 0..self.stats.len() {
+            let new = {
+                let mut s = self.stats[i].lock().unwrap();
+                let n = s.unreported - s.unreported_told;
+                s.unreported_told = s.unreported;
+                n
+            };
+            if new > 0 {
+                let ms = new as f64 / self.engine.sources()[i].rate_hz * 1000.0;
+                let text = format!("Source {i}: about {new} samples ({ms:.0} ms) lost without its driver saying so — the USB bus or the computer couldn't keep up");
+                self.records.push(Record::text(Level::Warning, None, text));
+            }
             let steered = self.stats[i].lock().unwrap().clock.steer(dt);
             let Some((offset, step)) = steered else { continue };
             if step {
@@ -1139,5 +1189,54 @@ mod clock_tests {
         // And 2 s lost (not reported by the driver).
         let set = run(60.0, 0.0, 30.0, 0);
         assert!((set.last().unwrap().0 - 0.02).abs() < 1e-6);
+    }
+}
+
+#[cfg(test)]
+mod unreported_tests {
+    use super::*;
+
+    /// An RTL-SDR's stream: 54.6 ms blocks at 2.4 MS/s, arriving up to 8 ms
+    /// late, its crystal 60 ppm slow; after `lose_at` s, `lose_s` of samples
+    /// simply aren't there. Returns the samples found lost unreported.
+    fn run(secs: f64, lose_at: f64, lose_s: f64) -> u64 {
+        let rate = 2_400_000.0;
+        let mut c = ClockFit { live: true, ..Default::default() };
+        let (block, mut sent, mut lost, mut x) = (131_072u64, 0u64, false, 12345u64);
+        let mut found = 0;
+        loop {
+            // Wall time the block's last sample was made at (60 ppm slow), plus the device's missing stretch.
+            let mut t = (sent + block) as f64 / (rate * (1.0 - 60e-6));
+            if lost {
+                t += lose_s;
+            }
+            if t > secs {
+                break;
+            }
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            let jitter = (x % 8000) as f64 / 1e6;
+            sent += block;
+            c.samples += block;
+            c.observe((t + 0.05 + jitter) * 1000.0, 0.0, rate);
+            found += std::mem::take(&mut c.unreported);
+            if !lost && t >= lose_at {
+                lost = true;
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn drift_and_jitter_are_no_loss() {
+        assert_eq!(run(180.0, f64::INFINITY, 0.0), 0);
+    }
+
+    #[test]
+    fn samples_missing_are_found() {
+        let n = run(180.0, 90.0, 0.02);
+        let want = (0.02 * 2_400_000.0) as u64;
+        assert!(n.abs_diff(want) < want / 10, "found {n} of {want} lost");
     }
 }

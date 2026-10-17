@@ -252,9 +252,9 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
             Source::Usrp { args, rate_hz, gain_db, agc, antenna, ppm, .. } => {
                 uhd::run(i, uhd::UsrpConfig { args, center_hz: center, rate_hz, gain_db, agc, antenna, ppm }, tx, stop)
             }
-            Source::Airspy { serial, rate_hz, gain_mode, gain_step, lna_step, mixer_step, vga_step, agc, bias_tee, ppm, .. } => {
+            Source::Airspy { serial, rate_hz, gain_mode, gain_step, lna_step, mixer_step, vga_step, agc, bias_tee, packing, ppm, .. } => {
                 let gain = airspy_gain(gain_mode, gain_step, lna_step, mixer_step, vga_step, agc);
-                airspy::run(i, airspy::AirspyConfig { serial, center_hz: center, rate_hz, gain, bias_tee, ppm }, tx, stop)
+                airspy::run(i, airspy::AirspyConfig { serial, center_hz: center, rate_hz, gain, bias_tee, packing, ppm }, tx, stop)
             }
             Source::Soapy { args, rate_hz, agc, gain_db, gains, antenna, settings, ppm, .. } => {
                 let gains = gains.into_iter().collect();
@@ -395,8 +395,10 @@ pub(crate) fn run_file(source: usize, path: &str, rate_hz: f64, realtime: bool, 
     let chunk = 32768 * bps;
     let t0 = Instant::now();
     let mut sent = 0u64;
+    let pool = crate::sdr::Pool::default();
+    let mut buf = vec![0u8; chunk];
     while !stop.load(Ordering::Relaxed) {
-        let mut buf = vec![0u8; chunk];
+        buf.resize(chunk, 0);
         let n = read_full(&mut f, &mut buf);
         if n < bps {
             break;
@@ -404,7 +406,7 @@ pub(crate) fn run_file(source: usize, path: &str, rate_hz: f64, realtime: bool, 
         buf.truncate(n - n % bps);
         sent += (buf.len() / bps) as u64;
         let msg = match format {
-            SampleFormat::Cu8 => SourceMsg::Data { source, bytes: buf, dropped: 0, at: Instant::now() },
+            SampleFormat::Cu8 => SourceMsg::Data { source, bytes: pool.copy(&buf), dropped: 0, at: Instant::now() },
             _ => SourceMsg::Iq { source, samples: trunk_app::samples::to_iq(format, &buf), dropped: 0, at: Instant::now() },
         };
         if tx.send(msg).is_err() {

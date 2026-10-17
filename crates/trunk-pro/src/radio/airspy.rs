@@ -60,6 +60,7 @@ struct Api {
     get_samplerates: unsafe extern "C" fn(Dev, *mut u32, u32) -> c_int,
     set_samplerate: unsafe extern "C" fn(Dev, u32) -> c_int,
     set_sample_type: unsafe extern "C" fn(Dev, c_int) -> c_int,
+    set_packing: unsafe extern "C" fn(Dev, u8) -> c_int,
     set_freq: unsafe extern "C" fn(Dev, u32) -> c_int,
     set_linearity_gain: unsafe extern "C" fn(Dev, u8) -> c_int,
     set_sensitivity_gain: unsafe extern "C" fn(Dev, u8) -> c_int,
@@ -104,6 +105,7 @@ fn api() -> Result<&'static Api, String> {
                 get_samplerates: f!("airspy_get_samplerates"),
                 set_samplerate: f!("airspy_set_samplerate"),
                 set_sample_type: f!("airspy_set_sample_type"),
+                set_packing: f!("airspy_set_packing"),
                 set_freq: f!("airspy_set_freq"),
                 set_linearity_gain: f!("airspy_set_linearity_gain"),
                 set_sensitivity_gain: f!("airspy_set_sensitivity_gain"),
@@ -163,6 +165,8 @@ pub struct AirspyConfig {
     pub rate_hz: f64,
     pub gain: AirspyGain,
     pub bias_tee: bool,
+    /// 12-bit packing on the USB.
+    pub packing: bool,
     pub ppm: f64,
 }
 
@@ -299,6 +303,10 @@ fn stream_once(source: usize, cfg: &AirspyConfig, tx: &SyncSender<SourceMsg>, st
             }
         }
         check(a, "bias-T", (a.set_rf_bias)(d.dev, cfg.bias_tee as u8))?;
+        // (Older firmware can't pack: it streams unpacked then, as it always did.)
+        if cfg.packing && (a.set_packing)(d.dev, 1) != 0 {
+            log::warn!("Airspy {}: this firmware can't pack samples; streaming them unpacked (a third more USB bandwidth)", if cfg.serial.is_empty() { "(first)" } else { &cfg.serial });
+        }
         let ctx = Box::new(Ctx { source, tx: tx.clone(), stop: stop.clone(), closed: AtomicBool::new(false), pool: Pool::default() });
         let ctx_ptr = &*ctx as *const Ctx as *mut c_void;
         check(a, "start", (a.start_rx)(d.dev, on_samples, ctx_ptr))?;

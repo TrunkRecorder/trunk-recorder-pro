@@ -5165,6 +5165,10 @@
             "biasTee": {
               "type": "boolean"
             },
+            "packing": {
+              "type": "boolean",
+              "description": "12-bit samples packed on the USB: a quarter less of the bus (default true)."
+            },
             "ppm": {
               "type": "number"
             }
@@ -5177,6 +5181,7 @@
             "gainStep",
             "lnaStep",
             "mixerStep",
+            "packing",
             "ppm",
             "rateHz",
             "serial",

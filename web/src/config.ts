@@ -73,7 +73,7 @@ export function newUsrp(): Source {
   return { type: "usrp", args: "", centerHz: 0, rateHz: 8_000_000, gainDb: 40, agc: false, antenna: "", ppm: 0 };
 }
 export function newAirspy(): Source {
-  return { type: "airspy", serial: "", centerHz: 0, rateHz: 6_000_000, gainMode: "linearity", gainStep: 14, lnaStep: 10, mixerStep: 10, vgaStep: 10, agc: false, biasTee: false, ppm: 0 };
+  return { type: "airspy", serial: "", centerHz: 0, rateHz: 6_000_000, gainMode: "linearity", gainStep: 14, lnaStep: 10, mixerStep: 10, vgaStep: 10, agc: false, biasTee: false, packing: true, ppm: 0 };
 }
 /** Offered for SoapySDR devices; any rate the device takes can be typed. */
 export const SOAPY_RATES = [2_000_000, 2_400_000, 2_500_000, 3_000_000, 6_000_000, 8_000_000, 10_000_000];
@@ -1013,6 +1013,7 @@ export function importTrunkRecorderConfig(
         vgaStep: clamp(vga, 15),
         agc,
         biasTee: /bias=1/.test(dev),
+        packing: true,
         ppm,
         ...autoTune,
       });

@@ -5,6 +5,15 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Airspy sample packing.** Airspys now send 12-bit samples packed over USB (`packing`, on by
+  default; **Pack samples** in Setup): a quarter less of the bus. An Airspy at 10 MSPS nearly
+  fills a USB 2.0 bus by itself; with several radios on one bus, that's what overflows.
+- **Losses a radio can't report are caught.** An RTL-SDR has no way to say its FIFO overflowed
+  (its USB bus too busy to read it in time). The recorder now notices a source's samples falling
+  behind the wall clock beyond its crystal's drift, counts them as dropped and logs "lost without
+  its driver saying so", so the dashboard's dropped count and alert cover RTL-SDRs too.
+- RTL-SDR and capture-file buffers are reused rather than allocated per transfer.
+
 - **Fewer Airspy drops.** libairspy converted the Airspy's samples to IQ on the same thread that
   drains its USB queue (about half a core at 10 MS/s), and dropped a buffer whenever that thread
   ran ~50 ms late. The recorder now asks for the raw samples and converts them on the source's
