@@ -5,6 +5,10 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **A call to a radio isn't taken for a copy of a talkgroup call.** Multi-site matched copies of a
+  call by number alone, and a unit-to-unit call's number is the radio called: one to radio 1234 on
+  one site and a call on talkgroup 1234 on another, within 3 s, were taken for one call and one of
+  them wasn't saved.
 - **Live audio follows a multi-site system across its sites.** Live audio comes from one site's
   copy of a call at a time, and the Live page's system filter asked for one site's: listening to
   site1 went quiet while site2's copy played. A site now asks for its whole system — the filter
