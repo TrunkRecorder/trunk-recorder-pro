@@ -206,14 +206,15 @@ impl MultiSite {
 impl MultiSite {
     /// Link call `c`, just granted on site `key`, with the copies of it
     /// already going on other sites of its system — the same talkgroup,
-    /// granted within [`TWIN_WINDOW_S`]. `sites`: every other site's key
+    /// granted within [`TWIN_WINDOW_S`]. (A unit-to-unit call's "talkgroup"
+    /// is the radio called: never a copy of a talkgroup's call.) `sites`: every other site's key
     /// (None: not known yet) and its calls.
     pub fn link_new<'a>(&mut self, c: &Call, key: &SiteKey, sites: impl IntoIterator<Item = (Option<SiteKey>, &'a [Call])>) {
         let twins: Vec<(CallId, u16)> = sites
             .into_iter()
             .filter(|(k, _)| k.as_ref().is_some_and(|k| k.twin(key)))
             .flat_map(|(_, calls)| calls.iter())
-            .filter(|o| o.talkgroup == c.talkgroup && (o.start_s - c.start_s).abs() <= TWIN_WINDOW_S)
+            .filter(|o| o.talkgroup == c.talkgroup && o.unit_to_unit == c.unit_to_unit && (o.start_s - c.start_s).abs() <= TWIN_WINDOW_S)
             .map(|o| (o.id, o.system))
             .collect();
         self.link(c.id, c.system, &twins);
@@ -290,6 +291,17 @@ mod tests {
         assert!(cc(856_000_000).twin(&cc(857_000_000)), "no site number: other control channels are other sites");
         assert!(!cc(856_000_000).twin(&cc(856_000_000)));
         assert!(!a.twin(&key("p25:bee00.1a3", Some((1, 4)))));
+    }
+
+    #[test]
+    fn a_call_to_a_radio_is_no_copy_of_a_talkgroup_call_of_its_number() {
+        let k = |site| key("p25:bee00.1a2", Some((1, site)));
+        let tg = |id, system, u2u| Call { talkgroup: 1234, unit_to_unit: u2u, ..call(id, system, 0.0) };
+        let mut m = MultiSite::default();
+        m.link_new(&tg(2, 1, true), &k(2), [(Some(k(1)), &[tg(1, 0, false)][..])]);
+        assert!(m.twins(2).is_empty());
+        m.link_new(&tg(4, 1, true), &k(2), [(Some(k(1)), &[tg(3, 0, true)][..])]);
+        assert_eq!(m.twins(4), [(3, 0)], "the same radio called on two sites is one call");
     }
 
     #[test]
