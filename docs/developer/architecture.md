@@ -348,12 +348,12 @@ frame:
 
 ### 5.2 Per protocol
 
-| Protocol | Carriers | Receive and decode | Site lock fields | Site group |
-|---|---|---|---|---|
-| P25 | one, hunted | `Bank` → `p25::Framer` → TSDU → `TsbkParser` | NAC, WACN, System ID, RFSS, site | `p25:<wacn>.<sysid>` |
-| SmartNet | one, hunted | `Fsk2` → OSW framer → `smartnet::Parser` | System ID, site | `smartnet:<sysid>` |
-| DMR | every carrier, watched | `C4fm::dmr` per carrier → bursts → CSBK / LC | none (colour code gate) | none (configured only) |
-| NXDN | every carrier, watched | `C4fm` (NXDN) → frames → CAC / SACCH → layer 3 | Type-C: System ID, site; Type-D: none | `nxdn:<sysid>` |
+| Protocol | Carriers | Receive and decode | Site lock fields |
+|---|---|---|---|
+| P25 | one, hunted | `Bank` → `p25::Framer` → TSDU → `TsbkParser` | NAC, WACN, System ID, RFSS, site |
+| SmartNet | one, hunted | `Fsk2` → OSW framer → `smartnet::Parser` | System ID, site |
+| DMR | every carrier, watched | `C4fm::dmr` per carrier → bursts → CSBK / LC | none (colour code gate) |
+| NXDN | every carrier, watched | `C4fm` (NXDN) → frames → CAC / SACCH → layer 3 | Type-C: System ID, site; Type-D: none |
 
 `CarrierPlan::Hunt` (P25, SmartNet) listens to one control channel at a time and moves through
 the list. `CarrierPlan::Watch` (DMR, NXDN) opens a head on every listed carrier at once.
@@ -528,9 +528,10 @@ removed and its number returned to `free_nums`.
 
 ### 6.6 Multi-site
 
-`trunk/multisite.rs`. Sites are twins when they are in the same site group but not the same
-site or control channel. A call that starts on a twin site with the same talkgroup within 3 s is
-linked into one conversation. **Every copy is recorded.** Live audio comes from one copy until it
+`trunk/multisite.rs`. Sites are twins when they are sites of one system (the same short name
+in `EngineConfig::sites`); nothing is grouped from what the control channels announce. A call
+that starts on a twin site with the same talkgroup (or, unit to unit, the same radio called)
+within 3 s is linked into one conversation, from the first grant. **Every copy is recorded.** Live audio comes from one copy until it
 has been quiet 0.5 s. When the last copy ends, one is kept: the talkgroup's preferred site if its
 clean voice is at least 90 % of the best, otherwise the most clean voice, then fewest FEC errors,
 then earliest start. The others become `Duplicate` events.
@@ -859,16 +860,16 @@ call JSON + WAV on disk → `HostMessage::CallConcluded` → plugin → `PluginM
 | `Duplicate` | `call`, `kept` | another site's copy kept |
 | `ConvSkipped` | `freq_hz`, `code` | conventional traffic no row took |
 
-**`Status`**: `now_s`, `systems: Vec<SystemStatus>`, `active_calls`, `recording`,
+**`Status`**: `now_s`, `sites: Vec<SiteStatus>`, `active_calls`, `recording`,
 `channels_open`, `conventional_open`, `calls_concluded`, `sources: Vec<SourceTune
 { error_ppm, applied_ppm }>`.
 
-**`SystemStatus`**: `system`, `short_name`, `now_s`, `control_channel_hz`, `identity`, `good`,
-`bad`, `modulation`, `active_calls`, `recording`, `calls_concluded`, `mismatch`,
-`adjacent: Vec<AdjacentSite { sys_id, rfss, site, freq_hz }>`, `patches`,
-`protocol: ProtocolStatus`, `site_group`.
+**`SiteStatus`**: `site`, `system`, `short_name`, `site_name`, `now_s`, `control_channel_hz`,
+`identity`, `good`, `bad`, `modulation`, `active_calls`, `recording`, `calls_concluded`,
+`mismatch`, `adjacent: Vec<AdjacentSite { sys_id, rfss, site, freq_hz }>`, `patches`,
+`protocol: ProtocolStatus`. The session's `status` message groups them by system.
 
-**`ChannelSnapshot`**: `system`, `freq_hz`, `source`, `kind` (control | voice | carrier |
+**`ChannelSnapshot`**: `site`, `freq_hz`, `source`, `kind` (control | voice | carrier |
 conventional), `power_db`, `noise_db`, `offset_hz`, `quality`, `phase_err`, `calls`.
 
 ### 9.5 Session output (`trunk-app/src/session.rs`)
@@ -899,7 +900,8 @@ none), `decrypted`, `call_length`,
 `call_length_ms`, `talkgroup`, `talkgroup_tag`, `talkgroup_description`,
 `talkgroup_group_tag`, `talkgroup_group`, `color_code` (−1 if none), `ran` (−1 if none),
 `tone_mode`, `tone_detected`, `tone_confidence`, `audio_type` (analog | digital tdma |
-digital), `short_name`, `patched_talkgroups` (only when more than one), `freqList` [{freq,
+digital), `short_name`, `site` (the site's name; none for conventional), `patched_talkgroups`
+(only when more than one), `freqList` [{freq,
 time, pos, len, error_count, spike_count}], `errorList` [{pos, len, frames, error_count,
 bad_frames, max_frame_errors}], `srcList` [{src, time, pos, emergency, encrypted, duplex, mode,
 priority, signal_system, tag, tag_ota, lat?, lon?}] (each source's own flags: what its
@@ -918,11 +920,11 @@ Constants: `API_VERSION` = 1, `EXIT_CONFIG` = 78, conventional system index base
 | `type` | Payload fields |
 |---|---|
 | `hello` | `api`, `host { name, version }`, `config`, `systems: [SystemInfo { index, short_name, kind, config }]`, `capture_dir`, `data_dir`, `audio_formats` |
-| `call.start`, `call.end` | `CallInfo { id, system, short_name, talkgroup, talkgroup_tag, freq_hz, tdma_slot, analog, encrypted, algid, key_id, decrypted, emergency, duplex, packet, priority, recording, reason, start_time, units, sources: [CallSource { unit, time, emergency, encrypted, duplex, packet, priority }], patched_talkgroups }` |
+| `call.start`, `call.end` | once per call, from its first copy: `CallInfo { id, system, short_name, site, talkgroup, talkgroup_tag, freq_hz, tdma_slot, analog, encrypted, algid, key_id, decrypted, emergency, duplex, packet, priority, recording, reason, start_time, units, sources: [CallSource { unit, time, emergency, encrypted, duplex, packet, priority }], patched_talkgroups }` |
 | `call.concluded` | `path`, `system`, `call: CallRecord` (the call JSON), `files { json, wav, m4a }` |
-| `unit` | `system`, `short_name`, `kind` (registration, deregistration, affiliation, acknowledge, location, data_grant, answer_request, call_alert, emergency_alarm), `unit`, `talkgroup`, `emergency`, `time` |
+| `unit` | `system`, `short_name`, `site`, `kind` (registration, deregistration, affiliation, acknowledge, location, data_grant, answer_request, call_alert, emergency_alarm), `unit`, `talkgroup`, `emergency`, `time` |
 | `audio` | `call_id`, `system`, `short_name`, `talkgroup`, `sample_rate`, `pcm` (base64 i16 LE) |
-| `status` | `time`, `systems [{ index, short_name, control_channel_hz, decode_rate, active_calls, recording, nac, wacn, sys_id, rfss, site }]` (the identity fields once the control channel has stated them) |
+| `status` | `time`, `systems [{ index, short_name, site_name, control_channel_hz, decode_rate, active_calls, recording, nac, wacn, sys_id, rfss, site }]` (one entry per site; the identity fields once the control channel has stated them) |
 | `shutdown` | `grace_s` |
 
 **`PluginMessage`** (tag `type`): `ready`; `log { level, message }`; `status { state: ok |
@@ -952,7 +954,7 @@ last_error_text, endpoints [{ name, state, latency_ms, last_ok, last_error }], e
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `sources` | array | one RTL-SDR at 2.4 MSPS, auto centre | radios and capture files |
-| `systems` | array | `[]` | trunked systems, one entry per site |
+| `systems` | array | `[]` | trunked systems, each with its `sites` |
 | `conventional` | array | `[]` | conventional systems (≤ 256) |
 | `recording` | object | see 10.6 | where and how calls are saved |
 | `server` | object | see 10.8 | web server |
@@ -981,21 +983,35 @@ last_error_text, endpoints [{ name, state, latency_ms, last_ok, last_error }], e
 | `name` | "" | display name |
 | `type` | `p25` | `p25`, `smartnet`, `dmr`, `nxdn` |
 | `enabled` | true | |
-| `controlChannelsHz` | [] | P25/SmartNet: hunted in order; DMR/NXDN: all watched |
-| `modulation` | `auto` | `auto`, `fsk4`, `qpsk` (P25 receiver bank) |
 | `talkgroupsCsv` / `talkgroupsName` | "" | talkgroup file contents and its name |
 | `unitNames` | — | `{csv, name, mode: user / ota / user_only / none}` |
+| `recording` | {} | per-system overrides (10.7) |
+| `plugins` | {} | per-system plugin settings; an array = several copies |
+| `pluginDelays`, `keys` | | plugin delays; the key source it decrypts with |
+| SmartNet / NXDN | | `defaultMode` (analog / digital); `nxdnType` (typeC / typeD) |
+| `sites` | [] | where it is recorded from, below |
+
+Each of `sites[]`:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `name` | the system's `shortName` | unique in its system: Preferred Site, call JSON `site`, band plan file, its stats |
+| `enabled` | true | |
+| `controlChannelsHz` | [] | P25/SmartNet: hunted in order; DMR/NXDN: all watched |
+| `modulation` | `auto` | `auto`, `fsk4`, `qpsk` (P25 receiver bank) |
 | `expect` | {} | site lock: `nac`, `wacn`, `sysId`, `rfss`, `site` (decimal) |
 | `voiceChannelsHz` | [] | from the survey; only for auto-centring |
-| `recording` | {} | per-system overrides (10.7) |
-| `siteGroup` | "" | multi-site grouping |
-| `plugins` | {} | per-system plugin settings; an array = several copies |
-| SmartNet | | `bandplan` (800_standard, 800_reband, 800_splinter, 900, obt…), `bandplanBaseHz`, `bandplanSpacingHz`, `bandplanOffset`, `bandplanHighHz`, `defaultMode` (analog / digital) |
+| SmartNet | | `bandplan` (800_standard, 800_reband, 800_splinter, 900, obt…), `bandplanBaseHz`, `bandplanSpacingHz`, `bandplanOffset`, `bandplanHighHz` |
 | DMR | | `lcnTableHz` {LCN: Hz}, `dmrChannelsHz`, `colorCode` |
-| NXDN | | `nxdnType` (typeC / typeD), `nxdnRate` (nxdn48 / nxdn96), `nxdnChannelsHz`, `ran`, `lcnTableHz` |
+| NXDN | | `nxdnRate` (nxdn48 / nxdn96), `nxdnChannelsHz`, `ran`, `lcnTableHz` |
 
-A system is **active** when it is enabled and has at least one control channel. Active systems
-are numbered 0, 1, … in config order; that number is `Call.system`.
+A site is **active** when it is enabled and has at least one control channel; a system is
+active when it is enabled and has an active site. Active systems are numbered 0, 1, … in config
+order (`Call.system`), and their active sites 0, 1, … system by system (`Call.site`).
+
+An older config (each system one site, joined by `siteGroup` or by site locks naming one
+system) is rewritten on load by `config::migrate_sites`, the old file kept as
+`config.json.before-sites`.
 
 ### 10.5 `conventional[]`
 
@@ -1060,9 +1076,9 @@ the old list form `[{name, path}]` is read as this map, and `home` is dropped).
 
 ### 10.10 From config to engine
 
-`Config::engine_config` builds trunk-core's `EngineConfig`: active systems → `SystemConfig`
-(control channels, `CallConfig`, `SaveRules`, talkgroups, unit tags, receiver bank, `expect`,
-protocol, site group); every conventional entry → `ConvSystem`; enabled channels →
+`Config::engine_config` builds trunk-core's `EngineConfig`: each active site → a `SiteConfig`
+(its system's short name and its own site name, control channels, receiver bank, `expect`,
+protocol; and its system's `CallConfig`, `SaveRules`, talkgroups, unit tags and keys); every conventional entry → `ConvSystem`; enabled channels →
 conventional channel rows; sources with resolved centres; `prerollS`, `maxRecorders`,
 `captureFrames`, `dropDuplicateCalls`, `vocoder`. File names, archive rules, M4A, spool,
 server, log, monitor and plugins stay in the platform.
@@ -1119,18 +1135,21 @@ Category, Squelch dB, Enable`.
   ],
   "systems": [
     {
-      "shortName": "county-p25", "name": "County Public Safety (Site 3)", "type": "p25",
-      "enabled": true, "controlChannelsHz": [851012500, 851262500], "modulation": "auto",
+      "shortName": "county-p25", "name": "County Public Safety", "type": "p25", "enabled": true,
       "talkgroupsCsv": "Decimal,Hex,Mode,Alpha Tag,Description,Tag,Category\n1201,4b1,D,FD Disp,Fire Dispatch,Fire Dispatch,County Fire\n",
       "talkgroupsName": "county.csv",
-      "expect": { "nac": 659, "wacn": 781824, "sysId": 989, "rfss": 1, "site": 3 },
+      "sites": [
+        { "name": "site3", "controlChannelsHz": [851012500, 851262500], "modulation": "auto",
+          "expect": { "nac": 659, "wacn": 781824, "sysId": 989, "rfss": 1, "site": 3 } },
+        { "name": "site5", "controlChannelsHz": [852137500],
+          "expect": { "nac": 659, "wacn": 781824, "sysId": 989, "rfss": 1, "site": 5 } }
+      ],
       "recording": { "minCallS": 1, "recordUnknown": false },
       "plugins": { "openmhz": { "apiKey": "REPLACE_ME", "systemName": "countyp25" } }
     },
     {
-      "shortName": "city-smartnet", "type": "smartnet", "enabled": true,
-      "controlChannelsHz": [851637500], "bandplan": "800_reband", "defaultMode": "analog",
-      "expect": { "sysId": 18205 }
+      "shortName": "city-smartnet", "type": "smartnet", "enabled": true, "defaultMode": "analog",
+      "sites": [{ "controlChannelsHz": [851637500], "bandplan": "800_reband", "expect": { "sysId": 18205 } }]
     }
   ],
   "conventional": [
@@ -1216,7 +1235,9 @@ A system's identity is its `shortName`. The numbers below are per-run handles, n
 | Name | Indexes | Used by |
 |---|---|---|
 | Position in `config.systems` | every configured system | the Setup cards |
-| Engine system index (`Call::system`) | active systems only | calls, events, live-audio frames, plugin `system` |
+| Engine system index (`Call::system`) | active systems only | calls, events, live-audio frames, plugin `system`, `status.systems[].index` |
+| Engine site index (`Call::site`) | active sites, system by system | calls, control channel events, `status.systems[].sites[].index` |
+| A site's `name` | unique in its system | Preferred Site, call JSON `site`, band plan files, control channel stats |
 | Conventional system id | 65535 − k | calls and plugins |
 | `shortName` | every system, unique | folders, files, plugin settings, what plugins key on |
 | `CallId` | one sequence for every system | `call_num` in the JSON |
@@ -1251,7 +1272,8 @@ asks.
 - **`Sink`**: `counter(name, total)` is a running total (it may restart at 0 when a part is
   replaced, such as a retuned control channel) that the reader turns into a rate; `gauge(name,
   value)` is a current value. Names are `/`-separated and become series keys, for example
-  `sys/<shortName>/cc/good`; renaming one loses its history.
+  `sys/<shortName>/cc/good` (a site with a name of its own:
+  `sys/<shortName>/site/<site>/cc/good`); renaming one loses its history.
 - **`Aggregator`**: rates from counters; each series' value now; per minute its average, lowest
   and highest. A rollup line is `{"t": minute, "s": {key: [avg, min, max]}}`.
 - **`History`**: a minute grid per series, a week in memory. `statsQuery` takes names or prefixes

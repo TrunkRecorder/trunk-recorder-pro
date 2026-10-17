@@ -10,6 +10,7 @@ pub mod filename;
 pub mod heard;
 pub mod keys;
 pub mod log;
+pub mod migrate;
 pub mod profile;
 pub mod samples;
 pub mod session;

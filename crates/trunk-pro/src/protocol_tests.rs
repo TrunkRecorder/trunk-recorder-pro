@@ -343,9 +343,9 @@ fn the_servers_messages() {
             { "type": "file", "path": "x.cu8", "centerHz": 851000000, "rateHz": 2400000, "realtime": true, "format": "cu8" }
         ],
         "systems": [
-            { "shortName": "p25", "controlChannelsHz": [851012500], "recording": { "minCallS": 2 }, "siteGroup": "g" },
-            { "shortName": "dmr", "type": "dmr", "controlChannelsHz": [452175000], "lcnTableHz": { "101": 452275000 }, "colorCode": 1 },
-            { "shortName": "smartnet", "type": "smartnet", "controlChannelsHz": [856112500], "bandplan": "800_standard" }
+            { "shortName": "p25", "recording": { "minCallS": 2 }, "sites": [{ "controlChannelsHz": [851012500] }, { "name": "p25-2", "controlChannelsHz": [851512500] }] },
+            { "shortName": "dmr", "type": "dmr", "sites": [{ "controlChannelsHz": [452175000], "lcnTableHz": { "101": 452275000 }, "colorCode": 1 }] },
+            { "shortName": "smartnet", "type": "smartnet", "sites": [{ "controlChannelsHz": [856112500], "bandplan": "800_standard" }] }
         ]
     }))
     .unwrap();
@@ -544,7 +544,7 @@ fn a_key_container_is_unlocked_and_locked_from_the_interface() {
     let ekc = concat!(env!("CARGO_MANIFEST_DIR"), "/../trunk-app/src/testdata/dummy-test-keys.ekc");
     let mut cfg = Config::default();
     cfg.keys.insert("county".into(), crate::config::KeySource { file: ekc.into(), ..Default::default() });
-    cfg.systems.push(crate::config::System { short_name: "fire".into(), keys: "county".into(), control_channels_hz: vec![851_012_500.0], ..Default::default() });
+    cfg.systems.push(crate::config::System { keys: "county".into(), ..crate::config::System::one_site("fire", crate::config::Site { control_channels_hz: vec![851_012_500.0], ..Default::default() }) });
     let c = ctx(cfg.clone(), &dir);
     let unlocked = |c: &crate::runtime::Ctx| crate::unlock::status_json(c)["sources"][0]["unlocked"].as_bool();
     assert_eq!(crate::unlock::status_json(&c)["sources"][0]["systems"], json!(["fire"]));

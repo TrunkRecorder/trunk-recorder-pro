@@ -39,9 +39,23 @@ import type {
   SurveyBand,
   SurveyState,
   SurveySuggestion,
+  Site,
   System,
 } from "./protocol.ts";
-import { type ImportTodo, activeSystems, newConventional, newSystem, resolvedCenters, sameSystem, siteName, sourceCovering, usableHalfWidth } from "./config.ts";
+import {
+  type ImportTodo,
+  activeSites,
+  newConventional,
+  newSiteName,
+  newSystem,
+  normalizeSite,
+  resolvedCenters,
+  sameSystem,
+  shortNameFor,
+  siteNameOf,
+  sourceCovering,
+  usableHalfWidth,
+} from "./config.ts";
 import { WsTransport, type CallExt, type Transport } from "./transport.ts";
 import { parseUnitsCsv, type UnitAliases } from "./units.ts";
 import { withIgnore } from "./talkgroups.ts";
@@ -890,36 +904,79 @@ export function stopSurvey(): void {
 
 /** What applying a survey result did to source `i`. */
 export interface SurveyApplied {
+  /** What it went into: "dcfd", or "dcfd-1-3, a site of dcfd". */
   system: string;
   /** The source's centre moved to cover it (false: other systems rely on where it is). */
   centered: boolean;
 }
 
+/** Where a survey result goes: a new system, or system `system`'s site `site` (replaced) or a new site of it. */
+export type SurveyTarget = "new" | { system: number; site: number | "new" };
+
 /**
- * Put what the survey found into the config: a system (new, or `target`
- * replaced) with its control channels, site identity and voice channels; and
- * source `i`'s ppm and gain, and its centre — unless another system is
- * covered only where that source is now.
+ * The system (index) a site with this identity is of, already set up: one
+ * of its sites is locked to the same WACN and System ID, or the running
+ * recorder hears one say so. -1: none.
  */
-export function applySurvey(i: number, sug: SurveySuggestion, target: number | "new"): SurveyApplied {
+export function systemOfSite(c: Config, id: SiteIdentity): number {
+  const live = state.status?.systems ?? [];
+  return c.systems.findIndex(
+    (sys) => sys.sites.some((x) => sameSystem(x.expect, id)) || !!live.find((y) => y.shortName === sys.shortName)?.sites.some((x) => sameSystem(x.identity, id)),
+  );
+}
+
+/** A new site of `sys` (not yet in it): `patch`, with its first site's modulation, band plan and NXDN rate. */
+export function newSiteOf(sys: System, patch: Partial<Site>): Site {
+  const first = sys.sites[0];
+  const like: Partial<Site> = first
+    ? {
+        modulation: first.modulation,
+        ...(first.bandplan ? { bandplan: first.bandplan } : {}),
+        ...(first.bandplanBaseHz ? { bandplanBaseHz: first.bandplanBaseHz } : {}),
+        ...(first.bandplanSpacingHz ? { bandplanSpacingHz: first.bandplanSpacingHz } : {}),
+        ...(first.bandplanOffset ? { bandplanOffset: first.bandplanOffset } : {}),
+        ...(first.bandplanHighHz ? { bandplanHighHz: first.bandplanHighHz } : {}),
+        ...(first.nxdnRate ? { nxdnRate: first.nxdnRate } : {}),
+      }
+    : {};
+  return normalizeSite({ ...like, name: newSiteName(sys), ...patch }, sys);
+}
+
+/** "dcfd-1-3, a site of dcfd"; a system's only site, the system. */
+const siteLabel = (sys: System, site: Site) => (sys.sites.length > 1 ? `${siteNameOf(sys, site)}, a site of ${sys.shortName}` : sys.shortName);
+
+/**
+ * Put what the survey found into the config: a site (of a new system, a new
+ * site of `target`'s system, or `target`'s site replaced) with its control
+ * channels, site identity and voice channels; and source `i`'s ppm and gain,
+ * and its centre — unless another site is covered only where that source is now.
+ */
+export function applySurvey(i: number, sug: SurveySuggestion, target: SurveyTarget): SurveyApplied {
   let applied: SurveyApplied = { system: "", centered: false };
   updateConfig((c) => {
     const expect: SiteIdentity = { nac: sug.nac, wacn: sug.wacn, sysId: sug.sysId, rfss: sug.rfss, site: sug.site };
     const b = sug.type === "smartnet" ? sug.bandplan : null;
-    const smartnet: Partial<System> = b
-      ? { type: "smartnet", bandplan: b.bandplan, bandplanBaseHz: b.bandplanBase, bandplanSpacingHz: b.bandplanSpacing, bandplanOffset: b.bandplanOffset, bandplanHighHz: b.bandplanHigh }
-      : { type: "p25" };
-    const fields: Partial<System> = { controlChannelsHz: sug.controlChannels, expect, voiceChannelsHz: sug.voiceChannels, enabled: true, ...smartnet };
-    let sys: System;
-    if (target === "new" || !c.systems[target]) {
-      // Another site of a system already here: same talkgroups.
-      const sibling = c.systems.find((x) => sameSystem(x.expect, expect) && x.talkgroupsCsv);
-      sys = newSystem(c, { shortName: siteName(c, expect, sug.type === "smartnet"), ...fields, talkgroupsCsv: sibling?.talkgroupsCsv ?? "", talkgroupsName: sibling?.talkgroupsName ?? "" });
+    const type = sug.type === "smartnet" ? "smartnet" : "p25";
+    const band: Partial<Site> = b
+      ? { bandplan: b.bandplan, bandplanBaseHz: b.bandplanBase, bandplanSpacingHz: b.bandplanSpacing, bandplanOffset: b.bandplanOffset, bandplanHighHz: b.bandplanHigh }
+      : {};
+    const fields: Partial<Site> = { controlChannelsHz: sug.controlChannels, expect, voiceChannelsHz: sug.voiceChannels, enabled: true, ...band };
+    let sys = target === "new" ? undefined : c.systems[target.system];
+    let site: Site;
+    if (!sys || target === "new") {
+      sys = newSystem(c, { shortName: shortNameFor(c, expect, type === "smartnet"), type, ...fields });
       c.systems.push(sys);
+      site = sys.sites[0];
+    } else if (target.site !== "new" && sys.sites[target.site]) {
+      // Replaced: its name and modulation stay.
+      sys.type = type;
+      site = normalizeSite({ ...sys.sites[target.site], ...fields }, sys);
+      sys.sites[target.site] = site;
     } else {
-      sys = c.systems[target];
-      Object.assign(sys, fields);
+      site = newSiteOf(sys, { name: newSiteName(sys, expect), ...fields });
+      sys.sites.push(site);
     }
+    sys.enabled = true;
     const src = c.sources[i];
     let centered = false;
     if (src && src.type !== "file") {
@@ -928,11 +985,11 @@ export function applySurvey(i: number, sug: SurveySuggestion, target: number | "
         src.gainDb = sug.gainDb;
         src.agc = false;
       }
-      // Don't strand another system that only this source covers now.
+      // Don't strand another site that only this source covers now.
       const centers = resolvedCenters(c);
       const within = (f: number) => Math.abs(f - sug.centerHz) <= usableHalfWidth(src.rateHz, src.guardHz);
-      const stranded = activeSystems(c).some((x) => {
-        if (x === sys) return false;
+      const stranded = activeSites(c).some(({ site: x }) => {
+        if (x === site) return false;
         const on = x.controlChannelsHz.map((f) => sourceCovering(c, centers, f));
         const onlyHere = on.includes(i) && !on.some((k) => k >= 0 && k !== i);
         return onlyHere && !x.controlChannelsHz.some(within);
@@ -942,25 +999,29 @@ export function applySurvey(i: number, sug: SurveySuggestion, target: number | "
         centered = true;
       }
     }
-    applied = { system: sys.shortName, centered };
+    applied = { system: siteLabel(sys, site), centered };
   });
   set({ configEpoch: state.configEpoch + 1 });
   return applied;
 }
 
-/** Add a site (a neighbour the control channel announced, or a scanned control channel) as a system. */
+/**
+ * Add a site (a neighbour the control channel announced, or a scanned
+ * control channel): to the system it is of, if that is set up, else as a new
+ * system. What it went into ("dcfd-1-3, a site of dcfd").
+ */
 export function addSite(controlChannels: number[], expect: SiteIdentity): string {
   let name = "";
   updateConfig((c) => {
-    const sibling = c.systems.find((x) => sameSystem(x.expect, expect) || (expect.sysId != null && x.expect.sysId === expect.sysId && x.talkgroupsCsv));
-    const sys = newSystem(c, {
-      shortName: siteName(c, expect),
-      controlChannelsHz: controlChannels,
-      expect,
-      modulation: sibling?.modulation ?? "auto",
-      talkgroupsCsv: sibling?.talkgroupsCsv ?? "",
-      talkgroupsName: sibling?.talkgroupsName ?? "",
-    });
+    const k = systemOfSite(c, expect);
+    if (k >= 0) {
+      const sys = c.systems[k];
+      const site = newSiteOf(sys, { name: newSiteName(sys, expect), controlChannelsHz: controlChannels, expect });
+      sys.sites.push(site);
+      name = siteLabel(sys, site);
+      return;
+    }
+    const sys = newSystem(c, { shortName: shortNameFor(c, expect), controlChannelsHz: controlChannels, expect });
     c.systems.push(sys);
     name = sys.shortName;
   });

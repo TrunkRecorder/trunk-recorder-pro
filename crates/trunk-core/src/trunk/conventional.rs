@@ -994,7 +994,9 @@ impl Conventional {
             let dur = h.audio.len() as f64 / fm::AUDIO_RATE;
             let start = h.air.map_or_else(|| (now_s - dur).max(o.opened_s - 0.05), |a| a.0);
             let call = Call {
+                site: conventional_system(ch.cfg.system),
                 system: conventional_system(ch.cfg.system),
+                twin: false,
                 id: ids.next(),
                 talkgroup: tg,
                 freq_hz: ch.cfg.freq_hz.round() as u64,

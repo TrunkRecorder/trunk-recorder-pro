@@ -70,7 +70,7 @@ with `--config` files in different folders never share band plans, talker aliase
 | Key | Required | Default | Type | Description |
 |---|:---:|---|---|---|
 | `sources` | | one RTL-SDR | array | Radios and capture files. [sources.md](sources.md) |
-| `systems` | | `[]` | array | Trunked systems, one entry per site. [systems.md](systems.md) |
+| `systems` | | `[]` | array | Trunked systems, each with its sites. [systems.md](systems.md) |
 | `conventional` | | `[]` | array | Conventional systems, each a group of single-frequency channels. [conventional.md](conventional.md) |
 | `recording` | | see page | object | Where calls go and which are kept. [recording.md](recording.md) |
 | `server` | | see page | object | The built-in interface's address and port; the other interfaces, each on a port of its own. [server-and-log.md](server-and-log.md#server) |
@@ -89,7 +89,7 @@ One RTL-SDR placed automatically, one P25 system, recordings in a folder of your
     { "type": "rtlsdr", "serial": "", "centerHz": 0, "rateHz": 2400000, "ppm": 0 }
   ],
   "systems": [
-    { "shortName": "dcfd", "type": "p25", "controlChannelsHz": [857987500, 858987500] }
+    { "shortName": "dcfd", "type": "p25", "sites": [{ "controlChannelsHz": [857987500, 858987500] }] }
   ],
   "recording": { "captureDir": "/home/me/TrunkRecorderPro" }
 }
@@ -119,24 +119,24 @@ the example.
       "shortName": "dcfd",
       "name": "DC Fire and EMS",
       "type": "p25",
-      "controlChannelsHz": [857987500, 858987500],
-      "modulation": "auto",
+      "sites": [{ "controlChannelsHz": [857987500, 858987500], "modulation": "auto", "expect": { "nac": 1091 } }],
       "talkgroupsCsv": "Decimal,Hex,Mode,Alpha Tag,Description,Tag,Category\n1201,4b1,D,FD Disp,Fire Dispatch,Fire Dispatch,DC Fire\n",
       "talkgroupsName": "dcfd.csv",
-      "expect": { "nac": 1091 },
       "recording": { "minCallS": 1 },
       "plugins": { "openmhz": { "apiKey": "...", "systemName": "dcfd" } }
     },
     {
       "shortName": "wmata",
       "type": "smartnet",
-      "controlChannelsHz": [489087500],
-      "bandplan": "400_custom",
-      "bandplanBaseHz": 489012500,
-      "bandplanSpacingHz": 12500,
-      "bandplanOffset": 380,
-      "bandplanHighHz": 490000000,
-      "defaultMode": "analog"
+      "defaultMode": "analog",
+      "sites": [{
+        "controlChannelsHz": [489087500],
+        "bandplan": "400_custom",
+        "bandplanBaseHz": 489012500,
+        "bandplanSpacingHz": 12500,
+        "bandplanOffset": 380,
+        "bandplanHighHz": 490000000
+      }]
     }
   ],
   "conventional": [
@@ -199,7 +199,8 @@ Recording won't start if:
   `bandplanSpacingHz` or `bandplanHighHz`, or has the high frequency at or below the base;
 - a DMR or NXDN system has a control channel, `dmrChannelsHz` or `nxdnChannelsHz` frequency outside
   every source's usable bandwidth;
-- a trunked system has no control channel inside any source's usable bandwidth;
+- a trunked system's site has no control channel inside any source's usable bandwidth;
+- two sites of one system have the same name;
 - there are more than 256 conventional systems;
 - an enabled conventional frequency is in two conventional systems, is 0 or less, or is outside every
   source's usable bandwidth;

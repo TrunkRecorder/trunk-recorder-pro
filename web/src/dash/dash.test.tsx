@@ -6,78 +6,63 @@ import { test } from "node:test";
 import { renderToString } from "react-dom/server";
 import { defaultConfig, newSystem } from "../config.ts";
 import { setView, snapshot, transport } from "../controller.ts";
-import type { Config, EngineStatus, FromRecorder, Identity, System, SystemStatus } from "../protocol.ts";
+import type { CallView, Config, EngineStatus, FromRecorder, Identity, SiteStatus, SystemStatus } from "../protocol.ts";
 import { LivePage } from "./Calls.tsx";
 import { DecodePage } from "./Decode.tsx";
 import { Overview } from "./Overview.tsx";
 
-function config(...systems: Partial<System>[]): Config {
-  const c = defaultConfig();
-  systems.forEach((x, i) => c.systems.push(newSystem(c, { controlChannelsHz: [851_000_000 + i * 25_000], ...x })));
-  return c;
-}
+const site = (index: number, name: string, identity: Partial<Identity>): SiteStatus => ({
+  index, name, nowS: 10, controlChannelHz: 851_000_000 + index * 500_000,
+  identity: { nac: 0x1f1, wacn: 0xbee00, sysId: 0x1a2, rfss: 1, site: null, ...identity },
+  good: 100, bad: 0, modulation: null, activeCalls: 0, recording: 0, callsConcluded: 0, mismatch: null, adjacent: [],
+});
+const system = (index: number, shortName: string, sites: SiteStatus[]): SystemStatus => ({ index, shortName, activeCalls: 0, recording: 0, callsConcluded: 0, sites });
 
-function status(shortName: string, index: number, siteGroup: string | null, identity: Partial<Identity>): SystemStatus {
-  return {
-    index, shortName, nowS: 10, controlChannelHz: 851_000_000 + index * 25_000,
-    identity: { nac: 0x1f1, wacn: null, sysId: null, rfss: 1, site: null, ...identity },
-    good: 100, bad: 0, modulation: null, activeCalls: 0, recording: 0, callsConcluded: 0, mismatch: null, adjacent: [], siteGroup,
-  };
-}
-
-/** The recorder says hello with `c` and is running these systems. */
-function running(c: Config, systems: SystemStatus[]): void {
+/** The recorder says hello with `c` and is running these systems, these calls on the air. */
+function running(c: Config, systems: SystemStatus[], calls: Partial<CallView>[] = []): void {
   const hello = { type: "hello", version: "test", platform: "test", config: c, devices: [], history: [], phase: { type: "state", phase: "running", error: null, ended: false } };
   transport.onMessage(hello as unknown as FromRecorder);
-  transport.onMessage({ type: "status", status: { systems, recording: 0 } as unknown as EngineStatus, sources: [], load: 0, calls: [] });
+  transport.onMessage({ type: "status", status: { systems, recording: 0 } as unknown as EngineStatus, sources: [], load: 0, calls: calls as CallView[] });
 }
 
-/** The DCFD-like case: two sites of one P25 system set up apart, another system between them. */
-function twoSites(): void {
-  const c = config({ shortName: "site1" }, { shortName: "other" }, { shortName: "site2" });
-  running(c, [status("site1", 0, "p25:bee00.1a2", { wacn: 0xbee00, sysId: 0x1a2, site: 1 }), status("other", 1, "p25:bee00.999", { wacn: 0xbee00, sysId: 0x999, site: 1 }), status("site2", 2, "p25:bee00.1a2", { wacn: 0xbee00, sysId: 0x1a2, site: 2 })]);
+/** dcfd, a system of two sites (dcfd and south), and another of one. */
+function twoSites(calls: Partial<CallView>[] = []): void {
+  const c = defaultConfig();
+  const dcfd = newSystem(c, { shortName: "dcfd", controlChannelsHz: [851_000_000] });
+  dcfd.sites.push({ ...dcfd.sites[0], name: "south", controlChannelsHz: [851_500_000] });
+  c.systems.push(dcfd, newSystem(c, { shortName: "other", controlChannelsHz: [852_000_000] }));
+  running(c, [system(0, "dcfd", [site(0, "dcfd", { site: 1 }), site(1, "south", { site: 2 })]), system(1, "other", [site(2, "other", { sysId: 0x999, site: 1 })])], calls);
 }
 
 const text = (html: string) => html.replace(/<!-- -->/g, "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
 const titles = (html: string) => [...html.matchAll(/<h3>(.*?)<\/h3>/g)].map((m) => text(m[1]).trim());
 
-test("Overview: each site of a multi-site system says which others it is recorded with", () => {
+test("Overview: a card per system; one of several sites has a row per site", () => {
   twoSites();
   setView("overview");
-  const page = text(renderToString(<Overview />));
-  assert.match(page, /multi-site with site2/);
-  assert.match(page, /multi-site with site1/);
-  assert.doesNotMatch(page, /multi-site with other/);
-  assert.equal(page.match(/multi-site with/g)?.length, 2, "the system on its own has no chip");
+  const html = renderToString(<Overview />);
+  assert.deepEqual(titles(html).filter((x) => ["dcfd", "south", "other"].includes(x)), ["dcfd", "other"], "a site isn't a card of its own");
+  const page = text(html);
+  assert.match(page, /Control channels .* 2 sites/);
+  assert.match(page, /dcfd 851\.0+ .* south 851\.5+/);
+  assert.match(page, /other P25 Control channel — msg\/s … · 852\.0+ MHz/, "a system of one site, as before");
 });
 
-test("Overview: the sites of one system are next to each other", () => {
+test("Decode: a card per site; a system's page picks the site", () => {
   twoSites();
-  setView("overview");
-  const shown = titles(renderToString(<Overview />)).filter((x) => ["site1", "site2", "other"].includes(x));
-  assert.deepEqual(shown, ["site1", "site2", "other"]);
+  setView("decode");
+  assert.deepEqual(titles(renderToString(<DecodePage />)), ["dcfd / dcfd", "dcfd / south", "other"]);
+  setView("decode", "dcfd", "south");
+  const page = text(renderToString(<DecodePage />));
+  assert.match(page, /All systems dcfd south dcfd \/ south .* 851\.50+ MHz/, "the site picker, then south's control channel");
+  assert.match(page, /Site 1-2/);
+  assert.doesNotMatch(page, /No system called/);
 });
 
-test("Decode, one system: says which sites it is recorded with", () => {
-  twoSites();
-  setView("decode", "site2");
-  assert.match(text(renderToString(<DecodePage />)), /multi-site with site1/);
-  setView("decode", "other");
-  assert.doesNotMatch(text(renderToString(<DecodePage />)), /multi-site with/);
-});
-
-test("Overview: a site group joins DMR sites; one switched off isn't listed", () => {
-  const c = config({ shortName: "cm1", type: "dmr", siteGroup: "capmax" }, { shortName: "cm2", type: "dmr", siteGroup: "capmax" }, { shortName: "cm3", type: "dmr", siteGroup: "capmax", enabled: false });
-  running(c, [status("cm1", 0, "group:capmax", {}), status("cm2", 1, "group:capmax", {})]);
-  setView("overview");
-  const page = renderToString(<Overview />);
-  assert.match(text(page), /multi-site with cm2/);
-  assert.doesNotMatch(text(page), /cm3/);
-  assert.match(page, /title="Site group &quot;capmax&quot; — calls saved once"/);
-});
-
-test("Live: a multi-site system is one choice of the system filter (its calls and live audio from any site)", () => {
-  twoSites();
+test("Live: one filter choice per system; a call says its site, and the others carrying it", () => {
+  twoSites([{ id: 7, system: 0, systemName: "dcfd", site: "south", alsoOn: ["dcfd"], talkgroup: 100, alphaTag: "Fire", freqHz: 851_600_000, slot: null, state: "recording", reason: null, sources: [], startS: 1 }]);
   const page = text(renderToString(<LivePage s={snapshot()} />));
-  assert.match(page, /All site1 \+ site2 other/);
+  assert.match(page, /All dcfd other/);
+  assert.match(page, /dcfd \/ south/);
+  assert.match(page, /also on dcfd/);
 });

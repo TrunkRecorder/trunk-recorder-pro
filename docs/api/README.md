@@ -387,13 +387,16 @@ Unknown message types should be ignored: new ones may be added.
 `hello.phase` and the `state` message carry it, with `error` (why it stopped
 or couldn't start) and `ended` (a capture file played to its end).
 
-**Systems.** `config.systems` are trunked systems: P25, SmartNet and DMR
-sites. Each site recorded from its own control channel is its own system with
-its own `shortName`, which is also the folder its calls are saved in. While
-running, `status.status.systems[i].index` is the number that calls and live
-audio carry as `system`. It is the system's position among the systems being
-**recorded** (enabled, with a control channel), so match on `shortName`
-rather than on positions in the config.
+**Systems.** `config.systems` are trunked systems: P25, SmartNet, DMR and
+NXDN. Each has its own `shortName`, which is also the folder its calls are
+saved in, and its `sites`, each a control channel it is recorded from. A call
+heard on several sites of a system is one call, saved once; a call's `site`
+(and `alsoOn`, the other sites carrying it) are site names. While running,
+`status.status.systems[i].index` is the number that calls and live audio
+carry as `system`, and `systems[i].sites[]` has each site's control channel,
+identity and decode counts. It is the system's position among the systems
+being **recorded** (enabled, with a site that has a control channel), so
+match on `shortName` rather than on positions in the config.
 
 **Conventional systems.** `config.conventional[k]` are groups of fixed
 frequencies. Their calls carry `system` = `65535 - k` (`conventionalSystem(k)`
@@ -436,7 +439,7 @@ Every message is a JSON object with a `type`. Exact fields are in
 | `stats` | 1/s while running | `t` (Unix s), `values`: series name → value now ([Statistics and history](#statistics-and-history)) |
 | `host` | Every 2 s (desktop app) | `t`, `values` (the computer's and plugins' series), `platform` (OS, cores, container and its limits, disks (the RAM spool's too, as `spool`), connectivity checks, `spotlight` (macOS: whether Spotlight indexes the recordings folder), `unavailable`: what this platform can't tell and why) |
 | `rfDetail` | Topic `rf:<source>`: 1/s | `source`, `profile` (the noise floor in 64 slices across the band, dBFS per FFT bin), `channels` (each channel on it: power, floor, SNR, carrier offset, the receiver's eye opening or CQPSK phase error) |
-| `decodeDetail` | Topic `decode:<shortName>`: 1/s | `system`, `channels` (the system's channels as received now) |
+| `decodeDetail` | Topic `decode:<shortName>`: 1/s | `system`, `channels` (the system's channels as received now, each with its `site`) |
 | `monitorEvent` | Something notable happened | `t`, `level`, `kind` (`controlLost`, `tgFirstSeen`, `sourceDrops`, `pluginHealth`, `linkDown`, `diskLow`, `spoolLow`, `spoolFull`, …) and its fields |
 | `subscribed` | Answers `subscribe` | `topics` |
 | `statsResult` | Answers `statsQuery` | `id`, `from`, `to`, `loading` (the history files are still being read), `series`: name → `{ t0, stepS, v, lo, hi, n }` |
@@ -676,7 +679,9 @@ the day). The live values come in `stats` (and `host`); the history answers
 | `plg/<id>/ok`, `failed`, `queued`, `latency`, `state` | Each plugin |
 
 Running totals arrive as rates (per second); everything else as it is.
-`<label>` is the source's label with `/` made `_`. In a `statsResult`, `v`
+`<label>` is the source's label with `/` made `_`. The `sys/<short>/cc/…`
+series are a site's: `sys/<short>/cc/…` for a site named as its system (a
+system of one site), `sys/<short>/site/<site>/cc/…` for the others. In a `statsResult`, `v`
 is each step's average, `lo` / `hi` its lowest and highest minute, and `n`
 the minutes measured in it — so a rate's amount over a step is `v × n × 60`.
 

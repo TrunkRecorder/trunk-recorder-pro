@@ -84,7 +84,7 @@ A trunked or conventional system's own `recording` object can override any rule 
 above. A rule left out follows the global `recording`.
 
 ```json
-{ "shortName": "fireground", "type": "p25", "controlChannelsHz": [851012500],
+{ "shortName": "fireground", "type": "p25", "sites": [{ "controlChannelsHz": [851012500] }],
   "recording": { "minCallS": 2, "recordUnknown": false } }
 ```
 
@@ -107,7 +107,9 @@ With `filenameFormat` empty, calls are saved as Trunk Recorder saves them, in lo
 ```
 
 Month and day aren't zero-padded (`2026/10/4`). `<freq>` is in Hz. `.<slot>` is added for P25
-Phase 2 and DMR calls.
+Phase 2 and DMR calls. A system's sites share its folder; the call JSON's `site` says which site's
+copy it is. Calls saved by an older version, when each site was a system, stay in each site's old
+folder and are still found.
 
 Otherwise `filenameFormat` is a path template relative to `captureDir`, with `/` making folders,
 built from Trunk Recorder's tokens. The interface's **Folders and file names** editor shows a preview
@@ -120,6 +122,7 @@ and flags unknown tokens.
 | Token | Gives |
 |---|---|
 | `{short_name}` | The system's short name |
+| `{site}` | The site the call was kept from, by name (a system of one site: its short name; none for a conventional system) |
 | `{sys_num}` | The system's number (trunked from 0; conventional 65535 down) |
 | `{talkgroup}`, `{talkgroup_display}` | The talkgroup number |
 | `{talkgroup_alpha_tag}` | The talkgroup's alpha tag |

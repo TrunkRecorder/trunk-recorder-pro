@@ -137,9 +137,16 @@ impl From<crate::p25::osp::ServiceOptions> for Flags {
 #[derive(Clone, Debug, Default)]
 pub struct Call {
     pub id: CallId,
-    /// The system (index in the engine's list) that made it; a conventional
-    /// system's counts down from [`CONVENTIONAL`] ([`conventional_index`]).
+    /// The site that made it (index in the engine's list of sites); a
+    /// conventional system's counts down from [`CONVENTIONAL`]
+    /// ([`conventional_index`]), as its system does.
+    pub site: u16,
+    /// Its system's number (the sites of one system share it; see
+    /// [`super::engine::system_numbers`]); a conventional system's, as `site`.
     pub system: u16,
+    /// Multi-site: a copy of a call another site of its system had first —
+    /// one call, which plugins and stats count by its first copy.
+    pub twin: bool,
     pub talkgroup: u32,
     pub freq_hz: u64,
     pub phase2_tdma: bool,
@@ -263,7 +270,8 @@ pub struct CallManager {
     pub calls: Vec<Call>,
     pub talkgroups: Talkgroups,
     pub cfg: CallConfig,
-    /// Stamped on every call made here.
+    /// Stamped on every call made here: its site, and its site's system.
+    pub site: u16,
     pub system: u16,
     ids: CallIds,
     /// The system's standing patches.
@@ -275,12 +283,12 @@ pub struct CallManager {
 
 impl CallManager {
     pub fn new(cfg: CallConfig, talkgroups: Talkgroups) -> Self {
-        CallManager { calls: Vec::new(), talkgroups, cfg, system: 0, ids: CallIds::default(), patches: Patches::default(), can_decrypt: false }
+        CallManager { calls: Vec::new(), talkgroups, cfg, site: 0, system: 0, ids: CallIds::default(), patches: Patches::default(), can_decrypt: false }
     }
 
-    /// For system `system`, drawing ids from `ids` (shared with the other systems).
-    pub fn with_ids(cfg: CallConfig, talkgroups: Talkgroups, system: u16, ids: CallIds) -> Self {
-        CallManager { system, ids, ..Self::new(cfg, talkgroups) }
+    /// For site `site` of system `system`, drawing ids from `ids` (shared with the other sites).
+    pub fn with_ids(cfg: CallConfig, talkgroups: Talkgroups, site: u16, system: u16, ids: CallIds) -> Self {
+        CallManager { site, system, ids, ..Self::new(cfg, talkgroups) }
     }
 
     pub fn handle(&mut self, msgs: &[Message], host: &mut dyn RecorderHost, ev: &mut Vec<CallEvent>) {
@@ -454,7 +462,9 @@ impl CallManager {
         let tg = self.talkgroups.get(&m.talkgroup).cloned();
         let mut c = Call {
             id: self.ids.next(),
+            site: self.site,
             system: self.system,
+            twin: false,
             talkgroup: m.talkgroup,
             freq_hz: m.freq_hz,
             phase2_tdma: m.phase2_tdma,
@@ -632,7 +642,7 @@ mod tests {
         let mut ev = Vec::new();
         m.handle(&[patch(0.0, 65001, [101, 0, 0]), msg(MessageType::Grant, 0.5, 65001), msg(MessageType::Grant, 0.5, 303)], &mut Host, &mut ev);
         let errors = Default::default();
-        let info = ConcludeInfo { short_name: "s", epoch_ms_at_zero: 0.0, audio_seconds: 1.0, errors: &errors, recorder_num: 0, end_s: 1.0, units: None, unit_tags: None, freq_error_hz: 0, reception: Default::default() };
+        let info = ConcludeInfo { short_name: "s", site: "", epoch_ms_at_zero: 0.0, audio_seconds: 1.0, errors: &errors, recorder_num: 0, end_s: 1.0, units: None, unit_tags: None, freq_error_hz: 0, reception: Default::default() };
         assert!(call_record(&m.calls[0], &info).0.contains("\"short_name\":\"s\",\"patched_talkgroups\":[101,65001],\"freqList\""));
         assert!(!call_record(&m.calls[1], &info).0.contains("patched"));
     }

@@ -190,6 +190,11 @@ pub struct CallInfo {
     /// [`SystemInfo::index`]: for this run only; `short_name` is the system's identity.
     pub system: u16,
     pub short_name: String,
+    /// The site it is on (its name; a system of one site's is its short
+    /// name; empty for a conventional system's call). A call heard on
+    /// several sites is told once, by the site that had it first.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub site: String,
     pub talkgroup: u32,
     /// The talkgroup's alpha tag, when known.
     pub talkgroup_tag: String,
@@ -278,6 +283,10 @@ pub struct CallFiles {
 pub struct CallRecord {
     pub call_num: u64,
     pub short_name: String,
+    /// The site its copy was kept from (this recorder's addition; a system
+    /// of one site: its short name; none for a conventional system's).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub site: String,
     pub talkgroup: u32,
     pub talkgroup_tag: String,
     pub talkgroup_description: String,
@@ -396,6 +405,9 @@ pub struct UnitEvent {
     /// [`SystemInfo::index`]: for this run only; `short_name` is the system's identity.
     pub system: u16,
     pub short_name: String,
+    /// The site whose control channel told it (its name).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub site: String,
     /// "registration" | "deregistration" | "affiliation" | "acknowledge" |
     /// "location" | "data_grant" | "answer_request" | "call_alert" |
     /// "emergency_alarm"
@@ -450,6 +462,9 @@ pub struct Status {
 pub struct SystemStatus {
     pub index: u16,
     pub short_name: String,
+    /// One entry per site: this one's name (a system of one site: its short
+    /// name). `site` below is its number, as the control channel says it.
+    pub site_name: String,
     /// The control channel being decoded (none: searching).
     pub control_channel_hz: Option<u64>,
     /// Control channel messages decoded per second.

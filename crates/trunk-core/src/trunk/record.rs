@@ -14,6 +14,8 @@ use crate::{loudness, mbe};
 
 pub struct ConcludeInfo<'a> {
     pub short_name: &'a str,
+    /// Its site's name (empty: a conventional system's call, which has none).
+    pub site: &'a str,
     /// Wall-clock epoch ms at sample-clock time 0.
     pub epoch_ms_at_zero: f64,
     pub audio_seconds: f64,
@@ -249,6 +251,9 @@ pub fn call_record(call: &Call, info: &ConcludeInfo) -> (String, String) {
         if call.analog { "analog" } else if call.phase2_tdma { "digital tdma" } else { "digital" },
         esc(info.short_name),
     );
+    if !info.site.is_empty() {
+        let _ = write!(j, "\"site\":\"{}\",", esc(info.site));
+    }
     // Only when patched with another, as Trunk Recorder writes it.
     if call.patched_talkgroups.len() > 1 {
         let tgs: Vec<String> = call.patched_talkgroups.iter().map(|t| t.to_string()).collect();
@@ -346,6 +351,7 @@ mod tests {
         let errors = FrameErrors::default();
         let info = ConcludeInfo {
             short_name: "s",
+            site: "",
             epoch_ms_at_zero: 0.0,
             audio_seconds: 1.0,
             errors: &errors,
@@ -401,6 +407,8 @@ pub struct Concluded {
     pub json: String,
     /// The call's system's short name (its folder).
     pub short_name: String,
+    /// The site its copy was kept from ([`super::engine::SiteConfig::site_name`]; empty: conventional).
+    pub site: String,
     /// `<talkgroup>-<start epoch>_<freq>[.slot]`
     pub base_name: String,
     /// 8 kHz mono in [−1, 1].
@@ -423,6 +431,8 @@ pub struct Capture {
 pub struct SaveContext<'a> {
     pub rules: SaveRules,
     pub short_name: &'a str,
+    /// The site's name (empty: conventional).
+    pub site: &'a str,
     /// Wall clock (Unix ms) at the engine's time 0.
     pub epoch_ms_at_zero: f64,
     /// Its radios' talker aliases, and its unit names file.
@@ -500,6 +510,7 @@ pub fn save_call(mut h: Held, cx: &SaveContext) -> Result<Concluded, Call> {
         &call,
         &ConcludeInfo {
             short_name: cx.short_name,
+            site: cx.site,
             epoch_ms_at_zero: cx.epoch_ms_at_zero,
             audio_seconds: audio.len() as f64 / mbe::SAMPLE_RATE as f64,
             errors: &frames.errors,
@@ -512,5 +523,5 @@ pub fn save_call(mut h: Held, cx: &SaveContext) -> Result<Concluded, Call> {
         },
     );
     let frames = frames.captured.filter(|f| !audio.is_empty() && !f.is_empty()).map(|f| capture(&call, &f, audio.len(), freq_error_hz, &reception, cx));
-    Ok(Concluded { call, json, short_name: cx.short_name.to_string(), base_name, audio, frames })
+    Ok(Concluded { call, json, short_name: cx.short_name.to_string(), site: cx.site.to_string(), base_name, audio, frames })
 }

@@ -110,7 +110,7 @@ new TrunkClient({ server?, secure?, historyLimit? })
   calls       CallView[]: the calls on the air now; [] when not running
   history     CallEntry[]: recorded calls, newest first (the last 300 at
               connect, plus each one recorded since; up to historyLimit)
-  log         LogLine[]: the latest 500 log lines { timeS, kind, text, system? }
+  log         LogLine[]: the latest 500 log lines { timeS, kind, text, system?, site? }
   aliases     talker aliases heard on the air: { shortName: { unit: alias } }
   error       the text of the latest error message, or null
   exited      true after the recorder said it was exiting; it keeps
@@ -150,12 +150,13 @@ Helpers: escapeHtml(s), duration(seconds) → "1:05", mhz(hz) → "155.2000 MHz"
 ## The data
 
 CallView: a call on the air (rec.calls, from the "status" message)
-  id, system (number), systemName (short name), talkgroup, alphaTag ("" if
+  id, system (number), systemName (short name), site? (its site's name), talkgroup, alphaTag ("" if
   not in the talkgroup file), freqHz, slot, analog, tone, encrypted,
   emergency, startS (engine seconds), sources (unit numbers that talked,
   in order), state ("recording" | "monitoring"), reason (why it's only
   monitored: "ignored" | "unknown_tg" | "encrypted" | "no_source" |
-  "no_recorder" | null), patched?, alsoOn?
+  "no_recorder" | null), patched?, alsoOn? (names of the system's other
+  sites carrying the same call; one copy is saved)
   How long it's been going: rec.status.nowS - call.startS.
 
 CallEntry: a recorded call (rec.history, the "concluded" message)
@@ -163,25 +164,33 @@ CallEntry: a recorded call (rec.history, the "concluded" message)
   /calls/<path>.wav and .json (rec.callUrl(entry)).
   record is Trunk Recorder's call JSON (snake_case):
     talkgroup, talkgroup_tag, talkgroup_description, talkgroup_group,
-    short_name (the system), start_time / stop_time (Unix seconds),
+    short_name (the system), site? (the site its copy was kept from), start_time / stop_time (Unix seconds),
     start_time_ms, call_length (seconds of audio), freq (Hz),
     emergency (1/0), encrypted (1/0), audio_type ("analog" | "digital" |
     "digital tdma"), srcList [{ src (unit), tag (its name or ""), tag_ota,
     time (Unix s), pos (s into the audio), emergency, lat? lon? (GPS) }], signal / noise
     (dBFS) / snr (dB) (or null), tone_detected, patched_talkgroups?
 
-SystemStatus: one trunked system or site (rec.status.systems)
-  index (the `system` its calls carry), shortName, controlChannelHz,
-  identity { nac, wacn, sysId, rfss, site }, good / bad (control messages
-  decoded / failed: decode rate = good / (good + bad)), activeCalls,
-  recording, callsConcluded, mismatch, adjacent, patches?, dmr?, siteGroup?
+SystemStatus: one running trunked system (rec.status.systems)
+  index (the `system` its calls carry), shortName, activeCalls, recording,
+  callsConcluded, patches?, sites: SiteStatus[]
+
+SiteStatus: one of its sites, each following its own control channel
+  index, name (a system of one site: its short name), nowS,
+  controlChannelHz (null while searching), identity { nac, wacn, sysId,
+  rfss, site }, good / bad (control messages decoded / failed: decode
+  rate = good / (good + bad)), modulation, activeCalls, recording,
+  callsConcluded, mismatch, adjacent, dmr?, nxdn?
 
 Systems and numbering
   config.systems[]: trunked systems ({ shortName, name?, type: "p25" |
-    "smartnet" | "dmr", enabled, talkgroupsCsv, … }).
+    "smartnet" | "dmr" | "nxdn", enabled, talkgroupsCsv, …, sites: [{ name?,
+    enabled, controlChannelsHz, … }] }). A call heard on several sites of
+    a system is one call, saved once.
   config.conventional[k]: conventional systems. Their calls carry
     system = 65535 - k.
-  Calls and audio carry `system` as a number. Match systems by short name
+  Calls and audio carry `system` as a number (a system, never a site:
+  a call's site is CallView.site, by name). Match systems by short name
   (CallView.systemName, record.short_name, SystemStatus.shortName), not by
   position. Talkgroup numbers can repeat across systems: key talkgroups by
   (short name, talkgroup).
@@ -217,7 +226,7 @@ To the recorder:
   { type: "setConfig", config: <the whole config> }
   (more in protocol.ts: devices, survey, plugins, …)
 Listening is per connection. Send listen again after every hello (each reconnect).
-system is a short name; a site of a multi-site system (status siteGroup) gets that system's audio from whichever site carries the call.
+system is a system's short name; you get its audio from whichever of its sites carries the call.
 
 
 ## Rules
