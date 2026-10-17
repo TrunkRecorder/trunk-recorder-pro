@@ -8,7 +8,7 @@
 //! Receivers: `--demod cqpsk|c4fm|auto` (auto: CQPSK + C4FM), `--diversity 1`
 //! (CQPSK + CQPSK/EQ + C4FM, `--eq 9 --mu 0.02`). Decoding: `--trellis
 //! greedy|viterbi`, `--soft none|amp`, `--softfec 0|1`, `--flywheel 0|1`,
-//! `--nidrecover 0|1`. Output: `--audio out.f32` (voice), `--iq out.cf32`.
+//! `--nidrecover 0|1`, `--detect 0|1` (`--demod auto`: settle on the kind of receiver the channel needs). Output: `--audio out.f32` (voice), `--iq out.cf32`.
 //!
 //! `tool smartnet <capture> --center Hz --rate Hz --cc Hz [--bandplan 400_custom
 //! --bp-base Hz --bp-spacing Hz --bp-offset N --bp-high Hz] [--osw]` — a
@@ -95,6 +95,7 @@ pub fn run(a: &Args) {
         eq_mu: a.num("mu", 0.02) as f32,
         framer: FramerOptions { flywheel: a.get("flywheel") != Some("0"), nid_recover: a.get("nidrecover") != Some("0"), ..Default::default() },
         soft: a.get("soft") != Some("none"),
+        detect: a.get("detect") != Some("0"),
     };
     let greedy = a.get("trellis") == Some("greedy");
     let soft_fec = a.get("softfec") != Some("0");

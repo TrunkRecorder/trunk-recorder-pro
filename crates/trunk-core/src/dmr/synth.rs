@@ -245,7 +245,7 @@ mod tests {
     }
 
     fn run(cfg: EngineConfig, iq: &[Complex32]) -> Vec<crate::trunk::Concluded> {
-        let mut e = Engine::new(cfg).unwrap();
+        let e = Engine::new(cfg).unwrap();
         for c in iq.chunks(8192) {
             e.push_iq(0, c);
         }
@@ -317,7 +317,7 @@ mod tests {
         let rows = vec![row("CC3", 1, "A"), row("CC5 TS1", 2, "B"), row("CC5 TG 999", 3, "C")];
         assert!(calls(rows.clone()).is_empty());
         let cfg = EngineConfig { sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }], conventional: rows, ..Default::default() };
-        let mut e = Engine::new(cfg).unwrap();
+        let e = Engine::new(cfg).unwrap();
         for c in iq.chunks(8192) {
             e.push_iq(0, c);
         }

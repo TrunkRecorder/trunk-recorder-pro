@@ -5,6 +5,45 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Airspy sample packing.** Airspys now send 12-bit samples packed over USB (`packing`, on by
+  default; **Pack samples** in Setup): a quarter less of the bus. An Airspy at 10 MSPS nearly
+  fills a USB 2.0 bus by itself; with several radios on one bus, that's what overflows.
+- **Losses a radio can't report are caught.** An RTL-SDR has no way to say its FIFO overflowed
+  (its USB bus too busy to read it in time). The recorder now notices a source's samples falling
+  behind the wall clock beyond its crystal's drift, counts them as dropped and logs "lost without
+  its driver saying so", so the dashboard's dropped count and alert cover RTL-SDRs too.
+- RTL-SDR and capture-file buffers are reused rather than allocated per transfer.
+
+- **Fewer Airspy drops.** libairspy converted the Airspy's samples to IQ on the same thread that
+  drains its USB queue (about half a core at 10 MS/s), and dropped a buffer whenever that thread
+  ran ~50 ms late. The recorder now asks for the raw samples and converts them on the source's
+  decoding thread, with no allocation per buffer on libairspy's. `TRUNK_PRO_AIRSPY_LIBRARY_IQ=1`
+  goes back to libairspy's conversion. Also fixed: drops reported by libairspy were under-counted
+  when they came back to back.
+- **Sources don't wait on the dashboard.** With many sources, the threads that read status, the
+  channel list and the history for the dashboard held the engine while waiting on a busy source,
+  and every other source's decoding waited behind them.
+
+- **Each source decodes on its own core.** With many sources one core used to do all the
+  decoding while the others sat idle (and samples were dropped once it couldn't keep up). Each
+  source now has a decoding thread of its own — its channelizer, its voice and control channels —
+  while the calls are followed in one place. Results are the same as before, fed from one thread
+  bit for bit; `trunk-pro replay --threads` feeds each source from its own thread, as live.
+- **NXDN trunked sites cost far less.** A Type-D site watches every repeater at once; each
+  watched NXDN48 carrier now decimates before demodulating, 42 % less CPU with the same decodes.
+- **P25 `modulation: "auto"` detects the modulation.** Instead of running the CQPSK and C4FM
+  receivers on every channel all the time, each channel runs both until one clearly decodes
+  better (a few seconds), then only that one — about 70 % less CPU on a P25 channel. The log says
+  what was detected and the setting that skips detecting it; Setup's option reads **Detect**. On a
+  weak simulcast signal (9–11 dB) this decodes up to 1 % fewer control messages than running both
+  kept doing.
+- **Faster 4FSK receivers.** Multi-symbol detection (P25 C4FM, DMR, NXDN) does the same work in
+  7–12 % less time.
+- **Performance report** (temporary). Platform → **Download performance report** gives where the
+  recorder's time goes, thread by thread and stage by stage, to send to the developers when the
+  CPU runs out; also written as `perf-report.json` beside the config every minute. See
+  [Troubleshooting](docs/troubleshooting.md#performance-report).
+
 - **AM channels (airband).** Conventional channels can now be analog AM: VHF airband (118–137 MHz)
   and UHF military air (225–400 MHz). The audio level follows each transmission's own carrier, so
   a fading aircraft keeps its volume; impulse noise is clipped; and a transmitter a few kHz off

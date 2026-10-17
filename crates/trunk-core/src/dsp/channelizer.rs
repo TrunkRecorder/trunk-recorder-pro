@@ -24,6 +24,7 @@ use num_complex::Complex32;
 use rustfft::{Fft, FftPlanner};
 
 use super::filters::blackman_sinc;
+use crate::prof::{self, Stage};
 
 pub type HeadId = u32;
 
@@ -163,6 +164,7 @@ impl Channelizer {
     /// before the head's live output. Also returns the absolute input sample
     /// the head's first output sample (replayed or live) corresponds to.
     pub fn add_head(&mut self, offset_hz: f64, cutoff_hz: f64, preroll_s: f64) -> (HeadId, Vec<Complex32>, u64) {
+        let _t = prof::span(Stage::ChzPreroll);
         let n = self.n as i64;
         let bin = (offset_hz / self.fs * self.n as f64).round() as i64;
         let residual_hz = offset_hz - bin as f64 * self.fs / self.n as f64;
@@ -189,6 +191,11 @@ impl Channelizer {
         (id, pre, start_block * self.l as u64)
     }
 
+    /// How many heads run each block.
+    pub fn head_count(&self) -> usize {
+        self.heads.len()
+    }
+
     pub fn remove_head(&mut self, id: HeadId) {
         self.heads.remove(&id);
     }
@@ -200,9 +207,11 @@ impl Channelizer {
         let total = u8.len() / 2;
         let take = (self.l - self.fill).min(total);
         let base = self.p - 1 + self.fill;
+        let t = prof::span(Stage::ChzInput);
         for (k, pair) in u8[..2 * take].chunks_exact(2).enumerate() {
             self.x[base + k] = Complex32::new((pair[0] as f32 - 127.5) * (1.0 / 127.5), (pair[1] as f32 - 127.5) * (1.0 / 127.5));
         }
+        drop(t);
         self.fill += take;
         let ran = self.fill == self.l;
         if ran {
@@ -369,6 +378,7 @@ impl Channelizer {
 
     fn run_block(&mut self) {
         let (n, p1) = (self.n, self.p - 1);
+        let t = prof::span(Stage::ChzFft);
         // Overlap-save: the first P−1 samples are the previous block's tail.
         self.x[..p1].copy_from_slice(&self.hist);
         self.hist.copy_from_slice(&self.x[n - p1..]);
@@ -381,9 +391,11 @@ impl Channelizer {
         if self.history_count < self.hist_cap {
             self.history_count += 1;
         }
+        drop(t);
         let b = self.block;
         let mut heads = std::mem::take(&mut self.heads);
         for h in heads.values_mut() {
+            let _t = prof::span(Stage::ChzHead);
             self.run_head(h, b);
         }
         self.heads = heads;

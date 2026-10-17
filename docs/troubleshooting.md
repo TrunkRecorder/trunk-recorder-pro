@@ -233,10 +233,17 @@ The radio delivers samples at a fixed rate and the driver has only a small buffe
 doesn't collect them in time, they're lost. Causes, most likely first:
 
 - **CPU.** Check the Platform page and **Decoding load** on the Overview. A lower sample rate,
-  fewer sources, or a faster computer helps.
+  fewer sources, or a faster computer helps. If one core is pinned while others sit idle, send a
+  [performance report](#performance-report).
 - **USB.** Several dongles on one hub or one bus, a long or poor cable, or a Raspberry Pi with a weak
   power supply. Spread dongles across ports.
 - **Something else on the computer** hogging it for a moment (a backup, a screen-sharing session).
+
+**Airspys** hand their samples over through libairspy, whose own thread drops a buffer
+(6.5 ms at 10 MS/s) when it runs more than ~50 ms late. The recorder now takes the Airspy's raw
+samples and turns them into IQ on its own decoding thread, so libairspy's thread only copies.
+If an Airspy's channels ever look wrong (nothing decodes, or the spectrum looks mirrored), start
+the recorder with `TRUNK_PRO_AIRSPY_LIBRARY_IQ=1` to have libairspy convert as before, and tell us.
 
 **USRPs** have a very small buffer by default, so the app asks UHD for a bigger one
 (`num_recv_frames=256`, about 65 ms) unless your device arguments set `num_recv_frames`
@@ -350,6 +357,19 @@ trunk-pro replay problem.cu8 --center 858500000 --rate 2400000 --cc 857262500
 
 See [Command line](command-line.md) for all of `capture` and `replay`.
 
+## Performance report
+
+When the recorder runs out of CPU (one core pinned, **Decoding load** near 100 %, samples
+dropped), the performance report tells the developers where its time goes. On the **Platform**
+page, click **Download performance report** while it's busy. If you can't reach the interface, take
+`perf-report.json` from the folder your config file is in: it's rewritten every minute.
+
+It covers the last hour: each thread's CPU, each core's, the time each stage of decoding takes on
+each source (the channelizer, voice and control channels, vocoders, conventional channels, call
+handling), and what each source runs. It also has your computer's CPU and OS, and the shape of your
+config: sources' rates and frequencies, how many systems, channels and recorders. It holds no
+keys, passwords, plugin settings, serial numbers or file paths.
+
 ## Reporting a bug
 
 Open an issue at
@@ -363,4 +383,5 @@ Include:
 - your config file. It can hold plugin keys and passwords: remove them first;
 - for a decoding problem, a short capture (see above) and the system's frequencies, or its
   RadioReference page;
-- for a dashboard problem, a screenshot.
+- for a dashboard problem, a screenshot;
+- for CPU or dropped samples, a [performance report](#performance-report).

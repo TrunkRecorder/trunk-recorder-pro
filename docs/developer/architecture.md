@@ -967,7 +967,7 @@ last_error_text, endpoints [{ name, state, latency_ms, last_ok, last_error }], e
 |---|---|
 | `rtlsdr` | `serial` (required; "" = first free), `gainDb` 25.4, `agc` false, `ppm` (integer, required) |
 | `usrp` | `args` "", `gainDb` 40, `agc` false, `antenna` "", `ppm` 0 |
-| `airspy` | `serial` "", `gainMode` linearity / sensitivity / manual, `gainStep` 14, `lnaStep` / `mixerStep` / `vgaStep` 10, `agc`, `biasTee`, `ppm` |
+| `airspy` | `serial` "", `gainMode` linearity / sensitivity / manual, `gainStep` 14, `lnaStep` / `mixerStep` / `vgaStep` 10, `agc`, `biasTee`, `packing` true, `ppm` |
 | `soapy` | `args` "", `agc` true, `gainDb` null, `gains` {}, `antenna` "", `settings` "", `ppm` 0 |
 | `file` | `path` (required), `realtime` (required), `format` cu8 / cs16 / cf32 (else from the extension) |
 

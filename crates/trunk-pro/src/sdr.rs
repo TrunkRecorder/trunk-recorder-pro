@@ -66,13 +66,80 @@ fn busy(info: &nusb::DeviceInfo) -> Option<String> {
     dev.detach_and_claim_interface(0).wait().err().map(why)
 }
 
+/// A buffer that goes back to its pool when dropped: a driver's thread
+/// (which must keep up with its device) reuses buffers instead of
+/// allocating one per transfer.
+pub struct Pooled<T> {
+    v: Vec<T>,
+    pool: Arc<Mutex<Vec<Vec<T>>>>,
+}
+
+/// Buffers a pool keeps (more are freed): a few in flight plus a queue's worth beyond the first.
+const POOL_KEEP: usize = 64;
+
+/// Buffers for a driver to fill ([`Pooled`]).
+#[derive(Clone, Default)]
+pub struct Pool<T> {
+    free: Arc<Mutex<Vec<Vec<T>>>>,
+}
+
+impl<T: Copy> Pool<T> {
+    /// A buffer holding a copy of `from` (one returned earlier when there is one).
+    pub fn copy(&self, from: &[T]) -> Pooled<T> {
+        let mut v = self.free.lock().unwrap().pop().unwrap_or_default();
+        v.clear();
+        v.extend_from_slice(from);
+        Pooled { v, pool: self.free.clone() }
+    }
+}
+
+impl<T> std::ops::Deref for Pooled<T> {
+    type Target = [T];
+    fn deref(&self) -> &[T] {
+        &self.v
+    }
+}
+
+impl<T> Drop for Pooled<T> {
+    fn drop(&mut self) {
+        let mut free = self.pool.lock().unwrap();
+        if free.len() < POOL_KEEP {
+            free.push(std::mem::take(&mut self.v));
+        }
+    }
+}
+
+/// Turns each source's [`SourceMsg::Real16`] into [`SourceMsg::Iq`] on the
+/// thread that takes the messages; the rest pass through.
+#[derive(Default)]
+pub struct IqFrom {
+    conv: Vec<Option<trunk_core::dsp::real_iq::RealToIq>>,
+}
+
+impl IqFrom {
+    pub fn iq(&mut self, m: SourceMsg) -> SourceMsg {
+        let SourceMsg::Real16 { source, samples, dropped, at } = m else { return m };
+        if self.conv.len() <= source {
+            self.conv.resize_with(source + 1, || None);
+        }
+        let c = self.conv[source].get_or_insert_with(trunk_core::dsp::real_iq::RealToIq::new);
+        let mut iq = Vec::with_capacity(samples.len() / 2 + 64);
+        c.push(&samples, &mut iq);
+        SourceMsg::Iq { source, samples: iq, dropped, at }
+    }
+}
+
 /// What a source thread reports.
 pub enum SourceMsg {
     /// Raw u8 IQ, samples the driver knows were dropped just before it, and
     /// when the driver handed it over (the source's clock is measured by it).
-    Data { source: usize, bytes: Vec<u8>, dropped: u64, at: Instant },
-    /// Float IQ (USRP, Airspy, float captures).
+    /// (A [`Pooled`] buffer: the driver's thread reuses them, allocating none per transfer.)
+    Data { source: usize, bytes: Pooled<u8>, dropped: u64, at: Instant },
+    /// Float IQ (USRP, float captures).
     Iq { source: usize, samples: Vec<num_complex::Complex32>, dropped: u64, at: Instant },
+    /// Real samples at twice the IQ rate (an Airspy's ADC, libairspy's INT16_REAL): turned into IQ on the
+    /// thread that takes them ([`IqFrom`]), not the driver's. `dropped` in IQ samples.
+    Real16 { source: usize, samples: Pooled<i16>, dropped: u64, at: Instant },
     Error { source: usize, error: String },
     /// A finite source (a capture file) has no more data.
     End { source: usize },
@@ -132,6 +199,8 @@ fn stream_once(source: usize, cfg: &RtlConfig, tx: &SyncSender<SourceMsg>, stop:
     })?;
     let mut rx = dev.rx_stream().map_err(|e| e.to_string())?;
     rx.start().wait().map_err(|e| e.to_string())?;
+    // (Buffers to copy each transfer into, reused: this thread must keep up with the dongle.)
+    let pool = Pool::default();
     let result = loop {
         if stop.load(Ordering::Relaxed) {
             break Ok(());
@@ -165,7 +234,7 @@ fn stream_once(source: usize, cfg: &RtlConfig, tx: &SyncSender<SourceMsg>, stop:
         }
         match rx.next_block(Some(Duration::from_secs(2))).wait() {
             Ok(Some(block)) => {
-                let msg = SourceMsg::Data { source, bytes: block.raw_bytes().to_vec(), dropped: block.dropped_samples(), at: Instant::now() };
+                let msg = SourceMsg::Data { source, bytes: pool.copy(block.raw_bytes()), dropped: block.dropped_samples(), at: Instant::now() };
                 if tx.send(msg).is_err() {
                     break Ok(());
                 }
@@ -177,4 +246,34 @@ fn stream_once(source: usize, cfg: &RtlConfig, tx: &SyncSender<SourceMsg>, stop:
     let _ = rx.close().wait();
     let _ = dev.shutdown().wait();
     result
+}
+
+#[cfg(test)]
+mod pool_tests {
+    use super::*;
+
+    /// A buffer goes back to its pool when dropped, and the next copy reuses it.
+    #[test]
+    fn buffers_are_reused() {
+        let pool: Pool<i16> = Pool::default();
+        let a = pool.copy(&[1, 2, 3]);
+        let p = a.as_ptr();
+        assert_eq!(&*a, &[1, 2, 3]);
+        drop(a);
+        let b = pool.copy(&[4, 5]);
+        assert_eq!((&*b, b.as_ptr()), (&[4i16, 5][..], p), "the same memory, refilled");
+    }
+
+    /// Real samples become IQ at half their count, per source.
+    #[test]
+    fn real_samples_become_iq() {
+        let pool: Pool<i16> = Pool::default();
+        let mut iqf = IqFrom::default();
+        let m = SourceMsg::Real16 { source: 1, samples: pool.copy(&vec![0i16; 4096]), dropped: 7, at: Instant::now() };
+        match iqf.iq(m) {
+            // (Half as many, less the filter's look-ahead held for the next push.)
+            SourceMsg::Iq { source, samples, dropped, .. } => assert_eq!((source, dropped, samples.len()), (1, 7, 2048 - 19)),
+            _ => panic!("not IQ"),
+        }
+    }
 }

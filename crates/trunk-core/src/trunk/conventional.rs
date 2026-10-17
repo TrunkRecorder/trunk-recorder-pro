@@ -505,6 +505,14 @@ pub struct Conventional {
     floors: Vec<Floor>,
 }
 
+impl Conventional {
+    /// Source `source`'s channels: (watched, open).
+    pub fn load(&self, source: usize) -> (usize, usize) {
+        let on = || self.chans.iter().filter(|c| c.source == source);
+        (on().count(), on().filter(|c| c.open.is_some()).count())
+    }
+}
+
 /// Whether `channels` can run together (see [`Conventional`]'s rows rules).
 pub fn check_channels(channels: &[ConvChannel]) -> Result<(), String> {
     Conventional::check(channels)
@@ -648,6 +656,7 @@ impl Conventional {
         if !self.chans.iter().any(|c| c.source == source) {
             return;
         }
+        let _t = crate::prof::span(crate::prof::Stage::ConvScan);
         let fl = &mut self.floors[source];
         if now_s >= fl.next_s && !gap {
             chz.noise_profile(&mut fl.scratch);
@@ -781,7 +790,15 @@ impl Conventional {
         let metered = o.meter.as_mut().map(|m| m.meter(iq) > meter_thr);
         o.voice.set_squelch(meter_thr);
         let mut vout = Vec::new();
+        let t = crate::prof::span(match ch.cfg.mode {
+            ConvMode::Fm => crate::prof::Stage::ConvFm,
+            ConvMode::Am => crate::prof::Stage::ConvAm,
+            ConvMode::P25 => crate::prof::Stage::ConvP25,
+            ConvMode::Dmr => crate::prof::Stage::ConvDmr,
+            ConvMode::Nxdn(_) => crate::prof::Stage::ConvNxdn,
+        });
         o.voice.push(iq, &mut vout);
+        drop(t);
         let carrier = metered.or(o.voice.carrier()).unwrap_or(false);
         for v in vout {
             let h = &mut heard[v.slot as usize & 1];
@@ -1165,7 +1182,7 @@ mod tests {
             conv_systems,
             ..Default::default()
         };
-        let mut e = Engine::new(cfg).unwrap();
+        let e = Engine::new(cfg).unwrap();
         let sigma2 = 0.01f64;
         let mut rng = 0x2545_f491_4f6c_dd1du64;
         let mut u = move || {
@@ -1273,7 +1290,7 @@ mod tests {
             conv_systems: vec![sys],
             ..Default::default()
         };
-        let mut e = Engine::new(cfg).unwrap();
+        let e = Engine::new(cfg).unwrap();
         for c in iq.chunks(32_768) {
             e.push_iq(0, c);
         }

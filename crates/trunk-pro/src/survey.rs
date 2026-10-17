@@ -56,9 +56,9 @@ pub(crate) fn spawn_source(src: &Source, i: usize, center: f64, tx: mpsc::SyncSe
             Source::Usrp { args, rate_hz, gain_db, agc, antenna, ppm, .. } => {
                 uhd::run_with(i, uhd::UsrpConfig { args, center_hz: center, rate_hz, gain_db, agc, antenna, ppm }, tx, stop, Some(ctl))
             }
-            Source::Airspy { serial, rate_hz, gain_mode, gain_step, lna_step, mixer_step, vga_step, agc, bias_tee, ppm, .. } => {
+            Source::Airspy { serial, rate_hz, gain_mode, gain_step, lna_step, mixer_step, vga_step, agc, bias_tee, packing, ppm, .. } => {
                 let gain = runtime::airspy_gain(gain_mode, gain_step, lna_step, mixer_step, vga_step, agc);
-                airspy::run_with(i, airspy::AirspyConfig { serial, center_hz: center, rate_hz, gain, bias_tee, ppm }, tx, stop, Some(ctl))
+                airspy::run_with(i, airspy::AirspyConfig { serial, center_hz: center, rate_hz, gain, bias_tee, packing, ppm }, tx, stop, Some(ctl))
             }
             Source::Soapy { args, rate_hz, agc, gain_db, gains, antenna, settings, ppm, .. } => {
                 let gains = gains.into_iter().collect();
@@ -87,6 +87,8 @@ fn feed(session: &mut SurveySession, msg: SourceMsg) -> bool {
         SourceMsg::Data { bytes, .. } => session.survey().push_u8(&bytes),
         SourceMsg::Iq { samples, .. } => session.survey().push_iq(&samples),
         SourceMsg::Tuned { center_hz, .. } => session.survey().tuned(center_hz),
+        // (The callers turn these into Iq first.)
+        SourceMsg::Real16 { .. } => {}
         SourceMsg::Error { error, .. } => session.source_error(&error),
         SourceMsg::End { .. } => {
             session.survey().finish();
@@ -126,6 +128,7 @@ pub fn start(ctx: Arc<Ctx>, cfg: Config, req: Request) -> Result<SurveyRunner, S
                 let t0 = Instant::now();
                 let mut out = Vec::new();
                 let mut running = true;
+                let mut iqf = crate::sdr::IqFrom::default();
                 while !stop2.load(Ordering::Relaxed) {
                     while let Ok(c) = cmd_rx.try_recv() {
                         match c {
@@ -137,6 +140,7 @@ pub fn start(ctx: Arc<Ctx>, cfg: Config, req: Request) -> Result<SurveyRunner, S
                     if running {
                         match rx.recv_timeout(Duration::from_millis(50)) {
                             Ok(m) => {
+                                let m = iqf.iq(m);
                                 if !opened && matches!(m, SourceMsg::Data { .. } | SourceMsg::Iq { .. }) {
                                     opened = true;
                                     session.survey().tuned(first);
@@ -216,10 +220,12 @@ pub fn cli(a: &crate::Args) {
     let mut last;
     let mut n_found = 0;
     let mut last_err: Option<String> = None;
+    let mut iqf = crate::sdr::IqFrom::default();
     loop {
         apply(&mut session, &ctl, fixed);
         let running = match rx.recv_timeout(Duration::from_millis(50)) {
             Ok(m) => {
+                let m = iqf.iq(m);
                 if !opened && matches!(m, SourceMsg::Data { .. } | SourceMsg::Iq { .. }) {
                     opened = true;
                     session.survey().tuned(first);

@@ -682,7 +682,15 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
             </Field>
           ))}
         {src.type === "airspy" && (
-          <Toggle label="Bias-T" hint="Powers an LNA via the antenna cable" checked={src.biasTee} onChange={(v) => edit((x) => x.type === "airspy" && void (x.biasTee = v))} />
+          <>
+            <Toggle label="Bias-T" hint="Powers an LNA via the antenna cable" checked={src.biasTee} onChange={(v) => edit((x) => x.type === "airspy" && void (x.biasTee = v))} />
+            <Toggle
+              label="Pack samples"
+              hint="12-bit samples on the USB: a quarter less of the bus (an Airspy at 10 MSPS nearly fills a USB 2.0 bus). Off only for old firmware"
+              checked={src.packing ?? true}
+              onChange={(v) => edit((x) => x.type === "airspy" && void (x.packing = v))}
+            />
+          </>
         )}
         {src.type === "soapy" &&
           (radios?.soapy && !radios.soapy.available ? (
@@ -1783,7 +1791,7 @@ function SystemCard(props: { c: Config; i: number }) {
         {sys.type !== "dmr" && sys.type !== "nxdn" && (
           <Field label={sys.type === "smartnet" ? "P25 voice modulation" : "Modulation"}>
             <select value={sys.modulation} onChange={(e) => edit((x) => void (x.modulation = e.target.value as System["modulation"]))}>
-              <option value="auto">Auto (both receivers)</option>
+              <option value="auto">Detect (then only that receiver)</option>
               <option value="fsk4">C4FM (fsk4)</option>
               <option value="qpsk">CQPSK / LSM simulcast (qpsk)</option>
             </select>

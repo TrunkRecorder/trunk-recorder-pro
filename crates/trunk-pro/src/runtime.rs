@@ -16,7 +16,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use chrono::{Local, Offset, TimeZone};
 use serde_json::{json, Value};
 use tokio::sync::broadcast;
-use trunk_app::{Output, Session};
+use trunk_app::{Feeder, Output, Session};
+use trunk_core::prof::{self, Stage};
 
 use crate::config::{AirspyGain, Config, SampleFormat, Source};
 use crate::plugins::{self, FileRules, PluginHost};
@@ -225,7 +226,8 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
     session.load_tune(&fs::read_to_string(tune_path()).unwrap_or_default());
     ctx.plugins.start(&cfg);
     let stop = Arc::new(AtomicBool::new(false));
-    let (tx, rx) = mpsc::sync_channel::<SourceMsg>(256);
+    // Each source's samples queue for its own decoding thread ([`feed_source`]).
+    let mut queues = Vec::new();
     let centers = cfg.resolved_centers();
     let mut threads = Vec::new();
     // A thread that can't be made: what was started is stopped again.
@@ -238,7 +240,9 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
         e.to_string()
     };
     for (i, (src, center)) in cfg.sources.iter().zip(&centers).enumerate() {
-        let (tx, stop) = (tx.clone(), stop.clone());
+        let (tx, rx) = mpsc::sync_channel::<SourceMsg>(256);
+        queues.push(rx);
+        let stop = stop.clone();
         let src = src.clone();
         let center = *center;
         let spawned = std::thread::Builder::new().name(format!("source-{i}")).spawn(move || match src {
@@ -248,9 +252,9 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
             Source::Usrp { args, rate_hz, gain_db, agc, antenna, ppm, .. } => {
                 uhd::run(i, uhd::UsrpConfig { args, center_hz: center, rate_hz, gain_db, agc, antenna, ppm }, tx, stop)
             }
-            Source::Airspy { serial, rate_hz, gain_mode, gain_step, lna_step, mixer_step, vga_step, agc, bias_tee, ppm, .. } => {
+            Source::Airspy { serial, rate_hz, gain_mode, gain_step, lna_step, mixer_step, vga_step, agc, bias_tee, packing, ppm, .. } => {
                 let gain = airspy_gain(gain_mode, gain_step, lna_step, mixer_step, vga_step, agc);
-                airspy::run(i, airspy::AirspyConfig { serial, center_hz: center, rate_hz, gain, bias_tee, ppm }, tx, stop)
+                airspy::run(i, airspy::AirspyConfig { serial, center_hz: center, rate_hz, gain, bias_tee, packing, ppm }, tx, stop)
             }
             Source::Soapy { args, rate_hz, agc, gain_db, gains, antenna, settings, ppm, .. } => {
                 let gains = gains.into_iter().collect();
@@ -263,9 +267,8 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
             Err(e) => return Err(undo(threads, e)),
         }
     }
-    drop(tx);
     let (ctx2, stop2) = (ctx.clone(), stop.clone());
-    let spawned = std::thread::Builder::new().name("engine".into()).spawn(move || engine_thread(ctx2, cfg, session, rx, stop2, (epoch_ms, epoch_at)));
+    let spawned = std::thread::Builder::new().name("engine".into()).spawn(move || engine_thread(ctx2, cfg, session, queues, stop2, (epoch_ms, epoch_at)));
     match spawned {
         Ok(t) => threads.push(t),
         Err(e) => return Err(undo(threads, e)),
@@ -392,8 +395,10 @@ pub(crate) fn run_file(source: usize, path: &str, rate_hz: f64, realtime: bool, 
     let chunk = 32768 * bps;
     let t0 = Instant::now();
     let mut sent = 0u64;
+    let pool = crate::sdr::Pool::default();
+    let mut buf = vec![0u8; chunk];
     while !stop.load(Ordering::Relaxed) {
-        let mut buf = vec![0u8; chunk];
+        buf.resize(chunk, 0);
         let n = read_full(&mut f, &mut buf);
         if n < bps {
             break;
@@ -401,7 +406,7 @@ pub(crate) fn run_file(source: usize, path: &str, rate_hz: f64, realtime: bool, 
         buf.truncate(n - n % bps);
         sent += (buf.len() / bps) as u64;
         let msg = match format {
-            SampleFormat::Cu8 => SourceMsg::Data { source, bytes: buf, dropped: 0, at: Instant::now() },
+            SampleFormat::Cu8 => SourceMsg::Data { source, bytes: pool.copy(&buf), dropped: 0, at: Instant::now() },
             _ => SourceMsg::Iq { source, samples: trunk_app::samples::to_iq(format, &buf), dropped: 0, at: Instant::now() },
         };
         if tx.send(msg).is_err() {
@@ -467,9 +472,111 @@ fn open_spool(ctx: &Ctx, cfg: &Config) {
     *ctx.spool.lock().unwrap() = spool;
 }
 
-/// `epoch`: the wall clock (Unix ms) at an instant, for the session's clock.
-fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Receiver<SourceMsg>, stop: Arc<AtomicBool>, epoch: (f64, Instant)) {
+/// One source's decoding thread: its samples into the engine as they come
+/// (each source on a core of its own), anything else to the engine thread.
+/// On stop, what the source had already sent is decoded first (up to the
+/// queue's 256 blocks: about 2.5 s of 10 ms USRP / Soapy blocks, about 14 s
+/// of RTL-SDR's at 2.4 MSPS): calls in progress keep it.
+fn feed_source(feeder: Feeder, rx: mpsc::Receiver<SourceMsg>, ctl: mpsc::Sender<SourceMsg>, stop: Arc<AtomicBool>, epoch: (f64, Instant), air: Air) {
+    let now_ms = || epoch.0 + epoch.1.elapsed().as_secs_f64() * 1000.0;
+    // An instant on the same clock (when a driver handed samples over).
+    let at_ms = |at: Instant| epoch.0 + at.saturating_duration_since(epoch.1).as_secs_f64() * 1000.0;
+    // (An Airspy's real samples become IQ here, on this thread: see [`crate::sdr::IqFrom`].)
+    let mut iqf = crate::sdr::IqFrom::default();
+    let mut take = |m: SourceMsg| match iqf.iq(m) {
+        SourceMsg::Data { source, bytes, dropped, at } => {
+            debug_assert_eq!(source, feeder.source());
+            air.keep_up(&stop);
+            crate::perf::received(source, (bytes.len() / 2) as u64, dropped, at);
+            feeder.push(&bytes, dropped, at_ms(at));
+            air.fed((bytes.len() / 2) as u64 + dropped);
+        }
+        SourceMsg::Iq { source, samples, dropped, at } => {
+            debug_assert_eq!(source, feeder.source());
+            air.keep_up(&stop);
+            crate::perf::received(source, samples.len() as u64, dropped, at);
+            feeder.push_iq(&samples, dropped, at_ms(at));
+            air.fed(samples.len() as u64 + dropped);
+        }
+        m => {
+            let _ = ctl.send(m);
+        }
+    };
+    loop {
+        if stop.load(Ordering::Relaxed) {
+            rx.try_iter().for_each(&mut take);
+            return;
+        }
+        match rx.recv_timeout(Duration::from_millis(50)) {
+            Ok(m) => take(m),
+            Err(RecvTimeoutError::Timeout) => feeder.idle(now_ms()),
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    air.done();
+}
+
+/// How far into its air each capture played as fast as it goes is, ms
+/// (`u64::MAX`: done, or a source that keeps time by itself). Such a capture
+/// has no clock to keep it in step with the others: it waits while it's
+/// more than [`Air::LEAD_MS`] ahead of the slowest of them, as sources on the
+/// air never are by much (a grant on one source opens a channel on another
+/// where that one is). Sources on the air never wait, nor are waited for.
+struct Air {
+    at_ms: Arc<Vec<AtomicU64>>,
+    me: usize,
+    rate_hz: f64,
+    samples: std::cell::Cell<u64>,
+    paced: bool,
+}
+
+impl Air {
+    const LEAD_MS: u64 = 100;
+
+    fn fed(&self, n: u64) {
+        if self.paced {
+            return;
+        }
+        self.samples.set(self.samples.get() + n);
+        self.at_ms[self.me].store((self.samples.get() as f64 / self.rate_hz * 1000.0) as u64, Ordering::Relaxed);
+    }
+
+    fn keep_up(&self, stop: &AtomicBool) {
+        if self.paced {
+            return;
+        }
+        let mine = self.at_ms[self.me].load(Ordering::Relaxed);
+        while !stop.load(Ordering::Relaxed) && self.at_ms.iter().enumerate().any(|(i, a)| i != self.me && a.load(Ordering::Relaxed).saturating_add(Self::LEAD_MS) < mine) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    fn done(&self) {
+        self.at_ms[self.me].store(u64::MAX, Ordering::Relaxed);
+    }
+}
+
+/// `queues`: each source's samples. `epoch`: the wall clock (Unix ms) at an instant, for the session's clock.
+fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<mpsc::Receiver<SourceMsg>>, stop: Arc<AtomicBool>, epoch: (f64, Instant)) {
     ctx.set_phase("running", None, false);
+    // Errors and ends from the sources, by way of their decoding threads.
+    let (ctl_tx, rx) = mpsc::channel::<SourceMsg>();
+    let at_ms: Arc<Vec<AtomicU64>> = Arc::new(cfg.sources.iter().map(|_| AtomicU64::new(0)).collect());
+    let feeders: Vec<JoinHandle<()>> = queues
+        .into_iter()
+        .enumerate()
+        .map(|(i, q)| {
+            let (f, ctl, stop) = (session.feeder(i), ctl_tx.clone(), stop.clone());
+            let src = &cfg.sources[i];
+            let paced = !matches!(src, Source::File { realtime: false, .. });
+            if paced {
+                at_ms[i].store(u64::MAX, Ordering::Relaxed);
+            }
+            let air = Air { at_ms: at_ms.clone(), me: i, rate_hz: src.rate_hz(), samples: Default::default(), paced };
+            std::thread::Builder::new().name(format!("dsp-{i}")).spawn(move || feed_source(f, q, ctl, stop, epoch, air)).expect("thread")
+        })
+        .collect();
+    drop(ctl_tx);
     let dir = PathBuf::from(&cfg.recording.capture_dir);
     // Each system's file rules, by a call's `system` (trunked or conventional).
     let rules = {
@@ -483,15 +590,16 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Rec
         std::thread::Builder::new().name("finish".into()).spawn(move || finish_calls(&ctx, &dir, spool.as_deref(), fin_rx, &m4a)).expect("thread")
     };
     // Calls are written on the finish thread, so a slow disk doesn't hold up decoding.
+    let (fin_queued, fin_inline) = (std::cell::Cell::new(0u64), std::cell::Cell::new(0u64));
     let fin = |f: Finish, plugins: Option<&PluginHost>| {
+        fin_queued.set(fin_queued.get() + 1);
         if let Err(mpsc::TrySendError::Full(f)) = fin_tx.try_send(f) {
+            fin_inline.set(fin_inline.get() + 1);
             // (Behind on writing or encoding: this one is written here, without its M4A, rather than waiting.)
             finish_one(&ctx, &dir, spool.as_deref(), Finish { rules: FileRules { compress_wav: false, ..f.rules }, ..f }, None, plugins);
         }
     };
     let now_ms = || epoch.0 + epoch.1.elapsed().as_secs_f64() * 1000.0;
-    // An instant on the same clock (when a driver handed samples over).
-    let at_ms = |at: Instant| epoch.0 + at.saturating_duration_since(epoch.1).as_secs_f64() * 1000.0;
     let mut out = Vec::new();
     let mut ended_all = false;
     // Band plans (and DMR channel tables) as last saved: learned ones survive a crash or kill too.
@@ -500,21 +608,15 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Rec
     let mut tune_at = Instant::now();
     let mut registry_at = Instant::now();
     let mut topics_gen = u64::MAX;
+    crate::perf::recording_started(cfg.sources.iter().map(|s| s.label()).collect());
+    let mut ticker = crate::perf::Ticker::new();
     loop {
         if stop.load(Ordering::Relaxed) {
             break;
         }
-        match rx.recv_timeout(Duration::from_millis(50)) {
-            Ok(SourceMsg::Data { source, bytes, dropped, at }) => {
-                let t = Instant::now();
-                session.push(source, &bytes, dropped, at_ms(at));
-                session.add_busy_ms(t.elapsed().as_secs_f64() * 1000.0);
-            }
-            Ok(SourceMsg::Iq { source, samples, dropped, at }) => {
-                let t = Instant::now();
-                session.push_iq(source, &samples, dropped, at_ms(at));
-                session.add_busy_ms(t.elapsed().as_secs_f64() * 1000.0);
-            }
+        // (What the sources decoded meanwhile is collected below, every 20 ms at most.)
+        match rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(SourceMsg::Data { .. } | SourceMsg::Iq { .. } | SourceMsg::Real16 { .. }) => {}
             Ok(SourceMsg::Error { source, error }) => session.source_error(source, &error),
             Ok(SourceMsg::Tuned { .. }) => {}
             Ok(SourceMsg::End { source }) => {
@@ -527,6 +629,7 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Rec
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
         }
+        let _hk = prof::span(Stage::Housekeeping);
         // (The plugins can be swapped meanwhile: their settings changed.)
         let plugins = ctx.plugins.host.read().unwrap();
         session.plugin_topics = plugins.as_ref().map_or(Default::default(), |p| p.topics);
@@ -549,7 +652,9 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Rec
             }
         }
         session.poll(now_ms(), &mut out);
+        let t = prof::span(Stage::Deliver);
         deliver(&ctx, &mut out, plugins.as_ref(), &rules, &fin);
+        drop(t);
         drop(plugins);
         save_units(&mut session);
         if tune_at.elapsed() >= Duration::from_secs(60) {
@@ -564,17 +669,14 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Rec
             registry_at = Instant::now();
             save_registry(&ctx.shared);
         }
+        ticker.tick(|| session.load(), fin_queued.get(), fin_inline.get());
     }
+    crate::perf::recording_stopped();
     ctx.set_phase("stopping", None, false);
-    // What the sources had already sent (up to the queue's 256 blocks: about
-    // 2.5 s of 10 ms USRP / Soapy blocks, about 14 s of RTL-SDR's at
-    // 2.4 MSPS): calls in progress keep it.
-    for m in rx.try_iter() {
-        match m {
-            SourceMsg::Data { source, bytes, dropped, at } => session.push(source, &bytes, dropped, at_ms(at)),
-            SourceMsg::Iq { source, samples, dropped, at } => session.push_iq(source, &samples, dropped, at_ms(at)),
-            _ => {}
-        }
+    // The decoding threads finish what their sources had already sent
+    // ([`feed_source`]); once the sources are gone (stopped, or files at their end).
+    for f in feeders {
+        let _ = f.join();
     }
     session.poll(now_ms(), &mut out);
     session.finish(&mut out);
@@ -633,6 +735,7 @@ fn finish_calls(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, rx: 
 /// written only when it's kept or a plugin takes it: an .m4a is encoded
 /// from memory.
 fn finish_one(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, f: Finish, encoder: Option<&(plugins::Encoder, u32)>, host: Option<&PluginHost>) {
+    let _t = prof::span(Stage::FinishWrite);
     let r = f.rules;
     let takers = host.map_or(0, |h| h.call_takers(f.decrypted));
     let p = plugins::plan(r, takers, host.is_some_and(|h| h.needs_wav()), encoder.is_some());
@@ -670,7 +773,10 @@ fn finish_one(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, f: Fin
         m4a_to: m4a_at,
     };
     if let Some((e, kbps)) = encoder.filter(|_| p.make_m4a) {
-        match e.m4a(&audio.wav, &audio.m4a_to, *kbps) {
+        let t = prof::span(Stage::FinishEncode);
+        let made = e.m4a(&audio.wav, &audio.m4a_to, *kbps);
+        drop(t);
+        match made {
             Ok(()) => audio.files.m4a = Some(audio.m4a_to.clone()),
             Err(err) => {
                 log::error!("M4A of {}: {err}", f.rel);

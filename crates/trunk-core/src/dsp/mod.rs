@@ -8,6 +8,7 @@ pub mod cqpsk;
 pub mod filters;
 pub mod fm;
 pub mod msd;
+pub mod real_iq;
 pub mod rolloff;
 pub mod signalling;
 pub mod squelch;

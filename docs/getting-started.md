@@ -131,7 +131,7 @@ If you know the control channels, press **Add a system** on the **Systems** tab 
 - **Control channels, MHz**: the site's control channels, separated by commas
   (`857.9875, 858.9875`). It starts on the first; later ones are fallbacks, tried in turn when the
   control channel goes quiet.
-- **Modulation** (P25): leave it on **Auto (both receivers)** unless you know better.
+- **Modulation** (P25): leave it on **Detect** unless you know better: the log says what it found.
 - For SmartNet, the **Band plan**: see [SmartNet](guides/smartnet.md). For DMR and NXDN, see
   [DMR](guides/dmr.md) and [NXDN](guides/nxdn.md).
 

@@ -37,8 +37,9 @@ fn measure(cfg: &Config, req: &Request) -> Result<Value, String> {
     let mut p = Profiler::new(src.rate_hz(), profile::SECONDS);
     let mut last = Instant::now();
     let mut err = None;
+    let mut iqf = crate::sdr::IqFrom::default();
     while !p.done() {
-        match rx.recv_timeout(Duration::from_millis(100)) {
+        match rx.recv_timeout(Duration::from_millis(100)).map(|m| iqf.iq(m)) {
             Ok(SourceMsg::Data { bytes, .. }) => {
                 p.push_u8(&bytes);
                 last = Instant::now();
@@ -52,7 +53,7 @@ fn measure(cfg: &Config, req: &Request) -> Result<Value, String> {
                 break;
             }
             Ok(SourceMsg::End { .. }) | Err(RecvTimeoutError::Disconnected) => break,
-            Ok(SourceMsg::Tuned { .. }) => {}
+            Ok(SourceMsg::Tuned { .. } | SourceMsg::Real16 { .. }) => {}
             Err(RecvTimeoutError::Timeout) if last.elapsed() > TIMEOUT => {
                 err = Some("the source sent nothing".into());
                 break;

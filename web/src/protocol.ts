@@ -37,6 +37,8 @@ export type Source = (
       vgaStep: number;
       agc: boolean;
       biasTee: boolean;
+      /** 12-bit samples packed on the USB: a quarter less of the bus (default true). */
+      packing: boolean;
       ppm: number;
     }
   /**

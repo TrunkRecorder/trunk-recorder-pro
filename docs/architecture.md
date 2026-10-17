@@ -46,13 +46,13 @@ same capture.
 ## From the antenna to a file
 
 ```text
- USB / driver thread           engine thread                                         finish thread
+ USB / driver thread           dsp-N thread (one per source)                         finish thread
  ───────────────────           ─────────────────────────────────────────────────     ─────────────
- RTL-SDR (nusb)   ┐            Session::push ─► Engine::push_u8 / push_iq
+ RTL-SDR (nusb)   ┐            Feeder::push ─► Engine::push_u8 / push_iq
  USRP (UHD)       │ SourceMsg      │
- Airspy           ├──────────►     ▼
+ Airspy           ├──────────►     ▼   (under the source's lock)
  SoapySDR         │ sync_channel  Channelizer (one per source: shared FFT, many heads, pre-roll)
- capture file     ┘   (256)        │
+ capture file     ┘ (256 each)     │
                                    ├─ control-channel head ─► receivers ─► framer ─► TSBK / OSW / CSBK
                                    │                                  ─► Message ─► site lock ─► CallManager
                                    │                                                     │ grant
@@ -63,6 +63,13 @@ same capture.
                                    │
                                    └─ conventional: energy in the shared spectrum ─► open head with
                                         pre-roll ─► NBFM / P25 / DMR voice
+                                   │
+                  each block: its voice channels and its control channels' carriers are
+                  decoded under the source's own lock (and each control channel's); what
+                  they decoded is followed (site lock, CallManager, grants, conventional
+                  calls) under the engine's — one source's logic at a time, every source's
+                  DSP at once. Fed from one thread (replay, the browser), it runs as it
+                  always did; `replay --threads` feeds each source from its own.
                                    │
                          call ends ▼
                          MultiSite (hold copies; keep the best one)
@@ -137,7 +144,10 @@ channel**: CQPSK, CQPSK with equaliser, and C4FM, as `modulation` allows. It
 takes the best of each frame (`best_frame`, `best_tsbks`), and per IMBE
 codeword the copy the soft decoder trusted most (`best_imbe`; erased bits
 count against a copy). Frames from the receivers are matched by their
-sample instant.
+sample instant. With both kinds (`auto`), both run until one has clearly needed fewer NID
+corrections over 40 frame slots or more (a missed frame counting as 11);
+then only that kind runs, on that channel, until it is reopened or goes
+10 s without a frame (`diversity::Detect`).
 
 Shared pieces: `dsp::filters` (RRC and windowed-sinc taps), `bits` (MSB-first
 fields, CRC-CCITT), `ambe` (the 72-bit AMBE+2 codeword: `decode_vcw`).
@@ -416,8 +426,12 @@ main ─► serve()
          ├─ stats-load / stats-store threads: history files in, rollups out
          ├─ history thread: fills the call list from disk in the background
          └─ runtime::start(cfg) on "start" (or --start / autoStart)
-               ├─ source-0 … source-N threads ─► SourceMsg channel
-               ├─ engine thread: owns Session; loop { recv 50 ms → push → poll → deliver }
+               ├─ source-0 … source-N threads ─► one SourceMsg queue each
+               ├─ dsp-0 … dsp-N threads: each source's samples into the engine (Feeder);
+               │     errors and ends on to the engine thread; quiet spells filled with
+               │     silence; a capture played as fast as it goes kept within 100 ms of
+               │     air of the others (runtime::Air)
+               ├─ engine thread: owns Session; loop { recv 20 ms → poll → deliver }
                │     deliver(): Text/Topic/Audio → hub (tokio broadcast, 4096)
                │                Plugin, Audio → PluginHost   Log → logging   Rollup → statstore
                │                File → Finish queue (1024; when full, written here without its .m4a)
