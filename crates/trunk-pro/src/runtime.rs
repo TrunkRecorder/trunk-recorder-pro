@@ -16,7 +16,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use chrono::{Local, Offset, TimeZone};
 use serde_json::{json, Value};
 use tokio::sync::broadcast;
-use trunk_app::{Output, Session};
+use trunk_app::{Feeder, Output, Session};
 
 use crate::config::{AirspyGain, Config, SampleFormat, Source};
 use crate::plugins::{self, FileRules, PluginHost};
@@ -225,7 +225,8 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
     session.load_tune(&fs::read_to_string(tune_path()).unwrap_or_default());
     ctx.plugins.start(&cfg);
     let stop = Arc::new(AtomicBool::new(false));
-    let (tx, rx) = mpsc::sync_channel::<SourceMsg>(256);
+    // Each source's samples queue for its own decoding thread ([`feed_source`]).
+    let mut queues = Vec::new();
     let centers = cfg.resolved_centers();
     let mut threads = Vec::new();
     // A thread that can't be made: what was started is stopped again.
@@ -238,7 +239,9 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
         e.to_string()
     };
     for (i, (src, center)) in cfg.sources.iter().zip(&centers).enumerate() {
-        let (tx, stop) = (tx.clone(), stop.clone());
+        let (tx, rx) = mpsc::sync_channel::<SourceMsg>(256);
+        queues.push(rx);
+        let stop = stop.clone();
         let src = src.clone();
         let center = *center;
         let spawned = std::thread::Builder::new().name(format!("source-{i}")).spawn(move || match src {
@@ -263,9 +266,8 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
             Err(e) => return Err(undo(threads, e)),
         }
     }
-    drop(tx);
     let (ctx2, stop2) = (ctx.clone(), stop.clone());
-    let spawned = std::thread::Builder::new().name("engine".into()).spawn(move || engine_thread(ctx2, cfg, session, rx, stop2, (epoch_ms, epoch_at)));
+    let spawned = std::thread::Builder::new().name("engine".into()).spawn(move || engine_thread(ctx2, cfg, session, queues, stop2, (epoch_ms, epoch_at)));
     match spawned {
         Ok(t) => threads.push(t),
         Err(e) => return Err(undo(threads, e)),
@@ -467,9 +469,107 @@ fn open_spool(ctx: &Ctx, cfg: &Config) {
     *ctx.spool.lock().unwrap() = spool;
 }
 
-/// `epoch`: the wall clock (Unix ms) at an instant, for the session's clock.
-fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Receiver<SourceMsg>, stop: Arc<AtomicBool>, epoch: (f64, Instant)) {
+/// One source's decoding thread: its samples into the engine as they come
+/// (each source on a core of its own), anything else to the engine thread.
+/// On stop, what the source had already sent is decoded first (up to the
+/// queue's 256 blocks: about 2.5 s of 10 ms USRP / Soapy blocks, about 14 s
+/// of RTL-SDR's at 2.4 MSPS): calls in progress keep it.
+fn feed_source(feeder: Feeder, rx: mpsc::Receiver<SourceMsg>, ctl: mpsc::Sender<SourceMsg>, stop: Arc<AtomicBool>, epoch: (f64, Instant), air: Air) {
+    let now_ms = || epoch.0 + epoch.1.elapsed().as_secs_f64() * 1000.0;
+    // An instant on the same clock (when a driver handed samples over).
+    let at_ms = |at: Instant| epoch.0 + at.saturating_duration_since(epoch.1).as_secs_f64() * 1000.0;
+    let take = |m: SourceMsg| match m {
+        SourceMsg::Data { source, bytes, dropped, at } => {
+            debug_assert_eq!(source, feeder.source());
+            air.keep_up(&stop);
+            feeder.push(&bytes, dropped, at_ms(at));
+            air.fed((bytes.len() / 2) as u64 + dropped);
+        }
+        SourceMsg::Iq { source, samples, dropped, at } => {
+            debug_assert_eq!(source, feeder.source());
+            air.keep_up(&stop);
+            feeder.push_iq(&samples, dropped, at_ms(at));
+            air.fed(samples.len() as u64 + dropped);
+        }
+        m => {
+            let _ = ctl.send(m);
+        }
+    };
+    loop {
+        if stop.load(Ordering::Relaxed) {
+            rx.try_iter().for_each(take);
+            return;
+        }
+        match rx.recv_timeout(Duration::from_millis(50)) {
+            Ok(m) => take(m),
+            Err(RecvTimeoutError::Timeout) => feeder.idle(now_ms()),
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    air.done();
+}
+
+/// How far into its air each capture played as fast as it goes is, ms
+/// (`u64::MAX`: done, or a source that keeps time by itself). Such a capture
+/// has no clock to keep it in step with the others: it waits while it's
+/// more than [`Air::LEAD_MS`] ahead of the slowest of them, as sources on the
+/// air never are by much (a grant on one source opens a channel on another
+/// where that one is). Sources on the air never wait, nor are waited for.
+struct Air {
+    at_ms: Arc<Vec<AtomicU64>>,
+    me: usize,
+    rate_hz: f64,
+    samples: std::cell::Cell<u64>,
+    paced: bool,
+}
+
+impl Air {
+    const LEAD_MS: u64 = 100;
+
+    fn fed(&self, n: u64) {
+        if self.paced {
+            return;
+        }
+        self.samples.set(self.samples.get() + n);
+        self.at_ms[self.me].store((self.samples.get() as f64 / self.rate_hz * 1000.0) as u64, Ordering::Relaxed);
+    }
+
+    fn keep_up(&self, stop: &AtomicBool) {
+        if self.paced {
+            return;
+        }
+        let mine = self.at_ms[self.me].load(Ordering::Relaxed);
+        while !stop.load(Ordering::Relaxed) && self.at_ms.iter().enumerate().any(|(i, a)| i != self.me && a.load(Ordering::Relaxed).saturating_add(Self::LEAD_MS) < mine) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    fn done(&self) {
+        self.at_ms[self.me].store(u64::MAX, Ordering::Relaxed);
+    }
+}
+
+/// `queues`: each source's samples. `epoch`: the wall clock (Unix ms) at an instant, for the session's clock.
+fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<mpsc::Receiver<SourceMsg>>, stop: Arc<AtomicBool>, epoch: (f64, Instant)) {
     ctx.set_phase("running", None, false);
+    // Errors and ends from the sources, by way of their decoding threads.
+    let (ctl_tx, rx) = mpsc::channel::<SourceMsg>();
+    let at_ms: Arc<Vec<AtomicU64>> = Arc::new(cfg.sources.iter().map(|_| AtomicU64::new(0)).collect());
+    let feeders: Vec<JoinHandle<()>> = queues
+        .into_iter()
+        .enumerate()
+        .map(|(i, q)| {
+            let (f, ctl, stop) = (session.feeder(i), ctl_tx.clone(), stop.clone());
+            let src = &cfg.sources[i];
+            let paced = !matches!(src, Source::File { realtime: false, .. });
+            if paced {
+                at_ms[i].store(u64::MAX, Ordering::Relaxed);
+            }
+            let air = Air { at_ms: at_ms.clone(), me: i, rate_hz: src.rate_hz(), samples: Default::default(), paced };
+            std::thread::Builder::new().name(format!("dsp-{i}")).spawn(move || feed_source(f, q, ctl, stop, epoch, air)).expect("thread")
+        })
+        .collect();
+    drop(ctl_tx);
     let dir = PathBuf::from(&cfg.recording.capture_dir);
     // Each system's file rules, by a call's `system` (trunked or conventional).
     let rules = {
@@ -490,8 +590,6 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Rec
         }
     };
     let now_ms = || epoch.0 + epoch.1.elapsed().as_secs_f64() * 1000.0;
-    // An instant on the same clock (when a driver handed samples over).
-    let at_ms = |at: Instant| epoch.0 + at.saturating_duration_since(epoch.1).as_secs_f64() * 1000.0;
     let mut out = Vec::new();
     let mut ended_all = false;
     // Band plans (and DMR channel tables) as last saved: learned ones survive a crash or kill too.
@@ -504,17 +602,9 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Rec
         if stop.load(Ordering::Relaxed) {
             break;
         }
-        match rx.recv_timeout(Duration::from_millis(50)) {
-            Ok(SourceMsg::Data { source, bytes, dropped, at }) => {
-                let t = Instant::now();
-                session.push(source, &bytes, dropped, at_ms(at));
-                session.add_busy_ms(t.elapsed().as_secs_f64() * 1000.0);
-            }
-            Ok(SourceMsg::Iq { source, samples, dropped, at }) => {
-                let t = Instant::now();
-                session.push_iq(source, &samples, dropped, at_ms(at));
-                session.add_busy_ms(t.elapsed().as_secs_f64() * 1000.0);
-            }
+        // (What the sources decoded meanwhile is collected below, every 20 ms at most.)
+        match rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(SourceMsg::Data { .. } | SourceMsg::Iq { .. }) => {}
             Ok(SourceMsg::Error { source, error }) => session.source_error(source, &error),
             Ok(SourceMsg::Tuned { .. }) => {}
             Ok(SourceMsg::End { source }) => {
@@ -566,15 +656,10 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Rec
         }
     }
     ctx.set_phase("stopping", None, false);
-    // What the sources had already sent (up to the queue's 256 blocks: about
-    // 2.5 s of 10 ms USRP / Soapy blocks, about 14 s of RTL-SDR's at
-    // 2.4 MSPS): calls in progress keep it.
-    for m in rx.try_iter() {
-        match m {
-            SourceMsg::Data { source, bytes, dropped, at } => session.push(source, &bytes, dropped, at_ms(at)),
-            SourceMsg::Iq { source, samples, dropped, at } => session.push_iq(source, &samples, dropped, at_ms(at)),
-            _ => {}
-        }
+    // The decoding threads finish what their sources had already sent
+    // ([`feed_source`]); once the sources are gone (stopped, or files at their end).
+    for f in feeders {
+        let _ = f.join();
     }
     session.poll(now_ms(), &mut out);
     session.finish(&mut out);

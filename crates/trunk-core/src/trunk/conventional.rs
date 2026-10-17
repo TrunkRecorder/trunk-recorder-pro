@@ -1102,7 +1102,7 @@ mod tests {
             conv_systems,
             ..Default::default()
         };
-        let mut e = Engine::new(cfg).unwrap();
+        let e = Engine::new(cfg).unwrap();
         let sigma2 = 0.01f64;
         let mut rng = 0x2545_f491_4f6c_dd1du64;
         let mut u = move || {
@@ -1209,7 +1209,7 @@ mod tests {
             conv_systems: vec![sys],
             ..Default::default()
         };
-        let mut e = Engine::new(cfg).unwrap();
+        let e = Engine::new(cfg).unwrap();
         for c in iq.chunks(32_768) {
             e.push_iq(0, c);
         }

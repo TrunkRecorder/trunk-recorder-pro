@@ -17,4 +17,4 @@ pub mod stats;
 pub mod survey;
 
 pub use config::Config;
-pub use session::{Output, PluginTopics, Session};
+pub use session::{Feeder, Output, PluginTopics, Session};

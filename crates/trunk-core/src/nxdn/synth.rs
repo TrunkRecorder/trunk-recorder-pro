@@ -304,7 +304,7 @@ mod tests {
     use crate::trunk::{Access, Engine, EngineConfig, Event, SourceConfig, Talkgroup};
 
     fn run_engine(cfg: EngineConfig, iq: &[Complex32]) -> (Vec<crate::trunk::Concluded>, Vec<String>) {
-        let mut e = Engine::new(cfg).unwrap();
+        let e = Engine::new(cfg).unwrap();
         for c in iq.chunks(8192) {
             e.push_iq(0, c);
         }

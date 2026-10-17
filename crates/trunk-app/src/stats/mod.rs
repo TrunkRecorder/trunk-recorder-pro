@@ -122,7 +122,8 @@ struct Day {
 
 pub struct Stats {
     agg: Aggregator,
-    meters: Vec<SampleMeter>,
+    /// (Each behind a lock: a source's feeder thread meters it.)
+    meters: Vec<Arc<Mutex<SampleMeter>>>,
     /// Each source's series name (its label).
     names: Vec<String>,
     tally: Tally,
@@ -147,7 +148,7 @@ impl Stats {
         let names: Vec<String> = cfg.sources.iter().map(|s| key_part(&s.label())).collect();
         Stats {
             agg: Aggregator::default(),
-            meters: vec![SampleMeter::default(); names.len()],
+            meters: names.iter().map(|_| Default::default()).collect(),
             trouble: vec![(false, false); names.len()],
             names,
             tally: Tally::default(),
@@ -168,8 +169,13 @@ impl Stats {
     }
 
     /// Source `i`'s sample meter (the session feeds it).
-    pub fn meter(&mut self, i: usize) -> &mut SampleMeter {
-        &mut self.meters[i]
+    pub fn meter(&self, i: usize) -> std::sync::MutexGuard<'_, SampleMeter> {
+        self.meters[i].lock().unwrap()
+    }
+
+    /// Source `i`'s sample meter, for a thread that feeds it ([`crate::session::Feeder`]).
+    pub fn meter_handle(&self, i: usize) -> Arc<Mutex<SampleMeter>> {
+        self.meters[i].clone()
     }
 
     /// Unix seconds, as last set.
@@ -210,7 +216,7 @@ impl Stats {
                     self.emit(MonitorEvent::TgFirstSeen { system: name.to_string(), talkgroup: c.talkgroup, alpha_tag }, out);
                 }
                 for u in firsts.units {
-                    let alias = engine.unit_alias(c.system, u).unwrap_or("").to_string();
+                    let alias = engine.unit_alias(c.system, u).unwrap_or_default();
                     self.emit(MonitorEvent::UnitFirstSeen { system: name.to_string(), unit: u, alias }, out);
                 }
                 if self.shared.monitor.lock().unwrap().wants_frequent() {
@@ -230,7 +236,7 @@ impl Stats {
                 self.day.air_s += secs;
                 let firsts = self.shared.radio.lock().unwrap().call_end(name, c, t);
                 for u in firsts {
-                    let alias = engine.unit_alias(c.system, u).unwrap_or("").to_string();
+                    let alias = engine.unit_alias(c.system, u).unwrap_or_default();
                     self.emit(MonitorEvent::UnitFirstSeen { system: name.to_string(), unit: u, alias }, out);
                 }
                 if self.shared.monitor.lock().unwrap().wants_frequent() {
@@ -294,8 +300,8 @@ impl Stats {
             out.push(Output::Rollup(r));
         }
         engine.report(&self.names, &mut self.agg);
-        for (i, m) in self.meters.iter_mut().enumerate() {
-            m.report(&mut Scoped::new(&mut self.agg, format!("src/{}", self.names[i])));
+        for (i, m) in self.meters.iter().enumerate() {
+            m.lock().unwrap().report(&mut Scoped::new(&mut self.agg, format!("src/{}", self.names[i])));
         }
         self.tally.report(&mut self.agg);
         if dt > 0.0 {

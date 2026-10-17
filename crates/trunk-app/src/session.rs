@@ -13,8 +13,10 @@ use trunk_core::dsp::tones::Tone;
 use trunk_core::Complex32;
 
 use crate::config::{Config, Source};
-use crate::stats::{Rollup, Shared, Stats, Topics};
-use std::sync::Arc;
+use crate::stats::{Rollup, SampleMeter, Shared, Stats, Topics};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use trunk_recorder_plugin::{CallInfo, HostMessage, SystemStatus as PluginSystemStatus, UnitEvent};
 
 pub enum Output {
@@ -96,6 +98,8 @@ struct SourceStats {
     fed_ms: Option<f64>,
     /// Its sample clock against the wall clock (live sources only).
     clock: ClockFit,
+    /// A [`Feeder`] feeds it from a thread of its own (and fills in its quiet spells there).
+    threaded: bool,
 }
 
 /// A source's sample clock against the wall clock. Sample time runs slow or
@@ -164,10 +168,101 @@ impl ClockFit {
     }
 }
 
+/// Feeds one source from a thread of its own ([`Session::feeder`]): its
+/// samples to the engine (decoded under its source's own lock), its counts,
+/// clock and sample meter to the session.
+pub struct Feeder {
+    source: usize,
+    engine: Engine,
+    stats: Arc<Mutex<SourceStats>>,
+    meter: Arc<Mutex<SampleMeter>>,
+    rate_hz: f64,
+    epoch_ms: f64,
+    busy_us: Arc<AtomicU64>,
+}
+
+impl Feeder {
+    /// The source it feeds.
+    pub fn source(&self) -> usize {
+        self.source
+    }
+
+    /// Raw u8 IQ; as [`Session::push`].
+    pub fn push(&self, bytes: &[u8], dropped: u64, at_ms: f64) {
+        let t = Instant::now();
+        self.gap(dropped);
+        self.engine.push_u8(self.source, bytes);
+        self.meter.lock().unwrap().u8(bytes);
+        self.fed(bytes.len() as u64 / 2, at_ms);
+        self.busy_us.fetch_add(t.elapsed().as_micros() as u64, Ordering::Relaxed);
+    }
+
+    /// Float IQ; as [`Session::push_iq`].
+    pub fn push_iq(&self, iq: &[Complex32], dropped: u64, at_ms: f64) {
+        let t = Instant::now();
+        self.gap(dropped);
+        self.engine.push_iq(self.source, iq);
+        self.meter.lock().unwrap().iq(iq);
+        self.fed(iq.len() as u64, at_ms);
+        self.busy_us.fetch_add(t.elapsed().as_micros() as u64, Ordering::Relaxed);
+    }
+
+    fn fed(&self, n: u64, at_ms: f64) {
+        let mut s = self.stats.lock().unwrap();
+        s.samples += n;
+        s.clock.samples += n;
+        s.clock.observe(at_ms, self.epoch_ms, self.rate_hz);
+        s.fed = true;
+    }
+
+    /// `dropped` samples lost: counted, and fed as silence.
+    fn gap(&self, dropped: u64) {
+        if dropped == 0 {
+            return;
+        }
+        let most = dropped.min((MAX_GAP_S * self.rate_hz) as u64);
+        {
+            let mut s = self.stats.lock().unwrap();
+            s.dropped += dropped;
+            s.clock.samples += most;
+        }
+        self.meter.lock().unwrap().dropped += dropped;
+        self.engine.push_gap(self.source, most);
+    }
+
+    /// Nothing came for a while (`now_ms`: on `poll`'s clock): once it's been
+    /// quiet long enough while running (unplugged, a driver reopening),
+    /// silence for the time it sent nothing.
+    pub fn idle(&self, now_ms: f64) {
+        let n = {
+            let mut s = self.stats.lock().unwrap();
+            if std::mem::take(&mut s.fed) || s.fed_ms.is_none() {
+                // (Not before its first samples: a radio still opening isn't a gap.)
+                if s.samples > 0 {
+                    s.fed_ms = Some(now_ms);
+                }
+                return;
+            }
+            let since = s.fed_ms.unwrap_or(now_ms);
+            if s.ended || now_ms - since < QUIET_MS {
+                return;
+            }
+            s.fed_ms = Some(now_ms);
+            let n = (((now_ms - since) / 1000.0).min(MAX_GAP_S) * self.rate_hz) as u64;
+            s.clock.samples += n;
+            n
+        };
+        self.engine.push_gap(self.source, n);
+    }
+}
+
 pub struct Session {
     cfg: Config,
     engine: Engine,
-    stats: Vec<SourceStats>,
+    /// (Each behind a lock: a source's [`Feeder`] updates it from its thread.)
+    stats: Vec<Arc<Mutex<SourceStats>>>,
+    /// Time each source's feeder spent decoding, µs (the load figure: the busiest's).
+    busy: Vec<Arc<AtomicU64>>,
     /// The dashboard's measurements ([`crate::stats`]).
     meas: Stats,
     log: Vec<Value>,
@@ -203,7 +298,7 @@ impl Session {
         if let Some(p) = cfg.problem() {
             return Err(p);
         }
-        let mut engine = Engine::new(cfg.engine_config(epoch_ms))?;
+        let engine = Engine::new(cfg.engine_config(epoch_ms))?;
         let names: Vec<String> = engine.systems().iter().map(|s| s.short_name.clone()).collect();
         for (i, n) in names.iter().enumerate() {
             if let Some(b) = bandplan(n) {
@@ -215,7 +310,7 @@ impl Session {
         let stats = cfg
             .sources
             .iter()
-            .map(|s| SourceStats { clock: ClockFit { live: !matches!(s, Source::File { realtime: false, .. }), ..Default::default() }, ..Default::default() })
+            .map(|s| Arc::new(Mutex::new(SourceStats { clock: ClockFit { live: !matches!(s, Source::File { realtime: false, .. }), ..Default::default() }, ..Default::default() })))
             .collect();
         let meas = Stats::new(&cfg, Shared::new(), local_offset);
         Ok(Session {
@@ -223,6 +318,7 @@ impl Session {
             cfg,
             engine,
             stats,
+            busy: (0..n).map(|_| Default::default()).collect(),
             log: Vec::new(),
             records: Vec::new(),
             local_offset,
@@ -283,7 +379,7 @@ impl Session {
             Some(i) => i as u16,
             None => trunk_core::trunk::conventional_system(self.cfg.conventional.iter().position(|c| c.short_name == short_name)?),
         };
-        self.engine.unit_alias(sys, unit).map(str::to_string)
+        self.engine.unit_alias(sys, unit)
     }
 
     /// `radioQuery` against the registry this session feeds, with names
@@ -304,61 +400,49 @@ impl Session {
     /// before these (fed as silence, so time keeps up); `at_ms`: when the
     /// driver handed them over, on `poll`'s clock.
     pub fn push(&mut self, source: usize, bytes: &[u8], dropped: u64, at_ms: f64) {
-        self.gap(source, dropped);
-        self.engine.push_u8(source, bytes);
-        self.meas.meter(source).u8(bytes);
-        self.fed(source, bytes.len() as u64 / 2, at_ms);
+        let f = self.feed_of(source);
+        f.gap(dropped);
+        f.engine.push_u8(source, bytes);
+        f.meter.lock().unwrap().u8(bytes);
+        f.fed(bytes.len() as u64 / 2, at_ms);
     }
 
     /// Float IQ from `source` (USRP, Airspy, float captures); as [`push`](Self::push).
     pub fn push_iq(&mut self, source: usize, iq: &[Complex32], dropped: u64, at_ms: f64) {
-        self.gap(source, dropped);
-        self.engine.push_iq(source, iq);
-        self.meas.meter(source).iq(iq);
-        self.fed(source, iq.len() as u64, at_ms);
+        let f = self.feed_of(source);
+        f.gap(dropped);
+        f.engine.push_iq(source, iq);
+        f.meter.lock().unwrap().iq(iq);
+        f.fed(iq.len() as u64, at_ms);
     }
 
-    fn fed(&mut self, source: usize, n: u64, at_ms: f64) {
-        let rate = self.engine.sources()[source].rate_hz;
-        let s = &mut self.stats[source];
-        s.samples += n;
-        s.clock.samples += n;
-        s.clock.observe(at_ms, self.epoch_ms, rate);
-        s.fed = true;
-    }
-
-    /// `dropped` samples of `source` lost: counted, and fed as silence.
-    fn gap(&mut self, source: usize, dropped: u64) {
-        if dropped == 0 {
-            return;
+    fn feed_of(&self, source: usize) -> Feeder {
+        Feeder {
+            source,
+            engine: self.engine.clone(),
+            stats: self.stats[source].clone(),
+            meter: self.meas.meter_handle(source),
+            rate_hz: self.engine.sources()[source].rate_hz,
+            epoch_ms: self.epoch_ms,
+            busy_us: self.busy[source].clone(),
         }
-        self.stats[source].dropped += dropped;
-        self.meas.meter(source).dropped += dropped;
-        let most = (MAX_GAP_S * self.engine.sources()[source].rate_hz) as u64;
-        self.engine.push_gap(source, dropped.min(most));
-        self.stats[source].clock.samples += dropped.min(most);
+    }
+
+    /// Source `source` fed from a thread of its own: push its samples there
+    /// ([`Feeder::push`]), each source's decoding on its own core. The
+    /// session no longer fills in its quiet spells ([`Feeder::idle`] does).
+    pub fn feeder(&mut self, source: usize) -> Feeder {
+        self.stats[source].lock().unwrap().threaded = true;
+        self.feed_of(source)
     }
 
     /// Fill in for sources that went quiet while running (unplugged, a
     /// driver reopening): silence for the time they've sent nothing.
     fn fill_quiet(&mut self, now_ms: f64) {
         for i in 0..self.stats.len() {
-            let s = &mut self.stats[i];
-            if std::mem::take(&mut s.fed) || s.fed_ms.is_none() {
-                // (Not before its first samples: a radio still opening isn't a gap.)
-                if s.samples > 0 {
-                    s.fed_ms = Some(now_ms);
-                }
-                continue;
+            if !self.stats[i].lock().unwrap().threaded {
+                self.feed_of(i).idle(now_ms);
             }
-            let since = s.fed_ms.unwrap_or(now_ms);
-            if s.ended || now_ms - since < QUIET_MS {
-                continue;
-            }
-            s.fed_ms = Some(now_ms);
-            let n = ((now_ms - since) / 1000.0).min(MAX_GAP_S) * self.engine.sources()[i].rate_hz;
-            self.engine.push_gap(i, n as u64);
-            self.stats[i].clock.samples += n as u64;
         }
     }
 
@@ -366,7 +450,8 @@ impl Session {
     /// seconds since the last poll.
     fn steer_clocks(&mut self, dt: f64) {
         for i in 0..self.stats.len() {
-            let Some((offset, step)) = self.stats[i].clock.steer(dt) else { continue };
+            let steered = self.stats[i].lock().unwrap().clock.steer(dt);
+            let Some((offset, step)) = steered else { continue };
             if step {
                 let moved = offset - self.engine.clock_offset(i);
                 self.records.push(Record::text(Level::Info, None, format!("Source {i}: clock re-anchored to the wall clock ({:+.3} s)", moved)));
@@ -380,20 +465,27 @@ impl Session {
         self.busy_ms += ms;
     }
 
+    /// Time spent decoding, ms: on the caller's thread, and the busiest feeder's.
+    fn busy_ms(&self) -> f64 {
+        self.busy_ms + self.busy.iter().map(|b| b.load(Ordering::Relaxed)).max().unwrap_or(0) as f64 / 1000.0
+    }
+
     pub fn source_error(&mut self, source: usize, error: &str) {
         self.meas.meter(source).errors += 1;
-        let s = &mut self.stats[source];
-        s.errors += 1;
-        s.last_error = Some(error.to_string());
-        s.last_error_s = self.meas.now();
+        {
+            let mut s = self.stats[source].lock().unwrap();
+            s.errors += 1;
+            s.last_error = Some(error.to_string());
+            s.last_error_s = self.meas.now();
+        }
         self.log.push(json!({ "timeS": self.engine.status().now_s, "kind": "error", "text": format!("source {source}: {error}") }));
         self.records.push(Record::text(Level::Error, None, format!("Source {source}: {error}")));
     }
 
     /// A finite source ran out; true when all have.
     pub fn source_ended(&mut self, source: usize) -> bool {
-        self.stats[source].ended = true;
-        self.stats.iter().all(|s| s.ended)
+        self.stats[source].lock().unwrap().ended = true;
+        self.stats.iter().all(|s| s.lock().unwrap().ended)
     }
 
     /// Collect what happened since the last poll; status every 500 ms and
@@ -428,13 +520,15 @@ impl Session {
         {
             let cfg = &self.cfg;
             let name = |sys: u16| cfg.short_name_of(sys).unwrap_or("conv").to_string();
-            self.meas.tick(now_ms, self.busy_ms, &self.engine, &name, out);
+            let busy = self.busy_ms();
+            self.meas.tick(now_ms, busy, &self.engine, &name, out);
         }
         if now_ms - self.last_status_ms >= 500.0 {
             self.last_status_ms = now_ms;
             let dt = (now_ms - self.rate_mark.0) / 1000.0;
             if dt >= 1.0 {
-                for (i, s) in self.stats.iter_mut().enumerate() {
+                for (i, s) in self.stats.iter().enumerate() {
+                    let mut s = s.lock().unwrap();
                     s.rate_measured = (s.samples - self.rate_mark.1[i]) as f64 / dt;
                     self.rate_mark.1[i] = s.samples;
                 }
@@ -449,7 +543,7 @@ impl Session {
                 self.last_plugin_status_ms = now_ms;
                 out.push(Output::Plugin(HostMessage::Status(self.plugin_status(dt))));
             }
-            let load = self.busy_ms / (now_ms - start).max(1.0);
+            let load = self.busy_ms() / (now_ms - start).max(1.0);
             out.push(Output::Text(self.status_json(load).to_string()));
         }
     }
@@ -540,7 +634,8 @@ impl Session {
 
     /// Talkgroups as the interface shows them: number and alpha tag (from system `system`'s file; "" when not in it).
     fn tg_names(&self, system: u16, tgs: impl IntoIterator<Item = u32>) -> Vec<Value> {
-        let file = self.engine.systems().get(system as usize).map(|s| &s.talkgroups);
+        let systems = self.engine.systems();
+        let file = systems.get(system as usize).map(|s| &s.talkgroups);
         tgs.into_iter()
             .map(|tg| json!({ "talkgroup": tg, "alphaTag": file.and_then(|f| f.get(&tg)).map_or("", |t| t.alpha_tag.as_str()) }))
             .collect()
@@ -839,6 +934,7 @@ impl Session {
             .zip(&self.stats)
             .enumerate()
             .map(|(i, ((s, sc), ss))| {
+                let ss = ss.lock().unwrap();
                 let label = s.label();
                 let tune = st.sources.get(i).copied().unwrap_or_default();
                 // An error long past isn't news (its count stays).
