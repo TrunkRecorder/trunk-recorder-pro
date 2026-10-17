@@ -239,6 +239,12 @@ doesn't collect them in time, they're lost. Causes, most likely first:
   power supply. Spread dongles across ports.
 - **Something else on the computer** hogging it for a moment (a backup, a screen-sharing session).
 
+**Airspys** hand their samples over through libairspy, whose own thread drops a buffer
+(6.5 ms at 10 MS/s) when it runs more than ~50 ms late. The recorder now takes the Airspy's raw
+samples and turns them into IQ on its own decoding thread, so libairspy's thread only copies.
+If an Airspy's channels ever look wrong (nothing decodes, or the spectrum looks mirrored), start
+the recorder with `TRUNK_PRO_AIRSPY_LIBRARY_IQ=1` to have libairspy convert as before, and tell us.
+
 **USRPs** have a very small buffer by default, so the app asks UHD for a bigger one
 (`num_recv_frames=256`, about 65 ms) unless your device arguments set `num_recv_frames`
 themselves. Other USRP messages: `USRP can't run at … MSPS (it offers …); set that sample rate`

@@ -5,7 +5,7 @@
 //! the chosen rate, centred on the tuned frequency.
 
 use std::ffi::{c_int, c_void, CStr};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -14,7 +14,7 @@ use libloading::Library;
 use num_complex::Complex32;
 
 use super::DriverInfo;
-use crate::sdr::{Control, SourceMsg};
+use crate::sdr::{Control, Pool, SourceMsg};
 
 type Dev = *mut c_void;
 
@@ -37,6 +37,16 @@ struct LibVersion {
 }
 
 const SAMPLE_FLOAT32_IQ: c_int = 0;
+const SAMPLE_INT16_REAL: c_int = 3;
+
+/// libairspy's own IQ conversion, as before (`TRUNK_PRO_AIRSPY_LIBRARY_IQ=1`):
+/// by default it hands over real samples and they're converted on the
+/// source's decoding thread ([`SourceMsg::Real16`]), so its thread only
+/// copies — it drops a buffer when that thread runs late by more than its
+/// eight (~50 ms at 10 MS/s).
+fn library_iq() -> bool {
+    std::env::var_os("TRUNK_PRO_AIRSPY_LIBRARY_IQ").is_some_and(|v| v != "0")
+}
 
 type Callback = extern "C" fn(*mut Transfer) -> c_int;
 
@@ -192,7 +202,8 @@ struct Ctx {
     tx: SyncSender<SourceMsg>,
     stop: Arc<AtomicBool>,
     closed: AtomicBool,
-    dropped: AtomicU64,
+    /// Buffers for its real samples (its thread allocates none).
+    pool: Pool<i16>,
 }
 
 extern "C" fn on_samples(t: *mut Transfer) -> c_int {
@@ -202,13 +213,24 @@ extern "C" fn on_samples(t: *mut Transfer) -> c_int {
     if ctx.stop.load(Ordering::Relaxed) || ctx.closed.load(Ordering::Relaxed) {
         return 1; // stop streaming
     }
-    if t.sample_type != SAMPLE_FLOAT32_IQ || t.sample_count <= 0 {
+    if t.sample_count <= 0 {
         return 0;
     }
-    // SAFETY: sample_count complex floats.
-    let s = unsafe { std::slice::from_raw_parts(t.samples as *const Complex32, t.sample_count as usize) };
-    let dropped = t.dropped_samples.saturating_sub(ctx.dropped.swap(t.dropped_samples, Ordering::Relaxed));
-    if ctx.tx.send(SourceMsg::Iq { source: ctx.source, samples: s.to_vec(), dropped, at: std::time::Instant::now() }).is_err() {
+    // (dropped_samples: the buffers libairspy dropped just before this one, in this one's samples — not a running total.)
+    let msg = match t.sample_type {
+        SAMPLE_INT16_REAL => {
+            // SAFETY: sample_count 16-bit real samples.
+            let s = unsafe { std::slice::from_raw_parts(t.samples as *const i16, t.sample_count as usize) };
+            SourceMsg::Real16 { source: ctx.source, samples: ctx.pool.copy(s), dropped: t.dropped_samples / 2, at: std::time::Instant::now() }
+        }
+        SAMPLE_FLOAT32_IQ => {
+            // SAFETY: sample_count complex floats.
+            let s = unsafe { std::slice::from_raw_parts(t.samples as *const Complex32, t.sample_count as usize) };
+            SourceMsg::Iq { source: ctx.source, samples: s.to_vec(), dropped: t.dropped_samples, at: std::time::Instant::now() }
+        }
+        _ => return 0,
+    };
+    if ctx.tx.send(msg).is_err() {
         ctx.closed.store(true, Ordering::Relaxed);
         return 1;
     }
@@ -245,14 +267,17 @@ fn stream_once(source: usize, cfg: &AirspyConfig, tx: &SyncSender<SourceMsg>, st
             check(a, "open", (a.open_sn)(&mut dev, sn))?;
         }
         let mut d = Device { a, dev, streaming: false };
-        check(a, "sample type", (a.set_sample_type)(d.dev, SAMPLE_FLOAT32_IQ))?;
+        // (Before the rate: for real samples libairspy lists and takes rates doubled.)
+        let real = !library_iq();
+        check(a, "sample type", (a.set_sample_type)(d.dev, if real { SAMPLE_INT16_REAL } else { SAMPLE_FLOAT32_IQ }))?;
         let mut count = 0u32;
         (a.get_samplerates)(d.dev, &mut count, 0);
         let mut rates = vec![0u32; count as usize];
         (a.get_samplerates)(d.dev, rates.as_mut_ptr(), count);
-        let want = cfg.rate_hz.round() as u32;
+        let per = if real { 2 } else { 1 };
+        let want = cfg.rate_hz.round() as u32 * per;
         if !rates.contains(&want) {
-            let list: Vec<String> = rates.iter().map(|r| format!("{}", *r as f64 / 1e6)).collect();
+            let list: Vec<String> = rates.iter().map(|r| format!("{}", *r as f64 / per as f64 / 1e6)).collect();
             return Err(format!("this Airspy runs at {} MSPS, not {}", list.join(" / "), cfg.rate_hz / 1e6));
         }
         check(a, "sample rate", (a.set_samplerate)(d.dev, want))?;
@@ -274,7 +299,7 @@ fn stream_once(source: usize, cfg: &AirspyConfig, tx: &SyncSender<SourceMsg>, st
             }
         }
         check(a, "bias-T", (a.set_rf_bias)(d.dev, cfg.bias_tee as u8))?;
-        let ctx = Box::new(Ctx { source, tx: tx.clone(), stop: stop.clone(), closed: AtomicBool::new(false), dropped: AtomicU64::new(0) });
+        let ctx = Box::new(Ctx { source, tx: tx.clone(), stop: stop.clone(), closed: AtomicBool::new(false), pool: Pool::default() });
         let ctx_ptr = &*ctx as *const Ctx as *mut c_void;
         check(a, "start", (a.start_rx)(d.dev, on_samples, ctx_ptr))?;
         d.streaming = true;

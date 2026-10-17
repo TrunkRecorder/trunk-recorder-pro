@@ -724,7 +724,7 @@ fn capture(a: &Args) {
                 dropped += d;
             }
             Ok(sdr::SourceMsg::Error { error, .. }) => eprintln!("{error}"),
-            Ok(sdr::SourceMsg::Iq { .. } | sdr::SourceMsg::Tuned { .. }) => {}
+            Ok(sdr::SourceMsg::Iq { .. } | sdr::SourceMsg::Real16 { .. } | sdr::SourceMsg::Tuned { .. }) => {}
             Ok(sdr::SourceMsg::End { .. }) | Err(_) => break,
         }
     }

@@ -479,7 +479,9 @@ fn feed_source(feeder: Feeder, rx: mpsc::Receiver<SourceMsg>, ctl: mpsc::Sender<
     let now_ms = || epoch.0 + epoch.1.elapsed().as_secs_f64() * 1000.0;
     // An instant on the same clock (when a driver handed samples over).
     let at_ms = |at: Instant| epoch.0 + at.saturating_duration_since(epoch.1).as_secs_f64() * 1000.0;
-    let take = |m: SourceMsg| match m {
+    // (An Airspy's real samples become IQ here, on this thread: see [`crate::sdr::IqFrom`].)
+    let mut iqf = crate::sdr::IqFrom::default();
+    let mut take = |m: SourceMsg| match iqf.iq(m) {
         SourceMsg::Data { source, bytes, dropped, at } => {
             debug_assert_eq!(source, feeder.source());
             air.keep_up(&stop);
@@ -500,7 +502,7 @@ fn feed_source(feeder: Feeder, rx: mpsc::Receiver<SourceMsg>, ctl: mpsc::Sender<
     };
     loop {
         if stop.load(Ordering::Relaxed) {
-            rx.try_iter().for_each(take);
+            rx.try_iter().for_each(&mut take);
             return;
         }
         match rx.recv_timeout(Duration::from_millis(50)) {
@@ -612,7 +614,7 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
         }
         // (What the sources decoded meanwhile is collected below, every 20 ms at most.)
         match rx.recv_timeout(Duration::from_millis(20)) {
-            Ok(SourceMsg::Data { .. } | SourceMsg::Iq { .. }) => {}
+            Ok(SourceMsg::Data { .. } | SourceMsg::Iq { .. } | SourceMsg::Real16 { .. }) => {}
             Ok(SourceMsg::Error { source, error }) => session.source_error(source, &error),
             Ok(SourceMsg::Tuned { .. }) => {}
             Ok(SourceMsg::End { source }) => {

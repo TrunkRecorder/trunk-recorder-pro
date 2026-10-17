@@ -5,6 +5,16 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Fewer Airspy drops.** libairspy converted the Airspy's samples to IQ on the same thread that
+  drains its USB queue (about half a core at 10 MS/s), and dropped a buffer whenever that thread
+  ran ~50 ms late. The recorder now asks for the raw samples and converts them on the source's
+  decoding thread, with no allocation per buffer on libairspy's. `TRUNK_PRO_AIRSPY_LIBRARY_IQ=1`
+  goes back to libairspy's conversion. Also fixed: drops reported by libairspy were under-counted
+  when they came back to back.
+- **Sources don't wait on the dashboard.** With many sources, the threads that read status, the
+  channel list and the history for the dashboard held the engine while waiting on a busy source,
+  and every other source's decoding waited behind them.
+
 - **Each source decodes on its own core.** With many sources one core used to do all the
   decoding while the others sat idle (and samples were dropped once it couldn't keep up). Each
   source now has a decoding thread of its own — its channelizer, its voice and control channels —
