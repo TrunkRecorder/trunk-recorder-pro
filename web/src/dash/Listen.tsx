@@ -11,6 +11,9 @@ import {
   holdSystem,
   holdTalkgroup,
   letGo,
+  listenLabel,
+  listenName,
+  listenOf,
   loadOlder,
   playable,
   playNow,
@@ -20,6 +23,7 @@ import {
   setFeed,
   setSystemOn,
   setTalkgroupsOn,
+  sitesOf,
   skip,
   subject,
   systemOf,
@@ -47,21 +51,23 @@ interface Tg {
 
 /**
  * Every system and talkgroup there is to hear: each system's talkgroup file,
- * and what calls were heard on (conventional channels, talkgroups not in a file).
+ * and what calls were heard on (conventional channels, talkgroups not in a
+ * file). The sites of a multi-site system are one, their files together.
  */
-function catalog(s: Pick<AppState, "config">, calls: CallEntry[]): Map<string, Tg[]> {
+function catalog(s: Pick<AppState, "config">, calls: CallEntry[], sel: Selection): Map<string, Tg[]> {
   const out = new Map<string, Map<number, Tg>>();
   const sys = (name: string) => out.get(name) ?? out.set(name, new Map()).get(name)!;
   for (const x of s.config?.systems ?? []) {
     if (!x.enabled) continue;
-    const m = sys(x.shortName);
+    const name = listenName(sel, x.shortName);
+    const m = sys(name);
     for (const t of parseTalkgroupCsv(x.talkgroupsCsv).values()) {
-      if (!t.ignore) m.set(t.number, { system: x.shortName, talkgroup: t.number, key: tgKey(x.shortName, t.number), alphaTag: t.alphaTag, description: t.description, tag: t.tag, group: t.group });
+      if (!t.ignore && !m.has(t.number)) m.set(t.number, { system: name, talkgroup: t.number, key: tgKey(name, t.number), alphaTag: t.alphaTag, description: t.description, tag: t.tag, group: t.group });
     }
   }
   for (const v of s.config?.conventional ?? []) if (v.enabled) sys(v.shortName);
   for (const c of calls) {
-    const name = systemOf(c);
+    const name = listenOf(sel, c);
     const m = sys(name);
     const r = c.record;
     if (!m.has(r.talkgroup)) {
@@ -169,7 +175,7 @@ function Controls() {
   const l = useListen((x) => ({ playing: x.playing, played: x.played, sel: x.sel, feed: x.feed, paused: x.paused }));
   const c = subject(l as Parameters<typeof subject>[0]);
   const hold = l.sel.hold;
-  const key = c ? tgKey(systemOf(c), c.record.talkgroup) : null;
+  const key = c ? tgKey(listenOf(l.sel, c), c.record.talkgroup) : null;
   const isAvoided = key !== null && avoided(l.sel, key);
   const timed = key !== null && isAvoided && l.sel.avoid[key] !== 0;
   const b = (label: string, onClick: () => void, opts: { on?: boolean; disabled?: boolean; title?: string } = {}) => (
@@ -222,7 +228,7 @@ function Recent({ s }: { s: AppState }) {
 }
 
 function Scanner({ s }: { s: AppState }) {
-  const l = useListen((x) => ({ feed: x.feed, queue: x.queue.length, missed: x.missed, hold: x.sel.hold }));
+  const l = useListen((x) => ({ feed: x.feed, queue: x.queue.length, missed: x.missed, hold: x.sel.hold, sel: x.sel }));
   const status = !s.connected ? "No link" : l.feed ? "Live" : "Feed off";
   return (
     <section className="panel scanner">
@@ -230,7 +236,7 @@ function Scanner({ s }: { s: AppState }) {
         <span className={`scan-status ${!s.connected ? "bad" : l.feed ? "live" : "off"}`}>{status}</span>
         {l.hold && (
           <span className="chip small">
-            Holding {l.hold.system}
+            Holding {listenLabel(l.sel, l.hold.system)}
             {l.hold.talkgroup !== null ? ` TG ${l.hold.talkgroup}` : ""}
           </span>
         )}
@@ -351,9 +357,9 @@ function Chips({ title, by, sel, tgs, known }: { title: string; by: (t: Tg) => s
   );
 }
 
-function Talkgroups({ s }: { s: AppState }) {
+export function Talkgroups({ s }: { s: AppState }) {
   const l = useListen((x) => ({ calls: x.calls, sel: x.sel }));
-  const cat = useMemo(() => catalog(s, l.calls), [s.config, l.calls]);
+  const cat = useMemo(() => catalog(s, l.calls, l.sel), [s.config, l.calls, l.sel.sites]);
   const [filter, setFilter] = useState("");
   const all = useMemo(() => [...cat.values()].flat(), [cat]);
   const known = useMemo(() => all.map((t) => t.key), [all]);
@@ -364,7 +370,7 @@ function Talkgroups({ s }: { s: AppState }) {
   const avoids = Object.entries(sel.avoid).filter(([k]) => avoided(sel, k, now));
   const name = (k: string) => {
     const t = all.find((x) => x.key === k);
-    return t ? `${t.alphaTag || `TG ${t.talkgroup}`}${cat.size > 1 ? ` (${t.system})` : ""}` : k;
+    return t ? `${t.alphaTag || `TG ${t.talkgroup}`}${cat.size > 1 ? ` (${listenLabel(sel, t.system)})` : ""}` : k;
   };
   return (
     <>
@@ -381,7 +387,7 @@ function Talkgroups({ s }: { s: AppState }) {
       {sel.hold && (
         <div className="banner subtle">
           <span>
-            Holding on {sel.hold.system}
+            Holding on {listenLabel(sel, sel.hold.system)}
             {sel.hold.talkgroup !== null ? `, talkgroup ${sel.hold.talkgroup}` : ""}: only it plays.
           </span>
           <button className="btn ghost small" onClick={sel.hold.talkgroup === null ? holdSystem : holdTalkgroup}>
@@ -407,13 +413,15 @@ function Talkgroups({ s }: { s: AppState }) {
       {[...cat].map(([system, tgs]) => {
         const sysOn = !sel.offSystems.includes(system);
         const shown = tgs.filter(match);
+        const sites = sitesOf(sel, system);
         if (f && !shown.length) return null;
         return (
           <div key={system} className="tg-system">
             <label className="tg-system-head">
               <input type="checkbox" checked={sysOn} onChange={(e) => setSystemOn(system, e.target.checked)} />
-              <Led color={systemColor(s.config, system)} />
-              <b>{system}</b>
+              <Led color={systemColor(s.config, sites[0] ?? system)} />
+              <b>{listenLabel(sel, system)}</b>
+              {sites.length > 0 && <span className="chip small" title="Sites of one system: a call plays whichever site it was kept from">multi-site</span>}
               <span className="muted small">
                 {sysOn ? tgs.filter((t) => !sel.offTalkgroups.includes(t.key)).length : 0} of {tgs.length} talkgroups
               </span>

@@ -16,3 +16,12 @@ g.addEventListener ??= () => {};
 g.removeEventListener ??= () => {};
 g.history ??= { pushState() {}, replaceState() {} };
 g.scrollTo ??= () => {};
+g.Audio ??= class {
+  src = "";
+  currentTime = 0;
+  duration = NaN;
+  play(): Promise<void> {
+    return Promise.resolve();
+  }
+  pause(): void {}
+};
