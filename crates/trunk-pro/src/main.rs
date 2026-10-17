@@ -124,7 +124,7 @@ use std::io::Read;
 use std::path::Path;
 use std::time::Instant;
 
-use trunk_core::trunk::{parse_csv, CallConfig, ConvChannel, ConvConfig, ConvMode, Engine, EngineConfig, SystemConfig, Event, IdField, Identity, Protocol, SaveRules, SourceConfig, SiteConfig, DEFAULT_GUARD_HZ};
+use trunk_core::trunk::{parse_csv, CallConfig, ConvChannel, ConvConfig, ConvMode, Engine, EngineConfig, SystemConfig, Voice, Event, IdField, Identity, Protocol, SaveRules, SourceConfig, SiteConfig, DEFAULT_GUARD_HZ};
 
 /// `--key value` / `--flag` arguments after the positionals.
 pub struct Args {
@@ -378,8 +378,6 @@ fn replay(a: &Args) {
             cfg.engine_config(0.0).conventional
         }))
         .collect();
-    // (Calls say only analog: which are AM, for the log.)
-    let am: Vec<u64> = conventional.iter().filter(|c| c.mode == ConvMode::Am).map(|c| c.freq_hz.round() as u64).collect();
     let out_dir = a.get("out").unwrap_or("calls").to_string();
     fs::create_dir_all(&out_dir).unwrap_or_else(|e| die(&format!("{out_dir}: {e}")));
     let talkgroups = a.get("talkgroups").map(|p| parse_csv(&fs::read_to_string(p).unwrap_or_else(|e| die(&format!("{p}: {e}"))))).unwrap_or_default();
@@ -545,7 +543,7 @@ fn replay(a: &Args) {
                     .expect("thread");
             }
             while running.load(std::sync::atomic::Ordering::SeqCst) > 0 {
-                written += handle_events(&engine, &out_dir, multi, quiet, a.flag("messages"), &am);
+                written += handle_events(&engine, &out_dir, multi, quiet, a.flag("messages"));
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
         });
@@ -568,14 +566,14 @@ fn replay(a: &Args) {
                     any = true;
                 }
             }
-            written += handle_events(&engine, &out_dir, multi, quiet, a.flag("messages"), &am);
+            written += handle_events(&engine, &out_dir, multi, quiet, a.flag("messages"));
             if !any {
                 break;
             }
         }
     }
     engine.finish();
-    written += handle_events(&engine, &out_dir, multi, quiet, a.flag("messages"), &am);
+    written += handle_events(&engine, &out_dir, multi, quiet, a.flag("messages"));
     let cpu = t0.elapsed().as_secs_f64();
     for (i, p) in bandplans.iter().enumerate() {
         let _ = fs::write(p, engine.bandplan(i));
@@ -667,8 +665,8 @@ fn system_tag(engine: &Engine, system: u16) -> String {
     }
 }
 
-/// Several systems: each writes to `<out>/<shortName>/`. `am`: the AM channels' frequencies.
-fn handle_events(engine: &Engine, out_dir: &str, multi: bool, quiet: bool, messages: bool, am: &[u64]) -> usize {
+/// Several systems: each writes to `<out>/<shortName>/`.
+fn handle_events(engine: &Engine, out_dir: &str, multi: bool, quiet: bool, messages: bool) -> usize {
     let mut written = 0;
     for ev in engine.drain_events() {
         match ev {
@@ -682,8 +680,12 @@ fn handle_events(engine: &Engine, out_dir: &str, multi: bool, quiet: bool, messa
                 c.id,
                 c.talkgroup,
                 c.freq_hz as f64 / 1e6,
-                if !c.analog { "" } else if am.contains(&c.freq_hz) { " AM" } else { " FM" },
-                if c.phase2_tdma { format!(" slot {}", c.tdma_slot) } else { String::new() },
+                match c.voice {
+                    Voice::Am => " AM",
+                    Voice::Fm => " FM",
+                    _ => "",
+                },
+                if let Voice::P25Tdma { slot } = c.voice { format!(" slot {slot}") } else { String::new() },
                 if c.patched_talkgroups.is_empty() { String::new() } else { format!(" patched {:?}", c.patched_talkgroups) },
                 if c.recording { "recording".into() } else { format!("monitoring ({})", c.reason.map_or("", |r| r.as_str())) }
             ),

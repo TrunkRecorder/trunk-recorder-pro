@@ -42,7 +42,7 @@ use super::voice::TrackerOut;
 use super::units::{UnitAlias, UnitAliases, UnitTags};
 use super::identity::Identity;
 use super::control::{self, CarrierPlan, ControlChannel, Protocol, ProtocolStatus, Step};
-use super::voice::{self, CipherId, VoiceDecoder, VoiceKind, VoiceParams, VoiceSpec};
+use super::voice::{self, CipherId, VoiceDecoder, VoiceParams, VoiceSpec};
 use crate::alias::Alias;
 use crate::dsp::channelizer::floor_slices;
 use crate::dsp::{AnalogTuning, Channelizer, HeadId};
@@ -53,7 +53,6 @@ use crate::p25::crypt::Keyring;
 use crate::p25::diversity::BankConfig;
 use crate::dsp::fm::ChannelFilter;
 use crate::smartnet::Bandplan;
-use crate::dmr;
 
 /// A SmartNet system (its control channels are SmartNet, not P25).
 #[derive(Clone, Debug)]
@@ -66,8 +65,6 @@ pub struct SmartnetConfig {
 /// Analog voice squelch: carrier this far above the noise floor, dB.
 const ANALOG_SQUELCH_DB: f64 = 6.0;
 
-/// One-sided channel filter cutoff for P25, Hz.
-const CHANNEL_CUTOFF_HZ: f64 = 7000.0;
 /// Lowest per-channel rate the P25 receivers need.
 const MIN_CHANNEL_RATE: f64 = 24_000.0;
 /// Default guard band at each edge of a source, Hz: channels this close to
@@ -797,8 +794,8 @@ impl SysHost<'_> {
     /// already open takes its slot over, as in Trunk Recorder).
     fn open_channel(&mut self, call: &Call, src: usize) {
         let r = &mut *self.radio;
-        let kind = VoiceKind::of(call);
-        let slot = if kind.slotted() { call.tdma_slot as usize & 1 } else { 0 };
+        let kind = call.voice.kind();
+        let slot = call.voice.slot().map_or(0, |s| s as usize & 1);
         let key = (self.site, call.freq_hz);
         let mut guard = r.rx[src].lock().unwrap();
         let rx = &mut *guard;
@@ -817,13 +814,7 @@ impl SysHost<'_> {
         }
         let s = &mut rx.src;
         let rate = s.chz.output_rate();
-        let cutoff = if let Some(r) = call.nxdn {
-            r.cutoff_hz()
-        } else if call.color_code.is_some() {
-            dmr::CHANNEL_CUTOFF_HZ
-        } else {
-            CHANNEL_CUTOFF_HZ
-        };
+        let cutoff = kind.cutoff_hz();
         let tune_ppm = s.tune_ppm;
         let (head, pre, start_sample) = s.chz.add_head(s.offset(call.freq_hz as f64), cutoff, r.preroll_s);
         // The noise floor under the channel, from the source's spectrum: analog squelch, and reception.
@@ -905,7 +896,7 @@ impl RecorderHost for SysHost<'_> {
         // A recording's channel is counted with its recording, not again.
         let r = &*self.radio;
         let following = r.chans.values().filter(|calls| !calls.iter().flatten().any(|c| r.recordings.contains_key(&c.id))).count();
-        if call.analog || r.recordings.len() + following >= r.max_recorders {
+        if call.voice.analog() || r.recordings.len() + following >= r.max_recorders {
             return false;
         }
         let Some(src) = r.source_for(call.freq_hz as f64) else {
@@ -2271,6 +2262,8 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::calls::Voice;
+    use super::super::voice::VoiceKind;
 
     fn tuned_source(auto_tune: bool) -> Source {
         let cfg = SourceConfig { center_hz: 770e6, rate_hz: 2.4e6, auto_tune, guard_hz: DEFAULT_GUARD_HZ };
@@ -2467,7 +2460,7 @@ mod tests {
         let mut e = Core::new(one_site("ddm", |_| ())).unwrap();
         let f = 851_500_000;
         fn grant(e: &mut Core, f: u64, t: f64, tg: u32, phase2: bool, slot: u8) {
-            handle(e, 0, &[Message { kind: MessageType::Grant, time_s: t, talkgroup: tg, freq_hz: f, phase2_tdma: phase2, tdma_slot: slot, ..Default::default() }]);
+            handle(e, 0, &[Message { kind: MessageType::Grant, time_s: t, talkgroup: tg, freq_hz: f, voice: if phase2 { Voice::P25Tdma { slot } } else { Voice::P25 }, ..Default::default() }]);
         }
         grant(&mut e, f, 0.0, 101, false, 0);
         assert_eq!(e.radio.rx(0).channels[&(0, f)].voice.kind(), VoiceKind::Fdma);

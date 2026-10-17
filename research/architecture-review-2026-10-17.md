@@ -27,10 +27,10 @@ second tier can go whenever a nearby change touches it.
 
 ### 1. "System" is not a type in the engine
 
-- [ ] `EngineConfig.systems: Vec<SystemConfig { short_name, policy…, kind: Trunked { sites } | Conventional { channels } }>`
-- [ ] `Call::system` a plain index for both kinds; `Call::site: Option<SiteId>`; drop the `65535 − k` sentinel, `MAX_CONVENTIONAL`, `conventional_index`
-- [ ] One `SiteKey { system, site: Option<String> }` with `stats_key`, `file_stem`, `label`, `Display`; `MonitorEvent::ControlLost { system, site, … }`
-- [ ] `control::build` takes `(&Protocol, &[f64], BankConfig, rate)` rather than a whole `SiteConfig`
+- [x] `EngineConfig.systems: Vec<SystemConfig { short_name, policy…, sites }>` (no sites: conventional; its channels name it) — bb880da
+- [x] `Call::system` a plain index for both kinds; `Call::site: Option<u16>`; the `65535 − k` sentinel, `MAX_CONVENTIONAL`, `conventional_index` gone; `status.systemNames` maps numbers to names — bb880da
+- [x] One `SiteKey { system, site }` with `own_name`, `stats_key`, `file_stem`, `Display`; `MonitorEvent::ControlLost { system, site, … }` (fixed the dashboard link to Decode) — 1d26965
+- [x] `control::build` takes a `SiteConfig`, which now holds only the site's own fields — bb880da
 - [ ] Conventional borrows "the only trunked system" for talkgroup names and the receiver bank (`Config::engine_config`): make it an explicit setting or drop it
 
 **Evidence.** #51 was done in the app; the engine kept a flat site list
@@ -61,8 +61,8 @@ Large but mechanical.
 
 ### 2. The kind of voice is a bag of flags
 
-- [ ] `Message.channel` / `Call.voice` as an enum: `P25Fdma { nac }`, `P25Tdma { slot }`, `Dmr { color_code, slot }`, `Nxdn { rate, ran }`, `Fm(FmTuning)`, `Am(AmTuning)`
-- [ ] `VoiceKind::of`, the cutoff in `SysHost::open_channel`, `SdrMode` in `record::capture`, `Call::slot`, `Call::decryptable`, conventional's `heard_code` all become one `match`
+- [x] `Message.voice` / `Call.voice: Voice { P25, P25Tdma { slot }, Dmr { slot, color_code }, Nxdn(rate), Fm, Am }` (tuning stays with the conventional channel; RAN, NAC and tone stay as data heard) — ea241f1
+- [x] `VoiceKind::of`, the cutoff in `SysHost::open_channel` (`VoiceKind::cutoff_hz`), `SdrMode` in `record::capture`, `Call::slot`, `Call::decryptable`, conventional's `heard_code` all become one `match` — ea241f1
 - [ ] `VoiceSpec` loses the analog-only fields (`squelch`, `subaudible`, `analog: AnalogTuning`, `ignore_hz`); `VoiceDecoder` loses `set_squelch` / `set_ignore` / `carrier`
 - [ ] `TrackerOut::Subaudible` becomes an FM-decoder accessor the conventional router reads, not a tracker output
 

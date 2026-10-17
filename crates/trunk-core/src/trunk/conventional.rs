@@ -52,7 +52,7 @@ use std::sync::Arc;
 
 use num_complex::Complex32;
 
-use super::calls::{Call, CallId, CallIds, CallManager, Flags, STUCK_CALL_S};
+use super::calls::{Call, CallId, CallIds, CallManager, Flags, Voice, STUCK_CALL_S};
 use super::engine::SystemConfig;
 use super::frames::CallFrames;
 use super::record::{Reception, Transmissions};
@@ -107,6 +107,17 @@ pub enum ConvMode {
 }
 
 impl ConvMode {
+    /// What a call on a channel of this mode is on: slot `slot` (DMR), its colour code once heard.
+    fn voice(self, slot: u8, color_code: Option<u8>) -> Voice {
+        match self {
+            ConvMode::Fm => Voice::Fm,
+            ConvMode::Am => Voice::Am,
+            ConvMode::P25 => Voice::P25,
+            ConvMode::Dmr => Voice::Dmr { slot, color_code },
+            ConvMode::Nxdn(r) => Voice::Nxdn(r),
+        }
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             ConvMode::Fm => "fm",
@@ -369,17 +380,13 @@ pub fn heard_code(call: &Call) -> Option<String> {
     if call.site.is_some() {
         return None;
     }
-    if call.analog {
-        return Some(call.tone.map_or(String::new(), |h| h.tone.to_string()));
-    }
-    if call.nxdn.is_some() {
+    match call.voice {
+        Voice::Fm | Voice::Am => Some(call.tone.map_or(String::new(), |h| h.tone.to_string())),
         // (RAN 0 is "any": a row can't ask for it.)
-        return Some(Access::Nxdn { ran: call.ran.filter(|&r| r != 0), tg: Some(call.talkgroup) }.to_string());
+        Voice::Nxdn(_) => Some(Access::Nxdn { ran: call.ran.filter(|&r| r != 0), tg: Some(call.talkgroup) }.to_string()),
+        Voice::Dmr { slot, color_code: cc @ Some(_) } => Some(Access::Dmr { cc, slot: Some(slot + 1), tg: Some(call.talkgroup) }.to_string()),
+        _ => call.nac.map(|n| Access::Nac(n).to_string()),
     }
-    if call.color_code.is_some() {
-        return Some(Access::Dmr { cc: call.color_code, slot: Some(call.tdma_slot + 1), tg: Some(call.talkgroup) }.to_string());
-    }
-    call.nac.map(|n| Access::Nac(n).to_string())
 }
 
 /// What one slot of an open channel heard in one run (FM and P25: slot 0 only).
@@ -994,8 +1001,7 @@ impl Conventional {
                 id: ids.next(),
                 talkgroup: tg,
                 freq_hz: ch.cfg.freq_hz.round() as u64,
-                phase2_tdma: false,
-                tdma_slot: slot as u8,
+                voice: ch.cfg.mode.voice(slot as u8, h.color_code),
                 unit_to_unit: false,
                 recording: true,
                 reason: None,
@@ -1006,18 +1012,12 @@ impl Conventional {
                 priority: 0,
                 duplex: false,
                 mode: false,
-                analog: ch.cfg.mode.analog(),
                 start_s: start,
                 last_update_s: now_s,
                 last_audio_s: now_s,
                 sources: Vec::new(),
                 talkgroup_info: Self::info_for(&ch.rows, row, tg, rules.talkgroups),
                 patched_talkgroups: Vec::new(),
-                color_code: h.color_code,
-                nxdn: match ch.cfg.mode {
-                    ConvMode::Nxdn(r) => Some(r),
-                    _ => None,
-                },
                 ran: h.ran,
                 nac: h.nac,
                 tone: None,
@@ -1047,8 +1047,8 @@ impl Conventional {
             l.call.ran = h.ran;
             changed = true;
         }
-        if l.call.color_code.is_none() && h.color_code.is_some() {
-            l.call.color_code = h.color_code;
+        if let (Voice::Dmr { color_code: cc @ None, .. }, Some(heard)) = (&mut l.call.voice, h.color_code) {
+            *cc = Some(heard);
             changed = true;
         }
         if h.cipher.is_some() && l.call.cipher != h.cipher {
@@ -1341,7 +1341,7 @@ mod tests {
         let air = |freq: f64, tg: u32| ConvChannel { talkgroup: tg, ..ConvChannel::new(freq, ConvMode::Am) };
         let chans = vec![air(c + 200_000.0, 1), air(c + 225_000.0, 2), air(c - 50_000.0, 3), fm(c + 300_000.0, 4)];
         let (calls, _, _) = run(fs, 9.0, &mut txs, chans);
-        let mut got: Vec<(u32, bool, f64)> = calls.iter().map(|(k, n, _)| (k.talkgroup, k.analog, *n as f64 / 8000.0)).collect();
+        let mut got: Vec<(u32, bool, f64)> = calls.iter().map(|(k, n, _)| (k.talkgroup, k.voice.analog(), *n as f64 / 8000.0)).collect();
         got.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let tgs: Vec<u32> = got.iter().map(|g| g.0).collect();
         assert_eq!(tgs, [1, 1, 2, 4], "{got:?}");

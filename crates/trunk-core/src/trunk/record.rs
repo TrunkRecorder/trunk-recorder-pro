@@ -3,7 +3,7 @@
 
 use std::fmt::Write;
 
-use super::calls::Call;
+use super::calls::{Call, Voice};
 use crate::dsp::tones::Tone;
 use super::frames::FrameErrors;
 use super::frames::{frames_jsonl, VoiceFrame};
@@ -215,8 +215,8 @@ pub fn call_record(call: &Call, info: &ConcludeInfo) -> (String, String) {
         db(info.reception.snr_db()),
         info.errors.clean_share().map_or("null".to_string(), |c| format!("{:.1}", c * 100.0)),
         info.recorder_num,
-        call.tdma_slot,
-        call.phase2_tdma as u8,
+        call.voice.slot().unwrap_or(0),
+        call.voice.tdma() as u8,
         start_ms.div_euclid(1000),
         stop_ms.div_euclid(1000),
         start_ms,
@@ -237,18 +237,18 @@ pub fn call_record(call: &Call, info: &ConcludeInfo) -> (String, String) {
         t(|t| &t.description),
         t(|t| &t.tag),
         t(|t| &t.group),
-        call.color_code.map_or(-1, i32::from),
+        call.voice.color_code().map_or(-1, i32::from),
         call.ran.map_or(-1, i32::from),
         // Trunk Recorder's (PR #1137) tone fields; "search": identified, not matched.
         match call.tone_set {
             Some(Tone::Ctcss(_)) => "ctcss",
             Some(Tone::Dcs(..)) => "dcs",
-            None if call.analog && call.site.is_none() => "search",
+            None if call.voice.analog() && call.site.is_none() => "search",
             None => "off",
         },
         call.tone.map_or(String::new(), |t| t.tone.to_string()),
         call.tone.map_or(0.0, |t| t.confidence),
-        if call.analog { "analog" } else if call.phase2_tdma { "digital tdma" } else { "digital" },
+        if call.voice.analog() { "analog" } else if call.voice.tdma() { "digital tdma" } else { "digital" },
         esc(info.short_name),
     );
     if !info.site.is_empty() {
@@ -295,7 +295,7 @@ pub fn call_record(call: &Call, info: &ConcludeInfo) -> (String, String) {
         call.talkgroup,
         start_ms.div_euclid(1000),
         call.freq_hz,
-        call.slot().map_or(String::new(), |s| format!(".{s}"))
+        call.voice.slot().map_or(String::new(), |s| format!(".{s}"))
     );
     (j, base)
 }
@@ -446,21 +446,18 @@ pub struct SaveContext<'a> {
 
 /// The frames as an `.sdr` file when the call's mode has a layout there, else JSON lines.
 fn capture(call: &Call, frames: &[VoiceFrame], audio_len: usize, freq_error_hz: Option<f64>, reception: &Reception, cx: &SaveContext) -> Capture {
-    let mode = if call.nxdn.is_some() {
-        None
-    } else if call.color_code.is_some() {
-        Some(SdrMode::Dmr)
-    } else if call.phase2_tdma {
-        Some(SdrMode::P25Tdma)
-    } else {
-        Some(SdrMode::P25Fdma)
+    let mode = match call.voice {
+        Voice::Nxdn(_) => None,
+        Voice::Dmr { .. } => Some(SdrMode::Dmr),
+        Voice::P25Tdma { .. } => Some(SdrMode::P25Tdma),
+        Voice::P25 | Voice::Fm | Voice::Am => Some(SdrMode::P25Fdma),
     };
     let (first, last) = (call.sources.first().map_or(0, |s| s.src), call.sources.last().map_or(0, |s| s.src));
     let info = SdrInfo {
         start_us: ((cx.epoch_ms_at_zero + call.start_s * 1000.0) * 1000.0).round().max(0.0) as u64,
         duration_ms: (audio_len as f64 * 1000.0 / mbe::SAMPLE_RATE as f64).round() as u32,
         hz: call.freq_hz as u32,
-        nac: call.color_code.map(u16::from).or(call.nac).or(cx.nac).unwrap_or(0),
+        nac: call.voice.color_code().map(u16::from).or(call.nac).or(cx.nac).unwrap_or(0),
         wacn: cx.wacn.unwrap_or(0),
         sysid: cx.sys_id.unwrap_or(0) as u16,
         system: match (cx.wacn, cx.sys_id) {
@@ -468,7 +465,7 @@ fn capture(call: &Call, frames: &[VoiceFrame], audio_len: usize, freq_error_hz: 
             _ => cx.short_name.to_string(),
         },
         conventional: call.site.is_none(),
-        slot: call.tdma_slot,
+        slot: call.voice.slot().unwrap_or(0),
         tg: call.talkgroup,
         first_src: first,
         src: last,
@@ -500,7 +497,7 @@ pub fn save_call(mut h: Held, cx: &SaveContext) -> Result<Concluded, Call> {
     if (audio.is_empty() && !(rules.keep_silent || call.encrypted && rules.keep_encrypted)) || short {
         return Err(call);
     }
-    let gain_db = if call.analog { rules.analog_gain_db } else { rules.digital_gain_db } as f64;
+    let gain_db = if call.voice.analog() { rules.analog_gain_db } else { rules.digital_gain_db } as f64;
     if rules.normalize {
         loudness::normalize(&mut audio, mbe::SAMPLE_RATE, gain_db);
     } else {

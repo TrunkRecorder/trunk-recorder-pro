@@ -14,11 +14,88 @@ use std::sync::Arc;
 use super::message::{Message, MessageType};
 use super::patches::Patches;
 use super::talkgroups::{Talkgroup, Talkgroups};
-use super::voice::CipherId;
+use super::voice::{CipherId, VoiceKind};
 use crate::dsp::tones::{Tone, ToneHeard};
 use crate::position::Position;
 
 pub type CallId = u32;
+
+/// What a call's voice is on: the kind of voice channel, and where on it.
+/// Each control channel's parser says so in its grants
+/// ([`Message::voice`]); a conventional channel says so by its mode.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Voice {
+    /// P25 Phase 1 (FDMA): IMBE.
+    #[default]
+    P25,
+    /// P25 Phase 2 (TDMA) on slot `slot` (0 / 1): AMBE+2.
+    P25Tdma { slot: u8 },
+    /// DMR on slot `slot` (0 / 1), with its colour code once known.
+    Dmr { slot: u8, color_code: Option<u8> },
+    /// NXDN at its rate.
+    Nxdn(crate::nxdn::Rate),
+    /// Analog FM (SmartNet's analog grants, conventional FM channels).
+    Fm,
+    /// Analog AM (conventional channels).
+    Am,
+}
+
+impl Voice {
+    /// The kind of voice channel it needs.
+    pub fn kind(self) -> VoiceKind {
+        match self {
+            Voice::P25 => VoiceKind::Fdma,
+            Voice::P25Tdma { .. } => VoiceKind::Tdma,
+            Voice::Dmr { .. } => VoiceKind::Dmr,
+            Voice::Nxdn(r) => VoiceKind::Nxdn(r),
+            Voice::Fm => VoiceKind::Analog,
+            Voice::Am => VoiceKind::Am,
+        }
+    }
+
+    /// Its slot (0 / 1) on a two-slot channel: P25 Phase 2 or DMR.
+    pub fn slot(self) -> Option<u8> {
+        match self {
+            Voice::P25Tdma { slot } | Voice::Dmr { slot, .. } => Some(slot),
+            _ => None,
+        }
+    }
+
+    pub fn analog(self) -> bool {
+        matches!(self, Voice::Fm | Voice::Am)
+    }
+
+    /// P25 Phase 2 (Trunk Recorder's `phase2_tdma`).
+    pub fn tdma(self) -> bool {
+        matches!(self, Voice::P25Tdma { .. })
+    }
+
+    /// Its voice is of a kind that can be decrypted (P25 Phase 1 or 2).
+    pub fn decryptable(self) -> bool {
+        matches!(self, Voice::P25 | Voice::P25Tdma { .. })
+    }
+
+    /// DMR: its colour code.
+    pub fn color_code(self) -> Option<u8> {
+        match self {
+            Voice::Dmr { color_code, .. } => color_code,
+            _ => None,
+        }
+    }
+
+    /// NXDN: its rate.
+    pub fn nxdn(self) -> Option<crate::nxdn::Rate> {
+        match self {
+            Voice::Nxdn(r) => Some(r),
+            _ => None,
+        }
+    }
+
+    /// Two grants for one channel's same place: P25 Phase 2 or not, the same slot.
+    fn same_place(self, other: Voice) -> bool {
+        self.tdma() == other.tdma() && self.slot().unwrap_or(0) == other.slot().unwrap_or(0)
+    }
+}
 
 /// Hands out call ids; clones share the sequence (one per engine).
 #[derive(Clone, Debug)]
@@ -130,8 +207,8 @@ pub struct Call {
     pub twin: bool,
     pub talkgroup: u32,
     pub freq_hz: u64,
-    pub phase2_tdma: bool,
-    pub tdma_slot: u8,
+    /// What its voice is on.
+    pub voice: Voice,
     pub unit_to_unit: bool,
     pub recording: bool,
     pub reason: Option<Reason>,
@@ -144,8 +221,6 @@ pub struct Call {
     pub priority: u8,
     pub duplex: bool,
     pub mode: bool,
-    /// Analog voice (SmartNet's analog grants, conventional FM and AM channels).
-    pub analog: bool,
     pub start_s: f64,
     pub last_update_s: f64,
     pub last_audio_s: f64,
@@ -154,10 +229,6 @@ pub struct Call {
     /// Every talkgroup patched with this one while the call lasted, its own
     /// included, ascending (TR's patched_talkgroups); empty when never patched.
     pub patched_talkgroups: Vec<u32>,
-    /// DMR: the colour code the voice came with (a DMR call's slot is `tdma_slot`).
-    pub color_code: Option<u8>,
-    /// NXDN: the rate its voice is at (set: an NXDN call).
-    pub nxdn: Option<crate::nxdn::Rate>,
     /// NXDN: the RAN its frames carried.
     pub ran: Option<u8>,
     /// Conventional P25: the NAC its frames carried.
@@ -169,17 +240,6 @@ pub struct Call {
 }
 
 impl Call {
-    /// Its voice is of a kind that can be decrypted (P25 Phase 1 or 2).
-    pub fn decryptable(&self) -> bool {
-        !self.analog && self.color_code.is_none() && self.nxdn.is_none()
-    }
-
-    /// Its TDMA slot (0 / 1), for a call on a two-slot channel: P25 Phase 2
-    /// or DMR.
-    pub fn slot(&self) -> Option<u8> {
-        (self.phase2_tdma || self.color_code.is_some()).then_some(self.tdma_slot)
-    }
-
     /// Fold in the talkgroups patched with it now (`members`); true when that added any.
     fn note_patch(&mut self, members: Vec<u32>) -> bool {
         let n = self.patched_talkgroups.len();
@@ -408,7 +468,7 @@ impl CallManager {
     }
 
     fn matches(c: &Call, m: &Message) -> bool {
-        c.talkgroup == m.talkgroup && c.freq_hz == m.freq_hz && c.tdma_slot == m.tdma_slot && c.phase2_tdma == m.phase2_tdma
+        c.talkgroup == m.talkgroup && c.freq_hz == m.freq_hz && c.voice.same_place(m.voice)
     }
 
     fn refresh(c: &mut Call, m: &Message, patches: &Patches) -> bool {
@@ -454,8 +514,8 @@ impl CallManager {
             twin: false,
             talkgroup: m.talkgroup,
             freq_hz: m.freq_hz,
-            phase2_tdma: m.phase2_tdma,
-            tdma_slot: m.tdma_slot,
+            // The control channel says (SmartNet), or the talkgroup file does (TR's mode "A").
+            voice: if tg.as_ref().is_some_and(|t| t.mode.starts_with('A')) { Voice::Fm } else { m.voice },
             unit_to_unit,
             recording: false,
             reason: None,
@@ -466,16 +526,12 @@ impl CallManager {
             priority: m.priority,
             duplex: m.duplex,
             mode: m.mode,
-            // The control channel says (SmartNet), or the talkgroup file does (TR's mode "A").
-            analog: m.analog || tg.as_ref().is_some_and(|t| t.mode.starts_with('A')),
             start_s: m.time_s,
             last_update_s: m.time_s,
             last_audio_s: m.time_s,
             sources: if m.source > 0 { vec![CallSource { src: m.source as u32, time_s: m.time_s, audio_pos: None, flags: Flags::of(m), position: None }] } else { vec![] },
             talkgroup_info: tg.clone(),
             patched_talkgroups: self.patches.members_of(m.talkgroup),
-            color_code: m.color_code,
-            nxdn: m.nxdn,
             ran: m.ran,
             nac: None,
             tone: None,
@@ -496,7 +552,7 @@ impl CallManager {
             c.reason = Some(Reason::Ignored);
         } else if !known && !cfg.record_unknown && !p.talkgroups.is_empty() {
             c.reason = Some(Reason::UnknownTg);
-        } else if c.encrypted && !cfg.record_encrypted && !(p.can_decrypt && c.decryptable()) {
+        } else if c.encrypted && !cfg.record_encrypted && !(p.can_decrypt && c.voice.decryptable()) {
             // No audio to record, but its terminators' link control is in
             // the clear: who spoke, and their talker aliases.
             c.reason = Some(Reason::Encrypted);
@@ -626,14 +682,14 @@ mod tests {
 
     #[test]
     fn encrypted_calls_are_recorded_when_the_system_may_decrypt_them() {
-        let enc = |t: f64, tg: u32, phase2: bool| Message { encrypted: true, phase2_tdma: phase2, ..msg(MessageType::Grant, t, tg) };
+        let enc = |t: f64, tg: u32, phase2: bool| Message { encrypted: true, voice: if phase2 { Voice::P25Tdma { slot: 0 } } else { Voice::P25 }, ..msg(MessageType::Grant, t, tg) };
         let mut m = Sys::new(CallConfig::default(), Talkgroups::default());
         let mut ev = Vec::new();
         m.handle(&[enc(0.0, 101, false)], &mut Host, &mut ev);
         assert_eq!(m.calls[0].reason, Some(Reason::Encrypted));
         m.can_decrypt = true;
         // P25: recorded, to see whether a key fits; DMR not yet.
-        let dmr = Message { color_code: Some(1), ..enc(0.0, 104, false) };
+        let dmr = Message { voice: Voice::Dmr { slot: 0, color_code: Some(1) }, ..enc(0.0, 104, false) };
         m.handle(&[enc(0.0, 102, false), enc(0.0, 103, true), dmr], &mut Host, &mut ev);
         assert!(m.calls[1].recording && m.calls[1].reason.is_none());
         assert!(m.calls[2].recording && m.calls[2].reason.is_none());

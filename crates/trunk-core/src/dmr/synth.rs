@@ -285,7 +285,7 @@ mod tests {
         let done = run(cfg, &iq);
         assert_eq!(done.len(), 1, "{:?}", done.iter().map(|k| &k.call).collect::<Vec<_>>());
         let c = &done[0].call;
-        assert_eq!((c.talkgroup, c.tdma_slot, c.color_code), (4321, 1, Some(5)));
+        assert_eq!((c.talkgroup, c.voice.slot(), c.voice.color_code()), (4321, Some(1), Some(5)));
         assert_eq!(c.sources.iter().map(|s| s.src).collect::<Vec<_>>(), [98765]);
         let secs = done[0].audio.len() as f64 / 8000.0;
         assert!((secs - 6.0 * 0.36).abs() < 0.2, "{secs:.2} s of audio");
@@ -342,7 +342,7 @@ mod tests {
         let done = run(cfg, &iq);
         assert_eq!(done.len(), 1, "{:?}", done.iter().map(|k| (&k.call.talkgroup, k.audio.len())).collect::<Vec<_>>());
         let c = &done[0].call;
-        assert_eq!((c.talkgroup, c.color_code), (4321, Some(5)));
+        assert_eq!((c.talkgroup, c.voice.color_code()), (4321, Some(5)));
         assert_eq!(c.sources.iter().map(|s| s.src).collect::<Vec<_>>(), [98765]);
         let secs = done[0].audio.len() as f64 / 8000.0;
         assert!((secs - 6.0 * 0.36).abs() < 0.2, "{secs:.2} s of audio");
@@ -360,7 +360,7 @@ mod tests {
         let done = run(cfg, &iq);
         assert_eq!(done.len(), 1);
         let c = &done[0].call;
-        assert_eq!((c.system, c.talkgroup, c.tdma_slot, c.color_code, c.freq_hz), (0, 4321, 1, Some(5), 460_050_000));
+        assert_eq!((c.system, c.talkgroup, c.voice.slot(), c.voice.color_code(), c.freq_hz), (0, 4321, Some(1), Some(5), 460_050_000));
         // The voice head opens at the LC with a second of pre-roll: the whole transmission.
         let secs = done[0].audio.len() as f64 / 8000.0;
         assert!((secs - 6.0 * 0.36).abs() < 0.2, "{secs:.2} s of audio");

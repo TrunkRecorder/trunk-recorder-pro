@@ -171,7 +171,7 @@ mod tests {
         let done: Vec<_> = events.iter().filter_map(|ev| if let Event::Concluded(k) = ev { Some(k) } else { None }).collect();
         assert_eq!(done.len(), 1, "{:?}", events.iter().filter(|e| !matches!(e, Event::Audio { .. })).collect::<Vec<_>>());
         let k = done[0];
-        assert!(k.call.analog && k.call.talkgroup == 0x1230 && k.call.freq_hz == 459_960_000, "{:?}", k.call);
+        assert!(k.call.voice.analog() && k.call.talkgroup == 0x1230 && k.call.freq_hz == 459_960_000, "{:?}", k.call);
         let secs = k.audio.len() as f64 / 8000.0;
         assert!(secs > 1.5, "{secs:.2} s of audio");
         // The tone is there: Goertzel at 1 kHz carries most of the power.

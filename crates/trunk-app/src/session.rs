@@ -787,8 +787,8 @@ impl Session {
             talkgroup: c.talkgroup,
             talkgroup_tag: c.talkgroup_info.as_ref().map_or(String::new(), |t| t.alpha_tag.clone()),
             freq_hz: c.freq_hz,
-            tdma_slot: c.slot(),
-            analog: c.analog,
+            tdma_slot: c.voice.slot(),
+            analog: c.voice.analog(),
             encrypted: c.encrypted,
             algid: c.cipher.map(|k| k.algid),
             key_id: c.cipher.map(|k| k.keyid),
@@ -957,18 +957,16 @@ impl Session {
             Event::CallStart(c) => {
                 let r = match c.reason {
                     _ if c.recording => {
-                        let kind = if c.analog {
-                            "Analog"
-                        } else if let Some(r) = c.nxdn {
-                            if r == trunk_core::nxdn::Rate::N48 { "NXDN48" } else { "NXDN96" }
-                        } else if c.color_code.is_some() {
-                            "DMR"
-                        } else if c.phase2_tdma {
-                            "P25 Phase 2"
-                        } else {
-                            "P25"
+                        use trunk_core::trunk::Voice;
+                        let kind = match c.voice {
+                            Voice::Fm | Voice::Am => "Analog",
+                            Voice::Nxdn(trunk_core::nxdn::Rate::N48) => "NXDN48",
+                            Voice::Nxdn(_) => "NXDN96",
+                            Voice::Dmr { .. } => "DMR",
+                            Voice::P25Tdma { .. } => "P25 Phase 2",
+                            Voice::P25 => "P25",
                         };
-                        let slot = c.slot();
+                        let slot = c.voice.slot();
                         self.call_record(Level::Info, &c, Body::Recording { kind, slot })
                     }
                     Some(why) => {
@@ -1167,9 +1165,9 @@ fn call_view(c: &Call, system_name: &str, patched: Vec<Value>) -> Value {
         "talkgroup": c.talkgroup,
         "alphaTag": c.talkgroup_info.as_ref().map_or("", |t| t.alpha_tag.as_str()),
         "freqHz": c.freq_hz,
-        "slot": c.slot(),
-        "analog": c.analog,
-        "nxdn": c.nxdn.map(|r| r.name()),
+        "slot": c.voice.slot(),
+        "analog": c.voice.analog(),
+        "nxdn": c.voice.nxdn().map(|r| r.name()),
         "ran": c.ran,
         // "151.4 Hz" or "D023N".
         "tone": c.tone.map(|h| match h.tone {

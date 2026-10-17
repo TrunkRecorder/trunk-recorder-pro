@@ -358,7 +358,7 @@ mod tests {
             let (done, _) = run_engine(cfg, &iq);
             assert_eq!(done.len(), 1, "{rate:?}: {:?}", done.iter().map(|k| &k.call).collect::<Vec<_>>());
             let c = &done[0].call;
-            assert_eq!((c.talkgroup, c.ran, c.nxdn), (3100, Some(3), Some(rate)), "{rate:?}");
+            assert_eq!((c.talkgroup, c.ran, c.voice.nxdn()), (3100, Some(3), Some(rate)), "{rate:?}");
             assert_eq!(c.sources.iter().map(|s| s.src).collect::<Vec<_>>(), [501]);
             let secs = done[0].audio.len() as f64 / 8000.0;
             // 10 superframes: 160 codewords at 4800, 80 at 9600 (every other frame is FACCH1).
@@ -491,7 +491,7 @@ mod tests {
         let (done, _) = run_engine(cfg, &iq);
         assert_eq!(done.len(), 1, "{:?}", done.iter().map(|k| &k.call).collect::<Vec<_>>());
         let c = &done[0].call;
-        assert_eq!((c.talkgroup, c.freq_hz, c.nxdn, c.ran), (3001, vc as u64, Some(Rate::N48), Some(5)));
+        assert_eq!((c.talkgroup, c.freq_hz, c.voice.nxdn(), c.ran), (3001, vc as u64, Some(Rate::N48), Some(5)));
         assert_eq!(c.sources.first().map(|s| s.src), Some(77));
         let secs = done[0].audio.len() as f64 / 8000.0;
         assert!((secs - 3.2).abs() < 0.2, "{secs:.2} s of audio");

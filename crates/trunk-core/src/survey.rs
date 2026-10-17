@@ -1174,7 +1174,7 @@ impl Monitor {
             MessageType::Grant | MessageType::Update | MessageType::UuVGrant | MessageType::UuVUpdate | MessageType::PhoneGrant | MessageType::PhoneUpdate if m.freq_hz != 0 => {
                 let v = self.voice.entry(m.freq_hz).or_insert(VoiceChannel { freq_hz: m.freq_hz, grants: 0, tdma: false });
                 v.grants += 1;
-                v.tdma |= m.phase2_tdma;
+                v.tdma |= m.voice.tdma();
             }
             _ => {}
         }

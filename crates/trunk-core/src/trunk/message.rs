@@ -6,6 +6,7 @@
 use std::collections::BTreeMap;
 use std::fmt::Write;
 
+use super::calls::Voice;
 use crate::p25::osp::{Answer, Channel, HarrisMember, Identifier, Msg, Osp, ServiceOptions, MFID_MOTOROLA};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -104,20 +105,15 @@ pub struct Message {
     pub duplex: bool,
     pub mode: bool,
     pub priority: u8,
-    pub phase2_tdma: bool,
-    pub tdma_slot: u8,
+    /// A grant's (or update's): what the call's voice is on.
+    pub voice: Voice,
     pub sys_id: u32,
     pub wacn: u32,
     pub nac: u16,
     pub rfss: u32,
     pub site: u32,
-    /// SmartNet: the voice channel is analog FM (P25 otherwise).
-    pub analog: bool,
     pub patch: Option<Patch>,
-    /// DMR: the colour code; a DMR grant's slot is `tdma_slot`.
-    pub color_code: Option<u8>,
-    /// NXDN: the voice channel's rate, and the site's (or carrier's) RAN.
-    pub nxdn: Option<crate::nxdn::Rate>,
+    /// NXDN: the site's (or carrier's) RAN.
     pub ran: Option<u8>,
     pub opcode: u8,
     /// Motorola: the site's callsign (its CW ID), from its base station ID.
@@ -308,8 +304,7 @@ impl P25Parser {
     fn on(&self, m: &mut Message, ch: Channel) {
         let (hz, slot) = self.resolve(ch);
         m.freq_hz = hz;
-        m.phase2_tdma = slot.is_some();
-        m.tdma_slot = slot.unwrap_or(0);
+        m.voice = slot.map_or(Voice::P25, |slot| Voice::P25Tdma { slot });
     }
 
     /// What a control channel message means. `nac` from its frame's NID.
@@ -323,7 +318,7 @@ impl P25Parser {
             m.mode = o.packet();
             m.priority = o.priority();
         };
-        let slot = |m: &Message| if m.phase2_tdma { format!(" slot {}", m.tdma_slot) } else { String::new() };
+        let slot = |m: &Message| m.voice.slot().map_or(String::new(), |s| format!(" slot {s}"));
         let enc = |m: &Message| if m.encrypted { " ENC" } else { "" };
         match &o.msg {
             Msg::GroupVoiceGrant { opts: so, ch, group, source, .. } => {
@@ -599,7 +594,7 @@ mod tests {
         let mut p = with_band_plan();
         assert_eq!(p.channel_to_hz(Channel(0x1000 | 100)), 851_006_250 + 100 * 6250);
         let m = parse(&mut p, 0x00, 0, [0x00, 0x10, 100, 0x01, 0x01, 0x0a, 0x0b, 0x0c]).pop().unwrap();
-        assert_eq!((m.kind, m.freq_hz, m.talkgroup, m.source, m.phase2_tdma), (MessageType::Grant, 851_631_250, 0x0101, 0x0a0b0c, false));
+        assert_eq!((m.kind, m.freq_hz, m.talkgroup, m.source, m.voice.tdma()), (MessageType::Grant, 851_631_250, 0x0101, 0x0a0b0c, false));
     }
 
     /// AABC-D Figure 4.2.5-1 has no service options: a channel iden of 0xC
@@ -615,7 +610,7 @@ mod tests {
     fn an_update_names_both_slots_of_a_carrier() {
         let mut p = with_band_plan();
         let ms = parse(&mut p, 0x02, 0, [0x20, 0x02, 0x01, 0x01, 0x20, 0x03, 0x02, 0x02]);
-        let got: Vec<_> = ms.iter().map(|m| (m.talkgroup, m.freq_hz, m.tdma_slot)).collect();
+        let got: Vec<_> = ms.iter().map(|m| (m.talkgroup, m.freq_hz, m.voice.slot().unwrap_or(0))).collect();
         assert_eq!(got, [(0x0101, 769_018_750, 0), (0x0202, 769_018_750, 1)]);
     }
 

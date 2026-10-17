@@ -15,6 +15,10 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   - Inside, a system's talkgroups, rules, unit names and keys are kept once for the whole system
     rather than copied into each of its sites, so a talkgroup file edited while recording reaches
     every site from one place.
+- **A conventional DMR call is DMR from its start.** One whose colour code wasn't heard yet was
+  logged as a P25 call and its files had no slot in their name; now it is DMR on its slot at once.
+  (Inside, a call says what its voice is on — P25, P25 Phase 2 on a slot, DMR on a slot, NXDN,
+  FM or AM — in one field, where five fields used to be read in order to tell.)
 - **A lost control channel on a named site links to its system.** The `controlLost` and
   `controlRegained` events now carry the system's short name in `system` and the site's own name
   in `site`; `system` used to be "dcfd/south", so the event's link to the Decode page found no

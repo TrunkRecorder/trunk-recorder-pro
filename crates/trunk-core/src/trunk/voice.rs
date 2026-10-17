@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use num_complex::Complex32;
 
-use super::calls::{Call, Flags};
+use super::calls::Flags;
 use super::frames::VoiceFrame;
 use super::tdma::TdmaTracker;
 use super::tracker::VoiceTracker;
@@ -59,24 +59,20 @@ pub enum VoiceKind {
 }
 
 impl VoiceKind {
-    /// The kind of voice a granted call carries.
-    pub fn of(call: &Call) -> VoiceKind {
-        if call.analog {
-            VoiceKind::Analog
-        } else if let Some(r) = call.nxdn {
-            VoiceKind::Nxdn(r)
-        } else if call.color_code.is_some() {
-            VoiceKind::Dmr
-        } else if call.phase2_tdma {
-            VoiceKind::Tdma
-        } else {
-            VoiceKind::Fdma
-        }
-    }
-
     /// Whether its calls are on one of two slots.
     pub fn slotted(self) -> bool {
         matches!(self, VoiceKind::Tdma | VoiceKind::Dmr)
+    }
+
+    /// The one-sided filter cutoff a trunked voice channel of this kind
+    /// opens with, Hz (conventional channels set their own).
+    pub fn cutoff_hz(self) -> f64 {
+        match self {
+            VoiceKind::Nxdn(r) => r.cutoff_hz(),
+            VoiceKind::Dmr => crate::dmr::CHANNEL_CUTOFF_HZ,
+            // (P25 Phase 1 and 2, and SmartNet's analog FM.)
+            _ => 7000.0,
+        }
     }
 }
 

@@ -581,7 +581,7 @@ fn run_smartnet(a: &Args) {
                         m.talkgroup,
                         m.freq_hz,
                         m.source,
-                        m.analog,
+                        m.voice.analog(),
                         m.encrypted,
                         m.meta
                     );
