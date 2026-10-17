@@ -5,7 +5,7 @@ use crate::{
     discovery::Selector,
     maybe_future::{MaybeFutureExt, ready},
     rtl2832u::Applied,
-    rx::RxStream,
+    rx::{RxBuffers, RxStream},
     session::{RxStreamClaim, Session},
     usb::NusbTransport,
 };
@@ -134,8 +134,13 @@ impl<M: SampleMode> Device<M> {
     /// Claim the single receive stream. The stream starts only when `start` is
     /// waited/awaited. Dormant and stopped streams retain the claim until close/drop.
     pub fn rx_stream(&self) -> Result<RxStream<M>> {
+        self.rx_stream_with(RxBuffers::default())
+    }
+    /// [`Device::rx_stream`] with transfers of a chosen size and number (see [`RxBuffers`]).
+    pub fn rx_stream_with(&self, buffers: RxBuffers) -> Result<RxStream<M>> {
+        buffers.validate()?;
         self.session.ensure_configured()?;
-        Ok(RxStream::new(RxStreamClaim::acquire(&self.session)?))
+        Ok(RxStream::new(RxStreamClaim::acquire(&self.session)?, buffers))
     }
     /// Stop the hardware and disable RF bias power.
     ///

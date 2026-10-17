@@ -5,6 +5,12 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **RTL-SDR USB transfer size** (`bufLen`, **USB transfer size** in Setup): Trunk Recorder's
+  `buflen`. Four or more dongles at 2.4 MSPS on one USB 2.0 bus overflow with the driver's
+  256 KiB transfers (the control channel goes unreliable first); 64 KiB transfers let them take
+  turns. Imported from a Trunk Recorder config's `buflen=` / `buffers=`, and suggested in the log
+  and in Setup once 4 or more dongles run at full rate. The RTL-SDR driver (`rtlsdr-nusb`) is now
+  a fork in the workspace to allow it.
 - **Airspy sample packing.** Airspys now send 12-bit samples packed over USB (`packing`, on by
   default; **Pack samples** in Setup): a quarter less of the bus. An Airspy at 10 MSPS nearly
   fills a USB 2.0 bus by itself; with several radios on one bus, that's what overflows.

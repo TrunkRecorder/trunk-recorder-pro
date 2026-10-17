@@ -5,7 +5,7 @@ use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use rtlsdr_nusb::{Device, GainConfig, MaybeFuture};
+use rtlsdr_nusb::{Device, GainConfig, MaybeFuture, RxBuffers};
 
 #[derive(Clone, Debug)]
 pub struct RtlConfig {
@@ -16,6 +16,25 @@ pub struct RtlConfig {
     /// None = tuner AGC.
     pub gain_db: Option<f32>,
     pub ppm: i32,
+    /// Bytes per USB transfer, 0 = the driver's default (Trunk Recorder's `buflen`).
+    pub buf_len: u32,
+    /// USB transfers in flight, 0 = enough for about 2 MiB.
+    pub buffers: u32,
+}
+
+/// About this much is kept in flight when the number of transfers isn't set:
+/// what the driver's 8 × 256 KiB default holds, about 440 ms at 2.4 MS/s.
+const RTL_IN_FLIGHT: usize = 2 << 20;
+
+impl RtlConfig {
+    /// The USB transfers to ask for: smaller ones, if `buf_len` is set, but
+    /// more of them, so as much is still in flight.
+    pub fn rx_buffers(&self) -> RxBuffers {
+        let d = RxBuffers::default();
+        let len = if self.buf_len == 0 { d.len } else { self.buf_len as usize };
+        let count = if self.buffers != 0 { self.buffers as usize } else if self.buf_len == 0 { d.count } else { (RTL_IN_FLIGHT / len).clamp(8, 64) };
+        RxBuffers { len, count }
+    }
 }
 
 /// Opening a dongle whose tuner rtlsdr-nusb doesn't drive (only R820T / R828D).
@@ -42,11 +61,23 @@ pub fn devices() -> Vec<serde_json::Value> {
                         "serial": d.serial.clone().unwrap_or_default(),
                         "product": d.product.clone().unwrap_or_else(|| "RTL-SDR".into()),
                         "busy": info.and_then(busy),
+                        "bus": info.map(|u| u.bus_id().to_string()),
                     })
                 })
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// The most RTL-SDRs plugged into one USB bus (host controller), None if
+/// the USB devices can't be listed.
+pub fn rtl_most_on_a_bus() -> Option<usize> {
+    let usb: Vec<nusb::DeviceInfo> = nusb::list_devices().wait().ok()?.collect();
+    let mut per_bus = std::collections::HashMap::<&str, usize>::new();
+    for u in usb.iter().filter(|u| u.vendor_id() == 0x0bda && matches!(u.product_id(), 0x2832 | 0x2838)) {
+        *per_bus.entry(u.bus_id()).or_default() += 1;
+    }
+    Some(per_bus.into_values().max().unwrap_or(0))
 }
 
 /// Why a dongle can't be opened now, or None: claim its interface and let it
@@ -197,7 +228,7 @@ fn stream_once(source: usize, cfg: &RtlConfig, tx: &SyncSender<SourceMsg>, stop:
             format!("open RTL-SDR {name}: {e}")
         }
     })?;
-    let mut rx = dev.rx_stream().map_err(|e| e.to_string())?;
+    let mut rx = dev.rx_stream_with(cfg.rx_buffers()).map_err(|e| format!("RTL-SDR USB transfers: {e}"))?;
     rx.start().wait().map_err(|e| e.to_string())?;
     // (Buffers to copy each transfer into, reused: this thread must keep up with the dongle.)
     let pool = Pool::default();

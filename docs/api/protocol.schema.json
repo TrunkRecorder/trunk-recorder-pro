@@ -857,6 +857,13 @@
             "null"
           ],
           "description": "Why it can't be opened now (another program has it); absent / null = free."
+        },
+        "bus": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The USB bus (host controller) it's plugged into, desktop app; dongles on one share its bandwidth."
         }
       },
       "required": [
@@ -5061,6 +5068,12 @@
               "type": "boolean"
             },
             "ppm": {
+              "type": "number"
+            },
+            "bufLen": {
+              "type": "number"
+            },
+            "buffers": {
               "type": "number"
             }
           },

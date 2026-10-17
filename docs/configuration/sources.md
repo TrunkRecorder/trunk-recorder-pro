@@ -78,6 +78,15 @@ An RTL-SDR dongle, driven directly over USB (no driver library needed).
 | `ppm` | ✓ | | integer | Frequency correction, whole ppm |
 | `autoTune` | | `false` | bool | Apply the measured frequency error by itself |
 | `guardHz` | | `75000` | number | Left unused at each edge of the band, Hz |
+| `bufLen` | | `0` | integer | Bytes per USB transfer (Trunk Recorder's `buflen`), a multiple of 512. `0` = 262 144. **USB transfer size** in Setup |
+| `buffers` | | `0` | integer | USB transfers kept in flight (Trunk Recorder's `buffers`), at most 256. `0` = enough for about 2 MiB: 8 at the default size, 32 at 65 536 |
+
+**Several dongles on one USB bus.** Four or more RTL-SDRs at 2.4 MSPS on one USB 2.0 bus
+(including behind one hub) can overflow: each dongle holds only a few milliseconds of samples on
+the chip, and a 256 KiB transfer from one keeps the others waiting. The usual sign is a control
+channel that keeps dropping out while voice mostly works. Set `bufLen` to `65536` on each (as
+Trunk Recorder's docs advise). The recorder logs this advice at start when 4 or more dongles at
+2 MSPS or more are left at the default, and Setup shows it next to **USB transfer size**.
 
 The native driver handles R820T and R828D tuners (the RTL-SDR Blog V3 and V4, and most current
 dongles). For an older dongle with an E4000, FC0012, FC0013 or FC2580 tuner, use a `soapy` source

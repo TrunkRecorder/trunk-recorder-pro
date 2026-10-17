@@ -17,8 +17,12 @@ export type SampleFormat = "cu8" | "cs16" | "cf32";
  * rolls off (default 75 000; Setup can measure it — `profileSource`).
  */
 export type Source = (
-  /** `agc`: the tuner's AGC instead of `gainDb`. */
-  | { type: "rtlsdr"; serial: string; centerHz: number; rateHz: number; gainDb: number; agc: boolean; ppm: number }
+  /**
+   * `agc`: the tuner's AGC instead of `gainDb`. `bufLen`: bytes per USB transfer (Trunk Recorder's
+   * buflen), a multiple of 512, 0 = the driver's 262144; several dongles on one USB 2.0 bus want 65536.
+   * `buffers`: transfers in flight, 0 = enough for about 2 MiB. Desktop app only.
+   */
+  | { type: "rtlsdr"; serial: string; centerHz: number; rateHz: number; gainDb: number; agc: boolean; ppm: number; bufLen?: number; buffers?: number }
   /** USRP through UHD (desktop app, UHD installed). `args` "" = first found; `agc` the device's AGC (B200/B210). */
   | { type: "usrp"; args: string; centerHz: number; rateHz: number; gainDb: number; agc: boolean; antenna: string; ppm: number }
   /**
@@ -466,6 +470,8 @@ export interface Device {
   product: string;
   /** Why it can't be opened now (another program has it); absent / null = free. */
   busy?: string | null;
+  /** The USB bus (host controller) it's plugged into, desktop app; dongles on one share its bandwidth. */
+  bus?: string | null;
 }
 
 export type Phase = "idle" | "starting" | "running" | "stopping";

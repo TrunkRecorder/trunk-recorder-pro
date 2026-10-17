@@ -50,7 +50,7 @@ pub use discovery::DeviceDescriptor;
 pub use errors::{Error, ErrorKind, Result};
 pub use num_complex::Complex32;
 pub use nusb::MaybeFuture;
-pub use rx::{MAX_F32_IQ_SAMPLES_PER_TRANSFER, RxStream, SampleBlock, StreamingStats};
+pub use rx::{MAX_F32_IQ_SAMPLES_PER_TRANSFER, RxBuffers, RxStream, SampleBlock, StreamingStats};
 pub use tuners::TunerKind;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

@@ -5,7 +5,6 @@ use nusb::transfer::{ControlIn, ControlOut, ControlType, Recipient};
 use std::time::Duration;
 
 pub(crate) const RX_ENDPOINT: u8 = 0x81;
-pub(crate) const TRANSFER_COUNT: usize = 8;
 pub(crate) fn timeout() -> Duration {
     Duration::from_millis(500)
 }

@@ -33,6 +33,13 @@ pub enum Source {
         /// Left unused at each edge of the band, Hz (the anti-alias roll-off).
         #[serde(default = "guard_default")]
         guard_hz: f64,
+        /// Bytes per USB transfer (Trunk Recorder's `buflen`): a multiple of 512;
+        /// 0 = the driver's 262144. Several dongles on one USB 2.0 bus want 65536.
+        #[serde(default)]
+        buf_len: u32,
+        /// USB transfers kept in flight; 0 = enough for about 2 MiB (8 to 64).
+        #[serde(default)]
+        buffers: u32,
     },
     /// A USRP through UHD (installed separately; loaded at run time).
     /// `args`: UHD device arguments, "" = the first found ("serial=…",
@@ -1257,7 +1264,7 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             other: BTreeMap::new(),
-            sources: vec![Source::Rtlsdr { serial: String::new(), center_hz: 0.0, rate_hz: 2_400_000.0, gain_db: RTL_DEFAULT_GAIN_DB, agc: false, ppm: 0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ }],
+            sources: vec![Source::Rtlsdr { serial: String::new(), center_hz: 0.0, rate_hz: 2_400_000.0, gain_db: RTL_DEFAULT_GAIN_DB, agc: false, ppm: 0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ, buf_len: 0, buffers: 0 }],
             systems: vec![],
             conventional: vec![],
             recording: Recording::default(),
@@ -1536,6 +1543,26 @@ impl Config {
         self.systems.iter().filter(|s| s.active())
     }
 
+    /// Advice for 4 or more RTL-SDRs at 2 MS/s or more left on the driver's
+    /// 256 KiB USB transfers: on one USB 2.0 bus each dongle waits too long
+    /// for its turn and its small FIFO overflows (losses the driver can't
+    /// see; the control channel suffers first, IMBE hides most of it in voice).
+    /// `most_on_a_bus`: the most RTL-SDRs plugged into one USB bus, if known
+    /// (spread over buses, there's nothing to say).
+    pub fn rtl_buflen_hint(&self, most_on_a_bus: Option<usize>) -> Option<String> {
+        let busy = self.sources.iter().filter(|s| matches!(s, Source::Rtlsdr { rate_hz, buf_len: 0, .. } if *rate_hz >= RTL_BUSY_RATE)).count();
+        if busy < RTL_BUSY_COUNT || most_on_a_bus.is_some_and(|n| n < RTL_BUSY_COUNT) {
+            return None;
+        }
+        let bus = match most_on_a_bus {
+            Some(n) => format!(", {n} of them on one USB bus"),
+            None => String::new(),
+        };
+        Some(format!(
+            "{busy} RTL-SDRs at 2 MS/s or more with the default 256 KiB USB transfers{bus}: dongles sharing a USB 2.0 bus can lose samples (an unreliable control channel is the usual sign). Set USB transfer size to 64 KiB on each in Setup → Sources (Trunk Recorder's buflen=65536)."
+        ))
+    }
+
     /// Each source's centre: as set, or (0 = auto) placed over what the
     /// sources before it don't cover yet — every system (control and known
     /// voice channels) and the conventional channels if they fit together,
@@ -1602,6 +1629,16 @@ impl Config {
         }
         if self.sources.iter().any(|s| matches!(s, Source::File { path, .. } if path.trim().is_empty())) {
             return Some("Choose the capture file to replay.".into());
+        }
+        for (i, s) in self.sources.iter().enumerate() {
+            if let Source::Rtlsdr { buf_len, buffers, .. } = *s {
+                if buf_len % 512 != 0 || buf_len > 16 << 20 {
+                    return Some(format!("Source {}: the USB transfer size must be a multiple of 512 bytes, at most 16 MiB (65536 for several dongles on one bus).", i + 1));
+                }
+                if buffers > 256 {
+                    return Some(format!("Source {}: at most 256 USB transfers in flight.", i + 1));
+                }
+            }
         }
         let trunked = self.active_systems().next().is_some();
         if !trunked && self.enabled_channels().next().is_none() {
@@ -1800,6 +1837,11 @@ pub fn auto_center(ccs: &[f64], rate_hz: f64, guard_hz: f64) -> Option<f64> {
     ccs.iter().all(|f| (f - c).abs() <= half - 10_000.0).then_some(c)
 }
 
+/// Several RTL-SDRs at this rate or more, on one USB 2.0 bus, want smaller transfers…
+const RTL_BUSY_RATE: f64 = 2_000_000.0;
+/// …once there are this many (Trunk Recorder users find trouble from 4 or 5).
+const RTL_BUSY_COUNT: usize = 4;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1956,13 +1998,35 @@ mod tests {
         assert_eq!(back, s);
     }
 
+    #[test]
+    fn rtl_usb_transfers_checked_and_hinted() {
+        let rtl = |rate_hz: f64, buf_len: u32| Source::Rtlsdr { serial: String::new(), center_hz: 851e6, rate_hz, gain_db: 30.0, agc: false, ppm: 0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ, buf_len, buffers: 0 };
+        let mut c = Config { sources: vec![rtl(2.4e6, 0); 3], systems: vec![system("s", &[851_012_500.0])], ..Default::default() };
+        assert_eq!(c.rtl_buflen_hint(None), None);
+        c.sources.push(rtl(1.2e6, 0));
+        assert_eq!(c.rtl_buflen_hint(None), None);
+        c.sources.push(rtl(2.4e6, 0));
+        assert!(c.rtl_buflen_hint(None).unwrap().starts_with("4 RTL-SDRs"));
+        assert!(c.rtl_buflen_hint(Some(5)).unwrap().contains("5 of them on one USB bus"));
+        assert_eq!(c.rtl_buflen_hint(Some(2)), None);
+        c.sources[0] = rtl(2.4e6, 65_536);
+        assert_eq!(c.rtl_buflen_hint(None), None);
+        assert_eq!(c.problem(), None);
+        c.sources[0] = rtl(2.4e6, 65_000);
+        assert!(c.problem().unwrap().contains("multiple of 512"));
+        let back: Config = serde_json::from_str(r#"{"sources":[{"type":"rtlsdr","serial":"","centerHz":0,"rateHz":2400000,"ppm":0}]}"#).unwrap();
+        assert!(matches!(back.sources[0], Source::Rtlsdr { buf_len: 0, buffers: 0, .. }));
+        let json = serde_json::to_value(&rtl(2.4e6, 65_536)).unwrap();
+        assert_eq!((json["bufLen"].as_u64(), json["buffers"].as_u64()), (Some(65_536), Some(0)));
+    }
+
     fn system(name: &str, ccs: &[f64]) -> System {
         System { short_name: name.into(), control_channels_hz: ccs.to_vec(), ..Default::default() }
     }
 
     #[test]
     fn several_systems_centers_and_engine_config() {
-        let rtl = || Source::Rtlsdr { serial: String::new(), center_hz: 0.0, rate_hz: 2_400_000.0, gain_db: 30.0, agc: false, ppm: 0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ };
+        let rtl = || Source::Rtlsdr { serial: String::new(), center_hz: 0.0, rate_hz: 2_400_000.0, gain_db: 30.0, agc: false, ppm: 0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ, buf_len: 0, buffers: 0 };
         let mut c = Config { sources: vec![rtl(), rtl()], ..Default::default() };
         let mut a = system("east", &[851_012_500.0]);
         a.voice_channels_hz = vec![851_500_000.0, 852_000_000.0];

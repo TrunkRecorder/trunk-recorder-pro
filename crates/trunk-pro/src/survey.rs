@@ -50,8 +50,8 @@ pub(crate) fn spawn_source(src: &Source, i: usize, center: f64, tx: mpsc::SyncSe
     std::thread::Builder::new()
         .name(format!("survey-source-{i}"))
         .spawn(move || match src {
-            Source::Rtlsdr { serial, rate_hz, gain_db, agc, ppm, .. } => {
-                sdr::run_with(i, RtlConfig { serial, center_hz: center as u64, rate_hz: rate_hz as u32, gain_db: (!agc).then_some(gain_db), ppm }, tx, stop, Some(ctl))
+            Source::Rtlsdr { serial, rate_hz, gain_db, agc, ppm, buf_len, buffers, .. } => {
+                sdr::run_with(i, RtlConfig { serial, center_hz: center as u64, rate_hz: rate_hz as u32, gain_db: (!agc).then_some(gain_db), ppm, buf_len, buffers }, tx, stop, Some(ctl))
             }
             Source::Usrp { args, rate_hz, gain_db, agc, antenna, ppm, .. } => {
                 uhd::run_with(i, uhd::UsrpConfig { args, center_hz: center, rate_hz, gain_db, agc, antenna, ppm }, tx, stop, Some(ctl))
@@ -195,6 +195,8 @@ pub fn cli(a: &crate::Args) {
             ppm: a.num("ppm", 0.0) as i32,
             auto_tune: false,
             guard_hz: crate::config::DEFAULT_GUARD_HZ,
+            buf_len: a.num("buflen", 0.0) as u32,
+            buffers: a.num("buffers", 0.0) as u32,
         }];
     }
     let bands = a.get("bands").map(|b| json!(b.split(',').collect::<Vec<_>>())).unwrap_or(Value::Null);

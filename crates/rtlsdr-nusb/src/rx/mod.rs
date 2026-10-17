@@ -12,7 +12,7 @@ use crate::{
     usb::NusbTransport,
 };
 use nusb::MaybeFuture;
-pub use queue::MAX_F32_IQ_SAMPLES_PER_TRANSFER;
+pub use queue::{MAX_F32_IQ_SAMPLES_PER_TRANSFER, RxBuffers};
 use receiver::Receiver;
 use std::time::Duration;
 
@@ -105,9 +105,9 @@ pub struct RxStream<M: SampleMode = F32Iq> {
 }
 
 impl<M: SampleMode> RxStream<M> {
-    pub(crate) fn new(claim: RxStreamClaim<NusbTransport>) -> Self {
+    pub(crate) fn new(claim: RxStreamClaim<NusbTransport>, sizes: RxBuffers) -> Self {
         Self {
-            inner: Receiver::new(claim),
+            inner: Receiver::new(claim, sizes),
         }
     }
 

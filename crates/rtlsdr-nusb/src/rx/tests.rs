@@ -1,4 +1,7 @@
-use super::{queue::DEFAULT_BUFFER_SIZE, receiver::Receiver};
+use super::{
+    queue::{DEFAULT_BUFFER_SIZE, RxBuffers},
+    receiver::Receiver,
+};
 use crate::{
     Complex32, DeviceDescriptor, Error, F32Iq, RawIq,
     config::{SampleMode, Settings},
@@ -32,7 +35,7 @@ fn setup<M: SampleMode>() -> (
     let (session, _) = Session::initialize(control.clone(), descriptor(), Settings::default())
         .wait()
         .unwrap();
-    let rx = Receiver::new(RxStreamClaim::acquire(&session).unwrap());
+    let rx = Receiver::new(RxStreamClaim::acquire(&session).unwrap(), RxBuffers::default());
     (control, session, rx)
 }
 fn pending<F: Future>(future: std::pin::Pin<&mut F>) {
@@ -287,4 +290,31 @@ fn canceled_configuration_invalidates_reads_and_full_retry_recovers() {
     rx.stop().wait().unwrap();
     rx.start().wait().unwrap();
     assert!(rx.next_block(None).wait().unwrap().is_some());
+}
+
+#[test]
+fn chosen_buffers_set_transfer_size_and_number() {
+    let control = FakeTransport::default();
+    let (session, _) = Session::initialize(control.clone(), descriptor(), Settings::default())
+        .wait()
+        .unwrap();
+    let sizes = RxBuffers { len: 65_536, count: 32 };
+    let mut rx = Receiver::<_, RawIq>::new(RxStreamClaim::acquire(&session).unwrap(), sizes);
+    rx.start().wait().unwrap();
+    let submitted = &rx.queue.as_ref().unwrap().bulk_in.as_ref().unwrap().submitted;
+    assert_eq!(submitted.len(), 32);
+    assert!(submitted.iter().all(|b| b.len() == 65_536));
+    let block = rx.next_block(None).wait().unwrap().unwrap();
+    assert_eq!(block.raw_bytes().len(), 65_536);
+}
+
+#[test]
+fn buffers_are_validated() {
+    assert!(RxBuffers::default().validate().is_ok());
+    assert!(RxBuffers { len: 512, count: 1 }.validate().is_ok());
+    assert!(RxBuffers { len: 0, count: 8 }.validate().is_err());
+    assert!(RxBuffers { len: 65_000, count: 8 }.validate().is_err());
+    assert!(RxBuffers { len: 32 << 20, count: 8 }.validate().is_err());
+    assert!(RxBuffers { len: 65_536, count: 0 }.validate().is_err());
+    assert!(RxBuffers { len: 65_536, count: 257 }.validate().is_err());
 }

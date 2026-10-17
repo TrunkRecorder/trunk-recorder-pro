@@ -3,7 +3,6 @@
 use super::{SampleBlock, StreamingStats};
 use crate::{
     errors::{Error, Result},
-    protocol::TRANSFER_COUNT,
     usb::{BulkInBackend, BulkInCompletion},
 };
 use nusb::MaybeFuture;
@@ -12,10 +11,48 @@ use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 pub(crate) const DEFAULT_BUFFER_SIZE: usize = 262_144;
-/// Maximum number of unpacked complex `F32Iq` samples produced by one USB transfer.
+/// Maximum number of unpacked complex `F32Iq` samples produced by one USB transfer
+/// with the default [`RxBuffers`].
 ///
-/// Short USB transfers may contain fewer samples.
+/// Short USB transfers may contain fewer samples, and smaller buffers produce fewer.
 pub const MAX_F32_IQ_SAMPLES_PER_TRANSFER: usize = DEFAULT_BUFFER_SIZE / 2;
+
+/// The receive stream's USB transfers: how big each is and how many are kept in flight.
+///
+/// The default is 8 transfers of 262144 bytes. With several receivers sharing one
+/// USB 2.0 bus, smaller transfers (librtlsdr's `buflen`, commonly 65536) let the host
+/// controller interleave the devices more finely, so none waits long enough for its
+/// small on-chip FIFO to overflow. Keep `len * count` similar when shrinking `len`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RxBuffers {
+    /// Bytes per transfer: a nonzero multiple of 512 (the bulk packet size), at most 16 MiB.
+    pub len: usize,
+    /// Transfers kept submitted: 1..=256.
+    pub count: usize,
+}
+impl Default for RxBuffers {
+    fn default() -> Self {
+        Self {
+            len: DEFAULT_BUFFER_SIZE,
+            count: 8,
+        }
+    }
+}
+impl RxBuffers {
+    /// Check `len` and `count` against the limits above.
+    pub fn validate(&self) -> Result<()> {
+        if self.len == 0 || self.len % 512 != 0 || self.len > 16 << 20 {
+            return Err(Error::invalid_config(
+                "buffer length",
+                "must be a nonzero multiple of 512 bytes, at most 16 MiB",
+            ));
+        }
+        if !(1..=256).contains(&self.count) {
+            return Err(Error::invalid_config("buffer count", "must be in 1..=256"));
+        }
+        Ok(())
+    }
+}
 
 pub(crate) struct Queue<B: BulkInBackend> {
     pub(super) bulk_in: Option<B>,
@@ -29,9 +66,9 @@ pub(crate) struct Queue<B: BulkInBackend> {
 }
 
 impl<B: BulkInBackend> Queue<B> {
-    pub(crate) fn new(bulk_in: B) -> Self {
-        let missing = TRANSFER_COUNT.saturating_sub(bulk_in.pending());
-        let len = DEFAULT_BUFFER_SIZE;
+    pub(crate) fn new(bulk_in: B, sizes: RxBuffers) -> Self {
+        let missing = sizes.count.saturating_sub(bulk_in.pending());
+        let len = sizes.len;
         let buffers = (0..missing).map(|_| bulk_in.allocate(len)).collect();
         Self {
             bulk_in: Some(bulk_in),

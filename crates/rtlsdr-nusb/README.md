@@ -1,3 +1,9 @@
+> **Trunk Recorder Pro's fork** of [rtlsdr-nusb](https://github.com/bastibl/rtlsdr-nusb) 0.3.0
+> (Apache-2.0, see `LICENSE`), patched in for the whole workspace by `[patch.crates-io]`. The one
+> change: the receive stream's USB transfers can be sized and counted (`RxBuffers`,
+> `Device::rx_stream_with`), like librtlsdr's `buf_len` / `buf_num`. Several dongles on one USB 2.0
+> bus need transfers smaller than the fixed 8 × 256 KiB. Everything else is upstream's.
+
 # rtlsdr-nusb
 
 Rust-native RTL-SDR driver using [nusb](https://github.com/kevinmehall/nusb),

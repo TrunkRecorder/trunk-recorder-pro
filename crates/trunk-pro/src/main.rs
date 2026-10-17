@@ -705,6 +705,8 @@ fn capture(a: &Args) {
         rate_hz: a.num("rate", 2_400_000.0) as u32,
         gain_db: a.get("gain").and_then(|g| g.parse().ok()),
         ppm: a.num("ppm", 0.0) as i32,
+        buf_len: a.num("buflen", 0.0) as u32,
+        buffers: a.num("buffers", 0.0) as u32,
     };
     let want = (a.num("seconds", 10.0) * cfg.rate_hz as f64) as u64 * 2;
     let (tx, rx) = mpsc::sync_channel(64);

@@ -156,3 +156,24 @@ test("merge: the setup it was given is left untouched", () => {
   importTrunkRecorderConfig(tr700, c, {});
   assert.deepEqual(c, copy);
 });
+
+test("an RTL-SDR's buflen and buffers come along", () => {
+  const tr = JSON.stringify({
+    sources: [
+      { device: "rtl=00000101,buflen=65536", center: 855_000_000, rate: 2_400_000, gain: 30 },
+      { device: "rtl=00000102,buflen=65536,buffers=24", center: 857_000_000, rate: 2_400_000, gain: 30 },
+      { device: "rtl=00000103,buflen=1000", center: 859_000_000, rate: 2_400_000, gain: 30 },
+      rtl("00000104", 861_000_000),
+    ],
+    systems: [p25("county800", 855_012_500)],
+  });
+  const r = importTrunkRecorderConfig(tr, defaultConfig());
+  const got = r.config.sources.map((s: Source) => (s.type === "rtlsdr" ? [s.serial, s.bufLen, s.buffers] : s.type));
+  assert.deepEqual(got, [
+    ["00000101", 65_536, 0],
+    ["00000102", 65_536, 24],
+    ["00000103", 0, 0],
+    ["00000104", 0, 0],
+  ]);
+  assert.ok(r.notes.some((n) => n.includes("buflen=1000")));
+});

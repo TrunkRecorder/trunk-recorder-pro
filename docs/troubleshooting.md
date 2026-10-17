@@ -236,7 +236,11 @@ doesn't collect them in time, they're lost. Causes, most likely first:
   fewer sources, or a faster computer helps. If one core is pinned while others sit idle, send a
   [performance report](#performance-report).
 - **USB.** Several dongles on one hub or one bus, a long or poor cable, or a Raspberry Pi with a weak
-  power supply. Spread dongles across ports.
+  power supply. Spread dongles across ports. With 4 or more RTL-SDRs on one USB 2.0 bus, set
+  **USB transfer size** to 64 KiB on each (`bufLen: 65536`, Trunk Recorder's `buflen`): see
+  [several dongles on one USB bus](configuration/sources.md#type-rtlsdr). An RTL-SDR can't report
+  these losses itself; the recorder notices them as samples falling behind the clock and logs
+  "lost without its driver saying so".
 - **Something else on the computer** hogging it for a moment (a backup, a screen-sharing session).
 
 **Airspys** hand their samples over through libairspy, whose own thread drops a buffer

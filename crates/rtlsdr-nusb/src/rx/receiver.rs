@@ -1,6 +1,10 @@
 //! One receiver lifecycle for every sample mode and execution mechanism.
 
-use super::{SampleBlock, StreamingStats, processing::Processor, queue::Queue};
+use super::{
+    SampleBlock, StreamingStats,
+    processing::Processor,
+    queue::{Queue, RxBuffers},
+};
 use crate::{
     Complex32,
     config::{F32Iq, RawIq, SampleMode},
@@ -25,15 +29,17 @@ pub(crate) struct Receiver<C: Transport = NusbTransport, M: SampleMode = F32Iq> 
     pub(super) processor: M::Processor,
     pub(super) stats: StreamingStats,
     pub(crate) claim: RxStreamClaim<C>,
+    sizes: RxBuffers,
 }
 
 impl<C: Transport, M: SampleMode> Receiver<C, M> {
-    pub(crate) fn new(claim: RxStreamClaim<C>) -> Self {
+    pub(crate) fn new(claim: RxStreamClaim<C>, sizes: RxBuffers) -> Self {
         Self {
             queue: None,
             processor: Default::default(),
             stats: StreamingStats::default(),
             claim,
+            sizes,
         }
     }
     pub(crate) fn current_stats(&self) -> StreamingStats {
@@ -77,11 +83,12 @@ impl<C: Transport, M: SampleMode> Receiver<C, M> {
         };
         let queue = &mut self.queue;
         let claim = &mut self.claim;
+        let sizes = self.sizes;
         let run = off.and_then(move |_| {
             let prepare = if fresh {
                 control
                     .bulk_in(RX_ENDPOINT)
-                    .map(|bulk| *queue = Some(Queue::new(bulk)))
+                    .map(|bulk| *queue = Some(Queue::new(bulk, sizes)))
             } else {
                 Ok(())
             };

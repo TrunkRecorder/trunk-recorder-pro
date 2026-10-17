@@ -34,7 +34,7 @@ import { currentView, dismissTodo, downloadText, findRadios, openGuide, refreshD
 import { M4aSettings, PluginSetupPanel, renameSystemRefs, SystemPluginSettings } from "./Plugins.tsx";
 import { SystemDelays } from "./Delays.tsx";
 import { IconAntenna, IconDongle, IconFolder, IconPuzzle, IconTower } from "./Onboarding.tsx";
-import type { AirspyGainMode, Channel, Config, Conventional, HeardCode, LockableKeys, LogSettings, Recording, RecordingOverride, RecordingRules, SiteIdentity, SoapyState, Source, System, UnitNames } from "./protocol.ts";
+import type { AirspyGainMode, Channel, Config, Conventional, Device, HeardCode, LockableKeys, LogSettings, Recording, RecordingOverride, RecordingRules, SiteIdentity, SoapyState, Source, System, UnitNames } from "./protocol.ts";
 import { DEFAULT_FORMAT, FilenameEditor } from "./FilenameEditor.tsx";
 import { GuardBand } from "./Rolloff.tsx";
 import { SurveyPanel } from "./Survey.tsx";
@@ -363,6 +363,41 @@ function PpmField(props: { src: Exclude<Source, { type: "file" }>; edit: EditSou
   );
 }
 
+/** USB transfer sizes offered (Trunk Recorder's buflen), bytes; 0 = the driver's 256 KiB. */
+const BUF_LENS = [0, 131_072, 65_536, 32_768, 16_384];
+/** As many RTL-SDRs as this at 2 MS/s or more get the advice (as `Config::rtl_buflen_hint`). */
+const RTL_BUSY_COUNT = 4;
+
+/**
+ * An RTL-SDR's USB transfer size: smaller transfers let several dongles take
+ * turns on one USB 2.0 bus without any of their small FIFOs overflowing.
+ */
+function UsbTransfers(props: { src: Extract<Source, { type: "rtlsdr" }>; sources: Source[]; devices: Device[]; edit: EditSource }) {
+  const { src, sources, devices, edit } = props;
+  const len = src.bufLen ?? 0;
+  const busy = sources.filter((x) => x.type === "rtlsdr" && x.rateHz >= 2_000_000).length;
+  const mine = devices.find((d) => (src.serial ? d.serial === src.serial : true));
+  const onBus = mine?.bus ? devices.filter((d) => d.bus === mine.bus).length : null;
+  const crowded = busy >= RTL_BUSY_COUNT && (onBus === null || onBus >= RTL_BUSY_COUNT);
+  const hint =
+    crowded && len === 0
+      ? `${busy} dongles at full rate${onBus !== null ? `, ${onBus} on this USB bus` : ""}: 64 KiB recommended`
+      : "Smaller helps several dongles share one USB 2.0 bus (Trunk Recorder's buflen)";
+  const kib = (n: number) => `${n / 1024} KiB`;
+  return (
+    <Field label="USB transfer size" hint={hint}>
+      <select value={len} onChange={(e) => edit((x) => x.type === "rtlsdr" && void (x.bufLen = Number(e.target.value)))}>
+        {BUF_LENS.map((n) => (
+          <option key={n} value={n}>
+            {n === 0 ? "256 KiB (default)" : kib(n)}
+          </option>
+        ))}
+        {!BUF_LENS.includes(len) && <option value={len}>{len % 1024 ? `${len} bytes` : kib(len)}</option>}
+      </select>
+    </Field>
+  );
+}
+
 /**
  * AutoTune (Trunk Recorder's): correct the source's channels for the error its
  * control channels show. While recording, what was measured, and the ppm that
@@ -596,6 +631,7 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
             </div>
           </Field>
         )}
+        {src.type === "rtlsdr" && !web && <UsbTransfers src={src} sources={c.sources} devices={s.devices} edit={edit} />}
         {src.type === "usrp" &&
           (radios && !radios.usrp.available ? (
             <DriverMissing kind="usrp" detail={radios.usrp.detail} />

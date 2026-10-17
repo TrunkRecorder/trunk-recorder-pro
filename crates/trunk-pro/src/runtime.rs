@@ -225,6 +225,11 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
     session.load_heard(&fs::read_to_string(heard_path(&cfg)).unwrap_or_default());
     session.load_tune(&fs::read_to_string(tune_path()).unwrap_or_default());
     ctx.plugins.start(&cfg);
+    if cfg.sources.iter().any(|s| matches!(s, Source::Rtlsdr { .. })) {
+        if let Some(hint) = cfg.rtl_buflen_hint(sdr::rtl_most_on_a_bus()) {
+            log::warn!("{hint}");
+        }
+    }
     let stop = Arc::new(AtomicBool::new(false));
     // Each source's samples queue for its own decoding thread ([`feed_source`]).
     let mut queues = Vec::new();
@@ -246,8 +251,8 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
         let src = src.clone();
         let center = *center;
         let spawned = std::thread::Builder::new().name(format!("source-{i}")).spawn(move || match src {
-            Source::Rtlsdr { serial, rate_hz, gain_db, agc, ppm, .. } => {
-                sdr::run(i, RtlConfig { serial, center_hz: center as u64, rate_hz: rate_hz as u32, gain_db: (!agc).then_some(gain_db), ppm }, tx, stop)
+            Source::Rtlsdr { serial, rate_hz, gain_db, agc, ppm, buf_len, buffers, .. } => {
+                sdr::run(i, RtlConfig { serial, center_hz: center as u64, rate_hz: rate_hz as u32, gain_db: (!agc).then_some(gain_db), ppm, buf_len, buffers }, tx, stop)
             }
             Source::Usrp { args, rate_hz, gain_db, agc, antenna, ppm, .. } => {
                 uhd::run(i, uhd::UsrpConfig { args, center_hz: center, rate_hz, gain_db, agc, antenna, ppm }, tx, stop)
