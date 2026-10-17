@@ -644,10 +644,7 @@ fn sys_tag(engine: &Engine, system: u16, site: Option<u16>) -> String {
     let systems = engine.systems();
     let sites: Vec<_> = trunk_core::trunk::sites(&systems).collect();
     match site.and_then(|s| sites.get(s as usize)) {
-        Some(&(n, s)) if sites.len() > 1 => match &systems[n as usize].short_name {
-            name if *name == s.name => format!("[{name}] "),
-            name => format!("[{name}/{}] ", s.name),
-        },
+        Some(&(n, s)) if sites.len() > 1 => format!("[{}] ", systems[n as usize].site_key(s)),
         None if site.is_none() && !sites.is_empty() => systems.get(system as usize).map_or(String::new(), |s| format!("[{}] ", s.short_name)),
         _ => String::new(),
     }

@@ -324,15 +324,13 @@ impl Stats {
         let sites: Vec<_> = trunk_core::trunk::sites(&systems).collect();
         for y in engine.status().sites {
             let Some(&(system, cfg)) = sites.get(y.site as usize) else { continue };
-            let Some(l) = self.agg.get(&format!("{}/cc/locked", systems[system as usize].stats_key(cfg))) else { continue };
+            let key = systems[system as usize].site_key(cfg);
+            let Some(l) = self.agg.get(&format!("{}/cc/locked", key.stats_key())) else { continue };
             let now = l > 0.5;
-            // "dcfd", or "dcfd/south" for a site with a name of its own.
-            let name = if y.site_name == y.short_name { y.short_name } else { format!("{}/{}", y.short_name, y.site_name) };
-            let freq_hz = y.control_channel_hz;
-            let was = self.locked.insert(name.clone(), now);
-            match (was, now) {
-                (Some(true), false) => self.emit(MonitorEvent::ControlLost { system: name, freq_hz }, out),
-                (Some(false), true) => self.emit(MonitorEvent::ControlRegained { system: name, freq_hz }, out),
+            let (system, site, freq_hz) = (key.system.to_string(), key.own_name().map(str::to_string), y.control_channel_hz);
+            match (self.locked.insert(key.to_string(), now), now) {
+                (Some(true), false) => self.emit(MonitorEvent::ControlLost { system, site, freq_hz }, out),
+                (Some(false), true) => self.emit(MonitorEvent::ControlRegained { system, site, freq_hz }, out),
                 _ => {}
             }
         }

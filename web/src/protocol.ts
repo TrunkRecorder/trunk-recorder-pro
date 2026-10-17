@@ -1169,6 +1169,8 @@ export interface MonitorEventBody {
     | "spoolRecovered";
   /** A system's short name (talkgroup, radio, call volume, control channel events). */
   system?: string;
+  /** Control channel events: the site's own name, when it has one other than its system's. */
+  site?: string;
   talkgroup?: number;
   alphaTag?: string;
   unit?: number;

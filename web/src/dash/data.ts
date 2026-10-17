@@ -52,7 +52,7 @@ export interface DashSite {
   status: SiteStatus | null;
 }
 
-/** A site's series key (the recorder's SiteConfig::stats_key): a site named as its system is under the system's. */
+/** A site's series key (the recorder's SiteKey::stats_key): a site named as its system is under the system's. */
 export const siteKey = (system: string, site: string) => (site === system ? `sys/${keyPart(system)}` : `sys/${keyPart(system)}/site/${keyPart(site)}`);
 
 /** Every system set up (trunked, then conventional with channels), with its sites and its status while running. */

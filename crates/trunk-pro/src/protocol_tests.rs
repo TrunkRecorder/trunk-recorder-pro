@@ -373,7 +373,7 @@ fn the_servers_messages() {
         r.concluded("p25", &json!({ "freq": 851_012_500u64, "snr": 18.5, "errorList": [{ "frames": 50, "error_count": 2, "bad_frames": 0 }] }), now);
     }
     ctx.series.lock().unwrap().insert(&trunk_app::stats::Rollup { t: now / 60 * 60, values: [("sys/p25/cc/good".to_string(), [30.0, 28.0, 33.0])].into() });
-    ctx.event(trunk_app::stats::MonitorEvent::ControlLost { system: "p25".into(), freq_hz: Some(851_012_500) });
+    ctx.event(trunk_app::stats::MonitorEvent::ControlLost { system: "p25".into(), site: Some("south".into()), freq_hz: Some(851_012_500) });
     ctx.event(trunk_app::stats::MonitorEvent::PluginHealth { plugin: "openmhz".into(), state: "warning".into(), message: "3 uploads waiting".into() });
     let mut agg = trunk_app::stats::Aggregator::default();
     let mut platform = crate::platform::Platform::new(vec![crate::platform::Watched { name: "data", path: dir.clone() }], Arc::new(crate::platform::Probes::default()));

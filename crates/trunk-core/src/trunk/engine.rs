@@ -148,11 +148,48 @@ impl SystemConfig {
         Policy { talkgroups: &self.talkgroups, can_decrypt: self.keys.as_ref().is_some_and(|k| !k.is_empty()) }
     }
 
-    /// Where its site `site`'s control channel stats go: `sys/<system>` for
-    /// a site named as its system, else `sys/<system>/site/<site>`.
-    pub fn stats_key(&self, site: &SiteConfig) -> String {
-        let sys = format!("sys/{}", metrics::key_part(&self.short_name));
-        if site.name == self.short_name { sys } else { format!("{sys}/site/{}", metrics::key_part(&site.name)) }
+    /// How its site `site` is named outside the engine.
+    pub fn site_key<'a>(&'a self, site: &'a SiteConfig) -> SiteKey<'a> {
+        SiteKey { system: &self.short_name, site: &site.name }
+    }
+}
+
+/// How a site is named outside the engine: its system's short name, and
+/// its own name when that is another (a system of one site usually has
+/// none of its own). Every name for a site — its stats, its files, its log
+/// lines — comes from here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SiteKey<'a> {
+    pub system: &'a str,
+    pub site: &'a str,
+}
+
+impl<'a> SiteKey<'a> {
+    /// Its own name, when it has one other than its system's.
+    pub fn own_name(&self) -> Option<&'a str> {
+        Some(self.site).filter(|s| !s.is_empty() && *s != self.system)
+    }
+
+    /// Where its control channel's stats go: `sys/<system>`, or
+    /// `sys/<system>/site/<site>` for a site with a name of its own.
+    pub fn stats_key(&self) -> String {
+        let sys = format!("sys/{}", metrics::key_part(self.system));
+        self.own_name().map_or_else(|| sys.clone(), |s| format!("{sys}/site/{}", metrics::key_part(s)))
+    }
+
+    /// The name its files (band plan) are kept under: `<system>`, or `<system>.<site>`.
+    pub fn file_stem(&self) -> String {
+        self.own_name().map_or_else(|| self.system.to_string(), |s| format!("{}.{s}", self.system))
+    }
+}
+
+/// `<system>`, or `<system>/<site>` (log lines).
+impl std::fmt::Display for SiteKey<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self.own_name() {
+            Some(s) => write!(f, "{}/{s}", self.system),
+            None => f.write_str(self.system),
+        }
     }
 }
 
@@ -1513,7 +1550,7 @@ impl Core {
             k.gauge("recording", recording as f64);
         }
         for t in self.trunks.iter().filter(|t| t.running()) {
-            let key = self.systems[t.system as usize].cfg.stats_key(&t.cfg);
+            let key = self.systems[t.system as usize].cfg.site_key(&t.cfg).stats_key();
             let mut k = Scoped::new(sink, key.clone());
             let mut al = Scoped::new(&mut k, "aliasLc");
             for (name, n) in ["protected", "clear", "fragment", "mac"].iter().zip(t.alias_lc) {
@@ -2334,6 +2371,16 @@ mod tests {
         assert_eq!(calls.len(), 1);
         assert!(calls[0].recording && calls[0].start_s > 2.0, "{:?}", calls[0]);
         assert_eq!(e.radio.rx(0).channels[&(0, f)].calls[0].map(|c| c.id), Some(calls[0].id), "the channel is still open, for the new part");
+    }
+
+    #[test]
+    fn a_site_is_named_by_its_system_and_its_own_name_if_it_has_one() {
+        let own = SiteKey { system: "dcfd", site: "south" };
+        assert_eq!((own.stats_key(), own.file_stem(), own.to_string()), ("sys/dcfd/site/south".into(), "dcfd.south".into(), "dcfd/south".into()));
+        for site in ["dcfd", ""] {
+            let k = SiteKey { system: "dcfd", site };
+            assert_eq!((k.own_name(), k.stats_key(), k.file_stem(), k.to_string()), (None, "sys/dcfd".into(), "dcfd".into(), "dcfd".into()));
+        }
     }
 
     #[test]

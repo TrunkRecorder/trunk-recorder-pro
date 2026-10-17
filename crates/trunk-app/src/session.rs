@@ -703,14 +703,9 @@ impl Session {
         site.and_then(|s| self.sites.get(s as usize)).map_or(String::new(), |s| s.1.clone())
     }
 
-    /// How the log names system `system` (its site `site`): its short name,
-    /// with the site's own name when it has one ("dcfd/south").
+    /// How the log names system `system` (its site `site`): "dcfd", or "dcfd/south".
     fn site_label(&self, system: u16, site: Option<u16>) -> String {
-        let system = self.system_name(system).to_string();
-        match self.site_name(site) {
-            n if n.is_empty() || n == system => system,
-            n => format!("{system}/{n}"),
-        }
+        trunk_core::trunk::SiteKey { system: self.system_name(system), site: &self.site_name(site) }.to_string()
     }
 
     /// Talkgroups as the interface shows them: number and alpha tag (from system `system`'s file; "" when not in it).
@@ -1159,10 +1154,9 @@ pub(crate) fn identity_json(id: &Identity) -> Value {
 }
 
 /// `patched`: the talkgroups patched with it ([`Session::tg_names`]).
-/// The name a site's band plan is kept under: its system's short name for a
-/// site named as its system (a system of one site), else `<system>.<site>`.
+/// The name a site's band plan is kept under ([`trunk_core::trunk::SiteKey::file_stem`]).
 pub fn bandplan_key(sys: &trunk_core::trunk::SystemConfig, s: &trunk_core::trunk::SiteConfig) -> String {
-    if s.name == sys.short_name { sys.short_name.clone() } else { format!("{}.{}", sys.short_name, s.name) }
+    sys.site_key(s).file_stem()
 }
 
 fn call_view(c: &Call, system_name: &str, patched: Vec<Value>) -> Value {

@@ -203,9 +203,9 @@ export function eventText(e: MonitorEvent): string {
     case "unitFirstSeen":
       return `${e.system}: radio ${e.alias || e.unit} heard for the first time`;
     case "controlLost":
-      return `${e.system}: lost its control channel${e.freqHz ? ` (${mhz(e.freqHz)} MHz)` : ""}`;
+      return `${e.system}${e.site ? ` site ${e.site}` : ""}: lost its control channel${e.freqHz ? ` (${mhz(e.freqHz)} MHz)` : ""}`;
     case "controlRegained":
-      return `${e.system}: decoding its control channel again`;
+      return `${e.system}${e.site ? ` site ${e.site}` : ""}: decoding its control channel again`;
     case "sourceDrops":
       return `${e.source}: dropping samples`;
     case "sourceClipping":

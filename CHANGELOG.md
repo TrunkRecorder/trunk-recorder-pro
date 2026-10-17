@@ -15,6 +15,10 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   - Inside, a system's talkgroups, rules, unit names and keys are kept once for the whole system
     rather than copied into each of its sites, so a talkgroup file edited while recording reaches
     every site from one place.
+- **A lost control channel on a named site links to its system.** The `controlLost` and
+  `controlRegained` events now carry the system's short name in `system` and the site's own name
+  in `site`; `system` used to be "dcfd/south", so the event's link to the Decode page found no
+  system.
 
 ## [0.1.15] — 2026-10-17
 

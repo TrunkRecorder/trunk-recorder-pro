@@ -1882,10 +1882,8 @@ impl Config {
         let inside = |f: f64| self.sources.iter().zip(&centers).any(|(s, &c)| (f - c).abs() <= s.usable_half_width());
         for (sys, s) in self.active_sites() {
             // "dcfd", or "dcfd (site south)" for a site with its own name.
-            let name = match sys.site_name(s) {
-                n if n == sys.short_name => n.to_string(),
-                n => format!("{} (site {n})", sys.short_name),
-            };
+            let key = trunk_core::trunk::SiteKey { system: &sys.short_name, site: sys.site_name(s) };
+            let name = key.own_name().map_or_else(|| sys.short_name.clone(), |n| format!("{} (site {n})", sys.short_name));
             if sys.is_smartnet() {
                 if let Err(e) = s.smartnet(sys) {
                     return Some(format!("{name}: {e}"));

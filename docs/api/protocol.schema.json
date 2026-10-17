@@ -2606,6 +2606,10 @@
               "type": "string",
               "description": "A system's short name (talkgroup, radio, call volume, control channel events)."
             },
+            "site": {
+              "type": "string",
+              "description": "Control channel events: the site's own name, when it has one other than its system's."
+            },
             "talkgroup": {
               "type": "number"
             },
@@ -3580,6 +3584,10 @@
         "system": {
           "type": "string",
           "description": "A system's short name (talkgroup, radio, call volume, control channel events)."
+        },
+        "site": {
+          "type": "string",
+          "description": "Control channel events: the site's own name, when it has one other than its system's."
         },
         "talkgroup": {
           "type": "number"
