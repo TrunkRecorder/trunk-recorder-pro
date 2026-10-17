@@ -1813,6 +1813,14 @@ impl Core {
         self.multisite.twins(id)
     }
 
+    /// Multi-site: each system's other sites now ([`SiteKey::twin`]), by
+    /// system number.
+    pub fn sites(&self) -> Vec<Vec<u16>> {
+        let keys: Vec<Option<SiteKey>> = self.trunks.iter().map(Trunk::site_key).collect();
+        let others = |k: &SiteKey, i: usize| keys.iter().enumerate().filter(|&(j, o)| j != i && o.as_ref().is_some_and(|o| o.twin(k))).map(|(j, _)| j as u16).collect();
+        keys.iter().enumerate().map(|(i, k)| k.as_ref().map_or_else(Vec::new, |k| others(k, i))).collect()
+    }
+
     /// AutoTune: start source `source` from an earlier run's score, ppm,
     /// until it measures its own.
     pub fn seed_tune(&mut self, source: usize, ppm: f64) {
@@ -2148,6 +2156,10 @@ impl Engine {
     /// The other sites' copies of call `id` still going or held, as (call, system).
     pub fn twins(&self, id: CallId) -> Vec<(CallId, u16)> {
         self.core().twins(id)
+    }
+    /// Multi-site: each system's other sites now, by system number.
+    pub fn sites(&self) -> Vec<Vec<u16>> {
+        self.core().sites()
     }
     /// AutoTune: start source `source` from an earlier run's score, ppm, until it measures its own.
     pub fn seed_tune(&self, source: usize, ppm: f64) {
@@ -2526,6 +2538,19 @@ mod tests {
         assert_eq!(saved(&ev), [far, west]);
         assert!(ev.iter().any(|x| matches!(x, Event::NotSaved(c) if c.id == east)));
         assert!(!ev.iter().any(|x| matches!(x, Event::Duplicate { .. })));
+    }
+
+    /// Each system's other sites, for live audio asked for by any of them.
+    #[test]
+    fn the_sites_of_each_system() {
+        let sys = |n: &str, cc: f64, g: &str| SystemConfig { short_name: n.into(), control_channels: vec![cc], site_group: g.into(), ..Default::default() };
+        let cfg = EngineConfig {
+            systems: vec![sys("east", 851.0125e6, "dc"), sys("west", 851.2125e6, "dc"), sys("far", 851.4125e6, "md"), sys("lone", 851.6125e6, "")],
+            sources: vec![SourceConfig { center_hz: 851e6, rate_hz: 2.4e6, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ }],
+            ..Default::default()
+        };
+        let e = Core::new(cfg).unwrap();
+        assert_eq!(e.sites(), [vec![1], vec![0], vec![], vec![]]);
     }
 }
 

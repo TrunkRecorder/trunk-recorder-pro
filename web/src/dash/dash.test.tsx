@@ -5,8 +5,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { renderToString } from "react-dom/server";
 import { defaultConfig, newSystem } from "../config.ts";
-import { setView, transport } from "../controller.ts";
+import { setView, snapshot, transport } from "../controller.ts";
 import type { Config, EngineStatus, FromRecorder, Identity, System, SystemStatus } from "../protocol.ts";
+import { LivePage } from "./Calls.tsx";
 import { DecodePage } from "./Decode.tsx";
 import { Overview } from "./Overview.tsx";
 
@@ -73,4 +74,10 @@ test("Overview: a site group joins DMR sites; one switched off isn't listed", ()
   assert.match(text(page), /multi-site with cm2/);
   assert.doesNotMatch(text(page), /cm3/);
   assert.match(page, /title="Site group &quot;capmax&quot; — calls saved once"/);
+});
+
+test("Live: a multi-site system is one choice of the system filter (its calls and live audio from any site)", () => {
+  twoSites();
+  const page = text(renderToString(<LivePage s={snapshot()} />));
+  assert.match(page, /All site1 \+ site2 other/);
 });

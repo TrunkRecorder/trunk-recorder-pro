@@ -217,6 +217,7 @@ To the recorder:
   { type: "setConfig", config: <the whole config> }
   (more in protocol.ts: devices, survey, plugins, …)
 Listening is per connection. Send listen again after every hello (each reconnect).
+system is a short name; a site of a multi-site system (status siteGroup) gets that system's audio from whichever site carries the call.
 
 
 ## Rules

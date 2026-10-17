@@ -27,8 +27,10 @@ pub enum Output {
     /// for talkgroup `tg` of `system` — that system's number for this run
     /// (`status.systems[].index`, or 65535 and down for conventional
     /// systems) — whose short name, its identity, is `short_name`.
-    /// `decrypted`: of a call decrypted with our keys.
-    Audio { system: u16, short_name: String, tg: u32, frame: Vec<u8>, decrypted: bool },
+    /// `decrypted`: of a call decrypted with our keys. `sites`: the other
+    /// sites (short names) of its multi-site system, and any other carrying
+    /// the call — live audio asked for any of them is this too.
+    Audio { system: u16, short_name: String, sites: Vec<String>, tg: u32, frame: Vec<u8>, decrypted: bool },
     /// A concluded call to store at `<rel>.wav` / `<rel>.json` (relative to
     /// the recordings folder); `entry` is its history entry, which the
     /// platform sends as a `concluded` message once the files are stored.
@@ -321,6 +323,8 @@ pub struct Session {
     rate_mark: (f64, Vec<u64>),
     /// Build audio frames (skip when nobody is listening).
     pub want_audio: bool,
+    /// Multi-site: each system's other sites, by system number (as of the last status).
+    sites: Vec<Vec<u16>>,
     pub plugin_topics: PluginTopics,
     /// Wall clock (Unix ms) at the engine's time 0.
     epoch_ms: f64,
@@ -373,6 +377,7 @@ impl Session {
             last_spec_ms: 0.0,
             rate_mark: (0.0, vec![0; n]),
             want_audio: true,
+            sites: Vec::new(),
             plugin_topics: PluginTopics::default(),
             epoch_ms,
             last_plugin_status_ms: 0.0,
@@ -611,6 +616,7 @@ impl Session {
                 out.push(Output::Plugin(HostMessage::Status(self.plugin_status(dt))));
             }
             let load = self.busy_ms() / (now_ms - start).max(1.0);
+            self.sites = self.engine.sites();
             out.push(Output::Text(self.status_json(load).to_string()));
         }
     }
@@ -892,7 +898,15 @@ impl Session {
                 for s in samples {
                     frame.extend_from_slice(&((s.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes());
                 }
-                out.push(Output::Audio { system, short_name: self.system_name(system).to_string(), tg: talkgroup, frame, decrypted });
+                // One copy plays (whichever site has it): it's every site's audio.
+                let mut also = self.sites.get(system as usize).cloned().unwrap_or_default();
+                for (_, s) in self.engine.twins(call_id) {
+                    if !also.contains(&s) {
+                        also.push(s);
+                    }
+                }
+                let sites = also.into_iter().map(|s| self.system_name(s).to_string()).collect();
+                out.push(Output::Audio { system, short_name: self.system_name(system).to_string(), sites, tg: talkgroup, frame, decrypted });
             }
             Event::ConvSkipped { freq_hz, code } => {
                 let ms = self.wall(self.engine.status().now_s) * 1000.0;
