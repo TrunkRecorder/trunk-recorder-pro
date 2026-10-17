@@ -34,8 +34,9 @@ pub enum Out {
     /// Only for browsers that subscribed to `topic` (see [`trunk_app::stats::Topics`]).
     Topic { topic: String, text: String },
     /// Live audio (binary frame) for talkgroup `tg` of the system with short
-    /// name `short_name` (the frame carries the system's number this run).
-    Audio { short_name: String, tg: u32, frame: Vec<u8> },
+    /// name `short_name` (the frame carries the system's number this run),
+    /// and of `sites`, the other sites of its multi-site system.
+    Audio { short_name: String, sites: Vec<String>, tg: u32, frame: Vec<u8> },
 }
 
 pub type Hub = broadcast::Sender<Arc<Out>>;
@@ -801,11 +802,11 @@ fn deliver(ctx: &Ctx, out: &mut Vec<Output>, plugins: Option<&PluginHost>, rules
             Output::Text(t) => {
                 let _ = ctx.hub.send(Arc::new(Out::Text(t)));
             }
-            Output::Audio { short_name, tg, frame, decrypted, .. } => {
+            Output::Audio { short_name, sites, tg, frame, decrypted, .. } => {
                 if let Some(p) = plugins {
                     p.audio_frame(&frame, decrypted);
                 }
-                let _ = ctx.hub.send(Arc::new(Out::Audio { short_name, tg, frame }));
+                let _ = ctx.hub.send(Arc::new(Out::Audio { short_name, sites, tg, frame }));
             }
             Output::Plugin(m) => {
                 if let Some(p) = plugins {

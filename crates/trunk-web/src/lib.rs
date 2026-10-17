@@ -70,10 +70,11 @@ fn to_js(out: &mut Vec<Output>, history: &mut History) -> Array {
                 set(&obj, "t", "text");
                 set(&obj, "json", t);
             }
-            Output::Audio { system, short_name, tg, frame, .. } => {
+            Output::Audio { system, short_name, sites, tg, frame, .. } => {
                 set(&obj, "t", "audio");
                 set(&obj, "system", system);
                 set(&obj, "shortName", short_name);
+                set(&obj, "sites", sites.into_iter().map(JsValue::from).collect::<Array>());
                 set(&obj, "tg", tg);
                 set(&obj, "frame", Uint8Array::from(frame.as_slice()));
             }

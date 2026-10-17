@@ -5,6 +5,10 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Live audio follows a multi-site system across its sites.** Live audio comes from one site's
+  copy of a call at a time, and the Live page's system filter asked for one site's: listening to
+  site1 went quiet while site2's copy played. A site now asks for its whole system — the filter
+  shows its sites as one choice ("site1 + site2") — in the desktop app and in the browser.
 - **Listen hears the sites of one system as one.** A call heard on several sites is saved once,
   from whichever site had it best — so a talkgroup switched on under one site didn't play the
   calls kept from another. Sites of one system now share one talkgroup list on Listen ("site1 +
