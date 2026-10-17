@@ -2,22 +2,26 @@
 
 The performance report (Platform → **Download performance report**, `perf-report.json`, the
 `trunk_core::prof` stage timers) was added to diagnose users whose recorder ran out of CPU. It is
-temporary. It was merged as **one self-contained commit** so it can be taken out with a single
-`git revert`, leaving everything that was built with its help (per-source decoding threads, NXDN
+temporary. It was merged as **self-contained commits** (the report, then one follow-up) so it can
+be taken out with `git revert`, leaving everything that was built with its help (per-source decoding threads, NXDN
 decimation, P25 modulation detection, faster MSD) in place.
 
-## The commit
+## The commits
 
-| | |
+Revert them newest first:
+
+| Hash | Subject |
 |---|---|
-| Subject | `A performance report: where the recorder's time goes, stage by stage` |
-| Hash | `df84fde` (on `main` via the merge of branch `per-source-threads`; hashes kept, not squashed) |
+| `3af34f7` | `Performance report: the busiest minute by the decoding threads alone` (follow-up) |
+| `df84fde` | `A performance report: where the recorder's time goes, stage by stage` (on `main` via the merge of `per-source-threads`; hashes kept, not squashed) |
 
-Find it by subject if the hash is ever in doubt (an earlier version of the same commit, `fa6cce9`,
-lives only on the old `stage-timing` branch and is **not** on `main`; don't revert that one):
+Find them by subject if a hash is ever in doubt (an earlier version of the report, `fa6cce9`, lives
+only on the old `stage-timing` branch and is **not** on `main`; don't revert that one). If a later
+commit's subject starts with `Performance report:`, it belongs to the report too: revert it as well,
+newest first.
 
 ```sh
-git log --oneline --grep="A performance report: where the recorder's time goes" main
+git log --oneline --grep="Performance report\|A performance report" main
 ```
 
 ## Steps
@@ -25,7 +29,7 @@ git log --oneline --grep="A performance report: where the recorder's time goes" 
 ```sh
 git switch main && git pull
 git switch -c remove-perf-report
-git revert --no-edit df84fde
+git revert --no-edit 3af34f7 df84fde
 ```
 
 If the revert stops on conflicts, later work touched the same lines. The commit only **adds**
