@@ -5,6 +5,7 @@ import { formatMhz, systemColor, systemWithChannel } from "../config.ts";
 import { addSite, setNotice, type AppState } from "../controller.ts";
 import type { Config, DmrSiteStatus, NxdnSiteStatus, SystemStatus, TalkgroupName } from "../protocol.ts";
 import type { CcMark } from "../Waterfall.tsx";
+import { multiSiteOf } from "./data.ts";
 
 export const hex = (v: number | null | undefined) => (v === null || v === undefined ? "—" : v.toString(16).toUpperCase());
 
@@ -13,6 +14,16 @@ export function ccMarks(c: Config | null, systems: SystemStatus[]): CcMark[] {
   const at = new Map<number, SystemStatus[]>();
   for (const x of systems) if (x.controlChannelHz) at.set(x.controlChannelHz, [...(at.get(x.controlChannelHz) ?? []), x]);
   return [...at].map(([hz, xs]) => ({ hz, label: systems.length > 1 ? xs.map((x) => x.shortName).join(" · ") : "CC", color: systemColor(c, xs[0].shortName) }));
+}
+
+/** "multi-site with dcfd-2, dcfd-3": the system's other sites, why they are one in the tooltip. */
+export function MultiSiteChip(props: { s: AppState; name: string }) {
+  const m = multiSiteOf(props.s, props.name);
+  return m ? (
+    <span className="chip site-chip" title={m.why}>
+      multi-site with {m.siblings.join(", ")}
+    </span>
+  ) : null;
 }
 
 /** Neighbouring sites the control channels announce that aren't set up yet — add one to record it too (next Start). */

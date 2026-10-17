@@ -215,7 +215,8 @@ export function subscribe(l: () => void): () => void {
 }
 
 export function useApp(): AppState {
-  return useSyncExternalStore(subscribe, () => state);
+  const get = () => state;
+  return useSyncExternalStore(subscribe, get, get);
 }
 
 /** Shallow equality of two values (arrays and plain objects by their items). */
@@ -244,7 +245,7 @@ export function useSelect<T>(pick: (s: AppState) => T, eq: (a: T, b: T) => boole
     last.current = { s: state, v };
     return v;
   };
-  return useSyncExternalStore(subscribe, get);
+  return useSyncExternalStore(subscribe, get, get);
 }
 
 /** The state now (outside React). */

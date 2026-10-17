@@ -83,6 +83,7 @@ function useOpened(): Record<string, boolean> {
       return () => void listeners.delete(l);
     },
     () => opened,
+    () => opened,
   );
 }
 

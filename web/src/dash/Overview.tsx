@@ -9,6 +9,7 @@ import { ago, bytes, compact, hmm, mhz, num, pct } from "../fmt.ts";
 import type { FreqRow, MonitorEvent, RadioSummary } from "../protocol.ts";
 import { change, rateOver, dashSystems, K, KIND_LABEL, pluginHealth, platformHealth, recentAvg, running, systemHealth, total, useHistory, usualOf, useUsual, val, type DashSystem, type Usual } from "./data.ts";
 import { SourceCard } from "./Rf.tsx";
+import { MultiSiteChip } from "./Systems.tsx";
 import { BAD_MAX, badLevel, voiceBadPct } from "./Decode.tsx";
 
 // ── today ────────────────────────────────────────────────────────────────────
@@ -113,6 +114,7 @@ function SystemCard({ s, x, usual, summary, freqs }: { s: AppState; x: DashSyste
       onTitle={() => setView("decode", x.name)}
       actions={<span className="badge-kind">{st?.modulation ? `${KIND_LABEL[x.kind]} · ${st.modulation}` : KIND_LABEL[x.kind]}</span>}
     >
+      <MultiSiteChip s={s} name={x.name} />
       {!live ? (
         <Stat
           label="Last 24 h"

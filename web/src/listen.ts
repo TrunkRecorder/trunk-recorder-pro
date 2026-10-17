@@ -87,18 +87,20 @@ function set(patch: Partial<ListenState>): void {
 /** One slice of the scanner's state (re-renders when it changes, shallowly). */
 export function useListen<T>(pick: (s: ListenState) => T): T {
   const last = useRef<{ s: ListenState; v: T } | null>(null);
+  const get = () => {
+    const l = last.current;
+    if (l?.s === state) return l.v;
+    const v = pick(state);
+    last.current = { s: state, v: l && shallowEqual(l.v, v) ? l.v : v };
+    return last.current.v;
+  };
   return useSyncExternalStore(
     (l) => {
       listeners.add(l);
       return () => listeners.delete(l);
     },
-    () => {
-      const l = last.current;
-      if (l?.s === state) return l.v;
-      const v = pick(state);
-      last.current = { s: state, v: l && shallowEqual(l.v, v) ? l.v : v };
-      return last.current.v;
-    },
+    get,
+    get,
   );
 }
 

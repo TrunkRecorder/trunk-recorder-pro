@@ -10,7 +10,7 @@ import { Card, Choice, HeatStrip, LiveSpark, Stat, TimeSeries, Trend, type Line 
 import { mhz, num, signed } from "../fmt.ts";
 import type { FreqRow, SeriesData, SourceStatus } from "../protocol.ts";
 import { change, dashSystems, K, KIND_LABEL, recentAvg, running, sourceGuard, systemHealth, useHistory, useUsual, val, type DashSystem, type Usual } from "./data.ts";
-import { DmrSites, hex, Neighbours, NxdnSites, Patches } from "./Systems.tsx";
+import { DmrSites, hex, MultiSiteChip, Neighbours, NxdnSites, Patches } from "./Systems.tsx";
 
 /** `a / b` step by step (errors per frame from the two rates). */
 function ratio(a: SeriesData | undefined, b: SeriesData | undefined, mul = 1): SeriesData | null {
@@ -233,6 +233,7 @@ function SystemDetail({ s, name }: { s: AppState; name: string }) {
         <button className="btn ghost small" onClick={() => setView("decode")}>
           ← All systems
         </button>
+        <MultiSiteChip s={s} name={name} />
       </div>
       <DecodeCard s={s} x={x} usual={usual[k("cc/good")]} freqs={rows} />
       {st && !st.dmr && !st.nxdn && (

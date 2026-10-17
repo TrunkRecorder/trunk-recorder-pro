@@ -14,7 +14,7 @@ import {
   formatFromPath,
   formatMhz,
   mhzCell,
-  multiSiteGroup,
+  multiSitePartners,
   newAirspy,
   newConventional,
   newDongle,
@@ -27,13 +27,13 @@ import {
   newSystem,
   resolvedCenters,
   SAMPLE_RATES,
-  siteSiblings,
   SOAPY_RATES,
   sourceCovering,
   systemColor,
   USRP_RATES,
   usableHalfWidth,
   siteLockFields,
+  siteText,
 } from "./config.ts";
 import { currentView, dismissTodo, downloadText, findRadios, openGuide, refreshDevices, setChannelFile, setNotice, setSetupTab, setView, unlockKeys, updateConfig, useApp, web, type SetupTab } from "./controller.ts";
 import { M4aSettings, PluginSetupPanel, renameSystemRefs, SystemPluginSettings } from "./Plugins.tsx";
@@ -1449,9 +1449,6 @@ function DemodGroup(props: { conv: Conventional; edit: (fn: (d: Demod) => void) 
   );
 }
 
-const hexText = (v: number | null | undefined) => (v === null || v === undefined ? "?" : v.toString(16).toUpperCase());
-
-/** "WACN BEE00 · SysID 445 · site 1-3" from what is known. */
 /** The site-lock inputs, in order. */
 const LOCK_INPUTS: { key: keyof SiteIdentity; label: string; hex: boolean }[] = [
   { key: "nac", label: "NAC", hex: true },
@@ -1460,26 +1457,6 @@ const LOCK_INPUTS: { key: keyof SiteIdentity; label: string; hex: boolean }[] = 
   { key: "rfss", label: "RFSS", hex: false },
   { key: "site", label: "Site", hex: false },
 ];
-
-/** A group the recorder names from the air ("p25:bee00.1a2") in words: "P25 WACN BEE00 · SysID 1A2". */
-function groupText(group: string | null): string {
-  const [proto, id = ""] = (group ?? "").split(":");
-  const [a, b] = id.split(".").map((x) => x.toUpperCase());
-  if (proto === "p25") return `P25 WACN ${a} · SysID ${b}`;
-  if (proto === "smartnet") return `SmartNet SysID ${a}`;
-  if (proto === "nxdn") return `NXDN system code ${a}`;
-  return group ?? "";
-}
-
-export function siteText(id: SiteIdentity): string {
-  const parts: string[] = [];
-  if (id.wacn != null) parts.push(`WACN ${hexText(id.wacn)}`);
-  if (id.sysId != null) parts.push(`SysID ${hexText(id.sysId)}`);
-  if (id.nac != null) parts.push(`NAC ${hexText(id.nac)}`);
-  if (id.site != null) parts.push(id.rfss != null ? `site ${id.rfss}-${id.site}` : `site ${id.site}`);
-  else if (id.rfss != null) parts.push(`RFSS ${id.rfss}`);
-  return parts.join(" · ");
-}
 
 function DmrFields(props: { sys: System; edit: (fn: (x: System) => void) => void }) {
   const { sys, edit } = props;
@@ -1678,13 +1655,7 @@ function SystemCard(props: { c: Config; i: number }) {
   const color = systemColor(c, sys.shortName);
   // Multi-site: as configured, or as the running recorder's control channels say.
   const live = app.status?.systems ?? [];
-  const siblings = siteSiblings(c, sys, live);
-  const group = multiSiteGroup(sys, live.find((y) => y.shortName === sys.shortName));
-  const groupWhy = sys.siteGroup?.trim()
-    ? `Site group "${sys.siteGroup.trim()}"`
-    : group && multiSiteGroup(sys) === group
-      ? siteText(sys.expect)
-      : `The same system on the air (${groupText(group)})`;
+  const partners = multiSitePartners(c, sys, live);
   // The lock, on the fields this protocol states (others are ignored).
   const lockFields = siteLockFields(sys);
   const lockedTo: SiteIdentity = Object.fromEntries(lockFields.filter((f) => sys.expect[f] != null).map((f) => [f, sys.expect[f]]));
@@ -1729,9 +1700,9 @@ function SystemCard(props: { c: Config; i: number }) {
                 voice {voiceIn}/{sys.voiceChannelsHz.length} covered
               </span>
             )}
-            {siblings.length > 0 && (
-              <span className="chip" title={`${groupWhy} — ${c.recording.dropDuplicateCalls ? "calls saved once" : "every site's copy saved"}`}>
-                multi-site with {siblings.map((x) => x.shortName).join(", ")}
+            {partners && (
+              <span className="chip" title={partners.why}>
+                multi-site with {partners.siblings.join(", ")}
               </span>
             )}
           </div>

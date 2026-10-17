@@ -3,7 +3,7 @@
 // health rules — plain functions returning a level and why, the why worded as
 // a hint (what it means, what to try).
 
-import { activeSystems } from "../config.ts";
+import { activeSystems, bySite, multiSitePartners, type MultiSite } from "../config.ts";
 import { snapshot, statsQuery, usePolled, type AppState, type StatsRange } from "../controller.ts";
 import { keyPart, num, pct } from "../fmt.ts";
 import { seriesPoints } from "../series.ts";
@@ -39,16 +39,27 @@ export interface DashSystem {
   status: SystemStatus | null;
 }
 
-/** Every system set up (trunked, then conventional with channels), with its status while running. */
+/** Every system set up (trunked, the sites of one system together, then conventional with channels), with its status while running. */
 export function dashSystems(s: AppState): DashSystem[] {
   if (!s.config) return [];
-  const out: DashSystem[] = activeSystems(s.config).map((x) => ({
+  const out: DashSystem[] = bySite(s.config, activeSystems(s.config), s.status?.systems).map((x) => ({
     name: x.shortName,
     kind: (x.type ?? "p25") as DashSystem["kind"],
     status: s.status?.systems.find((y) => y.shortName === x.shortName) ?? null,
   }));
   for (const c of s.config.conventional) if (c.enabled !== false && c.channels.some((ch) => ch.enabled)) out.push({ name: c.shortName, kind: "conventional", status: null });
   return out;
+}
+
+/** A running system's other sites being recorded, and why they are one system (Setup's chip says the same); null: none. */
+export function multiSiteOf(s: AppState, name: string): MultiSite | null {
+  const c = s.config;
+  const sys = c?.systems.find((x) => x.shortName === name);
+  if (!c || !sys) return null;
+  const on = new Set(activeSystems(c).map((x) => x.shortName));
+  const m = multiSitePartners(c, sys, s.status?.systems);
+  const siblings = m?.siblings.filter((x) => on.has(x)) ?? [];
+  return m && siblings.length ? { ...m, siblings } : null;
 }
 
 export const KIND_LABEL: Record<DashSystem["kind"], string> = { p25: "P25", smartnet: "SmartNet", dmr: "DMR", nxdn: "NXDN", conventional: "Conventional" };

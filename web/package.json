@@ -8,7 +8,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
-    "test": "node --test src/*.test.ts",
+    "test": "node --import ./scripts/test-loader.mjs --test 'src/**/*.test.ts' 'src/**/*.test.tsx'",
     "wasm": "cargo build -p trunk-web --target wasm32-unknown-unknown --profile dist && wasm-bindgen --target web --out-dir src/web/pkg --out-name trunk_web ../target/wasm32-unknown-unknown/dist/trunk_web.wasm",
     "dev:web": "vite --mode web",
     "build:web": "tsc --noEmit && vite build --mode web",
@@ -23,6 +23,7 @@
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",
+    "esbuild": "^0.21.5",
     "ts-json-schema-generator": "^2.9.0",
     "typescript": "^5.6.3",
     "vite": "^5.4.11"
