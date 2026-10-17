@@ -310,9 +310,9 @@ mod tests {
         }))
         .unwrap();
         let systems = systems_of(&c);
-        let conv = trunk_core::trunk::conventional_system(0);
-        assert_eq!(systems.iter().map(|s| (s.index, s.short_name.as_str(), s.kind.as_str())).collect::<Vec<_>>(), [(0, "dcfd", "p25"), (conv, "county", "conventional")]);
-        assert_eq!(c.engine_config(0.0).sites[0].short_name, "dcfd", "the engine numbers dcfd 0 too");
+        assert_eq!(systems.iter().map(|s| (s.index, s.short_name.as_str(), s.kind.as_str())).collect::<Vec<_>>(), [(0, "dcfd", "p25"), (1, "county", "conventional")]);
+        let e = c.engine_config(0.0);
+        assert_eq!(e.systems.iter().map(|s| s.short_name.as_str()).collect::<Vec<_>>(), ["dcfd", "county"], "the engine numbers them so too");
         let specs = Spec::enabled(&c);
         assert_eq!(specs[0].systems.get("dcfd"), Some(&json!({ "apiKey": "dcfd" })));
         assert_eq!(specs[0].systems.get("county"), Some(&json!({ "apiKey": "conv" })));

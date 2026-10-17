@@ -118,7 +118,7 @@ mod tests {
     /// that call's FM voice (a 1 kHz tone) on its channel → a recorded FM call.
     #[test]
     fn engine_records_an_analog_grant() {
-        use crate::trunk::{Engine, EngineConfig, Event, SmartnetConfig, SourceConfig, SiteConfig};
+        use crate::trunk::{Engine, EngineConfig, Event, SmartnetConfig, SourceConfig, SiteConfig, SystemConfig};
         use std::f64::consts::PI;
         let (fs, center) = (240_000.0, 460_000_000.0);
         // OBT: chan 380 = 459.0 MHz, 10 kHz steps; CC 460.03 (chan 483), voice 459.96 (chan 476).
@@ -154,11 +154,11 @@ mod tests {
             })
             .collect();
         let cfg = EngineConfig {
-            sites: vec![SiteConfig {
+            systems: vec![SystemConfig::trunked("sys1", vec![SiteConfig {
                 control_channels: vec![cc_hz],
                 protocol: crate::trunk::Protocol::SmartNet(SmartnetConfig { bandplan, analog_default: false }),
                 ..Default::default()
-            }],
+            }])],
             sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
             ..Default::default()
         };

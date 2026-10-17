@@ -5,7 +5,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { feedSeries } from "./series.ts";
 import { LivePlayer } from "./livePlayer.ts";
-import { conventionalIndex, copyOverride, copyOwn, OVERRIDE, pluginCopies } from "./protocol.ts";
+import { copyOverride, copyOwn, OVERRIDE, pluginCopies } from "./protocol.ts";
 import type {
   MonitorEvent,
   PlatformInfo,
@@ -1107,14 +1107,9 @@ export function stop(): void {
 
 // ── live audio ───────────────────────────────────────────────────────────────
 
-/**
- * The short name of the system a call or audio frame names by number (its
- * number this run: SystemStatus.index, or conventionalSystem(k)); "" if unknown.
- */
+/** The short name of the system a call or audio frame names by number (its number this run); "" if unknown. */
 export function systemNameOf(s: AppState, system: number): string {
-  const k = conventionalIndex(system);
-  if (k !== null) return s.config?.conventional[k]?.shortName ?? "";
-  return s.status?.systems.find((x) => x.index === system)?.shortName ?? "";
+  return s.status?.systemNames?.[system] ?? "";
 }
 
 /** Live audio on/off; optionally only one system's (its short name; null = any) and/or one talkgroup's. */

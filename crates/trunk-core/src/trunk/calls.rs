@@ -20,23 +20,6 @@ use crate::position::Position;
 
 pub type CallId = u32;
 
-/// `Call::system` of the first conventional system's calls; the next ones
-/// count down from it (see [`conventional_system`]).
-pub const CONVENTIONAL: u16 = u16::MAX;
-/// At most this many conventional systems.
-pub const MAX_CONVENTIONAL: usize = 256;
-
-/// The `Call::system` of conventional system `k` (from 0).
-pub fn conventional_system(k: usize) -> u16 {
-    CONVENTIONAL - k.min(MAX_CONVENTIONAL - 1) as u16
-}
-
-/// Which conventional system a `Call::system` is, or None for a trunked one.
-pub fn conventional_index(system: u16) -> Option<usize> {
-    let k = (CONVENTIONAL - system) as usize;
-    (k < MAX_CONVENTIONAL).then_some(k)
-}
-
 /// Hands out call ids; clones share the sequence (one per engine).
 #[derive(Clone, Debug)]
 pub struct CallIds(Arc<AtomicU32>);
@@ -137,12 +120,10 @@ impl From<crate::p25::osp::ServiceOptions> for Flags {
 #[derive(Clone, Debug, Default)]
 pub struct Call {
     pub id: CallId,
-    /// The site that made it (index in the engine's list of sites); a
-    /// conventional system's counts down from [`CONVENTIONAL`]
-    /// ([`conventional_index`]), as its system does.
-    pub site: u16,
-    /// Its system's number (the sites of one system share it; see
-    /// [`super::engine::system_numbers`]); a conventional system's, as `site`.
+    /// The site that made it (its number among the engine's sites,
+    /// [`super::engine::sites`]); none for a conventional call.
+    pub site: Option<u16>,
+    /// Its system's number (its place in the engine's systems).
     pub system: u16,
     /// Multi-site: a copy of a call another site of its system had first —
     /// one call, which plugins and stats count by its first copy.
@@ -163,7 +144,7 @@ pub struct Call {
     pub priority: u8,
     pub duplex: bool,
     pub mode: bool,
-    /// Analog voice (a conventional FM channel).
+    /// Analog voice (SmartNet's analog grants, conventional FM and AM channels).
     pub analog: bool,
     pub start_s: f64,
     pub last_update_s: f64,
@@ -265,40 +246,46 @@ pub enum CallEvent {
     End(Call),
 }
 
-#[derive(Default)]
-pub struct CallManager {
-    pub calls: Vec<Call>,
-    pub talkgroups: Talkgroups,
-    pub cfg: CallConfig,
-    /// Stamped on every call made here: its site, and its site's system.
-    pub site: u16,
-    pub system: u16,
-    ids: CallIds,
-    /// The system's standing patches.
-    pub patches: Patches,
+/// What a system decides about its calls that can change while recording,
+/// as its sites' call managers see it when the control channel speaks.
+#[derive(Clone, Copy, Debug)]
+pub struct Policy<'a> {
+    pub talkgroups: &'a Talkgroups,
     /// The system has encryption keys: encrypted calls it may be able to
     /// decrypt are recorded, to find out (the key ID comes with the voice).
     pub can_decrypt: bool,
 }
 
+#[derive(Default)]
+pub struct CallManager {
+    pub calls: Vec<Call>,
+    pub cfg: CallConfig,
+    /// Stamped on every call made here: its site, and its site's system.
+    pub site: u16,
+    pub system: u16,
+    ids: CallIds,
+    /// The site's standing patches.
+    pub patches: Patches,
+}
+
 impl CallManager {
-    pub fn new(cfg: CallConfig, talkgroups: Talkgroups) -> Self {
-        CallManager { calls: Vec::new(), talkgroups, cfg, site: 0, system: 0, ids: CallIds::default(), patches: Patches::default(), can_decrypt: false }
+    pub fn new(cfg: CallConfig) -> Self {
+        CallManager { calls: Vec::new(), cfg, site: 0, system: 0, ids: CallIds::default(), patches: Patches::default() }
     }
 
     /// For site `site` of system `system`, drawing ids from `ids` (shared with the other sites).
-    pub fn with_ids(cfg: CallConfig, talkgroups: Talkgroups, site: u16, system: u16, ids: CallIds) -> Self {
-        CallManager { site, system, ids, ..Self::new(cfg, talkgroups) }
+    pub fn with_ids(cfg: CallConfig, site: u16, system: u16, ids: CallIds) -> Self {
+        CallManager { site, system, ids, ..Self::new(cfg) }
     }
 
-    pub fn handle(&mut self, msgs: &[Message], host: &mut dyn RecorderHost, ev: &mut Vec<CallEvent>) {
+    pub fn handle(&mut self, msgs: &[Message], policy: Policy, host: &mut dyn RecorderHost, ev: &mut Vec<CallEvent>) {
         for m in msgs {
             match m.kind {
-                MessageType::Grant => self.grant(m, false, host, ev),
-                MessageType::Update if self.cfg.new_call_from_update => self.grant(m, false, host, ev),
+                MessageType::Grant => self.grant(m, false, policy, host, ev),
+                MessageType::Update if self.cfg.new_call_from_update => self.grant(m, false, policy, host, ev),
                 MessageType::Update => self.update(m, ev),
                 // Individual calls: unit-to-unit, and a radio's telephone call.
-                MessageType::UuVGrant | MessageType::PhoneGrant if self.cfg.record_unit_to_unit => self.grant(m, true, host, ev),
+                MessageType::UuVGrant | MessageType::PhoneGrant if self.cfg.record_unit_to_unit => self.grant(m, true, policy, host, ev),
                 MessageType::UuVUpdate | MessageType::PhoneUpdate if self.cfg.record_unit_to_unit => self.update(m, ev),
                 MessageType::PatchAdd => {
                     if let Some(p) = m.patch {
@@ -309,7 +296,7 @@ impl CallManager {
                             for c in self.calls.iter_mut() {
                                 if c.note_patch(self.patches.members_of(c.talkgroup)) {
                                     if c.reason == Some(Reason::UnknownTg) {
-                                        Self::admit(c, &self.cfg, &self.talkgroups, self.can_decrypt, host);
+                                        Self::admit(c, &self.cfg, policy, host);
                                     }
                                     ev.push(CallEvent::Update(c.clone()));
                                 }
@@ -449,7 +436,7 @@ impl CallManager {
         }
     }
 
-    fn grant(&mut self, m: &Message, unit_to_unit: bool, host: &mut dyn RecorderHost, ev: &mut Vec<CallEvent>) {
+    fn grant(&mut self, m: &Message, unit_to_unit: bool, p: Policy, host: &mut dyn RecorderHost, ev: &mut Vec<CallEvent>) {
         if m.freq_hz == 0 {
             return; // channel not resolvable yet (no IDEN seen)
         }
@@ -459,10 +446,10 @@ impl CallManager {
             }
             return;
         }
-        let tg = self.talkgroups.get(&m.talkgroup).cloned();
+        let tg = p.talkgroups.get(&m.talkgroup).cloned();
         let mut c = Call {
             id: self.ids.next(),
-            site: self.site,
+            site: Some(self.site),
             system: self.system,
             twin: false,
             talkgroup: m.talkgroup,
@@ -494,22 +481,22 @@ impl CallManager {
             tone: None,
             tone_set: None,
         };
-        Self::admit(&mut c, &self.cfg, &self.talkgroups, self.can_decrypt, host);
+        Self::admit(&mut c, &self.cfg, p, host);
         ev.push(CallEvent::Start(c.clone()));
         self.calls.push(c);
     }
 
     /// Record, follow or skip a call: Trunk Recorder's start_recorder()
     /// gates, in its order. A talkgroup not in the file is recorded while
-    /// it's patched with one that is. `can_decrypt`: the system has keys.
-    fn admit(c: &mut Call, cfg: &CallConfig, talkgroups: &Talkgroups, can_decrypt: bool, host: &mut dyn RecorderHost) {
+    /// it's patched with one that is.
+    fn admit(c: &mut Call, cfg: &CallConfig, p: Policy, host: &mut dyn RecorderHost) {
         c.reason = None;
-        let known = c.talkgroup_info.is_some() || c.patched_talkgroups.iter().any(|g| talkgroups.contains_key(g));
+        let known = c.talkgroup_info.is_some() || c.patched_talkgroups.iter().any(|g| p.talkgroups.contains_key(g));
         if c.talkgroup_info.as_ref().is_some_and(|t| t.ignore) {
             c.reason = Some(Reason::Ignored);
-        } else if !known && !cfg.record_unknown && !talkgroups.is_empty() {
+        } else if !known && !cfg.record_unknown && !p.talkgroups.is_empty() {
             c.reason = Some(Reason::UnknownTg);
-        } else if c.encrypted && !cfg.record_encrypted && !(can_decrypt && c.decryptable()) {
+        } else if c.encrypted && !cfg.record_encrypted && !(p.can_decrypt && c.decryptable()) {
             // No audio to record, but its terminators' link control is in
             // the clear: who spoke, and their talker aliases.
             c.reason = Some(Reason::Encrypted);
@@ -537,6 +524,32 @@ mod tests {
         fn release(&mut self, _: &Call) {}
     }
 
+    /// A one-site system: its call manager, with the policy it is handed.
+    struct Sys {
+        m: CallManager,
+        tgs: Talkgroups,
+        can_decrypt: bool,
+    }
+    impl Sys {
+        fn new(cfg: CallConfig, tgs: Talkgroups) -> Self {
+            Sys { m: CallManager::new(cfg), tgs, can_decrypt: false }
+        }
+        fn handle(&mut self, msgs: &[Message], host: &mut Host, ev: &mut Vec<CallEvent>) {
+            self.m.handle(msgs, Policy { talkgroups: &self.tgs, can_decrypt: self.can_decrypt }, host, ev);
+        }
+    }
+    impl std::ops::Deref for Sys {
+        type Target = CallManager;
+        fn deref(&self) -> &CallManager {
+            &self.m
+        }
+    }
+    impl std::ops::DerefMut for Sys {
+        fn deref_mut(&mut self) -> &mut CallManager {
+            &mut self.m
+        }
+    }
+
     fn msg(kind: MessageType, t: f64, tg: u32) -> Message {
         Message { kind, time_s: t, talkgroup: tg, freq_hz: 851_000_000, source: 7, ..Default::default() }
     }
@@ -544,9 +557,9 @@ mod tests {
         Message { kind: MessageType::PatchAdd, time_s: t, patch: Some(Patch { sg, ga }), ..Default::default() }
     }
     /// Talkgroup 101 is in the file; supergroups aren't.
-    fn manager() -> CallManager {
+    fn manager() -> Sys {
         let tgs = [(101, Talkgroup { number: 101, alpha_tag: "Fire Disp".into(), ..Default::default() })].into_iter().collect();
-        CallManager::new(CallConfig { record_unknown: false, ..Default::default() }, tgs)
+        Sys::new(CallConfig { record_unknown: false, ..Default::default() }, tgs)
     }
 
     #[test]
@@ -596,12 +609,13 @@ mod tests {
 
     #[test]
     fn a_call_past_the_length_limit_carries_on_in_a_new_one() {
-        let mut m = CallManager::new(CallConfig { max_call_s: 10.0, ..Default::default() }, Talkgroups::default());
+        let mut m = Sys::new(CallConfig { max_call_s: 10.0, ..Default::default() }, Talkgroups::default());
         let mut ev = Vec::new();
         m.handle(&[msg(MessageType::Grant, 0.0, 101)], &mut Host, &mut ev);
         for k in 1..=12 {
             m.handle(&[msg(MessageType::Update, k as f64, 101)], &mut Host, &mut ev);
-            m.note_audio(m.calls[0].id, k as f64);
+            let id = m.calls[0].id;
+            m.note_audio(id, k as f64);
             m.tick(k as f64, &mut Host, &mut ev);
         }
         let ends: Vec<(CallId, f64)> = ev.iter().filter_map(|e| if let CallEvent::End(c) = e { Some((c.id, c.start_s)) } else { None }).collect();
@@ -613,7 +627,7 @@ mod tests {
     #[test]
     fn encrypted_calls_are_recorded_when_the_system_may_decrypt_them() {
         let enc = |t: f64, tg: u32, phase2: bool| Message { encrypted: true, phase2_tdma: phase2, ..msg(MessageType::Grant, t, tg) };
-        let mut m = CallManager::new(CallConfig::default(), Talkgroups::default());
+        let mut m = Sys::new(CallConfig::default(), Talkgroups::default());
         let mut ev = Vec::new();
         m.handle(&[enc(0.0, 101, false)], &mut Host, &mut ev);
         assert_eq!(m.calls[0].reason, Some(Reason::Encrypted));
@@ -629,7 +643,7 @@ mod tests {
     #[test]
     fn an_ignored_talkgroup_is_not_recorded() {
         let tgs = [(101, Talkgroup { number: 101, ignore: true, ..Default::default() })].into_iter().collect();
-        let mut m = CallManager::new(CallConfig::default(), tgs);
+        let mut m = Sys::new(CallConfig::default(), tgs);
         let mut ev = Vec::new();
         m.handle(&[msg(MessageType::Grant, 0.0, 101), msg(MessageType::Grant, 0.0, 102)], &mut Host, &mut ev);
         assert_eq!((m.calls[0].recording, m.calls[0].reason), (false, Some(Reason::Ignored)));
@@ -652,7 +666,7 @@ mod tests {
     /// naming no one is about whoever is talking.
     #[test]
     fn each_source_keeps_its_own_flags() {
-        let mut m = CallManager::new(CallConfig::default(), Talkgroups::default());
+        let mut m = Sys::new(CallConfig::default(), Talkgroups::default());
         let mut ev = Vec::new();
         let grant = Message { emergency: true, duplex: true, priority: 7, ..msg(MessageType::Grant, 0.0, 101) };
         m.handle(&[grant], &mut Host, &mut ev);

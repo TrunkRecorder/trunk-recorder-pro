@@ -143,8 +143,8 @@ new LivePlayer({ followCall = true, quietS = 1.5, gain = 2, onNowPlaying })
   player.nowPlaying       { callId, system, talkgroup } or null
   player.stop()
 Helpers: escapeHtml(s), duration(seconds) → "1:05", mhz(hz) → "155.2000 MHz",
-  parseTalkgroups(csv), decodeAudioFrame(arrayBuffer), CONVENTIONAL (65535),
-  conventionalIndex(system).
+  parseTalkgroups(csv), decodeAudioFrame(arrayBuffer), systemName(status, system)
+  (status.systemNames[system]).
 
 
 ## The data
@@ -187,8 +187,9 @@ Systems and numbering
     "smartnet" | "dmr" | "nxdn", enabled, talkgroupsCsv, …, sites: [{ name?,
     enabled, controlChannelsHz, … }] }). A call heard on several sites of
     a system is one call, saved once.
-  config.conventional[k]: conventional systems. Their calls carry
-    system = 65535 - k.
+  config.conventional[k]: conventional systems. Systems are numbered
+    from 0, the trunked ones being recorded then the conventional ones;
+    status.systemNames[n] is system n's short name.
   Calls and audio carry `system` as a number (a system, never a site:
   a call's site is CallView.site, by name). Match systems by short name
   (CallView.systemName, record.short_name, SystemStatus.shortName), not by

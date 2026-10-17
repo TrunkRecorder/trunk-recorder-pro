@@ -139,7 +139,7 @@ pub fn old_names(sys: &System) -> Vec<String> {
 /// The name a site's band plan was kept under when it was a system of its
 /// own (read once; it is saved under its key from then on).
 pub fn old_bandplan(s: &SiteConfig) -> &str {
-    s.site_name()
+    &s.name
 }
 
 #[cfg(test)]
@@ -181,8 +181,8 @@ mod tests {
         assert!(c.notes.iter().any(|n| n.starts_with("p1 and p2 are one system now")), "{:?}", c.notes);
         let e = c.engine_config(0.0);
         assert!(!e.drop_duplicates);
-        assert_eq!(e.sites.iter().map(|s| (s.short_name.as_str(), s.site_name())).collect::<Vec<_>>(), [("cm1", "cm1"), ("p1", "p1"), ("p1", "p2"), ("p3", "p3")]);
-        assert_eq!(trunk_core::trunk::system_numbers(&e.sites), [0, 1, 1, 2]);
+        let sites: Vec<_> = trunk_core::trunk::sites(&e.systems).map(|(n, s)| (n, e.systems[n as usize].short_name.as_str(), s.name.as_str())).collect();
+        assert_eq!(sites, [(0, "cm1", "cm1"), (1, "p1", "p1"), (1, "p1", "p2"), (2, "p3", "p3")]);
         assert_eq!((c.site_of(2).map(|(s, x)| s.site_name(x)), c.short_name_of(1)), (Some("p2"), Some("p1")));
     }
 }

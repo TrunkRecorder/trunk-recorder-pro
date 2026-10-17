@@ -9,10 +9,8 @@
 // connection asked for after reconnecting, and plays live audio. The message
 // shapes are FromRecorder / ToRecorder in protocol.ts (/api/protocol.ts).
 
-/** The `system` of conventional system 0; conventional system k is 65535 - k. */
-export const CONVENTIONAL = 65535;
-/** Which conventional system a `system` is, or null for a trunked one. */
-export const conventionalIndex = (system) => (system > CONVENTIONAL - 256 && system <= CONVENTIONAL ? CONVENTIONAL - system : null);
+/** The short name of the system a call or live-audio chunk names by number (`status.systemNames`); "" if unknown. */
+export const systemName = (status, system) => status?.systemNames?.[system] ?? "";
 
 /**
  * A live-audio frame (binary message) → { system, callId, talkgroup, samples }

@@ -174,10 +174,16 @@ one `CallManager` serve P25, SmartNet and trunked DMR.
   the recorder pool (`recordings`, capped by `maxRecorders`), what each
   site's control channel tells its voice channels (`VoiceParams`: the
   Phase 2 scrambler key), and the AutoTune ppm per source.
-- **`Trunk`** is one per active site of a trunked system (a `SiteConfig`:
-  sites with one short name are one system), and knows nothing of any
-  protocol. Its `ControlChannel` (`control.rs`) decodes the protocol;
-  the `Trunk` does what every protocol shares:
+- **`System`** is one per system, trunked or conventional (a
+  `SystemConfig`): what it decides about its calls (talkgroups, call and
+  save rules, unit names, keys), its radios' talker aliases, and its saved
+  calls. A trunked system lists its sites (`SystemConfig::sites`); a
+  conventional one has none, and its channels name it.
+- **`Trunk`** is one per site of a trunked system (a `SiteConfig`: its
+  name, control channels, receivers, site lock, protocol). Its system's
+  rules are handed to it where it needs them, never copied. It knows
+  nothing of any protocol: its `ControlChannel` (`control.rs`) decodes
+  that, and the `Trunk` does what every protocol shares:
   - hunting through the control channels, or watching every carrier, as the
     protocol's `CarrierPlan` says;
   - the site lock (`identity.rs`), on the fields the protocol states;
@@ -187,8 +193,6 @@ one `CallManager` serve P25, SmartNet and trunked DMR.
     Recorder's `monitor_systems.cc`; standing patches in `patches.rs`); call
     ids come from one `CallIds` sequence shared by every system;
   - the adjacent sites.
-- **`AliasBook`** (`units.rs`) holds every system's talker aliases, saved per
-  short name.
 - **`Conventional`** (`conventional.rs`) covers energy-detected channels,
   tone / NAC / colour-code matching, and their calls.
 - **`MultiSite`** (`multisite.rs`) holds the copies of one call heard on
@@ -611,17 +615,17 @@ each indexes something different.
 | Name | What it indexes | Where it's used |
 |---|---|---|
 | Position in `config.systems` | Every configured trunked system, including disabled ones and ones with no control channel | The UI's Setup cards |
-| Engine system index (`Call::system`) | **Active** systems only (`Config::active_systems()`: enabled, with an enabled site that has a control channel), in config order | Calls, events, live-audio frames, plugin `CallInfo.system`, `status.systems[].index` |
-| Engine site index (`Call::site`) | Active sites of active systems (`Config::active_sites()`), system by system | Calls, control channel events, `status.systems[].sites[].index` |
+| Engine system index (`Call::system`) | **Active** systems only: the trunked ones (`Config::active_systems()`: enabled, with an enabled site that has a control channel), then the conventional ones (`Config::active_conventional()`: enabled, with an enabled channel), in config order | Calls, events, live-audio frames, plugin `CallInfo.system`, `status.systems[].index`, `status.systemNames` |
+| Engine site index (`Call::site`) | Active sites of active trunked systems (`trunk::sites`), system by system; none for a conventional call | Calls, control channel events, `status.systems[].sites[].index` |
 | Position in `Status.sites` | Sites that currently have a control channel (can skip some) | Nothing: each `SiteStatus` carries its `site` and `system` |
-| Conventional system id | `65535 − k` for conventional system *k* (at most 256) | Calls and plugins; `calls::conventional_system` / `conventional_index` |
 | `shortName` | Every system, unique | The identity: folders, companion files, plugin settings, what plugins key on |
 | A site's `name` | Each site of a system, unique there (absent: the system's short name) | The talkgroup file's Preferred Site, call JSON `site`, band plan files, control channel stats |
 
 `Config::call_systems()` is the one place a config's systems are given their
-numbers (active trunked systems, then enabled conventional systems with
-channels): the lookup from short name to number. Plugins' `SystemInfo` comes
-from it.
+numbers (active trunked systems, then active conventional systems): the
+lookup from short name to number, and the order `Config::engine_config`
+lists them in for the engine. Plugins' `SystemInfo` and `status.systemNames`
+come from it.
 
 Other conventions:
 
@@ -638,7 +642,7 @@ Other conventions:
 | Config in the UI, Trunk Recorder import | `web/src/config.ts`, `web/src/Setup.tsx` |
 | Call JSON (Trunk Recorder fields) | `trunk-core/src/trunk/record.rs` |
 | File names and folders | `trunk-app/src/filename.rs` |
-| Talkgroup CSV / unit names, talker aliases (`AliasBook`) | `trunk-core/src/trunk/talkgroups.rs`, `units.rs` |
+| Talkgroup CSV / unit names, talker aliases (`UnitAliases`) | `trunk-core/src/trunk/talkgroups.rs`, `units.rs` |
 | Conventional channel CSV | `trunk-app/src/channels.rs` |
 | Codes conventional frequencies carried | `trunk-app/src/heard.rs` |
 | Control channels, one per protocol | `trunk-core/src/trunk/control.rs` |

@@ -5,6 +5,17 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Systems are numbered from 0, conventional ones too.** Conventional systems used to be numbered
+  down from 65535; now the systems being recorded are numbered 0, 1, 2…, trunked first, then
+  conventional. This is the number `{sys_num}` gives in a file name format and plugins see as
+  `system`. The `status` message lists every system's short name by that number
+  (`status.systemNames`); the API client's `systemName(status, system)` reads it, and
+  `CONVENTIONAL` / `conventionalIndex` are gone (from the plugin SDK too). There is no longer a
+  limit of 256 conventional systems.
+  - Inside, a system's talkgroups, rules, unit names and keys are kept once for the whole system
+    rather than copied into each of its sites, so a talkgroup file edited while recording reaches
+    every site from one place.
+
 ## [0.1.15] — 2026-10-17
 
 - **A call to a radio isn't taken for a copy of a talkgroup call.** Multi-site matched copies of a

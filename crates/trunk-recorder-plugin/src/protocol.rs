@@ -153,17 +153,13 @@ pub struct HostInfo {
     pub version: String,
 }
 
-/// The index calls and events use for the first conventional system; the
-/// next ones count down from it (65534, 65533, …). Each is a system of its
-/// own in [`Hello::systems`], with its own short name and settings.
-pub const CONVENTIONAL: u16 = 65535;
-
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SystemInfo {
-    /// The number events carry for it (`system`) while the recorder runs
-    /// (conventional systems: [`CONVENTIONAL`] and down). It can change
-    /// between runs: know systems by `short_name`.
+    /// The number events carry for it (`system`) while the recorder runs:
+    /// from 0, the trunked systems then the conventional ones (each a
+    /// system of its own here). It can change between runs: know systems by
+    /// `short_name`.
     pub index: u16,
     /// The system's short name: its identity (unique among all the
     /// recorder's systems), its folder, and what users know it by. Every

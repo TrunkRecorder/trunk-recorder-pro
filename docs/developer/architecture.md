@@ -795,7 +795,8 @@ call JSON + WAV on disk → `HostMessage::CallConcluded` → plugin → `PluginM
 | Field | Type | Meaning |
 |---|---|---|
 | `id` | `CallId(u32)` | one sequence for all systems |
-| `system` | u16 | engine system index; conventional = 65535 − k |
+| `site` | `Option<u16>` | engine site index; none for a conventional call |
+| `system` | u16 | engine system index (trunked, then conventional) |
 | `talkgroup` | u32 | |
 | `freq_hz` | u64 | |
 | `phase2_tdma`, `tdma_slot` | bool, u8 | |
@@ -909,7 +910,7 @@ transmission said of itself).
 
 ### 9.7 Plugin protocol (`trunk-recorder-plugin/src/protocol.rs`)
 
-Constants: `API_VERSION` = 1, `EXIT_CONFIG` = 78, conventional system index base 65535.
+Constants: `API_VERSION` = 1, `EXIT_CONFIG` = 78.
 
 **`Manifest`**: `id`, `name`, `version`, `description`, `api`, `subscribe`, `audio_formats`,
 `config` (JSON Schema), `system_config` (JSON Schema), `homepage`, `repository`, `authors`,
@@ -1076,15 +1077,16 @@ the old list form `[{name, path}]` is read as this map, and `home` is dropped).
 
 ### 10.10 From config to engine
 
-`Config::engine_config` builds trunk-core's `EngineConfig`: each active site → a `SiteConfig`
-(its system's short name and its own site name, control channels, receiver bank, `expect`,
-protocol; and its system's `CallConfig`, `SaveRules`, talkgroups, unit tags and keys); every conventional entry → `ConvSystem`; enabled channels →
-conventional channel rows; sources with resolved centres; `prerollS`, `maxRecorders`,
+`Config::engine_config` builds trunk-core's `EngineConfig`: each active system → a
+`SystemConfig` (short name, `CallConfig`, `SaveRules`, talkgroups, unit tags; keys are set by the
+app) with its active sites, each a `SiteConfig` (name, control channels, receiver bank, `expect`,
+protocol); then each active conventional system → a `SystemConfig` with no sites; enabled channels →
+conventional channel rows naming their system; sources with resolved centres; `prerollS`, `maxRecorders`,
 `captureFrames`, `dropDuplicateCalls`, `vocoder`. File names, archive rules, M4A, spool,
 server, log, monitor and plugins stay in the platform.
 
-`Config::call_systems` numbers every system for plugins: active trunked systems 0, 1, …, then
-enabled conventional systems with channels as 65535 − k.
+`Config::call_systems` numbers every system as the engine does: active trunked systems 0, 1, …,
+then active conventional systems (enabled, with an enabled channel).
 
 ### 10.11 Validation at Start (`Config::problem`, first failure wins)
 
@@ -1238,7 +1240,6 @@ A system's identity is its `shortName`. The numbers below are per-run handles, n
 | Engine system index (`Call::system`) | active systems only | calls, events, live-audio frames, plugin `system`, `status.systems[].index` |
 | Engine site index (`Call::site`) | active sites, system by system | calls, control channel events, `status.systems[].sites[].index` |
 | A site's `name` | unique in its system | Preferred Site, call JSON `site`, band plan files, control channel stats |
-| Conventional system id | 65535 − k | calls and plugins |
 | `shortName` | every system, unique | folders, files, plugin settings, what plugins key on |
 | `CallId` | one sequence for every system | `call_num` in the JSON |
 

@@ -363,7 +363,6 @@ export interface KeySource {
 export interface Config {
   sources: Source[];
   systems: System[];
-  /** The conventional systems; the k-th's calls carry `system` conventionalSystem(k). */
   conventional: Conventional[];
   recording: Recording;
   server: {
@@ -516,13 +515,6 @@ export interface Identity {
   site: number | null;
 }
 
-/** `Call.system` / `listen.system` of the first conventional system; the next count down from it. */
-export const CONVENTIONAL = 65535;
-/** The `system` of conventional system `k`. */
-export const conventionalSystem = (k: number) => CONVENTIONAL - k;
-/** Which conventional system a `system` is, or null for a trunked one. */
-export const conventionalIndex = (system: number): number | null => (system > CONVENTIONAL - 256 && system <= CONVENTIONAL ? CONVENTIONAL - system : null);
-
 /** One running system, with its sites that are. `index` is what calls and audio carry as `system`. */
 export interface SystemStatus {
   index: number;
@@ -606,6 +598,8 @@ export interface EngineStatus {
   conventionalOpen: number;
   callsConcluded: number;
   systems: SystemStatus[];
+  /** Every system's short name, by the number its calls and live audio carry as `system` (trunked systems first, then conventional). */
+  systemNames: string[];
 }
 
 export interface SourceStatus {
@@ -631,7 +625,7 @@ export interface SourceStatus {
 
 export interface CallView {
   id: number;
-  /** SystemStatus.index; conventionalSystem(k) for conventional system k's channels. */
+  /** Its system's number this run (EngineStatus.systemNames names it). */
   system: number;
   systemName: string;
   /** The site it is on (its name; none for a conventional system's call). */
@@ -1488,7 +1482,7 @@ export type ToRecorder =
 /** Live audio: one 20 ms (or longer) chunk of a call, 8 kHz. */
 export interface AudioChunk {
   callId: number;
-  /** The system's number this run (SystemStatus.index, or conventionalSystem(k)): map it to its short name. */
+  /** The system's number this run: EngineStatus.systemNames names it. */
   system: number;
   talkgroup: number;
   samples: Float32Array;

@@ -194,7 +194,7 @@ reconnecting, re-sending `listen` after a reconnect, keeping state, safe
 config edits, and gapless audio.
 
 ```js
-import { TrunkClient, LivePlayer, decodeAudioFrame, parseTalkgroups, CONVENTIONAL, conventionalIndex, duration, mhz, escapeHtml } from "/api/client.js";
+import { TrunkClient, LivePlayer, decodeAudioFrame, parseTalkgroups, systemName, duration, mhz, escapeHtml } from "/api/client.js";
 ```
 
 From a page served elsewhere, import it by its full URL and say which
@@ -274,9 +274,9 @@ sound otherwise.
 
 **Helpers:** `duration(s)` gives `"1:05"`, `mhz(hz)` gives
 `"155.2000 MHz"`, `escapeHtml(s)`, and `parseTalkgroups(csv)` reads a
-talkgroup CSV. `conventionalIndex(system)` turns a
-conventional system's `system` number into its place in
-`config.conventional`.
+talkgroup CSV. `systemName(status, system)` turns the `system`
+number a call or audio chunk carries into its short name
+(`status.systemNames`).
 
 ## Examples
 
@@ -399,8 +399,8 @@ being **recorded** (enabled, with a site that has a control channel), so
 match on `shortName` rather than on positions in the config.
 
 **Conventional systems.** `config.conventional[k]` are groups of fixed
-frequencies. Their calls carry `system` = `65535 - k` (`conventionalSystem(k)`
-in protocol.ts). Each frequency acts as a talkgroup: the channel's
+frequencies. Their calls are numbered after the trunked systems' (and
+`status.systemNames` names every number). Each frequency acts as a talkgroup: the channel's
 `talkgroup`, or by default the frequency in kHz.
 
 **Calls on the air vs. recorded calls.**

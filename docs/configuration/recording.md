@@ -123,7 +123,7 @@ and flags unknown tokens.
 |---|---|
 | `{short_name}` | The system's short name |
 | `{site}` | The site the call was kept from, by name (a system of one site: its short name; none for a conventional system) |
-| `{sys_num}` | The system's number (trunked from 0; conventional 65535 down) |
+| `{sys_num}` | The system's number (from 0: trunked systems, then conventional) |
 | `{talkgroup}`, `{talkgroup_display}` | The talkgroup number |
 | `{talkgroup_alpha_tag}` | The talkgroup's alpha tag |
 | `{talkgroup_description}` | Its description |

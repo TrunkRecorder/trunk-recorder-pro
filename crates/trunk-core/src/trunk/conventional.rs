@@ -52,7 +52,8 @@ use std::sync::Arc;
 
 use num_complex::Complex32;
 
-use super::calls::{conventional_index, conventional_system, Call, CallId, CallIds, CallManager, Flags, STUCK_CALL_S};
+use super::calls::{Call, CallId, CallIds, CallManager, Flags, STUCK_CALL_S};
+use super::engine::SystemConfig;
 use super::frames::CallFrames;
 use super::record::{Reception, Transmissions};
 use super::voice::CipherId;
@@ -135,8 +136,8 @@ pub struct ConvChannel {
     /// Record only transmissions carrying this code (None: any — or, beside
     /// rows with codes on the frequency, the rest).
     pub access: Option<Access>,
-    /// The conventional system it belongs to (from 0): its rules, its calls'
-    /// [`Call::system`] ([`conventional_system`]).
+    /// The system it belongs to (its place in the engine's systems, a
+    /// conventional one): its rules, its calls' [`Call::system`].
     pub system: usize,
     /// Analog: how it's demodulated (rows sharing a frequency share it).
     pub analog: AnalogTuning,
@@ -350,11 +351,11 @@ pub enum ConvOut {
     Audio { call_id: CallId, system: u16, talkgroup: u32, samples: Vec<f32>, decrypted: bool },
     /// `recorder_num`: the index of the channel (frequency) it came on.
     End { call: Call, audio: Vec<f32>, frames: CallFrames, recorder_num: u32, tx: Transmissions, reception: Reception },
-    /// A radio's talker alias, heard on a P25 channel of conventional system `.0` ([`Call::system`]).
+    /// A radio's talker alias, heard on a P25 channel of system `.0` ([`Call::system`]).
     Alias(u16, Alias),
     /// A radio's new position, on a call (its system and talkgroup).
     Position(u16, Position, u32),
-    /// A key of conventional system `.0` that decrypts its voice to noise.
+    /// A key of system `.0` that decrypts its voice to noise.
     WrongKey(u16, CipherId),
     /// A transmission no row took, and the code it carried (as a row's
     /// Tone would say it; "" for none).
@@ -365,7 +366,9 @@ pub enum ConvOut {
 /// CTCSS / DCS heard ("" for none), the NAC, or the DMR colour code, slot
 /// and talkgroup — for finding a frequency's codes. None for a trunked call.
 pub fn heard_code(call: &Call) -> Option<String> {
-    conventional_index(call.system)?;
+    if call.site.is_some() {
+        return None;
+    }
     if call.analog {
         return Some(call.tone.map_or(String::new(), |h| h.tone.to_string()));
     }
@@ -501,6 +504,8 @@ struct Floor {
 pub struct Conventional {
     cfg: ConvConfig,
     bank_cfg: BankConfig,
+    /// Keep each call's vocoder frames (see [`super::frames`]).
+    capture_frames: bool,
     chans: Vec<Chan>,
     floors: Vec<Floor>,
 }
@@ -510,23 +515,29 @@ pub fn check_channels(channels: &[ConvChannel]) -> Result<(), String> {
     Conventional::check(channels)
 }
 
-/// What the calls need from the engine's configuration, per conventional system.
-pub struct CallRules<'a> {
-    pub call_timeout_s: f64,
+/// What a channel's calls need from their system's configuration.
+struct CallRules<'a> {
+    call_timeout_s: f64,
     /// A call longer than this is concluded and a new one started (0: never), s.
-    pub max_call_s: f64,
+    max_call_s: f64,
     /// Keep each call's vocoder frames (see [`super::frames`]).
-    pub capture_frames: bool,
+    capture_frames: bool,
     /// The system's talkgroup names.
-    pub talkgroups: &'a Talkgroups,
+    talkgroups: &'a Talkgroups,
     /// Its encryption keys.
-    pub keys: Option<&'a Arc<Keyring>>,
+    keys: Option<&'a Arc<Keyring>>,
+}
+
+impl<'a> CallRules<'a> {
+    fn of(sys: &'a SystemConfig, capture_frames: bool) -> Self {
+        CallRules { call_timeout_s: sys.calls.call_timeout_s, max_call_s: sys.calls.max_call_s, capture_frames, talkgroups: &sys.talkgroups, keys: sys.keys.as_ref() }
+    }
 }
 
 impl Conventional {
     /// `sources`: (centre, rate, usable half-width) of each source. Channels
     /// outside every source are an error.
-    pub fn new(channels: &[ConvChannel], sources: &[(f64, f64, f64)], cfg: ConvConfig, bank_cfg: BankConfig) -> Result<Self, String> {
+    pub fn new(channels: &[ConvChannel], sources: &[(f64, f64, f64)], cfg: ConvConfig, bank_cfg: BankConfig, capture_frames: bool) -> Result<Self, String> {
         let mut chans = Vec::new();
         let mut outside = Vec::new();
         let mut groups: Vec<Vec<ConvChannel>> = Vec::new();
@@ -563,7 +574,7 @@ impl Conventional {
                 Floor { slices: vec![0.0; n], scratch: vec![0.0; n], next_s: 0.0, primed: false }
             })
             .collect();
-        Ok(Conventional { cfg, bank_cfg, chans, floors })
+        Ok(Conventional { cfg, bank_cfg, capture_frames, chans, floors })
     }
 
     /// Whether `channels` can run together: rows on one frequency have one
@@ -622,7 +633,7 @@ impl Conventional {
         self.chans.is_empty()
     }
 
-    /// The keys of conventional system `system` changed: its open channels decrypt with them from now on.
+    /// The keys of system `system` changed: its open channels decrypt with them from now on.
     pub fn set_system_keys(&mut self, system: usize, keys: Option<&Arc<Keyring>>) {
         for o in self.chans.iter_mut().filter(|c| c.cfg.system == system).filter_map(|c| c.open.as_mut()) {
             o.voice.set_keys(keys.cloned());
@@ -640,11 +651,11 @@ impl Conventional {
     }
 
     /// After a block ran on `source` (whose clock reads `now_s`).
-    /// `ids`: the engine's call ids. `rules`: each conventional system's (a channel's `system` indexes them).
+    /// `ids`: the engine's call ids. `systems`: the engine's (a channel's `system` indexes them).
     /// `gap`: the block is silence standing in for samples that never came
     /// ([`super::Engine::push_gap`]): calls open run on, nothing new opens,
     /// and the noise floor is left as it was.
-    pub fn on_block(&mut self, source: usize, chz: &mut Channelizer, now_s: f64, gap: bool, ids: &CallIds, rules: &[CallRules], out: &mut Vec<ConvOut>) {
+    pub fn on_block(&mut self, source: usize, chz: &mut Channelizer, now_s: f64, gap: bool, ids: &CallIds, systems: &[&SystemConfig], out: &mut Vec<ConvOut>) {
         if !self.chans.iter().any(|c| c.source == source) {
             return;
         }
@@ -668,7 +679,7 @@ impl Conventional {
             if ch.source != source {
                 continue;
             }
-            let rules = &rules[ch.cfg.system];
+            let rules = &CallRules::of(systems[ch.cfg.system], self.capture_frames);
             let floor = self.floors[source].slices[ch.slice].max(1e-30);
             let bp = chz.band_power(ch.offset_hz, ch.cfg.detect_half_bw());
             ch.power = if ch.power == 0.0 { bp } else { ch.power + a * (bp - ch.power) };
@@ -795,9 +806,9 @@ impl Conventional {
                 TrackerOut::Info { source, flags } => h.infos.push((source, flags)),
                 TrackerOut::Cipher(id) => h.cipher = Some(id),
                 TrackerOut::Decrypted => h.decrypted = true,
-                TrackerOut::Alias(a) => out.push(ConvOut::Alias(conventional_system(ch.cfg.system), a)),
+                TrackerOut::Alias(a) => out.push(ConvOut::Alias(ch.cfg.system as u16, a)),
                 TrackerOut::Position(p) => h.positions.push(p),
-                TrackerOut::WrongKey(c) => out.push(ConvOut::WrongKey(conventional_system(ch.cfg.system), c)),
+                TrackerOut::WrongKey(c) => out.push(ConvOut::WrongKey(ch.cfg.system as u16, c)),
                 TrackerOut::AliasLc(_) => {}
             }
         }
@@ -977,8 +988,8 @@ impl Conventional {
             let dur = h.audio.len() as f64 / fm::AUDIO_RATE;
             let start = h.air.map_or_else(|| (now_s - dur).max(o.opened_s - 0.05), |a| a.0);
             let call = Call {
-                site: conventional_system(ch.cfg.system),
-                system: conventional_system(ch.cfg.system),
+                site: None,
+                system: ch.cfg.system as u16,
                 twin: false,
                 id: ids.next(),
                 talkgroup: tg,
@@ -1125,7 +1136,7 @@ impl Conventional {
 mod tests {
     use super::*;
     use crate::trunk::engine::{Engine, EngineConfig, Event, SourceConfig};
-    use crate::trunk::{CallConfig, CONVENTIONAL};
+    use crate::trunk::{CallConfig, SystemConfig};
     use std::f64::consts::PI;
 
     struct Tx {
@@ -1149,22 +1160,22 @@ mod tests {
         run_systems(fs, secs, txs, channels, vec![conv_system("conv")])
     }
 
-    fn conv_system(name: &str) -> crate::trunk::ConvSystem {
-        crate::trunk::ConvSystem { short_name: name.into(), calls: CallConfig { call_timeout_s: 1.0, ..Default::default() }, ..Default::default() }
+    fn conv_system(name: &str) -> SystemConfig {
+        SystemConfig { calls: CallConfig { call_timeout_s: 1.0, ..Default::default() }, ..SystemConfig::conventional(name) }
     }
 
-    fn run_systems(fs: f64, secs: f64, txs: &mut [Tx], channels: Vec<ConvChannel>, conv_systems: Vec<crate::trunk::ConvSystem>) -> Run {
-        run_gapped(fs, secs, txs, channels, conv_systems, None)
+    fn run_systems(fs: f64, secs: f64, txs: &mut [Tx], channels: Vec<ConvChannel>, systems: Vec<SystemConfig>) -> Run {
+        run_gapped(fs, secs, txs, channels, systems, None)
     }
 
     /// [`run_systems`], with `gap` = (air time, seconds): that long of
     /// samples that never came ([`Engine::push_gap`]) at that point of the air.
-    fn run_gapped(fs: f64, secs: f64, txs: &mut [Tx], channels: Vec<ConvChannel>, conv_systems: Vec<crate::trunk::ConvSystem>, mut gap: Option<(f64, f64)>) -> Run {
+    fn run_gapped(fs: f64, secs: f64, txs: &mut [Tx], channels: Vec<ConvChannel>, systems: Vec<SystemConfig>, mut gap: Option<(f64, f64)>) -> Run {
         let center = 155_000_000.0;
         let cfg = EngineConfig {
             sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
             conventional: channels,
-            conv_systems,
+            systems,
             ..Default::default()
         };
         let e = Engine::new(cfg).unwrap();
@@ -1268,11 +1279,11 @@ mod tests {
         crate::nxdn::synth::add_noise(&mut iq, 0.003, &mut 9);
         let mut keys = Keyring::default();
         keys.add(ALGID_AES_256, Some(0x4319), key, vec![]).unwrap();
-        let sys = crate::trunk::ConvSystem { keys: Some(Arc::new(keys)), ..conv_system("conv") };
+        let sys = SystemConfig { keys: Some(Arc::new(keys)), ..conv_system("conv") };
         let cfg = EngineConfig {
             sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
             conventional: vec![ConvChannel { mode: ConvMode::P25, ..fm(freq, 9) }],
-            conv_systems: vec![sys],
+            systems: vec![sys],
             ..Default::default()
         };
         let e = Engine::new(cfg).unwrap();
@@ -1303,10 +1314,9 @@ mod tests {
         let (calls, _, _) = run_systems(fs, 3.5, &mut txs, vec![fm(c + 200_000.0, 1), police, ems], vec![conv_system("fire"), conv_system("police"), strict]);
         let mut got: Vec<(u32, u16, bool)> = calls.iter().map(|(k, _, j)| (k.talkgroup, k.system, j.contains(r#""short_name":"fire""#) || j.contains(r#""short_name":"police""#))).collect();
         got.sort();
-        assert_eq!(got, [(1, CONVENTIONAL, true), (2, CONVENTIONAL - 1, true)], "EMS's 2 s call is under its minimum");
+        assert_eq!(got, [(1, 0, true), (2, 1, true)], "EMS's 2 s call is under its minimum");
         assert!(calls.iter().any(|(k, _, j)| k.talkgroup == 2 && j.contains(r#""short_name":"police""#)));
-        assert_eq!(conventional_index(CONVENTIONAL - 1), Some(1));
-        assert_eq!(conventional_index(3), None);
+        assert!(calls.iter().all(|(k, _, _)| k.site.is_none()), "a conventional call has no site");
     }
 
     /// Airband: AM calls on 25 kHz channels beside each other, one 2 kHz off

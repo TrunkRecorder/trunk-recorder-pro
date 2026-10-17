@@ -309,8 +309,7 @@ fn run_calls(a: &Args) {
         let v: Value = serde_json::from_str(j).unwrap_or_default();
         let name = v["short_name"].as_str().unwrap_or("").to_string();
         if !systems.iter().any(|s| s.short_name == name) {
-            let index = systems.iter().filter(|s| trunk_core::trunk::conventional_index(s.index).is_none()).count() as u16;
-            systems.push(SystemInfo { index, short_name: name, kind: "p25".into(), ..Default::default() });
+            systems.push(SystemInfo { index: systems.len() as u16, short_name: name, kind: "p25".into(), ..Default::default() });
         }
     }
     let notes: super::host::Notes = Arc::new(print_note);

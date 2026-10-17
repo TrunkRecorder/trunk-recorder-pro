@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use trunk_core::dsp::AnalogTuning;
 use trunk_core::p25::diversity::BankConfig;
 use trunk_core::trunk::{
-    check_channels, conventional_index, Access, parse_csv, CallConfig, Protocol, ConvChannel, ConvConfig, ConvMode, ConvSystem, EngineConfig, IdField, Identity, SaveRules, SourceConfig,
-    SiteConfig, Talkgroup, UnitTags, UnitTagsMode, MAX_CONVENTIONAL,
+    check_channels, Access, parse_csv, CallConfig, Protocol, ConvChannel, ConvConfig, ConvMode, EngineConfig, IdField, Identity, SaveRules, SourceConfig,
+    SiteConfig, SystemConfig, Talkgroup, UnitTags, UnitTagsMode,
 };
 pub use trunk_core::trunk::{usable_half_width, DEFAULT_GUARD_HZ};
 
@@ -1315,6 +1315,8 @@ pub struct CallSystem<'a> {
     pub short_name: &'a str,
     /// "p25", "smartnet", "dmr", "nxdn" or "conventional".
     pub kind: &'static str,
+    /// Its own recording rules (over the config's).
+    pub recording: &'a RecordingOverride,
     /// Its plugin settings, by plugin id.
     pub plugins: &'a BTreeMap<String, serde_json::Value>,
     /// How long plugins wait for its calls.
@@ -1354,8 +1356,7 @@ pub struct Config {
     pub sources: Vec<Source>,
     /// The trunked systems, each with its sites.
     pub systems: Vec<System>,
-    /// The conventional systems; the `k`th's calls are numbered
-    /// [`trunk_core::trunk::conventional_system`]`(k)`.
+    /// The conventional systems (numbered after the trunked ones: [`Config::call_systems`]).
     pub conventional: Vec<Conventional>,
     pub recording: Recording,
     pub server: Server,
@@ -1719,13 +1720,16 @@ impl Config {
 
     /// The engine's conventional channels: each with its system's number,
     /// and its system's squelch unless it has its own.
+    /// The conventional channels being recorded, each with its system's
+    /// number ([`Config::call_systems`]).
     fn engine_channels(&self) -> Vec<ConvChannel> {
         let mut out = Vec::new();
-        for (k, v) in self.conventional.iter().enumerate().filter(|(_, v)| v.enabled) {
+        let first = self.active_systems().count();
+        for (k, v) in self.active_conventional().enumerate() {
             let tgs = channel_talkgroups(&v.channels);
             for (c, tg) in v.channels.iter().zip(tgs).filter(|(c, _)| c.enabled) {
                 let mut e = c.engine_channel(tg);
-                e.system = k;
+                e.system = first + k;
                 e.squelch_db = Some(e.squelch_db.unwrap_or(v.squelch_db));
                 e.analog = v.demod.tuning(c);
                 out.push(e);
@@ -1738,6 +1742,12 @@ impl Config {
     /// engine's order — a call's `system` indexes this.
     pub fn active_systems(&self) -> impl Iterator<Item = &System> {
         self.systems.iter().filter(|s| s.active())
+    }
+
+    /// The conventional systems being recorded (enabled, with a channel
+    /// that is), in order: numbered after the trunked ones.
+    pub fn active_conventional(&self) -> impl Iterator<Item = &Conventional> {
+        self.conventional.iter().filter(|v| v.enabled && v.channels.iter().any(|c| c.enabled))
     }
 
     /// Advice for 4 or more RTL-SDRs at 2 MS/s or more left on the driver's
@@ -1892,9 +1902,6 @@ impl Config {
                 return Some(format!("No control channel of {name} falls inside any source's bandwidth — move a center frequency or add a source."));
             }
         }
-        if self.conventional.len() > MAX_CONVENTIONAL {
-            return Some(format!("At most {MAX_CONVENTIONAL} conventional systems."));
-        }
         // A frequency belongs to one conventional system.
         let mut owner: Vec<(f64, &str)> = Vec::new();
         for v in self.conventional.iter().filter(|v| v.enabled) {
@@ -1925,105 +1932,70 @@ impl Config {
         check_channels(&self.engine_channels()).err()
     }
 
-    /// System `s`'s recording rules (None: the conventional channels').
-    /// The recording rules of the system a call's `system` names: a trunked
-    /// system's (by the engine's order) or a conventional system's.
+    /// The recording rules of the system a call's `system` names.
     pub fn recording_of(&self, system: u16) -> Recording {
-        let own = match conventional_index(system) {
-            Some(k) => self.conventional.get(k).map(|v| &v.recording),
-            None => self.active_systems().nth(system as usize).map(|s| &s.recording),
-        };
-        own.map_or_else(|| self.recording.clone(), |o| self.recording.with(o))
+        self.call_systems().get(system as usize).map_or_else(|| self.recording.clone(), |s| self.recording.with(s.recording))
     }
 
     /// Every system a call can come from, numbered as calls number them
-    /// (`Call::system`): the active trunked systems in the engine's order,
-    /// then each enabled conventional system with channels (65535 − its
-    /// position). The one place that number is worked out for a config —
-    /// plugins, status and the interface all go by it.
+    /// (`Call::system`): the active trunked systems, then the active
+    /// conventional ones. The one place that number is worked out for a
+    /// config — the engine, plugins, status and the interface all go by it.
     pub fn call_systems(&self) -> Vec<CallSystem<'_>> {
-        let mut v: Vec<CallSystem> = self
-            .active_systems()
+        let trunked = self.active_systems().map(|s| (&s.short_name, s.kind_name(), &s.recording, &s.plugins, &s.plugin_delays[..]));
+        let conventional = self.active_conventional().map(|c| (&c.short_name, "conventional", &c.recording, &c.plugins, &c.plugin_delays[..]));
+        trunked
+            .chain(conventional)
             .enumerate()
-            .map(|(i, s)| CallSystem {
-                index: i as u16,
-                short_name: &s.short_name,
-                kind: s.kind_name(),
-                plugins: &s.plugins,
-                plugin_delays: &s.plugin_delays,
-            })
-            .collect();
-        for (k, c) in self.conventional.iter().enumerate().filter(|(_, c)| c.enabled && !c.channels.is_empty()) {
-            v.push(CallSystem { index: trunk_core::trunk::conventional_system(k), short_name: &c.short_name, kind: "conventional", plugins: &c.plugins, plugin_delays: &c.plugin_delays });
-        }
-        v
+            .map(|(i, (short_name, kind, recording, plugins, plugin_delays))| CallSystem { index: i as u16, short_name, kind, recording, plugins, plugin_delays })
+            .collect()
     }
 
     /// The short name of the system a call's `system` names.
     pub fn short_name_of(&self, system: u16) -> Option<&str> {
-        match conventional_index(system) {
-            Some(k) => self.conventional.get(k).map(|v| v.short_name.as_str()),
-            None => self.active_systems().nth(system as usize).map(|s| s.short_name.as_str()),
-        }
+        self.active_systems().map(|s| s.short_name.as_str()).chain(self.active_conventional().map(|c| c.short_name.as_str())).nth(system as usize)
     }
 
     pub fn engine_config(&self, epoch_ms: f64) -> EngineConfig {
         let centers = self.resolved_centers();
-        // Each site carries its system's talkgroups, rules, radio names (and keys, set by the app).
-        let sites: Vec<SiteConfig> = self
+        // (Keys are read by the app: [`Config::load_keys`].)
+        let mut systems: Vec<SystemConfig> = self
             .active_systems()
-            .flat_map(|sys| {
+            .map(|sys| {
                 let rules = self.recording.with(&sys.recording);
-                let talkgroups = parse_csv(&sys.talkgroups_csv);
-                let unit_tags = sys.unit_names.engine();
-                sys.active_sites()
-                    .map(|s| SiteConfig {
-                        short_name: sys.short_name.clone(),
-                        site: s.name.trim().to_string(),
-                        control_channels: s.control_channels_hz.clone(),
-                        calls: rules.call_config(),
-                        save: rules.save_rules(),
-                        unit_tags: unit_tags.clone(),
-                        bank: s.bank(),
-                        talkgroups: talkgroups.clone(),
-                        expect: s.expect.engine(),
-                        protocol: s.protocol(sys),
-                        // (Read by the app: [`Config::load_keys`].)
-                        keys: None,
-                    })
-                    .collect::<Vec<_>>()
+                let sites = sys
+                    .active_sites()
+                    .map(|s| SiteConfig { name: sys.site_name(s).to_string(), control_channels: s.control_channels_hz.clone(), bank: s.bank(), expect: s.expect.engine(), protocol: s.protocol(sys) })
+                    .collect();
+                SystemConfig {
+                    calls: rules.call_config(),
+                    save: rules.save_rules(),
+                    talkgroups: parse_csv(&sys.talkgroups_csv),
+                    unit_tags: sys.unit_names.engine(),
+                    ..SystemConfig::trunked(&sys.short_name, sites)
+                }
             })
             .collect();
         // A conventional system's P25 / DMR channels look up the talkgroup names
         // of the only trunked system, when there is just one (its channels'
         // own names come from the channel list). They use its (first site's) receivers too.
-        let systems = self.active_systems().count();
-        let conv_bank = match (systems, sites.first()) {
-            (1, Some(one)) => one.bank,
-            _ => BankConfig::default(),
-        };
-        let conv_systems: Vec<ConvSystem> = self
-            .conventional
-            .iter()
-            .map(|v| {
-                let r = self.recording.with(&v.recording);
-                let named = if systems == 1 { sites.first() } else { None };
-                ConvSystem {
-                    short_name: v.short_name.clone(),
-                    calls: r.call_config(),
-                    save: r.save_rules(),
-                    talkgroups: named.map(|s| s.talkgroups.clone()).unwrap_or_default(),
-                    unit_tags: v.unit_names.engine(),
-                    keys: None,
-                }
-            })
-            .collect();
+        let only = (systems.len() == 1).then(|| (systems[0].talkgroups.clone(), systems[0].sites[0].bank));
+        let conv_bank = only.as_ref().map_or_else(BankConfig::default, |o| o.1);
+        for v in self.active_conventional() {
+            let r = self.recording.with(&v.recording);
+            systems.push(SystemConfig {
+                calls: r.call_config(),
+                save: r.save_rules(),
+                talkgroups: only.as_ref().map(|o| o.0.clone()).unwrap_or_default(),
+                unit_tags: v.unit_names.engine(),
+                ..SystemConfig::conventional(&v.short_name)
+            });
+        }
         EngineConfig {
-            sites,
+            systems,
             sources: self.sources.iter().zip(centers).map(|(s, c)| SourceConfig { center_hz: c, rate_hz: s.rate_hz(), auto_tune: s.auto_tune(), guard_hz: s.guard_hz() }).collect(),
             preroll_s: self.recording.preroll_s,
             max_recorders: self.recording.max_recorders,
-            conv_systems,
             epoch_ms_at_zero: epoch_ms,
             bank: conv_bank,
             conventional: self.engine_channels(),
@@ -2172,7 +2144,7 @@ mod tests {
         let center = c.resolved_centers()[0];
         assert!((center - 154_265_000.0).abs() < 100_000.0, "center {center}");
         let e = c.engine_config(0.0);
-        assert!(e.sites.is_empty());
+        assert!(e.systems.iter().all(SystemConfig::is_conventional));
         assert_eq!(e.conventional.len(), 2);
         assert_eq!(e.conventional[0].talkgroup, 1001);
         assert_eq!(e.conventional[0].info.as_ref().unwrap().alpha_tag, "County Fire Dispatch");
@@ -2202,9 +2174,10 @@ mod tests {
         assert_eq!(c.problem(), None);
         let e = c.engine_config(0.0);
         assert_eq!(e.conventional.iter().map(|x| (x.system, x.squelch_db)).collect::<Vec<_>>(), [(0, Some(10.0)), (1, Some(14.0))]);
-        assert_eq!(e.conv_systems.iter().map(|x| (x.short_name.as_str(), x.save.min_call_s)).collect::<Vec<_>>(), [("fire", 0.0), ("police", 2.0), ("off", 0.0)]);
-        assert_eq!(c.short_name_of(trunk_core::trunk::conventional_system(1)), Some("police"));
-        assert_eq!(c.recording_of(trunk_core::trunk::conventional_system(1)).min_call_s, 2.0);
+        assert_eq!(e.systems.iter().map(|x| (x.short_name.as_str(), x.save.min_call_s)).collect::<Vec<_>>(), [("fire", 0.0), ("police", 2.0)], "the one switched off isn't numbered");
+        assert_eq!(c.short_name_of(1), Some("police"));
+        assert_eq!(c.recording_of(1).min_call_s, 2.0);
+        assert_eq!(c.call_systems().iter().map(|s| (s.index, s.short_name)).collect::<Vec<_>>(), [(0, "fire"), (1, "police")]);
         // One frequency, two systems: an error naming both.
         c.conventional[1].channels[0].freq_hz = 154_430_000.0;
         assert!(c.problem().unwrap().contains("both fire and police"), "{:?}", c.problem());
@@ -2282,11 +2255,11 @@ mod tests {
         }
         assert!((771_106_250.0 - centers[1]).abs() <= hw, "west's CC not in source 2 at {}", centers[1]);
         let e = c.engine_config(0.0);
-        assert_eq!(e.sites.iter().map(|s| s.short_name.as_str()).collect::<Vec<_>>(), ["east", "west"]);
-        assert_eq!(e.sites[0].expect.nac(), Some(0x443));
-        assert_eq!(e.sites[0].expect.site(), Some(3));
-        assert!(e.sites[0].calls.record_unknown && !e.sites[1].calls.record_unknown);
-        assert_eq!((e.sites[0].save.min_call_s, e.sites[1].save.min_call_s), (0.0, 2.0));
+        assert_eq!(e.systems.iter().map(|s| s.short_name.as_str()).collect::<Vec<_>>(), ["east", "west"]);
+        assert_eq!(e.systems[0].sites[0].expect.nac(), Some(0x443));
+        assert_eq!(e.systems[0].sites[0].expect.site(), Some(3));
+        assert!(e.systems[0].calls.record_unknown && !e.systems[1].calls.record_unknown);
+        assert_eq!((e.systems[0].save.min_call_s, e.systems[1].save.min_call_s), (0.0, 2.0));
         let saved = serde_json::to_string(&c.systems[1]).unwrap();
         assert!(saved.contains(r#""recording":{"recordUnknown":false,"minCallS":2.0}"#), "{saved}");
         assert!(!serde_json::to_string(&c.systems[0]).unwrap().contains("recording"));
@@ -2294,7 +2267,8 @@ mod tests {
         // A second site of east: its own control channel, east's rules; site names its own.
         c.systems[0].sites.push(Site { name: "east-2".into(), control_channels_hz: vec![851_212_500.0], ..Default::default() });
         let e = c.engine_config(0.0);
-        assert_eq!(e.sites.iter().map(|s| (s.short_name.as_str(), s.site_name(), s.calls.record_unknown)).collect::<Vec<_>>(), [("east", "east", true), ("east", "east-2", true), ("west", "west", false)]);
+        let sites: Vec<_> = trunk_core::trunk::sites(&e.systems).map(|(n, s)| (e.systems[n as usize].short_name.as_str(), s.name.as_str(), e.systems[n as usize].calls.record_unknown)).collect();
+        assert_eq!(sites, [("east", "east", true), ("east", "east-2", true), ("west", "west", false)]);
         c.systems[0].sites[1].name = "east".into();
         assert!(c.problem().unwrap().contains("Two sites of east are named \"east\""), "{:?}", c.problem());
         c.systems[0].sites.pop();

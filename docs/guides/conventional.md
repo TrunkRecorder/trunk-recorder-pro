@@ -37,12 +37,12 @@ has its own:
 - unit names, plugin settings, and recording rules (**Recording override**),
 - on/off switch for the whole group.
 
-A frequency can belong to only one conventional system. You can have at most 256.
+A frequency can belong to only one conventional system.
 
-Plugins treat each conventional system as one more system. Trunked systems are numbered from 0;
-conventional systems are numbered down from 65535: the first is 65535, the second 65534, and so
-on. That number is what `{sys_num}` gives in a [file name format](recordings.md#tokens), and what
-upload plugins see.
+Plugins treat each conventional system as one more system. Systems are numbered from 0: the
+trunked systems being recorded first, then the conventional ones. That number is what
+`{sys_num}` gives in a [file name format](recordings.md#tokens), and what upload plugins see. It
+can change when you add, remove or switch off a system, so plugins go by short name.
 
 ## Adding channels
 

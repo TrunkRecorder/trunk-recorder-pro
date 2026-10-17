@@ -1,9 +1,9 @@
 //! Multi-site: a call heard on several sites of one system is saved once.
 //!
-//! The config says which sites are one system ([`super::engine::SiteConfig`]:
-//! the same short name). Copies of a call are the same talkgroup (or the
-//! same radio called, unit to unit) granted on different sites of a system
-//! within [`TWIN_WINDOW_S`] of each other.
+//! The config says which sites are one system ([`super::engine::SystemConfig::sites`]).
+//! Copies of a call are the same talkgroup (or the same radio called, unit
+//! to unit) granted on different sites of a system within [`TWIN_WINDOW_S`]
+//! of each other.
 //!
 //! Unlike Trunk Recorder (record the first grant, ignore the rest), every
 //! copy is recorded and the best kept once the last one ends — so a site
@@ -179,18 +179,18 @@ impl MultiSite {
 }
 
 impl MultiSite {
-    /// Link call `c`, just granted, with the copies of it already going on
-    /// the other sites of its system (`others`: their calls) — the same
-    /// talkgroup, granted within [`TWIN_WINDOW_S`]. (A unit-to-unit call's
-    /// "talkgroup" is the radio called: never a copy of a talkgroup's call.)
-    pub fn link_new<'a>(&mut self, c: &Call, others: impl IntoIterator<Item = &'a [Call]>) {
+    /// Link call `c`, just granted on `site`, with the copies of it already
+    /// going on the other sites of its system (`others`: their calls) — the
+    /// same talkgroup, granted within [`TWIN_WINDOW_S`]. (A unit-to-unit
+    /// call's "talkgroup" is the radio called: never a copy of a talkgroup's call.)
+    pub fn link_new<'a>(&mut self, c: &Call, site: u16, others: impl IntoIterator<Item = &'a [Call]>) {
         let twins: Vec<(CallId, u16)> = others
             .into_iter()
             .flatten()
             .filter(|o| o.talkgroup == c.talkgroup && o.unit_to_unit == c.unit_to_unit && (o.start_s - c.start_s).abs() <= TWIN_WINDOW_S)
-            .map(|o| (o.id, o.site))
+            .filter_map(|o| Some((o.id, o.site?)))
             .collect();
-        self.link(c.id, c.site, &twins);
+        self.link(c.id, site, &twins);
     }
 
     /// Call `id` ended (`held`: its recording, None when it wasn't
@@ -199,7 +199,7 @@ impl MultiSite {
     /// try when one isn't kept (too short for its site's rules).
     /// `prefers(site, tg)`: whether `site` is the one the talkgroup file
     /// wants `tg` from.
-    pub fn conclude(&mut self, id: CallId, held: Option<Held>, prefers: impl Fn(u16, &Talkgroup) -> bool) -> Option<Vec<Held>> {
+    pub fn conclude(&mut self, id: CallId, held: Option<Held>, prefers: impl Fn(Option<u16>, &Talkgroup) -> bool) -> Option<Vec<Held>> {
         let mut copies = match self.end(id, held) {
             Ended::Alone(None) | Ended::Waiting => return None,
             Ended::Alone(Some(h)) => vec![h],
@@ -237,7 +237,7 @@ mod tests {
     use crate::trunk::frames::{Codec, VoiceFrame};
 
     fn call(id: CallId, site: u16, start_s: f64) -> Call {
-        Call { id, site, start_s, ..Default::default() }
+        Call { id, site: Some(site), start_s, ..Default::default() }
     }
 
     /// `good` clean frames then `bad` repeated ones, `errs` bit errors each.
@@ -254,12 +254,12 @@ mod tests {
     fn copies_are_the_same_talkgroup_granted_close_together() {
         let tg = |id, site, talkgroup, start_s, u2u| Call { talkgroup, unit_to_unit: u2u, ..call(id, site, start_s) };
         let mut m = MultiSite::default();
-        m.link_new(&tg(5, 1, 101, 10.0, false), [&[tg(1, 0, 101, 8.0, false), tg(2, 0, 102, 10.0, false), tg(3, 0, 101, 5.0, false)][..]]);
+        m.link_new(&tg(5, 1, 101, 10.0, false), 1, [&[tg(1, 0, 101, 8.0, false), tg(2, 0, 102, 10.0, false), tg(3, 0, 101, 5.0, false)][..]]);
         assert_eq!(m.twins(5), [(1, 0)], "another talkgroup, or granted too long before, isn't a copy");
         // A call to a radio is no copy of a talkgroup call of its number; the same radio called on two sites is.
-        m.link_new(&tg(7, 1, 1234, 0.0, true), [&[tg(6, 0, 1234, 0.0, false)][..]]);
+        m.link_new(&tg(7, 1, 1234, 0.0, true), 1, [&[tg(6, 0, 1234, 0.0, false)][..]]);
         assert!(m.twins(7).is_empty());
-        m.link_new(&tg(9, 1, 1234, 0.0, true), [&[tg(8, 0, 1234, 0.0, true)][..]]);
+        m.link_new(&tg(9, 1, 1234, 0.0, true), 1, [&[tg(8, 0, 1234, 0.0, true)][..]]);
         assert_eq!(m.twins(9), [(8, 0)]);
     }
 
@@ -267,9 +267,9 @@ mod tests {
     fn a_call_to_a_radio_is_no_copy_of_a_talkgroup_call_of_its_number() {
         let tg = |id, site, u2u| Call { talkgroup: 1234, unit_to_unit: u2u, ..call(id, site, 0.0) };
         let mut m = MultiSite::default();
-        m.link_new(&tg(2, 1, true), [&[tg(1, 0, false)][..]]);
+        m.link_new(&tg(2, 1, true), 1, [&[tg(1, 0, false)][..]]);
         assert!(m.twins(2).is_empty());
-        m.link_new(&tg(4, 1, true), [&[tg(3, 0, true)][..]]);
+        m.link_new(&tg(4, 1, true), 1, [&[tg(3, 0, true)][..]]);
         assert_eq!(m.twins(4), [(3, 0)], "the same radio called on two sites is one call");
     }
 

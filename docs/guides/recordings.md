@@ -68,7 +68,7 @@ default, it follows the Recording tab's.
 | Token | Gives |
 |---|---|
 | `{short_name}` | The system's short name |
-| `{sys_num}` | The system's number: trunked systems from 0; conventional systems 65535, 65534, ... |
+| `{sys_num}` | The system's number, from 0: the trunked systems, then the conventional ones |
 | `{talkgroup}`, `{talkgroup_display}` | The talkgroup number |
 | `{talkgroup_alpha_tag}` | The talkgroup's alpha tag, e.g. `FD_Disp` |
 | `{talkgroup_tag}` | The talkgroup's tag, e.g. `Fire_Dispatch` |

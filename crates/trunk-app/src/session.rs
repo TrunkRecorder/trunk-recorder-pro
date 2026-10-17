@@ -317,8 +317,8 @@ pub struct Session {
     rate_mark: (f64, Vec<u64>),
     /// Build audio frames (skip when nobody is listening).
     pub want_audio: bool,
-    /// Each site's system number (a call's `site` indexes it).
-    site_systems: Vec<u16>,
+    /// Each site, as calls number them: its system's number and its name.
+    sites: Vec<(u16, String)>,
     pub plugin_topics: PluginTopics,
     /// Wall clock (Unix ms) at the engine's time 0.
     epoch_ms: f64,
@@ -342,13 +342,14 @@ impl Session {
             return Err(p);
         }
         let engine = Engine::new(cfg.engine_config(epoch_ms))?;
-        let sites = engine.sites();
-        for (i, s) in sites.iter().enumerate() {
-            if let Some(b) = bandplan(&bandplan_key(s)).or_else(|| bandplan(crate::migrate::old_bandplan(s))) {
+        let systems = engine.systems();
+        let mut sites = Vec::new();
+        for (i, (system, s)) in trunk_core::trunk::sites(&systems).enumerate() {
+            if let Some(b) = bandplan(&bandplan_key(&systems[system as usize], s)).or_else(|| bandplan(crate::migrate::old_bandplan(s))) {
                 engine.load_bandplan(i, &b);
             }
+            sites.push((system, s.name.clone()));
         }
-        let site_systems = trunk_core::trunk::system_numbers(&sites);
         let n = cfg.sources.len();
         // (A capture played as fast as it can be has no wall clock to keep to.)
         let stats = cfg
@@ -373,7 +374,7 @@ impl Session {
             last_spec_ms: 0.0,
             rate_mark: (0.0, vec![0; n]),
             want_audio: true,
-            site_systems,
+            sites,
             plugin_topics: PluginTopics::default(),
             epoch_ms,
             last_plugin_status_ms: 0.0,
@@ -571,13 +572,11 @@ impl Session {
             }
         }
         {
-            let cfg = &self.cfg;
-            let systems = &self.site_systems;
-            let names = |site: u16| {
-                let system = cfg.short_name_of(systems.get(site as usize).copied().unwrap_or(site)).unwrap_or("conv").to_string();
-                (system, cfg.site_of(site).map_or(String::new(), |(sys, s)| sys.site_name(s).to_string()))
-            };
             let busy = self.busy_ms();
+            let (cfg, sites) = (&self.cfg, &self.sites);
+            let names = |system: u16, site: Option<u16>| {
+                (cfg.short_name_of(system).unwrap_or("conv").to_string(), site.and_then(|s| sites.get(s as usize)).map_or(String::new(), |s| s.1.clone()))
+            };
             self.meas.tick(now_ms, busy, &self.engine, &names, out);
         }
         if now_ms - self.last_status_ms >= 500.0 {
@@ -618,7 +617,7 @@ impl Session {
     /// Preload each system's talker aliases: `units` gives the CSV saved
     /// for a short name ([`Session::units_changed`]).
     pub fn load_units(&mut self, units: &dyn Fn(&str) -> Option<String>) {
-        for n in self.engine.unit_table_names() {
+        for n in self.engine.systems().iter().map(|s| s.short_name.clone()) {
             // A system's (and what its sites learned as systems of their own: newest wins).
             let mut names = vec![n.clone()];
             names.extend(self.cfg.systems.iter().filter(|s| s.short_name == n).flat_map(crate::migrate::old_names));
@@ -685,39 +684,39 @@ impl Session {
 
     /// Each site's (band plan key, band plan), to keep for the next run.
     pub fn bandplans(&self) -> Vec<(String, String)> {
-        self.engine.sites().iter().enumerate().map(|(i, s)| (bandplan_key(s), self.engine.bandplan(i))).collect()
+        let systems = self.engine.systems();
+        trunk_core::trunk::sites(&systems).enumerate().map(|(i, (system, s))| (bandplan_key(&systems[system as usize], s), self.engine.bandplan(i))).collect()
     }
 
-    /// A system's short name (a call's `system`: a trunked or a conventional system's).
+    /// A system's short name (a call's `system`).
     fn system_name(&self, system: u16) -> &str {
         self.cfg.short_name_of(system).unwrap_or("conv")
     }
 
-    /// The system of site `site` (a call's `site`; a conventional system's
-    /// number is its own).
+    /// The system of site `site` (a call's `site`).
     fn system_of(&self, site: u16) -> u16 {
-        self.site_systems.get(site as usize).copied().unwrap_or(site)
+        self.sites.get(site as usize).map_or(0, |s| s.0)
     }
 
-    /// Site `site`'s name (empty: a conventional system's, which has none).
-    fn site_name(&self, site: u16) -> String {
-        self.cfg.site_of(site).map_or(String::new(), |(sys, s)| sys.site_name(s).to_string())
+    /// Site `site`'s name (empty: none, a conventional call's).
+    fn site_name(&self, site: Option<u16>) -> String {
+        site.and_then(|s| self.sites.get(s as usize)).map_or(String::new(), |s| s.1.clone())
     }
 
-    /// How the log names site `site`: its system's short name, with the
-    /// site's own name when it has one ("dcfd/south").
-    fn site_label(&self, site: u16) -> String {
-        let system = self.system_name(self.system_of(site)).to_string();
+    /// How the log names system `system` (its site `site`): its short name,
+    /// with the site's own name when it has one ("dcfd/south").
+    fn site_label(&self, system: u16, site: Option<u16>) -> String {
+        let system = self.system_name(system).to_string();
         match self.site_name(site) {
             n if n.is_empty() || n == system => system,
             n => format!("{system}/{n}"),
         }
     }
 
-    /// Talkgroups as the interface shows them: number and alpha tag (from site `site`'s system's file; "" when not in it).
-    fn tg_names(&self, site: u16, tgs: impl IntoIterator<Item = u32>) -> Vec<Value> {
-        let sites = self.engine.sites();
-        let file = sites.get(site as usize).map(|s| &s.talkgroups);
+    /// Talkgroups as the interface shows them: number and alpha tag (from system `system`'s file; "" when not in it).
+    fn tg_names(&self, system: u16, tgs: impl IntoIterator<Item = u32>) -> Vec<Value> {
+        let systems = self.engine.systems();
+        let file = systems.get(system as usize).map(|s| &s.talkgroups);
         tgs.into_iter()
             .map(|tg| json!({ "talkgroup": tg, "alphaTag": file.and_then(|f| f.get(&tg)).map_or("", |t| t.alpha_tag.as_str()) }))
             .collect()
@@ -740,14 +739,14 @@ impl Session {
     }
 
     fn call_record(&self, level: Level, c: &Call, body: Body) -> Record {
-        Record { level, system: Some(self.site_label(c.site)), call: Some(Self::call_tag(c)), body }
+        Record { level, system: Some(self.site_label(c.system, c.site)), call: Some(Self::call_tag(c)), body }
     }
 
     /// Trunk Recorder's control channel decode rate check, and its status summary.
     fn log_rates_and_status(&mut self, _out: &mut [Output]) {
         let st = self.engine.status();
         let warn = self.cfg.log.control_warn_rate_per_s;
-        self.rate_at.resize(self.engine.sites().len(), (f64::NAN, 0));
+        self.rate_at.resize(self.sites.len(), (f64::NAN, 0));
         for y in &st.sites {
             let i = y.site as usize;
             let (t0, n0) = self.rate_at[i];
@@ -762,7 +761,7 @@ impl Session {
             self.rate_at[i] = (y.now_s, y.good);
             let level = if per_s < warn { Level::Error } else if warn == -1.0 { Level::Info } else { continue };
             let body = Body::DecodeRate { freq_hz: y.control_channel_hz.map(|f| f as f64), per_s, count: y.good - n0 };
-            self.records.push(Record { level, system: Some(self.site_label(y.site)), call: None, body });
+            self.records.push(Record { level, system: Some(self.site_label(y.system, Some(y.site))), call: None, body });
         }
         if st.now_s < self.next_status_s {
             return;
@@ -780,7 +779,7 @@ impl Session {
         for y in &st.sites {
             let freq = y.control_channel_hz.map_or("-".to_string(), |f| self.cfg.log.format().freq(f as f64));
             let rate = if y.now_s > 0.0 { y.good as f64 / y.now_s } else { 0.0 };
-            self.records.push(Record::text(Level::Info, Some(&self.site_label(y.site)), format!("{freq}\t{rate:.1} msg/sec")));
+            self.records.push(Record::text(Level::Info, Some(&self.site_label(y.system, Some(y.site))), format!("{freq}\t{rate:.1} msg/sec")));
         }
     }
 
@@ -822,7 +821,7 @@ impl Session {
     /// `dt`: seconds since the last one (0: the first).
     fn plugin_status(&mut self, dt: f64) -> trunk_recorder_plugin::Status {
         let st = self.engine.status();
-        self.plugin_good.resize(self.engine.sites().len(), 0);
+        self.plugin_good.resize(self.sites.len(), 0);
         let systems = st
             .sites
             .iter()
@@ -874,28 +873,29 @@ impl Session {
                     if let Some(kind) = unit_kind(m.kind) {
                         let talkgroup = matches!(kind, "affiliation" | "location" | "answer_request" | "call_alert" | "emergency_alarm").then_some(m.talkgroup);
                         if m.source >= 0 {
-                            let e = UnitEvent { system, short_name: name.clone(), site: self.site_name(site), kind: kind.into(), unit: m.source as u32, talkgroup, emergency: m.emergency, time: self.wall(m.time_s) };
+                            let e = UnitEvent { system, short_name: name.clone(), site: self.site_name(Some(site)), kind: kind.into(), unit: m.source as u32, talkgroup, emergency: m.emergency, time: self.wall(m.time_s) };
                             out.push(Output::Plugin(HostMessage::Unit(e)));
                         }
                     }
                 }
-                self.records.push(Record::text(Level::Trace, Some(&self.site_label(site)), m.meta.clone()));
+                self.records.push(Record::text(Level::Trace, Some(&self.site_label(system, Some(site))), m.meta.clone()));
                 if self.logging() {
-                    self.log.push(json!({ "timeS": m.time_s, "kind": m.kind.as_str(), "text": m.meta, "system": name, "site": self.site_name(site) }))
+                    self.log.push(json!({ "timeS": m.time_s, "kind": m.kind.as_str(), "text": m.meta, "system": name, "site": self.site_name(Some(site)) }))
                 }
             }
             Event::ControlChannel { site, freq_hz } => {
-                let name = self.system_name(self.system_of(site)).to_string();
-                self.records.push(Record { level: Level::Info, system: Some(self.site_label(site)), call: None, body: Body::ControlChannel { freq_hz: freq_hz as f64 } });
-                self.log.push(json!({ "timeS": 0, "kind": "control", "text": format!("Control channel {:.5} MHz", freq_hz as f64 / 1e6), "system": name, "site": self.site_name(site) }))
+                let system = self.system_of(site);
+                let name = self.system_name(system).to_string();
+                self.records.push(Record { level: Level::Info, system: Some(self.site_label(system, Some(site))), call: None, body: Body::ControlChannel { freq_hz: freq_hz as f64 } });
+                self.log.push(json!({ "timeS": 0, "kind": "control", "text": format!("Control channel {:.5} MHz", freq_hz as f64 / 1e6), "system": name, "site": self.site_name(Some(site)) }))
             }
-            Event::Note { site, level, text } => {
-                let name = self.system_name(self.system_of(site)).to_string();
+            Event::Note { system, site, level, text } => {
+                let name = self.system_name(system).to_string();
                 let (level, kind) = match level {
                     NoteLevel::Info => (Level::Info, "note"),
                     NoteLevel::Warning => (Level::Warning, "error"),
                 };
-                self.records.push(Record::text(level, Some(&self.site_label(site)), text.clone()));
+                self.records.push(Record::text(level, Some(&self.site_label(system, site)), text.clone()));
                 self.log.push(json!({ "timeS": self.engine.status().now_s, "kind": kind, "text": text, "system": name, "site": self.site_name(site) }))
             }
             Event::Audio { call_id, system, talkgroup, samples, decrypted } => {
@@ -956,7 +956,7 @@ impl Session {
                 let tag = call.talkgroup_info.as_ref().map_or(String::new(), |t| format!(" {}", t.alpha_tag));
                 let (kept_at, also_at) = (self.site_name(kept.site), self.site_name(call.site));
                 let text = format!("TG {}{tag} was heard on sites {kept_at} and {also_at}: saved {kept_at}'s copy", call.talkgroup);
-                self.records.push(Record::text(Level::Info, Some(&self.site_label(call.site)), text.clone()));
+                self.records.push(Record::text(Level::Info, Some(&self.site_label(call.system, call.site)), text.clone()));
                 self.log.push(json!({ "timeS": call.start_s, "kind": "duplicate", "text": text, "system": self.system_name(call.system), "site": also_at }));
             }
             Event::CallStart(c) => {
@@ -1081,7 +1081,7 @@ impl Session {
         // Each system with a site running, its sites in order.
         let mut systems: Vec<Value> = Vec::new();
         for y in &st.sites {
-            let at = y.site;
+            let at = y.system;
             let patches: Vec<Value> = y.patches.iter().map(|(sg, members)| json!({ "supergroup": self.tg_names(at, [*sg])[0], "members": self.tg_names(at, members.iter().copied()) })).collect();
             match systems.iter_mut().find(|v| v["index"] == y.system) {
                 Some(v) => {
@@ -1111,6 +1111,8 @@ impl Session {
                 "activeCalls": st.active_calls, "recording": st.recording, "channelsOpen": st.channels_open, "conventionalOpen": st.conventional_open,
                 "callsConcluded": st.calls_concluded,
                 "systems": systems,
+                // Every system's short name, by the number its calls and audio carry.
+                "systemNames": self.cfg.call_systems().iter().map(|s| s.short_name).collect::<Vec<_>>(),
             },
             "sources": sources,
             "load": load,
@@ -1119,12 +1121,12 @@ impl Session {
                 .active_calls()
                 .iter()
                 .map(|c| {
-                    let mut v = call_view(c, self.system_name(c.system), self.tg_names(c.site, c.patched_talkgroups.iter().copied().filter(|&t| t != c.talkgroup)));
+                    let mut v = call_view(c, self.system_name(c.system), self.tg_names(c.system, c.patched_talkgroups.iter().copied().filter(|&t| t != c.talkgroup)));
                     let site = self.site_name(c.site);
                     if !site.is_empty() {
                         v["site"] = json!(site);
                     }
-                    let twins: Vec<String> = self.engine.twins(c.id).iter().map(|&(_, at)| self.site_name(at)).collect();
+                    let twins: Vec<String> = self.engine.twins(c.id).iter().map(|&(_, at)| self.site_name(Some(at))).collect();
                     if !twins.is_empty() {
                         v["alsoOn"] = json!(twins);
                     }
@@ -1159,14 +1161,13 @@ pub(crate) fn identity_json(id: &Identity) -> Value {
 /// `patched`: the talkgroups patched with it ([`Session::tg_names`]).
 /// The name a site's band plan is kept under: its system's short name for a
 /// site named as its system (a system of one site), else `<system>.<site>`.
-pub fn bandplan_key(s: &trunk_core::trunk::SiteConfig) -> String {
-    if s.site_name() == s.short_name { s.short_name.clone() } else { format!("{}.{}", s.short_name, s.site_name()) }
+pub fn bandplan_key(sys: &trunk_core::trunk::SystemConfig, s: &trunk_core::trunk::SiteConfig) -> String {
+    if s.name == sys.short_name { sys.short_name.clone() } else { format!("{}.{}", sys.short_name, s.name) }
 }
 
 fn call_view(c: &Call, system_name: &str, patched: Vec<Value>) -> Value {
     json!({
         "id": c.id,
-        // (65535: a conventional channel)
         "system": c.system,
         "systemName": system_name,
         "talkgroup": c.talkgroup,

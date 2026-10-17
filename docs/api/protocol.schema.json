@@ -371,7 +371,7 @@
         },
         "system": {
           "type": "number",
-          "description": "SystemStatus.index; conventionalSystem(k) for conventional system k's channels."
+          "description": "Its system's number this run (EngineStatus.systemNames names it)."
         },
         "systemName": {
           "type": "string"
@@ -683,8 +683,7 @@
           "type": "array",
           "items": {
             "$ref": "#/definitions/Conventional"
-          },
-          "description": "The conventional systems; the k-th's calls carry `system` conventionalSystem(k)."
+          }
         },
         "recording": {
           "$ref": "#/definitions/Recording"
@@ -1136,6 +1135,13 @@
           "items": {
             "$ref": "#/definitions/SystemStatus"
           }
+        },
+        "systemNames": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Every system's short name, by the number its calls and live audio carry as `system` (trunked systems first, then conventional)."
         }
       },
       "required": [
@@ -1145,7 +1151,8 @@
         "channelsOpen",
         "conventionalOpen",
         "callsConcluded",
-        "systems"
+        "systems",
+        "systemNames"
       ],
       "additionalProperties": false
     },

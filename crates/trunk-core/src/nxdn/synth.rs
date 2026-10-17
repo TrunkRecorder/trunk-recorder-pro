@@ -465,7 +465,7 @@ mod tests {
         use super::super::channel::Sr as S;
         use super::super::layer3::build as l3;
         use crate::nxdn::trunking::NxdnConfig;
-        use crate::trunk::{Protocol, SiteConfig};
+        use crate::trunk::{Protocol, SiteConfig, SystemConfig};
         let (fs, center) = (240_000.0, 451_043_750.0);
         let (cc, vc) = (451_018_750.0, 451_068_750.0);
         let h = CallHead { cc_option: 0, call_type: CALL_CONFERENCE, option: 0, source: 77, destination: 3001 };
@@ -485,7 +485,7 @@ mod tests {
         nc.channel_table.insert(7, vc as u64);
         let cfg = EngineConfig {
             sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
-            sites: vec![SiteConfig { short_name: "nx".into(), control_channels: vec![cc], protocol: Protocol::Nxdn(nc), ..Default::default() }],
+            systems: vec![SystemConfig::trunked("nx", vec![SiteConfig { control_channels: vec![cc], protocol: Protocol::Nxdn(nc), ..Default::default() }])],
             ..Default::default()
         };
         let (done, _) = run_engine(cfg, &iq);
@@ -501,7 +501,7 @@ mod tests {
     fn engine_records_a_type_d_call_on_a_watched_repeater() {
         use crate::nxdn::channel::build as cb;
         use crate::nxdn::trunking::{Kind, NxdnConfig};
-        use crate::trunk::{Protocol, SiteConfig};
+        use crate::trunk::{Protocol, SiteConfig, SystemConfig};
         let (fs, center) = (240_000.0, 452_037_500.0);
         let (r1, r2) = (452_012_500.0, 452_062_500.0);
         let tg: u16 = 3 << 11 | 101;
@@ -525,12 +525,11 @@ mod tests {
         let iq = band(&[(r1 - center, r1_frames), (r2 - center, r2_frames)], Rate::N48, fs);
         let cfg = EngineConfig {
             sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
-            sites: vec![SiteConfig {
-                short_name: "idas".into(),
+            systems: vec![SystemConfig::trunked("idas", vec![SiteConfig {
                 control_channels: vec![r1, r2],
                 protocol: Protocol::Nxdn(NxdnConfig { kind: Kind::TypeD, ..Default::default() }),
                 ..Default::default()
-            }],
+            }])],
             ..Default::default()
         };
         let (done, _) = run_engine(cfg, &iq);

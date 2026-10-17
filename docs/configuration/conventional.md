@@ -61,8 +61,9 @@ for when to change them.
 
 Notes:
 
-- **System number.** To plugins and in some call data, conventional system *k* (counting from 0 in
-  the list) is system number 65535 − *k*; trunked systems count up from 0.
+- **System number.** To plugins and in some call data, systems are numbered from 0: the trunked
+  systems being recorded, then the conventional ones being recorded (enabled, with a channel that
+  is), in the order the config lists them.
 - **Pre-roll.** Conventional calls start 0.3 s before the signal was detected; `recording.prerollS`
   applies to trunked calls only.
 - **Talkgroup names.** When the config has exactly one trunked system, P25 and DMR conventional calls

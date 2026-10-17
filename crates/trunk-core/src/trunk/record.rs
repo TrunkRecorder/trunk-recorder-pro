@@ -3,7 +3,7 @@
 
 use std::fmt::Write;
 
-use super::calls::{conventional_index, Call};
+use super::calls::Call;
 use crate::dsp::tones::Tone;
 use super::frames::FrameErrors;
 use super::frames::{frames_jsonl, VoiceFrame};
@@ -243,7 +243,7 @@ pub fn call_record(call: &Call, info: &ConcludeInfo) -> (String, String) {
         match call.tone_set {
             Some(Tone::Ctcss(_)) => "ctcss",
             Some(Tone::Dcs(..)) => "dcs",
-            None if call.analog && conventional_index(call.system).is_some() => "search",
+            None if call.analog && call.site.is_none() => "search",
             None => "off",
         },
         call.tone.map_or(String::new(), |t| t.tone.to_string()),
@@ -407,7 +407,7 @@ pub struct Concluded {
     pub json: String,
     /// The call's system's short name (its folder).
     pub short_name: String,
-    /// The site its copy was kept from ([`super::engine::SiteConfig::site_name`]; empty: conventional).
+    /// The site its copy was kept from ([`super::engine::SiteConfig::name`]; empty: conventional).
     pub site: String,
     /// `<talkgroup>-<start epoch>_<freq>[.slot]`
     pub base_name: String,
@@ -467,7 +467,7 @@ fn capture(call: &Call, frames: &[VoiceFrame], audio_len: usize, freq_error_hz: 
             (Some(w), Some(s)) => format!("{w:05X}{s:03X}"),
             _ => cx.short_name.to_string(),
         },
-        conventional: conventional_index(call.system).is_some(),
+        conventional: call.site.is_none(),
         slot: call.tdma_slot,
         tg: call.talkgroup,
         first_src: first,

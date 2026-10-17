@@ -497,8 +497,6 @@ export function nameProblem(c: Config): string | null {
   return null;
 }
 
-/** Conventional systems a config may have (the recorder's MAX_CONVENTIONAL). */
-export const MAX_CONVENTIONAL = 256;
 
 /** An analog channel's filter width a config may set, kHz, and the demod ranges (the recorder's config.rs). */
 export const BANDWIDTH_KHZ: [number, number] = [4, 20];
@@ -564,7 +562,6 @@ export function startProblem(c: Config): string | null {
     }
     if (!site.controlChannelsHz.some(inside)) return `No control channel of ${name} falls inside any source's bandwidth — move a center frequency or add a source.`;
   }
-  if (c.conventional.length > MAX_CONVENTIONAL) return `At most ${MAX_CONVENTIONAL} conventional systems.`;
   const owner: [number, string][] = [];
   for (const v of c.conventional.filter((x) => x.enabled))
     for (const ch of v.channels.filter((x) => x.enabled)) {

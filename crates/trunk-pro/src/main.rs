@@ -124,7 +124,7 @@ use std::io::Read;
 use std::path::Path;
 use std::time::Instant;
 
-use trunk_core::trunk::{parse_csv, CallConfig, ConvChannel, ConvConfig, ConvMode, ConvSystem, Engine, EngineConfig, Event, IdField, Identity, Protocol, SaveRules, SourceConfig, SiteConfig, DEFAULT_GUARD_HZ};
+use trunk_core::trunk::{parse_csv, CallConfig, ConvChannel, ConvConfig, ConvMode, Engine, EngineConfig, SystemConfig, Event, IdField, Identity, Protocol, SaveRules, SourceConfig, SiteConfig, DEFAULT_GUARD_HZ};
 
 /// `--key value` / `--flag` arguments after the positionals.
 pub struct Args {
@@ -399,20 +399,29 @@ fn replay(a: &Args) {
         min_transmission_s: a.num("min-transmission", 0.0),
         ..Default::default()
     };
-    // Trunked systems: --cc (one, named --short-name) and/or --system (repeatable).
-    let mut systems: Vec<SiteConfig> = Vec::new();
+    // --keys: every system decrypts with the same keys file (a KFDtool container, with --keys-password-file).
+    let keys = a.get("keys").map(|p| {
+        let l = trunk_app::keys::load(std::path::Path::new(p), a.get("keys-password-file").map(std::path::Path::new)).unwrap_or_else(|e| die(&e));
+        for s in &l.skipped {
+            eprintln!("--keys: key left out: {s}");
+        }
+        for w in l.ring.warnings() {
+            eprintln!("--keys: {w}");
+        }
+        std::sync::Arc::new(l.ring)
+    });
+    // Every system goes by the same rules, talkgroups and keys.
+    let system = |name: &str, sites| SystemConfig { calls, save, talkgroups: talkgroups.clone(), keys: keys.clone(), ..SystemConfig::trunked(name, sites) };
+    // Trunked systems: --cc (one, named --short-name) and/or --system (repeatable; sites of one system share its name).
+    let mut systems: Vec<SystemConfig> = Vec::new();
     if !ccs.is_empty() {
         // --smartnet <band plan>: the --cc system is SmartNet.
         let smartnet = a.get("smartnet").map(|plan| trunk_core::trunk::SmartnetConfig {
             bandplan: tool::smartnet_bandplan(a, if plan == "1" { "800_standard" } else { plan }),
             analog_default: a.flag("analog-default"),
         });
-        systems.push(SiteConfig {
-            short_name: a.get("short-name").unwrap_or("replay").into(),
+        let site = SiteConfig {
             control_channels: ccs,
-            calls,
-            save,
-            talkgroups: talkgroups.clone(),
             // --dmr-trunk: the --cc frequencies are a DMR site's; --dmr-channels
             // more voice frequencies to watch; --lcn 101=452275000,… its channel table.
             // --nxdn-trunk [typeC|typeD]: an NXDN site's (--nxdn-rate 48|96,
@@ -436,34 +445,29 @@ fn replay(a: &Args) {
                 None => smartnet.map_or(Protocol::P25, Protocol::SmartNet),
             },
             ..Default::default()
-        });
+        };
+        systems.push(system(a.get("short-name").unwrap_or("replay"), vec![site]));
     }
     for spec in a.all("system") {
-        let sys = parse_system(spec, calls, &talkgroups).unwrap_or_else(|e| die(&format!("--system {spec}: {e}")));
-        systems.push(SiteConfig { save, ..sys });
-    }
-    // --keys: every system decrypts with the same keys file (a KFDtool container, with --keys-password-file).
-    let keys = a.get("keys").map(|p| {
-        let l = trunk_app::keys::load(std::path::Path::new(p), a.get("keys-password-file").map(std::path::Path::new)).unwrap_or_else(|e| die(&e));
-        for s in &l.skipped {
-            eprintln!("--keys: key left out: {s}");
+        let (name, site) = parse_system(spec).unwrap_or_else(|e| die(&format!("--system {spec}: {e}")));
+        match systems.iter_mut().find(|s| s.short_name == name) {
+            Some(s) => s.sites.push(site),
+            None => systems.push(system(&name, vec![site])),
         }
-        for w in l.ring.warnings() {
-            eprintln!("--keys: {w}");
-        }
-        std::sync::Arc::new(l.ring)
-    });
-    for s in systems.iter_mut() {
-        s.keys = keys.clone();
     }
-    let multi = trunk_core::trunk::system_numbers(&systems).into_iter().max().is_some_and(|n| n > 0);
-    let sites = systems.len() > 1;
+    let multi = systems.len() > 1;
+    let sites = trunk_core::trunk::sites(&systems).count() > 1;
+    // The conventional channels: one system of their own, "conv".
+    let mut conventional = conventional;
+    if !conventional.is_empty() {
+        conventional.iter_mut().for_each(|c| c.system = systems.len());
+        systems.push(system("conv", vec![]));
+    }
     let cfg = EngineConfig {
-        sites: systems,
+        systems,
         sources,
         preroll_s: a.num("preroll", 1.0),
         max_recorders: a.num("recorders", 32.0) as usize,
-        conv_systems: vec![ConvSystem { short_name: "conv".into(), calls, save, talkgroups, keys, ..Default::default() }],
         epoch_ms_at_zero: a.num("epoch", 0.0) * 1000.0,
         conventional,
         conv: ConvConfig { squelch_db: a.num("squelch", ConvConfig::default().squelch_db), ..Default::default() },
@@ -473,7 +477,8 @@ fn replay(a: &Args) {
     let engine = Engine::new(cfg).unwrap_or_else(|e| die(&e));
     // One band plan file per site (with several: <file>.<shortName>, <file>.<shortName>.<site>).
     let bandplans: Vec<String> = a.get("bandplan").map_or_else(Vec::new, |p| {
-        engine.sites().iter().map(|s| if sites { format!("{p}.{}", trunk_app::session::bandplan_key(s)) } else { p.to_string() }).collect()
+        let systems = engine.systems();
+        trunk_core::trunk::sites(&systems).map(|(n, s)| if sites { format!("{p}.{}", trunk_app::session::bandplan_key(&systems[n as usize], s)) } else { p.to_string() }).collect()
     });
     for (i, p) in bandplans.iter().enumerate() {
         if let Ok(s) = fs::read_to_string(p) {
@@ -607,7 +612,7 @@ fn replay(a: &Args) {
 /// `--system name[/site]:Hz[,Hz…][:nac=443,sysid=445,wacn=bee00,rfss=1,site=3]` —
 /// NAC / SysID / WACN in hex; only a control channel with that identity is
 /// followed. `dcfd/south`: site south of system dcfd.
-fn parse_system(spec: &str, calls: CallConfig, talkgroups: &trunk_core::trunk::Talkgroups) -> Result<SiteConfig, String> {
+fn parse_system(spec: &str) -> Result<(String, SiteConfig), String> {
     let mut parts = spec.splitn(3, ':');
     let head = parts.next().unwrap_or("");
     let (name, site) = head.split_once('/').unwrap_or((head, ""));
@@ -630,27 +635,37 @@ fn parse_system(spec: &str, calls: CallConfig, talkgroups: &trunk_core::trunk::T
             other => return Err(format!("unknown key {other} (nac, sysid, wacn, rfss, site)")),
         }
     }
-    Ok(SiteConfig { short_name: name.into(), site: site.into(), control_channels: ccs, calls, talkgroups: talkgroups.clone(), expect, ..Default::default() })
+    Ok((name.into(), SiteConfig { name: site.into(), control_channels: ccs, expect, ..Default::default() }))
 }
 
-/// "[name] " ("[name/site] ") for a line about site `site` when there are several; else "".
-fn sys_tag(engine: &Engine, site: u16) -> String {
-    let sites = engine.sites();
-    match sites.get(site as usize) {
-        Some(s) if sites.len() > 1 && s.site_name() == s.short_name => format!("[{}] ", s.short_name),
-        Some(s) if sites.len() > 1 => format!("[{}/{}] ", s.short_name, s.site_name()),
-        None if trunk_core::trunk::conventional_index(site).is_some() && !sites.is_empty() => "[conv] ".into(),
+/// "[name] " ("[name/site] ") for a line about `system` (its site `site`)
+/// when there are several sites (a conventional one: any); else "".
+fn sys_tag(engine: &Engine, system: u16, site: Option<u16>) -> String {
+    let systems = engine.systems();
+    let sites: Vec<_> = trunk_core::trunk::sites(&systems).collect();
+    match site.and_then(|s| sites.get(s as usize)) {
+        Some(&(n, s)) if sites.len() > 1 => match &systems[n as usize].short_name {
+            name if *name == s.name => format!("[{name}] "),
+            name => format!("[{name}/{}] ", s.name),
+        },
+        None if site.is_none() && !sites.is_empty() => systems.get(system as usize).map_or(String::new(), |s| format!("[{}] ", s.short_name)),
         _ => String::new(),
     }
 }
 
-/// "[name] " for a line about system `system` when there are several; else "".
+/// [`sys_tag`] for site `site`.
+fn site_tag(engine: &Engine, site: u16) -> String {
+    let system = trunk_core::trunk::sites(&engine.systems()).nth(site as usize).map_or(0, |(n, _)| n);
+    sys_tag(engine, system, Some(site))
+}
+
+/// "[name] " for a line about system `system` when there are several trunked
+/// ones (a conventional one: any); else "".
 fn system_tag(engine: &Engine, system: u16) -> String {
-    let sites = engine.sites();
-    let numbers = trunk_core::trunk::system_numbers(&sites);
-    match numbers.iter().position(|&n| n == system) {
-        Some(i) if numbers.iter().any(|&n| n != system) => format!("[{}] ", sites[i].short_name),
-        None if trunk_core::trunk::conventional_index(system).is_some() && !sites.is_empty() => "[conv] ".into(),
+    let systems = engine.systems();
+    let trunked = systems.iter().filter(|s| !s.is_conventional()).count();
+    match systems.get(system as usize) {
+        Some(s) if trunked > if s.is_conventional() { 0 } else { 1 } => format!("[{}] ", s.short_name),
         _ => String::new(),
     }
 }
@@ -660,13 +675,13 @@ fn handle_events(engine: &Engine, out_dir: &str, multi: bool, quiet: bool, messa
     let mut written = 0;
     for ev in engine.drain_events() {
         match ev {
-            Event::ControlChannel { site, freq_hz } if !quiet => println!("{}control channel {:.4} MHz", sys_tag(engine, site), freq_hz as f64 / 1e6),
-            Event::Note { site, text, .. } => eprintln!("{}{text}", sys_tag(engine, site)),
-            Event::Message { site, msg } if messages => println!("{:7.2}s  {}{} {}", msg.time_s, sys_tag(engine, site), msg.kind.as_str(), msg.meta),
+            Event::ControlChannel { site, freq_hz } if !quiet => println!("{}control channel {:.4} MHz", site_tag(engine, site), freq_hz as f64 / 1e6),
+            Event::Note { system, site, text, .. } => eprintln!("{}{text}", sys_tag(engine, system, site)),
+            Event::Message { site, msg } if messages => println!("{:7.2}s  {}{} {}", msg.time_s, site_tag(engine, site), msg.kind.as_str(), msg.meta),
             Event::CallStart(c) if !quiet => println!(
                 "{:7.2}s  {}CALL {} start TG {} {:.4} MHz{}{}{} → {}",
                 c.start_s,
-                sys_tag(engine, c.site),
+                sys_tag(engine, c.system, c.site),
                 c.id,
                 c.talkgroup,
                 c.freq_hz as f64 / 1e6,
@@ -688,10 +703,10 @@ fn handle_events(engine: &Engine, out_dir: &str, multi: bool, quiet: bool, messa
             }
             Event::CallEnd(c) if !quiet => {
                 let srcs: Vec<String> = c.sources.iter().map(|s| s.src.to_string()).collect();
-                println!("{:7.2}s  {}CALL {} end   TG {} srcs [{}]{}", c.last_update_s.max(c.last_audio_s), sys_tag(engine, c.site), c.id, c.talkgroup, srcs.join(","), if c.decrypted { " ENC DEC" } else if c.encrypted { " ENC" } else { "" });
+                println!("{:7.2}s  {}CALL {} end   TG {} srcs [{}]{}", c.last_update_s.max(c.last_audio_s), sys_tag(engine, c.system, c.site), c.id, c.talkgroup, srcs.join(","), if c.decrypted { " ENC DEC" } else if c.encrypted { " ENC" } else { "" });
             }
             Event::Duplicate { call, kept } if !quiet => {
-                println!("         {}CALL {} TG {} not saved: a copy of {}CALL {}", sys_tag(engine, call.site), call.id, call.talkgroup, sys_tag(engine, kept.site), kept.id)
+                println!("         {}CALL {} TG {} not saved: a copy of {}CALL {}", sys_tag(engine, call.system, call.site), call.id, call.talkgroup, sys_tag(engine, kept.system, kept.site), kept.id)
             }
             Event::Concluded(k) => {
                 // (Appended, not with_extension: a TDMA base name ends in ".<slot>".)
