@@ -168,7 +168,7 @@ fn inputs(clean: Vec<Complex32>, cutoff: f64, weak_db: f64) -> [(&'static str, V
 }
 
 fn voice_cost(kind: VoiceKind, bank: BankConfig, iq: &[Complex32]) -> (f64, usize) {
-    let mut v = voice::build(&VoiceSpec { kind, rate: RATE, t0: 0.0, seed: 1, vocoder: crate::mbe::Profile::Fixed, bank, squelch: 1e-4, subaudible: false, keys: None });
+    let mut v = voice::build(&VoiceSpec { kind, rate: RATE, t0: 0.0, seed: 1, vocoder: crate::mbe::Profile::Fixed, bank, squelch: 1e-4, subaudible: false, analog: Default::default(), ignore_hz: Vec::new(), keys: None });
     v.listen([Some(1201), Some(1201)]);
     let mut out = Vec::new();
     let mut audio = 0;

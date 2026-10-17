@@ -44,6 +44,22 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   CPU runs out; also written as `perf-report.json` beside the config every minute. See
   [Troubleshooting](docs/troubleshooting.md#performance-report).
 
+- **AM channels (airband).** Conventional channels can now be analog AM: VHF airband (118–137 MHz)
+  and UHF military air (225–400 MHz). The audio level follows each transmission's own carrier, so
+  a fading aircraft keeps its volume; impulse noise is clipped; and a transmitter a few kHz off
+  frequency is heard as it is. Pick **Analog AM** in Setup, `"mode": "am"`, `am` in a channel CSV,
+  or `--am` on `trunk-pro replay`. See [Airband (AM)](docs/guides/conventional.md#airband-am).
+  AM channels listen for the carrier's spectral line as well as the channel's power, which opens
+  them about 10 dB sooner, so distant aircraft are heard; the steady whistles of SDR spurs and
+  nearby electronics are learned and ignored.
+- **Channel bandwidth.** Each FM or AM channel can set its filter width (`bandwidthKhz`, Setup's
+  new **Bandwidth** column, the CSV's `Bandwidth kHz`): wide FM for 25 kHz channels, 6 kHz for
+  8.33 kHz airband, wider for UHF military air (its default from 225 MHz).
+- **Demodulation settings per conventional system** (`demod`, Setup's **Demodulation** group): FM
+  de-emphasis on or off, AM level speed and low cut, and the squelch's open delay and hang. A
+  longer hang bridges fades on weak signals without keeping the noise after a transmission: the
+  squelch now cuts the audio from just before the carrier dropped, whatever the hang.
+
 ## [0.1.14] — 2026-10-16
 
 - **Interfaces for people who listen, from an interface store.** Besides its own interface, the

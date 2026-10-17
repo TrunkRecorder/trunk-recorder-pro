@@ -227,6 +227,7 @@ called `conv`.
 | Option | Default | What it does |
 |---|---|---|
 | `--fm Hz,…` | | Analog FM channels |
+| `--am Hz,…` | | Analog AM channels (airband) |
 | `--p25 Hz,…` | | Conventional P25 channels |
 | `--dmr Hz,…` | | Conventional DMR channels |
 | `--nxdn48 Hz,…` `--nxdn96 Hz,…` | | Conventional NXDN channels |

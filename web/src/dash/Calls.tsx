@@ -8,6 +8,12 @@ import type { CallView, TalkgroupName } from "../protocol.ts";
 import { unitName } from "../units.ts";
 import { tgText } from "./Systems.tsx";
 
+/** An analog call on one of its conventional system's AM channels (calls say only analog). */
+function isAm(s: AppState, c: CallView): boolean {
+  const v = s.config?.conventional.find((x) => x.shortName === c.systemName);
+  return !!v?.channels.some((ch) => ch.mode === "am" && Math.abs(ch.freqHz - c.freqHz) < 1);
+}
+
 export function clock(s: number): string {
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
@@ -192,7 +198,7 @@ export function ActiveCalls({ s }: { s: AppState }) {
                   <td className="mono">
                     {formatMhz(c.freqHz, 4)}
                     {c.slot !== null && <span className="muted"> · s{c.slot}</span>}
-                    {c.analog && <span className="muted"> · FM{c.tone ? ` ${c.tone}` : ""}</span>}
+                    {c.analog && <span className="muted"> · {isAm(s, c) ? "AM" : "FM"}{c.tone ? ` ${c.tone}` : ""}</span>}
                     {c.nxdn && <span className="muted"> · {c.nxdn.toUpperCase()}{c.ran != null ? ` RAN ${c.ran}` : ""}</span>}
                   </td>
                   <td className="unit-cell">{c.sources.length ? <Unit id={c.sources.at(-1)!} alias={aliasOf(s, c.systemName, c.sources.at(-1)!)} /> : "—"}</td>

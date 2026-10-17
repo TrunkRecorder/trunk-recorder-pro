@@ -45,7 +45,7 @@ use super::control::{self, CarrierPlan, ControlChannel, Protocol, ProtocolStatus
 use super::voice::{self, CipherId, VoiceDecoder, VoiceKind, VoiceParams, VoiceSpec};
 use crate::alias::Alias;
 use crate::dsp::channelizer::floor_slices;
-use crate::dsp::{Channelizer, HeadId};
+use crate::dsp::{AnalogTuning, Channelizer, HeadId};
 use crate::mbe;
 use crate::metrics::{self, Scoped, Sink};
 use crate::p25::alias::AliasLc;
@@ -717,7 +717,8 @@ impl Radio {
         let _t = prof::span(match ch.voice.kind() {
             VoiceKind::Fdma => Stage::VoiceP25p1,
             VoiceKind::Tdma => Stage::VoiceP25p2,
-            VoiceKind::Analog => Stage::VoiceAnalog,
+            // (AM is conventional only.)
+            VoiceKind::Analog | VoiceKind::Am => Stage::VoiceAnalog,
             VoiceKind::Dmr => Stage::VoiceDmr,
             VoiceKind::Nxdn(_) => Stage::VoiceNxdn,
         });
@@ -797,6 +798,8 @@ impl SysHost<'_> {
             // Analog squelch: this far above the noise under the channel.
             squelch: (noise * 10f64.powf(ANALOG_SQUELCH_DB / 10.0)) as f32,
             subaudible: false,
+            analog: AnalogTuning::default(),
+            ignore_hz: Vec::new(),
             keys: self.keys.clone(),
         });
         let mut calls = [None, None];
@@ -2131,7 +2134,7 @@ impl Engine {
                     let kind = match ch.voice.kind() {
                         VoiceKind::Fdma => "p25p1",
                         VoiceKind::Tdma => "p25p2",
-                        VoiceKind::Analog => "analog",
+                        VoiceKind::Analog | VoiceKind::Am => "analog",
                         VoiceKind::Dmr => "dmr",
                         VoiceKind::Nxdn(_) => "nxdn",
                     };
@@ -2322,7 +2325,7 @@ mod tests {
     /// An engine on one source, with a conventional channel (so it runs).
     fn plain_engine() -> Engine {
         use super::super::conventional::{ConvChannel, ConvMode};
-        let ch = ConvChannel { freq_hz: 155.2e6, mode: ConvMode::Fm, talkgroup: 1, info: None, squelch_db: None, access: None, system: 0 };
+        let ch = ConvChannel { talkgroup: 1, ..ConvChannel::new(155.2e6, ConvMode::Fm) };
         Engine::new(EngineConfig { sources: vec![SourceConfig { center_hz: 155e6, rate_hz: 2.4e6, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ }], conventional: vec![ch], ..Default::default() }).unwrap()
     }
 

@@ -49,6 +49,7 @@ pub enum Stage {
     ConvScan,
     /// Open conventional channels' receivers (not their vocoder).
     ConvFm,
+    ConvAm,
     ConvP25,
     ConvDmr,
     ConvNxdn,
@@ -73,7 +74,7 @@ pub enum Stage {
 }
 
 impl Stage {
-    pub const ALL: [Stage; 30] = [
+    pub const ALL: [Stage; 31] = [
         Stage::ChzInput,
         Stage::ChzFft,
         Stage::ChzHead,
@@ -92,6 +93,7 @@ impl Stage {
         Stage::TrunkCalls,
         Stage::ConvScan,
         Stage::ConvFm,
+        Stage::ConvAm,
         Stage::ConvP25,
         Stage::ConvDmr,
         Stage::ConvNxdn,
@@ -126,6 +128,7 @@ impl Stage {
             Stage::TrunkCalls => "trunk.calls",
             Stage::ConvScan => "conv.scan",
             Stage::ConvFm => "conv.fm",
+            Stage::ConvAm => "conv.am",
             Stage::ConvP25 => "conv.p25",
             Stage::ConvDmr => "conv.dmr",
             Stage::ConvNxdn => "conv.nxdn",

@@ -80,3 +80,37 @@ pub fn lowpass(n: usize, fc: f64) -> Vec<f32> {
     h.into_iter().map(|v| v as f32).collect()
 }
 
+
+/// One second-order IIR section (direct form II transposed).
+#[derive(Clone, Copy)]
+pub struct Biquad {
+    b: [f32; 3],
+    a: [f32; 2],
+    z: [f32; 2],
+}
+
+impl Biquad {
+    /// From [b0, b1, b2, a1, a2] (a0 = 1).
+    pub fn new(c: [f64; 5]) -> Self {
+        Biquad { b: [c[0] as f32, c[1] as f32, c[2] as f32], a: [c[3] as f32, c[4] as f32], z: [0.0; 2] }
+    }
+    #[inline]
+    pub fn step(&mut self, x: f32) -> f32 {
+        let y = self.b[0] * x + self.z[0];
+        self.z[0] = self.b[1] * x - self.a[0] * y + self.z[1];
+        self.z[1] = self.b[2] * x - self.a[1] * y;
+        y
+    }
+}
+
+/// A 4th-order Butterworth high-pass at `fc` Hz for rate `fs`: two
+/// sections (bilinear, prewarped), 3 dB down at `fc`, 24 dB per octave below.
+pub fn butter_highpass4(fc: f64, fs: f64) -> [Biquad; 2] {
+    let w0 = 2.0 * PI * fc / fs;
+    // The two pole pairs' Q: 1 / (2 cos(π/8)), 1 / (2 cos(3π/8)).
+    [0.541_196_100_146_197, 1.306_562_964_876_376_7].map(|q| {
+        let alpha = w0.sin() / (2.0 * q);
+        let (c, a0) = (w0.cos(), 1.0 + alpha);
+        Biquad::new([(1.0 + c) / 2.0 / a0, -(1.0 + c) / a0, (1.0 + c) / 2.0 / a0, -2.0 * c / a0, (1.0 - alpha) / a0])
+    })
+}

@@ -426,7 +426,9 @@ export function nextTalkgroup(channels: Channel[], freqHz: number): number {
 function rowsProblem(rows: Channel[]): string | null {
   const mhz = formatMhz(rows[0].freqHz);
   if (rows.some((r) => r.mode !== rows[0].mode)) return `Conventional channel ${mhz} MHz is listed with different modes — rows sharing a frequency need the same one.`;
-  const what = { fm: "tone", p25: "NAC", dmr: "colour code, slot or talkgroup", nxdn48: "RAN or talkgroup", nxdn96: "RAN or talkgroup" }[rows[0].mode];
+  if (rows.some((r) => r.bandwidthKhz !== rows[0].bandwidthKhz)) return `Conventional channel ${mhz} MHz is listed with different bandwidths — rows sharing a frequency need the same one.`;
+  if (rows[0].mode === "am" && rows.length > 1) return `Conventional channel ${mhz} MHz is listed twice — AM has no tone or code to split a frequency by.`;
+  const what = { fm: "tone", am: "code", p25: "NAC", dmr: "colour code, slot or talkgroup", nxdn48: "RAN or talkgroup", nxdn96: "RAN or talkgroup" }[rows[0].mode];
   const tones = rows.map((r) => {
     const t = parseAccess(r.mode, r.tone ?? "");
     return "tone" in t ? t.tone : "";
@@ -453,6 +455,30 @@ export function nameProblem(c: Config): string | null {
 
 /** Conventional systems a config may have (the recorder's MAX_CONVENTIONAL). */
 export const MAX_CONVENTIONAL = 256;
+
+/** An analog channel's filter width a config may set, kHz, and the demod ranges (the recorder's config.rs). */
+export const BANDWIDTH_KHZ: [number, number] = [4, 20];
+export const AM_LOW_CUT_MAX_HZ = 600;
+export const SQUELCH_OPEN_MAX_MS = 500;
+export const SQUELCH_HANG_MAX_MS = 1000;
+
+/** The filter width a channel with none set gets, kHz (dsp::AnalogTuning): AM from 225 MHz (UHF military air) is wider. */
+export function defaultBandwidthKhz(ch: Channel): number {
+  return ch.mode === "am" && ch.freqHz >= 225e6 ? 16 : 11;
+}
+
+/** Widths to pick from for an analog channel, kHz. */
+export const BANDWIDTH_PRESETS: Record<"fm" | "am", { khz: number; label: string }[]> = {
+  fm: [
+    { khz: 11, label: "narrow" },
+    { khz: 16, label: "wide FM" },
+  ],
+  am: [
+    { khz: 6, label: "8.33 ch." },
+    { khz: 11, label: "25 kHz ch." },
+    { khz: 16, label: "wide" },
+  ],
+};
 
 /** The SmartNet band plans the recorder knows besides 400… / OBT (smartnet::Bandplan::from_config). */
 const BANDPLANS = ["", "800_standard", "800_domestic", "800_reband", "800_rebanded", "800_splinter", "800_domestic_splinter", "900"];
@@ -522,7 +548,7 @@ export function startProblem(c: Config): string | null {
 // recorder's channel file (crates/trunk-app/src/channels.rs) — keep them together.
 
 /** The columns channelsToCsv writes. */
-export const CHANNEL_CSV_HEADER = "TG Number,Frequency,Tone,Mode,Alpha Tag,Description,Tag,Category,Squelch dB,Enable";
+export const CHANNEL_CSV_HEADER = "TG Number,Frequency,Tone,Mode,Alpha Tag,Description,Tag,Category,Squelch dB,Bandwidth kHz,Enable";
 
 /** RFC-4180-ish split on `delim`. */
 function splitOn(line: string, delim: string): string[] {
@@ -587,6 +613,7 @@ export function parseChannelCsv(text: string): { channels: Channel[]; notes: str
   const cGroup = col("category", "group");
   const cMode = col("mode");
   const cSq = col("squelch db", "squelchdb");
+  const cBw = col("bandwidth khz", "bandwidthkhz", "bandwidth");
   const cTrSq = col("squelch");
   const cEnable = col("enable", "enabled");
   const cTone = col("tone");
@@ -595,6 +622,7 @@ export function parseChannelCsv(text: string): { channels: Channel[]; notes: str
   const badMode: number[] = [];
   const badTg: number[] = [];
   const badSq: number[] = [];
+  const badBw: number[] = [];
   const badTone: string[] = [];
   let search = false;
   for (const { row, l } of lines.slice(1)) {
@@ -612,6 +640,7 @@ export function parseChannelCsv(text: string): { channels: Channel[]; notes: str
     if (!m && (/NAC/i.test(raw) || raw.startsWith("$"))) mode = "p25";
     else if (!m && /^CC/i.test(raw)) mode = "dmr";
     else if (!m && /^RAN/i.test(raw)) mode = "nxdn48";
+    else if (m === "am") mode = "am";
     else if (["p25", "digital", "d"].includes(m)) mode = "p25";
     else if (m === "dmr") mode = "dmr";
     else if (m === "nxdn" || m === "nxdn48") mode = "nxdn48";
@@ -630,6 +659,12 @@ export function parseChannelCsv(text: string): { channels: Channel[]; notes: str
       if (Number.isFinite(sq) && sq >= 3 && sq <= 40) ch.squelchDb = sq;
       else badSq.push(row);
     }
+    const bwText = at(cBw);
+    if (bwText) {
+      const bw = Number(decimalComma ? bwText.replace(/,/g, ".") : bwText);
+      if (Number.isFinite(bw) && bw >= BANDWIDTH_KHZ[0] && bw <= BANDWIDTH_KHZ[1] && (mode === "fm" || mode === "am")) ch.bandwidthKhz = bw;
+      else badBw.push(row);
+    }
     if (at(cDesc)) ch.description = at(cDesc);
     if (at(cTag)) ch.tag = at(cTag);
     if (at(cGroup)) ch.group = at(cGroup);
@@ -641,9 +676,10 @@ export function parseChannelCsv(text: string): { channels: Channel[]; notes: str
   }
   const notes: string[] = [];
   if (badFreq.length) notes.push(`Skipped row(s) ${rowsList(badFreq)} — no usable frequency.`);
-  if (badMode.length) notes.push(`Row(s) ${rowsList(badMode)}: unknown Mode (use fm, p25, dmr, nxdn48 or nxdn96) — read as fm.`);
+  if (badMode.length) notes.push(`Row(s) ${rowsList(badMode)}: unknown Mode (use fm, am, p25, dmr, nxdn48 or nxdn96) — read as fm.`);
   if (badTg.length) notes.push(`Row(s) ${rowsList(badTg)}: TG Number isn't a positive whole number — using the default.`);
   if (badSq.length) notes.push(`Row(s) ${rowsList(badSq)}: Squelch dB must be 3–40 (dB above the noise) — using the default.`);
+  if (badBw.length) notes.push(`Row(s) ${rowsList(badBw)}: Bandwidth kHz must be 4–20, on an fm or am channel — using the default.`);
   if (badTone.length) notes.push(`Tone not read (the row records any): ${badTone.join("; ")}.`);
   if (search) notes.push("Tone S (search) needs no setting here: every analog call's tone is identified and written to its JSON.");
   if (cTrSq >= 0 && cSq < 0) notes.push("The Squelch column (Trunk Recorder's absolute level) was not read: use Squelch dB, in dB above the noise floor.");
@@ -674,6 +710,7 @@ export function channelsToCsv(channels: Channel[]): string {
       csvCell(c.tag),
       csvCell(c.group),
       c.squelchDb ?? "",
+      c.bandwidthKhz ?? "",
       String(c.enabled),
     ].join(","),
   );

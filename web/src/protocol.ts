@@ -81,7 +81,7 @@ export interface Radios {
 /** A conventional channel. `talkgroup` defaults to the frequency in kHz; `squelchDb` to the section's. */
 export interface Channel {
   freqHz: number;
-  mode: "fm" | "p25" | "dmr" | "nxdn48" | "nxdn96";
+  mode: "fm" | "am" | "p25" | "dmr" | "nxdn48" | "nxdn96";
   name: string;
   talkgroup?: number;
   /** FM: the CTCSS tone or DCS code it records, Trunk Recorder's form ("151.4", "D023N"); absent / "": any. */
@@ -90,7 +90,23 @@ export interface Channel {
   tag?: string;
   group?: string;
   squelchDb?: number;
+  /** FM / AM: the channel filter's width, kHz (4–20); absent = the mode's (FM 11, AM 11 or 16 from 225 MHz). */
+  bandwidthKhz?: number;
   enabled: boolean;
+}
+
+/** How a conventional system's analog channels are demodulated; each left out is the default. */
+export interface Demod {
+  /** FM: undo 750 µs pre-emphasis (default true). */
+  fmDeemphasis?: boolean;
+  /** AM: how fast the level follows the carrier (default fast: 50 ms; slow: 0.5 s). */
+  amLevel?: "fast" | "slow";
+  /** AM: audio high-pass corner, Hz (default 200; 0 = none). */
+  amLowCutHz?: number;
+  /** Carrier held this long before the audio opens, ms (default 30). */
+  squelchOpenMs?: number;
+  /** Audio kept open this long after the carrier goes, ms (default 2). */
+  squelchHangMs?: number;
 }
 
 /** A P25 site's identity (NAC, WACN, System ID are hex on the air). Absent = unknown / any. */
@@ -298,6 +314,7 @@ export interface Conventional {
   enabled: boolean;
   /** Open threshold above the noise floor, dB (each channel may have its own). */
   squelchDb: number;
+  demod?: Demod;
   /** Desktop: a CSV the channels are read from ("" = the list here). Changed with the channelFile message. */
   channelFile?: string;
   channels: Channel[];

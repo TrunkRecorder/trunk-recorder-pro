@@ -2,6 +2,11 @@ import { Fragment, useId, useRef, useState } from "react";
 import {
   activeSystems,
   AIRSPY_RATES,
+  AM_LOW_CUT_MAX_HZ,
+  BANDWIDTH_PRESETS,
+  defaultBandwidthKhz,
+  SQUELCH_HANG_MAX_MS,
+  SQUELCH_OPEN_MAX_MS,
   channelsToCsv,
   channelTalkgroups,
   defaultLog,
@@ -34,7 +39,7 @@ import { currentView, dismissTodo, downloadText, findRadios, openGuide, refreshD
 import { M4aSettings, PluginSetupPanel, renameSystemRefs, SystemPluginSettings } from "./Plugins.tsx";
 import { SystemDelays } from "./Delays.tsx";
 import { IconAntenna, IconDongle, IconFolder, IconPuzzle, IconTower } from "./Onboarding.tsx";
-import type { AirspyGainMode, Channel, Config, Conventional, HeardCode, LockableKeys, LogSettings, Recording, RecordingOverride, RecordingRules, SiteIdentity, SoapyState, Source, System, UnitNames } from "./protocol.ts";
+import type { AirspyGainMode, Channel, Config, Conventional, Demod, HeardCode, LockableKeys, LogSettings, Recording, RecordingOverride, RecordingRules, SiteIdentity, SoapyState, Source, System, UnitNames } from "./protocol.ts";
 import { DEFAULT_FORMAT, FilenameEditor } from "./FilenameEditor.tsx";
 import { GuardBand } from "./Rolloff.tsx";
 import { SurveyPanel } from "./Survey.tsx";
@@ -161,8 +166,25 @@ function KeyContainer(props: { k: LockableKeys }) {
   );
 }
 
+/** A conventional channel's modes, as the mode menus list them. */
+const MODE_OPTIONS: { mode: Channel["mode"]; label: string }[] = [
+  { mode: "fm", label: "Analog FM" },
+  { mode: "am", label: "Analog AM" },
+  { mode: "p25", label: "P25" },
+  { mode: "dmr", label: "DMR" },
+  { mode: "nxdn48", label: "NXDN48 (6.25 kHz)" },
+  { mode: "nxdn96", label: "NXDN96 (12.5 kHz)" },
+];
+
+const modeOptions = MODE_OPTIONS.map((o) => (
+  <option key={o.mode} value={o.mode}>
+    {o.label}
+  </option>
+));
+
 const TONE_HINT = {
   fm: { placeholder: "any", title: "CTCSS tone or DCS code (151.4 PL, 023 DPL). Empty: any." },
+  am: { placeholder: "—", title: "AM carries no tone or code." },
   p25: { placeholder: "any NAC", title: "NAC, hex (293). Empty: any." },
   dmr: { placeholder: "any CC", title: "Colour code, optional slot and talkgroup (CC1 TS2 TG201). Empty: any." },
   nxdn48: { placeholder: "any RAN", title: "RAN, optional talkgroup (RAN 5 TG 201). Empty or RAN 0: any." },
@@ -180,6 +202,7 @@ function ToneInput(props: { mode: Channel["mode"]; tone: string; disabled?: bool
       value={props.tone}
       codec={asTyped}
       placeholder={TONE_HINT[props.mode].placeholder}
+      readOnly={props.mode === "am" && !props.tone}
       aria-label="Tone"
       aria-invalid={!!error}
       title={error ?? TONE_HINT[props.mode].title}
@@ -189,7 +212,7 @@ function ToneInput(props: { mode: Channel["mode"]; tone: string; disabled?: bool
   );
 }
 
-const NONE_LABEL = { fm: "no tone", p25: "no NAC", dmr: "no code", nxdn48: "no code", nxdn96: "no code" };
+const NONE_LABEL = { fm: "no tone", am: "no code", p25: "no NAC", dmr: "no code", nxdn48: "no code", nxdn96: "no code" };
 const SHOWN_CODES = 8;
 
 /**
@@ -212,7 +235,7 @@ function HeardRow(props: { rows: Channel[]; heard: HeardCode[]; linked: boolean;
   return (
     <tr className="heard-row">
       <td />
-      <td colSpan={7}>
+      <td colSpan={8}>
         <span className="muted small">Heard:</span>
         {shown.map((h) => (
           <span key={h.code} className="heard-code" title={`Last heard ${new Date(h.lastMs).toLocaleString()}`}>
@@ -877,7 +900,7 @@ function ConventionalTab(props: { c: Config }) {
   return (
     <Section
       title="Conventional systems"
-      hint="Single frequencies (analog FM, P25, DMR or NXDN), kept together as a system with its own folder."
+      hint="Single frequencies (analog FM or AM, P25, DMR or NXDN), kept together as a system with its own folder."
       actions={
         <>
           <ExpandAll prefix="conv-" n={c.conventional.length} />
@@ -939,6 +962,7 @@ function ConventionalPanel(props: { c: Config; k: number }) {
     const ch = chans[i];
     const at = lastOfFreq(i);
     const row: Channel = { freqHz: ch.freqHz, mode: ch.mode, name: "", enabled: true, tone };
+    if (ch.bandwidthKhz !== undefined) row.bandwidthKhz = ch.bandwidthKhz;
     // A DMR / NXDN code naming a talkgroup files under it; others get the next free number.
     if (!(ch.mode !== "fm" && ch.mode !== "p25" && /\bTG \d/.test(tone))) row.talkgroup = nextTalkgroup(chans, ch.freqHz);
     if (!tone) delete row.tone;
@@ -1100,11 +1124,7 @@ function ConventionalPanel(props: { c: Config; k: number }) {
             <div className="row">
               <input className="mono grow" value={bulk} placeholder="154.430, 155.100, 460.125" onChange={(e) => setBulk(e.target.value)} />
               <select value={bulkMode} onChange={(e) => setBulkMode(e.target.value as Channel["mode"])} aria-label="Mode for the added channels">
-                <option value="fm">Analog FM</option>
-                <option value="p25">P25</option>
-                <option value="dmr">DMR</option>
-                <option value="nxdn48">NXDN48 (6.25 kHz)</option>
-                <option value="nxdn96">NXDN96 (12.5 kHz)</option>
+                {modeOptions}
               </select>
               <button
                 className="btn"
@@ -1128,6 +1148,7 @@ function ConventionalPanel(props: { c: Config; k: number }) {
                     <th title="Record this channel">On</th>
                     <th>Frequency, MHz</th>
                     <th>Mode</th>
+                    <th title="Analog: the channel filter's width">Bandwidth</th>
                     <th title="Tone, NAC, colour code or RAN to record; blank takes the rest">
                       Tone
                     </th>
@@ -1148,13 +1169,36 @@ function ConventionalPanel(props: { c: Config; k: number }) {
                         {linked ? <span className="mono">{mhzCell(ch.freqHz)}</span> : <DraftInput className="mono" codec={mhz} value={ch.freqHz} placeholder="MHz" aria-label="Frequency, MHz" onChange={(hz) => editRow(i, (x) => void (x.freqHz = hz))} />}
                       </td>
                       <td>
-                        <select value={ch.mode} disabled={linked} aria-label="Mode" onChange={(e) => editRow(i, (x) => void (x.mode = e.target.value as Channel["mode"]))}>
-                          <option value="fm">Analog FM</option>
-                          <option value="p25">P25</option>
-                          <option value="dmr">DMR</option>
-                          <option value="nxdn48">NXDN48 (6.25 kHz)</option>
-                          <option value="nxdn96">NXDN96 (12.5 kHz)</option>
+                        <select
+                          value={ch.mode}
+                          disabled={linked}
+                          aria-label="Mode"
+                          onChange={(e) =>
+                            editRow(i, (x) => {
+                              x.mode = e.target.value as Channel["mode"];
+                              // A bandwidth is the mode's (AM's and FM's mean different channels); AM has no codes.
+                              delete x.bandwidthKhz;
+                              if (x.mode === "am") delete x.tone;
+                            })
+                          }
+                        >
+                          {modeOptions}
                         </select>
+                      </td>
+                      <td>
+                        <BandwidthSelect
+                          ch={ch}
+                          disabled={linked}
+                          onChange={(khz) =>
+                            edit((x) => {
+                              // Rows sharing the frequency share it.
+                              for (const r of x.channels.filter((o) => Math.abs(o.freqHz - ch.freqHz) < 1)) {
+                                if (khz === undefined) delete r.bandwidthKhz;
+                                else r.bandwidthKhz = khz;
+                              }
+                            })
+                          }
+                        />
                       </td>
                       <td>
                         <ToneInput
@@ -1206,7 +1250,7 @@ function ConventionalPanel(props: { c: Config; k: number }) {
                       <td>
                         {!linked && (
                           <span className="row-actions">
-                            {ch.freqHz > 0 && (
+                            {ch.freqHz > 0 && ch.mode !== "am" && (
                               <button
                                 className="btn ghost small"
                                 title={`Another ${{ fm: "tone", p25: "NAC", dmr: "colour code or talkgroup", nxdn48: "RAN or talkgroup", nxdn96: "RAN or talkgroup" }[ch.mode]} on this frequency`}
@@ -1273,15 +1317,28 @@ function ConventionalPanel(props: { c: Config; k: number }) {
           <summary>CSV format</summary>
           <p className="small">
             A header row, then one channel per row; <b>Export CSV</b> writes one to start from. Columns, in any order: <code>TG Number</code> (empty = the
-            frequency in kHz), <code>Frequency</code> (MHz with a decimal point, or Hz), <code>Mode</code> (<code>fm</code>, <code>p25</code>,{" "}
+            frequency in kHz), <code>Frequency</code> (MHz with a decimal point, or Hz), <code>Mode</code> (<code>fm</code>, <code>am</code>, <code>p25</code>,{" "}
             <code>dmr</code>, <code>nxdn48</code> or <code>nxdn96</code>; empty = fm, or what the Tone says: a NAC p25, a colour code dmr, a RAN nxdn48),{" "}
             <code>Tone</code> (the code the row records: a CTCSS tone <code>151.4</code>, a DCS code <code>D023N</code>, a NAC <code>NAC 293</code>, a
             colour code <code>CC1 TS2 TG201</code>, a RAN <code>RAN 5</code>; empty = any), <code>Alpha Tag</code>, <code>Description</code>,{" "}
-            <code>Tag</code>, <code>Category</code>, <code>Squelch dB</code> (above the noise; empty = the default), <code>Enable</code> (<code>false</code> =
+            <code>Tag</code>, <code>Category</code>, <code>Squelch dB</code> (above the noise; empty = the default), <code>Bandwidth kHz</code> (fm and am: the
+            channel filter's width, 4–20; empty = the default), <code>Enable</code> (<code>false</code> =
             off). Trunk Recorder's channel file reads as is; its <code>Squelch</code> column (an absolute level) isn't used.
           </p>
         </details>
       </Group>
+      {chans.some((ch) => ch.mode === "fm" || ch.mode === "am") && (
+        <DemodGroup
+          conv={conv}
+          edit={(fn) =>
+            edit((x) => {
+              x.demod = { ...x.demod };
+              fn(x.demod);
+              if (!Object.keys(x.demod).length) delete x.demod;
+            })
+          }
+        />
+      )}
       {chans.length > 0 && (
         <Group title="Units" hint="Names for the radios heard on these channels." cols={1}>
           <UnitNamesField
@@ -1315,6 +1372,80 @@ function ConventionalPanel(props: { c: Config; k: number }) {
         </Group>
       )}
     </Card>
+  );
+}
+
+/** An analog channel's filter width: the mode's default, or a preset (or what a file set). */
+function BandwidthSelect(props: { ch: Channel; disabled: boolean; onChange: (khz: number | undefined) => void }) {
+  const { ch } = props;
+  if (ch.mode !== "fm" && ch.mode !== "am") return <span className="muted">—</span>;
+  const presets = BANDWIDTH_PRESETS[ch.mode];
+  const value = ch.bandwidthKhz === undefined ? "" : String(ch.bandwidthKhz);
+  const custom = ch.bandwidthKhz !== undefined && !presets.some((p) => p.khz === ch.bandwidthKhz);
+  return (
+    <select
+      value={value}
+      disabled={props.disabled}
+      aria-label="Bandwidth"
+      title={
+        ch.mode === "fm"
+          ? "The channel filter: narrow for 12.5 kHz channels, wide FM for 25 kHz ones (±5 kHz deviation)."
+          : "The channel filter: 8.33 kHz or 25 kHz airband channels, or wide for UHF military air and a transmitter that is off frequency."
+      }
+      onChange={(e) => props.onChange(e.target.value ? Number(e.target.value) : undefined)}
+    >
+      <option value="">Default ({defaultBandwidthKhz(ch)} kHz)</option>
+      {presets.map((p) => (
+        <option key={p.khz} value={p.khz}>
+          {p.khz} kHz: {p.label}
+        </option>
+      ))}
+      {custom && <option value={value}>{value} kHz</option>}
+    </select>
+  );
+}
+
+/** A conventional system's demodulation settings, for the analog modes it has; each left at Default is left out. */
+function DemodGroup(props: { conv: Conventional; edit: (fn: (d: Demod) => void) => void }) {
+  const d = props.conv.demod ?? {};
+  const fm = props.conv.channels.some((ch) => ch.mode === "fm");
+  const am = props.conv.channels.some((ch) => ch.mode === "am");
+  const set = <K extends keyof Demod>(k: K, v: Demod[K] | undefined) =>
+    props.edit((x) => {
+      if (v === undefined) delete x[k];
+      else x[k] = v;
+    });
+  const clamp = (v: number | undefined, max: number) => (v === undefined ? undefined : Math.max(0, Math.min(max, Math.round(v))));
+  return (
+    <Group title="Demodulation" hint="How the analog channels become audio. Each channel's bandwidth is in its row. Default suits most channels." cols={3}>
+      {fm && (
+        <Field label="FM de-emphasis" hint="Off for channels sent without pre-emphasis: they sound muffled with it">
+          <select value={d.fmDeemphasis === false ? "off" : ""} onChange={(e) => set("fmDeemphasis", e.target.value === "off" ? false : undefined)}>
+            <option value="">Default (750 µs)</option>
+            <option value="off">Off</option>
+          </select>
+        </Field>
+      )}
+      {am && (
+        <Field label="AM level" hint="How fast the volume follows a fading carrier: Fast keeps an aircraft steady, Slow pumps less on a steady signal">
+          <select value={d.amLevel ?? ""} onChange={(e) => set("amLevel", e.target.value === "slow" ? "slow" : undefined)}>
+            <option value="">Default (Fast, 50 ms)</option>
+            <option value="slow">Slow (0.5 s)</option>
+          </select>
+        </Field>
+      )}
+      {am && (
+        <Field label="AM low cut, Hz" hint="Takes carrier hum and flutter from under the voice. 0: none">
+          <NumberInput label="AM low cut, Hz" value={d.amLowCutHz} placeholder="200" onChange={(v) => set("amLowCutHz", clamp(v, AM_LOW_CUT_MAX_HZ))} />
+        </Field>
+      )}
+      <Field label="Squelch open delay, ms" hint="The carrier must hold this long, so a neighbour's splatter doesn't open it">
+        <NumberInput label="Squelch open delay, ms" value={d.squelchOpenMs} placeholder="30" onChange={(v) => set("squelchOpenMs", clamp(v, SQUELCH_OPEN_MAX_MS))} />
+      </Field>
+      <Field label="Squelch hang, ms" hint="Bridges fades on weak signals; the noise after a transmission is still cut. Live audio runs this much later">
+        <NumberInput label="Squelch hang, ms" value={d.squelchHangMs} placeholder="2" onChange={(v) => set("squelchHangMs", clamp(v, SQUELCH_HANG_MAX_MS))} />
+      </Field>
+    </Group>
   );
 }
 

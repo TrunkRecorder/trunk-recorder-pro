@@ -84,15 +84,16 @@ export function sameTone(a: string, b: string): boolean {
 /**
  * A row's Tone column for its mode, in the recorder's form (crates/trunk-core
  * src/trunk/conventional.rs: Access::parse — keep them together): FM as
- * parseTone; P25's NAC (`293`, `293 NAC`, `$293`, `0x293` → `NAC 293`; `F7E`
+ * parseTone; AM none; P25's NAC (`293`, `293 NAC`, `$293`, `0x293` → `NAC 293`; `F7E`
  * / `F7F` = any); DMR's colour code, slot and talkgroup (`CC1`, `1`,
  * `CC1 TS2 TG201`, `CC 1 TG 201 SL 2` → `CC 1 TS 2 TG 201`); NXDN's RAN
  * and group (`RAN 5`, `5`, `ran5 tg 201` → `RAN 5 TG 201`; RAN 0 = any).
  */
-export function parseAccess(mode: "fm" | "p25" | "dmr" | "nxdn48" | "nxdn96", text: string): { tone: string } | { error: string } {
+export function parseAccess(mode: "fm" | "am" | "p25" | "dmr" | "nxdn48" | "nxdn96", text: string): { tone: string } | { error: string } {
   if (mode === "fm") return parseTone(text);
   const up = text.trim().toUpperCase();
   if (["", "0", "S", "ANY", "NONE", "SEARCH"].includes(up)) return { tone: "" };
+  if (mode === "am") return { error: `"${text.trim()}": AM channels carry no tone or code — leave it empty` };
   if (mode === "p25") {
     const bad = { error: `"${text.trim()}" isn't a NAC (up to 3 hex digits, like 293)` };
     let body = up
