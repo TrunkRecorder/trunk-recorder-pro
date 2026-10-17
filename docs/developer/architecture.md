@@ -67,9 +67,11 @@ calls `WebSession.push` / `poll` directly, and keeps call files in OPFS.
 Stages in order. Thread in brackets.
 
 1. **SDR driver** [`source-N`]. Produces a block of IQ:
-   - RTL-SDR (`trunk-pro/src/sdr.rs`, pure-Rust `rtlsdr-nusb`): 262,144-byte USB transfers
-     (131,072 IQ samples, about 55 ms at 2.4 MSPS), 8 transfers in flight. Sent as raw `u8`
-     (`SourceMsg::Data`).
+   - RTL-SDR (`trunk-pro/src/sdr.rs`, pure-Rust `rtlsdr-nusb`, our fork in `crates/rtlsdr-nusb`
+     with settable transfers, `RxBuffers`): by default 262,144-byte USB transfers (131,072 IQ
+     samples, about 55 ms at 2.4 MSPS), 8 in flight; `bufLen` / `buffers` per source
+     (`RtlConfig::rx_buffers`: a smaller `bufLen` gets more transfers, about 2 MiB in flight).
+     Sent as raw `u8` (`SourceMsg::Data`).
    - USRP (`radio/uhd.rs`, UHD loaded at run time): about 10 ms per block, float IQ
      (`SourceMsg::Iq`). Adds `num_recv_frames=256` to the device args.
    - Airspy (`radio/airspy.rs`): whatever libairspy hands its callback, float IQ.
@@ -579,7 +581,7 @@ then earliest start. The others become `Duplicate` events.
 | Queue | Capacity | Producer → consumer | When full |
 |---|---|---|---|
 | Source → engine | 256 blocks | source threads → engine | sender blocks; driver overflows; drops reported and gap-filled |
-| rtlsdr-nusb USB transfers | 8 × 256 KiB | USB → source thread | device FIFO overflows |
+| rtlsdr-nusb USB transfers | 8 × 256 KiB (`bufLen` / `buffers`) | USB → source thread | device FIFO overflows; caught by `ClockFit` as unreported loss |
 | UHD receive frames | 256 frames | USRP → UHD | overflow `O`; counted from the timestamp gap |
 | Hub (tokio broadcast) | 4,096 messages | engine, finish, monitor → each WebSocket | a lagging client loses its oldest messages (silently); others unaffected |
 | Finish | 1,024 calls | engine → finish thread | the engine thread writes the call itself, without M4A |
@@ -965,7 +967,7 @@ last_error_text, endpoints [{ name, state, latency_ms, last_ok, last_error }], e
 
 | Type | Other keys |
 |---|---|
-| `rtlsdr` | `serial` (required; "" = first free), `gainDb` 25.4, `agc` false, `ppm` (integer, required) |
+| `rtlsdr` | `serial` (required; "" = first free), `gainDb` 25.4, `agc` false, `ppm` (integer, required), `bufLen` 0 (= 262144), `buffers` 0 (= about 2 MiB) |
 | `usrp` | `args` "", `gainDb` 40, `agc` false, `antenna` "", `ppm` 0 |
 | `airspy` | `serial` "", `gainMode` linearity / sensitivity / manual, `gainStep` 14, `lnaStep` / `mixerStep` / `vgaStep` 10, `agc`, `biasTee`, `packing` true, `ppm` |
 | `soapy` | `args` "", `agc` true, `gainDb` null, `gains` {}, `antenna` "", `settings` "", `ppm` 0 |

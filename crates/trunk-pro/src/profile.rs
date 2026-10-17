@@ -88,6 +88,8 @@ pub fn cli(a: &crate::Args) {
             ppm: 0,
             auto_tune: false,
             guard_hz,
+            buf_len: a.num("buflen", 0.0) as u32,
+            buffers: a.num("buffers", 0.0) as u32,
         },
     };
     let cfg = Config { sources: vec![src], ..Default::default() };

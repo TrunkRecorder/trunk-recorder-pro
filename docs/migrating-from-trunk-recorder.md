@@ -45,7 +45,7 @@ The importer reads Trunk Recorder's keys and writes this app's. A key not listed
 
 | Trunk Recorder | Trunk Recorder Pro |
 |---|---|
-| `driver: "osmosdr"`, `device: "rtl=…"` | `rtlsdr` source. A serial becomes `serial`; a device index (`rtl=0`) becomes `""`, the first free dongle. A `rate` over 3.2 MSPS becomes 2.4 MSPS |
+| `driver: "osmosdr"`, `device: "rtl=…"` | `rtlsdr` source. A serial becomes `serial`; a device index (`rtl=0`) becomes `""`, the first free dongle. `buflen=` → `bufLen`, `buffers=` → `buffers`. A `rate` over 3.2 MSPS becomes 2.4 MSPS |
 | `device` containing `airspy` | `airspy` source. The serial from `airspy=0x…`; `bias=1` → `biasTee`. `lnaGain`, `mixGain`, `ifGain` / `vgaGain` (or `gainSettings` LNA / MIX / IF) → manual mode steps; otherwise `gain` → the linearity step (0–21). A rate the Airspy can't do becomes 6 MSPS |
 | `device: "hackrf=…"`, `bladerf`, `airspyhf`, `lime` / `limesdr`, `sdrplay`, `plutosdr`, `redpitaya`, `xtrx`, or `soapy=…` | `soapy` source with matching `args` (`driver=hackrf`, plus `serial=…` when the device string had one; `soapy=` arguments kept as they are). Stage gains (`lnaGain`, `vgaGain`, `ampGain`, `ifGain`, `bbGain`, `mixGain`, `tiaGain`, `pgaGain`, `vga1Gain`, `vga2Gain`, `gainSettings`) → `gains`. AGC is on if `agc` was, or if no gain was given |
 | `driver: "usrp"` | `usrp` source; `device` → `args`, `antenna` → `antenna` |

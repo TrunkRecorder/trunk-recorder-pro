@@ -67,7 +67,7 @@ export const USRP_RATES = [2_400_000, 4_000_000, 5_000_000, 6_400_000, 8_000_000
 export const AIRSPY_RATES = [10_000_000, 6_000_000, 3_000_000, 2_500_000];
 
 export function newDongle(): Source {
-  return { type: "rtlsdr", serial: "", centerHz: 0, rateHz: 2_400_000, gainDb: RTL_DEFAULT_GAIN_DB, agc: false, ppm: 0 };
+  return { type: "rtlsdr", serial: "", centerHz: 0, rateHz: 2_400_000, gainDb: RTL_DEFAULT_GAIN_DB, agc: false, ppm: 0, bufLen: 0, buffers: 0 };
 }
 export function newUsrp(): Source {
   return { type: "usrp", args: "", centerHz: 0, rateHz: 8_000_000, gainDb: 40, agc: false, antenna: "", ppm: 0 };
@@ -808,7 +808,8 @@ const OSMOSDR_DRIVERS: Record<string, string> = {
  * A Trunk Recorder osmosdr device string → SoapySDR device arguments, or null
  * when it's a radio with its own source (rtl=, airspy=, uhd). "soapy=0,driver=sdrplay"
  * keeps its arguments; "hackrf=0" → "driver=hackrf"; "hackrf=0000000000000000a06063c8"
- * → "driver=hackrf,serial=…". Other osmosdr options (bias=1, buffers=…) are left out.
+ * → "driver=hackrf,serial=…". Other osmosdr options (bias=1, buffers=…) are left out
+ * (an RTL-SDR source keeps buflen= and buffers=).
  */
 export function osmosdrToSoapy(dev: string): string | null {
   const parts = dev.split(",").map((p) => p.trim()).filter(Boolean);
@@ -1114,6 +1115,11 @@ export function importTrunkRecorderConfig(
       continue;
     }
     const serial = /rtl=([^,\s]+)/.exec(dev)?.[1] ?? "";
+    // osmosdr's buflen= / buffers= (bytes per USB transfer, transfers in flight).
+    const bufLen = Number(/buflen=(\d+)/.exec(dev)?.[1] ?? 0);
+    const buffers = Number(/buffers=(\d+)/.exec(dev)?.[1] ?? 0);
+    const okLen = bufLen % 512 === 0 && bufLen <= 16 << 20;
+    if (!okLen) notes.push(`buflen=${bufLen} isn't a multiple of 512 bytes; using the default USB transfer size.`);
     let rate = typeof s.rate === "number" ? s.rate : 2_400_000;
     if (rate > 3_200_000) {
       notes.push(`Rate ${rate} is more than an RTL-SDR can do; using 2.4 MSPS.`);
@@ -1127,6 +1133,8 @@ export function importTrunkRecorderConfig(
       gainDb: gain ?? RTL_DEFAULT_GAIN_DB,
       agc,
       ppm: Math.round(ppm),
+      bufLen: okLen ? bufLen : 0,
+      buffers: Math.min(buffers, 256),
       ...autoTune,
     });
   }
