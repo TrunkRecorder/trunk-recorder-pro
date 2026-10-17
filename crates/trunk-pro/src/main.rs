@@ -96,6 +96,7 @@ mod monitor;
 mod nxdntool;
 mod p25synth;
 mod paths;
+mod perf;
 mod platform;
 mod snrtool;
 mod plugins;
@@ -135,7 +136,7 @@ pub struct Args {
 /// any option, these included (`--start=0`).
 const FLAGS: &[&str] = &[
     "analog-default", "auto-tune", "bursts", "capture-frames", "diversity", "dmr-trunk", "frames", "full", "hard-fec", "keep-silent", "messages", "no-gain", "no-open",
-    "no-unknown", "osw", "quality", "quiet", "record-encrypted", "s16", "separation", "start",
+    "no-unknown", "osw", "quality", "quiet", "record-encrypted", "s16", "separation", "start", "threads",
 ];
 
 impl Args {
@@ -464,7 +465,7 @@ fn replay(a: &Args) {
         capture_frames: a.flag("capture-frames"),
         ..Default::default()
     };
-    let mut engine = Engine::new(cfg).unwrap_or_else(|e| die(&e));
+    let engine = Engine::new(cfg).unwrap_or_else(|e| die(&e));
     // One band plan file per system (with several: <file>.<shortName>).
     let bandplans: Vec<String> = a.get("bandplan").map_or_else(Vec::new, |p| {
         engine.systems().iter().map(|s| if multi { format!("{p}.{}", s.short_name) } else { p.to_string() }).collect()
@@ -492,32 +493,79 @@ fn replay(a: &Args) {
     // Interleave the sources in ~13.6 ms chunks (rtl_sdr's 32768-sample transfers
     // at 2.4 MSPS), so their clocks advance together as they would live.
     let chunk_s = 32768.0 / 2_400_000.0;
-    let mut pos = vec![0usize; data.len()];
     let mut written = 0;
-    loop {
-        let mut any = false;
-        for (i, (file, len)) in data.iter_mut().enumerate() {
-            let bps = formats[i].bytes_per_sample();
-            let n = ((engine.sources()[i].rate_hz * chunk_s) as usize) * bps;
-            let end = (pos[i] + n).min(*len - *len % bps);
-            if pos[i] < end {
-                buf.resize(end - pos[i], 0);
-                file.read_exact(&mut buf).unwrap_or_else(|e| die(&format!("{}: {e}", files[i])));
-                match formats[i] {
-                    config::SampleFormat::Cu8 => engine.push_u8(i, &buf),
-                    f => engine.push_iq(i, &trunk_app::samples::to_iq(f, &buf)),
-                }
-                pos[i] = end;
-                any = true;
+    if a.flag("threads") {
+        // --threads: each source fed from a thread of its own, as live — none
+        // more than LEAD chunks (~55 ms of air) ahead of the slowest.
+        const LEAD: usize = 4;
+        let done: Vec<std::sync::atomic::AtomicUsize> = data.iter().map(|_| Default::default()).collect();
+        let running = std::sync::atomic::AtomicUsize::new(data.len());
+        std::thread::scope(|sc| {
+            for (i, (mut file, len)) in data.drain(..).enumerate() {
+                let (engine, done, running, files, formats) = (&engine, &done, &running, &files, &formats);
+                std::thread::Builder::new()
+                    .name(format!("dsp-{i}"))
+                    .spawn_scoped(sc, move || {
+                        use std::sync::atomic::Ordering::SeqCst;
+                        let bps = formats[i].bytes_per_sample();
+                        let n = ((engine.sources()[i].rate_hz * chunk_s) as usize) * bps;
+                        let (mut pos, mut k, mut buf) = (0usize, 0usize, Vec::new());
+                        loop {
+                            let end = (pos + n).min(len - len % bps);
+                            if pos >= end {
+                                break;
+                            }
+                            while done.iter().enumerate().any(|(j, d)| j != i && d.load(SeqCst) + LEAD < k && d.load(SeqCst) != usize::MAX) {
+                                std::thread::yield_now();
+                            }
+                            buf.resize(end - pos, 0);
+                            file.read_exact(&mut buf).unwrap_or_else(|e| die(&format!("{}: {e}", files[i])));
+                            match formats[i] {
+                                config::SampleFormat::Cu8 => engine.push_u8(i, &buf),
+                                f => engine.push_iq(i, &trunk_app::samples::to_iq(f, &buf)),
+                            }
+                            pos = end;
+                            k += 1;
+                            done[i].store(k, SeqCst);
+                        }
+                        // (Finished: no longer holds the others back.)
+                        done[i].store(usize::MAX, SeqCst);
+                        running.fetch_sub(1, SeqCst);
+                    })
+                    .expect("thread");
             }
-        }
-        written += handle_events(&mut engine, &out_dir, multi, quiet, a.flag("messages"));
-        if !any {
-            break;
+            while running.load(std::sync::atomic::Ordering::SeqCst) > 0 {
+                written += handle_events(&engine, &out_dir, multi, quiet, a.flag("messages"));
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        });
+    } else {
+        let mut pos = vec![0usize; data.len()];
+        loop {
+            let mut any = false;
+            for (i, (file, len)) in data.iter_mut().enumerate() {
+                let bps = formats[i].bytes_per_sample();
+                let n = ((engine.sources()[i].rate_hz * chunk_s) as usize) * bps;
+                let end = (pos[i] + n).min(*len - *len % bps);
+                if pos[i] < end {
+                    buf.resize(end - pos[i], 0);
+                    file.read_exact(&mut buf).unwrap_or_else(|e| die(&format!("{}: {e}", files[i])));
+                    match formats[i] {
+                        config::SampleFormat::Cu8 => engine.push_u8(i, &buf),
+                        f => engine.push_iq(i, &trunk_app::samples::to_iq(f, &buf)),
+                    }
+                    pos[i] = end;
+                    any = true;
+                }
+            }
+            written += handle_events(&engine, &out_dir, multi, quiet, a.flag("messages"));
+            if !any {
+                break;
+            }
         }
     }
     engine.finish();
-    written += handle_events(&mut engine, &out_dir, multi, quiet, a.flag("messages"));
+    written += handle_events(&engine, &out_dir, multi, quiet, a.flag("messages"));
     let cpu = t0.elapsed().as_secs_f64();
     for (i, p) in bandplans.iter().enumerate() {
         let _ = fs::write(p, engine.bandplan(i));
@@ -589,7 +637,7 @@ fn sys_tag(engine: &Engine, system: u16) -> String {
 }
 
 /// Several systems: each writes to `<out>/<shortName>/`.
-fn handle_events(engine: &mut Engine, out_dir: &str, multi: bool, quiet: bool, messages: bool) -> usize {
+fn handle_events(engine: &Engine, out_dir: &str, multi: bool, quiet: bool, messages: bool) -> usize {
     let mut written = 0;
     for ev in engine.drain_events() {
         match ev {
@@ -706,6 +754,8 @@ fn fatal(msg: &str) -> ! {
 fn serve(a: &Args) {
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
+    // (Before any thread that's timed: the performance report.)
+    perf::enable();
     let config_path = paths::config_path(a.get("config"));
     paths::init(&config_path);
     let cfg = config::Config::load(&config_path).unwrap_or_else(|e| fatal(&e));
@@ -784,6 +834,7 @@ fn serve(a: &Args) {
         unlocked: Default::default(),
     });
     monitor::start(ctx.clone());
+    perf::start(ctx.clone());
     // What each call kept once its plugins are done, for the history list.
     let weak = Arc::downgrade(&ctx);
     ctx.plugins.archive.on_settle(Box::new(move |rel, audio, json| {

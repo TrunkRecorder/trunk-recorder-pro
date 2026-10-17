@@ -162,7 +162,7 @@ mod tests {
             sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
             ..Default::default()
         };
-        let mut e = Engine::new(cfg).unwrap();
+        let e = Engine::new(cfg).unwrap();
         for chunk in iq.chunks(4096) {
             e.push_iq(0, chunk);
         }

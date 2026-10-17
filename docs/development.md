@@ -125,7 +125,7 @@ threads and how the pieces connect.
 | `…/trunk/` | Control-channel messages (Trunk Recorder's `p25_parser.cc`), call manager (`monitor_systems.cc`), Phase 1, TDMA and DMR voice tracking, conventional channels, multi-site dedupe, the engine (several radios and systems) |
 | `…/survey.rs` | **Find my system**: band scan, control-channel check, band plan and ppm |
 | `crates/trunk-app` | The app layer shared by desktop and browser: config, the conventional channel CSV (`channels.rs`), file names, and a recording `Session` (status, spectrum, log, calls, files) |
-| `crates/trunk-pro` | The desktop app: `serve` (default; radio threads, engine thread, web server + WebSocket), `replay`, `capture`, `devices`, `survey`, `tool`, `plugin` |
+| `crates/trunk-pro` | The desktop app: `serve` (default; radio threads, a decoding thread per source, engine thread, web server + WebSocket), `replay`, `capture`, `devices`, `survey`, `tool`, `plugin` |
 | `…/src/sdr.rs` | RTL-SDR over USB via `rtlsdr-nusb` (pure Rust; no libusb / librtlsdr) |
 | `…/src/radio/` | USRP (UHD's C API), Airspy (libairspy) and SoapySDR, loaded at run time when installed |
 | `…/src/plugins/` | The plugin host, store and command line |

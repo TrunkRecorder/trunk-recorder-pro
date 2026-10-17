@@ -255,7 +255,12 @@ impl ControlChannel for P25 {
     fn push(&mut self, _carrier: usize, iq: &[Complex32], t0: f64, rate: f64, out: &mut Vec<Step>) {
         (self.t0, self.rate) = (t0, rate);
         let mut groups = Vec::new();
+        let was = self.bank.detected();
         self.bank.push(iq, &mut groups);
+        if let Some(m) = self.bank.detected().filter(|_| was.is_none()) {
+            let (what, setting) = if m == "CQPSK" { ("CQPSK (simulcast)", "qpsk") } else { ("C4FM", "fsk4") };
+            self.notes.push((NoteLevel::Info, format!("Modulation detected: {what}; only its receivers run now (set modulation \"{setting}\" to skip detecting it)")));
+        }
         self.groups(&groups, out);
     }
     fn flush(&mut self, out: &mut Vec<Step>) {
@@ -286,6 +291,9 @@ impl ControlChannel for P25 {
         Some(format!("p25:{:x}.{:x}", id.wacn()?, id.sys_id()?))
     }
     fn modulation(&self) -> &'static str {
+        if let Some(m) = self.bank.detected() {
+            return m;
+        }
         // Frames per receiver: the two CQPSK ones, then C4FM.
         let (q, c) = self.bank.frames_per_rx().iter().enumerate().fold((0, 0), |(q, c), (i, &n)| if i < 2 { (q + n, c) } else { (q, c + n) });
         if q + c < 8 {

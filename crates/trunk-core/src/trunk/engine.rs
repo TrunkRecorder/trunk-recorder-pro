@@ -26,7 +26,7 @@
 //! engine does no I/O.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use num_complex::Complex32;
 
@@ -51,6 +51,7 @@ use crate::metrics::{self, Scoped, Sink};
 use crate::p25::alias::AliasLc;
 use crate::p25::crypt::Keyring;
 use crate::p25::diversity::BankConfig;
+use crate::prof::{self, Stage};
 use crate::dsp::fm::ChannelFilter;
 use crate::smartnet::Bandplan;
 use crate::dmr;
@@ -483,14 +484,169 @@ struct Recording {
     decrypted: bool,
 }
 
-/// The radio side every system shares: sources and their channelizers, the
-/// voice channels and the recorder pool. Kept apart from the systems' call
-/// managers so both can be borrowed at once.
-struct Radio {
-    sources: Vec<Source>,
+/// A control channel's decoding, shared by its system (which follows what
+/// it decodes) and the sources its carriers are on (which feed it).
+type Cc = Arc<Mutex<Box<dyn ControlChannel>>>;
+
+/// A control channel carrier on a source: each block its head's output is
+/// decoded ([`ControlChannel::push`]) before the system follows the steps.
+struct Tap {
+    system: u16,
+    /// Its number among the system's carriers (0 for a hunted control channel).
+    carrier: usize,
+    head: HeadId,
+    cc: Cc,
+    at: TapTime,
+}
+
+/// Where a tap's samples sit on the system's clock.
+#[derive(Clone, Copy)]
+enum TapTime {
+    /// A hunted control channel opened at `start_s`, when its source's clock offset was `offset_s`.
+    Hunt { start_s: f64, offset_s: f64 },
+    /// A watched carrier whose head began at source sample `start`.
+    Watch { start: u64 },
+}
+
+/// One source's radio side: its channelizer and everything that decodes its
+/// channels each block — voice channels, control channel carriers. Behind a
+/// lock of its own, so each source can decode on a thread of its own while
+/// the calls are followed in one place ([`Core`]).
+struct SourceRx {
+    src: Source,
     /// Keyed by (system, frequency): systems never share a voice channel.
     /// (A `BTreeMap`: channels run in one order, run after run.)
     channels: BTreeMap<(u16, u64), Channel>,
+    /// In (system, carrier) order.
+    taps: Vec<Tap>,
+    /// What each system's control channel tells its voice channels (Phase 2: the scrambler key, once it gave it).
+    voice_params: Vec<VoiceParams>,
+    tout: Vec<(usize, TrackerOut)>,
+}
+
+/// What one voice channel's decoding of a block came to, for the calls.
+#[derive(Default)]
+struct VoiceResult {
+    /// (system, call, output), in the order produced.
+    routed: Vec<(u16, CallId, TrackerOut)>,
+    /// A call's channel power and the noise under it while it carried voice.
+    reception: Vec<(CallId, f64, f64)>,
+    /// A call's voice frequency error, Hz from nominal.
+    freq_error: Vec<(CallId, f64)>,
+}
+
+/// A block of one source, decoded: what its voice channels heard (by
+/// channel, in key order) and its control channels' carriers' samples.
+struct BlockDsp {
+    voice: Vec<VoiceResult>,
+    taps: Vec<(u16, usize, HeadId, Cc, Vec<Complex32>, f64)>,
+    rate: f64,
+    /// The source's time at the block's end, its clock offset, and whether it was a gap.
+    time: f64,
+    in_gap: bool,
+}
+
+/// A source's control channels' decoding of a block: per system, its steps and samples.
+struct CcResult {
+    system: u16,
+    /// The (first) carrier's head.
+    head: Option<HeadId>,
+    steps: Vec<Step>,
+    samples: u64,
+}
+
+impl SourceRx {
+    /// Decode a channel's latest head output (or flush it): its outputs routed to its calls' slots.
+    fn decode_channel(&mut self, key: (u16, u64), flush: bool) -> Option<VoiceResult> {
+        let SourceRx { src, channels, voice_params, tout, .. } = self;
+        let ch = channels.get_mut(&key)?;
+        let iq: &[Complex32] = if flush { &[] } else { src.chz.output(ch.head).unwrap_or(&[]) };
+        let params = voice_params.get(ch.system as usize).copied().unwrap_or_default();
+        tout.clear();
+        Radio::run_channel(ch, iq, &params, tout, flush);
+        let mut r = VoiceResult::default();
+        // Reception: the channel's power while it carries a call's voice.
+        let voiced = |slot: usize| tout.iter().any(|(s, o)| *s & 1 == slot && matches!(o, TrackerOut::Audio(..) | TrackerOut::AnalogAudio(_)));
+        let on_air = [voiced(0), voiced(1)];
+        if !iq.is_empty() && (on_air[0] || on_air[1]) {
+            let p = ch.meter.meter(iq) as f64;
+            for (slot, c) in ch.calls.iter().enumerate() {
+                if let Some(c) = c.filter(|_| on_air[slot]) {
+                    r.reception.push((c.id, p, ch.noise));
+                }
+            }
+        }
+        Radio::route(ch, tout, &mut r.routed);
+        if let Some(off) = ch.voice.offset_hz() {
+            let err = off as f64 + ch.tune_ppm * 1e-6 * ch.freq_hz;
+            for c in ch.calls.iter().flatten() {
+                r.freq_error.push((c.id, err));
+            }
+        }
+        Some(r)
+    }
+
+    /// A block ran: decode its voice channels; take its carriers' samples for their control channels.
+    fn decode_block(&mut self) -> BlockDsp {
+        let keys: Vec<(u16, u64)> = self.channels.keys().copied().collect();
+        let voice = keys.into_iter().filter_map(|k| self.decode_channel(k, false)).collect();
+        let (rate, fs, offset) = (self.src.chz.output_rate(), self.src.cfg.rate_hz, self.src.clock_offset_s);
+        let taps = self
+            .taps
+            .iter()
+            .map(|t| {
+                let iq = self.src.chz.output(t.head).map(|v| v.to_vec()).unwrap_or_default();
+                let t0 = match t.at {
+                    TapTime::Hunt { start_s, offset_s } => start_s + (offset - offset_s),
+                    TapTime::Watch { start } => start as f64 / fs + offset,
+                };
+                (t.system, t.carrier, t.head, t.cc.clone(), iq, t0)
+            })
+            .collect();
+        BlockDsp { voice, taps, rate, time: self.src.time(), in_gap: self.src.in_gap }
+    }
+
+    fn set_tap(&mut self, tap: Tap) {
+        self.taps.retain(|t| (t.system, t.carrier) != (tap.system, tap.carrier));
+        let at = self.taps.partition_point(|t| (t.system, t.carrier) < (tap.system, tap.carrier));
+        self.taps.insert(at, tap);
+    }
+
+    fn remove_taps(&mut self, system: u16) {
+        self.taps.retain(|t| t.system != system);
+    }
+}
+
+impl BlockDsp {
+    /// Its control channels' samples decoded, each control channel under its own lock.
+    fn decode_control(&mut self) -> Vec<CcResult> {
+        let mut out: Vec<CcResult> = Vec::new();
+        for (system, carrier, head, cc, iq, t0) in self.taps.drain(..) {
+            let mut steps = Vec::new();
+            {
+                let mut cc = cc.lock().unwrap();
+                let _t = prof::span(Stage::control(cc.name()));
+                cc.push(carrier, &iq, t0, self.rate, &mut steps);
+            }
+            match out.last_mut().filter(|r| r.system == system) {
+                Some(r) => {
+                    r.steps.extend(steps);
+                    r.samples += iq.len() as u64;
+                }
+                None => out.push(CcResult { system, head: Some(head), steps, samples: iq.len() as u64 }),
+            }
+        }
+        out
+    }
+}
+
+/// The radio side every system shares: the sources (each behind its lock),
+/// the recordings and the recorder pool. Kept apart from the systems' call
+/// managers so both can be borrowed at once.
+struct Radio {
+    rx: Arc<Vec<Mutex<SourceRx>>>,
+    /// The sources' settings (as `rx`'s, without the lock).
+    cfgs: Vec<SourceConfig>,
     recordings: HashMap<CallId, Recording>,
     free_nums: Vec<u32>,
     next_num: u32,
@@ -498,8 +654,7 @@ struct Radio {
     preroll_s: f64,
     capture_frames: bool,
     vocoder: mbe::Profile,
-    tout: Vec<(usize, TrackerOut)>,
-    /// What each system's control channel tells its voice channels (Phase 2: the scrambler key, once it gave it).
+    /// What each system's control channel tells its voice channels (each source keeps a copy).
     voice_params: Vec<VoiceParams>,
     /// Audio / info produced by the voice channels, as (system, call, output), applied after.
     pending: Vec<(u16, CallId, TrackerOut)>,
@@ -507,7 +662,33 @@ struct Radio {
 
 impl Radio {
     fn source_for(&self, hz: f64) -> Option<usize> {
-        self.sources.iter().position(|s| (hz - s.cfg.center_hz).abs() <= s.cfg.usable_half_width())
+        self.cfgs.iter().position(|s| (hz - s.center_hz).abs() <= s.usable_half_width())
+    }
+
+    fn rx(&self, source: usize) -> MutexGuard<'_, SourceRx> {
+        self.rx[source].lock().unwrap()
+    }
+
+    /// What a voice channel's block came to: its calls' reception and frequency error, its outputs to apply.
+    fn take(&mut self, v: VoiceResult) {
+        for (id, sig, noise) in v.reception {
+            if let Some(r) = self.recordings.get_mut(&id) {
+                r.reception.signal(sig);
+                r.reception.noise(noise);
+            }
+        }
+        self.pending.extend(v.routed);
+        for (id, err) in v.freq_error {
+            if let Some(r) = self.recordings.get_mut(&id) {
+                r.freq_error.0 += err;
+                r.freq_error.1 += 1;
+            }
+        }
+    }
+
+    /// Voice channels open, on every source.
+    fn channel_count(&self) -> usize {
+        self.rx.iter().map(|r| r.lock().unwrap().channels.len()).sum()
     }
 
     /// Run a channel's decoder over `iq` (then flush it, at the end of
@@ -517,6 +698,13 @@ impl Radio {
         // Vocode only the slots somebody is recording.
         ch.voice.listen(ch.calls.map(|c| c.map(|c| c.talkgroup)));
         let mut out = Vec::new();
+        let _t = prof::span(match ch.voice.kind() {
+            VoiceKind::Fdma => Stage::VoiceP25p1,
+            VoiceKind::Tdma => Stage::VoiceP25p2,
+            VoiceKind::Analog => Stage::VoiceAnalog,
+            VoiceKind::Dmr => Stage::VoiceDmr,
+            VoiceKind::Nxdn(_) => Stage::VoiceNxdn,
+        });
         ch.voice.push(iq, &mut out);
         if flush {
             ch.voice.flush(&mut out);
@@ -529,38 +717,6 @@ impl Radio {
         for (slot, o) in tout.drain(..) {
             if let Some(c) = ch.calls[slot & 1] {
                 pending.push((ch.system, c.id, o));
-            }
-        }
-    }
-
-    /// Run a channel's receivers over its head's latest output and route the result.
-    fn run_head(&mut self, key: (u16, u64), flush: bool) {
-        let Some(ch) = self.channels.get_mut(&key) else { return };
-        let s = &self.sources[ch.source];
-        let iq: &[Complex32] = if flush { &[] } else { s.chz.output(ch.head).unwrap_or(&[]) };
-        let params = self.voice_params.get(ch.system as usize).copied().unwrap_or_default();
-        self.tout.clear();
-        Self::run_channel(ch, iq, &params, &mut self.tout, flush);
-        // Reception: the channel's power while it carries a call's voice.
-        let voiced = |slot: usize| self.tout.iter().any(|(s, o)| *s & 1 == slot && matches!(o, TrackerOut::Audio(..) | TrackerOut::AnalogAudio(_)));
-        let on_air = [voiced(0), voiced(1)];
-        if !iq.is_empty() && (on_air[0] || on_air[1]) {
-            let p = ch.meter.meter(iq) as f64;
-            for (slot, c) in ch.calls.iter().enumerate() {
-                if let Some(r) = c.filter(|_| on_air[slot]).and_then(|c| self.recordings.get_mut(&c.id)) {
-                    r.reception.signal(p);
-                    r.reception.noise(ch.noise);
-                }
-            }
-        }
-        Self::route(ch, &mut self.tout, &mut self.pending);
-        if let Some(off) = ch.voice.offset_hz() {
-            let err = off as f64 + ch.tune_ppm * 1e-6 * ch.freq_hz;
-            for c in ch.calls.iter().flatten() {
-                if let Some(r) = self.recordings.get_mut(&c.id) {
-                    r.freq_error.0 += err;
-                    r.freq_error.1 += 1;
-                }
             }
         }
     }
@@ -582,7 +738,9 @@ impl SysHost<'_> {
         let kind = VoiceKind::of(call);
         let slot = if kind.slotted() { call.tdma_slot as usize & 1 } else { 0 };
         let key = (self.system, call.freq_hz);
-        if let Some(ch) = r.channels.get_mut(&key) {
+        let mut guard = r.rx[src].lock().unwrap();
+        let rx = &mut *guard;
+        if let Some(ch) = rx.channels.get_mut(&key) {
             if ch.voice.kind() == kind {
                 ch.calls[slot] = Some(OnSlot::of(call));
                 return;
@@ -591,10 +749,10 @@ impl SysHost<'_> {
             // Dual Mode: Phase 1 then Phase 2; SmartNet: analog then
             // digital): a channel of that kind instead. The calls on the old
             // one are over; they end when their timeout comes.
-            let old = r.channels.remove(&key).unwrap();
-            r.sources[old.source].chz.remove_head(old.head);
+            let old = rx.channels.remove(&key).unwrap();
+            rx.src.chz.remove_head(old.head);
         }
-        let s = &mut r.sources[src];
+        let s = &mut rx.src;
         let rate = s.chz.output_rate();
         let cutoff = if let Some(r) = call.nxdn {
             r.cutoff_hz()
@@ -628,11 +786,11 @@ impl SysHost<'_> {
         calls[slot] = Some(OnSlot::of(call));
         let mut ch = Channel { system: self.system, source: src, head, calls, voice, freq_hz: call.freq_hz as f64, tune_ppm, meter: ChannelFilter::new(rate), noise };
         // Pre-roll: decode the replayed air now.
-        let params = r.voice_params.get(self.system as usize).copied().unwrap_or_default();
-        r.tout.clear();
-        Radio::run_channel(&mut ch, &pre, &params, &mut r.tout, false);
-        Radio::route(&ch, &mut r.tout, &mut r.pending);
-        r.channels.insert(key, ch);
+        let params = rx.voice_params.get(self.system as usize).copied().unwrap_or_default();
+        rx.tout.clear();
+        Radio::run_channel(&mut ch, &pre, &params, &mut rx.tout, false);
+        Radio::route(&ch, &mut rx.tout, &mut r.pending);
+        rx.channels.insert(key, ch);
     }
 
     /// Record `call`: a recorder of the pool, its voice channel opened.
@@ -680,7 +838,7 @@ impl RecorderHost for SysHost<'_> {
         // Only with a recorder's worth of room to spare, and never on analog.
         // A recording's channel is counted with its recording, not again.
         let r = &*self.radio;
-        let following = r.channels.values().filter(|ch| !ch.calls.iter().flatten().any(|c| r.recordings.contains_key(&c.id))).count();
+        let following: usize = r.rx.iter().map(|rx| rx.lock().unwrap().channels.values().filter(|ch| !ch.calls.iter().flatten().any(|c| r.recordings.contains_key(&c.id))).count()).sum();
         if call.analog || r.recordings.len() + following >= r.max_recorders {
             return false;
         }
@@ -693,16 +851,17 @@ impl RecorderHost for SysHost<'_> {
 
     fn release(&mut self, call: &Call) {
         let key = (self.system, call.freq_hz);
-        let r = &mut *self.radio;
-        let Some(ch) = r.channels.get_mut(&key) else { return };
+        let Some(src) = self.radio.source_for(call.freq_hz as f64) else { return };
+        let mut rx = self.radio.rx(src);
+        let Some(ch) = rx.channels.get_mut(&key) else { return };
         for c in ch.calls.iter_mut() {
             if c.is_some_and(|c| c.id == call.id) {
                 *c = None;
             }
         }
         if ch.calls.iter().all(Option::is_none) {
-            let ch = r.channels.remove(&key).unwrap();
-            r.sources[ch.source].chz.remove_head(ch.head);
+            let ch = rx.channels.remove(&key).unwrap();
+            rx.src.chz.remove_head(ch.head);
         }
     }
 }
@@ -712,8 +871,8 @@ struct Trunk {
     cfg: SystemConfig,
     idx: u16,
     calls: CallManager,
-    /// Its protocol's control channel decoding ([`super::control`]).
-    cc: Box<dyn ControlChannel>,
+    /// Its protocol's control channel decoding ([`super::control`]), shared with the taps on its carriers' sources.
+    cc: Cc,
     /// Hunting ([`CarrierPlan::Hunt`]): the control channel's head, on `cc_source`.
     cc_source: usize,
     cc_head: Option<HeadId>,
@@ -756,7 +915,7 @@ impl Trunk {
     /// group, else by what the control channel says (if its protocol says).
     fn site_key(&self) -> Option<SiteKey> {
         let id = &self.identity;
-        let group = if !self.cfg.site_group.is_empty() { format!("group:{}", self.cfg.site_group) } else { self.cc.site_group(id)? };
+        let group = if !self.cfg.site_group.is_empty() { format!("group:{}", self.cfg.site_group) } else { self.cc().site_group(id)? };
         Some(SiteKey { group, site: id.site().map(|s| (id.rfss().unwrap_or(0), s)), cc_hz: self.cc_hz })
     }
 
@@ -771,11 +930,18 @@ impl Trunk {
 
     /// Start listening as its protocol says: the first control channel, or every carrier.
     fn start(&mut self, radio: &mut Radio, events: &mut Vec<Event>) -> Result<(), String> {
-        match self.cc.plan() {
+        let plan = self.cc().plan();
+        match plan {
             CarrierPlan::Hunt { .. } if !self.cfg.control_channels.is_empty() => self.tune(radio, 0, events),
             CarrierPlan::Watch { carriers, cutoff_hz, note } if !carriers.is_empty() => self.watch(radio, &carriers, cutoff_hz, note, events),
             _ => Ok(()),
         }
+    }
+
+    /// Its control channel decoding. (Not held across a source's lock:
+    /// sources take the two the other way round while they decode.)
+    fn cc(&self) -> MutexGuard<'_, Box<dyn ControlChannel>> {
+        self.cc.lock().unwrap()
     }
 
     /// Whether it is receiving: a control channel open, or carriers watched.
@@ -783,14 +949,14 @@ impl Trunk {
         self.cc_head.is_some() || !self.carriers.is_empty()
     }
 
-    /// Whether any of its carriers is on `source`.
-    fn on_source(&self, source: usize) -> bool {
-        (self.cc_head.is_some() && self.cc_source == source) || self.carriers.iter().any(|c| c.0 == source)
+    /// Hunting: its control channel's tap, as the trunk has it now.
+    fn hunt_tap(&self, head: HeadId) -> Tap {
+        Tap { system: self.idx, carrier: 0, head, cc: self.cc.clone(), at: TapTime::Hunt { start_s: self.cc_start_s, offset_s: self.cc_offset_s } }
     }
 
     /// Hunting: open the control channel `index` (of those a source covers).
     fn tune(&mut self, radio: &mut Radio, index: usize, events: &mut Vec<Event>) -> Result<(), String> {
-        let CarrierPlan::Hunt { cutoff_hz } = self.cc.plan() else { return Ok(()) };
+        let CarrierPlan::Hunt { cutoff_hz } = self.cc().plan() else { return Ok(()) };
         let list: Vec<(f64, usize)> = self.cfg.control_channels.iter().filter_map(|&f| radio.source_for(f).map(|s| (f, s))).collect();
         if list.is_empty() {
             return Err(format!("{}: no control channel falls inside a source's bandwidth — move the center frequency.", self.cfg.short_name));
@@ -798,25 +964,33 @@ impl Trunk {
         self.cc_index = index % list.len();
         let (hz, src) = list[self.cc_index];
         if let Some(h) = self.cc_head.take() {
-            radio.sources[self.cc_source].chz.remove_head(h);
+            let mut rx = radio.rx(self.cc_source);
+            rx.src.chz.remove_head(h);
+            rx.remove_taps(self.idx);
         }
         let retune = self.cc_hz.is_some();
         self.cc_source = src;
-        let s = &mut radio.sources[src];
-        let (head, _, _) = s.chz.add_head(s.offset(hz), cutoff_hz, 0.0);
-        self.cc_ppm = s.tune_ppm;
+        let rate = {
+            let mut rx = radio.rx(src);
+            let s = &mut rx.src;
+            let (head, _, _) = s.chz.add_head(s.offset(hz), cutoff_hz, 0.0);
+            self.cc_ppm = s.tune_ppm;
+            self.cc_offset_s = s.clock_offset_s;
+            let rate = s.chz.output_rate();
+            self.cc_head = Some(head);
+            self.cc_start_s = self.now_s;
+            rx.set_tap(self.hunt_tap(head));
+            rate
+        };
         self.cc_measured_s = self.now_s;
-        self.cc_head = Some(head);
         self.cc_hz = Some(hz.round() as u64);
-        self.cc_start_s = self.now_s;
         self.cc_samples = 0;
-        self.cc_offset_s = s.clock_offset_s;
         self.last_good_s = self.now_s;
-        self.cc.restart(s.chz.output_rate());
+        self.cc().restart(rate);
         if retune {
             // Another control channel may be another site: learn it afresh.
             self.identity = Identity::default();
-            self.cc.forget_site();
+            self.cc().forget_site();
             self.mismatch = None;
             self.adjacent.clear();
         }
@@ -833,41 +1007,50 @@ impl Trunk {
                 outside.push(format!("{:.5}", hz / 1e6));
                 continue;
             };
-            let s = &mut radio.sources[src];
+            let mut rx = radio.rx(src);
+            let s = &mut rx.src;
             let (head, _, start) = s.chz.add_head(s.offset(hz), cutoff_hz, 0.0);
             heads.push((src, head, start));
         }
         if !outside.is_empty() {
-            return Err(format!("{}: {} frequencies outside every source's bandwidth: {} MHz — move a center frequency.", self.cfg.short_name, self.cc.name(), outside.join(", ")));
+            let name = self.cc().name();
+            return Err(format!("{}: {} frequencies outside every source's bandwidth: {} MHz — move a center frequency.", self.cfg.short_name, name, outside.join(", ")));
+        }
+        for (i, &(src, head, start)) in heads.iter().enumerate() {
+            radio.rx(src).set_tap(Tap { system: self.idx, carrier: i, head, cc: self.cc.clone(), at: TapTime::Watch { start } });
         }
         self.carriers = heads;
         events.push(Event::Note { system: self.idx, level: NoteLevel::Info, text: note });
         Ok(())
     }
 
-    /// A block ran on `source`: decode its carriers on it and follow what they say.
-    fn on_block(&mut self, radio: &mut Radio, source: usize, events: &mut Vec<Event>, call_events: &mut Vec<CallEvent>) {
+    /// A block ran on `source` and its carriers on it were decoded (`cc`):
+    /// follow what they say. `time`: the source's time after the block.
+    fn on_block(&mut self, radio: &mut Radio, source: usize, time: f64, cc: CcResult, events: &mut Vec<Event>, call_events: &mut Vec<CallEvent>) {
         if self.carriers.is_empty() {
-            self.on_block_hunting(radio, events, call_events);
+            self.on_block_hunting(radio, source, cc, events, call_events);
         } else {
-            self.on_block_watching(radio, source, events, call_events);
+            self.on_block_watching(radio, source, time, cc, events, call_events);
         }
     }
 
-    fn on_block_hunting(&mut self, radio: &mut Radio, events: &mut Vec<Event>, call_events: &mut Vec<CallEvent>) {
-        let Some(head) = self.cc_head else { return };
-        let src = self.cc_source;
-        let rate = radio.sources[src].chz.output_rate();
-        let iq = radio.sources[src].chz.output(head).map(|v| v.to_vec()).unwrap_or_default();
-        self.cc_samples += iq.len() as u64;
-        let moved = radio.sources[src].clock_offset_s - self.cc_offset_s;
+    fn on_block_hunting(&mut self, radio: &mut Radio, source: usize, cc: CcResult, events: &mut Vec<Event>, call_events: &mut Vec<CallEvent>) {
+        // (Another source's samples: decoded as it moved to this one.)
+        if self.cc_head.is_none() || self.cc_source != source || cc.head != self.cc_head {
+            return;
+        }
+        let (rate, offset) = {
+            let rx = radio.rx(source);
+            (rx.src.chz.output_rate(), rx.src.clock_offset_s)
+        };
+        self.cc_samples += cc.samples;
+        let moved = offset - self.cc_offset_s;
         self.now_s = self.cc_start_s + self.cc_samples as f64 / rate + moved;
-        let mut steps = Vec::new();
-        self.cc.push(0, &iq, self.cc_start_s + moved, rate, &mut steps);
-        for (level, text) in self.cc.take_notes() {
+        let notes = self.cc().take_notes();
+        for (level, text) in notes {
             events.push(Event::Note { system: self.idx, level, text });
         }
-        self.follow(radio, steps, events, call_events);
+        self.follow(radio, cc.steps, events, call_events);
         if self.now_s - self.last_good_s > CC_HUNT_S && self.cfg.control_channels.len() > 1 {
             let _ = self.tune(radio, self.cc_index + 1, events);
         } else if self.now_s - self.cc_measured_s >= TUNE_EVERY_S {
@@ -877,34 +1060,27 @@ impl Trunk {
         self.calls.tick(self.now_s, &mut host, call_events);
     }
 
-    fn on_block_watching(&mut self, radio: &mut Radio, source: usize, events: &mut Vec<Event>, call_events: &mut Vec<CallEvent>) {
+    fn on_block_watching(&mut self, radio: &mut Radio, source: usize, time: f64, cc: CcResult, events: &mut Vec<Event>, call_events: &mut Vec<CallEvent>) {
         if !self.carriers.iter().any(|c| c.0 == source) {
             return;
         }
-        let s = &radio.sources[source];
-        let (rate, fs, offset) = (s.chz.output_rate(), s.cfg.rate_hz, s.clock_offset_s);
-        let mut steps = Vec::new();
-        for (i, &(src, head, start)) in self.carriers.iter().enumerate() {
-            if src != source {
-                continue;
-            }
-            let iq = radio.sources[src].chz.output(head).map(|v| v.to_vec()).unwrap_or_default();
-            self.cc.push(i, &iq, start as f64 / fs + offset, rate, &mut steps);
-        }
-        self.now_s = self.now_s.max(radio.sources[source].time());
-        for (level, text) in self.cc.take_notes() {
+        self.now_s = self.now_s.max(time);
+        let (notes, control_hz) = {
+            let mut c = self.cc();
+            (c.take_notes(), c.control_hz())
+        };
+        for (level, text) in notes {
             events.push(Event::Note { system: self.idx, level, text });
         }
         // Where the control channel is now (Capacity Plus: the rest channel moves).
-        let cc = self.cc.control_hz();
-        if let Some(hz) = cc.filter(|&h| Some(h) != self.cc_hz) {
+        if let Some(hz) = control_hz.filter(|&h| Some(h) != self.cc_hz) {
             self.cc_hz = Some(hz);
             events.push(Event::ControlChannel { system: self.idx, freq_hz: hz });
         }
-        if cc.is_some() {
+        if control_hz.is_some() {
             self.last_good_s = self.now_s;
         }
-        self.follow(radio, steps, events, call_events);
+        self.follow(radio, cc.steps, events, call_events);
         let mut host = self.host(radio);
         self.calls.tick(self.now_s, &mut host, call_events);
     }
@@ -914,7 +1090,7 @@ impl Trunk {
     /// field has been heard nothing is), then the call manager.
     fn follow(&mut self, radio: &mut Radio, steps: Vec<Step>, events: &mut Vec<Event>, call_events: &mut Vec<CallEvent>) {
         // The site lock: on the fields its protocol states (none: no lock).
-        let fields = self.cc.identity_fields();
+        let fields = self.cc().identity_fields();
         let lock = !fields.is_empty();
         for st in steps {
             self.identity = st.identity;
@@ -945,14 +1121,21 @@ impl Trunk {
                 // hold the grants — a call still going is granted again.
                 continue;
             }
-            let p = self.cc.voice_params(&self.identity);
+            let p = self.cc().voice_params(&self.identity);
             let vp = &mut radio.voice_params[self.idx as usize];
+            let was = *vp;
             vp.tdma_key = p.tdma_key.or(vp.tdma_key);
             vp.nac = p.nac.or(vp.nac);
+            if *vp != was {
+                let vp = *vp;
+                for rx in radio.rx.iter() {
+                    rx.lock().unwrap().voice_params[self.idx as usize] = vp;
+                }
+            }
             let mut host = self.host(radio);
             self.calls.handle(&st.msgs, &mut host, call_events);
         }
-        (self.good, self.bad) = self.cc.counts();
+        (self.good, self.bad) = self.cc().counts();
     }
 
     /// AutoTune: how far off the control channel comes in (while it decodes),
@@ -964,13 +1147,18 @@ impl Trunk {
         if self.now_s - self.last_good_s > 1.0 {
             return;
         }
-        let Some(off) = self.cc.offset_hz() else { return };
+        let (off, reopens, plan) = {
+            let c = self.cc();
+            (c.offset_hz(), c.reopens(), c.plan())
+        };
+        let Some(off) = off else { return };
         let hz = hz as f64;
-        let s = &mut radio.sources[self.cc_source];
+        let mut rx = radio.rx(self.cc_source);
+        let s = &mut rx.src;
         s.measured(self.cc_ppm + off as f64 / hz * 1e6);
         let off_by = (s.tune_ppm - self.cc_ppm) * 1e-6 * hz;
-        if self.cc.reopens() && off_by.abs() > TUNE_RETUNE_HZ && self.now_s - self.cc_retuned_s >= TUNE_RETUNE_S {
-            let CarrierPlan::Hunt { cutoff_hz } = self.cc.plan() else { return };
+        if reopens && off_by.abs() > TUNE_RETUNE_HZ && self.now_s - self.cc_retuned_s >= TUNE_RETUNE_S {
+            let CarrierPlan::Hunt { cutoff_hz } = plan else { return };
             s.chz.remove_head(head);
             let (head, _, _) = s.chz.add_head(s.offset(hz), cutoff_hz, 0.0);
             self.cc_head = Some(head);
@@ -979,11 +1167,20 @@ impl Trunk {
             self.cc_start_s = self.now_s;
             self.cc_samples = 0;
             self.cc_offset_s = s.clock_offset_s;
-            self.cc.restart(s.chz.output_rate());
+            let rate = s.chz.output_rate();
+            rx.set_tap(self.hunt_tap(head));
+            drop(rx);
+            self.cc().restart(rate);
         }
     }
 
     fn status(&self, radio: &Radio) -> SystemStatus {
+        // (One lock at a time: a temporary guard lasts the whole expression.)
+        let (modulation, protocol) = {
+            let c = self.cc();
+            (c.modulation(), c.status())
+        };
+        let site_group = self.site_key().map(|k| k.group);
         SystemStatus {
             system: self.idx,
             short_name: self.cfg.short_name.clone(),
@@ -992,20 +1189,38 @@ impl Trunk {
             identity: self.identity.clone(),
             good: self.good,
             bad: self.bad,
-            modulation: self.cc.modulation(),
+            modulation,
             active_calls: self.calls.calls.len(),
             recording: self.calls.calls.iter().filter(|c| radio.recordings.contains_key(&c.id)).count(),
             calls_concluded: self.concluded,
             mismatch: self.mismatch.clone(),
             adjacent: self.adjacent.values().copied().collect(),
             patches: self.calls.patches.active(),
-            protocol: self.cc.status(),
-            site_group: self.site_key().map(|k| k.group),
+            protocol,
+            site_group,
         }
     }
 }
 
-pub struct Engine {
+/// What one source runs each block ([`Engine::load`]).
+#[derive(Clone, Debug, Default)]
+pub struct SourceLoad {
+    pub rate_hz: f64,
+    pub fft_size: usize,
+    pub decim: usize,
+    /// Channelizer heads (every channel: voice, control, conventional).
+    pub heads: usize,
+    /// Trunked voice channels open, by kind ("p25p1", "p25p2", "dmr", "nxdn", "analog").
+    pub voice: BTreeMap<&'static str, usize>,
+    /// Control-channel carriers (hunted or watched).
+    pub control: usize,
+    /// Conventional channels watched, and open.
+    pub conventional: usize,
+    pub conventional_open: usize,
+}
+
+/// Everything the engine follows calls with (behind [`Engine`]'s lock).
+struct Core {
     cfg: EngineConfig,
     radio: Radio,
     trunks: Vec<Trunk>,
@@ -1025,8 +1240,8 @@ pub struct Engine {
     call_events: Vec<CallEvent>,
 }
 
-impl Engine {
-    pub fn new(mut cfg: EngineConfig) -> Result<Self, String> {
+impl Core {
+    fn new(mut cfg: EngineConfig) -> Result<Self, String> {
         // Every conventional channel's system exists (a default one if none was given).
         let need = cfg.conventional.iter().map(|c| c.system + 1).max().unwrap_or(0);
         if need.max(cfg.conv_systems.len()) > MAX_CONVENTIONAL {
@@ -1055,9 +1270,14 @@ impl Engine {
             cfg.sources.iter().map(|s| Source { cfg: s.clone(), chz: Channelizer::new(s.rate_hz, MIN_CHANNEL_RATE, history), errors: VecDeque::new(), seed: None, tune_ppm: 0.0, in_gap: false, half: None, clock_offset_s: 0.0 }).collect();
         let rate = sources[0].chz.output_rate();
         let ids = CallIds::default();
+        let n_systems = cfg.systems.len();
+        let rx = sources
+            .into_iter()
+            .map(|src| Mutex::new(SourceRx { src, channels: BTreeMap::new(), taps: Vec::new(), voice_params: vec![VoiceParams::default(); n_systems], tout: Vec::new() }))
+            .collect();
         let mut radio = Radio {
-            sources,
-            channels: BTreeMap::new(),
+            rx: Arc::new(rx),
+            cfgs: cfg.sources.clone(),
             recordings: HashMap::new(),
             free_nums: Vec::new(),
             next_num: 0,
@@ -1065,7 +1285,6 @@ impl Engine {
             preroll_s: cfg.preroll_s,
             capture_frames: cfg.capture_frames,
             vocoder: cfg.vocoder,
-            tout: Vec::new(),
             voice_params: vec![VoiceParams::default(); cfg.systems.len()],
             pending: Vec::new(),
         };
@@ -1075,7 +1294,7 @@ impl Engine {
             let mut t = Trunk {
                 idx: i as u16,
                 calls: CallManager::with_ids(sc.calls, sc.talkgroups.clone(), i as u16, ids.clone()),
-                cc: control::build(sc, rate),
+                cc: Arc::new(Mutex::new(control::build(sc, rate))),
                 cc_source: 0,
                 cc_head: None,
                 carriers: Vec::new(),
@@ -1099,7 +1318,8 @@ impl Engine {
                 lc_protected_tgs: BTreeSet::new(),
                 cfg: sc.clone(),
             };
-            t.calls.patches.hold_s = t.cc.patch_hold_s();
+            let hold_s = t.cc().patch_hold_s();
+            t.calls.patches.hold_s = hold_s;
             t.calls.can_decrypt = sc.keys.as_ref().is_some_and(|k| !k.is_empty());
             t.start(&mut radio, &mut events)?;
             trunks.push(t);
@@ -1108,7 +1328,7 @@ impl Engine {
             cfg.systems.iter().map(|s| s.short_name.clone()),
             cfg.conv_systems.iter().enumerate().map(|(k, c)| (c.short_name.clone(), cfg.conventional.iter().any(|ch| ch.system == k))),
         );
-        Ok(Engine {
+        Ok(Core {
             radio,
             trunks,
             conv,
@@ -1129,12 +1349,12 @@ impl Engine {
     /// grant heard before the next IDEN broadcast can then be followed at once).
     pub fn load_bandplan(&mut self, system: usize, s: &str) {
         if let Some(t) = self.trunks.get_mut(system) {
-            t.cc.load_bandplan(s);
+            t.cc().load_bandplan(s);
         }
     }
     /// A system's band plan to save: P25's IDEN tables; DMR's logical channel → frequency table.
     pub fn bandplan(&self, system: usize) -> String {
-        self.trunks.get(system).map_or_else(String::new, |t| t.cc.bandplan())
+        self.trunks.get(system).map_or_else(String::new, |t| t.cc().bandplan())
     }
 
     /// The short names that keep a talker alias table ([`AliasBook::names`]).
@@ -1189,14 +1409,6 @@ impl Engine {
         }
     }
 
-    pub fn sources(&self) -> &[SourceConfig] {
-        &self.cfg.sources
-    }
-
-    pub fn systems(&self) -> &[SystemConfig] {
-        &self.cfg.systems
-    }
-
     /// Calls in progress (recording or monitoring), trunked then conventional.
     pub fn active_calls(&self) -> Vec<Call> {
         self.trunks.iter().flat_map(|t| t.calls.calls.iter()).chain(self.conv.calls()).cloned().collect()
@@ -1207,15 +1419,12 @@ impl Engine {
         std::mem::take(&mut self.events)
     }
 
-    /// Power spectrum (dBFS, fft-shifted) of a source's latest block — for the waterfall.
-    pub fn spectrum(&self, source: usize, bins: usize) -> Vec<f32> {
-        self.radio.sources.get(source).map_or_else(Vec::new, |s| s.chz.power_spectrum(bins))
-    }
-
     /// A source's noise floor across its band in `slices` equal slices
     /// (first at −fs/2), dBFS per FFT bin — the waterfall's floor.
     pub fn noise_profile(&self, source: usize, slices: usize) -> Vec<f64> {
-        let Some(s) = self.radio.sources.get(source) else { return Vec::new() };
+        let Some(r) = self.radio.rx.get(source) else { return Vec::new() };
+        let r = r.lock().unwrap();
+        let s = &r.src;
         let mut p = vec![0.0f64; slices];
         s.chz.noise_profile(&mut p);
         p.iter().map(|&v| metrics::bin_dbfs(v, s.chz.fft_size())).collect()
@@ -1227,16 +1436,15 @@ impl Engine {
     pub fn channels(&self) -> Vec<ChannelSnapshot> {
         let profiles: Vec<Vec<f64>> = self
             .radio
-            .sources
+            .rx
             .iter()
-            .map(|s| {
+            .map(|r| {
                 let mut p = vec![0.0f64; PROFILE_SLICES];
-                s.chz.noise_profile(&mut p);
+                r.lock().unwrap().src.chz.noise_profile(&mut p);
                 p
             })
             .collect();
-        let snap = |system: u16, hz: f64, src: usize, kind: &'static str, half_hz: f64| {
-            let s = &self.radio.sources[src];
+        let snap_in = |s: &Source, system: u16, hz: f64, src: usize, kind: &'static str, half_hz: f64| {
             let n = s.chz.fft_size();
             ChannelSnapshot {
                 system,
@@ -1251,10 +1459,12 @@ impl Engine {
                 calls: 0,
             }
         };
+        let snap = |system: u16, hz: f64, src: usize, kind: &'static str, half_hz: f64| snap_in(&self.radio.rx(src).src, system, hz, src, kind, half_hz);
         let mut out = Vec::new();
         for t in &self.trunks {
             // Watching every carrier (a DMR site): each, the control one marked.
-            if let CarrierPlan::Watch { carriers, .. } = t.cc.plan() {
+            let plan = t.cc().plan();
+            if let CarrierPlan::Watch { carriers, .. } = plan {
                 for (&hz, &(src, _, _)) in carriers.iter().zip(&t.carriers) {
                     out.push(snap(t.idx, hz, src, if Some(hz.round() as u64) == t.cc_hz { "control" } else { "carrier" }, CC_HALF_HZ));
                 }
@@ -1262,20 +1472,27 @@ impl Engine {
             }
             let Some(hz) = t.cc_hz.filter(|_| t.cc_head.is_some()) else { continue };
             let mut x = snap(t.idx, hz as f64, t.cc_source, "control", CC_HALF_HZ);
-            x.offset_hz = t.cc.offset_hz();
             let mut q = Quality::default();
-            t.cc.report(&mut q);
+            {
+                let c = t.cc();
+                x.offset_hz = c.offset_hz();
+                c.report(&mut q);
+            }
             (x.quality, x.phase_err) = (q.0, q.1);
             out.push(x);
         }
-        for ch in self.radio.channels.values() {
-            let mut x = snap(ch.system, ch.freq_hz, ch.source, "voice", CC_HALF_HZ);
-            x.calls = ch.calls.iter().flatten().count();
-            x.offset_hz = ch.voice.offset_hz();
-            let mut q = Quality::default();
-            ch.voice.report(&mut q);
-            (x.quality, x.phase_err) = (q.0, q.1);
-            out.push(x);
+        for (src, r) in self.radio.rx.iter().enumerate() {
+            let r = r.lock().unwrap();
+            for ch in r.channels.values() {
+                let mut x = snap_in(&r.src, ch.system, ch.freq_hz, ch.source, "voice", CC_HALF_HZ);
+                debug_assert_eq!(ch.source, src);
+                x.calls = ch.calls.iter().flatten().count();
+                x.offset_hz = ch.voice.offset_hz();
+                let mut q = Quality::default();
+                ch.voice.report(&mut q);
+                (x.quality, x.phase_err) = (q.0, q.1);
+                out.push(x);
+            }
         }
         for c in &self.cfg.conventional {
             if let Some(src) = self.radio.source_for(c.freq_hz) {
@@ -1294,7 +1511,9 @@ impl Engine {
     /// trunked system its control channel's decoding and demodulation, and
     /// its calls now. See [`crate::metrics`].
     pub fn report(&self, source_names: &[String], sink: &mut dyn Sink) {
-        for (i, s) in self.radio.sources.iter().enumerate() {
+        for (i, r) in self.radio.rx.iter().enumerate() {
+            let r = r.lock().unwrap();
+            let s = &r.src;
             let name = source_names.get(i).cloned().unwrap_or_else(|| i.to_string());
             let mut k = Scoped::new(sink, format!("src/{}", metrics::key_part(&name)));
             let mut p = vec![0.0f64; PROFILE_SLICES];
@@ -1324,10 +1543,11 @@ impl Engine {
             cc.counter("bad", t.bad);
             cc.gauge("locked", (t.now_s - t.last_good_s < 2.0 && t.mismatch.is_none()) as u8 as f64);
             // What its protocol measures (framing, eye opening, deviation…).
-            t.cc.report(&mut cc);
+            t.cc().report(&mut cc);
             // A hunted control channel's level above the floor under it.
             if let Some(hz) = t.cc_hz.filter(|_| t.cc_head.is_some()) {
-                let s = &self.radio.sources[t.cc_source];
+                let r = self.radio.rx(t.cc_source);
+                let s = &r.src;
                 let n = s.chz.fft_size();
                 let mut p = vec![0.0f64; PROFILE_SLICES];
                 s.chz.noise_profile(&mut p);
@@ -1340,7 +1560,7 @@ impl Engine {
             }
         }
         sink.gauge("eng/recording", self.radio.recordings.len() as f64);
-        sink.gauge("eng/channels", (self.radio.channels.len() + self.conv.open_count()) as f64);
+        sink.gauge("eng/channels", (self.radio.channel_count() + self.conv.open_count()) as f64);
         sink.gauge("eng/recorders", self.radio.max_recorders as f64);
     }
 
@@ -1374,8 +1594,10 @@ impl Engine {
             // Channels already open (one is reused by the next call on its frequency) change too:
             // unlocking reaches them, and locking takes the keys from them at once.
             let idx = t.idx;
-            for ch in self.radio.channels.iter_mut().filter(|((s, _), _)| *s == idx).map(|(_, c)| c) {
-                ch.voice.set_keys(keys.clone());
+            for r in self.radio.rx.iter() {
+                for ch in r.lock().unwrap().channels.iter_mut().filter(|((s, _), _)| *s == idx).map(|(_, c)| c) {
+                    ch.voice.set_keys(keys.clone());
+                }
             }
             if let Some(c) = self.cfg.systems.iter_mut().find(|c| c.short_name == short_name) {
                 c.keys = keys;
@@ -1396,119 +1618,40 @@ impl Engine {
             now_s: self.now_s,
             active_calls: systems.iter().map(|s| s.active_calls).sum::<usize>() + self.conv.calls().count(),
             recording: self.radio.recordings.len(),
-            channels_open: self.radio.channels.len() + self.conv.open_count(),
+            channels_open: self.radio.channel_count() + self.conv.open_count(),
             conventional_open: self.conv.open_count(),
             calls_concluded: systems.iter().map(|s| s.calls_concluded).sum::<u64>() + self.conv_concluded,
             systems,
             sources: self
                 .radio
-                .sources
+                .rx
                 .iter()
-                .map(|s| SourceTune { error_ppm: s.error_ppm(), applied_ppm: s.tune_ppm, seeded: s.seed.is_some() && s.errors.is_empty() })
+                .map(|r| {
+                    let s = &r.lock().unwrap().src;
+                    SourceTune { error_ppm: s.error_ppm(), applied_ppm: s.tune_ppm, seeded: s.seed.is_some() && s.errors.is_empty() }
+                })
                 .collect(),
         }
-    }
-
-    /// Feed a source's RTL-SDR native u8 IQ (any length).
-    pub fn push_u8(&mut self, source: usize, data: &[u8]) {
-        // An I byte left from the last buffer goes with this one's first (a
-        // buffer of odd length must not swap I and Q from then on).
-        let mut data = data;
-        if let (Some(i), Some(&q)) = (self.radio.sources[source].half, data.first()) {
-            self.radio.sources[source].half = None;
-            if self.radio.sources[source].chz.feed_u8(&[i, q]).1 {
-                self.on_block(source);
-            }
-            data = &data[1..];
-        }
-        if data.len() % 2 == 1 {
-            self.radio.sources[source].half = data.last().copied();
-            data = &data[..data.len() - 1];
-        }
-        let mut off = 0;
-        while off < data.len() {
-            let (used, ran) = self.radio.sources[source].chz.feed_u8(&data[off..]);
-            off += used;
-            if ran {
-                self.on_block(source);
-            }
-            if used == 0 {
-                break;
-            }
-        }
-    }
-
-    /// Feed a source's float IQ.
-    pub fn push_iq(&mut self, source: usize, iq: &[Complex32]) {
-        let mut off = 0;
-        while off < iq.len() {
-            let (used, ran) = self.radio.sources[source].chz.feed(&iq[off..]);
-            off += used;
-            if ran {
-                self.on_block(source);
-            }
-            if used == 0 {
-                break;
-            }
-        }
-    }
-
-    /// `n` samples of `source` that never arrived — the driver dropped them,
-    /// or the radio went quiet (unplugged, wedged) — fed as silence. Every
-    /// clock here is a sample count, so this is what keeps a source's clock,
-    /// and with it call times, timeouts and the matching of calls across
-    /// sources, in step with the air. Conventional channels neither learn
-    /// their noise floor from the silence nor open on it.
-    pub fn push_gap(&mut self, source: usize, n: u64) {
-        const CHUNK: u64 = 32768;
-        // Faint noise (about −80 dBFS) rather than zeros: receivers' gain
-        // control and equalisers see a signal of the kind they always idle on.
-        let mut x = 0x9e37_79b9_7f4a_7c15u64 ^ n;
-        let mut rnd = move || {
-            x ^= x << 13;
-            x ^= x >> 7;
-            x ^= x << 17;
-            (x >> 40) as f32 / (1u64 << 24) as f32 - 0.5
-        };
-        let quiet: Vec<Complex32> = (0..n.min(CHUNK)).map(|_| Complex32::new(rnd(), rnd()) * 2e-4).collect();
-        self.radio.sources[source].in_gap = true;
-        let mut left = n;
-        while left > 0 {
-            let k = left.min(CHUNK) as usize;
-            self.push_iq(source, &quiet[..k]);
-            left -= k as u64;
-        }
-        self.radio.sources[source].in_gap = false;
-    }
-
-    /// Source `source`'s sample clock is this far behind the engine's
-    /// clock, s: added to every time taken from its samples from now on.
-    /// Every clock here is a sample count; a source's runs slow or fast by
-    /// its crystal's error, starts late by the time it took to open, and
-    /// jumps when samples are lost. The platform measures it against the
-    /// wall clock (trunk-app's `Session` does) and sets it: in small steps
-    /// for drift, at once for a jump. 0 by default (replays).
-    pub fn set_clock_offset(&mut self, source: usize, offset_s: f64) {
-        if let Some(s) = self.radio.sources.get_mut(source) {
-            s.clock_offset_s = offset_s;
-        }
-    }
-
-    /// The offset [`set_clock_offset`](Self::set_clock_offset) last set, s.
-    pub fn clock_offset(&self, source: usize) -> f64 {
-        self.radio.sources.get(source).map_or(0.0, |s| s.clock_offset_s)
     }
 
     /// End of input: release what the receivers still hold and end every call.
     pub fn finish(&mut self) {
         for t in self.trunks.iter_mut() {
             let mut steps = Vec::new();
-            t.cc.flush(&mut steps);
+            t.cc().flush(&mut steps);
             t.follow(&mut self.radio, steps, &mut self.events, &mut self.call_events);
         }
-        let keys: Vec<(u16, u64)> = self.radio.channels.keys().copied().collect();
-        for k in keys {
-            self.radio.run_head(k, true);
+        // (Every source's channels in one key order, as they always ran.)
+        let mut keys: Vec<((u16, u64), usize)> = Vec::new();
+        for (src, r) in self.radio.rx.iter().enumerate() {
+            keys.extend(r.lock().unwrap().channels.keys().map(|&k| (k, src)));
+        }
+        keys.sort();
+        for (k, src) in keys {
+            let v = self.radio.rx(src).decode_channel(k, true);
+            if let Some(v) = v {
+                self.radio.take(v);
+            }
         }
         self.apply_pending();
         for t in self.trunks.iter_mut() {
@@ -1555,27 +1698,34 @@ impl Engine {
         self.conv_out = out;
     }
 
-    fn on_block(&mut self, source: usize) {
+    /// A block of `source` was decoded — its voice channels (`dsp`), its
+    /// control channels' carriers (`cc`, in system order): follow it.
+    fn after_block(&mut self, source: usize, dsp: BlockDsp, cc: Vec<CcResult>) {
+        let _t = prof::span(Stage::TrunkCalls);
         // Voice channels on this source, then its control channels. What
         // the voice channels heard (and channels just opened heard in their
         // pre-roll) reaches the calls after both, once, at this block's time.
-        let keys: Vec<(u16, u64)> = self.radio.channels.iter().filter(|(_, c)| c.source == source).map(|(&k, _)| k).collect();
-        for k in keys {
-            self.radio.run_head(k, false);
+        for v in dsp.voice {
+            self.radio.take(v);
         }
-        for t in self.trunks.iter_mut().filter(|t| t.on_source(source)) {
-            t.on_block(&mut self.radio, source, &mut self.events, &mut self.call_events);
+        let mut cc = cc.into_iter().peekable();
+        for t in self.trunks.iter_mut() {
+            while cc.next_if(|r| r.system < t.idx).is_some() {}
+            if let Some(r) = cc.next_if(|r| r.system == t.idx) {
+                t.on_block(&mut self.radio, source, dsp.time, r, &mut self.events, &mut self.call_events);
+            }
         }
         self.apply_pending();
         if source == 0 {
-            self.now_s = self.radio.sources[0].time();
+            self.now_s = dsp.time;
         }
         if !self.conv.is_empty() {
-            let t = self.radio.sources[source].time();
             let rules = Self::call_rules(&self.cfg);
             let mut out = std::mem::take(&mut self.conv_out);
-            let gap = self.radio.sources[source].in_gap;
-            self.conv.on_block(source, &mut self.radio.sources[source].chz, t, gap, &self.call_ids, &rules, &mut out);
+            {
+                let mut rx = self.radio.rx[source].lock().unwrap();
+                self.conv.on_block(source, &mut rx.src.chz, dsp.time, dsp.in_gap, &self.call_ids, &rules, &mut out);
+            }
             self.emit_conv(out);
         }
         self.apply_pending();
@@ -1719,8 +1869,9 @@ impl Engine {
     /// AutoTune: start source `source` from an earlier run's score, ppm,
     /// until it measures its own.
     pub fn seed_tune(&mut self, source: usize, ppm: f64) {
-        if let Some(s) = self.radio.sources.get_mut(source) {
+        if let Some(r) = self.radio.rx.get(source) {
             if ppm.is_finite() && ppm.abs() <= 50.0 {
+                let s = &mut r.lock().unwrap().src;
                 s.seed = Some(ppm);
                 s.retune();
             }
@@ -1735,8 +1886,8 @@ impl Engine {
             // AutoTune: every call that lasted (each site's copy, encrypted
             // ones too) scores its source.
             if let Some(hz) = freq_error_hz.filter(|_| call.freq_hz > 0 && call.last_update_s - call.start_s >= TUNE_CALL_MIN_S) {
-                if let Some(s) = self.radio.sources.get_mut(rec.source) {
-                    s.measured(hz / call.freq_hz as f64 * 1e6);
+                if let Some(r) = self.radio.rx.get(rec.source) {
+                    r.lock().unwrap().src.measured(hz / call.freq_hz as f64 * 1e6);
                 }
             }
             // (A call whose record never learned it was decrypted, because it was already gone when the news came, is saved
@@ -1809,6 +1960,285 @@ impl Engine {
     }
 }
 
+/// The engine: trunked systems' and conventional channels' calls, from
+/// sources' samples. A handle — clones share one engine — so each source can
+/// be fed from a thread of its own ([`Engine::push_u8`], [`Engine::push_iq`],
+/// [`Engine::push_gap`]) while another reads events and status: each block is
+/// decoded under its source's own lock (the channelizer, the voice channels
+/// and control channel carriers on it), then followed under the engine's.
+/// Fed from one thread, it runs exactly as it always did.
+#[derive(Clone)]
+pub struct Engine {
+    shared: Arc<Shared>,
+}
+
+struct Shared {
+    core: Mutex<Core>,
+    rx: Arc<Vec<Mutex<SourceRx>>>,
+    sources: Vec<SourceConfig>,
+    /// The systems as configured (talkgroups and keys as last set).
+    systems: Mutex<Arc<Vec<SystemConfig>>>,
+}
+
+// (Each source can be fed from a thread of its own.)
+const _: fn() = || {
+    fn shared<T: Send + Sync>() {}
+    shared::<Engine>();
+};
+
+impl Engine {
+    pub fn new(cfg: EngineConfig) -> Result<Self, String> {
+        let core = Core::new(cfg)?;
+        let shared = Shared { rx: core.radio.rx.clone(), sources: core.cfg.sources.clone(), systems: Mutex::new(Arc::new(core.cfg.systems.clone())), core: Mutex::new(core) };
+        Ok(Engine { shared: Arc::new(shared) })
+    }
+
+    fn core(&self) -> MutexGuard<'_, Core> {
+        self.shared.core.lock().unwrap()
+    }
+
+    /// Preload system `system`'s band plan saved by [`Engine::bandplan`] (a
+    /// grant heard before the next IDEN broadcast can then be followed at once).
+    pub fn load_bandplan(&self, system: usize, s: &str) {
+        self.core().load_bandplan(system, s)
+    }
+    /// A system's band plan to save: P25's IDEN tables; DMR's logical channel → frequency table.
+    pub fn bandplan(&self, system: usize) -> String {
+        self.core().bandplan(system)
+    }
+    /// The short names that keep a talker alias table ([`AliasBook::names`]).
+    pub fn unit_table_names(&self) -> Vec<String> {
+        self.core().unit_table_names()
+    }
+    /// Preload the talker aliases (Trunk Recorder's unitTagsOTA CSV) kept under `short_name`.
+    pub fn load_units(&self, short_name: &str, csv: &str) {
+        self.core().load_units(short_name, csv)
+    }
+    /// (short name, CSV) of each talker alias table that learned something since the last call.
+    pub fn units_changed(&self) -> Vec<(String, String)> {
+        self.core().units_changed()
+    }
+    /// A radio's talker alias on system `system` (a call's).
+    pub fn unit_alias(&self, system: u16, unit: u32) -> Option<String> {
+        self.core().unit_alias(system, unit).map(str::to_string)
+    }
+
+    pub fn sources(&self) -> &[SourceConfig] {
+        &self.shared.sources
+    }
+
+    /// The systems, as configured (with the talkgroups and keys last set).
+    pub fn systems(&self) -> Arc<Vec<SystemConfig>> {
+        self.shared.systems.lock().unwrap().clone()
+    }
+
+    /// Calls in progress (recording or monitoring), trunked then conventional.
+    pub fn active_calls(&self) -> Vec<Call> {
+        self.core().active_calls()
+    }
+    /// Everything that happened since the last call.
+    pub fn drain_events(&self) -> Vec<Event> {
+        self.core().drain_events()
+    }
+    /// Power spectrum (dBFS, fft-shifted) of a source's latest block — for the waterfall.
+    pub fn spectrum(&self, source: usize, bins: usize) -> Vec<f32> {
+        self.shared.rx.get(source).map_or_else(Vec::new, |r| r.lock().unwrap().src.chz.power_spectrum(bins))
+    }
+    /// A source's noise floor across its band in `slices` equal slices
+    /// (first at −fs/2), dBFS per FFT bin — the waterfall's floor.
+    pub fn noise_profile(&self, source: usize, slices: usize) -> Vec<f64> {
+        self.core().noise_profile(source, slices)
+    }
+    /// Every channel listened to now (see `Core::channels`): for the dashboard, once a second at most.
+    pub fn channels(&self) -> Vec<ChannelSnapshot> {
+        self.core().channels()
+    }
+    /// What the engine has measured, for the dashboard's history (see [`crate::metrics`]).
+    pub fn report(&self, source_names: &[String], sink: &mut dyn Sink) {
+        self.core().report(source_names, sink)
+    }
+    /// Replace the talkgroup table of the system named `short_name` (trunked
+    /// or conventional): calls from now on go by it. False when there's no such system.
+    pub fn set_talkgroups(&self, short_name: &str, talkgroups: Talkgroups) -> bool {
+        let mut c = self.core();
+        let ok = c.set_talkgroups(short_name, talkgroups);
+        *self.shared.systems.lock().unwrap() = Arc::new(c.cfg.systems.clone());
+        ok
+    }
+    /// The encryption keys of the system named `short_name` (trunked or
+    /// conventional). False when there's no such system.
+    pub fn set_keys(&self, short_name: &str, keys: Option<Arc<Keyring>>) -> bool {
+        let mut c = self.core();
+        let ok = c.set_keys(short_name, keys);
+        *self.shared.systems.lock().unwrap() = Arc::new(c.cfg.systems.clone());
+        ok
+    }
+    pub fn status(&self) -> Status {
+        self.core().status()
+    }
+
+    /// What each source runs each block now.
+    pub fn load(&self) -> Vec<SourceLoad> {
+        let conv: Vec<(usize, usize)> = {
+            let c = self.core();
+            (0..self.shared.rx.len()).map(|i| c.conv.load(i)).collect()
+        };
+        self.shared
+            .rx
+            .iter()
+            .zip(conv)
+            .map(|(r, (conventional, conventional_open))| {
+                let r = r.lock().unwrap();
+                let mut voice: BTreeMap<&'static str, usize> = BTreeMap::new();
+                for ch in r.channels.values() {
+                    let kind = match ch.voice.kind() {
+                        VoiceKind::Fdma => "p25p1",
+                        VoiceKind::Tdma => "p25p2",
+                        VoiceKind::Analog => "analog",
+                        VoiceKind::Dmr => "dmr",
+                        VoiceKind::Nxdn(_) => "nxdn",
+                    };
+                    *voice.entry(kind).or_default() += 1;
+                }
+                let c = &r.src.chz;
+                SourceLoad { rate_hz: r.src.cfg.rate_hz, fft_size: c.fft_size(), decim: c.decim(), heads: c.head_count(), voice, control: r.taps.len(), conventional, conventional_open }
+            })
+            .collect()
+    }
+    /// The other sites' copies of call `id` still going or held, as (call, system).
+    pub fn twins(&self, id: CallId) -> Vec<(CallId, u16)> {
+        self.core().twins(id)
+    }
+    /// AutoTune: start source `source` from an earlier run's score, ppm, until it measures its own.
+    pub fn seed_tune(&self, source: usize, ppm: f64) {
+        self.core().seed_tune(source, ppm)
+    }
+    /// End of input: release what the receivers still hold and end every call.
+    pub fn finish(&self) {
+        self.core().finish()
+    }
+
+    /// Source `source`'s sample clock is this far behind the engine's
+    /// clock, s: added to every time taken from its samples from now on.
+    /// Every clock here is a sample count; a source's runs slow or fast by
+    /// its crystal's error, starts late by the time it took to open, and
+    /// jumps when samples are lost. The platform measures it against the
+    /// wall clock (trunk-app's `Session` does) and sets it: in small steps
+    /// for drift, at once for a jump. 0 by default (replays).
+    pub fn set_clock_offset(&self, source: usize, offset_s: f64) {
+        if let Some(r) = self.shared.rx.get(source) {
+            r.lock().unwrap().src.clock_offset_s = offset_s;
+        }
+    }
+
+    /// The offset [`set_clock_offset`](Self::set_clock_offset) last set, s.
+    pub fn clock_offset(&self, source: usize) -> f64 {
+        self.shared.rx.get(source).map_or(0.0, |r| r.lock().unwrap().src.clock_offset_s)
+    }
+
+    /// A block of `source` ran: its control channels decoded (each under
+    /// its own lock), then everything followed under the engine's.
+    fn follow_block(&self, source: usize, mut dsp: BlockDsp) {
+        let cc = dsp.decode_control();
+        self.core().after_block(source, dsp, cc);
+    }
+
+    /// Feed a source's RTL-SDR native u8 IQ (any length).
+    pub fn push_u8(&self, source: usize, data: &[u8]) {
+        let _s = prof::source(source);
+        let rx = &self.shared.rx[source];
+        // An I byte left from the last buffer goes with this one's first (a
+        // buffer of odd length must not swap I and Q from then on).
+        let mut data = data;
+        let first = {
+            let mut r = rx.lock().unwrap();
+            let mut block = None;
+            if let (Some(i), Some(&q)) = (r.src.half, data.first()) {
+                r.src.half = None;
+                if r.src.chz.feed_u8(&[i, q]).1 {
+                    block = Some(r.decode_block());
+                }
+                data = &data[1..];
+            }
+            if data.len() % 2 == 1 {
+                r.src.half = data.last().copied();
+                data = &data[..data.len() - 1];
+            }
+            block
+        };
+        if let Some(b) = first {
+            self.follow_block(source, b);
+        }
+        let mut off = 0;
+        while off < data.len() {
+            let (used, block) = {
+                let mut r = rx.lock().unwrap();
+                let (used, ran) = r.src.chz.feed_u8(&data[off..]);
+                (used, ran.then(|| r.decode_block()))
+            };
+            off += used;
+            if let Some(b) = block {
+                self.follow_block(source, b);
+            }
+            if used == 0 {
+                break;
+            }
+        }
+    }
+
+    /// Feed a source's float IQ.
+    pub fn push_iq(&self, source: usize, iq: &[Complex32]) {
+        let _s = prof::source(source);
+        let rx = &self.shared.rx[source];
+        let mut off = 0;
+        while off < iq.len() {
+            let (used, block) = {
+                let mut r = rx.lock().unwrap();
+                let (used, ran) = r.src.chz.feed(&iq[off..]);
+                (used, ran.then(|| r.decode_block()))
+            };
+            off += used;
+            if let Some(b) = block {
+                self.follow_block(source, b);
+            }
+            if used == 0 {
+                break;
+            }
+        }
+    }
+
+    /// `n` samples of `source` that never arrived — the driver dropped them,
+    /// or the radio went quiet (unplugged, wedged) — fed as silence. Every
+    /// clock here is a sample count, so this is what keeps a source's clock,
+    /// and with it call times, timeouts and the matching of calls across
+    /// sources, in step with the air. Conventional channels neither learn
+    /// their noise floor from the silence nor open on it.
+    pub fn push_gap(&self, source: usize, n: u64) {
+        const CHUNK: u64 = 32768;
+        let _s = prof::source(source);
+        let t = prof::span(Stage::Gap);
+        // Faint noise (about −80 dBFS) rather than zeros: receivers' gain
+        // control and equalisers see a signal of the kind they always idle on.
+        let mut x = 0x9e37_79b9_7f4a_7c15u64 ^ n;
+        let mut rnd = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            (x >> 40) as f32 / (1u64 << 24) as f32 - 0.5
+        };
+        let quiet: Vec<Complex32> = (0..n.min(CHUNK)).map(|_| Complex32::new(rnd(), rnd()) * 2e-4).collect();
+        drop(t);
+        self.shared.rx[source].lock().unwrap().src.in_gap = true;
+        let mut left = n;
+        while left > 0 {
+            let k = left.min(CHUNK) as usize;
+            self.push_iq(source, &quiet[..k]);
+            left -= k as u64;
+        }
+        self.shared.rx[source].lock().unwrap().src.in_gap = false;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1843,11 +2273,11 @@ mod tests {
     #[test]
     fn autotune_starts_from_a_saved_score() {
         let sys = SystemConfig { short_name: "s".into(), control_channels: vec![770.5e6], ..Default::default() };
-        let mut e = Engine::new(EngineConfig { systems: vec![sys], sources: vec![SourceConfig { center_hz: 770e6, rate_hz: 2.4e6, auto_tune: true, guard_hz: DEFAULT_GUARD_HZ }], ..Default::default() }).unwrap();
+        let mut e = Core::new(EngineConfig { systems: vec![sys], sources: vec![SourceConfig { center_hz: 770e6, rate_hz: 2.4e6, auto_tune: true, guard_hz: DEFAULT_GUARD_HZ }], ..Default::default() }).unwrap();
         e.seed_tune(0, 2.5);
         let t = e.status().sources[0];
         assert_eq!((t.applied_ppm, t.error_ppm, t.seeded), (2.5, None, true));
-        e.radio.sources[0].measured(1.0);
+        e.radio.rx(0).src.measured(1.0);
         let t = e.status().sources[0];
         assert_eq!((t.applied_ppm, t.seeded), (1.0, false));
     }
@@ -1863,12 +2293,12 @@ mod tests {
     #[test]
     fn odd_length_buffers_keep_i_and_q_paired() {
         let bytes: Vec<u8> = (0..100_001u32).map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as u8).collect();
-        let (mut even, mut odd) = (plain_engine(), plain_engine());
+        let (even, odd) = (plain_engine(), plain_engine());
         even.push_u8(0, &bytes[..100_000]);
         for chunk in bytes[..100_000].chunks(4097) {
             odd.push_u8(0, chunk);
         }
-        let pos = |e: &Engine| e.radio.sources[0].chz.sample_position();
+        let pos = |e: &Engine| e.shared.rx[0].lock().unwrap().src.chz.sample_position();
         assert_eq!(pos(&even), pos(&odd));
         assert_eq!(even.spectrum(0, 256), odd.spectrum(0, 256));
         // (Asking for more cells than bins is answered, not a panic.)
@@ -1881,10 +2311,10 @@ mod tests {
     fn a_split_call_keeps_its_recorder() {
         let sys = SystemConfig { short_name: "s".into(), control_channels: vec![851.0125e6], calls: CallConfig { max_call_s: 2.0, ..Default::default() }, ..Default::default() };
         let cfg = EngineConfig { systems: vec![sys], sources: vec![SourceConfig { center_hz: 851e6, rate_hz: 2.4e6, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ }], max_recorders: 1, ..Default::default() };
-        let mut e = Engine::new(cfg).unwrap();
+        let mut e = Core::new(cfg).unwrap();
         let f = 851_500_000;
         for t in [0.0, 1.0, 2.0] {
-            let Engine { trunks, radio, call_events, .. } = &mut e;
+            let Core { trunks, radio, call_events, .. } = &mut e;
             let mut host = trunks[0].host(radio);
             let m = Message { kind: MessageType::Grant, time_s: t, talkgroup: 101, freq_hz: f, ..Default::default() };
             trunks[0].calls.handle(&[m], &mut host, call_events);
@@ -1893,12 +2323,12 @@ mod tests {
         let calls = &e.trunks[0].calls.calls;
         assert_eq!(calls.len(), 1);
         assert!(calls[0].recording && calls[0].start_s > 2.0, "{:?}", calls[0]);
-        assert_eq!(e.radio.channels[&(0, f)].calls[0].map(|c| c.id), Some(calls[0].id), "the channel is still open, for the new part");
+        assert_eq!(e.radio.rx(0).channels[&(0, f)].calls[0].map(|c| c.id), Some(calls[0].id), "the channel is still open, for the new part");
     }
 
     #[test]
     fn at_most_256_conventional_systems() {
-        let mut e = plain_engine().cfg;
+        let mut e = plain_engine().core().cfg.clone();
         e.conv_systems = vec![ConvSystem::default(); MAX_CONVENTIONAL + 1];
         assert!(Engine::new(e).err().unwrap().contains("256"));
     }
@@ -1939,10 +2369,10 @@ mod tests {
             drop_duplicates: dedupe,
             ..Default::default()
         };
-        let mut e = Engine::new(cfg).unwrap();
+        let mut e = Core::new(cfg).unwrap();
         let mut ids = [0; 3];
         for (i, (t, f)) in [(0.0, 851_500_000), (0.4, 851_600_000), (0.2, 851_700_000)].into_iter().enumerate() {
-            let Engine { trunks, radio, call_events, .. } = &mut e;
+            let Core { trunks, radio, call_events, .. } = &mut e;
             let mut host = trunks[i].host(radio);
             let grant = Message { kind: MessageType::Grant, time_s: t, talkgroup: 101, freq_hz: f, ..Default::default() };
             trunks[i].calls.handle(&[grant], &mut host, call_events);
@@ -1960,7 +2390,7 @@ mod tests {
         e.drain_events();
         // West ends last.
         for i in [0, 2, 1] {
-            let Engine { trunks, radio, call_events, .. } = &mut e;
+            let Core { trunks, radio, call_events, .. } = &mut e;
             let mut host = trunks[i].host(radio);
             trunks[i].calls.tick(10.0, &mut host, call_events);
             e.emit_call_events();
@@ -1978,25 +2408,27 @@ mod tests {
             sources: vec![SourceConfig { center_hz: 851e6, rate_hz: 2.4e6, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ }],
             ..Default::default()
         };
-        let mut e = Engine::new(cfg).unwrap();
+        let mut e = Core::new(cfg).unwrap();
         let f = 851_500_000;
-        fn grant(e: &mut Engine, f: u64, t: f64, tg: u32, phase2: bool, slot: u8) {
-            let Engine { trunks, radio, call_events, .. } = e;
+        fn grant(e: &mut Core, f: u64, t: f64, tg: u32, phase2: bool, slot: u8) {
+            let Core { trunks, radio, call_events, .. } = e;
             let mut host = trunks[0].host(radio);
             let m = Message { kind: MessageType::Grant, time_s: t, talkgroup: tg, freq_hz: f, phase2_tdma: phase2, tdma_slot: slot, ..Default::default() };
             trunks[0].calls.handle(&[m], &mut host, call_events);
         }
         grant(&mut e, f, 0.0, 101, false, 0);
-        assert_eq!(e.radio.channels[&(0, f)].voice.kind(), VoiceKind::Fdma);
+        assert_eq!(e.radio.rx(0).channels[&(0, f)].voice.kind(), VoiceKind::Fdma);
         grant(&mut e, f, 1.0, 202, true, 1);
-        let ch = &e.radio.channels[&(0, f)];
+        let rx = e.radio.rx(0);
+        let ch = &rx.channels[&(0, f)];
         assert_eq!(ch.voice.kind(), VoiceKind::Tdma);
         let tg202 = e.trunks[0].calls.calls.iter().find(|c| c.talkgroup == 202).unwrap().id;
         assert_eq!(ch.calls.map(|c| c.map(|c| c.id)), [None, Some(tg202)]);
+        drop(rx);
         // The same kind again shares it, on its own slot.
         grant(&mut e, f, 1.5, 303, true, 0);
-        assert_eq!(e.radio.channels.len(), 1);
-        assert!(e.radio.channels[&(0, f)].calls.iter().all(Option::is_some));
+        assert_eq!(e.radio.channel_count(), 1);
+        assert!(e.radio.rx(0).channels[&(0, f)].calls.iter().all(Option::is_some));
     }
 
     /// Decrypted voice for a call that expired in the same block is still known for what it is: not passed on as
@@ -2009,9 +2441,9 @@ mod tests {
             sources: vec![SourceConfig { center_hz: 851e6, rate_hz: 2.4e6, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ }],
             ..Default::default()
         };
-        let mut e = Engine::new(cfg).unwrap();
+        let mut e = Core::new(cfg).unwrap();
         {
-            let Engine { trunks, radio, call_events, .. } = &mut e;
+            let Core { trunks, radio, call_events, .. } = &mut e;
             let mut host = trunks[0].host(radio);
             let m = Message { kind: MessageType::Grant, time_s: 0.0, talkgroup: 101, freq_hz: 851_500_000, ..Default::default() };
             trunks[0].calls.handle(&[m], &mut host, call_events);
@@ -2054,5 +2486,81 @@ mod tests {
         assert_eq!(saved(&ev), [far, west]);
         assert!(ev.iter().any(|x| matches!(x, Event::NotSaved(c) if c.id == east)));
         assert!(!ev.iter().any(|x| matches!(x, Event::Duplicate { .. })));
+    }
+}
+
+#[cfg(test)]
+mod threads {
+    use super::*;
+    use crate::nxdn::layer3::{CallHead, CALL_CONFERENCE};
+    use crate::nxdn::synth::{add_noise, dibits, modulate, Tx};
+    use crate::nxdn::Rate;
+    use crate::trunk::conventional::{ConvChannel, ConvMode};
+
+    const FS: f64 = 240_000.0;
+
+    /// A source with a keyed NXDN48 transmission (group `tg`) at centre + 50 kHz.
+    fn air(tg: u16, seed: u64) -> Vec<Complex32> {
+        let head = CallHead { cc_option: 0, call_type: CALL_CONFERENCE, option: 0, source: 77, destination: tg };
+        let pad = 2400;
+        let mut d = vec![0u8; pad];
+        let mut on = vec![false; pad];
+        let frames = dibits(&Tx::new(Rate::N48, 1, head, 2, 12).frames());
+        on.extend(std::iter::repeat_n(true, frames.len()));
+        d.extend(frames);
+        d.extend(vec![0u8; 2 * pad]);
+        on.extend(std::iter::repeat_n(false, 2 * pad));
+        let mut ph = 0.0;
+        let mut iq = modulate(&d, Some(&on), Rate::N48, FS, 50_000.0, 0.3, &mut ph);
+        add_noise(&mut iq, 0.01, &mut { seed });
+        iq
+    }
+
+    fn engine() -> Engine {
+        let sources = [450e6, 460e6].map(|c| SourceConfig { center_hz: c, rate_hz: FS, auto_tune: false, guard_hz: 10_000.0 }).to_vec();
+        let conventional = [450.05e6, 460.05e6].map(|f| ConvChannel::new(f, ConvMode::Nxdn(Rate::N48))).to_vec();
+        Engine::new(EngineConfig { sources, conventional, ..Default::default() }).unwrap()
+    }
+
+    /// (talkgroup, audio) of each call saved, in talkgroup order.
+    fn saved(e: &Engine) -> Vec<(u32, Vec<f32>)> {
+        let mut out: Vec<(u32, Vec<f32>)> = e.drain_events().into_iter().filter_map(|ev| if let Event::Concluded(k) = ev { Some((k.call.talkgroup, k.audio)) } else { None }).collect();
+        out.sort_by_key(|c| c.0);
+        out
+    }
+
+    /// Two sources fed from threads of their own, while a third reads the
+    /// engine all along: no deadlock, and (nothing crossing between them)
+    /// the same calls, to the sample, as fed from one thread.
+    #[test]
+    fn sources_fed_from_threads_decode_as_from_one() {
+        let feeds = [air(3001, 1), air(3002, 2)];
+        let one = engine();
+        for (a, b) in feeds[0].chunks(4096).zip(feeds[1].chunks(4096)) {
+            one.push_iq(0, a);
+            one.push_iq(1, b);
+        }
+        one.finish();
+        let want = saved(&one);
+        assert_eq!(want.len(), 2, "both calls, fed from one thread");
+        let e = engine();
+        let done = std::sync::atomic::AtomicUsize::new(0);
+        std::thread::scope(|s| {
+            for (i, f) in feeds.iter().enumerate() {
+                let (e, done) = (&e, &done);
+                s.spawn(move || {
+                    for c in f.chunks(4096) {
+                        e.push_iq(i, c);
+                    }
+                    done.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                });
+            }
+            while done.load(std::sync::atomic::Ordering::SeqCst) < 2 {
+                let _ = (e.status(), e.channels(), e.active_calls(), e.spectrum(0, 64), e.noise_profile(1, 8));
+                std::thread::yield_now();
+            }
+        });
+        e.finish();
+        assert_eq!(saved(&e), want);
     }
 }

@@ -286,7 +286,7 @@ svg .label-free { fill: var(--muted); font: 11px var(--mono); }
   <h1>How Trunk Recorder Pro is built</h1>
   <p>A guide for developers: how samples get from an SDR to a call file, how each signal is decoded, how calls get recorders, why one slow part never stalls the rest, how plugins attach, and what the data and the config look like. Click any box in a diagram for detail. Every diagram is also written out as text beneath it.</p>
   <div class="figures">
-    <div class="fig"><span class="n">1</span><span class="l">engine thread runs all DSP and decoding</span></div>
+    <div class="fig"><span class="n">1</span><span class="l">decoding thread per source; calls followed under one lock</span></div>
     <div class="fig"><span class="n">16,384</span><span class="l">point FFT per source, shared by every channel</span></div>
     <div class="fig"><span class="n">12,288</span><span class="l">new samples per block (5.12 ms at 2.4 MSPS)</span></div>
     <div class="fig"><span class="n">256</span><span class="l">blocks in the only queue that blocks</span></div>
@@ -319,7 +319,7 @@ svg .label-free { fill: var(--muted); font: 11px var(--mono); }
 <section id="sample-flow">
   <div class="eyebrow"><b>02</b><span>trunk-pro/src/runtime.rs · trunk-app/src/session.rs · trunk-core/src/trunk/engine.rs</span></div>
   <h2>From SDR to saved call</h2>
-  <p>Samples cross a thread boundary twice: once into the engine, once out of it. Between those two points everything happens synchronously on the engine thread, in a fixed order, one channelizer block at a time. Press <b>Follow a block</b> to walk the path, or click any stage.</p>
+  <p>Samples cross a thread boundary twice: once into the engine, once out of it. Between those two points everything happens synchronously on the source's decoding thread, in a fixed order, one channelizer block at a time: its channels are decoded under the source's own lock, then followed under the engine's, so sources decode on cores of their own while the calls are followed in one place. Press <b>Follow a block</b> to walk the path, or click any stage.</p>
   <div id="dia-flow"></div>
   <div class="callout"><p><b>Latency, roughly:</b> the driver's block (RTL about 55 ms, others about 10 ms) + up to one channelizer block (5.12 ms at 2.4 MSPS) + filter delay (under 1 ms) + any backlog in the source queue + decoder framing (the C4FM receiver's block timing adds about 100 ms).</p></div>
 </section>
@@ -431,7 +431,7 @@ svg .label-free { fill: var(--muted); font: 11px var(--mono); }
 <section id="backpressure">
   <div class="eyebrow"><b>07</b><span>trunk-pro/src/runtime.rs · sdr.rs · radio/ · plugins/host.rs · main.rs</span></div>
   <h2>Buffering and back-pressure, compared with GNU Radio</h2>
-  <p>Trunk Recorder is a GNU Radio flowgraph: many blocks, each on its own thread, joined by circular buffers. Trunk Recorder Pro is one thread that runs every stage to completion for each block, with one blocking queue in front of it and non-blocking, explicitly lossy queues behind it. Pick a slow part in each diagram to see where the pressure goes.</p>
+  <p>Trunk Recorder is a GNU Radio flowgraph: many blocks, each on its own thread, joined by circular buffers. Trunk Recorder Pro is one thread per source that runs every stage to completion for each block, with one blocking queue in front of each and non-blocking, explicitly lossy queues behind it. Pick a slow part in each diagram to see where the pressure goes.</p>
   <div class="tabs" id="bp-tabs" role="tablist"></div>
   <div id="bp-body"></div>
   <h3>How long the input queue lasts</h3>

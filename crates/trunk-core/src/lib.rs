@@ -19,6 +19,7 @@ pub mod nxdn;
 pub mod position;
 pub mod metrics;
 pub mod p25;
+pub mod prof;
 pub mod smartnet;
 pub mod survey;
 pub mod tables;

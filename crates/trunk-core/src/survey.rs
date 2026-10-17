@@ -645,6 +645,8 @@ const PROBE_BANK: BankConfig = BankConfig {
     eq_mu: 0.02,
     framer: crate::p25::frame::FramerOptions { flywheel: true, flywheel_errs: 12, nid_recover: true, nid_max_errs: 11 },
     soft: true,
+    // (A probe is short: it tells the modulation by which kind decodes.)
+    detect: false,
 };
 
 /// One hop of the scan.
