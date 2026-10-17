@@ -5,6 +5,26 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Each source decodes on its own core.** With many sources one core used to do all the
+  decoding while the others sat idle (and samples were dropped once it couldn't keep up). Each
+  source now has a decoding thread of its own — its channelizer, its voice and control channels —
+  while the calls are followed in one place. Results are the same as before, fed from one thread
+  bit for bit; `trunk-pro replay --threads` feeds each source from its own thread, as live.
+- **NXDN trunked sites cost far less.** A Type-D site watches every repeater at once; each
+  watched NXDN48 carrier now decimates before demodulating, 42 % less CPU with the same decodes.
+- **P25 `modulation: "auto"` detects the modulation.** Instead of running the CQPSK and C4FM
+  receivers on every channel all the time, each channel runs both until one clearly decodes
+  better (a few seconds), then only that one — about 70 % less CPU on a P25 channel. The log says
+  what was detected and the setting that skips detecting it; Setup's option reads **Detect**. On a
+  weak simulcast signal (9–11 dB) this decodes up to 1 % fewer control messages than running both
+  kept doing.
+- **Faster 4FSK receivers.** Multi-symbol detection (P25 C4FM, DMR, NXDN) does the same work in
+  7–12 % less time.
+- **Performance report** (temporary). Platform → **Download performance report** gives where the
+  recorder's time goes, thread by thread and stage by stage, to send to the developers when the
+  CPU runs out; also written as `perf-report.json` beside the config every minute. See
+  [Troubleshooting](docs/troubleshooting.md#performance-report).
+
 ## [0.1.14] — 2026-10-16
 
 - **Interfaces for people who listen, from an interface store.** Besides its own interface, the
