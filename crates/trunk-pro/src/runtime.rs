@@ -34,9 +34,8 @@ pub enum Out {
     /// Only for browsers that subscribed to `topic` (see [`trunk_app::stats::Topics`]).
     Topic { topic: String, text: String },
     /// Live audio (binary frame) for talkgroup `tg` of the system with short
-    /// name `short_name` (the frame carries the system's number this run),
-    /// and of `sites`, the other sites of its multi-site system.
-    Audio { short_name: String, sites: Vec<String>, tg: u32, frame: Vec<u8> },
+    /// name `short_name` (the frame carries the system's number this run).
+    Audio { short_name: String, tg: u32, frame: Vec<u8> },
 }
 
 pub type Hub = broadcast::Sender<Arc<Out>>;
@@ -807,11 +806,11 @@ fn deliver(ctx: &Ctx, out: &mut Vec<Output>, plugins: Option<&PluginHost>, rules
             Output::Text(t) => {
                 let _ = ctx.hub.send(Arc::new(Out::Text(t)));
             }
-            Output::Audio { short_name, sites, tg, frame, decrypted, .. } => {
+            Output::Audio { short_name, tg, frame, decrypted, .. } => {
                 if let Some(p) = plugins {
                     p.audio_frame(&frame, decrypted);
                 }
-                let _ = ctx.hub.send(Arc::new(Out::Audio { short_name, sites, tg, frame }));
+                let _ = ctx.hub.send(Arc::new(Out::Audio { short_name, tg, frame }));
             }
             Output::Plugin(m) => {
                 if let Some(p) = plugins {
@@ -872,7 +871,10 @@ const OLDER_WINDOW_MS: i64 = 24 * 3600 * 1000;
 pub fn older_calls(ctx: &Ctx, before_ms: i64, limit: usize) -> Value {
     let (dir, names) = {
         let c = ctx.config.lock().unwrap();
-        let names: Vec<String> = c.systems.iter().map(|s| s.short_name.clone()).chain(c.conventional.iter().map(|v| v.short_name.clone())).collect();
+        // (A site that was a system of its own has its older calls under its name.)
+        let mut names: Vec<String> = c.systems.iter().flat_map(|s| std::iter::once(s.short_name.clone()).chain(s.sites.iter().map(|x| s.site_name(x).to_string()))).collect();
+        names.extend(c.conventional.iter().map(|v| v.short_name.clone()));
+        names.dedup();
         (PathBuf::from(&c.recording.capture_dir), names)
     };
     let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);

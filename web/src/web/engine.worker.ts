@@ -75,13 +75,11 @@ async function devices() {
 }
 
 /** Hand the session's outputs to the page / storage. */
-function deliver(outs: { t: string; json?: string; system?: number; shortName?: string; sites?: string[]; tg?: number; frame?: Uint8Array; rel?: string; wav?: Uint8Array; entry?: string }[]): void {
+function deliver(outs: { t: string; json?: string; system?: number; shortName?: string; tg?: number; frame?: Uint8Array; rel?: string; wav?: Uint8Array; entry?: string }[]): void {
   for (const o of outs) {
     if (o.t === "text") post(JSON.parse(o.json!) as FromRecorder);
     else if (o.t === "audio") {
-      // (A multi-site system's audio, asked for by any of its sites.)
-      const ofSystem = listen.system === null || listen.system === o.shortName || !!o.sites?.includes(listen.system);
-      if (listen.on && ofSystem && (listen.talkgroup === null || listen.talkgroup === o.tg)) {
+      if (listen.on && (listen.system === null || listen.system === o.shortName) && (listen.talkgroup === null || listen.talkgroup === o.tg)) {
         const buf = o.frame!.slice().buffer;
         postMessage({ audio: buf, tg: o.tg! } satisfies FromWorker, { transfer: [buf] });
       }

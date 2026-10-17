@@ -2,7 +2,7 @@
 // channel's log (made only while it's open). Recorded calls are on Listen.
 
 import { useState } from "react";
-import { formatMhz, multiSitePartners, systemColor } from "../config.ts";
+import { formatMhz, systemColor } from "../config.ts";
 import { setListen, useTopic, type AppState } from "../controller.ts";
 import type { CallView, TalkgroupName } from "../protocol.ts";
 import { unitName } from "../units.ts";
@@ -91,25 +91,8 @@ export function systemChoices(s: AppState): string[] {
   return out;
 }
 
-/**
- * The choices with a multi-site system's sites as one, under its first
- * site's name: each choice, and every site it stands for (itself first).
- */
-export function siteChoices(s: AppState, choices: string[]): Map<string, string[]> {
-  const out = new Map<string, string[]>();
-  const taken = new Set<string>();
-  for (const name of choices) {
-    if (taken.has(name)) continue;
-    const sys = s.config?.systems.find((x) => x.shortName === name);
-    const others = s.config && sys ? (multiSitePartners(s.config, sys, s.status?.systems)?.siblings ?? []).filter((x) => choices.includes(x) && !taken.has(x)) : [];
-    out.set(name, [name, ...others]);
-    for (const x of [name, ...others]) taken.add(x);
-  }
-  return out;
-}
-
-/** Pick one system (or all), by short name: filter chips (labelled `labelOf`, else by name). */
-export function SystemFilter(props: { s: AppState; choices: string[]; value: string | null; onChange: (v: string | null) => void; labelOf?: (name: string) => string }) {
+/** Pick one system (or all), by short name: filter chips. */
+export function SystemFilter(props: { s: AppState; choices: string[]; value: string | null; onChange: (v: string | null) => void }) {
   if (props.choices.length < 2) return null;
   return (
     <div className="filter-row" role="radiogroup" aria-label="System">
@@ -125,7 +108,7 @@ export function SystemFilter(props: { s: AppState; choices: string[]; value: str
           onClick={() => props.onChange(name)}
         >
           <span className="sys-dot" style={{ background: systemColor(props.s.config, name) }} />
-          {props.labelOf?.(name) ?? name}
+          {name}
         </button>
       ))}
     </div>
@@ -134,10 +117,7 @@ export function SystemFilter(props: { s: AppState; choices: string[]; value: str
 
 export function ActiveCalls({ s }: { s: AppState }) {
   const now = s.status?.nowS ?? 0;
-  // A multi-site system is one choice: its calls and live audio from any of its sites.
-  const groups = siteChoices(s, systemChoices(s));
-  const choices = [...groups.keys()];
-  const label = (name: string) => groups.get(name)?.join(" + ") ?? name;
+  const choices = systemChoices(s);
   const multi = choices.length > 1;
   const [only, setOnly] = useState<string | null>(null);
   const pick = (v: string | null) => {
@@ -146,7 +126,7 @@ export function ActiveCalls({ s }: { s: AppState }) {
     if (s.listen) setListen(true, v, null);
   };
   const calls = [...s.calls]
-    .filter((c) => only === null || (groups.get(only) ?? [only]).includes(c.systemName))
+    .filter((c) => only === null || c.systemName === only)
     .sort((a, b) => Number(b.state === "recording") - Number(a.state === "recording") || b.startS - a.startS);
   const playingCall = s.nowPlaying && s.calls.find((c) => c.id === s.nowPlaying?.callId);
   const talkerId = playingCall?.sources.at(-1);
@@ -162,12 +142,12 @@ export function ActiveCalls({ s }: { s: AppState }) {
           </label>
           {s.listen && (s.listenTalkgroup !== null || s.listenSystem !== null) && (
             <button className="btn ghost" onClick={() => setListen(true, null, null)}>
-              {[s.listenSystem !== null && multi ? label(s.listenSystem) : "", s.listenTalkgroup !== null ? `TG ${s.listenTalkgroup}` : ""].filter(Boolean).join(" ")} only ✕
+              {[s.listenSystem !== null && multi ? s.listenSystem : "", s.listenTalkgroup !== null ? `TG ${s.listenTalkgroup}` : ""].filter(Boolean).join(" ")} only ✕
             </button>
           )}
         </div>
       </header>
-      <SystemFilter s={s} choices={choices} value={only} onChange={pick} labelOf={label} />
+      <SystemFilter s={s} choices={choices} value={only} onChange={pick} />
       {s.nowPlaying && s.listen && (
         <div className="now-playing">
           ▶ {multi ? `${s.nowPlaying.system} · ` : ""}TG {s.nowPlaying.talkgroup}
@@ -202,6 +182,7 @@ export function ActiveCalls({ s }: { s: AppState }) {
                     <td className="sys-name">
                       <span className="sys-dot" style={{ background: systemColor(s.config, c.systemName) }} />
                       {c.systemName}
+                      {c.site && c.site !== c.systemName && <span className="muted"> / {c.site}</span>}
                     </td>
                   )}
                   <td>
@@ -210,7 +191,7 @@ export function ActiveCalls({ s }: { s: AppState }) {
                     {c.emergency && <span className="badge bad">EMERG</span>}
                     <PatchedWith tgs={c.patched ?? []} />
                     {c.alsoOn?.length ? (
-                      <div className="patched small" title="Same call on other sites; best copy saved">
+                      <div className="patched small" title="The same call on other sites of its system; the best copy is saved">
                         also on {c.alsoOn.join(", ")}
                       </div>
                     ) : null}

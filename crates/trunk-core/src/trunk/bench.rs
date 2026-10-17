@@ -12,7 +12,7 @@ use num_complex::Complex32;
 
 use super::control::{self, Protocol};
 use super::voice::{self, TrackerOut, VoiceKind, VoiceSpec};
-use super::{SmartnetConfig, SystemConfig};
+use super::{SmartnetConfig, SiteConfig};
 use crate::dsp::filters::{blackman_sinc, rrc_taps};
 use crate::p25::diversity::BankConfig;
 
@@ -181,7 +181,7 @@ fn voice_cost(kind: VoiceKind, bank: BankConfig, iq: &[Complex32]) -> (f64, usiz
     (t.elapsed().as_nanos() as f64 / iq.len() as f64, audio)
 }
 
-fn control_cost(sys: &SystemConfig, iq: &[Complex32]) -> (f64, usize) {
+fn control_cost(sys: &SiteConfig, iq: &[Complex32]) -> (f64, usize) {
     let mut cc = control::build(sys, RATE);
     cc.restart(RATE);
     let mut steps = Vec::new();
@@ -217,9 +217,9 @@ fn decoder_costs() {
         println!("{name:34} {}", r.iter().map(|s| format!("{s:>16}")).collect::<Vec<_>>().join(" "));
     }
     println!("{:34} {:>16} {:>16} {:>16}", "control (good blocks)", "clean", "weak", "noise");
-    let sys = |protocol: Protocol, bank: BankConfig| SystemConfig { control_channels: vec![851e6], protocol, bank, ..Default::default() };
+    let sys = |protocol: Protocol, bank: BankConfig| SiteConfig { control_channels: vec![851e6], protocol, bank, ..Default::default() };
     let bandplan = crate::smartnet::Bandplan::from_config("400_custom", 459_000_000.0, 10_000.0, 380, 461_000_000.0).unwrap();
-    let control_cases: Vec<(&str, SystemConfig, Vec<Complex32>, f64, f64)> = vec![
+    let control_cases: Vec<(&str, SiteConfig, Vec<Complex32>, f64, f64)> = vec![
         ("P25 C4FM, bank auto", sys(Protocol::P25, p25_auto), p25_c4fm(), 7000.0, 6.0),
         ("P25 CQPSK, bank auto", sys(Protocol::P25, p25_auto), p25_cqpsk(), 7000.0, 6.0),
         ("P25 CQPSK, bank qpsk", sys(Protocol::P25, p25_qpsk), p25_cqpsk(), 7000.0, 6.0),

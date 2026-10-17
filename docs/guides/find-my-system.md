@@ -192,11 +192,12 @@ When the control channel has announced its own frequency, a **Ready to record** 
 it will set. Until everything is measured it also says *Still measuring...*; you can add the
 system then, but waiting until the checklist is done gets you the band plan, correction and gain.
 
-The drop-down next to the button chooses **as a new system** or **replacing** one already set up
-(it picks the system that already has one of these control channels, if any). The button reads
-**Add this system** or **Update it**.
+The drop-down next to the button chooses **as a new system**, **as a site of** a system already set
+up, or **replacing** one of its sites. It picks the site that already has one of these control
+channels, if any, else a site of the system the control channel announces. The button reads **Add
+this system**, **Add this site** or **Update it**.
 
-It sets, on the system:
+It sets:
 
 - the type (P25, or SmartNet with the learned band plan);
 - the control channels: the one it announced for itself first, then the alternates;
@@ -206,8 +207,8 @@ It sets, on the system:
 - the voice channels it saw (used to place radios; shown on the system card as *voice 14/16
   covered*).
 
-A new system gets a short name made from its identity, and if another site of the same system is
-already set up, its talkgroup list.
+A new system gets a short name made from its identity. A site added to a system uses that system's
+talkgroup list.
 
 And on the radio that scanned:
 

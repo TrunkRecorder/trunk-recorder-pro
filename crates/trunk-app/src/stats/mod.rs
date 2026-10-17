@@ -282,9 +282,9 @@ impl Stats {
     /// Once a second of wall clock (`now_ms`, the session's clock): the
     /// `stats` message, a [`Rollup`] each new minute, the detail messages
     /// someone is watching, and the edge-triggered events. `busy_ms`: the
-    /// session's decoding time so far (the load). `system_name`: a call's
-    /// system number's short name.
-    pub fn tick(&mut self, now_ms: f64, busy_ms: f64, engine: &Engine, system_name: &dyn Fn(u16) -> String, out: &mut Vec<Output>) {
+    /// session's decoding time so far (the load). `site_names`: a call's
+    /// site number's system short name and site name.
+    pub fn tick(&mut self, now_ms: f64, busy_ms: f64, engine: &Engine, site_names: &dyn Fn(u16) -> (String, String), out: &mut Vec<Output>) {
         if self.last_tick_ms.is_some_and(|t| now_ms - t < TICK_MS) {
             return;
         }
@@ -314,16 +314,20 @@ impl Stats {
         self.agg.gauge("day/audioBytes", self.day.audio_bytes as f64);
         self.edges(engine, out);
         out.push(Output::Text(json!({ "type": "stats", "t": (self.now * 10.0).round() / 10.0, "values": self.agg.values_json() }).to_string()));
-        self.details(engine, system_name, out);
+        self.details(engine, site_names, out);
     }
 
     /// Events on a change of state: a control channel lost or regained, a
     /// source starting to drop samples or clip.
     fn edges(&mut self, engine: &Engine, out: &mut Vec<Output>) {
-        for y in engine.status().systems {
-            let Some(l) = self.agg.get(&format!("sys/{}/cc/locked", key_part(&y.short_name))) else { continue };
+        let sites = engine.sites();
+        for y in engine.status().sites {
+            let Some(cfg) = sites.get(y.site as usize) else { continue };
+            let Some(l) = self.agg.get(&format!("{}/cc/locked", cfg.stats_key())) else { continue };
             let now = l > 0.5;
-            let (name, freq_hz) = (y.short_name, y.control_channel_hz);
+            // "dcfd", or "dcfd/south" for a site with a name of its own.
+            let name = if y.site_name == y.short_name { y.short_name } else { format!("{}/{}", y.short_name, y.site_name) };
+            let freq_hz = y.control_channel_hz;
             let was = self.locked.insert(name.clone(), now);
             match (was, now) {
                 (Some(true), false) => self.emit(MonitorEvent::ControlLost { system: name, freq_hz }, out),
@@ -350,7 +354,7 @@ impl Stats {
     }
 
     /// `rfDetail` / `decodeDetail` for the topics someone watches.
-    fn details(&self, engine: &Engine, system_name: &dyn Fn(u16) -> String, out: &mut Vec<Output>) {
+    fn details(&self, engine: &Engine, site_names: &dyn Fn(u16) -> (String, String), out: &mut Vec<Output>) {
         let rf: Vec<usize> = (0..self.names.len()).filter(|i| self.topics.has(&format!("rf:{i}"))).collect();
         let decode: Vec<&str> = self.topics.iter().filter_map(|t| t.strip_prefix("decode:")).collect();
         if rf.is_empty() && decode.is_empty() {
@@ -359,8 +363,9 @@ impl Stats {
         let channels = engine.channels();
         let r1 = |v: f64| (v * 10.0).round() / 10.0;
         let ch_json = |c: &trunk_core::trunk::ChannelSnapshot| {
+            let (system, site) = site_names(c.site);
             json!({
-                "system": system_name(c.system), "freqHz": c.freq_hz, "source": c.source, "kind": c.kind,
+                "system": system, "site": if site.is_empty() { None } else { Some(site) }, "freqHz": c.freq_hz, "source": c.source, "kind": c.kind,
                 "powerDb": r1(c.power_db), "noiseDb": r1(c.noise_db), "snrDb": r1(c.power_db - c.noise_db),
                 "offsetHz": c.offset_hz.map(|v| v.round()), "quality": c.quality.map(|v| r1(v as f64)),
                 "phaseErrDeg": c.phase_err.map(|v| r1(v as f64)), "calls": c.calls,
@@ -373,7 +378,7 @@ impl Stats {
             out.push(Output::Topic { text: json!({ "type": "rfDetail", "source": i, "profile": profile, "channels": chans }).to_string(), topic });
         }
         for name in decode {
-            let chans: Vec<Value> = channels.iter().filter(|c| system_name(c.system) == name).map(ch_json).collect();
+            let chans: Vec<Value> = channels.iter().filter(|c| site_names(c.site).0 == name).map(ch_json).collect();
             out.push(Output::Topic { topic: format!("decode:{name}"), text: json!({ "type": "decodeDetail", "system": name, "channels": chans }).to_string() });
         }
     }

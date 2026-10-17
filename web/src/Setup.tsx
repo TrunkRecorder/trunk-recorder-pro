@@ -1,5 +1,6 @@
 import { Fragment, useId, useRef, useState } from "react";
 import {
+  activeSites,
   activeSystems,
   AIRSPY_RATES,
   AM_LOW_CUT_MAX_HZ,
@@ -14,7 +15,6 @@ import {
   formatFromPath,
   formatMhz,
   mhzCell,
-  multiSitePartners,
   newAirspy,
   newConventional,
   newDongle,
@@ -24,8 +24,12 @@ import {
   nextTalkgroup,
   parseChannelCsv,
   parseFreqList,
+  newSiteName,
   newSystem,
   resolvedCenters,
+  sameOnTheAir,
+  siteActive,
+  siteNameOf,
   SAMPLE_RATES,
   SOAPY_RATES,
   sourceCovering,
@@ -35,11 +39,28 @@ import {
   siteLockFields,
   siteText,
 } from "./config.ts";
-import { currentView, dismissTodo, downloadText, findRadios, openGuide, refreshDevices, setChannelFile, setNotice, setSetupTab, setView, unlockKeys, updateConfig, useApp, web, type SetupTab } from "./controller.ts";
+import {
+  currentView,
+  dismissTodo,
+  downloadText,
+  findRadios,
+  newSiteOf,
+  openGuide,
+  refreshDevices,
+  setChannelFile,
+  setNotice,
+  setSetupTab,
+  setView,
+  unlockKeys,
+  updateConfig,
+  useApp,
+  web,
+  type SetupTab,
+} from "./controller.ts";
 import { M4aSettings, PluginSetupPanel, renameSystemRefs, SystemPluginSettings } from "./Plugins.tsx";
 import { SystemDelays } from "./Delays.tsx";
 import { IconAntenna, IconDongle, IconFolder, IconPuzzle, IconTower } from "./Onboarding.tsx";
-import type { AirspyGainMode, Channel, Config, Conventional, Demod, Device, HeardCode, LockableKeys, LogSettings, Recording, RecordingOverride, RecordingRules, SiteIdentity, SoapyState, Source, System, UnitNames } from "./protocol.ts";
+import type { AirspyGainMode, Channel, Config, Conventional, Demod, Device, HeardCode, LockableKeys, LogSettings, Recording, RecordingOverride, RecordingRules, Site, SiteIdentity, SoapyState, Source, System, UnitNames } from "./protocol.ts";
 import { DEFAULT_FORMAT, FilenameEditor } from "./FilenameEditor.tsx";
 import { GuardBand } from "./Rolloff.tsx";
 import { SurveyPanel } from "./Survey.tsx";
@@ -82,10 +103,11 @@ export function showTodo(target: string, tries = 0): void {
   const el = document.getElementById(`need-${target}`);
   // Not drawn yet (a plugin just installed, say): a moment more.
   if (!el && tries < 30) return void setTimeout(() => showTodo(target, tries + 1), 100);
-  // In a folded card: open it, then look again.
-  const card = el?.closest<HTMLElement>("[data-card]");
-  if (card?.dataset.collapsed) {
-    setCardOpen(card.dataset.card!, true);
+  // In a folded card (a site's, in its system's): open them, then look again.
+  const folded: HTMLElement[] = [];
+  for (let card = el?.closest<HTMLElement>("[data-card]"); card; card = card.parentElement?.closest<HTMLElement>("[data-card]")) if (card.dataset.collapsed) folded.push(card);
+  if (folded.length) {
+    for (const card of folded) setCardOpen(card.dataset.card!, true);
     return void setTimeout(() => showTodo(target, tries), 60);
   }
   if (el instanceof HTMLDetailsElement) el.open = true;
@@ -892,13 +914,14 @@ function CoverageBar(props: { c: Config; center: number; rateHz: number; guardHz
   const inside = (hz: number) => Math.abs(hz - center) <= half;
   const systems = activeSystems(c);
   const ticks: { hz: number; kind: "cc" | "voice"; color: string; label: string }[] = [];
-  systems.forEach((x) => {
-    for (const f of x.controlChannelsHz) if (inside(f)) ticks.push({ hz: f, kind: "cc", color: systemColor(c, x.shortName), label: `${x.shortName} control channel ${formatMhz(f)} MHz` });
-    for (const f of x.voiceChannelsHz) if (inside(f)) ticks.push({ hz: f, kind: "voice", color: systemColor(c, x.shortName), label: `${x.shortName} voice ${formatMhz(f)} MHz` });
+  activeSites(c).forEach(({ sys: x, site }) => {
+    const name = siteNameOf(x, site);
+    for (const f of site.controlChannelsHz) if (inside(f)) ticks.push({ hz: f, kind: "cc", color: systemColor(c, x.shortName), label: `${name} control channel ${formatMhz(f)} MHz` });
+    for (const f of site.voiceChannelsHz) if (inside(f)) ticks.push({ hz: f, kind: "voice", color: systemColor(c, x.shortName), label: `${name} voice ${formatMhz(f)} MHz` });
   });
   const conv = enabledChannels(c).filter((ch) => inside(ch.freqHz));
   for (const ch of conv) ticks.push({ hz: ch.freqHz, kind: "voice", color: "var(--text)", label: `conventional ${ch.name || formatMhz(ch.freqHz)}` });
-  const here = systems.filter((x) => x.controlChannelsHz.some(inside) || x.voiceChannelsHz.some(inside));
+  const here = systems.filter((x) => x.sites.filter(siteActive).some((y) => y.controlChannelsHz.some(inside) || y.voiceChannelsHz.some(inside)));
   return (
     <div className="stack" style={{ gap: 4 }}>
       <div className="coverage" role="img" aria-label={`Covers ${formatMhz(center - half, 3)} to ${formatMhz(center + half, 3)} MHz`}>
@@ -1494,15 +1517,15 @@ const LOCK_INPUTS: { key: keyof SiteIdentity; label: string; hex: boolean }[] = 
   { key: "site", label: "Site", hex: false },
 ];
 
-function DmrFields(props: { sys: System; edit: (fn: (x: System) => void) => void }) {
-  const { sys, edit } = props;
+function DmrFields(props: { site: Site; edit: (fn: (x: Site) => void) => void }) {
+  const { site, edit } = props;
   return (
     <>
       <Field label="Voice frequencies, MHz" hint="Tier III, Capacity Max, Connect Plus" wide>
         <DraftInput
           className="mono"
           codec={mhzList}
-          value={sys.dmrChannelsHz ?? []}
+          value={site.dmrChannelsHz ?? []}
           placeholder="452.275, 452.300"
           onChange={(list) =>
             edit((x) => {
@@ -1515,7 +1538,7 @@ function DmrFields(props: { sys: System; edit: (fn: (x: System) => void) => void
       <Field label="Colour code">
         <NumberInput
           label="Colour code"
-          value={sys.colorCode}
+          value={site.colorCode}
           placeholder="auto"
           onChange={(v) =>
             edit((x) => {
@@ -1529,7 +1552,7 @@ function DmrFields(props: { sys: System; edit: (fn: (x: System) => void) => void
         <DraftInput
           className="mono"
           codec={lcnTable}
-          value={sys.lcnTableHz ?? {}}
+          value={site.lcnTableHz ?? {}}
           placeholder={"learned from the air"}
           onChange={(t) =>
             edit((x) => {
@@ -1543,28 +1566,14 @@ function DmrFields(props: { sys: System; edit: (fn: (x: System) => void) => void
   );
 }
 
-function NxdnFields(props: { sys: System; edit: (fn: (x: System) => void) => void }) {
-  const { sys, edit } = props;
+function NxdnFields(props: { sys: System; site: Site; edit: (fn: (x: Site) => void) => void }) {
+  const { sys, site, edit } = props;
   const typeD = sys.nxdnType === "typeD";
   return (
     <>
-      <Field label="NXDN type">
-        <select
-          value={typeD ? "typeD" : "typeC"}
-          onChange={(e) =>
-            edit((x) => {
-              if (e.target.value === "typeD") x.nxdnType = "typeD";
-              else delete x.nxdnType;
-            })
-          }
-        >
-          <option value="typeC">Type-C (control channel)</option>
-          <option value="typeD">Type-D / IDAS (no control channel)</option>
-        </select>
-      </Field>
       <Field label="Rate" hint={typeD ? "The repeaters'" : "The control channel's"}>
         <select
-          value={sys.nxdnRate === "nxdn96" ? "nxdn96" : "nxdn48"}
+          value={site.nxdnRate === "nxdn96" ? "nxdn96" : "nxdn48"}
           onChange={(e) =>
             edit((x) => {
               if (e.target.value === "nxdn96") x.nxdnRate = "nxdn96";
@@ -1579,7 +1588,7 @@ function NxdnFields(props: { sys: System; edit: (fn: (x: System) => void) => voi
       <Field label="RAN">
         <NumberInput
           label="RAN"
-          value={sys.ran}
+          value={site.ran}
           placeholder="auto"
           onChange={(v) =>
             edit((x) => {
@@ -1593,7 +1602,7 @@ function NxdnFields(props: { sys: System; edit: (fn: (x: System) => void) => voi
         <DraftInput
           className="mono"
           codec={mhzList}
-          value={sys.nxdnChannelsHz ?? []}
+          value={site.nxdnChannelsHz ?? []}
           placeholder="451.0125, 451.0375"
           onChange={(list) =>
             edit((x) => {
@@ -1607,7 +1616,7 @@ function NxdnFields(props: { sys: System; edit: (fn: (x: System) => void) => voi
         <DraftInput
           className="mono"
           codec={lcnTable}
-          value={sys.lcnTableHz ?? {}}
+          value={site.lcnTableHz ?? {}}
           placeholder={typeD ? "none" : "learned from the air"}
           onChange={(t) =>
             edit((x) => {
@@ -1627,10 +1636,10 @@ function NxdnFields(props: { sys: System; edit: (fn: (x: System) => void) => voi
   );
 }
 
-/** A SmartNet system's band plan (Trunk Recorder's settings) and default voice mode. */
-function SmartnetFields(props: { sys: System; edit: (fn: (x: System) => void) => void }) {
-  const { sys, edit } = props;
-  const custom = (sys.bandplan ?? "").startsWith("400") || sys.bandplan?.toLowerCase() === "obt";
+/** A SmartNet site's band plan (Trunk Recorder's settings). */
+function SmartnetFields(props: { site: Site; edit: (fn: (x: Site) => void) => void }) {
+  const { site, edit } = props;
+  const custom = (site.bandplan ?? "").startsWith("400") || site.bandplan?.toLowerCase() === "obt";
   const setNum = (k: "bandplanBaseHz" | "bandplanSpacingHz" | "bandplanOffset" | "bandplanHighHz", v: number | undefined) =>
     edit((x) => {
       if (v === undefined || v < 0) delete x[k];
@@ -1639,7 +1648,7 @@ function SmartnetFields(props: { sys: System; edit: (fn: (x: System) => void) =>
   return (
     <>
       <Field label="Band plan">
-        <select value={custom ? "400_custom" : (sys.bandplan ?? "800_standard")} onChange={(e) => edit((x) => void (x.bandplan = e.target.value))}>
+        <select value={custom ? "400_custom" : (site.bandplan ?? "800_standard")} onChange={(e) => edit((x) => void (x.bandplan = e.target.value))}>
           <option value="800_standard">800 MHz standard</option>
           <option value="800_reband">800 MHz rebanded</option>
           <option value="800_splinter">800 MHz splinter</option>
@@ -1647,25 +1656,19 @@ function SmartnetFields(props: { sys: System; edit: (fn: (x: System) => void) =>
           <option value="400_custom">VHF / UHF (custom, OBT)</option>
         </select>
       </Field>
-      <Field label="Voice of unknown talkgroups" hint="Until a grant says otherwise">
-        <select value={sys.defaultMode ?? "digital"} onChange={(e) => edit((x) => void (e.target.value === "analog" ? (x.defaultMode = "analog") : delete x.defaultMode))}>
-          <option value="digital">P25</option>
-          <option value="analog">Analog FM</option>
-        </select>
-      </Field>
       {custom && (
         <div className="id-grid wide">
           <Field label="Base, Hz" hint="Frequency of the offset channel">
-            <NumberInput label="Band plan base" placeholder="489087500" value={sys.bandplanBaseHz} onChange={(v) => setNum("bandplanBaseHz", v)} />
+            <NumberInput label="Band plan base" placeholder="489087500" value={site.bandplanBaseHz} onChange={(v) => setNum("bandplanBaseHz", v)} />
           </Field>
           <Field label="Spacing, Hz">
-            <NumberInput label="Band plan spacing" placeholder="25000" value={sys.bandplanSpacingHz} onChange={(v) => setNum("bandplanSpacingHz", v)} />
+            <NumberInput label="Band plan spacing" placeholder="25000" value={site.bandplanSpacingHz} onChange={(v) => setNum("bandplanSpacingHz", v)} />
           </Field>
           <Field label="Offset (channel)">
-            <NumberInput label="Band plan offset" placeholder="380" value={sys.bandplanOffset} onChange={(v) => setNum("bandplanOffset", v)} />
+            <NumberInput label="Band plan offset" placeholder="380" value={site.bandplanOffset} onChange={(v) => setNum("bandplanOffset", v)} />
           </Field>
           <Field label="High, Hz" hint="Highest outbound channel">
-            <NumberInput label="Band plan high" placeholder="496612500" value={sys.bandplanHighHz} onChange={(v) => setNum("bandplanHighHz", v)} />
+            <NumberInput label="Band plan high" placeholder="496612500" value={site.bandplanHighHz} onChange={(v) => setNum("bandplanHighHz", v)} />
           </Field>
         </div>
       )}
@@ -1675,6 +1678,175 @@ function SmartnetFields(props: { sys: System; edit: (fn: (x: System) => void) =>
 
 const SYSTEM_TYPES: Record<System["type"], string> = { p25: "P25", smartnet: "SmartNet / SmartZone", dmr: "DMR (trunked)", nxdn: "NXDN (trunked)" };
 
+/** A system's own settings, as a confirm names them: making two systems one keeps the first's. */
+const SYSTEM_OWN: [keyof System, string][] = [
+  ["talkgroupsCsv", "talkgroup file"],
+  ["unitNames", "unit names"],
+  ["recording", "recording rules"],
+  ["plugins", "plugin settings"],
+  ["pluginDelays", "plugin delays"],
+  ["keys", "keys"],
+  ["defaultMode", "default mode"],
+];
+
+/** Whether a site's control channels and voice channels land inside a source: chips. */
+function SiteCoverage(props: { c: Config; sys: System; sites: Site[] }) {
+  const { c, sys } = props;
+  const sites = sys.enabled ? props.sites.filter((x) => x.enabled) : [];
+  const ccs = sites.flatMap((x) => x.controlChannelsHz);
+  const voice = sites.flatMap((x) => x.voiceChannelsHz);
+  if (!ccs.length && !voice.length) return null;
+  const centers = resolvedCenters(c);
+  const ccOn = [...new Set(ccs.map((f) => sourceCovering(c, centers, f)).filter((k) => k >= 0))];
+  const voiceIn = voice.filter((f) => sourceCovering(c, centers, f) >= 0).length;
+  return (
+    <>
+      {ccs.length > 0 &&
+        (ccOn.length ? (
+          <span className="chip ok">control channel on source {ccOn.map((k) => k + 1).join(", ")}</span>
+        ) : (
+          <span className="chip bad">no control channel inside a source</span>
+        ))}
+      {voice.length > 0 && (
+        <span className={`chip ${voiceIn === voice.length ? "ok" : "warn"}`} title="Voice channels found by the survey, inside a source">
+          voice {voiceIn}/{voice.length} covered
+        </span>
+      )}
+    </>
+  );
+}
+
+/** One site of system `i`: folded, its name, Record switch, control channels and coverage; open, how it is followed. */
+function SiteCard(props: { c: Config; i: number; k: number; onRemoveSystem: () => void }) {
+  const { c, i, k } = props;
+  const sys = c.systems[i];
+  const site = sys.sites[k];
+  const need = useNeed();
+  const edit = (fn: (x: Site) => void) => updateConfig((x) => fn(x.systems[i].sites[k]));
+  const setExpect = (f: keyof SiteIdentity, v: number | undefined) =>
+    edit((x) => {
+      x.expect = { ...x.expect };
+      if (v === undefined) delete x.expect[f];
+      else x.expect[f] = v;
+    });
+  const name = siteNameOf(sys, site);
+  const dupName = sys.sites.some((x, j) => j !== k && siteNameOf(sys, x) === name);
+  // The lock, on the fields this protocol states (others are ignored).
+  const lockFields = siteLockFields(sys);
+  const lockedTo: SiteIdentity = Object.fromEntries(lockFields.filter((f) => site.expect[f] != null).map((f) => [f, site.expect[f]]));
+  const locked = Object.keys(lockedTo).length > 0;
+  // Its to-dos' fields: `site-<system>-<k>`, `cc-<system>-<k>`.
+  const at = `${sys.shortName}-${k}`;
+  const todo = openTodos(useApp()).filter((t) => t.target === `site-${at}` || t.target === `cc-${at}`).length;
+  const typeD = sys.type === "nxdn" && sys.nxdnType === "typeD";
+  const remove = () => {
+    if (sys.sites.length === 1) return props.onRemoveSystem();
+    if (!confirm(`Remove the site ${name} from ${sys.shortName}?`)) return;
+    forgetCard(`site-${i}-`, k, sys.sites.length);
+    updateConfig((x) => void x.systems[i].sites.splice(k, 1));
+  };
+  return (
+    <Card
+      cardKey={`site-${i}-${k}`}
+      // Sites start folded.
+      n={2}
+      className={`site-card${site.enabled ? "" : " off"}`}
+      head={
+        <>
+          <div className="set-card-title">
+            <h3>{name}</h3>
+            <span className="set-card-sub mono">
+              {site.controlChannelsHz.length ? `${site.controlChannelsHz.map((f) => formatMhz(f)).join(", ")} MHz` : "no control channel"}
+              {locked ? ` · ${siteText(lockedTo)}` : ""}
+            </span>
+          </div>
+          <div className="row set-card-chips">
+            {todo > 0 && <span className="chip warn">{todo} to finish</span>}
+            <SiteCoverage c={c} sys={sys} sites={[site]} />
+          </div>
+        </>
+      }
+      actions={
+        <>
+          <Switch label="Record" checked={site.enabled} onChange={(v) => edit((x) => void (x.enabled = v))} />
+          <button className="btn ghost small" onClick={remove}>
+            Remove
+          </button>
+        </>
+      }
+    >
+      <div className="set-group-body cols-2 site-body">
+        <Field label="Site name" hint={dupName ? "Another site has it — each needs its own" : "As the talkgroup file's Preferred Site names it"}>
+          <input
+            value={site.name ?? ""}
+            placeholder={sys.shortName}
+            onChange={(e) =>
+              edit((x) => {
+                if (e.target.value.trim()) x.name = e.target.value;
+                else delete x.name;
+              })
+            }
+          />
+        </Field>
+        {sys.type !== "dmr" && sys.type !== "nxdn" && (
+          <Field label={sys.type === "smartnet" ? "P25 voice modulation" : "Modulation"}>
+            <select value={site.modulation} onChange={(e) => edit((x) => void (x.modulation = e.target.value as Site["modulation"]))}>
+              <option value="auto">Detect (then only that receiver)</option>
+              <option value="fsk4">C4FM (fsk4)</option>
+              <option value="qpsk">CQPSK / LSM simulcast (qpsk)</option>
+            </select>
+          </Field>
+        )}
+        <Field
+          needs={need(`cc-${at}`)}
+          anchor={`cc-${at}`}
+          label={sys.type === "dmr" ? "Site frequencies, MHz" : typeD ? "Repeaters, MHz" : "Control channels, MHz"}
+          hint={sys.type === "dmr" ? "Capacity Plus: every repeater. Others: control channels." : typeD ? "Every repeater of the site" : "Later ones are fallbacks"}
+          wide
+        >
+          <DraftInput
+            className="mono"
+            codec={mhzList}
+            value={site.controlChannelsHz}
+            placeholder="857.9875, 858.9875"
+            onChange={(list) => edit((x) => void (x.controlChannelsHz = list))}
+          />
+        </Field>
+        {sys.type === "smartnet" && <SmartnetFields site={site} edit={edit} />}
+        {sys.type === "dmr" && <DmrFields site={site} edit={edit} />}
+        {sys.type === "nxdn" && <NxdnFields sys={sys} site={site} edit={edit} />}
+        {lockFields.length > 0 && (
+          <details className={`help wide${need(`site-${at}`) ? " needs" : ""}`} id={`need-site-${at}`} open={need(`site-${at}`) ? true : undefined}>
+            <summary>
+              Site lock{locked ? <span className="muted"> — only {siteText(lockedTo)}</span> : <span className="muted"> — off</span>}
+            </summary>
+            <p className="muted small">
+              {need(`site-${at}`) && (
+                <>
+                  <span className="field-needs">{need(`site-${at}`)}</span>{" "}
+                </>
+              )}
+              Follow only a control channel announcing this site, not a neighbour. Empty = any; {sys.type === "smartnet" || sys.type === "nxdn" ? "System ID in hex" : "NAC, WACN and System ID in hex"}.
+            </p>
+            <div className="id-grid">
+              {LOCK_INPUTS.filter((x) => lockFields.includes(x.key)).map((x) => (
+                <Field key={x.key} label={x.label}>
+                  <NumberInput label={x.label} hex={x.hex} value={site.expect[x.key] ?? undefined} onChange={(v) => setExpect(x.key, v)} />
+                </Field>
+              ))}
+            </div>
+            {locked && (
+              <button className="btn ghost small" onClick={() => edit((x) => void (x.expect = {}))}>
+                Clear the lock
+              </button>
+            )}
+          </details>
+        )}
+      </div>
+    </Card>
+  );
+}
+
 function SystemCard(props: { c: Config; i: number }) {
   const { c, i } = props;
   const sys = c.systems[i];
@@ -1682,28 +1854,48 @@ function SystemCard(props: { c: Config; i: number }) {
   const app = useApp();
   const plugins = app.plugins?.plugins ?? [];
   const edit = (fn: (x: System) => void) => updateConfig((x) => fn(x.systems[i]));
-  const setExpect = (k: keyof SiteIdentity, v: number | undefined) =>
-    edit((x) => {
-      x.expect = { ...x.expect };
-      if (v === undefined) delete x.expect[k];
-      else x.expect[k] = v;
-    });
   const color = systemColor(c, sys.shortName);
-  // Multi-site: as configured, or as the running recorder's control channels say.
-  const live = app.status?.systems ?? [];
-  const partners = multiSitePartners(c, sys, live);
-  // The lock, on the fields this protocol states (others are ignored).
-  const lockFields = siteLockFields(sys);
-  const lockedTo: SiteIdentity = Object.fromEntries(lockFields.filter((f) => sys.expect[f] != null).map((f) => [f, sys.expect[f]]));
-  const locked = Object.keys(lockedTo).length > 0;
   const dupName = c.systems.some((x, k) => k !== i && x.shortName === sys.shortName);
-  // Where it lands on the sources.
-  const centers = resolvedCenters(c);
-  const ccOn = [...new Set(sys.controlChannelsHz.map((f) => sourceCovering(c, centers, f)).filter((k) => k >= 0))];
-  const voiceIn = sys.voiceChannelsHz.filter((f) => sourceCovering(c, centers, f) >= 0).length;
+  // Its to-dos on this tab, its sites' among them.
+  const todo = openTodos(app).filter((t) => "system" in t.item && t.item.system === sys.shortName && tabOf(t.target) === "systems").length;
+  // Systems set up apart that announce this one on the air.
+  const same = sameOnTheAir(c, app.status?.systems ?? []).flatMap(([a, b]) => (a === sys ? [b] : b === sys ? [a] : []));
 
-  const todo = useTodosAt(["cc", "tg", "units", "site", "sysplug"], sys.shortName);
-  const multiSite = sys.type === "dmr" || (sys.type === "nxdn" && sys.nxdnType === "typeD");
+  const remove = (lastSite = false) => {
+    if (!confirm(`${lastSite ? `This is ${sys.shortName}'s only site. ` : ""}Remove ${sys.shortName}? Its recordings stay on disk.`)) return;
+    forgetCard("sys-", i, c.systems.length);
+    updateConfig((x) => void x.systems.splice(i, 1));
+  };
+  const addSite = () => {
+    setCardOpen(`site-${i}-${sys.sites.length}`, true);
+    edit((x) => void x.sites.push(newSiteOf(x, {})));
+  };
+  // The other system's sites move here (each named as its system was, unless it has a name); this one's settings stay.
+  const join = (other: System) => {
+    const j = c.systems.indexOf(other);
+    const dropped = SYSTEM_OWN.filter(([k]) => other[k] !== undefined && other[k] !== "" && JSON.stringify(other[k]) !== JSON.stringify(sys[k])).map(([, w]) => w);
+    const n = other.sites.length;
+    const ask =
+      `Make ${other.shortName} a site${n === 1 ? "" : "s"} of ${sys.shortName}? ` +
+      `Its ${n === 1 ? "site moves" : `${n} sites move`} here and ${other.shortName} is removed; its recordings stay on disk.` +
+      (dropped.length ? ` Its ${dropped.join(", ")} ${dropped.length === 1 ? "is" : "are"} dropped: ${sys.shortName}'s are kept.` : "");
+    if (j < 0 || !confirm(ask)) return;
+    forgetCard("sys-", j, c.systems.length);
+    updateConfig((x) => {
+      const to = x.systems[i];
+      const from = x.systems[j];
+      for (const s of from.sites) {
+        const taken = new Set(to.sites.map((y) => siteNameOf(to, y)));
+        const want = s.name?.trim() || from.shortName;
+        to.sites.push({ ...s, name: taken.has(want) ? newSiteName(to) : want, enabled: s.enabled && from.enabled });
+      }
+      if (from.enabled) to.enabled = true;
+      // Plugin settings that named it name this one.
+      renameSystemRefs(x, from.shortName, to.shortName, plugins);
+      x.systems.splice(j, 1);
+    });
+    setNotice(`${other.shortName} is a part of ${sys.shortName} now.`);
+  };
 
   return (
     <Card
@@ -1724,41 +1916,34 @@ function SystemCard(props: { c: Config; i: number }) {
           </div>
           <div className="row set-card-chips">
             {todo > 0 && <span className="chip warn">{todo} to finish</span>}
-            {sys.enabled && sys.controlChannelsHz.length > 0 ? (
-              ccOn.length ? (
-                <span className="chip ok">control channel on source {ccOn.map((k) => k + 1).join(", ")}</span>
-              ) : (
-                <span className="chip bad">no control channel inside a source</span>
-              )
-            ) : null}
-            {sys.enabled && sys.voiceChannelsHz.length > 0 && (
-              <span className={`chip ${voiceIn === sys.voiceChannelsHz.length ? "ok" : "warn"}`} title="Voice channels found by the survey, inside a source">
-                voice {voiceIn}/{sys.voiceChannelsHz.length} covered
-              </span>
-            )}
-            {partners && (
-              <span className="chip" title={partners.why}>
-                multi-site with {partners.siblings.join(", ")}
-              </span>
-            )}
+            {sys.sites.length > 1 && <span className="chip">{sys.sites.length} sites</span>}
+            <SiteCoverage c={c} sys={sys} sites={sys.sites} />
           </div>
         </>
       }
       actions={
         <>
           <Switch label="Record" checked={sys.enabled} onChange={(v) => edit((x) => void (x.enabled = v))} />
-          <button
-            className="btn ghost small"
-            onClick={() => {
-              if (confirm(`Remove ${sys.shortName}? Its recordings stay on disk.`)) {
-                forgetCard("sys-", i, c.systems.length);
-                updateConfig((x) => void x.systems.splice(i, 1));
-              }
-            }}
-          >
+          <button className="btn ghost small" onClick={() => remove()}>
             Remove
           </button>
         </>
+      }
+      note={
+        same.length > 0 && (
+          <div className="set-card-needs">
+            {same.map((other) => (
+              <div key={other.shortName} className="banner same-system">
+                <span>
+                  <b>{other.shortName}</b> announces the same system on the air.
+                </span>
+                <button className="btn small" onClick={() => join(other)}>
+                  Make them one system
+                </button>
+              </div>
+            ))}
+          </div>
+        )
       }
     >
       <Group title="Basics" hint="The short name is its calls' folder.">
@@ -1784,7 +1969,7 @@ function SystemCard(props: { c: Config; i: number }) {
             onChange={(e) =>
               edit((x) => {
                 x.type = e.target.value === "smartnet" ? "smartnet" : e.target.value === "dmr" ? "dmr" : e.target.value === "nxdn" ? "nxdn" : "p25";
-                if (x.type === "smartnet" && !x.bandplan) x.bandplan = "800_standard";
+                if (x.type === "smartnet") for (const y of x.sites) y.bandplan ??= "800_standard";
               })
             }
           >
@@ -1795,41 +1980,47 @@ function SystemCard(props: { c: Config; i: number }) {
             ))}
           </select>
         </Field>
-        {sys.type !== "dmr" && sys.type !== "nxdn" && (
-          <Field label={sys.type === "smartnet" ? "P25 voice modulation" : "Modulation"}>
-            <select value={sys.modulation} onChange={(e) => edit((x) => void (x.modulation = e.target.value as System["modulation"]))}>
-              <option value="auto">Detect (then only that receiver)</option>
-              <option value="fsk4">C4FM (fsk4)</option>
-              <option value="qpsk">CQPSK / LSM simulcast (qpsk)</option>
+        {sys.type === "smartnet" && (
+          <Field label="Voice of unknown talkgroups" hint="Until a grant says otherwise">
+            <select value={sys.defaultMode ?? "digital"} onChange={(e) => edit((x) => void (e.target.value === "analog" ? (x.defaultMode = "analog") : delete x.defaultMode))}>
+              <option value="digital">P25</option>
+              <option value="analog">Analog FM</option>
+            </select>
+          </Field>
+        )}
+        {sys.type === "nxdn" && (
+          <Field label="NXDN type">
+            <select
+              value={sys.nxdnType === "typeD" ? "typeD" : "typeC"}
+              onChange={(e) =>
+                edit((x) => {
+                  if (e.target.value === "typeD") x.nxdnType = "typeD";
+                  else delete x.nxdnType;
+                })
+              }
+            >
+              <option value="typeC">Type-C (control channel)</option>
+              <option value="typeD">Type-D / IDAS (no control channel)</option>
             </select>
           </Field>
         )}
       </Group>
-      <Group title="On the air" hint="Where the recorder finds it.">
-        <Field
-          needs={need(`cc-${sys.shortName}`)}
-          anchor={`cc-${sys.shortName}`}
-          label={sys.type === "dmr" ? "Site frequencies, MHz" : sys.type === "nxdn" && sys.nxdnType === "typeD" ? "Repeaters, MHz" : "Control channels, MHz"}
-          hint={
-            sys.type === "dmr"
-              ? "Capacity Plus: every repeater. Others: control channels."
-              : sys.type === "nxdn" && sys.nxdnType === "typeD"
-                ? "Every repeater of the site"
-                : "Later ones are fallbacks"
-          }
-          wide
-        >
-          <DraftInput
-            className="mono"
-            codec={mhzList}
-            value={sys.controlChannelsHz}
-            placeholder="857.9875, 858.9875"
-            onChange={(list) => edit((x) => void (x.controlChannelsHz = list))}
-          />
-        </Field>
-        {sys.type === "smartnet" && <SmartnetFields sys={sys} edit={edit} />}
-        {sys.type === "dmr" && <DmrFields sys={sys} edit={edit} />}
-        {sys.type === "nxdn" && <NxdnFields sys={sys} edit={edit} />}
+      <Group
+        title="Sites"
+        hint="Where the recorder finds it: each site's control channel. A call heard on several sites is saved once."
+        actions={
+          <button className="btn small" onClick={addSite}>
+            Add site
+          </button>
+        }
+        cols={1}
+      >
+        <div className="sites-list">
+          {sys.sites.map((_, k) => (
+            <SiteCard key={`${k}-${sys.sites.length}`} c={c} i={i} k={k} onRemoveSystem={() => remove(true)} />
+          ))}
+          {!sys.sites.length && <p className="muted small">No sites: add one with its control channel.</p>}
+        </div>
       </Group>
       <Group title="Talkgroups and units" hint="Names for what is heard, and which talkgroups are recorded.">
         <TalkgroupsField sys={sys} index={i} needs={need(`tg-${sys.shortName}`)} anchor={`tg-${sys.shortName}`} />
@@ -1844,47 +2035,6 @@ function SystemCard(props: { c: Config; i: number }) {
             })
           }
         />
-      </Group>
-      <Group title="Sites" hint={multiSite ? "Systems with the same site group save a call heard on several sites once." : "Sites of one system are matched from the air; a site lock follows only one."}>
-        <Field label="Site group" hint={multiSite ? "Same name on each site: calls saved once" : "Only to join ISSI-linked systems or split a site"}>
-          <input
-            value={sys.siteGroup ?? ""}
-            placeholder={multiSite ? "none" : "from the air"}
-            onChange={(e) =>
-              edit((x) => {
-                if (e.target.value.trim()) x.siteGroup = e.target.value;
-                else delete x.siteGroup;
-              })
-            }
-          />
-        </Field>
-        {lockFields.length > 0 && (
-          <details className={`help wide${need(`site-${sys.shortName}`) ? " needs" : ""}`} id={`need-site-${sys.shortName}`} open={need(`site-${sys.shortName}`) ? true : undefined}>
-            <summary>
-              Site lock{locked ? <span className="muted"> — only {siteText(lockedTo)}</span> : <span className="muted"> — off</span>}
-            </summary>
-            <p className="muted small">
-              {need(`site-${sys.shortName}`) && (
-                <>
-                  <span className="field-needs">{need(`site-${sys.shortName}`)}</span>{" "}
-                </>
-              )}
-              Follow only a control channel announcing this site. Empty = any; {sys.type === "smartnet" || sys.type === "nxdn" ? "System ID in hex" : "NAC, WACN and System ID in hex"}.
-            </p>
-            <div className="id-grid">
-              {LOCK_INPUTS.filter((x) => lockFields.includes(x.key)).map((x) => (
-                <Field key={x.key} label={x.label}>
-                  <NumberInput label={x.label} hex={x.hex} value={sys.expect[x.key] ?? undefined} onChange={(v) => setExpect(x.key, v)} />
-                </Field>
-              ))}
-            </div>
-            {locked && (
-              <button className="btn ghost small" onClick={() => edit((x) => void (x.expect = {}))}>
-                Clear the lock
-              </button>
-            )}
-          </details>
-        )}
       </Group>
       <Group title="Overrides" hint="This system's own plugin settings, plugin delays and call rules. Anything left at Default follows the Recording tab." cols={1}>
         <SystemPluginSettings system={i} />
@@ -2324,6 +2474,8 @@ export function Setup() {
                   className="btn"
                   onClick={() => {
                     addCard("sys-", c.systems.length);
+                    // Its site open too, for its control channel.
+                    setCardOpen(`site-${c.systems.length}-0`, true);
                     updateConfig((x) => void x.systems.push(newSystem(x)));
                   }}
                 >

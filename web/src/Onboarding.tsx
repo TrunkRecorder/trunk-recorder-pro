@@ -721,7 +721,7 @@ function ScanStep(props: { s: AppState; c: Config; found: Found | null; onFound:
 
   const useIt = (sug: SurveySuggestion, m: SurveyMonitor) => {
     const system = target === "new" ? c.systems.length : target;
-    applySurvey(sv.stage === "idle" ? source : sv.source, sug, target);
+    applySurvey(sv.stage === "idle" ? source : sv.source, sug, target === "new" ? "new" : { system: target, site: 0 });
     stopSurvey();
     props.onFound({ system, source: sv.stage === "idle" ? source : sv.source, sug, voice: m.voice });
   };
@@ -1089,10 +1089,10 @@ function planCenters(
 function CoverageStep(props: { c: Config; found: Found | null; onNext: () => void; onBack: () => void }) {
   const { c, found } = props;
   const sys = found ? c.systems[found.system] : undefined;
-  const ccs = sys?.controlChannelsHz ?? [];
+  const ccs = sys?.sites.flatMap((x) => x.controlChannelsHz) ?? [];
   const voice: Chan[] = useMemo(() => {
     if (found?.voice.length) return found.voice.map((v) => ({ hz: v.freqHz, weight: Math.max(1, v.grants) }));
-    return (sys?.voiceChannelsHz ?? []).map((hz) => ({ hz, weight: 1 }));
+    return (sys?.sites.flatMap((x) => x.voiceChannelsHz) ?? []).map((hz) => ({ hz, weight: 1 }));
   }, [found, sys]);
   const rates = c.sources.map((x) => x.rateHz);
   const guards = c.sources.map((x) => x.guardHz);
@@ -1365,7 +1365,7 @@ function NameStep(props: { c: Config; sys: System; index: number; onNext: () => 
           <IconFolder /> {now.getFullYear()} / {now.getMonth() + 1} / {now.getDate()}
         </div>
         <div className="d3">
-          <IconWave /> <span className="ob-mono">1201-{Math.floor(now.getTime() / 1000)}_{Math.round(sys.controlChannelsHz[0] ?? 851012500)}.wav</span>
+          <IconWave /> <span className="ob-mono">1201-{Math.floor(now.getTime() / 1000)}_{Math.round(sys.sites[0]?.controlChannelsHz[0] ?? 851012500)}.wav</span>
         </div>
       </div>
       <Nav onBack={props.onBack} onNext={props.onNext} disabled={!sys.shortName || dup} why="Pick a short name" />
@@ -1498,7 +1498,7 @@ function TalkgroupsStep(props: { sys: System; index: number; onNext: () => void;
     setList(normalizeTalkgroupCsv(await f.text()), f.name);
     props.onNext();
   };
-  const id = sys.expect;
+  const id = sys.sites[0]?.expect ?? {};
   return (
     <section className="ob-step">
       <Head
@@ -1653,7 +1653,7 @@ function DoneStep(props: { s: AppState; c: Config; sys: System | undefined; onSt
             <IconTower />
             <span>
               {sys.name || sys.shortName}
-              <span className="ob-quiet ob-mono"> · {sys.controlChannelsHz.map((f) => formatMhz(f, 4)).join(", ")} MHz</span>
+              <span className="ob-quiet ob-mono"> · {sys.sites.flatMap((x) => x.controlChannelsHz).map((f) => formatMhz(f, 4)).join(", ")} MHz</span>
             </span>
           </li>
         )}
@@ -1890,7 +1890,10 @@ function ImportReview(props: { s: AppState; c: Config; loaded: Loaded; onBack: (
   const convCount = cfg.conventional.filter((v) => brings(v.shortName)).reduce((n, v) => n + v.channels.length, 0);
   // Systems whose control channel no radio hears (as the radios stand, swaps included).
   const centers = resolvedCenters(cfg);
-  const unheard = (x: System) => x.enabled && x.controlChannelsHz.length > 0 && !x.controlChannelsHz.some((f) => sourceCovering(cfg, centers, f) >= 0);
+  const unheard = (x: System) => {
+    const ccs = x.enabled ? x.sites.filter((y) => y.enabled).flatMap((y) => y.controlChannelsHz) : [];
+    return ccs.length > 0 && !ccs.some((f) => sourceCovering(cfg, centers, f) >= 0);
+  };
   const installed = (id: string) => {
     const p = s.plugins?.plugins.find((x) => x.id === id);
     return !!p && !p.problem;
@@ -1996,7 +1999,8 @@ function ImportReview(props: { s: AppState; c: Config; loaded: Loaded; onBack: (
                 <span className="ob-row-main">
                   <b>{x.shortName}</b>
                   <span className="ob-quiet">
-                    {x.type === "smartnet" ? "SmartNet" : x.type === "dmr" ? "DMR" : x.type === "nxdn" ? "NXDN" : "P25"} · {x.controlChannelsHz.map((f) => formatMhz(f, 4)).join(", ") || "no control channel"}
+                    {x.type === "smartnet" ? "SmartNet" : x.type === "dmr" ? "DMR" : x.type === "nxdn" ? "NXDN" : "P25"}
+                    {x.sites.length > 1 ? ` · ${x.sites.length} sites` : ""} · {x.sites.flatMap((y) => y.controlChannelsHz).map((f) => formatMhz(f, 4)).join(", ") || "no control channel"}
                   </span>
                 </span>
                 {unheard(x) && <span className="ob-pill warn">Control channel out of reach</span>}

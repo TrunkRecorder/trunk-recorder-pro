@@ -425,7 +425,7 @@ svg .label-free { fill: var(--muted); font: 11px var(--mono); }
     <li><b>No priority, no preemption.</b> A call refused with <code>no_recorder</code> stays monitored until it times out and is not retried. The talkgroup CSV's <code>Priority</code> only matters when negative (ignore); <code>Message.priority</code> is written to the call JSON and used nowhere else.</li>
   </ul>
   <h3>Multi-site: every copy is recorded</h3>
-  <p>Sites are twins when they share a site group but are not the same site or control channel. Calls on twin sites with the same talkgroup that start within 3 s are linked into one conversation. Unlike Trunk Recorder, every copy gets a recorder. Live audio follows one copy until it has been quiet for 0.5 s. When the last copy ends one is kept: the talkgroup's preferred site if its clean voice is at least 90 % of the best, otherwise the most clean voice, then fewest FEC errors, then the earliest start. The rest become <code>Duplicate</code> events.</p>
+  <p>Sites are twins when they are sites of one system (the same short name in <code>EngineConfig::sites</code>); nothing is grouped from what the control channels announce. Calls on twin sites with the same talkgroup (or, unit to unit, the same radio called) that start within 3 s are linked into one conversation. Unlike Trunk Recorder, every copy gets a recorder. Live audio follows one copy until it has been quiet for 0.5 s. When the last copy ends one is kept: the talkgroup's preferred site if its clean voice is at least 90 % of the best, otherwise the most clean voice, then fewest FEC errors, then the earliest start. The rest become <code>Duplicate</code> events.</p>
 </section>
 
 <section id="backpressure">
@@ -527,7 +527,7 @@ svg .label-free { fill: var(--muted); font: 11px var(--mono); }
   <h3>Every key</h3>
   <div id="cfg-tables" style="display:grid;gap:14px;grid-template-columns:minmax(0,1fr)"></div>
   <h3>From config to engine</h3>
-  <p><code>Config::engine_config</code> builds trunk-core's <code>EngineConfig</code>. Active systems (enabled, with a control channel) become <code>SystemConfig</code>s with their <code>CallConfig</code> and <code>SaveRules</code> (global <code>recording</code> overlaid with the system's own), talkgroups, unit tags, receiver bank, <code>expect</code>, protocol and site group. Every conventional entry becomes a <code>ConvSystem</code> so indexes line up; enabled channels become channel rows. Sources get their resolved centres. File names, archive rules, M4A, the spool, server, log, monitor and plugins never reach the engine; the platform uses them.</p>
+  <p><code>Config::engine_config</code> builds trunk-core's <code>EngineConfig</code>. Each active site (enabled, with a control channel, of an enabled system) becomes a <code>SiteConfig</code>: its system's short name and its own site name, control channels, receiver bank, <code>expect</code> and protocol, with its system's <code>CallConfig</code> and <code>SaveRules</code> (global <code>recording</code> overlaid with the system's own), talkgroups, unit tags and keys. Every conventional entry becomes a <code>ConvSystem</code> so indexes line up; enabled channels become channel rows. Sources get their resolved centres. File names, archive rules, M4A, the spool, server, log, monitor and plugins never reach the engine; the platform uses them.</p>
   <h3>Checked at Start, first failure wins</h3>
   <ol>
     <li>No sources.</li>
@@ -1550,7 +1550,7 @@ const SEQ = [
   ["p", "log", "Any time.", `{"type":"log","level":"info","message":"uploaded in 412 ms"}`],
   ["p", "metrics", "Queue depth, retries, latency, endpoint health, for the Plugins page.", `{"type":"metrics","queued":0,"retrying":0,"latencyMs":412,"endpoints":[{"name":"openmhz","state":"up"}]}`],
   ["p", "call.result", "ok, skipped or failed. The Archive counts these to decide when files can go.", `{"type":"call.result","path":"county-p25/…","outcome":"ok","url":"https://…"}`],
-  ["h", "status", "Every 5 s: control channel, decode rate, active and recording calls per system, and its identity (NAC, WACN, system ID, RFSS, site) once stated.", `{"type":"status","time":1791500005,"systems":[{"index":0,"short_name":"county-p25","decode_rate":39.8,…}]}`],
+  ["h", "status", "Every 5 s: control channel, decode rate, active and recording calls per site (with its <code>site_name</code>), and its identity (NAC, WACN, system ID, RFSS, site) once stated.", `{"type":"status","time":1791500005,"systems":[{"index":0,"short_name":"county-p25","site_name":"site3","decode_rate":39.8,…}]}`],
   ["p", "status", "The plugin's own state for the interface.", `{"type":"status","state":"warning","message":"3 calls waiting to retry"}`],
   ["h", "shutdown", "Queued behind any pending events; stdin closes after it. The grace starts when the plugin reads it.", `{"type":"shutdown","grace_s":10}`]
 ];
@@ -1606,7 +1606,7 @@ const OBJ = [
     ["(map)", "BTreeMap<IdField, u32>", "IdField = Nac, Wacn, SysId, Rfss, Site"]]],
   ["Talkgroup", "core", "trunk-core/src/trunk/talkgroups.rs", "One row of the talkgroup CSV.", [
     ["number", "u32", "Decimal"], ["mode", "String", "D, A, E, TE, DE…"], ["alpha_tag · description · tag · group", "String", ""], ["priority", "i32", "< 0 means ignore; otherwise unused"],
-    ["preferred_nac", "u32", "multi-site: NAC or RRRRssss"], ["preferred_site", "String", "multi-site: short name"], ["ignore", "bool", ""]]],
+    ["preferred_nac", "u32", "multi-site: NAC or RRRRssss"], ["preferred_site", "String", "multi-site: a site's name"], ["ignore", "bool", ""]]],
   ["Call", "core", "trunk-core/src/trunk/calls.rs", "One trunked or conventional call, from grant to end.", [
     ["id", "CallId(u32)", "one sequence for every system"], ["system", "u16", "engine system index; conventional = 65535 − k"], ["talkgroup", "u32", ""], ["freq_hz", "u64", ""],
     ["phase2_tdma · tdma_slot", "bool · u8", ""], ["unit_to_unit", "bool", ""], ["recording", "bool", "has a recorder"], ["reason", "Option<Reason>", "ignored · unknown_tg · encrypted · no_source · no_recorder"],
@@ -1629,7 +1629,7 @@ const OBJ = [
     ["Concluded", "(Concluded)", ""], ["NotSaved", "(Call)", "too short or silent"], ["Duplicate", "{ call, kept }", "another site's copy kept"], ["ConvSkipped", "{ freq_hz, code }", "traffic no conventional row took"]]],
   ["Status · SystemStatus", "core", "trunk-core/src/trunk/engine.rs", "The engine's snapshot for the dashboard.", [
     ["Status", "now_s, systems, active_calls, recording, channels_open, conventional_open, calls_concluded, sources: Vec<SourceTune { error_ppm, applied_ppm }>", ""],
-    ["SystemStatus", "system, short_name, now_s, control_channel_hz, identity, good, bad, modulation, active_calls, recording, calls_concluded, mismatch, adjacent, patches, protocol, site_group", ""],
+    ["SiteStatus", "site, system, short_name, site_name, now_s, control_channel_hz, identity, good, bad, modulation, active_calls, recording, calls_concluded, mismatch, adjacent, patches, protocol", "one per running site"],
     ["ChannelSnapshot", "system, freq_hz, source, kind, power_db, noise_db, offset_hz, quality, phase_err, calls", "per channel, for RF detail"]]],
   ["Output", "app", "trunk-app/src/session.rs", "What Session::poll hands the platform.", [
     ["Text", "String", "a JSON message for every browser"], ["Topic", "{ topic, text }", "only for subscribers"], ["Audio", "{ system, short_name, tg, frame }", "[2][u16 system][u32 call][u32 tg][i16…]"],
@@ -1645,9 +1645,9 @@ const OBJ = [
     ["config · system_config", "Option<JSON Schema>", "the Plugins page's forms"], ["homepage · repository · authors · license", "", ""]]],
   ["HostMessage", "plugin", "trunk-recorder-plugin/src/protocol.rs", "Recorder → plugin, one JSON line on stdin, tagged by type.", [
     ["hello", "api, host, config, systems [SystemInfo { index, short_name, kind, config }], capture_dir, data_dir, audio_formats", ""],
-    ["call.start · call.end", "CallInfo { id, system, short_name, talkgroup, talkgroup_tag, freq_hz, tdma_slot, analog, encrypted, emergency, recording, reason, start_time, units, patched_talkgroups }", ""],
-    ["call.concluded", "path, system, call: CallRecord, files { json, wav, m4a }", "CallRecord = the call JSON, extra keys kept"], ["unit", "system, short_name, kind, unit, talkgroup, time", ""],
-    ["audio", "call_id, system, short_name, talkgroup, sample_rate, pcm (base64 i16)", ""], ["status", "time, systems [{ index, short_name, control_channel_hz, decode_rate, active_calls, recording, nac, wacn, sys_id, rfss, site }]", ""], ["shutdown", "grace_s", ""]]],
+    ["call.start · call.end", "CallInfo { id, system, short_name, site, talkgroup, talkgroup_tag, freq_hz, tdma_slot, analog, encrypted, emergency, recording, reason, start_time, units, patched_talkgroups }", ""],
+    ["call.concluded", "path, system, call: CallRecord, files { json, wav, m4a }", "CallRecord = the call JSON, extra keys kept"], ["unit", "system, short_name, site, kind, unit, talkgroup, time", ""],
+    ["audio", "call_id, system, short_name, talkgroup, sample_rate, pcm (base64 i16)", ""], ["status", "time, systems [{ index, short_name, site_name, control_channel_hz, decode_rate, active_calls, recording, nac, wacn, sys_id, rfss, site }]", ""], ["shutdown", "grace_s", ""]]],
   ["PluginMessage", "plugin", "trunk-recorder-plugin/src/protocol.rs", "Plugin → recorder, one JSON line on stdout.", [
     ["ready", "", "after hello"], ["log", "level, message", ""], ["status", "state (ok · warning · error), message", ""], ["call.result", "path, outcome (ok · skipped · failed), message, url", "one per call.concluded"],
     ["metrics", "queued, retrying, inFlight, retries, bytesSent, latencyMs, lastOk, lastError, lastErrorText, endpoints [{ name, state, latencyMs, lastOk, lastError }], extra", "all optional"]]]
@@ -1709,35 +1709,37 @@ const CFG = {
   "sources[].path": ["string", "required", "file: the capture to replay."],
   "sources[].realtime": ["bool", "required", "file: pace to real time, or run as fast as the engine goes."],
   "sources[].format": ["cu8 · cs16 · cf32", "from the extension", "file sample format."],
-  "systems": ["array", "[]", "Trunked systems, one entry per site."],
+  "systems": ["array", "[]", "Trunked systems, each with its sites."],
   "systems[].shortName": ["string", "sys1", "The identity: folder, companion files, plugin settings. Unique across every system."],
   "systems[].name": ["string", "\"\"", "Display name."],
   "systems[].type": ["p25 · smartnet · dmr · nxdn", "p25", "The protocol."],
-  "systems[].enabled": ["bool", "true", "Active when enabled and it has a control channel."],
-  "systems[].controlChannelsHz": ["array of Hz", "[]", "P25 / SmartNet: hunted in order. DMR / NXDN: every carrier watched."],
-  "systems[].modulation": ["auto · fsk4 · qpsk", "auto", "Which receivers the P25 bank runs: all three, C4FM only, or the two CQPSK."],
+  "systems[].enabled": ["bool", "true", "Active when enabled and one of its sites is."],
   "systems[].talkgroupsCsv": ["string", "\"\"", "The talkgroup file's contents, stored inside the config."],
   "systems[].talkgroupsName": ["string", "\"\"", "The file name it came from, for display."],
   "systems[].unitNames": ["{ csv, name, mode }", "—", "Unit names; mode user · ota · user_only · none."],
-  "systems[].expect": ["{ nac, wacn, sysId, rfss, site }", "{}", "The site lock, in decimal. Messages from a site that doesn't match are ignored."],
-  "systems[].expect.nac": ["number", "—", "P25 NAC (decimal; 659 = 0x293)."],
-  "systems[].expect.wacn": ["number", "—", "P25 WACN."],
-  "systems[].expect.sysId": ["number", "—", "System ID (P25, SmartNet, NXDN Type-C)."],
-  "systems[].expect.rfss": ["number", "—", "P25 RFSS."],
-  "systems[].expect.site": ["number", "—", "Site (P25, SmartNet, NXDN Type-C)."],
-  "systems[].voiceChannelsHz": ["array of Hz", "[]", "From the survey; only used for auto-centring."],
   "systems[].recording": ["object", "{}", "This system's own recording rules (keys marked per system in recording)."],
-  "systems[].siteGroup": ["string", "\"\"", "Multi-site: sites in one group are deduplicated."],
   "systems[].plugins": ["object", "{}", "Per-system plugin settings by plugin id. An array runs several copies of that plugin."],
-  "systems[].bandplan": ["800_standard · 800_reband · 800_splinter · 900 · obt…", "800_standard", "SmartNet band plan; OBT needs bandplanBaseHz, bandplanSpacingHz, bandplanHighHz (and bandplanOffset)."],
   "systems[].defaultMode": ["analog · digital", "digital", "SmartNet: voice mode until a talkgroup's mode is learned."],
-  "systems[].lcnTableHz": ["{ LCN: Hz }", "{}", "DMR / NXDN logical channel numbers to frequencies."],
-  "systems[].dmrChannelsHz": ["array of Hz", "[]", "DMR: more carriers to watch."],
-  "systems[].colorCode": ["number or null", "null", "DMR colour code."],
   "systems[].nxdnType": ["typeC · typeD", "typeC", "NXDN trunking type."],
-  "systems[].nxdnRate": ["nxdn48 · nxdn96", "nxdn48", ""],
-  "systems[].nxdnChannelsHz": ["array of Hz", "[]", "NXDN: more carriers to watch."],
-  "systems[].ran": ["number or null", "null", "NXDN RAN."],
+  "systems[].sites": ["array", "[]", "Where it is recorded from: each site a control channel to follow. A call heard on several of a system's sites is saved once."],
+  "systems[].sites[].name": ["string", "the system's shortName", "Unique in its system: Preferred Site, call JSON site, band plan file."],
+  "systems[].sites[].enabled": ["bool", "true", "Active when enabled and it has a control channel."],
+  "systems[].sites[].controlChannelsHz": ["array of Hz", "[]", "P25 / SmartNet: hunted in order. DMR / NXDN: every carrier watched."],
+  "systems[].sites[].modulation": ["auto · fsk4 · qpsk", "auto", "Which receivers the P25 bank runs: all three, C4FM only, or the two CQPSK."],
+  "systems[].sites[].expect": ["{ nac, wacn, sysId, rfss, site }", "{}", "The site lock, in decimal. Messages from a site that doesn't match are ignored."],
+  "systems[].sites[].expect.nac": ["number", "—", "P25 NAC (decimal; 659 = 0x293)."],
+  "systems[].sites[].expect.wacn": ["number", "—", "P25 WACN."],
+  "systems[].sites[].expect.sysId": ["number", "—", "System ID (P25, SmartNet, NXDN Type-C)."],
+  "systems[].sites[].expect.rfss": ["number", "—", "P25 RFSS."],
+  "systems[].sites[].expect.site": ["number", "—", "Site (P25, SmartNet, NXDN Type-C)."],
+  "systems[].sites[].voiceChannelsHz": ["array of Hz", "[]", "From the survey; only used for auto-centring."],
+  "systems[].sites[].bandplan": ["800_standard · 800_reband · 800_splinter · 900 · obt…", "800_standard", "SmartNet band plan; OBT needs bandplanBaseHz, bandplanSpacingHz, bandplanHighHz (and bandplanOffset)."],
+  "systems[].sites[].lcnTableHz": ["{ LCN: Hz }", "{}", "DMR / NXDN logical channel numbers to frequencies."],
+  "systems[].sites[].dmrChannelsHz": ["array of Hz", "[]", "DMR: more carriers to watch."],
+  "systems[].sites[].colorCode": ["number or null", "null", "DMR colour code."],
+  "systems[].sites[].nxdnRate": ["nxdn48 · nxdn96", "nxdn48", ""],
+  "systems[].sites[].nxdnChannelsHz": ["array of Hz", "[]", "NXDN: more carriers to watch."],
+  "systems[].sites[].ran": ["number or null", "null", "NXDN RAN."],
   "conventional": ["array", "[]", "Conventional systems: groups of single-frequency channels (at most 256)."],
   "conventional[].shortName": ["string", "conv", "Unique identity, as for trunked systems."],
   "conventional[].enabled": ["bool", "true", ""],
@@ -1792,11 +1794,13 @@ const CFG = {
 const CFG_EXAMPLE = {
   sources: [{ type: "rtlsdr", serial: "00000101", centerHz: 0, rateHz: 2400000, gainDb: 25.4, agc: false, ppm: 1, autoTune: true, guardHz: 75000 }],
   systems: [
-    { shortName: "county-p25", name: "County Public Safety (Site 3)", type: "p25", enabled: true, controlChannelsHz: [851012500, 851262500], modulation: "auto",
+    { shortName: "county-p25", name: "County Public Safety", type: "p25", enabled: true,
       talkgroupsCsv: "Decimal,Hex,Mode,Alpha Tag,Description,Tag,Category\n1201,4b1,D,FD Disp,…", talkgroupsName: "county.csv",
-      expect: { nac: 659, wacn: 781824, sysId: 989, rfss: 1, site: 3 }, recording: { minCallS: 1, recordUnknown: false },
+      sites: [{ name: "site3", controlChannelsHz: [851012500, 851262500], modulation: "auto", expect: { nac: 659, wacn: 781824, sysId: 989, rfss: 1, site: 3 } },
+              { name: "site5", controlChannelsHz: [852137500], expect: { nac: 659, wacn: 781824, sysId: 989, rfss: 1, site: 5 } }],
+      recording: { minCallS: 1, recordUnknown: false },
       plugins: { openmhz: { apiKey: "REPLACE_ME", systemName: "countyp25" } } },
-    { shortName: "city-smartnet", type: "smartnet", enabled: true, controlChannelsHz: [851637500], bandplan: "800_reband", defaultMode: "analog", expect: { sysId: 18205 } }
+    { shortName: "city-smartnet", type: "smartnet", enabled: true, defaultMode: "analog", sites: [{ controlChannelsHz: [851637500], bandplan: "800_reband", expect: { sysId: 18205 } }] }
   ],
   conventional: [{ shortName: "county-fire-conv", enabled: true, squelchDb: 8, channels: [
     { freqHz: 852087500, mode: "fm", name: "FG North", tone: "151.4" },

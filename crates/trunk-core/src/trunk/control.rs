@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 
 use num_complex::Complex32;
 
-use super::engine::{NoteLevel, SmartnetConfig, SystemConfig};
+use super::engine::{NoteLevel, SmartnetConfig, SiteConfig};
 use super::identity::{IdField, Identity};
 use super::message::{Message, MessageType, P25Parser};
 use super::patches;
@@ -104,7 +104,7 @@ pub trait ControlChannel: Send {
         false
     }
     /// What it can say about its site: the fields the site lock
-    /// (`SystemConfig::expect`) compares. None: no site lock.
+    /// (`SiteConfig::expect`) compares. None: no site lock.
     fn identity_fields(&self) -> &'static [IdField] {
         &[]
     }
@@ -113,8 +113,6 @@ pub trait ControlChannel: Send {
     fn voice_params(&self, _identity: &Identity) -> VoiceParams {
         VoiceParams::default()
     }
-    /// The multi-site group the air puts this site in, if it says.
-    fn site_group(&self, identity: &Identity) -> Option<String>;
     /// How it is modulated, for the dashboard ("" while unknown).
     fn modulation(&self) -> &'static str;
     /// Watching several carriers: the one carrying the control channel now.
@@ -143,7 +141,7 @@ pub trait ControlChannel: Send {
 }
 
 /// The control channel for system `cfg`; `rate` is a channel's sample rate.
-pub fn build(cfg: &SystemConfig, rate: f64) -> Box<dyn ControlChannel> {
+pub fn build(cfg: &SiteConfig, rate: f64) -> Box<dyn ControlChannel> {
     match &cfg.protocol {
         Protocol::P25 => Box::new(P25 {
             bank_cfg: cfg.bank,
@@ -287,9 +285,6 @@ impl ControlChannel for P25 {
         };
         VoiceParams { tdma_key, nac: id.nac().map(|n| n as u16) }
     }
-    fn site_group(&self, id: &Identity) -> Option<String> {
-        Some(format!("p25:{:x}.{:x}", id.wacn()?, id.sys_id()?))
-    }
     fn modulation(&self) -> &'static str {
         if let Some(m) = self.bank.detected() {
             return m;
@@ -367,9 +362,6 @@ impl ControlChannel for Smartnet {
     fn identity_fields(&self) -> &'static [IdField] {
         &[IdField::SysId, IdField::Site]
     }
-    fn site_group(&self, id: &Identity) -> Option<String> {
-        Some(format!("smartnet:{:x}", id.sys_id()?))
-    }
     fn modulation(&self) -> &'static str {
         "2FSK"
     }
@@ -404,10 +396,6 @@ impl ControlChannel for Dmr {
         // Blocks (CSBKs, link control) decoded and lost, on every carrier.
         let slots = || self.site.carriers.iter().flat_map(|c| c.chan.slots.iter());
         (slots().map(|s| s.good_blocks).sum(), slots().map(|s| s.bad_blocks).sum())
-    }
-    fn site_group(&self, _: &Identity) -> Option<String> {
-        // A DMR site doesn't announce a system: only a configured group joins sites.
-        None
     }
     fn modulation(&self) -> &'static str {
         self.site.variant.map_or("DMR", |v| v.name())
@@ -461,9 +449,6 @@ impl ControlChannel for Nxdn {
             nxdn::trunking::Kind::TypeC => &[IdField::SysId, IdField::Site],
             nxdn::trunking::Kind::TypeD => &[],
         }
-    }
-    fn site_group(&self, id: &Identity) -> Option<String> {
-        Some(format!("nxdn:{:x}", id.sys_id()?))
     }
     fn modulation(&self) -> &'static str {
         match self.site.status().rate {

@@ -334,7 +334,7 @@ fn the_servers_messages() {
 
     // A config with a bit of everything.
     let mut cfg = conventional_config();
-    let more: Config = serde_json::from_value(json!({
+    let more = Config::from_value(json!({
         "sources": [
             { "type": "rtlsdr", "serial": "", "centerHz": 0, "rateHz": 2400000, "gainDb": 25, "agc": false, "ppm": 0, "autoTune": true },
             { "type": "usrp", "args": "", "centerHz": 0, "rateHz": 8000000, "gainDb": 30, "agc": false, "antenna": "RX2", "ppm": 0 },
@@ -544,7 +544,7 @@ fn a_key_container_is_unlocked_and_locked_from_the_interface() {
     let ekc = concat!(env!("CARGO_MANIFEST_DIR"), "/../trunk-app/src/testdata/dummy-test-keys.ekc");
     let mut cfg = Config::default();
     cfg.keys.insert("county".into(), crate::config::KeySource { file: ekc.into(), ..Default::default() });
-    cfg.systems.push(crate::config::System { short_name: "fire".into(), keys: "county".into(), control_channels_hz: vec![851_012_500.0], ..Default::default() });
+    cfg.systems.push(crate::config::System { keys: "county".into(), ..crate::config::System::one_site("fire", crate::config::Site { control_channels_hz: vec![851_012_500.0], ..Default::default() }) });
     let c = ctx(cfg.clone(), &dir);
     let unlocked = |c: &crate::runtime::Ctx| crate::unlock::status_json(c)["sources"][0]["unlocked"].as_bool();
     assert_eq!(crate::unlock::status_json(&c)["sources"][0]["systems"], json!(["fire"]));

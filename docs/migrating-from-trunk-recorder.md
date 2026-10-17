@@ -64,20 +64,20 @@ USRP, Airspy and SoapySDR sources need their driver installed on this computer; 
 
 | Trunk Recorder | Trunk Recorder Pro |
 |---|---|
-| `type: "p25"`, `"smartnet"`, `"dmr"` | A trunked system of that type, one per entry, as in Trunk Recorder |
+| `type: "p25"`, `"smartnet"`, `"dmr"` | A trunked system of that type with one site, one per entry (but see `multiSite` below) |
 | `shortName` | `shortName` (made unique if two systems share one) |
-| `control_channels` | `controlChannelsHz` |
-| `modulation: "qpsk"` / `"fsk4"` | `modulation` the same; anything else, or no `modulation`, becomes `"auto"` |
+| `control_channels` | its site's `controlChannelsHz` |
+| `modulation: "qpsk"` / `"fsk4"` | its site's `modulation` the same; anything else, or no `modulation`, becomes `"auto"` |
 | `talkgroupsFile` | `talkgroupsCsv` (the file's contents) and `talkgroupsName`. Semicolon, tab or bar delimiters become commas, header names are tidied |
 | `unitTagsFile`, `unitTagsMode` | `unitNames.csv` (contents), `unitNames.name`, `unitNames.mode` |
-| `bandplan` | `bandplan` (default `800_standard`) |
+| `bandplan` | its site's `bandplan` (default `800_standard`), and the keys below |
 | `bandplanBase`, `bandplanSpacing`, `bandplanHigh` (MHz) | `bandplanBaseHz`, `bandplanSpacingHz`, `bandplanHighHz` (Hz) |
 | `bandplanOffset` | `bandplanOffset` |
 | Top-level `defaultMode: "analog"` | `defaultMode: "analog"` on every SmartNet system (it only affects SmartNet) |
 | DMR `lcnTable` | `lcnTableHz` |
 | DMR `channels` | `dmrChannelsHz` |
-| `multiSite: true` with `multiSiteSystemName` | `siteGroup` = that name. With no name, the site is grouped from what its control channel announces |
-| `multiSite` off, when other systems have it on | A `siteGroup` of its own (its short name), so every call there is kept |
+| `multiSite: true` with `multiSiteSystemName` | Systems with the same name become one system, named so, with a site each, named as Trunk Recorder named it. The first one's talkgroup file, unit names and rules are the system's; the import notes a talkgroup file that wasn't used |
+| `multiSite` without a `multiSiteSystemName`, or off | A system of its own. If two of them announce the same system on the air, Setup offers **Make them one system** |
 | `siteId` | A to-do: set a **Site lock** for that site |
 
 ### Conventional systems
@@ -185,6 +185,13 @@ the noise floor near each channel all the time, so the same setting works whatev
 antenna. Only conventional channels have one (`squelchDb`, default 8, per system or per channel).
 Trunked systems need none: calls start from the control channel's grants. See the
 [conventional guide](guides/conventional.md).
+
+### A system has sites
+
+In Trunk Recorder each site is a system of its own, joined by `multiSite`. Here one system (one short
+name, folder and talkgroup file) lists its sites, each a control channel to follow. A call heard on
+several of them is saved once, keeping the best copy rather than the first. The call JSON's
+`short_name` is the system, and `site` the site its copy was kept from.
 
 ### No recorder counts
 

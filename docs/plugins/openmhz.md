@@ -99,7 +99,7 @@ For each system (the system's card, or its `plugins.openmhz` in `config.json`):
   "systems": [
     {
       "shortName": "dcfd",
-      "controlChannelsHz": [857987500],
+      "sites": [{ "controlChannelsHz": [857987500] }],
       "plugins": { "openmhz": { "apiKey": "your-openmhz-api-key" } }
     }
   ]

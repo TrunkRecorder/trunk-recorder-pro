@@ -100,7 +100,7 @@ const csvName = (sys: System) => (sys.talkgroupsName && sys.talkgroupsName !== P
 /** Where to copy from, the box to paste into, and what was read from it. */
 function RadioReferencePaste(props: { sys: System; replacing: number; onUse: (list: Talkgroup[]) => void; onCancel: () => void }) {
   const [text, setText] = useState("");
-  const { sysId, wacn } = props.sys.expect;
+  const { sysId, wacn } = props.sys.sites[0]?.expect ?? {};
   const hex = (n: number) => n.toString(16).toUpperCase();
   const parsed = useMemo(() => parseRadioReferencePaste(text), [text]);
   const shown = 8;

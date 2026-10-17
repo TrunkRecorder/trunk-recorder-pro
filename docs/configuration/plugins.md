@@ -11,7 +11,7 @@ setting up plugins, see [using plugins](../plugins/README.md) and each plugin's 
     "openmhz": { "enabled": true, "settings": { "server": "https://api.openmhz.com" } }
   },
   "systems": [
-    { "shortName": "dcfd", "type": "p25", "controlChannelsHz": [857987500],
+    { "shortName": "dcfd", "type": "p25", "sites": [{ "controlChannelsHz": [857987500] }],
       "plugins": { "openmhz": { "apiKey": "...", "systemName": "dcfd" } } }
   ]
 }
@@ -100,7 +100,7 @@ keys, and a key left out picks everything:
 {
   "pluginDelays": [{ "plugins": ["broadcastify"], "delayS": 120 }],
   "systems": [
-    { "shortName": "dcfd", "type": "p25", "controlChannelsHz": [857987500],
+    { "shortName": "dcfd", "type": "p25", "sites": [{ "controlChannelsHz": [857987500] }],
       "pluginDelays": [
         { "talkgroups": ["1000-1099"], "delayS": 1800 },
         { "talkgroups": ["1000-1099"], "plugins": ["rdioscanner"], "delayS": 0 },

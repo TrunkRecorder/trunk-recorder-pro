@@ -69,7 +69,7 @@ For each system (the system's card, or its `plugins.broadcastify` in `config.jso
   "systems": [
     {
       "shortName": "dcfd",
-      "controlChannelsHz": [857987500],
+      "sites": [{ "controlChannelsHz": [857987500] }],
       "plugins": { "broadcastify": { "apiKey": "your-broadcastify-api-key", "systemId": 1234, "talkgroupDeny": ["99*"] } }
     }
   ]

@@ -265,7 +265,7 @@ mod tests {
 
     #[test]
     fn what_plugins_get_from_the_config() {
-        let c: Config = serde_json::from_value(json!({
+        let c = Config::from_value(json!({
             "systems": [
                 { "shortName": "dcfd", "controlChannelsHz": [857987500], "plugins": { "openmhz": { "apiKey": "k" } } },
                 { "shortName": "wmata", "controlChannelsHz": [489087500] }
@@ -299,7 +299,7 @@ mod tests {
     /// control channel) isn't one of them.
     #[test]
     fn plugins_know_systems_by_short_name() {
-        let c: Config = serde_json::from_value(json!({
+        let c = Config::from_value(json!({
             "systems": [
                 { "shortName": "old", "enabled": false, "controlChannelsHz": [851000000], "plugins": { "openmhz": { "apiKey": "old" } } },
                 { "shortName": "draft", "plugins": { "openmhz": { "apiKey": "draft" } } },
@@ -312,7 +312,7 @@ mod tests {
         let systems = systems_of(&c);
         let conv = trunk_core::trunk::conventional_system(0);
         assert_eq!(systems.iter().map(|s| (s.index, s.short_name.as_str(), s.kind.as_str())).collect::<Vec<_>>(), [(0, "dcfd", "p25"), (conv, "county", "conventional")]);
-        assert_eq!(c.engine_config(0.0).systems[0].short_name, "dcfd", "the engine numbers dcfd 0 too");
+        assert_eq!(c.engine_config(0.0).sites[0].short_name, "dcfd", "the engine numbers dcfd 0 too");
         let specs = Spec::enabled(&c);
         assert_eq!(specs[0].systems.get("dcfd"), Some(&json!({ "apiKey": "dcfd" })));
         assert_eq!(specs[0].systems.get("county"), Some(&json!({ "apiKey": "conv" })));
@@ -323,7 +323,7 @@ mod tests {
     /// the systems with a second copy.
     #[test]
     fn a_second_copy_runs_for_its_systems_only() {
-        let c: Config = serde_json::from_value(json!({
+        let c = Config::from_value(json!({
             "systems": [
                 { "shortName": "dcfd", "controlChannelsHz": [857987500], "plugins": { "openmhz": [{ "apiKey": "a" }, { "apiKey": "b" }] } },
                 { "shortName": "wmata", "controlChannelsHz": [489087500], "plugins": { "openmhz": { "apiKey": "w" } } }

@@ -170,18 +170,19 @@ one `CallManager` serve P25, SmartNet and trunked DMR.
 `trunk::Engine` owns everything above the radio:
 
 - **`Radio`** is shared by all systems. It holds the sources and their
-  channelizers, the open voice channels (`BTreeMap<(system, freq), Channel>`),
+  channelizers, the open voice channels (`BTreeMap<(site, freq), Channel>`),
   the recorder pool (`recordings`, capped by `maxRecorders`), what each
-  system's control channel tells its voice channels (`VoiceParams`: the
+  site's control channel tells its voice channels (`VoiceParams`: the
   Phase 2 scrambler key), and the AutoTune ppm per source.
-- **`Trunk`** is one per active trunked system, or site, and knows nothing
-  of any protocol. Its `ControlChannel` (`control.rs`) decodes the protocol;
+- **`Trunk`** is one per active site of a trunked system (a `SiteConfig`:
+  sites with one short name are one system), and knows nothing of any
+  protocol. Its `ControlChannel` (`control.rs`) decodes the protocol;
   the `Trunk` does what every protocol shares:
   - hunting through the control channels, or watching every carrier, as the
     protocol's `CarrierPlan` says;
   - the site lock (`identity.rs`), on the fields the protocol states;
   - AutoTune;
-  - the system's clock;
+  - the site's clock;
   - its `CallManager` (`calls.rs`: turns `Message`s into `Call`s, à la Trunk
     Recorder's `monitor_systems.cc`; standing patches in `patches.rs`); call
     ids come from one `CallIds` sequence shared by every system;
@@ -191,7 +192,8 @@ one `CallManager` serve P25, SmartNet and trunked DMR.
 - **`Conventional`** (`conventional.rs`) covers energy-detected channels,
   tone / NAC / colour-code matching, and their calls.
 - **`MultiSite`** (`multisite.rs`) holds the copies of one call heard on
-  several sites. When the last copy ends it keeps the most cleanly decoded
+  several sites of one system (only the config says which sites those are;
+  nothing is joined from the air). When the last copy ends it keeps the most cleanly decoded
   copy; the talkgroup's preferred site wins while its copy has 90 % of that.
 
 **Control channels** (`control.rs`): one `ControlChannel` implementation per
@@ -205,8 +207,8 @@ protocol.
 
 Each one turns IQ into `Step`s (messages, plus what the site has said about
 itself so far). `Trunk::follow` checks every step against the site lock
-before the call manager sees it. A system's protocol is
-`SystemConfig::protocol` (`Protocol::{P25, SmartNet, Dmr}`). What the
+before the call manager sees it. A site's protocol is
+`SiteConfig::protocol` (`Protocol::{P25, SmartNet, Dmr}`). What the
 dashboard shows beyond the common fields is `ProtocolStatus` (e.g. a DMR
 site's channel table).
 
@@ -324,10 +326,9 @@ A new trunking protocol (say NXDN) touches these places:
 1. **Decoding:** a module of its own (`nxdn/`): receiver, framer, and a
    parser that produces `trunk::Message`s.
 2. **Its control channel:** a `ControlChannel` implementation in
-   `control.rs` (`name`, `plan`, `push`, `counts`, `site_group`,
-   `modulation`, `status`; the rest have defaults). It sets the
-   `CarrierPlan`, the identity fields its site lock can use, and its site
-   group. If the dashboard shows more of it, a `ProtocolStatus` variant, its
+   `control.rs` (`name`, `plan`, `push`, `counts`, `modulation`,
+   `status`; the rest have defaults). It sets the `CarrierPlan` and the
+   identity fields its site lock can use. If the dashboard shows more of it, a `ProtocolStatus` variant, its
    JSON in `Session`'s status message, and its type in `protocol.ts`.
 3. **Wiring it in:** a `Protocol` variant, and its line in `control::build`.
 4. **Its voice:** if the voice is new, a `VoiceKind`, its `VoiceDecoder`, its
@@ -610,10 +611,12 @@ each indexes something different.
 | Name | What it indexes | Where it's used |
 |---|---|---|
 | Position in `config.systems` | Every configured trunked system, including disabled ones and ones with no control channel | The UI's Setup cards |
-| Engine system index (`Call::system`, `Trunk::idx`) | **Active** systems only (`Config::active_systems()`: enabled, with a control channel), in config order | Calls, events, live-audio frames, plugin `CallInfo.system` |
-| Position in `Status.systems` | Trunks that currently have a control channel (can skip some) | Nothing: each `SystemStatus` carries its engine index (`system`), which the `status` message sends as `index` |
+| Engine system index (`Call::system`) | **Active** systems only (`Config::active_systems()`: enabled, with an enabled site that has a control channel), in config order | Calls, events, live-audio frames, plugin `CallInfo.system`, `status.systems[].index` |
+| Engine site index (`Call::site`) | Active sites of active systems (`Config::active_sites()`), system by system | Calls, control channel events, `status.systems[].sites[].index` |
+| Position in `Status.sites` | Sites that currently have a control channel (can skip some) | Nothing: each `SiteStatus` carries its `site` and `system` |
 | Conventional system id | `65535 − k` for conventional system *k* (at most 256) | Calls and plugins; `calls::conventional_system` / `conventional_index` |
 | `shortName` | Every system, unique | The identity: folders, companion files, plugin settings, what plugins key on |
+| A site's `name` | Each site of a system, unique there (absent: the system's short name) | The talkgroup file's Preferred Site, call JSON `site`, band plan files, control channel stats |
 
 `Config::call_systems()` is the one place a config's systems are given their
 numbers (active trunked systems, then enabled conventional systems with
