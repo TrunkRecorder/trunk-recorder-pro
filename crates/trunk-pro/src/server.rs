@@ -703,8 +703,8 @@ async fn session(ctx: Arc<Ctx>, mut socket: WebSocket, door: Door) {
                         }
                         Out::Topic { topic, text } if subs.topics.contains(topic) => Message::Text(text.clone().into()),
                         Out::Topic { .. } => continue,
-                        Out::Audio { short_name, sites, tg, frame } => match &listen {
-                            Some(l) if l.wants(short_name, sites, *tg) => Message::Binary(frame.clone().into()),
+                        Out::Audio { short_name, tg, frame } => match &listen {
+                            Some(l) if l.wants(short_name, *tg) => Message::Binary(frame.clone().into()),
                             _ => continue,
                         },
                     };
@@ -784,8 +784,8 @@ async fn plugins_json(ctx: &Arc<Ctx>) -> Value {
 
 /// Which live audio a connection wants: every call, or one system's
 /// (65535: conventional) and/or one talkgroup's.
-/// What live audio a connection asked for: one system's (by short name; a
-/// multi-site system's from any of its sites) and / or one talkgroup's, or
+/// What live audio a connection asked for: one system's (by short name;
+/// whichever of its sites a call plays from) and / or one talkgroup's, or
 /// everything.
 struct Listen {
     system: Option<String>,
@@ -796,8 +796,8 @@ impl Listen {
     fn from_json(v: &Value) -> Listen {
         Listen { system: v["system"].as_str().map(String::from), talkgroup: v["talkgroup"].as_u64().map(|t| t as u32) }
     }
-    fn wants(&self, short_name: &str, sites: &[String], tg: u32) -> bool {
-        self.system.as_deref().is_none_or(|s| s == short_name || sites.iter().any(|x| x == s)) && self.talkgroup.is_none_or(|t| t == tg)
+    fn wants(&self, short_name: &str, tg: u32) -> bool {
+        self.system.as_deref().is_none_or(|s| s == short_name) && self.talkgroup.is_none_or(|t| t == tg)
     }
 }
 
@@ -827,7 +827,7 @@ async fn command(ctx: &Arc<Ctx>, v: &Value, access: ApiAccess, listen: &mut Opti
             let (before, limit) = (v["before"].as_i64().unwrap_or(i64::MAX), v["limit"].as_u64().unwrap_or(100).clamp(1, 500) as usize);
             tokio::task::spawn_blocking(move || runtime::older_calls(&ctx2, before, limit)).await.ok()
         }
-        "setConfig" => match serde_json::from_value::<Config>(v["config"].clone()) {
+        "setConfig" => match Config::from_value(v["config"].clone()) {
             Ok(mut c) => {
                 // While linked, a conventional system's channels are its file's
                 // (re-read: a spreadsheet may have changed it). Files are linked
@@ -1238,21 +1238,10 @@ mod tests {
     /// Live audio is asked for by a system's short name.
     #[test]
     fn listening_by_short_name() {
-        let none: &[String] = &[];
         let l = Listen::from_json(&json!({ "on": true, "system": "dcfd", "talkgroup": null }));
-        assert!(l.wants("dcfd", none, 101) && !l.wants("wmata", none, 101));
+        assert!(l.wants("dcfd", 101) && !l.wants("wmata", 101));
         let l = Listen::from_json(&json!({ "on": true, "system": "wmata", "talkgroup": 101 }));
-        assert!(l.wants("wmata", none, 101) && !l.wants("wmata", none, 102) && !l.wants("dcfd", none, 101));
-        assert!(Listen::from_json(&json!({ "system": null, "talkgroup": null })).wants("conv", none, 7));
-    }
-
-    /// A multi-site system's live audio comes from one site's copy at a
-    /// time: asked for by any of its sites, it's heard whichever plays.
-    #[test]
-    fn listening_to_a_multi_site_system() {
-        let l = Listen::from_json(&json!({ "on": true, "system": "site1", "talkgroup": 101 }));
-        let site1 = ["site1".to_string()];
-        assert!(l.wants("site2", &site1, 101), "site2's copy, site1 asked for");
-        assert!(!l.wants("site2", &site1, 102) && !l.wants("site2", &["site3".to_string()], 101));
+        assert!(l.wants("wmata", 101) && !l.wants("wmata", 102) && !l.wants("dcfd", 101));
+        assert!(Listen::from_json(&json!({ "system": null, "talkgroup": null })).wants("conv", 7));
     }
 }

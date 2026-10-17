@@ -10,7 +10,7 @@ use trunk_core::dsp::AnalogTuning;
 use trunk_core::p25::diversity::BankConfig;
 use trunk_core::trunk::{
     check_channels, conventional_index, Access, parse_csv, CallConfig, Protocol, ConvChannel, ConvConfig, ConvMode, ConvSystem, EngineConfig, IdField, Identity, SaveRules, SourceConfig,
-    SystemConfig, Talkgroup, UnitTags, UnitTagsMode, MAX_CONVENTIONAL,
+    SiteConfig, Talkgroup, UnitTags, UnitTagsMode, MAX_CONVENTIONAL,
 };
 pub use trunk_core::trunk::{usable_half_width, DEFAULT_GUARD_HZ};
 
@@ -263,9 +263,16 @@ impl Source {
     }
 }
 
-/// A trunked system — or one site of a multi-site system: each site you
-/// record from its own control channel is a system here (as in Trunk
-/// Recorder), with its own short name and folder.
+/// A trunked system: its talkgroups, radios, rules and plugin settings, and
+/// the sites it is recorded from — each a control channel to follow. A call
+/// heard on several of its sites is one call (saved once, from the site that
+/// heard it best: see [`Recording::drop_duplicate_calls`]).
+///
+/// ```json
+/// { "shortName": "dcfd", "type": "p25", "talkgroupsCsv": "…",
+///   "sites": [ { "controlChannelsHz": [851012500] },
+///              { "name": "dcfd-south", "controlChannelsHz": [852337500], "expect": { "rfss": 1, "site": 2 } } ] }
+/// ```
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct System {
@@ -276,72 +283,21 @@ pub struct System {
     #[serde(rename = "type")]
     pub kind: String,
     pub enabled: bool,
-    pub control_channels_hz: Vec<f64>,
-    /// "auto" | "fsk4" | "qpsk"
-    pub modulation: String,
     pub talkgroups_csv: String,
     pub talkgroups_name: String,
     /// Its own names for its radios (Trunk Recorder's unitTagsFile, kept here as text): see [`UnitNames`].
     #[serde(skip_serializing_if = "UnitNames::is_empty")]
     pub unit_names: UnitNames,
-    /// Only follow a control channel with this identity (fields left out
-    /// match anything) — e.g. this site of a multi-site system, not its
-    /// neighbour on a nearby frequency.
-    pub expect: SiteIdentity,
-    /// Voice channels the survey heard (for placing sources; informational).
-    pub voice_channels_hz: Vec<f64>,
     /// Its own recording rules; what's left out is as in [`Config::recording`].
     #[serde(skip_serializing_if = "RecordingOverride::is_empty")]
     pub recording: RecordingOverride,
-    /// SmartNet (`type` "smartnet"): the band plan, as Trunk Recorder names
-    /// it — "800_standard", "800_reband", "800_splinter", "900", or
-    /// "400_custom" with the four numbers below (Hz; offset is a channel number).
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub bandplan: String,
-    #[serde(skip_serializing_if = "is_zero")]
-    pub bandplan_base_hz: f64,
-    #[serde(skip_serializing_if = "is_zero")]
-    pub bandplan_spacing_hz: f64,
-    #[serde(skip_serializing_if = "is_zero_u16")]
-    pub bandplan_offset: u16,
-    #[serde(skip_serializing_if = "is_zero")]
-    pub bandplan_high_hz: f64,
     /// SmartNet: voice mode of a talkgroup never heard granted — "digital" (P25) or "analog".
     #[serde(skip_serializing_if = "String::is_empty")]
     pub default_mode: String,
-    /// DMR (`type` "dmr"): logical channel number → frequency, Hz (Trunk
-    /// Recorder's `lcnTable`); channels left out are learned from the air.
-    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    pub lcn_table_hz: BTreeMap<String, f64>,
-    /// DMR: voice frequencies to watch besides the control channels (Trunk
-    /// Recorder's `channels`; Capacity Plus: every repeater of the site).
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub dmr_channels_hz: Vec<f64>,
-    /// DMR: only this colour code.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub color_code: Option<u8>,
     /// NXDN (`type` "nxdn"): "typeC" (a control channel; the default) or
     /// "typeD" (IDAS distributed: list every repeater).
     #[serde(skip_serializing_if = "String::is_empty")]
     pub nxdn_type: String,
-    /// NXDN: "nxdn48" (the default) or "nxdn96", the control channel's (Type-D: the repeaters') rate.
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub nxdn_rate: String,
-    /// NXDN: voice frequencies to watch besides the control channels (Type-D:
-    /// the repeaters). A grant to a channel number not in `lcnTableHz` is
-    /// learned when its call comes up on one of them.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub nxdn_channels_hz: Vec<f64>,
-    /// NXDN: only this RAN.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ran: Option<u8>,
-    /// Multi-site: sites with the same group are one system, and a call
-    /// heard on several of them is saved once (see `Recording::drop_duplicate_calls`).
-    /// Empty: grouped by what the control channels say — P25 WACN and System
-    /// ID, SmartNet System ID. Name a group for DMR sites, systems linked by
-    /// ISSI, or to keep a site out of its system's group.
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub site_group: String,
     /// The encryption keys it decrypts with (P25): a key source's name, in
     /// [`Config::keys`]. Empty: none.
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -355,8 +311,66 @@ pub struct System {
     /// plugins'): see [`DelayRule`]. These come before the whole recorder's.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub plugin_delays: Vec<DelayRule>,
+    /// Where it is recorded from: one site, or several of one system.
+    pub sites: Vec<Site>,
     /// Keys this version doesn't know (a newer version's, a hand edit's):
     /// kept, and saved back as they were.
+    #[serde(flatten)]
+    pub other: BTreeMap<String, serde_json::Value>,
+}
+
+/// One site of a [`System`]: a control channel to follow, and how.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Site {
+    /// Its name, unique in its system (empty: the system's short name). The
+    /// talkgroup file's Preferred Site names it; calls and plugins say it.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    pub enabled: bool,
+    pub control_channels_hz: Vec<f64>,
+    /// "auto" | "fsk4" | "qpsk"
+    pub modulation: String,
+    /// Only follow a control channel with this identity (fields left out
+    /// match anything) — this site, not its neighbour on a nearby frequency.
+    pub expect: SiteIdentity,
+    /// Voice channels the survey heard (for placing sources; informational).
+    pub voice_channels_hz: Vec<f64>,
+    /// SmartNet (`type` "smartnet"): the band plan, as Trunk Recorder names
+    /// it — "800_standard", "800_reband", "800_splinter", "900", or
+    /// "400_custom" with the four numbers below (Hz; offset is a channel number).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub bandplan: String,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub bandplan_base_hz: f64,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub bandplan_spacing_hz: f64,
+    #[serde(skip_serializing_if = "is_zero_u16")]
+    pub bandplan_offset: u16,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub bandplan_high_hz: f64,
+    /// DMR / NXDN: logical channel number → frequency, Hz (Trunk Recorder's
+    /// `lcnTable`); channels left out are learned from the air.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub lcn_table_hz: BTreeMap<String, f64>,
+    /// DMR: voice frequencies to watch besides the control channels (Trunk
+    /// Recorder's `channels`; Capacity Plus: every repeater of the site).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub dmr_channels_hz: Vec<f64>,
+    /// DMR: only this colour code.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color_code: Option<u8>,
+    /// NXDN: "nxdn48" (the default) or "nxdn96", the control channel's (Type-D: the repeaters') rate.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub nxdn_rate: String,
+    /// NXDN: voice frequencies to watch besides the control channels (Type-D:
+    /// the repeaters). A grant to a channel number not in `lcnTableHz` is
+    /// learned when its call comes up on one of them.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub nxdn_channels_hz: Vec<f64>,
+    /// NXDN: only this RAN.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ran: Option<u8>,
     #[serde(flatten)]
     pub other: BTreeMap<String, serde_json::Value>,
 }
@@ -378,13 +392,52 @@ impl System {
     pub fn is_nxdn(&self) -> bool {
         self.kind.eq_ignore_ascii_case("nxdn")
     }
+    /// "p25", "smartnet", "dmr" or "nxdn".
+    pub fn kind_name(&self) -> &'static str {
+        if self.is_smartnet() {
+            "smartnet"
+        } else if self.is_dmr() {
+            "dmr"
+        } else if self.is_nxdn() {
+            "nxdn"
+        } else {
+            "p25"
+        }
+    }
+
+    /// Recording it: enabled, with a site that is.
+    pub fn active(&self) -> bool {
+        self.enabled && self.sites.iter().any(Site::active)
+    }
+
+    /// The sites being recorded, in order.
+    pub fn active_sites(&self) -> impl Iterator<Item = &Site> {
+        self.sites.iter().filter(|s| self.enabled && s.active())
+    }
+
+    /// Site `site`'s name: its own, else the system's short name.
+    pub fn site_name<'a>(&'a self, site: &'a Site) -> &'a str {
+        if site.name.trim().is_empty() { &self.short_name } else { site.name.trim() }
+    }
+
+    /// A system of one site, for code (and tests) that has only those fields.
+    pub fn one_site(short_name: &str, site: Site) -> System {
+        System { short_name: short_name.into(), sites: vec![site], ..Default::default() }
+    }
+}
+
+impl Site {
+    /// Recording it: enabled, with a control channel.
+    pub fn active(&self) -> bool {
+        self.enabled && !self.control_channels_hz.is_empty()
+    }
 
     /// The NXDN settings (`lcnTableHz` is its channel table: channel number
     /// → frequency; Type-D: repeater number → frequency).
-    pub fn nxdn(&self) -> trunk_core::nxdn::trunking::NxdnConfig {
+    pub fn nxdn(&self, sys: &System) -> trunk_core::nxdn::trunking::NxdnConfig {
         use trunk_core::nxdn::trunking::{Kind, NxdnConfig};
         NxdnConfig {
-            kind: if self.nxdn_type.eq_ignore_ascii_case("typeD") { Kind::TypeD } else { Kind::TypeC },
+            kind: if sys.nxdn_type.eq_ignore_ascii_case("typeD") { Kind::TypeD } else { Kind::TypeC },
             rate: trunk_core::nxdn::Rate::parse(&self.nxdn_rate).unwrap_or(trunk_core::nxdn::Rate::N48),
             channel_table: self.lcn_table_hz.iter().filter_map(|(k, &v)| Some((k.trim().parse().ok()?, v.round() as u64))).collect(),
             channels: self.nxdn_channels_hz.clone(),
@@ -393,10 +446,10 @@ impl System {
     }
 
     /// Frequencies a watching protocol (DMR, NXDN) needs besides the control channels.
-    pub fn watched_channels(&self) -> Vec<f64> {
-        if self.is_dmr() {
+    pub fn watched_channels(&self, sys: &System) -> Vec<f64> {
+        if sys.is_dmr() {
             self.dmr().channels
-        } else if self.is_nxdn() {
+        } else if sys.is_nxdn() {
             self.nxdn_channels_hz.clone()
         } else {
             vec![]
@@ -413,9 +466,27 @@ impl System {
     }
 
     /// The SmartNet settings, or why they don't work.
-    pub fn smartnet(&self) -> Result<trunk_core::trunk::SmartnetConfig, String> {
+    pub fn smartnet(&self, sys: &System) -> Result<trunk_core::trunk::SmartnetConfig, String> {
         let bandplan = trunk_core::smartnet::Bandplan::from_config(&self.bandplan, self.bandplan_base_hz, self.bandplan_spacing_hz, self.bandplan_offset, self.bandplan_high_hz)?;
-        Ok(trunk_core::trunk::SmartnetConfig { bandplan, analog_default: self.default_mode.eq_ignore_ascii_case("analog") })
+        Ok(trunk_core::trunk::SmartnetConfig { bandplan, analog_default: sys.default_mode.eq_ignore_ascii_case("analog") })
+    }
+
+    fn bank(&self) -> BankConfig {
+        let m = self.modulation.as_str();
+        BankConfig { cqpsk: m != "fsk4", cqpsk_eq: m != "fsk4", c4fm: m != "qpsk", ..Default::default() }
+    }
+
+    /// The engine's protocol settings for it, as a site of `sys`.
+    fn protocol(&self, sys: &System) -> Protocol {
+        if sys.is_dmr() {
+            Protocol::Dmr(self.dmr())
+        } else if sys.is_nxdn() {
+            Protocol::Nxdn(self.nxdn(sys))
+        } else if let Some(sn) = sys.is_smartnet().then(|| self.smartnet(sys).ok()).flatten() {
+            Protocol::SmartNet(sn)
+        } else {
+            Protocol::P25
+        }
     }
 }
 
@@ -428,42 +499,41 @@ impl Default for System {
             name: String::new(),
             kind: "p25".into(),
             enabled: true,
-            control_channels_hz: vec![],
-            modulation: "auto".into(),
             talkgroups_csv: String::new(),
             talkgroups_name: String::new(),
             unit_names: UnitNames::default(),
+            recording: RecordingOverride::default(),
+            default_mode: String::new(),
+            nxdn_type: String::new(),
+            plugins: BTreeMap::new(),
+            plugin_delays: vec![],
+            sites: vec![],
+        }
+    }
+}
+
+impl Default for Site {
+    fn default() -> Self {
+        Site {
+            name: String::new(),
+            enabled: true,
+            control_channels_hz: vec![],
+            modulation: "auto".into(),
             expect: SiteIdentity::default(),
             voice_channels_hz: vec![],
-            recording: RecordingOverride::default(),
             bandplan: String::new(),
             bandplan_base_hz: 0.0,
             bandplan_spacing_hz: 0.0,
             bandplan_offset: 0,
             bandplan_high_hz: 0.0,
-            default_mode: String::new(),
             lcn_table_hz: Default::default(),
             dmr_channels_hz: vec![],
             color_code: None,
-            nxdn_type: String::new(),
             nxdn_rate: String::new(),
             nxdn_channels_hz: vec![],
             ran: None,
-            site_group: String::new(),
-            plugins: BTreeMap::new(),
-            plugin_delays: vec![],
+            other: BTreeMap::new(),
         }
-    }
-}
-
-impl System {
-    fn bank(&self) -> BankConfig {
-        let m = self.modulation.as_str();
-        BankConfig { cqpsk: m != "fsk4", cqpsk_eq: m != "fsk4", c4fm: m != "qpsk", ..Default::default() }
-    }
-    /// Recording it: enabled, with a control channel.
-    pub fn active(&self) -> bool {
-        self.enabled && !self.control_channels_hz.is_empty()
     }
 }
 
@@ -1282,7 +1352,7 @@ pub struct LoadedKeys {
 #[serde(rename_all = "camelCase", default)]
 pub struct Config {
     pub sources: Vec<Source>,
-    /// The trunked systems (sites).
+    /// The trunked systems, each with its sites.
     pub systems: Vec<System>,
     /// The conventional systems; the `k`th's calls are numbered
     /// [`trunk_core::trunk::conventional_system`]`(k)`.
@@ -1307,6 +1377,9 @@ pub struct Config {
     /// kept, and saved back as they were.
     #[serde(flatten)]
     pub other: BTreeMap<String, serde_json::Value>,
+    /// What reading it changed (an older config upgraded: [`crate::migrate`]), to log.
+    #[serde(skip)]
+    pub notes: Vec<String>,
 }
 
 /// The log (desktop app), with Trunk Recorder's options: `logLevel`,
@@ -1382,6 +1455,7 @@ impl Default for Config {
             keys: BTreeMap::new(),
             log: LogSettings::default(),
             monitor: MonitorSettings::default(),
+            notes: vec![],
         }
     }
 }
@@ -1448,7 +1522,7 @@ impl Config {
     /// error, not the defaults (which would be saved over it).
     pub fn load(path: &Path) -> Result<Config, String> {
         let mut c: Config = match std::fs::read_to_string(path) {
-            Ok(s) => serde_json::from_str(&s).map_err(|e| format!("{}: not a config this version reads ({e})", path.display()))?,
+            Ok(s) => Config::from_json(&s).map_err(|e| format!("{}: not a config this version reads ({e})", path.display()))?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Config::default(),
             Err(e) => return Err(format!("{}: {e}", path.display())),
         };
@@ -1457,6 +1531,20 @@ impl Config {
         // `home` (what / showed) went with interfaces at /ui/<name>/: / is the built-in one's.
         c.server.other.remove("home");
         c.server.assign_ports();
+        Ok(c)
+    }
+
+    /// A config from its JSON, an older one upgraded ([`crate::migrate`];
+    /// what that changed is in [`Config::notes`]).
+    pub fn from_json(s: &str) -> Result<Config, serde_json::Error> {
+        Config::from_value(serde_json::from_str(s)?)
+    }
+
+    /// [`Config::from_json`], from its JSON value.
+    pub fn from_value(mut v: serde_json::Value) -> Result<Config, serde_json::Error> {
+        let notes = crate::migrate::config(&mut v);
+        let mut c: Config = serde_json::from_value(v)?;
+        c.notes = notes;
         Ok(c)
     }
 
@@ -1646,7 +1734,7 @@ impl Config {
         out
     }
 
-    /// The systems being recorded (enabled, with a control channel), in the
+    /// The systems being recorded (enabled, with a site that is), in the
     /// engine's order — a call's `system` indexes this.
     pub fn active_systems(&self) -> impl Iterator<Item = &System> {
         self.systems.iter().filter(|s| s.active())
@@ -1672,6 +1760,17 @@ impl Config {
         ))
     }
 
+    /// The sites being recorded, each with its system, in the engine's order
+    /// — a call's `site` indexes this.
+    pub fn active_sites(&self) -> impl Iterator<Item = (&System, &Site)> {
+        self.active_systems().flat_map(|s| s.active_sites().map(move |x| (s, x)))
+    }
+
+    /// The site a call's `site` names, with its system (None: conventional).
+    pub fn site_of(&self, site: u16) -> Option<(&System, &Site)> {
+        self.active_sites().nth(site as usize)
+    }
+
     /// Each source's centre: as set, or (0 = auto) placed over what the
     /// sources before it don't cover yet — every system (control and known
     /// voice channels) and the conventional channels if they fit together,
@@ -1680,10 +1779,10 @@ impl Config {
     pub fn resolved_centers(&self) -> Vec<f64> {
         // Groups to cover: (all its channels, the ones it can't do without).
         let mut groups: Vec<(Vec<f64>, Vec<f64>)> = self
-            .active_systems()
-            .map(|s| {
+            .active_sites()
+            .map(|(sys, s)| {
                 // A DMR / NXDN site's watched frequencies are all needed.
-                let watched = s.watched_channels();
+                let watched = s.watched_channels(sys);
                 let need: Vec<f64> = s.control_channels_hz.iter().chain(&watched).copied().collect();
                 (need.iter().chain(&s.voice_channels_hz).copied().collect(), need)
             })
@@ -1728,6 +1827,13 @@ impl Config {
                 return Some(format!("Two systems are named \"{n}\" — each needs a short name of its own (it is its folder, and how plugins know it)."));
             }
         }
+        // A site's name is its own in its system (its band plan's file, the talkgroup file's Preferred Site).
+        for sys in &self.systems {
+            let mut seen = std::collections::HashSet::new();
+            if let Some(site) = sys.sites.iter().find(|x| !seen.insert(sys.site_name(x))) {
+                return Some(format!("Two sites of {} are named \"{}\" — each needs a name of its own.", sys.short_name, sys.site_name(site)));
+            }
+        }
         None
     }
 
@@ -1764,21 +1870,26 @@ impl Config {
             ));
         }
         let inside = |f: f64| self.sources.iter().zip(&centers).any(|(s, &c)| (f - c).abs() <= s.usable_half_width());
-        for s in self.active_systems() {
-            if s.is_smartnet() {
-                if let Err(e) = s.smartnet() {
-                    return Some(format!("{}: {e}", s.short_name));
+        for (sys, s) in self.active_sites() {
+            // "dcfd", or "dcfd (site south)" for a site with its own name.
+            let name = match sys.site_name(s) {
+                n if n == sys.short_name => n.to_string(),
+                n => format!("{} (site {n})", sys.short_name),
+            };
+            if sys.is_smartnet() {
+                if let Err(e) = s.smartnet(sys) {
+                    return Some(format!("{name}: {e}"));
                 }
             }
-            if s.is_dmr() || s.is_nxdn() {
-                let out: Vec<String> = s.control_channels_hz.iter().chain(&s.watched_channels()).filter(|&&f| !inside(f)).map(|f| format!("{:.5}", f / 1e6)).collect();
+            if sys.is_dmr() || sys.is_nxdn() {
+                let out: Vec<String> = s.control_channels_hz.iter().chain(&s.watched_channels(sys)).filter(|&&f| !inside(f)).map(|f| format!("{:.5}", f / 1e6)).collect();
                 if !out.is_empty() {
-                    let what = if s.is_dmr() { "DMR" } else { "NXDN" };
-                    return Some(format!("{}: {what} frequencies outside every source's bandwidth: {} MHz — move a center frequency or add a source.", s.short_name, out.join(", ")));
+                    let what = if sys.is_dmr() { "DMR" } else { "NXDN" };
+                    return Some(format!("{name}: {what} frequencies outside every source's bandwidth: {} MHz — move a center frequency or add a source.", out.join(", ")));
                 }
             }
             if !s.control_channels_hz.iter().any(|&f| inside(f)) {
-                return Some(format!("No control channel of {} falls inside any source's bandwidth — move a center frequency or add a source.", s.short_name));
+                return Some(format!("No control channel of {name} falls inside any source's bandwidth — move a center frequency or add a source."));
             }
         }
         if self.conventional.len() > MAX_CONVENTIONAL {
@@ -1837,15 +1948,7 @@ impl Config {
             .map(|(i, s)| CallSystem {
                 index: i as u16,
                 short_name: &s.short_name,
-                kind: if s.is_smartnet() {
-                    "smartnet"
-                } else if s.is_dmr() {
-                    "dmr"
-                } else if s.is_nxdn() {
-                    "nxdn"
-                } else {
-                    "p25"
-                },
+                kind: s.kind_name(),
                 plugins: &s.plugins,
                 plugin_delays: &s.plugin_delays,
             })
@@ -1866,36 +1969,37 @@ impl Config {
 
     pub fn engine_config(&self, epoch_ms: f64) -> EngineConfig {
         let centers = self.resolved_centers();
-        let systems: Vec<SystemConfig> = self
+        // Each site carries its system's talkgroups, rules, radio names (and keys, set by the app).
+        let sites: Vec<SiteConfig> = self
             .active_systems()
-            .map(|s| SystemConfig {
-                short_name: s.short_name.clone(),
-                control_channels: s.control_channels_hz.clone(),
-                calls: self.recording.with(&s.recording).call_config(),
-                save: self.recording.with(&s.recording).save_rules(),
-                unit_tags: s.unit_names.engine(),
-                bank: s.bank(),
-                talkgroups: parse_csv(&s.talkgroups_csv),
-                expect: s.expect.engine(),
-                protocol: if s.is_dmr() {
-                    Protocol::Dmr(s.dmr())
-                } else if s.is_nxdn() {
-                    Protocol::Nxdn(s.nxdn())
-                } else if let Some(sn) = s.is_smartnet().then(|| s.smartnet().ok()).flatten() {
-                    Protocol::SmartNet(sn)
-                } else {
-                    Protocol::P25
-                },
-                site_group: s.site_group.trim().to_string(),
-                // (Read by the app: [`Config::load_keys`].)
-                keys: None,
+            .flat_map(|sys| {
+                let rules = self.recording.with(&sys.recording);
+                let talkgroups = parse_csv(&sys.talkgroups_csv);
+                let unit_tags = sys.unit_names.engine();
+                sys.active_sites()
+                    .map(|s| SiteConfig {
+                        short_name: sys.short_name.clone(),
+                        site: s.name.trim().to_string(),
+                        control_channels: s.control_channels_hz.clone(),
+                        calls: rules.call_config(),
+                        save: rules.save_rules(),
+                        unit_tags: unit_tags.clone(),
+                        bank: s.bank(),
+                        talkgroups: talkgroups.clone(),
+                        expect: s.expect.engine(),
+                        protocol: s.protocol(sys),
+                        // (Read by the app: [`Config::load_keys`].)
+                        keys: None,
+                    })
+                    .collect::<Vec<_>>()
             })
             .collect();
         // A conventional system's P25 / DMR channels look up the talkgroup names
         // of the only trunked system, when there is just one (its channels'
-        // own names come from the channel list). They use its receivers too.
-        let conv_bank = match systems.as_slice() {
-            [one] => one.bank,
+        // own names come from the channel list). They use its (first site's) receivers too.
+        let systems = self.active_systems().count();
+        let conv_bank = match (systems, sites.first()) {
+            (1, Some(one)) => one.bank,
             _ => BankConfig::default(),
         };
         let conv_systems: Vec<ConvSystem> = self
@@ -1903,7 +2007,7 @@ impl Config {
             .iter()
             .map(|v| {
                 let r = self.recording.with(&v.recording);
-                let named = if systems.len() == 1 { systems.first() } else { None };
+                let named = if systems == 1 { sites.first() } else { None };
                 ConvSystem {
                     short_name: v.short_name.clone(),
                     calls: r.call_config(),
@@ -1915,7 +2019,7 @@ impl Config {
             })
             .collect();
         EngineConfig {
-            systems,
+            sites,
             sources: self.sources.iter().zip(centers).map(|(s, c)| SourceConfig { center_hz: c, rate_hz: s.rate_hz(), auto_tune: s.auto_tune(), guard_hz: s.guard_hz() }).collect(),
             preroll_s: self.recording.preroll_s,
             max_recorders: self.recording.max_recorders,
@@ -1995,7 +2099,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("k.json"), r#"{ "keys": [{ "algId": "0xAA", "keyId": 1, "key": "1234567890" }] }"#).unwrap();
         let cc = vec![851_012_500.0];
-        let sys = |n: &str, k: &str| System { short_name: n.into(), keys: k.into(), control_channels_hz: cc.clone(), ..Default::default() };
+        let sys = |n: &str, k: &str| System { keys: k.into(), ..System::one_site(n, Site { control_channels_hz: cc.clone(), ..Default::default() }) };
         let mut c = Config { systems: vec![sys("a", "county"), sys("b", "county"), sys("c", "")], ..Default::default() };
         c.keys.insert("county".into(), KeySource { file: "k.json".into(), ..Default::default() });
         c.keys.insert("unused".into(), KeySource { file: "missing.json".into(), ..Default::default() });
@@ -2068,7 +2172,7 @@ mod tests {
         let center = c.resolved_centers()[0];
         assert!((center - 154_265_000.0).abs() < 100_000.0, "center {center}");
         let e = c.engine_config(0.0);
-        assert!(e.systems.is_empty());
+        assert!(e.sites.is_empty());
         assert_eq!(e.conventional.len(), 2);
         assert_eq!(e.conventional[0].talkgroup, 1001);
         assert_eq!(e.conventional[0].info.as_ref().unwrap().alpha_tag, "County Fire Dispatch");
@@ -2118,29 +2222,14 @@ mod tests {
     }
 
     #[test]
-    fn site_groups_and_duplicates() {
-        // Older configs: duplicates dropped, groups from the air.
-        let c: Config = serde_json::from_str(r#"{ "systems": [{ "shortName": "a", "controlChannelsHz": [851012500] }], "recording": { "preroll_s": 1 } }"#).unwrap();
-        assert!(c.recording.drop_duplicate_calls);
-        assert!(!serde_json::to_string(&c.systems[0]).unwrap().contains("siteGroup"));
-        let c: Config = serde_json::from_str(
-            r#"{ "systems": [{ "shortName": "a", "controlChannelsHz": [851012500], "siteGroup": " capmax " }], "recording": { "dropDuplicateCalls": false } }"#,
-        )
-        .unwrap();
-        let e = c.engine_config(0.0);
-        assert!(!e.drop_duplicates);
-        assert_eq!(e.systems[0].site_group, "capmax");
-    }
-
-    #[test]
     fn dmr_system_takes_a_channel_table() {
         let s: System = serde_json::from_str(
-            r#"{ "shortName": "capmax", "type": "dmr", "controlChannelsHz": [452175000],
-                 "lcnTableHz": { "101": 452275000, "102": 452300000 }, "dmrChannelsHz": [452275000], "colorCode": 0 }"#,
+            r#"{ "shortName": "capmax", "type": "dmr", "sites": [{ "controlChannelsHz": [452175000],
+                 "lcnTableHz": { "101": 452275000, "102": 452300000 }, "dmrChannelsHz": [452275000], "colorCode": 0 }] }"#,
         )
         .unwrap();
         assert!(s.is_dmr());
-        let d = s.dmr();
+        let d = s.sites[0].dmr();
         assert_eq!(d.lcn_table.into_iter().collect::<Vec<_>>(), [(101, 452_275_000), (102, 452_300_000)]);
         assert_eq!((d.channels, d.color_code), (vec![452_275_000.0], Some(0)));
         let back: System = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
@@ -2170,7 +2259,7 @@ mod tests {
     }
 
     fn system(name: &str, ccs: &[f64]) -> System {
-        System { short_name: name.into(), control_channels_hz: ccs.to_vec(), ..Default::default() }
+        System::one_site(name, Site { control_channels_hz: ccs.to_vec(), ..Default::default() })
     }
 
     #[test]
@@ -2178,8 +2267,8 @@ mod tests {
         let rtl = || Source::Rtlsdr { serial: String::new(), center_hz: 0.0, rate_hz: 2_400_000.0, gain_db: 30.0, agc: false, ppm: 0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ, buf_len: 0, buffers: 0 };
         let mut c = Config { sources: vec![rtl(), rtl()], ..Default::default() };
         let mut a = system("east", &[851_012_500.0]);
-        a.voice_channels_hz = vec![851_500_000.0, 852_000_000.0];
-        a.expect = SiteIdentity { nac: Some(0x443), site: Some(3), ..Default::default() };
+        a.sites[0].voice_channels_hz = vec![851_500_000.0, 852_000_000.0];
+        a.sites[0].expect = SiteIdentity { nac: Some(0x443), site: Some(3), ..Default::default() };
         let mut b = system("west", &[771_106_250.0]);
         b.recording.record_unknown = Some(false);
         b.recording.min_call_s = Some(2.0);
@@ -2193,15 +2282,22 @@ mod tests {
         }
         assert!((771_106_250.0 - centers[1]).abs() <= hw, "west's CC not in source 2 at {}", centers[1]);
         let e = c.engine_config(0.0);
-        assert_eq!(e.systems.iter().map(|s| s.short_name.as_str()).collect::<Vec<_>>(), ["east", "west"]);
-        assert_eq!(e.systems[0].expect.nac(), Some(0x443));
-        assert_eq!(e.systems[0].expect.site(), Some(3));
-        assert!(e.systems[0].calls.record_unknown && !e.systems[1].calls.record_unknown);
-        assert_eq!((e.systems[0].save.min_call_s, e.systems[1].save.min_call_s), (0.0, 2.0));
+        assert_eq!(e.sites.iter().map(|s| s.short_name.as_str()).collect::<Vec<_>>(), ["east", "west"]);
+        assert_eq!(e.sites[0].expect.nac(), Some(0x443));
+        assert_eq!(e.sites[0].expect.site(), Some(3));
+        assert!(e.sites[0].calls.record_unknown && !e.sites[1].calls.record_unknown);
+        assert_eq!((e.sites[0].save.min_call_s, e.sites[1].save.min_call_s), (0.0, 2.0));
         let saved = serde_json::to_string(&c.systems[1]).unwrap();
         assert!(saved.contains(r#""recording":{"recordUnknown":false,"minCallS":2.0}"#), "{saved}");
         assert!(!serde_json::to_string(&c.systems[0]).unwrap().contains("recording"));
-        assert!(e.drop_duplicates && e.systems[0].site_group.is_empty());
+        assert!(e.drop_duplicates);
+        // A second site of east: its own control channel, east's rules; site names its own.
+        c.systems[0].sites.push(Site { name: "east-2".into(), control_channels_hz: vec![851_212_500.0], ..Default::default() });
+        let e = c.engine_config(0.0);
+        assert_eq!(e.sites.iter().map(|s| (s.short_name.as_str(), s.site_name(), s.calls.record_unknown)).collect::<Vec<_>>(), [("east", "east", true), ("east", "east-2", true), ("west", "west", false)]);
+        c.systems[0].sites[1].name = "east".into();
+        assert!(c.problem().unwrap().contains("Two sites of east are named \"east\""), "{:?}", c.problem());
+        c.systems[0].sites.pop();
         // One source can't hold both.
         c.sources.pop();
         assert!(c.problem().unwrap().contains("west"), "{:?}", c.problem());

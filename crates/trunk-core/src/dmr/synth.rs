@@ -205,7 +205,7 @@ mod tests {
     use crate::dsp::c4fm::C4fm;
     use crate::dsp::Receiver;
     use crate::trunk::conventional::{ConvChannel, ConvMode};
-    use crate::trunk::{Engine, EngineConfig, Event, SourceConfig, SystemConfig};
+    use crate::trunk::{Engine, EngineConfig, Event, SourceConfig, SiteConfig};
 
     fn tx() -> Tx {
         Tx { cc: 5, slot: 1, talkgroup: 4321, source: 98765, superframes: 6, idle_before: 20, idle_after: 20, csbks: vec![], mobile: false }
@@ -354,7 +354,7 @@ mod tests {
         let iq = wideband(fs, freq - center);
         let cfg = EngineConfig {
             sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
-            systems: vec![SystemConfig { short_name: "cap".into(), control_channels: vec![freq], protocol: crate::trunk::Protocol::Dmr(Default::default()), ..Default::default() }],
+            sites: vec![SiteConfig { short_name: "cap".into(), control_channels: vec![freq], protocol: crate::trunk::Protocol::Dmr(Default::default()), ..Default::default() }],
             ..Default::default()
         };
         let done = run(cfg, &iq);

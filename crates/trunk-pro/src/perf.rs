@@ -564,9 +564,7 @@ fn config_shape(ctx: &Ctx) -> Value {
                 "shortName": s.short_name,
                 "kind": s.kind,
                 "enabled": s.enabled,
-                "modulation": s.modulation,
-                "controlChannels": s.control_channels_hz.len(),
-                "voiceChannels": s.voice_channels_hz.len(),
+                "sites": s.sites.iter().map(|x| json!({ "modulation": x.modulation, "controlChannels": x.control_channels_hz.len(), "voiceChannels": x.voice_channels_hz.len() })).collect::<Vec<_>>(),
             })
         })
         .collect();

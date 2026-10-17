@@ -11,7 +11,7 @@ A trunked system works without a talkgroup file: every call is recorded and file
 number. With one, calls get names (the alpha tag, description and category go into the call JSON
 and can be used in file names), and you can choose what to record.
 
-Each system has its own. It's the **Talkgroups** field on the system card in **Setup** →
+Each system has its own, shared by all its sites. It's the **Talkgroups** field on the system card in **Setup** →
 **Systems**:
 
 - **Load CSV…** loads a Trunk Recorder talkgroup CSV.
@@ -76,7 +76,7 @@ Either way:
 | `Mode` | see [Mode](#mode) |
 | `Priority` | only `-1` matters: it means ignore, as in Trunk Recorder |
 | `Ignore` | `x`, `yes`, `y`, `true`, `1` or `ignore`: never record it. Trunk Recorder Pro's own column |
-| `Preferred Site` | multi-site: the short name of the site whose copy to keep |
+| `Preferred Site` | multi-site: the name of the site whose copy to keep (its **Site name** in Setup; a site without one goes by the system's short name) |
 | `Preferred NAC` | multi-site: the same as Trunk Recorder writes it (a NAC, or RFSS and site as `RRRRssss`, in decimal) |
 
 The multi-site columns are explained in

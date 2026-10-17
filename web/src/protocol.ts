@@ -122,10 +122,6 @@ export interface SiteIdentity {
   site?: number | null;
 }
 
-/**
- * A trunked system — or one site of a multi-site system: each site recorded
- * from its own control channel is a system, with its own short name (folder).
- */
 /** A SmartNet band plan the survey learned, in Trunk Recorder's names (Hz; offset a channel number). */
 export interface SmartnetBandplan {
   /** "800_standard" | "800_reband" | "800_splinter" | "900" | "400_custom". */
@@ -136,6 +132,12 @@ export interface SmartnetBandplan {
   bandplanHigh?: number;
 }
 
+/**
+ * A trunked system: its talkgroups, radios, rules and plugin settings, and
+ * the sites it is recorded from — each a control channel to follow. A call
+ * heard on several of its sites is one call (saved once, from the site that
+ * heard it best).
+ */
 export interface System {
   shortName: string;
   /** What people call it ("County Public Safety"); the short name is its folder. */
@@ -146,6 +148,39 @@ export interface System {
    *  "nxdn": an NXDN site (Type-C: a control channel; Type-D / IDAS: every repeater listed);
    *  every control channel and `nxdnChannelsHz` frequency is watched. */
   type: "p25" | "smartnet" | "dmr" | "nxdn";
+  /** NXDN: "typeC" (a control channel; the default) or "typeD" (IDAS distributed: list every repeater). */
+  nxdnType?: "typeC" | "typeD";
+  /** SmartNet: the voice of a talkgroup never heard granted. */
+  defaultMode?: "digital" | "analog";
+  enabled: boolean;
+  talkgroupsCsv: string;
+  talkgroupsName: string;
+  /** Its own recording rules; each left out is the Recording tab's. */
+  recording?: RecordingOverride;
+  /** Names for its radios (Trunk Recorder's unitTagsFile and unitTagsMode). */
+  unitNames?: UnitNames;
+  /** Desktop: the P25 encryption keys it decrypts with, a key source's name (Config's `keys`). */
+  keys?: string;
+  /** Plugins' settings for this system, by plugin id (each plugin's `system_config` schema); a list for several copies of one. */
+  plugins?: Record<string, SystemPluginValues>;
+  /** How long plugins wait for its calls; these come before the whole recorder's (see DelayRule). */
+  pluginDelays?: DelayRule[];
+  /** Where it is recorded from: one site, or several of one system. */
+  sites: Site[];
+}
+
+/** One site of a system: a control channel to follow, and how. */
+export interface Site {
+  /** Its name, unique in its system (absent: the system's short name). The talkgroup file's
+   *  Preferred Site names it; calls and plugins say it. */
+  name?: string;
+  enabled: boolean;
+  controlChannelsHz: number[];
+  modulation: "auto" | "fsk4" | "qpsk";
+  /** Only follow a control channel with this identity (this site, not a neighbour). */
+  expect: SiteIdentity;
+  /** Voice channels the survey heard (for placing sources). */
+  voiceChannelsHz: number[];
   /** SmartNet: "800_standard" | "800_reband" | "800_splinter" | "900" | "400_custom" (with base / spacing / offset / high; offset a channel number). */
   bandplan?: string;
   bandplanBaseHz?: number;
@@ -159,8 +194,6 @@ export interface System {
   dmrChannelsHz?: number[];
   /** DMR: only this colour code. */
   colorCode?: number;
-  /** NXDN: "typeC" (a control channel; the default) or "typeD" (IDAS distributed: list every repeater). */
-  nxdnType?: "typeC" | "typeD";
   /** NXDN: the control channel's (Type-D: the repeaters') rate; default "nxdn48". */
   nxdnRate?: "nxdn48" | "nxdn96";
   /** NXDN: voice frequencies to watch besides the control channels (Type-D: the repeaters).
@@ -168,30 +201,6 @@ export interface System {
   nxdnChannelsHz?: number[];
   /** NXDN: only this RAN. */
   ran?: number;
-  /** SmartNet: the voice of a talkgroup never heard granted. */
-  defaultMode?: "digital" | "analog";
-  enabled: boolean;
-  controlChannelsHz: number[];
-  modulation: "auto" | "fsk4" | "qpsk";
-  talkgroupsCsv: string;
-  talkgroupsName: string;
-  /** Only follow a control channel with this identity (e.g. this site, not a neighbour). */
-  expect: SiteIdentity;
-  /** Voice channels the survey heard (for placing sources). */
-  voiceChannelsHz: number[];
-  /** Its own recording rules; each left out is the Recording tab's. */
-  recording?: RecordingOverride;
-  /** Names for its radios (Trunk Recorder's unitTagsFile and unitTagsMode). */
-  unitNames?: UnitNames;
-  /** Multi-site: sites with one group are one system (a call on several is saved once).
-   *  Absent: grouped by what the control channels say (P25 WACN + System ID, SmartNet System ID). */
-  siteGroup?: string;
-  /** Desktop: the P25 encryption keys it decrypts with, a key source's name (Config's `keys`). */
-  keys?: string;
-  /** Plugins' settings for this system, by plugin id (each plugin's `system_config` schema); a list for several copies of one. */
-  plugins?: Record<string, SystemPluginValues>;
-  /** How long plugins wait for its calls; these come before the whole recorder's (see DelayRule). */
-  pluginDelays?: DelayRule[];
 }
 
 /**
@@ -514,10 +523,24 @@ export const conventionalSystem = (k: number) => CONVENTIONAL - k;
 /** Which conventional system a `system` is, or null for a trunked one. */
 export const conventionalIndex = (system: number): number | null => (system > CONVENTIONAL - 256 && system <= CONVENTIONAL ? CONVENTIONAL - system : null);
 
-/** One running system (site). `index` is what calls and audio carry as `system`. */
+/** One running system, with its sites that are. `index` is what calls and audio carry as `system`. */
 export interface SystemStatus {
   index: number;
   shortName: string;
+  activeCalls: number;
+  recording: number;
+  callsConcluded: number;
+  /** Patches standing now (each once, however many sites hear it): the supergroup, and the talkgroups patched into it. */
+  patches?: { supergroup: TalkgroupName; members: TalkgroupName[] }[];
+  /** Its sites following their control channels, in order. */
+  sites: SiteStatus[];
+}
+
+/** One running site, as its control channel describes it. `index` is what calls carry as `site`. */
+export interface SiteStatus {
+  index: number;
+  /** Its name (a system of one site: the system's short name). */
+  name: string;
   nowS: number;
   controlChannelHz: number | null;
   identity: Identity;
@@ -531,14 +554,10 @@ export interface SystemStatus {
   mismatch: string | null;
   /** Neighbouring sites its control channel announces. */
   adjacent: { sysId: number; rfss: number; site: number; freqHz: number }[];
-  /** Patches standing now: the supergroup, and the talkgroups patched into it. */
-  patches?: { supergroup: TalkgroupName; members: TalkgroupName[] }[];
   /** A trunked DMR site. */
   dmr?: DmrSiteStatus | null;
   /** An NXDN site. */
   nxdn?: NxdnSiteStatus | null;
-  /** Multi-site: the system it is a site of ("p25:bee00.1a2", "group:<name>"), once known. */
-  siteGroup?: string | null;
 }
 
 export interface DmrSiteStatus {
@@ -615,6 +634,8 @@ export interface CallView {
   /** SystemStatus.index; conventionalSystem(k) for conventional system k's channels. */
   system: number;
   systemName: string;
+  /** The site it is on (its name; none for a conventional system's call). */
+  site?: string;
   talkgroup: number;
   alphaTag: string;
   freqHz: number;
@@ -636,7 +657,7 @@ export interface CallView {
   sources: number[];
   /** The talkgroups patched with this one during the call. */
   patched?: TalkgroupName[];
-  /** Multi-site: the other sites carrying this call (one copy is saved). */
+  /** The other sites of its system carrying this call, by name (one copy is saved). */
   alsoOn?: string[];
 }
 
@@ -644,8 +665,9 @@ export interface LogLine {
   timeS: number;
   kind: string;
   text: string;
-  /** The system's short name, for its messages. */
+  /** The system's short name, for its messages, and the site's name. */
   system?: string;
+  site?: string;
 }
 
 /** Trunk Recorder's call JSON: each call's .json file, and `record` in `concluded` and `hello.history`. */
@@ -653,6 +675,8 @@ export interface CallRecord {
   /** The call's number since the recorder started. */
   call_num: number;
   short_name?: string;
+  /** The site its copy was kept from (a system of one site: its short name). */
+  site?: string;
   talkgroup: number;
   talkgroup_tag: string;
   talkgroup_description: string;
@@ -1107,6 +1131,8 @@ export interface SeriesData {
 /** A channel listened to now, with its power and the noise floor under it. */
 export interface ChannelSnapshot {
   system: string;
+  /** The site it is for (none: a conventional channel). */
+  site?: string | null;
   freqHz: number;
   source: number;
   kind: "control" | "voice" | "carrier" | "conventional";

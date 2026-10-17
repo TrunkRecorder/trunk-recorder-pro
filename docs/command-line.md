@@ -187,15 +187,15 @@ trunk-pro replay --source cap1.cu8,center,rate[,format] [--source …] --cc Hz[,
 | `--cc Hz[,Hz…]` | | The system's control channels. P25 unless `--smartnet`, `--dmr-trunk` or `--nxdn-trunk` says otherwise. |
 | `--short-name name` | `replay` | The `--cc` system's short name |
 | `--talkgroups file.csv` | | A talkgroup file, in the usual [format](configuration/systems.md) |
-| `--bandplan file` | | Read a learned band plan from this file before, and save it after. With several systems, one file each: `<file>.<shortName>`. |
-| `--system name:Hz[,Hz…][:keys]` | | Another system (or site); repeatable. The keys lock it to one site: `nac`, `sysid`, `wacn` (hex), `rfss`, `site` (decimal), and `group=name` for its site group. A control channel that disagrees isn't followed. |
+| `--bandplan file` | | Read a learned band plan from this file before, and save it after. With several sites, one file each: `<file>.<shortName>`, or `<file>.<shortName>.<site>` for a site with a name of its own. |
+| `--system name[/site]:Hz[,Hz…][:keys]` | | Another system, or with `/site` a site of one (`county/south` is site `south` of system `county`); repeatable. A call heard on several sites of a system is saved once. The keys lock it to one site: `nac`, `sysid`, `wacn` (hex), `rfss`, `site` (decimal). A control channel that disagrees isn't followed. |
 
 With more than one system, each one's calls go to `<out>/<shortName>/`.
 
 ```bash
 # Two sites of one system from one capture, each locked to its own site number
 trunk-pro replay p25.cu8 --center 858500000 --rate 2400000 \
-  --system north:857262500:site=1,group=county --system south:858237500:site=3,group=county
+  --system county/north:857262500:site=1 --system county/south:858237500:site=3
 ```
 
 ### SmartNet

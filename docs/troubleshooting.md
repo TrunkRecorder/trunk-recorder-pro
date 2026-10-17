@@ -188,7 +188,7 @@ amber: that points at reception (multipath, a marginal signal), not at traffic.
 Control channel 857.26250 MHz is not this system: NAC 2A3 (expected 2A4)
 ```
 
-The system has a site lock (`expect` in the config, set by Find my system or by hand) and the
+The site has a site lock (its `expect` in the config, set by Find my system or by hand) and the
 control channel it found belongs to a different system or site. Its grants aren't followed and the
 recorder keeps hunting. Either the frequency belongs to another site (fix the control channel list),
 or the expected identity is wrong (fix or clear it). See [Multiple sites](guides/multi-site.md).

@@ -1,6 +1,7 @@
 // Config helpers for the setup form (the recorder validates again).
 
-import type { Channel, Config, Conventional, LogSettings, RecordingOverride, SiteIdentity, Source, System, SystemStatus, UnitNames } from "./protocol.ts";
+import type { Channel, Config, Conventional, LogSettings, RecordingOverride, Site, SiteIdentity, Source, System, SystemStatus, UnitNames } from "./protocol.ts";
+import { migrateSystems, type OldSystem } from "./migrate.ts";
 import { normalizeTalkgroupCsv, splitCsvLine } from "./talkgroups.ts";
 import { dmrTalkgroup, parseAccess, sameTone } from "./tones.ts";
 
@@ -128,9 +129,9 @@ export function newConventional(c: Config, patch: Partial<Conventional> = {}): C
 }
 
 /** Trunk Recorder's trunked DMR settings: `lcnTable` { "<lcn>": Hz } and `channels` (candidate voice frequencies), in Hz (a value under 100000 read as MHz). */
-function dmrImport(sys: Record<string, unknown>): Partial<System> {
+function dmrImport(sys: Record<string, unknown>): SystemInput {
   const hz = (v: unknown) => (typeof v === "number" && v > 0 ? (v < 1e5 ? Math.round(v * 1e6) : v) : undefined);
-  const out: Partial<System> = { type: "dmr" };
+  const out: SystemInput = { type: "dmr" };
   if (sys.lcnTable && typeof sys.lcnTable === "object") {
     const t: Record<string, number> = {};
     for (const [k, v] of Object.entries(sys.lcnTable as Record<string, unknown>)) if (hz(v)) t[k] = hz(v)!;
@@ -151,17 +152,30 @@ export function siteLockFields(sys: Pick<System, "type" | "nxdnType">): (keyof S
   return sys.type === "smartnet" ? ["sysId", "site"] : sys.type === "dmr" ? [] : ["nac", "wacn", "sysId", "rfss", "site"];
 }
 
-/** Frequencies a watching protocol (DMR, NXDN) needs besides the control channels (the recorder's System::watched_channels). */
-export function watchedChannels(x: System): number[] {
-  return x.type === "dmr" ? (x.dmrChannelsHz ?? []) : x.type === "nxdn" ? (x.nxdnChannelsHz ?? []) : [];
+/** Frequencies a watching protocol (DMR, NXDN) needs besides the control channels (the recorder's Site::watched_channels). */
+export function watchedChannels(sys: Pick<System, "type">, x: Site): number[] {
+  return sys.type === "dmr" ? (x.dmrChannelsHz ?? []) : sys.type === "nxdn" ? (x.nxdnChannelsHz ?? []) : [];
 }
+
+/** A site's fields in an older config's system (before sites, each system was one, its fields at the top). */
+const SITE_KEYS = [
+  "controlChannelsHz", "modulation", "expect", "voiceChannelsHz", "bandplan", "bandplanBaseHz", "bandplanSpacingHz", "bandplanOffset", "bandplanHighHz",
+  "lcnTableHz", "dmrChannelsHz", "colorCode", "nxdnRate", "nxdnChannelsHz", "ran",
+] as const satisfies readonly (keyof Site)[];
 
 /** Every key of System this version knows (the rest are kept as they are: a newer version's, a hand edit's). */
 const SYSTEM_KEYS: (keyof System)[] = [
-  "shortName", "name", "type", "bandplan", "bandplanBaseHz", "bandplanSpacingHz", "bandplanOffset", "bandplanHighHz", "lcnTableHz", "dmrChannelsHz",
-  "colorCode", "nxdnType", "nxdnRate", "nxdnChannelsHz", "ran", "defaultMode", "enabled", "controlChannelsHz", "modulation", "talkgroupsCsv",
-  "talkgroupsName", "expect", "voiceChannelsHz", "recording", "unitNames", "siteGroup", "keys", "plugins",
+  "shortName", "name", "type", "nxdnType", "defaultMode", "enabled", "talkgroupsCsv", "talkgroupsName", "recording", "unitNames", "keys", "plugins", "pluginDelays", "sites",
 ];
+
+/** Every key of Site this version knows. */
+const SITE_FIELDS: readonly string[] = ["name", "enabled", ...SITE_KEYS];
+
+/**
+ * A system as code that makes one writes it: the system's fields, with one
+ * site's at the top level, or `sites`.
+ */
+export type SystemInput = Partial<Omit<System, "sites">> & Partial<Omit<Site, "name" | "enabled">> & { sites?: Partial<Site>[] };
 
 /** `x` without the keys in `known`: what this version doesn't know of it, kept as it was (as the recorder's `other`). */
 function unknownKeys<T extends object>(x: T, known: readonly string[]): Record<string, unknown> {
@@ -171,51 +185,70 @@ function unknownKeys<T extends object>(x: T, known: readonly string[]): Record<s
 /** A plain object (not an array, not null), or undefined. */
 const plain = <T extends object>(v: unknown): T | undefined => (v && typeof v === "object" && !Array.isArray(v) ? (v as T) : undefined);
 
-/** A system with defaults filled in (configs saved before a field existed); keys this version doesn't know are kept. */
-export function normalizeSystem(x: Partial<System>): System {
+/** A site with defaults filled in, for a system of `type` (fields of another protocol left out); keys this version doesn't know are kept. */
+export function normalizeSite(x: Partial<Site>, sys: Pick<System, "type">): Site {
+  const type = sys.type;
   return {
-    ...unknownKeys(x, SYSTEM_KEYS),
-    shortName: x.shortName ?? "sys1",
+    ...unknownKeys(x, SITE_FIELDS),
     ...(x.name?.trim() ? { name: x.name } : {}),
-    type: x.type === "smartnet" ? "smartnet" : x.type === "dmr" ? "dmr" : x.type === "nxdn" ? "nxdn" : "p25",
-    ...(x.type === "dmr"
+    enabled: x.enabled ?? true,
+    controlChannelsHz: Array.isArray(x.controlChannelsHz) ? x.controlChannelsHz : [],
+    modulation: x.modulation ?? "auto",
+    expect: plain<SiteIdentity>(x.expect) ?? {},
+    voiceChannelsHz: Array.isArray(x.voiceChannelsHz) ? x.voiceChannelsHz : [],
+    ...(type === "dmr"
       ? {
           ...(x.lcnTableHz && Object.keys(x.lcnTableHz).length ? { lcnTableHz: x.lcnTableHz } : {}),
           ...(x.dmrChannelsHz?.length ? { dmrChannelsHz: x.dmrChannelsHz } : {}),
           ...(typeof x.colorCode === "number" ? { colorCode: x.colorCode } : {}),
         }
       : {}),
-    ...(x.type === "nxdn"
+    ...(type === "nxdn"
       ? {
-          ...(x.nxdnType === "typeD" ? { nxdnType: "typeD" as const } : {}),
           ...(x.nxdnRate === "nxdn96" ? { nxdnRate: "nxdn96" as const } : {}),
           ...(x.lcnTableHz && Object.keys(x.lcnTableHz).length ? { lcnTableHz: x.lcnTableHz } : {}),
           ...(x.nxdnChannelsHz?.length ? { nxdnChannelsHz: x.nxdnChannelsHz } : {}),
           ...(typeof x.ran === "number" ? { ran: x.ran } : {}),
         }
       : {}),
-    ...(x.type === "smartnet"
+    ...(type === "smartnet"
       ? {
           bandplan: x.bandplan ?? "800_standard",
           ...(x.bandplanBaseHz ? { bandplanBaseHz: x.bandplanBaseHz } : {}),
           ...(x.bandplanSpacingHz ? { bandplanSpacingHz: x.bandplanSpacingHz } : {}),
           ...(x.bandplanOffset ? { bandplanOffset: x.bandplanOffset } : {}),
           ...(x.bandplanHighHz ? { bandplanHighHz: x.bandplanHighHz } : {}),
-          ...(x.defaultMode === "analog" ? { defaultMode: "analog" as const } : {}),
         }
       : {}),
+  };
+}
+
+/**
+ * A system with defaults filled in (configs saved before a field existed);
+ * keys this version doesn't know are kept. An older config's system — one
+ * site's fields at its top — gets that site.
+ */
+export function normalizeSystem(x: SystemInput): System {
+  const type = x.type === "smartnet" ? "smartnet" : x.type === "dmr" ? "dmr" : x.type === "nxdn" ? "nxdn" : "p25";
+  const sites: Partial<Site>[] = Array.isArray(x.sites)
+    ? x.sites.filter((s): s is Partial<Site> => !!plain(s))
+    : [{ ...Object.fromEntries(SITE_KEYS.filter((k) => k in x).map((k) => [k, x[k]])), ...(x.enabled === false ? { enabled: false } : {}) }];
+  return {
+    ...unknownKeys(x, [...SYSTEM_KEYS, ...SITE_KEYS]),
+    shortName: x.shortName ?? "sys1",
+    ...(x.name?.trim() ? { name: x.name } : {}),
+    type,
+    ...(type === "nxdn" && x.nxdnType === "typeD" ? { nxdnType: "typeD" as const } : {}),
+    ...(type === "smartnet" && x.defaultMode === "analog" ? { defaultMode: "analog" as const } : {}),
     enabled: x.enabled ?? true,
-    controlChannelsHz: Array.isArray(x.controlChannelsHz) ? x.controlChannelsHz : [],
-    modulation: x.modulation ?? "auto",
     talkgroupsCsv: x.talkgroupsCsv ?? "",
     talkgroupsName: x.talkgroupsName ?? "",
-    expect: plain<SiteIdentity>(x.expect) ?? {},
-    voiceChannelsHz: Array.isArray(x.voiceChannelsHz) ? x.voiceChannelsHz : [],
     ...(x.recording && Object.keys(x.recording).length ? { recording: x.recording } : {}),
     ...(x.unitNames && (x.unitNames.csv || x.unitNames.mode) ? { unitNames: x.unitNames } : {}),
-    ...(x.siteGroup?.trim() ? { siteGroup: x.siteGroup } : {}),
     ...(x.keys?.trim() ? { keys: x.keys } : {}),
     ...(plain(x.plugins) && Object.keys(x.plugins!).length ? { plugins: x.plugins } : {}),
+    ...(x.pluginDelays?.length ? { pluginDelays: x.pluginDelays } : {}),
+    sites: sites.map((s) => normalizeSite(s, { type })),
   };
 }
 
@@ -228,7 +261,7 @@ export function storedConfig(raw: Partial<Config>): Config {
     ...base,
     ...raw,
     sources: Array.isArray(raw.sources) ? objects<Source>(raw.sources) : base.sources,
-    systems: objects<Partial<System>>(raw.systems).map(normalizeSystem),
+    systems: migrateSystems(objects<OldSystem>(raw.systems)).systems,
     conventional: objects<Partial<Conventional>>(raw.conventional).map(normalizeConventional),
     recording: { ...base.recording, ...plain<Partial<Config["recording"]>>(raw.recording) },
     server: { ...base.server, ...plain<Partial<Config["server"]>>(raw.server) },
@@ -239,9 +272,28 @@ export function storedConfig(raw: Partial<Config>): Config {
 /** Why a filename format can't be used, or null: filenameFormat.ts. */
 export { FILENAME_TOKENS, filenameProblem } from "./filenameFormat.ts";
 
-/** The systems being recorded, in the recorder's order (SystemStatus.index). */
+/** A site being recorded: enabled, with a control channel. */
+export const siteActive = (x: Site) => x.enabled && x.controlChannelsHz.length > 0;
+
+/** The systems being recorded (enabled, with a site that is), in the recorder's order (SystemStatus.index). */
 export function activeSystems(c: Config): System[] {
-  return c.systems.filter((x) => x.enabled && x.controlChannelsHz.length > 0);
+  return c.systems.filter((x) => x.enabled && x.sites.some(siteActive));
+}
+
+/** The sites being recorded, each with its system, in the recorder's order (SiteStatus.index, a call's `site`). */
+export function activeSites(c: Config): { sys: System; site: Site }[] {
+  return activeSystems(c).flatMap((sys) => sys.sites.filter(siteActive).map((site) => ({ sys, site })));
+}
+
+/** A site's name: its own, else its system's short name. */
+export const siteNameOf = (sys: System, x: Site) => x.name?.trim() || sys.shortName;
+
+/** A name for a new site of `sys` none of its sites has: from what its control channel says ("dcfd-1-3"), else "dcfd-2"…. */
+export function newSiteName(sys: System, id: SiteIdentity = {}): string {
+  const taken = new Set(sys.sites.map((x) => siteNameOf(sys, x)));
+  const base = id.site != null ? `${sys.shortName}-${id.rfss != null ? `${id.rfss}-` : ""}${id.site}` : `${sys.shortName}-${sys.sites.length + 1}`;
+  if (!taken.has(base)) return base;
+  for (let n = 2; ; n++) if (!taken.has(`${base}-${n}`)) return `${base}-${n}`;
 }
 
 /** A system's color (the dashboard, waterfall and setup agree): by its place among the active systems. */
@@ -270,16 +322,16 @@ export function uniqueShortName(c: Config, base: string, except?: System | Conve
 }
 
 /** A new system (not yet in the config), named uniquely. */
-export function newSystem(c: Config, patch: Partial<System> = {}): System {
+export function newSystem(c: Config, patch: SystemInput = {}): System {
   const sys = normalizeSystem(patch);
   sys.shortName = uniqueShortName(c, patch.shortName ?? `sys${c.systems.length + 1}`);
   return sys;
 }
 
 /** A SmartNet system's settings from a Trunk Recorder system (its base / spacing / high are MHz; Hz here — a value already in Hz is kept). */
-function smartnetImport(sys: Record<string, unknown>): Partial<System> {
+function smartnetImport(sys: Record<string, unknown>): SystemInput {
   const hz = (v: unknown, mhzBelow: number) => (typeof v === "number" && v > 0 ? (v < mhzBelow ? Math.round(v * 1e6) : v) : undefined);
-  const out: Partial<System> = { type: "smartnet", bandplan: typeof sys.bandplan === "string" ? sys.bandplan : "800_standard" };
+  const out: SystemInput = { type: "smartnet", bandplan: typeof sys.bandplan === "string" ? sys.bandplan : "800_standard" };
   const base = hz(sys.bandplanBase, 1e5);
   const spacing = hz(sys.bandplanSpacing, 1);
   const high = hz(sys.bandplanHigh, 1e5);
@@ -290,8 +342,8 @@ function smartnetImport(sys: Record<string, unknown>): Partial<System> {
   return out;
 }
 
-/** A default short name for a site: "p25-<sysid>-<rfss>-<site>", or "sysN". */
-export function siteName(c: Config, id: SiteIdentity, smartnet = false): string {
+/** A default short name for a new system, from its site: "p25-<sysid>-<rfss>-<site>", or "sysN". */
+export function shortNameFor(c: Config, id: SiteIdentity, smartnet = false): string {
   if (smartnet && id.sysId != null) return uniqueShortName(c, `smartnet-${id.sysId.toString(16)}`);
   if (id.sysId != null && id.site != null) return uniqueShortName(c, `p25-${id.sysId.toString(16)}-${id.rfss ?? 0}-${id.site}`);
   return uniqueShortName(c, `sys${c.systems.length + 1}`);
@@ -302,63 +354,24 @@ export function sameSystem(a: SiteIdentity, b: SiteIdentity): boolean {
   return a.wacn != null && a.sysId != null && a.wacn === b.wacn && a.sysId === b.sysId;
 }
 
-/** What the running recorder says of a site (its SystemStatus): what the control channel announces, and the group that puts it in. */
-export type LiveSite = Pick<SystemStatus, "shortName" | "identity" | "controlChannelHz" | "siteGroup">;
-
 /**
- * The multi-site group a system is in, named as the recorder names it
- * (Trunk::site_key): its site group ("group:<name>"); else what its control
- * channel announces — P25 WACN + System ID ("p25:<wacn>.<sysid>"), SmartNet
- * System ID ("smartnet:<sysid>"), NXDN Type-C system code ("nxdn:<code>") —
- * from its site lock, or else from the running recorder (`live`). DMR and
- * NXDN Type-D sites announce none: only a site group joins them. Null: none
- * known.
+ * Systems set up apart whose sites announce one system on the air (P25:
+ * the same WACN and System ID; SmartNet, NXDN Type-C: the same System ID),
+ * heard by the running recorder (`live`) or locked: each pair once, for
+ * Setup to offer making them one.
  */
-export function multiSiteGroup(sys: System, live?: LiveSite): string | null {
-  const group = sys.siteGroup?.trim();
-  if (group) return `group:${group}`;
-  const { wacn, sysId } = sys.expect;
-  const h = (n: number) => n.toString(16);
-  if (sys.type === "p25" && wacn != null && sysId != null) return `p25:${h(wacn)}.${h(sysId)}`;
-  if (sys.type === "smartnet" && sysId != null) return `smartnet:${h(sysId)}`;
-  if (sys.type === "nxdn" && sys.nxdnType !== "typeD" && sysId != null) return `nxdn:${h(sysId)}`;
-  // From the air: unless it was a site group's (since taken out of the config), and only for the protocol it is now.
-  const heard = live?.siteGroup ?? null;
-  const proto = sys.type === "nxdn" && sys.nxdnType === "typeD" ? null : sys.type === "dmr" ? null : sys.type;
-  return heard && proto && heard.startsWith(`${proto}:`) ? heard : null;
-}
-
-/**
- * Other sites of `sys`'s system, as the recorder groups them (a call heard on
- * several is saved once): the same site group, or (none named) the same
- * system announced on the air — by the site lock, or by what the running
- * recorder's control channels say (`live`, its systems' status). Two entries
- * following the same site (the same site heard or locked, the same control
- * channel) aren't sites of each other (multisite.rs SiteKey::twin).
- */
-export function siteSiblings(c: Config, sys: System, live: LiveSite[] = []): System[] {
-  const liveOf = (x: System) => live.find((y) => y.shortName === x.shortName);
-  const group = multiSiteGroup(sys, liveOf(sys));
-  if (!group) return [];
-  /** The site it follows, (RFSS, site): as heard, else as locked. */
-  const site = (x: System) => {
-    const id = liveOf(x)?.identity;
-    const s = id?.site ?? x.expect.site;
-    return s == null ? null : `${id?.site != null ? (id.rfss ?? 0) : (x.expect.rfss ?? 0)}-${s}`;
+export function sameOnTheAir(c: Config, live: SystemStatus[]): [System, System][] {
+  const key = (sys: System): string | null => {
+    if (sys.type === "dmr" || (sys.type === "nxdn" && sys.nxdnType === "typeD")) return null;
+    const heard = live.find((y) => y.shortName === sys.shortName)?.sites.map((x) => x.identity) ?? [];
+    const ids: SiteIdentity[] = [...heard, ...sys.sites.map((x) => x.expect)];
+    const id = ids.find((i) => i.sysId != null && (sys.type !== "p25" || i.wacn != null));
+    return id ? `${sys.type}:${id.wacn ?? ""}.${id.sysId}` : null;
   };
-  const cc = (x: System) => liveOf(x)?.controlChannelHz ?? null;
-  const same = <T,>(a: T | null, b: T | null) => a !== null && a === b;
-  return c.systems.filter((x) => x !== sys && multiSiteGroup(x, liveOf(x)) === group && !same(site(x), site(sys)) && !same(cc(x), cc(sys)));
-}
-
-/** A group the recorder names from the air ("p25:bee00.1a2") in words: "P25 WACN BEE00 · SysID 1A2". */
-function groupText(group: string | null): string {
-  const [proto, id = ""] = (group ?? "").split(":");
-  const [a, b] = id.split(".").map((x) => x.toUpperCase());
-  if (proto === "p25") return `P25 WACN ${a} · SysID ${b}`;
-  if (proto === "smartnet") return `SmartNet SysID ${a}`;
-  if (proto === "nxdn") return `NXDN system code ${a}`;
-  return group ?? "";
+  const keyed = c.systems.map((sys) => [sys, key(sys)] as const);
+  const out: [System, System][] = [];
+  keyed.forEach(([a, ka], i) => keyed.slice(i + 1).forEach(([b, kb]) => ka && ka === kb && out.push([a, b])));
+  return out;
 }
 
 const hexText = (v: number | null | undefined) => (v === null || v === undefined ? "?" : v.toString(16).toUpperCase());
@@ -374,40 +387,9 @@ export function siteText(id: SiteIdentity): string {
   return parts.join(" · ");
 }
 
-/** A system's other sites (short names) and why they are one system, as Setup and the dashboard both say it. */
-export interface MultiSite {
-  siblings: string[];
-  /** For a tooltip: `Site group "capmax" — calls saved once`. */
-  why: string;
-}
-
-/** `sys`'s multi-site partners (siteSiblings), with why; null: no other site. */
-export function multiSitePartners(c: Config, sys: System, live: LiveSite[] = []): MultiSite | null {
-  const siblings = siteSiblings(c, sys, live);
-  if (!siblings.length) return null;
-  const group = multiSiteGroup(sys, live.find((y) => y.shortName === sys.shortName));
-  const groupWhy = sys.siteGroup?.trim()
-    ? `Site group "${sys.siteGroup.trim()}"`
-    : group && multiSiteGroup(sys) === group
-      ? siteText(sys.expect)
-      : `The same system on the air (${groupText(group)})`;
-  return { siblings: siblings.map((x) => x.shortName), why: `${groupWhy} — ${c.recording.dropDuplicateCalls ? "calls saved once" : "every site's copy saved"}` };
-}
-
-/** `systems` with the sites of one system next to each other, each group where its first site was. */
-export function bySite(c: Config, systems: System[], live: LiveSite[] = []): System[] {
-  const out: System[] = [];
-  for (const x of systems) {
-    if (out.includes(x)) continue;
-    out.push(x);
-    for (const y of siteSiblings(c, x, live)) if (systems.includes(y) && !out.includes(y)) out.push(y);
-  }
-  return out;
-}
-
-/** The system a control channel is already configured on, if any. */
+/** The system (and its site) a control channel is already configured on, if any. */
 export function systemWithChannel(c: Config, hz: number): System | undefined {
-  return c.systems.find((x) => [...x.controlChannelsHz, ...watchedChannels(x)].some((f) => Math.abs(f - hz) < 6_000));
+  return c.systems.find((sys) => sys.sites.some((x) => [...x.controlChannelsHz, ...watchedChannels(sys, x)].some((f) => Math.abs(f - hz) < 6_000)));
 }
 
 /**
@@ -416,9 +398,9 @@ export function systemWithChannel(c: Config, hz: number): System | undefined {
  */
 export function resolvedCenters(c: Config): (number | null)[] {
   // A DMR / NXDN site's watched frequencies are all needed (as Config::resolved_centers).
-  const groups: [number[], number[]][] = activeSystems(c).map((x) => {
-    const need = [...x.controlChannelsHz, ...watchedChannels(x)];
-    return [[...need, ...x.voiceChannelsHz], need];
+  const groups: [number[], number[]][] = activeSites(c).map(({ sys, site }) => {
+    const need = [...site.controlChannelsHz, ...watchedChannels(sys, site)];
+    return [[...need, ...site.voiceChannelsHz], need];
   });
   for (const v of c.conventional.filter((x) => x.enabled)) {
     const conv = v.channels.filter((ch) => ch.enabled && ch.freqHz > 0).map((ch) => ch.freqHz);
@@ -496,13 +478,21 @@ function rowsProblem(rows: Channel[]): string | null {
   return null;
 }
 
-/** Two systems sharing a short name, or one without (the recorder's Config::name_problem): every system, on or off. */
+/** Two systems sharing a short name, or one without, or two sites of a system one name (the recorder's Config::name_problem): every system, on or off. */
 export function nameProblem(c: Config): string | null {
   const names = new Set<string>();
   for (const x of [...c.systems, ...c.conventional]) {
     if (!x.shortName.trim()) return "Every system needs a short name.";
     if (names.has(x.shortName)) return `Two systems are named "${x.shortName}" — each needs a short name of its own (it is its folder, and how plugins know it).`;
     names.add(x.shortName);
+  }
+  for (const sys of c.systems) {
+    const sites = new Set<string>();
+    for (const x of sys.sites) {
+      const n = siteNameOf(sys, x);
+      if (sites.has(n)) return `Two sites of ${sys.shortName} are named "${n}" — each needs a name of its own.`;
+      sites.add(n);
+    }
   }
   return null;
 }
@@ -537,8 +527,8 @@ export const BANDWIDTH_PRESETS: Record<"fm" | "am", { khz: number; label: string
 /** The SmartNet band plans the recorder knows besides 400… / OBT (smartnet::Bandplan::from_config). */
 const BANDPLANS = ["", "800_standard", "800_domestic", "800_reband", "800_rebanded", "800_splinter", "800_domestic_splinter", "900"];
 
-/** Why a SmartNet system's band plan can't be used, or null (smartnet::Bandplan::from_config). */
-export function bandplanProblem(x: System): string | null {
+/** Why a SmartNet site's band plan can't be used, or null (smartnet::Bandplan::from_config). */
+export function bandplanProblem(x: Site): string | null {
   const n = x.bandplan ?? "";
   if (n.startsWith("400") || n.toLowerCase() === "obt") {
     const base = x.bandplanBaseHz ?? 0;
@@ -562,15 +552,17 @@ export function startProblem(c: Config): string | null {
   if (missing >= 0)
     return `Set a center frequency for source ${missing + 1} — it couldn't be placed automatically (nothing left for it to cover, or the channels don't fit one source).`;
   const inside = (f: number) => sourceCovering(c, centers, f) >= 0;
-  for (const x of systems) {
-    const plan = x.type === "smartnet" ? bandplanProblem(x) : null;
-    if (plan) return `${x.shortName}: ${plan}`;
-    if (x.type === "dmr" || x.type === "nxdn") {
-      const out = [...x.controlChannelsHz, ...watchedChannels(x)].filter((f) => !inside(f)).map((f) => formatMhz(f));
-      const what = x.type === "dmr" ? "DMR" : "NXDN";
-      if (out.length) return `${x.shortName}: ${what} frequencies outside every source's bandwidth: ${out.join(", ")} MHz — move a center frequency or add a source.`;
+  for (const { sys, site } of activeSites(c)) {
+    // "dcfd", or "dcfd (site south)" for a site with its own name.
+    const name = siteNameOf(sys, site) === sys.shortName ? sys.shortName : `${sys.shortName} (site ${siteNameOf(sys, site)})`;
+    const plan = sys.type === "smartnet" ? bandplanProblem(site) : null;
+    if (plan) return `${name}: ${plan}`;
+    if (sys.type === "dmr" || sys.type === "nxdn") {
+      const out = [...site.controlChannelsHz, ...watchedChannels(sys, site)].filter((f) => !inside(f)).map((f) => formatMhz(f));
+      const what = sys.type === "dmr" ? "DMR" : "NXDN";
+      if (out.length) return `${name}: ${what} frequencies outside every source's bandwidth: ${out.join(", ")} MHz — move a center frequency or add a source.`;
     }
-    if (!x.controlChannelsHz.some(inside)) return `No control channel of ${x.shortName} falls inside any source's bandwidth — move a center frequency or add a source.`;
+    if (!site.controlChannelsHz.some(inside)) return `No control channel of ${name} falls inside any source's bandwidth — move a center frequency or add a source.`;
   }
   if (c.conventional.length > MAX_CONVENTIONAL) return `At most ${MAX_CONVENTIONAL} conventional systems.`;
   const owner: [number, string][] = [];
@@ -833,7 +825,7 @@ export type ImportTodo =
   /** A conventional system's channel file wasn't loaded; `had` channels were imported without it. */
   | { kind: "channels"; system: string; file: string; had: number }
   /** Trunk Recorder's siteId: a Site lock to fill in. */
-  | { kind: "siteLock"; system: string; siteId: string }
+  | { kind: "siteLock"; system: string; siteId: string; site?: number }
   /** An RTL-SDR that wasn't free when imported (`serial` as configured). */
   | { kind: "source"; index: number; serial: string }
   /** A source whose driver isn't installed here. */
@@ -1203,50 +1195,63 @@ export function importTrunkRecorderConfig(
   }
   if (conv.length > 1) notes.push(`${conv.length} conventional systems imported, each with its own folder and channels.`);
   if (p25.length) {
-    // Trunk Recorder drops duplicates only among systems with multiSite on;
-    // its multiSiteSystemName is a site group here (else grouped from the air).
-    const multi = p25.filter((x) => x.multiSite === true);
-    const isolated: string[] = [];
+    // Trunk Recorder's sites of one system: multiSite on, one multiSiteSystemName. Here they are
+    // one system (named so), each a site named as Trunk Recorder named it; the first's talkgroup
+    // file, unit names and rules are the system's.
+    const groupOf = (sys: Record<string, unknown>) => (sys.multiSite === true && typeof sys.multiSiteSystemName === "string" ? sys.multiSiteSystemName.trim() : "");
+    const members = new Map<string, number>();
+    for (const sys of p25) if (groupOf(sys)) members.set(groupOf(sys), (members.get(groupOf(sys)) ?? 0) + 1);
+    const made = new Map<string, System>();
     if (!merge) cfg.systems = [];
     for (const sys of p25) {
       const ccs = Array.isArray(sys.control_channels) ? (sys.control_channels as unknown[]) : [];
       const kind = sys.type === "smartnet" || sys.type === "dmr" ? sys.type : "p25";
-      if (existing(sys, cfg.systems, (y) => (y as System).type === kind && (y as System).controlChannelsHz.some((f) => ccs.includes(f)))) continue;
-      const msName = typeof sys.multiSiteSystemName === "string" ? sys.multiSiteSystemName.trim() : "";
+      if (existing(sys, cfg.systems, (y) => (y as System).type === kind && (y as System).sites.some((x) => x.controlChannelsHz.some((f) => ccs.includes(f))))) continue;
       const ownName = typeof sys.shortName === "string" ? sys.shortName : "";
-      const siteGroup = sys.multiSite === true ? msName : multi.length && ownName ? ownName : "";
-      if (sys.multiSite !== true && siteGroup) isolated.push(ownName);
-      const x = newSystem(cfg, {
-        shortName: typeof sys.shortName === "string" ? sys.shortName : undefined,
-        controlChannelsHz: Array.isArray(sys.control_channels) ? (sys.control_channels as unknown[]).filter((v): v is number => typeof v === "number") : [],
+      const group = (members.get(groupOf(sys)) ?? 0) > 1 ? groupOf(sys) : "";
+      const one = newSystem(cfg, {
+        shortName: group || (ownName ? ownName : undefined),
+        controlChannelsHz: ccs.filter((v): v is number => typeof v === "number"),
         modulation: sys.modulation === "qpsk" || sys.modulation === "fsk4" ? sys.modulation : "auto",
         ...(Object.keys(trRecording(sys)).length ? { recording: trRecording(sys) } : {}),
         ...(sys.type === "smartnet" ? smartnetImport(sys) : {}),
         // Trunk Recorder's defaultMode is global and only SmartNet's; here each SmartNet system has its own.
         ...(sys.type === "smartnet" && j.defaultMode === "analog" ? { defaultMode: "analog" as const } : {}),
         ...(sys.type === "dmr" ? dmrImport(sys) : {}),
-        ...(siteGroup ? { siteGroup } : {}),
       });
-      cfg.systems.push(x);
-      mine.push(x);
+      if (group && ownName) one.sites[0].name = ownName.replace(/[^\w.-]/g, "");
+      // A later site of a system already made here joins it.
+      const x = (group && made.get(group)) || one;
+      if (x === one) {
+        cfg.systems.push(x);
+        mine.push(x);
+        if (group) made.set(group, x);
+      } else {
+        x.sites.push(one.sites[0]);
+      }
+      const site = x.sites.length - 1;
       systemNames.set(sys, x.shortName);
       if (ownName && !names.has(ownName)) names.set(ownName, x.shortName);
       if (typeof sys.talkgroupsFile === "string" && sys.talkgroupsFile) {
         const csv = files[sys.talkgroupsFile];
-        if (csv === undefined) todo.push({ kind: "talkgroups", system: x.shortName, file: sys.talkgroupsFile });
+        if (x !== one && x.talkgroupsCsv) {
+          if (csv !== undefined && normalizeTalkgroupCsv(csv) !== x.talkgroupsCsv) notes.push(`${ownName}'s talkgroup file wasn't used: ${x.shortName}'s sites share the first one's.`);
+        } else if (csv === undefined) todo.push({ kind: "talkgroups", system: x.shortName, file: sys.talkgroupsFile });
         else {
           x.talkgroupsCsv = normalizeTalkgroupCsv(csv);
           x.talkgroupsName = baseName(sys.talkgroupsFile);
         }
       }
-      if (sys.siteId !== undefined && sys.siteId !== null && sys.siteId !== "") todo.push({ kind: "siteLock", system: x.shortName, siteId: String(sys.siteId) });
-      const units = trUnitNames(sys, files, x.shortName, todo);
-      if (units) x.unitNames = units;
+      if (sys.siteId !== undefined && sys.siteId !== null && sys.siteId !== "") todo.push({ kind: "siteLock", system: x.shortName, siteId: String(sys.siteId), site });
+      if (x === one) {
+        const units = trUnitNames(sys, files, x.shortName, todo);
+        if (units) x.unitNames = units;
+      }
     }
-    if (p25.length > 1) notes.push(`${p25.length} systems imported, each with its own folder.`);
-    if (multi.length && isolated.length) notes.push(`multiSite was off for ${isolated.join(", ")}: each has a site group of its own, so every call there is saved.`);
-    if (!multi.length && p25.length > 1)
-      notes.push("A call heard on several sites of one system is now saved once (Trunk Recorder's multiSite was off) — switch it off under Recording to keep every copy.");
+    const joined = [...made.values()].filter((x) => x.sites.length > 1);
+    for (const x of joined) notes.push(`${x.shortName}: ${x.sites.length} sites (${x.sites.map((s) => siteNameOf(x, s)).join(", ")}), one system: a call heard on several is saved once.`);
+    const apart = mine.filter((x): x is System => "sites" in x).length;
+    if (apart > 1) notes.push(`${apart} systems imported, each with its own folder.`);
   }
   if (already.length) notes.push(`Already here, left as ${already.length === 1 ? "it is" : "they are"}: ${already.join(", ")}.`);
   const owners = merge ? mine : [...cfg.systems.map((x) => x as { recording?: RecordingOverride }), ...cfg.conventional];

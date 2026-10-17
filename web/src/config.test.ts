@@ -1,75 +1,57 @@
-// Which systems are sites of one system (config.ts: multiSiteGroup,
-// siteSiblings, multiSitePartners, bySite), as Setup and the dashboard say.
-// `npm test`.
+// Systems with sites (config.ts): the sites recorded, their names, and
+// systems set up apart that are one on the air. `npm test`.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { bySite, defaultConfig, multiSiteGroup, multiSitePartners, newSystem, siteSiblings, type LiveSite } from "./config.ts";
-import type { Config, Identity, System } from "./protocol.ts";
+import { activeSites, defaultConfig, importTrunkRecorderConfig, nameProblem, newSiteName, newSystem, normalizeSystem, sameOnTheAir, siteNameOf } from "./config.ts";
+import type { Config, Identity, SiteStatus, SystemStatus } from "./protocol.ts";
 
-/** A config with these systems (each on a control channel of its own). */
-function config(...systems: Partial<System>[]): Config {
+test("normalizeSystem: an older config's system gets its site; a system with sites keeps them", () => {
+  const old = normalizeSystem({ shortName: "a", type: "dmr", controlChannelsHz: [452175000], colorCode: 3, modulation: "qpsk", talkgroupsCsv: "x", enabled: false, future: 1 } as never);
+  assert.equal(old.sites.length, 1);
+  assert.deepEqual([old.sites[0].controlChannelsHz, old.sites[0].colorCode, old.sites[0].modulation, old.sites[0].enabled], [[452175000], 3, "qpsk", false]);
+  assert.equal(old.talkgroupsCsv, "x");
+  assert.equal((old as unknown as Record<string, unknown>).future, 1, "a key this version doesn't know is kept");
+  assert.ok(!("controlChannelsHz" in old), "the site's fields are the site's");
+  const now = normalizeSystem({ shortName: "b", sites: [{ controlChannelsHz: [1] }, { name: "b2", controlChannelsHz: [2], enabled: false }] });
+  assert.deepEqual(now.sites.map((x) => [x.name, x.enabled, x.modulation]), [[undefined, true, "auto"], ["b2", false, "auto"]]);
+});
+
+test("activeSites: the recorder's order; site names unique in a system; new sites named so", () => {
   const c = defaultConfig();
-  systems.forEach((x, i) => c.systems.push(newSystem(c, { controlChannelsHz: [851_000_000 + i * 25_000], ...x })));
-  return c;
-}
-
-const id = (x: Partial<Identity>): Identity => ({ nac: null, wacn: null, sysId: null, rfss: null, site: null, ...x });
-const live = (shortName: string, siteGroup: string | null, identity: Partial<Identity>, controlChannelHz: number | null = null): LiveSite => ({ shortName, siteGroup, identity: id(identity), controlChannelHz });
-const names = (xs: System[]) => xs.map((x) => x.shortName);
-const sys = (c: Config, name: string) => c.systems.find((x) => x.shortName === name)!;
-
-test("P25 sites locked to one WACN + System ID are one system; another System ID isn't", () => {
-  const c = config(
-    { shortName: "a", expect: { wacn: 0xbee00, sysId: 0x1a2, rfss: 1, site: 1 } },
-    { shortName: "b", expect: { wacn: 0xbee00, sysId: 0x1a2, rfss: 1, site: 2 } },
-    { shortName: "other", expect: { wacn: 0xbee00, sysId: 0x1a3, rfss: 1, site: 1 } },
-  );
-  assert.equal(multiSiteGroup(sys(c, "a")), "p25:bee00.1a2");
-  assert.deepEqual(names(siteSiblings(c, sys(c, "a"))), ["b"]);
-  assert.deepEqual(names(siteSiblings(c, sys(c, "other"))), []);
-  assert.equal(multiSitePartners(c, sys(c, "other")), null);
-  const m = multiSitePartners(c, sys(c, "a"));
-  assert.deepEqual(m?.siblings, ["b"]);
-  assert.match(m!.why, /WACN BEE00 · SysID 1A2/);
+  const a = newSystem(c, { shortName: "a", controlChannelsHz: [1] });
+  a.sites.push({ ...a.sites[0], name: "a-south" }, { ...a.sites[0], name: "off", enabled: false });
+  c.systems.push(a, newSystem(c, { shortName: "b", controlChannelsHz: [2] }), newSystem(c, { shortName: "c" }));
+  assert.deepEqual(activeSites(c).map(({ sys, site }) => `${sys.shortName}/${siteNameOf(sys, site)}`), ["a/a", "a/a-south", "b/b"]);
+  assert.equal(newSiteName(a), "a-4");
+  assert.equal(newSiteName(a, { rfss: 1, site: 3 }), "a-1-3");
+  assert.equal(nameProblem(c), null);
+  a.sites[1].name = "a";
+  assert.match(nameProblem(c) ?? "", /Two sites of a are named "a"/);
 });
 
-test("P25 sites matched from the air, by what the running recorder's control channels say", () => {
-  const c = config({ shortName: "a" }, { shortName: "b" }, { shortName: "c" });
-  assert.deepEqual(names(siteSiblings(c, sys(c, "a"))), [], "nothing known while stopped");
-  const heard = [live("a", "p25:bee00.1a2", { site: 1 }), live("b", "p25:bee00.1a2", { site: 2 }), live("c", "p25:bee00.999", { site: 1 })];
-  assert.deepEqual(names(siteSiblings(c, sys(c, "a"), heard)), ["b"]);
-  assert.match(multiSitePartners(c, sys(c, "a"), heard)!.why, /^The same system on the air \(P25 WACN BEE00 · SysID 1A2\)/);
+test("sameOnTheAir: systems set up apart whose sites announce one system", () => {
+  const c: Config = defaultConfig();
+  c.systems.push(newSystem(c, { shortName: "dcfd" }), newSystem(c, { shortName: "dcfd2" }), newSystem(c, { shortName: "other", expect: { wacn: 0xbee00, sysId: 0x9 } }), newSystem(c, { shortName: "cm", type: "dmr" }));
+  const id = (x: Partial<Identity>): Identity => ({ nac: null, wacn: null, sysId: null, rfss: null, site: null, ...x });
+  const site = (name: string, identity: Partial<Identity>): SiteStatus =>
+    ({ index: 0, name, nowS: 0, controlChannelHz: null, identity: id(identity), good: 0, bad: 0, modulation: null, activeCalls: 0, recording: 0, callsConcluded: 0, mismatch: null, adjacent: [] });
+  const sys = (shortName: string, sites: SiteStatus[]): SystemStatus => ({ index: 0, shortName, activeCalls: 0, recording: 0, callsConcluded: 0, sites });
+  assert.deepEqual(sameOnTheAir(c, []), []);
+  const live = [sys("dcfd", [site("dcfd", { wacn: 0xbee00, sysId: 0x1a2, site: 1 })]), sys("dcfd2", [site("dcfd2", { wacn: 0xbee00, sysId: 0x1a2, site: 2 })])];
+  assert.deepEqual(sameOnTheAir(c, live).map(([a, b]) => [a.shortName, b.shortName]), [["dcfd", "dcfd2"]]);
 });
 
-test("two entries following one site, or one control channel, aren't sites of each other", () => {
-  const c = config({ shortName: "a" }, { shortName: "b" }, { shortName: "c" });
-  const heard = [live("a", "p25:bee00.1a2", { rfss: 1, site: 1 }, 851_000_000), live("b", "p25:bee00.1a2", { rfss: 1, site: 1 }), live("c", "p25:bee00.1a2", { site: 3 }, 851_000_000)];
-  assert.deepEqual(names(siteSiblings(c, sys(c, "a"), heard)), []);
-});
-
-test("SmartNet sites by System ID; a P25 system with the same number isn't one of them", () => {
-  const c = config({ shortName: "s1", type: "smartnet", expect: { sysId: 0x2c3 } }, { shortName: "s2", type: "smartnet", expect: { sysId: 0x2c3, site: 2 } }, { shortName: "p", expect: { wacn: 1, sysId: 0x2c3 } });
-  assert.equal(multiSiteGroup(sys(c, "s1")), "smartnet:2c3");
-  assert.deepEqual(names(siteSiblings(c, sys(c, "s1"))), ["s2"]);
-  assert.deepEqual(names(siteSiblings(c, sys(c, "p"))), []);
-});
-
-test("DMR sites are joined only by a site group, and the tooltip names it", () => {
-  const heard = [live("d1", "dmr:1", { site: 1 }), live("d2", "dmr:1", { site: 2 })];
-  const plain = config({ shortName: "d1", type: "dmr" }, { shortName: "d2", type: "dmr" });
-  assert.deepEqual(names(siteSiblings(plain, sys(plain, "d1"), heard)), []);
-  const grouped = config({ shortName: "d1", type: "dmr", siteGroup: "capmax" }, { shortName: "d2", type: "dmr", siteGroup: " capmax " }, { shortName: "d3", type: "dmr", siteGroup: "other" });
-  assert.equal(multiSiteGroup(sys(grouped, "d2")), "group:capmax");
-  assert.deepEqual(multiSitePartners(grouped, sys(grouped, "d1"))?.siblings, ["d2"]);
-  assert.equal(multiSitePartners(grouped, sys(grouped, "d1"))?.why, 'Site group "capmax" — calls saved once');
-  grouped.recording.dropDuplicateCalls = false;
-  assert.equal(multiSitePartners(grouped, sys(grouped, "d1"))?.why, `Site group "capmax" — every site's copy saved`);
-});
-
-test("bySite: the sites of one system together, where its first site was, the rest in order", () => {
-  const g = (shortName: string, siteGroup?: string) => ({ shortName, type: "dmr" as const, ...(siteGroup ? { siteGroup } : {}) });
-  const c = config(g("a1", "a"), g("x"), g("b1", "b"), g("a2", "a"), g("y"), g("b2", "b"), g("a3", "a"));
-  assert.deepEqual(names(bySite(c, c.systems)), ["a1", "a2", "a3", "x", "b1", "b2", "y"]);
-  // Only the systems given (e.g. the ones recording).
-  assert.deepEqual(names(bySite(c, c.systems.filter((x) => x.shortName !== "a1"))), ["x", "b1", "b2", "a2", "a3", "y"]);
+test("importTrunkRecorderConfig: multiSite systems of one multiSiteSystemName are one system, a site each", () => {
+  const tr = {
+    sources: [{ center: 851e6, rate: 2.4e6, driver: "osmosdr", device: "rtl=0" }],
+    systems: [
+      { shortName: "north", type: "p25", control_channels: [851012500], multiSite: true, multiSiteSystemName: "county", talkgroupsFile: "tg.csv" },
+      { shortName: "south", type: "p25", control_channels: [851512500], multiSite: true, multiSiteSystemName: "county", talkgroupsFile: "tg.csv", siteId: "2" },
+      { shortName: "city", type: "p25", control_channels: [852012500] },
+    ],
+  };
+  const { config, todo } = importTrunkRecorderConfig(JSON.stringify(tr), defaultConfig(), { "tg.csv": "Decimal,Hex,Alpha Tag,Mode,Description,Tag,Category\n100,64,Fire,D,Fire,,\n" });
+  assert.deepEqual(config.systems.map((s) => [s.shortName, s.sites.map((x) => siteNameOf(s, x))]), [["county", ["north", "south"]], ["city", ["city"]]]);
+  assert.match(config.systems[0].talkgroupsCsv, /Fire/);
+  assert.ok(todo.some((t) => t.kind === "siteLock" && t.system === "county" && t.site === 1), JSON.stringify(todo));
 });

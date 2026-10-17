@@ -152,7 +152,7 @@ by plugin id:
   "systems": [
     {
       "shortName": "dcfd",
-      "controlChannelsHz": [857987500],
+      "sites": [{ "controlChannelsHz": [857987500] }],
       "plugins": { "openmhz": { "apiKey": "your-openmhz-api-key" } }
     }
   ]

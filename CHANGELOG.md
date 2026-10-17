@@ -9,20 +9,29 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   call by number alone, and a unit-to-unit call's number is the radio called: one to radio 1234 on
   one site and a call on talkgroup 1234 on another, within 3 s, were taken for one call and one of
   them wasn't saved.
-- **Live audio follows a multi-site system across its sites.** Live audio comes from one site's
-  copy of a call at a time, and the Live page's system filter asked for one site's: listening to
-  site1 went quiet while site2's copy played. A site now asks for its whole system — the filter
-  shows its sites as one choice ("site1 + site2") — in the desktop app and in the browser.
-- **Listen hears the sites of one system as one.** A call heard on several sites is saved once,
-  from whichever site had it best — so a talkgroup switched on under one site didn't play the
-  calls kept from another. Sites of one system now share one talkgroup list on Listen ("site1 +
-  site2"), and a talkgroup on plays whichever site it comes from. What was chosen per site carries
-  over: a talkgroup on at any site is on. Also fixed: switching on an avoided talkgroup left it
-  avoided.
-- **The dashboard says which systems are sites of one system again.** Since the dashboard was
-  redesigned it didn't: each site's card on Overview, and a system's Decode page, now say
-  "multi-site with …" (why, in the tooltip — as Setup's chip says it), and the sites of one
-  system sit next to each other.
+- **A system has sites.** Sites of one radio system used to be systems of their own, joined while
+  recording (a site group, or the same WACN and System ID on the air), and anything set or counted
+  by short name — talkgroups, unit names, recording rules, plugin settings and delays, Ignore, the
+  Listen page — went by whichever site a call was kept from. Now a system has a list of sites, each
+  a control channel to follow, and everything else is the system's: one talkgroup file, one Listen
+  list, one folder, one Overview card (a row per site); the Decode page has a card per site. A call
+  heard on several sites is still saved once, now only among a system's own sites; the call JSON
+  says its `site`, and `{site}` can go in a filename format.
+  - **Setup**: a system's **Sites** (Add site; each with its own Record switch, control channels,
+    modulation, protocol settings and site lock). A neighbouring site the control channel announces
+    is added as a site of its system, and the survey can add a control channel as a site or replace
+    one. Two systems set up apart that the air says are one get **Make them one system**.
+  - **Your config is updated on the first start** (the old one kept as `config.json.before-sites`):
+    each system becomes a site named as it was, and those joined by a site group or by site locks
+    naming one system become one system, with the first one's name and settings; the log says what
+    wasn't kept. Systems joined only from the air are offered in Setup.
+  - From Trunk Recorder: systems with `multiSite` and one `multiSiteSystemName` are one system with
+    a site each.
+  - Plugin SDK 0.4.0: `site` on calls, unit events and the call record, `site_name` in status; a
+    call is started and ended once for plugins however many sites hear it.
+  - The API: `status.systems[]` is one per system with its `sites[]` (control channel, identity,
+    decoding); calls carry `site`. `--system name/site` in `trunk-pro replay`.
+  - Also fixed on the way: switching on an avoided talkgroup on Listen left it avoided.
 - **RTL-SDR USB transfer size** (`bufLen`, **USB transfer size** in Setup): Trunk Recorder's
   `buflen`. Four or more dongles at 2.4 MSPS on one USB 2.0 bus overflow with the driver's
   256 KiB transfers (the control channel goes unreliable first); 64 KiB transfers let them take

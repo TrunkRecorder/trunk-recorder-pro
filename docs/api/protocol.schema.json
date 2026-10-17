@@ -53,6 +53,10 @@
         "short_name": {
           "type": "string"
         },
+        "site": {
+          "type": "string",
+          "description": "The site its copy was kept from (a system of one site: its short name)."
+        },
         "talkgroup": {
           "type": "number"
         },
@@ -372,6 +376,10 @@
         "systemName": {
           "type": "string"
         },
+        "site": {
+          "type": "string",
+          "description": "The site it is on (its name; none for a conventional system's call)."
+        },
         "talkgroup": {
           "type": "number"
         },
@@ -468,7 +476,7 @@
           "items": {
             "type": "string"
           },
-          "description": "Multi-site: the other sites carrying this call (one copy is saved)."
+          "description": "The other sites of its system carrying this call, by name (one copy is saved)."
         }
       },
       "required": [
@@ -553,6 +561,13 @@
       "properties": {
         "system": {
           "type": "string"
+        },
+        "site": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The site it is for (none: a conventional channel)."
         },
         "freqHz": {
           "type": "number"
@@ -3429,7 +3444,10 @@
         },
         "system": {
           "type": "string",
-          "description": "The system's short name, for its messages."
+          "description": "The system's short name, for its messages, and the site's name."
+        },
+        "site": {
+          "type": "string"
         }
       },
       "required": [
@@ -4913,6 +4931,105 @@
       "additionalProperties": false,
       "description": "One series from the history: points every `stepS` from `t0`; null where nothing was measured."
     },
+    "Site": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Its name, unique in its system (absent: the system's short name). The talkgroup file's Preferred Site names it; calls and plugins say it."
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "controlChannelsHz": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        },
+        "modulation": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "fsk4",
+            "qpsk"
+          ]
+        },
+        "expect": {
+          "$ref": "#/definitions/SiteIdentity",
+          "description": "Only follow a control channel with this identity (this site, not a neighbour)."
+        },
+        "voiceChannelsHz": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "Voice channels the survey heard (for placing sources)."
+        },
+        "bandplan": {
+          "type": "string",
+          "description": "SmartNet: \"800_standard\" | \"800_reband\" | \"800_splinter\" | \"900\" | \"400_custom\" (with base / spacing / offset / high; offset a channel number)."
+        },
+        "bandplanBaseHz": {
+          "type": "number"
+        },
+        "bandplanSpacingHz": {
+          "type": "number"
+        },
+        "bandplanOffset": {
+          "type": "number"
+        },
+        "bandplanHighHz": {
+          "type": "number"
+        },
+        "lcnTableHz": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number"
+          },
+          "description": "DMR: logical channel number → frequency, Hz (Trunk Recorder's lcnTable); the rest is learned. NXDN: the channel table, channel number → frequency (Type-D: repeater number → frequency)."
+        },
+        "dmrChannelsHz": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "DMR: voice frequencies to watch besides the control channels (Trunk Recorder's channels)."
+        },
+        "colorCode": {
+          "type": "number",
+          "description": "DMR: only this colour code."
+        },
+        "nxdnRate": {
+          "type": "string",
+          "enum": [
+            "nxdn48",
+            "nxdn96"
+          ],
+          "description": "NXDN: the control channel's (Type-D: the repeaters') rate; default \"nxdn48\"."
+        },
+        "nxdnChannelsHz": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "NXDN: voice frequencies to watch besides the control channels (Type-D: the repeaters). A grant to a channel number not in `lcnTableHz` is learned when its call comes up on one."
+        },
+        "ran": {
+          "type": "number",
+          "description": "NXDN: only this RAN."
+        }
+      },
+      "required": [
+        "enabled",
+        "controlChannelsHz",
+        "modulation",
+        "expect",
+        "voiceChannelsHz"
+      ],
+      "additionalProperties": false,
+      "description": "One site of a system: a control channel to follow, and how."
+    },
     "SiteIdentity": {
       "type": "object",
       "properties": {
@@ -4949,6 +5066,125 @@
       },
       "additionalProperties": false,
       "description": "A P25 site's identity (NAC, WACN, System ID are hex on the air). Absent = unknown / any."
+    },
+    "SiteStatus": {
+      "type": "object",
+      "properties": {
+        "index": {
+          "type": "number"
+        },
+        "name": {
+          "type": "string",
+          "description": "Its name (a system of one site: the system's short name)."
+        },
+        "nowS": {
+          "type": "number"
+        },
+        "controlChannelHz": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "identity": {
+          "$ref": "#/definitions/Identity"
+        },
+        "good": {
+          "type": "number"
+        },
+        "bad": {
+          "type": "number"
+        },
+        "modulation": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "activeCalls": {
+          "type": "number"
+        },
+        "recording": {
+          "type": "number"
+        },
+        "callsConcluded": {
+          "type": "number"
+        },
+        "mismatch": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The control channel is another system's / site's: why (its grants are not followed)."
+        },
+        "adjacent": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "sysId": {
+                "type": "number"
+              },
+              "rfss": {
+                "type": "number"
+              },
+              "site": {
+                "type": "number"
+              },
+              "freqHz": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "sysId",
+              "rfss",
+              "site",
+              "freqHz"
+            ],
+            "additionalProperties": false
+          },
+          "description": "Neighbouring sites its control channel announces."
+        },
+        "dmr": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/DmrSiteStatus"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A trunked DMR site."
+        },
+        "nxdn": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/NxdnSiteStatus"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "An NXDN site."
+        }
+      },
+      "required": [
+        "index",
+        "name",
+        "nowS",
+        "controlChannelHz",
+        "identity",
+        "good",
+        "bad",
+        "modulation",
+        "activeCalls",
+        "recording",
+        "callsConcluded",
+        "mismatch",
+        "adjacent"
+      ],
+      "additionalProperties": false,
+      "description": "One running site, as its control channel describes it. `index` is what calls carry as `site`."
     },
     "SmartnetBandplan": {
       "type": "object",
@@ -6129,40 +6365,6 @@
           ],
           "description": "\"smartnet\": a Motorola SmartNet / SmartZone control channel (voice P25 or analog FM). \"dmr\": a trunked DMR site (Capacity Plus, Capacity Max, Connect Plus, Tier III); every control channel and `dmrChannelsHz` frequency is watched. \"nxdn\": an NXDN site (Type-C: a control channel; Type-D / IDAS: every repeater listed); every control channel and `nxdnChannelsHz` frequency is watched."
         },
-        "bandplan": {
-          "type": "string",
-          "description": "SmartNet: \"800_standard\" | \"800_reband\" | \"800_splinter\" | \"900\" | \"400_custom\" (with base / spacing / offset / high; offset a channel number)."
-        },
-        "bandplanBaseHz": {
-          "type": "number"
-        },
-        "bandplanSpacingHz": {
-          "type": "number"
-        },
-        "bandplanOffset": {
-          "type": "number"
-        },
-        "bandplanHighHz": {
-          "type": "number"
-        },
-        "lcnTableHz": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "number"
-          },
-          "description": "DMR: logical channel number → frequency, Hz (Trunk Recorder's lcnTable); the rest is learned. NXDN: the channel table, channel number → frequency (Type-D: repeater number → frequency)."
-        },
-        "dmrChannelsHz": {
-          "type": "array",
-          "items": {
-            "type": "number"
-          },
-          "description": "DMR: voice frequencies to watch besides the control channels (Trunk Recorder's channels)."
-        },
-        "colorCode": {
-          "type": "number",
-          "description": "DMR: only this colour code."
-        },
         "nxdnType": {
           "type": "string",
           "enum": [
@@ -6170,25 +6372,6 @@
             "typeD"
           ],
           "description": "NXDN: \"typeC\" (a control channel; the default) or \"typeD\" (IDAS distributed: list every repeater)."
-        },
-        "nxdnRate": {
-          "type": "string",
-          "enum": [
-            "nxdn48",
-            "nxdn96"
-          ],
-          "description": "NXDN: the control channel's (Type-D: the repeaters') rate; default \"nxdn48\"."
-        },
-        "nxdnChannelsHz": {
-          "type": "array",
-          "items": {
-            "type": "number"
-          },
-          "description": "NXDN: voice frequencies to watch besides the control channels (Type-D: the repeaters). A grant to a channel number not in `lcnTableHz` is learned when its call comes up on one."
-        },
-        "ran": {
-          "type": "number",
-          "description": "NXDN: only this RAN."
         },
         "defaultMode": {
           "type": "string",
@@ -6201,36 +6384,11 @@
         "enabled": {
           "type": "boolean"
         },
-        "controlChannelsHz": {
-          "type": "array",
-          "items": {
-            "type": "number"
-          }
-        },
-        "modulation": {
-          "type": "string",
-          "enum": [
-            "auto",
-            "fsk4",
-            "qpsk"
-          ]
-        },
         "talkgroupsCsv": {
           "type": "string"
         },
         "talkgroupsName": {
           "type": "string"
-        },
-        "expect": {
-          "$ref": "#/definitions/SiteIdentity",
-          "description": "Only follow a control channel with this identity (e.g. this site, not a neighbour)."
-        },
-        "voiceChannelsHz": {
-          "type": "array",
-          "items": {
-            "type": "number"
-          },
-          "description": "Voice channels the survey heard (for placing sources)."
         },
         "recording": {
           "$ref": "#/definitions/RecordingOverride",
@@ -6239,10 +6397,6 @@
         "unitNames": {
           "$ref": "#/definitions/UnitNames",
           "description": "Names for its radios (Trunk Recorder's unitTagsFile and unitTagsMode)."
-        },
-        "siteGroup": {
-          "type": "string",
-          "description": "Multi-site: sites with one group are one system (a call on several is saved once). Absent: grouped by what the control channels say (P25 WACN + System ID, SmartNet System ID)."
         },
         "keys": {
           "type": "string",
@@ -6261,20 +6415,25 @@
             "$ref": "#/definitions/DelayRule"
           },
           "description": "How long plugins wait for its calls; these come before the whole recorder's (see DelayRule)."
+        },
+        "sites": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Site"
+          },
+          "description": "Where it is recorded from: one site, or several of one system."
         }
       },
       "required": [
         "shortName",
         "type",
         "enabled",
-        "controlChannelsHz",
-        "modulation",
         "talkgroupsCsv",
         "talkgroupsName",
-        "expect",
-        "voiceChannelsHz"
+        "sites"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "A trunked system: its talkgroups, radios, rules and plugin settings, and the sites it is recorded from — each a control channel to follow. A call heard on several of its sites is one call (saved once, from the site that heard it best)."
     },
     "SystemPluginValues": {
       "anyOf": [
@@ -6299,30 +6458,6 @@
         "shortName": {
           "type": "string"
         },
-        "nowS": {
-          "type": "number"
-        },
-        "controlChannelHz": {
-          "type": [
-            "number",
-            "null"
-          ]
-        },
-        "identity": {
-          "$ref": "#/definitions/Identity"
-        },
-        "good": {
-          "type": "number"
-        },
-        "bad": {
-          "type": "number"
-        },
-        "modulation": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
         "activeCalls": {
           "type": "number"
         },
@@ -6331,41 +6466,6 @@
         },
         "callsConcluded": {
           "type": "number"
-        },
-        "mismatch": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "The control channel is another system's / site's: why (its grants are not followed)."
-        },
-        "adjacent": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "sysId": {
-                "type": "number"
-              },
-              "rfss": {
-                "type": "number"
-              },
-              "site": {
-                "type": "number"
-              },
-              "freqHz": {
-                "type": "number"
-              }
-            },
-            "required": [
-              "sysId",
-              "rfss",
-              "site",
-              "freqHz"
-            ],
-            "additionalProperties": false
-          },
-          "description": "Neighbouring sites its control channel announces."
         },
         "patches": {
           "type": "array",
@@ -6388,55 +6488,26 @@
             ],
             "additionalProperties": false
           },
-          "description": "Patches standing now: the supergroup, and the talkgroups patched into it."
+          "description": "Patches standing now (each once, however many sites hear it): the supergroup, and the talkgroups patched into it."
         },
-        "dmr": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/DmrSiteStatus"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "A trunked DMR site."
-        },
-        "nxdn": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/NxdnSiteStatus"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "An NXDN site."
-        },
-        "siteGroup": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "Multi-site: the system it is a site of (\"p25:bee00.1a2\", \"group:<name>\"), once known."
+        "sites": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/SiteStatus"
+          },
+          "description": "Its sites following their control channels, in order."
         }
       },
       "required": [
         "index",
         "shortName",
-        "nowS",
-        "controlChannelHz",
-        "identity",
-        "good",
-        "bad",
-        "modulation",
         "activeCalls",
         "recording",
         "callsConcluded",
-        "mismatch",
-        "adjacent"
+        "sites"
       ],
       "additionalProperties": false,
-      "description": "One running system (site). `index` is what calls and audio carry as `system`."
+      "description": "One running system, with its sites that are. `index` is what calls and audio carry as `system`."
     },
     "TalkgroupName": {
       "type": "object",

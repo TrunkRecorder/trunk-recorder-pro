@@ -70,11 +70,10 @@ fn to_js(out: &mut Vec<Output>, history: &mut History) -> Array {
                 set(&obj, "t", "text");
                 set(&obj, "json", t);
             }
-            Output::Audio { system, short_name, sites, tg, frame, .. } => {
+            Output::Audio { system, short_name, tg, frame, .. } => {
                 set(&obj, "t", "audio");
                 set(&obj, "system", system);
                 set(&obj, "shortName", short_name);
-                set(&obj, "sites", sites.into_iter().map(JsValue::from).collect::<Array>());
                 set(&obj, "tg", tg);
                 set(&obj, "frame", Uint8Array::from(frame.as_slice()));
             }
@@ -102,11 +101,11 @@ pub struct WebSession {
 
 #[wasm_bindgen]
 impl WebSession {
-    /// `config_json`: the interface's Config. `bandplans_json`: `{shortName: plan}`
+    /// `config_json`: the interface's Config. `bandplans_json`: `{key: plan}` (a site's key: [`trunk_app::session::bandplan_key`])
     /// saved from a previous run ([`WebSession::bandplans`]).
     #[wasm_bindgen(constructor)]
     pub fn new(config_json: &str, epoch_ms: f64, bandplans_json: Option<String>) -> Result<WebSession, JsError> {
-        let cfg: Config = serde_json::from_str(config_json).map_err(|e| JsError::new(&format!("config: {e}")))?;
+        let cfg = Config::from_json(config_json).map_err(|e| JsError::new(&format!("config: {e}")))?;
         let plans: serde_json::Map<String, serde_json::Value> = bandplans_json.and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default();
         let plan = |name: &str| plans.get(name).and_then(|v| v.as_str()).map(str::to_string);
         let s = Session::new(cfg, epoch_ms, &plan, local_offset).map_err(|e| JsError::new(&e))?;
@@ -212,7 +211,7 @@ impl WebSession {
     pub fn tune_unsaved(&mut self) -> Option<String> {
         self.s.tune_unsaved()
     }
-    /// Each system's band plan, as JSON `{shortName: plan}`.
+    /// Each site's band plan, as JSON `{key: plan}`.
     pub fn bandplans(&self) -> String {
         serde_json::Value::Object(self.s.bandplans().into_iter().map(|(n, p)| (n, serde_json::Value::String(p))).collect()).to_string()
     }
@@ -235,7 +234,7 @@ impl WebSurvey {
     /// `request_json`: {source, bands, findGain}.
     #[wasm_bindgen(constructor)]
     pub fn new(config_json: &str, request_json: &str) -> Result<WebSurvey, JsError> {
-        let cfg: Config = serde_json::from_str(config_json).map_err(|e| JsError::new(&format!("config: {e}")))?;
+        let cfg = Config::from_json(config_json).map_err(|e| JsError::new(&format!("config: {e}")))?;
         let req: serde_json::Value = serde_json::from_str(request_json).map_err(|e| JsError::new(&e.to_string()))?;
         let s = SurveySession::new(&cfg, &Request::from_json(&req)).map_err(|e| JsError::new(&e))?;
         Ok(WebSurvey { s, out: Vec::new() })

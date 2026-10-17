@@ -267,8 +267,8 @@ mod tests {
     fn what_plugins_get_from_the_config() {
         let c: Config = serde_json::from_value(json!({
             "systems": [
-                { "shortName": "dcfd", "controlChannelsHz": [857987500], "plugins": { "openmhz": { "apiKey": "k" } } },
-                { "shortName": "wmata", "controlChannelsHz": [489087500] }
+                { "shortName": "dcfd", "sites": [{ "controlChannelsHz": [857987500] }], "plugins": { "openmhz": { "apiKey": "k" } } },
+                { "shortName": "wmata", "sites": [{ "controlChannelsHz": [489087500] }] }
             ],
             "conventional": [{ "shortName": "conv", "plugins": { "openmhz": { "apiKey": "c" } } }],
             "plugins": {
@@ -301,9 +301,9 @@ mod tests {
     fn plugins_know_systems_by_short_name() {
         let c: Config = serde_json::from_value(json!({
             "systems": [
-                { "shortName": "old", "enabled": false, "controlChannelsHz": [851000000], "plugins": { "openmhz": { "apiKey": "old" } } },
+                { "shortName": "old", "enabled": false, "sites": [{ "controlChannelsHz": [851000000] }], "plugins": { "openmhz": { "apiKey": "old" } } },
                 { "shortName": "draft", "plugins": { "openmhz": { "apiKey": "draft" } } },
-                { "shortName": "dcfd", "controlChannelsHz": [857987500], "plugins": { "openmhz": { "apiKey": "dcfd" } } }
+                { "shortName": "dcfd", "sites": [{ "controlChannelsHz": [857987500] }], "plugins": { "openmhz": { "apiKey": "dcfd" } } }
             ],
             "conventional": [{ "shortName": "county", "channels": [{ "freqHz": 154430000 }], "plugins": { "openmhz": { "apiKey": "conv" } } }],
             "plugins": { "openmhz": { "enabled": true } }
@@ -312,7 +312,7 @@ mod tests {
         let systems = systems_of(&c);
         let conv = trunk_core::trunk::conventional_system(0);
         assert_eq!(systems.iter().map(|s| (s.index, s.short_name.as_str(), s.kind.as_str())).collect::<Vec<_>>(), [(0, "dcfd", "p25"), (conv, "county", "conventional")]);
-        assert_eq!(c.engine_config(0.0).systems[0].short_name, "dcfd", "the engine numbers dcfd 0 too");
+        assert_eq!(c.engine_config(0.0).sites[0].short_name, "dcfd", "the engine numbers dcfd 0 too");
         let specs = Spec::enabled(&c);
         assert_eq!(specs[0].systems.get("dcfd"), Some(&json!({ "apiKey": "dcfd" })));
         assert_eq!(specs[0].systems.get("county"), Some(&json!({ "apiKey": "conv" })));
@@ -325,8 +325,8 @@ mod tests {
     fn a_second_copy_runs_for_its_systems_only() {
         let c: Config = serde_json::from_value(json!({
             "systems": [
-                { "shortName": "dcfd", "controlChannelsHz": [857987500], "plugins": { "openmhz": [{ "apiKey": "a" }, { "apiKey": "b" }] } },
-                { "shortName": "wmata", "controlChannelsHz": [489087500], "plugins": { "openmhz": { "apiKey": "w" } } }
+                { "shortName": "dcfd", "sites": [{ "controlChannelsHz": [857987500] }], "plugins": { "openmhz": [{ "apiKey": "a" }, { "apiKey": "b" }] } },
+                { "shortName": "wmata", "sites": [{ "controlChannelsHz": [489087500] }], "plugins": { "openmhz": { "apiKey": "w" } } }
             ],
             "plugins": { "openmhz": { "enabled": true, "settings": { "server": "s" } } }
         }))

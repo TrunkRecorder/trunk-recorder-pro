@@ -128,6 +128,9 @@ If you know the control channels, press **Add a system** on the **Systems** tab 
 - **Short name**: the folder its calls go in (letters, digits, `.`, `_` and `-`).
 - **Name**: optional, for display.
 - **Type**: **P25**, **SmartNet / SmartZone**, **DMR (trunked)** or **NXDN (trunked)**.
+
+Then, on its site under **Sites** (open it):
+
 - **Control channels, MHz**: the site's control channels, separated by commas
   (`857.9875, 858.9875`). It starts on the first; later ones are fallbacks, tried in turn when the
   control channel goes quiet.
@@ -136,7 +139,8 @@ If you know the control channels, press **Add a system** on the **Systems** tab 
   [DMR](guides/dmr.md) and [NXDN](guides/nxdn.md).
 
 Each system card shows whether its control channel lands inside a source ("control channel on
-source 1") or not ("no control channel inside a source"). The other keys are described in the
+source 1") or not ("no control channel inside a source"). To record another site of the same
+system, **Add site** under **Sites**: see [Multi-site](guides/multi-site.md). The other keys are described in the
 [configuration reference](configuration/systems.md).
 
 ## Set up the radio

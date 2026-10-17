@@ -9,7 +9,7 @@ import { ago, bytes, compact, hmm, mhz, num, pct } from "../fmt.ts";
 import type { FreqRow, MonitorEvent, RadioSummary } from "../protocol.ts";
 import { change, rateOver, dashSystems, K, KIND_LABEL, pluginHealth, platformHealth, recentAvg, running, systemHealth, total, useHistory, usualOf, useUsual, val, type DashSystem, type Usual } from "./data.ts";
 import { SourceCard } from "./Rf.tsx";
-import { MultiSiteChip } from "./Systems.tsx";
+import { SiteRows } from "./Systems.tsx";
 import { BAD_MAX, badLevel, voiceBadPct } from "./Decode.tsx";
 
 // ── today ────────────────────────────────────────────────────────────────────
@@ -84,21 +84,26 @@ function Today({ s }: { s: AppState }) {
 
 // ── a system ─────────────────────────────────────────────────────────────────
 
-function SystemCard({ s, x, usual, summary, freqs }: { s: AppState; x: DashSystem; usual: Usual | null; summary?: RadioSummary; freqs?: FreqRow[] }) {
-  const h = systemHealth(s, x, usual);
-  const st = x.status;
-  const rate = val(s, K.sys(x.name, "cc/good"));
-  const good = recentAvg(K.sys(x.name, "cc/good"), 60) ?? 0;
-  const bad = recentAvg(K.sys(x.name, "cc/bad"), 60) ?? 0;
+function SystemCard({ s, x, usuals, summary, freqs }: { s: AppState; x: DashSystem; usuals: Record<string, Usual | null>; summary?: RadioSummary; freqs?: FreqRow[] }) {
+  const h = systemHealth(s, x, usuals);
+  // Its (first) site's control channel; with several, each in a row of its own too.
+  const site = x.sites[0];
+  const cc = (k: string) => (site ? K.cc(site, k) : K.sys(x.name, `cc/${k}`));
+  const st = site?.status;
+  const usual = usuals[cc("good")] ?? null;
+  const several = x.sites.length > 1;
+  const rate = several ? x.sites.reduce((a, y) => a + (val(s, K.cc(y, "good")) ?? 0), 0) : val(s, cc("good"));
+  const good = recentAvg(cc("good"), 60) ?? 0;
+  const bad = recentAvg(cc("bad"), 60) ?? 0;
   const decoded = good + bad > 0 ? (100 * good) / (good + bad) : null;
   const callsMin = (recentAvg(K.sys(x.name, "calls"), 600) ?? 0) * 60;
   const onAir = s.calls.filter((c) => c.systemName === x.name);
   const tgs = [...new Map(onAir.map((c) => [c.talkgroup, c])).values()].slice(0, 4);
   const lost = voiceBadPct(x.name);
   // Not recording: the last day from the history instead.
-  const day = useHistory([K.sys(x.name, "cc/good"), K.sys(x.name, "calls")], "24h", 48);
+  const day = useHistory([cc("good"), K.sys(x.name, "calls")], "24h", 48);
   const live = running(s);
-  const dayRate = usualOf(day?.[K.sys(x.name, "cc/good")]);
+  const dayRate = usualOf(day?.[cc("good")]);
   const dayCalls = total(day?.[K.sys(x.name, "calls")]);
   return (
     <Card
@@ -114,27 +119,31 @@ function SystemCard({ s, x, usual, summary, freqs }: { s: AppState; x: DashSyste
       onTitle={() => setView("decode", x.name)}
       actions={<span className="badge-kind">{st?.modulation ? `${KIND_LABEL[x.kind]} · ${st.modulation}` : KIND_LABEL[x.kind]}</span>}
     >
-      <MultiSiteChip s={s} name={x.name} />
       {!live ? (
         <Stat
           label="Last 24 h"
           value={dayCalls === null ? "—" : compact(dayCalls)}
           unit="calls"
-          spark={<Sparkline v={day?.[K.sys(x.name, "cc/good")]?.v ?? []} title="Control msg/s, last 24 h" />}
+          spark={<Sparkline v={day?.[cc("good")]?.v ?? []} title="Control msg/s, last 24 h" />}
           sub={dayRate ? `control avg ${num(dayRate.avg)} msg/s` : "no history yet"}
         />
+      ) : x.kind !== "conventional" && several ? (
+        <div className="sys-main">
+          <Stat label="Control channels" value={num(rate)} unit="msg/s" sub={`${x.sites.length} sites`} />
+          <SiteRows s={s} x={x} />
+        </div>
       ) : x.kind !== "conventional" ? (
         <div className="sys-main">
           <Stat
             label="Control channel"
             value={num(rate)}
             unit="msg/s"
-            trend={<Trend delta={change(recentAvg(K.sys(x.name, "cc/good"), 60), usual)} title="vs usual" />}
-            spark={<LiveSpark k={K.sys(x.name, "cc/good")} band={usual ? [usual.lo, usual.hi] : null} lo={0} title="msg/s, 10 min; band is usual" />}
+            trend={<Trend delta={change(recentAvg(cc("good"), 60), usual)} title="vs usual" />}
+            spark={<LiveSpark k={cc("good")} band={usual ? [usual.lo, usual.hi] : null} lo={0} title="msg/s, 10 min; band is usual" />}
             sub={
               <>
                 {decoded !== null ? `${num(decoded, 0)}% decoded` : "…"} · {st?.controlChannelHz ? `${formatMhz(st.controlChannelHz)} MHz` : "hunting"}
-                {val(s, K.sys(x.name, "cc/snr")) !== null && ` · SNR ${num(val(s, K.sys(x.name, "cc/snr")), 0)} dB`}
+                {val(s, cc("snr")) !== null && ` · SNR ${num(val(s, cc("snr")), 0)} dB`}
               </>
             }
           />
@@ -344,7 +353,7 @@ export function Overview() {
   const s = useApp();
   const on = running(s);
   const systems = dashSystems(s);
-  const usual = useUsual(systems.filter((x) => x.kind !== "conventional").map((x) => K.sys(x.name, "cc/good")));
+  const usual = useUsual(systems.flatMap((x) => x.sites.map((y) => K.cc(y, "good"))));
   const summary = usePolled(`summary:${on}`, () => radioQuery({ what: "summary" }), on ? 60_000 : 0);
   const names = systems.map((x) => x.name).join(",");
   const freqs = usePolled(`freqs:${names}:${on}`, () => Promise.all(systems.map((x) => radioQuery({ what: "freqs", system: x.name, hours: 24 }))), on ? 120_000 : 0);
@@ -377,7 +386,7 @@ export function Overview() {
           {systems.length === 0 && <p className="empty">No systems set up yet.</p>}
           <div className="card-grid">
             {systems.map((x) => (
-              <SystemCard key={x.name} s={s} x={x} usual={usual[K.sys(x.name, "cc/good")]} summary={summary?.systems?.[x.name]} freqs={freqOf(x.name)} />
+              <SystemCard key={x.name} s={s} x={x} usuals={usual} summary={summary?.systems?.[x.name]} freqs={freqOf(x.name)} />
             ))}
           </div>
         </div>
