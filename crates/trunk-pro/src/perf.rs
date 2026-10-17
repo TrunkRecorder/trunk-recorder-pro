@@ -502,9 +502,11 @@ fn window(rows: &[&Row]) -> Value {
     })
 }
 
-/// The busiest thread in a row: its name and CPU, % of one core.
+/// The busiest decoding thread in a row (a source's `dsp-N`, or the
+/// engine's): its name and CPU, % of one core. (Not one-off work such as the
+/// history scan at start, which would pick the first minute every time.)
 fn busiest(r: &Row) -> (&str, f64) {
-    r.threads.iter().map(|t| (t.0.as_str(), t.2)).fold(("", 0.0), |b, t| if t.1 > b.1 { t } else { b })
+    r.threads.iter().filter(|t| t.0.starts_with("dsp-") || t.0 == "engine").map(|t| (t.0.as_str(), t.2)).fold(("", 0.0), |b, t| if t.1 > b.1 { t } else { b })
 }
 
 /// A compact line per row.
@@ -638,7 +640,7 @@ timedBusyPctOfCore adds them up per thread; above the thread's OS CPU means it w
 voice.* the trunked voice receivers, vocoder.* the IMBE/AMBE synthesis, control.* the control channels, conv.* conventional channels, \
 trunk.calls the call logic, session.*/deliver/housekeeping the engine loop's own work. Each source decodes on its own thread (dsp-N); \
 the engine thread polls and delivers. queueWait: how long samples waited between the driver and their decoding thread (rising = it can't \
-keep up). Rows are 10 s; windows: the last minute, the busiest minute (by the busiest thread's CPU) and the last hour. Holds no keys, passwords, plugin settings, serial numbers or file paths.";
+keep up). Rows are 10 s; windows: the last minute, the busiest minute (by the busiest decoding thread's CPU) and the last hour. Holds no keys, passwords, plugin settings, serial numbers or file paths.";
 
 /// The report as it stands now.
 pub fn report(ctx: &Ctx) -> Value {
