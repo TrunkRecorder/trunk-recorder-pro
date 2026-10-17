@@ -502,6 +502,7 @@
           "type": "string",
           "enum": [
             "fm",
+            "am",
             "p25",
             "dmr",
             "nxdn48",
@@ -529,6 +530,10 @@
         },
         "squelchDb": {
           "type": "number"
+        },
+        "bandwidthKhz": {
+          "type": "number",
+          "description": "FM / AM: the channel filter's width, kHz (4–20); absent = the mode's (FM 11, AM 11 or 16 from 225 MHz)."
         },
         "enabled": {
           "type": "boolean"
@@ -762,6 +767,9 @@
           "type": "number",
           "description": "Open threshold above the noise floor, dB (each channel may have its own)."
         },
+        "demod": {
+          "$ref": "#/definitions/Demod"
+        },
         "channelFile": {
           "type": "string",
           "description": "Desktop: a CSV the channels are read from (\"\" = the list here). Changed with the channelFile message."
@@ -838,6 +846,37 @@
       ],
       "additionalProperties": false,
       "description": "Plugins wait this long for the calls its fields pick, each left out picking all. When several apply, one that narrows another (a system's over every system's, a talkgroup's over its system's, a plugin's over every plugin's) replaces it; of the rest, the longest wins."
+    },
+    "Demod": {
+      "type": "object",
+      "properties": {
+        "fmDeemphasis": {
+          "type": "boolean",
+          "description": "FM: undo 750 µs pre-emphasis (default true)."
+        },
+        "amLevel": {
+          "type": "string",
+          "enum": [
+            "fast",
+            "slow"
+          ],
+          "description": "AM: how fast the level follows the carrier (default fast: 50 ms; slow: 0.5 s)."
+        },
+        "amLowCutHz": {
+          "type": "number",
+          "description": "AM: audio high-pass corner, Hz (default 200; 0 = none)."
+        },
+        "squelchOpenMs": {
+          "type": "number",
+          "description": "Carrier held this long before the audio opens, ms (default 30)."
+        },
+        "squelchHangMs": {
+          "type": "number",
+          "description": "Audio kept open this long after the carrier goes, ms (default 2)."
+        }
+      },
+      "additionalProperties": false,
+      "description": "How a conventional system's analog channels are demodulated; each left out is the default."
     },
     "Device": {
       "type": "object",

@@ -39,7 +39,7 @@
 //!     watch) [--lcn n=Hz,…] (its channel table) [--color-code N]
 //!     NXDN: --nxdn-trunk typeC|typeD [--nxdn-rate 48|96] [--nxdn-channels Hz,…]
 //!     [--lcn n=Hz,…] [--ran N]
-//!     Conventional channels (with or without --cc): --fm Hz[,Hz…]  --p25 Hz[,Hz…]
+//!     Conventional channels (with or without --cc): --fm Hz[,Hz…]  --am Hz[,Hz…]  --p25 Hz[,Hz…]
 //!     --dmr Hz[,Hz…]  --nxdn48 Hz[,Hz…]  --nxdn96 Hz[,Hz…]
 //!     or --channels channels.csv (the channel-file format; see README)
 //!     --squelch dB (open threshold above the noise floor, default 8)
@@ -211,14 +211,14 @@ usage:
   trunk-pro replay <capture.cu8> --center Hz --rate Hz --cc Hz[,Hz…] [--out calls] …
   trunk-pro replay --source cap.cu8,center,rate [--source …] --cc Hz …
   trunk-pro replay <capture> … --system name:Hz[,Hz…][:nac=443,site=3] [--system …]
-  trunk-pro replay <capture> --center Hz --rate Hz --fm Hz[,Hz…] --p25 Hz[,Hz…] [--squelch 8]
+  trunk-pro replay <capture> --center Hz --rate Hz --fm Hz[,Hz…] --am Hz[,Hz…] --p25 Hz[,Hz…] [--squelch 8]
   trunk-pro replay <capture> --center Hz --rate Hz --dmr Hz,… --nxdn48 Hz,… --nxdn96 Hz,…
   trunk-pro replay <capture> --center Hz --rate Hz --cc Hz,… --dmr-trunk [--dmr-channels Hz,…] [--lcn n=Hz,…] [--color-code N]
   trunk-pro replay <capture> --center Hz --rate Hz --cc Hz,… --nxdn-trunk typeC|typeD [--nxdn-rate 48|96] [--nxdn-channels Hz,…] [--lcn n=Hz,…] [--ran N]
   trunk-pro replay <capture> --center Hz --rate Hz --cc Hz --smartnet 800_standard|800_reband|800_splinter|900|400_custom
   trunk-pro replay <capture> --center Hz --rate Hz --channels channels.csv
       Record calls from captures instead of dongles (a trunked system from
-      --cc, more from --system, conventional analog FM / P25 / DMR / NXDN
+      --cc, more from --system, conventional analog FM / AM / P25 / DMR / NXDN
       channels, or both). --format cu8|cs16|cf32 (else from the extension),
       --guard Hz (each band edge left unused; 75000), --auto-tune (correct
       the frequency error measured on the control channel), --messages
@@ -360,6 +360,7 @@ fn replay(a: &Args) {
     let conventional: Vec<ConvChannel> = hz_list("fm")
         .into_iter()
         .map(|f| ConvChannel::new(f, ConvMode::Fm))
+        .chain(hz_list("am").into_iter().map(|f| ConvChannel::new(f, ConvMode::Am)))
         .chain(hz_list("p25").into_iter().map(|f| ConvChannel::new(f, ConvMode::P25)))
         .chain(hz_list("dmr").into_iter().map(|f| ConvChannel::new(f, ConvMode::Dmr)))
         .chain(hz_list("nxdn48").into_iter().map(|f| ConvChannel::new(f, ConvMode::Nxdn(trunk_core::nxdn::Rate::N48))))
@@ -375,6 +376,8 @@ fn replay(a: &Args) {
             cfg.engine_config(0.0).conventional
         }))
         .collect();
+    // (Calls say only analog: which are AM, for the log.)
+    let am: Vec<u64> = conventional.iter().filter(|c| c.mode == ConvMode::Am).map(|c| c.freq_hz.round() as u64).collect();
     let out_dir = a.get("out").unwrap_or("calls").to_string();
     fs::create_dir_all(&out_dir).unwrap_or_else(|e| die(&format!("{out_dir}: {e}")));
     let talkgroups = a.get("talkgroups").map(|p| parse_csv(&fs::read_to_string(p).unwrap_or_else(|e| die(&format!("{p}: {e}"))))).unwrap_or_default();
@@ -511,13 +514,13 @@ fn replay(a: &Args) {
                 any = true;
             }
         }
-        written += handle_events(&mut engine, &out_dir, multi, quiet, a.flag("messages"));
+        written += handle_events(&mut engine, &out_dir, multi, quiet, a.flag("messages"), &am);
         if !any {
             break;
         }
     }
     engine.finish();
-    written += handle_events(&mut engine, &out_dir, multi, quiet, a.flag("messages"));
+    written += handle_events(&mut engine, &out_dir, multi, quiet, a.flag("messages"), &am);
     let cpu = t0.elapsed().as_secs_f64();
     for (i, p) in bandplans.iter().enumerate() {
         let _ = fs::write(p, engine.bandplan(i));
@@ -588,8 +591,8 @@ fn sys_tag(engine: &Engine, system: u16) -> String {
     }
 }
 
-/// Several systems: each writes to `<out>/<shortName>/`.
-fn handle_events(engine: &mut Engine, out_dir: &str, multi: bool, quiet: bool, messages: bool) -> usize {
+/// Several systems: each writes to `<out>/<shortName>/`. `am`: the AM channels' frequencies.
+fn handle_events(engine: &mut Engine, out_dir: &str, multi: bool, quiet: bool, messages: bool, am: &[u64]) -> usize {
     let mut written = 0;
     for ev in engine.drain_events() {
         match ev {
@@ -603,7 +606,7 @@ fn handle_events(engine: &mut Engine, out_dir: &str, multi: bool, quiet: bool, m
                 c.id,
                 c.talkgroup,
                 c.freq_hz as f64 / 1e6,
-                if c.analog { " FM" } else { "" },
+                if !c.analog { "" } else if am.contains(&c.freq_hz) { " AM" } else { " FM" },
                 if c.phase2_tdma { format!(" slot {}", c.tdma_slot) } else { String::new() },
                 if c.patched_talkgroups.is_empty() { String::new() } else { format!(" patched {:?}", c.patched_talkgroups) },
                 if c.recording { "recording".into() } else { format!("monitoring ({})", c.reason.map_or("", |r| r.as_str())) }

@@ -16,7 +16,8 @@ Each channel has a mode:
 
 | Mode | Config value | What it is |
 |---|---|---|
-| Analog FM | `fm` | Narrowband FM voice, 12.5 kHz |
+| Analog FM | `fm` | FM voice, narrowband (12.5 kHz) or wide (25 kHz) |
+| Analog AM | `am` | AM voice: VHF airband (118–137 MHz) and UHF military air (225–400 MHz) |
 | P25 | `p25` | P25 Phase 1, C4FM or CQPSK |
 | DMR | `dmr` | DMR Tier II; both slots, each recording its own calls |
 | NXDN48 | `nxdn48` | NXDN at 4800 bps (6.25 kHz) |
@@ -54,8 +55,8 @@ panel that appears:
    if you like, a **Name** such as "County Fire".
 2. Type frequencies in MHz into **Add frequencies, MHz** (for example `154.430, 155.100,
    460.125`), pick the mode beside it, and click **Add**. Or click **Add a channel** for one row.
-3. Fill in the table. Each row has **On**, **Frequency, MHz**, **Mode**, **Tone**, **Name**,
-   **Talkgroup** and **Squelch**.
+3. Fill in the table. Each row has **On**, **Frequency, MHz**, **Mode**, **Bandwidth** (analog
+   only; see [Bandwidth](#bandwidth)), **Tone**, **Name**, **Talkgroup** and **Squelch**.
 4. Leave **Squelch, dB above noise** at 8 to start with. See [Tuning the squelch](#tuning-the-squelch).
 
 The **Talkgroup** column is the number calls are filed under: in file names, the call JSON and
@@ -99,6 +100,14 @@ Channel files aren't available in the browser version.
     { "freqHz": 453000000, "mode": "fm",  "enabled": false }
   ]
 }, {
+  "shortName": "air",
+  "demod": { "squelchHangMs": 150 },
+  "channels": [
+    { "freqHz": 119100000, "mode": "am", "name": "Tower" },
+    { "freqHz": 132650000, "mode": "am", "name": "ATIS" },
+    { "freqHz": 269000000, "mode": "am", "name": "Mil Approach" }
+  ]
+}, {
   "shortName": "pd",
   "channelFile": "pd-channels.csv",
   "recording": { "minCallS": 2 }
@@ -113,17 +122,19 @@ Frequencies in the config are in Hz. Every key is listed in the
 A header row names the columns, in any order and any case; then one channel per row:
 
 ```csv
-TG Number,Frequency,Tone,Mode,Alpha Tag,Description,Tag,Category,Squelch dB,Enable
-1001,154.4300,,fm,County Fire Dispatch,,Fire Dispatch,Fire,,true
-,154.3250,D223N,fm,County A Fire,,,Fire,,true
-,154.3250,151.4,fm,County B Fire,,,Fire,,true
-,460.1250,,p25,PD Tac 2,,Law Tac,Police,12,true
+TG Number,Frequency,Tone,Mode,Alpha Tag,Description,Tag,Category,Squelch dB,Bandwidth kHz,Enable
+1001,154.4300,,fm,County Fire Dispatch,,Fire Dispatch,Fire,,,true
+,154.3250,D223N,fm,County A Fire,,,Fire,,,true
+,154.3250,151.4,fm,County B Fire,,,Fire,,,true
+,460.1250,,p25,PD Tac 2,,Law Tac,Police,12,,true
+,119.1000,,am,Tower,,Aircraft,Airport,,,true
 ```
 
 - `Frequency` is MHz when it has a decimal point, otherwise Hz.
-- `Mode` is `fm`, `p25`, `dmr`, `nxdn48` or `nxdn96`; empty means `fm`, unless `Tone` holds a NAC
-  (then `p25`), a colour code (`dmr`) or a RAN (`nxdn48`).
+- `Mode` is `fm`, `am`, `p25`, `dmr`, `nxdn48` or `nxdn96`; empty means `fm`, unless `Tone` holds
+  a NAC (then `p25`), a colour code (`dmr`) or a RAN (`nxdn48`).
 - `Squelch dB` is 3-40 dB above the noise floor; empty uses the system's.
+- `Bandwidth kHz` is an `fm` or `am` row's filter width, 4-20; empty uses the mode's default.
 - `Enable` set to `false`, `no`, `0` or `off` turns a row off.
 - Commas, semicolons or tabs all work, as do decimal commas and the byte-order mark Excel adds in
   some locales. Blank rows and lines starting with `#` are skipped.
@@ -154,18 +165,18 @@ Here is what happens, step by step:
    signals in a slice don't raise it, and measuring per slice follows the SDR's passband, which is
    usually lower near the edges.
 2. **Each channel's energy is compared with the floor.** For every block of samples, the power
-   within ±5 kHz of the channel (±3.125 kHz for NXDN48) is averaged, lightly smoothed (20 ms), and
+   within ±5 kHz of the channel (±3.125 kHz for NXDN48; an analog channel's bandwidth less 1 kHz) is averaged, lightly smoothed (20 ms), and
    compared with the floor under it. The difference in dB is the channel's SNR.
 3. **The channel opens at the squelch.** When the SNR reaches the channel's squelch (default
    8 dB), a receiver is started on that frequency. It begins 0.3 s in the past: the air from just
    before the detection is replayed into it (pre-roll), so the first syllable isn't lost.
 4. **A narrower filter confirms the carrier.** The receiver measures power through a ±5.5 kHz
-   channel filter. This filter is narrower than the spectrum view, so energy leaking over from a
+   channel filter (an analog channel's own [bandwidth](#bandwidth)). This filter is narrower than the spectrum view, so energy leaking over from a
    strong neighbour 12.5 kHz away doesn't count. If the filter never sees a carrier, the detection
    was leakage or a spur: the receiver closes, and that channel's threshold is raised to 3 dB above
    whatever set it off until the band quietens down again. This stops a neighbour from reopening the
    channel over and over.
-5. **The audio is decoded.** Analog FM is demodulated to 8 kHz audio. Audio passes only while the
+5. **The audio is decoded.** Analog FM and AM are demodulated to 8 kHz audio. Audio passes only while the
    carrier, measured through that channel filter, stays above a level 3 dB lower than the squelch
    (and never lower than 3 dB above the floor), so the gaps between transmissions are cut out.
    P25, DMR and NXDN go through the same decoders trunked calls use, and the same level decides
@@ -185,6 +196,65 @@ Things that follow from this:
   Recording tab is for trunked calls (audio before each grant) and doesn't change it.
 - A call longer than **Longest call, s** is saved and a new one started. With no limit set, a
   stuck carrier is saved in 600 s parts.
+
+## Airband (AM)
+
+Aircraft and air traffic control talk in AM: VHF airband from 118 to 137 MHz on 25 kHz channels
+(8.33 kHz in Europe), and UHF military air from 225 to 400 MHz. Add these channels with mode
+**Analog AM** (`am`). An RTL-SDR at 2.4 MSPS covers about 2 MHz of airband, enough for a tower,
+ground, approach and ATIS together.
+
+How AM differs from FM here:
+
+- **The volume follows the modulation, not the signal strength.** An aircraft's signal rises and
+  falls as it turns and moves away; the audio level is measured against its own carrier, so a
+  weak or fading aircraft sounds as loud as the tower. **AM level** sets how fast that follows
+  (see [Demodulation settings](#demodulation-settings)).
+- **No tones or codes.** AM has nothing to split a frequency by, so an AM frequency has one row.
+- **Off-frequency transmitters are fine.** AM is detected from the envelope, which doesn't care
+  where in the channel filter the carrier sits. Aircraft radios can be a couple of kHz off; UHF
+  military radios more, which is why UHF channels get a wider filter by default.
+- **Impulse noise is limited.** Clicks from ignition and power lines are clipped at 150 %
+  modulation, above any voice, so they don't blast through.
+
+A good first test is the airport's ATIS, which transmits all the time: it should record as one
+long call, cut into parts at **Longest call, s** if you have set one.
+
+## Bandwidth
+
+An analog channel's **Bandwidth** is the width of the filter its audio and carrier meter come
+through. Leave it at **Default** unless one of these applies:
+
+| Mode | Width | Use for |
+|---|---|---|
+| `fm` | 11 kHz (default) | Narrowband FM: 12.5 kHz channels, ±2.5 kHz deviation. Almost all US public safety and business radio since 2013 |
+| `fm` | 16 kHz | Wide FM: 25 kHz channels, ±5 kHz deviation. Older systems, some federal, and many outside the US. Loud voice distorts through the narrow filter |
+| `am` | 6 kHz | 8.33 kHz airband channels (Europe) |
+| `am` | 11 kHz (default below 225 MHz) | 25 kHz airband channels |
+| `am` | 16 kHz (default from 225 MHz) | UHF military air, a transmitter that is well off frequency, or offset-carrier sites |
+
+Wider takes in more noise and makes a strong neighbour more likely to be heard; narrower cuts a
+transmitter that is off frequency, or the high end of wide FM's voice. Rows sharing a frequency
+share one bandwidth: changing it on one row in Setup changes them all.
+
+## Demodulation settings
+
+Each conventional system's **Demodulation** group (in its card on the Conventional tab, shown
+when it has analog channels) applies to all of its FM and AM channels. Everything left at
+**Default** behaves as before. To use other settings for some channels, put them in a
+conventional system of their own.
+
+| Setting | Default | What it does |
+|---|---|---|
+| **FM de-emphasis** | 750 µs | FM transmitters boost the treble (pre-emphasis) and receivers cut it back. Set **Off** for a channel sent without pre-emphasis: with de-emphasis on it sounds muffled |
+| **AM level** | Fast (50 ms) | How fast the volume follows a fading carrier. **Fast** keeps a moving aircraft steady. **Slow** (0.5 s) pumps less on a steady signal such as ATIS |
+| **AM low cut, Hz** | 200 | A high-pass under the voice, for carrier hum and the flutter of a fading signal. 0 turns it off; 300 helps a humming ground transmitter |
+| **Squelch open delay, ms** | 30 | How long the carrier must hold before audio passes, so a neighbour's splatter as it keys up doesn't open the channel. Lower catches the first syllable of very short transmissions |
+| **Squelch hang, ms** | 2 | How long audio keeps passing after the carrier drops. Raise it (100-300) for weak or fluttering signals, such as distant aircraft, whose audio is cut into pieces |
+
+The hang doesn't add noise to the end of a transmission: audio runs a little behind the air, and
+when the gate closes, everything since the carrier dropped is removed. A fade shorter than the
+hang keeps playing (as the noise it is), and live audio runs the hang later than the air.
 
 ## Tuning the squelch
 

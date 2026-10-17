@@ -28,9 +28,10 @@ use crate::position::Position;
 use crate::dmr::voice::{DmrVoice, VOICE_BURST_S};
 use crate::dsp::c4fm::C4fm;
 use crate::dsp::cqpsk::{self, Cqpsk};
+use crate::dsp::am::Am;
 use crate::dsp::fm::Nbfm;
 use crate::dsp::signalling::Signalling;
-use crate::dsp::{Receiver, Symbol};
+use crate::dsp::{AnalogTuning, Receiver, Symbol};
 use crate::mbe;
 use crate::nxdn::voice::{NxdnVoice, VCH_S};
 use crate::nxdn::Rate;
@@ -47,8 +48,10 @@ pub enum VoiceKind {
     Fdma,
     /// P25 Phase 2 TDMA (H-DQPSK, AMBE+2, two slots).
     Tdma,
-    /// Analog narrowband FM.
+    /// Analog FM.
     Analog,
+    /// Analog AM (conventional only).
+    Am,
     /// DMR (4FSK, AMBE+2, two slots).
     Dmr,
     /// NXDN (4FSK at either rate, AMBE+2).
@@ -190,9 +193,11 @@ pub struct VoiceSpec {
     /// Analog: the squelch (carrier power that opens it); see
     /// [`VoiceDecoder::set_squelch`].
     pub squelch: f32,
-    /// Analog: also hand out the audio below 300 Hz (CTCSS / DCS) as
+    /// Analog FM: also hand out the audio below 300 Hz (CTCSS / DCS) as
     /// [`TrackerOut::Subaudible`].
     pub subaudible: bool,
+    /// Analog: bandwidth, de-emphasis, AM level, squelch timing.
+    pub analog: AnalogTuning,
     /// The system's keys: P25 voice it has the key for is decrypted.
     pub keys: Option<Arc<Keyring>>,
 }
@@ -257,9 +262,14 @@ pub fn build(spec: &VoiceSpec) -> Box<dyn VoiceDecoder> {
         }
         VoiceKind::Dmr => Box::new(Dmr { rx: C4fm::dmr(spec.rate), voice: Box::new(DmrVoice::new(spec.seed)), syms: Vec::new(), t0: spec.t0, rate: spec.rate, air: [None; 2] }),
         VoiceKind::Nxdn(r) => Box::new(Nxdn { rx: r.receiver(spec.rate), voice: Box::new(NxdnVoice::new(spec.seed)), syms: Vec::new(), t0: spec.t0, rate: spec.rate, nxdn: r, air: None }),
-        VoiceKind::Analog => {
-            Box::new(Analog { fm: Nbfm::new(spec.rate), ids: Signalling::default(), squelch: spec.squelch, subaudible: spec.subaudible, carrier: false })
-        }
+        VoiceKind::Analog => Box::new(Analog {
+            demod: Demod::Fm(Nbfm::with(spec.rate, &spec.analog)),
+            ids: Some(Signalling::with_deemphasis(spec.analog.deemph_tau_s)),
+            squelch: spec.squelch,
+            subaudible: spec.subaudible,
+            carrier: false,
+        }),
+        VoiceKind::Am => Box::new(Analog { demod: Demod::Am(Am::new(spec.rate, &spec.analog)), ids: None, squelch: spec.squelch, subaudible: false, carrier: false }),
     }
 }
 
@@ -477,10 +487,15 @@ impl VoiceDecoder for Nxdn {
     }
 }
 
-/// Analog FM, squelched; unit IDs from MDC1200 / FleetSync bursts.
+enum Demod {
+    Fm(Nbfm),
+    Am(Am),
+}
+
+/// Analog FM or AM, squelched; FM's unit IDs from MDC1200 / FleetSync bursts.
 struct Analog {
-    fm: Nbfm,
-    ids: Signalling,
+    demod: Demod,
+    ids: Option<Signalling>,
     squelch: f32,
     subaudible: bool,
     carrier: bool,
@@ -488,14 +503,22 @@ struct Analog {
 
 impl VoiceDecoder for Analog {
     fn kind(&self) -> VoiceKind {
-        VoiceKind::Analog
+        match self.demod {
+            Demod::Fm(_) => VoiceKind::Analog,
+            Demod::Am(_) => VoiceKind::Am,
+        }
     }
     fn push(&mut self, iq: &[Complex32], out: &mut Vec<VoiceOut>) {
         let mut audio = Vec::new();
         let mut low = Vec::new();
-        self.carrier = self.fm.push_low(iq, self.squelch, &mut audio, self.subaudible.then_some(&mut low));
+        self.carrier = match &mut self.demod {
+            Demod::Fm(fm) => fm.push_low(iq, self.squelch, &mut audio, self.subaudible.then_some(&mut low)),
+            Demod::Am(am) => am.push(iq, self.squelch, &mut audio),
+        };
         let mut found = Vec::new();
-        self.ids.push(&audio, &mut found);
+        if let Some(ids) = &mut self.ids {
+            ids.push(&audio, &mut found);
+        }
         for u in found {
             out.push(VoiceOut { slot: 0, t: 0.0, out: TrackerOut::Info { source: Some(u.unit), flags: Flags::emergency(u.emergency) } });
         }

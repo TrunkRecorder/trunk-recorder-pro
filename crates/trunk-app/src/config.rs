@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use trunk_core::dsp::AnalogTuning;
 use trunk_core::p25::diversity::BankConfig;
 use trunk_core::trunk::{
     check_channels, conventional_index, Access, parse_csv, CallConfig, Protocol, ConvChannel, ConvConfig, ConvMode, ConvSystem, EngineConfig, IdField, Identity, SaveRules, SourceConfig,
@@ -509,6 +510,9 @@ pub struct Conventional {
     pub enabled: bool,
     /// Open threshold for every channel, dB above the measured noise floor.
     pub squelch_db: f64,
+    /// How its analog channels are demodulated; what's left out is the default.
+    #[serde(skip_serializing_if = "Demod::is_empty")]
+    pub demod: Demod,
     /// A CSV the channels are read from, absolute or relative to the config
     /// file's folder; read when the app starts, when recording starts and
     /// on Reload. Empty: the channels are the list below.
@@ -575,6 +579,7 @@ impl Default for Conventional {
             name: String::new(),
             enabled: true,
             squelch_db: ConvConfig::default().squelch_db,
+            demod: Demod::default(),
             channel_file: String::new(),
             channels: vec![],
             channel_file_status: String::new(),
@@ -586,12 +591,103 @@ impl Default for Conventional {
     }
 }
 
+/// How a conventional system's analog channels are demodulated: FM's
+/// de-emphasis, AM's level and low cut, and the squelch gate's timing (each
+/// channel picks its own bandwidth: [`Channel::bandwidth_khz`]). None: the default.
+///
+/// ```json
+/// "demod": { "fmDeemphasis": false, "amLevel": "slow", "amLowCutHz": 300, "squelchOpenMs": 30, "squelchHangMs": 150 }
+/// ```
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Demod {
+    /// FM: undo the transmitter's 750 µs pre-emphasis (default true). Off
+    /// for channels sent without it, which sound muffled with it on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fm_deemphasis: Option<bool>,
+    /// AM: how fast the audio level follows the carrier: "fast" (50 ms,
+    /// default) or "slow" (0.5 s, for steady signals: less pumping).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub am_level: Option<AmLevel>,
+    /// AM: the audio high-pass's corner, Hz (default 200; 0 = none): carrier hum and flutter.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub am_low_cut_hz: Option<f64>,
+    /// How long the carrier must hold before the audio opens, ms (default 30).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub squelch_open_ms: Option<f64>,
+    /// How long the audio stays open after the carrier goes, ms (default 2):
+    /// longer bridges fades on weak signals.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub squelch_hang_ms: Option<f64>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum AmLevel {
+    #[default]
+    Fast,
+    Slow,
+}
+
+/// The ranges [`Config::problem`] accepts (the interface's too).
+pub const AM_LOW_CUT_MAX_HZ: f64 = 600.0;
+pub const SQUELCH_OPEN_MAX_MS: f64 = 500.0;
+pub const SQUELCH_HANG_MAX_MS: f64 = 1000.0;
+pub const BANDWIDTH_KHZ: (f64, f64) = (4.0, 20.0);
+
+impl Demod {
+    pub fn is_empty(&self) -> bool {
+        *self == Demod::default()
+    }
+
+    /// What's wrong with it, if anything.
+    fn problem(&self) -> Option<String> {
+        let bad = |v: Option<f64>, max: f64| v.is_some_and(|v| !(0.0..=max).contains(&v));
+        if bad(self.am_low_cut_hz, AM_LOW_CUT_MAX_HZ) {
+            return Some(format!("AM low cut is 0–{AM_LOW_CUT_MAX_HZ} Hz."));
+        }
+        if bad(self.squelch_open_ms, SQUELCH_OPEN_MAX_MS) {
+            return Some(format!("Squelch open delay is 0–{SQUELCH_OPEN_MAX_MS} ms."));
+        }
+        if bad(self.squelch_hang_ms, SQUELCH_HANG_MAX_MS) {
+            return Some(format!("Squelch hang is 0–{SQUELCH_HANG_MAX_MS} ms."));
+        }
+        None
+    }
+
+    /// Channel `c`'s tuning: the mode's (and frequency's) defaults, with these and its bandwidth.
+    fn tuning(&self, c: &Channel) -> AnalogTuning {
+        let mut t = if c.mode == ChannelMode::Am { AnalogTuning::am(c.freq_hz) } else { AnalogTuning::default() };
+        if let Some(khz) = c.bandwidth_khz {
+            t.half_bw_hz = khz * 500.0;
+        }
+        if self.fm_deemphasis == Some(false) {
+            t.deemph_tau_s = 0.0;
+        }
+        if self.am_level == Some(AmLevel::Slow) {
+            t.level_tau_s = trunk_core::dsp::am::LEVEL_SLOW_S;
+        }
+        if let Some(hz) = self.am_low_cut_hz {
+            t.low_cut_hz = hz;
+        }
+        if let Some(ms) = self.squelch_open_ms {
+            t.squelch.open_s = ms / 1000.0;
+        }
+        if let Some(ms) = self.squelch_hang_ms {
+            t.squelch.hang_s = ms / 1000.0;
+        }
+        t
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ChannelMode {
-    /// Analog narrowband FM.
+    /// Analog FM (narrowband unless its bandwidth says wide).
     #[default]
     Fm,
+    /// Analog AM (airband).
+    Am,
     /// P25 Phase 1.
     P25,
     /// DMR (both slots).
@@ -606,6 +702,7 @@ impl ChannelMode {
     pub fn conv(self) -> ConvMode {
         match self {
             ChannelMode::Fm => ConvMode::Fm,
+            ChannelMode::Am => ConvMode::Am,
             ChannelMode::P25 => ConvMode::P25,
             ChannelMode::Dmr => ConvMode::Dmr,
             ChannelMode::Nxdn48 => ConvMode::Nxdn(trunk_core::nxdn::Rate::N48),
@@ -644,6 +741,11 @@ pub struct Channel {
     /// This channel's open threshold, dB above the noise floor (else the section's).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub squelch_db: Option<f64>,
+    /// Analog: the channel filter's width, kHz (else the mode's: FM 11 —
+    /// 12.5 kHz channels, 16 for 25 kHz wide FM; AM 11, or 16 from 225 MHz;
+    /// 6 for 8.33 kHz airband channels).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bandwidth_khz: Option<f64>,
     #[serde(default = "yes")]
     pub enabled: bool,
 }
@@ -680,6 +782,11 @@ impl Channel {
         self.mode.conv()
     }
 
+    /// FM or AM.
+    pub fn analog(&self) -> bool {
+        matches!(self.mode, ChannelMode::Fm | ChannelMode::Am)
+    }
+
     /// The code it records, read for its mode.
     pub fn parsed_access(&self) -> Result<Option<Access>, String> {
         Access::parse(self.conv_mode(), &self.tone)
@@ -693,7 +800,7 @@ impl Channel {
             talkgroup: tg,
             info: named.then(|| Talkgroup {
                 number: tg,
-                mode: if self.mode == ChannelMode::Fm { "A".into() } else { "D".into() },
+                mode: if self.analog() { "A".into() } else { "D".into() },
                 alpha_tag: self.name.clone(),
                 description: self.description.clone(),
                 tag: self.tag.clone(),
@@ -706,6 +813,7 @@ impl Channel {
             squelch_db: self.squelch_db,
             access: self.parsed_access().ok().flatten(),
             system: 0,
+            analog: Demod::default().tuning(self),
         }
     }
 }
@@ -1520,6 +1628,7 @@ impl Config {
                 let mut e = c.engine_channel(tg);
                 e.system = k;
                 e.squelch_db = Some(e.squelch_db.unwrap_or(v.squelch_db));
+                e.analog = v.demod.tuning(c);
                 out.push(e);
             }
         }
@@ -1653,6 +1762,13 @@ impl Config {
         }
         if let Some((c, e)) = self.enabled_channels().find_map(|c| c.parsed_access().err().map(|e| (c, e))) {
             return Some(format!("Conventional channel {:.5} MHz: {e}.", c.freq_hz / 1e6));
+        }
+        let (lo, hi) = BANDWIDTH_KHZ;
+        if let Some(c) = self.enabled_channels().find(|c| c.bandwidth_khz.is_some_and(|b| !(lo..=hi).contains(&b))) {
+            return Some(format!("Conventional channel {:.5} MHz: a bandwidth is {lo}–{hi} kHz.", c.freq_hz / 1e6));
+        }
+        if let Some((v, e)) = self.conventional.iter().filter(|v| v.enabled).find_map(|v| v.demod.problem().map(|e| (v, e))) {
+            return Some(format!("{}: {e}", v.short_name));
         }
         check_channels(&self.engine_channels()).err()
     }
@@ -1854,6 +1970,39 @@ mod tests {
     }
 
     #[test]
+    fn am_channels_and_demod_settings() {
+        let c: Config = serde_json::from_str(
+            r#"{
+                "conventional": [{ "demod": { "fmDeemphasis": false, "amLevel": "slow", "amLowCutHz": 0, "squelchHangMs": 150 }, "channels": [
+                    { "freqHz": 119100000, "mode": "am", "name": "Tower" },
+                    { "freqHz": 128100000, "mode": "am", "bandwidthKhz": 6 },
+                    { "freqHz": 243000000, "mode": "am", "name": "Guard" },
+                    { "freqHz": 154430000, "mode": "fm", "bandwidthKhz": 16 } ] }],
+                "sources": [{ "type": "file", "path": "x.cu8", "centerHz": 150000000, "rateHz": 240000000, "realtime": false }]
+            }"#,
+        )
+        .unwrap();
+        let e = c.engine_config(0.0);
+        let t: Vec<_> = e.conventional.iter().map(|x| (x.mode, x.analog.half_bw_hz)).collect();
+        assert_eq!(t, [(ConvMode::Am, 5500.0), (ConvMode::Am, 3000.0), (ConvMode::Am, 8000.0), (ConvMode::Fm, 8000.0)]);
+        let a = &e.conventional[0].analog;
+        assert_eq!((a.deemph_tau_s, a.level_tau_s, a.low_cut_hz, a.squelch.hang_s), (0.0, trunk_core::dsp::am::LEVEL_SLOW_S, 0.0, 0.15));
+        assert_eq!(e.conventional[0].info.as_ref().unwrap().mode, "A");
+        // Defaults aren't written back.
+        let d = Conventional::default();
+        assert!(!serde_json::to_string(&d).unwrap().contains("demod"));
+        let mut bad = c.clone();
+        bad.conventional[0].demod.squelch_hang_ms = Some(5000.0);
+        assert!(bad.problem().unwrap().contains("hang"), "{:?}", bad.problem());
+        let mut bad = c.clone();
+        bad.conventional[0].channels[1].bandwidth_khz = Some(40.0);
+        assert!(bad.problem().unwrap().contains("bandwidth"), "{:?}", bad.problem());
+        let mut bad = c;
+        bad.conventional[0].channels[0].tone = "100.0".into();
+        assert!(bad.problem().unwrap().contains("AM channels carry no tone"), "{:?}", bad.problem());
+    }
+
+    #[test]
     fn conventional_only_config() {
         let mut c: Config = serde_json::from_str(
             r#"{
@@ -2005,6 +2154,7 @@ mod tests {
             tag: String::new(),
             group: String::new(),
             squelch_db: None,
+            bandwidth_khz: None,
             tone: tone.into(),
             enabled: true,
         };
@@ -2039,6 +2189,7 @@ mod tests {
             tag: String::new(),
             group: String::new(),
             squelch_db: None,
+            bandwidth_khz: None,
             tone: String::new(),
             enabled: true,
         }];

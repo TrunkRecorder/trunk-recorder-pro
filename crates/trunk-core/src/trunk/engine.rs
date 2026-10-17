@@ -45,7 +45,7 @@ use super::control::{self, CarrierPlan, ControlChannel, Protocol, ProtocolStatus
 use super::voice::{self, CipherId, VoiceDecoder, VoiceKind, VoiceParams, VoiceSpec};
 use crate::alias::Alias;
 use crate::dsp::channelizer::floor_slices;
-use crate::dsp::{Channelizer, HeadId};
+use crate::dsp::{AnalogTuning, Channelizer, HeadId};
 use crate::mbe;
 use crate::metrics::{self, Scoped, Sink};
 use crate::p25::alias::AliasLc;
@@ -622,6 +622,7 @@ impl SysHost<'_> {
             // Analog squelch: this far above the noise under the channel.
             squelch: (noise * 10f64.powf(ANALOG_SQUELCH_DB / 10.0)) as f32,
             subaudible: false,
+            analog: AnalogTuning::default(),
             keys: self.keys.clone(),
         });
         let mut calls = [None, None];
@@ -1855,7 +1856,7 @@ mod tests {
     /// An engine on one source, with a conventional channel (so it runs).
     fn plain_engine() -> Engine {
         use super::super::conventional::{ConvChannel, ConvMode};
-        let ch = ConvChannel { freq_hz: 155.2e6, mode: ConvMode::Fm, talkgroup: 1, info: None, squelch_db: None, access: None, system: 0 };
+        let ch = ConvChannel { talkgroup: 1, ..ConvChannel::new(155.2e6, ConvMode::Fm) };
         Engine::new(EngineConfig { sources: vec![SourceConfig { center_hz: 155e6, rate_hz: 2.4e6, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ }], conventional: vec![ch], ..Default::default() }).unwrap()
     }
 

@@ -1,5 +1,5 @@
-//! Conventional channels (analog NBFM, P25): energy-detected, so an idle
-//! channel costs almost nothing.
+//! Conventional channels (analog FM and AM, P25, DMR, NXDN): energy-detected,
+//! so an idle channel costs almost nothing.
 //!
 //! ```text
 //! every block, per channel, from the channelizer's own spectrum (no head):
@@ -7,9 +7,10 @@
 //! SNR ≥ squelch → open a head with pre-roll (the air from before detection)
 //!   → channel filter / carrier meter (±5.5 kHz: confirms the carrier, so FFT
 //!     leakage from a strong neighbour doesn't make a call)
-//!   → NBFM demod → 8 kHz audio          (fm; unit IDs from MDC1200 /
+//!   → FM demod → 8 kHz audio            (fm; unit IDs from MDC1200 /
 //!                                        FleetSync bursts in it, the CTCSS
 //!                                        tone / DCS code from below it)
+//!   → AM demod → 8 kHz audio            (am: airband)
 //!   → receiver bank → voice tracker     (p25; talkgroup from link control)
 //!   → 4FSK → DMR framer → both slots   (dmr; a call on each slot, talkgroup
 //!                                        from link control)
@@ -59,7 +60,7 @@ use super::frames::VoiceFrame;
 use crate::dsp::fm::{self, ChannelFilter};
 use crate::dsp::tones::{Tone, ToneDetector};
 use crate::dsp::channelizer::floor_slices;
-use crate::dsp::{Channelizer, HeadId};
+use crate::dsp::{AnalogTuning, Channelizer, HeadId};
 use crate::mbe;
 use crate::nxdn::Rate;
 use crate::alias::Alias;
@@ -88,8 +89,10 @@ const TONE_WAIT_S: f64 = 1.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConvMode {
-    /// Analog narrowband FM (12.5 kHz).
+    /// Analog FM (12.5 kHz, or 25 kHz wide).
     Fm,
+    /// Analog AM (airband).
+    Am,
     /// P25 Phase 1 (C4FM or CQPSK).
     P25,
     /// DMR (Tier II): each of the two slots records its own calls.
@@ -102,26 +105,16 @@ impl ConvMode {
     pub fn as_str(self) -> &'static str {
         match self {
             ConvMode::Fm => "fm",
+            ConvMode::Am => "am",
             ConvMode::P25 => "p25",
             ConvMode::Dmr => "dmr",
             ConvMode::Nxdn(r) => r.name(),
         }
     }
 
-    /// Half-width of the band the detector sums, Hz.
-    fn detect_half_bw(self) -> f64 {
-        match self {
-            ConvMode::Nxdn(Rate::N48) => 3125.0,
-            _ => DETECT_HALF_BW,
-        }
-    }
-
-    /// The head's filter cutoff, Hz.
-    fn head_cutoff_hz(self) -> f64 {
-        match self {
-            ConvMode::Nxdn(r) => r.cutoff_hz(),
-            _ => HEAD_CUTOFF_HZ,
-        }
+    /// Analog (FM or AM): demodulated as [`ConvChannel::analog`] says.
+    pub fn analog(self) -> bool {
+        matches!(self, ConvMode::Fm | ConvMode::Am)
     }
 }
 
@@ -141,6 +134,8 @@ pub struct ConvChannel {
     /// The conventional system it belongs to (from 0): its rules, its calls'
     /// [`Call::system`] ([`conventional_system`]).
     pub system: usize,
+    /// Analog: how it's demodulated (rows sharing a frequency share it).
+    pub analog: AnalogTuning,
 }
 
 /// How a row picks its transmissions out of a frequency's (the channel's
@@ -193,6 +188,9 @@ impl Access {
         }
         if ["", "0", "S", "ANY", "NONE", "SEARCH"].contains(&up.as_str()) {
             return Ok(None);
+        }
+        if mode == ConvMode::Am {
+            return Err(format!("\"{}\": AM channels carry no tone or code — leave it empty", text.trim()));
         }
         if mode == ConvMode::P25 {
             let bad = || format!("\"{}\" isn't a NAC (up to 3 hex digits, like 293)", text.trim());
@@ -285,7 +283,31 @@ impl ConvChannel {
     /// A channel filed under its default talkgroup: the frequency in kHz
     /// (154.430 MHz → 154430), stable however the list is ordered.
     pub fn new(freq_hz: f64, mode: ConvMode) -> Self {
-        ConvChannel { freq_hz, mode, talkgroup: Self::default_talkgroup(freq_hz), info: None, squelch_db: None, access: None, system: 0 }
+        let analog = if mode == ConvMode::Am { AnalogTuning::am(freq_hz) } else { AnalogTuning::default() };
+        ConvChannel { freq_hz, mode, talkgroup: Self::default_talkgroup(freq_hz), info: None, squelch_db: None, access: None, system: 0, analog }
+    }
+
+    /// Half-width of the band the detector sums, Hz.
+    fn detect_half_bw(&self) -> f64 {
+        match self.mode {
+            ConvMode::Nxdn(Rate::N48) => 3125.0,
+            m if m.analog() => self.analog.half_bw_hz - (fm::CHANNEL_HALF_BW - DETECT_HALF_BW),
+            _ => DETECT_HALF_BW,
+        }
+    }
+
+    /// The head's filter cutoff, Hz.
+    fn head_cutoff_hz(&self) -> f64 {
+        match self.mode {
+            ConvMode::Nxdn(r) => r.cutoff_hz(),
+            m if m.analog() => self.analog.half_bw_hz + (HEAD_CUTOFF_HZ - fm::CHANNEL_HALF_BW),
+            _ => HEAD_CUTOFF_HZ,
+        }
+    }
+
+    /// The carrier meter's noise bandwidth, Hz.
+    fn meter_bandwidth(&self) -> f64 {
+        if self.mode.analog() { 2.0 * self.analog.half_bw_hz } else { ChannelFilter::noise_bandwidth() }
     }
 
     pub fn default_talkgroup(freq_hz: f64) -> u32 {
@@ -559,8 +581,15 @@ impl Conventional {
         if rows.iter().any(|r| r.mode != rows[0].mode) {
             return Err(format!("Conventional channel {mhz} MHz is listed with different modes — rows sharing a frequency need the same one."));
         }
+        if rows.iter().any(|r| r.analog.half_bw_hz != rows[0].analog.half_bw_hz) {
+            return Err(format!("Conventional channel {mhz} MHz is listed with different bandwidths — rows sharing a frequency need the same one."));
+        }
+        if rows[0].mode == ConvMode::Am && rows.len() > 1 {
+            return Err(format!("Conventional channel {mhz} MHz is listed twice — AM has no tone or code to split a frequency by."));
+        }
         let what = match rows[0].mode {
             ConvMode::Fm => "tone",
+            ConvMode::Am => "code",
             ConvMode::P25 => "NAC",
             ConvMode::Dmr => "colour code, slot or talkgroup",
             ConvMode::Nxdn(_) => "RAN or talkgroup",
@@ -633,11 +662,11 @@ impl Conventional {
             }
             let rules = &rules[ch.cfg.system];
             let floor = self.floors[source].slices[ch.slice].max(1e-30);
-            let bp = chz.band_power(ch.offset_hz, ch.cfg.mode.detect_half_bw());
+            let bp = chz.band_power(ch.offset_hz, ch.cfg.detect_half_bw());
             ch.power = if ch.power == 0.0 { bp } else { ch.power + a * (bp - ch.power) };
             let snr_db = if gap { f64::NEG_INFINITY } else { 10.0 * (ch.power / floor).log10() };
             let base = ch.base_db(dflt);
-            let meter_thr = (chz.noise_in_band(floor, ChannelFilter::noise_bandwidth()) * 10f64.powf((base - CLOSE_BELOW_DB).max(3.0) / 10.0)) as f32;
+            let meter_thr = (chz.noise_in_band(floor, ch.cfg.meter_bandwidth()) * 10f64.powf((base - CLOSE_BELOW_DB).max(3.0) / 10.0)) as f32;
             if ch.open.is_none() {
                 if ch.raised && snr_db < base {
                     ch.raised = false;
@@ -653,7 +682,8 @@ impl Conventional {
             Self::run(ch, &iq, now_s, meter_thr, idx as u32, ids, rules, max_call_s, out);
             // Reception: the channel's power while its carrier is up, against the floor (both as a channel's head would see them).
             if snr_db >= base {
-                let (sig, noise) = (chz.noise_in_band(ch.power, ChannelFilter::noise_bandwidth()), chz.noise_in_band(floor, ChannelFilter::noise_bandwidth()));
+                let bw = ch.cfg.meter_bandwidth();
+                let (sig, noise) = (chz.noise_in_band(ch.power, bw), chz.noise_in_band(floor, bw));
                 for l in ch.open.as_mut().unwrap().live.iter_mut().flatten() {
                     if now_s - l.call.last_audio_s < 0.5 {
                         l.reception.signal(sig);
@@ -684,10 +714,11 @@ impl Conventional {
 
     #[allow(clippy::too_many_arguments)]
     fn open(ch: &mut Chan, chz: &mut Channelizer, now_s: f64, preroll_s: f64, bank_cfg: BankConfig, vocoder: mbe::Profile, meter_thr: f32, num: u32, ids: &CallIds, rules: &CallRules, out: &mut Vec<ConvOut>) {
-        let (head, pre, start_sample) = chz.add_head(ch.offset_hz, ch.cfg.mode.head_cutoff_hz(), preroll_s);
+        let (head, pre, start_sample) = chz.add_head(ch.offset_hz, ch.cfg.head_cutoff_hz(), preroll_s);
         let rate = chz.output_rate();
         let kind = match ch.cfg.mode {
             ConvMode::Fm => VoiceKind::Analog,
+            ConvMode::Am => VoiceKind::Am,
             ConvMode::P25 => VoiceKind::Fdma,
             ConvMode::Dmr => VoiceKind::Dmr,
             ConvMode::Nxdn(r) => VoiceKind::Nxdn(r),
@@ -703,10 +734,11 @@ impl Conventional {
             // (FM: set on every run, from the noise floor.)
             squelch: meter_thr,
             // For the tone detector.
-            subaudible: true,
+            subaudible: ch.cfg.mode == ConvMode::Fm,
+            analog: ch.cfg.analog,
             keys: rules.keys.cloned(),
         });
-        let meter = (kind != VoiceKind::Analog).then(|| ChannelFilter::new(rate));
+        let meter = (!ch.cfg.mode.analog()).then(|| ChannelFilter::new(rate));
         ch.open = Some(Open { head, voice, meter, opened_s: now_s, carrier_seen: false, last_carrier_s: now_s, live: [None, None], tx: None, cipher_ahead: [None; 2] });
         Self::run(ch, &pre, now_s, meter_thr, num, ids, rules, 0.0, out);
     }
@@ -716,7 +748,7 @@ impl Conventional {
     fn run(ch: &mut Chan, iq: &[Complex32], now_s: f64, meter_thr: f32, num: u32, ids: &CallIds, rules: &CallRules, max_call_s: f64, out: &mut Vec<ConvOut>) {
         let o = ch.open.as_mut().unwrap();
         let mut heard: [Heard; 2] = Default::default();
-        // Digital: the carrier by the meter; FM: by the decoder's squelch, at the same threshold.
+        // Digital: the carrier by the meter; analog: by the decoder's squelch, at the same threshold.
         let metered = o.meter.as_mut().map(|m| m.meter(iq) > meter_thr);
         o.voice.set_squelch(meter_thr);
         let mut vout = Vec::new();
@@ -932,7 +964,7 @@ impl Conventional {
                 priority: 0,
                 duplex: false,
                 mode: false,
-                analog: ch.cfg.mode == ConvMode::Fm,
+                analog: ch.cfg.mode.analog(),
                 start_s: start,
                 last_update_s: now_s,
                 last_audio_s: now_s,
@@ -1071,6 +1103,8 @@ mod tests {
         snr_db: f64,
         on: Vec<(f64, f64)>,
         ph: f64,
+        /// AM (50 % at 1 kHz) instead of FM.
+        am: bool,
         /// 8 kHz modulation from each key-up (±1: 5 kHz), then the tone.
         audio: Vec<f32>,
     }
@@ -1126,11 +1160,12 @@ mod tests {
                 for tx in txs.iter_mut() {
                     let on = tx.on.iter().find(|&&(s, e)| t >= s && t < e);
                     let i = on.map_or(usize::MAX, |&(s, _)| ((t - s) * 8000.0) as usize);
-                    let dev = tx.audio.get(i).map_or(2500.0 * (2.0 * PI * 1000.0 * t).sin(), |&a| 5000.0 * a as f64);
+                    let dev = if tx.am { 0.0 } else { tx.audio.get(i).map_or(2500.0 * (2.0 * PI * 1000.0 * t).sin(), |&a| 5000.0 * a as f64) };
                     tx.ph += 2.0 * PI * (tx.offset_hz + dev) / fs;
                     if on.is_some() {
                         let p = sigma2 * 10_000.0 / fs * 10f64.powf(tx.snr_db / 10.0);
-                        x += Complex32::from_polar(p.sqrt() as f32, tx.ph as f32);
+                        let env = if tx.am { 1.0 + 0.5 * (2.0 * PI * 1000.0 * t).sin() } else { 1.0 };
+                        x += Complex32::from_polar((p.sqrt() * env) as f32, tx.ph as f32);
                     }
                 }
                 *v = x;
@@ -1160,7 +1195,7 @@ mod tests {
     }
 
     fn fm(freq_hz: f64, tg: u32) -> ConvChannel {
-        ConvChannel { freq_hz, mode: ConvMode::Fm, talkgroup: tg, info: None, squelch_db: None, access: None, system: 0 }
+        ConvChannel { talkgroup: tg, ..ConvChannel::new(freq_hz, ConvMode::Fm) }
     }
 
     /// An encrypted P25 transmission on a conventional channel whose system
@@ -1225,9 +1260,9 @@ mod tests {
     fn conventional_systems_keep_their_own_names_and_rules() {
         let (fs, c) = (2_400_000.0, 155_000_000.0);
         let mut txs = vec![
-            Tx { offset_hz: 200_000.0, snr_db: 30.0, on: vec![(0.5, 2.5)], ph: 0.0, audio: Vec::new() },
-            Tx { offset_hz: 312_500.0, snr_db: 30.0, on: vec![(0.5, 2.5)], ph: 0.0, audio: Vec::new() },
-            Tx { offset_hz: -200_000.0, snr_db: 30.0, on: vec![(0.5, 2.5)], ph: 0.0, audio: Vec::new() },
+            Tx { offset_hz: 200_000.0, snr_db: 30.0, on: vec![(0.5, 2.5)], ph: 0.0, am: false, audio: Vec::new() },
+            Tx { offset_hz: 312_500.0, snr_db: 30.0, on: vec![(0.5, 2.5)], ph: 0.0, am: false, audio: Vec::new() },
+            Tx { offset_hz: -200_000.0, snr_db: 30.0, on: vec![(0.5, 2.5)], ph: 0.0, am: false, audio: Vec::new() },
         ];
         let police = ConvChannel { system: 1, ..fm(c + 312_500.0, 2) };
         let ems = ConvChannel { system: 2, ..fm(c - 200_000.0, 3) };
@@ -1243,17 +1278,67 @@ mod tests {
         assert_eq!(conventional_index(3), None);
     }
 
+    /// Airband: AM calls on 25 kHz channels beside each other, one 2 kHz off
+    /// frequency, one weak, an FM call beside them, and a strong AM neighbour
+    /// that isn't a channel. (The source's centre is 155 MHz, so the AM
+    /// channels take the VHF filter, as 118–137 MHz would.)
+    #[test]
+    fn am_calls_detected_beside_fm_and_neighbours() {
+        let fs = 2_400_000.0;
+        let c = 155_000_000.0;
+        let am = |off: f64, snr_db: f64, on: Vec<(f64, f64)>| Tx { offset_hz: off, snr_db, on, ph: 0.0, am: true, audio: Vec::new() };
+        let mut txs = vec![
+            // Two transmissions 1.5 s apart (> the 1 s call timeout): two calls, 2 kHz off frequency.
+            am(202_000.0, 30.0, vec![(0.5, 2.5), (4.0, 5.0)]),
+            // A weak one, 15 dB above noise, on the next channel up.
+            am(225_000.0, 15.0, vec![(1.0, 3.0)]),
+            // A very strong neighbour (not a configured channel) 25 kHz from channel 3.
+            am(-75_000.0, 50.0, vec![(0.2, 5.5)]),
+            Tx { offset_hz: 300_000.0, snr_db: 25.0, on: vec![(1.0, 2.0)], ph: 0.0, am: false, audio: Vec::new() },
+        ];
+        let air = |freq: f64, tg: u32| ConvChannel { talkgroup: tg, ..ConvChannel::new(freq, ConvMode::Am) };
+        let chans = vec![air(c + 200_000.0, 1), air(c + 225_000.0, 2), air(c - 50_000.0, 3), fm(c + 300_000.0, 4)];
+        let (calls, _, _) = run(fs, 6.0, &mut txs, chans);
+        let mut got: Vec<(u32, bool, f64)> = calls.iter().map(|(k, n, _)| (k.talkgroup, k.analog, *n as f64 / 8000.0)).collect();
+        got.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let tgs: Vec<u32> = got.iter().map(|g| g.0).collect();
+        assert_eq!(tgs, [1, 1, 2, 4], "{got:?}");
+        assert!(got.iter().all(|g| g.1), "all analog: {got:?}");
+        // Each about as long as it was on the air.
+        for (g, want) in got.iter().zip([1.0, 2.0, 2.0, 1.0]) {
+            assert!((g.2 - want).abs() < 0.2, "talkgroup {}: {:.2} s of audio, wanted {want}", g.0, g.2);
+        }
+    }
+
+    #[test]
+    fn am_rows_and_codes() {
+        let f = 121_500_000.0;
+        assert!(Access::parse(ConvMode::Am, "").unwrap().is_none());
+        assert!(Access::parse(ConvMode::Am, "151.4").is_err());
+        let a = ConvChannel::new(f, ConvMode::Am);
+        assert_eq!(a.analog.half_bw_hz, crate::dsp::am::HALF_BW_VHF);
+        assert_eq!(ConvChannel::new(243e6, ConvMode::Am).analog.half_bw_hz, crate::dsp::am::HALF_BW_UHF);
+        let twice = Conventional::check(&[a.clone(), ConvChannel { talkgroup: 9, ..a.clone() }]).unwrap_err();
+        assert!(twice.contains("AM has no tone"), "{twice}");
+        let mut narrow = ConvChannel::new(f, ConvMode::Fm);
+        narrow.access = Access::parse(ConvMode::Fm, "100.0").unwrap();
+        let mut wide = ConvChannel::new(f, ConvMode::Fm);
+        wide.analog.half_bw_hz = 8000.0;
+        let bw = Conventional::check(&[narrow, wide]).unwrap_err();
+        assert!(bw.contains("different bandwidths"), "{bw}");
+    }
+
     #[test]
     fn fm_calls_detected_split_and_leakage_ignored() {
         let fs = 2_400_000.0;
         let c = 155_000_000.0;
         let mut txs = vec![
             // Two transmissions 1.5 s apart (> the 1 s call timeout): two calls.
-            Tx { offset_hz: 200_000.0, snr_db: 30.0, on: vec![(0.5, 2.5), (4.0, 5.0)], ph: 0.0, audio: Vec::new() },
+            Tx { offset_hz: 200_000.0, snr_db: 30.0, on: vec![(0.5, 2.5), (4.0, 5.0)], ph: 0.0, am: false, audio: Vec::new() },
             // A weak one, 15 dB above noise.
-            Tx { offset_hz: 312_500.0, snr_db: 15.0, on: vec![(1.0, 3.0)], ph: 0.0, audio: Vec::new() },
+            Tx { offset_hz: 312_500.0, snr_db: 15.0, on: vec![(1.0, 3.0)], ph: 0.0, am: false, audio: Vec::new() },
             // A very strong neighbour (not a configured channel) 12.5 kHz from channel 3.
-            Tx { offset_hz: -100_000.0, snr_db: 50.0, on: vec![(0.2, 5.5)], ph: 0.0, audio: Vec::new() },
+            Tx { offset_hz: -100_000.0, snr_db: 50.0, on: vec![(0.2, 5.5)], ph: 0.0, am: false, audio: Vec::new() },
         ];
         let chans = vec![fm(c + 200_000.0, 1), fm(c + 312_500.0, 2), fm(c - 87_500.0, 3), fm(c - 400_000.0, 4)];
         let (calls, starts, _) = run(fs, 6.0, &mut txs, chans);
@@ -1282,7 +1367,7 @@ mod tests {
     fn a_gap_in_the_samples_moves_time_on() {
         let fs = 2_400_000.0;
         let c = 155_000_000.0;
-        let mut txs = vec![Tx { offset_hz: 200_000.0, snr_db: 30.0, on: vec![(0.5, 2.0)], ph: 0.0, audio: Vec::new() }];
+        let mut txs = vec![Tx { offset_hz: 200_000.0, snr_db: 30.0, on: vec![(0.5, 2.0)], ph: 0.0, am: false, audio: Vec::new() }];
         let chans = vec![fm(c + 200_000.0, 1), fm(c + 312_500.0, 2), fm(c - 400_000.0, 3)];
         let (calls, starts, _) = run_gapped(fs, 4.0, &mut txs, chans, vec![conv_system("conv")], Some((1.2, 5.0)));
         let got: Vec<(u32, f64, f64)> = calls.iter().map(|(c, n, _)| (c.talkgroup, c.start_s, *n as f64 / 8000.0)).collect();
@@ -1304,7 +1389,7 @@ mod tests {
         audio.extend(ffsk(&fs_bits(101, 1234), 1200.0, 2400.0, 2400.0, 0.5));
         let secs = audio.len() as f64 / 8000.0;
         let c = 155_000_000.0;
-        let mut txs = vec![Tx { offset_hz: 200_000.0, snr_db: 25.0, on: vec![(0.5, 0.5 + secs)], ph: 0.0, audio }];
+        let mut txs = vec![Tx { offset_hz: 200_000.0, snr_db: 25.0, on: vec![(0.5, 0.5 + secs)], ph: 0.0, am: false, audio }];
         let (calls, _, _) = run(2_400_000.0, 3.5, &mut txs, vec![fm(c + 200_000.0, 1)]);
         assert_eq!(calls.len(), 1);
         let call = &calls[0].0;
@@ -1322,8 +1407,8 @@ mod tests {
         let ctcss: Vec<f32> = (0..16_000).map(|i| (voice(i) + 0.1 * (2.0 * PI * 151.4 * i as f64 / 8000.0).sin()) as f32).collect();
         let dcs: Vec<f32> = dcs_dev(23, false, 700.0, 2.0, 8000.0).iter().enumerate().map(|(i, d)| (voice(i) + d / 5000.0) as f32).collect();
         let mut txs = vec![
-            Tx { offset_hz: 200_000.0, snr_db: 25.0, on: vec![(0.5, 2.5)], ph: 0.0, audio: ctcss },
-            Tx { offset_hz: 300_000.0, snr_db: 25.0, on: vec![(0.5, 2.5)], ph: 0.0, audio: dcs },
+            Tx { offset_hz: 200_000.0, snr_db: 25.0, on: vec![(0.5, 2.5)], ph: 0.0, am: false, audio: ctcss },
+            Tx { offset_hz: 300_000.0, snr_db: 25.0, on: vec![(0.5, 2.5)], ph: 0.0, am: false, audio: dcs },
         ];
         let (calls, _, _) = run(2_400_000.0, 4.0, &mut txs, vec![fm(c + 200_000.0, 1), fm(c + 300_000.0, 2)]);
         let tone = |tg: u32| calls.iter().find(|(c, _, _)| c.talkgroup == tg).and_then(|(c, _, _)| c.tone).map(|h| h.tone);
@@ -1349,7 +1434,7 @@ mod tests {
     /// (talkgroup, seconds) of each call, and the codes of transmissions no row took.
     fn shared_skipped(rows: Vec<ConvChannel>, txs: &[(f64, Option<Tone>)], secs: f64) -> (Vec<(u32, f64)>, Vec<String>) {
         let mut t: Vec<Tx> =
-            txs.iter().map(|&(at, tone)| Tx { offset_hz: 200_000.0, snr_db: 25.0, on: vec![(at, at + 1.5)], ph: 0.0, audio: voice_over(tone, 1.5) }).collect();
+            txs.iter().map(|&(at, tone)| Tx { offset_hz: 200_000.0, snr_db: 25.0, on: vec![(at, at + 1.5)], ph: 0.0, am: false, audio: voice_over(tone, 1.5) }).collect();
         let (calls, _, skipped) = run(2_400_000.0, secs, &mut t, rows);
         (calls.iter().map(|(c, n, _)| (c.talkgroup, *n as f64 / 8000.0)).collect(), skipped.into_iter().map(|s| s.1).collect())
     }
