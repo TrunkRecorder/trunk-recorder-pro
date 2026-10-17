@@ -41,7 +41,7 @@ import type {
   SurveySuggestion,
   System,
 } from "./protocol.ts";
-import { type ImportTodo, activeSystems, newConventional, newSystem, resolvedCenters, sameSystem, siteName, sourceCovering, usableHalfWidth } from "./config.ts";
+import { type ImportTodo, activeSystems, restartKey, newConventional, newSystem, resolvedCenters, sameSystem, siteName, sourceCovering, usableHalfWidth } from "./config.ts";
 import { WsTransport, type CallExt, type Transport } from "./transport.ts";
 import { parseUnitsCsv, type UnitAliases } from "./units.ts";
 import { withIgnore } from "./talkgroups.ts";
@@ -93,6 +93,8 @@ export interface AppState {
   profiling: number | null;
   /** Bumped when the config is replaced from outside the form (fields re-read it). */
   configEpoch: number;
+  /** Settings changed since this run started that only apply after a restart. */
+  restartNeeded: boolean;
   /** The plugins (desktop app); null until the recorder says. */
   plugins: PluginsList | null;
   /** The plugin registry's list; null until asked for. */
@@ -182,6 +184,7 @@ let state: AppState = {
   profile: null,
   profiling: null,
   configEpoch: 0,
+  restartNeeded: false,
   plugins: null,
   pluginStore: null,
   pluginInstalls: {},
@@ -203,8 +206,18 @@ let state: AppState = {
 };
 
 const listeners = new Set<() => void>();
+/** restartKey of the config the current run started with (null: not running). */
+let runKey: string | null = null;
+
 function set(patch: Partial<AppState>): void {
+  const was = state;
   state = { ...state, ...patch };
+  // (Only when the config or phase changed: spectrum and stats come many times a second.)
+  if (state.config !== was.config || state.phase !== was.phase) {
+    const key = state.phase === "idle" || !state.config ? null : restartKey(state.config);
+    runKey = key && (runKey ?? key);
+    state.restartNeeded = key !== runKey;
+  }
   for (const l of listeners) l();
 }
 
@@ -1027,7 +1040,9 @@ export function unlockKeys(source: string, password: string | null): void {
 
 export function start(): void {
   flushConfig();
-  set({ error: null, ended: false });
+  // The recorder reads the config now: what it runs with from here.
+  runKey = state.config ? restartKey(state.config) : null;
+  set({ error: null, ended: false, restartNeeded: false });
   transport.send({ type: "start" });
   if (state.listen) player.resume();
 }
