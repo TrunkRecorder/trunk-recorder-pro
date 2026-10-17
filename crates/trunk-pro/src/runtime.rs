@@ -871,10 +871,9 @@ const OLDER_WINDOW_MS: i64 = 24 * 3600 * 1000;
 pub fn older_calls(ctx: &Ctx, before_ms: i64, limit: usize) -> Value {
     let (dir, names) = {
         let c = ctx.config.lock().unwrap();
-        // (A site that was a system of its own has its older calls under its name.)
-        let mut names: Vec<String> = c.systems.iter().flat_map(|s| std::iter::once(s.short_name.clone()).chain(s.sites.iter().map(|x| s.site_name(x).to_string()))).collect();
+        // (And a site's, as a system of its own: its calls from before are under its name.)
+        let mut names: Vec<String> = c.systems.iter().flat_map(|s| std::iter::once(s.short_name.clone()).chain(trunk_app::migrate::old_names(s))).collect();
         names.extend(c.conventional.iter().map(|v| v.short_name.clone()));
-        names.dedup();
         (PathBuf::from(&c.recording.capture_dir), names)
     };
     let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);

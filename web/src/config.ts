@@ -1,6 +1,7 @@
 // Config helpers for the setup form (the recorder validates again).
 
 import type { Channel, Config, Conventional, LogSettings, RecordingOverride, Site, SiteIdentity, Source, System, SystemStatus, UnitNames } from "./protocol.ts";
+import { migrateSystems, type OldSystem } from "./migrate.ts";
 import { normalizeTalkgroupCsv, splitCsvLine } from "./talkgroups.ts";
 import { dmrTalkgroup, parseAccess, sameTone } from "./tones.ts";
 
@@ -171,11 +172,10 @@ const SYSTEM_KEYS: (keyof System)[] = [
 const SITE_FIELDS: readonly string[] = ["name", "enabled", ...SITE_KEYS];
 
 /**
- * A system as code that makes one (or an older config) writes it: the
- * system's fields, with one site's at the top level (an older config's
- * system, `siteGroup` and all) or `sites`.
+ * A system as code that makes one writes it: the system's fields, with one
+ * site's at the top level, or `sites`.
  */
-export type SystemInput = Partial<Omit<System, "sites">> & Partial<Omit<Site, "name" | "enabled">> & { siteGroup?: string; sites?: Partial<Site>[] };
+export type SystemInput = Partial<Omit<System, "sites">> & Partial<Omit<Site, "name" | "enabled">> & { sites?: Partial<Site>[] };
 
 /** `x` without the keys in `known`: what this version doesn't know of it, kept as it was (as the recorder's `other`). */
 function unknownKeys<T extends object>(x: T, known: readonly string[]): Record<string, unknown> {
@@ -234,7 +234,7 @@ export function normalizeSystem(x: SystemInput): System {
     ? x.sites.filter((s): s is Partial<Site> => !!plain(s))
     : [{ ...Object.fromEntries(SITE_KEYS.filter((k) => k in x).map((k) => [k, x[k]])), ...(x.enabled === false ? { enabled: false } : {}) }];
   return {
-    ...unknownKeys(x, [...SYSTEM_KEYS, ...SITE_KEYS, "siteGroup"]),
+    ...unknownKeys(x, [...SYSTEM_KEYS, ...SITE_KEYS]),
     shortName: x.shortName ?? "sys1",
     ...(x.name?.trim() ? { name: x.name } : {}),
     type,
@@ -252,56 +252,6 @@ export function normalizeSystem(x: SystemInput): System {
   };
 }
 
-/**
- * An older config's systems, each a site of its own, made systems with
- * sites (the recorder's migrate_sites): those joined by a site group, or by
- * site locks naming one system, become one — the first's short name and
- * settings, each site named as its system was. Returns what changed, to tell.
- */
-export function migrateSystems(systems: SystemInput[]): { systems: System[]; notes: string[] } {
-  if (systems.every((x) => Array.isArray(x.sites))) return { systems: systems.map(normalizeSystem), notes: [] };
-  const notes = ["Systems have sites now: each system's control channels are its first site's."];
-  const group = (x: SystemInput): string | null => {
-    if (Array.isArray(x.sites)) return null;
-    if (x.siteGroup?.trim()) return `group:${x.siteGroup.trim()}`;
-    const e = plain<SiteIdentity>(x.expect) ?? {};
-    const h = (n: number) => n.toString(16);
-    const type = x.type ?? "p25";
-    if (type === "p25" && e.wacn != null && e.sysId != null) return `p25:${h(e.wacn)}.${h(e.sysId)}`;
-    if (type === "smartnet" && e.sysId != null) return `smartnet:${h(e.sysId)}`;
-    if (type === "nxdn" && x.nxdnType !== "typeD" && e.sysId != null) return `nxdn:${h(e.sysId)}`;
-    return null;
-  };
-  const kept: [string | null, System, string[]][] = [];
-  const what: [keyof System, string][] = [
-    ["talkgroupsCsv", "talkgroup file"], ["unitNames", "unit names"], ["recording", "recording rules"], ["plugins", "plugin settings"],
-    ["pluginDelays", "plugin delays"], ["keys", "keys"], ["defaultMode", "default mode"], ["nxdnType", "NXDN type"],
-  ];
-  for (const x of systems) {
-    const g = group(x);
-    const sys = normalizeSystem(x);
-    // Each old system's site is named as the system was.
-    if (!Array.isArray(x.sites)) sys.sites[0].name = sys.shortName;
-    const first = g ? kept.find(([h]) => h === g) : undefined;
-    if (!first) {
-      kept.push([g, sys, []]);
-      continue;
-    }
-    const [, to, joined] = first;
-    const dropped = what.filter(([k]) => sys[k] !== undefined && sys[k] !== "" && JSON.stringify(sys[k]) !== JSON.stringify(to[k])).map(([, w]) => w);
-    if (dropped.length) notes.push(`${sys.shortName}'s ${dropped.join(", ")} weren't kept: ${to.shortName} has its system's now.`);
-    if (sys.enabled) to.enabled = true;
-    to.sites.push(...sys.sites.map((s) => ({ ...s, enabled: s.enabled && sys.enabled })));
-    joined.push(sys.shortName);
-  }
-  for (const [, sys, joined] of kept) {
-    if (joined.length) notes.push(`${sys.shortName} and ${joined.join(", ")} are one system now, ${sys.shortName}, with a site each.`);
-    // A site named as its system leaves its name out.
-    for (const site of sys.sites) if (site.name === sys.shortName) delete site.name;
-  }
-  return { systems: kept.map(([, sys]) => sys), notes };
-}
-
 /** A config stored by this browser, with any setting it lacks at its default. */
 export function storedConfig(raw: Partial<Config>): Config {
   const base = defaultConfig();
@@ -311,7 +261,7 @@ export function storedConfig(raw: Partial<Config>): Config {
     ...base,
     ...raw,
     sources: Array.isArray(raw.sources) ? objects<Source>(raw.sources) : base.sources,
-    systems: migrateSystems(objects<SystemInput>(raw.systems)).systems,
+    systems: migrateSystems(objects<OldSystem>(raw.systems)).systems,
     conventional: objects<Partial<Conventional>>(raw.conventional).map(normalizeConventional),
     recording: { ...base.recording, ...plain<Partial<Config["recording"]>>(raw.recording) },
     server: { ...base.server, ...plain<Partial<Config["server"]>>(raw.server) },

@@ -75,6 +75,25 @@ On disk:
   site, `sys/<system>/cc/…` for a site named as its system (the old key, history
   kept) and `sys/<system>/site/<site>/cc/…` for the others.
 
+## Removing the upgrade
+
+The upgrade is for a while only (there is no promise of compatibility yet).
+All of it is in `crates/trunk-app/src/migrate.rs` and `web/src/migrate.ts`,
+with their tests (in `migrate.rs` and `web/src/migrate.test.ts`). To drop
+it, delete those, `pub mod migrate;` in trunk-app's lib.rs, and the lines
+the compilers then point at:
+
+- `Config::from_value` (config.rs): the `migrate::config` call (`notes`
+  stays empty);
+- trunk-pro `serve` (main.rs): the `migrate::save` block;
+- `Session::new` / `Session::load_units` (session.rs): the
+  `old_bandplan` / `old_names` lookups;
+- `older_calls` (runtime.rs): `old_names`;
+- `storedConfig` (config.ts): `migrateSystems(…)` → `.map(normalizeSystem)`;
+- `readSelection` (listen.ts): `migrateSelection` (names as they are).
+
+And the docs' "Upgrading" notes (configuration/systems.md, guides/multi-site.md).
+
 ## Engine (trunk-core)
 
 - The engine's config stays a flat list, now of sites: `SystemConfig` became

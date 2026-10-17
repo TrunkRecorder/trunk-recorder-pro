@@ -8,6 +8,7 @@
 
 import { useRef, useSyncExternalStore } from "react";
 import { onRecorderMessage, setListen, shallowEqual, snapshot, subscribe, transport } from "./controller.ts";
+import { migrateSelection } from "./migrate.ts";
 import type { CallEntry } from "./protocol.ts";
 
 /** What to hear, kept in this browser. Talkgroups are `<system>:<talkgroup>`. */
@@ -61,13 +62,7 @@ function loadSelection(): Selection {
 export function readSelection(kept: unknown): Selection {
   const v = kept as (Partial<Selection> & { sites?: unknown }) | null;
   if (!v || typeof v !== "object") return { offSystems: [], offTalkgroups: [], hold: null, avoid: {} };
-  // Kept before systems had sites: a system of sites under its group's name ("p25:bee00.1a2"),
-  // its sites in `sites` — now its first site's (the system's) name.
-  const groups = new Map<string, string>();
-  for (const [site, g] of Object.entries(v.sites && typeof v.sites === "object" ? v.sites : {})) if (typeof g === "string" && !groups.has(g)) groups.set(g, site);
-  const name = (n: string) => groups.get(n) ?? n;
-  // (Before tgKey is defined: this runs as the module loads.)
-  const key = (k: string) => `${name(k.slice(0, k.lastIndexOf(":")))}${k.slice(k.lastIndexOf(":"))}`;
+  const { name, key } = migrateSelection(v);
   const strings = (x: unknown) => (Array.isArray(x) ? x.filter((y): y is string => typeof y === "string") : []);
   return {
     offSystems: strings(v.offSystems).map(name),

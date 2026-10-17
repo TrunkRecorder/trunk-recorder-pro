@@ -349,8 +349,7 @@ impl Session {
         let engine = Engine::new(cfg.engine_config(epoch_ms))?;
         let sites = engine.sites();
         for (i, s) in sites.iter().enumerate() {
-            // (A site that was a system of its own kept its plan under its name: read once, then saved by its key.)
-            if let Some(b) = bandplan(&bandplan_key(s)).or_else(|| bandplan(s.site_name())) {
+            if let Some(b) = bandplan(&bandplan_key(s)).or_else(|| bandplan(crate::migrate::old_bandplan(s))) {
                 engine.load_bandplan(i, &b);
             }
         }
@@ -637,10 +636,9 @@ impl Session {
     /// for a short name ([`Session::units_changed`]).
     pub fn load_units(&mut self, units: &dyn Fn(&str) -> Option<String>) {
         for n in self.engine.unit_table_names() {
-            // A system's, and what its sites learned when each was a system of its own (newest wins).
-            let sys = self.cfg.systems.iter().find(|s| s.short_name == n);
+            // A system's (and what its sites learned as systems of their own: newest wins).
             let mut names = vec![n.clone()];
-            names.extend(sys.into_iter().flat_map(|s| s.sites.iter().map(|x| s.site_name(x).to_string())).filter(|x| *x != n));
+            names.extend(self.cfg.systems.iter().filter(|s| s.short_name == n).flat_map(crate::migrate::old_names));
             let csv: Vec<String> = names.iter().filter_map(|x| units(x)).collect();
             if !csv.is_empty() {
                 self.engine.load_units(&n, &csv.join("\n"));

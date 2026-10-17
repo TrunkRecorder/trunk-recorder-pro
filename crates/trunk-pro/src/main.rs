@@ -783,14 +783,10 @@ fn serve(a: &Args) {
     let cfg = config::Config::load(&config_path).unwrap_or_else(|e| fatal(&e));
     let level = a.get("log-level").map(|l| trunk_app::log::Level::parse(l).unwrap_or_else(|| fatal(&format!("--log-level {l}: trace, debug, info, warning, error or fatal"))));
     logging::init(&cfg.log, config_path.parent().unwrap_or(Path::new(".")), level);
-    // An older config, made systems with sites: saved so (the old one kept beside it), and told.
+    // An older config, upgraded: saved so (the old one kept beside it), and told.
     if !cfg.notes.is_empty() {
-        let old = config_path.with_extension("json.before-sites");
-        if !old.exists() {
-            let _ = fs::copy(&config_path, &old);
-        }
-        match cfg.save(&config_path) {
-            Ok(()) => log::info!("{} updated (the old one is {})", config_path.display(), old.display()),
+        match trunk_app::migrate::save(&cfg, &config_path) {
+            Ok(old) => log::info!("{} updated (the old one is {})", config_path.display(), old.display()),
             Err(e) => log::warn!("{}: couldn't save the updated config ({e})", config_path.display()),
         }
         for n in &cfg.notes {

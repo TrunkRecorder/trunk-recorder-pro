@@ -334,7 +334,7 @@ fn the_servers_messages() {
 
     // A config with a bit of everything.
     let mut cfg = conventional_config();
-    let more = Config::from_value(json!({
+    let more: Config = serde_json::from_value(json!({
         "sources": [
             { "type": "rtlsdr", "serial": "", "centerHz": 0, "rateHz": 2400000, "gainDb": 25, "agc": false, "ppm": 0, "autoTune": true },
             { "type": "usrp", "args": "", "centerHz": 0, "rateHz": 8000000, "gainDb": 30, "agc": false, "antenna": "RX2", "ppm": 0 },
@@ -343,9 +343,9 @@ fn the_servers_messages() {
             { "type": "file", "path": "x.cu8", "centerHz": 851000000, "rateHz": 2400000, "realtime": true, "format": "cu8" }
         ],
         "systems": [
-            { "shortName": "p25", "controlChannelsHz": [851012500], "recording": { "minCallS": 2 }, "siteGroup": "g" },
-            { "shortName": "dmr", "type": "dmr", "controlChannelsHz": [452175000], "lcnTableHz": { "101": 452275000 }, "colorCode": 1 },
-            { "shortName": "smartnet", "type": "smartnet", "controlChannelsHz": [856112500], "bandplan": "800_standard" }
+            { "shortName": "p25", "recording": { "minCallS": 2 }, "sites": [{ "controlChannelsHz": [851012500] }, { "name": "p25-2", "controlChannelsHz": [851512500] }] },
+            { "shortName": "dmr", "type": "dmr", "sites": [{ "controlChannelsHz": [452175000], "lcnTableHz": { "101": 452275000 }, "colorCode": 1 }] },
+            { "shortName": "smartnet", "type": "smartnet", "sites": [{ "controlChannelsHz": [856112500], "bandplan": "800_standard" }] }
         ]
     }))
     .unwrap();

@@ -1,9 +1,8 @@
-// Systems with sites (config.ts): an older config's systems made so, the
-// sites recorded, their names, and systems set up apart that are one on the
-// air. `npm test`.
+// Systems with sites (config.ts): the sites recorded, their names, and
+// systems set up apart that are one on the air. `npm test`.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { activeSites, defaultConfig, importTrunkRecorderConfig, migrateSystems, nameProblem, newSiteName, newSystem, normalizeSystem, sameOnTheAir, siteNameOf } from "./config.ts";
+import { activeSites, defaultConfig, importTrunkRecorderConfig, nameProblem, newSiteName, newSystem, normalizeSystem, sameOnTheAir, siteNameOf } from "./config.ts";
 import type { Config, Identity, SiteStatus, SystemStatus } from "./protocol.ts";
 
 test("normalizeSystem: an older config's system gets its site; a system with sites keeps them", () => {
@@ -15,25 +14,6 @@ test("normalizeSystem: an older config's system gets its site; a system with sit
   assert.ok(!("controlChannelsHz" in old), "the site's fields are the site's");
   const now = normalizeSystem({ shortName: "b", sites: [{ controlChannelsHz: [1] }, { name: "b2", controlChannelsHz: [2], enabled: false }] });
   assert.deepEqual(now.sites.map((x) => [x.name, x.enabled, x.modulation]), [[undefined, true, "auto"], ["b2", false, "auto"]]);
-});
-
-test("migrateSystems: systems joined by a site group or a site lock become one, the first's settings its own", () => {
-  const { systems, notes } = migrateSystems([
-    { shortName: "cm1", type: "dmr", controlChannelsHz: [452175000], siteGroup: "capmax", talkgroupsCsv: "tg" },
-    { shortName: "p1", controlChannelsHz: [851012500], expect: { wacn: 0xbee00, sysId: 0x1a2, site: 1 } },
-    { shortName: "cm2", type: "dmr", controlChannelsHz: [452375000], siteGroup: "capmax", talkgroupsCsv: "other", enabled: false },
-    { shortName: "p2", controlChannelsHz: [851512500], expect: { wacn: 0xbee00, sysId: 0x1a2, site: 2 } },
-    { shortName: "p3", controlChannelsHz: [852012500], expect: { wacn: 0xbee00, sysId: 0x1a3 } },
-  ]);
-  assert.deepEqual(
-    systems.map((s) => [s.shortName, s.sites.map((x) => siteNameOf(s, x))]),
-    [["cm1", ["cm1", "cm2"]], ["p1", ["p1", "p2"]], ["p3", ["p3"]]],
-  );
-  assert.equal(systems[0].talkgroupsCsv, "tg");
-  assert.deepEqual(systems[0].sites.map((x) => x.enabled), [true, false]);
-  assert.equal(systems[0].sites[0].name, undefined, "a site named as its system leaves its name out");
-  assert.ok(notes.some((n) => n.includes("cm2's talkgroup file weren't kept")), notes.join(" | "));
-  assert.deepEqual(migrateSystems(systems).notes, [], "systems with sites: nothing to do");
 });
 
 test("activeSites: the recorder's order; site names unique in a system; new sites named so", () => {

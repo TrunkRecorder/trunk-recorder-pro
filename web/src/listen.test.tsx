@@ -14,13 +14,12 @@ const CSV = (rows: string) => `Decimal,Hex,Alpha Tag,Mode,Description,Tag,Catego
 const call = (site: string, talkgroup: number, tag = "", at = Date.now()): CallEntry =>
   ({ path: `dcfd/${talkgroup}-${at}`, record: { short_name: "dcfd", site, talkgroup, talkgroup_tag: tag, start_time_ms: at, call_length_ms: 4000, encrypted: 0 } }) as unknown as CallEntry;
 
-test("readSelection: one kept when sites were heard together under their group's name is the system's now", () => {
-  const G = "p25:bee00.1a2";
-  const kept = { sites: { dcfd: G, dcfd2: G }, offSystems: [G, "other"], offTalkgroups: [`${G}:200`, "other:5"], hold: { system: G, talkgroup: 9 }, avoid: { [`${G}:4`]: 0 } };
+test("readSelection: what this browser kept, or none", () => {
+  const kept = { offSystems: ["other"], offTalkgroups: ["dcfd:200", 7], hold: { system: "dcfd", talkgroup: 9 }, avoid: { "dcfd:4": 0 } };
   const sel = readSelection(kept);
-  assert.deepEqual(sel, { offSystems: ["dcfd", "other"], offTalkgroups: ["dcfd:200", "other:5"], hold: { system: "dcfd", talkgroup: 9 }, avoid: { "dcfd:4": 0 } });
+  assert.deepEqual(sel, { offSystems: ["other"], offTalkgroups: ["dcfd:200"], hold: { system: "dcfd", talkgroup: 9 }, avoid: { "dcfd:4": 0 } });
   assert.deepEqual(readSelection(null), { offSystems: [], offTalkgroups: [], hold: null, avoid: {} });
-  assert.ok(!wanted({ ...sel, hold: null }, call("dcfd2", 200)), "kept from either site, the system's choice");
+  assert.ok(!wanted({ ...sel, hold: null }, call("south", 200)), "kept from either site, the system's choice");
 });
 
 /** The recorder says hello with dcfd, a system of two sites, and is running them. */
