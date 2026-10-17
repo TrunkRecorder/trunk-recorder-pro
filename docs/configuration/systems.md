@@ -46,7 +46,7 @@ channel. Each site you record from its own control channel is its own entry, wit
 
 | Key | Required | Default | Type | Description |
 |---|:---:|---|---|---|
-| `modulation` | | `"auto"` | string | `"auto"`: run both receivers and keep the better result for each frame. `"qpsk"`: CQPSK / LSM simulcast only. `"fsk4"`: C4FM only. Any other value is `"auto"`. Auto costs more CPU; set the one your system uses if you know it |
+| `modulation` | | `"auto"` | string | `"auto"`: run both receivers and keep the better result for each frame; once one has decoded nothing the other didn't for a while on a clean signal, it rests until the signal weakens (and is checked again every minute). `"qpsk"`: CQPSK / LSM simulcast only. `"fsk4"`: C4FM only. Any other value is `"auto"`. Auto costs more CPU while both run; set the one your system uses if you know it |
 
 P25 Phase 2 voice needs no setting: a Phase 2 grant is followed as Phase 2.
 

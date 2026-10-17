@@ -35,12 +35,62 @@ pub struct BankConfig {
     /// Pass bit reliabilities to the framer (soft Viterbi / soft FEC). Off:
     /// hard decisions only, for comparisons.
     pub soft: bool,
+    /// With both kinds of receiver: rest the kind that isn't helping ([`Adapt`]).
+    pub adapt: bool,
 }
 
 impl Default for BankConfig {
     fn default() -> Self {
-        BankConfig { cqpsk: true, cqpsk_eq: true, c4fm: true, eq_taps: 9, eq_mu: 0.02, framer: FramerOptions::default(), soft: true }
+        BankConfig { cqpsk: true, cqpsk_eq: true, c4fm: true, eq_taps: 9, eq_mu: 0.02, framer: FramerOptions::default(), soft: true, adapt: true }
     }
+}
+
+/// The CQPSK receivers and the C4FM one, as kinds of receiver ([`Adapt`]).
+const KINDS: usize = 2;
+const CQPSK_KIND: usize = 0;
+const C4FM_KIND: usize = 1;
+
+/// Frame slots looked at before a kind is rested.
+const ADAPT_GROUPS: u32 = 40;
+/// A resting kind is woken this often (s of the channel), to look again.
+const ADAPT_PROBE_S: f64 = 60.0;
+/// Nor while frames come no further apart than this, s.
+const ADAPT_GAP_S: f64 = 1.0;
+/// It wakes when the kind left running needs this many NID corrections on
+/// average (a frame lost counting as 11, the most a NID corrects). Not on one
+/// frame's: on a strong simulcast signal CQPSK frames need 0–1, now and
+/// then 4–7, and the C4FM receiver still decodes none the CQPSK ones miss.
+const ADAPT_WAKE_MEAN: f32 = 1.5;
+/// And a kind rests only while the other's frames are cleaner than this on
+/// average (a weak signal keeps every receiver: both count then).
+const ADAPT_REST_MEAN: f32 = 0.8;
+
+/// Which kinds of receiver run. On a system of one modulation only one kind
+/// ever decodes a frame the other doesn't (`tool snr`, real captures: on
+/// simulcast CQPSK the C4FM receiver adds nothing at any SNR; on C4FM the
+/// CQPSK receivers find no frame at all) — yet the other costs as much or
+/// more (C4FM: two thirds of a P25 channel). After [`ADAPT_GROUPS`] frame
+/// slots in which one kind was never needed — never alone in a slot, never
+/// the copy with fewer NID corrections — while the other found nearly every
+/// one, it rests. It wakes, its receivers started afresh, as soon as the
+/// other kind's frames need correcting or stop for [`ADAPT_GAP_S`] (the
+/// signal weakening: both kinds count again), and every [`ADAPT_PROBE_S`]
+/// to look again.
+#[derive(Default)]
+struct Adapt {
+    /// Since the last look: slots in which each kind was needed, or found the frame, and slots seen.
+    needed: [u32; KINDS],
+    found: [u32; KINDS],
+    /// Each kind's NID corrections (its best copy; 11 when it missed the frame), summed.
+    errs: [u32; KINDS],
+    groups: u32,
+    resting: Option<usize>,
+    /// Channel samples pushed; when to wake the resting kind to look again; the last frame slot's sample.
+    pos: f64,
+    probe_at: f64,
+    last_group: f64,
+    /// While one kind rests: the other's NID corrections, smoothed.
+    mean_errs: f32,
 }
 
 /// CQPSK receivers are kept as such so they can share a matched filter.
@@ -55,11 +105,15 @@ struct Rx {
     /// Sample instant of the latest symbol.
     progress: f64,
     frames: u64,
+    /// The channel sample its first sample was (a kind woken from rest starts afresh, later).
+    offset: f64,
 }
 
 struct Pending {
     sample: f64,
     frames: Group,
+    /// Each frame's kind of receiver.
+    kinds: Vec<usize>,
 }
 
 pub struct Bank {
@@ -74,24 +128,28 @@ pub struct Bank {
     /// The lead CQPSK receiver's matched filter output for this push.
     filtered: [Vec<f32>; 2],
     pub groups: u64,
+    /// None: every receiver runs, always (one kind configured, or `adapt` off).
+    adapt: Option<Adapt>,
+    /// To start a resting kind's receivers afresh.
+    rate: f64,
+    cfg: BankConfig,
+    c4fm: C4fmOptions,
+    nac: Option<u16>,
 }
 
 impl Bank {
     /// The site's NAC, for the framers' NID recovery ([`Framer::expect_nac`]).
     pub fn expect_nac(&mut self, nac: Option<u16>) {
+        self.nac = nac;
         for r in &mut self.rx {
             r.framer.expect_nac(nac);
         }
     }
 
-    pub fn new(rate: f64, cfg: BankConfig) -> Self {
-        Self::with_c4fm(rate, cfg, C4fmOptions::default())
-    }
-
-    /// With the C4FM receiver's variant options (weak-signal comparisons).
-    pub fn with_c4fm(rate: f64, cfg: BankConfig, c4fm: C4fmOptions) -> Self {
+    /// Its receivers, by kind, as configured.
+    fn receivers(rate: f64, cfg: BankConfig, c4fm: C4fmOptions) -> Vec<Rx> {
         let mut rx = Vec::new();
-        let mut add = |d: Demod| rx.push(Rx { demod: d, framer: Framer::new(cfg.framer), progress: 0.0, frames: 0 });
+        let mut add = |d: Demod| rx.push(Rx { demod: d, framer: Framer::new(cfg.framer), progress: 0.0, frames: 0, offset: 0.0 });
         if cfg.cqpsk {
             add(Demod::Cqpsk(Box::new(Cqpsk::new(rate, cqpsk::Options::default()))));
         }
@@ -101,7 +159,53 @@ impl Bank {
         if cfg.c4fm {
             add(Demod::Other(Box::new(C4fm::with_options(rate, c4fm))));
         }
+        rx
+    }
+
+    fn kind(r: &Rx) -> usize {
+        match r.demod {
+            Demod::Cqpsk(_) => CQPSK_KIND,
+            Demod::Other(_) => C4FM_KIND,
+        }
+    }
+
+    /// Whether receiver `r` runs now.
+    fn running(&self, r: &Rx) -> bool {
+        self.adapt.as_ref().is_none_or(|a| a.resting != Some(Self::kind(r)))
+    }
+
+    /// The resting kind's receivers again, started afresh, from now.
+    fn wake(&mut self) {
+        let Some(a) = self.adapt.as_mut() else { return };
+        let Some(k) = a.resting.take() else { return };
+        *a = Adapt { pos: a.pos, last_group: a.pos, ..Default::default() };
+        let pos = a.pos;
+        let fresh = Self::receivers(self.rate, self.cfg, self.c4fm);
+        for (r, f) in self.rx.iter_mut().zip(fresh) {
+            if Self::kind(r) == k {
+                let frames = r.frames;
+                *r = f;
+                // (It counts its samples from 0: from now, on the channel's count.)
+                (r.frames, r.offset, r.progress) = (frames, pos, pos);
+                r.framer.expect_nac(self.nac);
+            }
+        }
+    }
+
+    pub fn new(rate: f64, cfg: BankConfig) -> Self {
+        Self::with_c4fm(rate, cfg, C4fmOptions::default())
+    }
+
+    /// With the C4FM receiver's variant options (weak-signal comparisons).
+    pub fn with_c4fm(rate: f64, cfg: BankConfig, c4fm: C4fmOptions) -> Self {
+        let rx = Self::receivers(rate, cfg, c4fm);
+        let both = rx.iter().any(|r| Self::kind(r) == CQPSK_KIND) && rx.iter().any(|r| Self::kind(r) == C4FM_KIND);
         Bank {
+            adapt: (cfg.adapt && both).then(Adapt::default),
+            rate,
+            cfg,
+            c4fm,
+            nac: None,
             rx,
             pending: VecDeque::new(),
             guard: 36.0 * rate / SYMBOL_RATE,
@@ -119,12 +223,23 @@ impl Bank {
 
     /// Feed channel IQ; groups that are complete are appended to `out`, in time order.
     pub fn push(&mut self, iq: &[Complex32], out: &mut Vec<Group>) {
+        if let Some(a) = &self.adapt {
+            let gap = ADAPT_GAP_S * self.rate;
+            if a.resting.is_some() && (a.pos >= a.probe_at || a.pos - a.last_group > gap) {
+                self.wake();
+            }
+        }
+        let resting = self.adapt.as_ref().and_then(|a| a.resting);
         // The first CQPSK receiver's matched filter output serves the others
         // that filter the same way (it is most of their work).
         let mut lead: Option<usize> = None;
         for i in 0..self.rx.len() {
             let (before, rest) = self.rx.split_at_mut(i);
             let r = &mut rest[0];
+            let kind = Self::kind(r);
+            if resting == Some(kind) {
+                continue;
+            }
             self.syms.clear();
             match &mut r.demod {
                 Demod::Cqpsk(c) => match lead.map(|j| &before[j].demod) {
@@ -136,6 +251,11 @@ impl Bank {
                     }
                 },
                 Demod::Other(d) => d.push(iq, &mut self.syms),
+            }
+            if r.offset != 0.0 {
+                for s in self.syms.iter_mut() {
+                    s.sample += r.offset;
+                }
             }
             if let Some(s) = self.syms.last() {
                 r.progress = s.sample;
@@ -152,11 +272,15 @@ impl Bank {
                 let sample = f.sample;
                 if let Some(g) = self.pending.iter_mut().find(|g| (g.sample - sample).abs() < self.guard) {
                     g.frames.push(f);
+                    g.kinds.push(kind);
                 } else {
                     let at = self.pending.iter().position(|g| g.sample > sample).unwrap_or(self.pending.len());
-                    self.pending.insert(at, Pending { sample, frames: vec![f] });
+                    self.pending.insert(at, Pending { sample, frames: vec![f], kinds: vec![kind] });
                 }
             }
+        }
+        if let Some(a) = self.adapt.as_mut() {
+            a.pos += iq.len() as f64;
         }
         self.release(false, out);
     }
@@ -168,7 +292,7 @@ impl Bank {
 
     /// How far above the channel the carrier is, Hz, from whichever receiver measures it.
     pub fn offset_hz(&self) -> Option<f32> {
-        self.rx.iter().find_map(|r| match &r.demod {
+        self.rx.iter().filter(|r| self.running(r)).find_map(|r| match &r.demod {
             Demod::Cqpsk(c) => c.offset_hz(),
             Demod::Other(d) => d.offset_hz(),
         })
@@ -200,13 +324,13 @@ impl Instrumented for Bank {
         sink.counter("flywheels", flywheels);
         sink.counter("eqResets", eq_resets);
         sink.counter("frames", self.groups);
-        if let Some(q) = self.rx.iter().find_map(|r| match &r.demod {
+        if let Some(q) = self.rx.iter().filter(|r| self.running(r)).find_map(|r| match &r.demod {
             Demod::Other(d) => d.quality(),
             Demod::Cqpsk(_) => None,
         }) {
             sink.gauge("sep", q as f64);
         }
-        if let Some(e) = self.rx.iter().find_map(|r| match &r.demod {
+        if let Some(e) = self.rx.iter().filter(|r| self.running(r)).find_map(|r| match &r.demod {
             Demod::Cqpsk(c) => c.phase_error_deg(),
             Demod::Other(_) => None,
         }) {
@@ -220,7 +344,8 @@ impl Instrumented for Bank {
 
 impl Bank {
     fn release(&mut self, all: bool, out: &mut Vec<Group>) {
-        let min_progress = self.rx.iter().map(|r| r.progress).fold(f64::INFINITY, f64::min);
+        // (A resting kind's receivers don't hold the others up.)
+        let min_progress = self.rx.iter().filter(|r| self.running(r)).map(|r| r.progress).fold(f64::INFINITY, f64::min);
         while let Some(front) = self.pending.front() {
             if !all && front.sample + self.hold >= min_progress {
                 break;
@@ -232,8 +357,46 @@ impl Bank {
             }
             self.last_released = Some(g.sample);
             self.groups += 1;
+            self.adapt_to(&g);
             out.push(g.frames);
         }
+    }
+
+    /// One more frame slot for [`Adapt`]: which kind it needed; time to rest one, or to wake it.
+    fn adapt_to(&mut self, g: &Pending) {
+        let Some(a) = self.adapt.as_mut() else { return };
+        a.last_group = a.last_group.max(g.sample);
+        // Each kind's best copy: its NID's corrections.
+        let mut best = [None::<u8>; KINDS];
+        for (f, &k) in g.frames.iter().zip(&g.kinds) {
+            best[k] = Some(best[k].map_or(f.nid.errors, |e| e.min(f.nid.errors)));
+        }
+        if let Some(r) = a.resting {
+            // The kind left running struggles with its frames (or lost one): the signal is weaker.
+            let e = best[1 - r].unwrap_or(u8::MAX);
+            a.mean_errs += 0.1 * (e.min(11) as f32 - a.mean_errs);
+            if a.mean_errs >= ADAPT_WAKE_MEAN {
+                self.wake();
+            }
+            return;
+        }
+        a.groups += 1;
+        for k in 0..KINDS {
+            a.errs[k] += best[k].unwrap_or(11).min(11) as u32;
+            if let Some(e) = best[k] {
+                a.found[k] += 1;
+                if best[1 - k].is_none_or(|o| e < o) {
+                    a.needed[k] += 1;
+                }
+            }
+        }
+        if a.groups < ADAPT_GROUPS {
+            return;
+        }
+        // Rest the kind never needed while the other found nearly every frame: C4FM first (it costs the most).
+        let clean = |k: usize| a.errs[k] as f32 <= ADAPT_REST_MEAN * a.groups as f32;
+        let rest = [C4FM_KIND, CQPSK_KIND].into_iter().find(|&k| a.needed[k] == 0 && a.found[1 - k] * 10 >= a.groups * 9 && a.found[1 - k] >= a.found[k] && clean(1 - k));
+        *a = Adapt { pos: a.pos, last_group: a.last_group, resting: rest, probe_at: a.pos + ADAPT_PROBE_S * self.rate, ..Default::default() };
     }
 }
 
@@ -389,5 +552,39 @@ mod tests {
         assert!(imbe_score(&clear) < imbe_score(&faded));
         // Without erased bits the score is as it was.
         assert_eq!(imbe_score(&clear), 0.012 / 1.357);
+    }
+}
+
+#[cfg(test)]
+mod adapt_tests {
+    use super::*;
+    use crate::p25::synth::{dibits, imbe, modulate, Tx};
+
+    /// On a clean C4FM signal the CQPSK receivers find nothing: they rest,
+    /// and every frame the whole bank finds is still found.
+    #[test]
+    fn a_kind_that_never_helps_rests() {
+        let rate = 37_500.0;
+        let tx = Tx { nac: 0x293, talkgroup: 1201, source: 1_234_567, cipher: None, voice: (0..18 * 40).map(imbe).collect() };
+        let mut ph = 0.0;
+        let mut iq = modulate(&dibits(&tx.frames()), rate, 0.0, 0.3, &mut ph);
+        // (The channel runs on after the transmission, as live: the C4FM
+        // receiver's ~0.1 s latency holds its last frame till then.)
+        iq.extend(vec![Complex32::default(); (0.5 * rate) as usize]);
+        crate::nxdn::synth::add_noise(&mut iq, 0.002, &mut 1);
+        let run = |adapt: bool| {
+            let mut b = Bank::new(rate, BankConfig { adapt, ..Default::default() });
+            let (mut out, mut rested) = (Vec::new(), false);
+            for c in iq.chunks(192) {
+                b.push(c, &mut out);
+                rested |= b.adapt.as_ref().is_some_and(|a| a.resting == Some(CQPSK_KIND));
+            }
+            b.flush(&mut out);
+            (out.len(), rested)
+        };
+        let (all, never) = run(false);
+        let (adaptive, rested) = run(true);
+        assert!(!never && rested, "the CQPSK receivers rest");
+        assert_eq!(adaptive, all, "the same frames");
     }
 }

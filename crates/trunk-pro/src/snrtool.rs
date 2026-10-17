@@ -137,6 +137,10 @@ pub struct Variant {
     pub c4fm: C4fmOptions,
     /// P25: the C4FM receiver alone (no CQPSK receivers).
     pub c4fm_only: bool,
+    /// P25: the CQPSK receivers alone (no C4FM receiver).
+    pub cqpsk_only: bool,
+    /// P25: rest the kind of receiver that isn't helping (`noadapt`: every receiver always).
+    pub adapt: bool,
     /// DMR: no soft combining of repeated blocks.
     pub no_combining: bool,
     pub fsk2: smartnet::Fsk2Options,
@@ -150,6 +154,8 @@ pub struct Variant {
 fn variant(name: &str, kind: &str) -> Variant {
     let mut o = if kind == "dmr" { C4fmOptions::dmr() } else { C4fmOptions::default() };
     let mut c4fm_only = false;
+    let mut cqpsk_only = false;
+    let mut adapt = true;
     let mut no_combining = false;
     let mut fsk2 = smartnet::Fsk2Options::default();
     let mut grid_errs = None;
@@ -160,6 +166,8 @@ fn variant(name: &str, kind: &str) -> Variant {
         match part {
             "base" | "" => {}
             "c4fm-only" => c4fm_only = true,
+            "cqpsk-only" => cqpsk_only = true,
+            "noadapt" => adapt = false,
             "nocombine" => no_combining = true,
             "coherent" => cq.coherent = true,
             "noamp" => cq.soft_amplitude = false,
@@ -175,7 +183,7 @@ fn variant(name: &str, kind: &str) -> Variant {
             }
         }
     }
-    Variant { name: name.into(), c4fm: o, c4fm_only, no_combining, fsk2, grid_errs, cqpsk: cq }
+    Variant { name: name.into(), c4fm: o, c4fm_only, cqpsk_only, adapt, no_combining, fsk2, grid_errs, cqpsk: cq }
 }
 
 /// What a decode of the channel got: each message's time (s) and content,
@@ -246,7 +254,13 @@ fn run_dmr(iq: &[Complex32], rate: f64, v: &Variant) -> Count {
 
 fn run_p25(iq: &[Complex32], rate: f64, v: &Variant) -> Count {
     // The live receiver set (CQPSK, CQPSK/EQ, C4FM), or C4FM alone with `c4fm-only`.
-    let cfg = if v.c4fm_only { BankConfig { cqpsk: false, cqpsk_eq: false, ..Default::default() } } else { BankConfig::default() };
+    let cfg = if v.c4fm_only {
+        BankConfig { cqpsk: false, cqpsk_eq: false, ..Default::default() }
+    } else if v.cqpsk_only {
+        BankConfig { c4fm: false, ..Default::default() }
+    } else {
+        BankConfig { adapt: v.adapt, ..Default::default() }
+    };
     let mut bank = Bank::with_c4fm(rate, cfg, v.c4fm);
     let mut groups = Vec::new();
     let mut n = Count::default();

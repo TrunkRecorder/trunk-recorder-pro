@@ -144,7 +144,11 @@ channel**: CQPSK, CQPSK with equaliser, and C4FM, as `modulation` allows. It
 takes the best of each frame (`best_frame`, `best_tsbks`), and per IMBE
 codeword the copy the soft decoder trusted most (`best_imbe`; erased bits
 count against a copy). Frames from the receivers are matched by their
-sample instant.
+sample instant. With both kinds (`auto`), the kind that hasn't been needed
+for 40 frame slots on a clean signal rests (on simulcast the C4FM receiver,
+on C4FM the CQPSK ones: on real air each adds nothing to the other there)
+and wakes, started afresh, when the frames left need correcting on
+average, stop coming, or a minute has passed (`diversity::Adapt`).
 
 Shared pieces: `dsp::filters` (RRC and windowed-sinc taps), `bits` (MSB-first
 fields, CRC-CCITT), `ambe` (the 72-bit AMBE+2 codeword: `decode_vcw`).

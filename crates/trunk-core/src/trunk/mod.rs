@@ -1,6 +1,8 @@
 //! Above the radio: trunking messages, calls, voice tracking, conventional
 //! channels, the engine.
 
+#[cfg(test)]
+mod bench;
 pub mod calls;
 pub mod control;
 pub mod conventional;
