@@ -33,6 +33,36 @@
       }
     },
     {
+      "id": "mqtt",
+      "name": "MQTT",
+      "description": "Publishes calls, unit activity and system status to an MQTT broker.",
+      "repository": "https://github.com/TrunkRecorder/trunk-plugin-mqtt",
+      "license": "GPL-3.0-or-later",
+      "tier": "official",
+      "version": "0.1.5",
+      "api": 1,
+      "tag": "v0.1.5",
+      "commit": "29ec6c179309f7fc114969ae69e7d88d2a1ce62f",
+      "assets": {
+        "x86_64-unknown-linux-gnu": {
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-mqtt/releases/download/v0.1.5/mqtt-0.1.5-x86_64-unknown-linux-gnu.tar.gz",
+          "sha256": "2f956004116eaa280e8289a685fd8c519fc32c98dd26e1b9ed1210ee3b00c5bd"
+        },
+        "aarch64-unknown-linux-gnu": {
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-mqtt/releases/download/v0.1.5/mqtt-0.1.5-aarch64-unknown-linux-gnu.tar.gz",
+          "sha256": "3e884cd6317438d682d677c6b9d0d8a9d58b851c30059f425c5f121ff95bce1b"
+        },
+        "universal-apple-darwin": {
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-mqtt/releases/download/v0.1.5/mqtt-0.1.5-universal-apple-darwin.tar.gz",
+          "sha256": "f52a96f42e0df6a122a6d0c8ae8992be2f2f488f0e28f04bf81dd1b03da3cd34"
+        },
+        "x86_64-pc-windows-msvc": {
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-mqtt/releases/download/v0.1.5/mqtt-0.1.5-x86_64-pc-windows-msvc.zip",
+          "sha256": "4b156bc95144323e751ce834d9aa53a88f6a89a78cc83a44ee10c15cfe7113a2"
+        }
+      }
+    },
+    {
       "id": "openmhz",
       "name": "OpenMHz",
       "description": "Uploads recorded calls to OpenMHz.",

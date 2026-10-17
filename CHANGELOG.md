@@ -5,6 +5,8 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+## [0.1.15] — 2026-10-17
+
 - **A call to a radio isn't taken for a copy of a talkgroup call.** Multi-site matched copies of a
   call by number alone, and a unit-to-unit call's number is the radio called: one to radio 1234 on
   one site and a call on talkgroup 1234 on another, within 3 s, were taken for one call and one of
