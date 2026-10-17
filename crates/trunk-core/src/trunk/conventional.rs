@@ -4,6 +4,9 @@
 //! ```text
 //! every block, per channel, from the channelizer's own spectrum (no head):
 //!   band power (±5 kHz) vs the local noise floor → SNR (dB)
+//!   (AM: also its carrier's line, the strongest bin pair, against where
+//!    noise alone puts it — ~9 dB more sensitive, as the carrier is one
+//!    line — leaving out the steady lines of spurs; whichever reads higher)
 //! SNR ≥ squelch → open a head with pre-roll (the air from before detection)
 //!   → channel filter / carrier meter (±5.5 kHz: confirms the carrier, so FFT
 //!     leakage from a strong neighbour doesn't make a call)
@@ -57,6 +60,7 @@ use super::talkgroups::{Talkgroup, Talkgroups};
 use super::voice::TrackerOut;
 use super::voice::{self, VoiceDecoder, VoiceKind, VoiceSpec};
 use super::frames::VoiceFrame;
+use crate::dsp::am;
 use crate::dsp::fm::{self, ChannelFilter};
 use crate::dsp::tones::{Tone, ToneDetector};
 use crate::dsp::channelizer::floor_slices;
@@ -473,6 +477,9 @@ struct Chan {
     offset_hz: f64,
     slice: usize,
     power: f64,
+    /// AM: its carrier detector, and the spurs it has learned (as the open decoder last heard of them).
+    watch: Option<am::LineWatch>,
+    ignored: Vec<(f64, f64)>,
     bar_db: f64,
     raised: bool,
     open: Option<Open>,
@@ -544,7 +551,7 @@ impl Conventional {
             let n = floor_slices(rate);
             let slice = (((offset_hz + rate / 2.0) / rate * n as f64) as usize).min(n - 1);
             let bar = c.squelch_db.unwrap_or(cfg.squelch_db);
-            chans.push(Chan { cfg: c.clone(), rows, routed, skipped: [None, None], source: src, offset_hz, slice, power: 0.0, bar_db: bar, raised: false, open: None });
+            chans.push(Chan { cfg: c.clone(), rows, routed, skipped: [None, None], source: src, offset_hz, slice, power: 0.0, watch: (c.mode == ConvMode::Am).then(am::LineWatch::default), ignored: Vec::new(), bar_db: bar, raised: false, open: None });
         }
         if !outside.is_empty() {
             return Err(format!("Conventional channel(s) outside every source's bandwidth: {} MHz — move a center frequency or disable them.", outside.join(", ")));
@@ -656,6 +663,7 @@ impl Conventional {
         }
         let a = 1.0 - (-chz.block_seconds() / DETECT_TAU_S).exp();
         let dflt = self.cfg.squelch_db;
+        let mut bins = Vec::new();
         for (idx, ch) in self.chans.iter_mut().enumerate() {
             if ch.source != source {
                 continue;
@@ -664,7 +672,16 @@ impl Conventional {
             let floor = self.floors[source].slices[ch.slice].max(1e-30);
             let bp = chz.band_power(ch.offset_hz, ch.cfg.detect_half_bw());
             ch.power = if ch.power == 0.0 { bp } else { ch.power + a * (bp - ch.power) };
-            let snr_db = if gap { f64::NEG_INFINITY } else { 10.0 * (ch.power / floor).log10() };
+            let snr_db = if gap {
+                f64::NEG_INFINITY
+            } else if let Some(w) = &mut ch.watch {
+                // AM: its carrier's line, above where noise alone puts the strongest bins
+                // (steady lines left out), or its band power, whichever is the stronger.
+                let first = chz.band_bins(ch.offset_hz, ch.cfg.detect_half_bw(), &mut bins);
+                w.update(&bins, first, chz.bin_hz(), floor, chz.block_seconds(), a).max(10.0 * (ch.power / floor).log10())
+            } else {
+                10.0 * (ch.power / floor).log10()
+            };
             let base = ch.base_db(dflt);
             let meter_thr = (chz.noise_in_band(floor, ch.cfg.meter_bandwidth()) * 10f64.powf((base - CLOSE_BELOW_DB).max(3.0) / 10.0)) as f32;
             if ch.open.is_none() {
@@ -678,6 +695,14 @@ impl Conventional {
                 continue;
             }
             let Some(iq) = chz.output(ch.open.as_ref().unwrap().head).map(|v| v.to_vec()) else { continue };
+            if let Some(w) = &ch.watch {
+                // A spur learned while it's open isn't listened to either.
+                let ignore = w.ignored();
+                if ignore != ch.ignored {
+                    ch.open.as_mut().unwrap().voice.set_ignore(&ignore);
+                    ch.ignored = ignore;
+                }
+            }
             let max_call_s = if rules.max_call_s > 0.0 { rules.max_call_s } else { STUCK_CALL_S };
             Self::run(ch, &iq, now_s, meter_thr, idx as u32, ids, rules, max_call_s, out);
             // Reception: the channel's power while its carrier is up, against the floor (both as a channel's head would see them).
@@ -714,6 +739,9 @@ impl Conventional {
 
     #[allow(clippy::too_many_arguments)]
     fn open(ch: &mut Chan, chz: &mut Channelizer, now_s: f64, preroll_s: f64, bank_cfg: BankConfig, vocoder: mbe::Profile, meter_thr: f32, num: u32, ids: &CallIds, rules: &CallRules, out: &mut Vec<ConvOut>) {
+        if let Some(w) = &ch.watch {
+            ch.ignored = w.ignored();
+        }
         let (head, pre, start_sample) = chz.add_head(ch.offset_hz, ch.cfg.head_cutoff_hz(), preroll_s);
         let rate = chz.output_rate();
         let kind = match ch.cfg.mode {
@@ -736,6 +764,7 @@ impl Conventional {
             // For the tone detector.
             subaudible: ch.cfg.mode == ConvMode::Fm,
             analog: ch.cfg.analog,
+            ignore_hz: ch.ignored.clone(),
             keys: rules.keys.cloned(),
         });
         let meter = (!ch.cfg.mode.analog()).then(|| ChannelFilter::new(rate));
@@ -1281,7 +1310,8 @@ mod tests {
     /// Airband: AM calls on 25 kHz channels beside each other, one 2 kHz off
     /// frequency, one weak, an FM call beside them, and a strong AM neighbour
     /// that isn't a channel. (The source's centre is 155 MHz, so the AM
-    /// channels take the VHF filter, as 118–137 MHz would.)
+    /// channels take the VHF filter, as 118–137 MHz would. AM channels open
+    /// from 3 s, once they know the spurs.)
     #[test]
     fn am_calls_detected_beside_fm_and_neighbours() {
         let fs = 2_400_000.0;
@@ -1289,16 +1319,16 @@ mod tests {
         let am = |off: f64, snr_db: f64, on: Vec<(f64, f64)>| Tx { offset_hz: off, snr_db, on, ph: 0.0, am: true, audio: Vec::new() };
         let mut txs = vec![
             // Two transmissions 1.5 s apart (> the 1 s call timeout): two calls, 2 kHz off frequency.
-            am(202_000.0, 30.0, vec![(0.5, 2.5), (4.0, 5.0)]),
+            am(202_000.0, 30.0, vec![(3.5, 5.5), (7.0, 8.0)]),
             // A weak one, 15 dB above noise, on the next channel up.
-            am(225_000.0, 15.0, vec![(1.0, 3.0)]),
+            am(225_000.0, 15.0, vec![(4.0, 6.0)]),
             // A very strong neighbour (not a configured channel) 25 kHz from channel 3.
-            am(-75_000.0, 50.0, vec![(0.2, 5.5)]),
+            am(-75_000.0, 50.0, vec![(3.2, 8.5)]),
             Tx { offset_hz: 300_000.0, snr_db: 25.0, on: vec![(1.0, 2.0)], ph: 0.0, am: false, audio: Vec::new() },
         ];
         let air = |freq: f64, tg: u32| ConvChannel { talkgroup: tg, ..ConvChannel::new(freq, ConvMode::Am) };
         let chans = vec![air(c + 200_000.0, 1), air(c + 225_000.0, 2), air(c - 50_000.0, 3), fm(c + 300_000.0, 4)];
-        let (calls, _, _) = run(fs, 6.0, &mut txs, chans);
+        let (calls, _, _) = run(fs, 9.0, &mut txs, chans);
         let mut got: Vec<(u32, bool, f64)> = calls.iter().map(|(k, n, _)| (k.talkgroup, k.analog, *n as f64 / 8000.0)).collect();
         got.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let tgs: Vec<u32> = got.iter().map(|g| g.0).collect();
@@ -1308,6 +1338,43 @@ mod tests {
         for (g, want) in got.iter().zip([1.0, 2.0, 2.0, 1.0]) {
             assert!((g.2 - want).abs() < 0.2, "talkgroup {}: {:.2} s of audio, wanted {want}", g.0, g.2);
         }
+    }
+
+    /// A distant aircraft: AM 3 dB over the noise in its channel, 5 dB under
+    /// the 8 dB squelch by band power, opens by its carrier and is recorded
+    /// whole; an idle AM channel beside it never opens on the noise.
+    #[test]
+    fn weak_am_opens_by_its_carrier() {
+        let (fs, c) = (2_400_000.0, 155_000_000.0);
+        let mut txs = vec![Tx { offset_hz: 201_000.0, snr_db: 3.0, on: vec![(3.5, 6.0)], ph: 0.0, am: true, audio: Vec::new() }];
+        let air = |freq: f64, tg: u32| ConvChannel { talkgroup: tg, ..ConvChannel::new(freq, ConvMode::Am) };
+        let (calls, starts, _) = run(fs, 7.5, &mut txs, vec![air(c + 200_000.0, 1), air(c + 250_000.0, 2)]);
+        let got: Vec<(u32, f64)> = calls.iter().map(|(k, n, _)| (k.talkgroup, *n as f64 / 8000.0)).collect();
+        assert_eq!(starts, 1, "{got:?}");
+        let [(1, secs)] = got[..] else { panic!("{got:?}") };
+        assert!((secs - 2.5).abs() < 0.25, "{secs:.2} s of 2.5 s");
+    }
+
+    /// A spur (a steady, unmodulated line) in an AM channel from the start,
+    /// 4 dB over the channel's noise (under the squelch by band power, ~20 dB
+    /// over it as a line): learned in the warm-up, it never opens the channel
+    /// nor holds open the call of an aircraft beside it, 3 kHz away.
+    #[test]
+    fn am_spurs_are_learned() {
+        let (fs, c) = (2_400_000.0, 155_000_000.0);
+        let spur = |off: f64, on: (f64, f64)| Tx { offset_hz: off, snr_db: 4.0, on: vec![on], ph: 0.0, am: false, audio: vec![0.0; 8000 * 20] };
+        let mut txs = vec![
+            spur(200_000.0 - 3_000.0, (0.0, 12.0)),
+            Tx { offset_hz: 200_000.0, snr_db: 15.0, on: vec![(6.0, 8.0)], ph: 0.0, am: true, audio: Vec::new() },
+            // A channel with only a spur.
+            spur(251_200.0, (0.0, 12.0)),
+        ];
+        let air = |freq: f64, tg: u32| ConvChannel { talkgroup: tg, ..ConvChannel::new(freq, ConvMode::Am) };
+        let (calls, starts, _) = run(fs, 12.0, &mut txs, vec![air(c + 200_000.0, 1), air(c + 250_000.0, 2)]);
+        let got: Vec<(u32, f64)> = calls.iter().map(|(k, n, _)| (k.talkgroup, *n as f64 / 8000.0)).collect();
+        assert_eq!(starts, 1, "{got:?}");
+        let [(1, secs)] = got[..] else { panic!("{got:?}") };
+        assert!((secs - 2.0).abs() < 0.25, "{secs:.2} s of 2 s");
     }
 
     #[test]

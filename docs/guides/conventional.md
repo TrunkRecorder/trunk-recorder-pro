@@ -165,7 +165,8 @@ Here is what happens, step by step:
    signals in a slice don't raise it, and measuring per slice follows the SDR's passband, which is
    usually lower near the edges.
 2. **Each channel's energy is compared with the floor.** For every block of samples, the power
-   within ±5 kHz of the channel (±3.125 kHz for NXDN48; an analog channel's bandwidth less 1 kHz) is averaged, lightly smoothed (20 ms), and
+   within ±5 kHz of the channel (±3.125 kHz for NXDN48; an analog channel's bandwidth less 1 kHz) is averaged
+   (AM also looks for its carrier's line: see [Airband](#airband-am)), lightly smoothed (20 ms), and
    compared with the floor under it. The difference in dB is the channel's SNR.
 3. **The channel opens at the squelch.** When the SNR reaches the channel's squelch (default
    8 dB), a receiver is started on that frequency. It begins 0.3 s in the past: the air from just
@@ -216,6 +217,17 @@ How AM differs from FM here:
   military radios more, which is why UHF channels get a wider filter by default.
 - **Impulse noise is limited.** Clicks from ignition and power lines are clipped at 150 %
   modulation, above any voice, so they don't blast through.
+- **Weak aircraft are heard by their carrier.** At least half of an AM signal's power is its
+  carrier, a single line in the spectrum, while noise spreads across the channel. Besides the
+  channel's power, an AM channel listens for that line, which stands out of the noise about
+  10 dB sooner: a transmission whose power in the channel is no higher than the noise's opens it
+  at the default squelch of 8 dB. The squelch applies to both, and so does its audio gate.
+- **Spurs are learned.** A line detector also hears the steady, unmodulated whistles ("birdies")
+  that SDRs and nearby electronics put in many channels. An AM channel learns them: in its first
+  3 s (when it doesn't open), and afterwards any line that stays put for about a minute. It then
+  ignores them. A birdie that starts later can open a channel for that first minute. A carrier
+  strong enough to open the channel by its power, such as a nearby ATIS, is still recorded
+  however steady it is; a weak continuous broadcast is learned like a birdie.
 
 A good first test is the airport's ATIS, which transmits all the time: it should record as one
 long call, cut into parts at **Longest call, s** if you have set one.

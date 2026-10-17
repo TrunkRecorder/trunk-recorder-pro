@@ -478,6 +478,7 @@ mod tests {
             squelch: 0.0,
             subaudible: false,
             analog: Default::default(),
+            ignore_hz: Vec::new(),
             keys: keys.map(Arc::new),
         });
         let mut out = Vec::new();

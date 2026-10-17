@@ -286,6 +286,28 @@ impl Channelizer {
         acc / (2 * hw + 1) as f64
     }
 
+    /// Each bin's |X|² within ±`half_width_hz` of `offset_hz` in the latest
+    /// block, lowest frequency first, into `out` (same units as
+    /// [`Channelizer::band_power`]); returns the first one's offset from
+    /// `offset_hz`, Hz. Empty before the first block.
+    pub fn band_bins(&self, offset_hz: f64, half_width_hz: f64, out: &mut Vec<f64>) -> f64 {
+        out.clear();
+        if self.history_count == 0 {
+            return 0.0;
+        }
+        let n = self.n as i64;
+        let slot = ((self.block - 1) as usize % self.hist_cap) * self.n;
+        let c = (offset_hz / self.fs * self.n as f64).round() as i64;
+        let hw = ((half_width_hz / self.fs * self.n as f64).round() as i64).max(1);
+        out.extend((c - hw..=c + hw).map(|k| self.spectra[slot + k.rem_euclid(n) as usize].norm_sqr() as f64));
+        (c - hw) as f64 * self.fs / self.n as f64 - offset_hz
+    }
+
+    /// The width of a bin, Hz.
+    pub fn bin_hz(&self) -> f64 {
+        self.fs / self.n as f64
+    }
+
     /// The latest block's noise floor, as mean noise |X|² per bin in each of
     /// `out.len()` equal slices of the band (first slice at −fs/2). Each is
     /// the slice's median / ln 2 — noise bins are exponential, whose median is

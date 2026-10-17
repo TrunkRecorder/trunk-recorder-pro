@@ -10,6 +10,9 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   a fading aircraft keeps its volume; impulse noise is clipped; and a transmitter a few kHz off
   frequency is heard as it is. Pick **Analog AM** in Setup, `"mode": "am"`, `am` in a channel CSV,
   or `--am` on `trunk-pro replay`. See [Airband (AM)](docs/guides/conventional.md#airband-am).
+  AM channels listen for the carrier's spectral line as well as the channel's power, which opens
+  them about 10 dB sooner, so distant aircraft are heard; the steady whistles of SDR spurs and
+  nearby electronics are learned and ignored.
 - **Channel bandwidth.** Each FM or AM channel can set its filter width (`bandwidthKhz`, Setup's
   new **Bandwidth** column, the CSV's `Bandwidth kHz`): wide FM for 25 kHz channels, 6 kHz for
   8.33 kHz airband, wider for UHF military air (its default from 225 MHz).

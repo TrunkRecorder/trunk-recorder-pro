@@ -4,6 +4,7 @@
 //! ```text
 //! per channel sample:  slow meter (the demod's, ~10 ms) up for `open` → opens
 //!                      fast meter (a boxcar) down for `hang` → closes
+//!                      (or a carrier the demod detected itself: Gate::decide)
 //! per 8 kHz sample:    into a delay line, marked with the gate; out of it,
 //!                      only what the gate let through
 //! ```
@@ -17,7 +18,8 @@
 //! open delay. A fade shorter than the hang keeps the gate open.
 //!
 //! The line is the hang plus the guard and a ramp long (15 ms at the
-//! defaults), which is how far behind the air the audio runs.
+//! defaults; more behind a slower detector), which is how far behind the
+//! air the audio runs.
 
 use num_complex::Complex32;
 
@@ -62,6 +64,8 @@ pub struct Gate {
     down_run: u32,
     up_streak: u32,
     hang: u32,
+    /// Opening: the carrier's first output samples not let through.
+    open_margin: usize,
     open: bool,
     /// The gate as the last 8 kHz sample saw it.
     was_open: bool,
@@ -80,8 +84,20 @@ impl Gate {
     /// for FM (1 ms), long enough for AM not to read its modulation's
     /// troughs as the carrier going.
     pub fn new(rate: f64, timing: SquelchTiming, fast_s: f64) -> Self {
+        Self::build(rate, timing, fast_s, fast_s + GUARD_S, fast_s + GUARD_S, LEAD_S)
+    }
+
+    /// A gate whose carrier the demod decides ([`Gate::decide`]), with a
+    /// detector that tells the carrier has gone up to `lag_s` late. Opening,
+    /// the audio of all but the first ms of the carrier it has seen is let
+    /// through, up to the open delay's worth.
+    pub fn detected(rate: f64, timing: SquelchTiming, lag_s: f64) -> Self {
+        Self::build(rate, timing, 0.0, lag_s + GUARD_S, GUARD_S, timing.open_s + RAMP_S)
+    }
+
+    fn build(rate: f64, timing: SquelchTiming, fast_s: f64, guard_s: f64, open_margin_s: f64, lead_s: f64) -> Self {
         let out = |s: f64| (s * AUDIO_RATE).round() as usize;
-        let guard = out(fast_s + GUARD_S);
+        let guard = out(guard_s);
         let ramp_n = out(RAMP_S);
         let hang = ((timing.hang_s * rate) as u32).max(1);
         let len = out(timing.hang_s).max(1) + guard + ramp_n + 2;
@@ -95,14 +111,15 @@ impl Gate {
             down_run: 0,
             up_streak: 0,
             hang,
+            open_margin: out(open_margin_s),
             open: false,
             was_open: false,
-            line: vec![(0.0, 0.0, 0.0); len.max(out(LEAD_S) + 2)],
+            line: vec![(0.0, 0.0, 0.0); len.max(out(lead_s) + 2)],
             pos: 0,
             gain: 0.0,
             ramp: 1.0 / ramp_n as f32,
             ramp_n,
-            lead: out(LEAD_S),
+            lead: out(lead_s),
             guard,
         }
     }
@@ -111,7 +128,6 @@ impl Gate {
     /// meter reads above `open_power`. Returns whether the gate is open.
     #[inline]
     pub fn meter(&mut self, y: Complex32, slow_up: bool, open_power: f32) -> bool {
-        self.up_run = if slow_up { self.up_run.saturating_add(1) } else { 0 };
         let p = y.norm_sqr();
         self.fast_sum += (p - self.fast[self.fast_pos]) as f64;
         self.fast[self.fast_pos] = p;
@@ -121,6 +137,15 @@ impl Gate {
             self.fast_sum = self.fast.iter().map(|&v| v as f64).sum();
         }
         let fast_up = self.fast_sum > open_power as f64 * self.fast.len() as f64;
+        self.decide(slow_up, fast_up)
+    }
+
+    /// One channel sample, the carrier decided by the caller: `slow_up` opens
+    /// (held for the open delay), `fast_up` gone for the hang closes. Returns
+    /// whether the gate is open.
+    #[inline]
+    pub fn decide(&mut self, slow_up: bool, fast_up: bool) -> bool {
+        self.up_run = if slow_up { self.up_run.saturating_add(1) } else { 0 };
         if fast_up {
             self.down_run = 0;
             self.up_streak = self.up_streak.saturating_add(1);
@@ -152,7 +177,7 @@ impl Gate {
         if self.open && !self.was_open {
             // The carrier's last few ms (past the guard), ramped up.
             let up = (self.up_streak as f64 / self.step) as usize;
-            let lead = self.lead.min(up.saturating_sub(self.guard)).min(room);
+            let lead = self.lead.min(up.saturating_sub(self.open_margin)).min(room);
             self.gain = 0.0;
             for k in (1..=lead).rev() {
                 self.gain = (self.gain + self.ramp).min(1.0);

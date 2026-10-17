@@ -198,6 +198,9 @@ pub struct VoiceSpec {
     pub subaudible: bool,
     /// Analog: bandwidth, de-emphasis, AM level, squelch timing.
     pub analog: AnalogTuning,
+    /// AM: bands (Hz from the centre) with a steady line in them (a spur),
+    /// which its squelch doesn't listen to.
+    pub ignore_hz: Vec<(f64, f64)>,
     /// The system's keys: P25 voice it has the key for is decrypted.
     pub keys: Option<Arc<Keyring>>,
 }
@@ -220,6 +223,8 @@ pub trait VoiceDecoder: Send {
     fn set_params(&mut self, _p: &VoiceParams) {}
     /// Analog: the carrier power that opens the squelch.
     fn set_squelch(&mut self, _open_power: f32) {}
+    /// AM: bands (Hz from the centre) with a steady line in them, which the squelch doesn't listen to.
+    fn set_ignore(&mut self, _ignore: &[(f64, f64)]) {}
     /// What the air said about `slot`, as of the last push.
     fn air(&self, _slot: u8) -> AirInfo {
         AirInfo::default()
@@ -269,7 +274,7 @@ pub fn build(spec: &VoiceSpec) -> Box<dyn VoiceDecoder> {
             subaudible: spec.subaudible,
             carrier: false,
         }),
-        VoiceKind::Am => Box::new(Analog { demod: Demod::Am(Am::new(spec.rate, &spec.analog)), ids: None, squelch: spec.squelch, subaudible: false, carrier: false }),
+        VoiceKind::Am => Box::new(Analog { demod: Demod::Am(Am::new(spec.rate, &spec.analog, &spec.ignore_hz)), ids: None, squelch: spec.squelch, subaudible: false, carrier: false }),
     }
 }
 
@@ -531,6 +536,11 @@ impl VoiceDecoder for Analog {
     }
     fn set_squelch(&mut self, open_power: f32) {
         self.squelch = open_power;
+    }
+    fn set_ignore(&mut self, ignore: &[(f64, f64)]) {
+        if let Demod::Am(am) = &mut self.demod {
+            am.set_ignore(ignore);
+        }
     }
     fn carrier(&self) -> Option<bool> {
         Some(self.carrier)

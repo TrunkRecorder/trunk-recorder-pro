@@ -623,6 +623,7 @@ impl SysHost<'_> {
             squelch: (noise * 10f64.powf(ANALOG_SQUELCH_DB / 10.0)) as f32,
             subaudible: false,
             analog: AnalogTuning::default(),
+            ignore_hz: Vec::new(),
             keys: self.keys.clone(),
         });
         let mut calls = [None, None];
