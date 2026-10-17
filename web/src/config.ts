@@ -351,6 +351,60 @@ export function siteSiblings(c: Config, sys: System, live: LiveSite[] = []): Sys
   return c.systems.filter((x) => x !== sys && multiSiteGroup(x, liveOf(x)) === group && !same(site(x), site(sys)) && !same(cc(x), cc(sys)));
 }
 
+/** A group the recorder names from the air ("p25:bee00.1a2") in words: "P25 WACN BEE00 · SysID 1A2". */
+function groupText(group: string | null): string {
+  const [proto, id = ""] = (group ?? "").split(":");
+  const [a, b] = id.split(".").map((x) => x.toUpperCase());
+  if (proto === "p25") return `P25 WACN ${a} · SysID ${b}`;
+  if (proto === "smartnet") return `SmartNet SysID ${a}`;
+  if (proto === "nxdn") return `NXDN system code ${a}`;
+  return group ?? "";
+}
+
+const hexText = (v: number | null | undefined) => (v === null || v === undefined ? "?" : v.toString(16).toUpperCase());
+
+/** "WACN BEE00 · SysID 445 · site 1-3" from what is known. */
+export function siteText(id: SiteIdentity): string {
+  const parts: string[] = [];
+  if (id.wacn != null) parts.push(`WACN ${hexText(id.wacn)}`);
+  if (id.sysId != null) parts.push(`SysID ${hexText(id.sysId)}`);
+  if (id.nac != null) parts.push(`NAC ${hexText(id.nac)}`);
+  if (id.site != null) parts.push(id.rfss != null ? `site ${id.rfss}-${id.site}` : `site ${id.site}`);
+  else if (id.rfss != null) parts.push(`RFSS ${id.rfss}`);
+  return parts.join(" · ");
+}
+
+/** A system's other sites (short names) and why they are one system, as Setup and the dashboard both say it. */
+export interface MultiSite {
+  siblings: string[];
+  /** For a tooltip: `Site group "capmax" — calls saved once`. */
+  why: string;
+}
+
+/** `sys`'s multi-site partners (siteSiblings), with why; null: no other site. */
+export function multiSitePartners(c: Config, sys: System, live: LiveSite[] = []): MultiSite | null {
+  const siblings = siteSiblings(c, sys, live);
+  if (!siblings.length) return null;
+  const group = multiSiteGroup(sys, live.find((y) => y.shortName === sys.shortName));
+  const groupWhy = sys.siteGroup?.trim()
+    ? `Site group "${sys.siteGroup.trim()}"`
+    : group && multiSiteGroup(sys) === group
+      ? siteText(sys.expect)
+      : `The same system on the air (${groupText(group)})`;
+  return { siblings: siblings.map((x) => x.shortName), why: `${groupWhy} — ${c.recording.dropDuplicateCalls ? "calls saved once" : "every site's copy saved"}` };
+}
+
+/** `systems` with the sites of one system next to each other, each group where its first site was. */
+export function bySite(c: Config, systems: System[], live: LiveSite[] = []): System[] {
+  const out: System[] = [];
+  for (const x of systems) {
+    if (out.includes(x)) continue;
+    out.push(x);
+    for (const y of siteSiblings(c, x, live)) if (systems.includes(y) && !out.includes(y)) out.push(y);
+  }
+  return out;
+}
+
 /** The system a control channel is already configured on, if any. */
 export function systemWithChannel(c: Config, hz: number): System | undefined {
   return c.systems.find((x) => [...x.controlChannelsHz, ...watchedChannels(x)].some((f) => Math.abs(f - hz) < 6_000));

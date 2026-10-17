@@ -5,6 +5,10 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **The dashboard says which systems are sites of one system again.** Since the dashboard was
+  redesigned it didn't: each site's card on Overview, and a system's Decode page, now say
+  "multi-site with …" (why, in the tooltip — as Setup's chip says it), and the sites of one
+  system sit next to each other.
 - **Airspy sample packing.** Airspys now send 12-bit samples packed over USB (`packing`, on by
   default; **Pack samples** in Setup): a quarter less of the bus. An Airspy at 10 MSPS nearly
   fills a USB 2.0 bus by itself; with several radios on one bus, that's what overflows.
