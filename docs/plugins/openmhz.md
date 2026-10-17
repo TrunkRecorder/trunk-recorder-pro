@@ -92,6 +92,7 @@ For each system (the system's card, or its `plugins.openmhz` in `config.json`):
 |---|---|---|---|---|
 | `apiKey` | ✓ | | string | **API key.** The system's upload key from OpenMHz. Needed for each system you upload; a system without one isn't uploaded. |
 | `systemName` | | the system's short name | string | **Name on OpenMHz.** The system's Short Name on OpenMHz, when it differs from its short name here. |
+| `sites` | | (none) | list | **Sites of their own.** A site of the system that is a system of its own on OpenMHz: `site` (its name, as under Sites in Setup), `apiKey`, and `systemName` if not the site's name. Its calls go there; the other sites' to the system's. (Plugin 0.1.5 and later.) |
 
 ```json
 {

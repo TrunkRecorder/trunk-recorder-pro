@@ -89,7 +89,9 @@ After its own arguments, three paths, in the same order as Trunk Recorder's `upl
 3. its M4A
 
 The script runs with the recordings folder as its working folder, with no input, and with the
-recorder's own environment; no extra environment variables are set. That environment is the
+recorder's own environment plus `SHORT_NAME` (the call's system), `SITE` (the site it was kept
+from) and `TALKGROUP`, as in its JSON (plugin 0.1.3 and later). A call heard on several sites of a
+system is saved once, in the system's folder: `SITE` tells the sites apart. That environment is the
 app's, so if the recorder was started from the desktop, commands *inside* your script may not be
 on its PATH: use full paths there, or set `PATH` at the top of the script.
 
