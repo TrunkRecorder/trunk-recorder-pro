@@ -65,6 +65,7 @@ pub async fn serve(ctx: Arc<Ctx>, listener: std::net::TcpListener) -> std::io::R
     let app = api(Router::new())
         .route("/store/screenshots/{sha256}", get(store_screenshot))
         .route("/interfaces/{id}/screenshots/{n}", get(interface_screenshot))
+        .route("/perf-report.json", get(perf_report))
         .fallback(|uri: Uri| async move { builtin(uri.path().trim_start_matches('/')) })
         .layer(Extension(Door::Builtin))
         .layer(middleware::from_fn_with_state((ctx.clone(), loopback), guard))
@@ -107,6 +108,13 @@ fn api(r: Router<Arc<Ctx>>) -> Router<Arc<Ctx>> {
         .route("/api/protocol.ts", get(|| async { ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], PROTOCOL).into_response() }))
         .route("/api/{*path}", get(|UrlPath(p): UrlPath<String>| async move { api_file(&p) }))
         .route("/calls/{*path}", get(call_file))
+}
+
+/// The performance report ([`crate::perf`]), as a download: the built-in interface's port only.
+async fn perf_report(State(ctx): State<Arc<Ctx>>) -> Response {
+    let Ok(r) = tokio::task::spawn_blocking(move || crate::perf::report(&ctx)).await else { return StatusCode::INTERNAL_SERVER_ERROR.into_response() };
+    let disposition = format!("attachment; filename=\"{}\"", crate::perf::download_name());
+    ([(header::CONTENT_TYPE, "application/json".to_string()), (header::CONTENT_DISPOSITION, disposition)], serde_json::to_string_pretty(&r).unwrap_or_default()).into_response()
 }
 
 /// Interface `id`'s server: its folder, and the API with its access.
