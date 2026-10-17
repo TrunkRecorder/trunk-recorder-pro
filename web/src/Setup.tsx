@@ -1652,7 +1652,7 @@ function SystemCard(props: { c: Config; i: number }) {
         {sys.type !== "dmr" && sys.type !== "nxdn" && (
           <Field label={sys.type === "smartnet" ? "P25 voice modulation" : "Modulation"}>
             <select value={sys.modulation} onChange={(e) => edit((x) => void (x.modulation = e.target.value as System["modulation"]))}>
-              <option value="auto">Auto (both receivers)</option>
+              <option value="auto">Detect (then only that receiver)</option>
               <option value="fsk4">C4FM (fsk4)</option>
               <option value="qpsk">CQPSK / LSM simulcast (qpsk)</option>
             </select>

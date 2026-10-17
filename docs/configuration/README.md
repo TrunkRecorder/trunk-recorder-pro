@@ -166,7 +166,7 @@ Notes on the example (the frequencies and band plan numbers are placeholders; us
   (`centerHz: 0`): the first is placed over the first system, the second over whatever the first
   doesn't reach. The second leaves 100 kHz unused at each edge instead of the default 75 kHz. The
   third is set by hand to 154.4 MHz for the conventional channels (Auto would work too).
-- **`dcfd`.** `modulation: "auto"` runs both P25 receivers and keeps the better frame. `expect`
+- **`dcfd`.** `modulation: "auto"` detects which P25 receiver the channels need, then runs only that. `expect`
   locks it to NAC `0x443`, written in decimal (1091). Its own `recording` drops calls under a second;
   every other rule follows the global `recording`. Its OpenMHz key is a per-system plugin setting.
 - **`wmata`.** A UHF SmartNet system needs `400_custom` and the four band plan numbers; Find my

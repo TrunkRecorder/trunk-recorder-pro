@@ -35,62 +35,54 @@ pub struct BankConfig {
     /// Pass bit reliabilities to the framer (soft Viterbi / soft FEC). Off:
     /// hard decisions only, for comparisons.
     pub soft: bool,
-    /// With both kinds of receiver: rest the kind that isn't helping ([`Adapt`]).
-    pub adapt: bool,
+    /// With both kinds of receiver (`modulation: auto`): find which the
+    /// channel needs, then run only that ([`Detect`]). Off: both, always.
+    pub detect: bool,
 }
 
 impl Default for BankConfig {
     fn default() -> Self {
-        BankConfig { cqpsk: true, cqpsk_eq: true, c4fm: true, eq_taps: 9, eq_mu: 0.02, framer: FramerOptions::default(), soft: true, adapt: true }
+        BankConfig { cqpsk: true, cqpsk_eq: true, c4fm: true, eq_taps: 9, eq_mu: 0.02, framer: FramerOptions::default(), soft: true, detect: true }
     }
 }
 
-/// The CQPSK receivers and the C4FM one, as kinds of receiver ([`Adapt`]).
+/// The CQPSK receivers and the C4FM one, as kinds of receiver ([`Detect`]).
 const KINDS: usize = 2;
 const CQPSK_KIND: usize = 0;
 const C4FM_KIND: usize = 1;
 
-/// Frame slots looked at before a kind is rested.
-const ADAPT_GROUPS: u32 = 40;
-/// A resting kind is woken this often (s of the channel), to look again.
-const ADAPT_PROBE_S: f64 = 60.0;
-/// Nor while frames come no further apart than this, s.
-const ADAPT_GAP_S: f64 = 1.0;
-/// It wakes when the kind left running needs this many NID corrections on
-/// average (a frame lost counting as 11, the most a NID corrects). Not on one
-/// frame's: on a strong simulcast signal CQPSK frames need 0–1, now and
-/// then 4–7, and the C4FM receiver still decodes none the CQPSK ones miss.
-const ADAPT_WAKE_MEAN: f32 = 1.5;
-/// And a kind rests only while the other's frames are cleaner than this on
-/// average (a weak signal keeps every receiver: both count then).
-const ADAPT_REST_MEAN: f32 = 0.8;
+/// Frame slots seen before a kind is chosen, at the least; with no clear
+/// winner by the most, the better one (C4FM on a tie) is taken.
+const DETECT_SLOTS: u32 = 40;
+const DETECT_MAX_SLOTS: u32 = 200;
+/// A clear winner: at least this many NID corrections fewer (two lost
+/// frames' worth), and no more than this share of the other's.
+const DETECT_MARGIN: u32 = 22;
+const DETECT_SHARE: f32 = 0.75;
+/// No frame slot for this long, s: the signal's gone; detect afresh when it's back.
+const DETECT_LOST_S: f64 = 10.0;
 
-/// Which kinds of receiver run. On a system of one modulation only one kind
-/// ever decodes a frame the other doesn't (`tool snr`, real captures: on
-/// simulcast CQPSK the C4FM receiver adds nothing at any SNR; on C4FM the
-/// CQPSK receivers find no frame at all) — yet the other costs as much or
-/// more (C4FM: two thirds of a P25 channel). After [`ADAPT_GROUPS`] frame
-/// slots in which one kind was never needed — never alone in a slot, never
-/// the copy with fewer NID corrections — while the other found nearly every
-/// one, it rests. It wakes, its receivers started afresh, as soon as the
-/// other kind's frames need correcting or stop for [`ADAPT_GAP_S`] (the
-/// signal weakening: both kinds count again), and every [`ADAPT_PROBE_S`]
-/// to look again.
+/// `modulation: auto`: which kind of receiver the channel needs, found
+/// once. On real air one kind does all the work (`tool snr`: on simulcast
+/// CQPSK the C4FM receiver adds nothing at any SNR, and decodes less than
+/// half of it at 7 dB; on C4FM the CQPSK receivers find no frame at all),
+/// while running both costs as much again or more. Both run until one
+/// has clearly needed fewer NID corrections over [`DETECT_SLOTS`] frame
+/// slots or more — a frame it missed counting as 11, the most a NID
+/// corrects — and then only that one. (One window isn't enough: on a
+/// strong simulcast signal C4FM can find every frame of 40.) Detected
+/// again from scratch when the channel is reopened (another control
+/// channel) or after [`DETECT_LOST_S`] without a frame.
 #[derive(Default)]
-struct Adapt {
-    /// Since the last look: slots in which each kind was needed, or found the frame, and slots seen.
-    needed: [u32; KINDS],
-    found: [u32; KINDS],
-    /// Each kind's NID corrections (its best copy; 11 when it missed the frame), summed.
+struct Detect {
+    /// Each kind's NID corrections summed over the slots seen (a slot it missed: 11).
     errs: [u32; KINDS],
-    groups: u32,
-    resting: Option<usize>,
-    /// Channel samples pushed; when to wake the resting kind to look again; the last frame slot's sample.
+    slots: u32,
+    /// The kind chosen; the other's receivers no longer run.
+    locked: Option<usize>,
+    /// Channel samples pushed, and the last frame slot's sample.
     pos: f64,
-    probe_at: f64,
-    last_group: f64,
-    /// While one kind rests: the other's NID corrections, smoothed.
-    mean_errs: f32,
+    last_slot: f64,
 }
 
 /// CQPSK receivers are kept as such so they can share a matched filter.
@@ -128,9 +120,9 @@ pub struct Bank {
     /// The lead CQPSK receiver's matched filter output for this push.
     filtered: [Vec<f32>; 2],
     pub groups: u64,
-    /// None: every receiver runs, always (one kind configured, or `adapt` off).
-    adapt: Option<Adapt>,
-    /// To start a resting kind's receivers afresh.
+    /// None: every receiver runs, always (one kind configured, or `detect` off).
+    detect: Option<Detect>,
+    /// To start the other kind's receivers afresh when detecting again.
     rate: f64,
     cfg: BankConfig,
     c4fm: C4fmOptions,
@@ -171,15 +163,20 @@ impl Bank {
 
     /// Whether receiver `r` runs now.
     fn running(&self, r: &Rx) -> bool {
-        self.adapt.as_ref().is_none_or(|a| a.resting != Some(Self::kind(r)))
+        self.detect.as_ref().is_none_or(|d| d.locked.is_none_or(|k| k == Self::kind(r)))
     }
 
-    /// The resting kind's receivers again, started afresh, from now.
-    fn wake(&mut self) {
-        let Some(a) = self.adapt.as_mut() else { return };
-        let Some(k) = a.resting.take() else { return };
-        *a = Adapt { pos: a.pos, last_group: a.pos, ..Default::default() };
-        let pos = a.pos;
+    /// The kind detected, once one is: "CQPSK" or "C4FM".
+    pub fn detected(&self) -> Option<&'static str> {
+        self.detect.as_ref()?.locked.map(|k| if k == CQPSK_KIND { "CQPSK" } else { "C4FM" })
+    }
+
+    /// Detect afresh: the kind not chosen started again, from now.
+    fn redetect(&mut self) {
+        let Some(d) = self.detect.as_mut() else { return };
+        let Some(chosen) = d.locked.take() else { return };
+        *d = Detect { pos: d.pos, last_slot: d.pos, ..Default::default() };
+        let (k, pos) = (1 - chosen, d.pos);
         let fresh = Self::receivers(self.rate, self.cfg, self.c4fm);
         for (r, f) in self.rx.iter_mut().zip(fresh) {
             if Self::kind(r) == k {
@@ -201,7 +198,7 @@ impl Bank {
         let rx = Self::receivers(rate, cfg, c4fm);
         let both = rx.iter().any(|r| Self::kind(r) == CQPSK_KIND) && rx.iter().any(|r| Self::kind(r) == C4FM_KIND);
         Bank {
-            adapt: (cfg.adapt && both).then(Adapt::default),
+            detect: (cfg.detect && both).then(Detect::default),
             rate,
             cfg,
             c4fm,
@@ -223,13 +220,10 @@ impl Bank {
 
     /// Feed channel IQ; groups that are complete are appended to `out`, in time order.
     pub fn push(&mut self, iq: &[Complex32], out: &mut Vec<Group>) {
-        if let Some(a) = &self.adapt {
-            let gap = ADAPT_GAP_S * self.rate;
-            if a.resting.is_some() && (a.pos >= a.probe_at || a.pos - a.last_group > gap) {
-                self.wake();
-            }
+        if self.detect.as_ref().is_some_and(|d| d.locked.is_some() && d.pos - d.last_slot > DETECT_LOST_S * self.rate) {
+            self.redetect();
         }
-        let resting = self.adapt.as_ref().and_then(|a| a.resting);
+        let resting = self.detect.as_ref().and_then(|d| d.locked).map(|k| 1 - k);
         // The first CQPSK receiver's matched filter output serves the others
         // that filter the same way (it is most of their work).
         let mut lead: Option<usize> = None;
@@ -279,8 +273,8 @@ impl Bank {
                 }
             }
         }
-        if let Some(a) = self.adapt.as_mut() {
-            a.pos += iq.len() as f64;
+        if let Some(d) = self.detect.as_mut() {
+            d.pos += iq.len() as f64;
         }
         self.release(false, out);
     }
@@ -344,7 +338,7 @@ impl Instrumented for Bank {
 
 impl Bank {
     fn release(&mut self, all: bool, out: &mut Vec<Group>) {
-        // (A resting kind's receivers don't hold the others up.)
+        // (The kind not chosen doesn't hold the other up.)
         let min_progress = self.rx.iter().filter(|r| self.running(r)).map(|r| r.progress).fold(f64::INFINITY, f64::min);
         while let Some(front) = self.pending.front() {
             if !all && front.sample + self.hold >= min_progress {
@@ -357,46 +351,40 @@ impl Bank {
             }
             self.last_released = Some(g.sample);
             self.groups += 1;
-            self.adapt_to(&g);
+            self.detect_on(&g);
             out.push(g.frames);
         }
     }
 
-    /// One more frame slot for [`Adapt`]: which kind it needed; time to rest one, or to wake it.
-    fn adapt_to(&mut self, g: &Pending) {
-        let Some(a) = self.adapt.as_mut() else { return };
-        a.last_group = a.last_group.max(g.sample);
-        // Each kind's best copy: its NID's corrections.
+    /// One more frame slot for [`Detect`]: each kind's NID corrections; a kind chosen once one is clearly better.
+    fn detect_on(&mut self, g: &Pending) {
+        let Some(d) = self.detect.as_mut() else { return };
+        d.last_slot = d.last_slot.max(g.sample);
+        if d.locked.is_some() {
+            return;
+        }
         let mut best = [None::<u8>; KINDS];
         for (f, &k) in g.frames.iter().zip(&g.kinds) {
             best[k] = Some(best[k].map_or(f.nid.errors, |e| e.min(f.nid.errors)));
         }
-        if let Some(r) = a.resting {
-            // The kind left running struggles with its frames (or lost one): the signal is weaker.
-            let e = best[1 - r].unwrap_or(u8::MAX);
-            a.mean_errs += 0.1 * (e.min(11) as f32 - a.mean_errs);
-            if a.mean_errs >= ADAPT_WAKE_MEAN {
-                self.wake();
-            }
-            return;
-        }
-        a.groups += 1;
+        d.slots += 1;
         for k in 0..KINDS {
-            a.errs[k] += best[k].unwrap_or(11).min(11) as u32;
-            if let Some(e) = best[k] {
-                a.found[k] += 1;
-                if best[1 - k].is_none_or(|o| e < o) {
-                    a.needed[k] += 1;
-                }
-            }
+            d.errs[k] += best[k].map_or(11, |e| e.min(11)) as u32;
         }
-        if a.groups < ADAPT_GROUPS {
+        if d.slots < DETECT_SLOTS {
             return;
         }
-        // Rest the kind never needed while the other found nearly every frame: C4FM first (it costs the most).
-        let clean = |k: usize| a.errs[k] as f32 <= ADAPT_REST_MEAN * a.groups as f32;
-        let rest = [C4FM_KIND, CQPSK_KIND].into_iter().find(|&k| a.needed[k] == 0 && a.found[1 - k] * 10 >= a.groups * 9 && a.found[1 - k] >= a.found[k] && clean(1 - k));
-        *a = Adapt { pos: a.pos, last_group: a.last_group, resting: rest, probe_at: a.pos + ADAPT_PROBE_S * self.rate, ..Default::default() };
+        let (q, c) = (d.errs[CQPSK_KIND], d.errs[C4FM_KIND]);
+        let clear = |w: u32, l: u32| w + DETECT_MARGIN <= l && w as f32 <= DETECT_SHARE * l as f32;
+        d.locked = if clear(q, c) {
+            Some(CQPSK_KIND)
+        } else if clear(c, q) {
+            Some(C4FM_KIND)
+        } else if d.slots >= DETECT_MAX_SLOTS {
+            Some(if q < c { CQPSK_KIND } else { C4FM_KIND })
+        } else {
+            None
+        };
     }
 }
 
@@ -556,14 +544,14 @@ mod tests {
 }
 
 #[cfg(test)]
-mod adapt_tests {
+mod detect_tests {
     use super::*;
     use crate::p25::synth::{dibits, imbe, modulate, Tx};
 
-    /// On a clean C4FM signal the CQPSK receivers find nothing: they rest,
-    /// and every frame the whole bank finds is still found.
+    /// On a C4FM signal the bank settles on C4FM, and finds every frame
+    /// the bank with both kinds always on finds.
     #[test]
-    fn a_kind_that_never_helps_rests() {
+    fn auto_locks_to_the_kind_that_decodes() {
         let rate = 37_500.0;
         let tx = Tx { nac: 0x293, talkgroup: 1201, source: 1_234_567, cipher: None, voice: (0..18 * 40).map(imbe).collect() };
         let mut ph = 0.0;
@@ -571,20 +559,19 @@ mod adapt_tests {
         // (The channel runs on after the transmission, as live: the C4FM
         // receiver's ~0.1 s latency holds its last frame till then.)
         iq.extend(vec![Complex32::default(); (0.5 * rate) as usize]);
-        crate::nxdn::synth::add_noise(&mut iq, 0.002, &mut 1);
-        let run = |adapt: bool| {
-            let mut b = Bank::new(rate, BankConfig { adapt, ..Default::default() });
-            let (mut out, mut rested) = (Vec::new(), false);
+        crate::nxdn::synth::add_noise(&mut iq, 0.01, &mut 1);
+        let run = |detect: bool| {
+            let mut b = Bank::new(rate, BankConfig { detect, ..Default::default() });
+            let mut out = Vec::new();
             for c in iq.chunks(192) {
                 b.push(c, &mut out);
-                rested |= b.adapt.as_ref().is_some_and(|a| a.resting == Some(CQPSK_KIND));
             }
             b.flush(&mut out);
-            (out.len(), rested)
+            (out.len(), b.detected())
         };
-        let (all, never) = run(false);
-        let (adaptive, rested) = run(true);
-        assert!(!never && rested, "the CQPSK receivers rest");
-        assert_eq!(adaptive, all, "the same frames");
+        let (all, none) = run(false);
+        let (detected, kind) = run(true);
+        assert_eq!((none, kind), (None, Some("C4FM")));
+        assert_eq!(detected, all, "the same frames");
     }
 }
