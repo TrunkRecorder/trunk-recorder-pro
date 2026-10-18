@@ -1347,6 +1347,7 @@ export type FromRecorder =
       platform: string;
       /** With listen access, without plugin settings and key sources. */
       config: Config;
+      configVersion: number;
       /** The config file (control access only). */
       configPath?: string;
       devices: Device[];
@@ -1374,7 +1375,10 @@ export type FromRecorder =
   | { type: "keys"; sources: LockableKeys[] }
   | { type: "radios"; radios: Radios }
   | ({ type: "state" } & PhaseState)
-  | { type: "config"; config: Config }
+  /** The config, and its version: what an edit of it (setConfig) is sent with. */
+  | { type: "config"; config: Config; version: number }
+  /** Answers setConfig: the config's version now; `error` when the edit wasn't taken (it was of an older version — the config changed elsewhere meanwhile — or bad) or wasn't saved. */
+  | { type: "configSaved"; version: number; error?: string }
   /** A system's talkgroup file (Trunk Recorder's CSV; "" for none): one for each system on connecting, and again whenever one changes. Kept beside the config, not in it. */
   | { type: "talkgroups"; system: string; csv: string }
   | { type: "status"; status: EngineStatus; sources: SourceStatus[]; load: number; calls: CallView[] }
@@ -1423,7 +1427,8 @@ export type FromRecorder =
   | { type: "quit" };
 
 export type ToRecorder =
-  | { type: "setConfig"; config: Config }
+  /** The whole config, edited from `version` (the last `config` message's): refused when the config has changed since. */
+  | { type: "setConfig"; config: Config; version: number }
   /** System `system`'s talkgroup file (Trunk Recorder's CSV; "" for none). Everyone gets it back as a `talkgroups` message. */
   | { type: "setTalkgroups"; system: string; csv: string }
   | { type: "start" }

@@ -860,6 +860,7 @@ fn serve(a: &Args) {
     let ctx = Arc::new(runtime::Ctx {
         config_path: config_path.clone(),
         config: Mutex::new(cfg),
+        config_version: std::sync::atomic::AtomicU64::new(1),
         talkgroups: Mutex::new(talkgroups),
         hub: hub.clone(),
         runner: Mutex::new(None),

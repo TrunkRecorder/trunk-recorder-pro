@@ -79,7 +79,7 @@ mod tests {
         assert_eq!(r["server"]["port"], 8080);
         let parse = |t: &str| trunk_app::protocol::Command::parse(t).unwrap();
         assert!(parse(r#"{"type":"listen","on":true}"#).listen_may_send() && parse(r#"{"type":"olderCalls"}"#).listen_may_send());
-        for c in [r#"{"type":"setConfig","config":{}}"#, r#"{"type":"start"}"#, r#"{"type":"quit"}"#, r#"{"type":"installPlugin","id":"x"}"#, r#"{"type":"listDir"}"#, r#"{"type":"unlockKeys","source":"a","password":"b"}"#] {
+        for c in [r#"{"type":"setConfig","config":{},"version":1}"#, r#"{"type":"start"}"#, r#"{"type":"quit"}"#, r#"{"type":"installPlugin","id":"x"}"#, r#"{"type":"listDir"}"#, r#"{"type":"unlockKeys","source":"a","password":"b"}"#] {
             assert!(!parse(c).listen_may_send(), "{c}");
         }
         let h = redact_hello(json!({ "type": "hello", "config": { "keys": {} }, "configPath": "/x", "history": [] }));

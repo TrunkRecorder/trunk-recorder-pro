@@ -44,7 +44,12 @@ pub enum ToClient {
     Radios { radios: Value },
     /// The recording's phase.
     State { phase: &'static str, error: Option<String>, ended: bool },
-    Config { config: Box<Config> },
+    /// The config, and its version: the number an edit of it is sent with.
+    Config { config: Box<Config>, version: u64 },
+    /// Answers setConfig: the config's version now; `error` when the edit
+    /// wasn't taken (it was of an older version, or the config was bad) or
+    /// wasn't saved.
+    ConfigSaved { version: u64, #[serde(skip_serializing_if = "Option::is_none")] error: Option<String> },
     /// A system's talkgroup file (Trunk Recorder's CSV; "" for none): one for
     /// each on connecting, and again whenever one changes.
     Talkgroups { system: String, csv: String },
@@ -155,8 +160,9 @@ impl Install {
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 #[strum(serialize_all = "camelCase")]
 pub enum Command {
-    /// The whole config (read as [`Config::from_value`] reads a file).
-    SetConfig { config: Value },
+    /// The whole config (read as [`Config::from_value`] reads a file), edited
+    /// from version `version`: refused when the config has changed since.
+    SetConfig { config: Value, version: u64 },
     /// System `system`'s talkgroup file (Trunk Recorder's CSV; "" for none).
     SetTalkgroups { system: String, csv: String },
     Start,
@@ -284,7 +290,7 @@ mod tests {
         let e = Command::parse(r#"{"type":"channelFile","index":0}"#).err().unwrap();
         assert!(e.contains("channelFile") && e.contains("path"), "{e}");
         assert!(Command::parse(r#"{"type":"nope"}"#).is_err());
-        let c = Command::parse(r#"{"type":"setConfig","config":{}}"#).unwrap();
+        let c = Command::parse(r#"{"type":"setConfig","config":{},"version":1}"#).unwrap();
         assert!(!c.listen_may_send() && c.kind() == "setConfig");
         let q = match Command::parse(r#"{"type":"statsQuery","id":3,"series":["a"],"range":"10m"}"#).unwrap() {
             Command::StatsQuery(q) => q,

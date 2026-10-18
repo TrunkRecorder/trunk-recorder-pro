@@ -1269,6 +1269,9 @@
               "$ref": "#/definitions/Config",
               "description": "With listen access, without plugin settings and key sources."
             },
+            "configVersion": {
+              "type": "number"
+            },
             "configPath": {
               "type": "string",
               "description": "The config file (control access only)."
@@ -1547,6 +1550,7 @@
             "version",
             "platform",
             "config",
+            "configVersion",
             "devices",
             "phase",
             "history"
@@ -1627,11 +1631,35 @@
             },
             "config": {
               "$ref": "#/definitions/Config"
+            },
+            "version": {
+              "type": "number"
             }
           },
           "required": [
             "type",
-            "config"
+            "config",
+            "version"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "configSaved"
+            },
+            "version": {
+              "type": "number"
+            },
+            "error": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "version"
           ],
           "additionalProperties": false
         },
@@ -6641,11 +6669,15 @@
             },
             "config": {
               "$ref": "#/definitions/Config"
+            },
+            "version": {
+              "type": "number"
             }
           },
           "required": [
             "type",
-            "config"
+            "config",
+            "version"
           ],
           "additionalProperties": false
         },

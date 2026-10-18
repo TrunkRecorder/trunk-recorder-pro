@@ -25,6 +25,7 @@
 
 use trunk_app::protocol::{body, Body, Command, StatsQuery, ToClient};
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -555,6 +556,7 @@ pub(crate) fn hello(ctx: &Ctx, devices: Value, radios: Value) -> ToClient {
         "version": env!("CARGO_PKG_VERSION"),
         "platform": std::env::consts::OS,
         "config": config,
+        "configVersion": ctx.config_version.load(Ordering::SeqCst),
         "configPath": ctx.config_path.display().to_string(),
         "devices": devices,
         "phase": ctx.phase.lock().unwrap().message().to_value(),
@@ -743,9 +745,9 @@ fn edit_config(ctx: &Ctx, f: impl FnOnce(&mut crate::config::Config)) -> Result<
         return Ok(());
     }
     cfg.save(&ctx.config_path).map_err(|e| format!("Couldn't save the config: {e}"))?;
+    ctx.config_changed(&cfg);
     let c = cfg.clone();
     drop(cfg);
-    publish(&ctx.hub, ToClient::Config { config: Box::new(c.clone()) });
     ctx.plugins.set_delays(&c);
     if crate::plugins::changed(&old, &c) {
         ctx.plugins.reload(&c);
@@ -806,18 +808,27 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
             let ctx2 = ctx.clone();
             tokio::task::spawn_blocking(move || runtime::older_calls(&ctx2, before, limit.clamp(1, 500))).await.ok()
         }
-        Command::SetConfig { config } => match Config::from_value(config) {
+        Command::SetConfig { config, version } => match Config::from_value(config) {
             Ok(mut c) => {
                 // While linked, a conventional system's channels are its file's
                 // (re-read: a spreadsheet may have changed it). Files are linked
                 // with "channelFile".
                 c.load_channel_files(&ctx.config_path);
-                let saved = c.save(&ctx.config_path);
-                let old = std::mem::replace(&mut *ctx.config.lock().unwrap(), c.clone());
+                // Only an edit of the config as it is now: another browser's change since isn't lost.
+                let (old, saved, now) = {
+                    let mut cur = ctx.config.lock().unwrap();
+                    let at = ctx.config_version.load(Ordering::SeqCst);
+                    if version != at {
+                        let error = "The config was changed elsewhere meanwhile, so this edit wasn't saved: here it is as it is now.".to_string();
+                        return Some(ToClient::ConfigSaved { version: at, error: Some(error) });
+                    }
+                    let saved = c.save(&ctx.config_path);
+                    let old = std::mem::replace(&mut *cur, c.clone());
+                    (old, saved, ctx.config_changed(&cur))
+                };
                 if old.log != c.log {
                     crate::logging::configure(&c.log, ctx.config_path.parent().unwrap_or(std::path::Path::new(".")));
                 }
-                publish(&ctx.hub, ToClient::Config { config: Box::new(c.clone()) });
                 if old.keys != c.keys || old.systems != c.systems || old.conventional != c.conventional {
                     crate::unlock::config_changed(ctx, &c);
                 }
@@ -832,9 +843,9 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
                     let ctx2 = ctx.clone();
                     let _ = tokio::task::spawn_blocking(move || ctx2.plugins.reload(&c)).await;
                 }
-                failed(saved.map_err(|e| format!("Couldn't save the config: {e}")))
+                Some(ToClient::ConfigSaved { version: now, error: saved.err().map(|e| format!("Couldn't save the config: {e}")) })
             }
-            Err(e) => Some(ToClient::error(format!("Bad config: {e}"))),
+            Err(e) => Some(ToClient::ConfigSaved { version: ctx.config_version.load(Ordering::SeqCst), error: Some(format!("Bad config: {e}")) }),
         },
         // (Written beside the config; a recording takes it at once.)
         Command::SetTalkgroups { system, csv } => failed(runtime::set_talkgroups(ctx, &system, csv)),
@@ -856,8 +867,10 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
             let r = c.link_channel_file(index, &ctx.config_path, &path);
             if r.is_ok() || c.conventional.get(index).is_some_and(|x| !x.channel_file.is_empty()) {
                 let saved = c.save(&ctx.config_path);
-                *ctx.config.lock().unwrap() = c.clone();
-                publish(&ctx.hub, ToClient::Config { config: Box::new(c) });
+                let mut cur = ctx.config.lock().unwrap();
+                *cur = c;
+                ctx.config_changed(&cur);
+                drop(cur);
                 if let Err(e) = saved {
                     return Some(ToClient::error(format!("Couldn't save the config: {e}")));
                 }
@@ -1121,6 +1134,31 @@ mod tests {
         let (mime, location) = (h(header::CONTENT_TYPE), h(header::LOCATION));
         let body = String::from_utf8_lossy(&axum::body::to_bytes(r.into_body(), usize::MAX).await.unwrap()).to_string();
         (status, if location.is_empty() { mime } else { location }, body)
+    }
+
+    /// An edit of the config as it was before someone else's change is
+    /// refused (and told the version now); one of the config as it is, saved.
+    #[tokio::test]
+    async fn a_config_edit_names_the_version_it_edits() {
+        use super::{command, Subs};
+        use trunk_app::protocol::{Command, ToClient};
+        let dir = std::env::temp_dir().join(format!("trunk-pro-cfgver-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ctx = crate::protocol_tests::ctx(crate::protocol_tests::conventional_config(), &dir);
+        let (mut listen, mut subs) = (None, Subs { ctx: ctx.clone(), topics: Default::default() });
+        let mut edited = serde_json::to_value(crate::protocol_tests::conventional_config()).unwrap();
+        edited["recording"]["minCallS"] = 3.into();
+        let set = |version| Command::SetConfig { config: edited.clone(), version };
+        match command(&ctx, set(1), &mut listen, &mut subs).await {
+            Some(ToClient::ConfigSaved { version: 2, error: None }) => {}
+            r => panic!("not saved: {:?}", r.map(|m| m.to_value())),
+        }
+        assert_eq!(ctx.config.lock().unwrap().recording.min_call_s, 3.0);
+        match command(&ctx, set(1), &mut listen, &mut subs).await {
+            Some(ToClient::ConfigSaved { version: 2, error: Some(_) }) => {}
+            r => panic!("not refused: {:?}", r.map(|m| m.to_value())),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

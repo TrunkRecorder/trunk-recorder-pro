@@ -89,6 +89,8 @@ impl PhaseInfo {
 pub struct Ctx {
     pub config_path: PathBuf,
     pub config: Mutex<Config>,
+    /// The config's version: one more each time it changes ([`Ctx::config_changed`]).
+    pub config_version: AtomicU64,
     /// Each system's talkgroup file, as kept beside the config ([`talkgroups_path`]).
     pub talkgroups: Mutex<trunk_app::config::TalkgroupFiles>,
     pub hub: Hub,
@@ -168,6 +170,14 @@ impl Ctx {
         }
     }
 
+    /// The config is now `c` (call with its lock held, so versions follow
+    /// the changes in order): a new version, told to every browser. Returns it.
+    pub fn config_changed(&self, c: &Config) -> u64 {
+        let version = self.config_version.fetch_add(1, Ordering::SeqCst) + 1;
+        publish(&self.hub, ToClient::Config { config: Box::new(c.clone()), version });
+        version
+    }
+
     pub fn set_phase(&self, phase: &'static str, error: Option<String>, ended: bool) {
         let p = PhaseInfo { phase, error, ended };
         publish(&self.hub, p.message());
@@ -206,7 +216,7 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
                 mine.channel_file_status = read.channel_file_status.clone();
             }
         }
-        publish(&ctx.hub, ToClient::Config { config: Box::new(shared.clone()) });
+        ctx.config_changed(&shared);
         if let Some(e) = errors.into_iter().next() {
             return Err(e);
         }

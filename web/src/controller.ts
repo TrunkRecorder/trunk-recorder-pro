@@ -303,6 +303,8 @@ transport.onMessage = (m: FromRecorder) => {
 function take(m: FromRecorder): void {
   switch (m.type) {
     case "hello":
+      server = { config: m.config, version: m.configVersion };
+      saving = queued = false;
       set({
         version: m.version,
         platform: m.platform,
@@ -333,7 +335,12 @@ function take(m: FromRecorder): void {
       if (m.phase === "idle") set({ nowPlaying: null, stats: null });
       break;
     case "config":
-      if (!pendingConfig) set({ config: m.config });
+      server = { config: m.config, version: m.version };
+      // (Not over an edit of this browser's not saved yet: its answer says.)
+      if (!pendingConfig && !saving) set({ config: m.config });
+      break;
+    case "configSaved":
+      configSaved(m.version, m.error);
       break;
     case "talkgroups":
       set({ talkgroups: withFile(state.talkgroups, m.system, m.csv) });
@@ -626,6 +633,39 @@ function sendTalkgroupMoves(): void {
 // ── config ───────────────────────────────────────────────────────────────────
 
 let pendingConfig: ReturnType<typeof setTimeout> | null = null;
+/** The config as the recorder has it, and its version (what an edit is sent with). */
+let server: { config: Config | null; version: number } = { config: null, version: 0 };
+/** An edit sent and not answered yet; and another made meanwhile, to send once it is. */
+let saving = false;
+let queued = false;
+
+/** Send the config as edited: one edit at a time, each of the version the last answer gave. */
+function sendConfig(): void {
+  if (!state.config) return;
+  if (saving) {
+    queued = true;
+    return;
+  }
+  saving = true;
+  transport.send({ type: "setConfig", config: state.config, version: server.version });
+  sendTalkgroupMoves();
+}
+
+/** The answer to an edit: saved (its version now), or not (the config is the recorder's again, and why). */
+function configSaved(version: number, error: string | undefined): void {
+  saving = false;
+  server.version = Math.max(server.version, version);
+  if (error) {
+    queued = false;
+    if (server.config) set({ config: server.config, configEpoch: state.configEpoch + 1 });
+    set({ error });
+    return;
+  }
+  if (queued) {
+    queued = false;
+    sendConfig();
+  }
+}
 
 /** Edit the config; saved on the recorder shortly after the last change. */
 export function updateConfig(fn: (c: Config) => void): void {
@@ -636,8 +676,7 @@ export function updateConfig(fn: (c: Config) => void): void {
   if (pendingConfig) clearTimeout(pendingConfig);
   pendingConfig = setTimeout(() => {
     pendingConfig = null;
-    if (state.config) transport.send({ type: "setConfig", config: state.config });
-    sendTalkgroupMoves();
+    sendConfig();
   }, 300);
 }
 
@@ -645,8 +684,7 @@ function flushConfig(): void {
   if (pendingConfig && state.config) {
     clearTimeout(pendingConfig);
     pendingConfig = null;
-    transport.send({ type: "setConfig", config: state.config });
-    sendTalkgroupMoves();
+    sendConfig();
   }
 }
 

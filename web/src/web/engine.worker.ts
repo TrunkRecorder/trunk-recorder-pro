@@ -9,7 +9,7 @@ import { listCalls, readText, saveCall, writeText } from "./opfs.ts";
 
 export type ToWorker =
   | { type: "init"; config: Config; talkgroups: Record<string, string> }
-  | { type: "setConfig"; config: Config }
+  | { type: "setConfig"; config: Config; version: number }
   | { type: "setTalkgroups"; system: string; csv: string }
   | { type: "files"; files: (File | null)[] }
   | { type: "start" }
@@ -34,6 +34,8 @@ const post = (msg: FromRecorder) => postMessage({ msg } satisfies FromWorker);
 const wallMs = () => performance.timeOrigin + performance.now();
 
 let config: Config | null = null;
+/** The config's version (one page edits it: every edit is taken). */
+let configVersion = 1;
 /** Each system's talkgroup file, by short name (the page keeps them). */
 let talkgroups: Record<string, string> = {};
 let files: (File | null)[] = [];
@@ -392,6 +394,7 @@ onmessage = async (ev: MessageEvent<ToWorker>) => {
         version: __APP_VERSION__,
         platform: "web",
         config: m.config,
+        configVersion,
         configPath: "this browser",
         devices: await devices(),
         phase,
@@ -404,6 +407,7 @@ onmessage = async (ev: MessageEvent<ToWorker>) => {
       break;
     case "setConfig":
       config = m.config;
+      post({ type: "configSaved", version: ++configVersion });
       break;
     case "setTalkgroups": {
       // (A recording takes it at once: an Ignore flag set, a tag fixed.)

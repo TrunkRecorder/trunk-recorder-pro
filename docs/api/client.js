@@ -55,6 +55,8 @@ export class TrunkClient {
     this.connected = false;
     this.version = null;
     this.config = null;
+    /** The version of `config`: a `setConfig` names the one it edits. */
+    this.configVersion = 0;
     this.phase = { phase: "idle", error: null, ended: false };
     this.status = null;
     this.sources = [];
@@ -132,7 +134,9 @@ export class TrunkClient {
   /**
    * Change the config: `edit` gets a copy of the latest one to change; the
    * whole config is sent back. Everyone gets the new one as a `config`
-   * message. Recording uses it from the next start.
+   * message. Recording uses it from the next start. If the config changed
+   * elsewhere meanwhile, the edit isn't saved: the `configSaved` reply says
+   * so (`error` is set) and `config` stays the newer one.
    *
    *   rec.setConfig((c) => { c.recording.minCallS = 2; });
    */
@@ -140,7 +144,7 @@ export class TrunkClient {
     if (!this.config) throw new Error("No config yet: wait for the first change event.");
     const next = structuredClone(this.config);
     edit(next);
-    this.send({ type: "setConfig", config: next });
+    this.send({ type: "setConfig", config: next, version: this.configVersion });
   }
 
   /**
@@ -243,7 +247,7 @@ export class TrunkClient {
   _apply(m) {
     switch (m.type) {
       case "hello":
-        Object.assign(this, { version: m.version, config: m.config, phase: m.phase, history: m.history, error: null, exited: false });
+        Object.assign(this, { version: m.version, config: m.config, configVersion: m.configVersion, phase: m.phase, history: m.history, error: null, exited: false });
         this.aliases = Object.fromEntries(Object.entries(m.units ?? {}).map(([name, csv]) => [name, parseUnitAliases(csv)]));
         if (!this.connected) {
           this.connected = true;
@@ -262,6 +266,10 @@ export class TrunkClient {
         break;
       case "config":
         this.config = m.config;
+        this.configVersion = m.version;
+        break;
+      case "configSaved":
+        if (m.error) this.error = m.error;
         break;
       case "talkgroups":
         if (m.csv) this.talkgroupFiles = { ...this.talkgroupFiles, [m.system]: m.csv };

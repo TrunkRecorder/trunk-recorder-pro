@@ -105,7 +105,7 @@ fn air(fs: f64, secs: f64, mut each: impl FnMut(&[Complex32], f64)) {
     }
 }
 
-fn conventional_config() -> Config {
+pub(crate) fn conventional_config() -> Config {
     serde_json::from_value(json!({
         "sources": [{ "type": "rtlsdr", "serial": "", "centerHz": 155000000, "rateHz": 2400000, "gainDb": 25, "agc": false, "ppm": 0 }],
         "conventional": [{ "shortName": "conv", "channels": [{ "freqHz": 155200000, "mode": "fm", "name": "Fire", "tone": "151.4" }] }],
@@ -258,13 +258,14 @@ fn a_surveys_messages() {
     check_all("FromRecorder", &msgs);
 }
 
-fn ctx(cfg: Config, dir: &Path) -> Arc<crate::runtime::Ctx> {
+pub(crate) fn ctx(cfg: Config, dir: &Path) -> Arc<crate::runtime::Ctx> {
     let (hub, _) = tokio::sync::broadcast::channel(16);
     let shared = trunk_app::stats::Shared::new();
     let series = Arc::new(Mutex::new(trunk_app::stats::History::default()));
     Arc::new(crate::runtime::Ctx {
         config_path: dir.join("config.json"),
         config: Mutex::new(cfg),
+        config_version: std::sync::atomic::AtomicU64::new(1),
         talkgroups: Mutex::new(Default::default()),
         hub: hub.clone(),
         runner: Mutex::new(None),
@@ -402,8 +403,10 @@ fn the_servers_messages() {
     assert_eq!(queries[2]["rows"][0]["alphaTag"], "", "no talkgroup file for p25 here");
     assert_eq!(queries[4]["talkers"].as_array().map(Vec::len), Some(2));
     let msgs = vec![
-        ToClient::Config { config: Box::new(cfg.clone()) },
-        ToClient::Config { config: Box::default() },
+        ToClient::Config { config: Box::new(cfg.clone()), version: 2 },
+        ToClient::Config { config: Box::default(), version: 1 },
+        ToClient::ConfigSaved { version: 3, error: None },
+        ToClient::ConfigSaved { version: 3, error: Some("changed elsewhere".into()) },
         crate::runtime::PhaseInfo { phase: "running", error: Some("x".into()), ended: false }.message(),
         crate::server::devices(),
         ToClient::Radios { radios: crate::radio::radios_json(false) },
@@ -441,7 +444,7 @@ fn every_message_type_is_declared() {
 #[test]
 fn messages_to_the_recorder() {
     let msgs = vec![
-        json!({ "type": "setConfig", "config": serde_json::to_value(conventional_config()).unwrap() }),
+        json!({ "type": "setConfig", "config": serde_json::to_value(conventional_config()).unwrap(), "version": 1 }),
         json!({ "type": "start" }),
         json!({ "type": "stop" }),
         json!({ "type": "listen", "on": true, "system": null, "talkgroup": 101 }),
