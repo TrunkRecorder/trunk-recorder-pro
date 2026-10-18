@@ -116,11 +116,10 @@ pub struct Ctx {
     /// The dashboard's minute history (a week), and where new minutes go.
     pub series: Arc<Mutex<trunk_app::stats::History>>,
     pub store: crate::statstore::Store,
-    /// How many connected browsers watch each topic; `topics_gen` changes with it.
+    /// How many connected browsers watch each topic (the recording is told as it changes).
     pub topics: Mutex<std::collections::BTreeMap<String, usize>>,
-    pub topics_gen: AtomicU64,
-    /// For the engine thread, while recording.
-    pub engine_cmds: Mutex<Vec<EngineCmd>>,
+    /// The recording's engine thread, while there is one: everything it's told comes this way ([`Ctx::tell_engine`]).
+    pub engine: Mutex<Option<mpsc::Sender<EngineCmd>>>,
     /// The latest `host` message (the computer and plugins), for browsers that connect.
     pub host_last: Mutex<Option<ToClient>>,
     /// The RAM spool (`recording.ramSpool`), as last opened.
@@ -129,8 +128,13 @@ pub struct Ctx {
     pub unlocked: crate::unlock::Unlocked,
 }
 
-/// Something for the running session to do.
+/// Something for the running session to do: the one way into the engine
+/// thread, which waits on it ([`Ctx::engine`]).
 pub enum EngineCmd {
+    /// A source's error or end, by way of its decoding thread.
+    Source(SourceMsg),
+    /// What the connected browsers watch changed.
+    Topics(trunk_app::stats::Topics),
     /// A system's talkgroup file changed (an Ignore flag set from the dashboard).
     Talkgroups { short_name: String, csv: String },
     /// A system's keys changed (a key container unlocked or locked): calls in progress take them too.
@@ -157,7 +161,15 @@ impl Ctx {
         for a in add {
             *t.entry(a.clone()).or_default() += 1;
         }
-        self.topics_gen.fetch_add(1, Ordering::Relaxed);
+        drop(t);
+        self.tell_engine(EngineCmd::Topics(self.topics()));
+    }
+
+    /// Tell the recording's engine thread, if there is one.
+    pub fn tell_engine(&self, c: EngineCmd) {
+        if let Some(tx) = &*self.engine.lock().unwrap() {
+            let _ = tx.send(c);
+        }
     }
 
     /// Hand an event to the monitor, and to the browsers when it's one for the feed.
@@ -182,11 +194,6 @@ impl Ctx {
         let p = PhaseInfo { phase, error, ended };
         publish(&self.hub, p.message());
         *self.phase.lock().unwrap() = p;
-    }
-
-    /// Whether a recording is running (what it should be told of changes).
-    pub fn recording(&self) -> bool {
-        matches!(*self.lifecycle.lock().unwrap(), Lifecycle::Recording(_))
     }
 
     /// Start recording with `cfg`, in place of whatever the radios were
@@ -473,9 +480,7 @@ pub fn set_talkgroups(ctx: &Ctx, system: &str, csv: String) -> Result<(), String
         trunk_app::config::write_atomic(&path, &csv).map_err(|e| format!("Couldn't save {}: {e}", path.display()))?;
         ctx.talkgroups.lock().unwrap().insert(system.to_string(), csv.clone());
     }
-    if ctx.recording() {
-        ctx.engine_cmds.lock().unwrap().push(EngineCmd::Talkgroups { short_name: system.to_string(), csv: csv.clone() });
-    }
+    ctx.tell_engine(EngineCmd::Talkgroups { short_name: system.to_string(), csv: csv.clone() });
     // (The config first, then the names: as config_changed takes them.)
     let (cfg, files) = (ctx.config.lock().unwrap().clone(), ctx.talkgroups.lock().unwrap().clone());
     ctx.shared.names.lock().unwrap().set_config(&cfg, &files);
@@ -672,7 +677,7 @@ fn open_spool(ctx: &Ctx, cfg: &Config) {
 /// On stop, what the source had already sent is decoded first (up to the
 /// queue's 256 blocks: about 2.5 s of 10 ms USRP / Soapy blocks, about 14 s
 /// of RTL-SDR's at 2.4 MSPS): calls in progress keep it.
-fn feed_source(feeder: Feeder, rx: mpsc::Receiver<SourceMsg>, ctl: mpsc::Sender<SourceMsg>, stop: Arc<AtomicBool>, epoch: (f64, Instant), air: Air) {
+fn feed_source(feeder: Feeder, rx: mpsc::Receiver<SourceMsg>, ctl: mpsc::Sender<EngineCmd>, stop: Arc<AtomicBool>, epoch: (f64, Instant), air: Air) {
     let now_ms = || epoch.0 + epoch.1.elapsed().as_secs_f64() * 1000.0;
     // An instant on the same clock (when a driver handed samples over).
     let at_ms = |at: Instant| epoch.0 + at.saturating_duration_since(epoch.1).as_secs_f64() * 1000.0;
@@ -692,7 +697,7 @@ fn feed_source(feeder: Feeder, rx: mpsc::Receiver<SourceMsg>, ctl: mpsc::Sender<
             air.fed(samples.len() as u64 + dropped);
         }
         m => {
-            let _ = ctl.send(m);
+            let _ = ctl.send(EngineCmd::Source(m));
         }
     };
     loop {
@@ -752,8 +757,11 @@ impl Air {
 /// `queues`: each source's samples. `epoch`: the wall clock (Unix ms) at an instant, for the session's clock.
 fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<mpsc::Receiver<SourceMsg>>, stop: Arc<AtomicBool>, epoch: (f64, Instant)) {
     ctx.set_phase("running", None, false);
-    // Errors and ends from the sources, by way of their decoding threads.
-    let (ctl_tx, rx) = mpsc::channel::<SourceMsg>();
+    // Everything for this thread: the sources' errors and ends (by way of
+    // their decoding threads), and the browsers' and the server's changes.
+    let (ctl_tx, rx) = mpsc::channel::<EngineCmd>();
+    *ctx.engine.lock().unwrap() = Some(ctl_tx.clone());
+    session.set_topics(ctx.topics());
     let at_ms: Arc<Vec<AtomicU64>> = Arc::new(cfg.sources.iter().map(|_| AtomicU64::new(0)).collect());
     let feeders: Vec<JoinHandle<()>> = queues
         .into_iter()
@@ -797,37 +805,24 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
     let mut plans_at = Instant::now();
     let mut tune_at = Instant::now();
     let mut registry_at = Instant::now();
-    let mut topics_gen = u64::MAX;
     loop {
         if stop.load(Ordering::Relaxed) {
             break;
         }
         // (What the sources decoded meanwhile is collected below, every 20 ms at most.)
-        match rx.recv_timeout(Duration::from_millis(20)) {
-            Ok(SourceMsg::Data { .. } | SourceMsg::Iq { .. } | SourceMsg::Real16 { .. }) => {}
-            Ok(SourceMsg::Error { source, error }) => session.source_error(source, &error),
-            Ok(SourceMsg::Tuned { .. }) => {}
-            Ok(SourceMsg::End { source }) => {
-                if session.source_ended(source) {
-                    // (Not "ended" when the user stopped it: the file thread ends on stop too.)
-                    ended_all = !stop.load(Ordering::Relaxed);
-                    break;
-                }
-            }
-            Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => break,
-        }
-        // (The plugins can be swapped meanwhile: their settings changed.)
-        let plugins = ctx.plugins.host.read().unwrap();
-        session.plugin_topics = plugins.as_ref().map_or(Default::default(), |p| p.topics);
-        session.want_audio = ctx.hub.receiver_count() > 0 || plugins.as_ref().is_some_and(|p| p.audio);
-        let g = ctx.topics_gen.load(Ordering::Relaxed);
-        if g != topics_gen {
-            topics_gen = g;
-            session.set_topics(ctx.topics());
-        }
-        for c in std::mem::take(&mut *ctx.engine_cmds.lock().unwrap()) {
+        // (What the sources decoded meanwhile is collected below, every 20 ms at most.)
+        let mut next = rx.recv_timeout(Duration::from_millis(20)).ok();
+        while let Some(c) = next {
             match c {
+                EngineCmd::Source(SourceMsg::Error { source, error }) => session.source_error(source, &error),
+                EngineCmd::Source(SourceMsg::End { source }) => {
+                    if session.source_ended(source) {
+                        // (Not "ended" when the user stopped it: the file thread ends on stop too.)
+                        ended_all = !stop.load(Ordering::Relaxed);
+                    }
+                }
+                EngineCmd::Source(_) => {}
+                EngineCmd::Topics(t) => session.set_topics(t),
                 EngineCmd::Talkgroups { short_name, csv } => {
                     if session.set_talkgroups(&short_name, &csv) {
                         log::info!("[{short_name}] Talkgroups updated");
@@ -837,9 +832,17 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
                     session.set_keys(&short_name, ring);
                 }
             }
+            next = rx.try_recv().ok();
         }
+        if ended_all {
+            break;
+        }
+        // (The plugins can be swapped meanwhile: their settings changed. This iteration's, held by no lock.)
+        let plugins = ctx.plugins.host();
+        session.plugin_topics = plugins.as_ref().map_or(Default::default(), |p| p.topics);
+        session.want_audio = ctx.hub.receiver_count() > 0 || plugins.as_ref().is_some_and(|p| p.audio);
         session.poll(now_ms(), &mut out);
-        deliver(&ctx, &mut out, plugins.as_ref(), &rules, &fin);
+        deliver(&ctx, &mut out, plugins.as_deref(), &rules, &fin);
         drop(plugins);
         save_units(&mut session);
         if tune_at.elapsed() >= Duration::from_secs(60) {
@@ -855,6 +858,7 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
             save_registry(&ctx.shared);
         }
     }
+    *ctx.engine.lock().unwrap() = None;
     ctx.set_phase("stopping", None, false);
     // The decoding threads finish what their sources had already sent
     // ([`feed_source`]); once the sources are gone (stopped, or files at their end).
@@ -863,7 +867,7 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
     }
     session.poll(now_ms(), &mut out);
     session.finish(&mut out);
-    deliver(&ctx, &mut out, ctx.plugins.host.read().unwrap().as_ref(), &rules, &fin);
+    deliver(&ctx, &mut out, ctx.plugins.host().as_deref(), &rules, &fin);
     drop(fin_tx);
     let _ = finisher.join();
     // Uploads in flight get a moment to finish.
@@ -901,13 +905,12 @@ fn finish_calls(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, rx: 
         if f.rules.compress_wav && encoder.is_none() && !std::mem::replace(&mut warned, true) {
             warn_all(&ctx.hub, if m4a.encoder == crate::config::M4aEncoder::None { "M4A encoding is off: calls are kept as WAV only" } else { "No M4A encoder found (install ffmpeg): calls are kept as WAV only" });
         }
-        let host = ctx.plugins.host.read().unwrap();
-        finish_one(ctx, dir, spool, f, encoder.as_ref(), host.as_ref());
+        let host = ctx.plugins.host();
+        finish_one(ctx, dir, spool, f, encoder.as_ref(), host.as_deref());
     }
 }
 
-/// `host`: the plugins, as the caller already holds them (taking the lock
-/// again on the engine thread could deadlock with a plugin reload waiting).
+/// `host`: the plugins this call goes to (the caller's clone).
 ///
 /// What's kept once the plugins are done goes to the recordings folder, and
 /// what only they need to the spool, when there is one with room. The WAV is

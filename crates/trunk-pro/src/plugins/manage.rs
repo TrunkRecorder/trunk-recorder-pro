@@ -17,7 +17,7 @@ use trunk_app::protocol::{body, Install, StoreKind, ToClient};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
@@ -186,10 +186,24 @@ const LOG_LINES: usize = 50;
 /// An executable's modification time, and what `--describe` said then.
 type Described = (Option<SystemTime>, Result<Manifest, String>);
 
+/// `h` once nothing else uses it (the engine or finish thread may hold it
+/// for the call in hand), to shut it down.
+fn alone(mut h: Arc<PluginHost>) -> PluginHost {
+    loop {
+        match Arc::try_unwrap(h) {
+            Ok(h) => return h,
+            Err(back) => {
+                h = back;
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+    }
+}
+
 /// The plugins' part of the app's shared state.
 pub struct Plugins {
-    /// The plugins running while recording.
-    pub host: RwLock<Option<PluginHost>>,
+    /// The plugins running while recording ([`Plugins::host`]: a clone, used without the lock).
+    host: Mutex<Option<Arc<PluginHost>>>,
     /// Calls whose files wait on the plugins' results.
     pub archive: Arc<Archive>,
     /// What plugins are to have late (their delays), until it's due.
@@ -211,7 +225,7 @@ impl Plugins {
         let archive: Arc<Archive> = Arc::default();
         let p = Plugins {
             monitor,
-            host: RwLock::new(None),
+            host: Mutex::new(None),
             hold: Hold::new(archive.clone()),
             archive,
             env: Mutex::new(None),
@@ -303,7 +317,13 @@ impl Plugins {
         self.set_delays(cfg);
         let host = self.new_host(cfg, true, Arc::new(AtomicBool::new(true)));
         self.hold.attach(host.as_ref().map(PluginHost::outlet));
-        *self.host.write().unwrap() = host;
+        *self.host.lock().unwrap() = host.map(Arc::new);
+    }
+
+    /// The plugins running now, if recording: held only as long as used, so
+    /// swapping them (a reload) never waits on a call being finished.
+    pub fn host(&self) -> Option<Arc<PluginHost>> {
+        self.host.lock().unwrap().clone()
     }
 
     /// Stop the plugins (recording ended): they get `grace` to finish.
@@ -311,9 +331,9 @@ impl Plugins {
         *self.env.lock().unwrap() = None;
         // (Before it stops: what's due meanwhile waits for the next recording.)
         self.hold.detach();
-        let old = self.host.write().unwrap().take();
-        if let Some(mut h) = old {
-            h.shutdown(grace);
+        let old = self.host.lock().unwrap().take();
+        if let Some(h) = old {
+            alone(h).shutdown(grace);
         }
         let mut rt = self.runtime.lock().unwrap();
         for r in rt.values_mut() {
@@ -339,11 +359,11 @@ impl Plugins {
         let new = self.new_host(cfg, false, go.clone());
         // What's held goes to the new plugins (queued until they start).
         self.hold.attach(new.as_ref().map(PluginHost::outlet));
-        let old = std::mem::replace(&mut *self.host.write().unwrap(), new);
+        let old = std::mem::replace(&mut *self.host.lock().unwrap(), new.map(Arc::new));
         match old {
-            Some(mut h) => {
+            Some(h) => {
                 std::thread::spawn(move || {
-                    h.shutdown(Duration::from_secs(10));
+                    alone(h).shutdown(Duration::from_secs(10));
                     go.store(true, Ordering::Relaxed);
                 });
             }
@@ -381,7 +401,7 @@ impl Plugins {
     /// Each plugin's figures into the dashboard's series (`plg/<id>/…`), with
     /// its process's restarts, drops and uptime folded into its runtime.
     pub fn report(&self, sink: &mut dyn Sink) {
-        let procs = self.host.read().unwrap().as_ref().map(|h| h.process_stats()).unwrap_or_default();
+        let procs = self.host().map(|h| h.process_stats()).unwrap_or_default();
         let mut held: BTreeMap<String, usize> = BTreeMap::new();
         for (label, n) in self.hold.calls() {
             *held.entry(super::parse_label(&label).0.to_string()).or_default() += n;
