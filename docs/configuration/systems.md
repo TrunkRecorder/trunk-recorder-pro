@@ -9,7 +9,7 @@ up, see the guides: [P25](../guides/p25.md), [SmartNet](../guides/smartnet.md),
 
 ```json
 "systems": [
-  { "shortName": "dcfd", "type": "p25", "talkgroupsCsv": "Decimal,Alpha Tag,Mode\n1201,FD Disp,D\n",
+  { "shortName": "dcfd", "type": "p25",
     "sites": [{ "controlChannelsHz": [857987500, 858987500], "expect": { "nac": 1091 } }] },
   { "shortName": "wmata", "type": "smartnet",
     "sites": [{ "controlChannelsHz": [489087500], "bandplan": "400_custom", "bandplanBaseHz": 489012500,
@@ -33,8 +33,6 @@ a system of its own.)
 | `type` | | `"p25"` | string | `"p25"`, `"smartnet"`, `"dmr"` or `"nxdn"` (any case). Anything else is treated as P25 |
 | `enabled` | | `true` | bool | `false` keeps it in the config without recording it |
 | `sites` | | `[]` | array | Where it is recorded from: one entry per site. See [Keys for each site](#keys-for-each-site) |
-| `talkgroupsCsv` | | `""` | string | The talkgroup file's **contents**, not a path. See [Talkgroup file](#talkgroup-file) |
-| `talkgroupsName` | | `""` | string | The name of the file the talkgroups came from, for display |
 | `unitNames` | | empty | object | Names for the system's radios. See [Unit names](#unit-names) |
 | `keys` | | `""` | string | P25: the encryption keys it decrypts with, a key source's name (desktop app only; not in the interface). See [Encryption keys](#encryption-keys-keys) |
 | `recording` | | `{}` | object | This system's own call rules; a rule left out follows the global `recording`. See [recording.md](recording.md#per-system-rules) |
@@ -142,7 +140,7 @@ the air, Setup offers **Make them one system**. To prefer a site for a talkgroup
 file's `Preferred Site` or `Preferred NAC` column.
 
 ```json
-{ "shortName": "capmax", "type": "dmr", "talkgroupsCsv": "…",
+{ "shortName": "capmax", "type": "dmr",
   "sites": [{ "name": "north", "controlChannelsHz": [452175000] },
             { "name": "south", "controlChannelsHz": [452525000] }] }
 ```
@@ -244,9 +242,12 @@ sync). **Lock** forgets the keys and they stop at once. The password is never sa
 
 ## Talkgroup file
 
-`talkgroupsCsv` holds a Trunk Recorder talkgroup file, as text. RadioReference's talkgroup CSV export
-reads as is. The interface loads it from a file or a RadioReference paste; by hand, put the file's
-contents in the string with each line ending in `\n`.
+A system's talkgroups are a Trunk Recorder talkgroup file, kept beside the config file as
+`<shortName>.talkgroups.csv` (not in the config). RadioReference's talkgroup CSV export reads as is.
+Setup loads it from a file or a RadioReference paste and saves it there, and renames it when the
+system is renamed. By hand, put the file in the config's folder under that name. A config from an
+older version, which kept the file inside it as `talkgroupsCsv`, is upgraded when it's read: the
+talkgroups are moved out into these files.
 
 ```csv
 Decimal,Hex,Mode,Alpha Tag,Description,Tag,Category,Priority

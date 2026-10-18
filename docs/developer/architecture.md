@@ -868,7 +868,8 @@ call JSON + WAV on disk → `HostMessage::CallConcluded` → plugin → `PluginM
 **`SiteStatus`**: `site`, `system`, `short_name`, `site_name`, `now_s`, `control_channel_hz`,
 `identity`, `good`, `bad`, `modulation`, `active_calls`, `recording`, `calls_concluded`,
 `mismatch`, `adjacent: Vec<AdjacentSite { sys_id, rfss, site, freq_hz }>`, `patches`,
-`protocol: ProtocolStatus`. The session's `status` message groups them by system.
+`protocol: ProtocolStatus`. The session's `status` message groups them by system, with a summary
+of each site; `adjacent`, the DMR and NXDN detail and `patches` go out in `decodeDetail`.
 
 **`ChannelSnapshot`**: `site`, `freq_hz`, `source`, `kind` (control | voice | carrier |
 conventional), `power_db`, `noise_db`, `offset_hz`, `quality`, `phase_err`, `calls`.
@@ -944,8 +945,11 @@ last_error_text, endpoints [{ name, state, latency_ms, last_ok, last_error }], e
   `/data/config/trunk-pro/config.json`; browser `localStorage["trp.config"]`.
 - `--config file.json` picks another file. Its folder becomes the data folder, holding every
   companion file, so two configs in different folders share nothing.
-- Written by `setConfig` (the interface always sends the whole config) through `write_atomic`
-  (temporary file, `sync_all`, rename).
+- Written by `setConfig` (the interface always sends the whole config, with the version it edited;
+  a stale one is refused) through `write_atomic` (temporary file, `sync_all`, rename).
+- A system's talkgroup file is not in it: `<shortName>.talkgroups.csv` beside it, written by
+  `setTalkgroups`. An older config's `talkgroupsCsv` / `talkgroupsName` are moved out into those
+  files when it is read (`migrate.rs`, `move_talkgroups`).
 - Keys are camelCase. Unknown keys are kept and written back at the top level and in each
   system, conventional system, `recording`, `server` and `log`. A value of the wrong type makes
   the file unreadable ("not a config this version reads").
@@ -984,7 +988,6 @@ last_error_text, endpoints [{ name, state, latency_ms, last_ok, last_error }], e
 | `name` | "" | display name |
 | `type` | `p25` | `p25`, `smartnet`, `dmr`, `nxdn` |
 | `enabled` | true | |
-| `talkgroupsCsv` / `talkgroupsName` | "" | talkgroup file contents and its name |
 | `unitNames` | — | `{csv, name, mode: user / ota / user_only / none}` |
 | `recording` | {} | per-system overrides (10.7) |
 | `plugins` | {} | per-system plugin settings; an array = several copies |
@@ -1138,8 +1141,6 @@ Category, Squelch dB, Enable`.
   "systems": [
     {
       "shortName": "county-p25", "name": "County Public Safety", "type": "p25", "enabled": true,
-      "talkgroupsCsv": "Decimal,Hex,Mode,Alpha Tag,Description,Tag,Category\n1201,4b1,D,FD Disp,Fire Dispatch,Fire Dispatch,County Fire\n",
-      "talkgroupsName": "county.csv",
       "sites": [
         { "name": "site3", "controlChannelsHz": [851012500, 851262500], "modulation": "auto",
           "expect": { "nac": 659, "wacn": 781824, "sysId": 989, "rfss": 1, "site": 3 } },
@@ -1286,7 +1287,7 @@ asks.
   frequencies and affiliations, with a week of hourly activity.
 - **`Monitor`**: notable events (talkgroup or unit first seen, talkgroup active, call volume,
   control channel lost / regained, source drops, clipping, disk and spool space). The last 200 are
-  sent in `hello`.
+  sent when a connection is greeted (`monitorEvent` for each).
 - **`stats::Shared`** holds the registry and monitor so they outlive a recording session; the
   platform answers queries from it.
 
@@ -1345,9 +1346,11 @@ full reference is `docs/api/README.md`.
 ### 14.1 A typical conversation
 
 1. Client connects to `/api/ws` (the access guard runs first; see 14.5).
-2. Recorder → `hello`: version, platform, config and its path, devices, phase, the last 300 calls,
-   talker aliases, heard codes, radios, survey state, recent events, the computer, plugin
-   runtimes. Then `plugins`.
+2. Recorder → the greeting, as the ordinary messages it sends later: `state`, `config` (with its
+   `version`), `talkgroups` (each system's file), `units` (each system's saved aliases), `heard`,
+   `history` (the last 300 calls), `radios`, `survey`, `monitorEvent` (each recent event), `host`;
+   with control access also `devices`, `keys`, `plugins`, `interfaces`. Then `hello` (version,
+   platform, api, config path, survey bands): caught up.
 3. Recorder → everyone: `status` (about every 500 ms while recording), `stats` (every second),
    `host` (every 2 s, desktop).
 4. Client → `subscribe {topics: ["spectrum:0", "log"]}` (replaces the last; up to 64); recorder →
@@ -1355,17 +1358,19 @@ full reference is `docs/api/README.md`.
 5. Client → `listen {on, system, talkgroup}`; recorder → binary audio frames, filtered per client.
 6. Recorder → `concluded {entry}` for each call, once its files are on disk.
 7. Client → `statsQuery {id, series, range}`; recorder → `statsResult {id, …}` to the asker.
-8. Client → `setConfig {config}` (always the whole config); recorder → `config` to everyone.
+8. Client → `setConfig {config, version}` (always the whole config, edited from that version);
+   recorder → `configSaved {version, error?}` to the sender, and `config` to everyone unless the
+   version was stale. Client → `setTalkgroups {system, csv}`; recorder → `talkgroups` to everyone.
 9. Client → `start` / `stop`; recorder → `state` to everyone.
 
 ### 14.2 Who gets what
 
 | Delivery | Messages |
 |---|---|
-| On connect | `hello`, then `plugins` |
-| Every client | `state`, `status`, `stats`, `host`, `concluded`, `callFiles`, `monitorEvent`, `unitAlias`, `heard`, `config`, `survey`, `surveySpectrum`, `pluginRuntime`, `pluginInstall`, `quit` |
-| Topic subscribers | `spectrum` (`spectrum:<source>`, about 7/s, 512 bins), `log` (`log`), `rfDetail` (`rf:<source>`, 1/s), `decodeDetail` (`decode:<shortName>`, 1/s), per-core detail in `host` (`platform`) |
-| The sender only | `devices`, `radios`, `dir`, `trConfig`, `pluginStore`, `subscribed`, `statsResult`, `radioResult`, `olderCalls`, `sourceProfile`, `error`, `notice` |
+| On connect | `state`, `config`, `talkgroups`, `units`, `heard`, `history`, `radios`, `survey`, `monitorEvent`, `host` (control access also `devices`, `keys`, `plugins`, `interfaces`), then `hello` |
+| Every client | `state`, `status`, `stats`, `host`, `concluded`, `callFiles`, `monitorEvent`, `unitAlias`, `heard`, `config`, `talkgroups`, `survey`, `surveySpectrum`, `pluginRuntime`, `pluginInstall`, `quit` |
+| Topic subscribers | `spectrum` (`spectrum:<source>`, about 7/s, 512 bins), `log` (`log`), `rfDetail` (`rf:<source>`, 1/s), `decodeDetail` (`decode:<shortName>`, 1/s: channels, each site's adjacent sites and DMR / NXDN detail, patches), per-core detail in `host` (`platform`) |
+| The sender only | `configSaved`, `devices`, `radios`, `dir`, `trConfig`, `pluginStore`, `subscribed`, `statsResult`, `radioResult`, `olderCalls`, `sourceProfile`, `error`, `notice` |
 | Binary, to listeners | live audio frames |
 
 Nothing is computed for a topic nobody watches. A client more than 4,096 messages behind on the
@@ -1375,7 +1380,7 @@ hub skips the oldest without notice.
 
 | Area | Commands |
 |---|---|
-| Recording | `setConfig`, `start`, `stop`, `quit`, `channelFile` |
+| Recording | `setConfig`, `setTalkgroups`, `start`, `stop`, `quit`, `channelFile` |
 | Watching | `subscribe`, `listen`, `statsQuery`, `radioQuery`, `olderCalls` |
 | Setup | `devices`, `findRadios`, `listDir`, `readTrConfig`, `profileSource`, `surveyStart`, `surveyListen`, `surveyRescan`, `surveyStop` |
 | Plugins | `plugins`, `pluginStore`, `installPlugin` (by id, or repository and tag), `addPlugin`, `removePlugin` |

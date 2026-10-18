@@ -17,12 +17,11 @@ Each system has its own, shared by all its sites. It's the **Talkgroups** field 
 - **Load CSV…** loads a Trunk Recorder talkgroup CSV.
 - **Paste from RadioReference…** reads a talkgroup table copied from RadioReference's web page.
   See [Pasting from RadioReference](#pasting-from-radioreference).
-- **Download** saves the system's talkgroup file as a CSV (named after the file you loaded, or
-  `<shortName>-talkgroups.csv`).
+- **Download** saves the system's talkgroup file as a CSV, `<shortName>.talkgroups.csv`.
 - **Clear** removes it.
 
-The file isn't kept as a path: its text goes into the config, in the system's `talkgroupsCsv`,
-with the original file name in `talkgroupsName`. To change it later, edit your copy and load it
+The file isn't kept as a path: Setup saves a copy beside the config file, as
+`<shortName>.talkgroups.csv`, and renames it when you rename the system. To change it later, edit your copy and load it
 again, or **Download**, edit, and load. Changes made while recording take effect at once (the log
 says "Talkgroups updated").
 
@@ -147,7 +146,7 @@ gives you a CSV you can edit and load again.
 
 A system can have its own names for radio IDs ("Engine 12" for 1234). This is Trunk Recorder's
 `unitTagsFile`. On the system card, **Unit names** → **Load CSV…** loads one; **Clear** removes it.
-Like the talkgroup file, it's kept inside the config, under the system's `unitNames`.
+Unlike the talkgroup file, it's kept inside the config, under the system's `unitNames`.
 
 The file has no header. Each line is a unit ID and its name:
 

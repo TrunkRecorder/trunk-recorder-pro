@@ -31,7 +31,7 @@ Unless the user asks otherwise, deliver an interface the recorder serves:
 - Add an interface.json beside index.html:
     {"id": "<lowercase-id>", "name": "…", "version": "0.1.0", "description": "…", "api": 1, "access": "listen"}
   "listen" (the default) can see and play everything and change nothing:
-  setConfig, start, stop, quit and the plugin / interface / key commands are
+  setConfig, setTalkgroups, start, stop, quit and the plugin / interface / key commands are
   refused, and the config comes without plugin settings and key sources.
   Ask for "control" only if the interface must change the recorder.
 - Tell the user how to run it, in one of two ways:
@@ -108,6 +108,8 @@ new TrunkClient({ server?, secure?, historyLimit? })
   status      EngineStatus while running, else null: { nowS, activeCalls, recording, callsConcluded, systems: SystemStatus[] }
   sources     SourceStatus[]: each radio (centerHz, rateHz, dropped, errors, errorPpm…)
   calls       CallView[]: the calls on the air now; [] when not running
+  configVersion  the config's version (setConfig sends it)
+  talkgroupFiles each system's talkgroup file as CSV text: { shortName: csv }
   history     CallEntry[]: recorded calls, newest first (the last 300 at
               connect, plus each one recorded since; up to historyLimit)
   log         LogLine[]: the latest 500 log lines { timeS, kind, text, system?, site? }
@@ -116,7 +118,8 @@ new TrunkClient({ server?, secure?, historyLimit? })
   exited      true after the recorder said it was exiting; it keeps
               reconnecting (every 5 s), and this clears when it's back
  Events: rec.on(type, fn) returns a function that removes the handler.
-  "change"      fn(rec): after every message. Redraw here.
+  "change"      fn(rec): after every message. Redraw here. (While a connection is being
+                greeted, once, at hello.)
   "<type>"      fn(message) for one message type, e.g. "concluded", "status", "state".
   "message"     fn(message): every message.
   "audio"       fn({ system, callId, talkgroup, samples: Float32Array /* 8000/s */ })
@@ -129,6 +132,9 @@ new TrunkClient({ server?, secure?, historyLimit? })
   rec.listen(false)                  none
                                      (kept across reconnects; one filter per connection)
   rec.setConfig((c) => { … })        change a copy of the config; the whole config is sent
+                                     with configVersion. Refused if the config changed elsewhere
+                                     meanwhile (rec.error says so)
+  rec.setTalkgroups(shortName, csv)  replace a system's talkgroup file ("" for none)
   rec.callUrl(entry, "wav" | "json" | "m4a")   a recorded call's file URL
   rec.talkgroups(shortName)          Map talkgroup → { talkgroup, alphaTag, description, tag, group, mode }
                                      (a conventional system's: its channels, alphaTag the channel's name)
@@ -173,18 +179,20 @@ CallEntry: a recorded call (rec.history, the "concluded" message)
 
 SystemStatus: one running trunked system (rec.status.systems)
   index (the `system` its calls carry), shortName, activeCalls, recording,
-  callsConcluded, patches?, sites: SiteStatus[]
+  callsConcluded, sites: SiteStatus[]
+  (patches are in decodeDetail)
 
 SiteStatus: one of its sites, each following its own control channel
   index, name (a system of one site: its short name), nowS,
   controlChannelHz (null while searching), identity { nac, wacn, sysId,
   rfss, site }, good / bad (control messages decoded / failed: decode
   rate = good / (good + bad)), modulation, activeCalls, recording,
-  callsConcluded, mismatch, adjacent, dmr?, nxdn?
+  callsConcluded, mismatch
+  (adjacent sites, dmr and nxdn are in decodeDetail)
 
 Systems and numbering
   config.systems[]: trunked systems ({ shortName, name?, type: "p25" |
-    "smartnet" | "dmr" | "nxdn", enabled, talkgroupsCsv, …, sites: [{ name?,
+    "smartnet" | "dmr" | "nxdn", enabled, …, sites: [{ name?,
     enabled, controlChannelsHz, … }] }). A call heard on several sites of
     a system is one call, saved once.
   config.conventional[k]: conventional systems. Systems are numbered
@@ -208,23 +216,36 @@ Connect to ws://<host>/api/ws. Text messages are JSON with a "type".
 Binary messages are live audio:
   [u8 2][u16 system][u32 callId][u32 talkgroup][i16 samples…], little-endian, 8000/s.
 From the recorder:
-  hello        first; carries everything: version, config, phase, history (≤ 300),
-               units (short name → aliases heard, CSV unit,alias,source,time,wacn,sys,tg; newest line wins), …
-  plugins      second
+  On connecting you get how things are now as ordinary messages, then hello last
+  ("caught up": draw the first screen then, and don't treat anything missing as
+  missing before it):
+  state, config, talkgroups, units, heard, history, radios, survey, monitorEvent, host
+  (with control access also devices, keys, plugins, interfaces), then
+  hello        { version, platform, api, configPath?, surveyBands }
+  config       { config, version }: on connecting, and when someone changes it
+  configSaved  { version, error? }: answers your setConfig; error when the edit wasn't taken
+               (the config changed elsewhere meanwhile) or couldn't be saved
+  talkgroups   { system (short name), csv }: a system's talkgroup file (Trunk Recorder's CSV;
+               "" none); one per system on connecting, and when one changes
+  history      { entries }: the latest calls (≤ 300), newest first
+  units        { system, csv }: a system's saved talker aliases (CSV unit,alias,source,time,wacn,sys,tg;
+               newest line wins)
+  decodeDetail topic decode:<shortName>: { system, channels, sites: [{ index, name, adjacent, dmr, nxdn }],
+               patches: [{ supergroup, members }] }
   state        { phase, error, ended }: recording started / stopped
   status       ~2/s while running: { status, sources, load, calls }
   spectrum     ~7/s per radio: { source, centerHz, rateHz, bins: 512 dBFS levels }
   concluded    { entry }: a call was recorded
   log          { lines }
   unitAlias    { system (short name), unit, alias }
-  config       { config }: someone changed the config
   error / notice  { message }: about your command
   quit         the recorder is exiting; keep reconnecting, slowly, in case it's restarted
   (more in protocol.ts; ignore types you don't use)
 To the recorder:
   { type: "start" }, { type: "stop" }
   { type: "listen", on: true, system: null, talkgroup: null }   ("on" and both fields are always required)
-  { type: "setConfig", config: <the whole config> }
+  { type: "setConfig", config: <the whole config>, version: <the last config message's> }
+  { type: "setTalkgroups", system: <short name>, csv: <Trunk Recorder talkgroup CSV, "" for none> }
   (more in protocol.ts: devices, survey, plugins, …)
 Listening is per connection. Send listen again after every hello (each reconnect).
 system is a system's short name; you get its audio from whichever of its sites carries the call.

@@ -68,7 +68,7 @@ USRP, Airspy and SoapySDR sources need their driver installed on this computer; 
 | `shortName` | `shortName` (made unique if two systems share one) |
 | `control_channels` | its site's `controlChannelsHz` |
 | `modulation: "qpsk"` / `"fsk4"` | its site's `modulation` the same; anything else, or no `modulation`, becomes `"auto"` |
-| `talkgroupsFile` | `talkgroupsCsv` (the file's contents) and `talkgroupsName`. Semicolon, tab or bar delimiters become commas, header names are tidied |
+| `talkgroupsFile` | The system's talkgroup file, `<shortName>.talkgroups.csv` beside the config (not a config key). Semicolon, tab or bar delimiters become commas, header names are tidied |
 | `unitTagsFile`, `unitTagsMode` | `unitNames.csv` (contents), `unitNames.name`, `unitNames.mode` |
 | `bandplan` | its site's `bandplan` (default `800_standard`), and the keys below |
 | `bandplanBase`, `bandplanSpacing`, `bandplanHigh` (MHz) | `bandplanBaseHz`, `bandplanSpacingHz`, `bandplanHighHz` (Hz) |
@@ -217,9 +217,9 @@ plugins are published. See [plugins](plugins/README.md).
 ### Files and settings live in the app's folder
 
 The config is in the app's config folder ([where](configuration/README.md#where-the-file-is)), not
-the folder you run it from, and keys are camelCase with frequencies in Hz. Talkgroup and unit files
-are stored **inside** the config (`talkgroupsCsv`, `unitNames.csv`), so editing the original CSV
-afterwards changes nothing: load it again in Setup. A conventional system can stay linked to a
+the folder you run it from, and keys are camelCase with frequencies in Hz. Talkgroup files are copied beside the
+config (`<shortName>.talkgroups.csv`) and unit files stored **inside** it (`unitNames.csv`), so editing
+the original CSV afterwards changes nothing: load it again in Setup. A conventional system can stay linked to a
 channel CSV, though (`channelFile`), re-read at every Start.
 
 ### What stays compatible

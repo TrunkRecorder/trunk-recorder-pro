@@ -41,7 +41,7 @@ with `--config` files in different folders never share band plans, talker aliase
 - **Frequencies are in Hz, everywhere.** 857.9875 MHz is `857987500`. Keys carry their unit in the
   name: `…Hz`, `…Db`, `…S` (seconds), `…Kbps`, `…Mb`, `…PerS`. The Airspy gains are the driver's
   steps (`…Step`), not dB.
-- **A key ending in `Csv` holds a file's contents, not a path** (`talkgroupsCsv`, `unitNames.csv`).
+- **A key ending in `Csv` holds a file's contents, not a path** (`unitNames.csv`).
   A key ending in `File` holds a path (`channelFile`).
 - **A missing key takes its default**, listed in each table. The few marked ✓ in the Required column
   have no default: a source without its `centerHz`, for example, makes the file unreadable.
@@ -120,8 +120,6 @@ the example.
       "name": "DC Fire and EMS",
       "type": "p25",
       "sites": [{ "controlChannelsHz": [857987500, 858987500], "modulation": "auto", "expect": { "nac": 1091 } }],
-      "talkgroupsCsv": "Decimal,Hex,Mode,Alpha Tag,Description,Tag,Category\n1201,4b1,D,FD Disp,Fire Dispatch,Fire Dispatch,DC Fire\n",
-      "talkgroupsName": "dcfd.csv",
       "recording": { "minCallS": 1 },
       "plugins": { "openmhz": { "apiKey": "...", "systemName": "dcfd" } }
     },
@@ -220,7 +218,7 @@ then Start). A few apply at once:
 
 | Applies at once | Applies at the next Start | Applies when the app restarts |
 |---|---|---|
-| A trunked system's talkgroup file (`talkgroupsCsv`): an Ignore or Priority change takes effect immediately | Sources, systems, conventional channels, squelch | `server.bind`, `server.port` |
+| A trunked system's talkgroup file (`<shortName>.talkgroups.csv`): an Ignore or Priority change takes effect immediately | Sources, systems, conventional channels, squelch | `server.bind`, `server.port` |
 | Plugin settings (`plugins`, each system's `plugins`) and `recording.m4a`: running plugins restart with them | Recording rules, `filenameFormat`, `captureDir` | `monitor.probeHosts` |
 | `log` settings | `recording.ramSpool` (the interface says "from the next start") | |
 | `server.allowedOrigins`, `server.interfaces` (an interface moves to its new port at once) | A linked `channelFile` is re-read at every Start | |
@@ -233,6 +231,7 @@ config folder above; with `--config elsewhere/config.json`, it's `elsewhere/`.
 | File or folder | What it holds |
 |---|---|
 | `<shortName>.bandplan` | Each trunked system's learned band plan (P25 IDEN tables, DMR and NXDN channel tables), so grants can be followed at once next time |
+| `<shortName>.talkgroups.csv` | Each system's [talkgroup file](systems.md#talkgroup-file), in Trunk Recorder's CSV format. Setup writes it |
 | `<shortName>.units.csv` | Talker aliases heard over the air, per system |
 | `conventional.heard.json` | The tones, NACs, colour codes and RANs each conventional frequency carried (the Heard list) |
 | `radio/` | The radio registry: the talkgroups, radios and frequencies each system has heard, one `.json` per system |

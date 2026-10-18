@@ -100,7 +100,7 @@ const ws = new WebSocket("ws://localhost:8080/api/ws");
 ws.onmessage = (ev) => {
   if (typeof ev.data !== "string") return; // live audio (binary), not asked for here
   const m = JSON.parse(ev.data);
-  if (m.type === "hello") console.log(`Connected to ${m.version}; recorder is ${m.phase.phase}`);
+  if (m.type === "hello") console.log(`Connected to ${m.version}`);
   if (m.type === "concluded") {
     const r = m.entry.record;
     console.log(`${r.talkgroup_tag || r.talkgroup} on ${r.short_name}: ${r.call_length} s`);
@@ -178,10 +178,10 @@ What a page may do depends on the port it came from:
 | `setConfig`, `start`, `stop`, `quit`, plugins, interfaces, keys, the survey, files on the recorder's computer | refused with an `error` | ✓ |
 
 A listen-only connection may send `subscribe`, `statsQuery`, `radioQuery`,
-`olderCalls` and `listen`. Its `hello` has no `configPath`, `keys` or
-`pluginRuntime`, and it isn't sent `plugins`, `pluginRuntime`,
-`pluginStore`, `pluginInstall`, `interfaces`, `interfaceStore`,
-`interfaceInstall` or `keys`. An interface that needs more says
+`olderCalls` and `listen`. Its `hello` has no `configPath`, and it isn't
+sent `devices`, `plugins`, `pluginRuntime`, `pluginStore`,
+`pluginInstall`, `interfaces`, `interfaceStore`, `interfaceInstall` or
+`keys`. An interface that needs more says
 `"access": "control"` in its `interface.json`; the store shows that before
 it's installed, and the user can change it either way at any time.
 
@@ -227,16 +227,18 @@ whenever `change` fires.
 | `sources` | `SourceStatus[]`: each radio |
 | `calls` | `CallView[]`: on the air now (empty when not running) |
 | `history` | `CallEntry[]`: recorded calls, newest first |
+| `configVersion` | the config's version, which `setConfig` sends |
+| `talkgroupFiles` | each system's talkgroup file as CSV text: short name → CSV |
 | `log` | the latest 500 `LogLine`s |
-| `aliases` | talker aliases heard on the air: short name → `{ unit: alias }` (those saved, from `hello.units`, then each `unitAlias`) |
-| `error` | the latest `error` message's text |
+| `aliases` | talker aliases heard on the air: short name → `{ unit: alias }` (those saved, from `units`, then each `unitAlias`) |
+| `error` | the latest `error` message's text, or why a `setConfig` was refused |
 | `exited` | the recorder said it was exiting (`quit`); it keeps trying to reconnect, and this clears when it's back |
 
 **Events.** `rec.on(type, fn)` returns a function that removes the handler.
 
 | `type` | `fn` gets | When |
 |---|---|---|
-| `"change"` | the client | after any message: redraw |
+| `"change"` | the client | after any message: redraw. While a connection is being greeted, only once, at `hello` |
 | any message type, e.g. `"concluded"` | the message | that message arrived (after the state was updated) |
 | `"message"` | the message | every message |
 | `"audio"` | `{ system, callId, talkgroup, samples }` | a live-audio chunk (`Float32Array`, 8000 per second) |
@@ -250,9 +252,10 @@ whenever `change` fires.
 | `start()`, `stop()` | start / stop recording |
 | `listen()`, `listen({ talkgroup })`, `listen({ system, talkgroup })`, `listen(false)` | live audio: every call, one talkgroup's, one system's (by short name) talkgroup's, none. Kept across reconnects. |
 | `subscribe(topics)` | the costly messages to receive: `["log"]` fills `log`; `"spectrum:0"` a waterfall's `spectrum`. Kept across reconnects. |
-| `setConfig(edit)` | `edit(copy)` changes a copy of the latest config, and the whole config is sent |
+| `setConfig(edit)` | `edit(copy)` changes a copy of the latest config, and the whole config is sent with `configVersion`. If the config changed elsewhere meanwhile it's refused, and `error` says so |
+| `setTalkgroups(shortName, csv)` | replace a system's talkgroup file (`""` for none) |
 | `callUrl(entry, "wav" \| "json" \| "m4a")` | a recorded call's file URL |
-| `talkgroups(shortName)` | the system's talkgroup file: `Map` talkgroup → `{ talkgroup, alphaTag, description, tag, group, mode }`; a conventional system's channels (`alphaTag` the channel's name) |
+| `talkgroups(shortName)` | the system's talkgroup file, parsed from `talkgroupFiles`: `Map` talkgroup → `{ talkgroup, alphaTag, description, tag, group, mode }`; a conventional system's channels (`alphaTag` the channel's name) |
 | `unitName(shortName, unit)` | a radio's name, as the system's `unitNames.mode` says: its unit names (`unitNames.csv`, regular-expression rows too) and the alias heard; else `""` |
 | `close()` | disconnect for good |
 
@@ -342,11 +345,16 @@ origin listed (e.g. `"https://radio.example.com"`).
 
 1. **Connect** to `ws://<host>:<port>/api/ws`. Set `binaryType = "arraybuffer"`
    if you'll want live audio.
-2. **`hello`** arrives first. It holds everything to draw the first screen:
-   the config, the recorder's phase, the last 300 recorded calls, the radios
-   plugged in, and the survey's state.
-3. **`plugins`** comes next (the plugins installed).
-4. Then **messages as things happen**, to every connected client:
+2. **The greeting.** The recorder sends how things are now as ordinary
+   messages, the same ones it sends later when they change: `state`,
+   `config`, `talkgroups` (one for each system), `units` (each system with
+   some), `heard`, `history` (the last 300 recorded calls), `radios`,
+   `survey`, `monitorEvent` (each recent event), `host`; with control access
+   also `devices`, `keys`, `plugins` and `interfaces`. **`hello`** comes
+   last. It means you're caught up: draw the first screen then, and don't
+   treat something missing as missing before it (a system with no
+   `talkgroups` message has no talkgroup file).
+3. Then **messages as things happen**, to every connected client:
    - `state` when recording starts or stops
    - `status` about twice a second while recording: systems, sources and the
      calls on the air
@@ -355,9 +363,9 @@ origin listed (e.g. `"https://radio.example.com"`).
    - `host` every 2 s: the computer and the plugins (desktop app)
    - `concluded` for each recorded call
    - `monitorEvent` when something notable happens
-   - `config` when anyone changes the config
+   - `config` when anyone changes the config (with its `version`)
    - …the full list is [below](#messages-from-the-recorder).
-5. **Subscribe** to what costs the recorder something to make, while you
+4. **Subscribe** to what costs the recorder something to make, while you
    show it: `{"type": "subscribe", "topics": ["spectrum:0", "log"]}`. A
    connection gets none of these until it asks; each `subscribe` replaces the
    last. Topics: `spectrum:<source>` (the waterfall, ~7/s), `log` (every
@@ -365,16 +373,17 @@ origin listed (e.g. `"https://radio.example.com"`).
    `decode:<shortName>` (`decodeDetail`, 1/s), `platform` (per-core and
    per-interface figures in `host`). With nobody subscribed the recorder
    doesn't compute them.
-6. **Send commands** as JSON text whenever you like. Answers to your own
+5. **Send commands** as JSON text whenever you like. Answers to your own
    commands (`error`, `notice`, `dir`, `trConfig`, `devices`, `radios`,
    `pluginStore`, and `plugins` when you sent `plugins`) come to your
    connection only. Everything else goes to every client: after
    `addPlugin`, `removePlugin` or `installPlugin` everyone gets `plugins`,
-   and after `setConfig` or `channelFile` everyone gets `config`.
-7. **Reconnect** when the socket closes: the recorder may have restarted. A
-   new `hello` brings you up to date. Per-connection settings (live audio,
+   and after `setConfig` or `channelFile` everyone gets `config`; every
+   `setConfig` is answered to its sender with `configSaved`.
+6. **Reconnect** when the socket closes: the recorder may have restarted. A
+   new greeting brings you up to date. Per-connection settings (live audio,
    subscriptions) must be sent again after it.
-8. **`quit`** means the recorder is exiting (Quit, Ctrl-C, a service stop or
+7. **`quit`** means the recorder is exiting (Quit, Ctrl-C, a service stop or
    restart). The built-in interface stops there. A display that should come
    back after a restart keeps trying, more slowly. client.js retries every
    5 s and sets `exited`.
@@ -384,7 +393,7 @@ Unknown message types should be ignored: new ones may be added.
 ## Concepts
 
 **Phase.** The recorder is `idle`, `starting`, `running` or `stopping`.
-`hello.phase` and the `state` message carry it, with `error` (why it stopped
+The `state` message carries it, with `error` (why it stopped
 or couldn't start) and `ended` (a capture file played to its end).
 
 **Systems.** `config.systems` are trunked systems: P25, SmartNet, DMR and
@@ -409,15 +418,15 @@ frequencies. Their calls are numbered after the trunked systems' (and
   `reason` such as `"encrypted"` or `"unknown_tg"`.
 - A recorded call arrives once, finished, as `concluded`. Its `entry` is a
   `CallEntry`: `path` (where its files are) and `record`, Trunk Recorder's
-  call JSON (`CallRecord`). The same entries make up `hello.history`, newest
+  call JSON (`CallRecord`). The same entries make up the `history` message, newest
   first.
 
 **Talkgroups** are numbers. Their names (`alphaTag` / `talkgroup_tag`) come
-from each system's talkgroup file (`talkgroupsCsv` in the config), and are
+from each system's talkgroup file (the `talkgroups` message), and are
 `""` when the talkgroup isn't in it. **Units** (radios) are numbers too:
 `CallView.sources`, `CallRecord.srcList`. Their names come from the
 user's unit names (`unitNames` of each system in the config), the talker
-aliases heard on the air (`hello.units`, then the `unitAlias` messages),
+aliases heard on the air (the `units` messages, then the `unitAlias` messages),
 and `srcList[].tag`.
 
 **Times.** Engine times (`nowS`, `startS`, `timeS`) are seconds since
@@ -431,15 +440,18 @@ Every message is a JSON object with a `type`. Exact fields are in
 
 | `type` | When | What's in it |
 |---|---|---|
-| `hello` | First, on every connection | `version`, `platform`, `config`, `configPath`, `devices`, `phase`, `history` (≤ 300 `CallEntry`, newest first), `units` (short name → the talker aliases heard, as CSV: `unit,alias,source,time,wacn,sys,tg`, the newest line per unit wins), `heard`, `radios`, `surveyBands`, `survey`, `events` (recent `monitorEvent`s), `host` (the last `host`), `pluginRuntime` (id → runtime) |
-| `plugins` | After `hello`; after plugin changes; answers `plugins` | `plugins` (`PluginInfo[]`), `encoderFound` |
+| `hello` | Last of a connection's greeting: you're caught up | `version`, `platform`, `api`, `configPath` (control access only), `surveyBands`. The rest of the greeting is the messages below, sent first |
+| `history` | On connecting | `entries`: the latest calls (≤ 300 `CallEntry`), newest first. Then `concluded` for each new one |
+| `units` | On connecting, for each system with some | `system` (short name), `csv`: the talker aliases saved, as CSV: `unit,alias,source,time,wacn,sys,tg`, the newest line per unit wins. Then `unitAlias` for each new one |
+| `talkgroups` | On connecting, for each system; whenever one changes | `system` (short name), `csv`: the system's talkgroup file (Trunk Recorder's CSV format; `""`: none) |
+| `plugins` | On connecting (control access); after plugin changes; answers `plugins` | `plugins` (`PluginInfo[]`), `encoderFound` |
 | `state` | Recording starts / stops | `phase`, `error`, `ended` |
-| `status` | ~2/s while running | `status` (`EngineStatus`: totals, `systems[]` with control channel, decode counts `good`/`bad`, site identity, patches, DMR state), `sources[]` (each radio: rate, drops, errors, frequency error), `load` (share of real time the decoder is busy), `calls` (`CallView[]`, on the air now) |
+| `status` | ~2/s while running | `status` (`EngineStatus`: totals, `systems[]` with control channel, decode counts `good`/`bad`, site identity), `sources[]` (each radio: rate, drops, errors, frequency error), `load` (share of real time the decoder is busy), `calls` (`CallView[]`, on the air now) |
 | `spectrum` | Topic `spectrum:<source>`: ~7/s while running | `source`, `centerHz`, `rateHz`, `bins`: 512 levels in dBFS, lowest frequency first, spanning `centerHz ± rateHz/2` |
 | `stats` | 1/s while running | `t` (Unix s), `values`: series name → value now ([Statistics and history](#statistics-and-history)) |
 | `host` | Every 2 s (desktop app) | `t`, `values` (the computer's and plugins' series), `platform` (OS, cores, container and its limits, disks (the RAM spool's too, as `spool`), connectivity checks, `spotlight` (macOS: whether Spotlight indexes the recordings folder), `unavailable`: what this platform can't tell and why) |
 | `rfDetail` | Topic `rf:<source>`: 1/s | `source`, `profile` (the noise floor in 64 slices across the band, dBFS per FFT bin), `channels` (each channel on it: power, floor, SNR, carrier offset, the receiver's eye opening or CQPSK phase error) |
-| `decodeDetail` | Topic `decode:<shortName>`: 1/s | `system`, `channels` (the system's channels as received now, each with its `site`) |
+| `decodeDetail` | Topic `decode:<shortName>`: 1/s | `system`, `channels` (the system's channels as received now, each with its `site`), `sites` (each running site's `index`, `name`, and what its control channel announces: `adjacent` sites, `dmr`, `nxdn`), `patches` (the patches standing now, each once: `supergroup` and `members`) |
 | `monitorEvent` | Something notable happened | `t`, `level`, `kind` (`controlLost`, `tgFirstSeen`, `sourceDrops`, `pluginHealth`, `linkDown`, `diskLow`, `spoolLow`, `spoolFull`, …) and its fields |
 | `subscribed` | Answers `subscribe` | `topics` |
 | `statsResult` | Answers `statsQuery` | `id`, `from`, `to`, `loading` (the history files are still being read), `series`: name → `{ t0, stepS, v, lo, hi, n }` |
@@ -448,18 +460,19 @@ Every message is a JSON object with a `type`. Exact fields are in
 | `callFiles` | A call's upload plugins are done, and it kept other than its entry said (an upload failed and its files stay) | `path`, `audio`, `json` |
 | `log` | Topic `log` (errors and notices always) | `lines[]`: `{ timeS, kind, text, system? }` — `kind` e.g. `"error"`, `"control"`, `"alias"`, `"plugin"`, or a control-message kind |
 | `unitAlias` | A talker alias was heard | `system` (short name), `unit`, `alias` |
-| `heard` | Conventional codes heard changed | `heard`: frequency (Hz, as a string) → `HeardCode[]` |
-| `config` | The config changed (anyone's `setConfig`, a plugin added…) | `config` |
-| `devices` | Answers `devices` | `devices`: RTL-SDR dongles plugged in (`busy` when another program has one) |
-| `radios` | Answers `findRadios` | `radios`: the optional USRP / Airspy / SoapySDR drivers and their devices |
+| `heard` | On connecting; conventional codes heard changed | `heard`: frequency (Hz, as a string) → `HeardCode[]` |
+| `config` | On connecting; the config changed (anyone's `setConfig`, a plugin added…) | `config`, `version` (what an edit is sent with) |
+| `configSaved` | Answers `setConfig`, to its sender | `version` (the config's now), `error` when the edit wasn't taken (the config changed elsewhere meanwhile, or it's bad) or couldn't be saved |
+| `devices` | On connecting (control access); answers `devices` | `devices`: RTL-SDR dongles plugged in (`busy` when another program has one) |
+| `radios` | On connecting; answers `findRadios` | `radios`: the optional USRP / Airspy / SoapySDR drivers and their devices |
 | `dir` | Answers `listDir` | a folder: `path`, `parent`, `dirs`, `files` (.json), `home`, `sep`, `error` |
 | `trConfig` | Answers `readTrConfig` | a Trunk Recorder config.json's `text`, the `files` it names, or `error` |
 | `survey` | The survey's progress | `stage` (`idle` / `scanning` / `monitoring` / `done`), candidates, the channel monitored, the suggested system |
 | `surveySpectrum` | While surveying | like `spectrum` |
 | `sourceProfile` | Answers `profileSource` | `source`, then `error`, or `centerHz`, `rateHz`, `spectrum` / `floor` (1024 points, dB, −rate/2 … +rate/2), `rows` (a waterfall), `referenceDb`, `lowHz` / `highHz` (how far in the floor is 3 dB down), `lowDropDb` / `highDropDb`, `suggestedGuardHz` |
-| `pluginRuntime` | A plugin's totals changed | `id`, `runtime` (state, counts, recent log; `metrics` — queue, upload time, endpoints — when the plugin reports them; restarts, events dropped, uptime; results per minute for the last hour) |
+| `pluginRuntime` | On connecting (control access); a plugin's totals changed | `id`, `runtime` (state, counts, recent log; `metrics` — queue, upload time, endpoints — when the plugin reports them; restarts, events dropped, uptime; results per minute for the last hour) |
 | `pluginStore` | Answers `pluginStore` | the plugin registry's listings |
-| `interfaces` | After `plugins`; after interface changes; answers `interfaces` | `interfaces` (`InterfaceInfo[]`: each one's port, access, whether it's served and why not), `api` |
+| `interfaces` | On connecting (control access);  after interface changes; answers `interfaces` | `interfaces` (`InterfaceInfo[]`: each one's port, access, whether it's served and why not), `api` |
 | `interfaceStore` | Answers `interfaceStore` | the interface store's listings |
 | `interfaceInstall` | As an install goes | `key`, `id`, `stage`, `message` (as `pluginInstall`) |
 | `pluginInstall` | An install's progress | `key`, `id`, `stage` (`finding` … `done` / `failed`), `message` |
@@ -477,7 +490,8 @@ aren't understood are ignored.
 | `start` | — | Start recording with the saved config. `state` follows; `error` if it can't. |
 | `stop` | — | Stop recording. Calls in progress are saved. |
 | `listen` | `on`, `system` (a short name, or null), `talkgroup` (number or null) | Live audio on this connection: every call (both null), one system's, one talkgroup's, or both. `on: false` stops it. |
-| `setConfig` | `config` | Replace the whole config: saved, and sent to everyone as `config`. Takes effect at the next `start` (plugin settings at once). |
+| `setConfig` | `config`, `version` | Replace the whole config, edited from `version` (the last `config` message's): saved, and sent to everyone as `config`. Refused if the config has changed since (another browser saved). Always answered with `configSaved`. Takes effect at the next `start` (plugin settings at once). |
+| `setTalkgroups` | `system` (short name), `csv` | Replace a system's talkgroup file (`""` removes it). Everyone gets it as `talkgroups`; a recording takes it at once. |
 | `channelFile` | `index`, `path` | Link conventional system `index`'s channels to a CSV, reload it (same path), or unlink (`""`). |
 | `devices` | — | List RTL-SDR dongles (→ `devices`). |
 | `findRadios` | — | Look for USRP / Airspy / SoapySDR devices (→ `radios`; takes a few seconds). |
@@ -573,7 +587,7 @@ With client.js: `rec.calls`, on `change`.
 **How long a call has been going.** `status.nowS - call.startS` (both engine
 seconds). With client.js: `rec.status.nowS - c.startS`.
 
-**A call log.** Start from `hello.history` and put each `concluded.entry` at
+**A call log.** Start from the `history` message and put each `concluded.entry` at
 the front. It's the same shape either way. With client.js: `rec.history`.
 
 **Listen to one talkgroup.** Send `{"type": "listen", "on": true, "system":
@@ -585,15 +599,17 @@ talkgroups, listen to everything and drop the chunks you don't want.
 `concluded`, queue `/calls/<path>.wav`, and play the queue with one `<audio>`
 element. `examples/talkgroup.html` does this.
 
-**Change a setting.** Take the latest config (from `hello`, or the latest
-`config` message), change it, and send the **whole** object back with
-`setConfig`. Then wait for the `config` message that everyone gets. Never
-build a config from scratch: fields you leave out are reset to defaults.
+**Change a setting.** Take the latest `config` message, change it, and send
+the **whole** object back with `setConfig`, with that message's `version`.
+Then wait for the `config` message that everyone gets, and the `configSaved`
+that answers you: if its `error` is set the edit wasn't taken (the config
+changed elsewhere meanwhile: take the new one and make the change again).
+Never build a config from scratch: fields you leave out are reset to defaults.
 
 ```js
 const next = structuredClone(config);
 next.recording.minCallS = 2;
-send({ type: "setConfig", config: next });
+send({ type: "setConfig", config: next, version });
 // client.js:
 rec.setConfig((c) => { c.recording.minCallS = 2; });
 ```
@@ -602,8 +618,9 @@ rec.setConfig((c) => { c.recording.minCallS = 2; });
 the command worked: `error` says why it didn't.
 
 **A talkgroup's name.** In a call: `alphaTag` (live) or `talkgroup_tag`
-(recorded). Otherwise, each system's talkgroup file is in
-`config.systems[i].talkgroupsCsv` (Trunk Recorder's CSV format). With
+(recorded). Otherwise, each system's talkgroup file comes in a
+`talkgroups` message (Trunk Recorder's CSV format); change one with
+`setTalkgroups`. With
 client.js: `rec.talkgroups(shortName).get(1234)?.alphaTag`.
 
 **A radio's name.** In a recorded call: `srcList[].tag`. Live: the user's
@@ -612,7 +629,7 @@ names are in the config, `systems[i].unitNames.csv` (or
 comments; a unit between slashes is a regular expression whose groups
 (`$1` or `\1`) may appear in the name (`/^1(\d{3})$/,Engine $1`); the first
 matching line wins. The aliases heard on the air are in
-`hello.units[shortName]` (Trunk Recorder's unitTagsOTA CSV:
+the `units` message for the system (Trunk Recorder's unitTagsOTA CSV:
 `unit,alias,source,time,wacn,sys,tg`, the newest line per unit wins), then
 in the `unitAlias` messages. `unitNames.mode` says which to use:
 `"user"` (the default) the user's name first, then the alias; `"ota"` the

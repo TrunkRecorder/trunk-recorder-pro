@@ -5,6 +5,37 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Talkgroup files live beside the config, not in it** (breaking for interface authors). A system's
+  talkgroup file (Trunk Recorder's CSV format) is `<shortName>.talkgroups.csv` in the config's
+  folder, and `talkgroupsCsv` / `talkgroupsName` are gone from the config, so editing one no longer
+  sends every system's file to the recorder and back to every connection. An older config is
+  upgraded when it's read: its talkgroups are moved out into those files (the log says which).
+  Renaming a system in Setup moves its file. In the API the recorder sends `talkgroups { system,
+  csv }` for each system on connecting and whenever one changes (`""`: none), and an interface with
+  control access changes one with `setTalkgroups { system, csv }`. client.js: `rec.talkgroupFiles`
+  and `rec.setTalkgroups(shortName, csv)`.
+- **A config edit names the version it edits** (breaking for interface authors). `config` carries a
+  `version`, and `setConfig` is `{ config, version }`. If the config changed elsewhere meanwhile
+  (another browser saved), the edit is refused rather than saved over the newer config. Every
+  `setConfig` is answered to its sender with `configSaved { version, error? }`: `version` is the
+  config's now, and `error` says the edit wasn't taken (an old version, or a bad config) or
+  couldn't be saved. client.js tracks `rec.configVersion` and sends it; a refusal sets `rec.error`.
+- **A connection is greeted with ordinary messages, and `hello` comes last** (breaking for
+  interface authors). It used to carry a copy of the config, phase, history, aliases, heard codes,
+  radios, survey, events, host, devices and keys, in its own shapes. Now a new connection is sent
+  `state`, `config`, `talkgroups`, `units`, `heard`, `history`, `radios`, `survey`, `monitorEvent`
+  (each recent event) and `host` (with control access also `devices`, `keys`, `plugins` and
+  `interfaces`) like any later change, and then `hello`, which means "caught up" and is just
+  `{ version, platform, api, configPath?, surveyBands }`. New messages: `history { entries }` (the
+  latest calls, newest first) and `units { system, csv }` (a system's saved talker aliases).
+  Wait for `hello` before treating something missing as missing. A listen-only connection gets the
+  same messages as before, without plugin settings and key sources. client.js emits `change` once
+  at `hello` during the greeting.
+- **`status` is slimmer** (breaking for interface authors). It's sent to everyone twice a second,
+  and each site carried its neighbour list, DMR and NXDN channels and carriers, and each system its
+  patches, which only the Decode page's system view reads. They moved to `decodeDetail` (topic
+  `decode:<shortName>`): `sites: [{ index, name, adjacent, dmr, nxdn }]` and `patches: [{
+  supergroup, members }]`.
 - **Setup applies the recorder's own rules.** Why Start would refuse a config, where an automatic
   source is centred, how a stored config is read (and an older one upgraded), and reading and writing
   a channel CSV were written twice, in the recorder and again in the interface, and had drifted:

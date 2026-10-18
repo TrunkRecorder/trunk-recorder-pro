@@ -375,7 +375,7 @@ browser, talks to (the `replay` CLI drives the `Engine` directly):
   - `Output::Log` carries `log::Record`s, which the platform formats in Trunk
     Recorder's log style.
 - `finish(&mut out)` ends every call (stop / end of input).
-- `set_talkgroups` applies a talkgroup file edited from the dashboard;
+- `set_talkgroups` applies a talkgroup file edited in Setup;
   `radio_query` answers `radioQuery`; `attach` hands it the platform's
   `stats::Shared` (registry and monitor).
 - Persistence hooks: `bandplans()`, `units_changed()`, `heard_unsaved()` hand
@@ -463,7 +463,8 @@ main ─► serve()
   SIGTERM and the interface's **Quit** all go through this path.
 - **Persistence.**
   - `config.json` is written by `setConfig` (the interface always sends the
-    whole config).
+    whole config, with the version it edited).
+  - `<short>.talkgroups.csv` is written by `setTalkgroups`.
   - `<short>.bandplan` is written every 10 s when it changes, and at stop.
   - `<short>.units.csv` and `conventional.heard.json` are written when they
     change.
@@ -513,15 +514,19 @@ variants against protocol.ts's, both ways, every message sent against the
 schema, and every documented command against `Command::parse`.
 
 - **Recorder → client.**
-  - On connect: `hello` (config, phase, history, aliases, heard codes,
-    radios, survey, recent events, host, plugin runtimes), then `plugins`.
+  - On connect, the ordinary messages describing how the recorder is now
+    (`state`, `config`, `talkgroups`, `units`, `heard`, `history`, `radios`,
+    `survey`, `monitorEvent` for each recent event, `host`; with control
+    access also `devices`, `keys`, `plugins`, `interfaces`), through the same
+    audience rules as every other message, then `hello` last: caught up.
   - Broadcast to every client: `state`, `status`, `stats`, `host`,
-    `monitorEvent`, `concluded`, `unitAlias`, `heard`, `config`, `survey`,
+    `monitorEvent`, `concluded`, `unitAlias`, `heard`, `config`, `talkgroups`, `survey`,
     `surveySpectrum`, `pluginRuntime` / `pluginInstall`, `quit`.
   - Only to clients subscribed to the topic: `spectrum` (`spectrum:<i>`),
     `log` (`log`), `rfDetail` (`rf:<i>`), `decodeDetail`
-    (`decode:<shortName>`).
-  - Replies to the sender only: `devices`, `radios`, `dir`, `trConfig`,
+    (`decode:<shortName>`: also each site's adjacent sites and DMR / NXDN
+    detail, and the patches).
+  - Replies to the sender only: `configSaved`, `devices`, `radios`, `dir`, `trConfig`,
     `pluginStore`, `interfaceStore`, `subscribed`, `statsResult`,
     `radioResult`, `error`, `notice`.
   - By access: `ToClient::audience` says which messages are control-only
@@ -531,7 +536,8 @@ schema, and every documented command against `Command::parse`.
     session passes on what its access may have. A command a listen-only
     connection may not send (`Command::listen_may_send`), and one that
     doesn't parse, is answered with an `error`.
-- **Client → recorder.** `setConfig`, `start`, `stop`, `listen`,
+- **Client → recorder.** `setConfig` (with the version it edits; a stale
+  one is refused), `setTalkgroups`, `start`, `stop`, `listen`,
   `channelFile`, `devices`, `findRadios`, `listDir`, `readTrConfig`,
   `survey*`, `plugins`, `addPlugin`, `removePlugin`, `pluginStore`,
   `installPlugin`, `interfaces`, `interfaceStore`, `installInterface`,
