@@ -24,31 +24,17 @@ use trunk_core::p25::diversity::{best_imbe, best_tsbks, Bank, BankConfig};
 use trunk_core::p25::frame::{LDU1, LDU2, TSDU};
 use trunk_core::smartnet;
 
+use crate::toolkit::{hex, Capture};
 use crate::{die, Args};
 
 /// Channel IQ of `freq` from a capture, through a head of `cutoff` Hz.
 fn channel(a: &Args, cutoff: f64) -> (Vec<Complex32>, f64) {
-    let path = a.positional.get(1).unwrap_or_else(|| die("tool snr: no capture"));
-    let mut cap = std::fs::read(path).unwrap_or_else(|e| die(&format!("{path}: {e}")));
-    let fs = a.num("rate", 2_400_000.0);
-    if let Some(s) = a.get("seconds").and_then(|v| v.parse::<f64>().ok()) {
-        cap.truncate((s * fs) as usize * 2);
-    }
-    let mut chz = Channelizer::new(fs, 24_000.0, 0.1);
+    let cap = Capture::from_args_seconds(a, "snr");
+    let mut chz = Channelizer::new(cap.fs, 24_000.0, 0.1);
     let rate = chz.output_rate();
-    let (head, _, _) = chz.add_head(a.num("freq", 0.0) - a.num("center", 0.0), cutoff, 0.0);
+    let (head, _, _) = chz.add_head(a.num("freq", 0.0) - cap.center, cutoff, 0.0);
     let mut iq = Vec::new();
-    let mut off = 0;
-    while off < cap.len() {
-        let (used, ran) = chz.feed_u8(&cap[off..]);
-        off += used;
-        if ran {
-            iq.extend_from_slice(chz.output(head).unwrap());
-        }
-        if used == 0 {
-            break;
-        }
-    }
+    cap.channelize(&mut chz, |chz| iq.extend_from_slice(chz.output(head).unwrap()));
     (iq, rate)
 }
 
@@ -210,10 +196,6 @@ fn matched(clean: &[(f64, String)], got: &[(f64, String)]) -> u64 {
         }
     }
     n
-}
-
-fn hex(b: &[u8]) -> String {
-    b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
 fn run_dmr(iq: &[Complex32], rate: f64, v: &Variant) -> Count {

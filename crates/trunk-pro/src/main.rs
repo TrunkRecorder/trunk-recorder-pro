@@ -110,6 +110,7 @@ mod spool;
 mod spotlight;
 mod statstore;
 mod store;
+mod toolkit;
 #[cfg(test)]
 mod protocol_tests;
 mod survey;

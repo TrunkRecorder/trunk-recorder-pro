@@ -28,7 +28,6 @@
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
-use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::time::Instant;
 
@@ -42,47 +41,32 @@ use trunk_core::trunk::frames::VoiceFrame;
 use trunk_core::p25::voice::{decode_hdu, decode_ldu1_lc, decode_ldu2_es, decode_tdulc, imbe_params_to_bits, ldu_imbe, EncryptionSync, ImbeParams};
 use trunk_core::p25::lc::LinkControl;
 
+use crate::toolkit::{hex, AudioOut, Capture};
 use crate::{die, Args};
 
 pub fn run(a: &Args) {
     let mode = a.positional.first().map(String::as_str).unwrap_or_else(|| die("tool cc|voice|frames|p2|smartnet|dmr|dmrscan|nxdn|nxdnscan|nxdnsynth|p25synth|snr|revoice|sdr … (trunk-pro --help)"));
-    if mode == "p2" {
-        return run_p2(a);
+    match mode {
+        "cc" | "voice" | "frames" => run_p25(a, mode),
+        "p2" => run_p2(a),
+        "smartnet" => run_smartnet(a),
+        "dmr" => crate::dmrtool::run(a),
+        "dmrscan" => crate::dmrtool::run_scan(a),
+        "nxdn" => crate::nxdntool::run(a),
+        "nxdnscan" => crate::nxdntool::run_scan(a),
+        "nxdnsynth" => crate::nxdntool::run_synth(a),
+        "p25synth" => crate::p25synth::run(a),
+        "snr" => crate::snrtool::run(a),
+        "revoice" => run_revoice(a),
+        "sdr" => run_sdr(a),
+        _ => die(&format!("tool {mode}: no such tool (cc|voice|frames|p2|smartnet|dmr|dmrscan|nxdn|nxdnscan|nxdnsynth|p25synth|snr|revoice|sdr)")),
     }
-    if mode == "dmr" {
-        return crate::dmrtool::run(a);
-    }
-    if mode == "snr" {
-        return crate::snrtool::run(a);
-    }
-    if mode == "dmrscan" {
-        return crate::dmrtool::run_scan(a);
-    }
-    if mode == "nxdn" {
-        return crate::nxdntool::run(a);
-    }
-    if mode == "nxdnscan" {
-        return crate::nxdntool::run_scan(a);
-    }
-    if mode == "nxdnsynth" {
-        return crate::nxdntool::run_synth(a);
-    }
-    if mode == "p25synth" {
-        return crate::p25synth::run(a);
-    }
-    if mode == "sdr" {
-        return run_sdr(a);
-    }
-    if mode == "revoice" {
-        return run_revoice(a);
-    }
-    if mode == "smartnet" {
-        return run_smartnet(a);
-    }
-    let path = a.positional.get(1).unwrap_or_else(|| die("tool: no capture"));
-    let cap = std::fs::read(path).unwrap_or_else(|e| die(&format!("{path}: {e}")));
-    let fs = a.num("fs", a.num("rate", 2_400_000.0));
-    let center = a.num("center", 0.0);
+}
+
+/// `tool cc|voice|frames`: one P25 Phase 1 channel.
+fn run_p25(a: &Args, mode: &str) {
+    let cap = Capture::from_args(a, mode);
+    let (fs, center) = (cap.fs, cap.center);
     let freq = a.num(if mode == "cc" { "cc" } else { "freq" }, 0.0);
 
     let demod = a.get("demod").unwrap_or("auto");
@@ -104,8 +88,8 @@ pub fn run(a: &Args) {
     let rate = chz.output_rate();
     let (head, _, _) = chz.add_head(freq - center, 7000.0, 0.0);
     let mut bank = Bank::new(rate, cfg);
-    let mut iq_out = a.get("iq").map(|p| BufWriter::new(File::create(p).unwrap_or_else(|e| die(&format!("{p}: {e}")))));
-    let mut audio_out = a.get("audio").map(|p| BufWriter::new(File::create(p).unwrap_or_else(|e| die(&format!("{p}: {e}")))));
+    let mut iq_out = AudioOut::open(a, "iq");
+    let mut audio_out = AudioOut::open(a, "audio");
     let mut vocoder = mbe::Decoder::new(mbe::lcg(1), if a.get("profile") == Some("mbelib") { mbe::Profile::Mbelib } else { mbe::Profile::Enhanced });
     if !soft_fec {
         vocoder.hard_fec();
@@ -116,7 +100,6 @@ pub fn run(a: &Args) {
     let mut st = Stats::default();
     let mut groups = Vec::new();
     let t0 = Instant::now();
-    let mut off = 0;
     let mut handle = |groups: &mut Vec<Group>, st: &mut Stats, out: &mut BufWriter<_>| {
         for g in groups.drain(..) {
             let f = best_frame(&g);
@@ -132,14 +115,14 @@ pub fn run(a: &Args) {
                     st.bad += bad;
                     for t in good {
                         st.good += 1;
-                        let hex: String = t.iter().map(|b| format!("{b:02x}")).collect();
+                        let hex = hex(&t);
                         let _ = writeln!(out, "{{\"t\":{:.3},\"nac\":{},\"op\":{},\"hex\":\"{hex}\"}}", f.sample / rate, f.nid.nac, tsbk_opcode(&t));
                     }
                 }
                 "cc" if f.nid.duid == PDU => match best_pdu(&g) {
                     Pdu::Mbt(m) => {
                         st.good += 1;
-                        let hex: String = m.header.iter().chain(&m.data).map(|b| format!("{b:02x}")).collect();
+                        let hex = format!("{}{}", hex(&m.header), hex(&m.data));
                         let _ = writeln!(out, "{{\"t\":{:.3},\"nac\":{},\"mbt\":{},\"hex\":\"{hex}\"}}", f.sample / rate, f.nid.nac, m.opcode());
                     }
                     Pdu::Other(_) => {}
@@ -159,30 +142,20 @@ pub fn run(a: &Args) {
             }
         }
     };
-    while off < cap.len() {
-        let (used, ran) = chz.feed_u8(&cap[off..]);
-        off += used;
-        if ran {
-            let iq = chz.output(head).unwrap();
-            if let Some(w) = iq_out.as_mut() {
-                for c in iq {
-                    let _ = w.write_all(&c.re.to_le_bytes());
-                    let _ = w.write_all(&c.im.to_le_bytes());
-                }
-            }
-            bank.push(iq, &mut groups);
-            handle(&mut groups, &mut st, &mut out);
+    cap.channelize(&mut chz, |chz| {
+        let iq = chz.output(head).unwrap();
+        if let Some(w) = iq_out.as_mut() {
+            w.iq(iq);
         }
-        if used == 0 {
-            break;
-        }
-    }
+        bank.push(iq, &mut groups);
+        handle(&mut groups, &mut st, &mut out);
+    });
     bank.flush(&mut groups);
     handle(&mut groups, &mut st, &mut out);
     let cpu = t0.elapsed().as_secs_f64();
     let _ = out.flush();
 
-    let air = cap.len() as f64 / 2.0 / fs;
+    let air = cap.air();
     let mut s = format!("{{\"mode\":\"{mode}\",\"airS\":{air:.2},\"pctCore\":{:.3},\"demod\":\"{demod}\",\"framesPerRx\":{:?},\"good\":{},\"bad\":{},\"frames\":{{", 100.0 * cpu / air, bank.frames_per_rx(), st.good, st.bad);
     let parts: Vec<String> = st.frames.iter().map(|(k, v)| format!("\"{k}\":{v}")).collect();
     s.push_str(&parts.join(","));
@@ -233,7 +206,7 @@ fn voice_line(
     es: Option<EncryptionSync>,
     st: &mut Stats,
     vocoder: &mut mbe::Decoder,
-    audio: Option<&mut BufWriter<File>>,
+    audio: Option<&mut AudioOut>,
 ) -> String {
     let mut s = format!("{{\"t\":{:.3},\"duid\":{},\"nac\":{},\"complete\":{},\"nbits\":{},\"raw\":\"", f.symbol as f64 / trunk_core::dsp::c4fm::SYMBOL_RATE, f.nid.duid, f.nid.nac, f.complete as u8, f.raw.len());
     for c in f.raw.chunks(4) {
@@ -256,9 +229,7 @@ fn voice_line(
                     let kind = vocoder.imbe(&imbe_params_to_bits(&p.u), p.e0, p.errs, false, &mut buf);
                     st.kinds[kind as usize] += 1;
                     mbe::to_unit(&mut buf);
-                    for v in buf {
-                        let _ = w.write_all(&v.to_le_bytes());
-                    }
+                    w.samples(&buf);
                 }
                 let u = &p.u;
                 let _ = write!(
@@ -402,10 +373,8 @@ fn run_p2(a: &Args) {
     use trunk_core::p25::mac::{parse_mac_ptt, MAC_PTT};
     use trunk_core::p25::phase2::{self, *};
 
-    let path = a.positional.get(1).unwrap_or_else(|| die("tool p2: no capture"));
-    let cap = std::fs::read(path).unwrap_or_else(|e| die(&format!("{path}: {e}")));
-    let fs = a.num("fs", a.num("rate", 2_400_000.0));
-    let (center, freq) = (a.num("center", 0.0), a.num("freq", 0.0));
+    let cap = Capture::from_args(a, "p2");
+    let (fs, center, freq) = (cap.fs, cap.center, a.num("freq", 0.0));
     let mask = a.get("nac").map(|_| xor_mask(num_any(a, "nac"), num_any(a, "sysid"), num_any(a, "wacn")));
     let soft = a.get("soft") != Some("none");
     let want_slot = a.num("slot", 0.0) as usize;
@@ -415,93 +384,83 @@ fn run_p2(a: &Args) {
     let mut rx = Cqpsk::new(rate, cqpsk::Options { baud: phase2::SYMBOL_RATE, eq_taps: a.num("eq", 0.0) as usize, ..Default::default() });
     let mut framer = phase2::Framer::new();
     let mut vocoder = mbe::Decoder::new(mbe::lcg(1), mbe::Profile::Enhanced);
-    let mut audio_out = a.get("audio").map(|p| BufWriter::new(File::create(p).unwrap_or_else(|e| die(&format!("{p}: {e}")))));
+    let mut audio_out = AudioOut::open(a, "audio");
     let stdout = std::io::stdout();
     let mut out = BufWriter::new(stdout.lock());
     let (mut syms, mut pkts) = (Vec::new(), Vec::new());
     let mut by_type: BTreeMap<i8, u64> = BTreeMap::new();
     let (mut vcw, mut vcw_errs, mut vcw_clean, mut macs, mut mac_fail) = (0u64, 0u64, 0u64, 0u64, 0u64);
     let t0 = Instant::now();
-    let mut off = 0;
-    while off < cap.len() {
-        let (used, ran) = chz.feed_u8(&cap[off..]);
-        off += used;
-        if ran {
-            syms.clear();
-            pkts.clear();
-            rx.push(chz.output(head).unwrap(), &mut syms);
-            for s in &syms {
-                framer.push(s, &mut pkts);
-            }
-            for p in &pkts {
-                let burst = &p.dibits[10..];
-                let kind = duid_decode(burst);
-                *by_type.entry(kind).or_default() += 1;
-                let mut line = format!("{{\"t\":{:.4},\"slot\":{},\"type\":{kind},\"dibits\":\"", p.sample / rate, p.sf_slot);
-                for d in p.dibits {
-                    line.push((b'0' + d) as char);
-                }
-                line.push('"');
-                let scrambled = matches!(kind, BURST_4V | BURST_2V | BURST_SACCH_S | BURST_LCCH_S | BURST_FACCH_S);
-                let mut x = [0u8; BURST_DIBITS];
-                x.copy_from_slice(&burst[..BURST_DIBITS]);
-                if scrambled {
-                    if let Some(m) = &mask {
-                        for (i, v) in x.iter_mut().enumerate() {
-                            *v ^= m[p.sf_slot * SLOT_DIBITS + i];
-                        }
-                    }
-                }
-                if kind == BURST_4V || kind == BURST_2V {
-                    line.push_str(",\"vcw\":[");
-                    let at: &[usize] = if kind == BURST_4V { &[11, 48, 96, 133] } else { &[11, 48] };
-                    for (k, &o) in at.iter().enumerate() {
-                        let rel = &p.rel[2 * (10 + o)..2 * (10 + o) + 72];
-                        let f = decode_vcw(&x[o..o + 36], soft.then_some(rel));
-                        vcw += 1;
-                        vcw_errs += f.errs as u64;
-                        vcw_clean += (f.errs <= 1) as u64;
-                        let bits: String = f.bits.iter().map(|&b| (b'0' + b) as char).collect();
-                        let _ = write!(line, "{}{{\"bits\":\"{bits}\",\"errs\":{}}}", if k > 0 { "," } else { "" }, f.errs);
-                        if SLOT_CHANNEL[p.sf_slot] == want_slot {
-                            if let Some(w) = audio_out.as_mut() {
-                                let mut buf = [0f32; FRAME_SAMPLES];
-                                vocoder.ambe(&f.bits, f.errs, &mut buf);
-                                mbe::to_unit(&mut buf);
-                                for v in buf {
-                                    let _ = w.write_all(&v.to_le_bytes());
-                                }
-                            }
-                        }
-                    }
-                    line.push(']');
-                } else if matches!(kind, BURST_SACCH_S | BURST_SACCH_U | BURST_FACCH_S | BURST_FACCH_U) {
-                    match decode_acch(&x, None, kind == BURST_FACCH_S || kind == BURST_FACCH_U) {
-                        Some(pdu) => {
-                            macs += 1;
-                            let _ = write!(line, ",\"mac\":{{\"op\":{},\"offset\":{},\"hex\":\"{}\"}}", pdu.opcode, pdu.offset, hex(&pdu.bytes));
-                            if pdu.opcode == MAC_PTT {
-                                let m = parse_mac_ptt(&pdu.bytes);
-                                let _ = write!(line, ",\"ptt\":{{\"algid\":{},\"keyid\":{},\"mi\":\"{}\",\"src\":{},\"tg\":{}}}", m.algid, m.keyid, hex(&m.mi), m.source, m.group);
-                            }
-                        }
-                        None => {
-                            mac_fail += 1;
-                            line.push_str(",\"mac\":null");
-                        }
-                    }
-                }
-                line.push('}');
-                let _ = writeln!(out, "{line}");
-            }
+    cap.channelize(&mut chz, |chz| {
+        syms.clear();
+        pkts.clear();
+        rx.push(chz.output(head).unwrap(), &mut syms);
+        for s in &syms {
+            framer.push(s, &mut pkts);
         }
-        if used == 0 {
-            break;
+        for p in &pkts {
+            let burst = &p.dibits[10..];
+            let kind = duid_decode(burst);
+            *by_type.entry(kind).or_default() += 1;
+            let mut line = format!("{{\"t\":{:.4},\"slot\":{},\"type\":{kind},\"dibits\":\"", p.sample / rate, p.sf_slot);
+            for d in p.dibits {
+                line.push((b'0' + d) as char);
+            }
+            line.push('"');
+            let scrambled = matches!(kind, BURST_4V | BURST_2V | BURST_SACCH_S | BURST_LCCH_S | BURST_FACCH_S);
+            let mut x = [0u8; BURST_DIBITS];
+            x.copy_from_slice(&burst[..BURST_DIBITS]);
+            if scrambled {
+                if let Some(m) = &mask {
+                    for (i, v) in x.iter_mut().enumerate() {
+                        *v ^= m[p.sf_slot * SLOT_DIBITS + i];
+                    }
+                }
+            }
+            if kind == BURST_4V || kind == BURST_2V {
+                line.push_str(",\"vcw\":[");
+                let at: &[usize] = if kind == BURST_4V { &[11, 48, 96, 133] } else { &[11, 48] };
+                for (k, &o) in at.iter().enumerate() {
+                    let rel = &p.rel[2 * (10 + o)..2 * (10 + o) + 72];
+                    let f = decode_vcw(&x[o..o + 36], soft.then_some(rel));
+                    vcw += 1;
+                    vcw_errs += f.errs as u64;
+                    vcw_clean += (f.errs <= 1) as u64;
+                    let bits: String = f.bits.iter().map(|&b| (b'0' + b) as char).collect();
+                    let _ = write!(line, "{}{{\"bits\":\"{bits}\",\"errs\":{}}}", if k > 0 { "," } else { "" }, f.errs);
+                    if SLOT_CHANNEL[p.sf_slot] == want_slot {
+                        if let Some(w) = audio_out.as_mut() {
+                            let mut buf = [0f32; FRAME_SAMPLES];
+                            vocoder.ambe(&f.bits, f.errs, &mut buf);
+                            mbe::to_unit(&mut buf);
+                            w.samples(&buf);
+                        }
+                    }
+                }
+                line.push(']');
+            } else if matches!(kind, BURST_SACCH_S | BURST_SACCH_U | BURST_FACCH_S | BURST_FACCH_U) {
+                match decode_acch(&x, None, kind == BURST_FACCH_S || kind == BURST_FACCH_U) {
+                    Some(pdu) => {
+                        macs += 1;
+                        let _ = write!(line, ",\"mac\":{{\"op\":{},\"offset\":{},\"hex\":\"{}\"}}", pdu.opcode, pdu.offset, hex(&pdu.bytes));
+                        if pdu.opcode == MAC_PTT {
+                            let m = parse_mac_ptt(&pdu.bytes);
+                            let _ = write!(line, ",\"ptt\":{{\"algid\":{},\"keyid\":{},\"mi\":\"{}\",\"src\":{},\"tg\":{}}}", m.algid, m.keyid, hex(&m.mi), m.source, m.group);
+                        }
+                    }
+                    None => {
+                        mac_fail += 1;
+                        line.push_str(",\"mac\":null");
+                    }
+                }
+            }
+            line.push('}');
+            let _ = writeln!(out, "{line}");
         }
-    }
+    });
     let cpu = t0.elapsed().as_secs_f64();
     let _ = out.flush();
-    let air = cap.len() as f64 / 2.0 / fs;
+    let air = cap.air();
     let types: Vec<String> = by_type.iter().map(|(k, v)| format!("\"{k}\":{v}")).collect();
     eprintln!(
         "{{\"mode\":\"p2\",\"airS\":{air:.2},\"pctCore\":{:.3},\"symbols\":{},\"syncs\":{},\"packets\":{},\"types\":{{{}}},\"vcw\":{vcw},\"meanErrs\":{:.3},\"cleanFrac\":{:.4},\"mac\":{macs},\"macFail\":{mac_fail}}}",
@@ -529,12 +488,11 @@ pub fn smartnet_bandplan(a: &Args, name: &str) -> trunk_core::smartnet::Bandplan
 
 fn run_smartnet(a: &Args) {
     use trunk_core::smartnet::{self, Framer, Fsk2, Parser, Word};
-    let path = a.positional.get(1).unwrap_or_else(|| die("tool smartnet: no capture"));
-    let cap = std::fs::read(path).unwrap_or_else(|e| die(&format!("{path}: {e}")));
-    let fs = a.num("rate", 2_400_000.0);
+    let cap = Capture::from_args(a, "smartnet");
+    let fs = cap.fs;
     let mut chz = Channelizer::new(fs, 24_000.0, 1.0);
     let rate = chz.output_rate();
-    let (head, _, _) = chz.add_head(a.num("cc", 0.0) - a.num("center", 0.0), smartnet::CHANNEL_CUTOFF_HZ, 0.0);
+    let (head, _, _) = chz.add_head(a.num("cc", 0.0) - cap.center, smartnet::CHANNEL_CUTOFF_HZ, 0.0);
     let mut rx = Fsk2::new(rate);
     let mut framer = Framer::new();
     let mut parser = Parser::new(smartnet_bandplan(a, a.get("bandplan").unwrap_or("800_standard")));
@@ -544,56 +502,48 @@ fn run_smartnet(a: &Args) {
     let (mut bits, mut fout, mut msgs) = (Vec::new(), Vec::new(), Vec::new());
     let mut n_bits = 0u64;
     let t0 = Instant::now();
-    let mut off = 0;
-    while off < cap.len() {
-        let (used, ran) = chz.feed_u8(&cap[off..]);
-        off += used;
-        if ran {
-            bits.clear();
-            rx.push(chz.output(head).unwrap_or(&[]), &mut bits);
-            for b in &bits {
-                n_bits += 1;
-                fout.clear();
-                framer.push(b.soft, &mut fout);
-                let t = b.sample / rate;
-                for o in &fout {
-                    match *o {
-                        Word::Osw(osw, _) => {
-                            if show_osw {
-                                let f = parser.bandplan().rx_hz(osw.cmd).map_or("null".into(), |f| f.to_string());
-                                let _ = writeln!(out, "{{\"t\":{t:.4},\"osw\":{{\"addr\":{},\"grp\":{},\"cmd\":\"{:03x}\",\"rx_hz\":{f}}}}}", osw.addr, osw.grp, osw.cmd);
-                            }
-                            parser.osw(osw, t, &mut msgs);
+    cap.channelize(&mut chz, |chz| {
+        bits.clear();
+        rx.push(chz.output(head).unwrap_or(&[]), &mut bits);
+        for b in &bits {
+            n_bits += 1;
+            fout.clear();
+            framer.push(b.soft, &mut fout);
+            let t = b.sample / rate;
+            for o in &fout {
+                match *o {
+                    Word::Osw(osw, _) => {
+                        if show_osw {
+                            let f = parser.bandplan().rx_hz(osw.cmd).map_or("null".into(), |f| f.to_string());
+                            let _ = writeln!(out, "{{\"t\":{t:.4},\"osw\":{{\"addr\":{},\"grp\":{},\"cmd\":\"{:03x}\",\"rx_hz\":{f}}}}}", osw.addr, osw.grp, osw.cmd);
                         }
-                        Word::Bad(_) => {
-                            if show_osw {
-                                let _ = writeln!(out, "{{\"t\":{t:.4},\"bad\":true}}");
-                            }
-                            parser.bad(t, &mut msgs);
+                        parser.osw(osw, t, &mut msgs);
+                    }
+                    Word::Bad(_) => {
+                        if show_osw {
+                            let _ = writeln!(out, "{{\"t\":{t:.4},\"bad\":true}}");
                         }
+                        parser.bad(t, &mut msgs);
                     }
                 }
-                for m in msgs.drain(..) {
-                    let _ = writeln!(
-                        out,
-                        "{{\"t\":{t:.4},\"kind\":\"{}\",\"tg\":{},\"freq\":{},\"src\":{},\"analog\":{},\"enc\":{},\"meta\":{:?}}}",
-                        m.kind.as_str(),
-                        m.talkgroup,
-                        m.freq_hz,
-                        m.source,
-                        m.voice.analog(),
-                        m.encrypted,
-                        m.meta
-                    );
-                }
+            }
+            for m in msgs.drain(..) {
+                let _ = writeln!(
+                    out,
+                    "{{\"t\":{t:.4},\"kind\":\"{}\",\"tg\":{},\"freq\":{},\"src\":{},\"analog\":{},\"enc\":{},\"meta\":{:?}}}",
+                    m.kind.as_str(),
+                    m.talkgroup,
+                    m.freq_hz,
+                    m.source,
+                    m.voice.analog(),
+                    m.encrypted,
+                    m.meta
+                );
             }
         }
-        if used == 0 {
-            break;
-        }
-    }
+    });
     let _ = out.flush();
-    let air = cap.len() as f64 / 2.0 / fs;
+    let air = cap.air();
     eprintln!(
         "{air:.1} s of air in {:.2} s: {} bits, {} good OSWs ({:.1}/s of {:.1}/s), {} lost; offset {:+.0} Hz, deviation ±{:.0} Hz; system {}",
         t0.elapsed().as_secs_f64(),
@@ -606,9 +556,4 @@ fn run_smartnet(a: &Args) {
         rx.deviation_hz(),
         parser.sys_id.map_or("?".into(), |s| format!("{s:04x}")),
     );
-}
-
-/// Bytes as lowercase hex.
-fn hex(b: &[u8]) -> String {
-    b.iter().map(|x| format!("{x:02x}")).collect()
 }
