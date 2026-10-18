@@ -240,9 +240,9 @@ main.rs replay. Each item is small to medium on its own.
 
 ### 8. The call record travels as a string
 
-- [ ] One serde `CallRecord` in trunk-core that `record::save_call` produces and the finish thread serialises once when writing `<rel>.json`; the SDK re-exports it; TS generated from it (theme 5)
-- [ ] `Concluded { record: CallRecord, … }`, `Output::File { record, … }`; drop the parallel `entry: Value`
-- [ ] `Stats::observe` and `Session::handle` read fields, not JSON keys (`"errorList"`, `"start_time"`)
+- [x] One serde `CallRecord` in trunk-core that `record::save_call` produces and the finish thread serialises once when writing `<rel>.json`; the SDK re-exports it; TS generated from it (theme 5) — done, in the SDK rather than trunk-core (the SDK is on crates.io and can't depend on trunk-core; trunk-core takes the SDK's types): every field named, written as it serialises, byte for byte as the format string wrote it (regress IDENTICAL), flags 0/1 both ways; protocol.ts stays hand-written (theme 5's decision)
+- [x] `Concluded { record: CallRecord, … }`, `Output::File { record, … }`; drop the parallel `entry: Value` — done: `Concluded.record`, `Output::File { record }`, history entries built by `session::call_entry`; the finish thread serialises it once
+- [x] `Stats::observe` and `Session::handle` read fields, not JSON keys (`"errorList"`, `"start_time"`) — done, and the radio registry's `concluded`
 
 **Evidence.** `record::call_record` writes the call JSON with a format
 string; `Concluded.json: String` is re-parsed in `Session::handle` (for

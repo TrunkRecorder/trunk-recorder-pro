@@ -437,8 +437,7 @@ impl PluginHost {
     /// `audio` says. An .m4a is made here when there isn't one and a plugin
     /// wants it.
     /// `decrypted`: some of it was decrypted with our keys.
-    pub fn concluded(&self, system: u16, rel: &str, json: &str, mut audio: CallAudio, decrypted: bool) {
-        let record: CallRecord = serde_json::from_str(json).unwrap_or_default();
+    pub fn concluded(&self, system: u16, rel: &str, record: CallRecord, mut audio: CallAudio, decrypted: bool) {
         if self.call_takers(decrypted) == 0 {
             if decrypted {
                 self.shared.say_all_withheld(topic::CALL_CONCLUDED);
@@ -977,7 +976,7 @@ mod tests {
         hold.attach(Some(host.outlet()));
         let call = |rel: &str, tg: u32| {
             let audio = CallAudio { wav: Arc::new(vec![]), wav_written: true, files: CallFiles::default(), m4a_to: dir.join("x.m4a") };
-            host.concluded(0, rel, &json!({ "talkgroup": tg, "short_name": "dcfd" }).to_string(), audio, false);
+            host.concluded(0, rel, CallRecord { talkgroup: tg, short_name: "dcfd".into(), ..Default::default() }, audio, false);
         };
         call("dcfd/held", 5);
         call("dcfd/now", 6);

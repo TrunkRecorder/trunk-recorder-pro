@@ -1,7 +1,8 @@
 //! The per-call JSON, with Trunk Recorder's field names (call_concluder.cc
 //! create_call_json) so existing tooling reads it, and TR's file base name.
 
-use std::fmt::Write;
+
+pub use trunk_recorder_plugin::{CallRecord, ErrorInterval, FreqEntry, SrcEntry};
 
 use super::calls::{Call, Voice};
 use crate::dsp::tones::Tone;
@@ -171,125 +172,98 @@ impl Transmissions {
     }
 }
 
-fn esc(s: &str) -> String {
-    let mut o = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '"' => o.push_str("\\\""),
-            '\\' => o.push_str("\\\\"),
-            '\n' => o.push_str("\\n"),
-            c if (c as u32) < 0x20 => {
-                let _ = write!(o, "\\u{:04x}", c as u32);
-            }
-            c => o.push(c),
-        }
-    }
-    o
-}
-
-/// A level for the JSON, to a tenth of a dB; null when not measured.
-fn db(v: Option<f64>) -> String {
-    v.map_or("null".to_string(), |v| format!("{:.1}", v))
-}
-
-/// (json, base name `<talkgroup>-<start epoch>_<freq>[.slot]`).
-pub fn call_record(call: &Call, info: &ConcludeInfo) -> (String, String) {
+/// A call's record (Trunk Recorder's call JSON, [`CallRecord`]), and its
+/// base name `<talkgroup>-<start epoch>_<freq>[.slot]`.
+pub fn call_record(call: &Call, info: &ConcludeInfo) -> (CallRecord, String) {
     let ms = |s: f64| (info.epoch_ms_at_zero + s * 1000.0).round() as i64;
     let (start_ms, stop_ms) = (ms(call.start_s), ms(info.end_s));
     let tg = call.talkgroup_info.as_ref();
-    let t = |f: fn(&super::talkgroups::Talkgroup) -> &str| tg.map_or(String::new(), |t| esc(f(t)));
+    let t = |f: fn(&super::talkgroups::Talkgroup) -> &str| tg.map_or(String::new(), |t| f(t).to_string());
     let secs = info.audio_seconds;
-    let mut j = String::new();
-    let _ = write!(
-        j,
-        "{{\"call_num\":{},\"freq\":{},\"freq_error\":{},\"signal\":{},\"noise\":{},\"snr\":{},\"clean_voice_pct\":{},\"source_num\":0,\"recorder_num\":{},\"tdma_slot\":{},\"phase2_tdma\":{},\
-\"start_time\":{},\"stop_time\":{},\"start_time_ms\":{},\"stop_time_ms\":{},\"emergency\":{},\"priority\":{},\"mode\":{},\"duplex\":{},\"encrypted\":{},\"algid\":{},\"key_id\":{},\"decrypted\":{},\
-\"call_length\":{},\"call_length_ms\":{},\"talkgroup\":{},\"talkgroup_tag\":\"{}\",\"talkgroup_description\":\"{}\",\"talkgroup_group_tag\":\"{}\",\
-\"talkgroup_group\":\"{}\",\"color_code\":{},\"ran\":{},\"tone_mode\":\"{}\",\"tone_detected\":\"{}\",\"tone_confidence\":{:.3},\
-\"audio_type\":\"{}\",\"short_name\":\"{}\",",
-        call.id,
-        call.freq_hz,
-        info.freq_error_hz,
-        db(info.reception.signal_db()),
-        db(info.reception.noise_db()),
-        db(info.reception.snr_db()),
-        info.errors.clean_share().map_or("null".to_string(), |c| format!("{:.1}", c * 100.0)),
-        info.recorder_num,
-        call.voice.slot().unwrap_or(0),
-        call.voice.tdma() as u8,
-        start_ms.div_euclid(1000),
-        stop_ms.div_euclid(1000),
-        start_ms,
-        stop_ms,
-        call.emergency as u8,
-        call.priority,
-        call.mode as u8,
-        call.duplex as u8,
-        call.encrypted as u8,
+    let record = CallRecord {
+        call_num: call.id as u64,
+        freq: call.freq_hz,
+        freq_error: info.freq_error_hz as i64,
+        signal: info.reception.signal_db(),
+        noise: info.reception.noise_db(),
+        snr: info.reception.snr_db(),
+        clean_voice_pct: info.errors.clean_share().map(|c| c * 100.0),
+        source_num: 0,
+        recorder_num: info.recorder_num as i64,
+        tdma_slot: call.voice.slot().unwrap_or(0) as i64,
+        phase2_tdma: call.voice.tdma(),
+        start_time: start_ms.div_euclid(1000),
+        stop_time: stop_ms.div_euclid(1000),
+        start_time_ms: start_ms,
+        stop_time_ms: stop_ms,
+        emergency: call.emergency,
+        priority: call.priority as i64,
+        mode: call.mode,
+        duplex: call.duplex,
+        encrypted: call.encrypted,
         // The cipher its encryption sync named (-1: none heard).
-        call.cipher.map_or(-1, |c| c.algid as i32),
-        call.cipher.map_or(-1, |c| c.keyid as i32),
-        call.decrypted as u8,
-        secs.round() as i64,
-        (secs * 1000.0).round() as i64,
-        call.talkgroup,
-        t(|t| &t.alpha_tag),
-        t(|t| &t.description),
-        t(|t| &t.tag),
-        t(|t| &t.group),
-        call.voice.color_code().map_or(-1, i32::from),
-        call.ran.map_or(-1, i32::from),
+        algid: call.cipher.map_or(-1, |c| c.algid as i64),
+        key_id: call.cipher.map_or(-1, |c| c.keyid as i64),
+        decrypted: call.decrypted,
+        call_length: secs.round(),
+        call_length_ms: (secs * 1000.0).round() as i64,
+        talkgroup: call.talkgroup,
+        talkgroup_tag: t(|t| &t.alpha_tag),
+        talkgroup_description: t(|t| &t.description),
+        talkgroup_group_tag: t(|t| &t.tag),
+        talkgroup_group: t(|t| &t.group),
+        color_code: call.voice.color_code().map_or(-1, i64::from),
+        ran: call.ran.map_or(-1, i64::from),
         // Trunk Recorder's (PR #1137) tone fields; "search": identified, not matched.
-        match call.tone_set {
+        tone_mode: match call.tone_set {
             Some(Tone::Ctcss(_)) => "ctcss",
             Some(Tone::Dcs(..)) => "dcs",
             None if call.voice.analog() && call.site.is_none() => "search",
             None => "off",
-        },
-        call.tone.map_or(String::new(), |t| t.tone.to_string()),
-        call.tone.map_or(0.0, |t| t.confidence),
-        if call.voice.analog() { "analog" } else if call.voice.tdma() { "digital tdma" } else { "digital" },
-        esc(info.short_name),
-    );
-    if !info.site.is_empty() {
-        let _ = write!(j, "\"site\":\"{}\",", esc(info.site));
-    }
-    // Only when patched with another, as Trunk Recorder writes it.
-    if call.patched_talkgroups.len() > 1 {
-        let tgs: Vec<String> = call.patched_talkgroups.iter().map(|t| t.to_string()).collect();
-        let _ = write!(j, "\"patched_talkgroups\":[{}],", tgs.join(","));
-    }
-    let _ = write!(
-        j,
-        "\"freqList\":[{{\"freq\":{},\"time\":{},\"pos\":0,\"len\":{},\"error_count\":{},\"spike_count\":0}}],{},\"srcList\":[",
-        call.freq_hz,
-        start_ms.div_euclid(1000),
-        (secs * 100.0).round() / 100.0,
-        info.errors.total_errors(),
-        info.errors.json()
-    );
-    for (i, s) in call.sources.iter().enumerate() {
-        let _ = write!(
-            j,
-            "{}{{\"src\":{},\"time\":{},\"pos\":{},\"emergency\":{},\"encrypted\":{},\"duplex\":{},\"mode\":{},\"priority\":{},\"signal_system\":\"\",\"tag\":\"{}\",\"tag_ota\":\"{}\"{}}}",
-            if i > 0 { "," } else { "" },
-            s.src,
-            ms(s.time_s).div_euclid(1000),
-            // Seconds into the saved audio, as Trunk Recorder's (the WAV's length when it was heard).
-            (s.audio_pos.unwrap_or(0) as f64 / mbe::SAMPLE_RATE as f64 * 100.0).round() / 100.0,
-            // What its transmission said of itself (the call's own flags are
-            // above; these are this radio's): Trunk Recorder's names.
-            s.flags.emergency as u8,
-            s.flags.encrypted as u8,
-            s.flags.duplex as u8,
-            s.flags.packet as u8,
-            s.flags.priority,
-            esc(&UnitTags::name(info.unit_tags, info.units, s.src).unwrap_or_default()),
-            esc(info.units.and_then(|u| u.get(s.src)).unwrap_or("")),
-            s.position.map_or(String::new(), |(lat, lon)| format!(",\"lat\":{lat:.6},\"lon\":{lon:.6}"))
-        );
-    }
-    j.push_str("]}");
+        }
+        .into(),
+        tone_detected: call.tone.map_or(String::new(), |t| t.tone.to_string()),
+        tone_confidence: call.tone.map_or(0.0, |t| t.confidence as f64),
+        audio_type: if call.voice.analog() { "analog" } else if call.voice.tdma() { "digital tdma" } else { "digital" }.into(),
+        short_name: info.short_name.to_string(),
+        site: info.site.to_string(),
+        // Only when patched with another, as Trunk Recorder writes it.
+        patched_talkgroups: if call.patched_talkgroups.len() > 1 { call.patched_talkgroups.clone() } else { Vec::new() },
+        freq_list: vec![FreqEntry {
+            freq: call.freq_hz,
+            time: start_ms.div_euclid(1000),
+            pos: 0.0,
+            len: (secs * 100.0).round() / 100.0,
+            error_count: info.errors.total_errors(),
+            spike_count: 0,
+            extra: Default::default(),
+        }],
+        error_list: info.errors.intervals(),
+        src_list: call
+            .sources
+            .iter()
+            .map(|s| SrcEntry {
+                src: s.src as i64,
+                time: ms(s.time_s).div_euclid(1000),
+                // Seconds into the saved audio, as Trunk Recorder's (the WAV's length when it was heard).
+                pos: (s.audio_pos.unwrap_or(0) as f64 / mbe::SAMPLE_RATE as f64 * 100.0).round() / 100.0,
+                // What its transmission said of itself (the call's own flags
+                // are above; these are this radio's): Trunk Recorder's names.
+                emergency: s.flags.emergency,
+                encrypted: s.flags.encrypted,
+                duplex: s.flags.duplex,
+                mode: s.flags.packet,
+                priority: s.flags.priority as i64,
+                signal_system: String::new(),
+                tag: UnitTags::name(info.unit_tags, info.units, s.src).unwrap_or_default(),
+                tag_ota: info.units.and_then(|u| u.get(s.src)).unwrap_or("").to_string(),
+                lat: s.position.map(|p| p.0),
+                lon: s.position.map(|p| p.1),
+                extra: Default::default(),
+            })
+            .collect(),
+        extra: Default::default(),
+    };
     let base = format!(
         "{}-{}_{}{}",
         call.talkgroup,
@@ -297,7 +271,7 @@ pub fn call_record(call: &Call, info: &ConcludeInfo) -> (String, String) {
         call.freq_hz,
         call.voice.slot().map_or(String::new(), |s| format!(".{s}"))
     );
-    (j, base)
+    (record, base)
 }
 
 #[cfg(test)]
@@ -362,11 +336,11 @@ mod tests {
             freq_error_hz: 0,
             reception: Reception::default(),
         };
-        let (json, _) = call_record(&call, &info);
+        let json = call_record(&call, &info).0.to_json();
         assert!(json.contains("\"src\":7,") && json.matches("\"lat\"").count() == 1, "{json}");
         // Each source's own flags.
         CallManager::note_source(&mut call, Some(8), 0.0, Flags { emergency: true, priority: 7, ..Default::default() });
-        let (json, _) = call_record(&call, &info);
+        let json = call_record(&call, &info).0.to_json();
         assert!(json.contains("\"src\":7,\"time\":0,\"pos\":0,\"emergency\":0,\"encrypted\":0,\"duplex\":0,\"mode\":0,\"priority\":0,"), "{json}");
         assert!(json.contains("\"src\":8,\"time\":0,\"pos\":0,\"emergency\":1,\"encrypted\":0,\"duplex\":0,\"mode\":0,\"priority\":7,"), "{json}");
         assert!(json.contains("\"tag_ota\":\"\",\"lat\":30.052900,\"lon\":-83.175650}]"), "{json}");
@@ -403,8 +377,8 @@ impl Default for SaveRules {
 #[derive(Clone, Debug)]
 pub struct Concluded {
     pub call: Call,
-    /// Trunk Recorder's call JSON.
-    pub json: String,
+    /// Its record: Trunk Recorder's call JSON.
+    pub record: CallRecord,
     /// The call's system's short name (its folder).
     pub short_name: String,
     /// The site its copy was kept from ([`super::engine::SiteConfig::name`]; empty: conventional).
@@ -503,7 +477,7 @@ pub fn save_call(mut h: Held, cx: &SaveContext) -> Result<Concluded, Call> {
     } else {
         loudness::gain(&mut audio, mbe::SAMPLE_RATE, gain_db);
     }
-    let (json, base_name) = call_record(
+    let (record, base_name) = call_record(
         &call,
         &ConcludeInfo {
             short_name: cx.short_name,
@@ -520,5 +494,5 @@ pub fn save_call(mut h: Held, cx: &SaveContext) -> Result<Concluded, Call> {
         },
     );
     let frames = frames.captured.filter(|f| !audio.is_empty() && !f.is_empty()).map(|f| capture(&call, &f, audio.len(), freq_error_hz, &reception, cx));
-    Ok(Concluded { call, json, short_name: cx.short_name.to_string(), site: cx.site.to_string(), base_name, audio, frames })
+    Ok(Concluded { call, record, short_name: cx.short_name.to_string(), site: cx.site.to_string(), base_name, audio, frames })
 }

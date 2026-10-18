@@ -289,7 +289,7 @@ mod tests {
         assert_eq!(c.sources.iter().map(|s| s.src).collect::<Vec<_>>(), [98765]);
         let secs = done[0].audio.len() as f64 / 8000.0;
         assert!((secs - 6.0 * 0.36).abs() < 0.2, "{secs:.2} s of audio");
-        assert!(done[0].base_name.ends_with("_460050000.1") && done[0].json.contains("\"color_code\":5"), "{} {}", done[0].base_name, done[0].json);
+        assert!(done[0].base_name.ends_with("_460050000.1") && done[0].record.to_json().contains("\"color_code\":5"), "{} {}", done[0].base_name, done[0].record.to_json());
     }
 
     #[test]

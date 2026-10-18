@@ -364,7 +364,7 @@ mod tests {
             // 10 superframes: 160 codewords at 4800, 80 at 9600 (every other frame is FACCH1).
             let want = if rate == Rate::N48 { 3.2 } else { 1.6 };
             assert!((secs - want).abs() < 0.15, "{rate:?}: {secs:.2} s of audio");
-            assert!(done[0].json.contains("\"ran\":3"), "{}", done[0].json);
+            assert!(done[0].record.to_json().contains("\"ran\":3"), "{}", done[0].record.to_json());
         }
     }
 
@@ -382,8 +382,8 @@ mod tests {
                 };
                 let (done, _) = run_engine(cfg, &keyed(&tx, fs, freq - center));
                 assert_eq!(done.len(), 1, "{rate:?} {alias}");
-                assert!(done[0].json.contains("\"src\":501,"), "{}", done[0].json);
-                assert!(done[0].json.contains(&format!("\"tag_ota\":\"{alias}\"")), "{rate:?}: {}", done[0].json);
+                assert!(done[0].record.to_json().contains("\"src\":501,"), "{}", done[0].record.to_json());
+                assert!(done[0].record.to_json().contains(&format!("\"tag_ota\":\"{alias}\"")), "{rate:?}: {}", done[0].record.to_json());
             }
         }
         // No alias sent: none made up.
@@ -393,7 +393,7 @@ mod tests {
             ..Default::default()
         };
         let (done, _) = run_engine(cfg, &keyed(&conv_tx(Rate::N48), fs, freq - center));
-        assert!(done[0].json.contains("\"tag_ota\":\"\""), "{}", done[0].json);
+        assert!(done[0].record.to_json().contains("\"tag_ota\":\"\""), "{}", done[0].record.to_json());
     }
 
     #[test]

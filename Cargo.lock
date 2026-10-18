@@ -1965,6 +1965,7 @@ dependencies = [
  "regex-lite",
  "rustfft",
  "sdr-stream",
+ "trunk-recorder-plugin",
  "zeroize",
 ]
 

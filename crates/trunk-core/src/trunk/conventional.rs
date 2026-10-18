@@ -1220,7 +1220,7 @@ mod tests {
             }
             for ev in e.drain_events() {
                 match ev {
-                    Event::Concluded(k) => out.push((k.call, k.audio.len(), k.json)),
+                    Event::Concluded(k) => out.push((k.call, k.audio.len(), k.record.to_json())),
                     Event::CallStart(_) => starts += 1,
                     Event::ConvSkipped { freq_hz, code } => skipped.push((freq_hz, code)),
                     _ => {}
@@ -1230,7 +1230,7 @@ mod tests {
         e.finish();
         for ev in e.drain_events() {
             if let Event::Concluded(k) = ev {
-                out.push((k.call, k.audio.len(), k.json));
+                out.push((k.call, k.audio.len(), k.record.to_json()));
             }
         }
         (out, starts, skipped)

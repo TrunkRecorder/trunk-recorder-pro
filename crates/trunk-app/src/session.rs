@@ -36,7 +36,7 @@ pub enum Output {
     /// platform sends as a `concluded` message once the files are stored.
     /// `frames`: the frame capture, for `<rel>.sdr` (NXDN: `<rel>.frames.jsonl`).
     /// `decrypted`: some of it was decrypted with our keys.
-    File { rel: String, system: u16, wav: Vec<u8>, json: String, frames: Option<trunk_core::trunk::Capture>, entry: Value, decrypted: bool },
+    File { rel: String, system: u16, wav: Vec<u8>, record: trunk_recorder_plugin::CallRecord, frames: Option<trunk_core::trunk::Capture>, decrypted: bool },
     /// An event for plugins (only those [`Session::plugin_topics`] asks for).
     Plugin(HostMessage),
     /// A line for the log (the platform's logger formats and routes it).
@@ -915,19 +915,17 @@ impl Session {
                     self.heard.note(k.call.freq_hz, &code, true, self.wall(k.call.start_s) * 1000.0);
                 }
                 // Trunk Recorder's layout: <shortName>/<year>/<month>/<day>/, local time; or the system's filename format.
-                let record: Value = serde_json::from_str(&k.json).unwrap_or(Value::Null);
-                let start = record["start_time"].as_i64().unwrap_or(0);
-                let offset = (self.local_offset)(start);
+                let r = &k.record;
+                let offset = (self.local_offset)(r.start_time);
                 let format = self.recordings.get(k.call.system as usize).map_or("", |r| r.filename_format.as_str());
                 let rel = if format.trim().is_empty() {
-                    filename::default_path(&k.short_name, &k.base_name, start, offset)
+                    filename::default_path(&k.short_name, &k.base_name, r.start_time, offset)
                 } else {
-                    filename::render(&format, &record, k.call.system, offset)
+                    // (A format's tokens are the record's field names.)
+                    filename::render(format, &serde_json::to_value(r).unwrap_or_default(), k.call.system, offset)
                 };
-                let entry = json!({ "path": rel, "record": record });
-                out.push(Output::File { rel, system: k.call.system, wav: trunk_core::wav::encode(&k.audio, 8000), json: k.json, frames: k.frames, entry, decrypted: k.call.decrypted });
-                let f = |key: &str| record[key].as_f64();
-                let body = Body::Concluded { length_s: k.audio.len() as f64 / 8000.0, signal_db: f("signal"), noise_db: f("noise"), snr_db: f("snr"), clean_pct: f("clean_voice_pct") };
+                let body = Body::Concluded { length_s: k.audio.len() as f64 / 8000.0, signal_db: r.signal, noise_db: r.noise, snr_db: r.snr, clean_pct: r.clean_voice_pct };
+                out.push(Output::File { rel, system: k.call.system, wav: trunk_core::wav::encode(&k.audio, 8000), record: k.record, frames: k.frames, decrypted: k.call.decrypted });
                 let r = self.call_record(Level::Info, &k.call, body);
                 self.records.push(r);
             }
@@ -1103,6 +1101,12 @@ fn unit_kind(k: MessageType) -> Option<&'static str> {
 }
 
 /// `{nac, wacn, sysId, rfss, site}`: every field, null when not stated.
+/// A stored call's history entry (`concluded`, `history`, protocol.ts
+/// `CallEntry`): where it is under the recordings folder, and its record.
+pub fn call_entry(rel: &str, record: &trunk_recorder_plugin::CallRecord) -> Value {
+    json!({ "path": rel, "record": record })
+}
+
 /// A site's identity as messages carry it: the config's [`crate::config::SiteIdentity`].
 pub(crate) fn identity_json(id: &Identity) -> Value {
     json!(crate::config::SiteIdentity::from(id))

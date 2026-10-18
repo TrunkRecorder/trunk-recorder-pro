@@ -8,6 +8,8 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+# The call record (CallRecord): the type plugins read it as.
+trunk-recorder-plugin.workspace = true
 rustfft.workspace = true
 num-complex.workspace = true
 regex-lite = "0.1"

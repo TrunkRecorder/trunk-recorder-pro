@@ -713,8 +713,8 @@ mod tests {
         m.handle(&[patch(0.0, 65001, [101, 0, 0]), msg(MessageType::Grant, 0.5, 65001), msg(MessageType::Grant, 0.5, 303)], &mut Host, &mut ev);
         let errors = Default::default();
         let info = ConcludeInfo { short_name: "s", site: "", epoch_ms_at_zero: 0.0, audio_seconds: 1.0, errors: &errors, recorder_num: 0, end_s: 1.0, units: None, unit_tags: None, freq_error_hz: 0, reception: Default::default() };
-        assert!(call_record(&m.calls[0], &info).0.contains("\"short_name\":\"s\",\"patched_talkgroups\":[101,65001],\"freqList\""));
-        assert!(!call_record(&m.calls[1], &info).0.contains("patched"));
+        assert!(call_record(&m.calls[0], &info).0.to_json().contains("\"short_name\":\"s\",\"patched_talkgroups\":[101,65001],\"freqList\""));
+        assert!(!call_record(&m.calls[1], &info).0.to_json().contains("patched"));
     }
 
     /// Each radio keeps what its own transmission said: the grant's options

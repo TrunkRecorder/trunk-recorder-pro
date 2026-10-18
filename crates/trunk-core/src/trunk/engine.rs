@@ -2498,7 +2498,7 @@ mod tests {
         e.conclude(&call);
         let ev = e.drain_events();
         let k = ev.iter().find_map(|x| if let Event::Concluded(k) = x { Some(k) } else { None }).expect("the call is saved");
-        assert!(k.json.contains("\"decrypted\":1"), "{}", k.json);
+        assert!(k.record.to_json().contains("\"decrypted\":1"), "{}", k.record.to_json());
     }
 
     fn saved(ev: &[Event]) -> Vec<CallId> {

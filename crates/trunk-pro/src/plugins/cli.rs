@@ -280,14 +280,14 @@ fn run_calls(a: &Args) {
     }
     eprintln!("M4A: {}", host.encoder().unwrap_or("none"));
     for (p, json) in &loaded {
-        let v: Value = serde_json::from_str(json).unwrap_or_default();
-        let system = systems.iter().find(|s| Some(s.short_name.as_str()) == v["short_name"].as_str()).map_or(0, |s| s.index);
+        let record = serde_json::from_str::<trunk_recorder_plugin::CallRecord>(json);
+        let system = record.as_ref().ok().and_then(|r| systems.iter().find(|s| s.short_name == r.short_name)).map_or(0, |s| s.index);
         // Its key: relative to the capture folder (absolute when it isn't in there).
         let base = p.with_extension("");
         let rel = base.strip_prefix(&capture_dir).map(Path::to_path_buf).unwrap_or(base.clone());
         // (A call JSON that can't be read is taken for a decrypted one.)
-        let decrypted = serde_json::from_str::<trunk_recorder_plugin::CallRecord>(json).map_or(true, |r| r.decrypted);
-        host.concluded(system, &rel.to_string_lossy().replace('\\', "/"), json, super::host::CallAudio::on_disk(&base), decrypted);
+        let decrypted = record.as_ref().map_or(true, |r| r.decrypted);
+        host.concluded(system, &rel.to_string_lossy().replace('\\', "/"), record.unwrap_or_default(), super::host::CallAudio::on_disk(&base), decrypted);
     }
     let grace: f64 = a.get("grace").and_then(|s| s.parse().ok()).unwrap_or(30.0);
     host.shutdown(Duration::from_secs_f64(grace));

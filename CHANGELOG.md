@@ -31,6 +31,12 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   Wait for `hello` before treating something missing as missing. A listen-only connection gets the
   same messages as before, without plugin settings and key sources. client.js emits `change` once
   at `hello` during the greeting.
+- **Plugin SDK: one `CallRecord`.** The call JSON is one typed record from the engine to the file,
+  the history and the plugins, where it was a string parsed again four times. Every field the
+  recorder writes is named (`freq_error`, `signal`, `noise`, `snr`, `clean_voice_pct`,
+  `recorder_num`, `algid`, `key_id`, `color_code`, `ran`, the tone fields, `errorList`…), so a plugin
+  no longer finds them in `extra`; flags are written back as 0/1, as the recorder's files have them.
+  The files themselves are byte for byte as before.
 - **One store for plugins and interfaces** (breaking for control-access interfaces). `pluginStore` /
   `interfaceStore`, `installPlugin` / `installInterface` and `pluginInstall` / `interfaceInstall` are
   `store { kind }`, `install { kind, … }` and `installProgress { kind, … }`, with `kind` `plugin` or

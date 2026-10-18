@@ -82,12 +82,12 @@ fn to_js(out: &mut Vec<Output>, history: &mut History) -> Array {
                 set(&obj, "frame", Uint8Array::from(frame.as_slice()));
             }
             // (No frame capture in the browser: the setting is desktop-only.)
-            Output::File { rel, wav, json, entry, .. } => {
+            Output::File { rel, wav, record, .. } => {
                 set(&obj, "t", "file");
-                set(&obj, "rel", rel);
                 set(&obj, "wav", Uint8Array::from(wav.as_slice()));
-                set(&obj, "json", json);
-                set(&obj, "entry", entry.to_string());
+                set(&obj, "json", record.to_json());
+                set(&obj, "entry", trunk_app::session::call_entry(&rel, &record).to_string());
+                set(&obj, "rel", rel);
             }
         }
         a.push(&obj);

@@ -303,18 +303,18 @@ impl Stats {
                 }
             }
             Event::Concluded(k) => {
-                let record: Value = serde_json::from_str(&k.json).unwrap_or(Value::Null);
+                let record = &k.record;
                 let bytes = 44 + k.audio.len() as u64 * 2;
                 self.tally.add(format!("{sys}/audioBytes"), bytes);
                 self.tally.add("all/audioBytes".into(), bytes);
                 self.roll_day();
                 self.day.audio_bytes += bytes;
-                for i in record["errorList"].as_array().into_iter().flatten() {
-                    self.tally.add(format!("{sys}/voice/frames"), i["frames"].as_u64().unwrap_or(0));
-                    self.tally.add(format!("{sys}/voice/errors"), i["error_count"].as_u64().unwrap_or(0));
-                    self.tally.add(format!("{sys}/voice/bad"), i["bad_frames"].as_u64().unwrap_or(0));
+                for i in &record.error_list {
+                    self.tally.add(format!("{sys}/voice/frames"), i.frames);
+                    self.tally.add(format!("{sys}/voice/errors"), i.error_count);
+                    self.tally.add(format!("{sys}/voice/bad"), i.bad_frames);
                 }
-                self.shared.radio.lock().unwrap().concluded(name, &record, t);
+                self.shared.radio.lock().unwrap().concluded(name, record, t);
             }
             Event::NotSaved(_) => self.tally.add(format!("{sys}/notSaved"), 1),
             Event::Duplicate { .. } => self.tally.add(format!("{sys}/dup"), 1),

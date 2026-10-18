@@ -713,7 +713,7 @@ fn handle_events(engine: &Engine, out_dir: &str, multi: bool, quiet: bool, messa
                 let _ = fs::create_dir_all(&dir);
                 let base = dir.join(&k.base_name).display().to_string();
                 let _ = fs::write(format!("{base}.wav"), trunk_core::wav::encode(&k.audio, 8000));
-                let _ = fs::write(format!("{base}.json"), &k.json);
+                let _ = fs::write(format!("{base}.json"), k.record.to_json());
                 if let Some(c) = &k.frames {
                     let _ = fs::write(format!("{base}.{}", c.ext), &c.bytes);
                 }

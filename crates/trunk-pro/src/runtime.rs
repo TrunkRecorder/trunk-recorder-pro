@@ -771,10 +771,8 @@ struct Finish {
     rel: String,
     system: u16,
     wav: Vec<u8>,
-    json: String,
+    record: trunk_recorder_plugin::CallRecord,
     frames: Option<trunk_core::trunk::Capture>,
-    /// Its history entry (`{path, record}`).
-    entry: Value,
     rules: FileRules,
     /// Some of it was decrypted with our keys: only plugins with `shareDecrypted` take it.
     decrypted: bool,
@@ -808,7 +806,9 @@ fn finish_one(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, f: Fin
     let p = plugins::plan(r, takers, host.is_some_and(|h| h.needs_wav()), encoder.is_some());
     let (keep_audio, keep_json, keep_m4a, write_wav) = (p.keep_audio, p.keep_json, p.keep_m4a, p.write_wav);
     let base = dir.join(&f.rel);
-    let need = f.json.len() + f.wav.len() / 4 + if write_wav && !keep_audio { f.wav.len() } else { 0 };
+    // (The record written once, as the .json file has it.)
+    let json = f.record.to_json();
+    let need = json.len() + f.wav.len() / 4 + if write_wav && !keep_audio { f.wav.len() } else { 0 };
     let spooled = spool.filter(|s| p.spool && s.room_for(need as u64)).map(|s| s.dir.join(&f.rel));
     let at = |kept: bool, ext: &str| PathBuf::from(format!("{}.{ext}", if kept { &base } else { spooled.as_ref().unwrap_or(&base) }.display()));
     let (wav_at, json_at, frames_at, m4a_at) = (at(keep_audio, "wav"), at(keep_json, "json"), at(keep_audio, f.frames.as_ref().map_or("sdr", |c| c.ext)), at(keep_m4a, "m4a"));
@@ -816,14 +816,14 @@ fn finish_one(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, f: Fin
         let _ = fs::create_dir_all(d);
     }
     let ok = (!write_wav || fs::write(&wav_at, &f.wav).is_ok())
-        && (!p.write_json || fs::write(&json_at, &f.json).is_ok())
+        && (!p.write_json || fs::write(&json_at, &json).is_ok())
         && f.frames.as_ref().filter(|_| p.write_frames).is_none_or(|c| fs::write(&frames_at, &c.bytes).is_ok());
     if !ok {
         warn_all(&ctx.hub, &format!("Couldn't write {}", base.display()));
         return;
     }
     // Whether its audio and JSON stay once the plugins are done (a plugin's failure may keep them after all: archive::settle).
-    let mut entry = f.entry;
+    let mut entry = trunk_app::session::call_entry(&f.rel, &f.record);
     entry["audio"] = json!(keep_audio);
     entry["json"] = json!(keep_json);
     publish(&ctx.hub, ToClient::Concluded { entry: entry.clone() });
@@ -852,7 +852,7 @@ fn finish_one(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, f: Fin
     }
     ctx.plugins.archive.expect(&f.rel, takers, r, &base, spooled.as_deref());
     if let Some(h) = host {
-        h.concluded(f.system, &f.rel, &f.json, audio, f.decrypted);
+        h.concluded(f.system, &f.rel, f.record, audio, f.decrypted);
     }
 }
 
@@ -877,7 +877,7 @@ fn deliver(ctx: &Ctx, out: &mut Vec<Output>, plugins: Option<&PluginHost>, rules
                 let _ = ctx.hub.send(Arc::new(Out::Topic { topic, text: msg.to_json() }));
             }
             Output::Rollup(r) => ctx.store.add(r),
-            Output::File { rel, system, wav, json, frames, entry, decrypted } => finish(Finish { rel, system, wav, json, frames, entry, rules: rules(system), decrypted }, plugins),
+            Output::File { rel, system, wav, record, frames, decrypted } => finish(Finish { rel, system, wav, record, frames, rules: rules(system), decrypted }, plugins),
         }
     }
 }

@@ -66,7 +66,7 @@ fn texts(out: &mut Vec<Output>, into: &mut Vec<Value>) {
         match o {
             Output::Message(m) | Output::Topic { msg: m, .. } => into.push(m.to_value()),
             // Stored, a call is announced as the platform does it (runtime::finish_one).
-            Output::File { entry, .. } => into.push(json!({ "type": "concluded", "entry": entry })),
+            Output::File { rel, record, .. } => into.push(json!({ "type": "concluded", "entry": trunk_app::session::call_entry(&rel, &record) })),
             _ => {}
         }
     }
@@ -156,12 +156,11 @@ fn a_late_radio_keeps_to_the_wall_clock() {
         air(2_400_000.0, 4.5, |iq, t| {
             s.push_iq(0, iq, 0, epoch + 3000.0 + t * 1000.0);
             s.poll(epoch + 3000.0 + t * 1000.0, &mut out);
-            files.extend(out.drain(..).filter_map(|o| if let Output::File { json, .. } = o { Some(json) } else { None }));
+            files.extend(out.drain(..).filter_map(|o| if let Output::File { record, .. } = o { Some(record) } else { None }));
         });
         s.finish(&mut out);
-        files.extend(out.drain(..).filter_map(|o| if let Output::File { json, .. } = o { Some(json) } else { None }));
-        let call: Value = serde_json::from_str(files.first().expect("a call")).unwrap();
-        call["start_time_ms"].as_f64().unwrap() - epoch
+        files.extend(out.drain(..).filter_map(|o| if let Output::File { record, .. } = o { Some(record) } else { None }));
+        files.first().expect("a call").start_time_ms as f64 - epoch
     };
     let radio = start_of(conventional_config());
     assert!((radio - 3500.0).abs() < 100.0, "the call starts {radio} ms in");
@@ -193,12 +192,11 @@ fn a_busy_engine_does_not_make_the_radio_look_late() {
     air(2_400_000.0, 4.5, |iq, t| {
         s.push_iq(0, iq, 0, epoch + t * 1000.0);
         s.poll(epoch + 2000.0 + t * 1000.0, &mut out);
-        files.extend(out.drain(..).filter_map(|o| if let Output::File { json, .. } = o { Some(json) } else { None }));
+        files.extend(out.drain(..).filter_map(|o| if let Output::File { record, .. } = o { Some(record) } else { None }));
     });
     s.finish(&mut out);
-    files.extend(out.drain(..).filter_map(|o| if let Output::File { json, .. } = o { Some(json) } else { None }));
-    let call: Value = serde_json::from_str(files.first().expect("a call")).unwrap();
-    let start = call["start_time_ms"].as_f64().unwrap() - epoch;
+    files.extend(out.drain(..).filter_map(|o| if let Output::File { record, .. } = o { Some(record) } else { None }));
+    let start = files.first().expect("a call").start_time_ms as f64 - epoch;
     assert!((start - 500.0).abs() < 100.0, "the call starts {start} ms in");
 }
 
@@ -373,7 +371,7 @@ fn the_servers_messages() {
         r.call_start("p25", &c, now - 10);
         r.call_end("p25", &c, now - 6);
         r.message("p25", &trunk_core::trunk::Message { kind: trunk_core::trunk::MessageType::Affiliation, source: 7, talkgroup: 101, ..Default::default() }, now);
-        r.concluded("p25", &json!({ "freq": 851_012_500u64, "snr": 18.5, "errorList": [{ "frames": 50, "error_count": 2, "bad_frames": 0 }] }), now);
+        r.concluded("p25", &serde_json::from_value(json!({ "freq": 851_012_500u64, "snr": 18.5, "errorList": [{ "frames": 50, "error_count": 2, "bad_frames": 0 }] })).unwrap(), now);
     }
     ctx.series.lock().unwrap().insert(&trunk_app::stats::Rollup { t: now / 60 * 60, values: [("sys/p25/cc/good".to_string(), [30.0, 28.0, 33.0])].into() });
     ctx.event(trunk_app::stats::MonitorEvent::ControlLost { system: "p25".into(), site: Some("south".into()), freq_hz: Some(851_012_500) });
