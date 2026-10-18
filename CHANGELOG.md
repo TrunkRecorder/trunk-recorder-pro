@@ -31,6 +31,10 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   Wait for `hello` before treating something missing as missing. A listen-only connection gets the
   same messages as before, without plugin settings and key sources. client.js emits `change` once
   at `hello` during the greeting.
+- **Conventional calls have their frequency error** (`freq_error` in the call JSON), measured from
+  their decoder's offset as a trunked call's is (P25; analog and DMR receivers don't measure one).
+- **Conventional DMR opens its channel as wide as trunked DMR** (6.25 kHz, was 7 kHz): a shade
+  fewer bad frames on the test capture.
 - **The recorder's own log lines reach the browsers** with their clock time and level (`LogLine.time`,
   `.level`): warnings and errors to every connection, the rest to those watching the `log` topic.
 - **Calls are finished by a small pool of threads** that write every file a call's plan says (an

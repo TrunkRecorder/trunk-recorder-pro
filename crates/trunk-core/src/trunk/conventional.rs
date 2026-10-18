@@ -351,7 +351,7 @@ pub enum ConvOut {
     Event(Event),
     /// A call is over: the engine saves it. `recorder_num`: the index of the
     /// channel (frequency) it came on.
-    End { call: Call, audio: Vec<f32>, frames: CallFrames, recorder_num: u32, tx: Transmissions, reception: Reception },
+    End { call: Call, audio: Vec<f32>, frames: CallFrames, recorder_num: u32, tx: Transmissions, reception: Reception, freq_error_hz: Option<f64> },
     /// A radio's talker alias, heard on a P25 channel of system `.0` ([`Call::system`]).
     Alias(u16, Alias),
     /// A key of system `.0` that decrypts its voice to noise.
@@ -434,6 +434,9 @@ struct Live {
     tx: Transmissions,
     /// How strong it came in.
     reception: Reception,
+    /// How far off its channel its carrier came in, Hz: the sum of the
+    /// measurements and their number (as a trunked call's).
+    freq_error: (f64, u32),
     /// The talkgroup came from P25 link control (not the channel's default).
     tg_from_air: bool,
     /// FM: what tone the call carries.
@@ -810,6 +813,13 @@ impl Conventional {
         let mut vout = Vec::new();
         o.voice.push(iq, &mut vout);
         let carrier = metered.or(o.voice.carrier()).unwrap_or(false);
+        // Its calls' frequency error, while the carrier is up and the receiver can tell.
+        if let Some(off) = o.voice.offset_hz().filter(|_| carrier) {
+            for l in o.live.iter_mut().flatten() {
+                l.freq_error.0 += off as f64;
+                l.freq_error.1 += 1;
+            }
+        }
         for v in vout {
             let h = &mut heard[v.slot as usize & 1];
             match v.out {
@@ -1037,7 +1047,7 @@ impl Conventional {
                 },
             };
             out.push(ConvOut::Event(Event::CallStart(call.clone())));
-            o.live[slot] = Some(Live { call, audio: Vec::new(), frames: CallFrames::new(rules.capture_frames), tx: Transmissions::default(), reception: Reception::default(), tg_from_air: air_tg.is_some(), tones: (ch.mode == ConvMode::Fm).then(Box::default) });
+            o.live[slot] = Some(Live { call, audio: Vec::new(), frames: CallFrames::new(rules.capture_frames), tx: Transmissions::default(), reception: Reception::default(), freq_error: (0.0, 0), tg_from_air: air_tg.is_some(), tones: (ch.mode == ConvMode::Fm).then(Box::default) });
         }
         let l = o.live[slot].as_mut().unwrap();
         l.call.last_update_s = now_s;
@@ -1106,7 +1116,8 @@ impl Conventional {
     }
 
     fn end(l: Live, num: u32, out: &mut Vec<ConvOut>) {
-        out.push(ConvOut::End { call: l.call, audio: l.audio, frames: l.frames, recorder_num: num, tx: l.tx, reception: l.reception });
+        let freq_error_hz = (l.freq_error.1 > 0).then(|| l.freq_error.0 / l.freq_error.1 as f64);
+        out.push(ConvOut::End { call: l.call, audio: l.audio, frames: l.frames, recorder_num: num, tx: l.tx, reception: l.reception, freq_error_hz });
     }
 
     /// End of input: flush the receivers and end every call.

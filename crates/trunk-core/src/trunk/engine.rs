@@ -1697,8 +1697,8 @@ impl Core {
         for o in out.drain(..) {
             match o {
                 ConvOut::Event(e) => self.events.push(e),
-                ConvOut::End { call, audio, frames, recorder_num, tx, reception } => {
-                    self.write_call(Held { call: call.clone(), audio, frames, recorder_num, tx, reception, freq_error_hz: None });
+                ConvOut::End { call, audio, frames, recorder_num, tx, reception, freq_error_hz } => {
+                    self.write_call(Held { call: call.clone(), audio, frames, recorder_num, tx, reception, freq_error_hz });
                     self.events.push(Event::CallEnd(call));
                 }
                 ConvOut::Alias(system, a) => self.learn_alias(system, None, a, None),
