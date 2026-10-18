@@ -78,7 +78,9 @@ On disk:
 ## Removing the upgrade
 
 The upgrade is for a while only (there is no promise of compatibility yet).
-All of it is in `crates/trunk-app/src/migrate.rs` and `web/src/migrate.ts`,
+All of it is in `crates/trunk-app/src/migrate.rs` (which also holds two older
+upgrades: key files named by systems, and the interfaces list with
+`server.home`) and `web/src/migrate.ts`,
 with their tests (in `migrate.rs` and `web/src/migrate.test.ts`). To drop
 it, delete those, `pub mod migrate;` in trunk-app's lib.rs, and the lines
 the compilers then point at:

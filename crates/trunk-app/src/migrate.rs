@@ -1,5 +1,7 @@
-//! Upgrading what an older version left — for a while only. Before
-//! 2026-10 each site was a system of its own (see
+//! Upgrading what an older version left — for a while only: a system's
+//! keys file named in `keys` (before key sources, v0.1.10), interfaces as a
+//! list and `server.home` (before interfaces had ports, v0.1.14), and each
+//! site a system of its own (before v0.1.15; see
 //! research/multi-site-systems.md). Everything that reads an older config,
 //! or the files kept under a former system's name, goes through here; the
 //! web's side is web/src/migrate.ts. To drop the upgrade, delete both (and
@@ -25,6 +27,60 @@ const SITE_KEYS: &[&str] = &[
 /// its recordings still match — and those joined one system, the first's
 /// short name and settings its own. Returns what changed, to tell.
 pub fn config(v: &mut serde_json::Value) -> Vec<String> {
+    keys(v);
+    server(v);
+    sites(v)
+}
+
+/// Before key sources (v0.1.10), a system's `keys` named its keys file: such
+/// a file becomes a source (named after it), which the system names instead.
+fn keys(v: &mut serde_json::Value) {
+    use serde_json::{json, Map, Value};
+    let mut sources: Map<String, Value> = v.get("keys").and_then(Value::as_object).cloned().unwrap_or_default();
+    let mut changed = false;
+    for list in ["systems", "conventional"] {
+        for sys in v.get_mut(list).and_then(Value::as_array_mut).into_iter().flatten() {
+            let Some(file) = sys.get("keys").and_then(Value::as_str).map(|k| k.trim().to_string()) else { continue };
+            if file.is_empty() || sources.contains_key(&file) {
+                continue;
+            }
+            let name = match sources.iter().find(|(_, s)| s["file"] == file.as_str()) {
+                Some((n, _)) => n.clone(),
+                None => {
+                    let stem = Path::new(&file).file_stem().and_then(|s| s.to_str()).unwrap_or("keys").to_string();
+                    let name = (1..).map(|i| if i == 1 { stem.clone() } else { format!("{stem}-{i}") }).find(|n| !sources.contains_key(n)).unwrap();
+                    sources.insert(name.clone(), json!({ "file": file }));
+                    name
+                }
+            };
+            sys["keys"] = Value::String(name);
+            changed = true;
+        }
+    }
+    if changed {
+        v["keys"] = Value::Object(sources);
+    }
+}
+
+/// Before interfaces had ports of their own (v0.1.14), `server.interfaces`
+/// was a list (`{name, path}` each, served at /ui/<name>/) and `server.home`
+/// said what / showed: the list becomes a map by id (ports are given on
+/// load), and `home` goes (/ is the built-in interface).
+fn server(v: &mut serde_json::Value) {
+    use serde_json::{json, Map, Value};
+    let Some(server) = v.get_mut("server").and_then(Value::as_object_mut) else { return };
+    server.remove("home");
+    if let Some(Value::Array(list)) = server.get("interfaces") {
+        let map: Map<String, Value> = list
+            .iter()
+            .filter_map(|o| Some((o.get("name")?.as_str()?.to_ascii_lowercase().replace('_', "-"), json!({ "path": o.get("path")?.as_str()? }))))
+            .collect();
+        server.insert("interfaces".into(), Value::Object(map));
+    }
+}
+
+/// Systems become systems with sites (see [`config`]).
+fn sites(v: &mut serde_json::Value) -> Vec<String> {
     use serde_json::{Map, Value};
     let Some(systems) = v.get_mut("systems").and_then(Value::as_array_mut) else { return vec![] };
     if systems.iter().all(|s| s.get("sites").is_some()) {

@@ -5,6 +5,10 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **A file name format with a token nobody knows is refused at Start**, the config's or a system's
+  own. Setup already said so; a config edited by hand or by another interface wasn't checked.
+- **Renaming a system in the setup guide keeps its plugin settings pointing at it**, as renaming it
+  in Setup does.
 - **A command the recorder can't read is answered.** One with a field missing or of the wrong kind,
   or of a type the recorder doesn't know, used to be ignored without a word (or read with a
   default in place of what was missing); now the connection gets an `error` saying what was wrong.

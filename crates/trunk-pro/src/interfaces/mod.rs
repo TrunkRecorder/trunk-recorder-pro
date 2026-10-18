@@ -491,9 +491,9 @@ mod tests {
 
     #[test]
     fn ports_and_old_configs() {
-        // A config from before: a list, and `home`.
-        let mut c: Config = serde_json::from_str(r#"{ "server": { "port": 8080, "interfaces": [{ "name": "Wall_1", "path": "~/wall" }], "home": "Wall_1" } }"#).unwrap();
-        c.server.other.remove("home");
+        // A config from before: a list, and `home` (upgraded as it's read: trunk_app::migrate).
+        let mut c = Config::from_json(r#"{ "server": { "port": 8080, "interfaces": [{ "name": "Wall_1", "path": "~/wall" }], "home": "Wall_1" } }"#).unwrap();
+        assert!(!c.server.other.contains_key("home"));
         c.server.assign_ports();
         assert_eq!(c.server.interfaces["wall-1"].port, 8081);
         assert_eq!(c.server.interfaces["wall-1"].access, ApiAccess::Listen);

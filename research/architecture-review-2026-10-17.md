@@ -176,9 +176,9 @@ Trunk-tris) read the protocol, so land it in one release and update them.
 - [ ] Talkgroup files as companion documents (`<short>.talkgroups.csv`, like units), with a `talkgroups { system, csv }` message for edits
 - [ ] `setConfig` as a patch (per-section objects or `{ path, value }`) with a `version` the server bumps and rejects on mismatch; drop `controller.updateConfig`'s echo suppression
 - [ ] Declare the per-system `Recording` overrides once (today the 16 fields appear in `Recording`, `RecordingOverride`, the `take!` macro, the TS type and the docs table); resolve each system's rules once at start instead of `recording_of` per concluded call in both session.rs and runtime.rs
-- [ ] Onboarding shares Setup's rules: one centre planner (today `planCenters` is a third algorithm with 15 kHz steps and 10 kHz DC clearance), `useShortName` (today `NameStep` doesn't call `renameSystemRefs`, so a rename there leaves plugin `x-system` references stale — a bug), `<RadioReferencePaste>`
+- [ ] Onboarding shares Setup's rules (the rename bug is fixed: one `renameSystem` for both): one centre planner (today `planCenters` is a third algorithm with 15 kHz steps and 10 kHz DC clearance), `useShortName` (today `NameStep` doesn't call `renameSystemRefs`, so a rename there leaves plugin `x-system` references stale — a bug), `<RadioReferencePaste>`
 - [ ] Setup cards keyed by a stable id instead of position + list length + `configEpoch`; delete `configEpoch` and `forgetCard`
-- [ ] Move `migrate_keys`, the `server.home` removal and the old `interfaces` list form out of `Config::load` into `migrate.rs` (or delete them), so the documented delete procedure is true
+- [x] `migrate_keys`, the `server.home` removal and the old `interfaces` list form moved into `migrate.rs` as JSON rewrites, so the documented delete procedure is true
 
 **Evidence.** About 700 lines of `web/src/config.ts` mirror config.rs, each
 marked "the recorder's X": defaults, `normalizeSystem` / `normalizeSite`,
@@ -187,7 +187,7 @@ marked "the recorder's X": defaults, `normalizeSystem` / `normalizeSite`,
 `siteLockFields`, `watchedChannels`, `parseChannelCsv` / `channelsToCsv`,
 `filenameFormat.ts`, `tones.ts`, `talkgroups.ts`. They have already drifted:
 the RTL transfer-size rule (`bufLen % 512`, `buffers ≤ 256`) is Rust-only;
-`filename::problem` has no caller in any crate, so a bad format set by hand
+`filename::problem` had no caller in any crate (fixed: `Config::problem` checks every format), so a bad format set by hand
 or by a third-party interface passes `Config::problem()`; the two validators
 check the capture-file path in different positions. Rust config enums are
 strings with silent fallbacks (`kind_name()` falls through to P25;

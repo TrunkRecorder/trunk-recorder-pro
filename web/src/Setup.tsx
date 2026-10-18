@@ -57,7 +57,7 @@ import {
   web,
   type SetupTab,
 } from "./controller.ts";
-import { M4aSettings, PluginSetupPanel, renameSystemRefs, SystemPluginSettings } from "./Plugins.tsx";
+import { M4aSettings, PluginSetupPanel, renameSystem, renameSystemRefs, SystemPluginSettings } from "./Plugins.tsx";
 import { SystemDelays } from "./Delays.tsx";
 import { IconAntenna, IconDongle, IconFolder, IconPuzzle, IconTower } from "./Onboarding.tsx";
 import type { AirspyGainMode, Channel, Config, Conventional, Demod, Device, HeardCode, LockableKeys, LogSettings, Recording, RecordingOverride, RecordingRules, Site, SiteIdentity, SoapyState, Source, System, UnitNames } from "./protocol.ts";
@@ -1953,10 +1953,7 @@ function SystemCard(props: { c: Config; i: number }) {
             onChange={(e) => {
               const to = cleanShortName(e.target.value);
               // Plugin settings that name it follow it.
-              updateConfig((x) => {
-                renameSystemRefs(x, x.systems[i].shortName, to, plugins);
-                x.systems[i].shortName = to;
-              });
+              updateConfig((x) => renameSystem(x, i, to, plugins));
             }}
           />
         </Field>

@@ -1184,7 +1184,6 @@ pub struct Server {
     /// The other interfaces, by id: web pages installed from the interface
     /// store or folders of the user's own, each served on a port of its own
     /// with the recorder's API beside it (docs/interfaces).
-    #[serde(deserialize_with = "interfaces_map")]
     pub interfaces: BTreeMap<String, Interface>,
     /// Keys this version doesn't know (a newer version's, a hand edit's):
     /// kept, and saved back as they were.
@@ -1279,26 +1278,6 @@ pub enum ApiAccess {
     /// Everything the built-in interface can do: change the config, start
     /// and stop, install plugins, quit.
     Control,
-}
-
-/// `server.interfaces`: a map by id; a list (from before ports: `{name,
-/// path}` each, served at /ui/<name>/) becomes one, its ports given on load.
-fn interfaces_map<'de, D: serde::Deserializer<'de>>(d: D) -> Result<BTreeMap<String, Interface>, D::Error> {
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum Either {
-        Map(BTreeMap<String, Interface>),
-        List(Vec<Old>),
-    }
-    #[derive(Deserialize)]
-    struct Old {
-        name: String,
-        path: String,
-    }
-    Ok(match Either::deserialize(d)? {
-        Either::Map(m) => m,
-        Either::List(l) => l.into_iter().map(|o| (o.name.to_ascii_lowercase().replace('_', "-"), Interface { path: o.path, ..Default::default() })).collect(),
-    })
 }
 
 /// A new RTL-SDR's gain, dB. Higher gains overload the front end near
@@ -1528,9 +1507,6 @@ impl Config {
             Err(e) => return Err(format!("{}: {e}", path.display())),
         };
         c.load_channel_files(path);
-        c.migrate_keys();
-        // `home` (what / showed) went with interfaces at /ui/<name>/: / is the built-in one's.
-        c.server.other.remove("home");
         c.server.assign_ports();
         Ok(c)
     }
@@ -1549,27 +1525,6 @@ impl Config {
         Ok(c)
     }
 
-    /// Before key sources, a system's `keys` named its keys file: such a file
-    /// becomes a source (named after it), which the system names instead.
-    fn migrate_keys(&mut self) {
-        let named = self.systems.iter_mut().map(|s| &mut s.keys).chain(self.conventional.iter_mut().map(|c| &mut c.keys));
-        for k in named {
-            let file = k.trim().to_string();
-            if file.is_empty() || self.keys.contains_key(&file) {
-                continue;
-            }
-            let name = match self.keys.iter().find(|(_, s)| s.file == file) {
-                Some((n, _)) => n.clone(),
-                None => {
-                    let stem = Path::new(&file).file_stem().and_then(|s| s.to_str()).unwrap_or("keys").to_string();
-                    let name = (1..).map(|i| if i == 1 { stem.clone() } else { format!("{stem}-{i}") }).find(|n| !self.keys.contains_key(n)).unwrap();
-                    self.keys.insert(name.clone(), KeySource { file, ..Default::default() });
-                    name
-                }
-            };
-            *k = name;
-        }
-    }
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
         if let Some(d) = path.parent() {
             std::fs::create_dir_all(d)?;
@@ -1927,6 +1882,15 @@ impl Config {
         if let Some((v, e)) = self.conventional.iter().filter(|v| v.enabled).find_map(|v| v.demod.problem().map(|e| (v, e))) {
             return Some(format!("{}: {e}", v.short_name));
         }
+        // File name formats: the config's, and each system's own.
+        if let Some(e) = crate::filename::problem(&self.recording.filename_format) {
+            return Some(format!("File name format: {e}"));
+        }
+        for s in self.call_systems() {
+            if let Some(e) = s.recording.filename_format.as_deref().and_then(crate::filename::problem) {
+                return Some(format!("{}'s file name format: {e}", s.short_name));
+            }
+        }
         check_channels(&self.engine_channels()).err()
     }
 
@@ -2176,6 +2140,14 @@ mod tests {
         assert_eq!(c.short_name_of(1), Some("police"));
         assert_eq!(c.recording_of(1).min_call_s, 2.0);
         assert_eq!(c.call_systems().iter().map(|s| (s.index, s.short_name)).collect::<Vec<_>>(), [(0, "fire"), (1, "police")]);
+        // A file name format with a token no one knows: refused, the config's or a system's own.
+        c.recording.filename_format = "{short_name}/{nope}".into();
+        assert!(c.problem().unwrap().contains("File name format: Unknown token: {nope}"), "{:?}", c.problem());
+        c.recording.filename_format.clear();
+        c.conventional[1].recording.filename_format = Some("{tg".into());
+        assert!(c.problem().unwrap().starts_with("police's file name format"), "{:?}", c.problem());
+        c.conventional[1].recording.filename_format = None;
+        assert_eq!(c.problem(), None);
         // One frequency, two systems: an error naming both.
         c.conventional[1].channels[0].freq_hz = 154_430_000.0;
         assert!(c.problem().unwrap().contains("both fire and police"), "{:?}", c.problem());

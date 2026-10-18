@@ -29,6 +29,7 @@ import {
 } from "./controller.ts";
 import { cleanShortName } from "./fieldText.ts";
 import { FileInput } from "./inputs.tsx";
+import { renameSystem } from "./Plugins.tsx";
 import type { Config, Source, SurveyCandidate, SurveyMonitor, SurveySuggestion, System } from "./protocol.ts";
 import { pluginCopies } from "./protocol.ts";
 import { normalizeTalkgroupCsv, parseRadioReferencePaste, parseTalkgroupCsv, talkgroupsToCsv, type Talkgroup } from "./talkgroups.ts";
@@ -1315,7 +1316,9 @@ const slug = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, "").sli
 function NameStep(props: { c: Config; sys: System; index: number; onNext: () => void; onBack: () => void }) {
   const { c, sys, index } = props;
   const [touched, setTouched] = useState(false);
-  const edit = (fn: (x: System) => void) => updateConfig((x) => fn(x.systems[index]));
+  const plugins = useApp().plugins?.plugins ?? [];
+  // (A new name: plugin settings that name the system follow it, as in Setup.)
+  const rename = (x: Config, to: string) => renameSystem(x, index, to, plugins);
   const dup = c.systems.some((x, k) => k !== index && x.shortName === sys.shortName);
   const now = new Date();
   const folder = c.recording.captureDir.split(/[\\/]/).filter(Boolean).pop() || "Recordings";
@@ -1332,9 +1335,9 @@ function NameStep(props: { c: Config; sys: System; index: number; onNext: () => 
             autoFocus
             onChange={(e) => {
               const name = e.target.value;
-              edit((x) => {
-                x.name = name;
-                if (!touched && slug(name)) x.shortName = uniqueShortName(c, slug(name), c.systems[index]);
+              updateConfig((x) => {
+                x.systems[index].name = name;
+                if (!touched && slug(name)) rename(x, uniqueShortName(c, slug(name), c.systems[index]));
               });
             }}
           />
@@ -1346,7 +1349,7 @@ function NameStep(props: { c: Config; sys: System; index: number; onNext: () => 
             value={sys.shortName}
             onChange={(e) => {
               setTouched(true);
-              edit((x) => void (x.shortName = cleanShortName(e.target.value)));
+              updateConfig((x) => rename(x, cleanShortName(e.target.value)));
             }}
           />
           <span className={`ob-hint${dup || !sys.shortName ? " bad" : ""}`}>
