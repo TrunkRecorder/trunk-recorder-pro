@@ -1265,295 +1265,68 @@
             "platform": {
               "type": "string"
             },
-            "config": {
-              "$ref": "#/definitions/Config",
-              "description": "With listen access, without plugin settings and key sources."
-            },
-            "configVersion": {
-              "type": "number"
+            "api": {
+              "type": "number",
+              "description": "The interface API this recorder speaks (docs/interfaces)."
             },
             "configPath": {
               "type": "string",
               "description": "The config file (control access only)."
-            },
-            "devices": {
-              "type": "array",
-              "items": {
-                "$ref": "#/definitions/Device"
-              }
-            },
-            "phase": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "type": {
-                  "type": "string",
-                  "const": "state"
-                },
-                "phase": {
-                  "$ref": "#/definitions/Phase"
-                },
-                "error": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "ended": {
-                  "type": "boolean"
-                }
-              },
-              "required": [
-                "ended",
-                "error",
-                "phase",
-                "type"
-              ]
-            },
-            "history": {
-              "type": "array",
-              "items": {
-                "$ref": "#/definitions/CallEntry"
-              }
-            },
-            "units": {
-              "type": "object",
-              "additionalProperties": {
-                "type": "string"
-              },
-              "description": "Each system's radios' talker aliases, as saved: short name → unitTagsOTA CSV."
-            },
-            "heard": {
-              "type": "object",
-              "additionalProperties": {
-                "type": "array",
-                "items": {
-                  "$ref": "#/definitions/HeardCode"
-                }
-              },
-              "description": "The codes each conventional frequency (Hz, as a string) carried, as saved."
-            },
-            "radios": {
-              "$ref": "#/definitions/Radios"
             },
             "surveyBands": {
               "type": "array",
               "items": {
                 "$ref": "#/definitions/SurveyBand"
               }
-            },
-            "survey": {
-              "anyOf": [
-                {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "properties": {
-                    "stage": {
-                      "type": "string",
-                      "const": "idle"
-                    },
-                    "type": {
-                      "type": "string",
-                      "const": "survey"
-                    }
-                  },
-                  "required": [
-                    "stage",
-                    "type"
-                  ]
-                },
-                {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "properties": {
-                    "stage": {
-                      "type": "string",
-                      "enum": [
-                        "scanning",
-                        "monitoring",
-                        "done"
-                      ]
-                    },
-                    "source": {
-                      "type": "number"
-                    },
-                    "bands": {
-                      "type": "array",
-                      "items": {
-                        "type": "string"
-                      }
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "error": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "progress": {
-                      "anyOf": [
-                        {
-                          "type": "object",
-                          "properties": {
-                            "hop": {
-                              "type": "number"
-                            },
-                            "hops": {
-                              "type": "number"
-                            },
-                            "band": {
-                              "type": "string"
-                            },
-                            "centerHz": {
-                              "type": "number"
-                            }
-                          },
-                          "required": [
-                            "hop",
-                            "hops",
-                            "band",
-                            "centerHz"
-                          ],
-                          "additionalProperties": false
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "candidates": {
-                      "type": "array",
-                      "items": {
-                        "$ref": "#/definitions/SurveyCandidate"
-                      }
-                    },
-                    "monitor": {
-                      "anyOf": [
-                        {
-                          "$ref": "#/definitions/SurveyMonitor"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "suggest": {
-                      "anyOf": [
-                        {
-                          "$ref": "#/definitions/SurveySuggestion"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "type": {
-                      "type": "string",
-                      "const": "survey"
-                    }
-                  },
-                  "required": [
-                    "bands",
-                    "candidates",
-                    "error",
-                    "message",
-                    "monitor",
-                    "progress",
-                    "source",
-                    "stage",
-                    "suggest",
-                    "type"
-                  ]
-                }
-              ]
-            },
-            "events": {
-              "type": "array",
-              "items": {
-                "$ref": "#/definitions/MonitorEvent"
-              },
-              "description": "The dashboard: recent notable events (oldest first)."
-            },
-            "host": {
-              "anyOf": [
-                {
-                  "type": "object",
-                  "properties": {
-                    "type": {
-                      "type": "string",
-                      "const": "host"
-                    },
-                    "t": {
-                      "type": "number"
-                    },
-                    "values": {
-                      "type": "object",
-                      "additionalProperties": {
-                        "type": "number"
-                      }
-                    },
-                    "platform": {
-                      "$ref": "#/definitions/PlatformInfo"
-                    }
-                  },
-                  "required": [
-                    "type",
-                    "t",
-                    "values",
-                    "platform"
-                  ],
-                  "additionalProperties": false
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "The computer as last sampled (desktop app)."
-            },
-            "pluginRuntime": {
-              "type": "object",
-              "additionalProperties": {
-                "$ref": "#/definitions/PluginRuntime"
-              },
-              "description": "Every plugin's runtime, by id (desktop app; control access only)."
-            },
-            "api": {
-              "type": "number",
-              "description": "The interface API this recorder speaks (desktop app; docs/interfaces)."
-            },
-            "keys": {
-              "type": "object",
-              "properties": {
-                "type": {
-                  "type": "string",
-                  "const": "keys"
-                },
-                "sources": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/definitions/LockableKeys"
-                  }
-                }
-              },
-              "required": [
-                "type",
-                "sources"
-              ],
-              "additionalProperties": false,
-              "description": "Key containers waiting for a password, and which are unlocked (desktop app)."
             }
           },
           "required": [
             "type",
             "version",
             "platform",
-            "config",
-            "configVersion",
-            "devices",
-            "phase",
-            "history"
+            "api",
+            "surveyBands"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "history"
+            },
+            "entries": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/CallEntry"
+              }
+            }
+          },
+          "required": [
+            "type",
+            "entries"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "units"
+            },
+            "system": {
+              "type": "string"
+            },
+            "csv": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "system",
+            "csv"
           ],
           "additionalProperties": false
         },
@@ -3589,133 +3362,6 @@
       ],
       "additionalProperties": false,
       "description": "The log (desktop app), with Trunk Recorder's options (crates/trunk-app/src/config.rs LogSettings)."
-    },
-    "MonitorEvent": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "t": {
-          "type": "number",
-          "description": "Unix seconds."
-        },
-        "level": {
-          "type": "string",
-          "enum": [
-            "info",
-            "ok",
-            "warn",
-            "bad"
-          ]
-        },
-        "kind": {
-          "type": "string",
-          "enum": [
-            "tgFirstSeen",
-            "unitFirstSeen",
-            "tgActive",
-            "unitActive",
-            "unitAffiliated",
-            "callVolume",
-            "controlLost",
-            "controlRegained",
-            "sourceDrops",
-            "sourceClipping",
-            "sourceRecovered",
-            "pluginHealth",
-            "linkDown",
-            "linkUp",
-            "diskLow",
-            "spoolLow",
-            "spoolFull",
-            "spoolRecovered"
-          ]
-        },
-        "system": {
-          "type": "string",
-          "description": "A system's short name (talkgroup, radio, call volume, control channel events)."
-        },
-        "site": {
-          "type": "string",
-          "description": "Control channel events: the site's own name, when it has one other than its system's."
-        },
-        "talkgroup": {
-          "type": "number"
-        },
-        "alphaTag": {
-          "type": "string"
-        },
-        "unit": {
-          "type": "number"
-        },
-        "alias": {
-          "type": "string"
-        },
-        "units": {
-          "type": "array",
-          "items": {
-            "type": "number"
-          }
-        },
-        "perMin": {
-          "type": "number"
-        },
-        "freqHz": {
-          "type": [
-            "number",
-            "null"
-          ]
-        },
-        "source": {
-          "type": "string",
-          "description": "A source's series name (its label)."
-        },
-        "perS": {
-          "type": "number"
-        },
-        "pct": {
-          "type": "number"
-        },
-        "plugin": {
-          "type": "string"
-        },
-        "state": {
-          "type": "string"
-        },
-        "message": {
-          "type": "string"
-        },
-        "target": {
-          "type": "string"
-        },
-        "downS": {
-          "type": "number"
-        },
-        "path": {
-          "type": "string"
-        },
-        "freePct": {
-          "type": "number"
-        },
-        "critical": {
-          "type": "boolean",
-          "description": "spoolLow: nearly full."
-        },
-        "calls": {
-          "type": "number",
-          "description": "spoolFull: calls that went to the recordings folder for want of room."
-        },
-        "type": {
-          "type": "string",
-          "const": "monitorEvent"
-        }
-      },
-      "required": [
-        "kind",
-        "level",
-        "t",
-        "type"
-      ],
-      "description": "Something notable (crates/trunk-app/src/stats/events.rs). Which fields come depends on `kind`."
     },
     "MonitorSettings": {
       "type": "object",

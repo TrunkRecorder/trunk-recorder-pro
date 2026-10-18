@@ -539,43 +539,65 @@ pub(crate) fn tr_config(path: &str) -> ToClient {
     ToClient::TrConfig(body(json!({ "path": shown, "text": text, "files": files, "error": null })))
 }
 
-/// The `hello` a connection starts with: everything the interface shows.
-/// `devices` and `radios` are found off the async workers (they open USB).
-pub(crate) fn hello(ctx: &Ctx, devices: Value, radios: Value) -> ToClient {
+/// What a connection is told first, as ordinary messages: how the recorder
+/// is now, then `hello` (it's caught up). `control`: with what only control
+/// access gets (devices, key containers, plugins, interfaces); a listen-only
+/// connection gets the config without secrets ([`Out::of`]).
+pub(crate) async fn greeting(ctx: &Arc<Ctx>, control: bool) -> Vec<ToClient> {
+    let found = tokio::task::spawn_blocking(move || (control.then(|| json!(sdr::devices())), crate::radio::radios_json(false))).await;
+    let (devices, radios) = found.unwrap_or((None, Value::Null));
+    let mut m = greeting_now(ctx, devices, radios);
+    if control {
+        m.push(plugins_list(ctx).await);
+        let cfg = ctx.config.lock().unwrap().clone();
+        m.push(ctx.interfaces.list(&cfg, &ctx.config_path));
+    }
+    m.push(ToClient::Hello {
+        version: env!("CARGO_PKG_VERSION").into(),
+        platform: std::env::consts::OS.into(),
+        api: crate::interfaces::API_VERSION,
+        config_path: control.then(|| ctx.config_path.display().to_string()),
+        survey_bands: trunk_app::survey::bands_json(),
+    });
+    m
+}
+
+/// The greeting's messages that need nothing found or listed: `devices` for control access only.
+pub(crate) fn greeting_now(ctx: &Ctx, devices: Option<Value>, radios: Value) -> Vec<ToClient> {
     let config = ctx.config.lock().unwrap().clone();
-    let history: Vec<Value> = ctx.history.lock().unwrap().iter().take(runtime::HISTORY).cloned().collect();
-    // Each system's talker aliases, as saved (CSV).
-    let units: serde_json::Map<String, Value> = config
-        .systems
-        .iter()
-        .map(|s| &s.short_name)
-        .chain(config.conventional.iter().map(|c| &c.short_name))
-        .filter_map(|n| std::fs::read_to_string(crate::runtime::units_path(n)).ok().map(|csv| (n.clone(), Value::String(csv))))
-        .collect();
-    ToClient::Hello(body(json!({
-        "version": env!("CARGO_PKG_VERSION"),
-        "platform": std::env::consts::OS,
-        "config": config,
-        "configVersion": ctx.config_version.load(Ordering::SeqCst),
-        "configPath": ctx.config_path.display().to_string(),
-        "devices": devices,
-        "phase": ctx.phase.lock().unwrap().message().to_value(),
-        "history": history,
-        "units": units,
+    let mut m = vec![ctx.phase.lock().unwrap().message(), ToClient::Config { config: Box::new(config.clone()), version: ctx.config_version.load(Ordering::SeqCst) }];
+    m.extend(ctx.talkgroups.lock().unwrap().iter().map(|(system, csv)| ToClient::Talkgroups { system: system.clone(), csv: csv.clone() }));
+    // Each system's talker aliases, as saved.
+    for n in config.systems.iter().map(|s| &s.short_name).chain(config.conventional.iter().map(|c| &c.short_name)) {
+        if let Ok(csv) = std::fs::read_to_string(crate::runtime::units_path(n)) {
+            m.push(ToClient::Units { system: n.clone(), csv });
+        }
+    }
+    // The codes conventional frequencies carried, as saved.
+    let heard = std::fs::read_to_string(crate::runtime::heard_path(&config)).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok());
+    m.push(ToClient::Heard { heard: heard.unwrap_or(json!({})) });
+    m.push(ToClient::History { entries: ctx.history.lock().unwrap().iter().take(runtime::HISTORY).cloned().collect() });
+    m.push(ToClient::Radios { radios });
+    m.push(ctx.survey_last.lock().unwrap().clone().unwrap_or_else(crate::survey::idle));
+    // The dashboard: recent notable events (oldest first), the computer as last sampled.
+    m.extend(ctx.shared.recent_events().into_iter().map(|e| ToClient::MonitorEvent(body(e))));
+    m.extend(ctx.host_last.lock().unwrap().clone());
+    if let Some(devices) = devices {
+        m.push(ToClient::Devices { devices });
         // Key containers waiting for a password, and which are unlocked.
-        "keys": crate::unlock::status(ctx).to_value(),
-        // The interface API version (crate::interfaces::API_VERSION).
-        "api": crate::interfaces::API_VERSION,
-        // The codes conventional frequencies carried, as saved.
-        "heard": std::fs::read_to_string(crate::runtime::heard_path(&config)).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).unwrap_or(json!({})),
-        "radios": radios,
-        "surveyBands": trunk_app::survey::bands_json(),
-        "survey": ctx.survey_last.lock().unwrap().clone().unwrap_or_else(|| crate::survey::idle().to_value()),
-        // The dashboard: recent notable events, the computer as last sampled, every plugin's runtime.
-        "events": ctx.shared.recent_events(),
-        "host": ctx.host_last.lock().unwrap().clone(),
-        "pluginRuntime": ctx.plugins.runtime_json(),
-    })))
+        m.push(crate::unlock::status(ctx));
+    }
+    m
+}
+
+/// A message as a connection with (or without) control access hears it, if it may.
+pub(crate) fn text_for(out: &Out, control: bool) -> Option<String> {
+    match out {
+        Out::Text(s) => Some(s.clone()),
+        Out::Control(s) => control.then(|| s.clone()),
+        Out::Config { full, listen } => Some(if control { full } else { listen }.clone()),
+        Out::Topic { .. } | Out::Audio { .. } | Out::Quit => None,
+    }
 }
 
 /// What one connection watches ([`trunk_app::stats::Topics`]); counted in
@@ -634,27 +656,10 @@ async fn session(ctx: Arc<Ctx>, mut socket: WebSocket, door: Door) {
     let mut rx = ctx.hub.subscribe();
     let Some(mut access) = access_of(&ctx, &door) else { return };
     let control = access == ApiAccess::Control;
-    let found = tokio::task::spawn_blocking(move || (if control { json!(sdr::devices()) } else { json!([]) }, crate::radio::radios_json(false))).await;
-    let (devices, radios) = found.unwrap_or((Value::Null, Value::Null));
-    let hello = hello(&ctx, devices, radios).to_value();
-    let hello = if control { hello } else { access::redact_hello(hello) };
-    if socket.send(Message::Text(hello.to_string().into())).await.is_err() {
-        return;
-    }
-    let talkgroups: Vec<ToClient> = ctx.talkgroups.lock().unwrap().iter().map(|(system, csv)| ToClient::Talkgroups { system: system.clone(), csv: csv.clone() }).collect();
-    for m in talkgroups {
-        if socket.send(Message::Text(m.to_json().into())).await.is_err() {
+    for m in greeting(&ctx, control).await {
+        let Some(text) = text_for(&Out::of(&m), control) else { continue };
+        if socket.send(Message::Text(text.into())).await.is_err() {
             return;
-        }
-    }
-    if control {
-        let plugins = plugins_list(&ctx).await;
-        let cfg = ctx.config.lock().unwrap().clone();
-        let interfaces = ctx.interfaces.list(&cfg, &ctx.config_path);
-        for m in [plugins, interfaces] {
-            if socket.send(Message::Text(m.to_json().into())).await.is_err() {
-                return;
-            }
         }
     }
     // An interface's connections close when it's no longer served on its port.

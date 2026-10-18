@@ -107,7 +107,7 @@ pub struct Ctx {
     /// The first-run survey, when one is running (never with recording).
     pub survey: Mutex<Option<crate::survey::SurveyRunner>>,
     /// Its latest snapshot, for browsers that connect meanwhile.
-    pub survey_last: Mutex<Option<Value>>,
+    pub survey_last: Mutex<Option<ToClient>>,
     pub plugins: plugins::manage::Plugins,
     /// The address every interface listens on (`--bind`, else `server.bind`).
     pub bind: std::net::IpAddr,
@@ -124,7 +124,7 @@ pub struct Ctx {
     /// For the engine thread, while recording.
     pub engine_cmds: Mutex<Vec<EngineCmd>>,
     /// The latest `host` message (the computer and plugins), for browsers that connect.
-    pub host_last: Mutex<Option<Value>>,
+    pub host_last: Mutex<Option<ToClient>>,
     /// The RAM spool (`recording.ramSpool`), as last opened.
     pub spool: Mutex<Option<Arc<crate::spool::Spool>>>,
     /// Key containers unlocked from the interface ([`crate::unlock`]).

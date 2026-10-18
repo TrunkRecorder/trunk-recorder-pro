@@ -382,9 +382,28 @@ fn the_servers_messages() {
     let mut platform = crate::platform::Platform::new(vec![crate::platform::Watched { name: "data", path: dir.clone() }], Arc::new(crate::platform::Probes::default()));
     agg.begin(now as f64);
     let p = platform.sample(&mut agg, true);
-    *ctx.host_last.lock().unwrap() = Some(crate::monitor::message(now as f64, &agg, p).to_value());
-    let hello = crate::server::hello(&ctx, serde_json::json!(crate::sdr::devices()), crate::radio::radios_json(false)).to_value();
-    assert_eq!(hello["events"].as_array().map(Vec::len), Some(2));
+    *ctx.host_last.lock().unwrap() = Some(crate::monitor::message(now as f64, &agg, p));
+    ctx.talkgroups.lock().unwrap().insert("p25".into(), "101,Fire Dispatch\n".into());
+    // The greeting: hello last, after how things are now; less of it for listen access.
+    let heard = |control| {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let msgs = rt.block_on(crate::server::greeting(&ctx, control));
+        msgs.iter().filter_map(|m| crate::server::text_for(&crate::runtime::Out::of(m), control)).map(|t| serde_json::from_str::<Value>(&t).unwrap()).collect::<Vec<Value>>()
+    };
+    let (greeting, listening) = (heard(true), heard(false));
+    let kinds = |g: &[Value]| g.iter().map(|m| m["type"].as_str().unwrap().to_string()).collect::<Vec<String>>();
+    let (all, some) = (kinds(&greeting), kinds(&listening));
+    assert_eq!(all.last().map(String::as_str), Some("hello"));
+    assert_eq!(all.iter().filter(|k| *k == "monitorEvent").count(), 2);
+    for k in ["state", "config", "talkgroups", "heard", "history", "radios", "survey", "host", "devices", "keys", "plugins", "interfaces"] {
+        assert!(all.iter().any(|a| a == k), "the greeting has no {k}: {all:?}");
+    }
+    for k in ["devices", "keys", "plugins", "interfaces"] {
+        assert!(!some.iter().any(|a| a == k), "a listen-only greeting has {k}");
+    }
+    assert!(greeting.last().unwrap()["configPath"].is_string() && listening.last().unwrap().get("configPath").is_none());
+    let config = |g: &[Value]| g.iter().find(|m| m["type"] == "config").unwrap()["config"].clone();
+    assert_eq!(config(&listening), crate::access::redact_config(config(&greeting)));
     let q = serde_json::from_value(json!({ "id": 1, "series": ["sys/p25/*"], "range": "1h" })).unwrap();
     let mut queries = vec![crate::server::stats_query(&ctx, &q).to_value()];
     assert!(queries[0]["series"]["sys/p25/cc/good"]["v"].is_array(), "{}", queries[0]);
@@ -422,7 +441,7 @@ fn the_servers_messages() {
         ToClient::Quit,
         ToClient::Subscribed { topics: vec!["spectrum:0".into(), "log".into()] },
     ];
-    let msgs: Vec<Value> = std::iter::once(hello).chain(msgs.iter().map(ToClient::to_value)).chain(queries).chain(ctx.shared.recent_events()).collect();
+    let msgs: Vec<Value> = greeting.into_iter().chain(msgs.iter().map(ToClient::to_value)).chain(queries).chain(ctx.shared.recent_events()).collect();
     let _ = std::fs::remove_dir_all(&dir);
     check_all("FromRecorder", &msgs);
 }

@@ -47,17 +47,6 @@ pub fn redact_config(mut c: Value) -> Value {
     c
 }
 
-/// The `hello` a listen-only connection gets.
-pub fn redact_hello(mut h: Value) -> Value {
-    h["config"] = redact_config(h["config"].take());
-    if let Some(o) = h.as_object_mut() {
-        for k in ["configPath", "keys", "pluginRuntime"] {
-            o.remove(k);
-        }
-    }
-    h
-}
-
 /// Why a command was refused.
 pub fn refusal(ty: &str) -> String {
     format!("This interface may only listen, so it can't send \"{ty}\". Give it control access on the recorder's Interfaces page if it should.")
@@ -82,7 +71,5 @@ mod tests {
         for c in [r#"{"type":"setConfig","config":{},"version":1}"#, r#"{"type":"start"}"#, r#"{"type":"quit"}"#, r#"{"type":"installPlugin","id":"x"}"#, r#"{"type":"listDir"}"#, r#"{"type":"unlockKeys","source":"a","password":"b"}"#] {
             assert!(!parse(c).listen_may_send(), "{c}");
         }
-        let h = redact_hello(json!({ "type": "hello", "config": { "keys": {} }, "configPath": "/x", "history": [] }));
-        assert!(h.get("configPath").is_none() && h["config"].get("keys").is_none() && h["history"].is_array());
     }
 }

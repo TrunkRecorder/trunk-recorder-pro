@@ -20,8 +20,14 @@ const system = (index: number, shortName: string, sites: SiteStatus[]): SystemSt
 
 /** The recorder says hello with `c` and is running these systems, these calls on the air. */
 function running(c: Config, systems: SystemStatus[], calls: Partial<CallView>[] = []): void {
-  const hello = { type: "hello", version: "test", platform: "test", config: c, devices: [], history: [], phase: { type: "state", phase: "running", error: null, ended: false } };
-  transport.onMessage(hello as unknown as FromRecorder);
+  // The greeting: how things are, then hello.
+  const greeting: FromRecorder[] = [
+    { type: "state", phase: "running", error: null, ended: false },
+    { type: "config", config: c, version: 1 },
+    { type: "history", entries: [] },
+    { type: "hello", version: "test", platform: "test", api: 1, surveyBands: [] },
+  ];
+  for (const m of greeting) transport.onMessage(m);
   transport.onMessage({ type: "status", status: { systems, recording: 0 } as unknown as EngineStatus, sources: [], load: 0, calls: calls as CallView[] });
 }
 

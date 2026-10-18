@@ -363,8 +363,8 @@ export function loadOlder(): void {
 
 onRecorderMessage((m) => {
   switch (m.type) {
-    case "hello":
-      set({ calls: merge(state.calls, m.history) });
+    case "history":
+      set({ calls: merge(state.calls, m.entries) });
       break;
     case "concluded":
       arrived(m.entry);

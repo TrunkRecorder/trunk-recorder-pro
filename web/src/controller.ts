@@ -293,7 +293,15 @@ export function onRecorderMessage(f: (m: FromRecorder) => void): void {
   messageHooks.add(f);
 }
 
-transport.onConnection = (connected) => set({ connected, ...(connected ? {} : { phase: "idle" as Phase }) });
+transport.onConnection = (connected) => {
+  set({ connected, ...(connected ? {} : { phase: "idle" as Phase }) });
+  if (!connected) return;
+  // A new connection's greeting says how things are, from nothing: what
+  // collects (events, files by system) starts over, an edit awaiting an
+  // answer won't get one.
+  saving = queued = false;
+  set({ events: [], talkgroups: {}, units: {} });
+};
 transport.onAudio = onAudio;
 transport.onMessage = (m: FromRecorder) => {
   take(m);
@@ -302,30 +310,9 @@ transport.onMessage = (m: FromRecorder) => {
 
 function take(m: FromRecorder): void {
   switch (m.type) {
+    // The greeting's end: everything before it said how things are now.
     case "hello":
-      server = { config: m.config, version: m.configVersion };
-      saving = queued = false;
-      set({
-        version: m.version,
-        platform: m.platform,
-        configPath: m.configPath,
-        config: m.config,
-        devices: m.devices,
-        history: m.history,
-        heard: m.heard ?? {},
-        units: Object.fromEntries(Object.entries(m.units ?? {}).map(([name, csv]) => [name, parseUnitsCsv(csv)])),
-        radios: m.radios ?? null,
-        lockable: m.keys?.sources ?? [],
-        phase: m.phase.phase,
-        error: m.phase.error,
-        ended: m.phase.ended,
-        surveyBands: m.surveyBands ?? [],
-        survey: m.survey ?? { stage: "idle" },
-        events: m.events ?? [],
-        host: m.host ?? state.host,
-      });
-      if (m.host) feedSeries(m.host.t, m.host.values);
-      if (m.pluginRuntime) pendingRuntime = m.pluginRuntime;
+      set({ version: m.version, platform: m.platform, configPath: m.configPath, surveyBands: m.surveyBands });
       if (state.listen) transport.send({ type: "listen", on: true, system: state.listenSystem, talkgroup: state.listenTalkgroup });
       // (A new connection: it watches nothing until told.)
       sendTopics(true);
@@ -344,6 +331,12 @@ function take(m: FromRecorder): void {
       break;
     case "talkgroups":
       set({ talkgroups: withFile(state.talkgroups, m.system, m.csv) });
+      break;
+    case "units":
+      set({ units: { ...state.units, [m.system]: parseUnitsCsv(m.csv) } });
+      break;
+    case "history":
+      set({ history: m.entries });
       break;
     case "status":
       set({ status: m.status, sources: m.sources, load: m.load, calls: m.calls });
@@ -405,12 +398,6 @@ function take(m: FromRecorder): void {
       break;
     case "plugins": {
       const { type: _, ...list } = m;
-      // The runtimes hello carried (the list only names plugins), merged in once.
-      if (pendingRuntime) {
-        const rt = pendingRuntime;
-        list.plugins = list.plugins.map((p) => (rt[p.id] ? { ...p, runtime: rt[p.id] } : p));
-        pendingRuntime = null;
-      }
       set({ plugins: list });
       break;
     }
@@ -491,9 +478,6 @@ function take(m: FromRecorder): void {
       break;
   }
 }
-
-/** Plugin runtimes from hello, waiting for the plugin list. */
-let pendingRuntime: Record<string, import("./protocol.ts").PluginRuntime> | null = null;
 
 // ── what this dashboard watches ──────────────────────────────────────────────
 //

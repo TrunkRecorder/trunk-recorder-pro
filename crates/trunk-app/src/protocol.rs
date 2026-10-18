@@ -36,9 +36,25 @@ pub fn body(v: Value) -> Body {
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 #[strum(serialize_all = "camelCase")]
 pub enum ToClient {
-    /// What a connection starts with (the desktop app's; the browser build's
-    /// worker writes its own).
-    Hello(Body),
+    /// The last message of a connection's greeting: every message before it
+    /// said how the recorder is now (its config, talkgroups, phase, recent
+    /// calls and so on, as ordinary messages), so the interface is caught up.
+    /// The browser build's worker sends the same greeting.
+    Hello {
+        version: String,
+        platform: String,
+        /// The interface API version (trunk-pro's `interfaces::API_VERSION`).
+        api: u32,
+        /// The config file (control access only).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        config_path: Option<String>,
+        survey_bands: Value,
+    },
+    /// The latest calls, newest first: on connecting (then `concluded` for each new one).
+    History { entries: Vec<Value> },
+    /// A system's talker aliases as saved (Trunk Recorder's unitTagsOTA CSV):
+    /// one for each system with some, on connecting (then `unitAlias` for each new one).
+    Units { system: String, csv: String },
     /// Which key containers are unlocked.
     Keys { sources: Value },
     Radios { radios: Value },

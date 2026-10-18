@@ -216,6 +216,9 @@ export class TrunkClient {
     ws.binaryType = "arraybuffer";
     ws.onopen = () => {
       this._retryMs = 500;
+      // The greeting says how things are, from nothing; "change" waits for its end (hello).
+      this._greeting = true;
+      Object.assign(this, { talkgroupFiles: {}, aliases: {}, error: null, exited: false });
       for (const m of this._queue.splice(0)) ws.send(JSON.stringify(m));
     };
     ws.onmessage = (ev) => {
@@ -228,7 +231,7 @@ export class TrunkClient {
       this._apply(m);
       this._emit(m.type, m);
       this._emit("message", m);
-      this._emit("change", this);
+      if (!this._greeting) this._emit("change", this);
     };
     ws.onclose = () => {
       this._ws = null;
@@ -246,9 +249,10 @@ export class TrunkClient {
 
   _apply(m) {
     switch (m.type) {
+      // The greeting's end: every message before it said how things are now.
       case "hello":
-        Object.assign(this, { version: m.version, config: m.config, configVersion: m.configVersion, phase: m.phase, history: m.history, error: null, exited: false });
-        this.aliases = Object.fromEntries(Object.entries(m.units ?? {}).map(([name, csv]) => [name, parseUnitAliases(csv)]));
+        this.version = m.version;
+        this._greeting = false;
         if (!this.connected) {
           this.connected = true;
           this._emit("connection", true);
@@ -277,6 +281,12 @@ export class TrunkClient {
           const { [m.system]: _, ...rest } = this.talkgroupFiles;
           this.talkgroupFiles = rest;
         }
+        break;
+      case "history":
+        this.history = m.entries.slice(0, this.historyLimit);
+        break;
+      case "units":
+        this.aliases = { ...this.aliases, [m.system]: parseUnitAliases(m.csv) };
         break;
       case "concluded":
         this.history = [m.entry, ...this.history].slice(0, this.historyLimit);
@@ -317,7 +327,7 @@ function splitCsv(line) {
 }
 
 /**
- * Talker aliases as the recorder saves them (`hello.units`: Trunk Recorder's
+ * Talker aliases as the recorder saves them (a `units` message: Trunk Recorder's
  * unitTagsOTA CSV, `unit,alias,source,time,wacn,sys,tg`) → { unit: alias }; the newest line wins.
  */
 export function parseUnitAliases(csv) {

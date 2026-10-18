@@ -389,20 +389,22 @@ onmessage = async (ev: MessageEvent<ToWorker>) => {
     case "init":
       config = m.config;
       talkgroups = m.talkgroups;
+      // The greeting, as the desktop app's (crates/trunk-pro server.rs): how things are, then hello.
+      post(phase);
+      post({ type: "config", config: m.config, version: configVersion });
+      for (const [system, csv] of Object.entries(m.talkgroups)) post({ type: "talkgroups", system, csv });
+      for (const [system, csv] of Object.entries(await savedUnits(m.config))) post({ type: "units", system, csv });
+      post({ type: "heard", heard: await savedHeard(m.config) });
+      post({ type: "history", entries: await listCalls(300) });
+      post({ type: "survey", stage: "idle" });
+      post({ type: "devices", devices: await devices() });
       post({
         type: "hello",
         version: __APP_VERSION__,
         platform: "web",
-        config: m.config,
-        configVersion,
+        api: 1,
         configPath: "this browser",
-        devices: await devices(),
-        phase,
-        history: await listCalls(300),
-        units: await savedUnits(m.config),
-        heard: await savedHeard(m.config),
         surveyBands: await ready.then(() => JSON.parse(survey_bands())).catch(() => []),
-        survey: { type: "survey", stage: "idle" },
       });
       break;
     case "setConfig":

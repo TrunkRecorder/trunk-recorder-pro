@@ -75,11 +75,13 @@ const send = (msg) => ws?.readyState === WebSocket.OPEN && ws.send(JSON.stringif
 
 function onMessage(m) {
   switch (m.type) {
+    // Before hello, the greeting says how things are now: the latest calls, the phase, …
+    case "history":
+      history = m.entries;
+      renderRecorded();
+      break;
     case "hello":
       $("conn").textContent = `connected · Trunk Recorder Pro ${m.version}`;
-      history = m.history;
-      setPhase(m.phase);
-      renderRecorded();
       // Listening is per connection: ask again after every (re)connect.
       if ($("live").checked) send({ type: "listen", on: true, system: null, talkgroup: null });
       break;

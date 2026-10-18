@@ -443,11 +443,6 @@ impl Plugins {
         }
     }
 
-    /// Every plugin's runtime (for a dashboard that just connected).
-    pub fn runtime_json(&self) -> Value {
-        json!(*self.runtime.lock().unwrap())
-    }
-
     fn publish_all_runtime(&self) {
         let rt = self.runtime.lock().unwrap().clone();
         for (id, r) in rt {

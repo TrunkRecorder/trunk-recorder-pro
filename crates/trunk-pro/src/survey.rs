@@ -158,7 +158,7 @@ pub fn start(ctx: Arc<Ctx>, cfg: Config, req: Request) -> Result<SurveyRunner, S
                     for o in out.drain(..) {
                         if let Output::Message(m) = o {
                             if let ToClient::Survey(_) = m {
-                                *ctx.survey_last.lock().unwrap() = Some(m.to_value());
+                                *ctx.survey_last.lock().unwrap() = Some(m.clone());
                             }
                             runtime::publish(&ctx.hub, m);
                         }

@@ -29,8 +29,14 @@ function twoSites(): void {
   dcfd.sites.push({ ...dcfd.sites[0], name: "south", controlChannelsHz: [851_500_000] });
   c.systems.push(dcfd);
   transport.onConnection(true);
-  const hello = { type: "hello", version: "test", platform: "test", config: c, devices: [], history: [], phase: { type: "state", phase: "running", error: null, ended: false } };
-  transport.onMessage(hello as unknown as FromRecorder);
+  // The greeting: how things are, then hello.
+  const greeting: FromRecorder[] = [
+    { type: "state", phase: "running", error: null, ended: false },
+    { type: "config", config: c, version: 1 },
+    { type: "history", entries: [] },
+    { type: "hello", version: "test", platform: "test", api: 1, surveyBands: [] },
+  ];
+  for (const m of greeting) transport.onMessage(m);
   transport.onMessage({ type: "talkgroups", system: "dcfd", csv: CSV("100,64,Fire Dispatch,D,Fire,,\n200,c8,EMS,D,EMS,,\n300,12c,Tac 3,D,Tac,,") });
   const id = (site: number): Identity => ({ nac: null, wacn: 0xbee00, sysId: 0x1a2, rfss: 1, site });
   const site = (index: number, name: string): SiteStatus =>

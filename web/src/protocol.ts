@@ -1341,36 +1341,28 @@ export interface RadioResultBody {
 }
 
 export type FromRecorder =
+  /**
+   * The last message of a connection's greeting. Every message before it said
+   * how the recorder is now, as ordinary messages (state, config, talkgroups,
+   * units, heard, history, radios, survey, monitorEvent for each recent event,
+   * host; with control access also devices, keys, plugins and interfaces): the
+   * interface is caught up. Wait for it before treating what's missing as
+   * missing (a system with no talkgroups message has no talkgroup file).
+   */
   | {
       type: "hello";
       version: string;
       platform: string;
-      /** With listen access, without plugin settings and key sources. */
-      config: Config;
-      configVersion: number;
+      /** The interface API this recorder speaks (docs/interfaces). */
+      api: number;
       /** The config file (control access only). */
       configPath?: string;
-      devices: Device[];
-      phase: PhaseState & { type: "state" };
-      history: CallEntry[];
-      /** Each system's radios' talker aliases, as saved: short name → unitTagsOTA CSV. */
-      units?: Record<string, string>;
-      /** The codes each conventional frequency (Hz, as a string) carried, as saved. */
-      heard?: Record<string, HeardCode[]>;
-      radios?: Radios;
-      surveyBands?: SurveyBand[];
-      survey?: { type: "survey" } & SurveyState;
-      /** The dashboard: recent notable events (oldest first). */
-      events?: MonitorEvent[];
-      /** The computer as last sampled (desktop app). */
-      host?: { type: "host"; t: number; values: Record<string, number>; platform: PlatformInfo } | null;
-      /** Every plugin's runtime, by id (desktop app; control access only). */
-      pluginRuntime?: Record<string, PluginRuntime>;
-      /** The interface API this recorder speaks (desktop app; docs/interfaces). */
-      api?: number;
-      /** Key containers waiting for a password, and which are unlocked (desktop app). */
-      keys?: { type: "keys"; sources: LockableKeys[] };
+      surveyBands: SurveyBand[];
     }
+  /** The latest calls, newest first: on connecting (then `concluded` for each new one). */
+  | { type: "history"; entries: CallEntry[] }
+  /** A system's talker aliases as saved (Trunk Recorder's unitTagsOTA CSV): one for each system with some, on connecting (then `unitAlias` for each new one). */
+  | { type: "units"; system: string; csv: string }
   /** Which key containers are unlocked, after an unlock, a lock or a config change. */
   | { type: "keys"; sources: LockableKeys[] }
   | { type: "radios"; radios: Radios }

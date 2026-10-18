@@ -88,7 +88,7 @@ fn run_with(ctx: Arc<Ctx>, mut platform: Platform) {
             }
         }
         let msg = message(t, &agg, p);
-        *ctx.host_last.lock().unwrap() = Some(msg.to_value());
+        *ctx.host_last.lock().unwrap() = Some(msg.clone());
         publish(&ctx.hub, msg);
         std::thread::sleep(EVERY);
     }
