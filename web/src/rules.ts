@@ -37,6 +37,11 @@ function rules(): typeof wasm {
   return wasm;
 }
 
+/** The talkgroup files an older config's JSON holds, as JSON by short name (migrate.ts). */
+export function configTalkgroups(json: string): string {
+  return rules().configTalkgroups(json);
+}
+
 /** The store's config now, and what has been worked out of it. */
 let current: Config | null = null;
 let kept = new Map<unknown, unknown>();

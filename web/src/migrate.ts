@@ -6,7 +6,7 @@
 // upgrade, delete both (and their tests) and the few lines the compiler then
 // points at.
 
-import { configTalkgroups } from "./web/pkg/trunk_web.js";
+import { configTalkgroups } from "./rules.ts";
 
 /**
  * The talkgroup files an older config this browser kept held (in
