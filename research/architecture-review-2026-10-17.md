@@ -203,14 +203,14 @@ setConfig, runtime `EngineCmd::Talkgroups`, docs/api.
 
 ### 7. trunk-pro's lifecycle and engine inlets
 
-- [ ] `Ctx.lifecycle: Mutex<Lifecycle>` with `enum Lifecycle { Idle, Recording(Runner), Surveying(SurveyRunner), Profiling, Quitting }` and `begin_recording` / `begin_survey` / `stop` / `quit` that own the transition and publish `state`; `phase` derived
+- [x] `Ctx.lifecycle: Mutex<Lifecycle>` with `enum Lifecycle { Idle, Recording(Runner), Surveying(SurveyRunner), Profiling, Quitting }` and `begin_recording` / `begin_survey` / `stop` / `quit` that own the transition and publish `state`; `phase` derived — done: `Lifecycle { Idle, Recording, Surveying, Quitting }` (profiling holds the lock through `Ctx::with_radios` rather than being a state); `begin_recording` / `begin_survey` / `with_radios` / `stop_recording` / `stop_survey` / `quit`; the published phase stays the engine's report
 - [ ] One `mpsc::Sender<EngineCmd>` in `Ctx` (`Talkgroups`, `Keys`, `Topics`, `Plugins(Option<Arc<PluginHost>>)`, `SourceError`, `SourceEnd`); the engine loop is `recv_timeout` on one channel; `topics_gen`, `engine_cmds` and the `host.read()` in the loop go
 - [ ] `plugins.host: Mutex<Option<Arc<PluginHost>>>` (or `arc_swap`): clone once per iteration, hold no lock during work; `finish_one` takes the clone; `reload` is a plain store
 - [ ] `Plan` is the one authority for a call's files (`AudioDisposition { Wav, M4a, M4aElseWav }`); `finish_one` materialises it before handing `CallAudio` to the host, so `PluginHost::concluded`, `encode_worker` and `CallAudio::write_wav` never write files; the Finish-queue-full fallback keeps the rules intact (or blocks for a bounded time now that decoding is off the engine thread)
 - [ ] `logging::init` takes the `Hub`; `record()` publishes the `log` message with its real time and level; the six hand-built `publish(json!({ "type": "log", … }))` sites become `log::warn!`
 - [ ] One generic `run_with<R: Radio>` in sdr.rs owning the reopen loop, back-off, ctl handling and `Tuned` reply; `runtime::start` and `survey::spawn_source` share one `spawn_source`
-- [ ] `plugins/cli.rs` and `interfaces/cli.rs`: `search` / `update` / `say_source` into store.rs generic over `Index`; both CLIs thin
-- [ ] Analysis tools share `Capture::from_args`, `channelize`, `hex`, `AudioOut`; `tool::run` becomes a `match`
+- [x] `plugins/cli.rs` and `interfaces/cli.rs`: `search` / `update` / `say_source` into store.rs generic over `Index`; both CLIs thin — done: 40932de
+- [x] Analysis tools share `Capture::from_args`, `channelize`, `hex`, `AudioOut`; `tool::run` becomes a `match` — done: 2cfa9b3 (toolkit.rs)
 - [ ] `replay` runs through the `Session` / `Feeder` / finish path (a `Config` of `Source::File` entries with a headless sink) instead of driving `Engine` directly with its own pacing and call writing
 
 **Evidence.** The real state is one enum but lives in `lifecycle:

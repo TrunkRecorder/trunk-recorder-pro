@@ -82,15 +82,7 @@ pub async fn serve(ctx: Arc<Ctx>, listener: std::net::TcpListener) -> std::io::R
             _ = terminate() => log::info!("Caught an Exit Signal..."),
         }
         let ctx3 = ctx2.clone();
-        let _ = tokio::task::spawn_blocking(move || {
-            let mut quitting = ctx3.lifecycle.lock().unwrap();
-            *quitting = true;
-            stop_survey(&ctx3);
-            if let Some(r) = ctx3.runner.lock().unwrap().take() {
-                r.stop();
-            }
-        })
-        .await;
+        let _ = tokio::task::spawn_blocking(move || ctx3.quit()).await;
         publish(&ctx2.hub, ToClient::Quit);
         // Let the sessions deliver it before the connections close.
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -437,16 +429,6 @@ fn access_of(ctx: &Ctx, door: &Door) -> Option<ApiAccess> {
     match door {
         Door::Builtin => Some(ApiAccess::Control),
         Door::Interface { id, .. } => ctx.interfaces.access(&ctx.config.lock().unwrap(), id),
-    }
-}
-
-/// End a running survey (frees its radio) and tell the browsers.
-fn stop_survey(ctx: &Ctx) {
-    let r = ctx.survey.lock().unwrap().take();
-    if let Some(r) = r {
-        r.stop();
-        *ctx.survey_last.lock().unwrap() = None;
-        publish(&ctx.hub, crate::survey::idle());
     }
 }
 
@@ -872,41 +854,11 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
         Command::Start => {
             let cfg = ctx.config.lock().unwrap().clone();
             let ctx2 = ctx.clone();
-            let r = tokio::task::spawn_blocking(move || {
-                let quitting = ctx2.lifecycle.lock().unwrap();
-                if *quitting {
-                    return None;
-                }
-                stop_survey(&ctx2);
-                if let Some(old) = ctx2.runner.lock().unwrap().take() {
-                    old.stop();
-                }
-                ctx2.set_phase("starting", None, false);
-                match runtime::start(ctx2.clone(), cfg) {
-                    Ok(r) => {
-                        *ctx2.runner.lock().unwrap() = Some(r);
-                        None
-                    }
-                    Err(e) => {
-                        ctx2.set_phase("idle", Some(e.clone()), false);
-                        Some(e)
-                    }
-                }
-            })
-            .await
-            .ok()
-            .flatten();
-            r.map(ToClient::error)
+            tokio::task::spawn_blocking(move || ctx2.begin_recording(cfg)).await.ok().and_then(Result::err).map(ToClient::error)
         }
         Command::Stop => {
             let ctx2 = ctx.clone();
-            let _ = tokio::task::spawn_blocking(move || {
-                let _held = ctx2.lifecycle.lock().unwrap();
-                if let Some(r) = ctx2.runner.lock().unwrap().take() {
-                    r.stop();
-                }
-            })
-            .await;
+            let _ = tokio::task::spawn_blocking(move || ctx2.stop_recording()).await;
             None
         }
         Command::Devices => tokio::task::spawn_blocking(devices).await.ok(),
@@ -916,7 +868,7 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
         }
         Command::Quit => {
             let ctx2 = ctx.clone();
-            let _ = tokio::task::spawn_blocking(move || stop_survey(&ctx2)).await;
+            let _ = tokio::task::spawn_blocking(move || ctx2.stop_survey()).await;
             ctx.quit.notify_one();
             None
         }
@@ -924,52 +876,19 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
             let cfg = ctx.config.lock().unwrap().clone();
             let req = trunk_app::survey::Request::from_json(&Value::Object(b));
             let ctx2 = ctx.clone();
-            let r = tokio::task::spawn_blocking(move || {
-                let quitting = ctx2.lifecycle.lock().unwrap();
-                if *quitting {
-                    return None;
-                }
-                {
-                    let mut runner = ctx2.runner.lock().unwrap();
-                    match runner.take() {
-                        // (Its capture files ended: nothing is recording.)
-                        Some(r) if r.finished() => r.stop(),
-                        Some(r) => {
-                            *runner = Some(r);
-                            return Some("Stop recording first — the scan needs the radio to itself.".to_string());
-                        }
-                        None => {}
-                    }
-                }
-                stop_survey(&ctx2);
-                match crate::survey::start(ctx2.clone(), cfg, req) {
-                    Ok(r) => {
-                        *ctx2.survey.lock().unwrap() = Some(r);
-                        None
-                    }
-                    Err(e) => Some(e),
-                }
-            })
-            .await
-            .ok()
-            .flatten();
-            r.map(ToClient::error)
+            tokio::task::spawn_blocking(move || ctx2.begin_survey(cfg, req)).await.ok().and_then(Result::err).map(ToClient::error)
         }
         Command::SurveyListen { freq_hz } => {
-            if let Some(r) = ctx.survey.lock().unwrap().as_ref() {
-                r.send(crate::survey::UserCmd::Listen(freq_hz));
-            }
+            ctx.survey_send(crate::survey::UserCmd::Listen(freq_hz));
             None
         }
         Command::SurveyRescan => {
-            if let Some(r) = ctx.survey.lock().unwrap().as_ref() {
-                r.send(crate::survey::UserCmd::Rescan);
-            }
+            ctx.survey_send(crate::survey::UserCmd::Rescan);
             None
         }
         Command::SurveyStop => {
             let ctx2 = ctx.clone();
-            let _ = tokio::task::spawn_blocking(move || stop_survey(&ctx2)).await;
+            let _ = tokio::task::spawn_blocking(move || ctx2.stop_survey()).await;
             None
         }
         // A moment with the radio alone (nothing may start meanwhile); the answer is this connection's.
@@ -978,23 +897,8 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
             let req = trunk_app::profile::Request::from_json(&Value::Object(b));
             let ctx2 = ctx.clone();
             let answer = tokio::task::spawn_blocking(move || {
-                let quitting = ctx2.lifecycle.lock().unwrap();
-                if *quitting {
-                    return None;
-                }
-                {
-                    let mut runner = ctx2.runner.lock().unwrap();
-                    match runner.take() {
-                        Some(r) if r.finished() => r.stop(),
-                        Some(r) => {
-                            *runner = Some(r);
-                            return Some(trunk_app::profile::error_json(req.source, "Stop recording first — profiling needs the radio to itself."));
-                        }
-                        None => {}
-                    }
-                }
-                stop_survey(&ctx2);
-                Some(crate::profile::run(&cfg, &req))
+                let source = req.source;
+                ctx2.with_radios("profiling", || crate::profile::run(&cfg, &req)).map(|r| r.unwrap_or_else(|e| trunk_app::profile::error_json(source, &e)))
             })
             .await
             .ok()

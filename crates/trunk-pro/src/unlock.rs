@@ -74,7 +74,7 @@ pub fn config_changed(ctx: &Ctx, cfg: &Config) {
 
 /// `systems` decrypt with `ring` from now on (when recording), and browsers are told.
 fn apply(ctx: &Ctx, systems: &[String], ring: Option<Arc<Keyring>>) {
-    if ctx.runner.lock().unwrap().is_some() {
+    if ctx.recording() {
         let mut cmds = ctx.engine_cmds.lock().unwrap();
         for s in systems {
             cmds.push(EngineCmd::Keys { short_name: s.clone(), ring: ring.clone() });

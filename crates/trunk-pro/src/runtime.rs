@@ -94,19 +94,17 @@ pub struct Ctx {
     /// Each system's talkgroup file, as kept beside the config ([`talkgroups_path`]).
     pub talkgroups: Mutex<trunk_app::config::TalkgroupFiles>,
     pub hub: Hub,
-    pub runner: Mutex<Option<Runner>>,
-    /// Held through a start, stop, survey start or quit, so two never
-    /// interleave (two Starts at once would leave a recorder nothing stops);
-    /// true once quitting, when nothing may start any more.
-    pub lifecycle: Mutex<bool>,
+    /// What the radios are doing ([`Lifecycle`]): changed only through its
+    /// methods on `Ctx`, each holding the lock throughout, so two never
+    /// interleave (two Starts at once would leave a recorder nothing stops).
+    pub lifecycle: Mutex<Lifecycle>,
+    /// The phase the browsers are told (the engine thread reports it as it goes).
     pub phase: Mutex<PhaseInfo>,
     /// Recently concluded calls (newest first), as sent to the browser.
     pub history: Mutex<VecDeque<Value>>,
     /// Signalled by a browser's `quit`.
     pub quit: tokio::sync::Notify,
-    /// The first-run survey, when one is running (never with recording).
-    pub survey: Mutex<Option<crate::survey::SurveyRunner>>,
-    /// Its latest snapshot, for browsers that connect meanwhile.
+    /// The survey's latest snapshot, for browsers that connect meanwhile.
     pub survey_last: Mutex<Option<ToClient>>,
     pub plugins: plugins::manage::Plugins,
     /// The address every interface listens on (`--bind`, else `server.bind`).
@@ -185,6 +183,121 @@ impl Ctx {
         publish(&self.hub, p.message());
         *self.phase.lock().unwrap() = p;
     }
+
+    /// Whether a recording is running (what it should be told of changes).
+    pub fn recording(&self) -> bool {
+        matches!(*self.lifecycle.lock().unwrap(), Lifecycle::Recording(_))
+    }
+
+    /// Start recording with `cfg`, in place of whatever the radios were
+    /// doing (nothing once quitting). The engine thread reports the phase.
+    pub fn begin_recording(self: &Arc<Self>, cfg: Config) -> Result<(), String> {
+        let mut l = self.lifecycle.lock().unwrap();
+        if matches!(*l, Lifecycle::Quitting) {
+            return Ok(());
+        }
+        self.end(&mut l);
+        self.set_phase("starting", None, false);
+        match start(self.clone(), cfg) {
+            Ok(r) => {
+                *l = Lifecycle::Recording(r);
+                Ok(())
+            }
+            Err(e) => {
+                self.set_phase("idle", Some(e.clone()), false);
+                Err(e)
+            }
+        }
+    }
+
+    /// Start a survey (`survey`, once the radios are free: [`Ctx::free_radios`]).
+    pub fn begin_survey(self: &Arc<Self>, cfg: Config, req: trunk_app::survey::Request) -> Result<(), String> {
+        let mut l = self.lifecycle.lock().unwrap();
+        if matches!(*l, Lifecycle::Quitting) {
+            return Ok(());
+        }
+        self.free_radios(&mut l, "the scan")?;
+        *l = Lifecycle::Surveying(crate::survey::start(self.clone(), cfg, req)?);
+        Ok(())
+    }
+
+    /// `f` with the radios to itself (profiling a source): nothing starts
+    /// meanwhile. None once quitting; Err while recording.
+    pub fn with_radios<T>(&self, what: &str, f: impl FnOnce() -> T) -> Option<Result<T, String>> {
+        let mut l = self.lifecycle.lock().unwrap();
+        if matches!(*l, Lifecycle::Quitting) {
+            return None;
+        }
+        Some(self.free_radios(&mut l, what).map(|()| f()))
+    }
+
+    /// The radios free for `what`: a survey ends, a recording whose capture
+    /// files ended too, but one still recording isn't stopped for it.
+    fn free_radios(&self, l: &mut Lifecycle, what: &str) -> Result<(), String> {
+        if let Lifecycle::Recording(r) = l {
+            if !r.finished() {
+                return Err(format!("Stop recording first — {what} needs the radio to itself."));
+            }
+        }
+        self.end(l);
+        Ok(())
+    }
+
+    /// Stop recording, if it is.
+    pub fn stop_recording(&self) {
+        let mut l = self.lifecycle.lock().unwrap();
+        if matches!(*l, Lifecycle::Recording(_)) {
+            self.end(&mut l);
+        }
+    }
+
+    /// End a running survey (frees its radio) and tell the browsers.
+    pub fn stop_survey(&self) {
+        let mut l = self.lifecycle.lock().unwrap();
+        if matches!(*l, Lifecycle::Surveying(_)) {
+            self.end(&mut l);
+        }
+    }
+
+    /// Something for the running survey (a frequency to monitor, a rescan).
+    pub fn survey_send(&self, c: crate::survey::UserCmd) {
+        if let Lifecycle::Surveying(r) = &*self.lifecycle.lock().unwrap() {
+            r.send(c);
+        }
+    }
+
+    /// Stop everything, for good: nothing starts once quitting.
+    pub fn quit(&self) {
+        let mut l = self.lifecycle.lock().unwrap();
+        self.end(&mut l);
+        *l = Lifecycle::Quitting;
+    }
+
+    /// Whatever the radios are doing stops (the lock held).
+    fn end(&self, l: &mut Lifecycle) {
+        match std::mem::replace(l, Lifecycle::Idle) {
+            Lifecycle::Recording(r) => r.stop(),
+            Lifecycle::Surveying(r) => {
+                r.stop();
+                *self.survey_last.lock().unwrap() = None;
+                publish(&self.hub, crate::survey::idle());
+            }
+            Lifecycle::Quitting => *l = Lifecycle::Quitting,
+            Lifecycle::Idle => {}
+        }
+    }
+}
+
+/// What the radios are doing: one thing at a time.
+#[derive(Default)]
+pub enum Lifecycle {
+    #[default]
+    Idle,
+    Recording(Runner),
+    /// The first-run survey (never with recording).
+    Surveying(crate::survey::SurveyRunner),
+    /// The recorder is exiting: nothing starts any more.
+    Quitting,
 }
 
 pub struct Runner {
@@ -360,7 +473,7 @@ pub fn set_talkgroups(ctx: &Ctx, system: &str, csv: String) -> Result<(), String
         trunk_app::config::write_atomic(&path, &csv).map_err(|e| format!("Couldn't save {}: {e}", path.display()))?;
         ctx.talkgroups.lock().unwrap().insert(system.to_string(), csv.clone());
     }
-    if ctx.runner.lock().unwrap().is_some() {
+    if ctx.recording() {
         ctx.engine_cmds.lock().unwrap().push(EngineCmd::Talkgroups { short_name: system.to_string(), csv: csv.clone() });
     }
     // (The config first, then the names: as config_changed takes them.)

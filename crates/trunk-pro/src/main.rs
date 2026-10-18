@@ -865,12 +865,10 @@ fn serve(a: &Args) {
         config_version: std::sync::atomic::AtomicU64::new(1),
         talkgroups: Mutex::new(talkgroups),
         hub: hub.clone(),
-        runner: Mutex::new(None),
-        lifecycle: Mutex::new(false),
+        lifecycle: Mutex::new(runtime::Lifecycle::Idle),
         phase: Mutex::new(runtime::PhaseInfo { phase: "idle", error: None, ended: false }),
         history: Mutex::new(VecDeque::new()),
         quit: tokio::sync::Notify::new(),
-        survey: Mutex::new(None),
         survey_last: Mutex::new(None),
         plugins: plugins::manage::Plugins::new(hub.clone(), shared.clone()),
         bind: addr.ip(),
@@ -909,13 +907,8 @@ fn serve(a: &Args) {
     let auto = a.flag("start") || ctx.config.lock().unwrap().server.auto_start;
     if auto {
         let cfg = ctx.config.lock().unwrap().clone();
-        ctx.set_phase("starting", None, false);
-        match runtime::start(ctx.clone(), cfg) {
-            Ok(r) => *ctx.runner.lock().unwrap() = Some(r),
-            Err(e) => {
-                log::error!("Not started: {e}");
-                ctx.set_phase("idle", Some(e), false);
-            }
+        if let Err(e) = ctx.begin_recording(cfg) {
+            log::error!("Not started: {e}");
         }
     }
     if let Some(u) = &ui_url {
