@@ -719,7 +719,7 @@ impl Conventional {
                 10.0 * (ch.power / floor).log10()
             };
             let base = ch.base_db(dflt);
-            let meter_thr = (chz.noise_in_band(floor, ch.shape.meter_bw) * 10f64.powf((base - CLOSE_BELOW_DB).max(3.0) / 10.0)) as f32;
+            let meter_thr = chz.threshold(floor, ch.shape.meter_bw, (base - CLOSE_BELOW_DB).max(3.0));
             if ch.open.is_none() {
                 if ch.raised && snr_db < base {
                     ch.raised = false;

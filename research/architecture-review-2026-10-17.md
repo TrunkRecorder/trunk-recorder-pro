@@ -83,10 +83,10 @@ protocol (field values unchanged if derived).
 
 ### 3. Conventional re-implements the trunked call pipeline
 
-- [ ] `Conventional` becomes a grant source only (energy detection + row routing) and hands its heads' `TrackerOut`s to the engine's `Recording` / `pending` / `apply_pending` path
-- [ ] `Live`, the info half of `Heard`, `ConvOut` and the second half of `slot_call` go
-- [ ] One `CarrierMeter` per head and one threshold function from the noise profile; `VoiceKind::cutoff_hz()` replaces the two `match`es
-- [ ] One `ToneDetector` per open head per transmission (today it runs twice, in `Tx` and `Live`)
+- [x] `Conventional` becomes a grant source only (energy detection + row routing) and hands its heads' `TrackerOut`s to the engine's `Recording` / `pending` / `apply_pending` path — decided against: a conventional call opens on energy or a tone and ends when its carrier drops, while `CallManager` is built around grants, updates and their timeouts. Routing it through the grant lifecycle would mean faking grants and carrying exceptions for each. Instead the two share their pieces (the event vocabulary, link control, `ChannelShape` / `cutoff_hz`, `floor_slice`, `threshold`, `note_info`)
+- [x] `Live`, the info half of `Heard`, `ConvOut` and the second half of `slot_call` go — in part: `ConvOut` is down to four variants and speaks the engine's `Event`s, and link control is applied one way. `Live` and `slot_call` stay, since they are the conventional call's own lifecycle (see the decision above)
+- [x] One `CarrierMeter` per head and one threshold function from the noise profile; `VoiceKind::cutoff_hz()` replaces the two `match`es — done: `Channelizer::threshold` (dB above the noise in a band) sets both the engine's analog squelch and conventional's carrier meter. Both already meter with `fm::ChannelFilter`, and the head widths come from `cutoff_hz()` via `ChannelShape`
+- [x] One `ToneDetector` per open head per transmission (today it runs twice, in `Tx` and `Live`) — decided against: they measure different things. `Tx`'s reads one transmission, to pick its row, and starts over at each key-up. `Live`'s reads the whole call, across its transmissions, for the call record, and it also runs on FM frequencies that have no tone rows. Sharing one would change the tone that calls report, and the detector is cheap
 - [x] `ChannelShape { detect_half_bw, head_cutoff, meter_bw }` built once, instead of three functions offsetting a mode's width against the FM constants — done: `ChannelShape::of(mode, analog)` once per frequency
 - [x] `Chan.cfg` is a mutated copy of `rows[0]`: split `ConvChannel { freq, mode, analog, system, rows: Vec<Row> }` — done inside conventional.rs: `Chan { freq_hz, mode, system, analog, shape, squelch_db, rows }`; the public `ConvChannel` stays one row (what the config lists)
 

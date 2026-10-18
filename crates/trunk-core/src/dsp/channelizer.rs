@@ -346,6 +346,13 @@ impl Channelizer {
         bin_noise / self.n as f64 * bandwidth_hz / self.fs
     }
 
+    /// A carrier threshold: `db` above the noise in a band (as
+    /// [`Channelizer::noise_in_band`]), the level a head's squelch or
+    /// carrier meter compares against.
+    pub fn threshold(&self, bin_noise: f64, bandwidth_hz: f64, db: f64) -> f32 {
+        (self.noise_in_band(bin_noise, bandwidth_hz) * 10f64.powf(db / 10.0)) as f32
+    }
+
     fn filter_for(&mut self, cutoff_hz: f64) -> usize {
         let key = cutoff_hz.round() as i64;
         if let Some(i) = self.filters.iter().position(|(k, _)| *k == key) {

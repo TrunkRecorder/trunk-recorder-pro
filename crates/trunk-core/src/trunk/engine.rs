@@ -855,7 +855,7 @@ impl SysHost<'_> {
             vocoder: r.vocoder,
             bank: self.bank,
             // Analog squelch: this far above the noise under the channel.
-            squelch: (noise * 10f64.powf(ANALOG_SQUELCH_DB / 10.0)) as f32,
+            squelch: s.chz.threshold(prof[slice].max(1e-30), ChannelFilter::noise_bandwidth(), ANALOG_SQUELCH_DB),
             subaudible: false,
             analog: AnalogTuning::default(),
             ignore_hz: Vec::new(),
