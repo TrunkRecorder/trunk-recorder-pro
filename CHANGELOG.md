@@ -5,6 +5,8 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+## [0.2.1] — 2026-10-18
+
 - **A dashboard card opens what it's about from anywhere on it**, not only its title: a system's
   card on the Radio page opens that system (its "Open …" link is gone), a site's on Decode, a
   source's on RF, and so on. A row of a system's busiest talkgroups opens that talkgroup, and a
