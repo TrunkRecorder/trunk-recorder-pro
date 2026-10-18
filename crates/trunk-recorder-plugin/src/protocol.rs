@@ -824,8 +824,8 @@ mod tests {
         assert_eq!(c.patched_talkgroups, [101, 65001]);
         assert_eq!((c.error_count(), c.spike_count()), (3, 1));
         assert_eq!(c.src_list[0].tag_ota, "E1");
-        assert_eq!(c.extra["color_code"], -1);
-        // And back, with the unknown field kept.
+        assert_eq!(c.color_code, -1);
+        // And back.
         let v = serde_json::to_value(&c).unwrap();
         assert_eq!(v["color_code"], -1);
         assert_eq!(v["srcList"][0]["src"], 1234);
