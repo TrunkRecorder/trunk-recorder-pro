@@ -34,6 +34,9 @@ import { parseTalkgroupCsv } from "../talkgroups.ts";
 import { BrowserStorage } from "../web/BrowserStorage.tsx";
 import { aliasOf } from "./Calls.tsx";
 
+/** What the Listen page reads of the store (the page selects only this). */
+type ListenState = Pick<AppState, "connected" | "config" | "units" | "talkgroups">;
+
 /** A talkgroup as the scanner shows it. */
 interface Tg {
   system: string;
@@ -86,7 +89,7 @@ const timeOf = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: "2-di
 const mmss = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 
 /** The radio that spoke first, by name when known. */
-function unitOf(s: AppState, c: CallEntry): string {
+function unitOf(s: ListenState, c: CallEntry): string {
   const u = c.record.srcList?.find((x) => x.src > 0);
   if (!u) return "";
   return aliasOf(s, systemOf(c), u.src, u.tag || u.tag_ota) ?? String(u.src);
@@ -96,7 +99,7 @@ function Led({ color, blink }: { color: string; blink?: boolean }) {
   return <span className={`led${blink ? " blink" : ""}`} style={{ background: color, color }} aria-hidden="true" />;
 }
 
-function Display({ s }: { s: AppState }) {
+function Display({ s }: { s: ListenState }) {
   const l = useListen((x) => x);
   const c = l.playing;
   if (!c) {
@@ -205,7 +208,7 @@ function Controls() {
   );
 }
 
-function Recent({ s }: { s: AppState }) {
+function Recent({ s }: { s: ListenState }) {
   const played = useListen((x) => x.played);
   if (!played.length) return null;
   return (
@@ -223,7 +226,7 @@ function Recent({ s }: { s: AppState }) {
   );
 }
 
-function Scanner({ s }: { s: AppState }) {
+function Scanner({ s }: { s: ListenState }) {
   const l = useListen((x) => ({ feed: x.feed, queue: x.queue.length, missed: x.missed, hold: x.sel.hold, sel: x.sel }));
   const status = !s.connected ? "No link" : l.feed ? "Live" : "Feed off";
   return (
@@ -251,7 +254,7 @@ function Scanner({ s }: { s: AppState }) {
 
 // ── the calls ────────────────────────────────────────────────────────────────
 
-function CallList({ s }: { s: AppState }) {
+function CallList({ s }: { s: ListenState }) {
   const l = useListen((x) => ({ calls: x.calls, sel: x.sel, queue: x.queue, playing: x.playing, loadingOlder: x.loadingOlder, moreOlder: x.moreOlder }));
   const [onlySelected, setOnlySelected] = useState(true);
   const [filter, setFilter] = useState("");
@@ -353,9 +356,9 @@ function Chips({ title, by, sel, tgs, known }: { title: string; by: (t: Tg) => s
   );
 }
 
-export function Talkgroups({ s }: { s: AppState }) {
+export function Talkgroups({ s }: { s: ListenState }) {
   const l = useListen((x) => ({ calls: x.calls, sel: x.sel }));
-  const cat = useMemo(() => catalog(s, l.calls), [s.config, l.calls]);
+  const cat = useMemo(() => catalog(s, l.calls), [s.config, s.talkgroups, l.calls]);
   const [filter, setFilter] = useState("");
   const all = useMemo(() => [...cat.values()].flat(), [cat]);
   const known = useMemo(() => all.map((t) => t.key), [all]);
@@ -442,9 +445,10 @@ export function Talkgroups({ s }: { s: AppState }) {
   );
 }
 
-export function ListenPage() {
-  const s = useSelect((x) => ({ connected: x.connected, config: x.config, units: x.units }) as AppState);
-  const [tab, setTab] = useState<"calls" | "talkgroups">("calls");
+/** `tab`: the side panel's tab to open on (the calls). */
+export function ListenPage({ tab: first = "calls" }: { tab?: "calls" | "talkgroups" } = {}) {
+  const s: ListenState = useSelect((x) => ({ connected: x.connected, config: x.config, units: x.units, talkgroups: x.talkgroups }));
+  const [tab, setTab] = useState<"calls" | "talkgroups">(first);
   const off = useListen((x) => x.sel.offSystems.length + x.sel.offTalkgroups.length);
   return (
     <div className="listen">

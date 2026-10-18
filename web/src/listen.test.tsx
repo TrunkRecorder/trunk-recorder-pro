@@ -45,7 +45,8 @@ function twoSites(): void {
   transport.onMessage({ type: "status", status: { systems, recording: 0 } as unknown as EngineStatus, sources: [], load: 0, calls: [] });
 }
 const text = (html: string) => html.replace(/<!-- -->/g, "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
-const tgList = () => text(renderToString(<Talkgroups s={snapshot()} />));
+// (The page's own tab, with what the page selects of the store: not the whole store.)
+const tgList = () => text(renderToString(<ListenPage tab="talkgroups" />));
 const concluded = (c: CallEntry) => transport.onMessage({ type: "concluded", entry: c });
 const showing = () => text(renderToString(<ListenPage />));
 

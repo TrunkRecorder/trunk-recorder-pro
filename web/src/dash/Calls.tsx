@@ -38,7 +38,7 @@ export function Unit({ id, alias }: { id: number; alias: string | undefined }) {
  * talker alias heard (live, or `saved` with the call), as the recorder picks
  * a call's `tag`.
  */
-export const aliasOf = (s: AppState, system: string, id: number, saved?: string) => {
+export const aliasOf = (s: Pick<AppState, "config" | "units">, system: string, id: number, saved?: string) => {
   const c = s.config;
   const names = c?.systems.find((x) => x.shortName === system)?.unitNames ?? c?.conventional.find((x) => x.shortName === system)?.unitNames;
   const heard = () => s.units[system]?.[id] || saved || undefined;
