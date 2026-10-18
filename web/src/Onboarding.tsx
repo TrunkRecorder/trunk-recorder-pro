@@ -11,7 +11,6 @@ import {
   applySurvey,
   addDmrSite,
   addNxdnSite,
-  bumpEpoch,
   dismissError,
   findRadios,
   listDir,
@@ -350,7 +349,6 @@ function RadiosStep(props: { s: AppState; c: Config; onNext: () => void; onBack:
       // A radio already set up keeps its settings (frequency correction, gain).
       x.sources = selected.map((d) => x.sources.find((o) => sourceKey(o) === d.key) ?? d.source);
     });
-    bumpEpoch();
     props.onNext();
   };
 
@@ -995,7 +993,6 @@ function ManualSystem(props: { c: Config; target: number | "new"; onDone: (syste
       if (props.target === "new") x.systems.push(sys);
       else x.systems[props.target] = { ...sys, shortName: x.systems[props.target].shortName, name: x.systems[props.target].name };
     });
-    bumpEpoch();
     props.onDone(system);
   };
   return (
@@ -1070,7 +1067,6 @@ function CoverageStep(props: { c: Config; found: Found | null; onNext: () => voi
         if (ctr !== null && x.sources[k]) x.sources[k].centerHz = ctr;
       });
     });
-    bumpEpoch();
     props.onNext();
   };
 
@@ -1868,7 +1864,6 @@ function ImportReview(props: { s: AppState; c: Config; loaded: Loaded; onBack: (
     });
     // Each system's talkgroup file, beside the config.
     for (const [system, csv] of Object.entries(result.talkgroups)) if (brings(system)) setTalkgroups(system, csv);
-    bumpEpoch();
     // Radios that aren't ready yet join what's left to do.
     const radios: ImportTodo[] = cfg.sources.flatMap((src, index): ImportTodo[] => {
       if (!bringsSource(index)) return [];

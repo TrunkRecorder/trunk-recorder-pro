@@ -112,8 +112,6 @@ export interface AppState {
   /** A source's roll-off as last measured (Setup), and the source being measured now (null: none). */
   profile: SourceProfile | null;
   profiling: number | null;
-  /** Bumped when the config is replaced from outside the form (fields re-read it). */
-  configEpoch: number;
   /** The plugins (desktop app); null until the recorder says. */
   plugins: PluginsList | null;
   /** A plugin this browser just installed: its settings open. */
@@ -200,7 +198,6 @@ let state: AppState = {
   surveySpectrum: null,
   profile: null,
   profiling: null,
-  configEpoch: 0,
   plugins: null,
   pluginJustInstalled: null,
   interfaces: null,
@@ -641,7 +638,7 @@ function sendConfig(): void {
     return;
   }
   saving = true;
-  transport.send({ type: "setConfig", config: state.config, version: server.version });
+  transport.send({ type: "setConfig", config: sendable(state.config), version: server.version });
   sendTalkgroupMoves();
 }
 
@@ -651,7 +648,7 @@ function configSaved(version: number, error: string | undefined): void {
   server.version = Math.max(server.version, version);
   if (error) {
     queued = false;
-    if (server.config) set({ config: server.config, configEpoch: state.configEpoch + 1 });
+    if (server.config) set({ config: server.config });
     set({ error });
     return;
   }
@@ -706,9 +703,33 @@ export function downloadText(name: string, text: string, type = "text/csv"): voi
   setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
 
-/** Make the setup form re-read the config (after it was replaced from outside a field). */
-export function bumpEpoch(): void {
-  set({ configEpoch: state.configEpoch + 1 });
+// ── card keys ────────────────────────────────────────────────────────────────
+
+/** Where a config entry keeps its card key: on it, in this browser only (never sent). */
+const CARD = "_card";
+
+/**
+ * A config entry's card key (a source, system, site or conventional system,
+ * one of `among`): Setup's card for it, open or not, stays its own as other
+ * entries come and go and as it is renamed. Taken from `seed` (what it is
+ * now: a system's short name, a source's position) the first time it's
+ * asked for, so a reload finds the same cards open; kept on the entry,
+ * which edits copy.
+ */
+export function cardKey(x: object, seed: string, among: readonly object[]): string {
+  const o = x as Record<string, unknown>;
+  if (typeof o[CARD] !== "string") {
+    const taken = (k: string) => among.some((y) => y !== x && (y as Record<string, unknown>)[CARD] === k);
+    let key = seed;
+    for (let n = 2; taken(key); n++) key = `${seed}#${n}`;
+    o[CARD] = key;
+  }
+  return o[CARD] as string;
+}
+
+/** `c` as the recorder takes it: without card keys. */
+function sendable(c: Config): Config {
+  return JSON.parse(JSON.stringify(c, (k, v) => (k === CARD ? undefined : v)));
 }
 
 // ── pages ────────────────────────────────────────────────────────────────────
@@ -1066,7 +1087,6 @@ export function applySurvey(i: number, sug: SurveySuggestion, target: SurveyTarg
     }
     applied = { system: siteLabel(sys, site), centered };
   });
-  set({ configEpoch: state.configEpoch + 1 });
   return applied;
 }
 
@@ -1090,7 +1110,6 @@ export function addSite(controlChannels: number[], expect: SiteIdentity): string
     c.systems.push(sys);
     name = sys.shortName;
   });
-  set({ configEpoch: state.configEpoch + 1 });
   return name;
 }
 
@@ -1107,7 +1126,6 @@ export function addDmrSite(freqHz: number, colorCode: number | null): string {
     c.systems.push(sys);
     name = sys.shortName;
   });
-  set({ configEpoch: state.configEpoch + 1 });
   return name;
 }
 
@@ -1125,7 +1143,6 @@ export function addNxdnSite(freqHz: number, rate: "nxdn48" | "nxdn96", ran: numb
     c.systems.push(sys);
     name = sys.shortName;
   });
-  set({ configEpoch: state.configEpoch + 1 });
   return name;
 }
 
@@ -1141,7 +1158,6 @@ export function addNxdnChannel(freqHz: number, rate: "nxdn48" | "nxdn96", ran: n
     conv.channels.push({ freqHz, mode: rate, name: "", enabled: true, ...(ran ? { tone: `RAN ${ran}` } : {}) });
     name = conv.shortName;
   });
-  set({ configEpoch: state.configEpoch + 1 });
   return name;
 }
 

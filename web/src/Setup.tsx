@@ -41,6 +41,7 @@ import {
 } from "./config.ts";
 import {
   can,
+  cardKey,
   currentView,
   dismissTodo,
   downloadText,
@@ -69,13 +70,19 @@ import type { AirspyGainMode, Channel, Config, Conventional, Demod, Device, Hear
 import { DEFAULT_FORMAT, FilenameEditor } from "./FilenameEditor.tsx";
 import { GuardBand } from "./Rolloff.tsx";
 import { SurveyPanel } from "./Survey.tsx";
-import { addCard, Card, ExpandAll, forgetCard, Group, Section, setCardOpen, Switch } from "./SetupLayout.tsx";
+import { addCard, Card, ExpandAll, Group, Section, setCardOpen, Switch } from "./SetupLayout.tsx";
 import { TalkgroupsField } from "./TalkgroupsField.tsx";
 import { DraftInput, Field, FileInput, NumberInput, Toggle } from "./inputs.tsx";
 import { asTyped, cleanShortName, lcnTable, mhz, mhzList, msps } from "./fieldText.ts";
 import { unitNameCount } from "./units.ts";
 import { openTodos } from "./todo.ts";
 import { parseAccess, sameTone } from "./tones.ts";
+
+/** Each card's key (the controller's `cardKey`), seeded from what its entry is now; `all`: its list. */
+const srcKey = (x: Source, i: number, all: Source[]) => cardKey(x, `src:${i}`, all);
+const sysKey = (x: System, _i: number, all: System[]) => cardKey(x, `sys:${x.shortName}`, all);
+const siteKey = (sys: System, x: Site) => cardKey(x, `site:${sys.shortName}/${siteNameOf(sys, x)}`, sys.sites);
+const convKey = (x: Conventional, _i: number, all: Conventional[]) => cardKey(x, `conv:${x.shortName}`, all);
 
 /** What an import left to do at a setup field (see todo.ts), or undefined. */
 function useNeed(): (target: string) => string | undefined {
@@ -613,7 +620,7 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
 
   return (
     <Card
-      cardKey={`src-${i}`}
+      cardKey={srcKey(src, i, c.sources)}
       n={c.sources.length}
       className={`source-card${needs ? " needs" : ""}`}
       id={`need-src-${i}`}
@@ -635,7 +642,6 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
             className="btn ghost small"
             onClick={() => {
               web?.removeFile(i);
-              forgetCard("src-", i, c.sources.length);
               updateConfig((x) => void x.sources.splice(i, 1));
             }}
           >
@@ -967,12 +973,15 @@ function ConventionalTab(props: { c: Config }) {
       hint="Single frequencies (analog FM or AM, P25, DMR or NXDN), kept together as a system with its own folder."
       actions={
         <>
-          <ExpandAll prefix="conv-" n={c.conventional.length} />
+          <ExpandAll keys={c.conventional.map(convKey)} />
           <button
             className="btn"
             onClick={() => {
-              addCard("conv-", c.conventional.length);
-              updateConfig((x) => void x.conventional.push(newConventional(x)));
+              updateConfig((x) => {
+                const n = newConventional(x);
+                x.conventional.push(n);
+                addCard(c.conventional.map(convKey), convKey(n, x.conventional.length - 1, x.conventional));
+              });
             }}
           >
             Add a conventional system
@@ -980,8 +989,8 @@ function ConventionalTab(props: { c: Config }) {
         </>
       }
     >
-      {c.conventional.map((_, k) => (
-        <ConventionalPanel key={`${k}-${c.conventional.length}-${s.configEpoch}`} c={c} k={k} />
+      {c.conventional.map((x, k) => (
+        <ConventionalPanel key={convKey(x, k, c.conventional)} c={c} k={k} />
       ))}
       {!c.conventional.length && <p className="set-empty">No conventional systems yet.</p>}
     </Section>
@@ -1058,7 +1067,7 @@ function ConventionalPanel(props: { c: Config; k: number }) {
 
   return (
     <Card
-      cardKey={`conv-${k}`}
+      cardKey={convKey(conv, k, c.conventional)}
       n={c.conventional.length}
       className={conv.enabled ? undefined : "off"}
       id={`need-conv-${name}`}
@@ -1082,7 +1091,6 @@ function ConventionalPanel(props: { c: Config; k: number }) {
             className="btn ghost small"
             onClick={() => {
               if (window.confirm(`Remove ${name || "this conventional system"} and its ${chans.length} channel${chans.length === 1 ? "" : "s"}? Its recordings stay on disk.`)) {
-                forgetCard("conv-", k, c.conventional.length);
                 updateConfig((x) => {
                   x.conventional.splice(k, 1);
                   forgetTalkgroups(x, conv.shortName);
@@ -1745,12 +1753,11 @@ function SiteCard(props: { c: Config; i: number; k: number; onRemoveSystem: () =
   const remove = () => {
     if (sys.sites.length === 1) return props.onRemoveSystem();
     if (!confirm(`Remove the site ${name} from ${sys.shortName}?`)) return;
-    forgetCard(`site-${i}-`, k, sys.sites.length);
     updateConfig((x) => void x.systems[i].sites.splice(k, 1));
   };
   return (
     <Card
-      cardKey={`site-${i}-${k}`}
+      cardKey={siteKey(sys, site)}
       // Sites start folded.
       n={2}
       className={`site-card${site.enabled ? "" : " off"}`}
@@ -1866,15 +1873,17 @@ function SystemCard(props: { c: Config; i: number }) {
 
   const remove = (lastSite = false) => {
     if (!confirm(`${lastSite ? `This is ${sys.shortName}'s only site. ` : ""}Remove ${sys.shortName}? Its recordings stay on disk.`)) return;
-    forgetCard("sys-", i, c.systems.length);
     updateConfig((x) => {
       x.systems.splice(i, 1);
       forgetTalkgroups(x, sys.shortName);
     });
   };
   const addSite = () => {
-    setCardOpen(`site-${i}-${sys.sites.length}`, true);
-    edit((x) => void x.sites.push(newSiteOf(x, {})));
+    edit((x) => {
+      const n = newSiteOf(x, {});
+      x.sites.push(n);
+      setCardOpen(siteKey(x, n), true);
+    });
   };
   // The other system's sites move here (each named as its system was, unless it has a name); this one's settings stay.
   const join = (other: System) => {
@@ -1889,7 +1898,6 @@ function SystemCard(props: { c: Config; i: number }) {
       `Its ${n === 1 ? "site moves" : `${n} sites move`} here and ${other.shortName} is removed; its recordings stay on disk.` +
       (dropped.length ? ` Its ${dropped.join(", ")} ${dropped.length === 1 ? "is" : "are"} dropped: ${sys.shortName}'s are kept.` : "");
     if (j < 0 || !confirm(ask)) return;
-    forgetCard("sys-", j, c.systems.length);
     updateConfig((x) => {
       const to = x.systems[i];
       const from = x.systems[j];
@@ -1910,7 +1918,7 @@ function SystemCard(props: { c: Config; i: number }) {
 
   return (
     <Card
-      cardKey={`sys-${i}`}
+      cardKey={sysKey(sys, i, c.systems)}
       n={c.systems.length}
       className={`system-card${sys.enabled ? "" : " off"}`}
       style={{ ["--sys-color" as string]: color }}
@@ -2023,8 +2031,8 @@ function SystemCard(props: { c: Config; i: number }) {
         cols={1}
       >
         <div className="sites-list">
-          {sys.sites.map((_, k) => (
-            <SiteCard key={`${k}-${sys.sites.length}`} c={c} i={i} k={k} onRemoveSystem={() => remove(true)} />
+          {sys.sites.map((x, k) => (
+            <SiteCard key={siteKey(sys, x)} c={c} i={i} k={k} onRemoveSystem={() => remove(true)} />
           ))}
           {!sys.sites.length && <p className="muted small">No sites: add one with its control channel.</p>}
         </div>
@@ -2473,17 +2481,20 @@ export function Setup() {
             hint="P25, SmartNet, DMR and NXDN systems, followed through their control channels."
             actions={
               <>
-                <ExpandAll prefix="sys-" n={c.systems.length} />
+                <ExpandAll keys={c.systems.map(sysKey)} />
                 <button className="btn ghost" onClick={() => openGuide("import")}>
                   Import Trunk Recorder config…
                 </button>
                 <button
                   className="btn"
                   onClick={() => {
-                    addCard("sys-", c.systems.length);
-                    // Its site open too, for its control channel.
-                    setCardOpen(`site-${c.systems.length}-0`, true);
-                    updateConfig((x) => void x.systems.push(newSystem(x)));
+                    updateConfig((x) => {
+                      const n = newSystem(x);
+                      x.systems.push(n);
+                      addCard(c.systems.map(sysKey), sysKey(n, x.systems.length - 1, x.systems));
+                      // Its site open too, for its control channel.
+                      setCardOpen(siteKey(n, n.sites[0]), true);
+                    });
                   }}
                 >
                   Add a system
@@ -2491,8 +2502,8 @@ export function Setup() {
               </>
             }
           >
-            {c.systems.map((_, i) => (
-              <SystemCard key={`${i}-${c.systems.length}-${s.configEpoch}`} c={c} i={i} />
+            {c.systems.map((x, i) => (
+              <SystemCard key={sysKey(x, i, c.systems)} c={c} i={i} />
             ))}
             {c.systems.length === 0 && <p className="set-empty">No trunked systems yet. Add one, import a Trunk Recorder config, or find one on the air below.</p>}
           </Section>
@@ -2508,13 +2519,16 @@ export function Setup() {
           hint="Each source hears a slice of spectrum; the systems and channels inside it are recorded."
           actions={
             <>
-              <ExpandAll prefix="src-" n={c.sources.length} />
+              <ExpandAll keys={c.sources.map(srcKey)} />
               <button
                 className="btn"
                 onClick={() => {
                   setFreshSource(c.sources.length);
-                  addCard("src-", c.sources.length);
-                  updateConfig((x) => void x.sources.push(newDongle()));
+                  updateConfig((x) => {
+                    const n = newDongle();
+                    x.sources.push(n);
+                    addCard(c.sources.map(srcKey), srcKey(n, x.sources.length - 1, x.sources));
+                  });
                 }}
               >
                 Add a source
@@ -2522,8 +2536,8 @@ export function Setup() {
             </>
           }
         >
-          {c.sources.map((_, i) => (
-            <SourceCard key={`${i}-${s.configEpoch}`} c={c} i={i} fresh={freshSource === i} onFreshDone={() => setFreshSource(null)} />
+          {c.sources.map((x, i) => (
+            <SourceCard key={srcKey(x, i, c.sources)} c={c} i={i} fresh={freshSource === i} onFreshDone={() => setFreshSource(null)} />
           ))}
           <details className="help">
             <summary>Dongle not showing up?</summary>
