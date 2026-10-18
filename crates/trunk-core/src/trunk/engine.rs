@@ -1696,39 +1696,51 @@ impl Core {
         for (site, id, o) in std::mem::take(&mut self.radio.pending) {
             let Some(t) = self.trunks.get_mut(site as usize) else { continue };
             let system = t.system;
+            let now = t.now_s;
+            // The call it's for, found once (gone already: it expired in this same block).
+            let call = t.calls.calls.iter_mut().find(|c| c.id == id);
+            let rec = self.radio.recordings.get_mut(&id);
             match o {
                 TrackerOut::Audio(samples, frame) => {
-                    let Some(rec) = self.radio.recordings.get_mut(&id) else { continue };
-                    rec.tx.note(rec.audio.len(), t.now_s);
+                    let Some(rec) = rec else { continue };
+                    rec.tx.note(rec.audio.len(), now);
                     rec.audio.extend_from_slice(&samples);
                     rec.frames.push(frame);
-                    let known_decrypted = rec.decrypted;
-                    t.calls.note_audio(id, t.now_s);
-                    // Fail closed: a call that is gone already (it expired in this same block) is not known to be
-                    // clear, and its voice is not given to a plugin as if it were.
-                    let (tg, decrypted) = t.calls.calls.iter().find(|c| c.id == id).map_or((0, true), |c| (c.talkgroup, c.encrypted || c.decrypted || known_decrypted));
-                    if self.multisite.audio_lead(id, t.now_s) {
+                    // Fail closed: a call that is gone already is not known to be clear, and its
+                    // voice is not given to a plugin as if it were.
+                    let (tg, decrypted) = match call {
+                        Some(c) => {
+                            c.last_audio_s = c.last_audio_s.max(now);
+                            (c.talkgroup, c.encrypted || c.decrypted || rec.decrypted)
+                        }
+                        None => (0, true),
+                    };
+                    if self.multisite.audio_lead(id, now) {
                         self.events.push(Event::Audio { call_id: id, system, talkgroup: tg, samples, decrypted });
                     }
                 }
                 TrackerOut::AnalogAudio(samples) => {
-                    let Some(rec) = self.radio.recordings.get_mut(&id) else { continue };
-                    rec.tx.note(rec.audio.len(), t.now_s);
+                    let Some(rec) = rec else { continue };
+                    rec.tx.note(rec.audio.len(), now);
                     rec.audio.extend_from_slice(&samples);
-                    t.calls.note_audio(id, t.now_s);
-                    let tg = t.calls.calls.iter().find(|c| c.id == id).map_or(0, |c| c.talkgroup);
-                    if self.multisite.audio_lead(id, t.now_s) {
+                    let tg = match call {
+                        Some(c) => {
+                            c.last_audio_s = c.last_audio_s.max(now);
+                            c.talkgroup
+                        }
+                        None => 0,
+                    };
+                    if self.multisite.audio_lead(id, now) {
                         self.events.push(Event::Audio { call_id: id, system, talkgroup: tg, samples, decrypted: false });
                     }
                 }
                 TrackerOut::Info { source, flags } => {
-                    let now = t.now_s;
                     if flags.encrypted {
-                        if let Some(rec) = self.radio.recordings.get_mut(&id) {
+                        if let Some(rec) = rec {
                             rec.tx.mark_encrypted(now);
                         }
                     }
-                    if let Some(c) = t.calls.call_mut(id) {
+                    if let Some(c) = call {
                         let mut changed = false;
                         if flags.encrypted && !c.encrypted {
                             c.encrypted = true;
@@ -1745,21 +1757,21 @@ impl Core {
                     }
                 }
                 TrackerOut::Cipher(cipher) => {
-                    if let Some(c) = t.calls.call_mut(id).filter(|c| c.cipher != Some(cipher)) {
+                    if let Some(c) = call.filter(|c| c.cipher != Some(cipher)) {
                         c.cipher = Some(cipher);
                         self.call_events.push(CallEvent::Update(c.clone()));
                     }
                 }
                 TrackerOut::WrongKey(c) => {
-                    let tg = t.calls.calls.iter().find(|c| c.id == id).map(|c| c.talkgroup);
+                    let tg = call.map(|c| c.talkgroup);
                     Self::wrong_key(&mut self.wrong_keys, &mut self.events, system, Some(site), c, tg);
                 }
                 TrackerOut::Decrypted => {
-                    if let Some(rec) = self.radio.recordings.get_mut(&id) {
-                        rec.tx.mark_decrypted(t.now_s);
+                    if let Some(rec) = rec {
+                        rec.tx.mark_decrypted(now);
                         rec.decrypted = true;
                     }
-                    if let Some(c) = t.calls.call_mut(id).filter(|c| !c.decrypted) {
+                    if let Some(c) = call.filter(|c| !c.decrypted) {
                         c.decrypted = true;
                         self.call_events.push(CallEvent::Update(c.clone()));
                     }
@@ -1767,7 +1779,7 @@ impl Core {
                 // (Only conventional FM asks for it.)
                 TrackerOut::Subaudible(_) => {}
                 TrackerOut::Position(p) => {
-                    if let Some(c) = t.calls.call_mut(id) {
+                    if let Some(c) = call {
                         if CallManager::note_position(c, &p) {
                             self.events.push(Event::UnitPosition { system, unit: p.unit, lat: p.lat, lon: p.lon, talkgroup: c.talkgroup });
                             self.call_events.push(CallEvent::Update(c.clone()));
@@ -1775,17 +1787,12 @@ impl Core {
                     }
                 }
                 TrackerOut::Alias(a) => {
-                    let tg = t
-                        .calls
-                        .calls
-                        .iter()
-                        .find(|c| c.id == id)
-                        .map(|c| c.talkgroup);
+                    let tg = call.map(|c| c.talkgroup);
                     self.learn_alias(system, Some(site), a, tg);
                 }
                 TrackerOut::AliasLc(sign) => {
+                    let tg = call.map_or(0, |c| c.talkgroup);
                     t.alias_lc[sign as usize] += 1;
-                    let tg = t.calls.calls.iter().find(|c| c.id == id).map_or(0, |c| c.talkgroup);
                     if sign == AliasLc::Protected && t.lc_protected_tgs.insert(tg) {
                         let text = format!("Talkgroup {tg}: link control is encrypted, so its radios' talker aliases can't be read");
                         self.events.push(t.note(NoteLevel::Info, text));
