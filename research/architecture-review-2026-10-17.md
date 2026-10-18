@@ -87,8 +87,8 @@ protocol (field values unchanged if derived).
 - [ ] `Live`, the info half of `Heard`, `ConvOut` and the second half of `slot_call` go
 - [ ] One `CarrierMeter` per head and one threshold function from the noise profile; `VoiceKind::cutoff_hz()` replaces the two `match`es
 - [ ] One `ToneDetector` per open head per transmission (today it runs twice, in `Tx` and `Live`)
-- [ ] `ChannelShape { detect_half_bw, head_cutoff, meter_bw }` built once, instead of three functions offsetting a mode's width against the FM constants
-- [ ] `Chan.cfg` is a mutated copy of `rows[0]`: split `ConvChannel { freq, mode, analog, system, rows: Vec<Row> }`
+- [x] `ChannelShape { detect_half_bw, head_cutoff, meter_bw }` built once, instead of three functions offsetting a mode's width against the FM constants — done: `ChannelShape::of(mode, analog)` once per frequency
+- [x] `Chan.cfg` is a mutated copy of `rows[0]`: split `ConvChannel { freq, mode, analog, system, rows: Vec<Row> }` — done inside conventional.rs: `Chan { freq_hz, mode, system, analog, shape, squelch_db, rows }`; the public `ConvChannel` stays one row (what the config lists)
 
 **Evidence.** `conventional::slot_call`'s `for (src, flags) in h.infos`
 block is line for line the `TrackerOut::Info` arm of `engine::apply_pending`;

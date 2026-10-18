@@ -44,7 +44,7 @@ use super::identity::{IdField, Identity};
 use super::control::{self, CarrierPlan, ControlChannel, Protocol, ProtocolStatus, Step};
 use super::voice::{self, ChannelQuality, CipherId, VoiceDecoder, VoiceParams, VoiceSpec};
 use crate::alias::Alias;
-use crate::dsp::channelizer::floor_slices;
+use crate::dsp::channelizer::{floor_slice, floor_slices};
 use crate::dsp::{AnalogTuning, Channelizer, HeadId};
 use crate::mbe;
 use crate::metrics::{self, Scoped, Sink};
@@ -422,9 +422,7 @@ const CC_HALF_HZ: f64 = 3000.0;
 
 /// The noise floor under `hz` from source `s`'s profile `p` (|X|² per bin).
 fn slice_at(p: &[f64], s: &Source, hz: f64) -> f64 {
-    let off = hz - s.cfg().center_hz;
-    let i = ((off + s.cfg().rate_hz / 2.0) / s.cfg().rate_hz * p.len() as f64).floor().clamp(0.0, p.len() as f64 - 1.0) as usize;
-    p[i]
+    p[floor_slice(p.len(), s.cfg().rate_hz, hz - s.cfg().center_hz)]
 }
 
 /// A source's frequency error (Trunk Recorder's autoTune report).
@@ -847,8 +845,7 @@ impl SysHost<'_> {
         let n = floor_slices(s.cfg().rate_hz);
         let mut prof = vec![0.0f64; n];
         s.chz.noise_profile(&mut prof);
-        let off = call.freq_hz as f64 - s.cfg().center_hz;
-        let slice = (((off + s.cfg().rate_hz / 2.0) / s.cfg().rate_hz * n as f64) as usize).min(n - 1);
+        let slice = floor_slice(n, s.cfg().rate_hz, call.freq_hz as f64 - s.cfg().center_hz);
         let noise = s.chz.noise_in_band(prof[slice].max(1e-30), ChannelFilter::noise_bandwidth());
         let voice = voice::build(&VoiceSpec {
             kind,

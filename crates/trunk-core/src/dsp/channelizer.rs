@@ -79,6 +79,13 @@ pub fn floor_slices(fs: f64) -> usize {
     n
 }
 
+/// Which of an `n`-slice noise profile's slices ([`Channelizer::noise_profile`],
+/// the first at −fs/2) a frequency `off_hz` from the centre falls in: the
+/// noise floor under it.
+pub fn floor_slice(n: usize, fs: f64, off_hz: f64) -> usize {
+    ((off_hz + fs / 2.0) / fs * n as f64).floor().clamp(0.0, n as f64 - 1.0) as usize
+}
+
 /// The largest power-of-two decimation of `fs` that still delivers at least
 /// `min_output_rate`, capped at N/64 (M ≥ 64 bins per head).
 pub fn output_rate(fs: f64, min_output_rate: f64, fft_size: usize) -> f64 {

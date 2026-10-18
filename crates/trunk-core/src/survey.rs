@@ -1079,7 +1079,7 @@ impl Monitor {
             self.chz.noise_profile(&mut self.noise);
             let off = self.head_hz - self.center;
             let fs = self.chz.fs();
-            let s = (((off + fs / 2.0) / fs * self.noise.len() as f64) as usize).min(self.noise.len() - 1);
+            let s = crate::dsp::channelizer::floor_slice(self.noise.len(), fs, off);
             let nb = self.noise[s];
             if nb > 0.0 {
                 let r = ((self.chz.band_power(off, 5000.0) - nb) / nb).max(1e-3);

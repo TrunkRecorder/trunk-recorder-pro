@@ -64,7 +64,7 @@ use super::frames::VoiceFrame;
 use crate::dsp::am;
 use crate::dsp::fm::{self, ChannelFilter};
 use crate::dsp::tones::{Tone, ToneDetector};
-use crate::dsp::channelizer::floor_slices;
+use crate::dsp::channelizer::{floor_slice, floor_slices};
 use crate::dsp::{AnalogTuning, Channelizer, HeadId};
 use crate::mbe;
 use crate::nxdn::Rate;
@@ -125,6 +125,17 @@ impl ConvMode {
             ConvMode::P25 => "p25",
             ConvMode::Dmr => "dmr",
             ConvMode::Nxdn(r) => r.name(),
+        }
+    }
+
+    /// The decoder a channel of this mode opens with.
+    fn kind(self) -> VoiceKind {
+        match self {
+            ConvMode::Fm => VoiceKind::Analog,
+            ConvMode::Am => VoiceKind::Am,
+            ConvMode::P25 => VoiceKind::Fdma,
+            ConvMode::Dmr => VoiceKind::Dmr,
+            ConvMode::Nxdn(r) => VoiceKind::Nxdn(r),
         }
     }
 
@@ -303,29 +314,6 @@ impl ConvChannel {
         ConvChannel { freq_hz, mode, talkgroup: Self::default_talkgroup(freq_hz), info: None, squelch_db: None, access: None, system: 0, analog }
     }
 
-    /// Half-width of the band the detector sums, Hz.
-    fn detect_half_bw(&self) -> f64 {
-        match self.mode {
-            ConvMode::Nxdn(Rate::N48) => 3125.0,
-            m if m.analog() => self.analog.half_bw_hz - (fm::CHANNEL_HALF_BW - DETECT_HALF_BW),
-            _ => DETECT_HALF_BW,
-        }
-    }
-
-    /// The head's filter cutoff, Hz.
-    fn head_cutoff_hz(&self) -> f64 {
-        match self.mode {
-            ConvMode::Nxdn(r) => r.cutoff_hz(),
-            m if m.analog() => self.analog.half_bw_hz + (HEAD_CUTOFF_HZ - fm::CHANNEL_HALF_BW),
-            _ => HEAD_CUTOFF_HZ,
-        }
-    }
-
-    /// The carrier meter's noise bandwidth, Hz.
-    fn meter_bandwidth(&self) -> f64 {
-        if self.mode.analog() { 2.0 * self.analog.half_bw_hz } else { ChannelFilter::noise_bandwidth() }
-    }
-
     pub fn default_talkgroup(freq_hz: f64) -> u32 {
         (freq_hz / 1000.0).round() as u32
     }
@@ -472,10 +460,17 @@ struct Open {
     cipher_ahead: [Option<CipherId>; 2],
 }
 
+/// One frequency, and the rows on it (what they share is checked: [`Conventional::check`]).
 struct Chan {
-    /// The first row (with the lowest squelch any row sets).
-    cfg: ConvChannel,
-    /// Every row on the frequency (only FM has more than one).
+    freq_hz: f64,
+    mode: ConvMode,
+    /// The system its rows belong to ([`ConvChannel::system`]).
+    system: usize,
+    analog: AnalogTuning,
+    shape: ChannelShape,
+    /// The lowest open threshold any row sets (None: the default).
+    squelch_db: Option<f64>,
+    /// Every row on the frequency (the first: what a transmission no row names is filed under).
     rows: Vec<ConvChannel>,
     /// Transmissions wait for their tone.
     routed: bool,
@@ -497,7 +492,7 @@ struct Chan {
 
 impl Chan {
     fn base_db(&self, dflt: f64) -> f64 {
-        self.cfg.squelch_db.unwrap_or(dflt)
+        self.squelch_db.unwrap_or(dflt)
     }
 }
 
@@ -515,6 +510,29 @@ pub struct Conventional {
     capture_frames: bool,
     chans: Vec<Chan>,
     floors: Vec<Floor>,
+}
+
+/// A channel's widths, from its mode (and an analog one's bandwidth), worked out once.
+#[derive(Clone, Copy, Debug)]
+struct ChannelShape {
+    /// Half-width of the band the detector sums, Hz.
+    detect_half_bw: f64,
+    /// The head's filter cutoff, Hz.
+    head_cutoff_hz: f64,
+    /// The carrier meter's noise bandwidth, Hz.
+    meter_bw: f64,
+}
+
+impl ChannelShape {
+    fn of(mode: ConvMode, analog: &AnalogTuning) -> Self {
+        // An analog channel's widths follow its bandwidth, from the 12.5 kHz FM channel's.
+        let wider = |base: f64| analog.half_bw_hz + (base - fm::CHANNEL_HALF_BW);
+        match mode {
+            m if m.analog() => ChannelShape { detect_half_bw: wider(DETECT_HALF_BW), head_cutoff_hz: wider(HEAD_CUTOFF_HZ), meter_bw: 2.0 * analog.half_bw_hz },
+            ConvMode::Nxdn(r) => ChannelShape { detect_half_bw: if r == Rate::N48 { 3125.0 } else { DETECT_HALF_BW }, head_cutoff_hz: r.cutoff_hz(), meter_bw: ChannelFilter::noise_bandwidth() },
+            _ => ChannelShape { detect_half_bw: DETECT_HALF_BW, head_cutoff_hz: HEAD_CUTOFF_HZ, meter_bw: ChannelFilter::noise_bandwidth() },
+        }
+    }
 }
 
 /// Whether `channels` can run together (see [`Conventional`]'s rows rules).
@@ -556,9 +574,8 @@ impl Conventional {
         }
         for rows in groups {
             Self::check_rows(&rows)?;
-            let mut c = rows[0].clone();
-            c.squelch_db = rows.iter().filter_map(|r| r.squelch_db).reduce(f64::min);
-            let c = &c;
+            let c = &rows[0];
+            let squelch_db = rows.iter().filter_map(|r| r.squelch_db).reduce(f64::min);
             let routed = rows.len() > 1 || c.access.is_some();
             let Some(src) = sources.iter().position(|&(center, _, half)| (c.freq_hz - center).abs() <= half) else {
                 outside.push(format!("{:.5}", c.freq_hz / 1e6));
@@ -567,9 +584,10 @@ impl Conventional {
             let (center, rate, _) = sources[src];
             let offset_hz = c.freq_hz - center;
             let n = floor_slices(rate);
-            let slice = (((offset_hz + rate / 2.0) / rate * n as f64) as usize).min(n - 1);
-            let bar = c.squelch_db.unwrap_or(cfg.squelch_db);
-            chans.push(Chan { cfg: c.clone(), rows, routed, skipped: [None, None], source: src, offset_hz, slice, power: 0.0, watch: (c.mode == ConvMode::Am).then(am::LineWatch::default), ignored: Vec::new(), bar_db: bar, raised: false, open: None });
+            let slice = floor_slice(n, rate, offset_hz);
+            let bar = squelch_db.unwrap_or(cfg.squelch_db);
+            let (freq_hz, mode, system, analog, shape) = (c.freq_hz, c.mode, c.system, c.analog, ChannelShape::of(c.mode, &c.analog));
+            chans.push(Chan { freq_hz, mode, system, analog, shape, squelch_db, rows, routed, skipped: [None, None], source: src, offset_hz, slice, power: 0.0, watch: (mode == ConvMode::Am).then(am::LineWatch::default), ignored: Vec::new(), bar_db: bar, raised: false, open: None });
         }
         if !outside.is_empty() {
             return Err(format!("Conventional channel(s) outside every source's bandwidth: {} MHz — move a center frequency or disable them.", outside.join(", ")));
@@ -642,7 +660,7 @@ impl Conventional {
 
     /// The keys of system `system` changed: its open channels decrypt with them from now on.
     pub fn set_system_keys(&mut self, system: usize, keys: Option<&Arc<Keyring>>) {
-        for o in self.chans.iter_mut().filter(|c| c.cfg.system == system).filter_map(|c| c.open.as_mut()) {
+        for o in self.chans.iter_mut().filter(|c| c.system == system).filter_map(|c| c.open.as_mut()) {
             o.voice.set_keys(keys.cloned());
         }
     }
@@ -686,22 +704,22 @@ impl Conventional {
             if ch.source != source {
                 continue;
             }
-            let rules = &CallRules::of(systems[ch.cfg.system], self.capture_frames);
+            let rules = &CallRules::of(systems[ch.system], self.capture_frames);
             let floor = self.floors[source].slices[ch.slice].max(1e-30);
-            let bp = chz.band_power(ch.offset_hz, ch.cfg.detect_half_bw());
+            let bp = chz.band_power(ch.offset_hz, ch.shape.detect_half_bw);
             ch.power = if ch.power == 0.0 { bp } else { ch.power + a * (bp - ch.power) };
             let snr_db = if gap {
                 f64::NEG_INFINITY
             } else if let Some(w) = &mut ch.watch {
                 // AM: its carrier's line, above where noise alone puts the strongest bins
                 // (steady lines left out), or its band power, whichever is the stronger.
-                let first = chz.band_bins(ch.offset_hz, ch.cfg.detect_half_bw(), &mut bins);
+                let first = chz.band_bins(ch.offset_hz, ch.shape.detect_half_bw, &mut bins);
                 w.update(&bins, first, chz.bin_hz(), floor, chz.block_seconds(), a).max(10.0 * (ch.power / floor).log10())
             } else {
                 10.0 * (ch.power / floor).log10()
             };
             let base = ch.base_db(dflt);
-            let meter_thr = (chz.noise_in_band(floor, ch.cfg.meter_bandwidth()) * 10f64.powf((base - CLOSE_BELOW_DB).max(3.0) / 10.0)) as f32;
+            let meter_thr = (chz.noise_in_band(floor, ch.shape.meter_bw) * 10f64.powf((base - CLOSE_BELOW_DB).max(3.0) / 10.0)) as f32;
             if ch.open.is_none() {
                 if ch.raised && snr_db < base {
                     ch.raised = false;
@@ -725,7 +743,7 @@ impl Conventional {
             Self::run(ch, &iq, now_s, meter_thr, idx as u32, ids, rules, max_call_s, out);
             // Reception: the channel's power while its carrier is up, against the floor (both as a channel's head would see them).
             if snr_db >= base {
-                let bw = ch.cfg.meter_bandwidth();
+                let bw = ch.shape.meter_bw;
                 let (sig, noise) = (chz.noise_in_band(ch.power, bw), chz.noise_in_band(floor, bw));
                 for l in ch.open.as_mut().unwrap().live.iter_mut().flatten() {
                     if now_s - l.call.last_audio_s < 0.5 {
@@ -760,32 +778,26 @@ impl Conventional {
         if let Some(w) = &ch.watch {
             ch.ignored = w.ignored();
         }
-        let (head, pre, start_sample) = chz.add_head(ch.offset_hz, ch.cfg.head_cutoff_hz(), preroll_s);
+        let (head, pre, start_sample) = chz.add_head(ch.offset_hz, ch.shape.head_cutoff_hz, preroll_s);
         let rate = chz.output_rate();
-        let kind = match ch.cfg.mode {
-            ConvMode::Fm => VoiceKind::Analog,
-            ConvMode::Am => VoiceKind::Am,
-            ConvMode::P25 => VoiceKind::Fdma,
-            ConvMode::Dmr => VoiceKind::Dmr,
-            ConvMode::Nxdn(r) => VoiceKind::Nxdn(r),
-        };
+        let kind = ch.mode.kind();
         let voice = voice::build(&VoiceSpec {
             kind,
             rate,
             // (On the engine's clock: `now_s` is this source's, offset included.)
             t0: start_sample as f64 / chz.fs() + (now_s - chz.sample_position() as f64 / chz.fs()),
-            seed: ch.cfg.freq_hz as u32,
+            seed: ch.freq_hz as u32,
             vocoder,
             bank: bank_cfg,
             // (FM: set on every run, from the noise floor.)
             squelch: meter_thr,
             // For the tone detector.
-            subaudible: ch.cfg.mode == ConvMode::Fm,
-            analog: ch.cfg.analog,
+            subaudible: ch.mode == ConvMode::Fm,
+            analog: ch.analog,
             ignore_hz: ch.ignored.clone(),
             keys: rules.keys.cloned(),
         });
-        let meter = (!ch.cfg.mode.analog()).then(|| ChannelFilter::new(rate));
+        let meter = (!ch.mode.analog()).then(|| ChannelFilter::new(rate));
         ch.open = Some(Open { head, voice, meter, opened_s: now_s, carrier_seen: false, last_carrier_s: now_s, live: [None, None], tx: None, cipher_ahead: [None; 2] });
         Self::run(ch, &pre, now_s, meter_thr, num, ids, rules, 0.0, out);
     }
@@ -813,9 +825,9 @@ impl Conventional {
                 TrackerOut::Info { source, flags } => h.infos.push((source, flags)),
                 TrackerOut::Cipher(id) => h.cipher = Some(id),
                 TrackerOut::Decrypted => h.decrypted = true,
-                TrackerOut::Alias(a) => out.push(ConvOut::Alias(ch.cfg.system as u16, a)),
+                TrackerOut::Alias(a) => out.push(ConvOut::Alias(ch.system as u16, a)),
                 TrackerOut::Position(p) => h.positions.push(p),
-                TrackerOut::WrongKey(c) => out.push(ConvOut::WrongKey(ch.cfg.system as u16, c)),
+                TrackerOut::WrongKey(c) => out.push(ConvOut::WrongKey(ch.system as u16, c)),
                 TrackerOut::AliasLc(_) => {}
             }
         }
@@ -834,19 +846,19 @@ impl Conventional {
                 *ahead = None;
             }
         }
-        if ch.routed && ch.cfg.mode == ConvMode::Fm {
+        if ch.routed && ch.mode == ConvMode::Fm {
             if let Some(code) = Self::route(&ch.rows, &mut o.tx, &mut heard[0], carrier) {
-                Self::skip(&mut ch.skipped[0], ch.cfg.freq_hz, code, now_s, rules, out);
+                Self::skip(&mut ch.skipped[0], ch.freq_hz, code, now_s, rules, out);
             }
         }
         if carrier {
             o.carrier_seen = true;
             o.last_carrier_s = now_s;
         }
-        if ch.routed && ch.cfg.mode != ConvMode::Fm {
+        if ch.routed && ch.mode != ConvMode::Fm {
             for (slot, h) in heard.iter_mut().enumerate() {
                 if let Some(code) = Self::route_digital(&ch.rows, slot, h) {
-                    Self::skip(&mut ch.skipped[slot], ch.cfg.freq_hz, code, now_s, rules, out);
+                    Self::skip(&mut ch.skipped[slot], ch.freq_hz, code, now_s, rules, out);
                 }
             }
         }
@@ -969,7 +981,7 @@ impl Conventional {
         }
         let o = ch.open.as_mut().unwrap();
         // The talkgroup: link control's (or the row's, see route), else the row's.
-        let row = h.row.map_or(&ch.cfg, |r| &ch.rows[r]);
+        let row = &ch.rows[h.row.unwrap_or(0)];
         let air_tg = h.tg;
         let tg = air_tg.unwrap_or(row.talkgroup);
         if let Some(l) = &o.live[slot] {
@@ -996,12 +1008,12 @@ impl Conventional {
             let start = h.air.map_or_else(|| (now_s - dur).max(o.opened_s - 0.05), |a| a.0);
             let call = Call {
                 site: None,
-                system: ch.cfg.system as u16,
+                system: ch.system as u16,
                 twin: false,
                 id: ids.next(),
                 talkgroup: tg,
-                freq_hz: ch.cfg.freq_hz.round() as u64,
-                voice: ch.cfg.mode.voice(slot as u8, h.color_code),
+                freq_hz: ch.freq_hz.round() as u64,
+                voice: ch.mode.voice(slot as u8, h.color_code),
                 unit_to_unit: false,
                 recording: true,
                 followed: false,
@@ -1028,7 +1040,7 @@ impl Conventional {
                 },
             };
             out.push(ConvOut::Start(call.clone()));
-            o.live[slot] = Some(Live { call, audio: Vec::new(), frames: CallFrames::new(rules.capture_frames), tx: Transmissions::default(), reception: Reception::default(), tg_from_air: air_tg.is_some(), tones: (ch.cfg.mode == ConvMode::Fm).then(Box::default) });
+            o.live[slot] = Some(Live { call, audio: Vec::new(), frames: CallFrames::new(rules.capture_frames), tx: Transmissions::default(), reception: Reception::default(), tg_from_air: air_tg.is_some(), tones: (ch.mode == ConvMode::Fm).then(Box::default) });
         }
         let l = o.live[slot].as_mut().unwrap();
         l.call.last_update_s = now_s;
