@@ -16,9 +16,8 @@ use trunk_app::Output;
 use trunk_core::survey::{Command, Stage};
 
 use crate::config::{Config, Source};
-use crate::radio::{airspy, soapy, uhd};
 use crate::runtime::{self, Ctx};
-use crate::sdr::{self, Control, RtlConfig, SourceMsg};
+use crate::sdr::{Control, SourceMsg};
 
 /// What the interface asks of a running survey.
 pub enum UserCmd {
@@ -42,33 +41,6 @@ impl SurveyRunner {
             let _ = t.join();
         }
     }
-}
-
-/// Start source `req.source`'s thread, able to retune; its first centre is
-/// set by the survey's first command.
-pub(crate) fn spawn_source(src: &Source, i: usize, center: f64, tx: mpsc::SyncSender<SourceMsg>, stop: Arc<AtomicBool>, ctl: Arc<Control>) -> Result<JoinHandle<()>, String> {
-    let src = src.clone();
-    std::thread::Builder::new()
-        .name(format!("survey-source-{i}"))
-        .spawn(move || match src {
-            Source::Rtlsdr { serial, rate_hz, gain_db, agc, ppm, buf_len, buffers, .. } => {
-                sdr::run_with(i, RtlConfig { serial, center_hz: center as u64, rate_hz: rate_hz as u32, gain_db: (!agc).then_some(gain_db), ppm, buf_len, buffers }, tx, stop, Some(ctl))
-            }
-            Source::Usrp { args, rate_hz, gain_db, agc, antenna, ppm, .. } => {
-                uhd::run_with(i, uhd::UsrpConfig { args, center_hz: center, rate_hz, gain_db, agc, antenna, ppm }, tx, stop, Some(ctl))
-            }
-            Source::Airspy { serial, rate_hz, gain_mode, gain_step, lna_step, mixer_step, vga_step, agc, bias_tee, packing, ppm, .. } => {
-                let gain = runtime::airspy_gain(gain_mode, gain_step, lna_step, mixer_step, vga_step, agc);
-                airspy::run_with(i, airspy::AirspyConfig { serial, center_hz: center, rate_hz, gain, bias_tee, packing, ppm }, tx, stop, Some(ctl))
-            }
-            Source::Soapy { args, rate_hz, agc, gain_db, gains, antenna, settings, ppm, .. } => {
-                let gains = gains.into_iter().collect();
-                soapy::run_with(i, soapy::SoapyConfig { args, center_hz: center, rate_hz, agc, gain_db, gains, antenna, settings, ppm }, tx, stop, Some(ctl))
-            }
-            // A capture can't be tuned: the survey looks at its one centre.
-            Source::File { path, rate_hz, realtime, format, .. } => runtime::run_file(i, &path, rate_hz, realtime, crate::config::SampleFormat::of(format, &path), tx, stop),
-        })
-        .map_err(|e| e.to_string())
 }
 
 /// Pass the survey's radio commands to the source; a capture confirms at once.
@@ -117,7 +89,7 @@ pub fn start(ctx: Arc<Ctx>, cfg: Config, req: Request) -> Result<SurveyRunner, S
         *ctl.current_hz.lock().unwrap() = Some(first);
     }
     let (tx, rx) = mpsc::sync_channel::<SourceMsg>(256);
-    let mut threads = vec![spawn_source(&cfg.sources[req.source], req.source, first, tx, stop.clone(), ctl.clone())?];
+    let mut threads = vec![runtime::spawn_source(&cfg.sources[req.source], req.source, first, tx, stop.clone(), Some(ctl.clone()), &format!("survey-source-{}", req.source)).map_err(|e| e.to_string())?];
     // The opening tune is confirmed by the first samples.
     let mut opened = fixed.is_some();
     let (cmd_tx, cmd_rx) = mpsc::channel::<UserCmd>();
@@ -211,7 +183,7 @@ pub fn cli(a: &crate::Args) {
         *ctl.current_hz.lock().unwrap() = Some(first);
     }
     let (tx, rx) = mpsc::sync_channel::<SourceMsg>(256);
-    let th = spawn_source(&cfg.sources[0], 0, first, tx, stop.clone(), ctl.clone()).unwrap_or_else(|e| crate::die(&e));
+    let th = runtime::spawn_source(&cfg.sources[0], 0, first, tx, stop.clone(), Some(ctl.clone()), "survey-source-0").unwrap_or_else(|e| crate::die(&e.to_string()));
     let listen_s = a.num("seconds", 30.0);
     let t0 = Instant::now();
     let mut opened = fixed.is_some();

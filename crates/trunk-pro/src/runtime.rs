@@ -394,26 +394,8 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
     for (i, (src, center)) in cfg.sources.iter().zip(&centers).enumerate() {
         let (tx, rx) = mpsc::sync_channel::<SourceMsg>(256);
         queues.push(rx);
-        let stop = stop.clone();
-        let src = src.clone();
-        let center = *center;
-        let spawned = std::thread::Builder::new().name(format!("source-{i}")).spawn(move || match src {
-            Source::Rtlsdr { serial, rate_hz, gain_db, agc, ppm, buf_len, buffers, .. } => {
-                sdr::run(i, RtlConfig { serial, center_hz: center as u64, rate_hz: rate_hz as u32, gain_db: (!agc).then_some(gain_db), ppm, buf_len, buffers }, tx, stop)
-            }
-            Source::Usrp { args, rate_hz, gain_db, agc, antenna, ppm, .. } => {
-                uhd::run(i, uhd::UsrpConfig { args, center_hz: center, rate_hz, gain_db, agc, antenna, ppm }, tx, stop)
-            }
-            Source::Airspy { serial, rate_hz, gain_mode, gain_step, lna_step, mixer_step, vga_step, agc, bias_tee, packing, ppm, .. } => {
-                let gain = airspy_gain(gain_mode, gain_step, lna_step, mixer_step, vga_step, agc);
-                airspy::run(i, airspy::AirspyConfig { serial, center_hz: center, rate_hz, gain, bias_tee, packing, ppm }, tx, stop)
-            }
-            Source::Soapy { args, rate_hz, agc, gain_db, gains, antenna, settings, ppm, .. } => {
-                let gains = gains.into_iter().collect();
-                soapy::run(i, soapy::SoapyConfig { args, center_hz: center, rate_hz, agc, gain_db, gains, antenna, settings, ppm }, tx, stop)
-            }
-            Source::File { path, rate_hz, realtime, format, .. } => run_file(i, &path, rate_hz, realtime, SampleFormat::of(format, &path), tx, stop),
-        });
+        let (stop, center) = (stop.clone(), *center);
+        let spawned = spawn_source(&src, i, center, tx, stop, None, &format!("source-{i}"));
         match spawned {
             Ok(t) => threads.push(t),
             Err(e) => return Err(undo(threads, e)),
@@ -578,6 +560,29 @@ fn save_units(session: &mut Session) {
 }
 
 /// Replay a capture file as a source, paced to real time or as fast as possible.
+/// A thread named `name` streaming source `src` (number `i`) into `tx` at
+/// `center` until `stop`; `ctl`: retune and gain requests (the survey). A
+/// capture file plays at its own centre. Recording and the survey both
+/// start their sources this way.
+pub(crate) fn spawn_source(src: &Source, i: usize, center: f64, tx: SyncSender<SourceMsg>, stop: Arc<AtomicBool>, ctl: Option<Arc<sdr::Control>>, name: &str) -> std::io::Result<JoinHandle<()>> {
+    let src = src.clone();
+    std::thread::Builder::new().name(name.to_string()).spawn(move || match src {
+        Source::Rtlsdr { serial, rate_hz, gain_db, agc, ppm, buf_len, buffers, .. } => {
+            sdr::run_with(i, RtlConfig { serial, center_hz: center as u64, rate_hz: rate_hz as u32, gain_db: (!agc).then_some(gain_db), ppm, buf_len, buffers }, tx, stop, ctl)
+        }
+        Source::Usrp { args, rate_hz, gain_db, agc, antenna, ppm, .. } => sdr::run_with(i, uhd::UsrpConfig { args, center_hz: center, rate_hz, gain_db, agc, antenna, ppm }, tx, stop, ctl),
+        Source::Airspy { serial, rate_hz, gain_mode, gain_step, lna_step, mixer_step, vga_step, agc, bias_tee, packing, ppm, .. } => {
+            let gain = airspy_gain(gain_mode, gain_step, lna_step, mixer_step, vga_step, agc);
+            sdr::run_with(i, airspy::AirspyConfig { serial, center_hz: center, rate_hz, gain, bias_tee, packing, ppm }, tx, stop, ctl)
+        }
+        Source::Soapy { args, rate_hz, agc, gain_db, gains, antenna, settings, ppm, .. } => {
+            let gains = gains.into_iter().collect();
+            sdr::run_with(i, soapy::SoapyConfig { args, center_hz: center, rate_hz, agc, gain_db, gains, antenna, settings, ppm }, tx, stop, ctl)
+        }
+        Source::File { path, rate_hz, realtime, format, .. } => run_file(i, &path, rate_hz, realtime, SampleFormat::of(format, &path), tx, stop),
+    })
+}
+
 pub(crate) fn run_file(source: usize, path: &str, rate_hz: f64, realtime: bool, format: SampleFormat, tx: SyncSender<SourceMsg>, stop: Arc<AtomicBool>) {
     let mut f = match fs::File::open(path) {
         Ok(f) => f,

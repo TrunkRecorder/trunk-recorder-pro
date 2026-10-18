@@ -215,27 +215,21 @@ pub struct UsrpConfig {
     pub ppm: f64,
 }
 
-/// Stream a USRP until `stop`; reopens after errors with a short back-off.
-pub fn run(source: usize, cfg: UsrpConfig, tx: SyncSender<SourceMsg>, stop: Arc<AtomicBool>) {
-    run_with(source, cfg, tx, stop, None)
-}
-
-/// [`run`], retuned on request.
-pub fn run_with(source: usize, mut cfg: UsrpConfig, tx: SyncSender<SourceMsg>, stop: Arc<AtomicBool>, ctl: Option<Arc<Control>>) {
-    // The device's buffer holds only milliseconds: a receive thread left
-    // waiting behind other work (a screen-sharing session, say) loses samples.
-    #[cfg(target_os = "macos")]
-    // SAFETY: sets this thread's own QoS class.
-    unsafe {
-        libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_USER_INTERACTIVE, 0);
+impl crate::sdr::Radio for UsrpConfig {
+    const BACKOFF: Duration = Duration::from_secs(3);
+    fn retune_to(&mut self, hz: f64) {
+        self.center_hz = hz;
     }
-    while !stop.load(Ordering::Relaxed) {
-        if let Some(c) = ctl.as_ref().and_then(|c| *c.current_hz.lock().unwrap()) {
-            cfg.center_hz = c;
-        }
-        if let Err(e) = stream_once(source, &cfg, &tx, &stop, ctl.as_deref()) {
-            let _ = tx.send(SourceMsg::Error { source, error: e });
-            std::thread::sleep(Duration::from_secs(3));
+    fn stream_once(&self, source: usize, tx: &SyncSender<SourceMsg>, stop: &Arc<AtomicBool>, ctl: Option<&Control>) -> Result<(), String> {
+        stream_once(source, self, tx, stop, ctl)
+    }
+    /// The device's buffer holds only milliseconds: a receive thread left
+    /// waiting behind other work (a screen-sharing session, say) loses samples.
+    fn prepare_thread(&self) {
+        #[cfg(target_os = "macos")]
+        // SAFETY: sets this thread's own QoS class.
+        unsafe {
+            libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_USER_INTERACTIVE, 0);
         }
     }
 }

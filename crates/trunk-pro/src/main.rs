@@ -747,7 +747,7 @@ fn capture(a: &Args) {
     let stop = Arc::new(AtomicBool::new(false));
     let s2 = stop.clone();
     let c2 = cfg.clone();
-    let th = std::thread::spawn(move || sdr::run(0, c2, tx, s2));
+    let th = std::thread::spawn(move || sdr::run_with(0, c2, tx, s2, None));
     let mut f = std::io::BufWriter::new(fs::File::create(out).unwrap_or_else(|e| die(&format!("{out}: {e}"))));
     let (mut got, mut dropped) = (0u64, 0u64);
     let t0 = Instant::now();

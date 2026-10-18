@@ -33,7 +33,7 @@ fn measure(cfg: &Config, req: &Request) -> Result<Value, String> {
     };
     let stop = Arc::new(AtomicBool::new(false));
     let (tx, rx) = mpsc::sync_channel::<SourceMsg>(256);
-    let th = crate::survey::spawn_source(src, req.source, center, tx, stop.clone(), Arc::new(Control::default()))?;
+    let th = crate::runtime::spawn_source(src, req.source, center, tx, stop.clone(), Some(Arc::new(Control::default())), &format!("profile-source-{}", req.source)).map_err(|e| e.to_string())?;
     let mut p = Profiler::new(src.rate_hz(), profile::SECONDS);
     let mut last = Instant::now();
     let mut err = None;

@@ -195,22 +195,42 @@ impl Control {
     }
 }
 
-/// Stream a dongle until `stop` is set; blocks go to `tx`. Reopens the device
-/// after USB errors (a stall, a sleep/wake) with a short back-off.
-pub fn run(source: usize, cfg: RtlConfig, tx: SyncSender<SourceMsg>, stop: Arc<AtomicBool>) {
-    run_with(source, cfg, tx, stop, None)
+/// A radio's driver: [`run_with`] keeps it streaming.
+pub trait Radio: Send + 'static {
+    /// How long to wait before opening it again after an error.
+    const BACKOFF: Duration;
+    /// It opens at `hz` from now on (where the survey last tuned it).
+    fn retune_to(&mut self, hz: f64);
+    /// Open it and stream into `tx` until `stop` or an error, retuning on
+    /// `ctl`'s requests (each answered with [`SourceMsg::Tuned`]).
+    fn stream_once(&self, source: usize, tx: &SyncSender<SourceMsg>, stop: &Arc<AtomicBool>, ctl: Option<&Control>) -> Result<(), String>;
+    /// On its thread, before it first opens.
+    fn prepare_thread(&self) {}
 }
 
-/// [`run`], retuned on request.
-pub fn run_with(source: usize, mut cfg: RtlConfig, tx: SyncSender<SourceMsg>, stop: Arc<AtomicBool>, ctl: Option<Arc<Control>>) {
+/// Stream `radio` until `stop` is set; blocks go to `tx`. Reopens it after
+/// errors (a USB stall, a sleep/wake, an unplug) after its back-off, at the
+/// centre `ctl` (the survey) last tuned it to.
+pub fn run_with<R: Radio>(source: usize, mut radio: R, tx: SyncSender<SourceMsg>, stop: Arc<AtomicBool>, ctl: Option<Arc<Control>>) {
+    radio.prepare_thread();
     while !stop.load(Ordering::Relaxed) {
         if let Some(c) = ctl.as_ref().and_then(|c| *c.current_hz.lock().unwrap()) {
-            cfg.center_hz = c as u64;
+            radio.retune_to(c);
         }
-        if let Err(e) = stream_once(source, &cfg, &tx, &stop, ctl.as_deref()) {
+        if let Err(e) = radio.stream_once(source, &tx, &stop, ctl.as_deref()) {
             let _ = tx.send(SourceMsg::Error { source, error: e });
-            std::thread::sleep(Duration::from_secs(2));
+            std::thread::sleep(R::BACKOFF);
         }
+    }
+}
+
+impl Radio for RtlConfig {
+    const BACKOFF: Duration = Duration::from_secs(2);
+    fn retune_to(&mut self, hz: f64) {
+        self.center_hz = hz as u64;
+    }
+    fn stream_once(&self, source: usize, tx: &SyncSender<SourceMsg>, stop: &Arc<AtomicBool>, ctl: Option<&Control>) -> Result<(), String> {
+        stream_once(source, self, tx, stop, ctl)
     }
 }
 
