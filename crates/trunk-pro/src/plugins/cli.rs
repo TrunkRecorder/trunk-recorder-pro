@@ -287,7 +287,15 @@ fn run_calls(a: &Args) {
         let rel = base.strip_prefix(&capture_dir).map(Path::to_path_buf).unwrap_or(base.clone());
         // (A call JSON that can't be read is taken for a decrypted one.)
         let decrypted = record.as_ref().map_or(true, |r| r.decrypted);
-        host.concluded(system, &rel.to_string_lossy().replace('\\', "/"), record.unwrap_or_default(), super::host::CallAudio::on_disk(&base), decrypted);
+        // (An .m4a made here for a plugin that wants one, as the recorder's finish thread would.)
+        let mut files = super::host::files_on_disk(&base);
+        if let Some((e, kbps)) = host.encoder_settings().filter(|_| files.m4a.is_none() && host.plugin_audio(decrypted).m4a) {
+            let to = PathBuf::from(format!("{}.m4a", base.display()));
+            if e.m4a(&std::fs::read(&files.wav).unwrap_or_default(), &to, *kbps).is_ok() {
+                files.m4a = Some(to);
+            }
+        }
+        host.concluded(system, &rel.to_string_lossy().replace('\\', "/"), record.unwrap_or_default(), files, decrypted);
     }
     let grace: f64 = a.get("grace").and_then(|s| s.parse().ok()).unwrap_or(30.0);
     host.shutdown(Duration::from_secs_f64(grace));

@@ -785,16 +785,36 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
         move |system: u16| each.get(system as usize).copied().unwrap_or(all)
     };
     let spool = ctx.spool.lock().unwrap().clone();
+    let encoder = plugins::Encoder::find(cfg.recording.m4a.encoder).map(|e| (e, cfg.recording.m4a.bitrate_kbps.clamp(8, 320)));
+    if encoder.is_none() && cfg.recordings().iter().any(|r| r.compress_wav) {
+        warn_all(&ctx.hub, if cfg.recording.m4a.encoder == crate::config::M4aEncoder::None { "M4A encoding is off: calls are kept as WAV only" } else { "No M4A encoder found (install ffmpeg): calls are kept as WAV only" });
+    }
+    // Calls are finished on threads of their own (each may be encoding an
+    // .m4a), so a slow disk or encoder doesn't hold up decoding.
     let (fin_tx, fin_rx) = mpsc::sync_channel::<Finish>(1024);
-    let finisher = {
-        let (ctx, dir, spool, m4a) = (ctx.clone(), dir.clone(), spool.clone(), cfg.recording.m4a.clone());
-        std::thread::Builder::new().name("finish".into()).spawn(move || finish_calls(&ctx, &dir, spool.as_deref(), fin_rx, &m4a)).expect("thread")
-    };
-    // Calls are written on the finish thread, so a slow disk doesn't hold up decoding.
-    let fin = |f: Finish, plugins: Option<&PluginHost>| {
-        if let Err(mpsc::TrySendError::Full(f)) = fin_tx.try_send(f) {
-            // (Behind on writing or encoding: this one is written here, without its M4A, rather than waiting.)
-            finish_one(&ctx, &dir, spool.as_deref(), Finish { rules: FileRules { compress_wav: false, ..f.rules }, ..f }, None, plugins);
+    let fin_rx = Arc::new(Mutex::new(fin_rx));
+    let finishers: Vec<JoinHandle<()>> = (0..finishers())
+        .map(|i| {
+            let (ctx, dir, spool, encoder, rx) = (ctx.clone(), dir.clone(), spool.clone(), encoder.clone(), fin_rx.clone());
+            std::thread::Builder::new().name(format!("finish-{i}")).spawn(move || finish_calls(&ctx, &dir, spool.as_deref(), &rx, encoder.as_ref())).expect("thread")
+        })
+        .collect();
+    let fin = |f: Finish| {
+        // Behind on writing or encoding: decoding is on the sources' own
+        // threads, so this waits a while; past that, it's finished here (by
+        // the same plan) rather than dropped.
+        let until = Instant::now() + FINISH_WAIT;
+        let mut f = f;
+        loop {
+            match fin_tx.try_send(f) {
+                Ok(()) => return,
+                Err(mpsc::TrySendError::Full(back)) if Instant::now() < until => {
+                    f = back;
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(mpsc::TrySendError::Full(back)) => return finish_one(&ctx, &dir, spool.as_deref(), back, encoder.as_ref()),
+                Err(mpsc::TrySendError::Disconnected(_)) => return,
+            }
         }
     };
     let now_ms = || epoch.0 + epoch.1.elapsed().as_secs_f64() * 1000.0;
@@ -869,7 +889,9 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
     session.finish(&mut out);
     deliver(&ctx, &mut out, ctx.plugins.host().as_deref(), &rules, &fin);
     drop(fin_tx);
-    let _ = finisher.join();
+    for f in finishers {
+        let _ = f.join();
+    }
     // Uploads in flight get a moment to finish.
     ctx.plugins.stop(Duration::from_secs(10));
     let _ = fs::create_dir_all(crate::paths::data_dir());
@@ -895,43 +917,45 @@ struct Finish {
     decrypted: bool,
 }
 
-/// Each call: its files, then (once they're on disk) the `concluded`
-/// message and history, its .m4a (compressWav), and the plugins, whose
-/// results settle what's kept ([`crate::plugins::Archive`]).
-fn finish_calls(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, rx: mpsc::Receiver<Finish>, m4a: &crate::config::M4a) {
-    let encoder = plugins::Encoder::find(m4a.encoder).map(|e| (e, m4a.bitrate_kbps.clamp(8, 320)));
-    let mut warned = false;
-    for f in rx {
-        if f.rules.compress_wav && encoder.is_none() && !std::mem::replace(&mut warned, true) {
-            warn_all(&ctx.hub, if m4a.encoder == crate::config::M4aEncoder::None { "M4A encoding is off: calls are kept as WAV only" } else { "No M4A encoder found (install ffmpeg): calls are kept as WAV only" });
-        }
-        let host = ctx.plugins.host();
-        finish_one(ctx, dir, spool, f, encoder.as_ref(), host.as_deref());
+/// How many calls are finished at once (each may be encoding an .m4a).
+fn finishers() -> usize {
+    std::thread::available_parallelism().map_or(1, |n| n.get() / 2).clamp(1, 3)
+}
+
+/// How long decoding waits for a place in the finish queue before finishing a call itself.
+const FINISH_WAIT: Duration = Duration::from_secs(5);
+
+/// A finish thread: each call it's given, until the recording ends.
+fn finish_calls(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, rx: &Mutex<mpsc::Receiver<Finish>>, encoder: Option<&(plugins::Encoder, u32)>) {
+    loop {
+        let Ok(f) = rx.lock().unwrap().recv() else { return };
+        finish_one(ctx, dir, spool, f, encoder);
     }
 }
 
-/// `host`: the plugins this call goes to (the caller's clone).
-///
-/// What's kept once the plugins are done goes to the recordings folder, and
-/// what only they need to the spool, when there is one with room. The WAV is
-/// written only when it's kept or a plugin takes it: an .m4a is encoded
-/// from memory.
-fn finish_one(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, f: Finish, encoder: Option<&(plugins::Encoder, u32)>, host: Option<&PluginHost>) {
+/// A call's files, all of them, as its [`plugins::plan`] says: what's kept
+/// goes to the recordings folder, what only the plugins need to the spool
+/// when there is one with room. Then the `concluded` message and history,
+/// the .m4a (to keep, or for a plugin; its WAV instead should that fail),
+/// and the plugins, handed the files as they are; their results settle
+/// what's kept ([`crate::plugins::Archive`]).
+fn finish_one(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, f: Finish, encoder: Option<&(plugins::Encoder, u32)>) {
+    let host = ctx.plugins.host();
     let r = f.rules;
-    let takers = host.map_or(0, |h| h.call_takers(f.decrypted));
-    let p = plugins::plan(r, takers, host.is_some_and(|h| h.needs_wav()), encoder.is_some());
-    let (keep_audio, keep_json, keep_m4a, write_wav) = (p.keep_audio, p.keep_json, p.keep_m4a, p.write_wav);
+    let to_plugins = host.as_ref().map_or(Default::default(), |h| h.plugin_audio(f.decrypted));
+    let p = plugins::plan(r, to_plugins, encoder.is_some());
+    let (keep_audio, keep_json, keep_m4a) = (p.keep_audio, p.keep_json, p.keep_m4a);
     let base = dir.join(&f.rel);
     // (The record written once, as the .json file has it.)
     let json = f.record.to_json();
-    let need = json.len() + f.wav.len() / 4 + if write_wav && !keep_audio { f.wav.len() } else { 0 };
+    let need = json.len() + f.wav.len() / 4 + if p.write_wav && !keep_audio { f.wav.len() } else { 0 };
     let spooled = spool.filter(|s| p.spool && s.room_for(need as u64)).map(|s| s.dir.join(&f.rel));
     let at = |kept: bool, ext: &str| PathBuf::from(format!("{}.{ext}", if kept { &base } else { spooled.as_ref().unwrap_or(&base) }.display()));
     let (wav_at, json_at, frames_at, m4a_at) = (at(keep_audio, "wav"), at(keep_json, "json"), at(keep_audio, f.frames.as_ref().map_or("sdr", |c| c.ext)), at(keep_m4a, "m4a"));
     for d in [&wav_at, &json_at, &m4a_at].into_iter().filter_map(|p| p.parent()) {
         let _ = fs::create_dir_all(d);
     }
-    let ok = (!write_wav || fs::write(&wav_at, &f.wav).is_ok())
+    let ok = (!p.write_wav || fs::write(&wav_at, &f.wav).is_ok())
         && (!p.write_json || fs::write(&json_at, &json).is_ok())
         && f.frames.as_ref().filter(|_| p.write_frames).is_none_or(|c| fs::write(&frames_at, &c.bytes).is_ok());
     if !ok {
@@ -948,32 +972,38 @@ fn finish_one(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, f: Fin
         h.push_front(entry);
         h.truncate(HISTORY_KEPT);
     }
-    let mut audio = plugins::CallAudio {
-        wav: Arc::new(f.wav),
-        wav_written: write_wav,
-        files: trunk_recorder_plugin::CallFiles { json: json_at, wav: wav_at, m4a: None },
-        m4a_to: m4a_at,
-    };
+    let mut wav_written = p.write_wav;
+    let mut m4a = None;
     if let Some((e, kbps)) = encoder.filter(|_| p.make_m4a) {
-        match e.m4a(&audio.wav, &audio.m4a_to, *kbps) {
-            Ok(()) => audio.files.m4a = Some(audio.m4a_to.clone()),
+        match e.m4a(&f.wav, &m4a_at, *kbps) {
+            Ok(()) => m4a = Some(m4a_at),
             Err(err) => {
-                warn_all(&ctx.hub, &format!("M4A of {}: {err}", f.rel));
+                m4a_failed(ctx, &f.rel, &err);
                 // The call's audio is then the WAV.
-                if !audio.wav_written {
-                    audio.wav_written = fs::write(&audio.files.wav, &*audio.wav).is_ok();
+                if !wav_written {
+                    wav_written = fs::write(&wav_at, &f.wav).is_ok();
                 }
             }
         }
     }
-    ctx.plugins.archive.expect(&f.rel, takers, r, &base, spooled.as_deref());
+    ctx.plugins.archive.expect(&f.rel, to_plugins.takers, r, &base, spooled.as_deref(), Some(wav_written));
     if let Some(h) = host {
-        h.concluded(f.system, &f.rel, f.record, audio, f.decrypted);
+        h.concluded(f.system, &f.rel, f.record, trunk_recorder_plugin::CallFiles { json: json_at, wav: wav_at, m4a }, f.decrypted);
+    }
+}
+
+/// An .m4a couldn't be made: said, at most once a minute.
+fn m4a_failed(ctx: &Ctx, rel: &str, err: &str) {
+    static LAST: Mutex<Option<Instant>> = Mutex::new(None);
+    let mut last = LAST.lock().unwrap();
+    if last.is_none_or(|t| t.elapsed() > Duration::from_secs(60)) {
+        *last = Some(Instant::now());
+        warn_all(&ctx.hub, &format!("M4A of {rel}: {err} (its audio is the WAV)"));
     }
 }
 
 /// Forward everything to the browsers and plugins; calls go to be stored.
-fn deliver(ctx: &Ctx, out: &mut Vec<Output>, plugins: Option<&PluginHost>, rules: &dyn Fn(u16) -> FileRules, finish: &dyn Fn(Finish, Option<&PluginHost>)) {
+fn deliver(ctx: &Ctx, out: &mut Vec<Output>, plugins: Option<&PluginHost>, rules: &dyn Fn(u16) -> FileRules, finish: &dyn Fn(Finish)) {
     for o in out.drain(..) {
         match o {
             Output::Message(m) => publish(&ctx.hub, m),
@@ -993,7 +1023,7 @@ fn deliver(ctx: &Ctx, out: &mut Vec<Output>, plugins: Option<&PluginHost>, rules
                 let _ = ctx.hub.send(Arc::new(Out::Topic { topic, text: msg.to_json() }));
             }
             Output::Rollup(r) => ctx.store.add(r),
-            Output::File { rel, system, wav, record, frames, decrypted } => finish(Finish { rel, system, wav, record, frames, rules: rules(system), decrypted }, plugins),
+            Output::File { rel, system, wav, record, frames, decrypted } => finish(Finish { rel, system, wav, record, frames, rules: rules(system), decrypted }),
         }
     }
 }

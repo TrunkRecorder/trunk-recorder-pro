@@ -40,7 +40,7 @@ pub mod store;
 
 pub use archive::{plan, Archive, FileRules};
 pub use encode::Encoder;
-pub use host::{CallAudio, Note, PluginHost, Spec};
+pub use host::{Note, PluginHost, Spec};
 
 use trunk_app::protocol::ToClient;
 use std::collections::BTreeMap;

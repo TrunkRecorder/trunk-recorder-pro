@@ -56,8 +56,6 @@ pub type Notes = Arc<dyn Fn(Note) + Send + Sync>;
 /// Messages waiting for a plugin; beyond this it's behind, and loses them.
 const QUEUE: usize = 1024;
 /// Calls waiting to be encoded.
-const ENCODE_QUEUE: usize = 256;
-
 struct Plugin {
     id: String,
     manifest: Manifest,
@@ -93,50 +91,10 @@ struct Shared {
 /// `shutdown` (its grace counts from then).
 const DRAIN_MAX: Duration = Duration::from_secs(30);
 
-struct EncodeJob {
-    call: ConcludedCall,
-    audio: CallAudio,
-    about: About,
-}
-
-/// A concluded call's audio, for the plugins.
-pub struct CallAudio {
-    /// Its WAV, to encode from (and to write, should that fail).
-    pub wav: Arc<Vec<u8>>,
-    /// The WAV is at `files.wav` (otherwise only in `wav`).
-    pub wav_written: bool,
-    /// Where its files are: the .json, the .wav (written or not), the .m4a once made.
-    pub files: CallFiles,
-    /// Where an .m4a for the plugins goes.
-    pub m4a_to: PathBuf,
-}
-
-impl CallAudio {
-    /// A call already on disk at `base` (its path without the extension).
-    pub fn on_disk(base: &Path) -> CallAudio {
-        let wav = with_ext(base, "wav");
-        let m4a = Some(with_ext(base, "m4a")).filter(|p| p.exists());
-        CallAudio {
-            wav: Arc::new(std::fs::read(&wav).unwrap_or_default()),
-            wav_written: true,
-            files: CallFiles { json: with_ext(base, "json"), wav, m4a },
-            m4a_to: with_ext(base, "m4a"),
-        }
-    }
-
-    /// Write the WAV, when it wasn't (the plugins get that instead of an .m4a).
-    fn write_wav(&mut self) {
-        if !self.wav_written {
-            self.wav_written = std::fs::write(&self.files.wav, &*self.wav).is_ok();
-        }
-    }
-}
-
 pub struct PluginHost {
     shared: Arc<Shared>,
+    /// The M4A encoder this host's plugins are told of (the finish thread encodes).
     encoder: Option<(Encoder, u32)>,
-    encode_tx: Option<SyncSender<EncodeJob>>,
-    encoders: Vec<JoinHandle<()>>,
     supervisors: Vec<JoinHandle<()>>,
     /// What the session should build for plugins.
     pub topics: PluginTopics,
@@ -337,23 +295,8 @@ impl PluginHost {
             })
             .collect();
         let encoder = encoder.map(|e| (e, audio.bitrate_kbps.clamp(8, 320)));
-        let (encode_tx, encoders) = match &encoder {
-            Some((e, kbps)) => {
-                let (tx, rx) = mpsc::sync_channel::<EncodeJob>(ENCODE_QUEUE);
-                let rx = Arc::new(Mutex::new(rx));
-                let n = std::thread::available_parallelism().map_or(1, |n| n.get() / 2).clamp(1, 3);
-                let workers = (0..n)
-                    .map(|i| {
-                        let (rx, sh, e, kbps) = (rx.clone(), shared.clone(), e.clone(), *kbps);
-                        std::thread::Builder::new().name(format!("encode-{i}")).spawn(move || encode_worker(&rx, &sh, &e, kbps)).expect("thread")
-                    })
-                    .collect();
-                (Some(tx), workers)
-            }
-            None => (None, Vec::new()),
-        };
         let names = systems.iter().map(|y| (y.index, y.short_name.clone())).collect();
-        PluginHost { shared, encoder, encode_tx, encoders, supervisors, topics, audio: live_audio, names, done: false }
+        PluginHost { shared, encoder, supervisors, topics, audio: live_audio, names, done: false }
     }
 
     /// Each plugin's process: drops, restarts, uptime.
@@ -425,55 +368,43 @@ impl PluginHost {
         self.shared.plugins.iter().filter(|p| p.manifest.subscribes(topic::CALL_CONCLUDED) && p.tx.lock().unwrap().is_some() && (!decrypted || p.share_decrypted)).count()
     }
 
-    /// Some plugin takes the WAV file: one that doesn't ask for M4A, does
-    /// with no encoder to make it, or asks for the WAV too. (Otherwise the
-    /// WAV needn't be written.)
-    pub fn needs_wav(&self) -> bool {
-        self.shared.plugins.iter().any(|p| p.manifest.subscribes(topic::CALL_CONCLUDED) && (self.encoder.is_none() || takes_wav(&p.manifest)))
+    /// What the plugins take of a finished call (`decrypted`: one decrypted
+    /// with our keys, which only plugins with `shareDecrypted` take): how
+    /// many, and whether one takes the WAV, one wants an .m4a
+    /// ([`super::archive::plan`] says what's written for them).
+    pub fn plugin_audio(&self, decrypted: bool) -> super::archive::PluginAudio {
+        let takers: Vec<&Plugin> = self.shared.plugins.iter().filter(|p| p.manifest.subscribes(topic::CALL_CONCLUDED) && p.tx.lock().unwrap().is_some() && (!decrypted || p.share_decrypted)).collect();
+        super::archive::PluginAudio { takers: takers.len(), wav: takers.iter().any(|p| takes_wav(&p.manifest)), m4a: takers.iter().any(|p| p.manifest.wants_format(format::M4A)) }
     }
 
-    /// A concluded call (`rel`: relative to the capture folder, no extension;
-    /// `json`: its call JSON) whose JSON is written, and its audio as
-    /// `audio` says. An .m4a is made here when there isn't one and a plugin
-    /// wants it.
-    /// `decrypted`: some of it was decrypted with our keys.
-    pub fn concluded(&self, system: u16, rel: &str, record: CallRecord, mut audio: CallAudio, decrypted: bool) {
+    /// The encoder and bitrate this host's plugins get .m4a files from, if any.
+    pub fn encoder_settings(&self) -> Option<&(Encoder, u32)> {
+        self.encoder.as_ref()
+    }
+
+    /// A concluded call (`rel`: relative to the capture folder, no
+    /// extension), its record and its files as they are on disk now (the
+    /// finish thread wrote what [`super::archive::plan`] said): to the
+    /// plugins that take it. `decrypted`: some of it was decrypted with our keys.
+    pub fn concluded(&self, system: u16, rel: &str, record: CallRecord, files: CallFiles, decrypted: bool) {
         if self.call_takers(decrypted) == 0 {
             if decrypted {
                 self.shared.say_all_withheld(topic::CALL_CONCLUDED);
             }
             return;
         }
-        let call = |files: &CallFiles| ConcludedCall { path: rel.to_string(), system, call: record.clone(), files: files.clone() };
         let short_name = self.names.get(&system).cloned().unwrap_or_else(|| record.short_name.clone());
         let about = About { system: short_name, talkgroup: Some(record.talkgroup), decrypted };
-        match &self.encode_tx {
-            Some(tx) if audio.files.m4a.is_none() => {
-                if let Err(TrySendError::Full(mut job) | TrySendError::Disconnected(mut job)) = tx.try_send(EncodeJob { call: call(&audio.files), audio, about }) {
-                    self.shared.note_log("", Level::Warn, "M4A encoding is behind: a call goes out as WAV only");
-                    job.audio.write_wav();
-                    self.shared.dispatch(topic::CALL_CONCLUDED, &line(&HostMessage::CallConcluded(job.call)), &job.about, Some(rel));
-                }
-            }
-            _ => {
-                if audio.files.m4a.is_none() {
-                    audio.write_wav();
-                }
-                self.shared.dispatch(topic::CALL_CONCLUDED, &line(&HostMessage::CallConcluded(call(&audio.files))), &about, Some(rel));
-            }
-        }
+        let call = ConcludedCall { path: rel.to_string(), system, call: record, files };
+        self.shared.dispatch(topic::CALL_CONCLUDED, &line(&HostMessage::CallConcluded(call)), &about, Some(rel));
     }
 
-    /// Finish encoding, tell every plugin to stop, and give each `grace` to
+    /// Tell every plugin to stop, and give each `grace` to
     /// exit from when it has read `shutdown` (behind what was queued, for up
     /// to `DRAIN_MAX`).
     pub fn shutdown(&mut self, grace: Duration) {
         if std::mem::replace(&mut self.done, true) {
             return;
-        }
-        drop(self.encode_tx.take());
-        for w in self.encoders.drain(..) {
-            let _ = w.join();
         }
         let sh = &self.shared;
         sh.stopping.store(true, Ordering::Relaxed);
@@ -576,6 +507,12 @@ fn takes_wav(m: &Manifest) -> bool {
     !m.wants_format(format::M4A) || m.wants_format(format::WAV) || m.id == "upload-script"
 }
 
+/// The files of a call already on disk at `base` (its path without the extension).
+pub fn files_on_disk(base: &Path) -> CallFiles {
+    let m4a = Some(with_ext(base, "m4a")).filter(|p| p.exists());
+    CallFiles { json: with_ext(base, "json"), wav: with_ext(base, "wav"), m4a }
+}
+
 fn with_ext(base: &Path, ext: &str) -> PathBuf {
     PathBuf::from(format!("{}.{ext}", base.display()))
 }
@@ -662,28 +599,6 @@ impl Outlet for Shared {
             Some(p) if !decrypted || p.share_decrypted => self.give(p, line),
             _ => Offer::Gone,
         }
-    }
-}
-
-fn encode_worker(rx: &Mutex<Receiver<EncodeJob>>, sh: &Shared, e: &Encoder, kbps: u32) {
-    let mut last_error: Option<Instant> = None;
-    loop {
-        let job = rx.lock().unwrap().recv();
-        let Ok(EncodeJob { mut call, mut audio, about }) = job else {
-            return;
-        };
-        match e.m4a(&audio.wav, &audio.m4a_to, kbps) {
-            Ok(()) => call.files.m4a = Some(audio.m4a_to),
-            Err(err) => {
-                audio.write_wav();
-                if last_error.is_none_or(|t| t.elapsed() > Duration::from_secs(60)) {
-                    last_error = Some(Instant::now());
-                    sh.note_log("", Level::Warn, format!("M4A encoding failed ({err}); plugins get WAV"));
-                }
-            }
-        }
-        let rel = call.path.clone();
-        sh.dispatch(topic::CALL_CONCLUDED, &line(&HostMessage::CallConcluded(call)), &about, Some(&rel));
     }
 }
 
@@ -975,8 +890,7 @@ mod tests {
         let mut host = PluginHost::start_when(vec![spec], &super::super::AudioSettings::default(), &systems, &dir, notes, Arc::new(AtomicBool::new(true)), Some(hold.clone()));
         hold.attach(Some(host.outlet()));
         let call = |rel: &str, tg: u32| {
-            let audio = CallAudio { wav: Arc::new(vec![]), wav_written: true, files: CallFiles::default(), m4a_to: dir.join("x.m4a") };
-            host.concluded(0, rel, CallRecord { talkgroup: tg, short_name: "dcfd".into(), ..Default::default() }, audio, false);
+            host.concluded(0, rel, CallRecord { talkgroup: tg, short_name: "dcfd".into(), ..Default::default() }, CallFiles::default(), false);
         };
         call("dcfd/held", 5);
         call("dcfd/now", 6);
