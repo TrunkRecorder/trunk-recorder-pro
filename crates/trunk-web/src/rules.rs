@@ -4,7 +4,7 @@
 //! Configs come and go as JSON. Used by the page in both builds (the desktop
 //! app's too), not by the engine worker.
 
-use trunk_app::config::{auto_center, usable_half_width};
+use trunk_app::config::{auto_center, plan_centers, usable_half_width, Placing};
 use trunk_app::Config;
 use wasm_bindgen::prelude::*;
 
@@ -52,6 +52,32 @@ pub fn config_centers(json: &str) -> Vec<f64> {
 #[wasm_bindgen(js_name = autoCenter)]
 pub fn auto_center_js(hz: Vec<f64>, rate_hz: f64, guard_hz: f64) -> Option<f64> {
     auto_center(&hz, rate_hz, guard_hz)
+}
+
+/// Where to tune each source for a system found on the air
+/// ([`trunk_app::config::plan_centers`]). JSON in `{ sources: [{ rateHz,
+/// guardHz?, fixedHz? }], first, firstCenter, ccs, voice: [{ hz, weight }] }`;
+/// out a centre (Hz) or null per source.
+#[wasm_bindgen(js_name = planCenters)]
+pub fn plan_centers_js(json: &str) -> String {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Voice {
+        hz: f64,
+        weight: f64,
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Ask {
+        sources: Vec<Placing>,
+        first: usize,
+        first_center: f64,
+        ccs: Vec<f64>,
+        voice: Vec<Voice>,
+    }
+    let Ok(a) = serde_json::from_str::<Ask>(json) else { return "[]".into() };
+    let voice: Vec<(f64, f64)> = a.voice.iter().map(|v| (v.hz, v.weight)).collect();
+    serde_json::json!(plan_centers(&a.sources, a.first, a.first_center, &a.ccs, &voice)).to_string()
 }
 
 /// How far from a source's centre a channel may be, Hz.

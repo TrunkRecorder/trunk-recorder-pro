@@ -2145,13 +2145,82 @@ pub fn auto_center(ccs: &[f64], rate_hz: f64, guard_hz: f64) -> Option<f64> {
     if hi - lo > 2.0 * half - 50_000.0 {
         return None;
     }
-    let mut c = ((lo + hi) / 2.0 / 1000.0).round() * 1000.0;
-    let mut step = 0;
-    while step < 40 && ccs.iter().any(|f| (f - c).abs() < 25_000.0) {
+    let mid = ((lo + hi) / 2.0 / 1000.0).round() * 1000.0;
+    off_dc(mid, ccs, |c| ccs.iter().all(|f| (f - c).abs() <= half - 10_000.0))
+}
+
+/// How far a channel is kept from a source's centre (its DC spike).
+const DC_CLEAR_HZ: f64 = 25_000.0;
+
+/// `c` off the DC spike: moved to either side in widening 12.5 kHz steps
+/// until no channel of `hz` is within [`DC_CLEAR_HZ`] of it and `keep(c)`
+/// (what it must still reach). None if 40 steps don't find one. Every
+/// centre the recorder or Setup picks goes through this.
+fn off_dc(mut c: f64, hz: &[f64], keep: impl Fn(f64) -> bool) -> Option<f64> {
+    for step in 0..=40 {
+        if hz.iter().all(|f| (f - c).abs() >= DC_CLEAR_HZ) && keep(c) {
+            return Some(c);
+        }
         c += if step % 2 == 1 { -1.0 } else { 1.0 } * 12_500.0 * (step + 1) as f64;
-        step += 1;
     }
-    ccs.iter().all(|f| (f - c).abs() <= half - 10_000.0).then_some(c)
+    None
+}
+
+/// A source to place ([`plan_centers`]): its rate and guard, and its centre
+/// if it can't be moved (a capture file).
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Placing {
+    pub rate_hz: f64,
+    #[serde(default = "guard_default")]
+    pub guard_hz: f64,
+    #[serde(default)]
+    pub fixed_hz: Option<f64>,
+}
+
+/// Where to tune each source for a system found on the air (Setup's
+/// first-run guide): source `first` at `first_center` (it covers the control
+/// channels `ccs`), each other over the busiest voice channels (`voice`: Hz
+/// and calls seen) still out of reach, or, when every one is reached,
+/// alongside `first` on the side with more of the system. A fixed source
+/// stays; every centre is off the DC spike as [`auto_center`]'s are.
+pub fn plan_centers(sources: &[Placing], first: usize, first_center: f64, ccs: &[f64], voice: &[(f64, f64)]) -> Vec<Option<f64>> {
+    let half = |s: &Placing| usable_half_width(s.rate_hz, s.guard_hz);
+    let mut out: Vec<Option<f64>> = sources.iter().map(|s| s.fixed_hz).collect();
+    if let Some(o) = out.get_mut(first) {
+        o.get_or_insert(first_center);
+    }
+    let all: Vec<f64> = ccs.iter().copied().chain(voice.iter().map(|v| v.0)).collect();
+    for k in 0..sources.len() {
+        if out[k].is_some() {
+            continue;
+        }
+        let h = half(&sources[k]);
+        let reached = |hz: f64| out.iter().zip(sources).any(|(c, s)| c.is_some_and(|c| (hz - c).abs() <= half(s)));
+        let left: Vec<(f64, f64)> = voice.iter().copied().filter(|v| !reached(v.0)).collect();
+        let best = if let Some(&(lowest, _)) = left.first() {
+            // Each channel still out of reach as the window's low edge: the window that takes in the most calls.
+            let score = |c: f64| left.iter().filter(|o| (o.0 - c).abs() <= h).map(|o| o.1).sum::<f64>();
+            let mut best = (lowest + h - 1000.0, -1.0);
+            for v in &left {
+                let c = v.0 + h - 1000.0;
+                let sc = score(c);
+                if sc > best.1 {
+                    best = (c, sc);
+                }
+            }
+            best.0
+        } else {
+            let mid = all.iter().sum::<f64>() / all.len().max(1) as f64;
+            let beside = sources.get(first).map_or(h, half) + h;
+            first_center + if mid >= first_center { beside } else { -beside }
+        };
+        let best = (best / 1000.0).round() * 1000.0;
+        let n = |c: f64| all.iter().filter(|f| (*f - c).abs() <= h).count();
+        let want = n(best);
+        out[k] = Some(off_dc(best, &all, |c| n(c) >= want).unwrap_or(best));
+    }
+    out
 }
 
 /// Several RTL-SDRs at this rate or more, on one USB 2.0 bus, want smaller transfers…
@@ -2384,6 +2453,24 @@ mod tests {
 
     fn system(name: &str, ccs: &[f64]) -> System {
         System::one_site(name, Site { control_channels_hz: ccs.to_vec(), ..Default::default() })
+    }
+
+    #[test]
+    fn a_first_run_plan_covers_the_busiest_channels() {
+        let rtl = |fixed_hz| Placing { rate_hz: 2_400_000.0, guard_hz: DEFAULT_GUARD_HZ, fixed_hz };
+        let ccs = [851_000_000.0];
+        // Busy voice channels 3–4 MHz up, a quiet one further: the second radio takes the busy ones.
+        let voice = [(854_000_000.0, 50.0), (854_500_000.0, 40.0), (856_900_000.0, 1.0), (851_200_000.0, 9.0)];
+        let plan = plan_centers(&[rtl(None), rtl(None)], 0, 851_400_000.0, &ccs, &voice);
+        assert_eq!(plan[0], Some(851_400_000.0));
+        let c = plan[1].unwrap();
+        let half = usable_half_width(2_400_000.0, DEFAULT_GUARD_HZ);
+        assert!((854_000_000.0 - c).abs() <= half && (854_500_000.0 - c).abs() <= half, "{c}");
+        assert!(voice.iter().chain([(851_000_000.0, 0.0)].iter()).all(|v| (v.0 - c).abs() >= DC_CLEAR_HZ), "off the DC spike: {c}");
+        // A capture file stays where it is; with everything reached, a spare radio goes alongside.
+        let plan = plan_centers(&[rtl(None), rtl(Some(853_000_000.0)), rtl(None)], 0, 851_400_000.0, &ccs, &voice[..2]);
+        assert_eq!(plan[1], Some(853_000_000.0));
+        assert!(plan[2].unwrap() > 851_400_000.0 + 2.0 * half - 100_000.0, "{plan:?}");
     }
 
     #[test]

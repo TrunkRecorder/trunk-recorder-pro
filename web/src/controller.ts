@@ -6,6 +6,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { feedSeries } from "./series.ts";
 import { LivePlayer } from "./livePlayer.ts";
 import { copyOverride, copyOwn, OVERRIDE, pluginCopies } from "./protocol.ts";
+import { renameSystemRefs } from "./pluginSettings.ts";
 import { configReplaced } from "./rules.ts";
 import type {
   MonitorEvent,
@@ -591,6 +592,24 @@ function withFile(files: Record<string, string>, system: string, csv: string): R
 export function setTalkgroups(system: string, csv: string): void {
   set({ talkgroups: withFile(state.talkgroups, system, csv) });
   transport.send({ type: "setTalkgroups", system, csv });
+}
+
+/**
+ * Rename `sys` (one of `x`'s systems, trunked or conventional) to `to`, in an
+ * updateConfig: its talkgroup file moves with it, and plugin settings that
+ * name it follow. Setup and the first-run guide both rename this way.
+ */
+export function renameSystem(x: Config, sys: { shortName: string }, to: string): void {
+  if (sys.shortName === to) return;
+  moveTalkgroups(sys.shortName, to);
+  renameSystemRefs(x, sys.shortName, to, state.plugins?.plugins ?? []);
+  sys.shortName = to;
+}
+
+/** System `name` is gone from `x` (removed, or made a site of another), in an updateConfig: its talkgroup file goes too, unless a system still has the name. */
+export function forgetTalkgroups(x: Config, name: string): void {
+  if ([...x.systems, ...x.conventional].some((s) => s.shortName === name)) return;
+  if (state.talkgroups[name] !== undefined) setTalkgroups(name, "");
 }
 
 /** Talkgroup files following a renamed system: (its name when the renaming began → its name now), sent with the config. */

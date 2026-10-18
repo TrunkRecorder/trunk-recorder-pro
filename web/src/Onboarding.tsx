@@ -5,7 +5,7 @@
 // leaving part way keeps what was done. Experienced users skip it.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { autoCenter, enabledChannels, formatMhz, importTrunkRecorderConfig, newAirspy, resolvedCenters, sourceCovering, newDongle, newSoapy, newSystem, newUsrp, parseFreqList, startProblem, trConfigFiles, uniqueShortName, usableHalfWidth, type ImportTodo } from "./config.ts";
+import { autoCenter, enabledChannels, formatMhz, importTrunkRecorderConfig, newAirspy, resolvedCenters, sourceCovering, newDongle, newSoapy, newSystem, newUsrp, parseFreqList, planCenters, startProblem, trConfigFiles, uniqueShortName, usableHalfWidth, type ImportTodo } from "./config.ts";
 import {
   applySurvey,
   addDmrSite,
@@ -14,7 +14,7 @@ import {
   dismissError,
   findRadios,
   listDir,
-  moveTalkgroups,
+  renameSystem,
   readTrConfig,
   refreshDevices,
   setTalkgroups,
@@ -31,7 +31,6 @@ import {
 } from "./controller.ts";
 import { cleanShortName } from "./fieldText.ts";
 import { FileInput } from "./inputs.tsx";
-import { renameSystem } from "./pluginSettings.ts";
 import type { Config, Source, SurveyCandidate, SurveyMonitor, SurveySuggestion, System } from "./protocol.ts";
 import { pluginCopies } from "./protocol.ts";
 import { normalizeTalkgroupCsv, parseRadioReferencePaste, parseTalkgroupCsv, talkgroupsToCsv, type Talkgroup } from "./talkgroups.ts";
@@ -1033,62 +1032,6 @@ interface Chan {
 
 const covers = (center: number, rate: number, hz: number, guard?: number) => Math.abs(hz - center) <= usableHalfWidth(rate, guard);
 
-/** Off the DC spike at the centre: nudge until no channel sits within 10 kHz, keeping what it covers. */
-function offDc(center: number, rate: number, chans: number[], guard?: number): number {
-  const n = (c: number) => chans.filter((f) => covers(c, rate, f, guard)).length;
-  const want = n(center);
-  for (let k = 0; k < 24; k++) {
-    const c = center + (k % 2 ? -1 : 1) * Math.ceil(k / 2) * 15_000;
-    if (chans.every((f) => Math.abs(f - c) > 10_000) && n(c) >= want) return Math.round(c / 1000) * 1000;
-  }
-  return center;
-}
-
-/**
- * Centres for every radio: the scanning one where the survey put it (it
- * covers the control channel), the others over the busiest voice channels
- * still out of reach — or next to the first when nothing is. `guards`: each
- * radio's guardHz (undefined = the default), as the recorder reckons reach.
- */
-function planCenters(
-  rates: (number | null)[],
-  guards: (number | undefined)[],
-  fixed: (number | null)[],
-  first: number,
-  firstCenter: number,
-  ccs: number[],
-  voice: Chan[],
-): (number | null)[] {
-  const out: (number | null)[] = fixed.slice();
-  if (fixed[first] === null) out[first] = firstCenter;
-  const all = [...ccs, ...voice.map((v) => v.hz)];
-  const reached = (hz: number) => out.some((c, k) => c !== null && rates[k] !== null && covers(c, rates[k]!, hz, guards[k]));
-  rates.forEach((rate, k) => {
-    if (rate === null || out[k] !== null) return;
-    const guard = guards[k];
-    const half = usableHalfWidth(rate, guard);
-    const left = voice.filter((v) => !reached(v.hz));
-    let best: number;
-    if (left.length) {
-      // Each channel still out of reach as the window's low edge; keep the window that takes in the most calls.
-      let score = -1;
-      best = left[0].hz;
-      for (const v of left) {
-        const c = v.hz + half - 1000;
-        const sc = left.filter((o) => covers(c, rate, o.hz, guard)).reduce((a, o) => a + o.weight, 0);
-        if (sc > score) [score, best] = [sc, c];
-      }
-    } else {
-      // Nothing left: alongside the first, on the side with more of the system.
-      const mid = all.reduce((a, f) => a + f, 0) / Math.max(1, all.length);
-      const firstHalf = rates[first] != null ? usableHalfWidth(rates[first]!, guards[first]) : half;
-      best = firstCenter + (mid >= firstCenter ? 1 : -1) * (firstHalf + half);
-    }
-    out[k] = offDc(best, rate, all, guard);
-  });
-  return out;
-}
-
 function CoverageStep(props: { c: Config; found: Found | null; onNext: () => void; onBack: () => void }) {
   const { c, found } = props;
   const sys = found ? c.systems[found.system] : undefined;
@@ -1104,7 +1047,7 @@ function CoverageStep(props: { c: Config; found: Found | null; onNext: () => voi
   const first = found && c.sources[found.source] ? found.source : 0;
   const recommended = useMemo(() => {
     const firstCenter = found?.sug?.centerHz || autoCenter(ccs, rates[first] ?? 2_400_000, guards[first]) || ccs[0] || 0;
-    return planCenters(rates, guards, fixed, first, firstCenter, ccs, voice);
+    return planCenters(c.sources.map((x, k) => ({ rateHz: x.rateHz, guardHz: x.guardHz, fixedHz: fixed[k] })), first, firstCenter, ccs, voice);
   }, [c.sources.length, found]);
   const [centers, setCenters] = useState<(number | null)[]>(recommended);
 
@@ -1318,12 +1261,8 @@ const slug = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, "").sli
 function NameStep(props: { c: Config; sys: System; index: number; onNext: () => void; onBack: () => void }) {
   const { c, sys, index } = props;
   const [touched, setTouched] = useState(false);
-  const plugins = useApp().plugins?.plugins ?? [];
-  // (A new name: plugin settings that name the system follow it, as in Setup.)
-  const rename = (x: Config, to: string) => {
-    moveTalkgroups(x.systems[index].shortName, to);
-    renameSystem(x, index, to, plugins);
-  };
+  // (A new name: its talkgroup file and plugin settings that name it follow, as in Setup.)
+  const rename = (x: Config, to: string) => renameSystem(x, x.systems[index], to);
   const dup = c.systems.some((x, k) => k !== index && x.shortName === sys.shortName);
   const now = new Date();
   const folder = c.recording.captureDir.split(/[\\/]/).filter(Boolean).pop() || "Recordings";

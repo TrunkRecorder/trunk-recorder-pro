@@ -81,6 +81,22 @@ export function autoCenter(hz: number[], rateHz: number, guardHz: number = DEFAU
   return rules().autoCenter(Float64Array.from(hz), rateHz, guardHz) ?? null;
 }
 
+/** A source to place (planCenters): its rate and guard, and its centre if it can't move (a capture file). */
+export interface Placing {
+  rateHz: number;
+  guardHz?: number;
+  fixedHz?: number | null;
+}
+
+/**
+ * Where to tune each radio for a system found on the air (the recorder's
+ * plan_centers): `first` at `firstCenter`, the others over the busiest voice
+ * channels still out of reach, or alongside the first; each off the DC spike.
+ */
+export function planCenters(sources: Placing[], first: number, firstCenter: number, ccs: number[], voice: { hz: number; weight: number }[]): (number | null)[] {
+  return JSON.parse(rules().planCenters(JSON.stringify({ sources, first, firstCenter, ccs, voice })));
+}
+
 /** Why a SmartNet site's band plan can't be used, or null (smartnet::Bandplan::from_config). */
 export function bandplanProblem(x: Site): string | null {
   return rules().bandplanProblem(x.bandplan ?? "", x.bandplanBaseHz ?? 0, x.bandplanSpacingHz ?? 0, x.bandplanOffset ?? 0, x.bandplanHighHz ?? 0) ?? null;

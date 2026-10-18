@@ -2014,6 +2014,7 @@ version = "0.1.15"
 dependencies = [
  "js-sys",
  "rtlsdr-nusb",
+ "serde",
  "serde_json",
  "trunk-app",
  "trunk-core",

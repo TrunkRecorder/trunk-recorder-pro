@@ -44,7 +44,9 @@ import {
   dismissTodo,
   downloadText,
   findRadios,
+  forgetTalkgroups,
   moveTalkgroups,
+  renameSystem,
   newSiteOf,
   openGuide,
   refreshDevices,
@@ -59,7 +61,7 @@ import {
   type SetupTab,
 } from "./controller.ts";
 import { M4aSettings, PluginSetupPanel, SystemPluginSettings } from "./Plugins.tsx";
-import { renameSystem, renameSystemRefs } from "./pluginSettings.ts";
+import { renameSystemRefs } from "./pluginSettings.ts";
 import { SystemDelays } from "./Delays.tsx";
 import { IconAntenna, IconDongle, IconFolder, IconPuzzle, IconTower } from "./Onboarding.tsx";
 import type { AirspyGainMode, Channel, Config, Conventional, Demod, Device, HeardCode, LockableKeys, LogSettings, Recording, RecordingOverride, RecordingRules, Site, SiteIdentity, SoapyState, Source, System, UnitNames } from "./protocol.ts";
@@ -992,7 +994,6 @@ function ConventionalTab(props: { c: Config }) {
 function ConventionalPanel(props: { c: Config; k: number }) {
   const { c, k } = props;
   const need = useNeed();
-  const plugins = useApp().plugins?.plugins ?? [];
   const conv = c.conventional[k];
   const chans = conv.channels;
   const name = conv.shortName;
@@ -1081,7 +1082,10 @@ function ConventionalPanel(props: { c: Config; k: number }) {
             onClick={() => {
               if (window.confirm(`Remove ${name || "this conventional system"} and its ${chans.length} channel${chans.length === 1 ? "" : "s"}? Its recordings stay on disk.`)) {
                 forgetCard("conv-", k, c.conventional.length);
-                updateConfig((x) => void x.conventional.splice(k, 1));
+                updateConfig((x) => {
+                  x.conventional.splice(k, 1);
+                  forgetTalkgroups(x, conv.shortName);
+                });
               }
             }}
           >
@@ -1097,10 +1101,7 @@ function ConventionalPanel(props: { c: Config; k: number }) {
             value={conv.shortName}
             onChange={(e) => {
               const to = cleanShortName(e.target.value);
-              updateConfig((x) => {
-                renameSystemRefs(x, x.conventional[k].shortName, to, plugins);
-                x.conventional[k].shortName = to;
-              });
+              updateConfig((x) => renameSystem(x, x.conventional[k], to));
             }}
           />
         </Field>
@@ -1865,7 +1866,10 @@ function SystemCard(props: { c: Config; i: number }) {
   const remove = (lastSite = false) => {
     if (!confirm(`${lastSite ? `This is ${sys.shortName}'s only site. ` : ""}Remove ${sys.shortName}? Its recordings stay on disk.`)) return;
     forgetCard("sys-", i, c.systems.length);
-    updateConfig((x) => void x.systems.splice(i, 1));
+    updateConfig((x) => {
+      x.systems.splice(i, 1);
+      forgetTalkgroups(x, sys.shortName);
+    });
   };
   const addSite = () => {
     setCardOpen(`site-${i}-${sys.sites.length}`, true);
@@ -1875,6 +1879,9 @@ function SystemCard(props: { c: Config; i: number }) {
   const join = (other: System) => {
     const j = c.systems.indexOf(other);
     const dropped = SYSTEM_OWN.filter(([k]) => other[k] !== undefined && other[k] !== "" && JSON.stringify(other[k]) !== JSON.stringify(sys[k])).map(([, w]) => w);
+    // Its talkgroup file comes along if this one has none.
+    const [theirs, mine] = [app.talkgroups[other.shortName], app.talkgroups[sys.shortName]];
+    if (theirs && mine && theirs !== mine) dropped.push("talkgroup file");
     const n = other.sites.length;
     const ask =
       `Make ${other.shortName} a site${n === 1 ? "" : "s"} of ${sys.shortName}? ` +
@@ -1893,7 +1900,9 @@ function SystemCard(props: { c: Config; i: number }) {
       if (from.enabled) to.enabled = true;
       // Plugin settings that named it name this one.
       renameSystemRefs(x, from.shortName, to.shortName, plugins);
+      if (!mine) moveTalkgroups(from.shortName, to.shortName);
       x.systems.splice(j, 1);
+      forgetTalkgroups(x, from.shortName);
     });
     setNotice(`${other.shortName} is a part of ${sys.shortName} now.`);
   };
@@ -1953,9 +1962,7 @@ function SystemCard(props: { c: Config; i: number }) {
             value={sys.shortName}
             onChange={(e) => {
               const to = cleanShortName(e.target.value);
-              // Plugin settings that name it follow it.
-              moveTalkgroups(sys.shortName, to);
-              updateConfig((x) => renameSystem(x, i, to, plugins));
+              updateConfig((x) => renameSystem(x, x.systems[i], to));
             }}
           />
         </Field>

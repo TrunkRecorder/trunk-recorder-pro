@@ -2,7 +2,7 @@
 // systems set up apart that are one on the air. `npm test`.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { activeSites, defaultConfig, importTrunkRecorderConfig, nameProblem, newSiteName, newSystem, normalizeSystem, resolvedCenters, sameOnTheAir, siteNameOf, startProblem } from "./config.ts";
+import { activeSites, defaultConfig, importTrunkRecorderConfig, nameProblem, newSiteName, newSystem, normalizeSystem, planCenters, resolvedCenters, usableHalfWidth, sameOnTheAir, siteNameOf, startProblem } from "./config.ts";
 import type { Config, Identity, SiteStatus, SystemStatus } from "./protocol.ts";
 
 test("normalizeSystem: an older config's system gets its site; a system with sites keeps them", () => {
@@ -67,4 +67,16 @@ test("startProblem and resolvedCenters are the recorder's own (rules.ts)", () =>
   // A rule only the recorder had before: the RTL-SDR's USB transfer size.
   (c.sources[0] as { bufLen?: number }).bufLen = 1000;
   assert.match(startProblem(c) ?? "", /multiple of 512/);
+});
+
+test("the first-run guide places radios with the recorder's planner: the busiest channels, a capture file left alone", () => {
+  const rtl = { rateHz: 2_400_000 };
+  const voice = [
+    { hz: 854_000_000, weight: 50 },
+    { hz: 854_500_000, weight: 40 },
+  ];
+  const [first, second, file] = planCenters([rtl, rtl, { ...rtl, fixedHz: 860_000_000 }], 0, 851_400_000, [851_000_000], voice);
+  assert.equal(first, 851_400_000);
+  assert.ok(second !== null && voice.every((v) => Math.abs(v.hz - second) <= usableHalfWidth(rtl.rateHz) && Math.abs(v.hz - second) >= 25_000), String(second));
+  assert.equal(file, 860_000_000);
 });

@@ -35,9 +35,3 @@ export function renameSystemRefs(x: Config, from: string, to: string, plugins: P
   }
 }
 
-/** Rename trunked system `i` (`x.systems[i]`) to `to`: plugin settings that name it follow. Changes `x`. */
-export function renameSystem(x: Config, i: number, to: string, plugins: PluginInfo[]): void {
-  renameSystemRefs(x, x.systems[i].shortName, to, plugins);
-  x.systems[i].shortName = to;
-}
-
