@@ -5,6 +5,25 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-10-18
+
+A release with breaking changes, for interface and plugin authors more than for recording. An
+older config is upgraded when it's read (its talkgroups are moved into files beside it), and
+recording carries on as before. What to know before upgrading:
+
+- **Update your plugins** from the Plugins page once the recorder is upgraded: the plugins in the
+  store are rebuilt on plugin SDK 0.5.0 (OpenMHz 0.1.6, Broadcastify 0.1.6, Rdio Scanner 0.1.5,
+  simplestream 0.1.5, Upload script 0.1.4, MQTT 0.1.7). Systems are numbered from 0 now,
+  conventional ones too, and the call record names every field, so an older MQTT plugin would
+  report a call's signal, noise and frequency error as 0.
+- **Interfaces** that use `setConfig`, the talkgroups, the store messages or a site's identity
+  need a version made for this one (Trunk City 2000 0.4.0 is; Trunk-tris needs no change).
+- **A config written by hand** with a choice the recorder doesn't list (a system `type` of
+  "P25x", say) is refused when it's read, where it used to fall back to the default without a
+  word.
+- **The dashboard needs a browser with WebAssembly SIMD** (Safari 16.4, Chrome 91, Firefox 89 or
+  later).
+
 - **Talkgroup files live beside the config, not in it** (breaking for interface authors). A system's
   talkgroup file (Trunk Recorder's CSV format) is `<shortName>.talkgroups.csv` in the config's
   folder, and `talkgroupsCsv` / `talkgroupsName` are gone from the config, so editing one no longer

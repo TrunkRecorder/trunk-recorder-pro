@@ -8,28 +8,28 @@
       "repository": "https://github.com/TrunkRecorder/trunk-city-2000",
       "license": "MIT",
       "tier": "official",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "api": 1,
       "access": "listen",
-      "tag": "v0.3.0",
-      "commit": "9c27a91f69deca4ff535a8af95789db29cdc49b1",
+      "tag": "v0.4.0",
+      "commit": "d6ee7958fa9f9c630fc2f581cff5afa3f50d7dc6",
       "asset": {
-        "url": "https://github.com/TrunkRecorder/trunk-city-2000/releases/download/v0.3.0/trunk-city-2000-0.3.0.zip",
-        "sha256": "9d03f431fec1d2338cc0c2d057c6f98fb02796d9634790a2c56d3a996436fae3"
+        "url": "https://github.com/TrunkRecorder/trunk-city-2000/releases/download/v0.4.0/trunk-city-2000-0.4.0.zip",
+        "sha256": "e59d0de54159f0287f4a67bf9db47f410f74567ca8c7cc22d7947d1686c521e1"
       },
       "screenshots": [
         {
-          "url": "https://github.com/TrunkRecorder/trunk-city-2000/releases/download/v0.3.0/trunk-city-2000-0.3.0-main.png",
+          "url": "https://github.com/TrunkRecorder/trunk-city-2000/releases/download/v0.4.0/trunk-city-2000-0.4.0-main.png",
           "sha256": "2288a20258a874e0f300e3efb6fe2010e2019bcdd2e7d86b2ba617f3451cd451",
           "caption": "Radios on the air as vehicles and buildings, glowing with their names while they talk"
         },
         {
-          "url": "https://github.com/TrunkRecorder/trunk-city-2000/releases/download/v0.3.0/trunk-city-2000-0.3.0-quad.png",
+          "url": "https://github.com/TrunkRecorder/trunk-city-2000/releases/download/v0.4.0/trunk-city-2000-0.4.0-quad.png",
           "sha256": "82c94e83627b608112376aa08909a5062efecfcbaf34c6b48d0692212b50325d",
           "caption": "Four systems at once, each with its own headlines"
         },
         {
-          "url": "https://github.com/TrunkRecorder/trunk-city-2000/releases/download/v0.3.0/trunk-city-2000-0.3.0-planning.png",
+          "url": "https://github.com/TrunkRecorder/trunk-city-2000/releases/download/v0.4.0/trunk-city-2000-0.4.0-planning.png",
           "sha256": "bec1316b54ee22aa6f4f28380f205777120382ca0414ef8dda17a04714a19eed",
           "caption": "City Planning: which systems and talkgroups count, and what each one is"
         }

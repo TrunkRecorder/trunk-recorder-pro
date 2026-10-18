@@ -136,7 +136,7 @@ Add the crate and `schemars` (for the settings form):
 
 ```toml
 [dependencies]
-trunk-recorder-plugin = "0.2.1"
+trunk-recorder-plugin = "0.5.0"
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
