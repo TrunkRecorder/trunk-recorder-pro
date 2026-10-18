@@ -42,7 +42,7 @@ use super::voice::TrackerOut;
 use super::units::{UnitAlias, UnitAliases, UnitTags};
 use super::identity::Identity;
 use super::control::{self, CarrierPlan, ControlChannel, Protocol, ProtocolStatus, Step};
-use super::voice::{self, CipherId, VoiceDecoder, VoiceParams, VoiceSpec};
+use super::voice::{self, ChannelQuality, CipherId, VoiceDecoder, VoiceParams, VoiceSpec};
 use crate::alias::Alias;
 use crate::dsp::channelizer::floor_slices;
 use crate::dsp::{AnalogTuning, Channelizer, HeadId};
@@ -366,19 +366,40 @@ pub struct ChannelSnapshot {
     pub site: Option<u16>,
     pub freq_hz: u64,
     pub source: usize,
-    /// "control" | "voice" | "carrier" (a DMR site's) | "conventional"
-    pub kind: &'static str,
+    pub kind: ChannelKind,
     /// The power in the channel and the noise floor under it, dBFS per FFT bin.
     pub power_db: f64,
     pub noise_db: f64,
     /// How far above the channel the carrier is, Hz, when a receiver can tell.
     pub offset_hz: Option<f32>,
-    /// The receiver's eye opening (C4FM / DMR 4FSK; see [`crate::dsp::Receiver::quality`]).
-    pub quality: Option<f32>,
-    /// CQPSK's phase error, RMS degrees (see [`crate::dsp::cqpsk::Cqpsk::phase_error_deg`]).
-    pub phase_err: Option<f32>,
+    /// How well its receiver hears it.
+    pub quality: ChannelQuality,
     /// Calls on it now.
     pub calls: usize,
+}
+
+/// What a channel is to the engine ([`ChannelSnapshot`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ChannelKind {
+    /// A site's control channel (a DMR site's: the one control is on now).
+    #[default]
+    Control,
+    /// Another carrier a DMR / NXDN site's channels are watched on.
+    Carrier,
+    Voice,
+    Conventional,
+}
+
+impl ChannelKind {
+    /// As the dashboard names it.
+    pub fn name(self) -> &'static str {
+        match self {
+            ChannelKind::Control => "control",
+            ChannelKind::Carrier => "carrier",
+            ChannelKind::Voice => "voice",
+            ChannelKind::Conventional => "conventional",
+        }
+    }
 }
 
 /// A channel [`Engine::channels`] measures on its source, and what the engine knows of it.
@@ -388,10 +409,9 @@ struct Want {
     site: Option<u16>,
     hz: f64,
     src: usize,
-    kind: &'static str,
+    kind: ChannelKind,
     offset_hz: Option<f32>,
-    quality: Option<f32>,
-    phase_err: Option<f32>,
+    quality: ChannelQuality,
     calls: usize,
 }
 
@@ -405,21 +425,6 @@ fn slice_at(p: &[f64], s: &Source, hz: f64) -> f64 {
     let off = hz - s.cfg.center_hz;
     let i = ((off + s.cfg.rate_hz / 2.0) / s.cfg.rate_hz * p.len() as f64).floor().clamp(0.0, p.len() as f64 - 1.0) as usize;
     p[i]
-}
-
-/// Picks the receiver quality out of a report.
-/// The eye opening (`sep`) and phase error (`phaseErr`) from a report.
-#[derive(Default)]
-struct Quality(Option<f32>, Option<f32>);
-impl Sink for Quality {
-    fn counter(&mut self, _: &str, _: u64) {}
-    fn gauge(&mut self, name: &str, value: f64) {
-        match name {
-            "sep" => self.0 = Some(value as f32),
-            "phaseErr" => self.1 = Some(value as f32),
-            _ => {}
-        }
-    }
 }
 
 /// A source's frequency error (Trunk Recorder's autoTune report).
@@ -1500,18 +1505,16 @@ impl Core {
             let plan = t.cc().plan();
             if let CarrierPlan::Watch { carriers, .. } = plan {
                 for (&hz, &(src, _, _)) in carriers.iter().zip(&t.carriers) {
-                    control.push(Want { system: t.system, site: Some(t.site), hz, src, kind: if Some(hz.round() as u64) == t.cc_hz { "control" } else { "carrier" }, ..Default::default() });
+                    control.push(Want { system: t.system, site: Some(t.site), hz, src, kind: if Some(hz.round() as u64) == t.cc_hz { ChannelKind::Control } else { ChannelKind::Carrier }, ..Default::default() });
                 }
                 continue;
             }
             let Some(hz) = t.cc_hz.filter(|_| t.cc_head.is_some()) else { continue };
-            let mut q = Quality::default();
-            let offset_hz = {
+            let (offset_hz, quality) = {
                 let c = t.cc();
-                c.report(&mut q);
-                c.offset_hz()
+                (c.offset_hz(), c.quality())
             };
-            control.push(Want { system: t.system, site: Some(t.site), hz: hz as f64, src: t.cc_source, kind: "control", offset_hz, quality: q.0, phase_err: q.1, calls: 0 });
+            control.push(Want { system: t.system, site: Some(t.site), hz: hz as f64, src: t.cc_source, kind: ChannelKind::Control, offset_hz, quality, calls: 0 });
         }
         let conv = self
             .cfg
@@ -1520,7 +1523,7 @@ impl Core {
             .filter_map(|c| {
                 let src = self.radio.source_for(c.freq_hz)?;
                 let calls = self.conv.calls().filter(|k| (k.freq_hz as f64 - c.freq_hz).abs() < 1.0).count();
-                Some(Want { system: c.system as u16, site: None, hz: c.freq_hz, src, kind: "conventional", calls, ..Default::default() })
+                Some(Want { system: c.system as u16, site: None, hz: c.freq_hz, src, kind: ChannelKind::Conventional, calls, ..Default::default() })
             })
             .collect();
         (control, conv)
@@ -2033,7 +2036,6 @@ impl Engine {
                 noise_db: metrics::bin_dbfs(slice_at(profile, s, w.hz), n),
                 offset_hz: w.offset_hz,
                 quality: w.quality,
-                phase_err: w.phase_err,
                 calls: w.calls,
             }
         };
@@ -2047,10 +2049,8 @@ impl Engine {
                 *o = Some(snap(&r.src, &profile, w));
             }
             for ch in r.channels.values() {
-                let mut q = Quality::default();
-                ch.voice.report(&mut q);
                 let system = self.shared.site_systems[ch.site as usize];
-                let w = Want { system, site: Some(ch.site), hz: ch.freq_hz, src, kind: "voice", offset_hz: ch.voice.offset_hz(), quality: q.0, phase_err: q.1, calls: ch.calls.iter().flatten().count() };
+                let w = Want { system, site: Some(ch.site), hz: ch.freq_hz, src, kind: ChannelKind::Voice, offset_hz: ch.voice.offset_hz(), quality: ch.voice.quality(), calls: ch.calls.iter().flatten().count() };
                 voice.push(snap(&r.src, &profile, &w));
             }
         }

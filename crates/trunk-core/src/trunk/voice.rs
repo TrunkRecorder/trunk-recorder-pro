@@ -35,7 +35,6 @@ use crate::dsp::{AnalogTuning, Receiver, Symbol};
 use crate::mbe;
 use crate::nxdn::voice::{NxdnVoice, VCH_S};
 use crate::nxdn::Rate;
-use crate::metrics::{Instrumented, Sink};
 use crate::p25::alias::AliasLc;
 use crate::p25::crypt::Keyring;
 use crate::p25::diversity::{best_frame, Bank, BankConfig, Group};
@@ -234,10 +233,19 @@ pub trait VoiceDecoder: Send {
     fn carrier(&self) -> Option<bool> {
         None
     }
-    /// Its receivers' measurements for the dashboard (the eye opening as
-    /// `sep`, CQPSK's phase error as `phaseErr`; see [`crate::metrics`]).
-    /// Default: none.
-    fn report(&self, _sink: &mut dyn Sink) {}
+    /// How well its receiver hears the channel (the dashboard's): default, nothing measured.
+    fn quality(&self) -> ChannelQuality {
+        ChannelQuality::default()
+    }
+}
+
+/// How well a receiver hears its channel, as the dashboard shows it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ChannelQuality {
+    /// The eye opening (C4FM / DMR / NXDN 4FSK; see [`crate::dsp::Receiver::quality`]).
+    pub sep: Option<f32>,
+    /// CQPSK's phase error, RMS degrees (see [`crate::dsp::cqpsk::Cqpsk::phase_error_deg`]).
+    pub phase_err_deg: Option<f32>,
 }
 
 /// Make the decoder for `spec.kind`.
@@ -326,8 +334,8 @@ impl VoiceDecoder for P25Fdma {
     fn set_keys(&mut self, keys: Option<Arc<Keyring>>) {
         self.tracker.set_keys(keys);
     }
-    fn report(&self, sink: &mut dyn Sink) {
-        self.bank.report(sink);
+    fn quality(&self) -> ChannelQuality {
+        self.bank.quality()
     }
     fn push(&mut self, iq: &[Complex32], out: &mut Vec<VoiceOut>) {
         (self.nac, self.air) = (None, None);
@@ -373,10 +381,8 @@ impl VoiceDecoder for P25Tdma {
     fn set_keys(&mut self, keys: Option<Arc<Keyring>>) {
         self.tracker.set_keys(keys);
     }
-    fn report(&self, sink: &mut dyn Sink) {
-        if let Some(e) = self.rx.phase_error_deg() {
-            sink.gauge("phaseErr", e as f64);
-        }
+    fn quality(&self) -> ChannelQuality {
+        ChannelQuality { sep: None, phase_err_deg: self.rx.phase_error_deg() }
     }
     fn push(&mut self, iq: &[Complex32], out: &mut Vec<VoiceOut>) {
         self.syms.clear();
@@ -416,10 +422,8 @@ impl VoiceDecoder for Dmr {
     fn kind(&self) -> VoiceKind {
         VoiceKind::Dmr
     }
-    fn report(&self, sink: &mut dyn Sink) {
-        if let Some(q) = self.rx.quality() {
-            sink.gauge("sep", q as f64);
-        }
+    fn quality(&self) -> ChannelQuality {
+        ChannelQuality { sep: self.rx.quality(), phase_err_deg: None }
     }
     fn push(&mut self, iq: &[Complex32], out: &mut Vec<VoiceOut>) {
         self.air = [None; 2];
@@ -459,10 +463,8 @@ impl VoiceDecoder for Nxdn {
     fn kind(&self) -> VoiceKind {
         VoiceKind::Nxdn(self.nxdn)
     }
-    fn report(&self, sink: &mut dyn Sink) {
-        if let Some(q) = self.rx.quality() {
-            sink.gauge("sep", q as f64);
-        }
+    fn quality(&self) -> ChannelQuality {
+        ChannelQuality { sep: self.rx.quality(), phase_err_deg: None }
     }
     fn push(&mut self, iq: &[Complex32], out: &mut Vec<VoiceOut>) {
         self.air = None;

@@ -302,6 +302,22 @@ impl Bank {
 /// syncs found, NIDs that failed, frames carried over a missed sync
 /// (flywheel), CQPSK equaliser resets — the C4FM receiver's eye opening and
 /// the lead CQPSK receiver's phase error.
+impl Bank {
+    /// The running C4FM receiver's eye opening, and the lead CQPSK receiver's phase error.
+    pub fn quality(&self) -> crate::trunk::voice::ChannelQuality {
+        crate::trunk::voice::ChannelQuality {
+            sep: self.rx.iter().filter(|r| self.running(r)).find_map(|r| match &r.demod {
+                Demod::Other(d) => d.quality(),
+                Demod::Cqpsk(_) => None,
+            }),
+            phase_err_deg: self.rx.iter().filter(|r| self.running(r)).find_map(|r| match &r.demod {
+                Demod::Cqpsk(c) => c.phase_error_deg(),
+                Demod::Other(_) => None,
+            }),
+        }
+    }
+}
+
 impl Instrumented for Bank {
     fn report(&self, sink: &mut dyn Sink) {
         let (mut syncs, mut nid_fails, mut flywheels, mut eq_resets) = (0, 0, 0, 0);
@@ -318,16 +334,11 @@ impl Instrumented for Bank {
         sink.counter("flywheels", flywheels);
         sink.counter("eqResets", eq_resets);
         sink.counter("frames", self.groups);
-        if let Some(q) = self.rx.iter().filter(|r| self.running(r)).find_map(|r| match &r.demod {
-            Demod::Other(d) => d.quality(),
-            Demod::Cqpsk(_) => None,
-        }) {
+        let q = self.quality();
+        if let Some(q) = q.sep {
             sink.gauge("sep", q as f64);
         }
-        if let Some(e) = self.rx.iter().filter(|r| self.running(r)).find_map(|r| match &r.demod {
-            Demod::Cqpsk(c) => c.phase_error_deg(),
-            Demod::Other(_) => None,
-        }) {
+        if let Some(e) = q.phase_err_deg {
             sink.gauge("phaseErr", e as f64);
         }
         if let Some(off) = self.offset_hz() {

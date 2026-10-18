@@ -138,6 +138,10 @@ pub trait ControlChannel: Send {
     /// Its receivers' measurements for the dashboard's history (framing,
     /// eye opening, deviation…; see [`crate::metrics`]). Default: none.
     fn report(&self, _sink: &mut dyn Sink) {}
+    /// How well its receiver hears the control channel (the dashboard's).
+    fn quality(&self) -> super::voice::ChannelQuality {
+        Default::default()
+    }
 }
 
 /// The control channel for system `cfg`; `rate` is a channel's sample rate.
@@ -230,6 +234,9 @@ impl P25 {
 impl ControlChannel for P25 {
     fn name(&self) -> &'static str {
         "P25"
+    }
+    fn quality(&self) -> super::voice::ChannelQuality {
+        self.bank.quality()
     }
     fn report(&self, sink: &mut dyn Sink) {
         self.bank.report(sink);

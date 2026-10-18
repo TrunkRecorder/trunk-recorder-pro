@@ -117,7 +117,7 @@ trait, fm.rs / am.rs push signatures. Conventional's tests run through
 - [ ] Carry `VoiceOut.t` through `routed` / `pending` and use it for transmissions, timeouts and `audio_lead`; set `Trunk.now_s = dsp.time` in both modes and delete `cc_start_s`, `cc_samples`, `cc_offset_s`, `TapTime` (or delete `t` and say the control channel's clock is authoritative)
 - [ ] `enum Listening { Hunting { source, head, index, hz, ppm, … }, Watching(Vec<Carrier>) }` decided once in `Trunk::start`; `plan()` becomes `Copy` and is fetched once (today re-asked on every `measure()` and `channels()`)
 - [ ] `apply_pending`: resolve `(trunk, recording, call)` once per `(site, id)` and dispatch (today up to three linear scans per output)
-- [ ] `Quality` sink used as an RPC (`report()` fished by series name) → `VoiceDecoder::quality() -> ChannelQuality`; `ChannelSnapshot.kind` and `modulation()` as enums, not `&'static str`
+- [x] `Quality` sink used as an RPC (`report()` fished by series name) → `VoiceDecoder::quality() -> ChannelQuality`; `ChannelSnapshot.kind` and `modulation()` as enums, not `&'static str` — done: `VoiceDecoder::quality()` / `ControlChannel::quality()` → `ChannelQuality { sep, phase_err_deg }` (the voice decoders' `report` went: it was only fished for these); `ChannelKind` enum. `modulation()` stays a name: it's what the interface shows ("CQPSK", a DMR variant), an enum would only map back
 
 **Evidence.** `Radio.chans` mirrors `SourceRx.channels[key].calls` and is
 hand-synced in `open_channel` and `release`, which take the source lock

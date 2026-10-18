@@ -408,10 +408,10 @@ impl Stats {
         let ch_json = |c: &trunk_core::trunk::ChannelSnapshot| {
             let (system, site) = site_names(c.system, c.site);
             json!({
-                "system": system, "site": if site.is_empty() { None } else { Some(site) }, "freqHz": c.freq_hz, "source": c.source, "kind": c.kind,
+                "system": system, "site": if site.is_empty() { None } else { Some(site) }, "freqHz": c.freq_hz, "source": c.source, "kind": c.kind.name(),
                 "powerDb": r1(c.power_db), "noiseDb": r1(c.noise_db), "snrDb": r1(c.power_db - c.noise_db),
-                "offsetHz": c.offset_hz.map(|v| v.round()), "quality": c.quality.map(|v| r1(v as f64)),
-                "phaseErrDeg": c.phase_err.map(|v| r1(v as f64)), "calls": c.calls,
+                "offsetHz": c.offset_hz.map(|v| v.round()), "quality": c.quality.sep.map(|v| r1(v as f64)),
+                "phaseErrDeg": c.quality.phase_err_deg.map(|v| r1(v as f64)), "calls": c.calls,
             })
         };
         for i in rf {
