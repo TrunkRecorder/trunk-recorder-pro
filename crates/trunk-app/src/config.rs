@@ -152,15 +152,49 @@ pub enum Source {
     },
 }
 
-/// How an Airspy's gain is set: libairspy's linearity or sensitivity
-/// tables (one 0..21 step for all three stages), or each stage by hand.
-#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum AirspyGain {
-    #[default]
-    Linearity,
-    Sensitivity,
-    Manual,
+/// A closed choice: each variant with its names in the config (the first is
+/// how it is saved), read in any case; "" reads as the default (the variant
+/// marked so).
+macro_rules! choice {
+    ($(#[$m:meta])* pub enum $name:ident { $( $(#[$vm:meta])* $v:ident = $($lit:literal)|+ ),+ $(,)? }) => {
+        $(#[$m])*
+        #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+        pub enum $name { $( $(#[$vm])* $v ),+ }
+        impl $name {
+            /// As the config writes it.
+            pub fn name(self) -> &'static str {
+                match self { $( $name::$v => choice!(@first $($lit)|+) ),+ }
+            }
+        }
+        impl Serialize for $name {
+            fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+                s.serialize_str(self.name())
+            }
+        }
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+                let text = String::deserialize(d)?;
+                let t = text.trim();
+                if t.is_empty() {
+                    return Ok(Self::default());
+                }
+                $( if $( t.eq_ignore_ascii_case($lit) )||+ { return Ok($name::$v); } )+
+                Err(serde::de::Error::unknown_variant(t, &[$( choice!(@first $($lit)|+) ),+]))
+            }
+        }
+    };
+    (@first $first:literal $(| $rest:literal)*) => { $first };
+}
+
+choice! {
+    /// How an Airspy's gain is set: libairspy's linearity or sensitivity
+    /// tables (one 0..21 step for all three stages), or each stage by hand.
+    pub enum AirspyGain {
+        #[default]
+        Linearity = "linearity",
+        Sensitivity = "sensitivity",
+        Manual = "manual",
+    }
 }
 
 fn guard_default() -> f64 {
@@ -176,17 +210,17 @@ fn airspy_stage() -> u8 {
     10
 }
 
-/// Sample format of a capture file.
-#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum SampleFormat {
-    /// Unsigned 8-bit I/Q (rtl_sdr).
-    #[default]
-    Cu8,
-    /// Signed 16-bit I/Q, little-endian.
-    Cs16,
-    /// 32-bit float I/Q, little-endian (GNU Radio "complex", UHD fc32).
-    Cf32,
+choice! {
+    /// Sample format of a capture file.
+    pub enum SampleFormat {
+        /// Unsigned 8-bit I/Q (rtl_sdr).
+        #[default]
+        Cu8 = "cu8",
+        /// Signed 16-bit I/Q, little-endian.
+        Cs16 = "cs16",
+        /// 32-bit float I/Q, little-endian (GNU Radio "complex", UHD fc32).
+        Cf32 = "cf32",
+    }
 }
 
 impl SampleFormat {
@@ -381,75 +415,59 @@ fn is_default<T: Default + PartialEq>(v: &T) -> bool {
     *v == T::default()
 }
 
-// The config's closed choices: a value not listed is an error when the file
-// is read, as a wrong type is (an empty string, where one meant "the
-// default", still reads as the default).
+// The config's closed choices ([`choice!`]): a value not listed is an error
+// when the file is read, as a wrong type is.
 
-/// A trunked system's protocol (`type`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum SystemKind {
-    #[default]
-    #[serde(alias = "")]
-    P25,
-    Smartnet,
-    Dmr,
-    Nxdn,
-}
 
-impl SystemKind {
-    pub fn name(self) -> &'static str {
-        match self {
-            SystemKind::P25 => "p25",
-            SystemKind::Smartnet => "smartnet",
-            SystemKind::Dmr => "dmr",
-            SystemKind::Nxdn => "nxdn",
-        }
+choice! {
+    /// A trunked system's protocol (`type`).
+    pub enum SystemKind {
+        #[default]
+        P25 = "p25",
+        Smartnet = "smartnet",
+        Dmr = "dmr",
+        Nxdn = "nxdn",
     }
 }
 
-/// SmartNet: the voice of a talkgroup never heard granted.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum SmartnetMode {
-    /// P25.
-    #[default]
-    #[serde(alias = "")]
-    Digital,
-    Analog,
+choice! {
+    /// SmartNet: the voice of a talkgroup never heard granted.
+    pub enum SmartnetMode {
+        /// P25.
+        #[default]
+        Digital = "digital",
+        Analog = "analog",
+    }
 }
 
-/// NXDN: a site with a control channel, or IDAS distributed (every repeater listed).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum NxdnType {
-    #[default]
-    #[serde(rename = "typeC", alias = "")]
-    TypeC,
-    #[serde(rename = "typeD")]
-    TypeD,
+choice! {
+    /// NXDN: a site with a control channel, or IDAS distributed (every repeater listed).
+    pub enum NxdnType {
+        #[default]
+        TypeC = "typeC",
+        TypeD = "typeD",
+    }
 }
 
-/// A site's receivers: detect which decodes, or one of them only.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Modulation {
-    #[default]
-    #[serde(alias = "")]
-    Auto,
-    /// C4FM.
-    Fsk4,
-    /// CQPSK (simulcast).
-    Qpsk,
+choice! {
+    /// A site's receivers: detect which decodes, or one of them only.
+    pub enum Modulation {
+        #[default]
+        Auto = "auto",
+        /// C4FM.
+        Fsk4 = "fsk4",
+        /// CQPSK (simulcast).
+        Qpsk = "qpsk",
+    }
 }
 
-/// NXDN: a control channel's (Type-D: the repeaters') rate.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum NxdnRate {
-    #[default]
-    #[serde(alias = "")]
-    Nxdn48,
-    Nxdn96,
+choice! {
+    /// NXDN: a control channel's (Type-D: the repeaters') rate.
+    pub enum NxdnRate {
+        #[default]
+        Nxdn48 = "nxdn48" | "48" | "4800",
+        Nxdn96 = "nxdn96" | "96" | "9600",
+    }
 }
 
 impl NxdnRate {
@@ -461,17 +479,16 @@ impl NxdnRate {
     }
 }
 
-/// The IMBE vocoder for P25 Phase 1 voice.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Vocoder {
-    /// Pavel Yazev's fixed-point decoder (Trunk Recorder's softVocoder false).
-    #[default]
-    #[serde(alias = "fixed-point", alias = "")]
-    Fixed,
-    /// Trunk Recorder's float synthesis.
-    Enhanced,
-    Mbelib,
+choice! {
+    /// The IMBE vocoder for P25 Phase 1 voice.
+    pub enum Vocoder {
+        /// Pavel Yazev's fixed-point decoder (Trunk Recorder's softVocoder false).
+        #[default]
+        Fixed = "fixed" | "fixed-point",
+        /// Trunk Recorder's float synthesis.
+        Enhanced = "enhanced",
+        Mbelib = "mbelib",
+    }
 }
 
 impl Vocoder {
@@ -484,43 +501,29 @@ impl Vocoder {
     }
 }
 
-/// What encodes M4A: the first found, one of them, or none.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum M4aEncoder {
-    #[default]
-    #[serde(alias = "")]
-    Auto,
-    Ffmpeg,
-    Afconvert,
-    Fdkaac,
-    None,
-}
-
-impl M4aEncoder {
-    pub fn name(self) -> &'static str {
-        match self {
-            M4aEncoder::Auto => "auto",
-            M4aEncoder::Ffmpeg => "ffmpeg",
-            M4aEncoder::Afconvert => "afconvert",
-            M4aEncoder::Fdkaac => "fdkaac",
-            M4aEncoder::None => "none",
-        }
+choice! {
+    /// What encodes M4A: the first found, one of them, or none.
+    pub enum M4aEncoder {
+        #[default]
+        Auto = "auto",
+        Ffmpeg = "ffmpeg",
+        Afconvert = "afconvert",
+        Fdkaac = "fdkaac",
+        None = "none",
     }
 }
 
-/// Which names a radio gets (Trunk Recorder's unitTagsMode).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum UnitNamesMode {
-    /// These names first, then the talker aliases heard.
-    #[default]
-    #[serde(alias = "")]
-    User,
-    /// The aliases heard first.
-    Ota,
-    UserOnly,
-    None,
+choice! {
+    /// Which names a radio gets (Trunk Recorder's unitTagsMode).
+    pub enum UnitNamesMode {
+        /// These names first, then the talker aliases heard.
+        #[default]
+        User = "user",
+        /// The aliases heard first.
+        Ota = "ota",
+        UserOnly = "user_only",
+        None = "none",
+    }
 }
 
 impl UnitNamesMode {
@@ -534,18 +537,17 @@ impl UnitNamesMode {
     }
 }
 
-/// ANSI colour in the log (Trunk Recorder's logColor).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum LogColor {
-    /// The console's when it is a terminal and NO_COLOR isn't set.
-    #[default]
-    #[serde(rename = "")]
-    Auto,
-    Console,
-    Logfile,
-    All,
-    None,
+choice! {
+    /// ANSI colour in the log (Trunk Recorder's logColor).
+    pub enum LogColor {
+        /// The console's when it is a terminal and NO_COLOR isn't set.
+        #[default]
+        Auto = "",
+        Console = "console",
+        Logfile = "logfile",
+        All = "all",
+        None = "none",
+    }
 }
 
 impl System {
@@ -868,12 +870,12 @@ pub struct Demod {
     pub squelch_hang_ms: Option<f64>,
 }
 
-#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum AmLevel {
-    #[default]
-    Fast,
-    Slow,
+choice! {
+    pub enum AmLevel {
+        #[default]
+        Fast = "fast",
+        Slow = "slow",
+    }
 }
 
 /// The ranges [`Config::problem`] accepts (the interface's too).
@@ -927,22 +929,22 @@ impl Demod {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum ChannelMode {
-    /// Analog FM (narrowband unless its bandwidth says wide).
-    #[default]
-    Fm,
-    /// Analog AM (airband).
-    Am,
-    /// P25 Phase 1.
-    P25,
-    /// DMR (both slots).
-    Dmr,
-    /// NXDN at 4800 bps (6.25 kHz).
-    Nxdn48,
-    /// NXDN at 9600 bps (12.5 kHz).
-    Nxdn96,
+choice! {
+    pub enum ChannelMode {
+        /// Analog FM (narrowband unless its bandwidth says wide).
+        #[default]
+        Fm = "fm",
+        /// Analog AM (airband).
+        Am = "am",
+        /// P25 Phase 1.
+        P25 = "p25",
+        /// DMR (both slots).
+        Dmr = "dmr",
+        /// NXDN at 4800 bps (6.25 kHz).
+        Nxdn48 = "nxdn48",
+        /// NXDN at 9600 bps (12.5 kHz).
+        Nxdn96 = "nxdn96",
+    }
 }
 
 impl ChannelMode {
@@ -1651,6 +1653,9 @@ impl Config {
     /// defaults when there's no file yet. A file that isn't a config is an
     /// error, not the defaults (which would be saved over it).
     pub fn load(path: &Path) -> Result<Config, String> {
+        // An older config's talkgroup files are written beside it first: whoever
+        // reads it (the desktop app, its command lines) then saves it without them.
+        crate::migrate::move_talkgroups(path).map_err(|e| format!("{}: couldn't move its talkgroup files out of it ({e})", path.display()))?;
         let mut c: Config = match std::fs::read_to_string(path) {
             Ok(s) => Config::from_json(&s).map_err(|e| format!("{}: not a config this version reads ({e})", path.display()))?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Config::default(),
@@ -2635,5 +2640,29 @@ mod tests {
         assert_eq!(back["multisite"]["window"], 3);
         assert_eq!(serde_json::from_value::<Config>(back.clone()).unwrap(), c);
         assert!(back["conventional"][0].get("channelFileStatus").is_none(), "an empty status isn't written");
+    }
+
+    #[test]
+    fn a_closed_choice_reads_in_any_case_and_is_saved_in_its_own() {
+        let c = Config::from_json(r#"{ "systems": [{ "shortName": "a", "type": "P25", "sites": [{ "controlChannelsHz": [1], "modulation": "QPSK" }], "unitNames": { "mode": " OTA " } }],
+            "conventional": [{ "shortName": "c", "channels": [{ "freqHz": 1, "mode": "NXDN48" }] }], "recording": { "vocoder": "Fixed-Point", "m4a": { "encoder": "FFmpeg" } } }"#).unwrap();
+        assert_eq!((c.systems[0].kind, c.systems[0].sites[0].modulation, c.systems[0].unit_names.mode), (SystemKind::P25, Modulation::Qpsk, UnitNamesMode::Ota));
+        assert_eq!((c.conventional[0].channels[0].mode, c.recording.vocoder, c.recording.m4a.encoder), (ChannelMode::Nxdn48, Vocoder::Fixed, M4aEncoder::Ffmpeg));
+        let saved = serde_json::to_string(&c).unwrap();
+        assert!(saved.contains(r#""type":"p25""#) && saved.contains(r#""modulation":"qpsk""#) && saved.contains(r#""mode":"ota""#) && saved.contains(r#""vocoder":"fixed""#), "{saved}");
+        let e = Config::from_json(r#"{ "systems": [{ "shortName": "a", "type": "p26" }] }"#).unwrap_err().to_string();
+        assert!(e.contains("p26") && e.contains("smartnet"), "names the value and the choices: {e}");
+    }
+
+    #[test]
+    fn loading_an_older_config_writes_its_talkgroup_files_beside_it() {
+        let dir = std::env::temp_dir().join(format!("trunk-load-tg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(&path, r#"{ "systems": [{ "shortName": "a", "sites": [{ "controlChannelsHz": [1] }], "talkgroupsCsv": "1,a" }] }"#).unwrap();
+        let c = Config::load(&path).unwrap();
+        assert_eq!(std::fs::read_to_string(talkgroups_path(&dir, "a")).unwrap(), "1,a", "the file is there before the config is saved back without it");
+        assert!(!serde_json::to_string(&c).unwrap().contains("talkgroupsCsv"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

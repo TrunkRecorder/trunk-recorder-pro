@@ -155,8 +155,11 @@ impl Ctx {
         for a in add {
             *t.entry(a.clone()).or_default() += 1;
         }
+        // (The snapshot is taken under the lock: the engine hears the changes in their order.)
+        let topics = trunk_app::stats::Topics::new(t.keys().cloned());
+        crate::logging::log_watched(t.contains_key("log"));
         drop(t);
-        self.tell_engine(EngineCmd::Topics(self.topics()));
+        self.tell_engine(EngineCmd::Topics(topics));
     }
 
     /// Tell the recording's engine thread, if there is one.
@@ -402,10 +405,16 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
         }
     }
     let (ctx2, stop2) = (ctx.clone(), stop.clone());
-    let spawned = std::thread::Builder::new().name("engine".into()).spawn(move || engine_thread(ctx2, cfg, session, queues, stop2, (epoch_ms, epoch_at)));
+    // The engine's commands: open before its thread is, so none sent meanwhile is lost.
+    let ctl = mpsc::channel::<EngineCmd>();
+    *ctx.engine.lock().unwrap() = Some(ctl.0.clone());
+    let spawned = std::thread::Builder::new().name("engine".into()).spawn(move || engine_thread(ctx2, cfg, session, queues, stop2, (epoch_ms, epoch_at), ctl));
     match spawned {
         Ok(t) => threads.push(t),
-        Err(e) => return Err(undo(threads, e)),
+        Err(e) => {
+            *ctx.engine.lock().unwrap() = None;
+            return Err(undo(threads, e));
+        }
     }
     Ok(Runner { stop, threads })
 }
@@ -430,14 +439,15 @@ fn bandplan_path(short_name: &str) -> PathBuf {
     crate::paths::data_dir().join(format!("{short_name}.bandplan"))
 }
 
-/// Where a system's radios' talker aliases are kept (Trunk Recorder's unitTagsOTA CSV).
+/// Where a system's talkgroup file is kept (`<short name>.talkgroups.csv`, beside the config).
 pub(crate) fn talkgroups_path(short_name: &str) -> PathBuf {
     trunk_app::config::talkgroups_path(&crate::paths::data_dir(), short_name)
 }
 
-/// The talkgroup files of `cfg`'s systems, as kept.
+/// The talkgroup files of `cfg`'s systems (trunked and conventional), as kept.
 pub fn load_talkgroups(cfg: &Config) -> trunk_app::config::TalkgroupFiles {
-    cfg.systems.iter().filter_map(|s| fs::read_to_string(talkgroups_path(&s.short_name)).ok().map(|csv| (s.short_name.clone(), csv))).collect()
+    let names = cfg.systems.iter().map(|s| &s.short_name).chain(cfg.conventional.iter().map(|c| &c.short_name));
+    names.filter_map(|name| fs::read_to_string(talkgroups_path(name)).ok().map(|csv| (name.clone(), csv))).collect()
 }
 
 /// System `system`'s talkgroup file is now `csv` ("": none): kept, told to
@@ -753,13 +763,13 @@ impl Air {
     }
 }
 
-/// `queues`: each source's samples. `epoch`: the wall clock (Unix ms) at an instant, for the session's clock.
-fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<mpsc::Receiver<SourceMsg>>, stop: Arc<AtomicBool>, epoch: (f64, Instant)) {
+/// `queues`: each source's samples. `epoch`: the wall clock (Unix ms) at an
+/// instant, for the session's clock. `ctl`: everything for this thread — the
+/// sources' errors and ends (by way of their decoding threads), and the
+/// browsers' and the server's changes ([`Ctx::engine`] holds its sender).
+fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<mpsc::Receiver<SourceMsg>>, stop: Arc<AtomicBool>, epoch: (f64, Instant), ctl: (mpsc::Sender<EngineCmd>, mpsc::Receiver<EngineCmd>)) {
     ctx.set_phase("running", None, false);
-    // Everything for this thread: the sources' errors and ends (by way of
-    // their decoding threads), and the browsers' and the server's changes.
-    let (ctl_tx, rx) = mpsc::channel::<EngineCmd>();
-    *ctx.engine.lock().unwrap() = Some(ctl_tx.clone());
+    let (ctl_tx, rx) = ctl;
     session.set_topics(ctx.topics());
     let at_ms: Arc<Vec<AtomicU64>> = Arc::new(cfg.sources.iter().map(|_| AtomicU64::new(0)).collect());
     let feeders: Vec<JoinHandle<()>> = queues

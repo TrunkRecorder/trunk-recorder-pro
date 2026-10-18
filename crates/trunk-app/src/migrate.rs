@@ -69,9 +69,9 @@ pub fn talkgroups_of(v: &serde_json::Value) -> TalkgroupFiles {
         .collect()
 }
 
-/// The desktop app, before it reads its config (at `path`): an older
-/// config's talkgroup files written beside it ([`crate::config::talkgroups_path`])
-/// — those not there already. Reading the config then leaves them out of it.
+/// Before a config (at `path`) is read ([`Config::load`]): an older config's
+/// talkgroup files written beside it ([`crate::config::talkgroups_path`]) —
+/// those not there already. Reading the config then leaves them out of it.
 pub fn move_talkgroups(path: &Path) -> std::io::Result<()> {
     let Ok(text) = std::fs::read_to_string(path) else { return Ok(()) };
     let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else { return Ok(()) };

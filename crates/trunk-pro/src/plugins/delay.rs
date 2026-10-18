@@ -122,6 +122,7 @@ impl Delays {
         Delays { rules }
     }
 
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.rules.iter().all(|r| r.delay.is_zero())
     }

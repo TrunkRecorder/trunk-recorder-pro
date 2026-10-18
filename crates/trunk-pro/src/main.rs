@@ -792,10 +792,6 @@ fn serve(a: &Args) {
     use std::sync::{Arc, Mutex};
     let config_path = paths::config_path(a.get("config"));
     paths::init(&config_path);
-    // An older config's talkgroup files, moved beside it before it is read (trunk_app::migrate).
-    if let Err(e) = trunk_app::migrate::move_talkgroups(&config_path) {
-        fatal(&format!("{}: couldn't move its talkgroup files out of it ({e})", config_path.display()));
-    }
     let cfg = config::Config::load(&config_path).unwrap_or_else(|e| fatal(&e));
     let level = a.get("log-level").map(|l| trunk_app::log::Level::parse(l).unwrap_or_else(|| fatal(&format!("--log-level {l}: trace, debug, info, warning, error or fatal"))));
     let (hub, _) = tokio::sync::broadcast::channel(4096);
