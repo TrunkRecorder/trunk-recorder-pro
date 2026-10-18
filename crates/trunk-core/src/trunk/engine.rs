@@ -748,10 +748,9 @@ struct Radio {
     vocoder: mbe::Profile,
     /// Audio / info produced by the voice channels, as (site, call, output), applied after.
     pending: Vec<(u16, CallId, TrackerOut)>,
-    /// Each voice channel open (on whichever source) and the calls on its
-    /// slots, as the sources' own have them: the calls are followed without
-    /// waiting on a source busy decoding.
-    chans: BTreeMap<(u16, u64), [Option<OnSlot>; 2]>,
+    /// Calls followed without a recorder now ([`Call::followed`]): a
+    /// recorder's worth of room is kept for recordings.
+    followed: usize,
 }
 
 impl Radio {
@@ -780,9 +779,9 @@ impl Radio {
         }
     }
 
-    /// Voice channels open, on every source.
+    /// Voice channels open, on every source (status and the dashboard's: each source's lock in turn).
     fn channel_count(&self) -> usize {
-        self.chans.len()
+        self.rx.iter().map(|r| r.lock().unwrap().channels.len()).sum()
     }
 
     /// Run a channel's decoder over `iq` (then flush it, at the end of
@@ -830,7 +829,6 @@ impl SysHost<'_> {
         if let Some(ch) = rx.channels.get_mut(&key) {
             if ch.voice.kind() == kind {
                 ch.calls[slot] = Some(OnSlot::of(call));
-                r.chans.insert(key, ch.calls);
                 return;
             }
             // The frequency carries another kind of call now (P25 Dynamic
@@ -874,7 +872,6 @@ impl SysHost<'_> {
         rx.tout.clear();
         Radio::run_channel(&mut ch, &pre, &params, &mut rx.tout, false);
         Radio::route(&ch, &mut rx.tout, &mut r.pending);
-        r.chans.insert(key, ch.calls);
         rx.channels.insert(key, ch);
     }
 
@@ -921,40 +918,37 @@ impl RecorderHost for SysHost<'_> {
 
     fn follow(&mut self, call: &Call) -> bool {
         // Only with a recorder's worth of room to spare, and never on analog.
-        // A recording's channel is counted with its recording, not again.
         let r = &*self.radio;
-        let following = r.chans.values().filter(|calls| !calls.iter().flatten().any(|c| r.recordings.contains_key(&c.id))).count();
-        if call.voice.analog() || r.recordings.len() + following >= r.max_recorders {
+        if call.voice.analog() || r.recordings.len() + r.followed >= r.max_recorders {
             return false;
         }
         let Some(src) = r.source_for(call.freq_hz as f64) else {
             return false;
         };
         self.open_channel(call, src);
+        self.radio.followed += 1;
         true
     }
 
     fn release(&mut self, call: &Call) {
-        let key = (self.site, call.freq_hz);
         // (A call never given a channel — not recorded, not followed — needs no source's lock.)
-        let Some(calls) = self.radio.chans.get_mut(&key) else { return };
-        for c in calls.iter_mut() {
+        if call.followed {
+            self.radio.followed = self.radio.followed.saturating_sub(1);
+        } else if !call.recording {
+            return;
+        }
+        let key = (self.site, call.freq_hz);
+        let Some(src) = self.radio.source_for(call.freq_hz as f64) else { return };
+        let mut rx = self.radio.rx(src);
+        let Some(ch) = rx.channels.get_mut(&key) else { return };
+        for c in ch.calls.iter_mut() {
             if c.is_some_and(|c| c.id == call.id) {
                 *c = None;
             }
         }
-        let (calls, empty) = (*calls, calls.iter().all(Option::is_none));
-        if empty {
-            self.radio.chans.remove(&key);
-        }
-        let Some(src) = self.radio.source_for(call.freq_hz as f64) else { return };
-        let mut rx = self.radio.rx(src);
-        if empty {
-            if let Some(ch) = rx.channels.remove(&key) {
-                rx.src.chz.remove_head(ch.head);
-            }
-        } else if let Some(ch) = rx.channels.get_mut(&key) {
-            ch.calls = calls;
+        if ch.calls.iter().all(Option::is_none) {
+            let ch = rx.channels.remove(&key).unwrap();
+            rx.src.chz.remove_head(ch.head);
         }
     }
 }
@@ -1424,7 +1418,7 @@ impl Core {
             capture_frames: cfg.capture_frames,
             vocoder: cfg.vocoder,
             pending: Vec::new(),
-            chans: BTreeMap::new(),
+            followed: 0,
         };
         let mut events = Vec::new();
         let mut trunks = Vec::new();
@@ -2434,6 +2428,28 @@ mod tests {
         assert_eq!(calls.len(), 1);
         assert!(calls[0].recording && calls[0].start_s > 2.0, "{:?}", calls[0]);
         assert_eq!(e.radio.rx(0).channels[&(0, f)].calls[0].map(|c| c.id), Some(calls[0].id), "the channel is still open, for the new part");
+    }
+
+    /// An encrypted call that isn't recorded is followed (its link control:
+    /// who talks) while a recorder's worth of room is left; when it ends its
+    /// channel closes and the room comes back.
+    #[test]
+    fn encrypted_calls_are_followed_while_there_is_room() {
+        let cfg = EngineConfig { max_recorders: 2, ..one_site("s", |_| ()) };
+        let mut e = Core::new(cfg).unwrap();
+        let grant = |tg: u32, f: u64, t: f64, encrypted: bool| Message { kind: MessageType::Grant, time_s: t, talkgroup: tg, freq_hz: f, encrypted, ..Default::default() };
+        handle(&mut e, 0, &[grant(101, 851_500_000, 0.0, true), grant(102, 851_600_000, 0.0, true), grant(103, 851_700_000, 0.0, true)]);
+        let followed: Vec<(u32, bool)> = e.trunks[0].calls.calls.iter().map(|c| (c.talkgroup, c.followed)).collect();
+        assert_eq!(followed, [(101, true), (102, true), (103, false)], "two followed (the room for two), the third not");
+        assert_eq!((e.radio.followed, e.radio.channel_count()), (2, 2));
+        // A clear call is still recorded (following never takes a recorder).
+        handle(&mut e, 0, &[grant(104, 851_800_000, 0.1, false)]);
+        assert!(e.trunks[0].calls.calls.iter().any(|c| c.talkgroup == 104 && c.recording));
+        // The followed ones end: their channels close, the room is back.
+        tick(&mut e, 0, 10.0);
+        assert_eq!((e.radio.followed, e.radio.channel_count()), (0, 0));
+        handle(&mut e, 0, &[grant(105, 851_900_000, 11.0, true)]);
+        assert!(e.trunks[0].calls.calls.iter().any(|c| c.talkgroup == 105 && c.followed));
     }
 
     #[test]

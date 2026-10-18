@@ -1004,6 +1004,7 @@ impl Conventional {
                 voice: ch.cfg.mode.voice(slot as u8, h.color_code),
                 unit_to_unit: false,
                 recording: true,
+                followed: false,
                 reason: None,
                 encrypted: false,
                 cipher: None,

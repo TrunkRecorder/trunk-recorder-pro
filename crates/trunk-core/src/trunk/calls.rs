@@ -211,6 +211,9 @@ pub struct Call {
     pub voice: Voice,
     pub unit_to_unit: bool,
     pub recording: bool,
+    /// Followed without a recorder (its voice channel's link control only:
+    /// encrypted, not recorded).
+    pub followed: bool,
     pub reason: Option<Reason>,
     pub encrypted: bool,
     /// The cipher its voice's encryption sync named (the latest, if more than one).
@@ -439,6 +442,7 @@ impl CallManager {
         let mut c = Call {
             id: self.ids.next(),
             recording: false,
+            followed: false,
             reason: None,
             start_s: now_s,
             last_update_s: old.last_update_s.max(now_s),
@@ -518,6 +522,7 @@ impl CallManager {
             voice: if tg.as_ref().is_some_and(|t| t.mode.starts_with('A')) { Voice::Fm } else { m.voice },
             unit_to_unit,
             recording: false,
+            followed: false,
             reason: None,
             encrypted: m.encrypted || tg.as_ref().is_some_and(|t| t.encrypted_mode()),
             cipher: None,
@@ -556,7 +561,7 @@ impl CallManager {
             // No audio to record, but its terminators' link control is in
             // the clear: who spoke, and their talker aliases.
             c.reason = Some(Reason::Encrypted);
-            host.follow(c);
+            c.followed = host.follow(c);
         } else {
             match host.record(c) {
                 Ok(()) => c.recording = true,
