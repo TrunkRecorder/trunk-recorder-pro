@@ -580,7 +580,7 @@ impl Session {
             let names = |system: u16, site: Option<u16>| {
                 (cfg.short_name_of(system).unwrap_or("conv").to_string(), site.and_then(|s| sites.get(s as usize)).map_or(String::new(), |s| s.1.clone()))
             };
-            self.meas.tick(now_ms, busy, &self.engine, &names, out);
+            self.meas.tick(now_ms, busy, &self.engine, &names, decode_sites, out);
         }
         if now_ms - self.last_status_ms >= 500.0 {
             self.last_status_ms = now_ms;
@@ -713,11 +713,7 @@ impl Session {
 
     /// Talkgroups as the interface shows them: number and alpha tag (from system `system`'s file; "" when not in it).
     fn tg_names(&self, system: u16, tgs: impl IntoIterator<Item = u32>) -> Vec<Value> {
-        let systems = self.engine.systems();
-        let file = systems.get(system as usize).map(|s| &s.talkgroups);
-        tgs.into_iter()
-            .map(|tg| json!({ "talkgroup": tg, "alphaTag": file.and_then(|f| f.get(&tg)).map_or("", |t| t.alpha_tag.as_str()) }))
-            .collect()
+        tg_names(&self.engine, system, tgs)
     }
 
     /// Unix seconds of engine time `s`.
@@ -1035,67 +1031,28 @@ impl Session {
             .collect();
         // Each running site, as its control channel describes it.
         let site_json = |y: &trunk_core::trunk::SiteStatus| {
-            let at = y.site;
             json!({
-                "index": at, "name": y.site_name, "nowS": y.now_s, "controlChannelHz": y.control_channel_hz,
+                "index": y.site, "name": y.site_name, "nowS": y.now_s, "controlChannelHz": y.control_channel_hz,
                 "identity": identity_json(&y.identity),
                 "good": y.good, "bad": y.bad, "modulation": if y.modulation.is_empty() { None } else { Some(y.modulation) },
                 "activeCalls": y.active_calls, "recording": y.recording, "callsConcluded": y.calls_concluded,
                 "mismatch": y.mismatch,
-                "adjacent": y.adjacent.iter().map(|a| json!({ "sysId": a.sys_id, "rfss": a.rfss, "site": a.site, "freqHz": a.freq_hz })).collect::<Vec<_>>(),
-                    "dmr": match &y.protocol { ProtocolStatus::Dmr(d) => Some(d), _ => None }.map(|d| {
-                        json!({
-                            "variant": d.variant.map(|v| v.name()),
-                            "colorCode": d.color_code,
-                            "rest": d.rest.map(|(lsn, hz)| json!({ "lsn": lsn, "freqHz": if hz > 0 { Some(hz) } else { None } })),
-                            "keyed": d.keyed,
-                            "channels": d.channels.iter().map(|c| json!({ "lcn": c.lcn, "freqHz": c.hz, "configured": c.configured })).collect::<Vec<_>>(),
-                            "carriers": d.carriers.iter().map(|c| json!({
-                                "freqHz": c.hz, "control": c.control, "colorCode": c.color_code,
-                                "slots": c.slots.iter().map(|s| s.map(|(tg, src)| json!({ "talkgroup": self.tg_names(at, [tg])[0], "source": src }))).collect::<Vec<_>>(),
-                            })).collect::<Vec<_>>(),
-                        })
-                    }),
-                    "nxdn": match &y.protocol { ProtocolStatus::Nxdn(n) => Some(n), _ => None }.map(|n| {
-                        json!({
-                            "kind": n.kind.name(),
-                            "rate": n.rate.map(|r| r.name()),
-                            "location": n.location.map(|(cat, sys, site)| json!({ "category": cat, "system": sys, "site": site })),
-                            "ran": n.ran,
-                            "dfa": n.dfa.map(|(base, step)| json!({ "baseHz": base, "stepHz": step })),
-                            "channels": n.channels.iter().map(|c| json!({ "channel": c.number, "freqHz": c.hz, "configured": c.configured })).collect::<Vec<_>>(),
-                            "unknownChannels": n.unknown,
-                            "carriers": n.carriers.iter().map(|c| json!({
-                                "freqHz": c.hz, "control": c.control, "ran": c.ran, "repeater": c.repeater,
-                                "call": c.call.map(|(tg, src)| json!({ "talkgroup": self.tg_names(at, [tg])[0], "source": src })),
-                            })).collect::<Vec<_>>(),
-                        })
-                    }),
             })
         };
         // Each system with a site running, its sites in order.
         let mut systems: Vec<Value> = Vec::new();
         for y in &st.sites {
-            let at = y.system;
-            let patches: Vec<Value> = y.patches.iter().map(|(sg, members)| json!({ "supergroup": self.tg_names(at, [*sg])[0], "members": self.tg_names(at, members.iter().copied()) })).collect();
             match systems.iter_mut().find(|v| v["index"] == y.system) {
                 Some(v) => {
                     for (k, n) in [("activeCalls", y.active_calls as u64), ("recording", y.recording as u64), ("callsConcluded", y.calls_concluded)] {
                         v[k] = json!(v[k].as_u64().unwrap_or(0) + n);
-                    }
-                    // (Each site hears the system's patches: once each.)
-                    let have = v["patches"].as_array_mut().unwrap();
-                    for p in patches {
-                        if !have.iter().any(|h| h["supergroup"] == p["supergroup"]) {
-                            have.push(p);
-                        }
                     }
                     v["sites"].as_array_mut().unwrap().push(site_json(y));
                 }
                 None => systems.push(json!({
                     "index": y.system, "shortName": y.short_name,
                     "activeCalls": y.active_calls, "recording": y.recording, "callsConcluded": y.calls_concluded,
-                    "patches": patches, "sites": [site_json(y)],
+                    "sites": [site_json(y)],
                 })),
             }
         }
@@ -1181,6 +1138,63 @@ fn call_view(c: &Call, system_name: &str, patched: Vec<Value>) -> Value {
         "sources": c.sources.iter().map(|s| s.src).collect::<Vec<_>>(),
         "patched": patched,
     })
+}
+
+
+/// Talkgroups with their names in system `system`'s talkgroup file.
+fn tg_names(engine: &Engine, system: u16, tgs: impl IntoIterator<Item = u32>) -> Vec<Value> {
+    let systems = engine.systems();
+    let file = systems.get(system as usize).map(|s| &s.talkgroups);
+    tgs.into_iter().map(|tg| json!({ "talkgroup": tg, "alphaTag": file.and_then(|f| f.get(&tg)).map_or("", |t| t.alpha_tag.as_str()) })).collect()
+}
+
+/// A system's `decodeDetail` beyond its channels: each running site's
+/// neighbours and DMR / NXDN channels and carriers, and the system's patches
+/// (each site hears them: once each).
+fn decode_sites(engine: &Engine, system: &str) -> (Vec<Value>, Vec<Value>) {
+    let (mut sites, mut patches) = (Vec::new(), Vec::<Value>::new());
+    for y in engine.status().sites.iter().filter(|y| y.short_name == system) {
+        let at = y.system;
+        sites.push(json!({
+            "index": y.site, "name": y.site_name,
+            "adjacent": y.adjacent.iter().map(|a| json!({ "sysId": a.sys_id, "rfss": a.rfss, "site": a.site, "freqHz": a.freq_hz })).collect::<Vec<_>>(),
+            "dmr": match &y.protocol { ProtocolStatus::Dmr(d) => Some(d), _ => None }.map(|d| {
+                json!({
+                    "variant": d.variant.map(|v| v.name()),
+                    "colorCode": d.color_code,
+                    "rest": d.rest.map(|(lsn, hz)| json!({ "lsn": lsn, "freqHz": if hz > 0 { Some(hz) } else { None } })),
+                    "keyed": d.keyed,
+                    "channels": d.channels.iter().map(|c| json!({ "lcn": c.lcn, "freqHz": c.hz, "configured": c.configured })).collect::<Vec<_>>(),
+                    "carriers": d.carriers.iter().map(|c| json!({
+                        "freqHz": c.hz, "control": c.control, "colorCode": c.color_code,
+                        "slots": c.slots.iter().map(|s| s.map(|(tg, src)| json!({ "talkgroup": tg_names(engine, at, [tg])[0], "source": src }))).collect::<Vec<_>>(),
+                    })).collect::<Vec<_>>(),
+                })
+            }),
+            "nxdn": match &y.protocol { ProtocolStatus::Nxdn(n) => Some(n), _ => None }.map(|n| {
+                json!({
+                    "kind": n.kind.name(),
+                    "rate": n.rate.map(|r| r.name()),
+                    "location": n.location.map(|(cat, sys, site)| json!({ "category": cat, "system": sys, "site": site })),
+                    "ran": n.ran,
+                    "dfa": n.dfa.map(|(base, step)| json!({ "baseHz": base, "stepHz": step })),
+                    "channels": n.channels.iter().map(|c| json!({ "channel": c.number, "freqHz": c.hz, "configured": c.configured })).collect::<Vec<_>>(),
+                    "unknownChannels": n.unknown,
+                    "carriers": n.carriers.iter().map(|c| json!({
+                        "freqHz": c.hz, "control": c.control, "ran": c.ran, "repeater": c.repeater,
+                        "call": c.call.map(|(tg, src)| json!({ "talkgroup": tg_names(engine, at, [tg])[0], "source": src })),
+                    })).collect::<Vec<_>>(),
+                })
+            }),
+        }));
+        for (sg, members) in &y.patches {
+            let p = json!({ "supergroup": tg_names(engine, at, [*sg])[0], "members": tg_names(engine, at, members.iter().copied()) });
+            if !patches.iter().any(|h| h["supergroup"] == p["supergroup"]) {
+                patches.push(p);
+            }
+        }
+    }
+    (sites, patches)
 }
 
 #[cfg(test)]

@@ -2375,12 +2375,26 @@
               "items": {
                 "$ref": "#/definitions/ChannelSnapshot"
               }
+            },
+            "sites": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/SiteDetail"
+              }
+            },
+            "patches": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/Patch"
+              }
             }
           },
           "required": [
             "type",
             "system",
-            "channels"
+            "channels",
+            "sites",
+            "patches"
           ],
           "additionalProperties": false
         },
@@ -3561,6 +3575,26 @@
       ],
       "additionalProperties": false
     },
+    "Patch": {
+      "type": "object",
+      "properties": {
+        "supergroup": {
+          "$ref": "#/definitions/TalkgroupName"
+        },
+        "members": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/TalkgroupName"
+          }
+        }
+      },
+      "required": [
+        "supergroup",
+        "members"
+      ],
+      "additionalProperties": false,
+      "description": "A patch standing now: the supergroup, and the talkgroups patched into it."
+    },
     "Phase": {
       "type": "string",
       "enum": [
@@ -4740,6 +4774,76 @@
       "additionalProperties": false,
       "description": "One site of a system: a control channel to follow, and how."
     },
+    "SiteDetail": {
+      "type": "object",
+      "properties": {
+        "index": {
+          "type": "number"
+        },
+        "name": {
+          "type": "string"
+        },
+        "adjacent": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "sysId": {
+                "type": "number"
+              },
+              "rfss": {
+                "type": "number"
+              },
+              "site": {
+                "type": "number"
+              },
+              "freqHz": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "sysId",
+              "rfss",
+              "site",
+              "freqHz"
+            ],
+            "additionalProperties": false
+          },
+          "description": "Neighbouring sites its control channel announces."
+        },
+        "dmr": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/DmrSiteStatus"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A trunked DMR site."
+        },
+        "nxdn": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/NxdnSiteStatus"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "An NXDN site."
+        }
+      },
+      "required": [
+        "index",
+        "name",
+        "adjacent",
+        "dmr",
+        "nxdn"
+      ],
+      "additionalProperties": false,
+      "description": "One running site's detail (decodeDetail): what its control channel announces."
+    },
     "SiteIdentity": {
       "type": "object",
       "properties": {
@@ -4826,56 +4930,6 @@
             "null"
           ],
           "description": "The control channel is another system's / site's: why (its grants are not followed)."
-        },
-        "adjacent": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "sysId": {
-                "type": "number"
-              },
-              "rfss": {
-                "type": "number"
-              },
-              "site": {
-                "type": "number"
-              },
-              "freqHz": {
-                "type": "number"
-              }
-            },
-            "required": [
-              "sysId",
-              "rfss",
-              "site",
-              "freqHz"
-            ],
-            "additionalProperties": false
-          },
-          "description": "Neighbouring sites its control channel announces."
-        },
-        "dmr": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/DmrSiteStatus"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "A trunked DMR site."
-        },
-        "nxdn": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/NxdnSiteStatus"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "An NXDN site."
         }
       },
       "required": [
@@ -4890,8 +4944,7 @@
         "activeCalls",
         "recording",
         "callsConcluded",
-        "mismatch",
-        "adjacent"
+        "mismatch"
       ],
       "additionalProperties": false,
       "description": "One running site, as its control channel describes it. `index` is what calls carry as `site`."
@@ -6168,29 +6221,6 @@
         },
         "callsConcluded": {
           "type": "number"
-        },
-        "patches": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "supergroup": {
-                "$ref": "#/definitions/TalkgroupName"
-              },
-              "members": {
-                "type": "array",
-                "items": {
-                  "$ref": "#/definitions/TalkgroupName"
-                }
-              }
-            },
-            "required": [
-              "supergroup",
-              "members"
-            ],
-            "additionalProperties": false
-          },
-          "description": "Patches standing now (each once, however many sites hear it): the supergroup, and the talkgroups patched into it."
         },
         "sites": {
           "type": "array",

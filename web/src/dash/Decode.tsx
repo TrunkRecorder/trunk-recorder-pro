@@ -233,7 +233,13 @@ function SystemDetail({ s, name, siteName }: { s: AppState; name: string; siteNa
   const line = (key: string, label: string, c: string, extra: Partial<Line> = {}): Line => ({ label, color: c, data: hist?.[key] ?? null, ...extra });
   if (!x) return <p className="empty">No system called {name}.</p>;
   const st = site?.status;
-  const here = runningSites(x.status ? [x.status] : []).filter((y) => y.name === site?.name);
+  // The site shown, with its detail (while watched: what its control channel announces).
+  const here = runningSites(x.status ? [x.status] : [])
+    .filter((y) => y.name === site?.name)
+    .flatMap((y) => {
+      const d = live?.sites.find((z) => z.index === y.index);
+      return d ? [{ ...y, ...d }] : [];
+    });
   const hints = freqHints(rows, s);
   return (
     <div className="stack">
@@ -244,7 +250,7 @@ function SystemDetail({ s, name, siteName }: { s: AppState; name: string; siteNa
         {x.sites.length > 1 && site && <Choice value={site.name} options={x.sites.map((y) => ({ v: y.name, label: y.name }))} onChange={(v) => setView("decode", name, v)} label="Site" />}
       </div>
       <DecodeCard s={s} x={x} site={site} usual={usual[cc("good")]} freqs={rows} />
-      {st && !st.dmr && !st.nxdn && (
+      {st && x.kind !== "dmr" && x.kind !== "nxdn" && (
         <div className="kv small">
           <span>
             NAC <b className="mono">{hex(st.identity.nac)}</b>
@@ -388,9 +394,9 @@ function SystemDetail({ s, name, siteName }: { s: AppState; name: string; siteNa
         )}
       </Card>
       {st && <Neighbours s={s} sites={here} />}
-      {x.status && <Patches systems={[x.status]} />}
-      {st?.dmr && <DmrSites sites={here} />}
-      {st?.nxdn && <NxdnSites sites={here} />}
+      {live && <Patches patches={live.patches} />}
+      {here.some((y) => y.dmr) && <DmrSites sites={here} />}
+      {here.some((y) => y.nxdn) && <NxdnSites sites={here} />}
     </div>
   );
 }

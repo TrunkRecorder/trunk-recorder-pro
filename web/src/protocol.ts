@@ -520,10 +520,14 @@ export interface SystemStatus {
   activeCalls: number;
   recording: number;
   callsConcluded: number;
-  /** Patches standing now (each once, however many sites hear it): the supergroup, and the talkgroups patched into it. */
-  patches?: { supergroup: TalkgroupName; members: TalkgroupName[] }[];
   /** Its sites following their control channels, in order. */
   sites: SiteStatus[];
+}
+
+/** A patch standing now: the supergroup, and the talkgroups patched into it. */
+export interface Patch {
+  supergroup: TalkgroupName;
+  members: TalkgroupName[];
 }
 
 /** One running site, as its control channel describes it. `index` is what calls carry as `site`. */
@@ -542,12 +546,18 @@ export interface SiteStatus {
   callsConcluded: number;
   /** The control channel is another system's / site's: why (its grants are not followed). */
   mismatch: string | null;
+}
+
+/** One running site's detail (decodeDetail): what its control channel announces. */
+export interface SiteDetail {
+  index: number;
+  name: string;
   /** Neighbouring sites its control channel announces. */
   adjacent: { sysId: number; rfss: number; site: number; freqHz: number }[];
   /** A trunked DMR site. */
-  dmr?: DmrSiteStatus | null;
+  dmr: DmrSiteStatus | null;
   /** An NXDN site. */
-  nxdn?: NxdnSiteStatus | null;
+  nxdn: NxdnSiteStatus | null;
 }
 
 export interface DmrSiteStatus {
@@ -1407,7 +1417,8 @@ export type FromRecorder =
   /** Topic rf:<source>, every second: the noise floor across the band (64 slices, dBFS per bin) and the channels on it. */
   | { type: "rfDetail"; source: number; profile: number[]; channels: ChannelSnapshot[] }
   /** Topic decode:<shortName>, every second: the system's channels as received now. */
-  | { type: "decodeDetail"; system: string; channels: ChannelSnapshot[] }
+  /** A system's decoding, for those watching its `decode:<short name>` topic: its channels, each running site's detail, the patches standing now (each once, however many sites hear it). */
+  | { type: "decodeDetail"; system: string; channels: ChannelSnapshot[]; sites: SiteDetail[]; patches: Patch[] }
   | ({ type: "monitorEvent" } & MonitorEventBody)
   /** Answers subscribe: what this connection now watches. */
   | { type: "subscribed"; topics: Topic[] }

@@ -98,7 +98,9 @@ pub enum ToClient {
     /// The computer's and the plugins' series, and the computer's own figures (desktop app).
     Host(Body),
     RfDetail { source: usize, profile: Vec<f64>, channels: Vec<Value> },
-    DecodeDetail { system: String, channels: Vec<Value> },
+    /// A system's decoding (the `decode:<short name>` topic): its channels,
+    /// each running site's neighbours and DMR / NXDN detail, its patches.
+    DecodeDetail { system: String, channels: Vec<Value>, sites: Vec<Value>, patches: Vec<Value> },
     MonitorEvent(Body),
     Subscribed { topics: Vec<String> },
     StatsResult(Body),

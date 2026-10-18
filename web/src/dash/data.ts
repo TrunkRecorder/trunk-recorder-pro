@@ -8,7 +8,7 @@ import { snapshot, statsQuery, usePolled, type AppState, type StatsRange } from 
 import { keyPart, num, pct } from "../fmt.ts";
 import { seriesPoints } from "../series.ts";
 import type { Level } from "../charts.tsx";
-import type { PluginInfo, SeriesData, SiteStatus, SourceStatus, SystemStatus } from "../protocol.ts";
+import type { PluginInfo, SeriesData, SiteDetail, SiteStatus, SourceStatus, SystemStatus } from "../protocol.ts";
 
 // ── series names (crates/trunk-app/src/stats) ────────────────────────────────
 
@@ -72,6 +72,9 @@ export function dashSystems(s: AppState): DashSystem[] {
 
 /** A running site, with its system's short name and how the dashboard names it: "dcfd", "dcfd/south". */
 export type RunningSite = SiteStatus & { shortName: string; label: string };
+
+/** A running site with its detail (decodeDetail: what its control channel announces). */
+export type DetailedSite = RunningSite & SiteDetail;
 
 /** Every running site, its system's in order. */
 export function runningSites(systems: SystemStatus[]): RunningSite[] {

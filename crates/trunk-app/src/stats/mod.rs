@@ -285,7 +285,8 @@ impl Stats {
     /// someone is watching, and the edge-triggered events. `busy_ms`: the
     /// session's decoding time so far (the load). `site_names`: a call's
     /// system's short name and (by its site's number) site name.
-    pub fn tick(&mut self, now_ms: f64, busy_ms: f64, engine: &Engine, site_names: &dyn Fn(u16, Option<u16>) -> (String, String), out: &mut Vec<Output>) {
+    /// `decode_sites`: a system's sites' and patches' detail (by short name).
+    pub fn tick(&mut self, now_ms: f64, busy_ms: f64, engine: &Engine, site_names: &dyn Fn(u16, Option<u16>) -> (String, String), decode_sites: DecodeSites, out: &mut Vec<Output>) {
         if self.last_tick_ms.is_some_and(|t| now_ms - t < TICK_MS) {
             return;
         }
@@ -315,7 +316,7 @@ impl Stats {
         self.agg.gauge("day/audioBytes", self.day.audio_bytes as f64);
         self.edges(engine, out);
         out.push(Output::Message(ToClient::Stats { t: (self.now * 10.0).round() / 10.0, values: self.agg.values_json() }));
-        self.details(engine, site_names, out);
+        self.details(engine, site_names, decode_sites, out);
     }
 
     /// Events on a change of state: a control channel lost or regained, a
@@ -354,7 +355,7 @@ impl Stats {
     }
 
     /// `rfDetail` / `decodeDetail` for the topics someone watches.
-    fn details(&self, engine: &Engine, site_names: &dyn Fn(u16, Option<u16>) -> (String, String), out: &mut Vec<Output>) {
+    fn details(&self, engine: &Engine, site_names: &dyn Fn(u16, Option<u16>) -> (String, String), decode_sites: DecodeSites, out: &mut Vec<Output>) {
         let rf: Vec<usize> = (0..self.names.len()).filter(|i| self.topics.has(&format!("rf:{i}"))).collect();
         let decode: Vec<&str> = self.topics.iter().filter_map(|t| t.strip_prefix("decode:")).collect();
         if rf.is_empty() && decode.is_empty() {
@@ -379,10 +380,14 @@ impl Stats {
         }
         for name in decode {
             let chans: Vec<Value> = channels.iter().filter(|c| site_names(c.system, c.site).0 == name).map(ch_json).collect();
-            out.push(Output::Topic { topic: format!("decode:{name}"), msg: ToClient::DecodeDetail { system: name.to_string(), channels: chans } });
+            let (sites, patches) = decode_sites(engine, name);
+            out.push(Output::Topic { topic: format!("decode:{name}"), msg: ToClient::DecodeDetail { system: name.to_string(), channels: chans, sites, patches } });
         }
     }
 }
+
+/// A system's (by short name) `decodeDetail` sites and patches.
+pub type DecodeSites = fn(&Engine, &str) -> (Vec<Value>, Vec<Value>);
 
 /// Talkgroup files, parsed: (short name → talkgroups), for [`Names`].
 pub fn talkgroup_tables(files: &crate::config::TalkgroupFiles) -> HashMap<String, trunk_core::trunk::Talkgroups> {

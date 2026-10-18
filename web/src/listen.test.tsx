@@ -40,7 +40,7 @@ function twoSites(): void {
   transport.onMessage({ type: "talkgroups", system: "dcfd", csv: CSV("100,64,Fire Dispatch,D,Fire,,\n200,c8,EMS,D,EMS,,\n300,12c,Tac 3,D,Tac,,") });
   const id = (site: number): Identity => ({ nac: null, wacn: 0xbee00, sysId: 0x1a2, rfss: 1, site });
   const site = (index: number, name: string): SiteStatus =>
-    ({ index, name, nowS: 1, controlChannelHz: 851_000_000 + index * 500_000, identity: id(index + 1), good: 1, bad: 0, modulation: null, activeCalls: 0, recording: 0, callsConcluded: 0, mismatch: null, adjacent: [] });
+    ({ index, name, nowS: 1, controlChannelHz: 851_000_000 + index * 500_000, identity: id(index + 1), good: 1, bad: 0, modulation: null, activeCalls: 0, recording: 0, callsConcluded: 0, mismatch: null });
   const systems = [{ index: 0, shortName: "dcfd", activeCalls: 0, recording: 0, callsConcluded: 0, sites: [site(0, "dcfd"), site(1, "south")] }];
   transport.onMessage({ type: "status", status: { systems, recording: 0 } as unknown as EngineStatus, sources: [], load: 0, calls: [] });
 }
