@@ -69,9 +69,31 @@ static LEVEL_OVERRIDE: Mutex<Option<Level>> = Mutex::new(None);
 
 /// Start logging with `s` (`config_dir`: where a relative `dir` is) and take
 /// the `log` crate's messages; `level`: `--log-level`, over the config's.
-pub fn init(s: &LogSettings, config_dir: &Path, level: Option<Level>) {
+/// `hub`: the browsers, who are shown what the recorder itself logs
+/// ([`text`]): warnings and errors to every one, the rest to those
+/// watching the log (topic `log`).
+pub fn init(s: &LogSettings, config_dir: &Path, level: Option<Level>, hub: crate::runtime::Hub) {
     *LEVEL_OVERRIDE.lock().unwrap() = level;
+    let _ = HUB.set(hub);
     configure(s, config_dir);
+}
+
+static HUB: OnceLock<crate::runtime::Hub> = OnceLock::new();
+
+/// A line the recorder logged, on the browsers' log (`kind`: "plugin" for a
+/// plugin's note, "error" for a warning or error, else "info"), with its
+/// clock time and level.
+fn to_browsers(level: Level, kind: &str, text: &str) {
+    use trunk_app::protocol::ToClient;
+    let Some(hub) = HUB.get() else { return };
+    let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
+    let line = serde_json::json!({ "timeS": 0, "time": (time * 10.0).round() / 10.0, "level": level.as_str(), "kind": kind, "text": text });
+    let m = ToClient::Log { lines: vec![line] };
+    if level >= Level::Warning {
+        crate::runtime::publish(hub, m);
+    } else {
+        let _ = hub.send(std::sync::Arc::new(crate::runtime::Out::Topic { topic: "log".into(), text: m.to_json() }));
+    }
 }
 
 /// The settings changed (the config was saved).
@@ -161,7 +183,10 @@ pub fn record(r: &Record) {
 }
 
 /// A plain message (what `log::info!` and friends make).
-pub fn text(level: Level, text: impl Into<String>) {
+/// What the recorder itself says (by way of `log::…!`): to the log, and the browsers.
+pub fn text(level: Level, kind: &str, text: impl Into<String>) {
+    let text = text.into();
+    to_browsers(level, kind, &text);
     record(&Record::text(level, None, text));
 }
 
@@ -171,7 +196,9 @@ impl log::Log for Logger {
     }
     fn log(&self, r: &log::Record) {
         if self.enabled(r.metadata()) {
-            text(level_of(r.level()), r.args().to_string());
+            let level = level_of(r.level());
+            let kind = if level >= Level::Warning { "error" } else if r.target() == "plugin" { "plugin" } else { "info" };
+            text(level, kind, r.args().to_string());
         }
     }
     fn flush(&self) {}

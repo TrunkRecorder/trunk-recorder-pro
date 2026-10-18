@@ -473,7 +473,7 @@ impl Plugins {
     /// What plugins say, as log lines, runtime updates and results for the interface.
     fn notes(&self) -> Notes {
         let (hub, runtime, archive, monitor) = (self.hub.clone(), self.runtime.clone(), self.archive.clone(), self.monitor.clone());
-        let log = super::notes_to_hub(hub.clone());
+        let log = super::notes_to_log();
         Arc::new(move |n: Note| {
             if let Note::Result { path, outcome, .. } = &n {
                 archive.result(path, *outcome);

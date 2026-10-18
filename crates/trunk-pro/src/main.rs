@@ -798,7 +798,8 @@ fn serve(a: &Args) {
     }
     let cfg = config::Config::load(&config_path).unwrap_or_else(|e| fatal(&e));
     let level = a.get("log-level").map(|l| trunk_app::log::Level::parse(l).unwrap_or_else(|| fatal(&format!("--log-level {l}: trace, debug, info, warning, error or fatal"))));
-    logging::init(&cfg.log, config_path.parent().unwrap_or(Path::new(".")), level);
+    let (hub, _) = tokio::sync::broadcast::channel(4096);
+    logging::init(&cfg.log, config_path.parent().unwrap_or(Path::new(".")), level, hub.clone());
     // An older config, upgraded: saved so (the old one kept beside it), and told.
     if !cfg.notes.is_empty() {
         match trunk_app::migrate::save(&cfg, &config_path) {
@@ -851,7 +852,6 @@ fn serve(a: &Args) {
         interfaces::Dev { id, folder: d, port: s.free_port(&[]) }
     });
     let ui_url = dev.as_ref().map(|d| format!("http://{host}:{}/", d.port));
-    let (hub, _) = tokio::sync::broadcast::channel(4096);
     // The dashboard's measurements: the radio registry (from earlier runs) and a week of history.
     let shared = trunk_app::stats::Shared::new();
     runtime::load_registry(&shared);

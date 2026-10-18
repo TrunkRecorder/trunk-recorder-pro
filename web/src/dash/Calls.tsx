@@ -255,7 +255,7 @@ export function Log({ s }: { s: AppState }) {
           .reverse()
           .map((l, i) => (
             <div key={i} className={`k-${l.kind}`}>
-              <span className="muted">{l.timeS.toFixed(1).padStart(7)}s</span> {multi && l.system ? <span className="muted">[{l.system}] </span> : null}
+              <span className="muted">{l.time ? new Date(l.time * 1000).toLocaleTimeString([], { hour12: false }).padStart(8) : `${l.timeS.toFixed(1).padStart(7)}s`}</span> {multi && l.system ? <span className="muted">[{l.system}] </span> : null}
               {l.text}
             </div>
           ))}

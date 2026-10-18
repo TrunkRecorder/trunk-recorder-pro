@@ -443,6 +443,8 @@ fn the_servers_messages() {
         crate::server::tr_config(&dir.join("nothing.json").display().to_string()),
         ToClient::Quit,
         ToClient::Subscribed { topics: vec!["spectrum:0".into(), "log".into()] },
+        // What the recorder itself logs (logging::to_browsers).
+        ToClient::Log { lines: vec![json!({ "timeS": 0, "time": 1_750_000_000.5, "level": "warning", "kind": "error", "text": "No RAM spool" })] },
     ];
     let msgs: Vec<Value> = greeting.into_iter().chain(msgs.iter().map(ToClient::to_value)).chain(queries).chain(ctx.shared.recent_events()).collect();
     let _ = std::fs::remove_dir_all(&dir);

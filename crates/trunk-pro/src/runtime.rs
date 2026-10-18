@@ -65,12 +65,6 @@ pub fn publish(hub: &Hub, m: ToClient) {
     let _ = hub.send(Arc::new(Out::of(&m)));
 }
 
-/// Say `text` in the log and on every browser's log page (as an error).
-pub fn warn_all(hub: &Hub, text: &str) {
-    log::warn!("{text}");
-    publish(hub, ToClient::Log { lines: vec![json!({ "timeS": 0, "kind": "error", "text": text })] });
-}
-
 #[derive(Clone, Debug, Default)]
 pub struct PhaseInfo {
     /// "idle" | "starting" | "running" | "stopping"
@@ -442,7 +436,7 @@ fn warn_readable_keys(ctx: &Ctx, cfg: &Config) {
         use std::os::unix::fs::PermissionsExt;
         for p in cfg.key_files(&ctx.config_path) {
             if fs::metadata(&p).is_ok_and(|m| m.permissions().mode() & 0o077 != 0) {
-                warn_all(&ctx.hub, &format!("Keys file {} can be read by other users (chmod 600 it)", p.display()));
+                log::warn!("Keys file {} can be read by other users (chmod 600 it)", p.display());
             }
         }
     }
@@ -662,7 +656,7 @@ fn open_spool(ctx: &Ctx, cfg: &Config) {
         match crate::spool::Spool::open(want, &crate::paths::data_dir()) {
             Ok(s) => Some(Arc::new(s)),
             Err(e) => {
-                warn_all(&ctx.hub, &format!("No RAM spool ({e}): calls go to the recordings folder"));
+                log::warn!("No RAM spool ({e}): calls go to the recordings folder");
                 None
             }
         }
@@ -787,7 +781,7 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
     let spool = ctx.spool.lock().unwrap().clone();
     let encoder = plugins::Encoder::find(cfg.recording.m4a.encoder).map(|e| (e, cfg.recording.m4a.bitrate_kbps.clamp(8, 320)));
     if encoder.is_none() && cfg.recordings().iter().any(|r| r.compress_wav) {
-        warn_all(&ctx.hub, if cfg.recording.m4a.encoder == crate::config::M4aEncoder::None { "M4A encoding is off: calls are kept as WAV only" } else { "No M4A encoder found (install ffmpeg): calls are kept as WAV only" });
+        log::warn!("{}", if cfg.recording.m4a.encoder == crate::config::M4aEncoder::None { "M4A encoding is off: calls are kept as WAV only" } else { "No M4A encoder found (install ffmpeg): calls are kept as WAV only" });
     }
     // Calls are finished on threads of their own (each may be encoding an
     // .m4a), so a slow disk or encoder doesn't hold up decoding.
@@ -959,7 +953,7 @@ fn finish_one(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, f: Fin
         && (!p.write_json || fs::write(&json_at, &json).is_ok())
         && f.frames.as_ref().filter(|_| p.write_frames).is_none_or(|c| fs::write(&frames_at, &c.bytes).is_ok());
     if !ok {
-        warn_all(&ctx.hub, &format!("Couldn't write {}", base.display()));
+        log::warn!("Couldn't write {}", base.display());
         return;
     }
     // Whether its audio and JSON stay once the plugins are done (a plugin's failure may keep them after all: archive::settle).
@@ -978,7 +972,7 @@ fn finish_one(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, f: Fin
         match e.m4a(&f.wav, &m4a_at, *kbps) {
             Ok(()) => m4a = Some(m4a_at),
             Err(err) => {
-                m4a_failed(ctx, &f.rel, &err);
+                m4a_failed(&f.rel, &err);
                 // The call's audio is then the WAV.
                 if !wav_written {
                     wav_written = fs::write(&wav_at, &f.wav).is_ok();
@@ -993,12 +987,12 @@ fn finish_one(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, f: Fin
 }
 
 /// An .m4a couldn't be made: said, at most once a minute.
-fn m4a_failed(ctx: &Ctx, rel: &str, err: &str) {
+fn m4a_failed(rel: &str, err: &str) {
     static LAST: Mutex<Option<Instant>> = Mutex::new(None);
     let mut last = LAST.lock().unwrap();
     if last.is_none_or(|t| t.elapsed() > Duration::from_secs(60)) {
         *last = Some(Instant::now());
-        warn_all(&ctx.hub, &format!("M4A of {rel}: {err} (its audio is the WAV)"));
+        log::warn!("M4A of {rel}: {err} (its audio is the WAV)");
     }
 }
 

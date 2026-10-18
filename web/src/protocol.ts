@@ -653,7 +653,11 @@ export interface CallView {
 }
 
 export interface LogLine {
+  /** Seconds into the recording (the decoder's lines; 0 for the recorder's own). */
   timeS: number;
+  /** The recorder's own lines (not the decoder's): when, Unix seconds, and how serious ("info", "warning", "error"…). Warnings and errors go to every connection, the rest to those watching `log`. */
+  time?: number;
+  level?: string;
   kind: string;
   text: string;
   /** The system's short name, for its messages, and the site's name. */

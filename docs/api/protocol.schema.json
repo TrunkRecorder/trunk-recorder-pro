@@ -3234,7 +3234,15 @@
       "type": "object",
       "properties": {
         "timeS": {
-          "type": "number"
+          "type": "number",
+          "description": "Seconds into the recording (the decoder's lines; 0 for the recorder's own)."
+        },
+        "time": {
+          "type": "number",
+          "description": "The recorder's own lines (not the decoder's): when, Unix seconds, and how serious (\"info\", \"warning\", \"error\"…). Warnings and errors go to every connection, the rest to those watching `log`."
+        },
+        "level": {
+          "type": "string"
         },
         "kind": {
           "type": "string"

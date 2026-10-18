@@ -42,7 +42,6 @@ pub use archive::{plan, Archive, FileRules};
 pub use encode::Encoder;
 pub use host::{Note, PluginHost, Spec};
 
-use trunk_app::protocol::ToClient;
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -215,34 +214,33 @@ pub fn systems_of(cfg: &crate::config::Config) -> Vec<trunk_recorder_plugin::Sys
         .collect()
 }
 
-/// Plugin notes as log lines (the plugins view follows each plugin's state
+/// Plugin notes as log lines, which the log shows the browsers too
+/// ([`crate::logging::text`]; the plugins view follows each plugin's state
 /// and results in its `pluginRuntime`).
-pub fn notes_to_hub(hub: crate::runtime::Hub) -> host::Notes {
-    use serde_json::json;
+pub fn notes_to_log() -> host::Notes {
     use trunk_recorder_plugin::{Level, Outcome, State};
-    let log = move |hub: &crate::runtime::Hub, plugin: &str, error: bool, text: &str| {
+    let log = |plugin: &str, error: bool, text: &str| {
         let text = if plugin.is_empty() { format!("Plugins: {text}") } else { format!("[{plugin}] {text}") };
         if error {
-            log::error!("{text}");
+            log::error!(target: "plugin", "{text}");
         } else {
-            log::info!("{text}");
+            log::info!(target: "plugin", "{text}");
         }
-        crate::runtime::publish(hub, ToClient::Log { lines: vec![json!({ "timeS": 0, "kind": if error { "error" } else { "plugin" }, "text": text })] });
     };
     std::sync::Arc::new(move |n: Note| match n {
         Note::Log { plugin, level, text } => {
             if level != Level::Debug {
-                log(&hub, &plugin, level <= Level::Warn, &text);
+                log(&plugin, level <= Level::Warn, &text);
             }
         }
         Note::State { plugin, state, message } => {
             if state == State::Error {
-                log(&hub, &plugin, true, &message);
+                log(&plugin, true, &message);
             }
         }
         Note::Result { plugin, path, outcome, message, .. } => {
             if outcome == Outcome::Failed {
-                log(&hub, &plugin, true, &format!("{path}: {message}"));
+                log(&plugin, true, &format!("{path}: {message}"));
             }
         }
         // (In the plugin's pluginRuntime.)
