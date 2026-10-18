@@ -66,9 +66,9 @@ Notes:
   is), in the order the config lists them.
 - **Pre-roll.** Conventional calls start 0.3 s before the signal was detected; `recording.prerollS`
   applies to trunked calls only.
-- **Talkgroup names.** When the config has exactly one trunked system, P25 and DMR conventional calls
-  that carry a talkgroup take its names from that system's talkgroup file. Otherwise names come from
-  the channel rows.
+- **Talkgroup names.** P25, DMR and NXDN conventional calls that carry a talkgroup take its name from
+  the conventional system's own talkgroup file (`<shortName>.talkgroups.csv` beside the config; Setup
+  shows it on a conventional system with digital channels), else from the channel rows.
 
 ## Channel keys
 

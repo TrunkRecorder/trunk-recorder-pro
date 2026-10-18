@@ -1121,6 +1121,11 @@ function ConventionalPanel(props: { c: Config; k: number }) {
           <NumberInput label="Squelch, dB above noise" value={conv.squelchDb} onChange={(v) => edit((x) => void (x.squelchDb = Math.max(3, Math.min(40, v ?? 8))))} />
         </Field>
       </Group>
+      {chans.some((c) => c.mode !== "fm" && c.mode !== "am") && (
+        <Group title="Talkgroup names" hint="For the talkgroups its P25, DMR and NXDN channels name on the air (a row's own name is for calls filed under its talkgroup).">
+          <TalkgroupsField sys={conv} />
+        </Group>
+      )}
       <Group
         title="Channels"
         hint="Each frequency, with the tone, NAC, colour code or RAN it records. Several rows can share a frequency."

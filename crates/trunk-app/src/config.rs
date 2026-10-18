@@ -2093,17 +2093,15 @@ impl Config {
                 }
             })
             .collect();
-        // A conventional system's P25 / DMR channels look up the talkgroup names
-        // of the only trunked system, when there is just one (its channels'
-        // own names come from the channel list). They use its (first site's) receivers too.
-        let only = (systems.len() == 1).then(|| (systems[0].talkgroups.clone(), systems[0].sites[0].bank));
-        let conv_bank = only.as_ref().map_or_else(BankConfig::default, |o| o.1);
+        // A conventional system's P25 / DMR / NXDN channels name the talkgroups
+        // they hear by its own talkgroup file (a row's own name comes from the
+        // channel list).
         for v in self.active_conventional() {
             let r = self.recording.with(&v.recording);
             systems.push(SystemConfig {
                 calls: r.call_config(),
                 save: r.save_rules(),
-                talkgroups: only.as_ref().map(|o| o.0.clone()).unwrap_or_default(),
+                talkgroups: tg(&v.short_name),
                 unit_tags: v.unit_names.engine(),
                 ..SystemConfig::conventional(&v.short_name)
             });
@@ -2114,7 +2112,7 @@ impl Config {
             preroll_s: self.recording.preroll_s,
             max_recorders: self.recording.max_recorders,
             epoch_ms_at_zero: epoch_ms,
-            bank: conv_bank,
+            bank: BankConfig::default(),
             conventional: self.engine_channels(),
             conv: ConvConfig::default(),
             capture_frames: self.recording.capture_frames,
@@ -2372,6 +2370,24 @@ mod tests {
         assert_eq!((c.log.color, c.recording.vocoder, c.recording.m4a.encoder), (LogColor::Auto, Vocoder::Fixed, M4aEncoder::None));
         let back = serde_json::to_value(&c).unwrap();
         assert_eq!((back["log"]["color"].as_str(), back["recording"]["vocoder"].as_str()), (Some(""), Some("fixed")), "saved as the interface writes them");
+    }
+
+    /// A conventional system names what its digital channels hear by its own
+    /// talkgroup file, not by a trunked system's.
+    #[test]
+    fn a_conventional_system_has_its_own_talkgroup_file() {
+        let c: Config = serde_json::from_str(
+            r#"{
+                "sources": [{ "type": "rtlsdr", "serial": "", "centerHz": 155000000, "rateHz": 2400000, "agc": true, "ppm": 0 }],
+                "systems": [{ "shortName": "county", "sites": [{ "controlChannelsHz": [155500000] }] }],
+                "conventional": [{ "shortName": "fire", "channels": [{ "freqHz": 154430000, "mode": "p25" }] }]
+            }"#,
+        )
+        .unwrap();
+        let files: TalkgroupFiles = [("county".to_string(), "1,County TG\n".to_string()), ("fire".to_string(), "7,Fire Ops\n".to_string())].into();
+        let e = c.engine_config(0.0, &files);
+        let fire = e.systems.iter().find(|s| s.short_name == "fire").unwrap();
+        assert!(fire.talkgroups.contains_key(&7) && !fire.talkgroups.contains_key(&1), "its own, not county's");
     }
 
     #[test]

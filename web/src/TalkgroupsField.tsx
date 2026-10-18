@@ -9,7 +9,10 @@ import { FileInput } from "./inputs.tsx";
 import type { System } from "./protocol.ts";
 import { isEncryptedMode, normalizeTalkgroupCsv, parseRadioReferencePaste, readTalkgroupCsv, talkgroupsToCsv, withHeader, type Talkgroup } from "./talkgroups.ts";
 
-export function TalkgroupsField(props: { sys: System; needs?: string; anchor?: string }) {
+/** A system with a talkgroup file: trunked (its first site's identity helps find it on RadioReference), or conventional. */
+type TalkgroupsOf = Pick<System, "shortName"> & Partial<Pick<System, "sites">>;
+
+export function TalkgroupsField(props: { sys: TalkgroupsOf; needs?: string; anchor?: string }) {
   const { sys } = props;
   const csv = useApp().talkgroups[sys.shortName] ?? "";
   const fileRef = useRef<HTMLInputElement>(null);
@@ -92,9 +95,9 @@ export function TalkgroupsField(props: { sys: System; needs?: string; anchor?: s
 }
 
 /** Where to copy from, the box to paste into, and what was read from it. */
-function RadioReferencePaste(props: { sys: System; replacing: number; onUse: (list: Talkgroup[]) => void; onCancel: () => void }) {
+function RadioReferencePaste(props: { sys: TalkgroupsOf; replacing: number; onUse: (list: Talkgroup[]) => void; onCancel: () => void }) {
   const [text, setText] = useState("");
-  const { sysId, wacn } = props.sys.sites[0]?.expect ?? {};
+  const { sysId, wacn } = props.sys.sites?.[0]?.expect ?? {};
   const hex = (n: number) => n.toString(16).toUpperCase();
   const parsed = useMemo(() => parseRadioReferencePaste(text), [text]);
   const shown = 8;

@@ -31,7 +31,7 @@ second tier can go whenever a nearby change touches it.
 - [x] `Call::system` a plain index for both kinds; `Call::site: Option<u16>`; the `65535 − k` sentinel, `MAX_CONVENTIONAL`, `conventional_index` gone; `status.systemNames` maps numbers to names — bb880da
 - [x] One `SiteKey { system, site }` with `own_name`, `stats_key`, `file_stem`, `Display`; `MonitorEvent::ControlLost { system, site, … }` (fixed the dashboard link to Decode) — 1d26965
 - [x] `control::build` takes a `SiteConfig`, which now holds only the site's own fields — bb880da
-- [ ] Conventional borrows "the only trunked system" for talkgroup names and the receiver bank (`Config::engine_config`): make it an explicit setting or drop it
+- [x] Conventional borrows "the only trunked system" for talkgroup names and the receiver bank (`Config::engine_config`): make it an explicit setting or drop it — done (dropped): a conventional system has its own talkgroup file by its short name (Setup shows it for digital channels); its P25 channels use the default receiver bank (modulation detected)
 
 **Evidence.** #51 was done in the app; the engine kept a flat site list
 (`research/multi-site-systems.md`: "the engine's config stays a flat list")
