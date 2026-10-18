@@ -3,8 +3,9 @@
 //!
 //! Nothing here blocks the engine: each event is serialized once and offered
 //! to each subscriber's queue, and a plugin that falls behind loses events
-//! (counted and reported) rather than holding up the recorder. Calls that
-//! need M4A are encoded on worker threads first. What a plugin is to have
+//! (counted and reported) rather than holding up the recorder. A call reaches
+//! the plugins once the finish threads have written its files (an .m4a made
+//! for them too, [`super::plan`]). What a plugin is to have
 //! late (its delays) goes to the [`Hold`] instead, which gives it to the
 //! plugin when it's due.
 
@@ -55,7 +56,7 @@ pub type Notes = Arc<dyn Fn(Note) + Send + Sync>;
 
 /// Messages waiting for a plugin; beyond this it's behind, and loses them.
 const QUEUE: usize = 1024;
-/// Calls waiting to be encoded.
+
 struct Plugin {
     id: String,
     manifest: Manifest,

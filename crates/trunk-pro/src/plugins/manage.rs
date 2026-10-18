@@ -5,13 +5,14 @@
 //! calls [`Plugins::reload`], which swaps in a new [`PluginHost`].
 //!
 //! Browser → server: `plugins` (the list), `addPlugin {path}`, `removePlugin
-//! {id}` (the server forgets it in the config), `pluginStore {refresh?}` (the registry's list),
-//! `installPlugin {id}` (from the registry; also an update) or `installPlugin
-//! {repository, tag?}` (a GitHub release that isn't in it). Server → browser:
-//! `plugins`, `pluginRuntime {id, runtime}` (its state, counts and recent
-//! log, as they change), `pluginStore`, and `pluginInstall {key, id, stage,
-//! message?}` as an install goes ("finding", "downloading", "checking",
-//! "installing", then "done" or "failed").
+//! {id}` (the server forgets it in the config), `store {kind: "plugin",
+//! refresh?}` (the registry's list), `install {kind: "plugin", id}` (from the
+//! registry; also an update) or `install {kind: "plugin", repository, tag?}`
+//! (a GitHub release that isn't in it). Server → browser: `plugins`,
+//! `pluginRuntime {id, runtime}` (its state, counts and recent log, as they
+//! change), `store`, and `installProgress {kind, key, id, stage, message?}`
+//! as an install goes ("finding", "downloading", "checking", "installing",
+//! then "done" or "failed").
 
 use trunk_app::protocol::{body, Install, StoreKind, ToClient};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
@@ -578,7 +579,7 @@ impl Plugins {
         self.shelf.catalog(refresh)
     }
 
-    /// The `pluginStore` message.
+    /// The `store` message for plugins.
     pub fn store(&self, refresh: bool) -> ToClient {
         store_message(&self.catalog(refresh))
     }

@@ -26,14 +26,15 @@ pub enum Output {
     Message(ToClient),
     /// Live audio frame `[2][u16 system][u32 call id][u32 talkgroup][i16…]`
     /// for talkgroup `tg` of `system` — that system's number for this run
-    /// (`status.systems[].index`, or 65535 and down for conventional
-    /// systems) — whose short name, its identity, is `short_name`.
+    /// (from 0, trunked then conventional: `status.systemNames`) — whose
+    /// short name, its identity, is `short_name`.
     /// `decrypted`: of a call decrypted with our keys. (A call heard on
     /// several sites of a system plays from one of them at a time.)
     Audio { system: u16, short_name: String, tg: u32, frame: Vec<u8>, decrypted: bool },
     /// A concluded call to store at `<rel>.wav` / `<rel>.json` (relative to
-    /// the recordings folder); `entry` is its history entry, which the
-    /// platform sends as a `concluded` message once the files are stored.
+    /// the recordings folder); `record` is its call JSON, and [`call_entry`]
+    /// its history entry, which the platform sends as a `concluded` message
+    /// once the files are stored.
     /// `frames`: the frame capture, for `<rel>.sdr` (NXDN: `<rel>.frames.jsonl`).
     /// `decrypted`: some of it was decrypted with our keys.
     File { rel: String, system: u16, wav: Vec<u8>, record: trunk_recorder_plugin::CallRecord, frames: Option<trunk_core::trunk::Capture>, decrypted: bool },
@@ -1100,19 +1101,18 @@ fn unit_kind(k: MessageType) -> Option<&'static str> {
     })
 }
 
-/// `{nac, wacn, sysId, rfss, site}`: every field, null when not stated.
 /// A stored call's history entry (`concluded`, `history`, protocol.ts
 /// `CallEntry`): where it is under the recordings folder, and its record.
 pub fn call_entry(rel: &str, record: &trunk_recorder_plugin::CallRecord) -> Value {
     json!({ "path": rel, "record": record })
 }
 
-/// A site's identity as messages carry it: the config's [`crate::config::SiteIdentity`].
+/// A site's identity as messages carry it: the config's [`crate::config::SiteIdentity`]
+/// (`{nac, wacn, sysId, rfss, site}`, a field not stated yet left out).
 pub(crate) fn identity_json(id: &Identity) -> Value {
     json!(crate::config::SiteIdentity::from(id))
 }
 
-/// `patched`: the talkgroups patched with it ([`Session::tg_names`]).
 /// The name a site's band plan is kept under ([`trunk_core::trunk::SiteKey::file_stem`]).
 pub fn bandplan_key(sys: &trunk_core::trunk::SystemConfig, s: &trunk_core::trunk::SiteConfig) -> String {
     sys.site_key(s).file_stem()

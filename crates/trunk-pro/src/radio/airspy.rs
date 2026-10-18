@@ -1,8 +1,9 @@
 //! Airspy R2 / Mini through libairspy, loaded at run time. Needs libairspy
 //! installed: `brew install airspy`, `apt install libairspy0`, or airspy.dll
 //! (from the airspy-tools release) next to trunk-pro.exe / on PATH on Windows.
-//! libairspy does the real-to-IQ conversion; samples arrive as float IQ at
-//! the chosen rate, centred on the tuned frequency.
+//! libairspy hands over real samples, turned into IQ (centred on the tuned
+//! frequency, at the chosen rate) on the source's decoding thread; its own
+//! conversion is kept behind `TRUNK_PRO_AIRSPY_LIBRARY_IQ=1` ([`library_iq`]).
 
 use std::ffi::{c_int, c_void, CStr};
 use std::sync::atomic::{AtomicBool, Ordering};

@@ -3,7 +3,7 @@
 //!
 //! ```text
 //! source(s) u8 IQ → Channelizer per source
-//!   control channel head → receiver bank → TSDU groups → TSBKs → TsbkParser → CallManager
+//!   control channel head → receiver bank → TSDU groups → TSBKs → P25Parser → CallManager
 //!   CallManager → RecorderHost::record → a voice head on whichever source covers the
 //!     frequency (with pre-roll) → receiver bank → VoiceTracker → audio
 //!     (Phase 2 TDMA: H-DQPSK receiver → slot framer → TdmaTracker, one head
@@ -15,8 +15,9 @@
 //! runs on the source that covers it, each voice channel on the source that
 //! covers its frequency. The systems share the sources and the recorder pool;
 //! each has its own control channel, band plan, talkgroups and calls, and its
-//! own time — its control channel's sample clock. Each site of a multi-site
-//! system is a system of its own (see [`SiteConfig::expect`]); a call heard
+//! own time — its control channel's sample clock. A system may have several
+//! sites ([`SystemConfig::sites`]), each its own [`Trunk`] with its own
+//! control channel, sharing the system's talkgroups and rules; a call heard
 //! on several sites is recorded on each and the best copy saved (see
 //! [`super::multisite`]).
 //!
