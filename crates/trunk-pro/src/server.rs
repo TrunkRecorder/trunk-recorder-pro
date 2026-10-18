@@ -636,21 +636,7 @@ pub(crate) fn stats_query(ctx: &Ctx, q: &StatsQuery) -> ToClient {
 
 /// `radioQuery`: the registry, with talkgroup names from the config and radio names as saved.
 pub(crate) fn radio_query(ctx: &Ctx, q: &Body) -> ToClient {
-    let v = &Value::Object(q.clone());
-    let cfg = ctx.config.lock().unwrap().clone();
-    let tables = trunk_app::stats::talkgroup_tables(&ctx.talkgroups.lock().unwrap());
-    let mut aliases: std::collections::HashMap<String, trunk_core::trunk::UnitAliases> = Default::default();
-    for n in cfg.systems.iter().map(|s| &s.short_name).chain(cfg.conventional.iter().map(|c| &c.short_name)) {
-        if let Ok(csv) = std::fs::read_to_string(crate::runtime::units_path(n)) {
-            aliases.insert(n.clone(), trunk_core::trunk::UnitAliases::parse_csv(&csv));
-        }
-    }
-    let tg = |sys: &str, t: u32| trunk_app::stats::tg_info(&tables, sys, t);
-    let unit = |sys: &str, u: u32| aliases.get(sys).and_then(|a| a.get(u)).map(str::to_string);
-    let names = trunk_app::stats::Names { tg: &tg, unit: &unit };
-    let mut out = ctx.shared.radio.lock().unwrap().query(v, unix_now(), &names);
-    out["id"] = v["id"].clone();
-    ToClient::RadioResult(body(out))
+    ctx.shared.radio_query(&Value::Object(q.clone()), unix_now())
 }
 
 async fn session(ctx: Arc<Ctx>, mut socket: WebSocket, door: Door) {

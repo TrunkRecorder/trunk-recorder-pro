@@ -130,7 +130,7 @@ impl WebSession {
     /// A `radioQuery` (JSON) → its `radioResult` (JSON).
     pub fn radio_query(&self, query_json: &str) -> String {
         let q: serde_json::Value = serde_json::from_str(query_json).unwrap_or_default();
-        self.s.radio_query(&q, (js_sys::Date::now() / 1000.0) as i64).to_json()
+        self.s.shared().radio_query(&q, (js_sys::Date::now() / 1000.0) as i64).to_json()
     }
     /// A system's talkgroup file changed (an Ignore flag): calls from now on go by it.
     pub fn set_talkgroups(&mut self, short_name: &str, csv: &str) {

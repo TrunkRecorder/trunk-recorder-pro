@@ -173,6 +173,8 @@ impl Ctx {
     /// The config is now `c` (call with its lock held, so versions follow
     /// the changes in order): a new version, told to every browser. Returns it.
     pub fn config_changed(&self, c: &Config) -> u64 {
+        let files = self.talkgroups.lock().unwrap().clone();
+        self.shared.names.lock().unwrap().set_config(c, &files);
         let version = self.config_version.fetch_add(1, Ordering::SeqCst) + 1;
         publish(&self.hub, ToClient::Config { config: Box::new(c.clone()), version });
         version
@@ -361,6 +363,9 @@ pub fn set_talkgroups(ctx: &Ctx, system: &str, csv: String) -> Result<(), String
     if ctx.runner.lock().unwrap().is_some() {
         ctx.engine_cmds.lock().unwrap().push(EngineCmd::Talkgroups { short_name: system.to_string(), csv: csv.clone() });
     }
+    // (The config first, then the names: as config_changed takes them.)
+    let (cfg, files) = (ctx.config.lock().unwrap().clone(), ctx.talkgroups.lock().unwrap().clone());
+    ctx.shared.names.lock().unwrap().set_config(&cfg, &files);
     publish(&ctx.hub, ToClient::Talkgroups { system: system.to_string(), csv });
     Ok(())
 }
@@ -383,6 +388,19 @@ fn save_bandplans(session: &Session, saved: &mut std::collections::HashMap<Strin
 /// Where the radio registry (talkgroups, radios, frequencies heard) is kept, a file per system.
 fn radio_dir() -> PathBuf {
     crate::paths::data_dir().join("radio")
+}
+
+/// The names the radio registry answers with, as saved: each system's
+/// talkgroups (`cfg` with its talkgroup files) and talker aliases. A
+/// recording keeps them current from then on.
+pub fn load_names(shared: &trunk_app::stats::Shared, cfg: &Config, talkgroups: &trunk_app::config::TalkgroupFiles) {
+    let mut book = shared.names.lock().unwrap();
+    book.set_config(cfg, talkgroups);
+    for n in cfg.systems.iter().map(|s| &s.short_name).chain(cfg.conventional.iter().map(|c| &c.short_name)) {
+        if let Ok(csv) = fs::read_to_string(units_path(n)) {
+            book.set_units(n, &csv);
+        }
+    }
 }
 
 /// Read the radio registry saved by earlier runs.

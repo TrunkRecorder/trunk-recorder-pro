@@ -42,11 +42,13 @@ const TICK_MS: f64 = 1000.0;
 /// A source clipping more than this share of samples, %, is an event.
 const CLIP_EVENT_PCT: f64 = 0.5;
 
-/// What outlives a session: the radio registry and the event monitor
-/// (shared with the platform, which answers queries and adds its own events).
+/// What outlives a session: the radio registry, the names it answers with,
+/// and the event monitor (shared with the platform, which answers queries
+/// and adds its own events).
 #[derive(Default)]
 pub struct Shared {
     pub radio: Mutex<Registry>,
+    pub names: Mutex<NameBook>,
     pub monitor: Mutex<Monitor>,
 }
 
@@ -62,6 +64,46 @@ impl Shared {
 
     pub fn recent_events(&self) -> Vec<Value> {
         self.monitor.lock().unwrap().recent()
+    }
+
+    /// A `radioQuery`: the registry, with talkgroups and radios named from
+    /// the [`NameBook`] (`now`: Unix s). The desktop app's server and the
+    /// browser build's worker both answer this way.
+    pub fn radio_query(&self, q: &Value, now: i64) -> ToClient {
+        let book = self.names.lock().unwrap();
+        let tg = |sys: &str, t: u32| tg_info(&book.talkgroups, sys, t);
+        let unit = |sys: &str, u: u32| book.units.get(sys).and_then(|a| a.get(u)).map(str::to_string);
+        let mut out = self.radio.lock().unwrap().query(q, now, &Names { tg: &tg, unit: &unit });
+        out["id"] = q["id"].clone();
+        ToClient::RadioResult(crate::protocol::body(out))
+    }
+}
+
+/// The names the radio registry's answers use ([`Shared::radio_query`]):
+/// each system's talkgroups (its talkgroup file's, a conventional system's
+/// channels) and talker aliases, by short name. A running session keeps
+/// them as its engine has them; the desktop app fills them from its files
+/// when it starts and when they change.
+#[derive(Default)]
+pub struct NameBook {
+    talkgroups: HashMap<String, trunk_core::trunk::Talkgroups>,
+    units: HashMap<String, trunk_core::trunk::UnitAliases>,
+}
+
+impl NameBook {
+    /// Each system's talkgroups, as an engine built from `cfg` and these talkgroup files has them.
+    pub fn set_config(&mut self, cfg: &Config, files: &crate::config::TalkgroupFiles) {
+        self.set_systems(&cfg.engine_config(0.0, files).systems);
+    }
+
+    /// Each system's talkgroups, from an engine's systems.
+    pub fn set_systems(&mut self, systems: &[trunk_core::trunk::SystemConfig]) {
+        self.talkgroups = systems.iter().map(|s| (s.short_name.clone(), s.talkgroups.clone())).collect();
+    }
+
+    /// System `short_name`'s talker aliases, from their CSV (as saved).
+    pub fn set_units(&mut self, short_name: &str, csv: &str) {
+        self.units.insert(short_name.to_string(), trunk_core::trunk::UnitAliases::parse_csv(csv));
     }
 }
 
@@ -388,15 +430,6 @@ impl Stats {
 
 /// A system's (by short name) `decodeDetail` sites and patches.
 pub type DecodeSites = fn(&Engine, &str) -> (Vec<Value>, Vec<Value>);
-
-/// Talkgroup files, parsed: (short name → talkgroups), for [`Names`].
-pub fn talkgroup_tables(files: &crate::config::TalkgroupFiles) -> HashMap<String, trunk_core::trunk::Talkgroups> {
-    let mut m = HashMap::new();
-    for (name, csv) in files {
-        m.insert(name.clone(), trunk_core::trunk::parse_csv(csv));
-    }
-    m
-}
 
 /// A talkgroup's name and Ignore flag from parsed tables.
 pub fn tg_info(tables: &HashMap<String, trunk_core::trunk::Talkgroups>, system: &str, tg: u32) -> Option<TgInfo> {

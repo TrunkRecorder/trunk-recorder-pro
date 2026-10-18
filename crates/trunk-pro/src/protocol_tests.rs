@@ -421,6 +421,13 @@ fn the_servers_messages() {
     }
     assert_eq!(queries[2]["rows"][0]["alphaTag"], "", "no talkgroup file for p25 here");
     assert_eq!(queries[4]["talkers"].as_array().map(Vec::len), Some(2));
+    // Named from the name book the server keeps (talkgroup files and the config; aliases as saved).
+    let files: trunk_app::config::TalkgroupFiles = [("p25".to_string(), "Decimal,Hex,Alpha Tag,Mode,Description,Tag,Category\n101,65,FD Dispatch,D,Dispatch,Fire Dispatch,Fire\n".to_string())].into();
+    ctx.shared.names.lock().unwrap().set_config(&cfg, &files);
+    ctx.shared.names.lock().unwrap().set_units("p25", "7,Engine 7\n");
+    let named = |q: Value| crate::server::radio_query(&ctx, &body(q)).to_value().to_string();
+    assert!(named(json!({ "id": 10, "what": "talkgroups", "system": "p25", "hours": 24 })).contains("FD Dispatch"));
+    assert!(named(json!({ "id": 11, "what": "units", "system": "p25" })).contains("Engine 7"));
     let msgs = vec![
         ToClient::Config { config: Box::new(cfg.clone()), version: 2 },
         ToClient::Config { config: Box::default(), version: 1 },

@@ -361,6 +361,7 @@ impl Session {
             .map(|s| Arc::new(Mutex::new(SourceStats { clock: ClockFit { live: !matches!(s, Source::File { realtime: false, .. }), ..Default::default() }, ..Default::default() })))
             .collect();
         let meas = Stats::new(&cfg, Shared::new(), local_offset);
+        meas.shared().names.lock().unwrap().set_systems(&systems);
         Ok(Session {
             meas,
             cfg,
@@ -398,6 +399,7 @@ impl Session {
     /// registry and the event monitor, instead of this session's own.
     pub fn attach(&mut self, shared: Arc<Shared>) {
         self.meas = Stats::new(&self.cfg, shared, self.local_offset);
+        self.meas.shared().names.lock().unwrap().set_systems(&self.engine.systems());
     }
 
     /// The registry and monitor this session feeds.
@@ -413,7 +415,9 @@ impl Session {
     /// A system's talkgroup file changed (an Ignore flag set from the
     /// dashboard): calls from now on go by it.
     pub fn set_talkgroups(&mut self, short_name: &str, csv: &str) -> bool {
-        self.engine.set_talkgroups(short_name, trunk_core::trunk::parse_csv(csv))
+        let set = self.engine.set_talkgroups(short_name, trunk_core::trunk::parse_csv(csv));
+        self.meas.shared().names.lock().unwrap().set_systems(&self.engine.systems());
+        set
     }
 
     /// The encryption keys of the system named `short_name` (trunked or
@@ -426,19 +430,6 @@ impl Session {
     pub fn unit_alias(&self, short_name: &str, unit: u32) -> Option<String> {
         let sys = self.cfg.call_systems().into_iter().find(|s| s.short_name == short_name)?.index;
         self.engine.unit_alias(sys, unit)
-    }
-
-    /// `radioQuery` against the registry this session feeds, with names
-    /// from its talkgroup files and the aliases it knows (`now`: Unix s).
-    pub fn radio_query(&self, q: &Value, now: i64) -> ToClient {
-        // (Each system's talkgroups, as the engine has them now.)
-        let tables: std::collections::HashMap<String, trunk_core::trunk::Talkgroups> = self.engine.systems().iter().map(|s| (s.short_name.clone(), s.talkgroups.clone())).collect();
-        let tg = |sys: &str, t: u32| crate::stats::tg_info(&tables, sys, t);
-        let unit = |sys: &str, u: u32| self.unit_alias(sys, u);
-        let names = crate::stats::Names { tg: &tg, unit: &unit };
-        let mut out = self.meas.shared().radio.lock().unwrap().query(q, now, &names);
-        out["id"] = q["id"].clone();
-        ToClient::RadioResult(crate::protocol::body(out))
     }
 
 
@@ -627,6 +618,7 @@ impl Session {
             let csv: Vec<String> = names.iter().filter_map(|x| units(x)).collect();
             if !csv.is_empty() {
                 self.engine.load_units(&n, &csv.join("\n"));
+                self.meas.shared().names.lock().unwrap().set_units(&n, &csv.join("\n"));
             }
         }
     }
@@ -634,7 +626,12 @@ impl Session {
     /// (short name, talker alias CSV) of each system that learned an alias
     /// since the last call, to save.
     pub fn units_changed(&mut self) -> Vec<(String, String)> {
-        self.engine.units_changed()
+        let changed = self.engine.units_changed();
+        let mut book = self.meas.shared().names.lock().unwrap();
+        for (name, csv) in &changed {
+            book.set_units(name, csv);
+        }
+        changed
     }
 
     /// Start each AutoTune source from the score an earlier run kept (what
