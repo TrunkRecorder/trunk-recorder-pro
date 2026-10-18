@@ -76,8 +76,9 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   conventional. This is the number `{sys_num}` gives in a file name format and plugins see as
   `system`. The `status` message lists every system's short name by that number
   (`status.systemNames`); the API client's `systemName(status, system)` reads it, and
-  `CONVENTIONAL` / `conventionalIndex` are gone (from the plugin SDK too). There is no longer a
-  limit of 256 conventional systems.
+  `CONVENTIONAL` / `conventionalIndex` are gone (from the plugin SDK too: SDK 0.5.0, since 0.4.0
+  on crates.io still has it; a plugin tells a conventional system by its `kind` in `Setup`). There
+  is no longer a limit of 256 conventional systems.
   - Inside, a system's talkgroups, rules, unit names and keys are kept once for the whole system
     rather than copied into each of its sites, so a talkgroup file edited while recording reaches
     every site from one place.
