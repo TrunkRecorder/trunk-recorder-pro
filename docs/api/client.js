@@ -60,6 +60,8 @@ export class TrunkClient {
     this.sources = [];
     this.calls = [];
     this.history = [];
+    /** Each system's talkgroup file (Trunk Recorder's CSV), by short name. */
+    this.talkgroupFiles = {};
     this.log = [];
     /** Talker aliases heard on the air (saved ones, then live): short name → { unit: alias }. */
     this.aliases = {};
@@ -161,19 +163,24 @@ export class TrunkClient {
   /**
    * System `shortName`'s talkgroups: Map talkgroup → { talkgroup, alphaTag,
    * description, tag, group, mode }. A trunked system's from its talkgroup
-   * file (Trunk Recorder's CSV, as in the config); a conventional system's
-   * from its channels (alphaTag the channel's name).
+   * file (Trunk Recorder's CSV: `talkgroups` messages); a conventional
+   * system's from its channels (alphaTag the channel's name).
    */
   talkgroups(shortName) {
     const conv = this.config?.conventional?.find((s) => s.shortName === shortName);
     if (conv) return channelTalkgroups(conv.channels ?? []);
-    const csv = this.config?.systems.find((s) => s.shortName === shortName)?.talkgroupsCsv ?? "";
+    const csv = this.talkgroupFiles[shortName] ?? "";
     this._tgCache ??= new Map();
     const hit = this._tgCache.get(shortName);
     if (hit?.csv === csv) return hit.map;
     const map = parseTalkgroups(csv);
     this._tgCache.set(shortName, { csv, map });
     return map;
+  }
+
+  /** Replace system `shortName`'s talkgroup file (Trunk Recorder's CSV; "" for none). Needs control access. */
+  setTalkgroups(shortName, csv) {
+    this.send({ type: "setTalkgroups", system: shortName, csv });
   }
 
   /** A recorded call's file: entry (or its path), "wav" | "json" | "m4a". */
@@ -255,6 +262,13 @@ export class TrunkClient {
         break;
       case "config":
         this.config = m.config;
+        break;
+      case "talkgroups":
+        if (m.csv) this.talkgroupFiles = { ...this.talkgroupFiles, [m.system]: m.csv };
+        else {
+          const { [m.system]: _, ...rest } = this.talkgroupFiles;
+          this.talkgroupFiles = rest;
+        }
         break;
       case "concluded":
         this.history = [m.entry, ...this.history].slice(0, this.historyLimit);

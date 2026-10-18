@@ -312,7 +312,7 @@ mod tests {
         .unwrap();
         let systems = systems_of(&c);
         assert_eq!(systems.iter().map(|s| (s.index, s.short_name.as_str(), s.kind.as_str())).collect::<Vec<_>>(), [(0, "dcfd", "p25"), (1, "county", "conventional")]);
-        let e = c.engine_config(0.0);
+        let e = c.engine_config(0.0, &Default::default());
         assert_eq!(e.systems.iter().map(|s| s.short_name.as_str()).collect::<Vec<_>>(), ["dcfd", "county"], "the engine numbers them so too");
         let specs = Spec::enabled(&c);
         assert_eq!(specs[0].systems.get("dcfd"), Some(&json!({ "apiKey": "dcfd" })));

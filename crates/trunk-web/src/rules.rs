@@ -23,6 +23,13 @@ pub fn config_normalize(json: &str) -> String {
     }
 }
 
+/// The talkgroup files an older stored config (JSON) held, `{shortName:
+/// csv}`: moved out before it is read (the upgrade: [`trunk_app::migrate`]).
+#[wasm_bindgen(js_name = configTalkgroups)]
+pub fn config_talkgroups(json: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(json).map_or_else(|_| "{}".into(), |v| serde_json::json!(trunk_app::migrate::talkgroups_of(&v)).to_string())
+}
+
 /// Why Start would refuse this config, or none.
 #[wasm_bindgen(js_name = configProblem)]
 pub fn config_problem(json: &str) -> Option<String> {

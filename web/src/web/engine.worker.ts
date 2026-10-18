@@ -8,8 +8,9 @@ import { activeSystems, resolvedCenters } from "../config.ts";
 import { listCalls, readText, saveCall, writeText } from "./opfs.ts";
 
 export type ToWorker =
-  | { type: "init"; config: Config }
+  | { type: "init"; config: Config; talkgroups: Record<string, string> }
   | { type: "setConfig"; config: Config }
+  | { type: "setTalkgroups"; system: string; csv: string }
   | { type: "files"; files: (File | null)[] }
   | { type: "start" }
   | { type: "stop" }
@@ -33,6 +34,8 @@ const post = (msg: FromRecorder) => postMessage({ msg } satisfies FromWorker);
 const wallMs = () => performance.timeOrigin + performance.now();
 
 let config: Config | null = null;
+/** Each system's talkgroup file, by short name (the page keeps them). */
+let talkgroups: Record<string, string> = {};
 let files: (File | null)[] = [];
 let session: WebSession | null = null;
 let rtls: WebRtl[] = [];
@@ -276,7 +279,7 @@ async function start(): Promise<void> {
       if (p) plans[x.shortName] = p;
     }
     // The session's clock: Unix ms that never jump (performance.now() from the page's start).
-    session = new WebSession(JSON.stringify(cfg), wallMs(), JSON.stringify(plans));
+    session = new WebSession(JSON.stringify(cfg), JSON.stringify(talkgroups), wallMs(), JSON.stringify(plans));
     session.load_units(JSON.stringify(await savedUnits(cfg)));
     session.load_heard((await readText(heardFile(cfg))) ?? "");
     session.load_tune((await readText(TUNE_FILE)) ?? "");
@@ -383,6 +386,7 @@ onmessage = async (ev: MessageEvent<ToWorker>) => {
   switch (m.type) {
     case "init":
       config = m.config;
+      talkgroups = m.talkgroups;
       post({
         type: "hello",
         version: __APP_VERSION__,
@@ -398,16 +402,15 @@ onmessage = async (ev: MessageEvent<ToWorker>) => {
         survey: { type: "survey", stage: "idle" },
       });
       break;
-    case "setConfig": {
-      // A talkgroup file changed while recording (an Ignore flag): the session takes it now.
-      const old = config;
+    case "setConfig":
       config = m.config;
-      if (session && old) {
-        for (const x of m.config.systems) {
-          const was = old.systems.find((o) => o.shortName === x.shortName);
-          if (was && was.talkgroupsCsv !== x.talkgroupsCsv) session.set_talkgroups(x.shortName, x.talkgroupsCsv);
-        }
-      }
+      break;
+    case "setTalkgroups": {
+      // (A recording takes it at once: an Ignore flag set, a tag fixed.)
+      if (m.csv.trim()) talkgroups[m.system] = m.csv;
+      else delete talkgroups[m.system];
+      session?.set_talkgroups(m.system, m.csv);
+      post({ type: "talkgroups", system: m.system, csv: m.csv });
       break;
     }
     case "subscribe":

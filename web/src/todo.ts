@@ -23,7 +23,7 @@ export function openTodos(s: AppState): OpenTodo[] {
     switch (item.kind) {
       case "talkgroups": {
         const sys = c.systems.find((x) => x.shortName === item.system);
-        if (sys && !sys.talkgroupsCsv)
+        if (sys && !s.talkgroups[sys.shortName])
           out.push({ item, target: `tg-${item.system}`, title: `Talkgroups for ${item.system}`, text: `“${item.file}” wasn't found. Load it to name the talkgroups.` });
         break;
       }

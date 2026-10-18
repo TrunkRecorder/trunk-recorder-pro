@@ -100,7 +100,7 @@ const SITE_KEYS = [
 
 /** Every key of System this version knows (the rest are kept as they are: a newer version's, a hand edit's). */
 const SYSTEM_KEYS: (keyof System)[] = [
-  "shortName", "name", "type", "nxdnType", "defaultMode", "enabled", "talkgroupsCsv", "talkgroupsName", "recording", "unitNames", "keys", "plugins", "pluginDelays", "sites",
+  "shortName", "name", "type", "nxdnType", "defaultMode", "enabled", "recording", "unitNames", "keys", "plugins", "pluginDelays", "sites",
 ];
 
 /** Every key of Site this version knows. */
@@ -176,8 +176,6 @@ export function normalizeSystem(x: SystemInput): System {
     ...(type === "nxdn" && x.nxdnType === "typeD" ? { nxdnType: "typeD" as const } : {}),
     ...(type === "smartnet" && x.defaultMode === "analog" ? { defaultMode: "analog" as const } : {}),
     enabled: x.enabled ?? true,
-    talkgroupsCsv: x.talkgroupsCsv ?? "",
-    talkgroupsName: x.talkgroupsName ?? "",
     ...(x.recording && Object.keys(x.recording).length ? { recording: x.recording } : {}),
     ...(x.unitNames && (x.unitNames.csv || x.unitNames.mode) ? { unitNames: x.unitNames } : {}),
     ...(x.keys?.trim() ? { keys: x.keys } : {}),
@@ -631,7 +629,7 @@ export function importTrunkRecorderConfig(
   base: Config,
   files: Record<string, string> = {},
   merge = false,
-): { config: Config; notes: string[]; todo: ImportTodo[]; plugins: PluginImport[]; added: { sources: number[]; systems: string[] } } {
+): { config: Config; talkgroups: Record<string, string>; notes: string[]; todo: ImportTodo[]; plugins: PluginImport[]; added: { sources: number[]; systems: string[] } } {
   const j = JSON.parse(text) as Record<string, unknown>;
   const notes: string[] = [];
   const todo: ImportTodo[] = [];
@@ -639,6 +637,8 @@ export function importTrunkRecorderConfig(
   const names = new Map<string, string>();
   const systemNames = new Map<unknown, string>();
   const cfg: Config = structuredClone(base);
+  // Each system's talkgroup file, by its short name here (kept beside the config: setTalkgroups).
+  const talkgroups: Record<string, string> = {};
   const sources = (j.sources as Record<string, unknown>[] | undefined) ?? [];
   const systems = (j.systems as Record<string, unknown>[] | undefined) ?? [];
   const imported: Source[] = [];
@@ -849,13 +849,11 @@ export function importTrunkRecorderConfig(
       if (ownName && !names.has(ownName)) names.set(ownName, x.shortName);
       if (typeof sys.talkgroupsFile === "string" && sys.talkgroupsFile) {
         const csv = files[sys.talkgroupsFile];
-        if (x !== one && x.talkgroupsCsv) {
-          if (csv !== undefined && normalizeTalkgroupCsv(csv) !== x.talkgroupsCsv) notes.push(`${ownName}'s talkgroup file wasn't used: ${x.shortName}'s sites share the first one's.`);
+        const had = talkgroups[x.shortName];
+        if (x !== one && had) {
+          if (csv !== undefined && normalizeTalkgroupCsv(csv) !== had) notes.push(`${ownName}'s talkgroup file wasn't used: ${x.shortName}'s sites share the first one's.`);
         } else if (csv === undefined) todo.push({ kind: "talkgroups", system: x.shortName, file: sys.talkgroupsFile });
-        else {
-          x.talkgroupsCsv = normalizeTalkgroupCsv(csv);
-          x.talkgroupsName = baseName(sys.talkgroupsFile);
-        }
+        else talkgroups[x.shortName] = normalizeTalkgroupCsv(csv);
       }
       if (sys.siteId !== undefined && sys.siteId !== null && sys.siteId !== "") todo.push({ kind: "siteLock", system: x.shortName, siteId: String(sys.siteId), site });
       if (x === one) {
@@ -906,7 +904,7 @@ export function importTrunkRecorderConfig(
   const { plugins, other } = trPlugins(j, names, systemNames);
   if (other.length) todo.push({ kind: "plugins", names: other });
   const added = { sources: addedSources, systems: mine.map((o) => (o as System | Conventional).shortName) };
-  if (merge) return { config: cfg, notes, todo, plugins, added };
+  if (merge) return { config: cfg, talkgroups, notes, todo, plugins, added };
   if (typeof j.captureDir === "string") cfg.recording.captureDir = j.captureDir;
   if (typeof j.callTimeout === "number") cfg.recording.callTimeoutS = j.callTimeout;
   if (typeof j.recordUUVCalls === "boolean") cfg.recording.recordUnitToUnit = j.recordUUVCalls;
@@ -927,5 +925,5 @@ export function importTrunkRecorderConfig(
   if (tgFormat) log.talkgroupDisplayFormat = tgFormat as LogSettings["talkgroupDisplayFormat"];
   if (log.file && log.dir && !log.dir.startsWith("/")) notes.push(`The log folder "${log.dir}" is now next to the config file.`);
   cfg.log = log;
-  return { config: cfg, notes, todo, plugins, added };
+  return { config: cfg, talkgroups, notes, todo, plugins, added };
 }

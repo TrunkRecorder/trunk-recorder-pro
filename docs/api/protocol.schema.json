@@ -1640,6 +1640,27 @@
           "properties": {
             "type": {
               "type": "string",
+              "const": "talkgroups"
+            },
+            "system": {
+              "type": "string"
+            },
+            "csv": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "system",
+            "csv"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
               "const": "status"
             },
             "status": {
@@ -6399,12 +6420,6 @@
         "enabled": {
           "type": "boolean"
         },
-        "talkgroupsCsv": {
-          "type": "string"
-        },
-        "talkgroupsName": {
-          "type": "string"
-        },
         "recording": {
           "$ref": "#/definitions/RecordingOverride",
           "description": "Its own recording rules; each left out is the Recording tab's."
@@ -6443,8 +6458,6 @@
         "shortName",
         "type",
         "enabled",
-        "talkgroupsCsv",
-        "talkgroupsName",
         "sites"
       ],
       "additionalProperties": false,
@@ -6633,6 +6646,27 @@
           "required": [
             "type",
             "config"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "setTalkgroups"
+            },
+            "system": {
+              "type": "string"
+            },
+            "csv": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "system",
+            "csv"
           ],
           "additionalProperties": false
         },

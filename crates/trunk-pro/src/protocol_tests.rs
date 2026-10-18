@@ -118,7 +118,7 @@ fn conventional_config() -> Config {
 /// spectrum, log, heard, concluded, the dashboard's stats and details.
 #[test]
 fn a_recording_sessions_messages() {
-    let mut s = Session::new(conventional_config(), 1.75e12, &|_| None, |_| 0).unwrap();
+    let mut s = Session::new(conventional_config(), &Default::default(), 1.75e12, &|_| None, |_| 0).unwrap();
     s.set_topics(trunk_app::stats::Topics::new(["spectrum:0", "log", "rf:0", "decode:conv"].map(String::from)));
     let (mut out, mut msgs) = (Vec::new(), Vec::new());
     air(2_400_000.0, 4.5, |iq, t| {
@@ -149,7 +149,7 @@ fn a_late_radio_keeps_to_the_wall_clock() {
     let epoch = 1.75e12;
     // When the call starts, ms after the recording did.
     let start_of = |cfg: Config| {
-        let mut s = Session::new(cfg, epoch, &|_| None, |_| 0).unwrap();
+        let mut s = Session::new(cfg, &Default::default(), epoch, &|_| None, |_| 0).unwrap();
         let mut out = Vec::new();
         s.poll(epoch, &mut out);
         let mut files = Vec::new();
@@ -186,7 +186,7 @@ fn a_late_radio_keeps_to_the_wall_clock() {
 #[test]
 fn a_busy_engine_does_not_make_the_radio_look_late() {
     let epoch = 1.75e12;
-    let mut s = Session::new(conventional_config(), epoch, &|_| None, |_| 0).unwrap();
+    let mut s = Session::new(conventional_config(), &Default::default(), epoch, &|_| None, |_| 0).unwrap();
     let mut out = Vec::new();
     s.poll(epoch, &mut out);
     let mut files = Vec::new();
@@ -208,7 +208,7 @@ fn a_busy_engine_does_not_make_the_radio_look_late() {
 fn autotune_starts_from_the_saved_score() {
     let mut cfg = conventional_config();
     cfg.sources[0] = serde_json::from_value(json!({ "type": "rtlsdr", "serial": "", "centerHz": 155000000, "rateHz": 2400000, "gainDb": 25, "agc": false, "ppm": 2, "autoTune": true })).unwrap();
-    let mut s = Session::new(cfg, 1.75e12, &|_| None, |_| 0).unwrap();
+    let mut s = Session::new(cfg, &Default::default(), 1.75e12, &|_| None, |_| 0).unwrap();
     s.load_tune(r#"{"RTL-SDR (first)": {"errorPpm": 3.0, "atPpm": 1}, "Airspy SN 1": {"errorPpm": -1.0, "atPpm": 0}}"#);
     assert_eq!(s.tune_unsaved(), None, "nothing new to save");
     let (mut out, mut msgs) = (Vec::new(), Vec::new());
@@ -222,7 +222,7 @@ fn autotune_starts_from_the_saved_score() {
 /// Without subscriptions, the costly messages aren't made.
 #[test]
 fn unwatched_topics_are_not_sent() {
-    let mut s = Session::new(conventional_config(), 1.75e12, &|_| None, |_| 0).unwrap();
+    let mut s = Session::new(conventional_config(), &Default::default(), 1.75e12, &|_| None, |_| 0).unwrap();
     let (mut out, mut msgs) = (Vec::new(), Vec::new());
     air(2_400_000.0, 3.0, |iq, t| {
         s.push_iq(0, iq, 0, 1.75e12 + t * 1000.0);
@@ -265,6 +265,7 @@ fn ctx(cfg: Config, dir: &Path) -> Arc<crate::runtime::Ctx> {
     Arc::new(crate::runtime::Ctx {
         config_path: dir.join("config.json"),
         config: Mutex::new(cfg),
+        talkgroups: Mutex::new(Default::default()),
         hub: hub.clone(),
         runner: Mutex::new(None),
         lifecycle: Mutex::new(false),
@@ -460,6 +461,7 @@ fn messages_to_the_recorder() {
         json!({ "type": "surveyListen", "freqHz": 851_012_500 }),
         json!({ "type": "pluginStore", "refresh": true }),
         json!({ "type": "removeInterface", "id": "trunkamp" }),
+        json!({ "type": "setTalkgroups", "system": "dcfd", "csv": "Decimal,Alpha Tag\n101,FD Disp\n" }),
     ];
     check_all("ToRecorder", &msgs);
     // And the recorder reads each as the docs give it.

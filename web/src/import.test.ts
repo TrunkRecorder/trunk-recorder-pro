@@ -42,7 +42,7 @@ test("replace: a first import takes the config's radios, systems and settings", 
   const r = importTrunkRecorderConfig(tr800, defaultConfig(), { "county.csv": csv });
   assert.deepEqual(serials(r.config), ["800a@855"]);
   assert.deepEqual(names(r.config), ["county800"]);
-  assert.equal(r.config.systems[0].talkgroupsName, "county.csv");
+  assert.deepEqual(Object.keys(r.talkgroups), ["county800"], "its talkgroup file, apart from the config");
   assert.equal(r.config.recording.captureDir, "/tr/audio");
   assert.equal(r.config.recording.callTimeoutS, 3);
   assert.equal(r.config.log?.level, "debug");
@@ -75,7 +75,6 @@ test("merge: split configs imported one by one make one setup", () => {
   assert.deepEqual(serials(c), ["800a@855", "700a@770", "vhf@155"], "the 800 MHz dongle both name is there once");
   assert.deepEqual(names(c), ["county800", "state700", "vhf"]);
   assert.equal(c.conventional[0].channels.length, 2);
-  assert.equal(c.systems[1].talkgroupsName, "state.csv");
   // The first config's settings stay.
   assert.equal(c.recording.captureDir, "/tr/audio");
   assert.equal(c.recording.callTimeoutS, 3);

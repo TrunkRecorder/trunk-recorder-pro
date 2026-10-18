@@ -89,6 +89,8 @@ impl PhaseInfo {
 pub struct Ctx {
     pub config_path: PathBuf,
     pub config: Mutex<Config>,
+    /// Each system's talkgroup file, as kept beside the config ([`talkgroups_path`]).
+    pub talkgroups: Mutex<trunk_app::config::TalkgroupFiles>,
     pub hub: Hub,
     pub runner: Mutex<Option<Runner>>,
     /// Held through a start, stop, survey start or quit, so two never
@@ -220,7 +222,8 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
     // `now_ms` is the one plus the other (wall time that never jumps).
     let epoch_ms = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_millis() as f64);
     let epoch_at = Instant::now();
-    let mut session = Session::new(cfg.clone(), epoch_ms, &|name| fs::read_to_string(bandplan_path(name)).ok(), local_offset)?;
+    let talkgroups = ctx.talkgroups.lock().unwrap().clone();
+    let mut session = Session::new(cfg.clone(), &talkgroups, epoch_ms, &|name| fs::read_to_string(bandplan_path(name)).ok(), local_offset)?;
     session.attach(ctx.shared.clone());
     for k in keys {
         for s in &k.skipped {
@@ -320,6 +323,38 @@ fn bandplan_path(short_name: &str) -> PathBuf {
 }
 
 /// Where a system's radios' talker aliases are kept (Trunk Recorder's unitTagsOTA CSV).
+pub(crate) fn talkgroups_path(short_name: &str) -> PathBuf {
+    trunk_app::config::talkgroups_path(&crate::paths::data_dir(), short_name)
+}
+
+/// The talkgroup files of `cfg`'s systems, as kept.
+pub fn load_talkgroups(cfg: &Config) -> trunk_app::config::TalkgroupFiles {
+    cfg.systems.iter().filter_map(|s| fs::read_to_string(talkgroups_path(&s.short_name)).ok().map(|csv| (s.short_name.clone(), csv))).collect()
+}
+
+/// System `system`'s talkgroup file is now `csv` ("": none): kept, told to
+/// every browser, and taken by the recording at once.
+pub fn set_talkgroups(ctx: &Ctx, system: &str, csv: String) -> Result<(), String> {
+    if system.trim().is_empty() || system.contains(['/', '\\']) || system.starts_with('.') {
+        return Err(format!("bad short name {system:?}"));
+    }
+    let path = talkgroups_path(system);
+    if csv.trim().is_empty() {
+        if path.exists() {
+            fs::remove_file(&path).map_err(|e| format!("Couldn't delete {}: {e}", path.display()))?;
+        }
+        ctx.talkgroups.lock().unwrap().remove(system);
+    } else {
+        trunk_app::config::write_atomic(&path, &csv).map_err(|e| format!("Couldn't save {}: {e}", path.display()))?;
+        ctx.talkgroups.lock().unwrap().insert(system.to_string(), csv.clone());
+    }
+    if ctx.runner.lock().unwrap().is_some() {
+        ctx.engine_cmds.lock().unwrap().push(EngineCmd::Talkgroups { short_name: system.to_string(), csv: csv.clone() });
+    }
+    publish(&ctx.hub, ToClient::Talkgroups { system: system.to_string(), csv });
+    Ok(())
+}
+
 pub(crate) fn units_path(short_name: &str) -> PathBuf {
     crate::paths::data_dir().join(format!("{short_name}.units.csv"))
 }

@@ -74,6 +74,8 @@ export interface AppState {
   notice: string | null;
   ended: boolean;
   config: Config | null;
+  /** Each system's talkgroup file (Trunk Recorder's CSV), by short name: kept beside the config, not in it. */
+  talkgroups: Record<string, string>;
   devices: Device[];
   /** Optional drivers (desktop app); null in the web build. */
   radios: Radios | null;
@@ -174,6 +176,7 @@ let state: AppState = {
   notice: null,
   ended: false,
   config: null,
+  talkgroups: {},
   devices: [],
   radios: null,
   lockable: [],
@@ -331,6 +334,9 @@ function take(m: FromRecorder): void {
       break;
     case "config":
       if (!pendingConfig) set({ config: m.config });
+      break;
+    case "talkgroups":
+      set({ talkgroups: withFile(state.talkgroups, m.system, m.csv) });
       break;
     case "status":
       set({ status: m.status, sources: m.sources, load: m.load, calls: m.calls });
@@ -577,10 +583,44 @@ export function usePolled<T>(key: string, run: () => Promise<T>, everyMs: number
 
 /** Mark talkgroup `tg` of system `system` ignored (or not) in its talkgroup file. */
 export function setTalkgroupIgnore(system: string, tg: number, ignore: boolean, alphaTag = ""): void {
-  updateConfig((c) => {
-    const sys = c.systems.find((x) => x.shortName === system);
-    if (sys) sys.talkgroupsCsv = withIgnore(sys.talkgroupsCsv, tg, ignore, alphaTag);
-  });
+  setTalkgroups(system, withIgnore(state.talkgroups[system] ?? "", tg, ignore, alphaTag));
+}
+
+// ── talkgroup files ──────────────────────────────────────────────────────────
+
+/** `files` with system `system`'s now `csv` ("" for none). */
+function withFile(files: Record<string, string>, system: string, csv: string): Record<string, string> {
+  const next = { ...files };
+  if (csv.trim()) next[system] = csv;
+  else delete next[system];
+  return next;
+}
+
+/** System `system`'s talkgroup file is now `csv` ("": none): saved on the recorder at once. */
+export function setTalkgroups(system: string, csv: string): void {
+  set({ talkgroups: withFile(state.talkgroups, system, csv) });
+  transport.send({ type: "setTalkgroups", system, csv });
+}
+
+/** Talkgroup files following a renamed system: (its name when the renaming began → its name now), sent with the config. */
+const movedTalkgroups = new Map<string, string>();
+
+/** System `from` is renamed `to` (as its short name is typed): its talkgroup file follows, saved once with the config. */
+export function moveTalkgroups(from: string, to: string): void {
+  const csv = state.talkgroups[from];
+  if (from === to || csv === undefined) return;
+  set({ talkgroups: withFile(withFile(state.talkgroups, from, ""), to, csv) });
+  const began = [...movedTalkgroups].find(([, now]) => now === from)?.[0] ?? from;
+  movedTalkgroups.set(began, to);
+}
+
+function sendTalkgroupMoves(): void {
+  for (const [began, now] of movedTalkgroups) {
+    if (began === now) continue;
+    transport.send({ type: "setTalkgroups", system: now, csv: state.talkgroups[now] ?? "" });
+    transport.send({ type: "setTalkgroups", system: began, csv: "" });
+  }
+  movedTalkgroups.clear();
 }
 
 // ── config ───────────────────────────────────────────────────────────────────
@@ -597,6 +637,7 @@ export function updateConfig(fn: (c: Config) => void): void {
   pendingConfig = setTimeout(() => {
     pendingConfig = null;
     if (state.config) transport.send({ type: "setConfig", config: state.config });
+    sendTalkgroupMoves();
   }, 300);
 }
 
@@ -605,6 +646,7 @@ function flushConfig(): void {
     clearTimeout(pendingConfig);
     pendingConfig = null;
     transport.send({ type: "setConfig", config: state.config });
+    sendTalkgroupMoves();
   }
 }
 

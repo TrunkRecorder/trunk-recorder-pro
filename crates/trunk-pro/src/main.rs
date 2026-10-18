@@ -375,7 +375,7 @@ fn replay(a: &Args) {
             }
             let mut cfg = config::Config::default();
             cfg.conventional = vec![config::Conventional { channels: parsed.channels, ..Default::default() }];
-            cfg.engine_config(0.0).conventional
+            cfg.engine_config(0.0, &Default::default()).conventional
         }))
         .collect();
     let out_dir = a.get("out").unwrap_or("calls").to_string();
@@ -791,6 +791,10 @@ fn serve(a: &Args) {
     use std::sync::{Arc, Mutex};
     let config_path = paths::config_path(a.get("config"));
     paths::init(&config_path);
+    // An older config's talkgroup files, moved beside it before it is read (trunk_app::migrate).
+    if let Err(e) = trunk_app::migrate::move_talkgroups(&config_path) {
+        fatal(&format!("{}: couldn't move its talkgroup files out of it ({e})", config_path.display()));
+    }
     let cfg = config::Config::load(&config_path).unwrap_or_else(|e| fatal(&e));
     let level = a.get("log-level").map(|l| trunk_app::log::Level::parse(l).unwrap_or_else(|| fatal(&format!("--log-level {l}: trace, debug, info, warning, error or fatal"))));
     logging::init(&cfg.log, config_path.parent().unwrap_or(Path::new(".")), level);
@@ -852,9 +856,11 @@ fn serve(a: &Args) {
     runtime::load_registry(&shared);
     let series = Arc::new(Mutex::new(trunk_app::stats::History::default()));
     let store = statstore::Store::start(paths::data_dir().join("stats"), series.clone());
+    let talkgroups = runtime::load_talkgroups(&cfg);
     let ctx = Arc::new(runtime::Ctx {
         config_path: config_path.clone(),
         config: Mutex::new(cfg),
+        talkgroups: Mutex::new(talkgroups),
         hub: hub.clone(),
         runner: Mutex::new(None),
         lifecycle: Mutex::new(false),

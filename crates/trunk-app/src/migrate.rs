@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use trunk_core::trunk::SiteConfig;
 
-use crate::config::{Config, System};
+use crate::config::{Config, System, TalkgroupFiles};
 
 /// A site's keys in a system's config (before sites, a system had them itself).
 const SITE_KEYS: &[&str] = &[
@@ -29,7 +29,60 @@ const SITE_KEYS: &[&str] = &[
 pub fn config(v: &mut serde_json::Value) -> Vec<String> {
     keys(v);
     server(v);
-    sites(v)
+    let mut notes = sites(v);
+    notes.extend(talkgroups(v));
+    notes
+}
+
+/// Talkgroup files were kept in the config (`talkgroupsCsv`, before
+/// v0.1.16); they are files of their own now ([`TalkgroupFiles`]). Their
+/// copies leave the config here; [`talkgroups_of`] gives them to the
+/// platform to keep (the desktop app: [`move_talkgroups`]). Returns which
+/// moved, to tell.
+fn talkgroups(v: &mut serde_json::Value) -> Vec<String> {
+    let moved: Vec<String> = talkgroups_of(v).into_keys().collect();
+    for sys in v.get_mut("systems").and_then(serde_json::Value::as_array_mut).into_iter().flatten() {
+        if let Some(o) = sys.as_object_mut() {
+            o.remove("talkgroupsCsv");
+            o.remove("talkgroupsName");
+        }
+    }
+    if moved.is_empty() {
+        return vec![];
+    }
+    vec![format!("Talkgroup files are kept beside the config now, as <short name>.talkgroups.csv: moved {}'s there.", moved.join("'s, "))]
+}
+
+/// The talkgroup files an older config (`v`, its JSON) holds, by its
+/// systems' short names once it is upgraded (systems it joins into one keep
+/// the first's file, as [`sites`] says).
+pub fn talkgroups_of(v: &serde_json::Value) -> TalkgroupFiles {
+    let mut v = v.clone();
+    sites(&mut v);
+    let systems = v.get("systems").and_then(serde_json::Value::as_array).cloned().unwrap_or_default();
+    systems
+        .iter()
+        .filter_map(|s| {
+            let csv = s.get("talkgroupsCsv")?.as_str()?.to_string();
+            Some((s.get("shortName")?.as_str()?.to_string(), csv)).filter(|(_, csv)| !csv.trim().is_empty())
+        })
+        .collect()
+}
+
+/// The desktop app, before it reads its config (at `path`): an older
+/// config's talkgroup files written beside it ([`crate::config::talkgroups_path`])
+/// — those not there already. Reading the config then leaves them out of it.
+pub fn move_talkgroups(path: &Path) -> std::io::Result<()> {
+    let Ok(text) = std::fs::read_to_string(path) else { return Ok(()) };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else { return Ok(()) };
+    let dir = path.parent().unwrap_or(Path::new("."));
+    for (short, csv) in talkgroups_of(&v) {
+        let to = crate::config::talkgroups_path(dir, &short);
+        if !to.exists() {
+            crate::config::write_atomic(&to, csv)?;
+        }
+    }
+    Ok(())
 }
 
 /// Before key sources (v0.1.10), a system's `keys` named its keys file: such
@@ -204,14 +257,38 @@ mod tests {
 
     /// An older config: each system a site of its own, those its site group
     /// or site locks joined made one system.
+    /// An older config's talkgroup files move beside it, one per system once
+    /// upgraded (systems joined into one keep the first's); a file already
+    /// there stays as it is.
+    #[test]
+    fn talkgroup_files_move_out_of_the_config() {
+        let dir = std::env::temp_dir().join(format!("trunk-migrate-tg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(&path, r#"{ "systems": [
+            { "shortName": "a", "controlChannelsHz": [1], "siteGroup": "g", "talkgroupsCsv": "1,a" },
+            { "shortName": "b", "controlChannelsHz": [2], "siteGroup": "g", "talkgroupsCsv": "2,b" },
+            { "shortName": "c", "sites": [{ "controlChannelsHz": [3] }], "talkgroupsCsv": "3,c" },
+            { "shortName": "d", "sites": [{ "controlChannelsHz": [4] }], "talkgroupsCsv": "" } ] }"#).unwrap();
+        std::fs::write(crate::config::talkgroups_path(&dir, "c"), "kept").unwrap();
+        move_talkgroups(&path).unwrap();
+        let read = |n: &str| std::fs::read_to_string(crate::config::talkgroups_path(&dir, n)).ok();
+        assert_eq!((read("a"), read("b"), read("c"), read("d")), (Some("1,a".into()), None, Some("kept".into()), None));
+        let c = Config::from_json(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(!serde_json::to_string(&c).unwrap().contains("talkgroupsCsv"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn older_systems_become_systems_with_sites() {
         let c = Config::from_json(r#"{ "systems": [{ "shortName": "a", "controlChannelsHz": [851012500], "modulation": "qpsk", "talkgroupsCsv": "x" }] }"#).unwrap();
         assert!(c.recording.drop_duplicate_calls);
         assert_eq!(c.systems.len(), 1);
-        let (sys, site) = (&c.systems[0], &c.systems[0].sites[0]);
-        assert_eq!((sys.talkgroups_csv.as_str(), site.name.as_str(), site.control_channels_hz.as_slice(), site.modulation), ("x", "", &[851_012_500.0][..], crate::config::Modulation::Qpsk));
-        assert_eq!(c.notes.len(), 1, "{:?}", c.notes);
+        let site = &c.systems[0].sites[0];
+        assert_eq!((site.name.as_str(), site.control_channels_hz.as_slice(), site.modulation), ("", &[851_012_500.0][..], crate::config::Modulation::Qpsk));
+        assert_eq!(c.notes.len(), 2, "{:?}", c.notes);
+        assert!(c.notes[1].contains("moved a's there"), "its talkgroup file moves out, and the note says so: {:?}", c.notes);
+        assert!(!serde_json::to_string(&c).unwrap().contains("talkgroupsCsv"));
         let saved = serde_json::to_value(&c).unwrap();
         assert!(saved["systems"][0].get("controlChannelsHz").is_none() && saved["systems"][0]["sites"][0]["controlChannelsHz"][0] == 851012500.0);
         assert!(Config::from_value(saved).unwrap().notes.is_empty(), "read again: nothing to change");
@@ -231,11 +308,10 @@ mod tests {
             ("p1", vec!["p1".into(), "p2".into()]),
             ("p3", vec!["p3".into()]),
         ]);
-        assert_eq!(c.systems[0].talkgroups_csv, "tg");
         assert!(c.systems[0].sites[0].enabled && !c.systems[0].sites[1].enabled, "each site keeps its own switch");
-        assert!(c.notes.iter().any(|n| n.contains("cm2's talkgroup file weren't kept: cm1")), "{:?}", c.notes);
         assert!(c.notes.iter().any(|n| n.starts_with("p1 and p2 are one system now")), "{:?}", c.notes);
-        let e = c.engine_config(0.0);
+        assert!(c.notes.iter().any(|n| n.contains("cm2's talkgroup file weren't kept: cm1")), "{:?}", c.notes);
+        let e = c.engine_config(0.0, &Default::default());
         assert!(!e.drop_duplicates);
         let sites: Vec<_> = trunk_core::trunk::sites(&e.systems).map(|(n, s)| (n, e.systems[n as usize].short_name.as_str(), s.name.as_str())).collect();
         assert_eq!(sites, [(0, "cm1", "cm1"), (1, "p1", "p1"), (1, "p1", "p2"), (2, "p3", "p3")]);

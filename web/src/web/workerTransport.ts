@@ -5,10 +5,13 @@
 import { decodeAudioFrame, type AudioChunk, type Config, type FromRecorder, type ToRecorder } from "../protocol.ts";
 import type { CallExt, Transport } from "../transport.ts";
 import { defaultConfig, storedConfig } from "../config.ts";
+import { oldTalkgroups } from "../migrate.ts";
 import type { FromWorker, ToWorker } from "./engine.worker.ts";
 import { callBlob } from "./opfs.ts";
 
 const CONFIG_KEY = "trp.config";
+/** Each system's talkgroup file, by short name: kept beside the config, not in it. */
+const TALKGROUPS_KEY = "trp.talkgroups";
 
 function loadConfig(): Config {
   try {
@@ -18,6 +21,17 @@ function loadConfig(): Config {
     /* storage blocked or corrupt: defaults */
   }
   return defaultConfig();
+}
+
+function loadTalkgroups(): Record<string, string> {
+  try {
+    const kept = JSON.parse(localStorage.getItem(TALKGROUPS_KEY) ?? "{}") as Record<string, string>;
+    // An older config's, moved out of it (migrate.ts).
+    const old = oldTalkgroups(JSON.parse(localStorage.getItem(CONFIG_KEY) ?? "{}"));
+    return { ...old, ...kept };
+  } catch {
+    return {};
+  }
 }
 
 export const RTL_USB_FILTERS = [
@@ -32,6 +46,7 @@ export class WorkerTransport implements Transport {
   onConnection: (connected: boolean) => void = () => {};
   private worker: Worker;
   private files: (File | null)[] = [];
+  private talkgroups: Record<string, string> = {};
 
   constructor() {
     this.worker = new Worker(new URL("./engine.worker.ts", import.meta.url), { type: "module" });
@@ -43,7 +58,8 @@ export class WorkerTransport implements Transport {
       } else this.onMessage(d.msg);
     };
     this.worker.onerror = (e) => this.onMessage({ type: "error", message: `Engine worker crashed: ${e.message}` });
-    this.post({ type: "init", config: loadConfig() });
+    this.talkgroups = loadTalkgroups();
+    this.post({ type: "init", config: loadConfig(), talkgroups: this.talkgroups });
     queueMicrotask(() => this.onConnection(true));
   }
 
@@ -52,6 +68,15 @@ export class WorkerTransport implements Transport {
   }
 
   send(msg: ToRecorder): void {
+    if (msg.type === "setTalkgroups") {
+      if (msg.csv.trim()) this.talkgroups[msg.system] = msg.csv;
+      else delete this.talkgroups[msg.system];
+      try {
+        localStorage.setItem(TALKGROUPS_KEY, JSON.stringify(this.talkgroups));
+      } catch {
+        /* not persisted; still used this session */
+      }
+    }
     if (msg.type === "setConfig") {
       try {
         localStorage.setItem(CONFIG_KEY, JSON.stringify(msg.config));

@@ -384,15 +384,11 @@ impl Stats {
     }
 }
 
-/// The talkgroup files of `cfg`'s systems, parsed: (short name → talkgroups),
-/// for [`Names`].
-pub fn talkgroup_tables(cfg: &Config) -> HashMap<String, trunk_core::trunk::Talkgroups> {
+/// Talkgroup files, parsed: (short name → talkgroups), for [`Names`].
+pub fn talkgroup_tables(files: &crate::config::TalkgroupFiles) -> HashMap<String, trunk_core::trunk::Talkgroups> {
     let mut m = HashMap::new();
-    for s in &cfg.systems {
-        m.insert(s.short_name.clone(), trunk_core::trunk::parse_csv(&s.talkgroups_csv));
-    }
-    for c in &cfg.conventional {
-        m.entry(c.short_name.clone()).or_insert_with(trunk_core::trunk::Talkgroups::new);
+    for (name, csv) in files {
+        m.insert(name.clone(), trunk_core::trunk::parse_csv(csv));
     }
     m
 }

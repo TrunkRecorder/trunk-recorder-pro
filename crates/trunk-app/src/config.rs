@@ -269,7 +269,7 @@ impl Source {
 /// heard it best: see [`Recording::drop_duplicate_calls`]).
 ///
 /// ```json
-/// { "shortName": "dcfd", "type": "p25", "talkgroupsCsv": "…",
+/// { "shortName": "dcfd", "type": "p25",
 ///   "sites": [ { "controlChannelsHz": [851012500] },
 ///              { "name": "dcfd-south", "controlChannelsHz": [852337500], "expect": { "rfss": 1, "site": 2 } } ] }
 /// ```
@@ -283,8 +283,6 @@ pub struct System {
     #[serde(rename = "type")]
     pub kind: SystemKind,
     pub enabled: bool,
-    pub talkgroups_csv: String,
-    pub talkgroups_name: String,
     /// Its own names for its radios (Trunk Recorder's unitTagsFile, kept here as text): see [`UnitNames`].
     #[serde(skip_serializing_if = "UnitNames::is_empty")]
     pub unit_names: UnitNames,
@@ -655,8 +653,6 @@ impl Default for System {
             name: String::new(),
             kind: SystemKind::P25,
             enabled: true,
-            talkgroups_csv: String::new(),
-            talkgroups_name: String::new(),
             unit_names: UnitNames::default(),
             recording: RecordingOverride::default(),
             default_mode: SmartnetMode::default(),
@@ -2070,7 +2066,10 @@ impl Config {
         self.active_systems().map(|s| s.short_name.as_str()).chain(self.active_conventional().map(|c| c.short_name.as_str())).nth(system as usize)
     }
 
-    pub fn engine_config(&self, epoch_ms: f64) -> EngineConfig {
+    /// The engine's config, with each system's talkgroup file (`talkgroups`:
+    /// its CSV by short name; kept beside the config, not in it).
+    pub fn engine_config(&self, epoch_ms: f64, talkgroups: &TalkgroupFiles) -> EngineConfig {
+        let tg = |short: &str| talkgroups.get(short).map_or_else(Default::default, |csv| parse_csv(csv));
         let centers = self.resolved_centers();
         // (Keys are read by the app: [`Config::load_keys`].)
         let mut systems: Vec<SystemConfig> = self
@@ -2084,7 +2083,7 @@ impl Config {
                 SystemConfig {
                     calls: rules.call_config(),
                     save: rules.save_rules(),
-                    talkgroups: parse_csv(&sys.talkgroups_csv),
+                    talkgroups: tg(&sys.short_name),
                     unit_tags: sys.unit_names.engine(),
                     ..SystemConfig::trunked(&sys.short_name, sites)
                 }
@@ -2121,6 +2120,18 @@ impl Config {
     }
 }
 
+
+/// Each system's talkgroup file (Trunk Recorder's talkgroup CSV), by its
+/// short name. Kept apart from the config: the desktop app beside it
+/// (`<short name>.talkgroups.csv`), the browser in its storage; the
+/// interface edits one with `setTalkgroups`.
+pub type TalkgroupFiles = BTreeMap<String, String>;
+
+/// Where the desktop app keeps system `short_name`'s talkgroup file: beside
+/// the config (in `dir`).
+pub fn talkgroups_path(dir: &Path, short_name: &str) -> PathBuf {
+    dir.join(format!("{short_name}.talkgroups.csv"))
+}
 
 /// A centre that puts every control channel inside one source (and off the
 /// DC spike), or None if they span too much.
@@ -2218,7 +2229,7 @@ mod tests {
             }"#,
         )
         .unwrap();
-        let e = c.engine_config(0.0);
+        let e = c.engine_config(0.0, &Default::default());
         let t: Vec<_> = e.conventional.iter().map(|x| (x.mode, x.analog.half_bw_hz)).collect();
         assert_eq!(t, [(ConvMode::Am, 5500.0), (ConvMode::Am, 3000.0), (ConvMode::Am, 8000.0), (ConvMode::Fm, 8000.0)]);
         let a = &e.conventional[0].analog;
@@ -2257,7 +2268,7 @@ mod tests {
         assert_eq!(c.problem(), None);
         let center = c.resolved_centers()[0];
         assert!((center - 154_265_000.0).abs() < 100_000.0, "center {center}");
-        let e = c.engine_config(0.0);
+        let e = c.engine_config(0.0, &Default::default());
         assert!(e.systems.iter().all(SystemConfig::is_conventional));
         assert_eq!(e.conventional.len(), 2);
         assert_eq!(e.conventional[0].talkgroup, 1001);
@@ -2304,7 +2315,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(c.problem(), None);
-        let e = c.engine_config(0.0);
+        let e = c.engine_config(0.0, &Default::default());
         assert_eq!(e.conventional.iter().map(|x| (x.system, x.squelch_db)).collect::<Vec<_>>(), [(0, Some(10.0)), (1, Some(14.0))]);
         assert_eq!(e.systems.iter().map(|x| (x.short_name.as_str(), x.save.min_call_s)).collect::<Vec<_>>(), [("fire", 0.0), ("police", 2.0)], "the one switched off isn't numbered");
         assert_eq!(c.short_name_of(1), Some("police"));
@@ -2394,7 +2405,7 @@ mod tests {
             assert!((f - centers[0]).abs() <= hw, "{f} not in source 1 at {}", centers[0]);
         }
         assert!((771_106_250.0 - centers[1]).abs() <= hw, "west's CC not in source 2 at {}", centers[1]);
-        let e = c.engine_config(0.0);
+        let e = c.engine_config(0.0, &Default::default());
         assert_eq!(e.systems.iter().map(|s| s.short_name.as_str()).collect::<Vec<_>>(), ["east", "west"]);
         assert_eq!(e.systems[0].sites[0].expect.nac(), Some(0x443));
         assert_eq!(e.systems[0].sites[0].expect.site(), Some(3));
@@ -2406,7 +2417,7 @@ mod tests {
         assert!(e.drop_duplicates);
         // A second site of east: its own control channel, east's rules; site names its own.
         c.systems[0].sites.push(Site { name: "east-2".into(), control_channels_hz: vec![851_212_500.0], ..Default::default() });
-        let e = c.engine_config(0.0);
+        let e = c.engine_config(0.0, &Default::default());
         let sites: Vec<_> = trunk_core::trunk::sites(&e.systems).map(|(n, s)| (e.systems[n as usize].short_name.as_str(), s.name.as_str(), e.systems[n as usize].calls.record_unknown)).collect();
         assert_eq!(sites, [("east", "east", true), ("east", "east-2", true), ("west", "west", false)]);
         c.systems[0].sites[1].name = "east".into();

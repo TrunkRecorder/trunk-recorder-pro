@@ -1,35 +1,31 @@
 // A system's talkgroup names (Setup → Systems): a Trunk Recorder talkgroup
 // CSV loaded from a file, or the talkgroup table copied from RadioReference's
-// web page and pasted in. Each system keeps its own.
+// web page and pasted in. Each system keeps its own file, beside the config
+// (`<short name>.talkgroups.csv`), saved as soon as it changes.
 
 import { useMemo, useRef, useState } from "react";
-import { downloadText, setNotice, updateConfig } from "./controller.ts";
+import { downloadText, setNotice, setTalkgroups, useApp } from "./controller.ts";
 import { FileInput } from "./inputs.tsx";
 import type { System } from "./protocol.ts";
 import { isEncryptedMode, normalizeTalkgroupCsv, parseRadioReferencePaste, readTalkgroupCsv, talkgroupsToCsv, withHeader, type Talkgroup } from "./talkgroups.ts";
 
-const PASTED = "RadioReference (pasted)";
-
-export function TalkgroupsField(props: { sys: System; index: number; needs?: string; anchor?: string }) {
-  const { sys, index } = props;
+export function TalkgroupsField(props: { sys: System; needs?: string; anchor?: string }) {
+  const { sys } = props;
+  const csv = useApp().talkgroups[sys.shortName] ?? "";
   const fileRef = useRef<HTMLInputElement>(null);
   const [pasting, setPasting] = useState(false);
-  const report = useMemo(() => readTalkgroupCsv(sys.talkgroupsCsv ?? ""), [sys.talkgroupsCsv]);
+  const report = useMemo(() => readTalkgroupCsv(csv), [csv]);
   const tgs = [...report.talkgroups.values()];
   const ignored = tgs.filter((t) => t.ignore).length;
   const encrypted = tgs.filter((t) => isEncryptedMode(t.mode)).length;
-  const set = (csv: string, name: string) =>
-    updateConfig((x) => {
-      x.systems[index].talkgroupsCsv = csv;
-      x.systems[index].talkgroupsName = name;
-    });
+  const set = (next: string) => setTalkgroups(sys.shortName, next);
 
   const onFile = async (f: File | undefined) => {
     if (!f) return;
-    const csv = normalizeTalkgroupCsv(await f.text());
-    const r = readTalkgroupCsv(csv);
+    const next = normalizeTalkgroupCsv(await f.text());
+    const r = readTalkgroupCsv(next);
     if (!r.talkgroups.size) return setNotice(`${f.name}: no talkgroups found.`);
-    set(csv, f.name);
+    set(next);
     setNotice(`Loaded ${r.talkgroups.size} talkgroups from ${f.name} into ${sys.shortName}.${r.skipped.length ? ` ${r.skipped.length} row(s) without a number skipped.` : ""}`);
   };
 
@@ -43,13 +39,13 @@ export function TalkgroupsField(props: { sys: System; index: number; needs?: str
         <button className="btn" aria-expanded={pasting} onClick={() => setPasting(!pasting)}>
           Paste from RadioReference…
         </button>
-        <span className="mono">{tgs.length ? `${tgs.length} from ${sys.talkgroupsName || "a file"}` : "none"}</span>
+        <span className="mono">{tgs.length ? `${tgs.length}` : "none"}</span>
         {tgs.length > 0 && (
           <>
-            <button className="btn ghost" title="Trunk Recorder CSV, with a header row" onClick={() => downloadText(csvName(sys), withHeader(sys.talkgroupsCsv))}>
+            <button className="btn ghost" title="Trunk Recorder CSV, with a header row" onClick={() => downloadText(`${sys.shortName || "system"}.talkgroups.csv`, withHeader(csv))}>
               Download
             </button>
-            <button className="btn ghost" onClick={() => set("", "")}>
+            <button className="btn ghost" onClick={() => set("")}>
               Clear
             </button>
           </>
@@ -84,7 +80,7 @@ export function TalkgroupsField(props: { sys: System; index: number; needs?: str
           sys={sys}
           replacing={tgs.length}
           onUse={(list) => {
-            set(talkgroupsToCsv(list), PASTED);
+            set(talkgroupsToCsv(list));
             setPasting(false);
             setNotice(`Loaded ${list.length} talkgroups from RadioReference into ${sys.shortName}.`);
           }}
@@ -94,8 +90,6 @@ export function TalkgroupsField(props: { sys: System; index: number; needs?: str
     </div>
   );
 }
-
-const csvName = (sys: System) => (sys.talkgroupsName && sys.talkgroupsName !== PASTED && /\.csv$/i.test(sys.talkgroupsName) ? sys.talkgroupsName : `${sys.shortName || "talkgroups"}-talkgroups.csv`);
 
 /** Where to copy from, the box to paste into, and what was read from it. */
 function RadioReferencePaste(props: { sys: System; replacing: number; onUse: (list: Talkgroup[]) => void; onCancel: () => void }) {

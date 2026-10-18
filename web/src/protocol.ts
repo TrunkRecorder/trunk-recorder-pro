@@ -153,8 +153,6 @@ export interface System {
   /** SmartNet: the voice of a talkgroup never heard granted. */
   defaultMode?: "digital" | "analog";
   enabled: boolean;
-  talkgroupsCsv: string;
-  talkgroupsName: string;
   /** Its own recording rules; each left out is the Recording tab's. */
   recording?: RecordingOverride;
   /** Names for its radios (Trunk Recorder's unitTagsFile and unitTagsMode). */
@@ -1377,6 +1375,8 @@ export type FromRecorder =
   | { type: "radios"; radios: Radios }
   | ({ type: "state" } & PhaseState)
   | { type: "config"; config: Config }
+  /** A system's talkgroup file (Trunk Recorder's CSV; "" for none): one for each system on connecting, and again whenever one changes. Kept beside the config, not in it. */
+  | { type: "talkgroups"; system: string; csv: string }
   | { type: "status"; status: EngineStatus; sources: SourceStatus[]; load: number; calls: CallView[] }
   | ({ type: "spectrum" } & Spectrum)
   | { type: "log"; lines: LogLine[] }
@@ -1424,6 +1424,8 @@ export type FromRecorder =
 
 export type ToRecorder =
   | { type: "setConfig"; config: Config }
+  /** System `system`'s talkgroup file (Trunk Recorder's CSV; "" for none). Everyone gets it back as a `talkgroups` message. */
+  | { type: "setTalkgroups"; system: string; csv: string }
   | { type: "start" }
   | { type: "stop" }
   | { type: "devices" }

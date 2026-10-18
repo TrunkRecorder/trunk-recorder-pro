@@ -44,6 +44,7 @@ import {
   dismissTodo,
   downloadText,
   findRadios,
+  moveTalkgroups,
   newSiteOf,
   openGuide,
   refreshDevices,
@@ -1681,7 +1682,6 @@ const SYSTEM_TYPES: Record<System["type"], string> = { p25: "P25", smartnet: "Sm
 
 /** A system's own settings, as a confirm names them: making two systems one keeps the first's. */
 const SYSTEM_OWN: [keyof System, string][] = [
-  ["talkgroupsCsv", "talkgroup file"],
   ["unitNames", "unit names"],
   ["recording", "recording rules"],
   ["plugins", "plugin settings"],
@@ -1954,6 +1954,7 @@ function SystemCard(props: { c: Config; i: number }) {
             onChange={(e) => {
               const to = cleanShortName(e.target.value);
               // Plugin settings that name it follow it.
+              moveTalkgroups(sys.shortName, to);
               updateConfig((x) => renameSystem(x, i, to, plugins));
             }}
           />
@@ -2021,7 +2022,7 @@ function SystemCard(props: { c: Config; i: number }) {
         </div>
       </Group>
       <Group title="Talkgroups and units" hint="Names for what is heard, and which talkgroups are recorded.">
-        <TalkgroupsField sys={sys} index={i} needs={need(`tg-${sys.shortName}`)} anchor={`tg-${sys.shortName}`} />
+        <TalkgroupsField sys={sys} needs={need(`tg-${sys.shortName}`)} anchor={`tg-${sys.shortName}`} />
         <UnitNamesField
           value={sys.unitNames}
           anchor={`units-${sys.shortName}`}

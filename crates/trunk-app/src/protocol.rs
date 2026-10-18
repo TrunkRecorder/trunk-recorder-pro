@@ -45,6 +45,9 @@ pub enum ToClient {
     /// The recording's phase.
     State { phase: &'static str, error: Option<String>, ended: bool },
     Config { config: Box<Config> },
+    /// A system's talkgroup file (Trunk Recorder's CSV; "" for none): one for
+    /// each on connecting, and again whenever one changes.
+    Talkgroups { system: String, csv: String },
     Status { status: Value, sources: Vec<Value>, load: f64, calls: Vec<Value> },
     Spectrum { source: usize, center_hz: f64, rate_hz: f64, bins: Vec<f32> },
     Log { lines: Vec<Value> },
@@ -154,6 +157,8 @@ impl Install {
 pub enum Command {
     /// The whole config (read as [`Config::from_value`] reads a file).
     SetConfig { config: Value },
+    /// System `system`'s talkgroup file (Trunk Recorder's CSV; "" for none).
+    SetTalkgroups { system: String, csv: String },
     Start,
     Stop,
     Devices,

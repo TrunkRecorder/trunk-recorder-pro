@@ -50,14 +50,14 @@ interface Tg {
  * and what calls were heard on (conventional channels, talkgroups not in a
  * file).
  */
-function catalog(s: Pick<AppState, "config">, calls: CallEntry[]): Map<string, Tg[]> {
+function catalog(s: Pick<AppState, "config" | "talkgroups">, calls: CallEntry[]): Map<string, Tg[]> {
   const out = new Map<string, Map<number, Tg>>();
   const sys = (name: string) => out.get(name) ?? out.set(name, new Map()).get(name)!;
   for (const x of s.config?.systems ?? []) {
     if (!x.enabled) continue;
     const name = x.shortName;
     const m = sys(name);
-    for (const t of parseTalkgroupCsv(x.talkgroupsCsv).values()) {
+    for (const t of parseTalkgroupCsv(s.talkgroups[name] ?? "").values()) {
       if (!t.ignore && !m.has(t.number)) m.set(t.number, { system: name, talkgroup: t.number, key: tgKey(name, t.number), alphaTag: t.alphaTag, description: t.description, tag: t.tag, group: t.group });
     }
   }

@@ -25,12 +25,13 @@ test("readSelection: what this browser kept, or none", () => {
 /** The recorder says hello with dcfd, a system of two sites, and is running them. */
 function twoSites(): void {
   const c = defaultConfig();
-  const dcfd = newSystem(c, { shortName: "dcfd", controlChannelsHz: [851_000_000], talkgroupsCsv: CSV("100,64,Fire Dispatch,D,Fire,,\n200,c8,EMS,D,EMS,,\n300,12c,Tac 3,D,Tac,,") });
+  const dcfd = newSystem(c, { shortName: "dcfd", controlChannelsHz: [851_000_000] });
   dcfd.sites.push({ ...dcfd.sites[0], name: "south", controlChannelsHz: [851_500_000] });
   c.systems.push(dcfd);
   transport.onConnection(true);
   const hello = { type: "hello", version: "test", platform: "test", config: c, devices: [], history: [], phase: { type: "state", phase: "running", error: null, ended: false } };
   transport.onMessage(hello as unknown as FromRecorder);
+  transport.onMessage({ type: "talkgroups", system: "dcfd", csv: CSV("100,64,Fire Dispatch,D,Fire,,\n200,c8,EMS,D,EMS,,\n300,12c,Tac 3,D,Tac,,") });
   const id = (site: number): Identity => ({ nac: null, wacn: 0xbee00, sysId: 0x1a2, rfss: 1, site });
   const site = (index: number, name: string): SiteStatus =>
     ({ index, name, nowS: 1, controlChannelHz: 851_000_000 + index * 500_000, identity: id(index + 1), good: 1, bad: 0, modulation: null, activeCalls: 0, recording: 0, callsConcluded: 0, mismatch: null, adjacent: [] });

@@ -92,6 +92,9 @@ the compilers then point at:
   `old_bandplan` / `old_names` lookups;
 - `older_calls` (runtime.rs): `old_names`;
 - `storedConfig` (config.ts): `migrateSystems(…)` → `.map(normalizeSystem)`;
+- trunk-pro `serve` (main.rs): the `migrate::move_talkgroups` call;
+- `configTalkgroups` (crates/trunk-web/src/rules.rs) and its use in
+  `loadTalkgroups` (web/src/web/workerTransport.ts): `oldTalkgroups`;
 - `readSelection` (listen.ts): `migrateSelection` (names as they are).
 
 And the docs' "Upgrading" notes (configuration/systems.md, guides/multi-site.md).

@@ -339,11 +339,12 @@ pub struct Session {
 impl Session {
     /// `bandplan`: the band plan saved for a site, by its key
     /// ([`Session::bandplans`], [`bandplan_key`]).
-    pub fn new(cfg: Config, epoch_ms: f64, bandplan: &dyn Fn(&str) -> Option<String>, local_offset: LocalOffset) -> Result<Session, String> {
+    /// `talkgroups`: each system's talkgroup file ([`crate::config::TalkgroupFiles`]).
+    pub fn new(cfg: Config, talkgroups: &crate::config::TalkgroupFiles, epoch_ms: f64, bandplan: &dyn Fn(&str) -> Option<String>, local_offset: LocalOffset) -> Result<Session, String> {
         if let Some(p) = cfg.problem() {
             return Err(p);
         }
-        let engine = Engine::new(cfg.engine_config(epoch_ms))?;
+        let engine = Engine::new(cfg.engine_config(epoch_ms, talkgroups))?;
         let systems = engine.systems();
         let mut sites = Vec::new();
         for (i, (system, s)) in trunk_core::trunk::sites(&systems).enumerate() {
@@ -430,7 +431,8 @@ impl Session {
     /// `radioQuery` against the registry this session feeds, with names
     /// from its talkgroup files and the aliases it knows (`now`: Unix s).
     pub fn radio_query(&self, q: &Value, now: i64) -> ToClient {
-        let tables = crate::stats::talkgroup_tables(&self.cfg);
+        // (Each system's talkgroups, as the engine has them now.)
+        let tables: std::collections::HashMap<String, trunk_core::trunk::Talkgroups> = self.engine.systems().iter().map(|s| (s.short_name.clone(), s.talkgroups.clone())).collect();
         let tg = |sys: &str, t: u32| crate::stats::tg_info(&tables, sys, t);
         let unit = |sys: &str, u: u32| self.unit_alias(sys, u);
         let names = crate::stats::Names { tg: &tg, unit: &unit };

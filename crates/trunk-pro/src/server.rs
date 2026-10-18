@@ -613,7 +613,7 @@ pub(crate) fn stats_query(ctx: &Ctx, q: &StatsQuery) -> ToClient {
 pub(crate) fn radio_query(ctx: &Ctx, q: &Body) -> ToClient {
     let v = &Value::Object(q.clone());
     let cfg = ctx.config.lock().unwrap().clone();
-    let tables = trunk_app::stats::talkgroup_tables(&cfg);
+    let tables = trunk_app::stats::talkgroup_tables(&ctx.talkgroups.lock().unwrap());
     let mut aliases: std::collections::HashMap<String, trunk_core::trunk::UnitAliases> = Default::default();
     for n in cfg.systems.iter().map(|s| &s.short_name).chain(cfg.conventional.iter().map(|c| &c.short_name)) {
         if let Ok(csv) = std::fs::read_to_string(crate::runtime::units_path(n)) {
@@ -638,6 +638,12 @@ async fn session(ctx: Arc<Ctx>, mut socket: WebSocket, door: Door) {
     let hello = if control { hello } else { access::redact_hello(hello) };
     if socket.send(Message::Text(hello.to_string().into())).await.is_err() {
         return;
+    }
+    let talkgroups: Vec<ToClient> = ctx.talkgroups.lock().unwrap().iter().map(|(system, csv)| ToClient::Talkgroups { system: system.clone(), csv: csv.clone() }).collect();
+    for m in talkgroups {
+        if socket.send(Message::Text(m.to_json().into())).await.is_err() {
+            return;
+        }
     }
     if control {
         let plugins = plugins_list(&ctx).await;
@@ -808,15 +814,6 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
                 c.load_channel_files(&ctx.config_path);
                 let saved = c.save(&ctx.config_path);
                 let old = std::mem::replace(&mut *ctx.config.lock().unwrap(), c.clone());
-                // A talkgroup file changed while recording (an Ignore flag set): the session takes it now.
-                if ctx.runner.lock().unwrap().is_some() {
-                    let mut cmds = ctx.engine_cmds.lock().unwrap();
-                    for s in &c.systems {
-                        if old.systems.iter().find(|o| o.short_name == s.short_name).is_some_and(|o| o.talkgroups_csv != s.talkgroups_csv) {
-                            cmds.push(crate::runtime::EngineCmd::Talkgroups { short_name: s.short_name.clone(), csv: s.talkgroups_csv.clone() });
-                        }
-                    }
-                }
                 if old.log != c.log {
                     crate::logging::configure(&c.log, ctx.config_path.parent().unwrap_or(std::path::Path::new(".")));
                 }
@@ -839,6 +836,8 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
             }
             Err(e) => Some(ToClient::error(format!("Bad config: {e}"))),
         },
+        // (Written beside the config; a recording takes it at once.)
+        Command::SetTalkgroups { system, csv } => failed(runtime::set_talkgroups(ctx, &system, csv)),
         // A key container with no passwordFile, unlocked with a password typed in, or locked again
         // (docs/configuration/systems.md). The password is never kept.
         Command::UnlockKeys { source, password } => {

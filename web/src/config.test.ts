@@ -6,10 +6,9 @@ import { activeSites, defaultConfig, importTrunkRecorderConfig, nameProblem, new
 import type { Config, Identity, SiteStatus, SystemStatus } from "./protocol.ts";
 
 test("normalizeSystem: an older config's system gets its site; a system with sites keeps them", () => {
-  const old = normalizeSystem({ shortName: "a", type: "dmr", controlChannelsHz: [452175000], colorCode: 3, modulation: "qpsk", talkgroupsCsv: "x", enabled: false, future: 1 } as never);
+  const old = normalizeSystem({ shortName: "a", type: "dmr", controlChannelsHz: [452175000], colorCode: 3, modulation: "qpsk", enabled: false, future: 1 } as never);
   assert.equal(old.sites.length, 1);
   assert.deepEqual([old.sites[0].controlChannelsHz, old.sites[0].colorCode, old.sites[0].modulation, old.sites[0].enabled], [[452175000], 3, "qpsk", false]);
-  assert.equal(old.talkgroupsCsv, "x");
   assert.equal((old as unknown as Record<string, unknown>).future, 1, "a key this version doesn't know is kept");
   assert.ok(!("controlChannelsHz" in old), "the site's fields are the site's");
   const now = normalizeSystem({ shortName: "b", sites: [{ controlChannelsHz: [1] }, { name: "b2", controlChannelsHz: [2], enabled: false }] });
@@ -50,9 +49,10 @@ test("importTrunkRecorderConfig: multiSite systems of one multiSiteSystemName ar
       { shortName: "city", type: "p25", control_channels: [852012500] },
     ],
   };
-  const { config, todo } = importTrunkRecorderConfig(JSON.stringify(tr), defaultConfig(), { "tg.csv": "Decimal,Hex,Alpha Tag,Mode,Description,Tag,Category\n100,64,Fire,D,Fire,,\n" });
+  const { config, todo, talkgroups } = importTrunkRecorderConfig(JSON.stringify(tr), defaultConfig(), { "tg.csv": "Decimal,Hex,Alpha Tag,Mode,Description,Tag,Category\n100,64,Fire,D,Fire,,\n" });
   assert.deepEqual(config.systems.map((s) => [s.shortName, s.sites.map((x) => siteNameOf(s, x))]), [["county", ["north", "south"]], ["city", ["city"]]]);
-  assert.match(config.systems[0].talkgroupsCsv, /Fire/);
+  assert.match(talkgroups.county, /Fire/, "its talkgroup file, apart from the config");
+  assert.ok(!JSON.stringify(config).includes("Fire"));
   assert.ok(todo.some((t) => t.kind === "siteLock" && t.system === "county" && t.site === 1), JSON.stringify(todo));
 });
 

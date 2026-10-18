@@ -6,6 +6,17 @@
 // upgrade, delete both (and their tests) and the few lines the compiler then
 // points at.
 
+import { configTalkgroups } from "./web/pkg/trunk_web.js";
+
+/**
+ * The talkgroup files an older config this browser kept held (in
+ * `talkgroupsCsv`, before v0.1.16), by short name once upgraded: the
+ * recorder's own reading of it (trunk_app::migrate::talkgroups_of).
+ */
+export function oldTalkgroups(raw: unknown): Record<string, string> {
+  return JSON.parse(configTalkgroups(JSON.stringify(raw ?? {}))) as Record<string, string>;
+}
+
 /**
  * A Listen selection kept before systems had sites: a system of sites was
  * heard under its group's name ("p25:bee00.1a2"), its sites listed in
