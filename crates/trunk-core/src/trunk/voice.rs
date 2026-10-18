@@ -7,7 +7,7 @@
 //! SmartNet system analog and P25 ones ([`VoiceKind::of`]).
 //!
 //! ```text
-//! channel IQ ─► VoiceDecoder::push ─► VoiceOut { slot, air time, TrackerOut }
+//! channel IQ ─► VoiceDecoder::push ─► VoiceOut { slot, TrackerOut }
 //!   P25 Phase 1: receiver bank → framer → VoiceTracker (IMBE)
 //!   P25 Phase 2: H-DQPSK → slot framer → TdmaTracker (AMBE+2, both slots)
 //!   DMR:         4FSK → burst framer → DmrVoice (AMBE+2, both slots)
@@ -141,12 +141,13 @@ impl Encryption {
     }
 }
 
-/// What one decoder produced: an output for the call on `slot`, from air
-/// time `t` (s, the source's sample clock).
+/// What one decoder produced: an output for the call on `slot`. Its time is
+/// the block's: calls are followed on their site's control channel clock
+/// (`Trunk::now_s`), which every output of a block is applied at, whichever
+/// source its voice channel is on.
 #[derive(Debug)]
 pub struct VoiceOut {
     pub slot: u8,
-    pub t: f64,
     pub out: TrackerOut,
 }
 
@@ -313,7 +314,7 @@ impl P25Fdma {
                 // An LDU is 180 ms of voice.
                 self.air = Some((self.air.map_or(t, |a| a.0), t + 0.18));
             }
-            out.extend(tout.drain(..).map(|o| VoiceOut { slot: 0, t, out: o }));
+            out.extend(tout.drain(..).map(|o| VoiceOut { slot: 0, out: o }));
         }
     }
 }
@@ -394,7 +395,7 @@ impl VoiceDecoder for P25Tdma {
         for p in &self.pkts {
             let t = self.t0 + p.sample / self.rate;
             self.tracker.packet(p, t, &mut self.tout);
-            out.extend(self.tout.drain(..).map(|(slot, o)| VoiceOut { slot: slot as u8, t, out: o }));
+            out.extend(self.tout.drain(..).map(|(slot, o)| VoiceOut { slot: slot as u8, out: o }));
         }
     }
     fn offset_hz(&self) -> Option<f32> {
@@ -436,7 +437,7 @@ impl VoiceDecoder for Dmr {
                 let a = &mut self.air[v.slot as usize & 1];
                 *a = Some((a.map_or(v.t, |a| a.0), v.t + VOICE_BURST_S));
             }
-            out.push(VoiceOut { slot: v.slot, t: v.t, out: v.out });
+            out.push(VoiceOut { slot: v.slot, out: v.out });
         }
     }
     fn listen(&mut self, slots: [Option<u32>; 2]) {
@@ -476,7 +477,7 @@ impl VoiceDecoder for Nxdn {
             if matches!(v.out, TrackerOut::Audio(..)) {
                 self.air = Some((self.air.map_or(v.t, |a| a.0), v.t + VCH_S));
             }
-            out.push(VoiceOut { slot: 0, t: v.t, out: v.out });
+            out.push(VoiceOut { slot: 0, out: v.out });
         }
     }
     fn air(&self, slot: u8) -> AirInfo {
@@ -523,13 +524,13 @@ impl VoiceDecoder for Analog {
             ids.push(&audio, &mut found);
         }
         for u in found {
-            out.push(VoiceOut { slot: 0, t: 0.0, out: TrackerOut::Info { source: Some(u.unit), flags: Flags::emergency(u.emergency) } });
+            out.push(VoiceOut { slot: 0, out: TrackerOut::Info { source: Some(u.unit), flags: Flags::emergency(u.emergency) } });
         }
         if !audio.is_empty() {
-            out.push(VoiceOut { slot: 0, t: 0.0, out: TrackerOut::AnalogAudio(audio) });
+            out.push(VoiceOut { slot: 0, out: TrackerOut::AnalogAudio(audio) });
         }
         if !low.is_empty() {
-            out.push(VoiceOut { slot: 0, t: 0.0, out: TrackerOut::Subaudible(low) });
+            out.push(VoiceOut { slot: 0, out: TrackerOut::Subaudible(low) });
         }
     }
     fn set_squelch(&mut self, open_power: f32) {

@@ -936,6 +936,47 @@ impl RecorderHost for SysHost<'_> {
     }
 }
 
+/// How a site listens, decided once when it starts from its protocol's
+/// [`CarrierPlan`].
+enum Listening {
+    /// Not (yet): no control channel inside a source.
+    Off,
+    /// One control channel at a time, through the site's list.
+    Hunting(Hunt),
+    /// Every carrier at once (a DMR / NXDN site).
+    Watching(Vec<Carrier>),
+}
+
+/// The control channel a hunting site has open.
+struct Hunt {
+    /// The control channels' bandwidth ([`CarrierPlan::Hunt`]).
+    cutoff_hz: f64,
+    /// Which of the control channels a source covers it is.
+    index: usize,
+    source: usize,
+    head: HeadId,
+    /// When it opened, and the samples decoded since: the site's clock.
+    start_s: f64,
+    samples: u64,
+    /// Its source's clock offset when it opened (time since is samples
+    /// since, plus how much the offset moved).
+    offset_s: f64,
+    /// AutoTune: the correction it was opened with, ppm; when it was last
+    /// measured, and when the site last reopened one at a correction.
+    ppm: f64,
+    measured_s: f64,
+    retuned_s: f64,
+}
+
+/// A carrier a watching site listens to.
+struct Carrier {
+    hz: f64,
+    source: usize,
+    head: HeadId,
+    /// The source sample its head began at.
+    start: u64,
+}
+
 /// One site of a trunked system: its control channel, parser (band plan) and
 /// calls. What its system decides (talkgroups, rules, keys) is its system's
 /// ([`System`]), passed in where it's needed.
@@ -947,18 +988,10 @@ struct Trunk {
     calls: CallManager,
     /// Its protocol's control channel decoding ([`super::control`]), shared with the taps on its carriers' sources.
     cc: Cc,
-    /// Hunting ([`CarrierPlan::Hunt`]): the control channel's head, on `cc_source`.
-    cc_source: usize,
-    cc_head: Option<HeadId>,
-    /// Watching ([`CarrierPlan::Watch`]): each carrier's (source, head, first sample of the head).
-    carriers: Vec<(usize, HeadId, u64)>,
-    cc_index: usize,
+    /// How it listens: one control channel at a time, or every carrier.
+    listening: Listening,
+    /// The control channel's frequency (watching: the carrier control is on now).
     cc_hz: Option<u64>,
-    cc_start_s: f64,
-    cc_samples: u64,
-    /// Its source's clock offset when the control channel opened (time
-    /// since is samples since, plus how much the offset moved).
-    cc_offset_s: f64,
     last_good_s: f64,
     now_s: f64,
     good: u64,
@@ -968,11 +1001,6 @@ struct Trunk {
     /// Why this control channel is not ours, while it isn't.
     mismatch: Option<String>,
     adjacent: std::collections::BTreeMap<(u32, u32, u32), AdjacentSite>,
-    /// AutoTune: the correction its control channel was opened with, ppm;
-    /// when it was last measured, and last reopened.
-    cc_ppm: f64,
-    cc_measured_s: f64,
-    cc_retuned_s: f64,
     /// Terminators' link control, as talker aliases see it: encrypted,
     /// clear, alias fragments; then Phase 2 alias messages ([`AliasLc`]).
     alias_lc: [u64; 4],
@@ -1004,7 +1032,7 @@ impl Trunk {
     fn start(&mut self, radio: &mut Radio, sys: &SystemConfig, events: &mut Vec<Event>) -> Result<(), String> {
         let plan = self.cc().plan();
         match plan {
-            CarrierPlan::Hunt { .. } if !self.cfg.control_channels.is_empty() => self.tune(radio, sys, 0, events),
+            CarrierPlan::Hunt { cutoff_hz } if !self.cfg.control_channels.is_empty() => self.tune(radio, sys, cutoff_hz, 0, events),
             CarrierPlan::Watch { carriers, cutoff_hz, note } if !carriers.is_empty() => self.watch(radio, sys, &carriers, cutoff_hz, note, events),
             _ => Ok(()),
         }
@@ -1018,45 +1046,45 @@ impl Trunk {
 
     /// Whether it is receiving: a control channel open, or carriers watched.
     fn running(&self) -> bool {
-        self.cc_head.is_some() || !self.carriers.is_empty()
+        !matches!(self.listening, Listening::Off)
     }
 
-    /// Hunting: its control channel's tap, as the trunk has it now.
-    fn hunt_tap(&self, head: HeadId) -> Tap {
-        Tap { site: self.site, carrier: 0, head, cc: self.cc.clone(), at: TapTime::Hunt { start_s: self.cc_start_s, offset_s: self.cc_offset_s } }
+    /// Hunting: the control channel open, its source and frequency.
+    fn hunted(&self) -> Option<(usize, f64)> {
+        match (&self.listening, self.cc_hz) {
+            (Listening::Hunting(h), Some(hz)) => Some((h.source, hz as f64)),
+            _ => None,
+        }
     }
 
     /// Hunting: open the control channel `index` (of those a source covers).
-    fn tune(&mut self, radio: &mut Radio, sys: &SystemConfig, index: usize, events: &mut Vec<Event>) -> Result<(), String> {
-        let CarrierPlan::Hunt { cutoff_hz } = self.cc().plan() else { return Ok(()) };
+    fn tune(&mut self, radio: &mut Radio, sys: &SystemConfig, cutoff_hz: f64, index: usize, events: &mut Vec<Event>) -> Result<(), String> {
         let list: Vec<(f64, usize)> = self.cfg.control_channels.iter().filter_map(|&f| radio.source_for(f).map(|s| (f, s))).collect();
         if list.is_empty() {
             return Err(format!("{}: no control channel falls inside a source's bandwidth — move the center frequency.", sys.short_name));
         }
-        self.cc_index = index % list.len();
-        let (hz, src) = list[self.cc_index];
-        if let Some(h) = self.cc_head.take() {
-            let mut rx = radio.rx(self.cc_source);
-            rx.src.chz.remove_head(h);
+        let index = index % list.len();
+        let (hz, src) = list[index];
+        // (When it last reopened at a correction, from one control channel to the next.)
+        let mut retuned_s = 0.0;
+        if let Listening::Hunting(old) = &self.listening {
+            retuned_s = old.retuned_s;
+            let mut rx = radio.rx(old.source);
+            rx.src.chz.remove_head(old.head);
             rx.remove_taps(self.site);
         }
         let retune = self.cc_hz.is_some();
-        self.cc_source = src;
-        let rate = {
+        let (hunt, rate) = {
             let mut rx = radio.rx(src);
             let s = &mut rx.src;
             let (head, _, _) = s.chz.add_head(s.offset(hz), cutoff_hz, 0.0);
-            self.cc_ppm = s.tune_ppm;
-            self.cc_offset_s = s.clock_offset_s;
+            let hunt = Hunt { cutoff_hz, index, source: src, head, start_s: self.now_s, samples: 0, offset_s: s.clock_offset_s, ppm: s.tune_ppm, measured_s: self.now_s, retuned_s };
             let rate = s.chz.output_rate();
-            self.cc_head = Some(head);
-            self.cc_start_s = self.now_s;
-            rx.set_tap(self.hunt_tap(head));
-            rate
+            rx.set_tap(self.hunt_tap(&hunt));
+            (hunt, rate)
         };
-        self.cc_measured_s = self.now_s;
+        self.listening = Listening::Hunting(hunt);
         self.cc_hz = Some(hz.round() as u64);
-        self.cc_samples = 0;
         self.last_good_s = self.now_s;
         self.cc().restart(rate);
         if retune {
@@ -1068,6 +1096,11 @@ impl Trunk {
         }
         events.push(Event::ControlChannel { site: self.site, freq_hz: hz.round() as u64 });
         Ok(())
+    }
+
+    /// Hunting: its control channel's tap.
+    fn hunt_tap(&self, h: &Hunt) -> Tap {
+        Tap { site: self.site, carrier: 0, head: h.head, cc: self.cc.clone(), at: TapTime::Hunt { start_s: h.start_s, offset_s: h.offset_s } }
     }
 
     /// Watching: heads on the sources that cover each carrier.
@@ -1082,16 +1115,16 @@ impl Trunk {
             let mut rx = radio.rx(src);
             let s = &mut rx.src;
             let (head, _, start) = s.chz.add_head(s.offset(hz), cutoff_hz, 0.0);
-            heads.push((src, head, start));
+            heads.push(Carrier { hz, source: src, head, start });
         }
         if !outside.is_empty() {
             let name = self.cc().name();
             return Err(format!("{}: {} frequencies outside every source's bandwidth: {} MHz — move a center frequency.", sys.short_name, name, outside.join(", ")));
         }
-        for (i, &(src, head, start)) in heads.iter().enumerate() {
-            radio.rx(src).set_tap(Tap { site: self.site, carrier: i, head, cc: self.cc.clone(), at: TapTime::Watch { start } });
+        for (i, c) in heads.iter().enumerate() {
+            radio.rx(c.source).set_tap(Tap { site: self.site, carrier: i, head: c.head, cc: self.cc.clone(), at: TapTime::Watch { start: c.start } });
         }
-        self.carriers = heads;
+        self.listening = Listening::Watching(heads);
         events.push(self.note(NoteLevel::Info, note));
         Ok(())
     }
@@ -1099,33 +1132,35 @@ impl Trunk {
     /// A block ran on `source` and its carriers on it were decoded (`cc`):
     /// follow what they say. `time`: the source's time after the block.
     fn on_block(&mut self, radio: &mut Radio, sys: &SystemConfig, source: usize, time: f64, cc: CcResult, events: &mut Vec<Event>, call_events: &mut Vec<CallEvent>) {
-        if self.carriers.is_empty() {
-            self.on_block_hunting(radio, sys, source, cc, events, call_events);
-        } else {
-            self.on_block_watching(radio, sys, source, time, cc, events, call_events);
+        match &self.listening {
+            Listening::Hunting(_) => self.on_block_hunting(radio, sys, source, cc, events, call_events),
+            Listening::Watching(_) => self.on_block_watching(radio, sys, source, time, cc, events, call_events),
+            Listening::Off => {}
         }
     }
 
     fn on_block_hunting(&mut self, radio: &mut Radio, sys: &SystemConfig, source: usize, cc: CcResult, events: &mut Vec<Event>, call_events: &mut Vec<CallEvent>) {
+        let Listening::Hunting(h) = &mut self.listening else { return };
         // (Another source's samples: decoded as it moved to this one.)
-        if self.cc_head.is_none() || self.cc_source != source || cc.head != self.cc_head {
+        if h.source != source || cc.head != Some(h.head) {
             return;
         }
         let (rate, offset) = {
             let rx = radio.rx(source);
             (rx.src.chz.output_rate(), rx.src.clock_offset_s)
         };
-        self.cc_samples += cc.samples;
-        let moved = offset - self.cc_offset_s;
-        self.now_s = self.cc_start_s + self.cc_samples as f64 / rate + moved;
+        h.samples += cc.samples;
+        let moved = offset - h.offset_s;
+        self.now_s = h.start_s + h.samples as f64 / rate + moved;
+        let (index, cutoff_hz, measured_s) = (h.index, h.cutoff_hz, h.measured_s);
         let notes = self.cc().take_notes();
         for (level, text) in notes {
             events.push(self.note(level, text));
         }
         self.follow(radio, sys, cc.steps, events, call_events);
         if self.now_s - self.last_good_s > CC_HUNT_S && self.cfg.control_channels.len() > 1 {
-            let _ = self.tune(radio, sys, self.cc_index + 1, events);
-        } else if self.now_s - self.cc_measured_s >= TUNE_EVERY_S {
+            let _ = self.tune(radio, sys, cutoff_hz, index + 1, events);
+        } else if self.now_s - measured_s >= TUNE_EVERY_S {
             self.measure(radio);
         }
         let mut host = self.host(radio, sys);
@@ -1133,7 +1168,8 @@ impl Trunk {
     }
 
     fn on_block_watching(&mut self, radio: &mut Radio, sys: &SystemConfig, source: usize, time: f64, cc: CcResult, events: &mut Vec<Event>, call_events: &mut Vec<CallEvent>) {
-        if !self.carriers.iter().any(|c| c.0 == source) {
+        let Listening::Watching(carriers) = &self.listening else { return };
+        if !carriers.iter().any(|c| c.source == source) {
             return;
         }
         self.now_s = self.now_s.max(time);
@@ -1214,33 +1250,34 @@ impl Trunk {
     /// into its source's average; a control channel well off the correction
     /// is reopened at it, when its protocol allows.
     fn measure(&mut self, radio: &mut Radio) {
-        self.cc_measured_s = self.now_s;
-        let (Some(hz), Some(head)) = (self.cc_hz, self.cc_head) else { return };
-        if self.now_s - self.last_good_s > 1.0 {
+        let now = self.now_s;
+        let (Listening::Hunting(h), Some(hz)) = (&mut self.listening, self.cc_hz) else { return };
+        h.measured_s = now;
+        if now - self.last_good_s > 1.0 {
             return;
         }
-        let (off, reopens, plan) = {
-            let c = self.cc();
-            (c.offset_hz(), c.reopens(), c.plan())
+        let (off, reopens) = {
+            let c = self.cc.lock().unwrap();
+            (c.offset_hz(), c.reopens())
         };
         let Some(off) = off else { return };
         let hz = hz as f64;
-        let mut rx = radio.rx(self.cc_source);
+        let mut rx = radio.rx(h.source);
         let s = &mut rx.src;
-        s.measured(self.cc_ppm + off as f64 / hz * 1e6);
-        let off_by = (s.tune_ppm - self.cc_ppm) * 1e-6 * hz;
-        if reopens && off_by.abs() > TUNE_RETUNE_HZ && self.now_s - self.cc_retuned_s >= TUNE_RETUNE_S {
-            let CarrierPlan::Hunt { cutoff_hz } = plan else { return };
-            s.chz.remove_head(head);
-            let (head, _, _) = s.chz.add_head(s.offset(hz), cutoff_hz, 0.0);
-            self.cc_head = Some(head);
-            self.cc_ppm = s.tune_ppm;
-            self.cc_retuned_s = self.now_s;
-            self.cc_start_s = self.now_s;
-            self.cc_samples = 0;
-            self.cc_offset_s = s.clock_offset_s;
+        s.measured(h.ppm + off as f64 / hz * 1e6);
+        let off_by = (s.tune_ppm - h.ppm) * 1e-6 * hz;
+        if reopens && off_by.abs() > TUNE_RETUNE_HZ && now - h.retuned_s >= TUNE_RETUNE_S {
+            s.chz.remove_head(h.head);
+            let (head, _, _) = s.chz.add_head(s.offset(hz), h.cutoff_hz, 0.0);
+            h.head = head;
+            h.ppm = s.tune_ppm;
+            h.retuned_s = now;
+            h.start_s = now;
+            h.samples = 0;
+            h.offset_s = s.clock_offset_s;
             let rate = s.chz.output_rate();
-            rx.set_tap(self.hunt_tap(head));
+            let tap = Tap { site: self.site, carrier: 0, head: h.head, cc: self.cc.clone(), at: TapTime::Hunt { start_s: h.start_s, offset_s: h.offset_s } };
+            rx.set_tap(tap);
             drop(rx);
             self.cc().restart(rate);
         }
@@ -1374,14 +1411,8 @@ impl Core {
                 system,
                 calls: CallManager::with_ids(sys.calls, i as u16, system, ids.clone()),
                 cc: Arc::new(Mutex::new(control::build(sc, rate))),
-                cc_source: 0,
-                cc_head: None,
-                carriers: Vec::new(),
-                cc_index: 0,
+                listening: Listening::Off,
                 cc_hz: None,
-                cc_start_s: 0.0,
-                cc_samples: 0,
-                cc_offset_s: 0.0,
                 last_good_s: 0.0,
                 now_s: 0.0,
                 good: 0,
@@ -1390,9 +1421,6 @@ impl Core {
                 identity: Identity::default(),
                 mismatch: None,
                 adjacent: Default::default(),
-                cc_ppm: 0.0,
-                cc_measured_s: 0.0,
-                cc_retuned_s: 0.0,
                 alias_lc: [0; 4],
                 lc_protected_tgs: BTreeSet::new(),
                 cfg: sc.clone(),
@@ -1502,19 +1530,18 @@ impl Core {
         let mut control = Vec::new();
         for t in &self.trunks {
             // Watching every carrier (a DMR site): each, the control one marked.
-            let plan = t.cc().plan();
-            if let CarrierPlan::Watch { carriers, .. } = plan {
-                for (&hz, &(src, _, _)) in carriers.iter().zip(&t.carriers) {
-                    control.push(Want { system: t.system, site: Some(t.site), hz, src, kind: if Some(hz.round() as u64) == t.cc_hz { ChannelKind::Control } else { ChannelKind::Carrier }, ..Default::default() });
+            if let Listening::Watching(carriers) = &t.listening {
+                for c in carriers {
+                    control.push(Want { system: t.system, site: Some(t.site), hz: c.hz, src: c.source, kind: if Some(c.hz.round() as u64) == t.cc_hz { ChannelKind::Control } else { ChannelKind::Carrier }, ..Default::default() });
                 }
                 continue;
             }
-            let Some(hz) = t.cc_hz.filter(|_| t.cc_head.is_some()) else { continue };
+            let Some((src, hz)) = t.hunted() else { continue };
             let (offset_hz, quality) = {
                 let c = t.cc();
                 (c.offset_hz(), c.quality())
             };
-            control.push(Want { system: t.system, site: Some(t.site), hz: hz as f64, src: t.cc_source, kind: ChannelKind::Control, offset_hz, quality, calls: 0 });
+            control.push(Want { system: t.system, site: Some(t.site), hz, src, kind: ChannelKind::Control, offset_hz, quality, calls: 0 });
         }
         let conv = self
             .cfg
@@ -1556,8 +1583,8 @@ impl Core {
             cc.gauge("locked", (t.now_s - t.last_good_s < 2.0 && t.mismatch.is_none()) as u8 as f64);
             // What its protocol measures (framing, eye opening, deviation…).
             t.cc().report(&mut cc);
-            if let Some(hz) = t.cc_hz.filter(|_| t.cc_head.is_some()) {
-                hunted.push((key, t.cc_source, hz as f64));
+            if let Some((src, hz)) = t.hunted() {
+                hunted.push((key, src, hz));
             }
         }
         sink.gauge("eng/recording", self.radio.recordings.len() as f64);
