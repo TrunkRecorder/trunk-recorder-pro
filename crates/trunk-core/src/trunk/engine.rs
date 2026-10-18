@@ -422,8 +422,8 @@ const CC_HALF_HZ: f64 = 3000.0;
 
 /// The noise floor under `hz` from source `s`'s profile `p` (|X|² per bin).
 fn slice_at(p: &[f64], s: &Source, hz: f64) -> f64 {
-    let off = hz - s.cfg.center_hz;
-    let i = ((off + s.cfg.rate_hz / 2.0) / s.cfg.rate_hz * p.len() as f64).floor().clamp(0.0, p.len() as f64 - 1.0) as usize;
+    let off = hz - s.cfg().center_hz;
+    let i = ((off + s.cfg().rate_hz / 2.0) / s.cfg().rate_hz * p.len() as f64).floor().clamp(0.0, p.len() as f64 - 1.0) as usize;
     p[i]
 }
 
@@ -455,7 +455,9 @@ const TUNE_RETUNE_HZ: f64 = 150.0;
 const TUNE_RETUNE_S: f64 = 200.0;
 
 struct Source {
-    cfg: SourceConfig,
+    /// Every source's settings (the engine's one copy), and which this is.
+    cfgs: Arc<[SourceConfig]>,
+    index: usize,
     chz: Channelizer,
     /// Recent frequency errors measured on it, ppm: its control channels'
     /// (every TUNE_EVERY_S) and its calls' (one each).
@@ -474,6 +476,14 @@ struct Source {
 }
 
 impl Source {
+    fn new(cfgs: &Arc<[SourceConfig]>, index: usize, history_s: f64) -> Source {
+        let rate = cfgs[index].rate_hz;
+        Source { cfgs: cfgs.clone(), index, chz: Channelizer::new(rate, MIN_CHANNEL_RATE, history_s), errors: VecDeque::new(), seed: None, tune_ppm: 0.0, in_gap: false, half: None, clock_offset_s: 0.0 }
+    }
+    /// Its settings.
+    fn cfg(&self) -> &SourceConfig {
+        &self.cfgs[self.index]
+    }
     /// A frequency error measured on it (a control channel, a call), ppm.
     fn measured(&mut self, ppm: f64) {
         if !ppm.is_finite() || ppm.abs() > 50.0 {
@@ -486,7 +496,7 @@ impl Source {
         self.retune();
     }
     fn retune(&mut self) {
-        if self.cfg.auto_tune {
+        if self.cfg().auto_tune {
             self.tune_ppm = self.error_ppm().or(self.seed).unwrap_or(0.0);
         }
     }
@@ -503,7 +513,7 @@ impl Source {
     }
     /// A channel's offset from the tuned centre, corrected.
     fn offset(&self, hz: f64) -> f64 {
-        hz * (1.0 + self.tune_ppm * 1e-6) - self.cfg.center_hz
+        hz * (1.0 + self.tune_ppm * 1e-6) - self.cfg().center_hz
     }
 }
 
@@ -658,7 +668,7 @@ impl SourceRx {
     fn decode_block(&mut self) -> BlockDsp {
         let keys: Vec<(u16, u64)> = self.channels.keys().copied().collect();
         let voice = keys.into_iter().filter_map(|k| self.decode_channel(k, false)).collect();
-        let (rate, fs, offset) = (self.src.chz.output_rate(), self.src.cfg.rate_hz, self.src.clock_offset_s);
+        let (rate, fs, offset) = (self.src.chz.output_rate(), self.src.cfg().rate_hz, self.src.clock_offset_s);
         let taps = self
             .taps
             .iter()
@@ -712,8 +722,8 @@ impl BlockDsp {
 /// managers so both can be borrowed at once.
 struct Radio {
     rx: Arc<Vec<Mutex<SourceRx>>>,
-    /// The sources' settings (as `rx`'s, without the lock).
-    cfgs: Vec<SourceConfig>,
+    /// The sources' settings (each source's own, without its lock).
+    cfgs: Arc<[SourceConfig]>,
     recordings: HashMap<CallId, Recording>,
     free_nums: Vec<u32>,
     next_num: u32,
@@ -823,16 +833,16 @@ impl SysHost<'_> {
         let tune_ppm = s.tune_ppm;
         let (head, pre, start_sample) = s.chz.add_head(s.offset(call.freq_hz as f64), cutoff, r.preroll_s);
         // The noise floor under the channel, from the source's spectrum: analog squelch, and reception.
-        let n = floor_slices(s.cfg.rate_hz);
+        let n = floor_slices(s.cfg().rate_hz);
         let mut prof = vec![0.0f64; n];
         s.chz.noise_profile(&mut prof);
-        let off = call.freq_hz as f64 - s.cfg.center_hz;
-        let slice = (((off + s.cfg.rate_hz / 2.0) / s.cfg.rate_hz * n as f64) as usize).min(n - 1);
+        let off = call.freq_hz as f64 - s.cfg().center_hz;
+        let slice = (((off + s.cfg().rate_hz / 2.0) / s.cfg().rate_hz * n as f64) as usize).min(n - 1);
         let noise = s.chz.noise_in_band(prof[slice].max(1e-30), ChannelFilter::noise_bandwidth());
         let voice = voice::build(&VoiceSpec {
             kind,
             rate,
-            t0: start_sample as f64 / s.cfg.rate_hz + s.clock_offset_s,
+            t0: start_sample as f64 / s.cfg().rate_hz + s.clock_offset_s,
             seed: call.freq_hz as u32,
             vocoder: r.vocoder,
             bank: self.bank,
@@ -1379,8 +1389,9 @@ impl Core {
         let history = cfg.preroll_s.max(cfg.conv.preroll_s).max(0.1);
         let spans: Vec<(f64, f64, f64)> = cfg.sources.iter().map(|s| (s.center_hz, s.rate_hz, s.usable_half_width())).collect();
         let conv = Conventional::new(&cfg.conventional, &spans, ConvConfig { vocoder: cfg.vocoder, ..cfg.conv }, cfg.bank, cfg.capture_frames)?;
-        let sources: Vec<Source> =
-            cfg.sources.iter().map(|s| Source { cfg: s.clone(), chz: Channelizer::new(s.rate_hz, MIN_CHANNEL_RATE, history), errors: VecDeque::new(), seed: None, tune_ppm: 0.0, in_gap: false, half: None, clock_offset_s: 0.0 }).collect();
+        // (The engine's one copy of the sources' settings, shared.)
+        let cfgs: Arc<[SourceConfig]> = std::mem::take(&mut cfg.sources).into();
+        let sources: Vec<Source> = (0..cfgs.len()).map(|i| Source::new(&cfgs, i, history)).collect();
         let rate = sources[0].chz.output_rate();
         let ids = CallIds::default();
         let n_sites = sites(&cfg.systems).count();
@@ -1390,7 +1401,7 @@ impl Core {
             .collect();
         let mut radio = Radio {
             rx: Arc::new(rx),
-            cfgs: cfg.sources.clone(),
+            cfgs: cfgs.clone(),
             recordings: HashMap::new(),
             free_nums: Vec::new(),
             next_num: 0,
@@ -1970,7 +1981,7 @@ pub struct Engine {
 struct Shared {
     core: Mutex<Core>,
     rx: Arc<Vec<Mutex<SourceRx>>>,
-    sources: Vec<SourceConfig>,
+    sources: Arc<[SourceConfig]>,
     /// The systems as configured (talkgroups and keys as last set).
     systems: Mutex<Arc<Vec<SystemConfig>>>,
     /// Each site's system.
@@ -1988,7 +1999,7 @@ impl Engine {
         let core = Core::new(cfg)?;
         let systems = Arc::new(core.system_configs());
         let site_systems = sites(&systems).map(|(system, _)| system).collect();
-        let shared = Shared { rx: core.radio.rx.clone(), sources: core.cfg.sources.clone(), systems: Mutex::new(systems), site_systems, core: Mutex::new(core) };
+        let shared = Shared { rx: core.radio.rx.clone(), sources: core.radio.cfgs.clone(), systems: Mutex::new(systems), site_systems, core: Mutex::new(core) };
         Ok(Engine { shared: Arc::new(shared) })
     }
 
@@ -2301,7 +2312,7 @@ mod tests {
 
     fn tuned_source(auto_tune: bool) -> Source {
         let cfg = SourceConfig { center_hz: 770e6, rate_hz: 2.4e6, auto_tune, guard_hz: DEFAULT_GUARD_HZ };
-        Source { chz: Channelizer::new(cfg.rate_hz, MIN_CHANNEL_RATE, 0.1), cfg, errors: VecDeque::new(), seed: None, tune_ppm: 0.0, in_gap: false, half: None, clock_offset_s: 0.0 }
+        Source::new(&Arc::from(vec![cfg]), 0, 0.1)
     }
 
     /// The score is the median of the last measurements: a few far off

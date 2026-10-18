@@ -112,7 +112,7 @@ trait, fm.rs / am.rs push signatures. Conventional's tests run through
 
 - [ ] Drop `Radio.chans` (a `Call.followed` flag set by `admit` lets `follow()` count from `t.calls`)
 - [ ] `VoiceParams` travels with the tap (or in `BlockDsp`) instead of being mirrored in `Radio` and every `SourceRx`
-- [ ] One `Vec<SourceConfig>` (today: `Radio.cfgs`, `Shared.sources`, `SourceRx.src.cfg`)
+- [x] One `Vec<SourceConfig>` (today: `Radio.cfgs`, `Shared.sources`, `SourceRx.src.cfg`) — done: one `Arc<[SourceConfig]>`, taken out of the EngineConfig, held by `Radio`, `Shared` and each `Source` (with its index)
 - [ ] The tap owns its `ControlChannel`; `Step` / `CcResult` carry what the trunk needs each block (good/bad deltas, notes, `control_hz`, `offset_hz`, `voice_params`); cold queries (`bandplan`, `status`, `report`) through a snapshot. The `Arc<Mutex<Box<dyn ControlChannel>>>` and its lock-order comment go
 - [x] Carry `VoiceOut.t` through `routed` / `pending` and use it for transmissions, timeouts and `audio_lead`; set `Trunk.now_s = dsp.time` in both modes and delete `cc_start_s`, `cc_samples`, `cc_offset_s`, `TapTime` (or delete `t` and say the control channel's clock is authoritative) — done the second way: `VoiceOut.t` is gone (nothing read it); a block's outputs are applied at the site's control channel clock, as documented on `VoiceOut`
 - [x] `enum Listening { Hunting { source, head, index, hz, ppm, … }, Watching(Vec<Carrier>) }` decided once in `Trunk::start`; `plan()` becomes `Copy` and is fetched once (today re-asked on every `measure()` and `channels()`) — done: `Listening { Off, Hunting(Hunt), Watching(Vec<Carrier>) }` set by `Trunk::start`; the hunt keeps its cutoff, so `plan()` is asked once (start)
