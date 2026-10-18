@@ -46,7 +46,7 @@ The key is the interface's id: lowercase letters, digits and `-`.
 |---|:---:|---|---|---|
 | `port` | | the next free one | integer | Its port: not the built-in interface's, nor another interface's. Missing or `0`: the first free port above `server.port` is given it when the config is loaded |
 | `enabled` | | `true` | bool | Served. `false`: kept, but not served |
-| `access` | | `"listen"` | string | What its pages may do with the API. `"listen"`: see what the recorder does and play its calls, change nothing (the config they see has no plugin settings or key sources). `"control"`: everything the built-in interface can, including changing settings, installing plugins and quitting |
+| `access` | | `"listen"` | string | What its pages may do with the API. `"listen"`: see what the recorder does and play its calls, change nothing (the config they see has no plugin settings or key sources). `"control"`: everything the built-in interface can, including changing settings, installing plugins and quitting. Spelled exactly so; anything else makes the file unreadable |
 | `path` | | `""` | string | A folder of your own holding its `index.html`: absolute, `~/…`, or relative to the config file's folder. Empty: the copy installed from the store, in `interfaces/<id>/` beside the config |
 
 Changes take effect at once: an interface is started, stopped or moved to its new port without a
@@ -67,7 +67,7 @@ panel on the **Recording** tab (desktop app). Changes apply at once.
 | `dir` | | `""` (= `logs`) | string | The log folder: absolute, or relative to the config file's folder |
 | `syslogFriendly` | | `false` | bool | With `file`: one `trunk-pro.log`, appended to and never rotated by the app. For logrotate: SIGHUP reopens it |
 | `syslog` | | `false` | bool | Also send to the system log (Linux, macOS) |
-| `color` | | `""` | string | ANSI colour: `"console"`, `"logfile"`, `"all"` or `"none"`. `""` = on the console when it's a terminal and the `NO_COLOR` environment variable isn't set |
+| `color` | | `""` | string | ANSI colour: `"console"`, `"logfile"`, `"all"` or `"none"` (any case; anything else is refused when the config is read). `""` = on the console when it's a terminal and the `NO_COLOR` environment variable isn't set |
 | `frequencyFormat` | | `"mhz"` | string | How frequencies read: `"mhz"` (857.987500 MHz), `"hz"` (857987500 Hz) or `"exp"` (8.579875e+08) |
 | `talkgroupDisplayFormat` | | `"id"` | string | How talkgroups read: `"id"` (3747), `"id_tag"` (3747 (DCFD Disp)) or `"tag_id"` ((DCFD Disp) 3747) |
 | `statusAsString` | | `true` | bool | States as words ("Monitoring"), not numbers |

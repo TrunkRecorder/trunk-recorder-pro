@@ -12,8 +12,11 @@ several radios, see the [radios guide](../guides/radios.md).
 ```
 
 A source receives a block of spectrum `rateHz` wide, centered on `centerHz`. Every source has a
-`type`, one of `"rtlsdr"`, `"usrp"`, `"airspy"`, `"soapy"` or `"file"`. Any other `type` makes the file
-unreadable.
+`type`, one of `"rtlsdr"`, `"usrp"`, `"airspy"`, `"soapy"` or `"file"` (lower case, as listed). Any other
+`type` makes the file unreadable.
+
+The fixed choices below (`gainMode`, `format`) are read in any case, and an empty string is the default.
+Anything else is refused when the file is read.
 
 ## Keys every source shares
 
@@ -78,7 +81,7 @@ An RTL-SDR dongle, driven directly over USB (no driver library needed).
 | `ppm` | ✓ | | integer | Frequency correction, whole ppm |
 | `autoTune` | | `false` | bool | Apply the measured frequency error by itself |
 | `guardHz` | | `75000` | number | Left unused at each edge of the band, Hz |
-| `bufLen` | | `0` | integer | Bytes per USB transfer (Trunk Recorder's `buflen`), a multiple of 512. `0` = 262 144. **USB transfer size** in Setup |
+| `bufLen` | | `0` | integer | Bytes per USB transfer (Trunk Recorder's `buflen`), a multiple of 512, at most 16 MiB. `0` = 262 144. **USB transfer size** in Setup |
 | `buffers` | | `0` | integer | USB transfers kept in flight (Trunk Recorder's `buffers`), at most 256. `0` = enough for about 2 MiB: 8 at the default size, 32 at 65 536 |
 
 **Several dongles on one USB bus.** Four or more RTL-SDRs at 2.4 MSPS on one USB 2.0 bus
@@ -121,7 +124,7 @@ An Airspy R2 or Mini, through libairspy. libairspy must be installed separately.
 | `serial` | | `""` | string | Serial number in hex. `""` = the first found |
 | `centerHz` | ✓ | | number | Center frequency, Hz. `0` = Auto |
 | `rateHz` | ✓ | | number | R2: 10 000 000 or 2 500 000. Mini: 6 000 000 or 3 000 000 |
-| `gainMode` | | `"linearity"` | string | `"linearity"` (best near transmitters), `"sensitivity"` (best for weak signals) or `"manual"` (each stage set separately) |
+| `gainMode` | | `"linearity"` | string | `"linearity"` (best near transmitters), `"sensitivity"` (best for weak signals) or `"manual"` (each stage set separately). Any other value is refused |
 | `gainStep` | | `14` | integer | Linearity or sensitivity step, 0–21 |
 | `lnaStep` | | `10` | integer | Manual mode: LNA step, 0–14 |
 | `mixerStep` | | `10` | integer | Manual mode: mixer step, 0–15 |
@@ -167,7 +170,7 @@ from an IQ file someone sent you.
 | `centerHz` | ✓ | | number | The frequency it was recorded at, Hz |
 | `rateHz` | ✓ | | number | Its sample rate |
 | `realtime` | ✓ | | bool | `true`: play it at the speed it was recorded. `false`: as fast as the computer can |
-| `format` | | from the name | string | `"cu8"` (rtl_sdr, unsigned 8-bit), `"cs16"` (signed 16-bit) or `"cf32"` (32-bit float: GNU Radio, UHD). Left out: `.cs16` and `.sc16` files are `cs16`; `.cf32`, `.fc32`, `.cfile` and `.complex` are `cf32`; anything else is `cu8` |
+| `format` | | from the name | string | `"cu8"` (rtl_sdr, unsigned 8-bit), `"cs16"` (signed 16-bit) or `"cf32"` (32-bit float: GNU Radio, UHD). Left out: `.cs16` and `.sc16` files are `cs16`; `.cf32`, `.fc32`, `.cfile` and `.complex` are `cf32`; anything else is `cu8`. Any other `format` is refused |
 | `autoTune` | | `false` | bool | Apply the measured frequency error by itself |
 | `guardHz` | | `75000` | number | Left unused at each edge of the band, Hz |
 

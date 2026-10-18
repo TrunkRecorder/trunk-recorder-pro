@@ -69,7 +69,7 @@ P25 Phase 2 voice needs no setting: a Phase 2 grant is followed as Phase 2.
 | `bandplanSpacingHz` | with `400_custom` | | number | Channel spacing, Hz |
 | `bandplanOffset` | | `0` | integer | The first channel number |
 | `bandplanHighHz` | with `400_custom` | | number | Top of the band, Hz. Must be above `bandplanBaseHz` |
-| `defaultMode` | | `""` (digital) | string | `"analog"`: a talkgroup never seen granted before is recorded as analog FM. Otherwise as P25 digital |
+| `defaultMode` | | `"digital"` | string | `"analog"`: a talkgroup never seen granted before is recorded as analog FM. `"digital"` (or `""`): as P25 digital. Any other value is refused |
 
 Find my system fills in the four `400_custom` numbers for SmartNet OBT systems.
 
@@ -88,8 +88,8 @@ of one system under it.
 
 | Key | Required | Default | Type | Description |
 |---|:---:|---|---|---|
-| `nxdnType` | | `""` (= `"typeC"`) | string | `"typeC"`: a control channel assigns calls to channels (Kenwood NEXEDGE, Icom IDAS Type-C). `"typeD"`: IDAS distributed trunking with no control channel; list every repeater in `controlChannelsHz` |
-| `nxdnRate` | | `""` (= `"nxdn48"`) | string | The control channel's rate (Type-D: the repeaters'): `"nxdn48"` (4800 bps, 6.25 kHz) or `"nxdn96"` (9600 bps, 12.5 kHz). Voice channels go at the rate each grant names |
+| `nxdnType` | | `"typeC"` | string | `"typeC"`: a control channel assigns calls to channels (Kenwood NEXEDGE, Icom IDAS Type-C). `"typeD"`: IDAS distributed trunking with no control channel; list every repeater in `controlChannelsHz` |
+| `nxdnRate` | | `"nxdn48"` | string | The control channel's rate (Type-D: the repeaters'): `"nxdn48"` (`"48"`, `"4800"`; 4800 bps, 6.25 kHz) or `"nxdn96"` (`"96"`, `"9600"`; 9600 bps, 12.5 kHz). Voice channels go at the rate each grant names |
 | `nxdnChannelsHz` | | `[]` | array of numbers | Voice frequencies to watch besides the control channels, Hz. A grant to a channel number not in `lcnTableHz` is learned when its call comes up on one of them. Each must be inside a source |
 | `lcnTableHz` | | `{}` | object | Channel number → frequency, Hz: `{ "12": 451118750 }` (RadioReference lists them as LCNs for many systems). Wins over channels learned from the air. Not needed when the site uses Direct Frequency Assignment. Type-D: repeater number → frequency |
 | `ran` | | `null` | integer or null | Only this RAN, 0–63. `null`: the control channel's |
@@ -245,9 +245,10 @@ sync). **Lock** forgets the keys and they stop at once. The password is never sa
 A system's talkgroups are a Trunk Recorder talkgroup file, kept beside the config file as
 `<shortName>.talkgroups.csv` (not in the config). RadioReference's talkgroup CSV export reads as is.
 Setup loads it from a file or a RadioReference paste and saves it there, and renames it when the
-system is renamed. By hand, put the file in the config's folder under that name. A config from an
-older version, which kept the file inside it as `talkgroupsCsv`, is upgraded when it's read: the
-talkgroups are moved out into these files.
+system is renamed. By hand, put the file in the config's folder under that name. A conventional
+system has its own file the same way, which names the talkgroups its P25, DMR and NXDN channels hear.
+A config from an older version, which kept the file inside it as `talkgroupsCsv`, is upgraded when
+it's read: the talkgroups are moved out into these files.
 
 ```csv
 Decimal,Hex,Mode,Alpha Tag,Description,Tag,Category,Priority
@@ -302,7 +303,7 @@ aliases heard over the air. Each trunked and conventional system has its own.
 |---|:---:|---|---|---|
 | `csv` | | `""` | string | The file's **contents**: `unit,name` lines with no header, `#` for comments. A unit written between slashes (`/^14(\d{2})$/`) is a regular expression; `$1` or `\1` in the name inserts its groups. The first match wins |
 | `name` | | `""` | string | The file it came from, for display |
-| `mode` | | `""` (= `"user"`) | string | `"user"`: your names first, then talker aliases heard. `"ota"`: aliases heard first. `"user_only"`: only your names. `"none"`: no names |
+| `mode` | | `"user"` | string | `"user"`: your names first, then talker aliases heard. `"ota"`: aliases heard first. `"user_only"`: only your names. `"none"`: no names. Any other value is refused |
 
 Talker aliases heard over the air are kept in `<shortName>.units.csv` beside the config file
 ([Files kept beside the config](README.md#files-kept-beside-the-config)).

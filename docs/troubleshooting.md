@@ -12,10 +12,18 @@ what to put in a bug report.
 /home/pi/.config/trunk-pro/config.json: not a config this version reads (expected `,` or `}` at line 41 column 5)
 ```
 
-The config file isn't valid JSON, or a value has the wrong type (text where a number goes, say).
+The config file isn't valid JSON, a value has the wrong type (text where a number goes, say), or a
+choice isn't one the app lists (a system `type` of `P25x`, a `vocoder` of `best`):
+
+```text
+config.json: not a config this version reads (unknown variant `P25x`, expected one of `p25`, `smartnet`, `dmr`, `nxdn` at line 12 column 20)
+```
+
 The part in brackets says what and where. This usually comes from a hand edit: a missing comma,
-a trailing comma, or a stray quote. Fix that line, or move the file aside and start again (the
-app starts with the default config, one RTL-SDR and no systems, when there's no file).
+a trailing comma, a stray quote or a misspelt choice (choices are read in any case, so `P25` is
+fine). Fix that line, or move the file aside and start again (the app starts with the default
+config, one RTL-SDR and no systems, when there's no file). The choices each key takes are listed
+in the [config reference](configuration/README.md#general-rules).
 
 A Trunk Recorder `config.json` is a different format. Don't point `--config` at one; bring it over
 with **Import Trunk Recorder config…** instead (see
@@ -73,6 +81,8 @@ the log says `Not started: <why>`. The reasons:
 | `Add a system with a control channel, or a conventional channel.` | A trunked system only counts once it's enabled and has a control channel |
 | `Every system needs a short name.` | Give it one in Setup |
 | `Two systems are named "x" — each needs a short name of its own …` | Short names are folder names and how plugins tell systems apart, so they must differ (conventional systems included) |
+| `Two sites of x are named "y" — each needs a name of its own.` | Site names are unique within their system |
+| `Source N: the USB transfer size must be a multiple of 512 bytes, at most 16 MiB …` or `Source N: at most 256 USB transfers in flight.` | An RTL-SDR's `bufLen` or `buffers` (Setup's **USB transfer size**) is out of range; `65536` is the usual value |
 | `Set a center frequency for source N — it couldn't be placed automatically …` | Automatic centring couldn't fit the channels. Set the centre yourself, or add a source. See [Radios](guides/radios.md). |
 | `No control channel of x falls inside any source's bandwidth — move a center frequency or add a source.` | At least one control channel must be inside a source's usable band (its band minus the guard band at each edge) |
 | `x: DMR (or NXDN) frequencies outside every source's bandwidth: … MHz` | Every control and voice frequency of a DMR or NXDN site has to be covered |
@@ -81,7 +91,9 @@ the log says `Not started: <why>`. The reasons:
 | `Conventional channel … MHz is in both a and b …` | A frequency can belong to only one conventional system |
 | `A conventional channel has no frequency yet.` | Fill it in or remove the row |
 | `Conventional channel … MHz: …` | Its tone, NAC, colour code or RAN can't be read; see [Tones](guides/tones.md) |
-| `At most 256 conventional systems.` | |
+| `Conventional channel … MHz: a bandwidth is 4–20 kHz.` | A channel's **Bandwidth kHz** is outside that range |
+| `<system>: AM low cut is 0–600 Hz.` (also `Squelch open delay is 0–500 ms.`, `Squelch hang is 0–1000 ms.`) | A conventional system's demodulation setting is out of range |
+| `File name format: Unknown token: {x}.` (or `<system>'s file name format: …`) | A file name format has a token that isn't one of [the listed ones](configuration/recording.md#file-names), or a `{` with no `}` |
 
 A linked channel file that can't be read also stops the start, with the file's problem as the
 message.

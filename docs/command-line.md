@@ -66,12 +66,15 @@ Where the default config lives:
 
 If the file doesn't exist, the app starts with the default config (one RTL-SDR source, no
 systems) and the interface offers the setup guide. If it exists but can't be read, the app stops with
-`<path>: not a config this version reads (…)`. See [Troubleshooting](troubleshooting.md).
+`<path>: not a config this version reads (…)`: a wrong type, or a choice the app doesn't list (a
+system `type` of `P25x`). See [Troubleshooting](troubleshooting.md). A config from an older version
+is upgraded when it's read: its talkgroups are moved out into `<shortName>.talkgroups.csv` files
+beside it, and the log says what changed.
 
 At start the log says where everything is:
 
 ```text
-Trunk Recorder Pro 0.1.4 — open http://localhost:8080
+Trunk Recorder Pro 0.2.0 — open http://localhost:8080
 Using Config file: /home/pi/.config/trunk-pro/config.json
 Capture Directory: /home/pi/TrunkRecorderPro
 Log Level: info · Log to File: false · System log: false
@@ -131,7 +134,7 @@ trunk-pro devices --usrp
 
 ```bash
 trunk-pro capture <out.cu8> --freq Hz [--rate 2400000] [--gain dB] [--ppm 0] [--serial S]
-                  [--seconds 10]
+                  [--seconds 10] [--buflen n] [--buffers n]
 ```
 
 Records raw IQ from an RTL-SDR to a file, like `rtl_sdr` does: unsigned 8-bit I/Q pairs (`.cu8`).
@@ -146,6 +149,7 @@ to a bug report.
 | `--ppm n` | 0 | Frequency correction |
 | `--serial S` | first dongle | Which dongle |
 | `--seconds n` | 10 | How long |
+| `--buflen n` `--buffers n` | 0 (the driver's) | USB transfer size in bytes and transfers in flight, as a source's [`bufLen` and `buffers`](configuration/sources.md#type-rtlsdr). `survey` and `rolloff` take them too |
 
 When it's done it prints how many samples it got and how many the driver dropped. Stop the
 recorder first if it is using the same dongle: only one program can open a dongle at a time.
@@ -179,6 +183,7 @@ trunk-pro replay --source cap1.cu8,center,rate[,format] [--source …] --cc Hz[,
 | `--format cu8\|cs16\|cf32` | from the extension | Sample format: `cu8` (rtl_sdr), `cs16` (`.cs16`, `.sc16`), `cf32` (`.cf32`, `.cfile`, `.fc32`). Anything else is refused. |
 | `--guard Hz` | 75000 | Left unused at each edge of a source's band (the guard band) |
 | `--auto-tune` | off | Correct the sources' frequency error as measured on the control channels and calls. The error is reported at the end either way. |
+| `--threads` | off | Feed each source from a thread of its own, as live, none far ahead of the slowest, instead of in step on one thread. |
 
 ### A trunked system
 
@@ -186,7 +191,7 @@ trunk-pro replay --source cap1.cu8,center,rate[,format] [--source …] --cc Hz[,
 |---|---|---|
 | `--cc Hz[,Hz…]` | | The system's control channels. P25 unless `--smartnet`, `--dmr-trunk` or `--nxdn-trunk` says otherwise. |
 | `--short-name name` | `replay` | The `--cc` system's short name |
-| `--talkgroups file.csv` | | A talkgroup file, in the usual [format](configuration/systems.md) |
+| `--talkgroups file.csv` | | A talkgroup file, in the usual [format](configuration/systems.md#talkgroup-file). Every system in the replay uses it, the conventional one too |
 | `--bandplan file` | | Read a learned band plan from this file before, and save it after. With several sites, one file each: `<file>.<shortName>`, or `<file>.<shortName>.<site>` for a site with a name of its own. |
 | `--system name[/site]:Hz[,Hz…][:keys]` | | Another system, or with `/site` a site of one (`county/south` is site `south` of system `county`); repeatable. A call heard on several sites of a system is saved once. The keys lock it to one site: `nac`, `sysid`, `wacn` (hex), `rfss`, `site` (decimal). A control channel that disagrees isn't followed. |
 

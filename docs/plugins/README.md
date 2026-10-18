@@ -102,6 +102,11 @@ trunk-pro plugin uninstall openmhz
 trunk-pro plugin list                   # what's installed, on or off, and the M4A encoder
 ```
 
+After upgrading the recorder to 0.2.0, update your plugins too: the store's plugins are rebuilt on
+plugin SDK 0.5.0 (OpenMHz 0.1.6, Broadcastify 0.1.6, Rdio Scanner 0.1.5, simplestream 0.1.5, Upload
+script 0.1.4, MQTT 0.1.7). Systems are numbered from 0 now, and an older plugin (MQTT especially)
+reads a call's fields wrongly. The Plugins page offers **Update to vX** for each.
+
 Add `--config path/to/config.json` if your config isn't in the usual place: plugins are installed
 beside it. A plugin installed this way is off; turn it on in Setup. See the
 [command-line reference](../command-line.md) for every option.
@@ -350,5 +355,6 @@ subscribes to, and its settings.
 | [Rdio Scanner](rdioscanner.md) | Uploads recorded calls to an Rdio Scanner server |
 | [simplestream](simplestream.md) | Streams live call audio to other programs over UDP or TCP |
 | [Upload script](upload-script.md) | Runs a script of yours on each recorded call |
+| [MQTT](mqtt.md) | Publishes calls, radio activity and system status to an MQTT broker |
 
 To write your own, see [Writing plugins](writing-plugins.md).

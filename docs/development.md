@@ -34,7 +34,7 @@ Release packages: `packaging/package.sh <macos|linux-x86_64|linux-aarch64|window
 A release is a commit that bumps the version, and a tag on it. With
 everything for the release already pushed to `main`:
 
-1. **`Cargo.toml`**: `[workspace.package] version` (`0.1.3` → `0.1.4`).
+1. **`Cargo.toml`**: `[workspace.package] version` (`0.2.0` → `0.2.1`).
    `trunk-core`, `trunk-app`, `trunk-pro` and `trunk-web` take it from
    there; the plugin SDK (`trunk-recorder-plugin`) has its own version
    (below).
@@ -48,9 +48,9 @@ everything for the release already pushed to `main`:
 4. Commit as `v<version>`, tag, push both:
 
    ```bash
-   git commit -am "v0.1.4"
-   git tag -a v0.1.4 -m v0.1.4
-   git push origin main v0.1.4
+   git commit -am "v0.2.1"
+   git tag -a v0.2.1 -m v0.2.1
+   git push origin main v0.2.1
    ```
 
 Then `.github/workflows/build.yml` takes over. It stops if the tag doesn't
@@ -59,7 +59,7 @@ ARM64, Windows, browser) and publishes the GitHub release with `SHA256SUMS`
 and the changelog section. It then tells
 [trunkrecorder.pro](https://trunkrecorder.pro) to rebuild its download links
 and `/app/` (`SITE_DEPLOY_TOKEN`; without the token the site still finds the
-release within the hour). A tag with a suffix (`v0.1.4-rc.1`) makes a
+release within the hour). A tag with a suffix (`v0.2.1-rc.1`) makes a
 prerelease and leaves the site alone. Watch it with `gh run watch`.
 
 The same tag starts `.github/workflows/docker.yml`, which builds the Docker
@@ -70,7 +70,7 @@ publishes `edge`. It needs the `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`
 repository secrets; without them the image is built but not pushed.
 
 If CI fails, fix it on `main` and move the tag:
-`git tag -fa v0.1.4 -m v0.1.4 && git push -f origin v0.1.4`. Do this only
+`git tag -fa v0.2.1 -m v0.2.1 && git push -f origin v0.2.1`. Do this only
 before anyone has downloaded the release.
 
 The plugin SDK is released apart from the app, only when its API changes:
@@ -128,11 +128,12 @@ threads and how the pieces connect.
 | `…/mbe/` | IMBE and AMBE+2 vocoders (mbelib + Trunk Recorder's enhanced synthesis) |
 | `…/trunk/` | Control-channel messages (Trunk Recorder's `p25_parser.cc`), call manager (`monitor_systems.cc`), Phase 1, TDMA and DMR voice tracking, conventional channels, multi-site dedupe, the engine (several radios and systems) |
 | `…/survey.rs` | **Find my system**: band scan, control-channel check, band plan and ppm |
-| `crates/trunk-app` | The app layer shared by desktop and browser: config, the conventional channel CSV (`channels.rs`), file names, and a recording `Session` (status, spectrum, log, calls, files) |
-| `crates/trunk-pro` | The desktop app: `serve` (default; radio threads, a decoding thread per source, engine thread, web server + WebSocket), `replay`, `capture`, `devices`, `survey`, `tool`, `plugin` |
+| `crates/trunk-app` | The app layer shared by desktop and browser: config (`config.rs`, with `migrate.rs` upgrading older ones), the conventional channel CSV (`channels.rs`), file names, and a recording `Session` (status, spectrum, log, calls, files) |
+| `crates/trunk-pro` | The desktop app: `serve` (default; radio threads, a decoding thread per source, engine thread, web server + WebSocket), `replay`, `capture`, `devices`, `survey`, `rolloff`, `tool`, `plugin`, `interface` |
 | `…/src/sdr.rs` | RTL-SDR over USB via `rtlsdr-nusb` (pure Rust; no libusb / librtlsdr) |
 | `…/src/radio/` | USRP (UHD's C API), Airspy (libairspy) and SoapySDR, loaded at run time when installed |
 | `…/src/plugins/` | The plugin host, store and command line |
+| `…/src/interfaces/` | The other interfaces: their servers, store and command line |
 | `crates/trunk-recorder-plugin` | The plugin protocol, and a Rust SDK for writing plugins (on crates.io) |
 | `crates/trunk-web` | The browser build: `Session` and the RTL-SDR driver (WebUSB) exported to JavaScript with `wasm-bindgen` |
 | `web/` | The browser interface (React + Vite), embedded in the binary; `src/web/` runs the engine in a worker for the browser version |

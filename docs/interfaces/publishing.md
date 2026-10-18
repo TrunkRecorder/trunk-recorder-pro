@@ -139,6 +139,38 @@ so the page showing the store never reaches GitHub.
 says. `tier` is `official` for interfaces maintained with the recorder (in the TrunkRecorder
 organization) and `community` for everyone else's.
 
+## Interfaces written for an older recorder
+
+Recorder 0.2.0 changed the protocol without changing `api` (still `1`), so an interface written for
+an earlier recorder may need a new version. The API guide has the messages; what moved:
+
+- **`setConfig` names the version it edits**: `{ config, version }`, with the `version` the last
+  `config` message carried. If the config changed elsewhere meanwhile, the edit is refused. Every
+  `setConfig` is answered to its sender with `configSaved { version, error? }`.
+- **Talkgroups are not in the config.** Each system's talkgroup file arrives as a `talkgroups { system,
+  csv }` message (when you connect, and when one changes), and an interface with control access changes
+  one with `setTalkgroups { system, csv }`. `talkgroupsCsv` and `talkgroupsName` are gone from the
+  config.
+- **`hello` comes last.** A new connection is sent `state`, `config`, `talkgroups`, `units`, `heard`,
+  `history`, `radios`, `survey`, `monitorEvent`s and `host` first, as it would be sent any later
+  change, then `hello`, which means "caught up" and carries only `{ version, platform, api,
+  configPath?, surveyBands }` and `capabilities` (what the recorder can do beyond recording:
+  `service`, `drivers`, `plugins`, `interfaces`, `host`, `keys`). Wait for it before treating
+  something missing as missing.
+- **Systems are numbered from 0**, conventional ones too (there is no `CONVENTIONAL` number), and
+  `status.systemNames` lists every system's short name by that number.
+- **`status` is slimmer**: a site's neighbours, DMR and NXDN channels and a system's patches come in
+  `decodeDetail` (topic `decode:<shortName>`).
+- **One store for both kinds**: `store { kind }`, `install { kind, … }` and `installProgress { kind, … }`,
+  with `kind` `plugin` or `interface`, replace the separate plugin and interface messages.
+- **A site's identity is one shape** everywhere, and a field not heard yet is left out rather than
+  `null`: test with `!= null`.
+
+The JavaScript client does most of this for you (`rec.configVersion`, `rec.talkgroupFiles`,
+`rec.setTalkgroups()`, `rec.capabilities`, `systemName(status, system)`), so an interface that
+uses it and none of the above directly needs no change. Say in your README which recorder version
+it is made for.
+
 ## What review looks at
 
 The checks prove where the files came from. A maintainer reviews the rest:

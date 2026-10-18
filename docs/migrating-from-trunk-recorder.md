@@ -155,7 +155,9 @@ The browser version has no plugins, so there these settings aren't kept.
   number (NAC, WACN, System ID, RFSS, site).
 - **Recorder counts** (`digitalRecorders`, `analogRecorders` and the like) and
   `signalDetectorThreshold`. There are no per-source recorders here; see below.
-- **A conventional system's `talkgroupsFile`.** Name the channels in the channel rows instead.
+- **A conventional system's `talkgroupsFile`.** Not imported. Load it into the conventional system in
+  Setup (**Talkgroup names** appears once the system has a P25, DMR or NXDN channel), or name the
+  channels in the channel rows.
 - **`conversationMode: false`** (a file per transmission). Each call is one file here; the import
   notes it.
 - **Unsupported system types** (anything but the six above) are skipped, with a note.
@@ -211,8 +213,9 @@ be split by CTCSS/DCS tone, NAC, colour code or RAN ([tones guide](guides/tones.
 
 Trunk Recorder's plugins are shared libraries built against it. Here a plugin is a separate program
 the recorder starts and talks to, installed from the **Plugins** page (or `trunk-pro plugin install`)
-without building anything. OpenMHz, Broadcastify Calls, Rdio Scanner, simplestream and upload-script
-plugins are published. See [plugins](plugins/README.md).
+without building anything. OpenMHz, Broadcastify Calls, Rdio Scanner, simplestream, upload-script and MQTT
+plugins are published. A Trunk Recorder MQTT status plugin entry isn't imported (it's listed under
+**Other plugins**); install [MQTT](plugins/mqtt.md) and fill in its settings in Setup. See [plugins](plugins/README.md).
 
 ### Files and settings live in the app's folder
 

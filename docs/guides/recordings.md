@@ -123,7 +123,7 @@ It is written on a single line.
 |---|---|
 | `call_num` | The call's number |
 | `freq` | Frequency, Hz |
-| `freq_error` | How far off the channel the voice was, Hz (0 when not measured) |
+| `freq_error` | How far off the channel the voice was, Hz (0 when not measured). Conventional P25 calls have it too; conventional analog and DMR receivers don't measure one |
 | `signal`, `noise` | The channel's power during the call and the noise floor under it, dBFS, one decimal; `null` if not measured |
 | `snr` | `signal` minus `noise`, dB |
 | `clean_voice_pct` | Share of vocoder frames decoded cleanly, %; `null` for analog calls |
@@ -147,6 +147,7 @@ It is written on a single line.
 | `tone_mode`, `tone_detected`, `tone_confidence` | Analog conventional calls' tone: see [Tones](tones.md#how-tones-are-identified) |
 | `audio_type` | `analog`, `digital` or `digital tdma` |
 | `short_name` | The system's short name |
+| `site` | The site the kept copy was heard on (a system of one site: its short name). Not on conventional calls. A call heard on several sites is saved once |
 | `patched_talkgroups` | Only when the talkgroup was patched with others: all of them |
 | `freqList` | One entry for the call: `freq`, `time`, `pos` (0), `len` (seconds of audio), `error_count` (FEC errors), `spike_count` (0) |
 | `errorList` | Per 10 s of audio: `pos`, `len`, `frames`, `error_count`, `bad_frames` (repeated, muted or erased), `max_frame_errors` |

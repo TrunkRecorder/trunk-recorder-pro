@@ -74,7 +74,8 @@ LimeSDR...).
 - [Recordings](guides/recordings.md): where calls go, file names, the call JSON, what is kept
 - [Plugins](plugins/README.md): uploading to [OpenMHz](plugins/openmhz.md),
   [Broadcastify](plugins/broadcastify.md) and [Rdio Scanner](plugins/rdioscanner.md),
-  [streaming](plugins/simplestream.md), [running a script](plugins/upload-script.md)
+  [streaming](plugins/simplestream.md), [running a script](plugins/upload-script.md),
+  [publishing to MQTT](plugins/mqtt.md)
 - [Interfaces](interfaces/README.md): pages for people who listen (a player, a scanner wall),
   each on a port of its own, from the interface store or a folder of your own
 - [Coming from Trunk Recorder](migrating-from-trunk-recorder.md): importing your config, and what

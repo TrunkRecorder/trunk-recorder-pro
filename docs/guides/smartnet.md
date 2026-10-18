@@ -148,7 +148,7 @@ lost** (OSWs that failed their checksum), **Deviation** (the control channel's t
 **Voice lost** for its P25 calls. The badge reads **SmartNet · 2FSK**. The system's detail adds the
 frequencies table, channels open now and patches.
 
-On the **Calls** page, an analog call shows `FM` after its frequency.
+On the **Live** page, an analog call shows `FM` after its frequency.
 
 ## Diagnostic tools
 

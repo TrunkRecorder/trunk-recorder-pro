@@ -23,7 +23,7 @@ plugins.
 | [docs.rs/trunk-recorder-plugin](https://docs.rs/trunk-recorder-plugin) | The SDK's API reference |
 | [The template's protocol page](https://github.com/TrunkRecorder/trunk-plugin-template/blob/main/docs/protocol.md) | The wire format, for plugins in other languages |
 | [TrunkRecorder/plugins](https://github.com/TrunkRecorder/plugins) | The registry the plugin store installs from |
-| The published plugins ([OpenMHz](https://github.com/TrunkRecorder/trunk-plugin-openmhz), [Broadcastify](https://github.com/TrunkRecorder/trunk-plugin-broadcastify), [Rdio Scanner](https://github.com/TrunkRecorder/trunk-plugin-rdioscanner), [simplestream](https://github.com/TrunkRecorder/trunk-plugin-simplestream), [upload-script](https://github.com/TrunkRecorder/trunk-plugin-upload-script)) | Complete plugins to learn from |
+| The published plugins ([OpenMHz](https://github.com/TrunkRecorder/trunk-plugin-openmhz), [Broadcastify](https://github.com/TrunkRecorder/trunk-plugin-broadcastify), [Rdio Scanner](https://github.com/TrunkRecorder/trunk-plugin-rdioscanner), [simplestream](https://github.com/TrunkRecorder/trunk-plugin-simplestream), [upload-script](https://github.com/TrunkRecorder/trunk-plugin-upload-script), [MQTT](https://github.com/TrunkRecorder/trunk-plugin-mqtt)) | Complete plugins to learn from |
 
 ## Starting from the template
 
@@ -92,13 +92,15 @@ far behind loses events (counted on the dashboard) rather than slowing the recor
 |---|---|---|
 | `call.start` | `CallInfo` | A call starts: talkgroup and its tag, frequency, TDMA slot, analog / encrypted / emergency flags and the grant's duplex / packet / priority, whether it's recorded (and why not), the radios heard so far (`sources`: each with what its own transmission said of itself — emergency, encrypted, duplex, packet, priority), patched talkgroups |
 | `call.end` | `CallInfo` | A call ends; its files follow in `call.concluded` |
-| `call.concluded` | `ConcludedCall` | A recorded call's files are on disk: its path key, its call JSON (Trunk Recorder's format) and the paths of its `.json`, `.wav` and, when asked for, `.m4a` |
+| `call.concluded` | `ConcludedCall` | A recorded call's files are on disk: its path key, its call JSON (Trunk Recorder's format, as a typed `CallRecord`: every field the recorder writes is a named field) and the paths of its `.json`, `.wav` and, when asked for, `.m4a` |
 | `unit` | `UnitEvent` | A radio registered, deregistered, affiliated, acknowledged, reported its location, got a data grant, or sent an answer request or call alert |
 | `audio` | `AudioChunk` | Live audio of recording calls: 16-bit mono PCM at 8 kHz, base64 |
 | `status` | `Status` | Every system's state every few seconds: control channel, decode rate, active and recording calls |
 
 Every event carries the system's `short_name`, which is its identity. The numeric `system` index is
-for the current run only, so store anything by short name. Calls and unit events also carry `site`,
+for the current run only, so store anything by short name. It counts from 0: the trunked systems
+being recorded first, then the conventional ones (there is no `CONVENTIONAL` index any more); a
+system's `kind` in `hello` (`p25`, `smartnet`, `dmr`, `nxdn` or `conventional`) says which it is. Calls and unit events also carry `site`,
 the name of the site they were heard on (a system of one site: its short name), and `status` has an
 entry per site, with its `site_name`. A call heard on several sites of a system is one call: one
 `call.start` and one `call.end` (from its first copy), and one `call.concluded`, for the copy kept.
@@ -142,7 +144,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ```
 
-A plugin implements the `Plugin` trait and calls `run` from `main`:
+SDK 0.5.0 is the one for Trunk Recorder Pro 0.2.0. A plugin built on an older SDK should be rebuilt
+on it: systems are numbered from 0 now (conventional ones too), and the call record names every
+field instead of keeping some in `extra`. A plugin implements the `Plugin` trait and calls `run`
+from `main`:
 
 ```rust
 use trunk_recorder_plugin::{topic, ConcludedCall, Host, Manifest, NoConfig, Outcome, Plugin, Setup};
@@ -183,8 +188,8 @@ The main pieces:
 | `Multipart` | A `multipart/form-data` body for any HTTP client |
 | `testing` | Run a plugin without the recorder (below) |
 
-Four of the five published plugins use `CallQueue` (simplestream, which is live, doesn't), and each
-is short enough to read in one sitting.
+Four of the six published plugins use `CallQueue` (simplestream, which is live, and MQTT, which has
+a queue of its own, don't), and the smaller ones are short enough to read in one sitting.
 
 ### Settings for each system
 

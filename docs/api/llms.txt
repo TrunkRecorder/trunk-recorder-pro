@@ -105,16 +105,18 @@ new TrunkClient({ server?, secure?, historyLimit? })
   version     the recorder's version
   config      the whole config (Config)
   phase       { phase: "idle" | "starting" | "running" | "stopping", error: string|null, ended: boolean }
-  status      EngineStatus while running, else null: { nowS, activeCalls, recording, callsConcluded, systems: SystemStatus[] }
+  status      EngineStatus while running, else null: { nowS, activeCalls, recording, callsConcluded, systemNames, systems: SystemStatus[] }
   sources     SourceStatus[]: each radio (centerHz, rateHz, dropped, errors, errorPpm…)
   calls       CallView[]: the calls on the air now; [] when not running
   configVersion  the config's version (setConfig sends it)
   talkgroupFiles each system's talkgroup file as CSV text: { shortName: csv }
   history     CallEntry[]: recorded calls, newest first (the last 300 at
               connect, plus each one recorded since; up to historyLimit)
-  log         LogLine[]: the latest 500 log lines { timeS, kind, text, system?, site? }
+  log         LogLine[]: the latest 500 log lines { timeS, kind, text, time?, level?, system?, site? }
+              (after rec.subscribe(["log"]); the recorder's own lines have time (Unix s) and level)
   aliases     talker aliases heard on the air: { shortName: { unit: alias } }
-  error       the text of the latest error message, or null
+  capabilities  hello.capabilities: what the recorder can do beyond recording
+  error       the text of the latest error message (or why a setConfig was refused), or null
   exited      true after the recorder said it was exiting; it keeps
               reconnecting (every 5 s), and this clears when it's back
  Events: rec.on(type, fn) returns a function that removes the handler.
@@ -240,7 +242,9 @@ From the recorder:
   status       ~2/s while running: { status, sources, load, calls }
   spectrum     ~7/s per radio: { source, centerHz, rateHz, bins: 512 dBFS levels }
   concluded    { entry }: a call was recorded
-  log          { lines }
+  log          { lines }: topic log (warnings and errors always); { timeS, kind, text, time?, level?, system?, site? }
+  olderCalls   { before, entries, more }: answers the olderCalls command
+  keys         { sources: [{ name, systems, unlocked }] }: key containers waiting for a password (control access)
   unitAlias    { system (short name), unit, alias }
   error / notice  { message }: about your command
   quit         the recorder is exiting; keep reconnecting, slowly, in case it's restarted
@@ -250,6 +254,9 @@ To the recorder:
   { type: "listen", on: true, system: null, talkgroup: null }   ("on" and both fields are always required)
   { type: "setConfig", config: <the whole config>, version: <the last config message's> }
   { type: "setTalkgroups", system: <short name>, csv: <Trunk Recorder talkgroup CSV, "" for none> }
+  { type: "olderCalls", before: <Unix ms>, limit: <≤ 500> }   recorded calls before that, from the last 24 hours (listen access may send it)
+  { type: "subscribe", topics: ["log", "spectrum:0", "rf:0", "decode:<shortName>", "platform"] }
+  A command it can't read (unknown type, a missing field) is answered with an error message.
   (more in protocol.ts: devices, survey, plugins, …)
 Listening is per connection. Send listen again after every hello (each reconnect).
 system is a system's short name; you get its audio from whichever of its sites carries the call.
@@ -275,8 +282,10 @@ system is a system's short name; you get its audio from whichever of its sites c
    rec.start / rec.stop. Never build a config from scratch: fields left out
    reset to defaults.
 7. History reaches back 300 calls at connect, and grows as calls are
-   recorded. Older recordings are on disk, but there's no API to list them.
-   Say so if the user asks for more.
+   recorded. For older ones (the last 24 hours) send olderCalls { before:
+   <Unix ms of the oldest you have>, limit } and read the olderCalls reply
+   (more: false at the end). Before that there's no API to list them. Say so
+   if the user asks for more.
 8. One live-audio filter per connection: one talkgroup, or everything. For
    several talkgroups, listen to everything and drop the chunks you don't
    want before player.play.

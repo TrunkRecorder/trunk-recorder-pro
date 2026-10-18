@@ -41,7 +41,7 @@ under **Recording override**.
 | `archiveFilesOnFailure` | | `true` | bool | Per system. **Keep when a plugin fails**: a plugin's failure keeps the audio and JSON whatever the two above say (a skip doesn't) |
 | `filenameFormat` | | `""` | string | Per system. Folders and file names under `captureDir`. See [File names](#file-names) |
 | `dropDuplicateCalls` | | `true` | bool | Multi-site: a call heard on several sites of one system is saved once, keeping the cleanest copy or the talkgroup's Preferred Site. See [systems.md](systems.md#multi-site) |
-| `vocoder` | | `"fixed"` | string | The IMBE voice decoder for P25 Phase 1 (trunked and conventional): `"fixed"` (fixed-point, usually sounds most natural), `"enhanced"` or `"mbelib"` (any case; anything else is refused when the config is read) |
+| `vocoder` | | `"fixed"` | string | The IMBE voice decoder for P25 Phase 1 (trunked and conventional): `"fixed"` (also `"fixed-point"`; usually sounds most natural), `"enhanced"` or `"mbelib"` (any case; anything else is refused when the config is read) |
 | `captureFrames` | | `false` | bool | Also save each digital call's vocoder frames as `<call>.sdr` (NXDN: `<call>.frames.jsonl`), for diagnosis and `trunk-pro tool revoice` |
 | `m4a` | | see below | object | The M4A encoder for `compressWav` and for plugins that upload M4A |
 | `ramSpool` | | see below | object | Keep files only the upload plugins need in RAM instead of `captureDir` |
@@ -54,7 +54,7 @@ encrypted part-way is kept with its clear transmissions.
 
 | Key | Required | Default | Type | Description |
 |---|:---:|---|---|---|
-| `encoder` | | `"auto"` | string | `"auto"` (ffmpeg, then afconvert, then fdkaac, whichever is found first), `"ffmpeg"`, `"afconvert"` (macOS), `"fdkaac"` or `"none"` (WAV only) |
+| `encoder` | | `"auto"` | string | `"auto"` (ffmpeg, then afconvert, then fdkaac, whichever is found first), `"ffmpeg"`, `"afconvert"` (macOS), `"fdkaac"` or `"none"` (WAV only). Any case; anything else is refused when the config is read |
 | `bitrateKbps` | | `32` | integer | AAC bitrate, 8–320 kb/s |
 
 Each call is encoded once, and the same `.m4a` serves `compressWav` and every plugin. Changing
@@ -113,7 +113,9 @@ folder and are still found.
 
 Otherwise `filenameFormat` is a path template relative to `captureDir`, with `/` making folders,
 built from Trunk Recorder's tokens. The interface's **Folders and file names** editor shows a preview
-and flags unknown tokens.
+and flags unknown tokens. The format is checked when recording starts, the global one and each
+system's own: an unknown token (`{shortName}`, `{tg}`) or a `{` with no `}` stops the start with a
+message naming it.
 
 ```json
 "filenameFormat": "{short_name}/{time:%Y-%m-%d}/{talkgroup}-{time:%H%M%S}"
@@ -123,7 +125,7 @@ and flags unknown tokens.
 |---|---|
 | `{short_name}` | The system's short name |
 | `{site}` | The site the call was kept from, by name (a system of one site: its short name; none for a conventional system) |
-| `{sys_num}` | The system's number (from 0: trunked systems, then conventional) |
+| `{sys_num}` | The system's number: 0, 1, 2… for the systems being recorded, trunked first, then conventional (before 0.2.0 a conventional system's was counted down from 65535) |
 | `{talkgroup}`, `{talkgroup_display}` | The talkgroup number |
 | `{talkgroup_alpha_tag}` | The talkgroup's alpha tag |
 | `{talkgroup_description}` | Its description |
@@ -151,4 +153,4 @@ Rendering rules:
   `_`, so a talkgroup tag can't make folders.
 - A `:` from a time format (`iso`, `%H:%M`) becomes `-`.
 - Empty folder names, `.` and `..` are dropped, so the path can't leave `captureDir`.
-- An unknown token is left as typed.
+- A format that comes out empty is saved as `call-call_<call_num>`.

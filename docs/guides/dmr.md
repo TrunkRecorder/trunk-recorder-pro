@@ -146,7 +146,7 @@ The **Decode** page has a **DMR** panel for each site (in the system's detail):
   **Slot 1** and **Slot 2** right now (talkgroup and radio);
 - the channels in the table that aren't watched frequencies.
 
-On the **Calls** page, a DMR call shows its slot (`s0` / `s1`) after the frequency.
+On the **Live** page, a DMR call shows its slot (`s0` / `s1`) after the frequency.
 
 ## Diagnostic tools
 

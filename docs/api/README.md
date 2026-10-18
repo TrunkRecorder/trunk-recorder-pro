@@ -178,9 +178,9 @@ What a page may do depends on the port it came from:
 | `setConfig`, `start`, `stop`, `quit`, plugins, interfaces, keys, the survey, files on the recorder's computer | refused with an `error` | ✓ |
 
 A listen-only connection may send `subscribe`, `statsQuery`, `radioQuery`,
-`olderCalls` and `listen`. Its `hello` has no `configPath`, and it isn't
-sent `devices`, `plugins`, `pluginRuntime`, `interfaces`, `store`,
-`installProgress` or `keys`. An interface that needs more says
+`olderCalls` and `listen`; anything else is answered with an `error`. Its
+`hello` has no `configPath`, and it isn't sent `devices`, `plugins`,
+`pluginRuntime`, `interfaces`, `store`, `installProgress` or `keys`. An interface that needs more says
 `"access": "control"` in its `interface.json`; the store shows that before
 it's installed, and the user can change it either way at any time.
 
@@ -220,6 +220,7 @@ whenever `change` fires.
 |---|---|
 | `connected` | `true` while connected (from `hello` on) |
 | `version` | the recorder's version |
+| `capabilities` | what the recorder can do beyond recording (`hello.capabilities`): `service`, `drivers`, `plugins`, `interfaces`, `host`, `keys` |
 | `config` | the config (`Config`) |
 | `phase` | `{ phase: "idle" \| "starting" \| "running" \| "stopping", error, ended }` |
 | `status` | `EngineStatus` while running: `nowS`, totals, `systems[]` |
@@ -374,8 +375,9 @@ origin listed (e.g. `"https://radio.example.com"`).
    doesn't compute them.
 5. **Send commands** as JSON text whenever you like. Answers to your own
    commands (`error`, `notice`, `dir`, `trConfig`, `devices`, `radios`,
-   `store`, and `plugins` when you sent `plugins`) come to your
-   connection only. Everything else goes to every client: after
+   `store`, `configSaved`, `subscribed`, `statsResult`, `radioResult`, `olderCalls`, and
+   `plugins` when you sent `plugins`) come to your connection only. A command the recorder can't
+   read (a field missing or of the wrong kind, an unknown `type`) is answered with an `error`. Everything else goes to every client: after
    `addPlugin`, `removePlugin` or a plugin's `install` everyone gets `plugins`,
    and after `setConfig` or `channelFile` everyone gets `config`; every
    `setConfig` is answered to its sender with `configSaved`.
@@ -402,7 +404,8 @@ heard on several sites of a system is one call, saved once; a call's `site`
 (and `alsoOn`, the other sites carrying it) are site names. While running,
 `status.status.systems[i].index` is the number that calls and live audio
 carry as `system`, and `systems[i].sites[]` has each site's control channel,
-identity and decode counts. It is the system's position among the systems
+identity and decode counts. A site's identity (`nac`, `wacn`, `sysId`, `rfss`, `site`) leaves out
+what hasn't been heard yet, so test a field with `!= null`. It is the system's position among the systems
 being **recorded** (enabled, with a site that has a control channel), so
 match on `shortName` rather than on positions in the config.
 
@@ -445,7 +448,7 @@ Every message is a JSON object with a `type`. Exact fields are in
 | `talkgroups` | On connecting, for each system; whenever one changes | `system` (short name), `csv`: the system's talkgroup file (Trunk Recorder's CSV format; `""`: none) |
 | `plugins` | On connecting (control access); after plugin changes; answers `plugins` | `plugins` (`PluginInfo[]`), `encoderFound` |
 | `state` | Recording starts / stops | `phase`, `error`, `ended` |
-| `status` | ~2/s while running | `status` (`EngineStatus`: totals, `systems[]` with control channel, decode counts `good`/`bad`, site identity), `sources[]` (each radio: rate, drops, errors, frequency error), `load` (share of real time the decoder is busy), `calls` (`CallView[]`, on the air now) |
+| `status` | ~2/s while running | `status` (`EngineStatus`: totals, `systemNames`: every system's short name by its number, `systems[]` with control channel, decode counts `good`/`bad`, site identity; neighbours, patches and the like are in `decodeDetail`), `sources[]` (each radio: rate, drops, errors, frequency error), `load` (share of real time the decoder is busy), `calls` (`CallView[]`, on the air now) |
 | `spectrum` | Topic `spectrum:<source>`: ~7/s while running | `source`, `centerHz`, `rateHz`, `bins`: 512 levels in dBFS, lowest frequency first, spanning `centerHz ± rateHz/2` |
 | `stats` | 1/s while running | `t` (Unix s), `values`: series name → value now ([Statistics and history](#statistics-and-history)) |
 | `host` | Every 2 s (desktop app) | `t`, `values` (the computer's and plugins' series), `platform` (OS, cores, container and its limits, disks (the RAM spool's too, as `spool`), connectivity checks, `spotlight` (macOS: whether Spotlight indexes the recordings folder), `unavailable`: what this platform can't tell and why) |
@@ -453,6 +456,8 @@ Every message is a JSON object with a `type`. Exact fields are in
 | `decodeDetail` | Topic `decode:<shortName>`: 1/s | `system`, `channels` (the system's channels as received now, each with its `site`), `sites` (each running site's `index`, `name`, and what its control channel announces: `adjacent` sites, `dmr`, `nxdn`), `patches` (the patches standing now, each once: `supergroup` and `members`) |
 | `monitorEvent` | Something notable happened | `t`, `level`, `kind` (`controlLost`, `tgFirstSeen`, `sourceDrops`, `pluginHealth`, `linkDown`, `diskLow`, `spoolLow`, `spoolFull`, …) and its fields |
 | `subscribed` | Answers `subscribe` | `topics` |
+| `olderCalls` | Answers `olderCalls` | `before` (as asked), `entries` (`CallEntry[]`, newest first), `more` (there are older ones still) |
+| `keys` | On connecting, and after an unlock, a lock or a config change (control access) | `sources[]`: `{ name, systems, unlocked }`, each key container that waits for a password |
 | `statsResult` | Answers `statsQuery` | `id`, `from`, `to`, `loading` (the history files are still being read), `series`: name → `{ t0, stepS, v, lo, hi, n }` |
 | `radioResult` | Answers `radioQuery` | `id`, `what`, and by `what`: `rows` (talkgroups / radios / frequencies), `row` and its detail, `systems` (summary), `histogram` |
 | `concluded` | A call was recorded | `entry`: `{ path, record, audio, json }`; `audio` / `json`: whether they stay in the recordings folder once the plugins are done (**Keep audio** / **Keep call JSON**; false: deleted then) |
@@ -469,7 +474,7 @@ Every message is a JSON object with a `type`. Exact fields are in
 | `survey` | The survey's progress | `stage` (`idle` / `scanning` / `monitoring` / `done`), candidates, the channel monitored, the suggested system |
 | `surveySpectrum` | While surveying | like `spectrum` |
 | `sourceProfile` | Answers `profileSource` | `source`, then `error`, or `centerHz`, `rateHz`, `spectrum` / `floor` (1024 points, dB, −rate/2 … +rate/2), `rows` (a waterfall), `referenceDb`, `lowHz` / `highHz` (how far in the floor is 3 dB down), `lowDropDb` / `highDropDb`, `suggestedGuardHz` |
-| `pluginRuntime` | On connecting (control access); a plugin's totals changed | `id`, `runtime` (state, counts, recent log; `metrics` — queue, upload time, endpoints — when the plugin reports them; restarts, events dropped, uptime; results per minute for the last hour) |
+| `pluginRuntime` | A plugin's totals changed (control access) | `id`, `runtime` (state, counts, recent log; `metrics` — queue, upload time, endpoints — when the plugin reports them; restarts, events dropped, uptime; results per minute for the last hour) |
 | `interfaces` | On connecting (control access);  after interface changes; answers `interfaces` | `interfaces` (`InterfaceInfo[]`: each one's port, access, whether it's served and why not), `api` |
 | `store` | Answers `store` | `kind` (`plugin`: the plugin registry; `interface`: the interface store), `source`, `fetched`, `problem`, `listings` (a plugin store also says this computer's `target`) |
 | `installProgress` | As an install goes (control access) | `kind`, `key` (what was asked for), `id`, `stage` (`finding` … `done` / `failed`), `message` |
@@ -479,8 +484,10 @@ Every message is a JSON object with a `type`. Exact fields are in
 
 ## Commands to the recorder
 
-Send JSON text. Exact fields are in `ToRecorder` in protocol.ts. Commands that
-aren't understood are ignored.
+Send JSON text. Exact fields are in `ToRecorder` in protocol.ts. A command that can't be read
+(unknown `type`, a field missing or of the wrong kind) is answered with an `error` saying what was
+wrong; one a listen-only connection may not send, or the browser build can't do, with an `error`
+too.
 
 | `type` | Fields | Does |
 |---|---|---|
@@ -509,6 +516,9 @@ aren't understood are ignored.
 | `subscribe` | `topics` | What this connection watches (replaces the last): `spectrum:<source>`, `log`, `rf:<source>`, `decode:<shortName>`, `platform` (→ `subscribed`). |
 | `statsQuery` | `id`, `series` (names, or prefixes ending in `*`), `range` (`10m` / `1h` / `6h` / `24h` / `7d`) or `from` / `to` (Unix s), `points?` | The minute history of series, averaged down to about `points` steps (→ `statsResult`). |
 | `radioQuery` | `id`, `what`, `system?`, `key?`, `hours?`, `limit?` | The radio registry: `summary`, `talkgroups`, `units`, `tg` (`key`: the talkgroup), `unit` (`key`: the radio), `freqs`, `lengths` (→ `radioResult`). |
+| `olderCalls` | `before?` (Unix ms), `limit?` (≤ 500, default 100) | Recorded calls that started before `before`, newest first, from the last 24 hours (→ `olderCalls`). Listen-only connections may send it. |
+| `unlockKeys` | `source`, `password` | Open a key container that has no password file; the password is kept in memory only. `keys` follows. |
+| `lockKeys` | `source` | Forget a container's keys: its systems stop decrypting at once. |
 | `quit` | — | Stop recording and exit the recorder. |
 
 A listening-only interface needs nothing but `listen`, and perhaps

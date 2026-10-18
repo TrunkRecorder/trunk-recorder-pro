@@ -48,15 +48,25 @@ with `--config` files in different folders never share band plans, talker aliase
 - **A missing `sources` key gives one RTL-SDR** with default settings (first free dongle, Auto
   center, 2.4 MSPS, 25.4 dB), not none.
 - **A value of the wrong type makes the whole file unreadable**: a string where a number belongs, an
-  unknown source `type`, a fraction in an integer field (`"ppm": 1.5` on an RTL-SDR), a misspelled
-  value in a fixed list (`"level": "warn"` instead of `"warning"`). The app then refuses to start, with
-  `<file>: not a config this version reads (<what was wrong>)`. It never replaces a file it can't read
-  with the defaults.
+  unknown source `type`, a fraction in an integer field (`"ppm": 1.5` on an RTL-SDR), a value that
+  isn't one of a fixed list (`"level": "warn"` instead of `"warning"`, a system `"type": "P25x"`). The
+  app then refuses to start, with `<file>: not a config this version reads (<what was wrong>)`. It
+  never replaces a file it can't read with the defaults.
+- **Fixed lists are closed.** Where a key takes one of a few names (a system's `type`, `modulation`,
+  `vocoder`, `m4a.encoder`, a channel's `mode`…), the pages list them. They are read in any case
+  (`"P25"` is `"p25"`), and `""` is the default; any other value is refused as above, where older
+  versions fell back to the default without a word. The exceptions, spelled exactly as listed, are a
+  source's `type`, an interface's `access` and the log's `level`, `frequencyFormat` and `talkgroupDisplayFormat`.
 - **Keys this version doesn't know are kept** and saved back as they were, at the top level and
-  inside a trunked system, a conventional system, `recording`, `server` and `log`. Notes of your own
-  there survive the interface saving the file. Unknown keys anywhere else (inside a source, a
-  channel, `expect`, `unitNames`, a system's own `recording`, `m4a`, `ramSpool`, an interface, a
-  plugin's entry, `monitor`) are dropped the next time the file is saved.
+  inside a trunked system, a site, a conventional system, `recording`, `server`, `log`, a key source
+  and a delay rule. Notes of your own there survive the interface saving the file. Unknown keys
+  anywhere else (inside a source, a channel, `expect`, `unitNames`, a system's own `recording`,
+  `m4a`, `ramSpool`, an interface, a plugin's entry, `monitor`) are dropped the next time the file is
+  saved.
+- **Talkgroups aren't in the config.** Each system's talkgroup file is a file of its own beside it
+  (`<shortName>.talkgroups.csv`); see [Files kept beside the config](#files-kept-beside-the-config).
+  A config from an older version that holds them (`talkgroupsCsv`) is upgraded when it's read: the
+  talkgroups are moved out into those files, and the log says so.
 - **The interface saves the whole file on every change**, so hand edits made while the app is running
   are overwritten by the next change in the interface. Stop the app, or make the change in the
   interface, rather than editing underneath it.
@@ -188,6 +198,7 @@ Recording won't start if:
 
 - there is no source;
 - a `file` source has no `path` (`Choose the capture file to replay.`);
+- an RTL-SDR's `bufLen` isn't a multiple of 512 or is over 16 MiB, or its `buffers` is over 256;
 - there is nothing to record: no trunked system that is enabled and has a control channel, and no
   enabled channel in an enabled conventional system;
 - a system, trunked or conventional, has an empty `shortName`, or two share one (enabled or not);
@@ -199,13 +210,16 @@ Recording won't start if:
   every source's usable bandwidth;
 - a trunked system's site has no control channel inside any source's usable bandwidth;
 - two sites of one system have the same name;
-- there are more than 256 conventional systems;
 - an enabled conventional frequency is in two conventional systems, is 0 or less, or is outside every
   source's usable bandwidth;
 - a channel's `tone` can't be read for its mode (including a CTCSS tone that isn't a standard one:
   `151.5 Hz isn't a standard CTCSS tone — 151.4?`);
 - rows sharing a frequency have different modes, two of them have no `tone`, or two have codes that
   can't be told apart (`D023N` and `D047I` are the same DCS signal);
+- a conventional channel's `bandwidthKhz` is outside 4–20, or its system's `demod` has `amLowCutHz`
+  outside 0–600, `squelchOpenMs` outside 0–500 or `squelchHangMs` outside 0–1000;
+- a `filenameFormat` (the global one, or a system's own) has a `{` with no `}` or a token that isn't
+  listed under [File names](recording.md#file-names) (`Unknown tokens: {shortName}, {tg}.`);
 - a linked `channelFile` can't be read.
 
 "Usable bandwidth" is the source's sample rate less its guard band at each edge: see

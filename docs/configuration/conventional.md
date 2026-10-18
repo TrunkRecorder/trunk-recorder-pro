@@ -39,7 +39,7 @@ anywhere a source covers, including alongside a trunked system. Analog channels 
 | `plugins` | | `{}` | object | Its plugin settings, by plugin id. See [plugins.md](plugins.md#per-system-settings) |
 | `pluginDelays` | | `[]` | array | How long plugins wait for its calls. See [plugins.md](plugins.md#delays) |
 
-At most 256 conventional systems. A frequency belongs to only one of them.
+A frequency belongs to only one conventional system.
 
 ### Demodulation (`demod`)
 
@@ -68,14 +68,19 @@ Notes:
   applies to trunked calls only.
 - **Talkgroup names.** P25, DMR and NXDN conventional calls that carry a talkgroup take its name from
   the conventional system's own talkgroup file (`<shortName>.talkgroups.csv` beside the config; Setup
-  shows it on a conventional system with digital channels), else from the channel rows.
+  shows it on a conventional system with digital channels), else from the channel rows. A
+  conventional system doesn't borrow the names, or the settings, of a trunked system: give it its
+  own file. The file's format is the [talkgroup file](systems.md#talkgroup-file)'s.
+- **Frequency error.** A conventional call's `freq_error` is measured as a trunked call's is, from
+  the decoder's offset (P25 only: analog and DMR receivers don't measure one).
+- **Channel width.** A conventional DMR channel is opened 6.25 kHz wide, as a trunked one is.
 
 ## Channel keys
 
 | Key | Required | Default | Type | Description |
 |---|:---:|---|---|---|
 | `freqHz` | ✓ | | number | The frequency, Hz |
-| `mode` | | `"fm"` | string | `"fm"` (analog FM), `"am"` (analog AM, airband), `"p25"` (P25 Phase 1, C4FM or CQPSK), `"dmr"` (both slots), `"nxdn48"` or `"nxdn96"`. Exactly these spellings |
+| `mode` | | `"fm"` | string | `"fm"` (analog FM), `"am"` (analog AM, airband), `"p25"` (P25 Phase 1, C4FM or CQPSK), `"dmr"` (both slots), `"nxdn48"` or `"nxdn96"` (any case; anything else is refused when the config is read) |
 | `name` | | `""` | string | Alpha tag, written to the call JSON |
 | `description` | | `""` | string | Description in the call JSON |
 | `tag` | | `""` | string | Tag in the call JSON |

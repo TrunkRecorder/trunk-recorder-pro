@@ -19,7 +19,7 @@ Each channel has a mode:
 | Analog FM | `fm` | FM voice, narrowband (12.5 kHz) or wide (25 kHz) |
 | Analog AM | `am` | AM voice: VHF airband (118–137 MHz) and UHF military air (225–400 MHz) |
 | P25 | `p25` | P25 Phase 1, C4FM or CQPSK |
-| DMR | `dmr` | DMR Tier II; both slots, each recording its own calls |
+| DMR | `dmr` | DMR Tier II; both slots, each recording its own calls (the channel is opened 6.25 kHz wide, as for trunked DMR) |
 | NXDN48 | `nxdn48` | NXDN at 4800 bps (6.25 kHz) |
 | NXDN96 | `nxdn96` | NXDN at 9600 bps (12.5 kHz) |
 
@@ -350,7 +350,6 @@ saved. There is no separate log line for each detection.
 | `Conventional channel ... MHz is listed twice without a tone` (or NAC, or code) | Give each row its own code; one may have none. |
 | `Conventional channel ... MHz has two rows for ...` | Two rows ask for the same code (or two DCS codes that are the same signal). |
 | `A conventional channel has no frequency yet.` | A row was added and left empty. |
-| `At most 256 conventional systems.` | |
 | `Channel file ...: ...` | The linked CSV couldn't be read. |
 
 ## Talkgroup names on digital channels

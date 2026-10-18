@@ -214,8 +214,8 @@ keep up), if samples hit full scale (lower the gain), or if its frequency is off
 2 ppm with AutoTune off. The **RF** page has the detail: each radio's noise floor, headroom,
 frequency error and waterfall.
 
-When calls start, they show on the **Calls** page: on the air now (press one to listen live) and
-recently recorded. A call that wasn't recorded says why, for example *outside tuned range* when no
+When calls start, they show on the **Live** page (press one to listen live), and once recorded
+on **Listen**. A call that wasn't recorded says why, for example *outside tuned range* when no
 radio covers its voice frequency. The **Radio system** page counts these reasons over time; lots
 of *Out of band* means you need another radio or a different center.
 
@@ -231,7 +231,7 @@ Calls are written to the recordings folder (**Recordings folder** on the **Recor
 
 for example `dcfd/2026/10/6/101-1791320000_858237500.wav`. The JSON beside each call has the same
 fields as Trunk Recorder's, so tools written for Trunk Recorder can read them. In the browser
-version, calls are kept in the browser's storage instead and exported from **Recorded calls**.
+version, calls are kept in the browser's storage instead and exported from the **Listen** page.
 
 File names, the call JSON, M4A copies and what is kept or deleted are covered in
 [Recordings](guides/recordings.md).

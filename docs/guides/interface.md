@@ -6,7 +6,9 @@ history is kept, reaching it from another machine, and the other interfaces it s
 measurement pages (Overview, RF, Decode, Radio system, Plugins, Platform) and what their numbers
 mean are on [The dashboard](dashboard.md).
 
-When you start `trunk-pro` it opens the interface at <http://localhost:8080>. If you closed the
+The interface needs a browser with WebAssembly SIMD (Safari 16.4, Chrome 91, Firefox 89 or later); an
+older one shows "This browser can't run the dashboard". When you start `trunk-pro` it opens the
+interface at <http://localhost:8080>. If you closed the
 tab, open that address again, or start the app again: a second copy notices the first one and
 just opens the browser on it.
 
