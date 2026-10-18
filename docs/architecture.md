@@ -645,7 +645,7 @@ Other conventions:
 | Concern | File(s) |
 |---|---|
 | Config schema, defaults, validation (`problem()`), source auto-centring | `trunk-app/src/config.rs` |
-| Config in the UI, Trunk Recorder import | `web/src/config.ts`, `web/src/Setup.tsx` |
+| Config in the UI, Trunk Recorder import | `web/src/config.ts`, `web/src/Setup.tsx`; the rules it applies are the recorder's, as WebAssembly: `crates/trunk-web/src/rules.rs` → `web/src/rules.ts` |
 | Call JSON (Trunk Recorder fields) | `trunk-core/src/trunk/record.rs` |
 | File names and folders | `trunk-app/src/filename.rs` |
 | Talkgroup CSV / unit names, talker aliases (`UnitAliases`) | `trunk-core/src/trunk/talkgroups.rs`, `units.rs` |

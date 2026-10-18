@@ -6,14 +6,25 @@ For how the recorder works inside, see [Architecture](architecture.md); for the 
 
 ## Building
 
-Needs Rust 1.95+ and Node 20+ (for the interface).
+Needs Rust 1.95+, Node 22+ (for the interface), the `wasm32-unknown-unknown`
+target and `wasm-bindgen-cli` at the version in `Cargo.lock` (0.2.129). The
+interface uses the recorder's own config rules — why Start would refuse, where
+sources go, how a config is read — compiled to WebAssembly from
+`crates/trunk-web` (`web/src/rules.ts`), so it needs that built first, in both
+versions:
 
 ```bash
-(cd web && npm ci && npx vite build)    # the interface → web/dist, embedded in the binary
-cargo build --release                   # target/release/trunk-pro
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --version 0.2.129 --locked
+(cd web && npm ci && npm run wasm && npm run build)   # the interface → web/dist, embedded in the binary
+cargo build --release                                 # target/release/trunk-pro
 cargo test --release
-cargo build --profile dist              # stripped, as released
+(cd web && npm test)
+cargo build --profile dist                            # stripped, as released
 ```
+
+Run `npm run wasm` again after changing a rule in `trunk-app`'s config (or
+`trunk-web`): the interface and its tests use what it last built.
 
 Release packages: `packaging/package.sh <macos|linux-x86_64|linux-aarch64|windows-x86_64|browser> <version> <binary> <out-dir>`
 (what CI runs; see the top of the script).
@@ -75,19 +86,12 @@ How the interface looks and is organized (type, tokens, Setup's sections,
 cards and groups, wording) is in [Interface style](developer/ui-style.md);
 new screens should follow it.
 
-The browser version additionally needs the `wasm32-unknown-unknown` target and
-`wasm-bindgen-cli` at the version in `Cargo.lock` (0.2.129):
+The browser version runs the engine there too (the same WebAssembly):
 
 ```bash
-rustup target add wasm32-unknown-unknown
-cargo install wasm-bindgen-cli --version 0.2.129 --locked
 (cd web && npm run wasm && npm run build:web)   # → web/dist-web
 (cd web && npm run dev:web)                     # hot reload, engine in the page
 ```
-
-`npm run build` type-checks the browser version too, so it fails until the
-WebAssembly engine (`web/src/web/pkg`) has been built; `npx vite build` builds
-the interface alone.
 
 ## Code layout
 

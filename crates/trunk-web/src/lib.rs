@@ -10,6 +10,8 @@
 //! * [`WebProfiler`] — a source's roll-off for Setup: takes u8 IQ, answers
 //!   with a `sourceProfile` message.
 //!
+//! And to the page (both builds'): the config's rules ([`rules`]).
+//!
 //! Build: `cargo build -p trunk-web --target wasm32-unknown-unknown --profile
 //! dist` with `-C target-feature=+simd128`, then `wasm-bindgen --target web`
 //! (see web/package.json `build:wasm`).
@@ -24,6 +26,8 @@ use trunk_app::stats::{History, Topics};
 use trunk_app::{Config, Output, Session};
 use trunk_core::survey::Command;
 use wasm_bindgen::prelude::*;
+
+pub mod rules;
 
 fn local_offset(t: i64) -> i32 {
     let d = js_sys::Date::new(&JsValue::from_f64(t as f64 * 1000.0));

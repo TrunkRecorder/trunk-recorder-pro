@@ -2,7 +2,7 @@
 // systems set up apart that are one on the air. `npm test`.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { activeSites, defaultConfig, importTrunkRecorderConfig, nameProblem, newSiteName, newSystem, normalizeSystem, sameOnTheAir, siteNameOf } from "./config.ts";
+import { activeSites, defaultConfig, importTrunkRecorderConfig, nameProblem, newSiteName, newSystem, normalizeSystem, resolvedCenters, sameOnTheAir, siteNameOf, startProblem } from "./config.ts";
 import type { Config, Identity, SiteStatus, SystemStatus } from "./protocol.ts";
 
 test("normalizeSystem: an older config's system gets its site; a system with sites keeps them", () => {
@@ -54,4 +54,17 @@ test("importTrunkRecorderConfig: multiSite systems of one multiSiteSystemName ar
   assert.deepEqual(config.systems.map((s) => [s.shortName, s.sites.map((x) => siteNameOf(s, x))]), [["county", ["north", "south"]], ["city", ["city"]]]);
   assert.match(config.systems[0].talkgroupsCsv, /Fire/);
   assert.ok(todo.some((t) => t.kind === "siteLock" && t.system === "county" && t.site === 1), JSON.stringify(todo));
+});
+
+test("startProblem and resolvedCenters are the recorder's own (rules.ts)", () => {
+  const c = defaultConfig();
+  assert.match(startProblem(c) ?? "", /Add a system with a control channel, or a conventional channel/);
+  c.sources[0].centerHz = 0;
+  c.systems.push(newSystem(c, { shortName: "a", controlChannelsHz: [851_012_500] }));
+  const centers = resolvedCenters(c);
+  assert.ok(centers[0] && Math.abs(centers[0] - 851_012_500) < 1_000_000, `placed over the control channel: ${centers}`);
+  assert.equal(startProblem(c), null);
+  // A rule only the recorder had before: the RTL-SDR's USB transfer size.
+  (c.sources[0] as { bufLen?: number }).bufLen = 1000;
+  assert.match(startProblem(c) ?? "", /multiple of 512/);
 });

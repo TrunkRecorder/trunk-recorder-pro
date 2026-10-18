@@ -29,7 +29,7 @@ import {
 } from "./controller.ts";
 import { cleanShortName } from "./fieldText.ts";
 import { FileInput } from "./inputs.tsx";
-import { renameSystem } from "./Plugins.tsx";
+import { renameSystem } from "./pluginSettings.ts";
 import type { Config, Source, SurveyCandidate, SurveyMonitor, SurveySuggestion, System } from "./protocol.ts";
 import { pluginCopies } from "./protocol.ts";
 import { normalizeTalkgroupCsv, parseRadioReferencePaste, parseTalkgroupCsv, talkgroupsToCsv, type Talkgroup } from "./talkgroups.ts";

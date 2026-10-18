@@ -171,7 +171,7 @@ Trunk-tris) read the protocol, so land it in one release and update them.
 
 ### 6. Config logic lives twice, in Rust and TypeScript
 
-- [ ] Export `normalize`, `problem`, `resolved_centers`, `migrate`, and the CSV / tone / filename parsers from trunk-web via wasm-bindgen; Setup uses them in both builds; config.ts keeps only presets, labels and formatting
+- [x] trunk-web exports the config rules (`rules.rs`: normalize with migration, problem, name problem, centres, auto-centre, usable width, band plan, channel CSV read/write); `web/src/rules.ts` loads them before render and keeps answers for the store's config; config.ts −280 lines, migrate.ts's system migration gone. Left in TS on purpose: the filename chip editor (stricter, UI), tone/talkgroup parsers used for inline hints, `normalizeSystem`/`normalizeSite` as builders for new cards and the Trunk Recorder import
 - [x] Rust config enums: `SystemKind`, `SmartnetMode`, `NxdnType`, `Modulation`, `NxdnRate`, `Vocoder`, `M4aEncoder`, `UnitNamesMode`, `LogColor`; a wrong value fails at load like a wrong type ("" still the default). Left: `Site` stays one struct with every protocol's fields (a `SiteProtocol` enum would change the JSON shape Setup and the store's interfaces read)
 - [ ] Talkgroup files as companion documents (`<short>.talkgroups.csv`, like units), with a `talkgroups { system, csv }` message for edits
 - [ ] `setConfig` as a patch (per-section objects or `{ path, value }`) with a `version` the server bumps and rejects on mismatch; drop `controller.updateConfig`'s echo suppression

@@ -41,6 +41,7 @@ import { numberList, textList } from "./fieldText.ts";
 import { Group, Section, Switch } from "./SetupLayout.tsx";
 import { openTodos } from "./todo.ts";
 import { copyOverride, copyOwn, pluginCopies } from "./protocol.ts";
+import { fieldsOf } from "./pluginSettings.ts";
 import type { Config, PluginInfo, PluginInstall, PluginManifest, PluginSchema, PluginValues, PluginsList, StoreListing } from "./protocol.ts";
 import { Author, newer, STAGES, StoreSource, TierChip, webUrl } from "./StoreParts.tsx";
 
@@ -52,12 +53,6 @@ function spell(key: string): string {
     .trim()
     .toLowerCase();
   return words.charAt(0).toUpperCase() + words.slice(1);
-}
-
-function fieldsOf(schema: PluginSchema | undefined): [string, PluginSchema][] {
-  const props = schema?.properties ?? {};
-  const order = schema?.["x-order"] ?? Object.keys(props);
-  return order.filter((k) => props[k]).map((k) => [k, props[k]]);
 }
 
 const hasFields = (schema: PluginSchema | undefined) => fieldsOf(schema).length > 0;
@@ -133,35 +128,6 @@ function systemsOf(c: Config): { at: SystemRef; name: string; copies: (id: strin
     if (v.channels.length) out.push({ at: { conv: k }, name: v.shortName, copies: (id) => pluginCopies(v.plugins?.[id]) });
   });
   return out;
-}
-
-/** A system was renamed: plugin settings that name it (`x-system` fields) follow. Changes `x`. */
-export function renameSystemRefs(x: Config, from: string, to: string, plugins: PluginInfo[]): void {
-  if (!from || from === to) return;
-  const walk = (schema: PluginSchema | undefined, v: unknown) => {
-    if (!v || typeof v !== "object") return;
-    const obj = v as PluginValues;
-    for (const [k, f] of fieldsOf(schema)) {
-      if (f["x-system"] && obj[k] === from) obj[k] = to;
-      else if (f.type === "object") walk(f, obj[k]);
-      else if (f.type === "array" && f.items?.type === "object" && Array.isArray(obj[k])) for (const item of obj[k] as unknown[]) walk(f.items, item);
-    }
-  };
-  for (const p of plugins) {
-    if (!p.manifest) continue;
-    walk(p.manifest.config, x.plugins?.[p.id]?.settings);
-    for (const sys of [...x.systems, ...x.conventional])
-      for (const v of pluginCopies(sys.plugins?.[p.id])) {
-        walk(p.manifest.system_config, v);
-        walk(p.manifest.config, copyOverride(v));
-      }
-  }
-}
-
-/** Rename trunked system `i` (`x.systems[i]`) to `to`: plugin settings that name it follow. Changes `x`. */
-export function renameSystem(x: Config, i: number, to: string, plugins: PluginInfo[]): void {
-  renameSystemRefs(x, x.systems[i].shortName, to, plugins);
-  x.systems[i].shortName = to;
 }
 
 function isUrl(s: string): boolean {

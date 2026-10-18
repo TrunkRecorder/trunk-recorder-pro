@@ -57,7 +57,8 @@ import {
   web,
   type SetupTab,
 } from "./controller.ts";
-import { M4aSettings, PluginSetupPanel, renameSystem, renameSystemRefs, SystemPluginSettings } from "./Plugins.tsx";
+import { M4aSettings, PluginSetupPanel, SystemPluginSettings } from "./Plugins.tsx";
+import { renameSystem, renameSystemRefs } from "./pluginSettings.ts";
 import { SystemDelays } from "./Delays.tsx";
 import { IconAntenna, IconDongle, IconFolder, IconPuzzle, IconTower } from "./Onboarding.tsx";
 import type { AirspyGainMode, Channel, Config, Conventional, Demod, Device, HeardCode, LockableKeys, LogSettings, Recording, RecordingOverride, RecordingRules, Site, SiteIdentity, SoapyState, Source, System, UnitNames } from "./protocol.ts";

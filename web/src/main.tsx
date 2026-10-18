@@ -4,6 +4,9 @@ import "./styles.css";
 
 const root = createRoot(document.getElementById("root")!);
 
+// The config's rules are the recorder's own, compiled to WebAssembly (rules.ts).
+await (await import("./rules.ts")).loadRules();
+
 // The browser version can't do anything without WebUSB; say so up front
 // instead of loading the app (which starts the engine worker).
 const unsupported = import.meta.env.MODE === "web" ? await import("./web/NoWebUsb.tsx") : null;

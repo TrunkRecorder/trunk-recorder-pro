@@ -6,6 +6,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { feedSeries } from "./series.ts";
 import { LivePlayer } from "./livePlayer.ts";
 import { copyOverride, copyOwn, OVERRIDE, pluginCopies } from "./protocol.ts";
+import { configReplaced } from "./rules.ts";
 import type {
   MonitorEvent,
   PlatformInfo,
@@ -219,6 +220,8 @@ let state: AppState = {
 const listeners = new Set<() => void>();
 function set(patch: Partial<AppState>): void {
   state = { ...state, ...patch };
+  // (Its rules' answers last as long as the config does: rules.ts.)
+  if ("config" in patch) configReplaced(state.config);
   for (const l of listeners) l();
 }
 

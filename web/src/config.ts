@@ -1,9 +1,12 @@
 // Config helpers for the setup form (the recorder validates again).
 
 import type { Channel, Config, Conventional, LogSettings, RecordingOverride, Site, SiteIdentity, Source, System, SystemStatus, UnitNames } from "./protocol.ts";
-import { migrateSystems, type OldSystem } from "./migrate.ts";
 import { normalizeTalkgroupCsv, splitCsvLine } from "./talkgroups.ts";
-import { dmrTalkgroup, parseAccess, sameTone } from "./tones.ts";
+import { dmrTalkgroup } from "./tones.ts";
+import { defaultConfig, parseChannelCsv, readConfig, usableHalfWidth } from "./rules.ts";
+
+// The recorder's rules, as it applies them (rules.ts):
+export { autoCenter, bandplanProblem, channelsToCsv, defaultConfig, DEFAULT_GUARD_HZ, nameProblem, parseChannelCsv, readConfig, resolvedCenters, startProblem, usableHalfWidth } from "./rules.ts";
 
 /** A new RTL-SDR's gain, dB (higher overloads its front end near strong transmitters). */
 export const RTL_DEFAULT_GAIN_DB = 25.4;
@@ -11,58 +14,11 @@ export const RTL_DEFAULT_GAIN_DB = 25.4;
 export const SAMPLE_RATES = [2_400_000, 2_048_000, 2_560_000, 3_200_000, 1_920_000, 1_024_000];
 
 /** A fresh config (the web build; the desktop app gets its own from the recorder). */
-export function defaultConfig(): Config {
-  return {
-    sources: [newDongle()],
-    systems: [],
-    conventional: [],
-    recording: {
-      captureDir: "",
-      prerollS: 1,
-      maxRecorders: 32,
-      callTimeoutS: 3,
-      recordUnknown: true,
-      recordEncrypted: false,
-      recordUnitToUnit: true,
-      keepSilentCalls: false,
-      minCallS: 0,
-      maxCallS: 0,
-      minTransmissionS: 0,
-      captureFrames: false,
-      dropDuplicateCalls: true,
-      normalizeAudio: true,
-      digitalLevelDb: 0,
-      analogLevelDb: 0,
-      compressWav: false,
-      audioArchive: true,
-      callLog: true,
-      archiveFilesOnFailure: true,
-      filenameFormat: "",
-      vocoder: "fixed",
-    },
-    server: { bind: "127.0.0.1", port: 8080, autoStart: false },
-    log: defaultLog(),
-  };
-}
-
 /** The log's defaults (the recorder's LogSettings). */
 export function defaultLog(): LogSettings {
-  return {
-    level: "info",
-    console: true,
-    file: false,
-    dir: "",
-    syslogFriendly: false,
-    syslog: false,
-    color: "",
-    frequencyFormat: "mhz",
-    talkgroupDisplayFormat: "id",
-    statusAsString: true,
-    controlWarnRatePerS: 10,
-  };
+  return defaultConfig().log!;
 }
 
-/** Sample rates offered for a USRP (any rate its master clock divides to works). */
 export const USRP_RATES = [2_400_000, 4_000_000, 5_000_000, 6_400_000, 8_000_000, 10_000_000, 12_500_000, 16_000_000, 20_000_000];
 /** Airspy R2: 10 / 2.5; Mini: 6 / 3 (and 10 with newer firmware). */
 export const AIRSPY_RATES = [10_000_000, 6_000_000, 3_000_000, 2_500_000];
@@ -92,27 +48,6 @@ export function formatFromPath(path: string): "cu8" | "cs16" | "cf32" {
 }
 
 /** Left unused at each edge of a source's band unless it says otherwise (`guardHz`), Hz. */
-export const DEFAULT_GUARD_HZ = 75_000;
-
-/** How far from a source's centre a channel may be: half its band less the guard (never under a quarter of the band). */
-export function usableHalfWidth(rateHz: number, guardHz: number = DEFAULT_GUARD_HZ): number {
-  return Math.max(rateHz / 2 - Math.max(0, guardHz), rateHz / 4);
-}
-
-/** A centre that fits every control channel in one source, off the DC spike. */
-export function autoCenter(controlChannels: number[], rateHz: number, guardHz?: number): number | null {
-  if (!controlChannels.length) return null;
-  const lo = Math.min(...controlChannels);
-  const hi = Math.max(...controlChannels);
-  const half = usableHalfWidth(rateHz, guardHz);
-  if (hi - lo > 2 * half - 50_000) return null;
-  let c = Math.round((lo + hi) / 2 / 1000) * 1000;
-  for (let step = 0; step < 40 && controlChannels.some((f) => Math.abs(f - c) < 25_000); step++) {
-    c += (step % 2 ? -1 : 1) * 12_500 * (step + 1);
-  }
-  return controlChannels.every((f) => Math.abs(f - c) <= half - 10_000) ? c : null;
-}
-
 /** The conventional channels being recorded: switched on, in a system that is. */
 export function enabledChannels(c: Config): Channel[] {
   return (c.conventional ?? []).filter((v) => v.enabled).flatMap((v) => v.channels.filter((ch) => ch.enabled));
@@ -252,21 +187,9 @@ export function normalizeSystem(x: SystemInput): System {
   };
 }
 
-/** A config stored by this browser, with any setting it lacks at its default. */
-export function storedConfig(raw: Partial<Config>): Config {
-  const base = defaultConfig();
-  // Keys this version doesn't know are kept at each level (as the recorder keeps them); a known one of the wrong shape is the default.
-  const objects = <T extends object>(v: unknown): T[] => (Array.isArray(v) ? v.filter((x): x is T => !!plain<T>(x)) : []);
-  return {
-    ...base,
-    ...raw,
-    sources: Array.isArray(raw.sources) ? objects<Source>(raw.sources) : base.sources,
-    systems: migrateSystems(objects<OldSystem>(raw.systems)).systems,
-    conventional: objects<Partial<Conventional>>(raw.conventional).map(normalizeConventional),
-    recording: { ...base.recording, ...plain<Partial<Config["recording"]>>(raw.recording) },
-    server: { ...base.server, ...plain<Partial<Config["server"]>>(raw.server) },
-    log: { ...defaultLog(), ...plain<Partial<LogSettings>>(raw.log) },
-  };
+/** A config stored by this browser, read as the recorder reads one (older ones upgraded, what it lacks at its default). */
+export function storedConfig(raw: unknown): Config {
+  return readConfig(raw).config;
 }
 
 /** Why a filename format can't be used, or null: filenameFormat.ts. */
@@ -392,37 +315,6 @@ export function systemWithChannel(c: Config, hz: number): System | undefined {
   return c.systems.find((sys) => sys.sites.some((x) => [...x.controlChannelsHz, ...watchedChannels(sys, x)].some((f) => Math.abs(f - hz) < 6_000)));
 }
 
-/**
- * Each source's centre: as set, or (0 = auto) placed over what the sources
- * before it don't cover yet (the recorder's Config::resolved_centers).
- */
-export function resolvedCenters(c: Config): (number | null)[] {
-  // A DMR / NXDN site's watched frequencies are all needed (as Config::resolved_centers).
-  const groups: [number[], number[]][] = activeSites(c).map(({ sys, site }) => {
-    const need = [...site.controlChannelsHz, ...watchedChannels(sys, site)];
-    return [[...need, ...site.voiceChannelsHz], need];
-  });
-  for (const v of c.conventional.filter((x) => x.enabled)) {
-    const conv = v.channels.filter((ch) => ch.enabled && ch.freqHz > 0).map((ch) => ch.freqHz);
-    if (conv.length) groups.push([conv, conv]);
-  }
-  const centers = c.sources.map((s) => s.centerHz);
-  const covered = (f: number) => c.sources.some((s, i) => centers[i] > 0 && Math.abs(f - centers[i]) <= usableHalfWidth(s.rateHz, s.guardHz));
-  for (let i = 0; i < c.sources.length; i++) {
-    if (centers[i] > 0) continue;
-    const open = groups.filter(([, need]) => !need.some(covered));
-    if (!open.length) break;
-    const { rateHz: rate, guardHz: guard } = c.sources[i];
-    centers[i] =
-      autoCenter(open.flatMap((g) => g[0]), rate, guard) ??
-      autoCenter(open.flatMap((g) => g[1]), rate, guard) ??
-      autoCenter(open[0][0], rate, guard) ??
-      autoCenter(open[0][1], rate, guard) ??
-      0;
-  }
-  return centers.map((x) => x || null);
-}
-
 /** The source (index) whose usable band holds `hz`, or -1. */
 export function sourceCovering(c: Config, centers: (number | null)[], hz: number): number {
   return c.sources.findIndex((s, i) => centers[i] !== null && Math.abs(hz - (centers[i] ?? 0)) <= usableHalfWidth(s.rateHz, s.guardHz));
@@ -458,46 +350,6 @@ export function nextTalkgroup(channels: Channel[], freqHz: number): number {
   return defaultTalkgroup(freqHz) * 10 + k;
 }
 
-/** Why rows on one frequency can't run together, or null (the recorder's check_channels). */
-function rowsProblem(rows: Channel[]): string | null {
-  const mhz = formatMhz(rows[0].freqHz);
-  if (rows.some((r) => r.mode !== rows[0].mode)) return `Conventional channel ${mhz} MHz is listed with different modes — rows sharing a frequency need the same one.`;
-  if (rows.some((r) => r.bandwidthKhz !== rows[0].bandwidthKhz)) return `Conventional channel ${mhz} MHz is listed with different bandwidths — rows sharing a frequency need the same one.`;
-  if (rows[0].mode === "am" && rows.length > 1) return `Conventional channel ${mhz} MHz is listed twice — AM has no tone or code to split a frequency by.`;
-  const what = { fm: "tone", am: "code", p25: "NAC", dmr: "colour code, slot or talkgroup", nxdn48: "RAN or talkgroup", nxdn96: "RAN or talkgroup" }[rows[0].mode];
-  const tones = rows.map((r) => {
-    const t = parseAccess(r.mode, r.tone ?? "");
-    return "tone" in t ? t.tone : "";
-  });
-  for (let i = 0; i < tones.length; i++)
-    for (let j = 0; j < i; j++) {
-      if (!tones[i] && !tones[j]) return `Conventional channel ${mhz} MHz is listed twice without a ${what} — give each row its own (one may have none).`;
-      if (tones[i] && tones[j] && sameTone(tones[j], tones[i]))
-        return `Conventional channel ${mhz} MHz has two rows for ${tones[i] === tones[j] ? tones[i] : `${tones[j]} and ${tones[i]} (the same signal)`}.`;
-    }
-  return null;
-}
-
-/** Two systems sharing a short name, or one without, or two sites of a system one name (the recorder's Config::name_problem): every system, on or off. */
-export function nameProblem(c: Config): string | null {
-  const names = new Set<string>();
-  for (const x of [...c.systems, ...c.conventional]) {
-    if (!x.shortName.trim()) return "Every system needs a short name.";
-    if (names.has(x.shortName)) return `Two systems are named "${x.shortName}" — each needs a short name of its own (it is its folder, and how plugins know it).`;
-    names.add(x.shortName);
-  }
-  for (const sys of c.systems) {
-    const sites = new Set<string>();
-    for (const x of sys.sites) {
-      const n = siteNameOf(sys, x);
-      if (sites.has(n)) return `Two sites of ${sys.shortName} are named "${n}" — each needs a name of its own.`;
-      sites.add(n);
-    }
-  }
-  return null;
-}
-
-
 /** An analog channel's filter width a config may set, kHz, and the demod ranges (the recorder's config.rs). */
 export const BANDWIDTH_KHZ: [number, number] = [4, 20];
 export const AM_LOW_CUT_MAX_HZ = 600;
@@ -522,245 +374,11 @@ export const BANDWIDTH_PRESETS: Record<"fm" | "am", { khz: number; label: string
   ],
 };
 
-/** The SmartNet band plans the recorder knows besides 400… / OBT (smartnet::Bandplan::from_config). */
-const BANDPLANS = ["", "800_standard", "800_domestic", "800_reband", "800_rebanded", "800_splinter", "800_domestic_splinter", "900"];
-
-/** Why a SmartNet site's band plan can't be used, or null (smartnet::Bandplan::from_config). */
-export function bandplanProblem(x: Site): string | null {
-  const n = x.bandplan ?? "";
-  if (n.startsWith("400") || n.toLowerCase() === "obt") {
-    const base = x.bandplanBaseHz ?? 0;
-    if (!(base > 0) || !((x.bandplanSpacingHz ?? 0) > 0) || !((x.bandplanHighHz ?? 0) > base))
-      return `SmartNet band plan ${n} needs its base, spacing and high frequency (high above base) and offset.`;
-    return null;
-  }
-  return BANDPLANS.includes(n) ? null : `unknown SmartNet band plan "${n}" (800_standard, 800_reband, 800_splinter, 900, 400_custom).`;
-}
-
-/** Why the config can't start, or null (the recorder's Config::problem). */
-export function startProblem(c: Config): string | null {
-  if (!c.sources.length) return "Add a source: a dongle or a capture file.";
-  const systems = activeSystems(c);
-  const channels = enabledChannels(c);
-  if (!systems.length && !channels.length) return "Add a system with a control channel, or a conventional channel.";
-  const named = nameProblem(c);
-  if (named) return named;
-  const centers = resolvedCenters(c);
-  const missing = centers.findIndex((x) => !x);
-  if (missing >= 0)
-    return `Set a center frequency for source ${missing + 1} — it couldn't be placed automatically (nothing left for it to cover, or the channels don't fit one source).`;
-  const inside = (f: number) => sourceCovering(c, centers, f) >= 0;
-  for (const { sys, site } of activeSites(c)) {
-    // "dcfd", or "dcfd (site south)" for a site with its own name.
-    const name = siteNameOf(sys, site) === sys.shortName ? sys.shortName : `${sys.shortName} (site ${siteNameOf(sys, site)})`;
-    const plan = sys.type === "smartnet" ? bandplanProblem(site) : null;
-    if (plan) return `${name}: ${plan}`;
-    if (sys.type === "dmr" || sys.type === "nxdn") {
-      const out = [...site.controlChannelsHz, ...watchedChannels(sys, site)].filter((f) => !inside(f)).map((f) => formatMhz(f));
-      const what = sys.type === "dmr" ? "DMR" : "NXDN";
-      if (out.length) return `${name}: ${what} frequencies outside every source's bandwidth: ${out.join(", ")} MHz — move a center frequency or add a source.`;
-    }
-    if (!site.controlChannelsHz.some(inside)) return `No control channel of ${name} falls inside any source's bandwidth — move a center frequency or add a source.`;
-  }
-  const owner: [number, string][] = [];
-  for (const v of c.conventional.filter((x) => x.enabled))
-    for (const ch of v.channels.filter((x) => x.enabled)) {
-      const other = owner.find(([f, o]) => sameFreq(f, ch.freqHz) && o !== v.shortName);
-      if (other) return `Conventional channel ${formatMhz(ch.freqHz)} MHz is in both ${other[1]} and ${v.shortName} — a frequency belongs to one conventional system.`;
-      owner.push([ch.freqHz, v.shortName]);
-    }
-  if (channels.some((ch) => !(ch.freqHz > 0))) return "A conventional channel has no frequency yet.";
-  const outside = channels.filter((ch) => !inside(ch.freqHz)).map((ch) => formatMhz(ch.freqHz));
-  if (outside.length) return `Conventional channel(s) outside every source's bandwidth: ${outside.join(", ")} MHz — move a center frequency or disable them.`;
-  for (const ch of channels) {
-    const t = parseAccess(ch.mode, ch.tone ?? "");
-    if ("error" in t) return `Conventional channel ${formatMhz(ch.freqHz)} MHz: ${t.error}.`;
-  }
-  const done: number[] = [];
-  for (const ch of channels) {
-    if (done.some((f) => sameFreq(f, ch.freqHz))) continue;
-    done.push(ch.freqHz);
-    const p = rowsProblem(channels.filter((o) => sameFreq(o.freqHz, ch.freqHz)));
-    if (p) return p;
-  }
-  if (c.sources.some((s) => s.type === "file" && !s.path)) return "Choose the capture file to replay.";
-  return null;
-}
-
-// Conventional channels as CSV, for a spreadsheet. The same rules as the
-// recorder's channel file (crates/trunk-app/src/channels.rs) — keep them together.
-
-/** The columns channelsToCsv writes. */
-export const CHANNEL_CSV_HEADER = "TG Number,Frequency,Tone,Mode,Alpha Tag,Description,Tag,Category,Squelch dB,Bandwidth kHz,Enable";
-
-/** RFC-4180-ish split on `delim`. */
-function splitOn(line: string, delim: string): string[] {
-  if (delim === ",") return splitCsvLine(line);
-  const out: string[] = [];
-  let cur = "";
-  let q = false;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (q) {
-      if (ch === '"' && line[i + 1] === '"') {
-        cur += '"';
-        i++;
-      } else if (ch === '"') q = false;
-      else cur += ch;
-    } else if (ch === '"') q = true;
-    else if (ch === delim) {
-      out.push(cur.trim());
-      cur = "";
-    } else cur += ch;
-  }
-  out.push(cur.trim());
-  return out;
-}
-
-/** A frequency cell: MHz with a decimal point (under 10 GHz in MHz), else Hz. */
-function freqCell(cell: string, decimalComma: boolean): number | null {
-  const t = (decimalComma ? cell.replace(/,/g, ".") : cell).trim();
-  const v = Number(t);
-  if (!t || !Number.isFinite(v) || v <= 0) return null;
-  return t.includes(".") && v < 10_000 ? Math.round(v * 1e6) : Math.round(v);
-}
-
-function rowsList(rows: number[]): string {
-  return rows.slice(0, 8).join(", ") + (rows.length > 8 ? ` and ${rows.length - 8} more` : "");
-}
-
-/**
- * Conventional channels from a CSV: Trunk Recorder's channel file (TG Number,
- * Frequency, Alpha Tag, Description, Tag, Category, Enable) plus Mode and
- * Squelch dB; commas, semicolons or tabs; Excel's byte-order mark and decimal
- * commas. `error` when there is no Frequency column.
- */
-export function parseChannelCsv(text: string): { channels: Channel[]; notes: string[]; error?: string } {
-  const lines = text
-    .replace(/^\uFEFF/, "")
-    .split(/\r?\n/)
-    .map((l, i) => ({ row: i + 1, l }))
-    .filter(({ l }) => l.trim() && !l.trimStart().startsWith("#"));
-  if (!lines.length) return { channels: [], notes: [], error: "The channel file is empty." };
-  const headLine = lines[0].l;
-  const delim = [",", ";", "\t"].reduce((best, d) => (headLine.split(d).length > headLine.split(best).length ? d : best), ",");
-  const decimalComma = delim !== ",";
-  const head = splitOn(headLine, delim).map((h) => h.toLowerCase());
-  const col = (...names: string[]) => head.findIndex((h) => names.includes(h));
-  const cFreq = col("frequency", "freq", "freqhz");
-  if (cFreq < 0) return { channels: [], notes: [], error: "No Frequency column: the first row must name the columns (TG Number, Frequency, Mode, Alpha Tag, …)." };
-  const cTg = col("tg number", "talkgroup", "tg");
-  const cName = col("alpha tag", "name");
-  const cDesc = col("description");
-  const cTag = col("tag");
-  const cGroup = col("category", "group");
-  const cMode = col("mode");
-  const cSq = col("squelch db", "squelchdb");
-  const cBw = col("bandwidth khz", "bandwidthkhz", "bandwidth");
-  const cTrSq = col("squelch");
-  const cEnable = col("enable", "enabled");
-  const cTone = col("tone");
-  const channels: Channel[] = [];
-  const badFreq: number[] = [];
-  const badMode: number[] = [];
-  const badTg: number[] = [];
-  const badSq: number[] = [];
-  const badBw: number[] = [];
-  const badTone: string[] = [];
-  let search = false;
-  for (const { row, l } of lines.slice(1)) {
-    const f = splitOn(l, delim);
-    const at = (i: number) => (i >= 0 ? f[i] ?? "" : "");
-    const freqHz = freqCell(at(cFreq), decimalComma);
-    if (freqHz === null) {
-      badFreq.push(row);
-      continue;
-    }
-    const m = at(cMode).toLowerCase();
-    const raw = at(cTone);
-    let mode: Channel["mode"] = "fm";
-    // No Mode: a NAC means P25, a colour code DMR, a RAN NXDN48.
-    if (!m && (/NAC/i.test(raw) || raw.startsWith("$"))) mode = "p25";
-    else if (!m && /^CC/i.test(raw)) mode = "dmr";
-    else if (!m && /^RAN/i.test(raw)) mode = "nxdn48";
-    else if (m === "am") mode = "am";
-    else if (["p25", "digital", "d"].includes(m)) mode = "p25";
-    else if (m === "dmr") mode = "dmr";
-    else if (m === "nxdn" || m === "nxdn48") mode = "nxdn48";
-    else if (m === "nxdn96") mode = "nxdn96";
-    else if (!["", "fm", "nfm", "analog", "a"].includes(m)) badMode.push(row);
-    const ch: Channel = { freqHz, mode, name: at(cName), enabled: !["false", "no", "0", "off"].includes(at(cEnable).toLowerCase()) };
-    const tgText = at(cTg);
-    if (tgText) {
-      const tg = Number(tgText);
-      if (Number.isInteger(tg) && tg > 0 && tg < 2 ** 32) ch.talkgroup = tg;
-      else badTg.push(row);
-    }
-    const sqText = at(cSq);
-    if (sqText) {
-      const sq = Number(decimalComma ? sqText.replace(/,/g, ".") : sqText);
-      if (Number.isFinite(sq) && sq >= 3 && sq <= 40) ch.squelchDb = sq;
-      else badSq.push(row);
-    }
-    const bwText = at(cBw);
-    if (bwText) {
-      const bw = Number(decimalComma ? bwText.replace(/,/g, ".") : bwText);
-      if (Number.isFinite(bw) && bw >= BANDWIDTH_KHZ[0] && bw <= BANDWIDTH_KHZ[1] && (mode === "fm" || mode === "am")) ch.bandwidthKhz = bw;
-      else badBw.push(row);
-    }
-    if (at(cDesc)) ch.description = at(cDesc);
-    if (at(cTag)) ch.tag = at(cTag);
-    if (at(cGroup)) ch.group = at(cGroup);
-    search ||= raw.toLowerCase() === "s";
-    const t = parseAccess(mode, raw);
-    if ("error" in t) badTone.push(`row ${row}: ${t.error}`);
-    else if (t.tone) ch.tone = t.tone;
-    channels.push(ch);
-  }
-  const notes: string[] = [];
-  if (badFreq.length) notes.push(`Skipped row(s) ${rowsList(badFreq)} — no usable frequency.`);
-  if (badMode.length) notes.push(`Row(s) ${rowsList(badMode)}: unknown Mode (use fm, am, p25, dmr, nxdn48 or nxdn96) — read as fm.`);
-  if (badTg.length) notes.push(`Row(s) ${rowsList(badTg)}: TG Number isn't a positive whole number — using the default.`);
-  if (badSq.length) notes.push(`Row(s) ${rowsList(badSq)}: Squelch dB must be 3–40 (dB above the noise) — using the default.`);
-  if (badBw.length) notes.push(`Row(s) ${rowsList(badBw)}: Bandwidth kHz must be 4–20, on an fm or am channel — using the default.`);
-  if (badTone.length) notes.push(`Tone not read (the row records any): ${badTone.join("; ")}.`);
-  if (search) notes.push("Tone S (search) needs no setting here: every analog call's tone is identified and written to its JSON.");
-  if (cTrSq >= 0 && cSq < 0) notes.push("The Squelch column (Trunk Recorder's absolute level) was not read: use Squelch dB, in dB above the noise floor.");
-  return { channels, notes };
-}
-
-/** MHz with at least 4 and at most 6 decimals (154.4300, 154.43125). */
 export function mhzCell(hz: number): string {
   const [int, frac = ""] = (hz / 1e6).toFixed(6).split(".");
   return `${int}.${frac.replace(/0+$/, "").padEnd(4, "0")}`;
 }
 
-function csvCell(s: string | undefined): string {
-  const v = s ?? "";
-  return /[,";\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
-}
-
-/** The channels as CSV (CHANNEL_CSV_HEADER's columns), which parseChannelCsv and the recorder read back unchanged. */
-export function channelsToCsv(channels: Channel[]): string {
-  const rows = channels.map((c) =>
-    [
-      c.talkgroup ?? "",
-      mhzCell(c.freqHz),
-      csvCell(c.tone),
-      c.mode,
-      csvCell(c.name),
-      csvCell(c.description),
-      csvCell(c.tag),
-      csvCell(c.group),
-      c.squelchDb ?? "",
-      c.bandwidthKhz ?? "",
-      String(c.enabled),
-    ].join(","),
-  );
-  return [CHANNEL_CSV_HEADER, ...rows].join("\n") + "\n";
-}
-
-/** Parse a comma/space separated list of MHz (or Hz) values. */
 export function parseFreqList(text: string): number[] {
   return text
     .split(/[\s,;]+/)

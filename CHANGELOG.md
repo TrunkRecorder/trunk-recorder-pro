@@ -5,6 +5,14 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Setup applies the recorder's own rules.** Why Start would refuse a config, where an automatic
+  source is centred, how a stored config is read (and an older one upgraded), and reading and writing
+  a channel CSV were written twice, in the recorder and again in the interface, and had drifted:
+  Setup let Start be pressed with an RTL-SDR's USB transfer size the recorder refuses, or a channel
+  bandwidth or demodulation setting out of range. The interface now runs the recorder's code for
+  these (as WebAssembly, which the browser version already used), so they can't disagree. The
+  browser version starts from the recorder's default config, with the M4A, spool and monitor
+  settings it lacked.
 - **A config with a choice it doesn't list is refused when it's read**, as one with a wrong type is:
   a system `type`, a site's `modulation`, `nxdnType`, `nxdnRate`, `defaultMode`, `vocoder`, the M4A
   `encoder`, `unitNames.mode` and `log.color`. They used to fall back without a word (a `type` of
