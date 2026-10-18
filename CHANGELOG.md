@@ -5,6 +5,10 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **A config with a choice it doesn't list is refused when it's read**, as one with a wrong type is:
+  a system `type`, a site's `modulation`, `nxdnType`, `nxdnRate`, `defaultMode`, `vocoder`, the M4A
+  `encoder`, `unitNames.mode` and `log.color`. They used to fall back without a word (a `type` of
+  "P25x" recorded as P25). An empty value still means the default.
 - **A file name format with a token nobody knows is refused at Start**, the config's or a system's
   own. Setup already said so; a config edited by hand or by another interface wasn't checked.
 - **Renaming a system in the setup guide keeps its plugin settings pointing at it**, as renaming it

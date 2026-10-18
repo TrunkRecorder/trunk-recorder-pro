@@ -80,10 +80,11 @@ pub fn configure(s: &LogSettings, config_dir: &Path) {
     let level_override = *LEVEL_OVERRIDE.lock().unwrap();
     let no_color = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
     // Trunk Recorder's logColor (its default "console", "none" under NO_COLOR); unset: colour only on a terminal.
-    let color = match s.color.trim() {
-        "" if no_color => "none",
-        "" if std::io::stderr().is_terminal() => "console",
-        "" => "none",
+    use crate::config::LogColor;
+    let color = match s.color {
+        LogColor::Auto if no_color => LogColor::None,
+        LogColor::Auto if std::io::stderr().is_terminal() => LogColor::Console,
+        LogColor::Auto => LogColor::None,
         c => c,
     };
     let dir = if s.dir.trim().is_empty() { config_dir.join("logs") } else { config_dir.join(s.dir.trim()) };
@@ -91,9 +92,9 @@ pub fn configure(s: &LogSettings, config_dir: &Path) {
     *l.settings.write().unwrap() = Settings {
         level,
         console: s.console,
-        console_color: matches!(color, "console" | "all"),
+        console_color: matches!(color, LogColor::Console | LogColor::All),
         file: s.file,
-        file_color: matches!(color, "logfile" | "all"),
+        file_color: matches!(color, LogColor::Logfile | LogColor::All),
         syslog: s.syslog,
         format: s.format(),
     };

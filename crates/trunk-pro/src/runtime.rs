@@ -721,11 +721,11 @@ struct Finish {
 /// message and history, its .m4a (compressWav), and the plugins, whose
 /// results settle what's kept ([`crate::plugins::Archive`]).
 fn finish_calls(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, rx: mpsc::Receiver<Finish>, m4a: &crate::config::M4a) {
-    let encoder = plugins::Encoder::find(&m4a.encoder).map(|e| (e, m4a.bitrate_kbps.clamp(8, 320)));
+    let encoder = plugins::Encoder::find(m4a.encoder).map(|e| (e, m4a.bitrate_kbps.clamp(8, 320)));
     let mut warned = false;
     for f in rx {
         if f.rules.compress_wav && encoder.is_none() && !std::mem::replace(&mut warned, true) {
-            warn_all(&ctx.hub, if m4a.encoder == "none" { "M4A encoding is off: calls are kept as WAV only" } else { "No M4A encoder found (install ffmpeg): calls are kept as WAV only" });
+            warn_all(&ctx.hub, if m4a.encoder == crate::config::M4aEncoder::None { "M4A encoding is off: calls are kept as WAV only" } else { "No M4A encoder found (install ffmpeg): calls are kept as WAV only" });
         }
         let host = ctx.plugins.host.read().unwrap();
         finish_one(ctx, dir, spool, f, encoder.as_ref(), host.as_ref());

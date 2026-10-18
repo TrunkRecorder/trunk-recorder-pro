@@ -172,7 +172,7 @@ Trunk-tris) read the protocol, so land it in one release and update them.
 ### 6. Config logic lives twice, in Rust and TypeScript
 
 - [ ] Export `normalize`, `problem`, `resolved_centers`, `migrate`, and the CSV / tone / filename parsers from trunk-web via wasm-bindgen; Setup uses them in both builds; config.ts keeps only presets, labels and formatting
-- [ ] Rust config enums: `SystemKind` (serde `tag = "type"`), `Site.protocol: SiteProtocol { P25 | Smartnet { bandplan… } | Dmr { lcn_table_hz, channels, color_code } | Nxdn { rate, channels, ran } }`, `Modulation`, `vocoder: mbe::Profile`, `M4a.encoder`, `UnitNames.mode`, `LogSettings.color`; a wrong value fails at load like a wrong type
+- [x] Rust config enums: `SystemKind`, `SmartnetMode`, `NxdnType`, `Modulation`, `NxdnRate`, `Vocoder`, `M4aEncoder`, `UnitNamesMode`, `LogColor`; a wrong value fails at load like a wrong type ("" still the default). Left: `Site` stays one struct with every protocol's fields (a `SiteProtocol` enum would change the JSON shape Setup and the store's interfaces read)
 - [ ] Talkgroup files as companion documents (`<short>.talkgroups.csv`, like units), with a `talkgroups { system, csv }` message for edits
 - [ ] `setConfig` as a patch (per-section objects or `{ path, value }`) with a `version` the server bumps and rejects on mismatch; drop `controller.updateConfig`'s echo suppression
 - [ ] Declare the per-system `Recording` overrides once (today the 16 fields appear in `Recording`, `RecordingOverride`, the `take!` macro, the TS type and the docs table); resolve each system's rules once at start instead of `recording_of` per concluded call in both session.rs and runtime.rs

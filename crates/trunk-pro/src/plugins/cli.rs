@@ -104,8 +104,8 @@ fn list(a: &Args) {
         };
         println!("  {id} [{}] {}\n    {what}", if e.enabled { "on" } else { "off" }, exe.display());
     }
-    let enc = super::Encoder::find(&cfg.recording.m4a.encoder);
-    println!("M4A encoder ({}): {}", cfg.recording.m4a.encoder, enc.as_ref().map_or("none found (install ffmpeg)", |e| e.name()));
+    let enc = super::Encoder::find(cfg.recording.m4a.encoder);
+    println!("M4A encoder ({}): {}", cfg.recording.m4a.encoder.name(), enc.as_ref().map_or("none found (install ffmpeg)", |e| e.name()));
 }
 
 /// The installed plugin's version, if it's installed and answers.
@@ -313,7 +313,8 @@ fn run_calls(a: &Args) {
         }
     }
     let notes: super::host::Notes = Arc::new(print_note);
-    let audio = AudioSettings { encoder: a.get("encoder").unwrap_or("auto").to_string(), ..Default::default() };
+    let encoder = a.get("encoder").map_or(Ok(Default::default()), |e| serde_json::from_value(serde_json::json!(e))).unwrap_or_else(|_| die("--encoder: auto, ffmpeg, afconvert, fdkaac or none"));
+    let audio = AudioSettings { encoder, ..Default::default() };
     let mut host = PluginHost::start(vec![spec], &audio, &systems, &capture_dir, notes);
     if host.is_empty() {
         std::process::exit(1);

@@ -210,7 +210,7 @@ mod tests {
         assert!(c.recording.drop_duplicate_calls);
         assert_eq!(c.systems.len(), 1);
         let (sys, site) = (&c.systems[0], &c.systems[0].sites[0]);
-        assert_eq!((sys.talkgroups_csv.as_str(), site.name.as_str(), site.control_channels_hz.as_slice(), site.modulation.as_str()), ("x", "", &[851_012_500.0][..], "qpsk"));
+        assert_eq!((sys.talkgroups_csv.as_str(), site.name.as_str(), site.control_channels_hz.as_slice(), site.modulation), ("x", "", &[851_012_500.0][..], crate::config::Modulation::Qpsk));
         assert_eq!(c.notes.len(), 1, "{:?}", c.notes);
         let saved = serde_json::to_value(&c).unwrap();
         assert!(saved["systems"][0].get("controlChannelsHz").is_none() && saved["systems"][0]["sites"][0]["controlChannelsHz"][0] == 851012500.0);

@@ -265,10 +265,10 @@ impl PluginHost {
             }
         }
         let wants_m4a = ready.iter().any(|(_, m, _)| m.subscribes(topic::CALL_CONCLUDED) && m.wants_format(format::M4A));
-        let encoder = if wants_m4a { Encoder::find(&audio.encoder) } else { None };
+        let encoder = if wants_m4a { Encoder::find(audio.encoder) } else { None };
         if wants_m4a && encoder.is_none() {
             let who: Vec<&str> = ready.iter().filter(|(_, m, _)| m.wants_format(format::M4A)).map(|(s, _, _)| s.id.as_str()).collect();
-            let text = if audio.encoder == "none" {
+            let text = if audio.encoder == crate::config::M4aEncoder::None {
                 format!("M4A encoding is off: {} get WAV only", who.join(", "))
             } else {
                 format!("No M4A encoder found (install ffmpeg): {} get WAV only", who.join(", "))

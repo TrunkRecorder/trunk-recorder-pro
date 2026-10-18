@@ -281,7 +281,7 @@ pub struct System {
     #[serde(skip_serializing_if = "String::is_empty")]
     pub name: String,
     #[serde(rename = "type")]
-    pub kind: String,
+    pub kind: SystemKind,
     pub enabled: bool,
     pub talkgroups_csv: String,
     pub talkgroups_name: String,
@@ -291,13 +291,12 @@ pub struct System {
     /// Its own recording rules; what's left out is as in [`Config::recording`].
     #[serde(skip_serializing_if = "RecordingOverride::is_empty")]
     pub recording: RecordingOverride,
-    /// SmartNet: voice mode of a talkgroup never heard granted — "digital" (P25) or "analog".
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub default_mode: String,
-    /// NXDN (`type` "nxdn"): "typeC" (a control channel; the default) or
-    /// "typeD" (IDAS distributed: list every repeater).
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub nxdn_type: String,
+    /// SmartNet: voice mode of a talkgroup never heard granted.
+    #[serde(skip_serializing_if = "is_default")]
+    pub default_mode: SmartnetMode,
+    /// NXDN (`type` "nxdn"): a control channel (the default) or IDAS distributed (list every repeater).
+    #[serde(skip_serializing_if = "is_default")]
+    pub nxdn_type: NxdnType,
     /// The encryption keys it decrypts with (P25): a key source's name, in
     /// [`Config::keys`]. Empty: none.
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -329,8 +328,7 @@ pub struct Site {
     pub name: String,
     pub enabled: bool,
     pub control_channels_hz: Vec<f64>,
-    /// "auto" | "fsk4" | "qpsk"
-    pub modulation: String,
+    pub modulation: Modulation,
     /// Only follow a control channel with this identity (fields left out
     /// match anything) — this site, not its neighbour on a nearby frequency.
     pub expect: SiteIdentity,
@@ -360,9 +358,9 @@ pub struct Site {
     /// DMR: only this colour code.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub color_code: Option<u8>,
-    /// NXDN: "nxdn48" (the default) or "nxdn96", the control channel's (Type-D: the repeaters') rate.
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub nxdn_rate: String,
+    /// NXDN: the control channel's (Type-D: the repeaters') rate.
+    #[serde(skip_serializing_if = "is_default")]
+    pub nxdn_rate: NxdnRate,
     /// NXDN: voice frequencies to watch besides the control channels (Type-D:
     /// the repeaters). A grant to a channel number not in `lcnTableHz` is
     /// learned when its call comes up on one of them.
@@ -381,28 +379,186 @@ fn is_zero(v: &f64) -> bool {
 fn is_zero_u16(v: &u16) -> bool {
     *v == 0
 }
+fn is_default<T: Default + PartialEq>(v: &T) -> bool {
+    *v == T::default()
+}
+
+// The config's closed choices: a value not listed is an error when the file
+// is read, as a wrong type is (an empty string, where one meant "the
+// default", still reads as the default).
+
+/// A trunked system's protocol (`type`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SystemKind {
+    #[default]
+    #[serde(alias = "")]
+    P25,
+    Smartnet,
+    Dmr,
+    Nxdn,
+}
+
+impl SystemKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            SystemKind::P25 => "p25",
+            SystemKind::Smartnet => "smartnet",
+            SystemKind::Dmr => "dmr",
+            SystemKind::Nxdn => "nxdn",
+        }
+    }
+}
+
+/// SmartNet: the voice of a talkgroup never heard granted.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SmartnetMode {
+    /// P25.
+    #[default]
+    #[serde(alias = "")]
+    Digital,
+    Analog,
+}
+
+/// NXDN: a site with a control channel, or IDAS distributed (every repeater listed).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NxdnType {
+    #[default]
+    #[serde(rename = "typeC", alias = "")]
+    TypeC,
+    #[serde(rename = "typeD")]
+    TypeD,
+}
+
+/// A site's receivers: detect which decodes, or one of them only.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Modulation {
+    #[default]
+    #[serde(alias = "")]
+    Auto,
+    /// C4FM.
+    Fsk4,
+    /// CQPSK (simulcast).
+    Qpsk,
+}
+
+/// NXDN: a control channel's (Type-D: the repeaters') rate.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NxdnRate {
+    #[default]
+    #[serde(alias = "")]
+    Nxdn48,
+    Nxdn96,
+}
+
+impl NxdnRate {
+    pub fn engine(self) -> trunk_core::nxdn::Rate {
+        match self {
+            NxdnRate::Nxdn48 => trunk_core::nxdn::Rate::N48,
+            NxdnRate::Nxdn96 => trunk_core::nxdn::Rate::N96,
+        }
+    }
+}
+
+/// The IMBE vocoder for P25 Phase 1 voice.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Vocoder {
+    /// Pavel Yazev's fixed-point decoder (Trunk Recorder's softVocoder false).
+    #[default]
+    #[serde(alias = "fixed-point", alias = "")]
+    Fixed,
+    /// Trunk Recorder's float synthesis.
+    Enhanced,
+    Mbelib,
+}
+
+impl Vocoder {
+    pub fn engine(self) -> trunk_core::mbe::Profile {
+        match self {
+            Vocoder::Fixed => trunk_core::mbe::Profile::Fixed,
+            Vocoder::Enhanced => trunk_core::mbe::Profile::Enhanced,
+            Vocoder::Mbelib => trunk_core::mbe::Profile::Mbelib,
+        }
+    }
+}
+
+/// What encodes M4A: the first found, one of them, or none.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum M4aEncoder {
+    #[default]
+    #[serde(alias = "")]
+    Auto,
+    Ffmpeg,
+    Afconvert,
+    Fdkaac,
+    None,
+}
+
+impl M4aEncoder {
+    pub fn name(self) -> &'static str {
+        match self {
+            M4aEncoder::Auto => "auto",
+            M4aEncoder::Ffmpeg => "ffmpeg",
+            M4aEncoder::Afconvert => "afconvert",
+            M4aEncoder::Fdkaac => "fdkaac",
+            M4aEncoder::None => "none",
+        }
+    }
+}
+
+/// Which names a radio gets (Trunk Recorder's unitTagsMode).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnitNamesMode {
+    /// These names first, then the talker aliases heard.
+    #[default]
+    #[serde(alias = "")]
+    User,
+    /// The aliases heard first.
+    Ota,
+    UserOnly,
+    None,
+}
+
+impl UnitNamesMode {
+    fn engine(self) -> UnitTagsMode {
+        match self {
+            UnitNamesMode::User => UnitTagsMode::UserFirst,
+            UnitNamesMode::Ota => UnitTagsMode::OtaFirst,
+            UnitNamesMode::UserOnly => UnitTagsMode::UserOnly,
+            UnitNamesMode::None => UnitTagsMode::None,
+        }
+    }
+}
+
+/// ANSI colour in the log (Trunk Recorder's logColor).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LogColor {
+    /// The console's when it is a terminal and NO_COLOR isn't set.
+    #[default]
+    #[serde(rename = "")]
+    Auto,
+    Console,
+    Logfile,
+    All,
+    None,
+}
 
 impl System {
     pub fn is_smartnet(&self) -> bool {
-        self.kind.eq_ignore_ascii_case("smartnet")
+        self.kind == SystemKind::Smartnet
     }
     pub fn is_dmr(&self) -> bool {
-        self.kind.eq_ignore_ascii_case("dmr")
+        self.kind == SystemKind::Dmr
     }
     pub fn is_nxdn(&self) -> bool {
-        self.kind.eq_ignore_ascii_case("nxdn")
-    }
-    /// "p25", "smartnet", "dmr" or "nxdn".
-    pub fn kind_name(&self) -> &'static str {
-        if self.is_smartnet() {
-            "smartnet"
-        } else if self.is_dmr() {
-            "dmr"
-        } else if self.is_nxdn() {
-            "nxdn"
-        } else {
-            "p25"
-        }
+        self.kind == SystemKind::Nxdn
     }
 
     /// Recording it: enabled, with a site that is.
@@ -437,8 +593,8 @@ impl Site {
     pub fn nxdn(&self, sys: &System) -> trunk_core::nxdn::trunking::NxdnConfig {
         use trunk_core::nxdn::trunking::{Kind, NxdnConfig};
         NxdnConfig {
-            kind: if sys.nxdn_type.eq_ignore_ascii_case("typeD") { Kind::TypeD } else { Kind::TypeC },
-            rate: trunk_core::nxdn::Rate::parse(&self.nxdn_rate).unwrap_or(trunk_core::nxdn::Rate::N48),
+            kind: if sys.nxdn_type == NxdnType::TypeD { Kind::TypeD } else { Kind::TypeC },
+            rate: self.nxdn_rate.engine(),
             channel_table: self.lcn_table_hz.iter().filter_map(|(k, &v)| Some((k.trim().parse().ok()?, v.round() as u64))).collect(),
             channels: self.nxdn_channels_hz.clone(),
             ran: self.ran,
@@ -468,12 +624,12 @@ impl Site {
     /// The SmartNet settings, or why they don't work.
     pub fn smartnet(&self, sys: &System) -> Result<trunk_core::trunk::SmartnetConfig, String> {
         let bandplan = trunk_core::smartnet::Bandplan::from_config(&self.bandplan, self.bandplan_base_hz, self.bandplan_spacing_hz, self.bandplan_offset, self.bandplan_high_hz)?;
-        Ok(trunk_core::trunk::SmartnetConfig { bandplan, analog_default: sys.default_mode.eq_ignore_ascii_case("analog") })
+        Ok(trunk_core::trunk::SmartnetConfig { bandplan, analog_default: sys.default_mode == SmartnetMode::Analog })
     }
 
     fn bank(&self) -> BankConfig {
-        let m = self.modulation.as_str();
-        BankConfig { cqpsk: m != "fsk4", cqpsk_eq: m != "fsk4", c4fm: m != "qpsk", ..Default::default() }
+        let m = self.modulation;
+        BankConfig { cqpsk: m != Modulation::Fsk4, cqpsk_eq: m != Modulation::Fsk4, c4fm: m != Modulation::Qpsk, ..Default::default() }
     }
 
     /// The engine's protocol settings for it, as a site of `sys`.
@@ -497,14 +653,14 @@ impl Default for System {
             keys: String::new(),
             short_name: "sys1".into(),
             name: String::new(),
-            kind: "p25".into(),
+            kind: SystemKind::P25,
             enabled: true,
             talkgroups_csv: String::new(),
             talkgroups_name: String::new(),
             unit_names: UnitNames::default(),
             recording: RecordingOverride::default(),
-            default_mode: String::new(),
-            nxdn_type: String::new(),
+            default_mode: SmartnetMode::default(),
+            nxdn_type: NxdnType::default(),
             plugins: BTreeMap::new(),
             plugin_delays: vec![],
             sites: vec![],
@@ -518,7 +674,7 @@ impl Default for Site {
             name: String::new(),
             enabled: true,
             control_channels_hz: vec![],
-            modulation: "auto".into(),
+            modulation: Modulation::Auto,
             expect: SiteIdentity::default(),
             voice_channels_hz: vec![],
             bandplan: String::new(),
@@ -529,7 +685,7 @@ impl Default for Site {
             lcn_table_hz: Default::default(),
             dmr_channels_hz: vec![],
             color_code: None,
-            nxdn_rate: String::new(),
+            nxdn_rate: NxdnRate::default(),
             nxdn_channels_hz: vec![],
             ran: None,
             other: BTreeMap::new(),
@@ -638,8 +794,8 @@ pub struct UnitNames {
     /// The file it came from.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub name: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub mode: String,
+    #[serde(skip_serializing_if = "is_default")]
+    pub mode: UnitNamesMode,
 }
 
 impl UnitNames {
@@ -647,7 +803,7 @@ impl UnitNames {
         *self == UnitNames::default()
     }
     fn engine(&self) -> UnitTags {
-        UnitTags::parse_csv(&self.csv, UnitTagsMode::from_name(&self.mode)).0
+        UnitTags::parse_csv(&self.csv, self.mode.engine()).0
     }
 }
 
@@ -953,10 +1109,8 @@ pub struct Recording {
     /// (each is recorded; the one decoded most cleanly, or the talkgroup's
     /// preferred site, is kept). Trunk Recorder's multiSite.
     pub drop_duplicate_calls: bool,
-    /// IMBE vocoder for P25 Phase 1 voice: "fixed" (Pavel Yazev's fixed-point
-    /// decoder, Trunk Recorder's softVocoder false), "enhanced" (TR's float
-    /// synthesis) or "mbelib".
-    pub vocoder: String,
+    /// IMBE vocoder for P25 Phase 1 voice.
+    pub vocoder: Vocoder,
     /// M4A for the plugins that upload it, encoded once per call.
     pub m4a: M4a,
     /// Calls waiting for the upload plugins kept in memory, not on the disk.
@@ -970,14 +1124,13 @@ pub struct Recording {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct M4a {
-    /// "auto" | "ffmpeg" | "afconvert" | "fdkaac" | "none"
-    pub encoder: String,
+    pub encoder: M4aEncoder,
     pub bitrate_kbps: u32,
 }
 
 impl Default for M4a {
     fn default() -> Self {
-        M4a { encoder: "auto".into(), bitrate_kbps: 32 }
+        M4a { encoder: M4aEncoder::Auto, bitrate_kbps: 32 }
     }
 }
 
@@ -1078,7 +1231,7 @@ impl Default for Recording {
             archive_files_on_failure: true,
             filename_format: String::new(),
             drop_duplicate_calls: true,
-            vocoder: "fixed".into(),
+            vocoder: Vocoder::Fixed,
             m4a: M4a::default(),
             ram_spool: RamSpool::default(),
         }
@@ -1381,9 +1534,8 @@ pub struct LogSettings {
     pub syslog_friendly: bool,
     /// To the system log too (syslog; Linux and macOS).
     pub syslog: bool,
-    /// ANSI colour: "console", "logfile", "all" or "none"; empty = the
-    /// console's when it is a terminal and NO_COLOR isn't set.
-    pub color: String,
+    /// ANSI colour.
+    pub color: LogColor,
     pub frequency_format: crate::log::FrequencyFormat,
     pub talkgroup_display_format: crate::log::TalkgroupFormat,
     pub status_as_string: bool,
@@ -1406,7 +1558,7 @@ impl Default for LogSettings {
             dir: String::new(),
             syslog_friendly: false,
             syslog: false,
-            color: String::new(),
+            color: LogColor::Auto,
             frequency_format: Default::default(),
             talkgroup_display_format: Default::default(),
             status_as_string: true,
@@ -1904,7 +2056,7 @@ impl Config {
     /// conventional ones. The one place that number is worked out for a
     /// config — the engine, plugins, status and the interface all go by it.
     pub fn call_systems(&self) -> Vec<CallSystem<'_>> {
-        let trunked = self.active_systems().map(|s| (&s.short_name, s.kind_name(), &s.recording, &s.plugins, &s.plugin_delays[..]));
+        let trunked = self.active_systems().map(|s| (&s.short_name, s.kind.name(), &s.recording, &s.plugins, &s.plugin_delays[..]));
         let conventional = self.active_conventional().map(|c| (&c.short_name, "conventional", &c.recording, &c.plugins, &c.plugin_delays[..]));
         trunked
             .chain(conventional)
@@ -1964,7 +2116,7 @@ impl Config {
             conv: ConvConfig::default(),
             capture_frames: self.recording.capture_frames,
             drop_duplicates: self.recording.drop_duplicate_calls,
-            vocoder: trunk_core::mbe::Profile::from_name(&self.recording.vocoder).unwrap_or(trunk_core::mbe::Profile::Fixed),
+            vocoder: self.recording.vocoder.engine(),
         }
     }
 }
@@ -2118,6 +2270,24 @@ mod tests {
         assert!(c.problem().unwrap().contains("center frequency"));
         c.conventional[0].channels.clear();
         assert!(c.problem().unwrap().contains("conventional channel"));
+    }
+
+    /// A choice the config doesn't list is an error when it's read (as a
+    /// wrong type is); an empty one is the default, as it always meant.
+    #[test]
+    fn a_choice_not_listed_is_refused() {
+        let sys = |kind: &str, modulation: &str| Config::from_json(&format!(r#"{{ "systems": [{{ "shortName": "a", "type": "{kind}", "sites": [{{ "modulation": "{modulation}" }}] }}] }}"#));
+        let c = sys("smartnet", "qpsk").unwrap();
+        assert_eq!((c.systems[0].kind, c.systems[0].sites[0].modulation), (SystemKind::Smartnet, Modulation::Qpsk));
+        let e = sys("P25x", "auto").err().unwrap().to_string();
+        assert!(e.contains("P25x") && e.contains("smartnet"), "{e}");
+        assert!(sys("p25", "both").is_err());
+        let c = sys("", "").unwrap();
+        assert_eq!((c.systems[0].kind, c.systems[0].sites[0].modulation), (SystemKind::P25, Modulation::Auto));
+        let c = Config::from_json(r#"{ "log": { "color": "" }, "recording": { "vocoder": "fixed-point", "m4a": { "encoder": "none" } } }"#).unwrap();
+        assert_eq!((c.log.color, c.recording.vocoder, c.recording.m4a.encoder), (LogColor::Auto, Vocoder::Fixed, M4aEncoder::None));
+        let back = serde_json::to_value(&c).unwrap();
+        assert_eq!((back["log"]["color"].as_str(), back["recording"]["vocoder"].as_str()), (Some(""), Some("fixed")), "saved as the interface writes them");
     }
 
     #[test]

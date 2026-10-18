@@ -293,7 +293,7 @@ impl Plugins {
                 })
             })
             .collect();
-        let found = Encoder::find(&cfg.recording.m4a.encoder).map(|e| e.name());
+        let found = Encoder::find(cfg.recording.m4a.encoder).map(|e| e.name());
         ToClient::Plugins(body(json!({ "plugins": plugins, "encoderFound": found })))
     }
 
