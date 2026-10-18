@@ -5,6 +5,10 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Every closed choice in the config is read in any case**, the few that weren't too: a source's
+  `type` (`"RTLSDR"`), an interface's `access`, and the log's `level`, `frequencyFormat` and
+  `talkgroupDisplayFormat` (`"warn"` is `"warning"`). They're saved in their own case, as before.
+
 ## [0.2.0] — 2026-10-18
 
 A release with breaking changes, for interface and plugin authors more than for recording. An

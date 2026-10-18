@@ -46,7 +46,7 @@ The key is the interface's id: lowercase letters, digits and `-`.
 |---|:---:|---|---|---|
 | `port` | | the next free one | integer | Its port: not the built-in interface's, nor another interface's. Missing or `0`: the first free port above `server.port` is given it when the config is loaded |
 | `enabled` | | `true` | bool | Served. `false`: kept, but not served |
-| `access` | | `"listen"` | string | What its pages may do with the API. `"listen"`: see what the recorder does and play its calls, change nothing (the config they see has no plugin settings or key sources). `"control"`: everything the built-in interface can, including changing settings, installing plugins and quitting. Spelled exactly so; anything else makes the file unreadable |
+| `access` | | `"listen"` | string | What its pages may do with the API. `"listen"`: see what the recorder does and play its calls, change nothing (the config they see has no plugin settings or key sources). `"control"`: everything the built-in interface can, including changing settings, installing plugins and quitting. Any case; anything else makes the file unreadable |
 | `path` | | `""` | string | A folder of your own holding its `index.html`: absolute, `~/…`, or relative to the config file's folder. Empty: the copy installed from the store, in `interfaces/<id>/` beside the config |
 
 Changes take effect at once: an interface is started, stopped or moved to its new port without a
@@ -73,8 +73,8 @@ panel on the **Recording** tab (desktop app). Changes apply at once.
 | `statusAsString` | | `true` | bool | States as words ("Monitoring"), not numbers |
 | `controlWarnRatePerS` | | `10` | number | Log an error when a control channel decodes fewer messages a second than this. `-1`: log the rate every time, as info |
 
-The values of `level`, `frequencyFormat` and `talkgroupDisplayFormat` must be spelled exactly as
-listed (lower case); anything else makes the file unreadable.
+The values of `level` (`"warn"` is `"warning"`), `frequencyFormat` and `talkgroupDisplayFormat` are
+read in any case, and `""` is the default; anything else makes the file unreadable.
 
 If you're coming from Trunk Recorder: the default `frequencyFormat` here is `"mhz"`, not `"exp"`.
 

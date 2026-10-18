@@ -3,6 +3,8 @@
 //! platform-independent recording [`Session`] and the first-run
 //! [`survey`] that finds a system.
 
+#[macro_use]
+mod choice;
 pub mod channels;
 pub mod config;
 pub mod ekc;

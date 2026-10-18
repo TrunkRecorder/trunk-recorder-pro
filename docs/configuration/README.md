@@ -55,8 +55,8 @@ with `--config` files in different folders never share band plans, talker aliase
 - **Fixed lists are closed.** Where a key takes one of a few names (a system's `type`, `modulation`,
   `vocoder`, `m4a.encoder`, a channel's `mode`…), the pages list them. They are read in any case
   (`"P25"` is `"p25"`), and `""` is the default; any other value is refused as above, where older
-  versions fell back to the default without a word. The exceptions, spelled exactly as listed, are a
-  source's `type`, an interface's `access` and the log's `level`, `frequencyFormat` and `talkgroupDisplayFormat`.
+  versions fell back to the default without a word. A source's `type` is read in any case too, but
+  can't be left empty.
 - **Keys this version doesn't know are kept** and saved back as they were, at the top level and
   inside a trunked system, a site, a conventional system, `recording`, `server`, `log`, a key source
   and a delay rule. Notes of your own there survive the interface saving the file. Unknown keys

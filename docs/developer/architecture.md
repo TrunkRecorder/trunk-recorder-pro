@@ -1130,8 +1130,10 @@ unlike the other messages).
   system, conventional system, `recording`, `server` and `log`. A value of the wrong type makes
   the file unreadable ("not a config this version reads"), and so does a closed choice it doesn't
   list (a system `type`, `modulation`, `nxdnType`, `nxdnRate`, `defaultMode`, `vocoder`, the M4A
-  `encoder`, `unitNames.mode`, `log.color`, a channel `mode`…): each is declared once by the
-  `choice!` macro with its names, read in any case (`"P25"`, `"QPSK"`), "" meaning the default.
+  `encoder`, `unitNames.mode`, the log's `color`, `level` and formats, an interface's `access`, a
+  channel `mode`…): each is declared once by the `choice!` macro (`trunk-app/src/choice.rs`) with
+  its names, read in any case (`"P25"`, `"QPSK"`), "" meaning the default. A source's `type` is the
+  tag of `Source`, put in its own case by `Config::from_value` before it is read.
 
 ### 10.2 Top level
 

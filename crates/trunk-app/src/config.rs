@@ -152,40 +152,6 @@ pub enum Source {
     },
 }
 
-/// A closed choice: each variant with its names in the config (the first is
-/// how it is saved), read in any case; "" reads as the default (the variant
-/// marked so).
-macro_rules! choice {
-    ($(#[$m:meta])* pub enum $name:ident { $( $(#[$vm:meta])* $v:ident = $($lit:literal)|+ ),+ $(,)? }) => {
-        $(#[$m])*
-        #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-        pub enum $name { $( $(#[$vm])* $v ),+ }
-        impl $name {
-            /// As the config writes it.
-            pub fn name(self) -> &'static str {
-                match self { $( $name::$v => choice!(@first $($lit)|+) ),+ }
-            }
-        }
-        impl Serialize for $name {
-            fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-                s.serialize_str(self.name())
-            }
-        }
-        impl<'de> Deserialize<'de> for $name {
-            fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-                let text = String::deserialize(d)?;
-                let t = text.trim();
-                if t.is_empty() {
-                    return Ok(Self::default());
-                }
-                $( if $( t.eq_ignore_ascii_case($lit) )||+ { return Ok($name::$v); } )+
-                Err(serde::de::Error::unknown_variant(t, &[$( choice!(@first $($lit)|+) ),+]))
-            }
-        }
-    };
-    (@first $first:literal $(| $rest:literal)*) => { $first };
-}
-
 choice! {
     /// How an Airspy's gain is set: libairspy's linearity or sensitivity
     /// tables (one 0..21 step for all three stages), or each stage by hand.
@@ -415,8 +381,8 @@ fn is_default<T: Default + PartialEq>(v: &T) -> bool {
     *v == T::default()
 }
 
-// The config's closed choices ([`choice!`]): a value not listed is an error
-// when the file is read, as a wrong type is.
+// The config's closed choices ([`choice!`](crate::choice)): a value not
+// listed is an error when the file is read, as a wrong type is.
 
 
 choice! {
@@ -1420,17 +1386,18 @@ impl Interface {
     }
 }
 
-/// What a page may do with the recorder's API.
-#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
-#[serde(rename_all = "camelCase")]
-pub enum ApiAccess {
-    /// See what the recorder does and play its calls, live and recorded;
-    /// change nothing. Its settings for plugins and keys aren't shown.
-    #[default]
-    Listen,
-    /// Everything the built-in interface can do: change the config, start
-    /// and stop, install plugins, quit.
-    Control,
+choice! {
+    /// What a page may do with the recorder's API.
+    #[derive(PartialOrd, Ord)]
+    pub enum ApiAccess {
+        /// See what the recorder does and play its calls, live and recorded;
+        /// change nothing. Its settings for plugins and keys aren't shown.
+        #[default]
+        Listen = "listen",
+        /// Everything the built-in interface can do: change the config, start
+        /// and stop, install plugins, quit.
+        Control = "control",
+    }
 }
 
 /// A new RTL-SDR's gain, dB. Higher gains overload the front end near
@@ -1648,6 +1615,19 @@ pub fn default_capture_dir() -> PathBuf {
     home().join("TrunkRecorderPro")
 }
 
+/// A source's `type` names its kind (the tag of [`Source`]), read in any case
+/// as the other closed choices are (`"RTLSDR"` is `"rtlsdr"`).
+const SOURCE_TYPES: [&str; 5] = ["rtlsdr", "usrp", "airspy", "soapy", "file"];
+
+fn source_types(v: &mut serde_json::Value) {
+    for s in v.get_mut("sources").and_then(serde_json::Value::as_array_mut).into_iter().flatten() {
+        let Some(t) = s.get_mut("type") else { continue };
+        if let Some(name) = t.as_str().and_then(|t| SOURCE_TYPES.into_iter().find(|n| n.eq_ignore_ascii_case(t.trim()))) {
+            *t = name.into();
+        }
+    }
+}
+
 impl Config {
     /// The config at `path`, with a linked channel file read in; the
     /// defaults when there's no file yet. A file that isn't a config is an
@@ -1675,6 +1655,7 @@ impl Config {
     /// [`Config::from_json`], from its JSON value.
     pub fn from_value(mut v: serde_json::Value) -> Result<Config, serde_json::Error> {
         let notes = crate::migrate::config(&mut v);
+        source_types(&mut v);
         let mut c: Config = serde_json::from_value(v)?;
         c.notes = notes;
         Ok(c)
@@ -2642,6 +2623,19 @@ mod tests {
         assert!(back["conventional"][0].get("channelFileStatus").is_none(), "an empty status isn't written");
     }
 
+    /// Every kind of source is named in [`SOURCE_TYPES`] (or its `type` wouldn't read in any case).
+    #[test]
+    fn every_source_type_is_known() {
+        for t in SOURCE_TYPES {
+            let e = serde_json::from_value::<Source>(serde_json::json!({ "type": t })).unwrap_err().to_string();
+            assert!(!e.contains("unknown variant"), "{t}: {e}");
+        }
+        let e = serde_json::from_value::<Source>(serde_json::json!({ "type": "nope" })).unwrap_err().to_string();
+        for t in SOURCE_TYPES {
+            assert!(e.contains(t), "the source kinds are {SOURCE_TYPES:?}, serde lists: {e}");
+        }
+    }
+
     #[test]
     fn a_closed_choice_reads_in_any_case_and_is_saved_in_its_own() {
         let c = Config::from_json(r#"{ "systems": [{ "shortName": "a", "type": "P25", "sites": [{ "controlChannelsHz": [1], "modulation": "QPSK" }], "unitNames": { "mode": " OTA " } }],
@@ -2652,6 +2646,13 @@ mod tests {
         assert!(saved.contains(r#""type":"p25""#) && saved.contains(r#""modulation":"qpsk""#) && saved.contains(r#""mode":"ota""#) && saved.contains(r#""vocoder":"fixed""#), "{saved}");
         let e = Config::from_json(r#"{ "systems": [{ "shortName": "a", "type": "p26" }] }"#).unwrap_err().to_string();
         assert!(e.contains("p26") && e.contains("smartnet"), "names the value and the choices: {e}");
+        let c = Config::from_json(r#"{ "sources": [{ "type": "RTLSDR", "serial": "", "centerHz": 0, "rateHz": 2.4e6, "ppm": 0 }], "log": { "level": "Warn", "frequencyFormat": "MHz", "talkgroupDisplayFormat": "ID_TAG" },
+            "server": { "interfaces": { "city": { "port": 8090, "access": "Control" } } } }"#).unwrap();
+        assert!(matches!(c.sources[0], Source::Rtlsdr { .. }));
+        assert_eq!((c.log.level, c.log.frequency_format, c.log.talkgroup_display_format), (crate::log::Level::Warning, crate::log::FrequencyFormat::Mhz, crate::log::TalkgroupFormat::IdTag));
+        assert_eq!(c.server.interfaces["city"].access, ApiAccess::Control);
+        let saved = serde_json::to_string(&c).unwrap();
+        assert!(saved.contains(r#""type":"rtlsdr""#) && saved.contains(r#""level":"warning""#) && saved.contains(r#""talkgroupDisplayFormat":"id_tag""#) && saved.contains(r#""access":"control""#), "{saved}");
     }
 
     #[test]

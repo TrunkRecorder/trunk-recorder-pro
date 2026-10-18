@@ -12,8 +12,8 @@ several radios, see the [radios guide](../guides/radios.md).
 ```
 
 A source receives a block of spectrum `rateHz` wide, centered on `centerHz`. Every source has a
-`type`, one of `"rtlsdr"`, `"usrp"`, `"airspy"`, `"soapy"` or `"file"` (lower case, as listed). Any other
-`type` makes the file unreadable.
+`type`, one of `"rtlsdr"`, `"usrp"`, `"airspy"`, `"soapy"` or `"file"` (any case). Any other
+`type`, or none, makes the file unreadable.
 
 The fixed choices below (`gainMode`, `format`) are read in any case, and an empty string is the default.
 Anything else is refused when the file is read.
