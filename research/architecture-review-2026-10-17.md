@@ -358,3 +358,44 @@ Worth knowing so the refactors above don't disturb it.
   round-trips; `write_atomic` is used consistently; `migrate.rs` is isolated
   at the JSON level with a delete procedure (modulo the three stragglers in
   `Config::load`).
+
+## Review of the work (2026-10-18)
+
+The 43 commits from 9ce22dc were reviewed crate by crate against the claims
+above; what didn't hold was corrected in one PR (branch `review-fixes`).
+
+Wrong, fixed:
+
+- A conventional system's talkgroup file was never loaded at start
+  (`runtime::load_talkgroups` read `cfg.systems` only), so after a restart
+  Setup showed none and the engine named nothing until it was saved again.
+- The command lines (`plugin`, `interface`) loaded an older config without
+  moving its talkgroup files out first, then saved it back without them.
+  `Config::load` moves them now, for every reader.
+- The built-in interface sent an edit with the newest version it had heard,
+  not the one the edit was made over, so the stale-edit refusal never
+  protected it. A refused edit also left its talkgroup moves done: the files
+  follow the config once `configSaved` says so, and never onto "" or a name
+  another system has (which overwrote the other's file).
+- `Ctx::retopic` snapshotted the topics after dropping the lock (two
+  connections could leave the engine on the older set); `SurveyListen` /
+  `SurveyRescan` took the lifecycle lock on an async worker; the engine's
+  command sender was installed by the engine thread, after `start` had
+  returned; every `log::info!` from any crate was serialised for the hub
+  whether or not a browser watched the log.
+- A talkgroup marked mode "A" turned a Phase 2 grant into `Voice::Fm`,
+  losing its slot (its updates then never matched).
+- Closed choices refused `"P25"`, `"QPSK"`, `"OTA"`, which the docs promised
+  and the old parsers took: one `choice!` macro declares each with its names,
+  read in any case.
+- `ChannelFile` edited the config outside its lock (the lost update the
+  version was added against).
+
+Judged fine, left: `NameBook` built from the engine config (only active
+systems answer a `radioQuery`); parallel finishers can publish `concluded`
+out of order; the dashboard's wasm is the whole engine (3 MB, SIMD) — it now
+says so when a browser can't run it, a rules-only module would be the real
+fix; `ctx.talkgroups` keeps files of systems since removed (a re-added system
+picks its file up again, which is friendlier than pruning); the analog
+decoder has no carrier offset, so FM/AM conventional calls read
+`freq_error: 0`.

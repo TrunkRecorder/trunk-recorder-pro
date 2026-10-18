@@ -585,9 +585,8 @@ then earliest start. The others become `Duplicate` events.
 | rtlsdr-nusb USB transfers | 8 × 256 KiB (`bufLen` / `buffers`) | USB → source thread | device FIFO overflows; caught by `ClockFit` as unreported loss |
 | UHD receive frames | 256 frames | USRP → UHD | overflow `O`; counted from the timestamp gap |
 | Hub (tokio broadcast) | 4,096 messages | engine, finish, monitor → each WebSocket | a lagging client loses its oldest messages (silently); others unaffected |
-| Finish | 1,024 calls | engine → finish thread | the engine thread writes the call itself, without M4A |
+| Finish | 1,024 calls | engine → finish threads | the engine thread writes the call itself, as WAV |
 | Plugin events | 1,024 lines per plugin process | engine / finish / encoders → plugin stdin | the event is dropped and counted (`dropped`), logged at most every 30 s |
-| Encode jobs | 256 | finish → encode threads | the call goes to plugins as WAV only |
 | Stats rollups | unbounded | engine → stats-store | — |
 | SDK `CallQueue` (inside a plugin) | 10,000 calls | plugin | `call.result failed` "too many calls waiting" |
 
@@ -602,7 +601,7 @@ then earliest start. The others become `Duplicate` events.
 |---|---|
 | The engine (CPU can't keep up) | Source queue fills → sources block → driver loses samples → `dropped` in status, gap filled, calls carry on with a hole; load shown on the dashboard. |
 | One browser | Its WebSocket task falls behind the 4,096-message ring and skips messages. Recording and other browsers are unaffected. |
-| Disk / finish thread | Finish queue fills (1,024 calls) → the engine writes calls itself without M4A, which slows decoding until it drains. |
+| Disk / finish threads | Finish queue fills (1,024 calls) → the engine writes calls itself as WAV, which slows decoding until it drains. |
 | One plugin | Its 1,024-line queue fills → its events are dropped and counted. The engine and other plugins are unaffected. A call it never answered for counts as failed after 1 h. |
 | M4A encoder | Encode queue fills → calls go to plugins as WAV. |
 | A radio stalls | No data for 1 s → silence filled in by `Session::poll` so calls on that source time out; the driver reopens after 2–3 s. |
@@ -1368,7 +1367,7 @@ full reference is `docs/api/README.md`.
 | Delivery | Messages |
 |---|---|
 | On connect | `state`, `config`, `talkgroups`, `units`, `heard`, `history`, `radios`, `survey`, `monitorEvent`, `host` (control access also `devices`, `keys`, `plugins`, `interfaces`), then `hello` |
-| Every client | `state`, `status`, `stats`, `host`, `concluded`, `callFiles`, `monitorEvent`, `unitAlias`, `heard`, `config`, `talkgroups`, `survey`, `surveySpectrum`, `pluginRuntime`, `pluginInstall`, `quit` |
+| Every client | `state`, `status`, `stats`, `host`, `concluded`, `callFiles`, `monitorEvent`, `unitAlias`, `heard`, `config`, `talkgroups`, `survey`, `surveySpectrum`, `pluginRuntime`, `installProgress`, `quit` |
 | Topic subscribers | `spectrum` (`spectrum:<source>`, about 7/s, 512 bins), `log` (`log`), `rfDetail` (`rf:<source>`, 1/s), `decodeDetail` (`decode:<shortName>`, 1/s: channels, each site's adjacent sites and DMR / NXDN detail, patches), per-core detail in `host` (`platform`) |
 | The sender only | `configSaved`, `devices`, `radios`, `dir`, `trConfig`, `store`, `subscribed`, `statsResult`, `radioResult`, `olderCalls`, `sourceProfile`, `error`, `notice` |
 | Binary, to listeners | live audio frames |

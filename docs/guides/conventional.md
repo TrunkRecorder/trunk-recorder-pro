@@ -355,9 +355,9 @@ saved. There is no separate log line for each detection.
 
 ## Talkgroup names on digital channels
 
-P25, DMR and NXDN channels can carry a talkgroup number. A call's names come from the row it was
-recorded under first. If the config has exactly one trunked system, its talkgroup list is also used
-to name talkgroups heard on conventional digital channels.
+P25, DMR and NXDN channels can carry a talkgroup number. A call's names come from the conventional
+system's own talkgroup file (`<shortName>.talkgroups.csv` beside the config; Setup shows it on a
+conventional system with digital channels), else from the row it was recorded under.
 
 ## Coming from Trunk Recorder
 
