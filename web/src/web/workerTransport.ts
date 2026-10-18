@@ -84,19 +84,6 @@ export class WorkerTransport implements Transport {
         /* not persisted; still used this session */
       }
     }
-    // Desktop-only (no plugins in the browser either).
-    if (msg.type === "quit" || msg.type === "findRadios" || msg.type === "channelFile" || msg.type === "listDir" || msg.type === "readTrConfig") return;
-    if (msg.type === "unlockKeys" || msg.type === "lockKeys") return;
-    if (
-      msg.type === "plugins" ||
-      msg.type === "addPlugin" ||
-      msg.type === "removePlugin" ||
-      msg.type === "pluginStore" ||
-      msg.type === "installPlugin"
-    )
-      return;
-    // Nor other interfaces: the browser build has no server to serve them.
-    if (msg.type === "interfaces" || msg.type === "interfaceStore" || msg.type === "installInterface" || msg.type === "addInterface" || msg.type === "removeInterface") return;
     if (msg.type === "start" || msg.type === "surveyStart" || msg.type === "profileSource") this.post({ type: "files", files: this.files });
     this.post(msg);
   }

@@ -1350,6 +1350,17 @@ export interface RadioResultBody {
   histogram?: LengthHistogram;
 }
 
+/**
+ * Something a recorder can do beyond recording (`hello.capabilities`).
+ * - `service`: a program of its own on a computer: quit, start recording when it starts, log files, M4A encoding, files by path (capture files, channel files, browsing folders, a Trunk Recorder config, the recordings folder, the RAM spool, keeping audio and JSON once plugins are done)
+ * - `drivers`: radio drivers beyond RTL-SDR (USRP, Airspy, SoapySDR), finding radios, an RTL-SDR's USB transfer sizes
+ * - `plugins`: plugins (listing, adding, the store, their settings)
+ * - `interfaces`: other interfaces, served on ports of their own
+ * - `host`: the computer's and plugins' figures (`host`)
+ * - `keys`: key containers opened with a password
+ */
+export type Capability = "service" | "drivers" | "plugins" | "interfaces" | "host" | "keys";
+
 export type FromRecorder =
   /**
    * The last message of a connection's greeting. Every message before it said
@@ -1368,6 +1379,8 @@ export type FromRecorder =
       /** The config file (control access only). */
       configPath?: string;
       surveyBands: SurveyBand[];
+      /** What this recorder can do beyond recording: show only what works. The desktop app can do all of them; the browser build, none. */
+      capabilities: Capability[];
     }
   /** The latest calls, newest first: on connecting (then `concluded` for each new one). */
   | { type: "history"; entries: CallEntry[] }

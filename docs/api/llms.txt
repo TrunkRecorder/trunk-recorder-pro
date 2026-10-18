@@ -221,7 +221,10 @@ From the recorder:
   missing before it):
   state, config, talkgroups, units, heard, history, radios, survey, monitorEvent, host
   (with control access also devices, keys, plugins, interfaces), then
-  hello        { version, platform, api, configPath?, surveyBands }
+  hello        { version, platform, api, configPath?, surveyBands, capabilities }
+               capabilities: what it can do beyond recording, of "service" (quit, files by path, log,
+               M4A), "drivers" (USRP/Airspy/SoapySDR), "plugins", "interfaces", "host", "keys".
+               The desktop app has all; the browser build none. Show only what works.
   config       { config, version }: on connecting, and when someone changes it
   configSaved  { version, error? }: answers your setConfig; error when the edit wasn't taken
                (the config changed elsewhere meanwhile) or couldn't be saved

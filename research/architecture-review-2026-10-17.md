@@ -146,7 +146,7 @@ conventional.rs, bench.rs.
 - [ ] One `SiteIdentity` (today `SiteIdentity`, `Identity`, `SurveyIdentity`, and `SurveySuggestion`'s flattened copy); `SmartnetBandplan` keys match `Site`'s so `applySurvey` stops renaming
 - [x] `status` (every 500 ms, to everyone) = calls + a per-site summary; DMR/NXDN carriers, channel tables, adjacent and patches move to the topic-gated `decodeDetail`; counters live only in `stats` — df7b696 (counters still in status)
 - [ ] Plugin and interface stores: one store concept keyed by kind (`store {kind}`, `install {kind, …}`, `installProgress {kind, key, stage}`), one state slice, one `<StoreCard kind>`; `Shelf::install` takes `&dyn Fn(Stage)` so the CLI doesn't fake a hub
-- [ ] `hello.capabilities` replaces the scattered `web` checks and the hand-kept drop list in `workerTransport.ts`
+- [x] `hello.capabilities` replaces the scattered `web` checks and the hand-kept drop list in `workerTransport.ts` — six (`service`, `drivers`, `plugins`, `interfaces`, `host`, `keys`); `web` stays only where the page itself hosts the engine (WebUSB, the wake lock, browser storage, picking files)
 
 **Evidence.** Around 160 `json!` sites build messages by hand (session.rs 37,
 server.rs 32, stats/radio.rs 37, runtime.rs 18, survey.rs 17…);

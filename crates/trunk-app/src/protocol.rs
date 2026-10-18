@@ -49,6 +49,8 @@ pub enum ToClient {
         #[serde(skip_serializing_if = "Option::is_none")]
         config_path: Option<String>,
         survey_bands: Value,
+        /// What this recorder can do beyond recording: an interface shows only what works.
+        capabilities: Vec<Capability>,
     },
     /// The latest calls, newest first: on connecting (then `concluded` for each new one).
     History { entries: Vec<Value> },
@@ -107,6 +109,34 @@ pub enum ToClient {
     RadioResult(Body),
     OlderCalls { before: i64, entries: Vec<Value>, more: bool },
     Quit,
+}
+
+/// Something a recorder can do beyond recording (`hello.capabilities`). The
+/// desktop app can do all of them; the browser build, none.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, strum::VariantArray)]
+#[serde(rename_all = "camelCase")]
+pub enum Capability {
+    /// A program of its own on a computer: quit, start recording when it
+    /// starts, log files, M4A encoding, files by path (capture files, channel
+    /// files, browsing folders, a Trunk Recorder config, the recordings
+    /// folder, the RAM spool, keeping audio and JSON once plugins are done).
+    Service,
+    /// Radio drivers beyond RTL-SDR (USRP, Airspy, SoapySDR), finding
+    /// radios, an RTL-SDR's USB transfer sizes.
+    Drivers,
+    /// Plugins: listing, adding, the store, their settings.
+    Plugins,
+    /// Other interfaces, served on ports of their own.
+    Interfaces,
+    /// The computer's and plugins' figures (`host`).
+    Host,
+    /// Key containers opened with a password.
+    Keys,
+}
+
+impl Capability {
+    /// All of them (the desktop app).
+    pub const ALL: &'static [Capability] = <Self as strum::VariantArray>::VARIANTS;
 }
 
 /// Who may hear a message.

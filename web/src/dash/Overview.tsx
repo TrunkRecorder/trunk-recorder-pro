@@ -3,7 +3,7 @@
 // plugins and the computer in a line each, and what happened lately.
 
 import { formatMhz, systemColor } from "../config.ts";
-import { pluginOn, radioQuery, statsSince, setView, start, usePolled, useApp, web, type AppState } from "../controller.ts";
+import { can, pluginOn, radioQuery, statsSince, setView, start, usePolled, useApp, type AppState } from "../controller.ts";
 import { Card, HeatStrip, LiveSpark, Light, Meter, Sparkline, Stat, Trend } from "../charts.tsx";
 import { ago, bytes, compact, hmm, mhz, num, pct } from "../fmt.ts";
 import type { FreqRow, MonitorEvent, RadioSummary } from "../protocol.ts";
@@ -400,8 +400,8 @@ export function Overview() {
             </>
           )}
           <h2 className="section-title">Status</h2>
-          {!web && <PlatformLine s={s} />}
-          {!web && <PluginsLine s={s} />}
+          {can("host") && <PlatformLine s={s} />}
+          {can("plugins") && <PluginsLine s={s} />}
           <EventFeed events={s.events} />
         </div>
       </div>

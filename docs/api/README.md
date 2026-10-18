@@ -440,7 +440,7 @@ Every message is a JSON object with a `type`. Exact fields are in
 
 | `type` | When | What's in it |
 |---|---|---|
-| `hello` | Last of a connection's greeting: you're caught up | `version`, `platform`, `api`, `configPath` (control access only), `surveyBands`. The rest of the greeting is the messages below, sent first |
+| `hello` | Last of a connection's greeting: you're caught up | `version`, `platform`, `api`, `configPath` (control access only), `surveyBands`, `capabilities`: what it can do beyond recording, of `service` (a program of its own: quit, files by path, the log, M4A encoding), `drivers` (USRP, Airspy, SoapySDR, finding radios), `plugins`, `interfaces`, `host` and `keys` (the desktop app has all; the browser build none: show only what works, and a command for one it lacks gets an `error`). The rest of the greeting is the messages below, sent first |
 | `history` | On connecting | `entries`: the latest calls (≤ 300 `CallEntry`), newest first. Then `concluded` for each new one |
 | `units` | On connecting, for each system with some | `system` (short name), `csv`: the talker aliases saved, as CSV: `unit,alias,source,time,wacn,sys,tg`, the newest line per unit wins. Then `unitAlias` for each new one |
 | `talkgroups` | On connecting, for each system; whenever one changes | `system` (short name), `csv`: the system's talkgroup file (Trunk Recorder's CSV format; `""`: none) |

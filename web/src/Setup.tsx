@@ -40,6 +40,7 @@ import {
   siteText,
 } from "./config.ts";
 import {
+  can,
   currentView,
   dismissTodo,
   downloadText,
@@ -579,11 +580,11 @@ function GainStages(props: { i: number; gains: Record<string, number>; disabled:
   );
 }
 
-const KINDS: { kind: Source["type"]; label: string; desktop?: boolean }[] = [
+const KINDS: { kind: Source["type"]; label: string; drivers?: boolean }[] = [
   { kind: "rtlsdr", label: "RTL-SDR" },
-  { kind: "usrp", label: "USRP", desktop: true },
-  { kind: "airspy", label: "Airspy", desktop: true },
-  { kind: "soapy", label: "SoapySDR", desktop: true },
+  { kind: "usrp", label: "USRP", drivers: true },
+  { kind: "airspy", label: "Airspy", drivers: true },
+  { kind: "soapy", label: "SoapySDR", drivers: true },
   { kind: "file", label: "Capture file" },
 ];
 
@@ -648,7 +649,7 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
         <div className="field wide">
           <span className="field-label">Kind</span>
           <div className="seg small" role="radiogroup" aria-label={`Source ${i + 1} kind`}>
-            {KINDS.filter((k) => !k.desktop || !web).map((k) => (
+            {KINDS.filter((k) => !k.drivers || can("drivers")).map((k) => (
               <button key={k.kind} role="radio" aria-checked={src.type === k.kind} className={src.type === k.kind ? "on" : ""} onClick={() => setKind(k.kind)}>
                 {k.label}
               </button>
@@ -680,7 +681,7 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
             </div>
           </Field>
         )}
-        {src.type === "rtlsdr" && !web && <UsbTransfers src={src} sources={c.sources} devices={s.devices} edit={edit} />}
+        {src.type === "rtlsdr" && can("drivers") && <UsbTransfers src={src} sources={c.sources} devices={s.devices} edit={edit} />}
         {src.type === "usrp" &&
           (radios && !radios.usrp.available ? (
             <DriverMissing kind="usrp" detail={radios.usrp.detail} />
@@ -832,7 +833,7 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
               />
             </Field>
           ))}
-        {src.type === "file" && !web && (
+        {src.type === "file" && can("service") && (
           <Field label="Sample format">
             <select value={src.format ?? "cu8"} onChange={(e) => edit((x) => x.type === "file" && void (x.format = e.target.value as "cu8" | "cs16" | "cf32"))}>
               <option value="cu8">cu8 — rtl_sdr (unsigned 8-bit)</option>
@@ -857,7 +858,7 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
           <RateInput
             key={src.type}
             hz={src.rateHz}
-            free={src.type === "usrp" || src.type === "soapy" || (src.type === "file" && !web)}
+            free={src.type === "usrp" || src.type === "soapy" || (src.type === "file" && can("service"))}
             options={src.type === "usrp" ? USRP_RATES : src.type === "airspy" ? AIRSPY_RATES : src.type === "soapy" ? SOAPY_RATES : src.type === "file" ? [...SAMPLE_RATES, 8_000_000, 10_000_000] : SAMPLE_RATES}
             onChange={(hz) => edit((x) => void (x.rateHz = hz))}
           />
@@ -1005,7 +1006,7 @@ function ConventionalPanel(props: { c: Config; k: number }) {
   const [bulk, setBulk] = useState("");
   const [pending, setPending] = useState<{ name: string; channels: Channel[]; notes: string[] } | null>(null);
   const [filePath, setFilePath] = useState(`${conv.shortName || "conv"}-channels.csv`);
-  const linked = !web && !!conv.channelFile;
+  const linked = can("service") && !!conv.channelFile;
   const [bulkMode, setBulkMode] = useState<Channel["mode"]>("fm");
   const edit = (fn: (x: Conventional) => void) =>
     updateConfig((x) => {
@@ -1360,7 +1361,7 @@ function ConventionalPanel(props: { c: Config; k: number }) {
             )}
           </>
         )}
-        {!web && !linked && (
+        {can("service") && !linked && (
           <Field
             needs={need(`channels-${name}`)}
             anchor={`channels-${name}`}
@@ -2200,7 +2201,7 @@ type Rule =
       kind: "bool";
       label: string;
       hint?: string;
-      desktop?: boolean;
+      service?: boolean;
       /** Why it does nothing with these settings (greyed out), if it doesn't. */
       inactive?: (r: RecordingRules) => string | undefined;
     }
@@ -2249,7 +2250,7 @@ const RULE_GROUPS: { title: string; hint?: string; rules: Rule[] }[] = [
     hint: "Where each call is saved, and in what format.",
     rules: [
       { key: "filenameFormat", kind: "text", label: "Folders and file names" },
-      { key: "compressWav", kind: "bool", label: "Also save an M4A", hint: "a tenth the size; needs ffmpeg or afconvert", desktop: true },
+      { key: "compressWav", kind: "bool", label: "Also save an M4A", hint: "a tenth the size; needs ffmpeg or afconvert", service: true },
     ],
   },
   {
@@ -2257,21 +2258,21 @@ const RULE_GROUPS: { title: string; hint?: string; rules: Rule[] }[] = [
     title: "Archive",
     hint: "What stays in the recordings folder once the plugins are done with a call.",
     rules: [
-      { key: "audioArchive", kind: "bool", label: "Keep audio", hint: "off: deleted once the plugins are done with the call", desktop: true },
-      { key: "callLog", kind: "bool", label: "Keep call JSON", hint: "off: deleted once the plugins are done with the call", desktop: true },
+      { key: "audioArchive", kind: "bool", label: "Keep audio", hint: "off: deleted once the plugins are done with the call", service: true },
+      { key: "callLog", kind: "bool", label: "Keep call JSON", hint: "off: deleted once the plugins are done with the call", service: true },
       {
         key: "archiveFilesOnFailure",
         kind: "bool",
         label: "Keep when a plugin fails",
         hint: "keeps the audio and JSON when any plugin reports a failure",
-        desktop: true,
+        service: true,
         inactive: (r) => (r.audioArchive && r.callLog ? "both are kept anyway" : undefined),
       },
     ],
   },
 ];
 
-const ruleShown = (r: Rule) => !(web && r.kind === "bool" && r.desktop);
+const ruleShown = (r: Rule) => !(r.kind === "bool" && r.service && !can("service"));
 
 function ruleValue(r: Rule, v: Recording[keyof Recording] | undefined): string {
   if (r.kind === "bool") return v ? "on" : "off";
@@ -2313,7 +2314,7 @@ function CallRules(props: { c: Config }) {
                 value={r.filenameFormat}
                 fallback={DEFAULT_FORMAT}
                 fallbackName="Trunk Recorder's layout"
-                root={web ? undefined : props.c.recording.captureDir}
+                root={can("service") ? props.c.recording.captureDir : undefined}
                 onChange={(v) => set("filenameFormat", v.trim() ? v : "")}
               />
             ),
@@ -2363,7 +2364,7 @@ function RecordingOverridePanel(props: { c: Config; value: RecordingOverride | u
                 value={own.filenameFormat ?? ""}
                 fallback={base.filenameFormat || DEFAULT_FORMAT}
                 fallbackName={base.filenameFormat ? "from Recording" : "Trunk Recorder's layout"}
-                root={web ? undefined : base.captureDir}
+                root={can("service") ? base.captureDir : undefined}
                 onChange={(v) => set("filenameFormat", v.trim() ? v : undefined)}
               />
             );
@@ -2433,7 +2434,7 @@ function SetupTabs(props: { c: Config; tab: SetupTab }) {
   };
   return (
     <nav className="setup-tabs" role="tablist" aria-label="Setup">
-      {TABS.filter((t) => t.id !== "plugins" || !web).map((t) => {
+      {TABS.filter((t) => t.id !== "plugins" || can("plugins")).map((t) => {
         const todo = todos.filter((x) => tabOf(x.target) === t.id).length;
         return (
           <button key={t.id} role="tab" aria-selected={props.tab === t.id} className={props.tab === t.id ? "on" : ""} onClick={() => setSetupTab(t.id)}>
@@ -2604,7 +2605,7 @@ export function Setup() {
                 onChange={(v) => updateConfig((x) => void (x.recording.dropDuplicateCalls = v))}
               />
             </Group>
-            {!web && (
+            {can("service") && (
               <Group title="Startup and diagnostics">
                 <Toggle label="Start recording when the app starts" checked={c.server.autoStart} onChange={(v) => updateConfig((x) => void (x.server.autoStart = v))} />
                 <Toggle
@@ -2618,7 +2619,7 @@ export function Setup() {
           </section>
         </Section>
       )}
-      {tab === "recording" && !web && s.lockable.length > 0 && (
+      {tab === "recording" && can("keys") && s.lockable.length > 0 && (
         <Section title="Key containers" hint="Encryption keys in a KFDtool container with no password file. Unlocked keys stay in memory until you lock them or the app quits; the password is never saved.">
           {s.lockable.map((k) => (
             <KeyContainer key={k.name} k={k} />
@@ -2630,14 +2631,14 @@ export function Setup() {
           <CallRules c={c} />
         </Section>
       )}
-      {tab === "recording" && !web && (
+      {tab === "recording" && can("service") && (
         <Section title="Advanced" hint="Audio encoding and the log.">
           <M4aSettings />
           <LogPanel c={c} />
         </Section>
       )}
 
-      {tab === "plugins" && !web && <PluginSetupPanel />}
+      {tab === "plugins" && can("plugins") && <PluginSetupPanel />}
     </div>
   );
 }

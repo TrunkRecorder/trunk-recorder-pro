@@ -558,6 +558,7 @@ pub(crate) async fn greeting(ctx: &Arc<Ctx>, control: bool) -> Vec<ToClient> {
         api: crate::interfaces::API_VERSION,
         config_path: control.then(|| ctx.config_path.display().to_string()),
         survey_bands: trunk_app::survey::bands_json(),
+        capabilities: trunk_app::protocol::Capability::ALL.to_vec(),
     });
     m
 }

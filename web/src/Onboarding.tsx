@@ -7,6 +7,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { autoCenter, enabledChannels, formatMhz, importTrunkRecorderConfig, newAirspy, resolvedCenters, sourceCovering, newDongle, newSoapy, newSystem, newUsrp, parseFreqList, planCenters, startProblem, trConfigFiles, uniqueShortName, usableHalfWidth, type ImportTodo } from "./config.ts";
 import {
+  can,
   applySurvey,
   addDmrSite,
   addNxdnSite,
@@ -90,7 +91,7 @@ export function SetupGuide(props: { mode: "start" | "import"; onClose: () => voi
   const [found, setFound] = useState<Found | null>(null);
   const defaultDir = useRef(c?.recording.captureDir ?? "");
   const body = useRef<HTMLDivElement>(null);
-  const order: Step[] = ["welcome", ...STEPS.filter((x) => !web || x.id !== "storage").map((x) => x.id), "done"];
+  const order: Step[] = ["welcome", ...STEPS.filter((x) => can("service") || x.id !== "storage").map((x) => x.id), "done"];
   const go = (to: Step) => {
     setStep(to);
     body.current?.scrollTo({ top: 0 });
@@ -334,7 +335,7 @@ function RadiosStep(props: { s: AppState; c: Config; onNext: () => void; onBack:
   const selected = free.filter((d) => chosen.has(d.key));
   const look = () => {
     refreshDevices();
-    if (!web) findRadios();
+    if (can("drivers")) findRadios();
   };
   useEffect(look, []);
 
@@ -544,7 +545,7 @@ function tipsFor(os: Os, s: AppState): Tip[] {
       ),
     });
   }
-  if (!web && s.radios) {
+  if (can("drivers") && s.radios) {
     const r = s.radios;
     const d = DRIVERS[os];
     const missing = [!r.airspy.available && ["Airspy", d.airspy], !r.usrp.available && ["USRP (UHD)", d.usrp], r.soapy && !r.soapy.available && ["HackRF, SDRplay, LimeSDR… (SoapySDR)", d.soapy]].filter(
@@ -716,7 +717,7 @@ function ScanStep(props: { s: AppState; c: Config; found: Found | null; onFound:
   const [bands, setBands] = useState<string[] | null>(null);
   const [manual, setManual] = useState(false);
   const picked = bands ?? s.surveyBands.filter((b) => b.defaultOn).map((b) => b.id);
-  const unsupported = web && ["usrp", "airspy", "soapy"].includes(c.sources[source]?.type ?? "");
+  const unsupported = !can("drivers") && ["usrp", "airspy", "soapy"].includes(c.sources[source]?.type ?? "");
   const scan = () => startSurvey(source, picked, c.sources[source]?.type === "rtlsdr");
   // Re-scanning after adding one replaces it rather than adding a second.
   const target = found ? found.system : ("new" as const);
@@ -1602,7 +1603,7 @@ function DoneStep(props: { s: AppState; c: Config; sys: System | undefined; onSt
             </span>
           </li>
         )}
-        {!web && (
+        {can("service") && (
           <li>
             <IconFolder />
             <span className="ob-mono">{c.recording.captureDir}</span>
@@ -1703,7 +1704,7 @@ function ImportPick(props: { s: AppState; onLoaded: (l: Loaded) => void; onBack?
         }
       />
       {error && <div className="ob-note bad">{error}</div>}
-      {!web && <ConfigPicker />}
+      {can("service") && <ConfigPicker />}
       <div className="ob-center-actions">
         {web ? (
           <button className="ob-btn primary big" onClick={() => fileRef.current?.click()}>
@@ -1875,7 +1876,7 @@ function ImportReview(props: { s: AppState; c: Config; loaded: Loaded; onBack: (
       if ((src.type === "usrp" || src.type === "airspy" || src.type === "soapy") && sourceState(src, s).tone === "bad") return [{ kind: "driver", index, driver: src.type }];
       return [];
     });
-    const plugins: ImportTodo[] = web ? [] : result.plugins.map((p) => ({ kind: "plugin", id: p.id, name: s.plugins?.plugins.find((x) => x.id === p.id)?.manifest?.name ?? p.name }));
+    const plugins: ImportTodo[] = !can("plugins") ? [] : result.plugins.map((p) => ({ kind: "plugin", id: p.id, name: s.plugins?.plugins.find((x) => x.id === p.id)?.manifest?.name ?? p.name }));
     const coverage: ImportTodo[] = cfg.systems.filter((x) => brings(x.shortName) && unheard(x)).map((x) => ({ kind: "coverage", system: x.shortName }));
     setTodo([...(merge ? s.todo : []), ...result.todo, ...radios, ...coverage, ...plugins]);
     props.onDone();
@@ -1991,7 +1992,7 @@ function ImportReview(props: { s: AppState; c: Config; loaded: Loaded; onBack: (
           )}
         </ul>
 
-        {!web && (
+        {can("service") && (
           <>
             <h3 className="ob-sub">
               <IconFolder /> Recordings
@@ -2013,7 +2014,7 @@ function ImportReview(props: { s: AppState; c: Config; loaded: Loaded; onBack: (
               {result.plugins.map((p) => {
                 const systems = Object.keys(p.systems);
                 const streams = Array.isArray(p.config.streams) ? p.config.streams.length : 0;
-                const ok = !web && installed(p.id);
+                const ok = can("plugins") && installed(p.id);
                 return (
                   <li key={p.id} className={ok ? "ok" : "warn"}>
                     <span className="ob-row-main">
@@ -2022,7 +2023,7 @@ function ImportReview(props: { s: AppState; c: Config; loaded: Loaded; onBack: (
                         {streams ? `${streams} stream${streams === 1 ? "" : "s"}` : systems.length ? `for ${systems.join(", ")}` : "settings for every system"}
                       </span>
                     </span>
-                    <span className={`ob-pill ${ok ? "ok" : "warn"}`}>{web ? "Needs the desktop app" : ok ? "Will be turned on" : "Settings kept · add the plugin"}</span>
+                    <span className={`ob-pill ${ok ? "ok" : "warn"}`}>{!can("plugins") ? "Needs the desktop app" : ok ? "Will be turned on" : "Settings kept · add the plugin"}</span>
                   </li>
                 );
               })}

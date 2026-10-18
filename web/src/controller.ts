@@ -39,6 +39,7 @@ import type {
   SourceProfile,
   Spectrum,
   SurveyBand,
+  Capability,
   SurveyState,
   SurveySuggestion,
   Site,
@@ -105,6 +106,8 @@ export interface AppState {
   /** The first-run survey, as the recorder last reported it. */
   survey: SurveyState;
   surveyBands: SurveyBand[];
+  /** What the recorder can do beyond recording (hello): see [`can`]. */
+  capabilities: Capability[];
   surveySpectrum: Spectrum | null;
   /** A source's roll-off as last measured (Setup), and the source being measured now (null: none). */
   profile: SourceProfile | null;
@@ -197,6 +200,7 @@ let state: AppState = {
   nowPlaying: null,
   survey: { stage: "idle" },
   surveyBands: [],
+  capabilities: [],
   surveySpectrum: null,
   profile: null,
   profiling: null,
@@ -277,6 +281,14 @@ export function snapshot(): AppState {
 const player = new LivePlayer();
 // The web build (`vite build --mode web`) runs the recorder in this page; the
 // desktop build leaves the worker and WebAssembly out entirely.
+/**
+ * Whether the recorder can do `c` (hello.capabilities): what to show. (Not
+ * whether this page hosts the engine, the browser build: that's `web`.)
+ */
+export function can(c: Capability): boolean {
+  return state.capabilities.includes(c);
+}
+
 export const web: WorkerTransport | null = import.meta.env.MODE === "web" ? new (await import("./web/workerTransport.ts")).WorkerTransport() : null;
 export const transport: Transport = web ?? new WsTransport();
 
@@ -313,7 +325,7 @@ function take(m: FromRecorder): void {
   switch (m.type) {
     // The greeting's end: everything before it said how things are now.
     case "hello":
-      set({ version: m.version, platform: m.platform, configPath: m.configPath, surveyBands: m.surveyBands });
+      set({ version: m.version, platform: m.platform, configPath: m.configPath, surveyBands: m.surveyBands, capabilities: m.capabilities });
       if (state.listen) transport.send({ type: "listen", on: true, system: state.listenSystem, talkgroup: state.listenTalkgroup });
       // (A new connection: it watches nothing until told.)
       sendTopics(true);

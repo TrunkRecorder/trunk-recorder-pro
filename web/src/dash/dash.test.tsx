@@ -25,7 +25,7 @@ function running(c: Config, systems: SystemStatus[], calls: Partial<CallView>[] 
     { type: "state", phase: "running", error: null, ended: false },
     { type: "config", config: c, version: 1 },
     { type: "history", entries: [] },
-    { type: "hello", version: "test", platform: "test", api: 1, surveyBands: [] },
+    { type: "hello", version: "test", platform: "test", api: 1, surveyBands: [], capabilities: ["service", "drivers", "plugins", "interfaces", "host", "keys"] },
   ];
   for (const m of greeting) transport.onMessage(m);
   transport.onMessage({ type: "status", status: { systems, recording: 0 } as unknown as EngineStatus, sources: [], load: 0, calls: calls as CallView[] });

@@ -31,6 +31,11 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   Wait for `hello` before treating something missing as missing. A listen-only connection gets the
   same messages as before, without plugin settings and key sources. client.js emits `change` once
   at `hello` during the greeting.
+- **`hello.capabilities`** says what a recorder can do beyond recording: `service`, `drivers`,
+  `plugins`, `interfaces`, `host`, `keys` (the desktop app has all; the browser build none). The
+  interface shows what the recorder can do instead of checking which build it is, and the browser
+  build answers a command it can't do with an `error` instead of dropping it. client.js:
+  `rec.capabilities`.
 - **`status` is slimmer** (breaking for interface authors). It's sent to everyone twice a second,
   and each site carried its neighbour list, DMR and NXDN channels and carriers, and each system its
   patches, which only the Decode page's system view reads. They moved to `decodeDetail` (topic

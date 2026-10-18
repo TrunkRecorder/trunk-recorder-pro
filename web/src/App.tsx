@@ -3,7 +3,7 @@
 
 import { useEffect, useRef, type ReactNode } from "react";
 import { startProblem } from "./config.ts";
-import { closeGuide, dismissError, openGuide, quitApp, setNotice, setView, start, stop, useApp, useSelect, web, type View } from "./controller.ts";
+import { can, closeGuide, dismissError, openGuide, quitApp, setNotice, setView, start, stop, useApp, useSelect, web, type View } from "./controller.ts";
 import { guideWanted, SetupGuide } from "./Onboarding.tsx";
 import { InterfacesPage } from "./Interfaces.tsx";
 import { PluginsPage } from "./Plugins.tsx";
@@ -47,7 +47,7 @@ const LABEL: Record<View, string> = {
 };
 
 function Nav({ view, health }: { view: View; health: Record<string, Health> }) {
-  const pages: View[] = ["overview", "listen", "rf", "decode", "radio", "live", ...(web ? [] : (["plugins", "interfaces", "platform"] as View[])), "setup"];
+  const pages: View[] = ["overview", "listen", "rf", "decode", "radio", "live", ...((["plugins", "interfaces", "platform"] as const).filter((v) => can(v === "platform" ? "host" : v)) as View[]), "setup"];
   return (
     <nav className="rail-nav" aria-label="Sections">
       {pages.map((p) => {
@@ -82,11 +82,11 @@ function Page({ view }: { view: View }) {
     case "live":
       return <LivePage s={s} />;
     case "plugins":
-      return web ? null : <PluginHealthPage manage={<PluginsPage />} />;
+      return can("plugins") ? <PluginHealthPage manage={<PluginsPage />} /> : null;
     case "interfaces":
-      return web ? null : <InterfacesPage />;
+      return can("interfaces") ? <InterfacesPage /> : null;
     case "platform":
-      return web ? null : <PlatformPage />;
+      return can("host") ? <PlatformPage /> : null;
     case "setup":
       return <Setup />;
   }
@@ -168,7 +168,7 @@ export function App() {
                 Start
               </button>
             )}
-            {!web && s.connected && (
+            {can("service") && s.connected && (
               <button className="btn ghost" onClick={quitApp} title="Stop recording and quit the app">
                 Quit
               </button>

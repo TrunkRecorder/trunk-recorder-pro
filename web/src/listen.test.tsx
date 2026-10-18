@@ -34,7 +34,7 @@ function twoSites(): void {
     { type: "state", phase: "running", error: null, ended: false },
     { type: "config", config: c, version: 1 },
     { type: "history", entries: [] },
-    { type: "hello", version: "test", platform: "test", api: 1, surveyBands: [] },
+    { type: "hello", version: "test", platform: "test", api: 1, surveyBands: [], capabilities: ["service", "drivers", "plugins", "interfaces", "host", "keys"] },
   ];
   for (const m of greeting) transport.onMessage(m);
   transport.onMessage({ type: "talkgroups", system: "dcfd", csv: CSV("100,64,Fire Dispatch,D,Fire,,\n200,c8,EMS,D,EMS,,\n300,12c,Tac 3,D,Tac,,") });

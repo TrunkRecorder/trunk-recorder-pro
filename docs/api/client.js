@@ -54,6 +54,8 @@ export class TrunkClient {
 
     this.connected = false;
     this.version = null;
+    /** What the recorder can do beyond recording (hello.capabilities: "service", "drivers", "plugins", "interfaces", "host", "keys"). */
+    this.capabilities = [];
     this.config = null;
     /** The version of `config`: a `setConfig` names the one it edits. */
     this.configVersion = 0;
@@ -252,6 +254,7 @@ export class TrunkClient {
       // The greeting's end: every message before it said how things are now.
       case "hello":
         this.version = m.version;
+        this.capabilities = m.capabilities ?? [];
         this._greeting = false;
         if (!this.connected) {
           this.connected = true;

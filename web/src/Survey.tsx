@@ -9,6 +9,7 @@
 import { Fragment, useState } from "react";
 import { formatGain, formatMhz, siteNameOf, systemWithChannel } from "./config.ts";
 import {
+  can,
   addDmrSite,
   addNxdnChannel,
   addNxdnSite,
@@ -21,7 +22,6 @@ import {
   surveyRescan,
   systemOfSite,
   useApp,
-  web,
   type SurveyTarget,
 } from "./controller.ts";
 import type { Config, SiteIdentity, SurveyCandidate, SurveyIdentity, SurveyMonitor, SurveySuggestion } from "./protocol.ts";
@@ -477,7 +477,7 @@ export function SurveyPanel(props: { c: Config }) {
   const bands = picked ?? s.surveyBands.filter((b) => b.defaultOn).map((b) => b.id);
   const src = c.sources[Math.min(source, c.sources.length - 1)];
   const active = sv.stage !== "idle";
-  const unsupported = web && (src?.type === "usrp" || src?.type === "airspy" || src?.type === "soapy");
+  const unsupported = !can("drivers") && (src?.type === "usrp" || src?.type === "airspy" || src?.type === "soapy");
   const bandLabel = (id: string) => s.surveyBands.find((b) => b.id === id)?.label ?? id;
 
   if (!s.surveyBands.length) return null;

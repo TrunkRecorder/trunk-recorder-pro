@@ -500,6 +500,18 @@
       ],
       "additionalProperties": false
     },
+    "Capability": {
+      "type": "string",
+      "enum": [
+        "service",
+        "drivers",
+        "plugins",
+        "interfaces",
+        "host",
+        "keys"
+      ],
+      "description": "Something a recorder can do beyond recording (`hello.capabilities`).\n- `service`: a program of its own on a computer: quit, start recording when it starts, log files, M4A encoding, files by path (capture files, channel files, browsing folders, a Trunk Recorder config, the recordings folder, the RAM spool, keeping audio and JSON once plugins are done)\n- `drivers`: radio drivers beyond RTL-SDR (USRP, Airspy, SoapySDR), finding radios, an RTL-SDR's USB transfer sizes\n- `plugins`: plugins (listing, adding, the store, their settings)\n- `interfaces`: other interfaces, served on ports of their own\n- `host`: the computer's and plugins' figures (`host`)\n- `keys`: key containers opened with a password"
+    },
     "Channel": {
       "type": "object",
       "properties": {
@@ -1278,6 +1290,13 @@
               "items": {
                 "$ref": "#/definitions/SurveyBand"
               }
+            },
+            "capabilities": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/Capability"
+              },
+              "description": "What this recorder can do beyond recording: show only what works. The desktop app can do all of them; the browser build, none."
             }
           },
           "required": [
@@ -1285,7 +1304,8 @@
             "version",
             "platform",
             "api",
-            "surveyBands"
+            "surveyBands",
+            "capabilities"
           ],
           "additionalProperties": false
         },

@@ -3,28 +3,12 @@
 // server, so the interface is identical. Calls are stored in OPFS.
 
 import init, { survey_bands, WebProfiler, WebRtl, WebSession, WebSurvey } from "./pkg/trunk_web.js";
-import type { Config, FromRecorder, HeardCode } from "../protocol.ts";
+import type { Config, FromRecorder, HeardCode, ToRecorder } from "../protocol.ts";
 import { activeSystems, resolvedCenters } from "../config.ts";
 import { listCalls, readText, saveCall, writeText } from "./opfs.ts";
 
-export type ToWorker =
-  | { type: "init"; config: Config; talkgroups: Record<string, string> }
-  | { type: "setConfig"; config: Config; version: number }
-  | { type: "setTalkgroups"; system: string; csv: string }
-  | { type: "files"; files: (File | null)[] }
-  | { type: "start" }
-  | { type: "stop" }
-  | { type: "devices" }
-  | { type: "listen"; on: boolean; system: string | null; talkgroup: number | null }
-  | { type: "surveyStart"; source: number; bands: string[]; findGain: boolean }
-  | { type: "surveyListen"; freqHz: number }
-  | { type: "surveyRescan" }
-  | { type: "surveyStop" }
-  | { type: "profileSource"; source: number; centerHz: number }
-  | { type: "olderCalls"; before: number; limit: number }
-  | { type: "subscribe"; topics: string[] }
-  | { type: "statsQuery"; id: number; series: string[]; range?: string; from?: number; to?: number; points?: number }
-  | { type: "radioQuery"; id: number; what: string; system?: string; key?: number; hours?: number; limit?: number };
+/** Page → worker: the protocol's commands (those it can't do get an `error`), and its own setup. */
+export type ToWorker = ToRecorder | { type: "init"; config: Config; talkgroups: Record<string, string> } | { type: "files"; files: (File | null)[] };
 
 /** Worker → page: a protocol message, or a live audio frame. */
 export type FromWorker = { msg: FromRecorder } | { audio: ArrayBuffer; tg: number };
@@ -405,6 +389,8 @@ onmessage = async (ev: MessageEvent<ToWorker>) => {
         api: 1,
         configPath: "this browser",
         surveyBands: await ready.then(() => JSON.parse(survey_bands())).catch(() => []),
+        // The page is the recorder: no program of its own, no drivers but WebUSB's RTL-SDR, no plugins.
+        capabilities: [],
       });
       break;
     case "setConfig":
@@ -470,6 +456,9 @@ onmessage = async (ev: MessageEvent<ToWorker>) => {
     case "profileSource":
       await profileSource(m);
       break;
+    default:
+      // What hello's capabilities said this recorder can't do (the desktop app's commands).
+      post({ type: "error", message: `The browser version can't do "${m.type}": that needs the desktop app.` });
   }
 };
 
