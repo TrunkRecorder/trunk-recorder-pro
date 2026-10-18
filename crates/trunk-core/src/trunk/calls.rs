@@ -402,6 +402,36 @@ impl CallManager {
         true
     }
 
+    /// What a voice channel's link control said of the call at `now_s`
+    /// (who talks, encrypted, emergency), trunked or conventional; `tx`: its
+    /// recording's transmissions, which drop an encrypted one's audio.
+    /// Returns whether the call changed.
+    pub fn note_info(c: &mut Call, tx: Option<&mut super::record::Transmissions>, source: Option<u32>, flags: Flags, now_s: f64) -> bool {
+        if flags.encrypted {
+            if let Some(tx) = tx {
+                tx.mark_encrypted(now_s);
+            }
+        }
+        let mut changed = false;
+        if flags.encrypted && !c.encrypted {
+            c.encrypted = true;
+            changed = true;
+        }
+        if flags.emergency && !c.emergency {
+            c.emergency = true;
+            changed = true;
+        }
+        changed | Self::note_source(c, source, now_s, flags)
+    }
+
+    /// Its voice was decrypted (at `now_s`): its transmission's audio is kept. Returns whether the call changed.
+    pub fn note_decrypted(c: &mut Call, tx: Option<&mut super::record::Transmissions>, now_s: f64) -> bool {
+        if let Some(tx) = tx {
+            tx.mark_decrypted(now_s);
+        }
+        !std::mem::replace(&mut c.decrypted, true)
+    }
+
     /// A voice channel gave a radio's position: kept on its latest entry
     /// (returns true if it moved).
     pub fn note_position(c: &mut Call, p: &Position) -> bool {

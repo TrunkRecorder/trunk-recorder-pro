@@ -1696,17 +1696,13 @@ impl Core {
     fn emit_conv(&mut self, mut out: Vec<ConvOut>) {
         for o in out.drain(..) {
             match o {
-                ConvOut::Start(c) => self.events.push(Event::CallStart(c)),
-                ConvOut::Update(c) => self.events.push(Event::CallUpdate(c)),
-                ConvOut::Audio { call_id, system, talkgroup, samples, decrypted } => self.events.push(Event::Audio { call_id, system, talkgroup, samples, decrypted }),
+                ConvOut::Event(e) => self.events.push(e),
                 ConvOut::End { call, audio, frames, recorder_num, tx, reception } => {
                     self.write_call(Held { call: call.clone(), audio, frames, recorder_num, tx, reception, freq_error_hz: None });
                     self.events.push(Event::CallEnd(call));
                 }
                 ConvOut::Alias(system, a) => self.learn_alias(system, None, a, None),
                 ConvOut::WrongKey(system, c) => Self::wrong_key(&mut self.wrong_keys, &mut self.events, system, None, c, None),
-                ConvOut::Position(system, p, talkgroup) => self.events.push(Event::UnitPosition { system, unit: p.unit, lat: p.lat, lon: p.lon, talkgroup }),
-                ConvOut::Skipped { freq_hz, code } => self.events.push(Event::ConvSkipped { freq_hz, code }),
             }
         }
         self.conv_out = out;
@@ -1788,28 +1784,20 @@ impl Core {
                         self.events.push(Event::Audio { call_id: id, system, talkgroup: tg, samples, decrypted: false });
                     }
                 }
-                TrackerOut::Info { source, flags } => {
-                    if flags.encrypted {
+                TrackerOut::Info { source, flags } => match call {
+                    Some(c) => {
+                        if CallManager::note_info(c, rec.map(|r| &mut r.tx), source, flags, now) {
+                            self.call_events.push(CallEvent::Update(c.clone()));
+                        }
+                    }
+                    // (Gone already: its recording still drops an encrypted transmission.)
+                    None if flags.encrypted => {
                         if let Some(rec) = rec {
                             rec.tx.mark_encrypted(now);
                         }
                     }
-                    if let Some(c) = call {
-                        let mut changed = false;
-                        if flags.encrypted && !c.encrypted {
-                            c.encrypted = true;
-                            changed = true;
-                        }
-                        if flags.emergency && !c.emergency {
-                            c.emergency = true;
-                            changed = true;
-                        }
-                        changed |= CallManager::note_source(c, source, now, flags);
-                        if changed {
-                            self.call_events.push(CallEvent::Update(c.clone()));
-                        }
-                    }
-                }
+                    None => {}
+                },
                 TrackerOut::Cipher(cipher) => {
                     if let Some(c) = call.filter(|c| c.cipher != Some(cipher)) {
                         c.cipher = Some(cipher);
@@ -1821,13 +1809,21 @@ impl Core {
                     Self::wrong_key(&mut self.wrong_keys, &mut self.events, system, Some(site), c, tg);
                 }
                 TrackerOut::Decrypted => {
-                    if let Some(rec) = rec {
-                        rec.tx.mark_decrypted(now);
-                        rec.decrypted = true;
-                    }
-                    if let Some(c) = call.filter(|c| !c.decrypted) {
-                        c.decrypted = true;
-                        self.call_events.push(CallEvent::Update(c.clone()));
+                    let tx = rec.map(|r| {
+                        r.decrypted = true;
+                        &mut r.tx
+                    });
+                    match call {
+                        Some(c) => {
+                            if CallManager::note_decrypted(c, tx, now) {
+                                self.call_events.push(CallEvent::Update(c.clone()));
+                            }
+                        }
+                        None => {
+                            if let Some(tx) = tx {
+                                tx.mark_decrypted(now);
+                            }
+                        }
                     }
                 }
                 // (Only conventional FM asks for it.)

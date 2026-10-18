@@ -52,8 +52,8 @@ use std::sync::Arc;
 
 use num_complex::Complex32;
 
-use super::calls::{Call, CallId, CallIds, CallManager, Flags, Voice, STUCK_CALL_S};
-use super::engine::SystemConfig;
+use super::calls::{Call, CallIds, CallManager, Flags, Voice, STUCK_CALL_S};
+use super::engine::{Event, SystemConfig};
 use super::frames::CallFrames;
 use super::record::{Reception, Transmissions};
 use super::voice::CipherId;
@@ -343,22 +343,19 @@ impl Default for ConvConfig {
 }
 
 
-/// What the conventional channels did, for the engine to report.
+/// What the conventional channels did: the engine's events as they are,
+/// and what the engine itself acts on.
 pub enum ConvOut {
-    Start(Call),
-    Update(Call),
-    Audio { call_id: CallId, system: u16, talkgroup: u32, samples: Vec<f32>, decrypted: bool },
-    /// `recorder_num`: the index of the channel (frequency) it came on.
+    /// A call started or changed, its audio, a radio's position, a
+    /// transmission no row took ([`Event::ConvSkipped`]).
+    Event(Event),
+    /// A call is over: the engine saves it. `recorder_num`: the index of the
+    /// channel (frequency) it came on.
     End { call: Call, audio: Vec<f32>, frames: CallFrames, recorder_num: u32, tx: Transmissions, reception: Reception },
     /// A radio's talker alias, heard on a P25 channel of system `.0` ([`Call::system`]).
     Alias(u16, Alias),
-    /// A radio's new position, on a call (its system and talkgroup).
-    Position(u16, Position, u32),
     /// A key of system `.0` that decrypts its voice to noise.
     WrongKey(u16, CipherId),
-    /// A transmission no row took, and the code it carried (as a row's
-    /// Tone would say it; "" for none).
-    Skipped { freq_hz: u64, code: String },
 }
 
 /// What a conventional call carried, as a row's Tone would say it: the
@@ -916,7 +913,7 @@ impl Conventional {
     /// after a pause longer than the call timeout.
     fn skip(last: &mut Option<(String, f64)>, freq_hz: f64, code: String, now_s: f64, rules: &CallRules, out: &mut Vec<ConvOut>) {
         if last.as_ref().is_none_or(|(c, t)| *c != code || now_s - t > rules.call_timeout_s) {
-            out.push(ConvOut::Skipped { freq_hz: freq_hz.round() as u64, code: code.clone() });
+            out.push(ConvOut::Event(Event::ConvSkipped { freq_hz: freq_hz.round() as u64, code: code.clone() }));
         }
         *last = Some((code, now_s));
     }
@@ -999,7 +996,7 @@ impl Conventional {
                 if l.call.talkgroup != tg {
                     l.call.talkgroup = tg;
                     l.call.talkgroup_info = info;
-                    out.push(ConvOut::Update(l.call.clone()));
+                    out.push(ConvOut::Event(Event::CallUpdate(l.call.clone())));
                 }
             }
         }
@@ -1039,7 +1036,7 @@ impl Conventional {
                     _ => None,
                 },
             };
-            out.push(ConvOut::Start(call.clone()));
+            out.push(ConvOut::Event(Event::CallStart(call.clone())));
             o.live[slot] = Some(Live { call, audio: Vec::new(), frames: CallFrames::new(rules.capture_frames), tx: Transmissions::default(), reception: Reception::default(), tg_from_air: air_tg.is_some(), tones: (ch.mode == ConvMode::Fm).then(Box::default) });
         }
         let l = o.live[slot].as_mut().unwrap();
@@ -1069,31 +1066,19 @@ impl Conventional {
             changed = true;
         }
         for (src, flags) in h.infos {
-            if flags.encrypted {
-                l.tx.mark_encrypted(now_s);
-            }
-            if flags.encrypted && !l.call.encrypted {
-                l.call.encrypted = true;
-                changed = true;
-            }
-            if flags.emergency && !l.call.emergency {
-                l.call.emergency = true;
-                changed = true;
-            }
-            changed |= CallManager::note_source(&mut l.call, src, now_s, flags);
+            changed |= CallManager::note_info(&mut l.call, Some(&mut l.tx), src, flags, now_s);
         }
         if h.decrypted {
-            l.tx.mark_decrypted(now_s);
-            changed |= !std::mem::replace(&mut l.call.decrypted, true);
+            changed |= CallManager::note_decrypted(&mut l.call, Some(&mut l.tx), now_s);
         }
         for p in h.positions {
             if CallManager::note_position(&mut l.call, &p) {
-                out.push(ConvOut::Position(l.call.system, p, l.call.talkgroup));
+                out.push(ConvOut::Event(Event::UnitPosition { system: l.call.system, unit: p.unit, lat: p.lat, lon: p.lon, talkgroup: l.call.talkgroup }));
                 changed = true;
             }
         }
         if changed {
-            out.push(ConvOut::Update(l.call.clone()));
+            out.push(ConvOut::Event(Event::CallUpdate(l.call.clone())));
         }
         // (An encrypted transmission's audio, unless decrypted, is left out
         // when the call is saved, as a trunked call's is; it isn't played live.)
@@ -1104,7 +1089,7 @@ impl Conventional {
                 l.frames.push(f);
             }
             if !l.tx.current_dropped() {
-                out.push(ConvOut::Audio { call_id: l.call.id, system: l.call.system, talkgroup: l.call.talkgroup, samples: h.audio, decrypted: l.call.encrypted || l.call.decrypted });
+                out.push(ConvOut::Event(Event::Audio { call_id: l.call.id, system: l.call.system, talkgroup: l.call.talkgroup, samples: h.audio, decrypted: l.call.encrypted || l.call.decrypted }));
             }
         }
     }
