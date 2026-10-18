@@ -529,8 +529,8 @@ impl ChannelShape {
         let wider = |base: f64| analog.half_bw_hz + (base - fm::CHANNEL_HALF_BW);
         match mode {
             m if m.analog() => ChannelShape { detect_half_bw: wider(DETECT_HALF_BW), head_cutoff_hz: wider(HEAD_CUTOFF_HZ), meter_bw: 2.0 * analog.half_bw_hz },
-            ConvMode::Nxdn(r) => ChannelShape { detect_half_bw: if r == Rate::N48 { 3125.0 } else { DETECT_HALF_BW }, head_cutoff_hz: r.cutoff_hz(), meter_bw: ChannelFilter::noise_bandwidth() },
-            _ => ChannelShape { detect_half_bw: DETECT_HALF_BW, head_cutoff_hz: HEAD_CUTOFF_HZ, meter_bw: ChannelFilter::noise_bandwidth() },
+            // Digital: the head as a trunked channel of its kind opens.
+            m => ChannelShape { detect_half_bw: if m == ConvMode::Nxdn(Rate::N48) { 3125.0 } else { DETECT_HALF_BW }, head_cutoff_hz: m.kind().cutoff_hz(), meter_bw: ChannelFilter::noise_bandwidth() },
         }
     }
 }
