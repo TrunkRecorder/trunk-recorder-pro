@@ -38,18 +38,49 @@ pub struct Index {
 }
 
 impl crate::store::Index for Index {
+    type Listing = Listing;
+    const LIST: &'static str = "store";
+    const KINDS: &'static str = "interfaces";
     fn format(&self) -> u32 {
         self.format
+    }
+    fn listings(&self) -> &[Listing] {
+        &self.interfaces
+    }
+}
+
+impl crate::store::Listed for Listing {
+    fn id(&self) -> &str {
+        &self.id
+    }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn description(&self) -> &str {
+        &self.description
+    }
+    fn repository(&self) -> &str {
+        &self.repository
+    }
+    fn tier(&self) -> &str {
+        &self.tier
+    }
+    fn version(&self) -> &str {
+        &self.version
+    }
+    fn unavailable(&self) -> Option<String> {
+        Listing::unavailable(self)
+    }
+    fn note(&self) -> &'static str {
+        if self.access == ApiAccess::Control {
+            " · asks for control"
+        } else {
+            ""
+        }
     }
 }
 
 pub type Catalog = crate::store::Catalog<Index>;
-
-impl Catalog {
-    pub fn find(&self, id: &str) -> Option<&Listing> {
-        self.index.interfaces.iter().find(|l| l.id == id)
-    }
-}
 
 /// An interface in the registry: one release of it, pinned.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

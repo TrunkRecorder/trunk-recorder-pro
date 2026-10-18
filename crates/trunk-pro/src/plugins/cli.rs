@@ -114,31 +114,10 @@ fn installed_version(id: &str) -> Option<String> {
     exe.is_file().then(|| describe(&exe).ok().map(|m| m.version)).flatten()
 }
 
-fn say_source(cat: &store::Catalog) {
-    match cat.source {
-        "registry" => {}
-        "saved" => eprintln!("(The registry couldn't be reached: {}. Using the list fetched before.)", cat.problem.as_deref().unwrap_or("")),
-        _ => eprintln!("(The registry couldn't be reached: {}. Using the list built into this version.)", cat.problem.as_deref().unwrap_or("")),
-    }
-}
-
 fn search(a: &Args) {
-    let text = a.positional.get(1).map(|t| t.to_lowercase()).unwrap_or_default();
     let cat = store::catalog();
-    say_source(&cat);
-    let found: Vec<&Listing> = cat.index.plugins.iter().filter(|l| [&l.id, &l.name, &l.description].iter().any(|f| f.to_lowercase().contains(&text))).collect();
-    if found.is_empty() {
-        println!("No plugins{}.", if text.is_empty() { String::new() } else { format!(" match {text:?}") });
-    }
-    for l in found {
-        let status = match (installed_version(&l.id), l.unavailable()) {
-            (Some(v), _) if store::newer(&l.version, &v) => format!("installed {v}, update available"),
-            (Some(v), _) => format!("installed {v}"),
-            (None, Some(why)) => why,
-            (None, None) => String::new(),
-        };
-        println!("{} {} [{}]{}\n    {}\n    {}", l.id, l.version, l.tier, if status.is_empty() { String::new() } else { format!(" — {status}") }, l.description, l.repository);
-    }
+    cat.say_source();
+    cat.search(a.positional.get(1).map_or("", String::as_str), &installed_version);
 }
 
 /// The listing to install for `what`: an id in the registry, or a GitHub repository.
@@ -184,7 +163,7 @@ fn install_listing(cfg: &Config, l: &Listing) -> bool {
 fn install(a: &Args) {
     let what = a.positional.get(1).unwrap_or_else(|| die("trunk-pro plugin install <id | GitHub repository> [--tag v1.2.0]"));
     let cat = store::catalog();
-    say_source(&cat);
+    cat.say_source();
     let l = listing_for(what, a.get("tag"), &cat);
     let (_, cfg) = load_config(a);
     if !install_listing(&cfg, &l) {
@@ -201,7 +180,7 @@ fn update(a: &Args) {
         ids.sort();
     }
     let cat = store::catalog();
-    say_source(&cat);
+    cat.say_source();
     let mut failed = false;
     for id in &ids {
         let entry = cfg.plugins.get(id).cloned().unwrap_or_default();
@@ -214,29 +193,9 @@ fn update(a: &Args) {
             continue;
         };
         // From the registry, or from the repository it came from.
-        let unlisted = store::unlisted_from(id);
-        let latest = if unlisted.is_none() {
-            match cat.find(id) {
-                Some(l) => l.clone(),
-                None => {
-                    println!("{id} {have}: not in the registry");
-                    continue;
-                }
-            }
-        } else {
-            match store::release_listing(unlisted.as_deref().unwrap_or_default(), None) {
-                Ok(l) => l,
-                Err(e) => {
-                    println!("{id} {have}: {e}");
-                    continue;
-                }
-            }
-        };
-        if !store::newer(&latest.version, &have) {
-            println!("{id} {have}: up to date");
+        let Some(latest) = cat.newer_release(id, &have, store::unlisted_from(id).as_deref(), &|repo| store::release_listing(repo, None)) else {
             continue;
-        }
-        println!("{id}: {have} → {}", latest.version);
+        };
         failed |= !install_listing(&cfg, &latest);
     }
     if failed {

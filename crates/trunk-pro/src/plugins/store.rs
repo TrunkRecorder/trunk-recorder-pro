@@ -34,8 +34,38 @@ pub struct Index {
 }
 
 impl crate::store::Index for Index {
+    type Listing = Listing;
+    const LIST: &'static str = "registry";
+    const KINDS: &'static str = "plugins";
     fn format(&self) -> u32 {
         self.format
+    }
+    fn listings(&self) -> &[Listing] {
+        &self.plugins
+    }
+}
+
+impl crate::store::Listed for Listing {
+    fn id(&self) -> &str {
+        &self.id
+    }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn description(&self) -> &str {
+        &self.description
+    }
+    fn repository(&self) -> &str {
+        &self.repository
+    }
+    fn tier(&self) -> &str {
+        &self.tier
+    }
+    fn version(&self) -> &str {
+        &self.version
+    }
+    fn unavailable(&self) -> Option<String> {
+        Listing::unavailable(self)
     }
 }
 
@@ -97,12 +127,6 @@ impl Listing {
             return Some(format!("Not built for this computer ({})", target().unwrap_or(std::env::consts::OS)));
         }
         None
-    }
-}
-
-impl Catalog {
-    pub fn find(&self, id: &str) -> Option<&Listing> {
-        self.index.plugins.iter().find(|l| l.id == id)
     }
 }
 

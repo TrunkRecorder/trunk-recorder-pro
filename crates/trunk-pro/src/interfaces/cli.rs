@@ -7,10 +7,10 @@ use trunk_app::protocol::Install;
 use std::path::{Path, PathBuf};
 
 
-use super::store::{self, Listing};
+use super::store;
 use super::{folder, interfaces_dir, Installed, Interfaces, Manifest};
 use crate::config::{ApiAccess, Config};
-use crate::store::{newer, Provenance};
+use crate::store::Provenance;
 use crate::{die, Args};
 
 pub fn run(a: &Args) {
@@ -79,34 +79,14 @@ fn list(a: &Args) {
     }
 }
 
-fn say_source(cat: &store::Catalog) {
-    if cat.source != "registry" {
-        eprintln!("(The store couldn't be reached: {}. Using {}.)", cat.problem.as_deref().unwrap_or(""), if cat.source == "saved" { "the list fetched before" } else { "the list built into this version" });
-    }
-}
-
 fn installed_version(id: &str) -> Option<String> {
     Manifest::read(&interfaces_dir().join(id)).ok().flatten().map(|m| m.version)
 }
 
 fn search(a: &Args) {
-    let text = a.positional.get(1).map(|t| t.to_lowercase()).unwrap_or_default();
     let cat = store::catalog();
-    say_source(&cat);
-    let found: Vec<&Listing> = cat.index.interfaces.iter().filter(|l| [&l.id, &l.name, &l.description].iter().any(|f| f.to_lowercase().contains(&text))).collect();
-    if found.is_empty() {
-        println!("No interfaces{}.", if text.is_empty() { String::new() } else { format!(" match {text:?}") });
-    }
-    for l in found {
-        let status = match (installed_version(&l.id), l.unavailable()) {
-            (Some(v), _) if newer(&l.version, &v) => format!(" — installed {v}, update available"),
-            (Some(v), _) => format!(" — installed {v}"),
-            (None, Some(why)) => format!(" — {why}"),
-            (None, None) => String::new(),
-        };
-        let control = if l.access == ApiAccess::Control { " · asks for control" } else { "" };
-        println!("{} {} [{}]{status}\n    {}{control}\n    {}", l.id, l.version, l.tier, l.description, l.repository);
-    }
+    cat.say_source();
+    cat.search(a.positional.get(1).map_or("", String::as_str), &installed_version);
 }
 
 /// Install `what` (an id in the store, or a GitHub repository), headless:
@@ -145,7 +125,7 @@ fn update(a: &Args) {
         ids = cfg.server.interfaces.iter().filter(|(_, i)| i.path.is_empty()).map(|(id, _)| id.clone()).collect();
     }
     let cat = store::catalog();
-    say_source(&cat);
+    cat.say_source();
     let mut failed = false;
     for id in &ids {
         let Some(have) = installed_version(id) else {
@@ -153,20 +133,11 @@ fn update(a: &Args) {
             continue;
         };
         let from = Provenance::read(&interfaces_dir().join(id)).filter(|p| !p.reviewed).map(|p| p.repository);
-        let latest = match &from {
-            None => cat.find(id).map(|l| l.version.clone()),
-            Some(repo) => store::release_listing(repo, None).ok().map(|l| l.version),
-        };
-        match latest {
-            Some(v) if newer(&v, &have) => {
-                println!("{id}: {have} → {v}");
-                match install_one(from.as_deref().unwrap_or(id), None, &cfg) {
-                    Some(done) => done.apply(&mut cfg, &[]),
-                    None => failed = true,
-                }
+        if cat.newer_release(id, &have, from.as_deref(), &|repo| store::release_listing(repo, None)).is_some() {
+            match install_one(from.as_deref().unwrap_or(id), None, &cfg) {
+                Some(done) => done.apply(&mut cfg, &[]),
+                None => failed = true,
             }
-            Some(_) => println!("{id} {have}: up to date"),
-            None => println!("{id} {have}: not in the store"),
         }
     }
     save(&path, &cfg);

@@ -49,7 +49,29 @@ pub struct Registry {
 
 /// A registry's `index.json`.
 pub trait Index: DeserializeOwned + Default + Clone {
+    type Listing: Listed;
+    /// What the list is called to the user ("registry", "store").
+    const LIST: &'static str;
+    /// What it lists, plural ("plugins").
+    const KINDS: &'static str;
     fn format(&self) -> u32;
+    fn listings(&self) -> &[Self::Listing];
+}
+
+/// One entry of a registry's list, as far as the command lines care.
+pub trait Listed {
+    fn id(&self) -> &str;
+    fn name(&self) -> &str;
+    fn description(&self) -> &str;
+    fn repository(&self) -> &str;
+    fn tier(&self) -> &str;
+    fn version(&self) -> &str;
+    /// Why this recorder can't install it, when it can't.
+    fn unavailable(&self) -> Option<String>;
+    /// Said after the description, with its own separator.
+    fn note(&self) -> &'static str {
+        ""
+    }
 }
 
 /// A registry's list, and where it came from.
@@ -62,6 +84,71 @@ pub struct Catalog<I> {
     pub fetched: Option<f64>,
     /// Why the registry couldn't be fetched.
     pub problem: Option<String>,
+}
+
+impl<I: Index> Catalog<I> {
+    pub fn find(&self, id: &str) -> Option<&I::Listing> {
+        self.index.listings().iter().find(|l| l.id() == id)
+    }
+
+    /// Say on stderr when the list isn't the registry's own.
+    pub fn say_source(&self) {
+        let problem = self.problem.as_deref().unwrap_or("");
+        match self.source {
+            "registry" => {}
+            "saved" => eprintln!("(The {} couldn't be reached: {problem}. Using the list fetched before.)", I::LIST),
+            _ => eprintln!("(The {} couldn't be reached: {problem}. Using the list built into this version.)", I::LIST),
+        }
+    }
+
+    /// Print the listings whose id, name or description has `text`, each with what is installed
+    /// (`installed` gives the version of one, if it is).
+    pub fn search(&self, text: &str, installed: &dyn Fn(&str) -> Option<String>) {
+        let text = text.to_lowercase();
+        let found: Vec<&I::Listing> = self.index.listings().iter().filter(|l| [l.id(), l.name(), l.description()].iter().any(|f| f.to_lowercase().contains(&text))).collect();
+        if found.is_empty() {
+            println!("No {}{}.", I::KINDS, if text.is_empty() { String::new() } else { format!(" match {text:?}") });
+        }
+        for l in found {
+            let status = match (installed(l.id()), l.unavailable()) {
+                (Some(v), _) if newer(l.version(), &v) => format!(" — installed {v}, update available"),
+                (Some(v), _) => format!(" — installed {v}"),
+                (None, Some(why)) => format!(" — {why}"),
+                (None, None) => String::new(),
+            };
+            println!("{} {} [{}]{status}\n    {}{}\n    {}", l.id(), l.version(), l.tier(), l.description(), l.note(), l.repository());
+        }
+    }
+
+    /// The newer release of installed `id` (at `have`), if there is one; otherwise says why not on stdout.
+    /// `from` is the repository it was installed from when not from the list; `release` finds that one's latest.
+    pub fn newer_release(&self, id: &str, have: &str, from: Option<&str>, release: &dyn Fn(&str) -> Result<I::Listing, String>) -> Option<I::Listing>
+    where
+        I::Listing: Clone,
+    {
+        let latest = match from {
+            None => match self.find(id) {
+                Some(l) => l.clone(),
+                None => {
+                    println!("{id} {have}: not in the {}", I::LIST);
+                    return None;
+                }
+            },
+            Some(repo) => match release(repo) {
+                Ok(l) => l,
+                Err(e) => {
+                    println!("{id} {have}: {e}");
+                    return None;
+                }
+            },
+        };
+        if !newer(latest.version(), have) {
+            println!("{id} {have}: up to date");
+            return None;
+        }
+        println!("{id}: {have} → {}", latest.version());
+        Some(latest)
+    }
 }
 
 impl Registry {
