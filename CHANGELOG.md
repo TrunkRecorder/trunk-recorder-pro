@@ -5,6 +5,11 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **A dashboard card opens what it's about from anywhere on it**, not only its title: a system's
+  card on the Radio page opens that system (its "Open …" link is gone), a site's on Decode, a
+  source's on RF, and so on. A row of a system's busiest talkgroups opens that talkgroup, and a
+  row of who talks on a talkgroup opens that radio. Buttons, links and charts in a card still do
+  their own thing.
 - **The Listen page's Talkgroups tab opens again** (0.2.0 failed with "s.talkgroups is
   undefined"): the page didn't take the talkgroup files from the store when they moved out of
   the config.

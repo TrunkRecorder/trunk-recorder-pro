@@ -412,8 +412,8 @@ function TgView({ s, sys, tg }: { s: AppState; sys: DashSystem; tg: number }) {
           ) : (
             <ul className="barlist">
               {talkers.map((t) => (
-                <li key={t.unit}>
-                  <button className="linkish" onClick={() => setView("radio", sys.name, "unit", t.unit)}>
+                <li key={t.unit} className="opens" onClick={() => setView("radio", sys.name, "unit", t.unit)}>
+                  <button className="linkish">
                     {aliasOf(s, sys.name, t.unit) ?? (t.alias || t.unit)}
                   </button>
                   <span className="bar" style={{ width: `${(t.n / maxN) * 100}%` }} />
@@ -641,8 +641,8 @@ function AllSystems({ s, systems }: { s: AppState; systems: DashSystem[] }) {
             {top.length > 0 ? (
               <ul className="barlist">
                 {top.map((r) => (
-                  <li key={r.tg}>
-                    <button className="linkish" onClick={() => setView("radio", x.name, "tg", r.tg)}>
+                  <li key={r.tg} className="opens" onClick={() => setView("radio", x.name, "tg", r.tg)}>
+                    <button className="linkish">
                       <TgName r={r} />
                     </button>
                     <span className="bar" style={{ width: `${(r.secs / Math.max(1, top[0].secs)) * 100}%`, background: systemColor(s.config, x.name) }} />
@@ -669,9 +669,6 @@ function AllSystems({ s, systems }: { s: AppState; systems: DashSystem[] }) {
                 {sm.newTgs.length > 6 ? "…" : ""}
               </p>
             )}
-            <button className="card-more" onClick={() => setView("radio", x.name)}>
-              Open {x.name} ▸
-            </button>
           </Card>
         );
       })}

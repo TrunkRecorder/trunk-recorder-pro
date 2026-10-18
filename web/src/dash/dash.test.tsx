@@ -10,6 +10,7 @@ import type { CallView, Config, EngineStatus, FromRecorder, SiteIdentity, SiteSt
 import { LivePage } from "./Calls.tsx";
 import { DecodePage } from "./Decode.tsx";
 import { Overview } from "./Overview.tsx";
+import { RadioPage } from "./Radio.tsx";
 
 const site = (index: number, name: string, identity: Partial<SiteIdentity>): SiteStatus => ({
   index, name, nowS: 10, controlChannelHz: 851_000_000 + index * 500_000,
@@ -87,4 +88,12 @@ test("Live: one filter choice per system; a call says its site, and the others c
   assert.match(page, /All dcfd other/);
   assert.match(page, /dcfd \/ south/);
   assert.match(page, /also on dcfd/);
+});
+
+test("Radio: each system's card opens its system from anywhere on it, without an Open link", () => {
+  twoSites();
+  setView("radio");
+  const html = renderToString(<RadioPage />);
+  assert.equal((html.match(/class="card card-opens sys-section"/g) ?? []).length, 2, "both systems' cards open them");
+  assert.doesNotMatch(text(html), /Open dcfd/);
 });
