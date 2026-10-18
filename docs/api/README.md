@@ -457,7 +457,7 @@ Every message is a JSON object with a `type`. Exact fields are in
 | `radioResult` | Answers `radioQuery` | `id`, `what`, and by `what`: `rows` (talkgroups / radios / frequencies), `row` and its detail, `systems` (summary), `histogram` |
 | `concluded` | A call was recorded | `entry`: `{ path, record, audio, json }`; `audio` / `json`: whether they stay in the recordings folder once the plugins are done (**Keep audio** / **Keep call JSON**; false: deleted then) |
 | `callFiles` | A call's upload plugins are done, and it kept other than its entry said (an upload failed and its files stay) | `path`, `audio`, `json` |
-| `log` | Topic `log` (errors and notices always) | `lines[]`: `{ timeS, kind, text, system? }` — `kind` e.g. `"error"`, `"control"`, `"alias"`, `"plugin"`, or a control-message kind |
+| `log` | Topic `log` (warnings and errors always) | `lines[]`: `{ timeS, kind, text, system?, time?, level? }` — `kind` e.g. `"error"`, `"control"`, `"alias"`, `"plugin"`, `"info"`, or a control-message kind; the decoder's lines have `timeS` (seconds into the recording), the recorder's own `time` (Unix seconds) and `level` |
 | `unitAlias` | A talker alias was heard | `system` (short name), `unit`, `alias` |
 | `heard` | On connecting; conventional codes heard changed | `heard`: frequency (Hz, as a string) → `HeardCode[]` |
 | `config` | On connecting; the config changed (anyone's `setConfig`, a plugin added…) | `config`, `version` (what an edit is sent with) |

@@ -31,6 +31,10 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   Wait for `hello` before treating something missing as missing. A listen-only connection gets the
   same messages as before, without plugin settings and key sources. client.js emits `change` once
   at `hello` during the greeting.
+- **The recorder's own log lines reach the browsers** with their clock time and level (`LogLine.time`,
+  `.level`): warnings and errors to every connection, the rest to those watching the `log` topic.
+- **Calls are finished by a small pool of threads** that write every file a call's plan says (an
+  .m4a made for a plugin too), so the plugins are handed finished files.
 - **Plugin SDK: one `CallRecord`.** The call JSON is one typed record from the engine to the file,
   the history and the plugins, where it was a string parsed again four times. Every field the
   recorder writes is named (`freq_error`, `signal`, `noise`, `snr`, `clean_voice_pct`,
