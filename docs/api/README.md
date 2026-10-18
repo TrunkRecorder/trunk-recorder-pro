@@ -179,9 +179,8 @@ What a page may do depends on the port it came from:
 
 A listen-only connection may send `subscribe`, `statsQuery`, `radioQuery`,
 `olderCalls` and `listen`. Its `hello` has no `configPath`, and it isn't
-sent `devices`, `plugins`, `pluginRuntime`, `pluginStore`,
-`pluginInstall`, `interfaces`, `interfaceStore`, `interfaceInstall` or
-`keys`. An interface that needs more says
+sent `devices`, `plugins`, `pluginRuntime`, `interfaces`, `store`,
+`installProgress` or `keys`. An interface that needs more says
 `"access": "control"` in its `interface.json`; the store shows that before
 it's installed, and the user can change it either way at any time.
 
@@ -375,9 +374,9 @@ origin listed (e.g. `"https://radio.example.com"`).
    doesn't compute them.
 5. **Send commands** as JSON text whenever you like. Answers to your own
    commands (`error`, `notice`, `dir`, `trConfig`, `devices`, `radios`,
-   `pluginStore`, and `plugins` when you sent `plugins`) come to your
+   `store`, and `plugins` when you sent `plugins`) come to your
    connection only. Everything else goes to every client: after
-   `addPlugin`, `removePlugin` or `installPlugin` everyone gets `plugins`,
+   `addPlugin`, `removePlugin` or a plugin's `install` everyone gets `plugins`,
    and after `setConfig` or `channelFile` everyone gets `config`; every
    `setConfig` is answered to its sender with `configSaved`.
 6. **Reconnect** when the socket closes: the recorder may have restarted. A
@@ -471,11 +470,9 @@ Every message is a JSON object with a `type`. Exact fields are in
 | `surveySpectrum` | While surveying | like `spectrum` |
 | `sourceProfile` | Answers `profileSource` | `source`, then `error`, or `centerHz`, `rateHz`, `spectrum` / `floor` (1024 points, dB, −rate/2 … +rate/2), `rows` (a waterfall), `referenceDb`, `lowHz` / `highHz` (how far in the floor is 3 dB down), `lowDropDb` / `highDropDb`, `suggestedGuardHz` |
 | `pluginRuntime` | On connecting (control access); a plugin's totals changed | `id`, `runtime` (state, counts, recent log; `metrics` — queue, upload time, endpoints — when the plugin reports them; restarts, events dropped, uptime; results per minute for the last hour) |
-| `pluginStore` | Answers `pluginStore` | the plugin registry's listings |
 | `interfaces` | On connecting (control access);  after interface changes; answers `interfaces` | `interfaces` (`InterfaceInfo[]`: each one's port, access, whether it's served and why not), `api` |
-| `interfaceStore` | Answers `interfaceStore` | the interface store's listings |
-| `interfaceInstall` | As an install goes | `key`, `id`, `stage`, `message` (as `pluginInstall`) |
-| `pluginInstall` | An install's progress | `key`, `id`, `stage` (`finding` … `done` / `failed`), `message` |
+| `store` | Answers `store` | `kind` (`plugin`: the plugin registry; `interface`: the interface store), `source`, `fetched`, `problem`, `listings` (a plugin store also says this computer's `target`) |
+| `installProgress` | As an install goes (control access) | `kind`, `key` (what was asked for), `id`, `stage` (`finding` … `done` / `failed`), `message` |
 | `error` | A command failed | `message`, for the user |
 | `notice` | A command worked and has something to say | `message` |
 | `quit` | The recorder is exiting (it may be restarted) | — |
@@ -504,13 +501,11 @@ aren't understood are ignored.
 | `plugins` | — | List plugins again (→ `plugins`). |
 | `addPlugin` | `path` | Add a plugin executable of your own. |
 | `removePlugin` | `id` | Remove a plugin. |
-| `pluginStore` | `refresh?` | The plugin registry's list (→ `pluginStore`). |
 | `interfaces` | — | List the interfaces again (→ `interfaces`). |
-| `interfaceStore` | `refresh?` | The interface store's list (→ `interfaceStore`). |
-| `installInterface` | `id`, or `repository` and `tag?` | Install or update an interface; a new one is served at once on the next free port. |
+| `store` | `kind` (`plugin` or `interface`), `refresh?` | A store's list (→ `store`). |
+| `install` | `kind`, then `id`, or `repository` and `tag?` | Install or update a plugin or an interface from its store or a GitHub release (→ `installProgress` as it goes). A new interface is served at once on the next free port. |
 | `addInterface` | `path` | Serve a folder on the recorder's computer as an interface. |
 | `removeInterface` | `id` | Stop serving it and forget it; an installed copy is deleted. |
-| `installPlugin` | `id`, or `repository` + `tag?` | Install or update a plugin (→ `pluginInstall` as it goes). |
 | `subscribe` | `topics` | What this connection watches (replaces the last): `spectrum:<source>`, `log`, `rf:<source>`, `decode:<shortName>`, `platform` (→ `subscribed`). |
 | `statsQuery` | `id`, `series` (names, or prefixes ending in `*`), `range` (`10m` / `1h` / `6h` / `24h` / `7d`) or `from` / `to` (Unix s), `points?` | The minute history of series, averaged down to about `points` steps (→ `statsResult`). |
 | `radioQuery` | `id`, `what`, `system?`, `key?`, `hours?`, `limit?` | The radio registry: `summary`, `talkgroups`, `units`, `tg` (`key`: the talkgroup), `unit` (`key`: the radio), `freqs`, `lengths` (→ `radioResult`). |

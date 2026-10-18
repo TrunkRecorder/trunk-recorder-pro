@@ -13,9 +13,7 @@ import { useEffect, useState } from "react";
 import {
   addPlugin,
   addSystemPluginCopy,
-  fetchPluginStore,
-  installPlugin,
-  installPluginFrom,
+  installFromStore,
   pluginOn,
   removePlugin,
   removeSystemPluginCopy,
@@ -42,8 +40,8 @@ import { Group, Section, Switch } from "./SetupLayout.tsx";
 import { openTodos } from "./todo.ts";
 import { copyOverride, copyOwn, pluginCopies } from "./protocol.ts";
 import { fieldsOf } from "./pluginSettings.ts";
-import type { Config, PluginInfo, PluginInstall, PluginManifest, PluginSchema, PluginValues, PluginsList, StoreListing } from "./protocol.ts";
-import { Author, newer, STAGES, StoreSource, TierChip, webUrl } from "./StoreParts.tsx";
+import type { Config, InstallProgress, PluginInfo, PluginListing, PluginManifest, PluginSchema, PluginValues, PluginsList } from "./protocol.ts";
+import { Author, InstallStage, newer, STAGES, StoreCard, StorePanel, TierChip, webUrl, type StoreWords } from "./StoreParts.tsx";
 
 /** "apiKey" → "Api key": a label for a field the plugin didn't title. */
 function spell(key: string): string {
@@ -670,7 +668,7 @@ function stateOf(p: PluginInfo, on: boolean, recording: boolean): { tone: "ok" |
 }
 
 /** An installed plugin on the Plugins page: how it's doing, its log, updates; "Set up" goes to Setup. */
-function PluginCard(props: { p: PluginInfo; recording: boolean; listing?: StoreListing; install?: PluginInstall }) {
+function PluginCard(props: { p: PluginInfo; recording: boolean; listing?: PluginListing; install?: InstallProgress }) {
   const { p, recording, listing, install } = props;
   const m = p.manifest;
   const s = useApp();
@@ -749,7 +747,7 @@ function PluginCard(props: { p: PluginInfo; recording: boolean; listing?: StoreL
           </span>
         ) : (
           update && (
-            <button className="btn primary" onClick={() => installPlugin(p.id)} title={recording && on ? "It restarts with the new version." : undefined}>
+            <button className="btn primary" onClick={() => installFromStore("plugin", p.id)} title={recording && on ? "It restarts with the new version." : undefined}>
               Update to v{update.version}
             </button>
           )
@@ -839,174 +837,37 @@ function AddPlugin() {
   );
 }
 
-/** One of the registry's plugins: what it is, and Install / Update / Installed. */
-function StoreCard(props: { l: StoreListing; installed?: PluginInfo; install?: PluginInstall; recording: boolean }) {
+/** What the plugin registry says on this page. */
+const PLUGIN_STORE: StoreWords = {
+  title: "Find plugins",
+  searchHint: "OpenMHz, upload, stream…",
+  empty: "The registry has no plugins yet.",
+  warning: "Unreviewed. Plugins get full access to this computer.",
+  repoExample: "https://github.com/someone/trunk-plugin-pager",
+  template: "Must use the plugin template's release workflow.",
+};
+
+/** One of the registry's plugins: Install / Update / Installed. */
+function StoreListingCard(props: { l: PluginListing; installed?: PluginInfo; install?: InstallProgress }) {
   const { l, installed, install } = props;
   const have = installed?.manifest?.version;
   let action: React.ReactNode;
-  if (install) {
+  if (install) action = <InstallStage install={install} />;
+  else if (installed?.custom) action = <span className="small muted">Your build is installed</span>;
+  else if (l.unavailable) action = <span className="small muted">{l.unavailable}</span>;
+  else if (installed && have && !installed.unlistedFrom && !newer(l.version, have)) action = <span className="chip ok">Installed{have !== l.version ? ` v${have}` : ""}</span>;
+  else
     action = (
-      <span className="small muted install-stage" role="status">
-        {STAGES[install.stage]}
-      </span>
-    );
-  } else if (installed?.custom) {
-    action = <span className="small muted">Your build is installed</span>;
-  } else if (l.unavailable) {
-    action = <span className="small muted">{l.unavailable}</span>;
-  } else if (installed && have && !installed.unlistedFrom && !newer(l.version, have)) {
-    action = <span className="chip ok">Installed{have !== l.version ? ` v${have}` : ""}</span>;
-  } else if (installed && have) {
-    action = (
-      <button className="btn primary" onClick={() => installPlugin(l.id)}>
-        {installed.unlistedFrom ? `Install the registry's v${l.version}` : `Update to v${l.version}`}
+      <button className="btn primary" onClick={() => installFromStore("plugin", l.id)}>
+        {installed && have ? (installed.unlistedFrom ? `Install the registry's v${l.version}` : `Update to v${l.version}`) : "Install"}
       </button>
     );
-  } else {
-    action = (
-      <button className="btn primary" onClick={() => installPlugin(l.id)}>
-        Install
-      </button>
-    );
-  }
-  return (
-    <article className="plugin-card store-card" aria-labelledby={`sn-${l.id}`}>
-      <div className="plugin-head">
-        <span className="plugin-icon tone-off" aria-hidden="true">
-          <IconPuzzle />
-        </span>
-        <div className="plugin-title">
-          <div className="row">
-            <strong id={`sn-${l.id}`}>{l.name}</strong>
-            <span className="chip">v{l.version}</span>
-            <TierChip tier={l.tier} />
-            <Author repository={l.repository} />
-          </div>
-        </div>
-        {action}
-      </div>
-      <p className="plugin-desc">{l.description}</p>
-      <p className="small muted plugin-meta">
-        {l.license && `${l.license} · `}
-        {l.homepage && (
-          <>
-            <a href={webUrl(l.homepage)} target="_blank" rel="noreferrer">
-              Website
-            </a>
-            {" · "}
-          </>
-        )}
-        <a href={webUrl(l.repository)} target="_blank" rel="noreferrer">
-          Source
-        </a>
-      </p>
-    </article>
-  );
+  return <StoreCard l={l} icon={<IconPuzzle />} action={action} />;
 }
 
-/** A plugin from a GitHub release that isn't in the registry. */
-function InstallFromGitHub(props: { busy: boolean }) {
-  const [open, setOpen] = useState(false);
-  const [repo, setRepo] = useState("");
-  const [tag, setTag] = useState("");
-  if (!open)
-    return (
-      <button className="btn ghost" onClick={() => setOpen(true)}>
-        Install from GitHub…
-      </button>
-    );
-  return (
-    <form
-      className="add-plugin"
-      onSubmit={(e) => {
-        e.preventDefault();
-        if (!repo.trim()) return;
-        installPluginFrom(repo.trim(), tag);
-        setRepo("");
-        setTag("");
-        setOpen(false);
-      }}
-    >
-      <p className="small warn-text">Unreviewed. Plugins get full access to this computer.</p>
-      <div className="grid2">
-        <div className="field">
-          <label className="field-label" htmlFor="gh-repo">
-            GitHub repository or release URL
-          </label>
-          <input id="gh-repo" className="mono" autoFocus value={repo} placeholder="https://github.com/someone/trunk-plugin-pager" onChange={(e) => setRepo(e.target.value)} />
-        </div>
-        <div className="field">
-          <label className="field-label" htmlFor="gh-tag">
-            Release (optional)
-          </label>
-          <input id="gh-tag" className="mono" value={tag} placeholder="latest" onChange={(e) => setTag(e.target.value)} />
-        </div>
-      </div>
-      <span className="field-hint">Must use the plugin template's release workflow.</span>
-      <div className="row">
-        <button className="btn primary" type="submit" disabled={!repo.trim() || props.busy}>
-          Install
-        </button>
-        <button className="btn ghost" type="button" onClick={() => setOpen(false)}>
-          Cancel
-        </button>
-      </div>
-    </form>
-  );
-}
-
-function PluginStorePanel(props: { list: PluginsList; recording: boolean }) {
-  const s = useApp();
-  const store = s.pluginStore;
-  const [query, setQuery] = useState("");
-  useEffect(() => {
-    if (!store) fetchPluginStore();
-  }, [store]);
-  const q = query.trim().toLowerCase();
-  const order = { official: 0, community: 1, unlisted: 2 };
-  const listings = (store?.plugins ?? [])
-    .filter((l) => !q || [l.id, l.name, l.description].some((f) => f.toLowerCase().includes(q)))
-    .sort((a, b) => order[a.tier] - order[b.tier] || a.name.localeCompare(b.name));
-  // Installs from GitHub, by repository: shown until they're done.
-  const fromGitHub = Object.values(s.pluginInstalls).filter((i) => !store?.plugins.some((l) => l.id === i.key));
-
-  return (
-    <section className="panel" aria-labelledby="store-title">
-      <header className="panel-head">
-        <h2 id="store-title">Find plugins</h2>
-        <button className="btn ghost small" onClick={() => fetchPluginStore(true)} disabled={!store}>
-          Check again
-        </button>
-      </header>
-      {!store ? (
-        <p className="muted">Loading…</p>
-      ) : (
-        <div className="stack">
-          <StoreSource store={store} />
-          {store.plugins.length > 4 && (
-            <div className="field">
-              <label className="field-label" htmlFor="store-search">
-                Search
-              </label>
-              <input id="store-search" type="search" value={query} placeholder="OpenMHz, upload, stream…" onChange={(e) => setQuery(e.target.value)} />
-            </div>
-          )}
-          {listings.map((l) => (
-            <StoreCard key={l.id} l={l} installed={props.list.plugins.find((p) => p.id === l.id)} install={s.pluginInstalls[l.id]} recording={props.recording} />
-          ))}
-          {listings.length === 0 && <p className="empty">{q ? `No plugins match “${query.trim()}”.` : "The registry has no plugins yet."}</p>}
-          {fromGitHub.map((i) => (
-            <p key={i.key} className="small muted" role="status">
-              {i.key}: {STAGES[i.stage]}
-            </p>
-          ))}
-          <div className="row">
-            <InstallFromGitHub busy={fromGitHub.length > 0} />
-          </div>
-        </div>
-      )}
-    </section>
-  );
+function PluginStorePanel(props: { list: PluginsList }) {
+  const installs = useApp().installs.plugin;
+  return <StorePanel kind="plugin" words={PLUGIN_STORE} card={(l) => <StoreListingCard key={l.id} l={l} installed={props.list.plugins.find((p) => p.id === l.id)} install={installs[l.id]} />} />;
 }
 
 export function PluginsPage() {
@@ -1031,14 +892,14 @@ export function PluginsPage() {
               key={p.id}
               p={p}
               recording={recording}
-              listing={s.pluginStore?.plugins.find((l) => l.id === p.id)}
-              install={s.pluginInstalls[p.id]}
+              listing={s.stores.plugin?.listings.find((l) => l.id === p.id)}
+              install={s.installs.plugin[p.id]}
             />
           ))}
           {plugins.length === 0 && <p className="empty">No plugins yet.</p>}
         </div>
       </section>
-      <PluginStorePanel list={list} recording={recording} />
+      <PluginStorePanel list={list} />
     </div>
   );
 }

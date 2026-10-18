@@ -1,8 +1,15 @@
-// What the plugin store and the interface store share on screen: version
-// order, how an install is going, a listing's tier, and how fresh the list is.
+// The plugin store and the interface store on screen: one panel (search, the
+// listings, installs from GitHub), one card, one GitHub form, by kind; and
+// what they share: version order, how an install is going, a listing's tier,
+// and how fresh the list is. Each page says only what its own listing's
+// button is (installed, an update, your own copy…).
 
-import { useState } from "react";
-import type { PluginInstall, StoreListing } from "./protocol.ts";
+import { useEffect, useState } from "react";
+import { fetchStore, installFromGitHub, useApp } from "./controller.ts";
+import type { InstallProgress, InterfaceListing, PluginListing, StoreKind, StoreListing } from "./protocol.ts";
+
+/** A listing of store `K`. */
+export type ListingOf<K extends StoreKind> = K extends "plugin" ? PluginListing : InterfaceListing;
 
 /** `url` when it's a web address; undefined otherwise (a manifest's `javascript:` link, say). */
 export function webUrl(url: string | null | undefined): string | undefined {
@@ -100,7 +107,7 @@ export function newer(a: string, b: string): boolean {
   return x.pre > y.pre;
 }
 
-export const STAGES: Record<PluginInstall["stage"], string> = {
+export const STAGES: Record<InstallProgress["stage"], string> = {
   finding: "Finding it…",
   downloading: "Downloading…",
   checking: "Checking it…",
@@ -153,3 +160,175 @@ export function StoreSource(props: { store: { source: "registry" | "saved" | "bu
   );
 }
 
+
+/** A store's listing: what it is, and `action` (Install / Update / Installed…). `chips`: more beside its tier. */
+export function StoreCard(props: { l: StoreListing; icon: React.ReactNode; action: React.ReactNode; chips?: React.ReactNode }) {
+  const { l } = props;
+  const id = `store-${l.id}`;
+  return (
+    <article className="plugin-card store-card" aria-labelledby={id}>
+      <div className="plugin-head">
+        <span className="plugin-icon tone-off" aria-hidden="true">
+          {props.icon}
+        </span>
+        <div className="plugin-title">
+          <div className="row">
+            <strong id={id}>{l.name}</strong>
+            <span className="chip">v{l.version}</span>
+            <TierChip tier={l.tier} />
+            <Author repository={l.repository} />
+            {props.chips}
+          </div>
+        </div>
+        {props.action}
+      </div>
+      <p className="plugin-desc">{l.description}</p>
+      {"screenshots" in l && <Screenshots name={l.name} shots={(l.screenshots ?? []).map((sh) => ({ src: `/store/screenshots/${sh.sha256}`, caption: sh.caption }))} />}
+      <p className="small muted plugin-meta">
+        {l.license && `${l.license} · `}
+        {l.homepage && (
+          <>
+            <a href={webUrl(l.homepage)} target="_blank" rel="noreferrer">
+              Website
+            </a>
+            {" · "}
+          </>
+        )}
+        <a href={webUrl(l.repository)} target="_blank" rel="noreferrer">
+          Source
+        </a>
+      </p>
+    </article>
+  );
+}
+
+/** How an install under way is going, for a listing's button. */
+export function InstallStage(props: { install: InstallProgress }) {
+  return (
+    <span className="small muted install-stage" role="status">
+      {STAGES[props.install.stage]}
+    </span>
+  );
+}
+
+/** What differs between the stores' panels. */
+export interface StoreWords {
+  title: string;
+  /** Search box examples. */
+  searchHint: string;
+  /** When the store has nothing. */
+  empty: string;
+  /** Above the GitHub form: what an unreviewed one may do. */
+  warning: string;
+  /** A repository, for the GitHub form's placeholder. */
+  repoExample: string;
+  /** Under it: which template's release workflow it must use. */
+  template: string;
+}
+
+/** A store: its source, a search, its listings (each drawn by `card`), installs from GitHub under way, and the GitHub form. */
+export function StorePanel<K extends StoreKind>(props: { kind: K; words: StoreWords; card: (l: ListingOf<K>) => React.ReactNode }) {
+  const s = useApp();
+  const { kind, words } = props;
+  const store = s.stores[kind];
+  const [query, setQuery] = useState("");
+  useEffect(() => {
+    if (!store) fetchStore(kind);
+  }, [store, kind]);
+  const q = query.trim().toLowerCase();
+  const order = { official: 0, community: 1, unlisted: 2 };
+  const all: StoreListing[] = store?.listings ?? [];
+  const listings = all
+    .filter((l) => !q || [l.id, l.name, l.description].some((f) => f.toLowerCase().includes(q)))
+    .sort((a, b) => order[a.tier] - order[b.tier] || a.name.localeCompare(b.name));
+  // Installs from GitHub, by repository: shown until they're done.
+  const fromGitHub = Object.values(s.installs[kind]).filter((i) => !all.some((l) => l.id === i.key));
+  const titleId = `${kind}-store-title`;
+  return (
+    <section className="panel" aria-labelledby={titleId}>
+      <header className="panel-head">
+        <h2 id={titleId}>{words.title}</h2>
+        <button className="btn ghost small" onClick={() => fetchStore(kind, true)} disabled={!store}>
+          Check again
+        </button>
+      </header>
+      {!store ? (
+        <p className="muted">Loading…</p>
+      ) : (
+        <div className="stack">
+          <StoreSource store={store} />
+          {all.length > 4 && (
+            <div className="field">
+              <label className="field-label" htmlFor={`${kind}-store-search`}>
+                Search
+              </label>
+              <input id={`${kind}-store-search`} type="search" value={query} placeholder={words.searchHint} onChange={(e) => setQuery(e.target.value)} />
+            </div>
+          )}
+          {listings.map((l) => props.card(l as ListingOf<K>))}
+          {listings.length === 0 && <p className="empty">{q ? `Nothing matches “${query.trim()}”.` : words.empty}</p>}
+          {fromGitHub.map((i) => (
+            <p key={i.key} className="small muted" role="status">
+              {i.key}: {STAGES[i.stage]}
+            </p>
+          ))}
+          <div className="row">
+            <InstallFromGitHub kind={kind} words={words} busy={fromGitHub.length > 0} />
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+/** One from a GitHub release that isn't in the store. */
+function InstallFromGitHub(props: { kind: StoreKind; words: StoreWords; busy: boolean }) {
+  const [open, setOpen] = useState(false);
+  const [repo, setRepo] = useState("");
+  const [tag, setTag] = useState("");
+  if (!open)
+    return (
+      <button className="btn ghost" onClick={() => setOpen(true)}>
+        Install from GitHub…
+      </button>
+    );
+  const id = `${props.kind}-gh`;
+  return (
+    <form
+      className="add-plugin"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (!repo.trim()) return;
+        installFromGitHub(props.kind, repo.trim(), tag);
+        setRepo("");
+        setTag("");
+        setOpen(false);
+      }}
+    >
+      <p className="small warn-text">{props.words.warning}</p>
+      <div className="grid2">
+        <div className="field">
+          <label className="field-label" htmlFor={`${id}-repo`}>
+            GitHub repository or release URL
+          </label>
+          <input id={`${id}-repo`} className="mono" autoFocus value={repo} placeholder={props.words.repoExample} onChange={(e) => setRepo(e.target.value)} />
+        </div>
+        <div className="field">
+          <label className="field-label" htmlFor={`${id}-tag`}>
+            Release (optional)
+          </label>
+          <input id={`${id}-tag`} className="mono" value={tag} placeholder="latest" onChange={(e) => setTag(e.target.value)} />
+        </div>
+      </div>
+      <span className="field-hint">{props.words.template}</span>
+      <div className="row">
+        <button className="btn primary" type="submit" disabled={!repo.trim() || props.busy}>
+          Install
+        </button>
+        <button className="btn ghost" type="button" onClick={() => setOpen(false)}>
+          Cancel
+        </button>
+      </div>
+    </form>
+  );
+}

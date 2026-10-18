@@ -14,7 +14,7 @@
 //! release of its own (`<id>-<version>-<file name>`), which the listing pins
 //! by URL and SHA-256: the store shows them before anything is installed.
 
-use trunk_app::protocol::{body, ToClient};
+use trunk_app::protocol::{body, StoreKind, ToClient};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -98,7 +98,7 @@ impl Listing {
     }
 }
 
-/// The `interfaceStore` message for a catalog.
+/// The interfaces' `store` message for a catalog.
 pub fn message(cat: &Catalog) -> ToClient {
     let list: Vec<Value> = cat
         .index
@@ -110,7 +110,7 @@ pub fn message(cat: &Catalog) -> ToClient {
             v
         })
         .collect();
-    ToClient::InterfaceStore(body(json!({ "source": cat.source, "fetched": cat.fetched, "problem": cat.problem, "interfaces": list })))
+    ToClient::Store { kind: StoreKind::Interface, list: body(json!({ "source": cat.source, "fetched": cat.fetched, "problem": cat.problem, "listings": list })) }
 }
 
 /// The registry's list: fetched if it can be, else saved or built in.

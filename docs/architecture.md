@@ -527,7 +527,7 @@ schema, and every documented command against `Command::parse`.
     (`decode:<shortName>`: also each site's adjacent sites and DMR / NXDN
     detail, and the patches).
   - Replies to the sender only: `configSaved`, `devices`, `radios`, `dir`, `trConfig`,
-    `pluginStore`, `interfaceStore`, `subscribed`, `statsResult`,
+    `store`, `subscribed`, `statsResult`,
     `radioResult`, `error`, `notice`.
   - By access: `ToClient::audience` says which messages are control-only
     (plugin, interface and key management), and `runtime::publish` — the
@@ -539,9 +539,9 @@ schema, and every documented command against `Command::parse`.
 - **Client → recorder.** `setConfig` (with the version it edits; a stale
   one is refused), `setTalkgroups`, `start`, `stop`, `listen`,
   `channelFile`, `devices`, `findRadios`, `listDir`, `readTrConfig`,
-  `survey*`, `plugins`, `addPlugin`, `removePlugin`, `pluginStore`,
-  `installPlugin`, `interfaces`, `interfaceStore`, `installInterface`,
-  `addInterface`, `removeInterface`, `subscribe`, `statsQuery`,
+  `survey*`, `plugins`, `addPlugin`, `removePlugin`, `interfaces`,
+  `addInterface`, `removeInterface`, `store` and `install` (each with
+  `kind`: `plugin` or `interface`), `subscribe`, `statsQuery`,
   `radioQuery`, `quit`. A listen-only connection may send only `subscribe`,
   `statsQuery`, `radioQuery`, `olderCalls` and `listen`.
 - **HTTP routes**, on every interface's port (`server::api`):

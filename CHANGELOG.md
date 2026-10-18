@@ -31,6 +31,11 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   Wait for `hello` before treating something missing as missing. A listen-only connection gets the
   same messages as before, without plugin settings and key sources. client.js emits `change` once
   at `hello` during the greeting.
+- **One store for plugins and interfaces** (breaking for control-access interfaces). `pluginStore` /
+  `interfaceStore`, `installPlugin` / `installInterface` and `pluginInstall` / `interfaceInstall` are
+  `store { kind }`, `install { kind, … }` and `installProgress { kind, … }`, with `kind` `plugin` or
+  `interface`; a store's list is `listings`. The Plugins and Interfaces pages share one store panel.
+  `trunk-pro interface install` reports progress directly instead of reading it back off a hub.
 - **One site identity everywhere** (breaking for interface authors). A site's identity in `status`,
   the survey's candidates and monitor, and the config's `expect` is one shape, `SiteIdentity`: a
   field not heard yet is left out (it was `null` in messages), so test with `!= null`. The survey's

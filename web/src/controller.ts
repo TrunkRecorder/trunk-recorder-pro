@@ -25,12 +25,12 @@ import type {
   FromRecorder,
   LogLine,
   Phase,
-  PluginInstall,
+  InstallProgress,
   PluginsList,
   InterfaceSetup,
   InterfacesList,
-  InterfaceStore,
-  PluginStore,
+  Store,
+  StoreKind,
   PluginValues,
   LockableKeys,
   Radios,
@@ -116,18 +116,14 @@ export interface AppState {
   configEpoch: number;
   /** The plugins (desktop app); null until the recorder says. */
   plugins: PluginsList | null;
-  /** The plugin registry's list; null until asked for. */
-  pluginStore: PluginStore | null;
-  /** Installs under way, by what was asked for (an id, or a repository). */
-  pluginInstalls: Record<string, PluginInstall>;
   /** A plugin this browser just installed: its settings open. */
   pluginJustInstalled: string | null;
   /** The interfaces besides this one (desktop app); null until the recorder says. */
   interfaces: InterfacesList | null;
-  /** The interface store's list, once asked for. */
-  interfaceStore: InterfaceStore | null;
-  /** Interface installs under way, by what was asked for. */
-  interfaceInstalls: Record<string, PluginInstall>;
+  /** Each store's list (the plugins' registry, the interfaces'), once asked for. */
+  stores: { [K in StoreKind]: Extract<Store, { kind: K }> | null };
+  /** Installs under way from each store, by what was asked for (an id, or a repository). */
+  installs: Record<StoreKind, Record<string, InstallProgress>>;
   /** Which page is showing, and what in it (`#/rf/0` → page "rf", path ["0"]). */
   view: View;
   path: string[];
@@ -206,12 +202,10 @@ let state: AppState = {
   profiling: null,
   configEpoch: 0,
   plugins: null,
-  pluginStore: null,
-  pluginInstalls: {},
   pluginJustInstalled: null,
   interfaces: null,
-  interfaceStore: null,
-  interfaceInstalls: {},
+  stores: { plugin: null, interface: null },
+  installs: { plugin: {}, interface: {} },
   ...routeFromHash(),
   stats: null,
   host: null,
@@ -443,45 +437,30 @@ function take(m: FromRecorder): void {
     case "pluginRuntime":
       if (state.plugins) set({ plugins: { ...state.plugins, plugins: state.plugins.plugins.map((p) => (p.id === m.id ? { ...p, runtime: m.runtime } : p)) } });
       break;
-    case "pluginStore": {
+    case "store": {
       const { type: _, ...store } = m;
-      set({ pluginStore: store });
+      set({ stores: { ...state.stores, [store.kind]: store } });
       break;
     }
-    case "pluginInstall": {
+    case "installProgress": {
       const { type: _, ...inst } = m;
-      const installs = { ...state.pluginInstalls };
+      const installs = { ...state.installs[inst.kind] };
       if (inst.stage === "done" || inst.stage === "failed") {
         delete installs[inst.key];
         // Only the browser that asked says how it went.
-        if (askedInstalls.delete(inst.key)) {
+        if (askedInstalls.delete(`${inst.kind}:${inst.key}`)) {
           // A new plugin's settings open (not an update's: the list still has it).
-          const fresh = !!inst.id && !state.plugins?.plugins.some((p) => p.id === inst.id);
-          if (inst.stage === "done") set({ notice: inst.message, pluginJustInstalled: fresh ? inst.id : null });
+          const fresh = inst.kind === "plugin" && !!inst.id && !state.plugins?.plugins.some((p) => p.id === inst.id);
+          if (inst.stage === "done") set({ notice: inst.message, ...(fresh ? { pluginJustInstalled: inst.id } : {}) });
           else set({ error: inst.message });
         }
       } else installs[inst.key] = inst;
-      set({ pluginInstalls: installs });
+      set({ installs: { ...state.installs, [inst.kind]: installs } });
       break;
     }
     case "interfaces": {
       const { type: _, ...list } = m;
       set({ interfaces: list });
-      break;
-    }
-    case "interfaceStore": {
-      const { type: _, ...store } = m;
-      set({ interfaceStore: store });
-      break;
-    }
-    case "interfaceInstall": {
-      const { type: _, ...inst } = m;
-      const installs = { ...state.interfaceInstalls };
-      if (inst.stage === "done" || inst.stage === "failed") {
-        delete installs[inst.key];
-        if (askedInstalls.delete(inst.key)) set(inst.stage === "done" ? { notice: inst.message } : { error: inst.message });
-      } else installs[inst.key] = inst;
-      set({ interfaceInstalls: installs });
       break;
     }
     case "quit":
@@ -839,46 +818,35 @@ export function removePlugin(id: string): void {
 export function setM4a(patch: { encoder?: string; bitrateKbps?: number }): void {
   updateConfig((x) => void (x.recording.m4a = { ...(x.recording.m4a ?? { encoder: "auto", bitrateKbps: 32 }), ...patch }));
 }
-/** The registry's list (fetched again now with `refresh`). */
-export function fetchPluginStore(refresh = false): void {
-  transport.send({ type: "pluginStore", refresh });
+// ── the stores ───────────────────────────────────────────────────────────────
+// The plugins' registry and the interfaces' store: the same lists, installs
+// and progress, by kind.
+
+/** A store's list (fetched again now with `refresh`). */
+export function fetchStore(kind: StoreKind, refresh = false): void {
+  transport.send({ type: "store", kind, refresh });
 }
-/** Installs this browser asked for: it says how they went. */
+/** Installs this browser asked for (`kind:key`): it says how they went. */
 const askedInstalls = new Set<string>();
-/** Install (or update) a plugin from the registry. */
-export function installPlugin(id: string): void {
-  askedInstalls.add(id);
-  set({ pluginInstalls: { ...state.pluginInstalls, [id]: { key: id, id, stage: "finding", message: null } } });
-  transport.send({ type: "installPlugin", id });
+function installing(kind: StoreKind, key: string, id: string): void {
+  askedInstalls.add(`${kind}:${key}`);
+  set({ installs: { ...state.installs, [kind]: { ...state.installs[kind], [key]: { kind, key, id, stage: "finding", message: null } } } });
 }
-/** Install a plugin from a GitHub release that isn't in the registry. */
-export function installPluginFrom(repository: string, tag?: string): void {
+/** Install (or update) a plugin or interface from its store. */
+export function installFromStore(kind: StoreKind, id: string): void {
+  installing(kind, id, id);
+  transport.send({ type: "install", kind, id });
+}
+/** Install from a GitHub release that isn't in the store (its latest, or `tag`). */
+export function installFromGitHub(kind: StoreKind, repository: string, tag?: string): void {
   const key = repository.trim();
-  askedInstalls.add(key);
-  set({ pluginInstalls: { ...state.pluginInstalls, [key]: { key, id: "", stage: "finding", message: null } } });
-  transport.send({ type: "installPlugin", repository: key, ...(tag?.trim() ? { tag: tag.trim() } : {}) });
+  installing(kind, key, "");
+  transport.send({ type: "install", kind, repository: key, ...(tag?.trim() ? { tag: tag.trim() } : {}) });
 }
 // ── interfaces ───────────────────────────────────────────────────────────────
 // The other interfaces (docs/interfaces): each served on a port of its own,
 // set up in the config's server.interfaces (port, on or off, access).
 
-/** The interface store's list (fetched again now with `refresh`). */
-export function fetchInterfaceStore(refresh = false): void {
-  transport.send({ type: "interfaceStore", refresh });
-}
-/** Install (or update) an interface from the store. */
-export function installInterface(id: string): void {
-  askedInstalls.add(id);
-  set({ interfaceInstalls: { ...state.interfaceInstalls, [id]: { key: id, id, stage: "finding", message: null } } });
-  transport.send({ type: "installInterface", id });
-}
-/** Install an interface from a GitHub release that isn't in the store. */
-export function installInterfaceFrom(repository: string, tag?: string): void {
-  const key = repository.trim();
-  askedInstalls.add(key);
-  set({ interfaceInstalls: { ...state.interfaceInstalls, [key]: { key, id: "", stage: "finding", message: null } } });
-  transport.send({ type: "installInterface", repository: key, ...(tag?.trim() ? { tag: tag.trim() } : {}) });
-}
 /** Serve a folder of your own as an interface. */
 export function addInterface(path: string): void {
   transport.send({ type: "addInterface", path });

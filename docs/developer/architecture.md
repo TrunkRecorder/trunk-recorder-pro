@@ -1370,7 +1370,7 @@ full reference is `docs/api/README.md`.
 | On connect | `state`, `config`, `talkgroups`, `units`, `heard`, `history`, `radios`, `survey`, `monitorEvent`, `host` (control access also `devices`, `keys`, `plugins`, `interfaces`), then `hello` |
 | Every client | `state`, `status`, `stats`, `host`, `concluded`, `callFiles`, `monitorEvent`, `unitAlias`, `heard`, `config`, `talkgroups`, `survey`, `surveySpectrum`, `pluginRuntime`, `pluginInstall`, `quit` |
 | Topic subscribers | `spectrum` (`spectrum:<source>`, about 7/s, 512 bins), `log` (`log`), `rfDetail` (`rf:<source>`, 1/s), `decodeDetail` (`decode:<shortName>`, 1/s: channels, each site's adjacent sites and DMR / NXDN detail, patches), per-core detail in `host` (`platform`) |
-| The sender only | `configSaved`, `devices`, `radios`, `dir`, `trConfig`, `pluginStore`, `subscribed`, `statsResult`, `radioResult`, `olderCalls`, `sourceProfile`, `error`, `notice` |
+| The sender only | `configSaved`, `devices`, `radios`, `dir`, `trConfig`, `store`, `subscribed`, `statsResult`, `radioResult`, `olderCalls`, `sourceProfile`, `error`, `notice` |
 | Binary, to listeners | live audio frames |
 
 Nothing is computed for a topic nobody watches. A client more than 4,096 messages behind on the
@@ -1383,7 +1383,7 @@ hub skips the oldest without notice.
 | Recording | `setConfig`, `setTalkgroups`, `start`, `stop`, `quit`, `channelFile` |
 | Watching | `subscribe`, `listen`, `statsQuery`, `radioQuery`, `olderCalls` |
 | Setup | `devices`, `findRadios`, `listDir`, `readTrConfig`, `profileSource`, `surveyStart`, `surveyListen`, `surveyRescan`, `surveyStop` |
-| Plugins | `plugins`, `pluginStore`, `installPlugin` (by id, or repository and tag), `addPlugin`, `removePlugin` |
+| Plugins and interfaces | `plugins`, `addPlugin`, `removePlugin`, `interfaces`, `addInterface`, `removeInterface`; their stores: `store {kind}`, `install {kind, id}` or `{kind, repository, tag?}` (progress in `installProgress`) |
 
 ### 14.4 Live audio frame
 

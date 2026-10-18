@@ -90,11 +90,11 @@ pub enum ToClient {
     Notice { message: String },
     Plugins(Body),
     PluginRuntime { id: String, runtime: Value },
-    PluginStore(Body),
-    PluginInstall(Body),
     Interfaces(Body),
-    InterfaceStore(Body),
-    InterfaceInstall(Body),
+    /// A store's list (plugins' or interfaces'): `{ source, fetched, problem, listings, … }`.
+    Store { kind: StoreKind, #[serde(flatten)] list: Body },
+    /// An install from a store (or a GitHub release) as it goes, to everyone.
+    InstallProgress { kind: StoreKind, key: String, id: String, stage: &'static str, message: Option<String> },
     /// Every second while recording: each series' value now.
     Stats { t: f64, values: Body },
     /// The computer's and the plugins' series, and the computer's own figures (desktop app).
@@ -159,7 +159,7 @@ impl ToClient {
     pub fn audience(&self) -> Audience {
         use ToClient::*;
         match self {
-            Plugins(_) | PluginRuntime { .. } | PluginStore(_) | PluginInstall(_) | Interfaces(_) | InterfaceStore(_) | InterfaceInstall(_) | Keys { .. } => Audience::Control,
+            Plugins(_) | PluginRuntime { .. } | Interfaces(_) | Store { .. } | InstallProgress { .. } | Keys { .. } => Audience::Control,
             _ => Audience::Everyone,
         }
     }
@@ -181,6 +181,14 @@ impl ToClient {
     pub fn to_value(&self) -> Value {
         serde_json::to_value(self).unwrap_or_default()
     }
+}
+
+/// Which store: the plugins' or the interfaces'.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum StoreKind {
+    Plugin,
+    Interface,
 }
 
 /// Which plugin or interface to install: one listed in the store, or a
@@ -231,11 +239,11 @@ pub enum Command {
     Plugins,
     AddPlugin { path: String },
     RemovePlugin { id: String },
-    PluginStore { #[serde(default)] refresh: bool },
-    InstallPlugin(Install),
     Interfaces,
-    InterfaceStore { #[serde(default)] refresh: bool },
-    InstallInterface(Install),
+    /// A store's list; `refresh` fetches it again now.
+    Store { kind: StoreKind, #[serde(default)] refresh: bool },
+    /// Install (or update) from a store, or from a GitHub release.
+    Install { kind: StoreKind, #[serde(flatten)] what: Install },
     AddInterface { path: String },
     RemoveInterface { id: String },
     Subscribe { topics: Vec<String> },
@@ -333,8 +341,8 @@ mod tests {
     fn commands_are_read_strictly_and_listen_may_only_look() {
         let c = Command::parse(r#"{"type":"listen","on":true,"system":"dcfd"}"#).unwrap();
         assert!(matches!(&c, Command::Listen { on: true, system: Some(s), talkgroup: None } if s == "dcfd") && c.listen_may_send());
-        assert!(matches!(Command::parse(r#"{"type":"installPlugin","repository":"a/b"}"#), Ok(Command::InstallPlugin(Install::Release { tag: None, .. }))));
-        assert!(matches!(Command::parse(r#"{"type":"installPlugin","id":"openmhz"}"#), Ok(Command::InstallPlugin(Install::Listed { .. }))));
+        assert!(matches!(Command::parse(r#"{"type":"install","kind":"plugin","repository":"a/b"}"#), Ok(Command::Install { kind: StoreKind::Plugin, what: Install::Release { tag: None, .. } })));
+        assert!(matches!(Command::parse(r#"{"type":"install","kind":"interface","id":"trunkamp"}"#), Ok(Command::Install { kind: StoreKind::Interface, what: Install::Listed { .. } })));
         let e = Command::parse(r#"{"type":"channelFile","index":0}"#).err().unwrap();
         assert!(e.contains("channelFile") && e.contains("path"), "{e}");
         assert!(Command::parse(r#"{"type":"nope"}"#).is_err());

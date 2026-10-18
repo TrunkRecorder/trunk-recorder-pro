@@ -483,13 +483,6 @@ export interface InterfaceListing {
   unavailable: string | null;
 }
 
-/** The interface store's list, and where it came from (as PluginStore). */
-export interface InterfaceStore {
-  source: "registry" | "saved" | "built-in";
-  fetched: number | null;
-  problem: string | null;
-  interfaces: InterfaceListing[];
-}
 
 export interface Device {
   index: number;
@@ -1023,7 +1016,7 @@ export interface PluginsList {
 }
 
 /** A plugin in the registry (crates/trunk-pro/src/plugins/store.rs): one release of it, pinned. */
-export interface StoreListing {
+export interface PluginListing {
   id: string;
   name: string;
   description: string;
@@ -1041,23 +1034,36 @@ export interface StoreListing {
   unavailable: string | null;
 }
 
-/** The registry's list, and where it came from. */
-export interface PluginStore {
-  /** "registry": just fetched; "saved": fetched before (the registry couldn't be reached); "built-in": this version's copy. */
+/** Which store: the plugins' (the registry) or the interfaces'. */
+export type StoreKind = "plugin" | "interface";
+
+/** A store's list, and where it came from. */
+interface StoreList {
+  /** "registry": just fetched; "saved": fetched before (it couldn't be reached); "built-in": this version's copy. */
   source: "registry" | "saved" | "built-in";
   /** When it was fetched, Unix seconds. */
   fetched: number | null;
-  /** Why the registry couldn't be reached. */
+  /** Why it couldn't be reached. */
   problem: string | null;
-  /** This computer's release target, e.g. universal-apple-darwin. */
-  target: string | null;
-  plugins: StoreListing[];
 }
 
+export type Store =
+  | (StoreList & {
+      kind: "plugin";
+      /** This computer's release target, e.g. universal-apple-darwin. */
+      target: string | null;
+      listings: PluginListing[];
+    })
+  | (StoreList & { kind: "interface"; listings: InterfaceListing[] });
+
+/** One listing of either store. */
+export type StoreListing = PluginListing | InterfaceListing;
+
 /** An install (of a plugin or an interface) as it goes. `key` is what was asked for: an id, or a repository. */
-export interface PluginInstall {
+export interface InstallProgress {
+  kind: StoreKind;
   key: string;
-  /** The plugin's id, once known. */
+  /** What it installs, once known. */
   id: string;
   stage: "finding" | "downloading" | "checking" | "installing" | "done" | "failed";
   message: string | null;
@@ -1402,12 +1408,12 @@ export type FromRecorder =
   | { type: "notice"; message: string }
   | ({ type: "plugins" } & PluginsList)
   | { type: "pluginRuntime"; id: string; runtime: PluginRuntime }
-  | ({ type: "pluginStore" } & PluginStore)
-  | ({ type: "pluginInstall" } & PluginInstall)
+  /** A store's list (answers `store`). */
+  | ({ type: "store" } & Store)
+  /** An install from a store or a GitHub release as it goes, to every connection with control access. */
+  | ({ type: "installProgress" } & InstallProgress)
   /** Control access only (as the plugin messages). */
   | ({ type: "interfaces" } & InterfacesList)
-  | ({ type: "interfaceStore" } & InterfaceStore)
-  | ({ type: "interfaceInstall" } & PluginInstall)
   /** Every second while recording: each series' value now (see the series names above). */
   | { type: "stats"; t: number; values: Record<string, number> }
   /** Every 2 s (desktop app): the computer's and the plugins' series, and the computer's own figures. */
@@ -1461,20 +1467,14 @@ export type ToRecorder =
   | { type: "addPlugin"; path: string }
   /** Forget a plugin (in the config too); an installed copy is deleted. */
   | { type: "removePlugin"; id: string }
-  /** The registry's list; `refresh` fetches it again now. */
-  | { type: "pluginStore"; refresh?: boolean }
-  /** Install (or update) a plugin from the registry. */
-  | { type: "installPlugin"; id: string }
-  /** Install a plugin from a GitHub release that isn't in the registry (its latest, or `tag`). */
-  | { type: "installPlugin"; repository: string; tag?: string }
+  /** A store's list (the plugins' registry, or the interfaces'); `refresh` fetches it again now. */
+  | { type: "store"; kind: StoreKind; refresh?: boolean }
+  /** Install (or update) a plugin or interface from its store. A new interface is served at once on the next free port. */
+  | { type: "install"; kind: StoreKind; id: string }
+  /** Install from a GitHub release that isn't in the store (its latest, or `tag`); an interface may only listen until given control. */
+  | { type: "install"; kind: StoreKind; repository: string; tag?: string }
   /** The interfaces besides the built-in one (answered with `interfaces`). */
   | { type: "interfaces" }
-  /** The interface store's list; `refresh` fetches it again now. */
-  | { type: "interfaceStore"; refresh?: boolean }
-  /** Install (or update) an interface from the store; a new one is served at once on the next free port. */
-  | { type: "installInterface"; id: string }
-  /** Install an interface from a GitHub release that isn't in the store (its latest, or `tag`); it may only listen until given control. */
-  | { type: "installInterface"; repository: string; tag?: string }
   /** Serve a folder on the recorder's computer as an interface (its interface.json names it, else the folder does). */
   | { type: "addInterface"; path: string }
   /** Stop serving an interface and forget it; an installed copy is deleted. */

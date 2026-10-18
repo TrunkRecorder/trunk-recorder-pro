@@ -42,7 +42,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::config::{ApiAccess, Config, Interface};
-use crate::runtime::Hub;
 use crate::store::{Provenance, Shelf};
 
 /// The API version interfaces are written against: the WebSocket protocol
@@ -227,12 +226,11 @@ pub struct Interfaces {
     pub dev: Option<Dev>,
     /// The built-in interface's port this run (`--port` may differ from the config's).
     builtin_port: u16,
-    hub: Hub,
 }
 
 impl Interfaces {
-    pub fn new(hub: Hub, dev: Option<Dev>, builtin_port: u16) -> Interfaces {
-        Interfaces { shelf: Shelf::new(&store::REGISTRY), serving: Mutex::new(BTreeMap::new()), problems: Mutex::new(BTreeMap::new()), dev, builtin_port, hub }
+    pub fn new(dev: Option<Dev>, builtin_port: u16) -> Interfaces {
+        Interfaces { shelf: Shelf::new(&store::REGISTRY), serving: Mutex::new(BTreeMap::new()), problems: Mutex::new(BTreeMap::new()), dev, builtin_port }
     }
 
     /// Ports in use this run that the config doesn't know of: the built-in
@@ -316,12 +314,12 @@ impl Interfaces {
         store::message(&self.shelf.catalog(refresh))
     }
 
-    /// `installInterface {id}` or `{repository, tag?}`: says how it goes in
-    /// `interfaceInstall` messages, to everyone; blocks until done. Returns
-    /// what the config should have for it once installed ([`Installed`]).
-    pub fn install(&self, what: &Install, cfg: &Config) -> Option<Installed> {
+    /// `install {kind: "interface", id}` or `{…, repository, tag?}`: says how
+    /// it goes to `report`; blocks until done. Returns what the config should
+    /// have for it once installed ([`Installed`]).
+    pub fn install(&self, what: &Install, cfg: &Config, report: &dyn Fn(crate::store::Progress)) -> Option<Installed> {
         let mut done = None;
-        self.shelf.install(&self.hub, ToClient::InterfaceInstall, what.key(), |id_out, stage| {
+        self.shelf.install(what.key(), report, |id_out, stage| {
             let listing = match what {
                 Install::Listed { id } => self.shelf.catalog(false).find(id).cloned().ok_or_else(|| format!("{id} isn't in the interface store"))?,
                 Install::Release { repository, tag } => {

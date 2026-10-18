@@ -9,10 +9,10 @@
 // at once (this interface's own port takes a restart).
 
 import { useEffect, useState } from "react";
-import { addInterface, fetchInterfaceStore, installInterface, installInterfaceFrom, removeInterface, setInterface, updateConfig, useApp } from "./controller.ts";
+import { addInterface, installFromStore, removeInterface, setInterface, updateConfig, useApp } from "./controller.ts";
 import { Switch } from "./SetupLayout.tsx";
-import { Author, newer, Screenshots, STAGES, StoreSource, TierChip, webUrl } from "./StoreParts.tsx";
-import type { ApiAccess, Config, InterfaceInfo, InterfaceListing, PluginInstall } from "./protocol.ts";
+import { Author, InstallStage, newer, Screenshots, STAGES, StoreCard, StorePanel, TierChip, webUrl, type StoreWords } from "./StoreParts.tsx";
+import type { ApiAccess, Config, InstallProgress, InterfaceInfo, InterfaceListing } from "./protocol.ts";
 
 /** Where interface `port` is, from this browser. */
 const urlOf = (port: number) => `${location.protocol}//${location.hostname}:${port}/`;
@@ -75,7 +75,7 @@ function stateOf(i: InterfaceInfo, on: boolean): { tone: string; text: string } 
 }
 
 /** One of this recorder's interfaces: what it is, how it's doing, and what it may do. */
-function InterfaceCard(props: { i: InterfaceInfo; listing?: InterfaceListing; install?: PluginInstall }) {
+function InterfaceCard(props: { i: InterfaceInfo; listing?: InterfaceListing; install?: InstallProgress }) {
   const { i, listing, install } = props;
   const c = useApp().config;
   const setup = c?.server.interfaces?.[i.id];
@@ -156,7 +156,7 @@ function InterfaceCard(props: { i: InterfaceInfo; listing?: InterfaceListing; in
           </span>
         ) : (
           update && (
-            <button className="btn" onClick={() => installInterface(i.id)}>
+            <button className="btn" onClick={() => installFromStore("interface", i.id)}>
               Update to v{update.version}
             </button>
           )
@@ -279,176 +279,46 @@ function PortsPanel(props: { c: Config; list: InterfaceInfo[] }) {
   );
 }
 
-/** One of the store's interfaces: what it is, and Install / Update / Installed. */
-function StoreCard(props: { l: InterfaceListing; installed?: InterfaceInfo; install?: PluginInstall }) {
-  const { l, installed, install } = props;
+/** What the interface store says of an interface on this page. */
+const INTERFACE_STORE: StoreWords = {
+  title: "Find interfaces",
+  searchHint: "player, wall, map…",
+  empty: "The store has no interfaces yet.",
+  warning: "Unreviewed. It may only listen until you give it control.",
+  repoExample: "https://github.com/someone/trunkamp",
+  template: "Must use the interface template's release workflow.",
+};
+
+/** One of the store's interfaces: Install / Update / Installed. */
+function StoreListingCard(props: { l: InterfaceListing; installed?: InterfaceInfo; install?: InstallProgress }) {
+  const { l, installed, install: going } = props;
   const have = installed?.manifest?.version;
   const go = () => {
     if (!installed && l.access === "control" && !confirm(`${l.name} asks for control.\n\n${CONTROL_WARNING}`)) return;
-    installInterface(l.id);
+    installFromStore("interface", l.id);
   };
   let action: React.ReactNode;
-  if (install) {
-    action = (
-      <span className="small muted install-stage" role="status">
-        {STAGES[install.stage]}
-      </span>
-    );
-  } else if (installed && !installed.installed) {
-    action = <span className="small muted">Your folder is {l.id}</span>;
-  } else if (l.unavailable) {
-    action = <span className="small muted">{l.unavailable}</span>;
-  } else if (installed && have && installed.reviewed && !newer(l.version, have)) {
-    action = <span className="chip ok">Installed{have !== l.version ? ` v${have}` : ""}</span>;
-  } else {
+  if (going) action = <InstallStage install={going} />;
+  else if (installed && !installed.installed) action = <span className="small muted">Your folder is {l.id}</span>;
+  else if (l.unavailable) action = <span className="small muted">{l.unavailable}</span>;
+  else if (installed && have && installed.reviewed && !newer(l.version, have)) action = <span className="chip ok">Installed{have !== l.version ? ` v${have}` : ""}</span>;
+  else
     action = (
       <button className="btn primary" onClick={go}>
         {installed && have ? (installed.reviewed ? `Update to v${l.version}` : `Install the store's v${l.version}`) : "Install"}
       </button>
     );
-  }
-  return (
-    <article className="plugin-card store-card" aria-labelledby={`is-${l.id}`}>
-      <div className="plugin-head">
-        <span className="plugin-icon tone-off" aria-hidden="true">
-          <IconWindow />
-        </span>
-        <div className="plugin-title">
-          <div className="row">
-            <strong id={`is-${l.id}`}>{l.name}</strong>
-            <span className="chip">v{l.version}</span>
-            <TierChip tier={l.tier} />
-            <Author repository={l.repository} />
-            {l.access === "control" && (
-              <span className="chip warn" title={CONTROL_WARNING}>
-                asks for control
-              </span>
-            )}
-          </div>
-        </div>
-        {action}
-      </div>
-      <p className="plugin-desc">{l.description}</p>
-      <Screenshots name={l.name} shots={(l.screenshots ?? []).map((sh) => ({ src: `/store/screenshots/${sh.sha256}`, caption: sh.caption }))} />
-      <p className="small muted plugin-meta">
-        {l.license && `${l.license} · `}
-        {l.homepage && (
-          <>
-            <a href={webUrl(l.homepage)} target="_blank" rel="noreferrer">
-              Website
-            </a>
-            {" · "}
-          </>
-        )}
-        <a href={webUrl(l.repository)} target="_blank" rel="noreferrer">
-          Source
-        </a>
-      </p>
-    </article>
+  const chips = l.access === "control" && (
+    <span className="chip warn" title={CONTROL_WARNING}>
+      asks for control
+    </span>
   );
+  return <StoreCard l={l} icon={<IconWindow />} action={action} chips={chips} />;
 }
 
-/** An interface from a GitHub release that isn't in the store. */
-function InstallFromGitHub(props: { busy: boolean }) {
-  const [open, setOpen] = useState(false);
-  const [repo, setRepo] = useState("");
-  const [tag, setTag] = useState("");
-  if (!open)
-    return (
-      <button className="btn ghost" onClick={() => setOpen(true)}>
-        Install from GitHub…
-      </button>
-    );
-  return (
-    <form
-      className="add-plugin"
-      onSubmit={(e) => {
-        e.preventDefault();
-        if (!repo.trim()) return;
-        installInterfaceFrom(repo.trim(), tag);
-        setRepo("");
-        setTag("");
-        setOpen(false);
-      }}
-    >
-      <p className="small warn-text">Unreviewed. It may only listen until you give it control.</p>
-      <div className="grid2">
-        <div className="field">
-          <label className="field-label" htmlFor="gh-iface-repo">
-            GitHub repository or release URL
-          </label>
-          <input id="gh-iface-repo" className="mono" autoFocus value={repo} placeholder="https://github.com/someone/trunkamp" onChange={(e) => setRepo(e.target.value)} />
-        </div>
-        <div className="field">
-          <label className="field-label" htmlFor="gh-iface-tag">
-            Release (optional)
-          </label>
-          <input id="gh-iface-tag" className="mono" value={tag} placeholder="latest" onChange={(e) => setTag(e.target.value)} />
-        </div>
-      </div>
-      <span className="field-hint">Must use the interface template's release workflow.</span>
-      <div className="row">
-        <button className="btn primary" type="submit" disabled={!repo.trim() || props.busy}>
-          Install
-        </button>
-        <button className="btn ghost" type="button" onClick={() => setOpen(false)}>
-          Cancel
-        </button>
-      </div>
-    </form>
-  );
-}
-
-function StorePanel(props: { list: InterfaceInfo[] }) {
-  const s = useApp();
-  const store = s.interfaceStore;
-  const [query, setQuery] = useState("");
-  useEffect(() => {
-    if (!store) fetchInterfaceStore();
-  }, [store]);
-  const q = query.trim().toLowerCase();
-  const order = { official: 0, community: 1, unlisted: 2 };
-  const listings = (store?.interfaces ?? [])
-    .filter((l) => !q || [l.id, l.name, l.description].some((f) => f.toLowerCase().includes(q)))
-    .sort((a, b) => order[a.tier] - order[b.tier] || a.name.localeCompare(b.name));
-  const fromGitHub = Object.values(s.interfaceInstalls).filter((i) => !store?.interfaces.some((l) => l.id === i.key));
-  return (
-    <section className="panel" aria-labelledby="istore-title">
-      <header className="panel-head">
-        <h2 id="istore-title">Find interfaces</h2>
-        <button className="btn ghost small" onClick={() => fetchInterfaceStore(true)} disabled={!store}>
-          Check again
-        </button>
-      </header>
-      {!store ? (
-        <p className="muted">Loading…</p>
-      ) : (
-        <div className="stack">
-          <StoreSource store={store} />
-          {store.interfaces.length > 4 && (
-            <div className="field">
-              <label className="field-label" htmlFor="istore-search">
-                Search
-              </label>
-              <input id="istore-search" type="search" value={query} placeholder="player, wall, map…" onChange={(e) => setQuery(e.target.value)} />
-            </div>
-          )}
-          {listings.map((l) => (
-            <StoreCard key={l.id} l={l} installed={props.list.find((i) => i.id === l.id)} install={s.interfaceInstalls[l.id]} />
-          ))}
-          {listings.length === 0 && <p className="empty">{q ? `No interfaces match “${query.trim()}”.` : "The store has no interfaces yet."}</p>}
-          {fromGitHub.map((i) => (
-            <p key={i.key} className="small muted" role="status">
-              {i.key}: {STAGES[i.stage]}
-            </p>
-          ))}
-          <div className="row">
-            <InstallFromGitHub busy={fromGitHub.length > 0} />
-          </div>
-        </div>
-      )}
-    </section>
-  );
+function StoreSection(props: { list: InterfaceInfo[] }) {
+  const installs = useApp().installs.interface;
+  return <StorePanel kind="interface" words={INTERFACE_STORE} card={(l) => <StoreListingCard key={l.id} l={l} installed={props.list.find((i) => i.id === l.id)} install={installs[l.id]} />} />;
 }
 
 /** Pages served elsewhere that may use this interface's API (with control). */
@@ -513,13 +383,13 @@ export function InterfacesPage() {
         </p>
         <div className="stack">
           {sorted.map((i) => (
-            <InterfaceCard key={i.id} i={i} listing={s.interfaceStore?.interfaces.find((l) => l.id === i.id)} install={s.interfaceInstalls[i.id]} />
+            <InterfaceCard key={i.id} i={i} listing={s.stores.interface?.listings.find((l) => l.id === i.id)} install={s.installs.interface[i.id]} />
           ))}
           {sorted.length === 0 && <p className="empty">No interfaces yet. Install one below, or add a folder of your own.</p>}
         </div>
       </section>
       <PortsPanel c={c} list={sorted} />
-      <StorePanel list={list} />
+      <StoreSection list={list} />
       <OriginsPanel c={c} />
     </div>
   );

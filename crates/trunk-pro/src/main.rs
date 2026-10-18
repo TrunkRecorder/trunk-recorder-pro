@@ -872,7 +872,7 @@ fn serve(a: &Args) {
         survey_last: Mutex::new(None),
         plugins: plugins::manage::Plugins::new(hub.clone(), shared.clone()),
         bind: addr.ip(),
-        interfaces: interfaces::Interfaces::new(hub.clone(), dev, addr.port()),
+        interfaces: interfaces::Interfaces::new(dev, addr.port()),
         shared,
         series,
         store,

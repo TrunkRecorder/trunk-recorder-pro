@@ -2097,6 +2097,23 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
+            "kind": {
+              "type": "string",
+              "const": "plugin"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "This computer's release target, e.g. universal-apple-darwin."
+            },
+            "listings": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/PluginListing"
+              }
+            },
             "source": {
               "type": "string",
               "enum": [
@@ -2104,7 +2121,7 @@
                 "saved",
                 "built-in"
               ],
-              "description": "\"registry\": just fetched; \"saved\": fetched before (the registry couldn't be reached); \"built-in\": this version's copy."
+              "description": "\"registry\": just fetched; \"saved\": fetched before (it couldn't be reached); \"built-in\": this version's copy."
             },
             "fetched": {
               "type": [
@@ -2118,29 +2135,17 @@
                 "string",
                 "null"
               ],
-              "description": "Why the registry couldn't be reached."
-            },
-            "target": {
-              "type": [
-                "string",
-                "null"
-              ],
-              "description": "This computer's release target, e.g. universal-apple-darwin."
-            },
-            "plugins": {
-              "type": "array",
-              "items": {
-                "$ref": "#/definitions/StoreListing"
-              }
+              "description": "Why it couldn't be reached."
             },
             "type": {
               "type": "string",
-              "const": "pluginStore"
+              "const": "store"
             }
           },
           "required": [
             "fetched",
-            "plugins",
+            "kind",
+            "listings",
             "problem",
             "source",
             "target",
@@ -2151,12 +2156,66 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
+            "kind": {
+              "type": "string",
+              "const": "interface"
+            },
+            "listings": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/InterfaceListing"
+              }
+            },
+            "source": {
+              "type": "string",
+              "enum": [
+                "registry",
+                "saved",
+                "built-in"
+              ],
+              "description": "\"registry\": just fetched; \"saved\": fetched before (it couldn't be reached); \"built-in\": this version's copy."
+            },
+            "fetched": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "description": "When it was fetched, Unix seconds."
+            },
+            "problem": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Why it couldn't be reached."
+            },
+            "type": {
+              "type": "string",
+              "const": "store"
+            }
+          },
+          "required": [
+            "fetched",
+            "kind",
+            "listings",
+            "problem",
+            "source",
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "$ref": "#/definitions/StoreKind"
+            },
             "key": {
               "type": "string"
             },
             "id": {
               "type": "string",
-              "description": "The plugin's id, once known."
+              "description": "What it installs, once known."
             },
             "stage": {
               "type": "string",
@@ -2177,12 +2236,13 @@
             },
             "type": {
               "type": "string",
-              "const": "pluginInstall"
+              "const": "installProgress"
             }
           },
           "required": [
             "id",
             "key",
+            "kind",
             "message",
             "stage",
             "type"
@@ -2210,90 +2270,6 @@
           "required": [
             "api",
             "interfaces",
-            "type"
-          ]
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "source": {
-              "type": "string",
-              "enum": [
-                "registry",
-                "saved",
-                "built-in"
-              ]
-            },
-            "fetched": {
-              "type": [
-                "number",
-                "null"
-              ]
-            },
-            "problem": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "interfaces": {
-              "type": "array",
-              "items": {
-                "$ref": "#/definitions/InterfaceListing"
-              }
-            },
-            "type": {
-              "type": "string",
-              "const": "interfaceStore"
-            }
-          },
-          "required": [
-            "fetched",
-            "interfaces",
-            "problem",
-            "source",
-            "type"
-          ]
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "key": {
-              "type": "string"
-            },
-            "id": {
-              "type": "string",
-              "description": "The plugin's id, once known."
-            },
-            "stage": {
-              "type": "string",
-              "enum": [
-                "finding",
-                "downloading",
-                "checking",
-                "installing",
-                "done",
-                "failed"
-              ]
-            },
-            "message": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "type": {
-              "type": "string",
-              "const": "interfaceInstall"
-            }
-          },
-          "required": [
-            "id",
-            "key",
-            "message",
-            "stage",
             "type"
           ]
         },
@@ -3918,6 +3894,92 @@
       "additionalProperties": false,
       "description": "An installed plugin (or one the config names), and what it is. Whether it's on, and its settings, are in the config."
     },
+    "PluginListing": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "repository": {
+          "type": "string"
+        },
+        "homepage": {
+          "type": "string"
+        },
+        "license": {
+          "type": "string"
+        },
+        "tier": {
+          "type": "string",
+          "enum": [
+            "official",
+            "community",
+            "unlisted"
+          ]
+        },
+        "version": {
+          "type": "string"
+        },
+        "api": {
+          "type": "number"
+        },
+        "tag": {
+          "type": "string"
+        },
+        "commit": {
+          "type": "string"
+        },
+        "assets": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "url": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "url",
+              "sha256"
+            ],
+            "additionalProperties": false
+          },
+          "description": "Its release downloads, by target (\"aarch64-unknown-linux-gnu\", \"universal-apple-darwin\", …)."
+        },
+        "unavailable": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Why this recorder can't install it (no build for this computer, a newer plugin API); null when it can."
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "description",
+        "repository",
+        "license",
+        "tier",
+        "version",
+        "api",
+        "tag",
+        "commit",
+        "assets",
+        "unavailable"
+      ],
+      "additionalProperties": false,
+      "description": "A plugin in the registry (crates/trunk-pro/src/plugins/store.rs): one release of it, pinned."
+    },
     "PluginManifest": {
       "type": "object",
       "properties": {
@@ -5389,91 +5451,13 @@
       ],
       "additionalProperties": false
     },
-    "StoreListing": {
-      "type": "object",
-      "properties": {
-        "id": {
-          "type": "string"
-        },
-        "name": {
-          "type": "string"
-        },
-        "description": {
-          "type": "string"
-        },
-        "repository": {
-          "type": "string"
-        },
-        "homepage": {
-          "type": "string"
-        },
-        "license": {
-          "type": "string"
-        },
-        "tier": {
-          "type": "string",
-          "enum": [
-            "official",
-            "community",
-            "unlisted"
-          ]
-        },
-        "version": {
-          "type": "string"
-        },
-        "api": {
-          "type": "number"
-        },
-        "tag": {
-          "type": "string"
-        },
-        "commit": {
-          "type": "string"
-        },
-        "assets": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "object",
-            "properties": {
-              "url": {
-                "type": "string"
-              },
-              "sha256": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "url",
-              "sha256"
-            ],
-            "additionalProperties": false
-          },
-          "description": "Its release downloads, by target (\"aarch64-unknown-linux-gnu\", \"universal-apple-darwin\", …)."
-        },
-        "unavailable": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "Why this recorder can't install it (no build for this computer, a newer plugin API); null when it can."
-        }
-      },
-      "required": [
-        "id",
-        "name",
-        "description",
-        "repository",
-        "license",
-        "tier",
-        "version",
-        "api",
-        "tag",
-        "commit",
-        "assets",
-        "unavailable"
+    "StoreKind": {
+      "type": "string",
+      "enum": [
+        "plugin",
+        "interface"
       ],
-      "additionalProperties": false,
-      "description": "A plugin in the registry (crates/trunk-pro/src/plugins/store.rs): one release of it, pinned."
+      "description": "Which store: the plugins' (the registry) or the interfaces'."
     },
     "SurveyBand": {
       "type": "object",
@@ -6602,14 +6586,18 @@
           "properties": {
             "type": {
               "type": "string",
-              "const": "pluginStore"
+              "const": "store"
+            },
+            "kind": {
+              "$ref": "#/definitions/StoreKind"
             },
             "refresh": {
               "type": "boolean"
             }
           },
           "required": [
-            "type"
+            "type",
+            "kind"
           ],
           "additionalProperties": false
         },
@@ -6618,7 +6606,10 @@
           "properties": {
             "type": {
               "type": "string",
-              "const": "installPlugin"
+              "const": "install"
+            },
+            "kind": {
+              "$ref": "#/definitions/StoreKind"
             },
             "id": {
               "type": "string"
@@ -6626,6 +6617,7 @@
           },
           "required": [
             "type",
+            "kind",
             "id"
           ],
           "additionalProperties": false
@@ -6635,7 +6627,10 @@
           "properties": {
             "type": {
               "type": "string",
-              "const": "installPlugin"
+              "const": "install"
+            },
+            "kind": {
+              "$ref": "#/definitions/StoreKind"
             },
             "repository": {
               "type": "string"
@@ -6646,6 +6641,7 @@
           },
           "required": [
             "type",
+            "kind",
             "repository"
           ],
           "additionalProperties": false
@@ -6660,59 +6656,6 @@
           },
           "required": [
             "type"
-          ],
-          "additionalProperties": false
-        },
-        {
-          "type": "object",
-          "properties": {
-            "type": {
-              "type": "string",
-              "const": "interfaceStore"
-            },
-            "refresh": {
-              "type": "boolean"
-            }
-          },
-          "required": [
-            "type"
-          ],
-          "additionalProperties": false
-        },
-        {
-          "type": "object",
-          "properties": {
-            "type": {
-              "type": "string",
-              "const": "installInterface"
-            },
-            "id": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "id"
-          ],
-          "additionalProperties": false
-        },
-        {
-          "type": "object",
-          "properties": {
-            "type": {
-              "type": "string",
-              "const": "installInterface"
-            },
-            "repository": {
-              "type": "string"
-            },
-            "tag": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "repository"
           ],
           "additionalProperties": false
         },

@@ -112,21 +112,12 @@ fn search(a: &Args) {
 /// Install `what` (an id in the store, or a GitHub repository), headless:
 /// the same as the Interfaces page does, without the browser.
 fn install_one(what: &str, tag: Option<&str>, cfg: &Config) -> Option<Installed> {
-    let (hub, mut rx) = tokio::sync::broadcast::channel(64);
     let v = if what.contains('/') { Install::Release { repository: what.into(), tag: tag.map(String::from) } } else { Install::Listed { id: what.into() } };
-    let r = Interfaces::new(hub, None, 0).install(&v, cfg);
-    while let Ok(m) = rx.try_recv() {
-        if let crate::runtime::Out::Control(t) = &*m {
-            let m: serde_json::Value = serde_json::from_str(t).unwrap_or_default();
-            match m["stage"].as_str() {
-                Some("done") => println!("{}", m["message"].as_str().unwrap_or("")),
-                Some("failed") => eprintln!("{}", m["message"].as_str().unwrap_or("")),
-                Some(stage) => eprintln!("  {stage}…"),
-                None => {}
-            }
-        }
-    }
-    r
+    Interfaces::new(None, 0).install(&v, cfg, &|p| match p.stage {
+        "done" => println!("{}", p.message.unwrap_or("")),
+        "failed" => eprintln!("{}", p.message.unwrap_or("")),
+        stage => eprintln!("  {stage}…"),
+    })
 }
 
 fn install(a: &Args) {
@@ -188,8 +179,7 @@ fn add(a: &Args) {
     let dir = a.positional.get(1).unwrap_or_else(|| die("trunk-pro interface add <folder> [--port N]"));
     let (path, mut cfg) = load_config(a);
     let abs = std::fs::canonicalize(dir).unwrap_or_else(|e| die(&format!("{dir}: {e}")));
-    let (hub, _) = tokio::sync::broadcast::channel(1);
-    let (id, mut entry) = Interfaces::new(hub, None, 0).add(&abs.display().to_string(), &cfg, &path).unwrap_or_else(|e| die(&e));
+    let (id, mut entry) = Interfaces::new(None, 0).add(&abs.display().to_string(), &cfg, &path).unwrap_or_else(|e| die(&e));
     entry.port = port_arg(a, &cfg);
     println!("Added {id}: {} on port {}.", abs.display(), entry.port);
     cfg.server.interfaces.insert(id, entry);
@@ -202,8 +192,7 @@ fn uninstall(a: &Args) {
     if !cfg.server.interfaces.contains_key(id) && !interfaces_dir().join(id).is_dir() {
         die(&format!("{id} isn't an interface here"));
     }
-    let (hub, _) = tokio::sync::broadcast::channel(1);
-    Interfaces::new(hub, None, 0).remove(id, &cfg).unwrap_or_else(|e| die(&e));
+    Interfaces::new(None, 0).remove(id, &cfg).unwrap_or_else(|e| die(&e));
     cfg.server.interfaces.remove(id);
     save(&path, &cfg);
     println!("{id} removed.");

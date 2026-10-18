@@ -13,7 +13,7 @@
 //! message?}` as an install goes ("finding", "downloading", "checking",
 //! "installing", then "done" or "failed").
 
-use trunk_app::protocol::{body, Install, ToClient};
+use trunk_app::protocol::{body, Install, StoreKind, ToClient};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -563,12 +563,12 @@ impl Plugins {
         store_message(&self.catalog(refresh))
     }
 
-    /// `installPlugin {id}` or `installPlugin {repository, tag?}`. Says how
-    /// it goes in `pluginInstall` messages, to everyone; blocks until done.
-    /// A new plugin is off (nothing in the config changes); after an update
-    /// the server reloads the plugins, so a running one restarts with it.
-    pub fn install(&self, what: &Install, cfg: &Config) {
-        self.shelf.install(&self.hub, ToClient::PluginInstall, what.key(), |id, stage| self.install_one(what, cfg, id, stage));
+    /// `install {kind: "plugin", id}` or `{…, repository, tag?}`: says how it
+    /// goes to `report`; blocks until done. A new plugin is off (nothing in
+    /// the config changes); after an update the server reloads the plugins,
+    /// so a running one restarts with it.
+    pub fn install(&self, what: &Install, cfg: &Config, report: &dyn Fn(crate::store::Progress)) {
+        self.shelf.install(what.key(), report, |id, stage| self.install_one(what, cfg, id, stage));
     }
 
     fn install_one(&self, what: &Install, cfg: &Config, id_out: &mut String, stage: &dyn Fn(&str, &'static str)) -> Result<String, String> {
@@ -627,7 +627,7 @@ fn now() -> f64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
 }
 
-/// The `pluginStore` message for a catalog.
+/// The plugins' `store` message for a catalog.
 pub(crate) fn store_message(cat: &store::Catalog) -> ToClient {
     let plugins: Vec<Value> = cat
         .index
@@ -639,5 +639,5 @@ pub(crate) fn store_message(cat: &store::Catalog) -> ToClient {
             v
         })
         .collect();
-    ToClient::PluginStore(body(json!({ "source": cat.source, "fetched": cat.fetched, "problem": cat.problem, "target": store::target(), "plugins": plugins })))
+    ToClient::Store { kind: StoreKind::Plugin, list: body(json!({ "source": cat.source, "fetched": cat.fetched, "problem": cat.problem, "target": store::target(), "listings": plugins })) }
 }

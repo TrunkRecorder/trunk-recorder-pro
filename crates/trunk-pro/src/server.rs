@@ -23,7 +23,7 @@
 //! Every request passes [`guard`]: pages from other sites are refused unless
 //! listed in `server.allowedOrigins`.
 
-use trunk_app::protocol::{body, Body, Command, StatsQuery, ToClient};
+use trunk_app::protocol::{body, Body, Command, StatsQuery, StoreKind, ToClient};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -1018,25 +1018,50 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
         Command::ReadTrConfig { path } => tokio::task::spawn_blocking(move || tr_config(&path)).await.ok(),
         Command::ListDir { path } => tokio::task::spawn_blocking(move || dir(&path)).await.ok(),
         Command::Plugins => Some(plugins_list(ctx).await),
-        Command::PluginStore { refresh } => {
+        Command::Store { kind, refresh } => {
             let ctx2 = ctx.clone();
-            tokio::task::spawn_blocking(move || ctx2.plugins.store(refresh)).await.ok()
+            tokio::task::spawn_blocking(move || match kind {
+                StoreKind::Plugin => ctx2.plugins.store(refresh),
+                StoreKind::Interface => ctx2.interfaces.store(refresh),
+            })
+            .await
+            .ok()
         }
         // In the background: it takes a while, and this connection should
-        // hear how it goes (pluginInstall), as everyone does.
-        Command::InstallPlugin(what) => {
+        // hear how it goes (installProgress), as everyone does. An update of
+        // a running plugin restarts it with the new version; a new interface
+        // is served at once, on a port of its own, with the access its
+        // listing asks.
+        Command::Install { kind: StoreKind::Plugin, what } => {
             let ctx2 = ctx.clone();
             tokio::spawn(async move {
                 let ctx3 = ctx2.clone();
                 let _ = tokio::task::spawn_blocking(move || {
                     let cfg = ctx3.config.lock().unwrap().clone();
-                    ctx3.plugins.install(&what, &cfg);
-                    // An update of a running plugin: it restarts with the new version.
+                    ctx3.plugins.install(&what, &cfg, &crate::store::announce(&ctx3.hub, StoreKind::Plugin));
                     let cfg = ctx3.config.lock().unwrap().clone();
                     ctx3.plugins.reload(&cfg);
                 })
                 .await;
                 publish(&ctx2.hub, plugins_list(&ctx2).await);
+            });
+            None
+        }
+        Command::Install { kind: StoreKind::Interface, what } => {
+            let ctx2 = ctx.clone();
+            tokio::spawn(async move {
+                let ctx3 = ctx2.clone();
+                let r = tokio::task::spawn_blocking(move || {
+                    let cfg = ctx3.config.lock().unwrap().clone();
+                    let done = ctx3.interfaces.install(&what, &cfg, &crate::store::announce(&ctx3.hub, StoreKind::Interface))?;
+                    let taken = ctx3.interfaces.taken();
+                    edit_config(&ctx3, |c| done.apply(c, &taken)).err()
+                })
+                .await;
+                if let Ok(Some(e)) = r {
+                    publish(&ctx2.hub, ToClient::error(e));
+                }
+                crate::interfaces::serve::reconcile(ctx2).await;
             });
             None
         }
@@ -1069,30 +1094,6 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
         Command::Interfaces => {
             let cfg = ctx.config.lock().unwrap().clone();
             Some(ctx.interfaces.list(&cfg, &ctx.config_path))
-        }
-        Command::InterfaceStore { refresh } => {
-            let ctx2 = ctx.clone();
-            tokio::task::spawn_blocking(move || ctx2.interfaces.store(refresh)).await.ok()
-        }
-        // In the background, as installPlugin. A new one is served at once,
-        // on a port of its own, with the access its listing asks.
-        Command::InstallInterface(what) => {
-            let ctx2 = ctx.clone();
-            tokio::spawn(async move {
-                let ctx3 = ctx2.clone();
-                let r = tokio::task::spawn_blocking(move || {
-                    let cfg = ctx3.config.lock().unwrap().clone();
-                    let done = ctx3.interfaces.install(&what, &cfg)?;
-                    let taken = ctx3.interfaces.taken();
-                    edit_config(&ctx3, |c| done.apply(c, &taken)).err()
-                })
-                .await;
-                if let Ok(Some(e)) = r {
-                    publish(&ctx2.hub, ToClient::error(e));
-                }
-                crate::interfaces::serve::reconcile(ctx2).await;
-            });
-            None
         }
         Command::AddInterface { path } => {
             let ctx2 = ctx.clone();
