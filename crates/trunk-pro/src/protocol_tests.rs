@@ -2,8 +2,8 @@
 //! writing their own interface in docs/api/. Its JSON Schema
 //! (docs/api/protocol.schema.json, from `npm run schema` in web/) is checked
 //! here against what the recorder really sends and handles: messages from a
-//! recording session (a conventional call), a survey, the server's replies,
-//! and every message type named in the code.
+//! recording session (a conventional call), a survey, the server's replies;
+//! and protocol.ts's message types against [`ToClient`] and [`Command`].
 
 use std::collections::{BTreeSet, VecDeque};
 use std::f64::consts::PI;
@@ -11,6 +11,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};
+use trunk_app::protocol::{body, Command, ToClient};
 use trunk_app::survey::{Request, SurveySession};
 use trunk_app::{Config, Output, Session};
 use trunk_core::Complex32;
@@ -63,7 +64,7 @@ fn check_all(direction: &str, msgs: &[Value]) {
 fn texts(out: &mut Vec<Output>, into: &mut Vec<Value>) {
     for o in out.drain(..) {
         match o {
-            Output::Text(t) | Output::Topic { text: t, .. } => into.push(serde_json::from_str(&t).unwrap()),
+            Output::Message(m) | Output::Topic { msg: m, .. } => into.push(m.to_value()),
             // Stored, a call is announced as the platform does it (runtime::finish_one).
             Output::File { entry, .. } => into.push(json!({ "type": "concluded", "entry": entry })),
             _ => {}
@@ -251,8 +252,8 @@ fn a_surveys_messages() {
         s.poll(t * 1000.0, &mut out);
         texts(&mut out, &mut msgs);
     });
-    msgs.push(s.snapshot());
-    msgs.push(crate::survey::idle_json());
+    msgs.push(ToClient::Survey(body(s.snapshot())).to_value());
+    msgs.push(crate::survey::idle().to_value());
     assert!(msgs.iter().any(|m| m["type"] == "surveySpectrum"));
     check_all("FromRecorder", &msgs);
 }
@@ -379,10 +380,11 @@ fn the_servers_messages() {
     let mut platform = crate::platform::Platform::new(vec![crate::platform::Watched { name: "data", path: dir.clone() }], Arc::new(crate::platform::Probes::default()));
     agg.begin(now as f64);
     let p = platform.sample(&mut agg, true);
-    *ctx.host_last.lock().unwrap() = Some(crate::monitor::message(now as f64, &agg, p));
-    let hello = crate::server::hello_json(&ctx, serde_json::json!(crate::sdr::devices()), crate::radio::radios_json(false));
+    *ctx.host_last.lock().unwrap() = Some(crate::monitor::message(now as f64, &agg, p).to_value());
+    let hello = crate::server::hello(&ctx, serde_json::json!(crate::sdr::devices()), crate::radio::radios_json(false)).to_value();
     assert_eq!(hello["events"].as_array().map(Vec::len), Some(2));
-    let mut queries = vec![crate::server::stats_query(&ctx, &json!({ "id": 1, "series": ["sys/p25/*"], "range": "1h" }))];
+    let q = serde_json::from_value(json!({ "id": 1, "series": ["sys/p25/*"], "range": "1h" })).unwrap();
+    let mut queries = vec![crate::server::stats_query(&ctx, &q).to_value()];
     assert!(queries[0]["series"]["sys/p25/cc/good"]["v"].is_array(), "{}", queries[0]);
     for q in [
         json!({ "id": 2, "what": "summary" }),
@@ -394,123 +396,44 @@ fn the_servers_messages() {
         json!({ "id": 8, "what": "lengths", "system": "p25", "hours": 24 }),
         json!({ "id": 9, "what": "talkgroups", "system": "nowhere" }),
     ] {
-        queries.push(crate::server::radio_query(&ctx, &q));
+        queries.push(crate::server::radio_query(&ctx, &body(q)).to_value());
     }
     assert_eq!(queries[2]["rows"][0]["alphaTag"], "", "no talkgroup file for p25 here");
     assert_eq!(queries[4]["talkers"].as_array().map(Vec::len), Some(2));
     let msgs = vec![
-        hello,
-        json!({ "type": "config", "config": cfg }),
-        json!({ "type": "config", "config": Config::default() }),
-        crate::runtime::PhaseInfo { phase: "running", error: Some("x".into()), ended: false }.to_json(),
-        crate::server::devices_json(),
-        json!({ "type": "radios", "radios": crate::radio::radios_json(false) }),
-        ctx.plugins.list_json(&cfg),
+        ToClient::Config { config: Box::new(cfg.clone()) },
+        ToClient::Config { config: Box::default() },
+        crate::runtime::PhaseInfo { phase: "running", error: Some("x".into()), ended: false }.message(),
+        crate::server::devices(),
+        ToClient::Radios { radios: crate::radio::radios_json(false) },
+        ctx.plugins.list(&cfg),
         crate::plugins::manage::store_message(&crate::plugins::store::built_in()),
-        ctx.interfaces.list_json(&cfg, &ctx.config_path),
+        ctx.interfaces.list(&cfg, &ctx.config_path),
         crate::interfaces::store::message(&crate::interfaces::store::REGISTRY.built_in()),
-        json!({ "type": "interfaceInstall", "key": "trunkamp", "id": "trunkamp", "stage": "downloading", "message": null }),
-        crate::server::dir_json(&dir.display().to_string()),
-        crate::server::dir_json(&dir.join("missing").display().to_string()),
-        crate::server::tr_config_json(&dir.display().to_string()),
-        crate::server::tr_config_json(&dir.join("nothing.json").display().to_string()),
-        json!({ "type": "quit" }),
-        json!({ "type": "subscribed", "topics": ["spectrum:0", "log"] }),
+        ToClient::InterfaceInstall(body(json!({ "key": "trunkamp", "id": "trunkamp", "stage": "downloading", "message": null }))),
+        crate::server::dir(&dir.display().to_string()),
+        crate::server::dir(&dir.join("missing").display().to_string()),
+        crate::server::tr_config(&dir.display().to_string()),
+        crate::server::tr_config(&dir.join("nothing.json").display().to_string()),
+        ToClient::Quit,
+        ToClient::Subscribed { topics: vec!["spectrum:0".into(), "log".into()] },
     ];
-    let msgs: Vec<Value> = msgs.into_iter().chain(queries).chain(ctx.shared.recent_events()).collect();
+    let msgs: Vec<Value> = std::iter::once(hello).chain(msgs.iter().map(ToClient::to_value)).chain(queries).chain(ctx.shared.recent_events()).collect();
     let _ = std::fs::remove_dir_all(&dir);
     check_all("FromRecorder", &msgs);
 }
 
-/// Every Rust source file the messages come from.
-fn sources() -> Vec<(String, String)> {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-    let mut files = Vec::new();
-    let mut dirs = vec![root.join("trunk-app/src"), root.join("trunk-pro/src")];
-    while let Some(d) = dirs.pop() {
-        for e in std::fs::read_dir(&d).unwrap().filter_map(|e| e.ok()) {
-            let p = e.path();
-            if p.is_dir() {
-                dirs.push(p);
-            } else if p.extension().is_some_and(|x| x == "rs") && !p.ends_with("protocol_tests.rs") {
-                files.push((p.display().to_string(), std::fs::read_to_string(&p).unwrap()));
-            }
-        }
-    }
-    files
-}
-
-/// Each `json!({ "type": "…"` (or `["type"] = json!("…")`) in the code: a
-/// message sent; and the progress messages a [`crate::store::Shelf`] sends
-/// for an install (`.install(&self.hub, "…"`).
-fn sent_types() -> BTreeSet<String> {
-    let mut found = BTreeSet::new();
-    for (_, text) in sources() {
-        let mut rest = text.as_str();
-        while let Some(i) = rest.find("\"type\": \"") {
-            let before = rest[..i].trim_end();
-            let after = &rest[i + 9..];
-            let name: String = after.chars().take_while(|c| c.is_ascii_alphanumeric()).collect();
-            if before.ends_with("json!({") {
-                found.insert(name);
-            }
-            rest = after;
-        }
-        let mut rest = text.as_str();
-        while let Some(i) = rest.find(".install(&self.hub, \"") {
-            let after = &rest[i + 21..];
-            let name: String = after.chars().take_while(|c| c.is_ascii_alphanumeric()).collect();
-            if !name.is_empty() {
-                found.insert(name);
-            }
-            rest = after;
-        }
-        let mut rest = text.as_str();
-        while let Some(i) = rest.find("[\"type\"] = json!(\"") {
-            let after = &rest[i + 18..];
-            found.insert(after.chars().take_while(|c| c.is_ascii_alphanumeric()).collect());
-            rest = after;
-        }
-    }
-    found
-}
-
-/// The types the server's `command` answers.
-fn handled_types() -> BTreeSet<String> {
-    let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/server.rs")).unwrap();
-    let body = &text[text.find("async fn command(").unwrap()..];
-    let body = &body[..body.find("\n}\n").unwrap()];
-    let mut found = BTreeSet::new();
-    for line in body.lines().map(str::trim) {
-        let Some(arm) = line.split_once(" =>").map(|(a, _)| a) else { continue };
-        if !arm.starts_with('"') {
-            continue;
-        }
-        for name in arm.split('|').map(|n| n.trim().trim_matches('"')) {
-            found.insert(name.to_string());
-        }
-    }
-    found
-}
-
-/// Messages protocol.ts declares that the recorder never sends, or sends
-/// without declaring; types the server handles that aren't declared, or
-/// declared ones it ignores.
+/// protocol.ts declares the messages [`ToClient`] can be and the commands
+/// [`Command`] reads: no more, no fewer.
 #[test]
 fn every_message_type_is_declared() {
-    let from = declared("FromRecorder");
-    let sent = sent_types();
-    let undeclared: Vec<_> = sent.difference(&from).collect();
-    assert!(undeclared.is_empty(), "sent but not in protocol.ts's FromRecorder: {undeclared:?}");
-    let never: Vec<_> = from.difference(&sent).collect();
-    assert!(never.is_empty(), "in protocol.ts's FromRecorder but never sent: {never:?}");
-
-    let to = declared("ToRecorder");
-    let handled = handled_types();
-    let undeclared: Vec<_> = handled.difference(&to).collect();
-    assert!(undeclared.is_empty(), "handled but not in protocol.ts's ToRecorder: {undeclared:?}");
-    let ignored: Vec<_> = to.difference(&handled).collect();
-    assert!(ignored.is_empty(), "in protocol.ts's ToRecorder but not handled: {ignored:?}");
+    let names = |v: &[&str]| v.iter().map(|n| n.to_string()).collect::<BTreeSet<String>>();
+    let (from, sent) = (declared("FromRecorder"), names(ToClient::TYPES));
+    assert_eq!(sent.difference(&from).collect::<Vec<_>>(), Vec::<&String>::new(), "sent but not in protocol.ts's FromRecorder");
+    assert_eq!(from.difference(&sent).collect::<Vec<_>>(), Vec::<&String>::new(), "in protocol.ts's FromRecorder but never sent");
+    let (to, read) = (declared("ToRecorder"), names(Command::TYPES));
+    assert_eq!(read.difference(&to).collect::<Vec<_>>(), Vec::<&String>::new(), "read but not in protocol.ts's ToRecorder");
+    assert_eq!(to.difference(&read).collect::<Vec<_>>(), Vec::<&String>::new(), "in protocol.ts's ToRecorder but not read");
 }
 
 /// What the interface sends is what the server reads (the shapes, as the docs give them).
@@ -531,8 +454,20 @@ fn messages_to_the_recorder() {
         json!({ "type": "statsQuery", "id": 2, "series": ["plat/cpu"], "from": 1_750_000_000, "to": 1_750_086_400 }),
         json!({ "type": "radioQuery", "id": 3, "what": "talkgroups", "system": "dcfd", "hours": 168, "limit": 100 }),
         json!({ "type": "radioQuery", "id": 4, "what": "unit", "system": "dcfd", "key": 1234 }),
+        json!({ "type": "channelFile", "index": 0, "path": "" }),
+        json!({ "type": "unlockKeys", "source": "county", "password": "p" }),
+        json!({ "type": "olderCalls", "before": 1_750_000_000_000i64, "limit": 50 }),
+        json!({ "type": "surveyListen", "freqHz": 851_012_500 }),
+        json!({ "type": "pluginStore", "refresh": true }),
+        json!({ "type": "removeInterface", "id": "trunkamp" }),
     ];
     check_all("ToRecorder", &msgs);
+    // And the recorder reads each as the docs give it.
+    for m in &msgs {
+        if let Err(e) = Command::parse(&m.to_string()) {
+            panic!("{e}: {m}");
+        }
+    }
 }
 
 /// A key container with no passwordFile starts locked; a wrong password changes nothing, the right
@@ -546,8 +481,8 @@ fn a_key_container_is_unlocked_and_locked_from_the_interface() {
     cfg.keys.insert("county".into(), crate::config::KeySource { file: ekc.into(), ..Default::default() });
     cfg.systems.push(crate::config::System { keys: "county".into(), ..crate::config::System::one_site("fire", crate::config::Site { control_channels_hz: vec![851_012_500.0], ..Default::default() }) });
     let c = ctx(cfg.clone(), &dir);
-    let unlocked = |c: &crate::runtime::Ctx| crate::unlock::status_json(c)["sources"][0]["unlocked"].as_bool();
-    assert_eq!(crate::unlock::status_json(&c)["sources"][0]["systems"], json!(["fire"]));
+    let unlocked = |c: &crate::runtime::Ctx| crate::unlock::status(c).to_value()["sources"][0]["unlocked"].as_bool();
+    assert_eq!(crate::unlock::status(&c).to_value()["sources"][0]["systems"], json!(["fire"]));
     assert_eq!(unlocked(&c), Some(false));
     let e = crate::unlock::unlock(&c, "county", "nope").unwrap_err();
     assert!(e.contains("wrong password") && !e.contains("nope"), "{e}");
@@ -558,7 +493,7 @@ fn a_key_container_is_unlocked_and_locked_from_the_interface() {
     // A start reads the keys it holds.
     let keys = cfg.load_keys(&c.config_path, &|n| crate::unlock::held(&c, &cfg, n)).unwrap();
     assert_eq!(keys[0].ring.as_ref().map(|r| r.keys().len()), Some(3));
-    check_all("FromRecorder", &[crate::unlock::status_json(&c)]);
+    check_all("FromRecorder", &[crate::unlock::status(&c).to_value()]);
     crate::unlock::lock(&c, "county");
     assert_eq!(unlocked(&c), Some(false));
     assert!(cfg.load_keys(&c.config_path, &|n| crate::unlock::held(&c, &cfg, n)).unwrap()[0].ring.is_none(), "locked");

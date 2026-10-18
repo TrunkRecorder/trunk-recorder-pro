@@ -3,6 +3,7 @@
 //! publishes what it finds to the browsers. Also `trunk-pro survey`, the
 //! same from the command line.
 
+use trunk_app::protocol::{body, ToClient};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::Arc;
@@ -155,14 +156,11 @@ pub fn start(ctx: Arc<Ctx>, cfg: Config, req: Request) -> Result<SurveyRunner, S
                     }
                     session.poll(t0.elapsed().as_secs_f64() * 1000.0, &mut out);
                     for o in out.drain(..) {
-                        if let Output::Text(t) = o {
-                            // (Keys are sorted, so look at the type, not the text's start.)
-                            if let Ok(v) = serde_json::from_str::<Value>(&t) {
-                                if v["type"] == "survey" {
-                                    *ctx.survey_last.lock().unwrap() = Some(v);
-                                }
+                        if let Output::Message(m) = o {
+                            if let ToClient::Survey(_) = m {
+                                *ctx.survey_last.lock().unwrap() = Some(m.to_value());
                             }
-                            let _ = ctx.hub.send(Arc::new(runtime::Out::Text(t)));
+                            runtime::publish(&ctx.hub, m);
                         }
                     }
                 }
@@ -173,8 +171,8 @@ pub fn start(ctx: Arc<Ctx>, cfg: Config, req: Request) -> Result<SurveyRunner, S
 }
 
 /// The message a browser gets when no survey is running.
-pub fn idle_json() -> Value {
-    json!({ "type": "survey", "stage": "idle" })
+pub fn idle() -> ToClient {
+    ToClient::Survey(body(json!({ "stage": "idle" })))
 }
 
 /// `trunk-pro survey`: scan with a dongle (or look at a capture) and print

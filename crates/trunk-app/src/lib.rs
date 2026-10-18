@@ -12,6 +12,7 @@ pub mod keys;
 pub mod log;
 pub mod migrate;
 pub mod profile;
+pub mod protocol;
 pub mod samples;
 pub mod session;
 pub mod stats;

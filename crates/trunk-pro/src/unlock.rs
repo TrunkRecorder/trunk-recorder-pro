@@ -3,6 +3,7 @@
 //! in memory only, until Lock or the app quits; the password is never kept. Browsers are told which
 //! sources are locked, never a key.
 
+use trunk_app::protocol::ToClient;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -23,11 +24,11 @@ pub fn held(ctx: &Ctx, cfg: &Config, name: &str) -> Option<Arc<Keyring>> {
 }
 
 /// The `keys` message: each key source that is unlocked here, the systems that use it, and whether it is.
-pub fn status_json(ctx: &Ctx) -> Value {
+pub fn status(ctx: &Ctx) -> ToClient {
     let cfg = ctx.config.lock().unwrap().clone();
     let sources: Vec<Value> =
         cfg.lockable(&ctx.config_path).into_iter().map(|(name, _, systems)| json!({ "name": name, "systems": systems, "unlocked": held(ctx, &cfg, &name).is_some() })).collect();
-    json!({ "type": "keys", "sources": sources })
+    ToClient::Keys { sources: json!(sources) }
 }
 
 /// Open key source `name`'s container with `password`: its systems decrypt with its keys from now
@@ -68,7 +69,7 @@ pub fn lock(ctx: &Ctx, name: &str) {
 /// forgotten, and browsers are told what is locked now.
 pub fn config_changed(ctx: &Ctx, cfg: &Config) {
     ctx.unlocked.lock().unwrap().retain(|name, (file, _)| cfg.keys.get(name).and_then(|s| trunk_app::keys::path(&s.file, &ctx.config_path)).is_some_and(|f| f == *file));
-    crate::runtime::publish(&ctx.hub, status_json(ctx));
+    crate::runtime::publish(&ctx.hub, status(ctx));
 }
 
 /// `systems` decrypt with `ring` from now on (when recording), and browsers are told.
@@ -79,5 +80,5 @@ fn apply(ctx: &Ctx, systems: &[String], ring: Option<Arc<Keyring>>) {
             cmds.push(EngineCmd::Keys { short_name: s.clone(), ring: ring.clone() });
         }
     }
-    crate::runtime::publish(&ctx.hub, status_json(ctx));
+    crate::runtime::publish(&ctx.hub, status(ctx));
 }

@@ -19,9 +19,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use trunk_recorder_plugin::{CallInfo, HostMessage, SystemStatus as PluginSystemStatus, UnitEvent};
 
+use crate::protocol::ToClient;
+
 pub enum Output {
-    /// A JSON message for the interface.
-    Text(String),
+    /// A message for the interface.
+    Message(ToClient),
     /// Live audio frame `[2][u16 system][u32 call id][u32 talkgroup][i16…]`
     /// for talkgroup `tg` of `system` — that system's number for this run
     /// (`status.systems[].index`, or 65535 and down for conventional
@@ -39,8 +41,8 @@ pub enum Output {
     Plugin(HostMessage),
     /// A line for the log (the platform's logger formats and routes it).
     Log(Record),
-    /// A JSON message only for interfaces watching `topic` ([`crate::stats::Topics`]).
-    Topic { topic: String, text: String },
+    /// A message only for interfaces watching `topic` ([`crate::stats::Topics`]).
+    Topic { topic: String, msg: ToClient },
     /// A minute of the dashboard's series, for the history (and its files).
     Rollup(Rollup),
 }
@@ -427,15 +429,14 @@ impl Session {
 
     /// `radioQuery` against the registry this session feeds, with names
     /// from its talkgroup files and the aliases it knows (`now`: Unix s).
-    pub fn radio_query(&self, q: &Value, now: i64) -> Value {
+    pub fn radio_query(&self, q: &Value, now: i64) -> ToClient {
         let tables = crate::stats::talkgroup_tables(&self.cfg);
         let tg = |sys: &str, t: u32| crate::stats::tg_info(&tables, sys, t);
         let unit = |sys: &str, u: u32| self.unit_alias(sys, u);
         let names = crate::stats::Names { tg: &tg, unit: &unit };
         let mut out = self.meas.shared().radio.lock().unwrap().query(q, now, &names);
-        out["type"] = json!("radioResult");
         out["id"] = q["id"].clone();
-        out
+        ToClient::RadioResult(crate::protocol::body(out))
     }
 
 
@@ -568,7 +569,7 @@ impl Session {
                     continue;
                 }
                 let bins: Vec<f32> = self.engine.spectrum(i, 512).iter().map(|v| (v * 10.0).round() / 10.0).collect();
-                out.push(Output::Topic { topic, text: json!({ "type": "spectrum", "source": i, "centerHz": s.center_hz, "rateHz": s.rate_hz, "bins": bins }).to_string() });
+                out.push(Output::Topic { topic, msg: ToClient::Spectrum { source: i, center_hz: s.center_hz, rate_hz: s.rate_hz, bins } });
             }
         }
         {
@@ -592,7 +593,7 @@ impl Session {
             }
             self.flush_log(out);
             if self.heard.take_unshown() {
-                out.push(Output::Text(json!({ "type": "heard", "heard": self.heard.json() }).to_string()));
+                out.push(Output::Message(ToClient::Heard { heard: self.heard.json() }));
             }
             if self.plugin_topics.status && now_ms - self.last_plugin_status_ms >= 5000.0 {
                 let dt = if self.last_plugin_status_ms == 0.0 { 0.0 } else { (now_ms - self.last_plugin_status_ms) / 1000.0 };
@@ -600,7 +601,7 @@ impl Session {
                 out.push(Output::Plugin(HostMessage::Status(self.plugin_status(dt))));
             }
             let load = self.busy_ms() / (now_ms - start).max(1.0);
-            out.push(Output::Text(self.status_json(load).to_string()));
+            out.push(Output::Message(self.status_message(load)));
         }
     }
 
@@ -845,8 +846,7 @@ impl Session {
 
     fn flush_log(&mut self, out: &mut Vec<Output>) {
         if !self.log.is_empty() {
-            let text = json!({ "type": "log", "lines": std::mem::take(&mut self.log) }).to_string();
-            out.push(Output::Topic { topic: "log".into(), text });
+            out.push(Output::Topic { topic: "log".into(), msg: ToClient::Log { lines: std::mem::take(&mut self.log) } });
         }
     }
 
@@ -936,7 +936,7 @@ impl Session {
                 let name = self.system_name(system).to_string();
                 self.records.push(Record::text(Level::Info, Some(&name), format!("Unit {unit} is \"{alias}\" (TG {talkgroup})")));
                 self.log.push(json!({ "timeS": self.engine.status().now_s, "kind": "alias", "text": format!("Unit {unit} is \"{alias}\" (TG {talkgroup})"), "system": name }));
-                out.push(Output::Text(json!({ "type": "unitAlias", "system": name, "unit": unit, "alias": alias }).to_string()));
+                out.push(Output::Message(ToClient::UnitAlias { system: name, unit, alias }));
             }
             Event::UnitPosition { system, unit, lat, lon, talkgroup } => {
                 // (Each transmission may move it: a trace line, as control messages are.)
@@ -1011,7 +1011,7 @@ impl Session {
         }
     }
 
-    fn status_json(&self, load: f64) -> Value {
+    fn status_message(&self, load: f64) -> ToClient {
         let st = self.engine.status();
         let sources: Vec<Value> = self
             .cfg
@@ -1097,36 +1097,32 @@ impl Session {
                 })),
             }
         }
-        json!({
-            "type": "status",
-            "status": {
-                "nowS": st.now_s,
-                "activeCalls": st.active_calls, "recording": st.recording, "channelsOpen": st.channels_open, "conventionalOpen": st.conventional_open,
-                "callsConcluded": st.calls_concluded,
-                "systems": systems,
-                // Every system's short name, by the number its calls and audio carry.
-                "systemNames": self.cfg.call_systems().iter().map(|s| s.short_name).collect::<Vec<_>>(),
-            },
-            "sources": sources,
-            "load": load,
-            "calls": self
-                .engine
-                .active_calls()
-                .iter()
-                .map(|c| {
-                    let mut v = call_view(c, self.system_name(c.system), self.tg_names(c.system, c.patched_talkgroups.iter().copied().filter(|&t| t != c.talkgroup)));
-                    let site = self.site_name(c.site);
-                    if !site.is_empty() {
-                        v["site"] = json!(site);
-                    }
-                    let twins: Vec<String> = self.engine.twins(c.id).iter().map(|&(_, at)| self.site_name(Some(at))).collect();
-                    if !twins.is_empty() {
-                        v["alsoOn"] = json!(twins);
-                    }
-                    v
-                })
-                .collect::<Vec<_>>(),
-        })
+        let calls = self
+            .engine
+            .active_calls()
+            .iter()
+            .map(|c| {
+                let mut v = call_view(c, self.system_name(c.system), self.tg_names(c.system, c.patched_talkgroups.iter().copied().filter(|&t| t != c.talkgroup)));
+                let site = self.site_name(c.site);
+                if !site.is_empty() {
+                    v["site"] = json!(site);
+                }
+                let twins: Vec<String> = self.engine.twins(c.id).iter().map(|&(_, at)| self.site_name(Some(at))).collect();
+                if !twins.is_empty() {
+                    v["alsoOn"] = json!(twins);
+                }
+                v
+            })
+            .collect();
+        let status = json!({
+            "nowS": st.now_s,
+            "activeCalls": st.active_calls, "recording": st.recording, "channelsOpen": st.channels_open, "conventionalOpen": st.conventional_open,
+            "callsConcluded": st.calls_concluded,
+            "systems": systems,
+            // Every system's short name, by the number its calls and audio carry.
+            "systemNames": self.cfg.call_systems().iter().map(|s| s.short_name).collect::<Vec<_>>(),
+        });
+        ToClient::Status { status, sources, load, calls }
     }
 }
 

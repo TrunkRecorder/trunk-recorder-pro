@@ -66,9 +66,9 @@ fn to_js(out: &mut Vec<Output>, history: &mut History) -> Array {
                 continue;
             }
             // (One page, which asked for its topics.)
-            Output::Text(t) | Output::Topic { text: t, .. } => {
+            Output::Message(m) | Output::Topic { msg: m, .. } => {
                 set(&obj, "t", "text");
-                set(&obj, "json", t);
+                set(&obj, "json", m.to_json());
             }
             Output::Audio { system, short_name, tg, frame, .. } => {
                 set(&obj, "t", "audio");
@@ -118,25 +118,13 @@ impl WebSession {
     }
     /// A `statsQuery` (JSON) → its `statsResult` (JSON), from this session's minutes.
     pub fn stats_query(&self, query_json: &str) -> String {
-        let q: serde_json::Value = serde_json::from_str(query_json).unwrap_or_default();
-        let now = (js_sys::Date::now() / 1000.0) as i64;
-        let back = match q["range"].as_str().unwrap_or("1h") {
-            "10m" => 600,
-            "6h" => 6 * 3600,
-            "24h" => 86400,
-            "7d" => 7 * 86400,
-            _ => 3600,
-        };
-        let to = q["to"].as_i64().unwrap_or(now);
-        let from = q["from"].as_i64().unwrap_or(to - back);
-        let patterns: Vec<String> = q["series"].as_array().into_iter().flatten().filter_map(|t| t.as_str().map(String::from)).collect();
-        let series = self.history.query(&patterns, from, to, q["points"].as_u64().unwrap_or(0) as usize);
-        serde_json::json!({ "type": "statsResult", "id": q["id"], "from": from, "to": to, "loading": false, "series": series }).to_string()
+        let q: trunk_app::protocol::StatsQuery = serde_json::from_str(query_json).unwrap_or_default();
+        q.answer(&self.history, (js_sys::Date::now() / 1000.0) as i64, false).to_json()
     }
     /// A `radioQuery` (JSON) → its `radioResult` (JSON).
     pub fn radio_query(&self, query_json: &str) -> String {
         let q: serde_json::Value = serde_json::from_str(query_json).unwrap_or_default();
-        self.s.radio_query(&q, (js_sys::Date::now() / 1000.0) as i64).to_string()
+        self.s.radio_query(&q, (js_sys::Date::now() / 1000.0) as i64).to_json()
     }
     /// A system's talkgroup file changed (an Ignore flag): calls from now on go by it.
     pub fn set_talkgroups(&mut self, short_name: &str, csv: &str) {

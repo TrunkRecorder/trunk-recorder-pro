@@ -29,6 +29,7 @@ use trunk_core::metrics::{key_part, Scoped, Sink};
 use trunk_core::trunk::{Engine, Event, MessageType};
 
 use crate::config::Config;
+use crate::protocol::ToClient;
 use crate::session::Output;
 pub use aggregate::{Aggregator, Rollup};
 pub use events::{Monitor, MonitorEvent, Watcher};
@@ -190,7 +191,7 @@ impl Stats {
 
     fn emit(&mut self, e: MonitorEvent, out: &mut Vec<Output>) {
         if let Some(v) = self.shared.emit(self.now, e) {
-            out.push(Output::Text(v.to_string()));
+            out.push(Output::Message(ToClient::MonitorEvent(crate::protocol::body(v))));
         }
     }
 
@@ -313,7 +314,7 @@ impl Stats {
         self.agg.gauge("day/airS", self.day.air_s);
         self.agg.gauge("day/audioBytes", self.day.audio_bytes as f64);
         self.edges(engine, out);
-        out.push(Output::Text(json!({ "type": "stats", "t": (self.now * 10.0).round() / 10.0, "values": self.agg.values_json() }).to_string()));
+        out.push(Output::Message(ToClient::Stats { t: (self.now * 10.0).round() / 10.0, values: self.agg.values_json() }));
         self.details(engine, site_names, out);
     }
 
@@ -374,11 +375,11 @@ impl Stats {
             let profile: Vec<f64> = engine.noise_profile(i, 64).into_iter().map(r1).collect();
             let chans: Vec<Value> = channels.iter().filter(|c| c.source == i).map(ch_json).collect();
             let topic = format!("rf:{i}");
-            out.push(Output::Topic { text: json!({ "type": "rfDetail", "source": i, "profile": profile, "channels": chans }).to_string(), topic });
+            out.push(Output::Topic { msg: ToClient::RfDetail { source: i, profile, channels: chans }, topic });
         }
         for name in decode {
             let chans: Vec<Value> = channels.iter().filter(|c| site_names(c.system, c.site).0 == name).map(ch_json).collect();
-            out.push(Output::Topic { topic: format!("decode:{name}"), text: json!({ "type": "decodeDetail", "system": name, "channels": chans }).to_string() });
+            out.push(Output::Topic { topic: format!("decode:{name}"), msg: ToClient::DecodeDetail { system: name.to_string(), channels: chans } });
         }
     }
 }

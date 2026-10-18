@@ -16,6 +16,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use chrono::{Local, Offset, TimeZone};
 use serde_json::{json, Value};
 use tokio::sync::broadcast;
+use trunk_app::protocol::{body, Audience, ToClient};
 use trunk_app::{Feeder, Output, Session};
 
 use crate::config::{AirspyGain, Config, SampleFormat, Source};
@@ -23,10 +24,11 @@ use crate::plugins::{self, FileRules, PluginHost};
 use crate::radio::{airspy, soapy, uhd};
 use crate::sdr::{self, RtlConfig, SourceMsg};
 
-/// A message for every connected browser.
+/// A message for the connected browsers, serialized once for all of them.
 pub enum Out {
+    /// For every connection.
     Text(String),
-    /// Only for connections with control access ([`crate::access`]).
+    /// Only for connections with control access ([`Audience::Control`]).
     Control(String),
     /// The config: as it is, and as a listen-only connection sees it.
     Config { full: String, listen: String },
@@ -35,21 +37,38 @@ pub enum Out {
     /// Live audio (binary frame) for talkgroup `tg` of the system with short
     /// name `short_name` (the frame carries the system's number this run).
     Audio { short_name: String, tg: u32, frame: Vec<u8> },
+    /// The recorder is quitting: every connection is told, then closed.
+    Quit,
+}
+
+impl Out {
+    /// `m`, as each kind of connection may hear it.
+    pub fn of(m: &ToClient) -> Out {
+        match m {
+            ToClient::Quit => Out::Quit,
+            ToClient::Config { .. } => {
+                let mut listen = m.to_value();
+                listen["config"] = crate::access::redact_config(listen["config"].take());
+                Out::Config { full: m.to_json(), listen: listen.to_string() }
+            }
+            _ if m.audience() == Audience::Control => Out::Control(m.to_json()),
+            _ => Out::Text(m.to_json()),
+        }
+    }
 }
 
 pub type Hub = broadcast::Sender<Arc<Out>>;
 
-/// Send `v` to the browsers that may have it ([`crate::access`]).
-pub fn publish(hub: &Hub, v: Value) {
-    let out = match v["type"].as_str().unwrap_or("") {
-        "config" => {
-            let listen = serde_json::json!({ "type": "config", "config": crate::access::redact_config(v["config"].clone()) });
-            Out::Config { full: v.to_string(), listen: listen.to_string() }
-        }
-        t if crate::access::control_only(t) => Out::Control(v.to_string()),
-        _ => Out::Text(v.to_string()),
-    };
-    let _ = hub.send(Arc::new(out));
+/// Send `m` to the browsers that may have it. Every message to all of them
+/// goes this way.
+pub fn publish(hub: &Hub, m: ToClient) {
+    let _ = hub.send(Arc::new(Out::of(&m)));
+}
+
+/// Say `text` in the log and on every browser's log page (as an error).
+pub fn warn_all(hub: &Hub, text: &str) {
+    log::warn!("{text}");
+    publish(hub, ToClient::Log { lines: vec![json!({ "timeS": 0, "kind": "error", "text": text })] });
 }
 
 #[derive(Clone, Debug, Default)]
@@ -61,8 +80,8 @@ pub struct PhaseInfo {
 }
 
 impl PhaseInfo {
-    pub fn to_json(&self) -> Value {
-        json!({ "type": "state", "phase": self.phase, "error": self.error, "ended": self.ended })
+    pub fn message(&self) -> ToClient {
+        ToClient::State { phase: self.phase, error: self.error.clone(), ended: self.ended }
     }
 }
 
@@ -143,13 +162,13 @@ impl Ctx {
     pub fn event(&self, e: trunk_app::stats::MonitorEvent) {
         let t = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
         if let Some(v) = self.shared.emit(t, e) {
-            publish(&self.hub, v);
+            publish(&self.hub, ToClient::MonitorEvent(body(v)));
         }
     }
 
     pub fn set_phase(&self, phase: &'static str, error: Option<String>, ended: bool) {
         let p = PhaseInfo { phase, error, ended };
-        publish(&self.hub, p.to_json());
+        publish(&self.hub, p.message());
         *self.phase.lock().unwrap() = p;
     }
 }
@@ -185,7 +204,7 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
                 mine.channel_file_status = read.channel_file_status.clone();
             }
         }
-        publish(&ctx.hub, serde_json::json!({ "type": "config", "config": &*shared }));
+        publish(&ctx.hub, ToClient::Config { config: Box::new(shared.clone()) });
         if let Some(e) = errors.into_iter().next() {
             return Err(e);
         }
@@ -288,9 +307,7 @@ fn warn_readable_keys(ctx: &Ctx, cfg: &Config) {
         use std::os::unix::fs::PermissionsExt;
         for p in cfg.key_files(&ctx.config_path) {
             if fs::metadata(&p).is_ok_and(|m| m.permissions().mode() & 0o077 != 0) {
-                let text = format!("Keys file {} can be read by other users (chmod 600 it)", p.display());
-                log::warn!("{text}");
-                publish(&ctx.hub, json!({ "type": "log", "lines": [{ "timeS": 0, "kind": "error", "text": text }] }));
+                warn_all(&ctx.hub, &format!("Keys file {} can be read by other users (chmod 600 it)", p.display()));
             }
         }
     }
@@ -464,9 +481,7 @@ fn open_spool(ctx: &Ctx, cfg: &Config) {
         match crate::spool::Spool::open(want, &crate::paths::data_dir()) {
             Ok(s) => Some(Arc::new(s)),
             Err(e) => {
-                let text = format!("No RAM spool ({e}): calls go to the recordings folder");
-                log::warn!("{text}");
-                publish(&ctx.hub, json!({ "type": "log", "lines": [{ "timeS": 0, "kind": "error", "text": text }] }));
+                warn_all(&ctx.hub, &format!("No RAM spool ({e}): calls go to the recordings folder"));
                 None
             }
         }
@@ -710,9 +725,7 @@ fn finish_calls(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, rx: 
     let mut warned = false;
     for f in rx {
         if f.rules.compress_wav && encoder.is_none() && !std::mem::replace(&mut warned, true) {
-            let text = if m4a.encoder == "none" { "M4A encoding is off: calls are kept as WAV only" } else { "No M4A encoder found (install ffmpeg): calls are kept as WAV only" };
-            log::warn!("{text}");
-            publish(&ctx.hub, json!({ "type": "log", "lines": [{ "timeS": 0, "kind": "error", "text": text }] }));
+            warn_all(&ctx.hub, if m4a.encoder == "none" { "M4A encoding is off: calls are kept as WAV only" } else { "No M4A encoder found (install ffmpeg): calls are kept as WAV only" });
         }
         let host = ctx.plugins.host.read().unwrap();
         finish_one(ctx, dir, spool, f, encoder.as_ref(), host.as_ref());
@@ -743,15 +756,14 @@ fn finish_one(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, f: Fin
         && (!p.write_json || fs::write(&json_at, &f.json).is_ok())
         && f.frames.as_ref().filter(|_| p.write_frames).is_none_or(|c| fs::write(&frames_at, &c.bytes).is_ok());
     if !ok {
-        log::error!("Couldn't write {}", base.display());
-        publish(&ctx.hub, json!({ "type": "log", "lines": [{ "timeS": 0, "kind": "error", "text": format!("couldn't write {}", base.display()) }] }));
+        warn_all(&ctx.hub, &format!("Couldn't write {}", base.display()));
         return;
     }
     // Whether its audio and JSON stay once the plugins are done (a plugin's failure may keep them after all: archive::settle).
     let mut entry = f.entry;
     entry["audio"] = json!(keep_audio);
     entry["json"] = json!(keep_json);
-    publish(&ctx.hub, json!({ "type": "concluded", "entry": &entry }));
+    publish(&ctx.hub, ToClient::Concluded { entry: entry.clone() });
     {
         let mut h = ctx.history.lock().unwrap();
         h.push_front(entry);
@@ -767,8 +779,7 @@ fn finish_one(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, f: Fin
         match e.m4a(&audio.wav, &audio.m4a_to, *kbps) {
             Ok(()) => audio.files.m4a = Some(audio.m4a_to.clone()),
             Err(err) => {
-                log::error!("M4A of {}: {err}", f.rel);
-                publish(&ctx.hub, json!({ "type": "log", "lines": [{ "timeS": 0, "kind": "error", "text": format!("M4A of {}: {err}", f.rel) }] }));
+                warn_all(&ctx.hub, &format!("M4A of {}: {err}", f.rel));
                 // The call's audio is then the WAV.
                 if !audio.wav_written {
                     audio.wav_written = fs::write(&audio.files.wav, &*audio.wav).is_ok();
@@ -786,9 +797,7 @@ fn finish_one(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, f: Fin
 fn deliver(ctx: &Ctx, out: &mut Vec<Output>, plugins: Option<&PluginHost>, rules: &dyn Fn(u16) -> FileRules, finish: &dyn Fn(Finish, Option<&PluginHost>)) {
     for o in out.drain(..) {
         match o {
-            Output::Text(t) => {
-                let _ = ctx.hub.send(Arc::new(Out::Text(t)));
-            }
+            Output::Message(m) => publish(&ctx.hub, m),
             Output::Audio { short_name, tg, frame, decrypted, .. } => {
                 if let Some(p) = plugins {
                     p.audio_frame(&frame, decrypted);
@@ -801,8 +810,8 @@ fn deliver(ctx: &Ctx, out: &mut Vec<Output>, plugins: Option<&PluginHost>, rules
                 }
             }
             Output::Log(r) => crate::logging::record(&r),
-            Output::Topic { topic, text } => {
-                let _ = ctx.hub.send(Arc::new(Out::Topic { topic, text }));
+            Output::Topic { topic, msg } => {
+                let _ = ctx.hub.send(Arc::new(Out::Topic { topic, text: msg.to_json() }));
             }
             Output::Rollup(r) => ctx.store.add(r),
             Output::File { rel, system, wav, json, frames, entry, decrypted } => finish(Finish { rel, system, wav, json, frames, entry, rules: rules(system), decrypted }, plugins),
@@ -822,7 +831,7 @@ pub fn call_files(ctx: &Ctx, rel: &str, audio: bool, json: bool) {
     e["audio"] = json!(audio);
     e["json"] = json!(json);
     drop(h);
-    publish(&ctx.hub, json!({ "type": "callFiles", "path": rel, "audio": audio, "json": json }));
+    publish(&ctx.hub, ToClient::CallFiles { path: rel.to_string(), audio, json });
 }
 
 /// Fill the history list with the newest calls already on disk, in the
@@ -851,7 +860,7 @@ const OLDER_WINDOW_MS: i64 = 24 * 3600 * 1000;
 /// started before `before_ms`, newest first, from the last 24 hours. Only the
 /// day folders of Trunk Recorder's layout are read (a system with its own
 /// filename format isn't searched), so this stays cheap without an index.
-pub fn older_calls(ctx: &Ctx, before_ms: i64, limit: usize) -> Value {
+pub fn older_calls(ctx: &Ctx, before_ms: i64, limit: usize) -> ToClient {
     let (dir, names) = {
         let c = ctx.config.lock().unwrap();
         // (And a site's, as a system of its own: its calls from before are under its name.)
@@ -911,7 +920,7 @@ pub fn older_calls(ctx: &Ctx, before_ms: i64, limit: usize) -> Value {
     }
     entries.sort_by(|a, b| b.0.cmp(&a.0));
     let entries: Vec<Value> = entries.into_iter().map(|(_, e)| e).collect();
-    json!({ "type": "olderCalls", "before": before_ms, "entries": entries, "more": read < found.len() })
+    ToClient::OlderCalls { before: before_ms, entries, more: read < found.len() }
 }
 
 /// The newest `limit` calls already on disk (for the history list at startup).

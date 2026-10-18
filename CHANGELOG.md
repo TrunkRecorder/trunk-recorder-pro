@@ -5,6 +5,9 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **A command the recorder can't read is answered.** One with a field missing or of the wrong kind,
+  or of a type the recorder doesn't know, used to be ignored without a word (or read with a
+  default in place of what was missing); now the connection gets an `error` saying what was wrong.
 - **Systems are numbered from 0, conventional ones too.** Conventional systems used to be numbered
   down from 65535; now the systems being recorded are numbered 0, 1, 2…, trunked first, then
   conventional. This is the number `{sys_num}` gives in a file name format and plugins see as

@@ -137,11 +137,11 @@ conventional.rs, bench.rs.
 
 ### 5. The interface protocol has no typed home in Rust
 
-- [ ] One serde enum each for recorder→client and client→recorder messages in Rust, with `audience()` (`Everyone | Control | ConfigRedacted`) and `listen_may_send()` as methods; `publish()` the only way onto the hub (`deliver` and `survey.rs` go through it too)
-- [ ] Generate `protocol.ts` and `protocol.schema.json` from the Rust types (schemars); doc comments live once, in Rust
+- [x] One serde enum each way in Rust (`trunk_app::protocol::{ToClient, Command}`), with `audience()` and `listen_may_send()`; `publish(ToClient)` the only way onto the hub (`deliver` and `survey.rs` go through it). Bodies still built as JSON ride as `Body`; typing them is follow-up work
+- ~~Generate `protocol.ts` and `protocol.schema.json` from the Rust types~~ — decided against: protocol.ts stays the documented contract that third-party interfaces read; the enums are checked against it both ways instead
 - [ ] `hello` becomes `{ version, platform, api, capabilities }` followed by a replay of the ordinary messages through `publish`; `redact_hello`'s field list goes
-- [ ] `protocol_tests.rs` compares the enum to protocol.ts instead of scraping server.rs
-- [ ] `server::command`: `impl TryFrom<Value> for Command` (or a serde enum tagged by `type`) so the 30-arm `match ty` has typed fields
+- [x] `protocol_tests.rs` compares `ToClient::TYPES` / `Command::TYPES` with protocol.ts instead of scraping server.rs, and parses every documented command with `Command::parse`
+- [x] `server::command` matches on `Command` with typed fields; a command that doesn't parse gets an `error`
 - [ ] `radio_query` / `stats_query` move into trunk-app over `Shared` + a `UnitAliases` store (today the server re-reads every units CSV from disk per query because the `Session` is unreachable from it; `span()` is duplicated in trunk-web)
 - [ ] One `SiteIdentity` (today `SiteIdentity`, `Identity`, `SurveyIdentity`, and `SurveySuggestion`'s flattened copy); `SmartnetBandplan` keys match `Site`'s so `applySurvey` stops renaming
 - [ ] `status` (every 500 ms, to everyone) = calls + a per-site summary; DMR/NXDN carriers, channel tables, adjacent and patches move to the topic-gated `decodeDetail`; counters live only in `stats`

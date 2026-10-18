@@ -13,6 +13,7 @@
 //! message?}` as an install goes ("finding", "downloading", "checking",
 //! "installing", then "done" or "failed").
 
+use trunk_app::protocol::{body, Install, ToClient};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -268,7 +269,7 @@ impl Plugins {
 
     /// The `plugins` message: what's installed and what each is. (Their
     /// settings are in the config.)
-    pub fn list_json(&self, cfg: &Config) -> Value {
+    pub fn list(&self, cfg: &Config) -> ToClient {
         let all = Self::entries(cfg);
         let runtime = self.runtime.lock().unwrap().clone();
         let plugins: Vec<Value> = all
@@ -293,7 +294,7 @@ impl Plugins {
             })
             .collect();
         let found = Encoder::find(&cfg.recording.m4a.encoder).map(|e| e.name());
-        json!({ "type": "plugins", "plugins": plugins, "encoderFound": found })
+        ToClient::Plugins(body(json!({ "plugins": plugins, "encoderFound": found })))
     }
 
     /// Start the config's enabled plugins for a recording.
@@ -392,13 +393,13 @@ impl Plugins {
             let n = held.remove(id).unwrap_or(0);
             if r.held != n {
                 r.held = n;
-                changed.push(json!({ "type": "pluginRuntime", "id": id, "runtime": r }));
+                changed.push(ToClient::PluginRuntime { id: id.clone(), runtime: json!(r) });
             }
         }
         for (id, n) in held {
             let r = rt.entry(id.clone()).or_default();
             r.held = n;
-            changed.push(json!({ "type": "pluginRuntime", "id": id, "runtime": r }));
+            changed.push(ToClient::PluginRuntime { id: id.clone(), runtime: json!(r) });
         }
         for v in changed {
             publish(&self.hub, v);
@@ -450,7 +451,7 @@ impl Plugins {
     fn publish_all_runtime(&self) {
         let rt = self.runtime.lock().unwrap().clone();
         for (id, r) in rt {
-            publish(&self.hub, json!({ "type": "pluginRuntime", "id": id, "runtime": r }));
+            publish(&self.hub, ToClient::PluginRuntime { id: id.clone(), runtime: json!(r) });
         }
     }
 
@@ -500,7 +501,7 @@ impl Plugins {
                         if was != r.state && !(was == "starting" || was == "off") || r.state == "error" && was != "error" {
                             let e = trunk_app::stats::MonitorEvent::PluginHealth { plugin: id.clone(), state: r.state.to_string(), message: message.clone() };
                             if let Some(v) = monitor.emit(now(), e) {
-                                publish(&hub, v);
+                                publish(&hub, ToClient::MonitorEvent(body(v)));
                             }
                         }
                     }
@@ -517,7 +518,7 @@ impl Plugins {
                     }
                     Note::Metrics { metrics, .. } => r.set_metrics(copy, metrics.clone()),
                 }
-                publish(&hub, json!({ "type": "pluginRuntime", "id": id, "runtime": r }));
+                publish(&hub, ToClient::PluginRuntime { id: id.clone(), runtime: json!(r) });
             }
             log(n);
         })
@@ -525,8 +526,8 @@ impl Plugins {
 
     /// `addPlugin {path}`: a plugin executable of the user's own (a build).
     /// Returns its id and path, for the server to put in the config, and a notice.
-    pub fn add(&self, v: &Value, cfg: &Config) -> Result<(String, PathBuf, String), String> {
-        let path = v["path"].as_str().map(str::trim).filter(|p| !p.is_empty()).ok_or("Which executable?")?;
+    pub fn add(&self, path: &str, cfg: &Config) -> Result<(String, PathBuf, String), String> {
+        let path = Some(path.trim()).filter(|p| !p.is_empty()).ok_or("Which executable?")?;
         let path = PathBuf::from(shellexpand_home(path));
         let path = std::fs::canonicalize(&path).map_err(|e| format!("{}: {e}", path.display()))?;
         self.manifests.lock().unwrap().remove(&path);
@@ -542,8 +543,8 @@ impl Plugins {
     /// `removePlugin {id}`: an installed copy is deleted (a build of the
     /// user's own isn't). Its data folder stays. The server then forgets it
     /// in the config; returns its id.
-    pub fn remove(&self, v: &Value, cfg: &Config) -> Result<String, String> {
-        let id = v["id"].as_str().ok_or("no plugin id")?.to_string();
+    pub fn remove(&self, id: &str, cfg: &Config) -> Result<String, String> {
+        let id = id.to_string();
         if !store::valid_id(&id) {
             return Err(format!("bad plugin id {id:?}"));
         }
@@ -563,7 +564,7 @@ impl Plugins {
     }
 
     /// The `pluginStore` message.
-    pub fn store_json(&self, refresh: bool) -> Value {
+    pub fn store(&self, refresh: bool) -> ToClient {
         store_message(&self.catalog(refresh))
     }
 
@@ -571,17 +572,16 @@ impl Plugins {
     /// it goes in `pluginInstall` messages, to everyone; blocks until done.
     /// A new plugin is off (nothing in the config changes); after an update
     /// the server reloads the plugins, so a running one restarts with it.
-    pub fn install(&self, v: &Value, cfg: &Config) {
-        let key = v["id"].as_str().or(v["repository"].as_str()).unwrap_or_default().trim().to_string();
-        self.shelf.install(&self.hub, "pluginInstall", &key, |id, stage| self.install_one(v, cfg, id, stage));
+    pub fn install(&self, what: &Install, cfg: &Config) {
+        self.shelf.install(&self.hub, ToClient::PluginInstall, what.key(), |id, stage| self.install_one(what, cfg, id, stage));
     }
 
-    fn install_one(&self, v: &Value, cfg: &Config, id_out: &mut String, stage: &dyn Fn(&str, &'static str)) -> Result<String, String> {
-        let listing = match v["id"].as_str() {
-            Some(id) => self.catalog(false).find(id).cloned().ok_or_else(|| format!("{id} isn't in the plugin registry"))?,
-            None => {
-                let repo = v["repository"].as_str().map(str::trim).filter(|r| !r.is_empty()).ok_or("Which plugin? Its GitHub repository, or its release's page.")?;
-                let l = store::release_listing(repo, v["tag"].as_str())?;
+    fn install_one(&self, what: &Install, cfg: &Config, id_out: &mut String, stage: &dyn Fn(&str, &'static str)) -> Result<String, String> {
+        let listing = match what {
+            Install::Listed { id } => self.catalog(false).find(id).cloned().ok_or_else(|| format!("{id} isn't in the plugin registry"))?,
+            Install::Release { repository, tag } => {
+                let repo = Some(repository.trim()).filter(|r| !r.is_empty()).ok_or("Which plugin? Its GitHub repository, or its release's page.")?;
+                let l = store::release_listing(repo, tag.as_deref())?;
                 // A listed plugin's id is its own.
                 if let Some(listed) = self.catalog(false).find(&l.id) {
                     if !listed.repository.eq_ignore_ascii_case(&l.repository) {
@@ -633,7 +633,7 @@ fn now() -> f64 {
 }
 
 /// The `pluginStore` message for a catalog.
-pub(crate) fn store_message(cat: &store::Catalog) -> Value {
+pub(crate) fn store_message(cat: &store::Catalog) -> ToClient {
     let plugins: Vec<Value> = cat
         .index
         .plugins
@@ -644,5 +644,5 @@ pub(crate) fn store_message(cat: &store::Catalog) -> Value {
             v
         })
         .collect();
-    json!({ "type": "pluginStore", "source": cat.source, "fetched": cat.fetched, "problem": cat.problem, "target": store::target(), "plugins": plugins })
+    ToClient::PluginStore(body(json!({ "source": cat.source, "fetched": cat.fetched, "problem": cat.problem, "target": store::target(), "plugins": plugins })))
 }

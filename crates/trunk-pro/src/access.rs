@@ -15,7 +15,6 @@
 
 use serde_json::Value;
 
-use crate::config::ApiAccess;
 
 /// Which port a request came in on.
 #[derive(Clone, Debug)]
@@ -26,21 +25,9 @@ pub enum Door {
     Interface { id: String, stop: tokio::sync::watch::Receiver<bool> },
 }
 
-/// Commands a listen-only page may send.
-const LISTEN_COMMANDS: &[&str] = &["subscribe", "statsQuery", "radioQuery", "olderCalls", "listen"];
-
-/// Messages only control access hears (plugin and interface management, key containers).
-const CONTROL_MESSAGES: &[&str] = &["plugins", "pluginRuntime", "pluginStore", "pluginInstall", "interfaces", "interfaceStore", "interfaceInstall", "keys"];
-
-/// May `access` send command `ty`?
-pub fn may(access: ApiAccess, ty: &str) -> bool {
-    access == ApiAccess::Control || LISTEN_COMMANDS.contains(&ty)
-}
-
-/// Is a message of type `ty` for control access only?
-pub fn control_only(ty: &str) -> bool {
-    CONTROL_MESSAGES.contains(&ty)
-}
+// Which commands a listen-only page may send, and which messages only
+// control access hears, are the protocol's to say:
+// [`trunk_app::protocol::Command::listen_may_send`], [`trunk_app::protocol::ToClient::audience`].
 
 /// The config as a listen-only page sees it: without plugin settings and
 /// key sources, the recorder's or any system's.
@@ -90,9 +77,10 @@ mod tests {
         assert!(!r.to_string().contains("apiKey") && !r.to_string().contains("k.json"));
         assert_eq!(r["systems"][0]["shortName"], "x");
         assert_eq!(r["server"]["port"], 8080);
-        assert!(may(ApiAccess::Listen, "listen") && may(ApiAccess::Listen, "olderCalls"));
-        for c in ["setConfig", "start", "stop", "quit", "installPlugin", "listDir", "unlockKeys", "installInterface"] {
-            assert!(!may(ApiAccess::Listen, c) && may(ApiAccess::Control, c), "{c}");
+        let parse = |t: &str| trunk_app::protocol::Command::parse(t).unwrap();
+        assert!(parse(r#"{"type":"listen","on":true}"#).listen_may_send() && parse(r#"{"type":"olderCalls"}"#).listen_may_send());
+        for c in [r#"{"type":"setConfig","config":{}}"#, r#"{"type":"start"}"#, r#"{"type":"quit"}"#, r#"{"type":"installPlugin","id":"x"}"#, r#"{"type":"listDir"}"#, r#"{"type":"unlockKeys","source":"a","password":"b"}"#] {
+            assert!(!parse(c).listen_may_send(), "{c}");
         }
         let h = redact_hello(json!({ "type": "hello", "config": { "keys": {} }, "configPath": "/x", "history": [] }));
         assert!(h.get("configPath").is_none() && h["config"].get("keys").is_none() && h["history"].is_array());

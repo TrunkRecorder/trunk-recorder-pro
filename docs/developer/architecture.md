@@ -1336,7 +1336,10 @@ WebSocket, so the interface code is shared.
 
 One WebSocket, `/api/ws`: JSON text both ways plus binary frames for live audio.
 `web/src/protocol.ts` is the source of truth; `docs/api/protocol.schema.json` is generated from it
-(`npm run schema`); `trunk-pro/src/protocol_tests.rs` checks the Rust side against the schema. The
+(`npm run schema`). The Rust side is two enums in `trunk-app/src/protocol.rs`: `ToClient` (every
+message, serialized as `{"type": <variant>, …}`, with `audience()`) and `Command` (every command,
+read strictly by `Command::parse`, with `listen_may_send()`). `trunk-pro/src/protocol_tests.rs`
+checks their variants against protocol.ts both ways and the messages against the schema. The
 full reference is `docs/api/README.md`.
 
 ### 14.1 A typical conversation

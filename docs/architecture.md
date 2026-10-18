@@ -506,8 +506,11 @@ are hidden or ignored in the browser:
 ### 9. The interface protocol
 
 `web/src/protocol.ts` is the source of truth. `docs/api/protocol.schema.json`
-is generated from it (`npm run schema`), and
-`trunk-pro/src/protocol_tests.rs` checks Rust's messages against that schema.
+is generated from it (`npm run schema`). In Rust every message is a
+`ToClient` and every command a `Command` (`trunk-app/src/protocol.rs`), one
+variant per `type`; `trunk-pro/src/protocol_tests.rs` checks both enums'
+variants against protocol.ts's, both ways, every message sent against the
+schema, and every documented command against `Command::parse`.
 
 - **Recorder → client.**
   - On connect: `hello` (config, phase, history, aliases, heard codes,
@@ -521,10 +524,13 @@ is generated from it (`npm run schema`), and
   - Replies to the sender only: `devices`, `radios`, `dir`, `trConfig`,
     `pluginStore`, `interfaceStore`, `subscribed`, `statsResult`,
     `radioResult`, `error`, `notice`.
-  - By access (`access.rs`): `runtime::publish` marks plugin, interface and
-    key messages control-only (`Out::Control`) and sends `config` both whole
-    and without plugin settings and key sources (`Out::Config`); a session
-    passes on what its access may have.
+  - By access: `ToClient::audience` says which messages are control-only
+    (plugin, interface and key management), and `runtime::publish` — the
+    one way onto the hub — serializes a message once per audience: `config`
+    whole and without plugin settings and key sources (`access.rs`). A
+    session passes on what its access may have. A command a listen-only
+    connection may not send (`Command::listen_may_send`), and one that
+    doesn't parse, is answered with an `error`.
 - **Client → recorder.** `setConfig`, `start`, `stop`, `listen`,
   `channelFile`, `devices`, `findRadios`, `listDir`, `readTrConfig`,
   `survey*`, `plugins`, `addPlugin`, `removePlugin`, `pluginStore`,

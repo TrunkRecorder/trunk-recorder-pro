@@ -33,6 +33,7 @@ pub mod cli;
 pub mod serve;
 pub mod store;
 
+use trunk_app::protocol::{body, Install, ToClient};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -276,7 +277,7 @@ impl Interfaces {
     }
 
     /// The `interfaces` message: each one, what it is, and how it's doing.
-    pub fn list_json(&self, cfg: &Config, config_path: &Path) -> Value {
+    pub fn list(&self, cfg: &Config, config_path: &Path) -> ToClient {
         let serving = self.serving.lock().unwrap();
         let problems = self.problems.lock().unwrap();
         let list: Vec<Value> = self
@@ -305,28 +306,27 @@ impl Interfaces {
                 })
             })
             .collect();
-        json!({ "type": "interfaces", "interfaces": list, "api": API_VERSION })
+        ToClient::Interfaces(body(json!({ "interfaces": list, "api": API_VERSION })))
     }
 
     // ─── The store ─────────────────────────────────────────────────────────
 
     /// The `interfaceStore` message.
-    pub fn store_json(&self, refresh: bool) -> Value {
+    pub fn store(&self, refresh: bool) -> ToClient {
         store::message(&self.shelf.catalog(refresh))
     }
 
     /// `installInterface {id}` or `{repository, tag?}`: says how it goes in
     /// `interfaceInstall` messages, to everyone; blocks until done. Returns
     /// what the config should have for it once installed ([`Installed`]).
-    pub fn install(&self, v: &Value, cfg: &Config) -> Option<Installed> {
-        let key = v["id"].as_str().or(v["repository"].as_str()).unwrap_or_default().trim().to_string();
+    pub fn install(&self, what: &Install, cfg: &Config) -> Option<Installed> {
         let mut done = None;
-        self.shelf.install(&self.hub, "interfaceInstall", &key, |id_out, stage| {
-            let listing = match v["id"].as_str() {
-                Some(id) => self.shelf.catalog(false).find(id).cloned().ok_or_else(|| format!("{id} isn't in the interface store"))?,
-                None => {
-                    let repo = v["repository"].as_str().map(str::trim).filter(|r| !r.is_empty()).ok_or("Which interface? Its GitHub repository, or its release's page.")?;
-                    let l = store::release_listing(repo, v["tag"].as_str())?;
+        self.shelf.install(&self.hub, ToClient::InterfaceInstall, what.key(), |id_out, stage| {
+            let listing = match what {
+                Install::Listed { id } => self.shelf.catalog(false).find(id).cloned().ok_or_else(|| format!("{id} isn't in the interface store"))?,
+                Install::Release { repository, tag } => {
+                    let repo = Some(repository.trim()).filter(|r| !r.is_empty()).ok_or("Which interface? Its GitHub repository, or its release's page.")?;
+                    let l = store::release_listing(repo, tag.as_deref())?;
                     if let Some(listed) = self.shelf.catalog(false).find(&l.id) {
                         if !listed.repository.eq_ignore_ascii_case(&l.repository) {
                             return Err(format!("{} is the id of {} in the interface store ({}). Install that one from the list.", l.id, listed.name, listed.repository));
@@ -389,8 +389,8 @@ impl Interfaces {
 
     /// `addInterface {path}`: a folder of the user's own. Returns its id
     /// and its entry, for the config.
-    pub fn add(&self, v: &Value, cfg: &Config, config_path: &Path) -> Result<(String, Interface), String> {
-        let path = v["path"].as_str().map(str::trim).filter(|p| !p.is_empty()).ok_or("Which folder?")?;
+    pub fn add(&self, path: &str, cfg: &Config, config_path: &Path) -> Result<(String, Interface), String> {
+        let path = Some(path.trim()).filter(|p| !p.is_empty()).ok_or("Which folder?")?;
         let entry = Interface { path: path.to_string(), port: cfg.server.free_port(&self.taken()), ..Default::default() };
         let dir = folder(config_path, "", &entry);
         if let Some(p) = folder_problem(&dir) {

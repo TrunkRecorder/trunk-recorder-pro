@@ -3,9 +3,9 @@
 //! nearby. They're written to the config; a running recorder serves them
 //! once it's restarted (its Interfaces page does it at once).
 
+use trunk_app::protocol::Install;
 use std::path::{Path, PathBuf};
 
-use serde_json::json;
 
 use super::store::{self, Listing};
 use super::{folder, interfaces_dir, Installed, Interfaces, Manifest};
@@ -113,7 +113,7 @@ fn search(a: &Args) {
 /// the same as the Interfaces page does, without the browser.
 fn install_one(what: &str, tag: Option<&str>, cfg: &Config) -> Option<Installed> {
     let (hub, mut rx) = tokio::sync::broadcast::channel(64);
-    let v = if what.contains('/') { json!({ "repository": what, "tag": tag }) } else { json!({ "id": what }) };
+    let v = if what.contains('/') { Install::Release { repository: what.into(), tag: tag.map(String::from) } } else { Install::Listed { id: what.into() } };
     let r = Interfaces::new(hub, None, 0).install(&v, cfg);
     while let Ok(m) = rx.try_recv() {
         if let crate::runtime::Out::Control(t) = &*m {
@@ -189,7 +189,7 @@ fn add(a: &Args) {
     let (path, mut cfg) = load_config(a);
     let abs = std::fs::canonicalize(dir).unwrap_or_else(|e| die(&format!("{dir}: {e}")));
     let (hub, _) = tokio::sync::broadcast::channel(1);
-    let (id, mut entry) = Interfaces::new(hub, None, 0).add(&json!({ "path": abs.display().to_string() }), &cfg, &path).unwrap_or_else(|e| die(&e));
+    let (id, mut entry) = Interfaces::new(hub, None, 0).add(&abs.display().to_string(), &cfg, &path).unwrap_or_else(|e| die(&e));
     entry.port = port_arg(a, &cfg);
     println!("Added {id}: {} on port {}.", abs.display(), entry.port);
     cfg.server.interfaces.insert(id, entry);

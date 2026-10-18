@@ -68,7 +68,7 @@ pub async fn reconcile(ctx: Arc<Ctx>) {
         }
     }
     *ctx.interfaces.problems.lock().unwrap() = problems;
-    publish(&ctx.hub, ctx.interfaces.list_json(&cfg, &ctx.config_path));
+    publish(&ctx.hub, ctx.interfaces.list(&cfg, &ctx.config_path));
 }
 
 /// Stop serving them all (the app is quitting).

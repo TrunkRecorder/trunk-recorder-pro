@@ -16,6 +16,7 @@
 //!   checked against its own `SHA256SUMS`. That proves they arrived intact,
 //!   not that anyone reviewed them, and the interface says so.
 
+use trunk_app::protocol::{body, Body, ToClient};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -133,12 +134,12 @@ impl<I: Index> Shelf<I> {
     }
 
     /// Run install `key` (what was asked for), telling everyone how it goes
-    /// in `kind` messages (`{type: kind, key, id, stage, message}`; stage
+    /// in `kind` messages (`{key, id, stage, message}`; stage
     /// "finding", then what `work` reports — "downloading", "checking",
     /// "installing" — then "done" or "failed"). `work` sets the id once it
     /// knows it, and returns the notice for "done". Blocks until done.
-    pub fn install(&self, hub: &Hub, kind: &str, key: &str, work: impl FnOnce(&mut String, &dyn Fn(&str, &'static str)) -> Result<String, String>) {
-        let say = |id: &str, stage: &str, message: Option<&str>| publish(hub, json!({ "type": kind, "key": key, "id": id, "stage": stage, "message": message }));
+    pub fn install(&self, hub: &Hub, kind: fn(Body) -> ToClient, key: &str, work: impl FnOnce(&mut String, &dyn Fn(&str, &'static str)) -> Result<String, String>) {
+        let say = |id: &str, stage: &str, message: Option<&str>| publish(hub, kind(body(json!({ "key": key, "id": id, "stage": stage, "message": message }))));
         if !self.installing.lock().unwrap().insert(key.to_string()) {
             return say("", "failed", Some("That's being installed already."));
         }

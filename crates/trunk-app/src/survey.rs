@@ -12,6 +12,7 @@ use serde_json::{json, Value};
 use trunk_core::survey::{Command, GainState, Kind, Stage, Survey, SurveyConfig, BANDS};
 
 use crate::config::{auto_center, usable_half_width, Config, Source};
+use crate::protocol::ToClient;
 #[cfg(test)]
 use crate::config::DEFAULT_GUARD_HZ;
 use crate::session::Output;
@@ -144,13 +145,13 @@ impl SurveySession {
             self.last_spec_ms = now_ms;
             if let Some((center, bins)) = self.survey.spectrum(512) {
                 let bins: Vec<f32> = bins.iter().map(|v| (v * 10.0).round() / 10.0).collect();
-                out.push(Output::Text(json!({ "type": "surveySpectrum", "source": self.source, "centerHz": center, "rateHz": self.survey.rate_hz(), "bins": bins }).to_string()));
+                out.push(Output::Message(ToClient::SurveySpectrum { source: self.source, center_hz: center, rate_hz: self.survey.rate_hz(), bins }));
             }
         }
         if self.changed && now_ms - self.last_ms >= 400.0 {
             self.last_ms = now_ms;
             self.changed = false;
-            out.push(Output::Text(self.snapshot().to_string()));
+            out.push(Output::Message(ToClient::Survey(crate::protocol::body(self.snapshot()))));
         }
     }
 

@@ -42,6 +42,7 @@ pub use archive::{plan, Archive, FileRules};
 pub use encode::Encoder;
 pub use host::{CallAudio, Note, PluginHost, Spec};
 
+use trunk_app::protocol::ToClient;
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -226,7 +227,7 @@ pub fn notes_to_hub(hub: crate::runtime::Hub) -> host::Notes {
         } else {
             log::info!("{text}");
         }
-        crate::runtime::publish(hub, json!({ "type": "log", "lines": [{ "timeS": 0, "kind": if error { "error" } else { "plugin" }, "text": text }] }));
+        crate::runtime::publish(hub, ToClient::Log { lines: vec![json!({ "timeS": 0, "kind": if error { "error" } else { "plugin" }, "text": text })] });
     };
     std::sync::Arc::new(move |n: Note| match n {
         Note::Log { plugin, level, text } => {

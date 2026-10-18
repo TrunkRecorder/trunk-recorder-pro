@@ -1949,6 +1949,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "strum",
  "trunk-core",
  "trunk-recorder-plugin",
  "zeroize",
