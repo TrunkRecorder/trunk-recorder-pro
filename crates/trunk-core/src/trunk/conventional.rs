@@ -670,6 +670,11 @@ impl Conventional {
         self.chans.iter().filter(|c| c.open.is_some()).count()
     }
 
+    /// Each channel: its frequency, its system, and its calls in progress.
+    pub fn channels(&self) -> impl Iterator<Item = (f64, usize, usize)> + '_ {
+        self.chans.iter().map(|c| (c.freq_hz, c.system, c.open.as_ref().map_or(0, |o| o.live.iter().flatten().count())))
+    }
+
     /// Calls in progress.
     pub fn calls(&self) -> impl Iterator<Item = &Call> {
         self.chans.iter().filter_map(|c| c.open.as_ref()).flat_map(|o| o.live.iter().flatten().map(|l| &l.call))
@@ -680,7 +685,7 @@ impl Conventional {
     /// `gap`: the block is silence standing in for samples that never came
     /// ([`super::Engine::push_gap`]): calls open run on, nothing new opens,
     /// and the noise floor is left as it was.
-    pub fn on_block(&mut self, source: usize, chz: &mut Channelizer, now_s: f64, gap: bool, ids: &CallIds, systems: &[&SystemConfig], out: &mut Vec<ConvOut>) {
+    pub fn on_block<'s>(&mut self, source: usize, chz: &mut Channelizer, now_s: f64, gap: bool, ids: &CallIds, system: &dyn Fn(usize) -> &'s SystemConfig, out: &mut Vec<ConvOut>) {
         if !self.chans.iter().any(|c| c.source == source) {
             return;
         }
@@ -704,7 +709,7 @@ impl Conventional {
             if ch.source != source {
                 continue;
             }
-            let rules = &CallRules::of(systems[ch.system], self.capture_frames);
+            let rules = &CallRules::of(system(ch.system), self.capture_frames);
             let floor = self.floors[source].slices[ch.slice].max(1e-30);
             let bp = chz.band_power(ch.offset_hz, ch.shape.detect_half_bw);
             ch.power = if ch.power == 0.0 { bp } else { ch.power + a * (bp - ch.power) };

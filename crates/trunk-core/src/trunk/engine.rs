@@ -1105,7 +1105,7 @@ impl Trunk {
             let (head, _, _) = s.chz.add_head(s.offset(hz), cutoff_hz, 0.0);
             let hunt = Hunt { cutoff_hz, index, source: src, head, start_s: self.now_s, samples: 0, offset_s: s.clock_offset_s, ppm: s.tune_ppm, measured_s: self.now_s, retuned_s };
             let rate = s.chz.output_rate();
-            rx.set_tap(self.hunt_tap(&hunt));
+            rx.set_tap(Self::hunt_tap(self.site, &self.cc, &hunt));
             (hunt, rate)
         };
         self.listening = Listening::Hunting(hunt);
@@ -1124,8 +1124,8 @@ impl Trunk {
     }
 
     /// Hunting: its control channel's tap.
-    fn hunt_tap(&self, h: &Hunt) -> Tap {
-        Tap { site: self.site, carrier: 0, head: h.head, cc: self.cc.clone(), at: TapTime::Hunt { start_s: h.start_s, offset_s: h.offset_s } }
+    fn hunt_tap(site: u16, cc: &Cc, h: &Hunt) -> Tap {
+        Tap { site, carrier: 0, head: h.head, cc: cc.clone(), at: TapTime::Hunt { start_s: h.start_s, offset_s: h.offset_s } }
     }
 
     /// Watching: heads on the sources that cover each carrier.
@@ -1165,14 +1165,13 @@ impl Trunk {
     }
 
     fn on_block_hunting(&mut self, radio: &mut Radio, sys: &SystemConfig, source: usize, mut cc: CcResult, events: &mut Vec<Event>, call_events: &mut Vec<CallEvent>) {
-        let Listening::Hunting(h) = &mut self.listening else { return };
+        let Listening::Hunting(h) = &self.listening else { return };
         // (Another source's samples: decoded as it moved to this one. What it noted is still the site's.)
         if h.source != source || cc.head != Some(h.head) {
-            for (level, text) in std::mem::take(&mut cc.notes) {
-                events.push(Event::Note { system: self.system, site: Some(self.site), level, text });
-            }
+            events.extend(std::mem::take(&mut cc.notes).into_iter().map(|(level, text)| self.note(level, text)));
             return;
         }
+        let Listening::Hunting(h) = &mut self.listening else { return };
         let (rate, offset) = {
             let rx = radio.rx(source);
             (rx.src.chz.output_rate(), rx.src.clock_offset_s)
@@ -1291,7 +1290,7 @@ impl Trunk {
             h.samples = 0;
             h.offset_s = s.clock_offset_s;
             let rate = s.chz.output_rate();
-            let tap = Tap { site: self.site, carrier: 0, head: h.head, cc: self.cc.clone(), at: TapTime::Hunt { start_s: h.start_s, offset_s: h.offset_s } };
+            let tap = Self::hunt_tap(self.site, &self.cc, h);
             rx.set_tap(tap);
             drop(rx);
             self.cc().restart(rate);
@@ -1336,8 +1335,6 @@ struct System {
 
 /// Everything the engine follows calls with (behind [`Engine`]'s lock).
 struct Core {
-    /// The engine's settings; its systems are in `systems`.
-    cfg: EngineConfig,
     systems: Vec<System>,
     radio: Radio,
     /// Every site of every trunked system, numbered as [`sites`] numbers them.
@@ -1353,6 +1350,10 @@ struct Core {
     now_s: f64,
     events: Vec<Event>,
     call_events: Vec<CallEvent>,
+    /// Wall-clock epoch ms at sample-clock time 0 ([`EngineConfig::epoch_ms_at_zero`]).
+    epoch_ms_at_zero: f64,
+    /// One copy of a call heard on several sites ([`EngineConfig::drop_duplicates`]).
+    drop_duplicates: bool,
 }
 
 impl Core {
@@ -1465,7 +1466,8 @@ impl Core {
             now_s: 0.0,
             events,
             call_events: Vec::new(),
-            cfg,
+            epoch_ms_at_zero: cfg.epoch_ms_at_zero,
+            drop_duplicates: cfg.drop_duplicates,
         })
     }
 
@@ -1521,7 +1523,7 @@ impl Core {
         let learned = UnitAlias {
             alias: a.alias.clone(),
             source: a.source.to_string(),
-            time: ((self.cfg.epoch_ms_at_zero + now_s * 1000.0) / 1000.0) as i64,
+            time: ((self.epoch_ms_at_zero + now_s * 1000.0) / 1000.0) as i64,
             wacn: hex(wacn, 5),
             sys: hex(sys_id, 3),
             talkgroup: tg,
@@ -1566,13 +1568,11 @@ impl Core {
             control.push(Want { system: t.system, site: Some(t.site), hz, src, kind: ChannelKind::Control, offset_hz, quality, calls: 0 });
         }
         let conv = self
-            .cfg
-            .conventional
-            .iter()
-            .filter_map(|c| {
-                let src = self.radio.source_for(c.freq_hz)?;
-                let calls = self.conv.calls().filter(|k| (k.freq_hz as f64 - c.freq_hz).abs() < 1.0).count();
-                Some(Want { system: c.system as u16, site: None, hz: c.freq_hz, src, kind: ChannelKind::Conventional, calls, ..Default::default() })
+            .conv
+            .channels()
+            .filter_map(|(hz, system, calls)| {
+                let src = self.radio.source_for(hz)?;
+                Some(Want { system: system as u16, site: None, hz, src, kind: ChannelKind::Conventional, calls, ..Default::default() })
             })
             .collect();
         (control, conv)
@@ -1731,9 +1731,8 @@ impl Core {
         if !self.conv.is_empty() {
             let mut out = std::mem::take(&mut self.conv_out);
             {
-                let systems: Vec<&SystemConfig> = self.systems.iter().map(|s| &s.cfg).collect();
                 let mut rx = self.radio.rx[source].lock().unwrap();
-                self.conv.on_block(source, &mut rx.src.chz, dsp.time, dsp.in_gap, &self.call_ids, &systems, &mut out);
+                self.conv.on_block(source, &mut rx.src.chz, dsp.time, dsp.in_gap, &self.call_ids, &|i| &self.systems[i].cfg, &mut out);
             }
             self.emit_conv(out);
         }
@@ -1760,7 +1759,7 @@ impl Core {
                     // voice is not given to a plugin as if it were.
                     let (tg, decrypted) = match call {
                         Some(c) => {
-                            c.last_audio_s = c.last_audio_s.max(now);
+                            c.note_audio(now);
                             (c.talkgroup, c.encrypted || c.decrypted || rec.decrypted)
                         }
                         None => (0, true),
@@ -1775,7 +1774,7 @@ impl Core {
                     rec.audio.extend_from_slice(&samples);
                     let tg = match call {
                         Some(c) => {
-                            c.last_audio_s = c.last_audio_s.max(now);
+                            c.note_audio(now);
                             c.talkgroup
                         }
                         None => 0,
@@ -1872,7 +1871,7 @@ impl Core {
     /// sites of its system. True: it is a copy of one already going (marked
     /// [`Call::twin`]).
     fn link_twins(&mut self, c: &Call) -> bool {
-        let Some(site) = c.site.filter(|_| self.cfg.drop_duplicates) else { return false };
+        let Some(site) = c.site.filter(|_| self.drop_duplicates) else { return false };
         let others = self.trunks.iter().filter(|t| t.system == c.system && t.site != site).map(|t| t.calls.calls.as_slice());
         self.multisite.link_new(c, site, others);
         let twin = !self.multisite.twins(c.id).is_empty();
@@ -1953,7 +1952,7 @@ impl Core {
                 rules: sys.cfg.save,
                 short_name: &sys.cfg.short_name,
                 site: trunk.map_or("", |t| &t.cfg.name),
-                epoch_ms_at_zero: self.cfg.epoch_ms_at_zero,
+                epoch_ms_at_zero: self.epoch_ms_at_zero,
                 units: Some(&sys.aliases),
                 unit_tags: Some(&sys.cfg.unit_tags).filter(|t| !t.is_empty() || t.mode != Default::default()),
                 wacn: trunk.and_then(|t| t.identity.wacn()),
