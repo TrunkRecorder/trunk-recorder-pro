@@ -422,8 +422,9 @@ VoiceDecoder::report, ControlChannel::report (`sep`) ─► Engine::channels() �
 
 ```text
 main ─► serve()
-         ├─ Ctx (Arc): config (Mutex), lifecycle, phase, history, runner, survey, plugins, interfaces,
-         │             hub, shared (registry + monitor), series + store (stats history), topics, engine_cmds
+         ├─ Ctx (Arc): config (Mutex) + its version, lifecycle (idle / recording / surveying / quitting),
+         │             phase, history, plugins, interfaces, hub, shared (registry + monitor + names),
+         │             series + store (stats history), topics, engine (the engine thread's commands)
          ├─ tokio runtime ─► axum server on server.port: the built-in UI + the API (/api/ws, /api/*, /calls/)
          │                    one listener per other interface (interfaces::serve): its folder + the API
          │                    one task per WebSocket; blocking commands via spawn_blocking
@@ -438,14 +439,17 @@ main ─► serve()
                │     air of the others (runtime::Air)
                ├─ engine thread: owns Session; loop { recv 20 ms → poll → deliver }
                │     deliver(): Text/Topic/Audio → hub (tokio broadcast, 4096)
-               │                Plugin, Audio → PluginHost   Log → logging   Rollup → statstore
-               │                File → Finish queue (1024; when full, written here without its .m4a)
-               ├─ finish thread: write .json (+ .wav when kept or a plugin takes it),
-               │                 `concluded` + history, .m4a (WAV piped to the encoder),
-               │                 PluginHost::concluded, Archive bookkeeping; files only
-               │                 the plugins need go to the RAM spool (spool.rs) if on
+               │                Plugin, Audio → PluginHost   Rollup → statstore
+               │                File → Finish queue (1024; when full, written on this thread as WAV)
+               ├─ finish-N threads: one plan per call of which files to write (the system's
+               │                 rules, what plugins want, whether there's an encoder), .json +
+               │                 .wav + .m4a (WAV piped to the encoder), `concluded` + history,
+               │                 PluginHost::concluded, Archive bookkeeping; files only the
+               │                 plugins need go to the RAM spool (spool.rs) if on
+               ├─ logging: what the recorder logs goes to the browsers too (warnings to every
+               │           connection, the rest to those watching the log)
                └─ PluginHost: per enabled plugin a supervisor thread (plugin-<id>) and its
-                              child process; encode-N threads make M4A for plugins
+                              child process
 ```
 
 - **Ctx** is the shared state between the web server and the recorder. The
@@ -521,7 +525,7 @@ schema, and every documented command against `Command::parse`.
     audience rules as every other message, then `hello` last: caught up.
   - Broadcast to every client: `state`, `status`, `stats`, `host`,
     `monitorEvent`, `concluded`, `unitAlias`, `heard`, `config`, `talkgroups`, `survey`,
-    `surveySpectrum`, `pluginRuntime` / `pluginInstall`, `quit`.
+    `surveySpectrum`, `pluginRuntime` / `installProgress`, `quit`.
   - Only to clients subscribed to the topic: `spectrum` (`spectrum:<i>`),
     `log` (`log`), `rfDetail` (`rf:<i>`), `decodeDetail`
     (`decode:<shortName>`: also each site's adjacent sites and DMR / NXDN

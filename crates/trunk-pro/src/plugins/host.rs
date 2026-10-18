@@ -93,7 +93,7 @@ const DRAIN_MAX: Duration = Duration::from_secs(30);
 
 pub struct PluginHost {
     shared: Arc<Shared>,
-    /// The M4A encoder this host's plugins are told of (the finish thread encodes).
+    /// The M4A encoder this host's plugins are told of (the finish threads encode).
     encoder: Option<(Encoder, u32)>,
     supervisors: Vec<JoinHandle<()>>,
     /// What the session should build for plugins.

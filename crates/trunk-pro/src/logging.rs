@@ -80,12 +80,23 @@ pub fn init(s: &LogSettings, config_dir: &Path, level: Option<Level>, hub: crate
 
 static HUB: OnceLock<crate::runtime::Hub> = OnceLock::new();
 
+/// Some browser watches the log (topic `log`): lines below a warning are
+/// only serialised and sent while one does.
+static LOG_WATCHED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn log_watched(watched: bool) {
+    LOG_WATCHED.store(watched, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// A line the recorder logged, on the browsers' log (`kind`: "plugin" for a
 /// plugin's note, "error" for a warning or error, else "info"), with its
 /// clock time and level.
 fn to_browsers(level: Level, kind: &str, text: &str) {
     use trunk_app::protocol::ToClient;
     let Some(hub) = HUB.get() else { return };
+    if level < Level::Warning && !LOG_WATCHED.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
     let time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
     let line = serde_json::json!({ "timeS": 0, "time": (time * 10.0).round() / 10.0, "level": level.as_str(), "kind": kind, "text": text });
     let m = ToClient::Log { lines: vec![line] };

@@ -4,7 +4,7 @@
 //!
 //! Which decoder a channel gets depends on the call, not on the system's
 //! control channel: a P25 system grants Phase 1 and Phase 2 calls, a
-//! SmartNet system analog and P25 ones ([`VoiceKind::of`]).
+//! SmartNet system analog and P25 ones ([`Voice::kind`](super::calls::Voice::kind)).
 //!
 //! ```text
 //! channel IQ ─► VoiceDecoder::push ─► VoiceOut { slot, TrackerOut }

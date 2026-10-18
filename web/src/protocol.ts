@@ -1424,8 +1424,7 @@ export type FromRecorder =
   | { type: "host"; t: number; values: Record<string, number>; platform: PlatformInfo }
   /** Topic rf:<source>, every second: the noise floor across the band (64 slices, dBFS per bin) and the channels on it. */
   | { type: "rfDetail"; source: number; profile: number[]; channels: ChannelSnapshot[] }
-  /** Topic decode:<shortName>, every second: the system's channels as received now. */
-  /** A system's decoding, for those watching its `decode:<short name>` topic: its channels, each running site's detail, the patches standing now (each once, however many sites hear it). */
+  /** Topic decode:<shortName>, every second: a system's decoding, for those watching its `decode:<short name>` topic: its channels, each running site's detail, the patches standing now (each once, however many sites hear it). */
   | { type: "decodeDetail"; system: string; channels: ChannelSnapshot[]; sites: SiteDetail[]; patches: Patch[] }
   | ({ type: "monitorEvent" } & MonitorEventBody)
   /** Answers subscribe: what this connection now watches. */
@@ -1487,9 +1486,9 @@ export type ToRecorder =
   | { type: "subscribe"; topics: Topic[] }
   /** The history of series (names, or prefixes ending in `*`) over `range` back from now, or `from`–`to` (Unix s), in about `points` points. */
   | { type: "statsQuery"; id: number; series: string[]; range?: "10m" | "1h" | "6h" | "24h" | "7d"; from?: number; to?: number; points?: number }
-  /** The radio registry: talkgroups, radios, frequencies heard. `key`: the talkgroup or radio for "tg" / "unit". */
   /** Calls that started before `before` (Unix ms), newest first, from the last 24 hours (the Listen page's "Load older"). */
   | { type: "olderCalls"; before: number; limit: number }
+  /** The radio registry: talkgroups, radios, frequencies heard. `key`: the talkgroup or radio for "tg" / "unit". */
   | { type: "radioQuery"; id: number; what: "summary" | "talkgroups" | "units" | "tg" | "unit" | "freqs" | "lengths"; system?: string; key?: number; hours?: number; limit?: number }
   | { type: "quit" };
 

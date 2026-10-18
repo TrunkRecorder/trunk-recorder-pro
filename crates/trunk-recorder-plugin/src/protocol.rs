@@ -277,14 +277,19 @@ pub struct CallFiles {
 /// audio. The recorder makes one of these for every call and writes it as
 /// it serialises (field order, flags as 0/1, levels to a tenth of a dB);
 /// read back, it accepts Trunk Recorder's own files too (flags as 0/1 or
-/// booleans). Fields neither writes are kept in `extra`.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+/// booleans). Fields neither writes are kept in `extra`. Its default is the
+/// recorder's for what wasn't heard (`-1`, `"off"`, `"digital"`).
+///
+/// Serialise it as JSON with serde_json ([`CallRecord::to_json`]): its
+/// numbers are written through serde_json's raw values, which other serde
+/// formats don't take.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CallRecord {
     pub call_num: u64,
     /// Hz.
     pub freq: u64,
-    /// The control channel's carrier offset when the call was granted, Hz.
+    /// How far off its channel the voice carrier came in, Hz (the mean over the call).
     pub freq_error: i64,
     /// Levels while it was heard, dB (null: not measured).
     #[serde(serialize_with = "tenth_or_null")]
@@ -361,6 +366,56 @@ pub struct CallRecord {
     pub src_list: Vec<SrcEntry>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
+}
+
+impl Default for CallRecord {
+    fn default() -> Self {
+        CallRecord {
+            call_num: 0,
+            freq: 0,
+            freq_error: 0,
+            signal: None,
+            noise: None,
+            snr: None,
+            clean_voice_pct: None,
+            source_num: 0,
+            recorder_num: 0,
+            tdma_slot: 0,
+            phase2_tdma: false,
+            start_time: 0,
+            stop_time: 0,
+            start_time_ms: 0,
+            stop_time_ms: 0,
+            emergency: false,
+            priority: 0,
+            mode: false,
+            duplex: false,
+            encrypted: false,
+            algid: -1,
+            key_id: -1,
+            decrypted: false,
+            call_length: 0.0,
+            call_length_ms: 0,
+            talkgroup: 0,
+            talkgroup_tag: String::new(),
+            talkgroup_description: String::new(),
+            talkgroup_group_tag: String::new(),
+            talkgroup_group: String::new(),
+            color_code: -1,
+            ran: -1,
+            tone_mode: "off".into(),
+            tone_detected: String::new(),
+            tone_confidence: 0.0,
+            audio_type: "digital".into(),
+            short_name: String::new(),
+            site: String::new(),
+            patched_talkgroups: Vec::new(),
+            freq_list: Vec::new(),
+            error_list: Vec::new(),
+            src_list: Vec::new(),
+            extra: Map::new(),
+        }
+    }
 }
 
 impl CallRecord {

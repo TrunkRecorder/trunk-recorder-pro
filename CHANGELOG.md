@@ -76,12 +76,14 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   Setup let Start be pressed with an RTL-SDR's USB transfer size the recorder refuses, or a channel
   bandwidth or demodulation setting out of range. The interface now runs the recorder's code for
   these (as WebAssembly, which the browser version already used), so they can't disagree. The
-  browser version starts from the recorder's default config, with the M4A, spool and monitor
-  settings it lacked.
+  dashboard now needs a browser with WebAssembly SIMD (Safari 16.4, Chrome 91, Firefox 89 or
+  later), and says so if it hasn't. The browser version starts from the recorder's default
+  config, with the M4A, spool and monitor settings it lacked.
 - **A config with a choice it doesn't list is refused when it's read**, as one with a wrong type is:
   a system `type`, a site's `modulation`, `nxdnType`, `nxdnRate`, `defaultMode`, `vocoder`, the M4A
   `encoder`, `unitNames.mode` and `log.color`. They used to fall back without a word (a `type` of
-  "P25x" recorded as P25). An empty value still means the default.
+  "P25x" recorded as P25). A listed name is read in any case (`"P25"`, `"QPSK"`), and an empty value
+  still means the default.
 - **A file name format with a token nobody knows is refused at Start**, the config's or a system's
   own. Setup already said so; a config edited by hand or by another interface wasn't checked.
 - **Renaming a system in the setup guide keeps its plugin settings pointing at it**, as renaming it

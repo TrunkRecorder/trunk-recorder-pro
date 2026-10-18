@@ -30,7 +30,7 @@ a system of its own.)
 |---|:---:|---|---|---|
 | `shortName` | | `"sys1"` | string | The system's identity: its recordings folder, the `short_name` in call JSON, its talker alias file, and how plugins know it. Every system, trunked or conventional, enabled or not, needs its own. Keep it to letters, digits, `-` and `_` |
 | `name` | | `""` | string | What people call it ("County Public Safety"), for display |
-| `type` | | `"p25"` | string | `"p25"`, `"smartnet"`, `"dmr"` or `"nxdn"` (any case). Anything else is treated as P25 |
+| `type` | | `"p25"` | string | `"p25"`, `"smartnet"`, `"dmr"` or `"nxdn"` (any case). Anything else is refused when the config is read |
 | `enabled` | | `true` | bool | `false` keeps it in the config without recording it |
 | `sites` | | `[]` | array | Where it is recorded from: one entry per site. See [Keys for each site](#keys-for-each-site) |
 | `unitNames` | | empty | object | Names for the system's radios. See [Unit names](#unit-names) |
@@ -56,7 +56,7 @@ which are the system's.
 
 | Key | Required | Default | Type | Description |
 |---|:---:|---|---|---|
-| `modulation` | | `"auto"` | string | `"auto"`: detect it — both receivers run until one clearly decodes better (a few seconds), then only that one, on each channel; detected again when the control channel moves or after 10 s without a frame. `"qpsk"`: CQPSK / LSM simulcast only. `"fsk4"`: C4FM only. Any other value is `"auto"`. The log says what was detected; set the one your system uses if you know it |
+| `modulation` | | `"auto"` | string | `"auto"`: detect it — both receivers run until one clearly decodes better (a few seconds), then only that one, on each channel; detected again when the control channel moves or after 10 s without a frame. `"qpsk"`: CQPSK / LSM simulcast only. `"fsk4"`: C4FM only (any case; anything else is refused when the config is read). The log says what was detected; set the one your system uses if you know it |
 
 P25 Phase 2 voice needs no setting: a Phase 2 grant is followed as Phase 2.
 

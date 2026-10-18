@@ -837,17 +837,17 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
         // Link conventional system `index`'s channels to a CSV (created from
         // its list if new), reload it (the same path again), or unlink ("").
         Command::ChannelFile { index, path } => {
-            let mut c = ctx.config.lock().unwrap().clone();
-            let r = c.link_channel_file(index, &ctx.config_path, &path);
-            if r.is_ok() || c.conventional.get(index).is_some_and(|x| !x.channel_file.is_empty()) {
-                let saved = c.save(&ctx.config_path);
-                let mut cur = ctx.config.lock().unwrap();
-                *cur = c;
-                ctx.config_changed(&cur);
-                drop(cur);
-                if let Err(e) = saved {
-                    return Some(ToClient::error(format!("Couldn't save the config: {e}")));
+            let mut r = Ok(());
+            // (A failed link that left the channels unlinked is no edit.)
+            let saved = edit_config(&ctx, |c| {
+                let before = c.clone();
+                r = c.link_channel_file(index, &ctx.config_path, &path);
+                if r.is_err() && c.conventional.get(index).is_none_or(|x| x.channel_file.is_empty()) {
+                    *c = before;
                 }
+            });
+            if let Err(e) = saved {
+                return Some(ToClient::error(e));
             }
             failed(r)
         }
@@ -878,12 +878,15 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
             let ctx2 = ctx.clone();
             tokio::task::spawn_blocking(move || ctx2.begin_survey(cfg, req)).await.ok().and_then(Result::err).map(ToClient::error)
         }
+        // (Behind the lifecycle lock, which a start or stop may hold for seconds.)
         Command::SurveyListen { freq_hz } => {
-            ctx.survey_send(crate::survey::UserCmd::Listen(freq_hz));
+            let ctx2 = ctx.clone();
+            let _ = tokio::task::spawn_blocking(move || ctx2.survey_send(crate::survey::UserCmd::Listen(freq_hz))).await;
             None
         }
         Command::SurveyRescan => {
-            ctx.survey_send(crate::survey::UserCmd::Rescan);
+            let ctx2 = ctx.clone();
+            let _ = tokio::task::spawn_blocking(move || ctx2.survey_send(crate::survey::UserCmd::Rescan)).await;
             None
         }
         Command::SurveyStop => {

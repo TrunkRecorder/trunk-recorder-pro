@@ -243,6 +243,11 @@ pub struct Call {
 }
 
 impl Call {
+    /// Audio of it was heard at `time_s`.
+    pub fn note_audio(&mut self, time_s: f64) {
+        self.last_audio_s = self.last_audio_s.max(time_s);
+    }
+
     /// Fold in the talkgroups patched with it now (`members`); true when that added any.
     fn note_patch(&mut self, members: Vec<u32>) -> bool {
         let n = self.patched_talkgroups.len();
@@ -382,9 +387,10 @@ impl CallManager {
     }
 
     /// The recorder delivered audio for this call.
+    #[cfg(test)]
     pub fn note_audio(&mut self, id: CallId, time_s: f64) {
         if let Some(c) = self.call_mut(id) {
-            c.last_audio_s = c.last_audio_s.max(time_s);
+            c.note_audio(time_s);
         }
     }
 
@@ -548,8 +554,12 @@ impl CallManager {
             twin: false,
             talkgroup: m.talkgroup,
             freq_hz: m.freq_hz,
-            // The control channel says (SmartNet), or the talkgroup file does (TR's mode "A").
-            voice: if tg.as_ref().is_some_and(|t| t.mode.starts_with('A')) { Voice::Fm } else { m.voice },
+            // The control channel says (SmartNet), or the talkgroup file does (TR's mode
+            // "A": a Phase 1 grant is of analog voice; a two-slot grant keeps its slot).
+            voice: match m.voice {
+                Voice::P25 if tg.as_ref().is_some_and(|t| t.mode.starts_with('A')) => Voice::Fm,
+                v => v,
+            },
             unit_to_unit,
             recording: false,
             followed: false,
@@ -768,5 +778,23 @@ mod tests {
         assert!(!CallManager::note_source(c, Some(8), 2.0, Flags::emergency(true)), "nothing new");
         let flags: Vec<(u32, Flags)> = c.sources.iter().map(|s| (s.src, s.flags)).collect();
         assert_eq!(flags, [(7, Flags { emergency: true, duplex: true, priority: 7, ..Default::default() }), (8, Flags { emergency: true, encrypted: true, priority: 4, ..Default::default() })]);
+    }
+
+    /// The talkgroup file's mode "A" (Trunk Recorder's) says a Phase 1 grant is of analog voice; a two-slot grant keeps its slot.
+    #[test]
+    fn an_analog_talkgroup_keeps_a_two_slot_grants_slot() {
+        let tgs = |mode: &str| [(101, Talkgroup { number: 101, mode: mode.into(), ..Default::default() })].into_iter().collect();
+        let mut ev = Vec::new();
+        let mut m = Sys::new(CallConfig::default(), tgs("A"));
+        m.handle(&[Message { voice: Voice::P25Tdma { slot: 1 }, ..msg(MessageType::Grant, 0.0, 101) }], &mut Host, &mut ev);
+        assert_eq!(m.m.calls[0].voice, Voice::P25Tdma { slot: 1 });
+        m.handle(&[Message { voice: Voice::P25Tdma { slot: 1 }, ..msg(MessageType::Update, 1.0, 101) }], &mut Host, &mut ev);
+        assert_eq!((m.m.calls.len(), m.m.calls[0].last_update_s), (1, 1.0), "its update is its own");
+        let mut m = Sys::new(CallConfig::default(), tgs("A"));
+        m.handle(&[msg(MessageType::Grant, 0.0, 101)], &mut Host, &mut ev);
+        assert_eq!(m.m.calls[0].voice, Voice::Fm);
+        let mut m = Sys::new(CallConfig::default(), tgs("D"));
+        m.handle(&[msg(MessageType::Grant, 0.0, 101)], &mut Host, &mut ev);
+        assert_eq!(m.m.calls[0].voice, Voice::P25);
     }
 }

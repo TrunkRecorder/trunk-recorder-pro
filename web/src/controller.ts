@@ -328,7 +328,10 @@ function take(m: FromRecorder): void {
     case "config":
       server = { config: m.config, version: m.version };
       // (Not over an edit of this browser's not saved yet: its answer says.)
-      if (!pendingConfig && !saving) set({ config: m.config });
+      if (!pendingConfig && !saving) {
+        set({ config: m.config });
+        basedOn = m.version;
+      }
       break;
     case "configSaved":
       configSaved(m.version, m.error);
@@ -589,48 +592,86 @@ export function setTalkgroups(system: string, csv: string): void {
  */
 export function renameSystem(x: Config, sys: { shortName: string }, to: string): void {
   if (sys.shortName === to) return;
-  moveTalkgroups(sys.shortName, to);
+  moveTalkgroups(sys.shortName, to, [...x.systems, ...x.conventional].some((s) => s !== sys && s.shortName === to));
   renameSystemRefs(x, sys.shortName, to, state.plugins?.plugins ?? []);
   sys.shortName = to;
 }
 
-/** System `name` is gone from `x` (removed, or made a site of another), in an updateConfig: its talkgroup file goes too, unless a system still has the name. */
+/** System `name` is gone from `x` (removed, or made a site of another), in an updateConfig: its talkgroup file goes too (once the config is saved), unless a system still has the name. */
 export function forgetTalkgroups(x: Config, name: string): void {
   if ([...x.systems, ...x.conventional].some((s) => s.shortName === name)) return;
-  if (state.talkgroups[name] !== undefined) setTalkgroups(name, "");
+  const csv = state.talkgroups[name];
+  if (csv === undefined) return;
+  forgottenTalkgroups.set(name, csv);
+  set({ talkgroups: withFile(state.talkgroups, name, "") });
 }
 
-/** Talkgroup files following a renamed system: (its name when the renaming began → its name now), sent with the config. */
-const movedTalkgroups = new Map<string, string>();
+// Talkgroup files follow the config they are edited with: moved and dropped in
+// the store as the edit is made, on the recorder once the edit is saved (a
+// refused edit puts them back).
 
-/** System `from` is renamed `to` (as its short name is typed): its talkgroup file follows, saved once with the config. */
-export function moveTalkgroups(from: string, to: string): void {
-  const csv = state.talkgroups[from];
-  if (from === to || csv === undefined) return;
-  set({ talkgroups: withFile(withFile(state.talkgroups, from, ""), to, csv) });
-  const began = [...movedTalkgroups].find(([, now]) => now === from)?.[0] ?? from;
-  movedTalkgroups.set(began, to);
+/** Files following a renamed system: its name when the renaming began → its name now, and the name the file sits under in the store. */
+const movedTalkgroups = new Map<string, { now: string; at: string }>();
+/** Files of systems removed (by name), with their text, in case the edit is refused. */
+const forgottenTalkgroups = new Map<string, string>();
+
+/**
+ * System `from` is renamed `to` (as its short name is typed): its talkgroup
+ * file follows. Not onto "" or a name another system has (`taken`): the file
+ * waits under its last name of its own until the new one is.
+ */
+export function moveTalkgroups(from: string, to: string, taken = false): void {
+  if (from === to) return;
+  const began = [...movedTalkgroups].find(([, m]) => m.now === from)?.[0] ?? from;
+  const move = movedTalkgroups.get(began) ?? { now: from, at: from };
+  const csv = state.talkgroups[move.at];
+  if (csv === undefined) return;
+  move.now = to;
+  if (to === began) movedTalkgroups.delete(began);
+  else movedTalkgroups.set(began, move);
+  if (to === "" || taken) return;
+  if (move.at !== to) set({ talkgroups: withFile(withFile(state.talkgroups, move.at, ""), to, csv) });
+  move.at = to;
 }
 
+/** The config was saved: the recorder's files follow it. */
 function sendTalkgroupMoves(): void {
-  for (const [began, now] of movedTalkgroups) {
-    if (began === now) continue;
-    transport.send({ type: "setTalkgroups", system: now, csv: state.talkgroups[now] ?? "" });
+  for (const [began, m] of movedTalkgroups) {
+    // (Waiting for a name of its own: the file stays where it was.)
+    if (m.at !== m.now) continue;
+    transport.send({ type: "setTalkgroups", system: m.now, csv: state.talkgroups[m.now] ?? "" });
     transport.send({ type: "setTalkgroups", system: began, csv: "" });
+    movedTalkgroups.delete(began);
   }
+  for (const name of forgottenTalkgroups.keys()) transport.send({ type: "setTalkgroups", system: name, csv: "" });
+  forgottenTalkgroups.clear();
+}
+
+/** The edit was refused: the files are where the recorder has them. */
+function undoTalkgroupMoves(): void {
+  let files = state.talkgroups;
+  for (const [began, m] of movedTalkgroups) {
+    const csv = files[m.at];
+    if (m.at !== began && csv !== undefined) files = withFile(withFile(files, m.at, ""), began, csv);
+  }
+  for (const [name, csv] of forgottenTalkgroups) files = withFile(files, name, csv);
   movedTalkgroups.clear();
+  forgottenTalkgroups.clear();
+  set({ talkgroups: files });
 }
 
 // ── config ───────────────────────────────────────────────────────────────────
 
 let pendingConfig: ReturnType<typeof setTimeout> | null = null;
-/** The config as the recorder has it, and its version (what an edit is sent with). */
+/** The config as the recorder has it, and its version. */
 let server: { config: Config | null; version: number } = { config: null, version: 0 };
+/** The version the config in the store was taken from: what an edit of it is sent as editing (one made over a newer config is refused). */
+let basedOn = 0;
 /** An edit sent and not answered yet; and another made meanwhile, to send once it is. */
 let saving = false;
 let queued = false;
 
-/** Send the config as edited: one edit at a time, each of the version the last answer gave. */
+/** Send the config as edited: one edit at a time. */
 function sendConfig(): void {
   if (!state.config) return;
   if (saving) {
@@ -638,8 +679,7 @@ function sendConfig(): void {
     return;
   }
   saving = true;
-  transport.send({ type: "setConfig", config: sendable(state.config), version: server.version });
-  sendTalkgroupMoves();
+  transport.send({ type: "setConfig", config: sendable(state.config), version: basedOn });
 }
 
 /** The answer to an edit: saved (its version now), or not (the config is the recorder's again, and why). */
@@ -648,10 +688,16 @@ function configSaved(version: number, error: string | undefined): void {
   server.version = Math.max(server.version, version);
   if (error) {
     queued = false;
+    if (pendingConfig) clearTimeout(pendingConfig);
+    pendingConfig = null;
+    undoTalkgroupMoves();
     if (server.config) set({ config: server.config });
+    basedOn = server.version;
     set({ error });
     return;
   }
+  basedOn = version;
+  sendTalkgroupMoves();
   if (queued) {
     queued = false;
     sendConfig();
@@ -901,8 +947,8 @@ export function refreshDevices(): void {
 }
 /** Search for USRPs and SoapySDR devices (and re-list Airspys and SoapySDR modules); a search can take seconds. */
 export function findRadios(): void {
-  // The browser has no USRP, Airspy or SoapySDR (its worker drops findRadios: nothing would answer).
-  if (web) return;
+  // (A recorder without the drivers — the browser version — has none to find.)
+  if (!can("drivers")) return;
   set({ findingRadios: true });
   transport.send({ type: "findRadios" });
 }
