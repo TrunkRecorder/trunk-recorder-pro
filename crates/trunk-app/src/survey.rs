@@ -233,11 +233,7 @@ impl SurveySession {
             "voiceCovered": covered,
             "voiceTotal": voice.len(),
             "spanHz": if hi > lo { hi - lo } else { 0.0 },
-            "nac": m.identity.nac(),
-            "sysId": m.identity.sys_id(),
-            "wacn": m.identity.wacn(),
-            "rfss": m.identity.rfss(),
-            "site": m.identity.site(),
+            "identity": crate::session::identity_json(&m.identity),
             "voiceChannels": voice,
         }))
     }
@@ -246,7 +242,7 @@ impl SurveySession {
 /// A learned SmartNet band plan in the config's terms (Trunk Recorder's names).
 fn plan_json(p: &trunk_core::smartnet::plan::PlanConfig) -> Value {
     if p.name == "400_custom" {
-        json!({ "bandplan": p.name, "bandplanBase": p.base_hz, "bandplanSpacing": p.spacing_hz, "bandplanOffset": p.offset, "bandplanHigh": p.high_hz })
+        json!({ "bandplan": p.name, "bandplanBaseHz": p.base_hz, "bandplanSpacingHz": p.spacing_hz, "bandplanOffset": p.offset, "bandplanHighHz": p.high_hz })
     } else {
         json!({ "bandplan": p.name })
     }

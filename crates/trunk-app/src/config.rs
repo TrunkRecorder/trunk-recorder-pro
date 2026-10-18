@@ -705,6 +705,20 @@ pub struct SiteIdentity {
     pub site: Option<u32>,
 }
 
+/// What a control channel says of itself, as the config writes a site's
+/// identity: the one shape status, the survey and the config share.
+impl From<&Identity> for SiteIdentity {
+    fn from(id: &Identity) -> Self {
+        SiteIdentity {
+            nac: id.get(IdField::Nac).map(|v| v as u16),
+            wacn: id.get(IdField::Wacn),
+            sys_id: id.get(IdField::SysId),
+            rfss: id.get(IdField::Rfss),
+            site: id.get(IdField::Site),
+        }
+    }
+}
+
 impl SiteIdentity {
     fn engine(&self) -> Identity {
         let mut id = Identity::default();

@@ -184,8 +184,9 @@ SystemStatus: one running trunked system (rec.status.systems)
 
 SiteStatus: one of its sites, each following its own control channel
   index, name (a system of one site: its short name), nowS,
-  controlChannelHz (null while searching), identity { nac, wacn, sysId,
-  rfss, site }, good / bad (control messages decoded / failed: decode
+  controlChannelHz (null while searching), identity { nac?, wacn?, sysId?,
+  rfss?, site? } (SiteIdentity, as a config site's `expect`: a field not
+  heard yet is absent, so test with `!= null`), good / bad (control messages decoded / failed: decode
   rate = good / (good + bad)), modulation, activeCalls, recording,
   callsConcluded, mismatch
   (adjacent sites, dmr and nxdn are in decodeDetail)

@@ -6,12 +6,12 @@ import { test } from "node:test";
 import { renderToString } from "react-dom/server";
 import { defaultConfig, newSystem } from "../config.ts";
 import { setView, snapshot, transport } from "../controller.ts";
-import type { CallView, Config, EngineStatus, FromRecorder, Identity, SiteStatus, SystemStatus } from "../protocol.ts";
+import type { CallView, Config, EngineStatus, FromRecorder, SiteIdentity, SiteStatus, SystemStatus } from "../protocol.ts";
 import { LivePage } from "./Calls.tsx";
 import { DecodePage } from "./Decode.tsx";
 import { Overview } from "./Overview.tsx";
 
-const site = (index: number, name: string, identity: Partial<Identity>): SiteStatus => ({
+const site = (index: number, name: string, identity: Partial<SiteIdentity>): SiteStatus => ({
   index, name, nowS: 10, controlChannelHz: 851_000_000 + index * 500_000,
   identity: { nac: 0x1f1, wacn: 0xbee00, sysId: 0x1a2, rfss: 1, site: null, ...identity },
   good: 100, bad: 0, modulation: null, activeCalls: 0, recording: 0, callsConcluded: 0, mismatch: null,

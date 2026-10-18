@@ -2913,49 +2913,6 @@
       "additionalProperties": false,
       "description": "A code a conventional frequency carried (crates/trunk-app/src/heard.rs), in a row's Tone form (\"\" = none)."
     },
-    "Identity": {
-      "type": "object",
-      "properties": {
-        "nac": {
-          "type": [
-            "number",
-            "null"
-          ]
-        },
-        "wacn": {
-          "type": [
-            "number",
-            "null"
-          ]
-        },
-        "sysId": {
-          "type": [
-            "number",
-            "null"
-          ]
-        },
-        "rfss": {
-          "type": [
-            "number",
-            "null"
-          ]
-        },
-        "site": {
-          "type": [
-            "number",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "nac",
-        "wacn",
-        "sysId",
-        "rfss",
-        "site"
-      ],
-      "additionalProperties": false
-    },
     "InterfaceInfo": {
       "type": "object",
       "properties": {
@@ -4899,7 +4856,7 @@
         }
       },
       "additionalProperties": false,
-      "description": "A P25 site's identity (NAC, WACN, System ID are hex on the air). Absent = unknown / any."
+      "description": "A site's identity (NAC, WACN, System ID are hex on the air): what a site in the config expects (absent: any), and what a control channel said of itself in status and the survey (absent: not heard yet). Compare with `!= null`."
     },
     "SiteStatus": {
       "type": "object",
@@ -4921,7 +4878,7 @@
           ]
         },
         "identity": {
-          "$ref": "#/definitions/Identity"
+          "$ref": "#/definitions/SiteIdentity"
         },
         "good": {
           "type": "number"
@@ -4976,16 +4933,16 @@
           "type": "string",
           "description": "\"800_standard\" | \"800_reband\" | \"800_splinter\" | \"900\" | \"400_custom\"."
         },
-        "bandplanBase": {
+        "bandplanBaseHz": {
           "type": "number"
         },
-        "bandplanSpacing": {
+        "bandplanSpacingHz": {
           "type": "number"
         },
         "bandplanOffset": {
           "type": "number"
         },
-        "bandplanHigh": {
+        "bandplanHighHz": {
           "type": "number"
         }
       },
@@ -5594,7 +5551,7 @@
           "type": "string"
         },
         "identity": {
-          "$ref": "#/definitions/SurveyIdentity"
+          "$ref": "#/definitions/SiteIdentity"
         },
         "dmr": {
           "anyOf": [
@@ -5688,49 +5645,6 @@
       "additionalProperties": false,
       "description": "A signal the scan found. `freqHz` as heard (uncorrected); `correctedHz` once the ppm is known."
     },
-    "SurveyIdentity": {
-      "type": "object",
-      "properties": {
-        "nac": {
-          "type": [
-            "number",
-            "null"
-          ]
-        },
-        "wacn": {
-          "type": [
-            "number",
-            "null"
-          ]
-        },
-        "sysId": {
-          "type": [
-            "number",
-            "null"
-          ]
-        },
-        "rfss": {
-          "type": [
-            "number",
-            "null"
-          ]
-        },
-        "site": {
-          "type": [
-            "number",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "nac",
-        "wacn",
-        "sysId",
-        "rfss",
-        "site"
-      ],
-      "additionalProperties": false
-    },
     "SurveyMonitor": {
       "type": "object",
       "properties": {
@@ -5744,7 +5658,7 @@
           "type": "number"
         },
         "identity": {
-          "$ref": "#/definitions/SurveyIdentity"
+          "$ref": "#/definitions/SiteIdentity"
         },
         "advertisedHz": {
           "type": [
@@ -6070,35 +5984,9 @@
         "spanHz": {
           "type": "number"
         },
-        "nac": {
-          "type": [
-            "number",
-            "null"
-          ]
-        },
-        "sysId": {
-          "type": [
-            "number",
-            "null"
-          ]
-        },
-        "wacn": {
-          "type": [
-            "number",
-            "null"
-          ]
-        },
-        "rfss": {
-          "type": [
-            "number",
-            "null"
-          ]
-        },
-        "site": {
-          "type": [
-            "number",
-            "null"
-          ]
+        "identity": {
+          "$ref": "#/definitions/SiteIdentity",
+          "description": "The site it heard."
         },
         "voiceChannels": {
           "type": "array",
@@ -6118,11 +6006,7 @@
         "voiceCovered",
         "voiceTotal",
         "spanHz",
-        "nac",
-        "sysId",
-        "wacn",
-        "rfss",
-        "site",
+        "identity",
         "voiceChannels"
       ],
       "additionalProperties": false,

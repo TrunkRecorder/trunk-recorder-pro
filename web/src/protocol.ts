@@ -113,7 +113,11 @@ export interface Demod {
   squelchHangMs?: number;
 }
 
-/** A P25 site's identity (NAC, WACN, System ID are hex on the air). Absent = unknown / any. */
+/**
+ * A site's identity (NAC, WACN, System ID are hex on the air): what a site in
+ * the config expects (absent: any), and what a control channel said of itself
+ * in status and the survey (absent: not heard yet). Compare with `!= null`.
+ */
 export interface SiteIdentity {
   nac?: number | null;
   wacn?: number | null;
@@ -126,10 +130,10 @@ export interface SiteIdentity {
 export interface SmartnetBandplan {
   /** "800_standard" | "800_reband" | "800_splinter" | "900" | "400_custom". */
   bandplan: string;
-  bandplanBase?: number;
-  bandplanSpacing?: number;
+  bandplanBaseHz?: number;
+  bandplanSpacingHz?: number;
   bandplanOffset?: number;
-  bandplanHigh?: number;
+  bandplanHighHz?: number;
 }
 
 /**
@@ -505,14 +509,6 @@ export interface PhaseState {
   ended: boolean;
 }
 
-export interface Identity {
-  nac: number | null;
-  wacn: number | null;
-  sysId: number | null;
-  rfss: number | null;
-  site: number | null;
-}
-
 /** One running system, with its sites that are. `index` is what calls and audio carry as `system`. */
 export interface SystemStatus {
   index: number;
@@ -537,7 +533,7 @@ export interface SiteStatus {
   name: string;
   nowS: number;
   controlChannelHz: number | null;
-  identity: Identity;
+  identity: SiteIdentity;
   good: number;
   bad: number;
   modulation: string | null;
@@ -800,14 +796,6 @@ export interface SurveyBand {
   defaultOn: boolean;
 }
 
-export interface SurveyIdentity {
-  nac: number | null;
-  wacn: number | null;
-  sysId: number | null;
-  rfss: number | null;
-  site: number | null;
-}
-
 /** A signal the scan found. `freqHz` as heard (uncorrected); `correctedHz` once the ppm is known. */
 export interface SurveyCandidate {
   freqHz: number;
@@ -820,7 +808,7 @@ export interface SurveyCandidate {
   good: number;
   bad: number;
   modulation: string;
-  identity: SurveyIdentity;
+  identity: SiteIdentity;
   /** DMR: the trunking its control blocks are ("DMR Capacity Plus", …) and its colour code. */
   dmr?: { variant: string | null; colorCode: number | null } | null;
   /** NXDN: its rate and RAN, and (a control channel) its system and site codes. */
@@ -830,7 +818,7 @@ export interface SurveyCandidate {
 export interface SurveyMonitor {
   freqHz: number | null;
   heardHz: number;
-  identity: SurveyIdentity;
+  identity: SiteIdentity;
   /** The frequency the control channel announces for itself. */
   advertisedHz: number | null;
   secondary: number[];
@@ -875,11 +863,8 @@ export interface SurveySuggestion {
   voiceCovered: number;
   voiceTotal: number;
   spanHz: number;
-  nac: number | null;
-  sysId: number | null;
-  wacn: number | null;
-  rfss: number | null;
-  site: number | null;
+  /** The site it heard. */
+  identity: SiteIdentity;
   voiceChannels: number[];
 }
 

@@ -31,6 +31,12 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   Wait for `hello` before treating something missing as missing. A listen-only connection gets the
   same messages as before, without plugin settings and key sources. client.js emits `change` once
   at `hello` during the greeting.
+- **One site identity everywhere** (breaking for interface authors). A site's identity in `status`,
+  the survey's candidates and monitor, and the config's `expect` is one shape, `SiteIdentity`: a
+  field not heard yet is left out (it was `null` in messages), so test with `!= null`. The survey's
+  suggestion carries `identity` instead of `nac`, `sysId`… beside its other fields, and its learned
+  SmartNet band plan uses the config's names (`bandplanBaseHz`, `bandplanSpacingHz`,
+  `bandplanHighHz`).
 - **`hello.capabilities`** says what a recorder can do beyond recording: `service`, `drivers`,
   `plugins`, `interfaces`, `host`, `keys` (the desktop app has all; the browser build none). The
   interface shows what the recorder can do instead of checking which build it is, and the browser

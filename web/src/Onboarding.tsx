@@ -855,12 +855,12 @@ function ScanStep(props: { s: AppState; c: Config; found: Found | null; onFound:
           <Check ok={m.good >= 10} title="Hearing it clearly">
             {total ? `${pct}% of messages decoded` : "Waiting for messages…"}
           </Check>
-          <Check ok={id.sysId !== null} title="Who it is">
-            {id.sysId !== null ? (
+          <Check ok={id.sysId != null} title="Who it is">
+            {id.sysId != null ? (
               <span className="ob-mono">
                 System ID {hex(id.sysId)}
-                {id.wacn !== null ? ` · WACN ${hex(id.wacn)}` : ""}
-                {id.site !== null ? ` · site ${id.rfss ?? "?"}-${id.site}` : ""}
+                {id.wacn != null ? ` · WACN ${hex(id.wacn)}` : ""}
+                {id.site != null ? ` · site ${id.rfss ?? "?"}-${id.site}` : ""}
               </span>
             ) : (
               "Waiting…"
@@ -885,7 +885,7 @@ function ScanStep(props: { s: AppState; c: Config; found: Found | null; onFound:
               {others.map((x) => (
                 <button key={x.freqHz} className="ob-chip" onClick={() => surveyListen(x.freqHz)}>
                   <span className="ob-mono">{formatMhz(x.correctedHz ?? x.freqHz, 4)}</span>
-                  <span className="ob-chip-sub">{x.identity.sysId !== null ? `System ID ${hex(x.identity.sysId)}` : x.kind === "smartnet" ? "SmartNet" : "P25"}</span>
+                  <span className="ob-chip-sub">{x.identity.sysId != null ? `System ID ${hex(x.identity.sysId)}` : x.kind === "smartnet" ? "SmartNet" : "P25"}</span>
                 </button>
               ))}
             </div>

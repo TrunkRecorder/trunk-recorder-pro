@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { activeSites, defaultConfig, importTrunkRecorderConfig, nameProblem, newSiteName, newSystem, normalizeSystem, planCenters, resolvedCenters, usableHalfWidth, sameOnTheAir, siteNameOf, startProblem } from "./config.ts";
-import type { Config, Identity, SiteStatus, SystemStatus } from "./protocol.ts";
+import type { Config, SiteIdentity, SiteStatus, SystemStatus } from "./protocol.ts";
 
 test("normalizeSystem: an older config's system gets its site; a system with sites keeps them", () => {
   const old = normalizeSystem({ shortName: "a", type: "dmr", controlChannelsHz: [452175000], colorCode: 3, modulation: "qpsk", enabled: false, future: 1 } as never);
@@ -31,8 +31,8 @@ test("activeSites: the recorder's order; site names unique in a system; new site
 test("sameOnTheAir: systems set up apart whose sites announce one system", () => {
   const c: Config = defaultConfig();
   c.systems.push(newSystem(c, { shortName: "dcfd" }), newSystem(c, { shortName: "dcfd2" }), newSystem(c, { shortName: "other", expect: { wacn: 0xbee00, sysId: 0x9 } }), newSystem(c, { shortName: "cm", type: "dmr" }));
-  const id = (x: Partial<Identity>): Identity => ({ nac: null, wacn: null, sysId: null, rfss: null, site: null, ...x });
-  const site = (name: string, identity: Partial<Identity>): SiteStatus =>
+  const id = (x: Partial<SiteIdentity>): SiteIdentity => ({ nac: null, wacn: null, sysId: null, rfss: null, site: null, ...x });
+  const site = (name: string, identity: Partial<SiteIdentity>): SiteStatus =>
     ({ index: 0, name, nowS: 0, controlChannelHz: null, identity: id(identity), good: 0, bad: 0, modulation: null, activeCalls: 0, recording: 0, callsConcluded: 0, mismatch: null });
   const sys = (shortName: string, sites: SiteStatus[]): SystemStatus => ({ index: 0, shortName, activeCalls: 0, recording: 0, callsConcluded: 0, sites });
   assert.deepEqual(sameOnTheAir(c, []), []);

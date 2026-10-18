@@ -24,16 +24,16 @@ import {
   useApp,
   type SurveyTarget,
 } from "./controller.ts";
-import type { Config, SiteIdentity, SurveyCandidate, SurveyIdentity, SurveyMonitor, SurveySuggestion } from "./protocol.ts";
+import type { Config, SiteIdentity, SurveyCandidate, SurveyMonitor, SurveySuggestion } from "./protocol.ts";
 import { Waterfall } from "./Waterfall.tsx";
 
 const hex = (v: number | null | undefined) => (v === null || v === undefined ? "?" : v.toString(16).toUpperCase());
 
-function idText(id: SurveyIdentity): string {
+function idText(id: SiteIdentity): string {
   const parts: string[] = [];
-  if (id.nac !== null) parts.push(`NAC ${hex(id.nac)}`);
-  if (id.sysId !== null) parts.push(`SysID ${hex(id.sysId)}`);
-  if (id.rfss !== null && id.site !== null) parts.push(`site ${id.rfss}-${id.site}`);
+  if (id.nac != null) parts.push(`NAC ${hex(id.nac)}`);
+  if (id.sysId != null) parts.push(`SysID ${hex(id.sysId)}`);
+  if (id.rfss != null && id.site != null) parts.push(`site ${id.rfss}-${id.site}`);
   return parts.join(" · ");
 }
 
@@ -50,7 +50,7 @@ const KIND: Record<SurveyCandidate["kind"], string> = {
 const isControl = (c: SurveyCandidate) => c.kind === "control" || c.kind === "smartnet";
 
 /** The site key of a scanned control channel: its secondaries share it. */
-const siteKey = (id: SurveyIdentity) => (id.sysId !== null && id.site !== null ? `${id.nac}/${id.sysId}/${id.rfss}/${id.site}` : null);
+const siteKey = (id: SiteIdentity) => (id.sysId != null && id.site != null ? `${id.nac}/${id.sysId}/${id.rfss}/${id.site}` : null);
 
 function Candidates(props: { c: Config; list: SurveyCandidate[]; listening: number | null; onListen?: (hz: number) => void }) {
   // Add a scanned control channel as a system — with its site's other control channels found in the scan.
@@ -60,7 +60,7 @@ function Candidates(props: { c: Config; list: SurveyCandidate[]; listening: numb
     // (On the 6.25 kHz channel raster.)
     const ccs = same.map((x) => Math.round((x.correctedHz ?? x.freqHz) / 6250) * 6250);
     const id = cand.identity;
-    const expect: SiteIdentity = { nac: id.nac, sysId: id.sysId, rfss: id.rfss, site: id.site, wacn: id.wacn };
+    const expect: SiteIdentity = { ...id };
     const name = addSite(ccs, expect);
     setNotice(`Added ${name}: control channel${ccs.length === 1 ? "" : "s"} ${ccs.map((f) => formatMhz(f)).join(", ")} MHz.`);
   };
@@ -226,7 +226,7 @@ function SmartnetPlan(props: { s: NonNullable<SurveyMonitor["smartnet"]> }) {
     <>
       <span className="mono">
         {b.bandplan === "400_custom"
-          ? `${b.bandplan}: channel ${b.bandplanOffset} = ${formatMhz(b.bandplanBase ?? 0)} MHz, ${(b.bandplanSpacing ?? 0) / 1000} kHz steps`
+          ? `${b.bandplan}: channel ${b.bandplanOffset} = ${formatMhz(b.bandplanBaseHz ?? 0)} MHz, ${(b.bandplanSpacingHz ?? 0) / 1000} kHz steps`
           : b.bandplan}
       </span>{" "}
       ({found})
@@ -249,7 +249,7 @@ function MonitorView(props: { m: SurveyMonitor; sug: SurveySuggestion | null; c:
   const existing = sug
     ? c.systems.flatMap((x, k) => x.sites.map((y, j) => ({ system: k, site: j, y }))).find(({ y }) => sug.controlChannels.some((f) => y.controlChannelsHz.some((g) => near(f, g))))
     : undefined;
-  const of = sug ? systemOfSite(c, { wacn: sug.wacn, sysId: sug.sysId }) : -1;
+  const of = sug ? systemOfSite(c, sug.identity) : -1;
   const [picked, setTarget] = useState<SurveyTarget | null>(null);
   const target: SurveyTarget = picked ?? (existing ? { system: existing.system, site: existing.site } : of >= 0 ? { system: of, site: "new" } : "new");
   const targetSys = target === "new" ? undefined : c.systems[target.system];
@@ -266,7 +266,7 @@ function MonitorView(props: { m: SurveyMonitor; sug: SurveySuggestion | null; c:
     stopSurvey();
     const bits = [`control channel${sug.controlChannels.length === 1 ? "" : "s"} ${mhzList(sug.controlChannels)} MHz`];
     if (sug.type === "smartnet" && sug.bandplan) bits.unshift(`SmartNet, band plan ${sug.bandplan.bandplan}`);
-    if (sug.site !== null) bits.push(`site lock ${sug.rfss ?? "?"}-${sug.site}`);
+    if (sug.identity.site != null) bits.push(`site lock ${sug.identity.rfss ?? "?"}-${sug.identity.site}`);
     if (src && src.type !== "file") {
       if (sug.ppmApply !== null) bits.push(`correction ${sug.ppmApply > 0 ? "+" : ""}${sug.ppmApply} ppm`);
       if (rtl && sug.gainDb !== null) bits.push(`gain ${formatGain(sug.gainDb)} dB`);
@@ -293,15 +293,15 @@ function MonitorView(props: { m: SurveyMonitor; sug: SurveySuggestion | null; c:
           )}
         </Check>
         {m.smartnet ? (
-          <Check state={id.sysId !== null ? "ok" : "wait"} label="System">
-            {id.sysId !== null ? <span className="mono">SmartNet · System ID {hex(id.sysId)}</span> : "SmartNet — waiting for the system ID broadcast…"}
+          <Check state={id.sysId != null ? "ok" : "wait"} label="System">
+            {id.sysId != null ? <span className="mono">SmartNet · System ID {hex(id.sysId)}</span> : "SmartNet — waiting for the system ID broadcast…"}
           </Check>
         ) : (
-        <Check state={id.wacn !== null && id.sysId !== null ? "ok" : "wait"} label="System">
-          {id.wacn !== null || id.sysId !== null || id.nac !== null ? (
+        <Check state={id.wacn != null && id.sysId != null ? "ok" : "wait"} label="System">
+          {id.wacn != null || id.sysId != null || id.nac != null ? (
             <span className="mono">
               WACN {hex(id.wacn)} · SysID {hex(id.sysId)} · NAC {hex(id.nac)}
-              {id.rfss !== null && id.site !== null ? ` · RFSS ${id.rfss} site ${id.site}` : ""}
+              {id.rfss != null && id.site != null ? ` · RFSS ${id.rfss} site ${id.site}` : ""}
             </span>
           ) : (
             "waiting for the network status broadcast…"
@@ -402,11 +402,11 @@ function MonitorView(props: { m: SurveyMonitor; sug: SurveySuggestion | null; c:
                   : `adds a site to ${targetSys?.shortName ?? "the system"} with`}{" "}
               control channel
               {sug.controlChannels.length === 1 ? "" : "s"} <span className="mono">{mhzList(sug.controlChannels)}</span> MHz
-              {sug.site !== null && (
+              {sug.identity.site != null && (
                 <>
                   , locked to site{" "}
                   <span className="mono">
-                    {sug.rfss ?? "?"}-{sug.site}
+                    {sug.identity.rfss ?? "?"}-{sug.identity.site}
                   </span>
                 </>
               )}

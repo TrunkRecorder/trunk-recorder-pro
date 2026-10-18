@@ -1052,12 +1052,11 @@ const siteLabel = (sys: System, site: Site) => (sys.sites.length > 1 ? `${siteNa
 export function applySurvey(i: number, sug: SurveySuggestion, target: SurveyTarget): SurveyApplied {
   let applied: SurveyApplied = { system: "", centered: false };
   updateConfig((c) => {
-    const expect: SiteIdentity = { nac: sug.nac, wacn: sug.wacn, sysId: sug.sysId, rfss: sug.rfss, site: sug.site };
+    const expect: SiteIdentity = { ...sug.identity };
     const b = sug.type === "smartnet" ? sug.bandplan : null;
     const type = sug.type === "smartnet" ? "smartnet" : "p25";
-    const band: Partial<Site> = b
-      ? { bandplan: b.bandplan, bandplanBaseHz: b.bandplanBase, bandplanSpacingHz: b.bandplanSpacing, bandplanOffset: b.bandplanOffset, bandplanHighHz: b.bandplanHigh }
-      : {};
+    // (In the config's own terms.)
+    const band: Partial<Site> = b ?? {};
     const fields: Partial<Site> = { controlChannelsHz: sug.controlChannels, expect, voiceChannelsHz: sug.voiceChannels, enabled: true, ...band };
     let sys = target === "new" ? undefined : c.systems[target.system];
     let site: Site;

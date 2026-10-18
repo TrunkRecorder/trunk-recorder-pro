@@ -1102,8 +1102,9 @@ fn unit_kind(k: MessageType) -> Option<&'static str> {
 }
 
 /// `{nac, wacn, sysId, rfss, site}`: every field, null when not stated.
+/// A site's identity as messages carry it: the config's [`crate::config::SiteIdentity`].
 pub(crate) fn identity_json(id: &Identity) -> Value {
-    Value::Object(IdField::ALL.into_iter().map(|f| (f.key().to_string(), json!(id.get(f)))).collect())
+    json!(crate::config::SiteIdentity::from(id))
 }
 
 /// `patched`: the talkgroups patched with it ([`Session::tg_names`]).
