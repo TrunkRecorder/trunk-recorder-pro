@@ -40,7 +40,7 @@ use super::talkgroups::Talkgroups;
 use super::frames::CallFrames;
 use super::voice::TrackerOut;
 use super::units::{UnitAlias, UnitAliases, UnitTags};
-use super::identity::Identity;
+use super::identity::{IdField, Identity};
 use super::control::{self, CarrierPlan, ControlChannel, Protocol, ProtocolStatus, Step};
 use super::voice::{self, ChannelQuality, CipherId, VoiceDecoder, VoiceParams, VoiceSpec};
 use crate::alias::Alias;
@@ -624,13 +624,24 @@ struct BlockDsp {
     in_gap: bool,
 }
 
-/// A source's control channels' decoding of a block: per site, its steps and samples.
+/// A source's control channels' decoding of a block: per site, its steps
+/// and samples, and what else its trunk follows each block, read under the
+/// control channel's lock with the decoding (so the trunk needn't take it).
 struct CcResult {
     site: u16,
     /// The (first) carrier's head.
     head: Option<HeadId>,
     steps: Vec<Step>,
+    /// What each step tells the site's voice channels ([`ControlChannel::voice_params`] of its identity).
+    params: Vec<VoiceParams>,
     samples: u64,
+    notes: Vec<(NoteLevel, String)>,
+    /// Watching: the carrier control is on now.
+    control_hz: Option<u64>,
+    /// Messages decoded and failed, so far.
+    counts: (u64, u64),
+    /// How far off the control channel comes in, Hz (AutoTune).
+    offset_hz: Option<f32>,
 }
 
 impl SourceRx {
@@ -701,16 +712,20 @@ impl BlockDsp {
         let mut out: Vec<CcResult> = Vec::new();
         for (site, carrier, head, cc, iq, t0) in self.taps.drain(..) {
             let mut steps = Vec::new();
-            {
+            let (params, notes, control_hz, counts, offset_hz) = {
                 let mut cc = cc.lock().unwrap();
                 cc.push(carrier, &iq, t0, self.rate, &mut steps);
-            }
+                (steps.iter().map(|st| cc.voice_params(&st.identity)).collect::<Vec<_>>(), cc.take_notes(), cc.control_hz(), cc.counts(), cc.offset_hz())
+            };
             match out.last_mut().filter(|r| r.site == site) {
                 Some(r) => {
                     r.steps.extend(steps);
+                    r.params.extend(params);
+                    r.notes.extend(notes);
                     r.samples += iq.len() as u64;
+                    (r.control_hz, r.counts, r.offset_hz) = (control_hz, counts, offset_hz);
                 }
-                None => out.push(CcResult { site, head: Some(head), steps, samples: iq.len() as u64 }),
+                None => out.push(CcResult { site, head: Some(head), steps, params, samples: iq.len() as u64, notes, control_hz, counts, offset_hz }),
             }
         }
         out
@@ -731,8 +746,6 @@ struct Radio {
     preroll_s: f64,
     capture_frames: bool,
     vocoder: mbe::Profile,
-    /// What each site's control channel tells its voice channels (each source keeps a copy).
-    voice_params: Vec<VoiceParams>,
     /// Audio / info produced by the voice channels, as (site, call, output), applied after.
     pending: Vec<(u16, CallId, TrackerOut)>,
     /// Each voice channel open (on whichever source) and the calls on its
@@ -1011,6 +1024,14 @@ struct Trunk {
     /// Why this control channel is not ours, while it isn't.
     mismatch: Option<String>,
     adjacent: std::collections::BTreeMap<(u32, u32, u32), AdjacentSite>,
+    /// What its protocol says of itself, once: the identity fields its site
+    /// lock goes by, and whether a control channel is reopened at a correction.
+    id_fields: &'static [IdField],
+    reopens: bool,
+    /// What its control channel tells its voice channels (each source has a copy).
+    voice_params: VoiceParams,
+    /// How far off the control channel came in at the last block, Hz (AutoTune).
+    cc_offset_hz: Option<f32>,
     /// Terminators' link control, as talker aliases see it: encrypted,
     /// clear, alias fragments; then Phase 2 alias messages ([`AliasLc`]).
     alias_lc: [u64; 4],
@@ -1048,8 +1069,11 @@ impl Trunk {
         }
     }
 
-    /// Its control channel decoding. (Not held across a source's lock:
-    /// sources take the two the other way round while they decode.)
+    /// Its control channel decoding, for what isn't asked every block
+    /// (starting, a new control channel, status, the dashboard's figures):
+    /// each block's results come in its [`CcResult`], read by the source's
+    /// thread under the lock it decodes with. (Not held across a source's
+    /// lock: sources take the two the other way round while they decode.)
     fn cc(&self) -> MutexGuard<'_, Box<dyn ControlChannel>> {
         self.cc.lock().unwrap()
     }
@@ -1149,10 +1173,13 @@ impl Trunk {
         }
     }
 
-    fn on_block_hunting(&mut self, radio: &mut Radio, sys: &SystemConfig, source: usize, cc: CcResult, events: &mut Vec<Event>, call_events: &mut Vec<CallEvent>) {
+    fn on_block_hunting(&mut self, radio: &mut Radio, sys: &SystemConfig, source: usize, mut cc: CcResult, events: &mut Vec<Event>, call_events: &mut Vec<CallEvent>) {
         let Listening::Hunting(h) = &mut self.listening else { return };
-        // (Another source's samples: decoded as it moved to this one.)
+        // (Another source's samples: decoded as it moved to this one. What it noted is still the site's.)
         if h.source != source || cc.head != Some(h.head) {
+            for (level, text) in std::mem::take(&mut cc.notes) {
+                events.push(Event::Note { system: self.system, site: Some(self.site), level, text });
+            }
             return;
         }
         let (rate, offset) = {
@@ -1163,11 +1190,8 @@ impl Trunk {
         let moved = offset - h.offset_s;
         self.now_s = h.start_s + h.samples as f64 / rate + moved;
         let (index, cutoff_hz, measured_s) = (h.index, h.cutoff_hz, h.measured_s);
-        let notes = self.cc().take_notes();
-        for (level, text) in notes {
-            events.push(self.note(level, text));
-        }
-        self.follow(radio, sys, cc.steps, events, call_events);
+        self.cc_offset_hz = cc.offset_hz;
+        self.follow(radio, sys, cc, events, call_events);
         if self.now_s - self.last_good_s > CC_HUNT_S && self.cfg.control_channels.len() > 1 {
             let _ = self.tune(radio, sys, cutoff_hz, index + 1, events);
         } else if self.now_s - measured_s >= TUNE_EVERY_S {
@@ -1183,22 +1207,15 @@ impl Trunk {
             return;
         }
         self.now_s = self.now_s.max(time);
-        let (notes, control_hz) = {
-            let mut c = self.cc();
-            (c.take_notes(), c.control_hz())
-        };
-        for (level, text) in notes {
-            events.push(self.note(level, text));
-        }
         // Where the control channel is now (Capacity Plus: the rest channel moves).
-        if let Some(hz) = control_hz.filter(|&h| Some(h) != self.cc_hz) {
+        if let Some(hz) = cc.control_hz.filter(|&h| Some(h) != self.cc_hz) {
             self.cc_hz = Some(hz);
             events.push(Event::ControlChannel { site: self.site, freq_hz: hz });
         }
-        if control_hz.is_some() {
+        if cc.control_hz.is_some() {
             self.last_good_s = self.now_s;
         }
-        self.follow(radio, sys, cc.steps, events, call_events);
+        self.follow(radio, sys, cc, events, call_events);
         let mut host = self.host(radio, sys);
         self.calls.tick(self.now_s, &mut host, call_events);
     }
@@ -1206,11 +1223,14 @@ impl Trunk {
     /// Follow what the control channel decoded, step by step: the site lock
     /// first (another site's grants aren't followed, and until every locked
     /// field has been heard nothing is), then the call manager.
-    fn follow(&mut self, radio: &mut Radio, sys: &SystemConfig, steps: Vec<Step>, events: &mut Vec<Event>, call_events: &mut Vec<CallEvent>) {
+    fn follow(&mut self, radio: &mut Radio, sys: &SystemConfig, cc: CcResult, events: &mut Vec<Event>, call_events: &mut Vec<CallEvent>) {
+        for (level, text) in cc.notes {
+            events.push(self.note(level, text));
+        }
         // The site lock: on the fields its protocol states (none: no lock).
-        let fields = self.cc().identity_fields();
+        let fields = self.id_fields;
         let lock = !fields.is_empty();
-        for st in steps {
+        for (st, p) in cc.steps.into_iter().zip(cc.params) {
             self.identity = st.identity;
             for m in st.msgs.iter().filter(|m| m.kind == MessageType::Adjacent && m.freq_hz > 0) {
                 self.adjacent.insert((m.sys_id, m.rfss, m.site), AdjacentSite { sys_id: m.sys_id, rfss: m.rfss, site: m.site, freq_hz: m.freq_hz });
@@ -1239,21 +1259,19 @@ impl Trunk {
                 // hold the grants — a call still going is granted again.
                 continue;
             }
-            let p = self.cc().voice_params(&self.identity);
-            let vp = &mut radio.voice_params[self.site as usize];
-            let was = *vp;
-            vp.tdma_key = p.tdma_key.or(vp.tdma_key);
-            vp.nac = p.nac.or(vp.nac);
-            if *vp != was {
-                let vp = *vp;
+            // What the voice channels need from it (Phase 2's scrambler key), to every source's copy as it changes.
+            let was = self.voice_params;
+            self.voice_params.tdma_key = p.tdma_key.or(was.tdma_key);
+            self.voice_params.nac = p.nac.or(was.nac);
+            if self.voice_params != was {
                 for rx in radio.rx.iter() {
-                    rx.lock().unwrap().voice_params[self.site as usize] = vp;
+                    rx.lock().unwrap().voice_params[self.site as usize] = self.voice_params;
                 }
             }
             let mut host = self.host(radio, sys);
             self.calls.handle(&st.msgs, sys.policy(), &mut host, call_events);
         }
-        (self.good, self.bad) = self.cc().counts();
+        (self.good, self.bad) = cc.counts;
     }
 
     /// AutoTune: how far off the control channel comes in (while it decodes),
@@ -1266,11 +1284,7 @@ impl Trunk {
         if now - self.last_good_s > 1.0 {
             return;
         }
-        let (off, reopens) = {
-            let c = self.cc.lock().unwrap();
-            (c.offset_hz(), c.reopens())
-        };
-        let Some(off) = off else { return };
+        let (Some(off), reopens) = (self.cc_offset_hz, self.reopens) else { return };
         let hz = hz as f64;
         let mut rx = radio.rx(h.source);
         let s = &mut rx.src;
@@ -1409,7 +1423,6 @@ impl Core {
             preroll_s: cfg.preroll_s,
             capture_frames: cfg.capture_frames,
             vocoder: cfg.vocoder,
-            voice_params: vec![VoiceParams::default(); n_sites],
             pending: Vec::new(),
             chans: BTreeMap::new(),
         };
@@ -1432,12 +1445,19 @@ impl Core {
                 identity: Identity::default(),
                 mismatch: None,
                 adjacent: Default::default(),
+                id_fields: &[],
+                reopens: false,
+                voice_params: VoiceParams::default(),
+                cc_offset_hz: None,
                 alias_lc: [0; 4],
                 lc_protected_tgs: BTreeSet::new(),
                 cfg: sc.clone(),
             };
-            let hold_s = t.cc().patch_hold_s();
-            t.calls.patches.hold_s = hold_s;
+            let (hold_s, id_fields, reopens) = {
+                let c = t.cc();
+                (c.patch_hold_s(), c.identity_fields(), c.reopens())
+            };
+            (t.calls.patches.hold_s, t.id_fields, t.reopens) = (hold_s, id_fields, reopens);
             t.start(&mut radio, sys, &mut events)?;
             trunks.push(t);
         }
@@ -1649,9 +1669,14 @@ impl Core {
     /// End of input: release what the receivers still hold and end every call.
     pub fn finish(&mut self) {
         for t in self.trunks.iter_mut() {
-            let mut steps = Vec::new();
-            t.cc().flush(&mut steps);
-            t.follow(&mut self.radio, &self.systems[t.system as usize].cfg, steps, &mut self.events, &mut self.call_events);
+            let cc = {
+                let mut c = t.cc();
+                let mut steps = Vec::new();
+                c.flush(&mut steps);
+                let params = steps.iter().map(|st| c.voice_params(&st.identity)).collect();
+                CcResult { site: t.site, head: None, steps, params, samples: 0, notes: c.take_notes(), control_hz: c.control_hz(), counts: c.counts(), offset_hz: c.offset_hz() }
+            };
+            t.follow(&mut self.radio, &self.systems[t.system as usize].cfg, cc, &mut self.events, &mut self.call_events);
         }
         // (Every source's channels in one key order, as they always ran.)
         let mut keys: Vec<((u16, u64), usize)> = Vec::new();
