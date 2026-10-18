@@ -321,6 +321,8 @@ pub struct Session {
     pub want_audio: bool,
     /// Each site, as calls number them: its system's number and its name.
     sites: Vec<(u16, String)>,
+    /// Each system's recording rules, as calls number them ([`Config::recordings`]).
+    recordings: Vec<crate::config::Recording>,
     pub plugin_topics: PluginTopics,
     /// Wall clock (Unix ms) at the engine's time 0.
     epoch_ms: f64,
@@ -360,6 +362,7 @@ impl Session {
             .iter()
             .map(|s| Arc::new(Mutex::new(SourceStats { clock: ClockFit { live: !matches!(s, Source::File { realtime: false, .. }), ..Default::default() }, ..Default::default() })))
             .collect();
+        let recordings = cfg.recordings();
         let meas = Stats::new(&cfg, Shared::new(), local_offset);
         meas.shared().names.lock().unwrap().set_systems(&systems);
         Ok(Session {
@@ -379,6 +382,7 @@ impl Session {
             rate_mark: (0.0, vec![0; n]),
             want_audio: true,
             sites,
+            recordings,
             plugin_topics: PluginTopics::default(),
             epoch_ms,
             last_plugin_status_ms: 0.0,
@@ -914,7 +918,7 @@ impl Session {
                 let record: Value = serde_json::from_str(&k.json).unwrap_or(Value::Null);
                 let start = record["start_time"].as_i64().unwrap_or(0);
                 let offset = (self.local_offset)(start);
-                let format = self.cfg.recording_of(k.call.system).filename_format;
+                let format = self.recordings.get(k.call.system as usize).map_or("", |r| r.filename_format.as_str());
                 let rel = if format.trim().is_empty() {
                     filename::default_path(&k.short_name, &k.base_name, start, offset)
                 } else {

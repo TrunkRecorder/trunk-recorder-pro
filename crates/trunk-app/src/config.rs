@@ -1065,70 +1065,108 @@ impl Channel {
     }
 }
 
-/// How calls are recorded and saved. The settings marked "per system" can
-/// be set again on each system (and the conventional channels): see
-/// [`RecordingOverride`].
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase", default)]
-pub struct Recording {
-    pub capture_dir: String,
-    pub preroll_s: f64,
-    pub max_recorders: usize,
-    /// Per system: a call ends this long after its last grant or audio.
-    pub call_timeout_s: f64,
-    /// Per system: talkgroups not in the talkgroup file.
-    pub record_unknown: bool,
-    /// Per system.
-    pub record_encrypted: bool,
-    /// Per system.
-    pub record_unit_to_unit: bool,
-    /// Per system: keep calls with no audio (encrypted, nothing decoded).
-    pub keep_silent_calls: bool,
-    /// Per system: drop calls with less audio than this, s; 0 = keep all
-    /// (Trunk Recorder's minDuration).
-    pub min_call_s: f64,
-    /// Per system: save a call this long and carry on in a new one, s; 0 =
-    /// parts of `STUCK_CALL_S` (600 s), so a stuck carrier never records
-    /// without bound (maxDuration).
-    pub max_call_s: f64,
-    /// Per system: leave out transmissions shorter than this, s; 0 = keep
-    /// all (minTransmissionDuration).
-    pub min_transmission_s: f64,
-    /// Save each call's vocoder frames next to its audio, for diagnosis.
-    pub capture_frames: bool,
-    /// Per system: bring every call's speech to the same loudness (as
-    /// Trunk Recorder's uploads were).
-    pub normalize_audio: bool,
-    /// Per system: then raise or lower digital / analog calls by this much,
-    /// dB (Trunk Recorder's digitalLevels / analogLevels).
-    pub digital_level_db: f64,
-    pub analog_level_db: f64,
-    /// Per system: also keep an .m4a of every call (Trunk Recorder's compressWav).
-    pub compress_wav: bool,
-    /// Per system: keep the audio once every upload plugin has handled the
-    /// call (audioArchive); off, it's deleted then.
-    pub audio_archive: bool,
-    /// Per system: keep the call's JSON then (callLog).
-    pub call_log: bool,
-    /// Per system: when an upload failed, keep the files anyway (archiveFilesOnFailure).
-    pub archive_files_on_failure: bool,
-    /// Per system: where calls go under the recordings folder, and their
-    /// names ([`crate::filename`]); empty = `<short name>/<year>/<month>/<day>/<talkgroup>-<epoch>_<freq>`.
-    pub filename_format: String,
-    /// A call heard on several sites of one system: save only the best copy
-    /// (each is recorded; the one decoded most cleanly, or the talkgroup's
-    /// preferred site, is kept). Trunk Recorder's multiSite.
-    pub drop_duplicate_calls: bool,
-    /// IMBE vocoder for P25 Phase 1 voice.
-    pub vocoder: Vocoder,
-    /// M4A for the plugins that upload it, encoded once per call.
-    pub m4a: M4a,
-    /// Calls waiting for the upload plugins kept in memory, not on the disk.
-    pub ram_spool: RamSpool,
-    /// Keys this version doesn't know (a newer version's, a hand edit's):
-    /// kept, and saved back as they were.
-    #[serde(flatten)]
-    pub other: BTreeMap<String, serde_json::Value>,
+/// Recording's settings, declared once: those each system can set again for
+/// itself (`per_system`) make [`RecordingOverride`] and [`Recording::with`]
+/// too (protocol.ts: `RecordingRules`, of which `RecordingOverride` is a
+/// `Partial`).
+macro_rules! recording {
+    (
+        $(#[$sm:meta])*
+        pub struct Recording {
+            per_system { $( $(#[$pm:meta])* pub $pf:ident: $pt:ty, )* }
+            $( $(#[$om:meta])* pub $of:ident: $ot:ty, )*
+        }
+    ) => {
+        $(#[$sm])*
+        pub struct Recording {
+            $( $(#[$pm])* pub $pf: $pt, )*
+            $( $(#[$om])* pub $of: $ot, )*
+        }
+
+        /// One system's own recording rules (or the conventional channels'):
+        /// each left out is as in [`Recording`].
+        #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+        #[serde(rename_all = "camelCase", default)]
+        pub struct RecordingOverride {
+            $( #[serde(skip_serializing_if = "Option::is_none")] pub $pf: Option<$pt>, )*
+        }
+
+        impl Recording {
+            /// These settings with a system's own on top.
+            pub fn with(&self, o: &RecordingOverride) -> Recording {
+                let mut r = self.clone();
+                $( if let Some(v) = &o.$pf { r.$pf = v.clone(); } )*
+                r
+            }
+        }
+    };
+}
+
+recording! {
+    /// How calls are recorded and saved. Those `per_system` can be set again
+    /// on each system (and the conventional channels): [`RecordingOverride`].
+    #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+    #[serde(rename_all = "camelCase", default)]
+    pub struct Recording {
+        per_system {
+            /// A call ends this long after its last grant or audio.
+            pub call_timeout_s: f64,
+            /// Talkgroups not in the talkgroup file.
+            pub record_unknown: bool,
+            pub record_encrypted: bool,
+            pub record_unit_to_unit: bool,
+            /// Keep calls with no audio (encrypted, nothing decoded).
+            pub keep_silent_calls: bool,
+            /// Drop calls with less audio than this, s; 0 = keep all (Trunk
+            /// Recorder's minDuration).
+            pub min_call_s: f64,
+            /// Save a call this long and carry on in a new one, s; 0 = parts of
+            /// `STUCK_CALL_S` (600 s), so a stuck carrier never records without
+            /// bound (maxDuration).
+            pub max_call_s: f64,
+            /// Leave out transmissions shorter than this, s; 0 = keep all
+            /// (minTransmissionDuration).
+            pub min_transmission_s: f64,
+            /// Bring every call's speech to the same loudness (as Trunk
+            /// Recorder's uploads were).
+            pub normalize_audio: bool,
+            /// Then raise or lower digital / analog calls by this much, dB
+            /// (Trunk Recorder's digitalLevels / analogLevels).
+            pub digital_level_db: f64,
+            pub analog_level_db: f64,
+            /// Also keep an .m4a of every call (Trunk Recorder's compressWav).
+            pub compress_wav: bool,
+            /// Keep the audio once every upload plugin has handled the call
+            /// (audioArchive); off, it's deleted then.
+            pub audio_archive: bool,
+            /// Keep the call's JSON then (callLog).
+            pub call_log: bool,
+            /// When an upload failed, keep the files anyway (archiveFilesOnFailure).
+            pub archive_files_on_failure: bool,
+            /// Where calls go under the recordings folder, and their names
+            /// ([`crate::filename`]); empty = `<short name>/<year>/<month>/<day>/<talkgroup>-<epoch>_<freq>`.
+            pub filename_format: String,
+        }
+        pub capture_dir: String,
+        pub preroll_s: f64,
+        pub max_recorders: usize,
+        /// Save each call's vocoder frames next to its audio, for diagnosis.
+        pub capture_frames: bool,
+        /// A call heard on several sites of one system: save only the best copy
+        /// (each is recorded; the one decoded most cleanly, or the talkgroup's
+        /// preferred site, is kept). Trunk Recorder's multiSite.
+        pub drop_duplicate_calls: bool,
+        /// IMBE vocoder for P25 Phase 1 voice.
+        pub vocoder: Vocoder,
+        /// M4A for the plugins that upload it, encoded once per call.
+        pub m4a: M4a,
+        /// Calls waiting for the upload plugins kept in memory, not on the disk.
+        pub ram_spool: RamSpool,
+        /// Keys this version doesn't know (a newer version's, a hand edit's):
+        /// kept, and saved back as they were.
+        #[serde(flatten)]
+        pub other: BTreeMap<String, serde_json::Value>,
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -1248,45 +1286,6 @@ impl Default for Recording {
     }
 }
 
-/// One system's own recording rules (or the conventional channels'): each
-/// left out is as in [`Recording`].
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase", default)]
-pub struct RecordingOverride {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub call_timeout_s: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub record_unknown: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub record_encrypted: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub record_unit_to_unit: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub keep_silent_calls: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub min_call_s: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_call_s: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub min_transmission_s: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub normalize_audio: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub digital_level_db: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub analog_level_db: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub compress_wav: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub audio_archive: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub call_log: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub archive_files_on_failure: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub filename_format: Option<String>,
-}
-
 impl RecordingOverride {
     pub fn is_empty(&self) -> bool {
         *self == RecordingOverride::default()
@@ -1294,17 +1293,6 @@ impl RecordingOverride {
 }
 
 impl Recording {
-    /// These settings with a system's own on top.
-    pub fn with(&self, o: &RecordingOverride) -> Recording {
-        let mut r = self.clone();
-        macro_rules! take {
-            ($($f:ident),*) => { $( if let Some(v) = &o.$f { r.$f = v.clone(); } )* };
-        }
-        take!(call_timeout_s, record_unknown, record_encrypted, record_unit_to_unit, keep_silent_calls, min_call_s, max_call_s, min_transmission_s);
-        take!(normalize_audio, digital_level_db, analog_level_db, compress_wav, audio_archive, call_log, archive_files_on_failure, filename_format);
-        r
-    }
-
     /// What the engine does with a finished call.
     fn save_rules(&self) -> SaveRules {
         SaveRules {
@@ -2056,9 +2044,11 @@ impl Config {
         check_channels(&self.engine_channels()).err()
     }
 
-    /// The recording rules of the system a call's `system` names.
-    pub fn recording_of(&self, system: u16) -> Recording {
-        self.call_systems().get(system as usize).map_or_else(|| self.recording.clone(), |s| self.recording.with(s.recording))
+    /// Each system's recording rules (its own on the config's), by the
+    /// number calls give it ([`Config::call_systems`]): worked out once when
+    /// recording starts.
+    pub fn recordings(&self) -> Vec<Recording> {
+        self.call_systems().iter().map(|s| self.recording.with(s.recording)).collect()
     }
 
     /// Every system a call can come from, numbered as calls number them
@@ -2402,7 +2392,7 @@ mod tests {
         assert_eq!(e.conventional.iter().map(|x| (x.system, x.squelch_db)).collect::<Vec<_>>(), [(0, Some(10.0)), (1, Some(14.0))]);
         assert_eq!(e.systems.iter().map(|x| (x.short_name.as_str(), x.save.min_call_s)).collect::<Vec<_>>(), [("fire", 0.0), ("police", 2.0)], "the one switched off isn't numbered");
         assert_eq!(c.short_name_of(1), Some("police"));
-        assert_eq!(c.recording_of(1).min_call_s, 2.0);
+        assert_eq!(c.recordings()[1].min_call_s, 2.0);
         assert_eq!(c.call_systems().iter().map(|s| (s.index, s.short_name)).collect::<Vec<_>>(), [(0, "fire"), (1, "police")]);
         // A file name format with a token no one knows: refused, the config's or a system's own.
         c.recording.filename_format = "{short_name}/{nope}".into();

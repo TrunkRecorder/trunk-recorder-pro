@@ -660,8 +660,8 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
     let dir = PathBuf::from(&cfg.recording.capture_dir);
     // Each system's file rules, by a call's `system` (trunked or conventional).
     let rules = {
-        let cfg = cfg.clone();
-        move |system: u16| FileRules::of(&cfg.recording_of(system))
+        let (each, all) = (cfg.recordings().iter().map(FileRules::of).collect::<Vec<_>>(), FileRules::of(&cfg.recording));
+        move |system: u16| each.get(system as usize).copied().unwrap_or(all)
     };
     let spool = ctx.spool.lock().unwrap().clone();
     let (fin_tx, fin_rx) = mpsc::sync_channel::<Finish>(1024);
