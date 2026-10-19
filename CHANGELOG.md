@@ -5,6 +5,8 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+## [0.2.5] — 2026-10-19
+
 - **The Live page is each system's now**: a system's page under **Radio system** has its
   **Active calls** (with **Listen live** for that system, and its talkgroups and radios linking to
   their pages) in place of the "On the air now" card, and its **Control channel log** at the
