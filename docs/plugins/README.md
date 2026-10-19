@@ -242,9 +242,10 @@ On **Plugins** > **Install & settings**, each installed plugin's card shows:
 - what it listens to (**Hears recorded calls**, **live audio**, …) and **Uploads M4A audio** if it
   asks for M4A
 - **Log (N)**: its last 50 log lines
-- **Update to vX** when the registry has a newer version. Updating a running plugin restarts it
-  with the new version, and its settings carry over
-- **Uninstall** (or **Remove**, for a build of your own)
+- **Update to vX** when the registry has a newer version, else **Reinstall**: the same again from
+  where it came (the registry, its GitHub repository's latest release, or your build's file). A
+  running plugin restarts with it, and its settings carry over
+- **Uninstall** (a build of your own: its settings are forgotten, the file stays)
 
 A plugin's log lines (except debug ones) also go to the recorder's log, prefixed with its id, like
 `[openmhz] uploading dcfd as dcfd (key …3f)`.
@@ -308,8 +309,8 @@ To run a plugin you've built, or any executable that speaks the protocol:
   ```
 
 `path` runs that executable instead of an installed copy. The store doesn't update it, and
-**Remove** forgets it without deleting the file. After you rebuild, turn it off and on again (while
-recording) to run the new build.
+**Uninstall** forgets it without deleting the file. After you rebuild, **Reinstall** runs the new
+build (restarting it while recording).
 
 ## Trying a plugin on recorded calls
 

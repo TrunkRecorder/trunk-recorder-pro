@@ -13,6 +13,7 @@ import { useEffect, useState } from "react";
 import {
   addPlugin,
   addSystemPluginCopy,
+  installFromGitHub,
   installFromStore,
   pluginOn,
   removePlugin,
@@ -681,6 +682,15 @@ function PluginCard(props: { p: PluginInfo; recording: boolean; listing?: Plugin
   const needs = on && m && s.config ? pluginNeeds(m, s.config, p.id) : [];
   // A newer version in the registry (not for a build of the user's own, or a plugin from elsewhere).
   const update = listing && m && !p.custom && !p.unlistedFrom && !listing.unavailable && newer(listing.version, m.version) ? listing : null;
+  // Taken again from where it came (the newer version, if there is one): the user's file, the
+  // GitHub repository's latest release, or the registry. Its settings stay.
+  const again = p.custom
+    ? () => addPlugin(p.path)
+    : p.unlistedFrom
+      ? () => installFromGitHub("plugin", p.unlistedFrom!)
+      : listing && !listing.unavailable
+        ? () => installFromStore("plugin", p.id)
+        : null;
 
   // Just installed from this browser: on to setting it up.
   useEffect(() => {
@@ -746,9 +756,9 @@ function PluginCard(props: { p: PluginInfo; recording: boolean; listing?: Plugin
             {STAGES[install.stage]}
           </span>
         ) : (
-          update && (
-            <button className="btn primary" onClick={() => installFromStore("plugin", p.id)} title={recording && on ? "It restarts with the new version." : undefined}>
-              Update to v{update.version}
+          again && (
+            <button className={`btn${update ? " primary" : ""}`} onClick={again} title={recording && on ? "It restarts with it." : undefined}>
+              {update ? `Update to v${update.version}` : "Reinstall"}
             </button>
           )
         )}
@@ -758,12 +768,12 @@ function PluginCard(props: { p: PluginInfo; recording: boolean; listing?: Plugin
           disabled={!!install}
           onClick={() => {
             const what = p.custom
-              ? `Remove ${m?.name ?? p.id} and its settings? ${p.path} stays.`
+              ? `Uninstall ${m?.name ?? p.id} and delete its settings? Your file ${p.path} stays.`
               : `Uninstall ${m?.name ?? p.id} and delete its settings?`;
             if (confirm(what)) removePlugin(p.id);
           }}
         >
-          {p.custom ? "Remove" : "Uninstall"}
+          Uninstall
         </button>
       </div>
     </article>
@@ -893,7 +903,7 @@ export function PluginsPage() {
               p={p}
               recording={recording}
               listing={s.stores.plugin?.listings.find((l) => l.id === p.id)}
-              install={s.installs.plugin[p.id]}
+              install={s.installs.plugin[p.id] ?? (p.unlistedFrom ? s.installs.plugin[p.unlistedFrom] : undefined)}
             />
           ))}
           {plugins.length === 0 && <p className="empty">No plugins yet.</p>}
