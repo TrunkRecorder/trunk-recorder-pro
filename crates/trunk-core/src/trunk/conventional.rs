@@ -1039,6 +1039,8 @@ impl Conventional {
                 mode: false,
                 start_s: start,
                 last_update_s: now_s,
+                heard_s: now_s,
+                heard_update_s: now_s,
                 last_audio_s: now_s,
                 sources: Vec::new(),
                 talkgroup_info: Self::info_for(&ch.rows, row, tg, rules.talkgroups),

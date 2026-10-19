@@ -226,6 +226,13 @@ pub struct Call {
     pub mode: bool,
     pub start_s: f64,
     pub last_update_s: f64,
+    /// When the recorder took in the update at `last_update_s`, by its own
+    /// clock: the call timeout counts from here. A control channel's messages
+    /// arrive some 0.4 s after they were on the air, so counting from
+    /// `last_update_s` would end calls that much early.
+    pub heard_s: f64,
+    /// The `last_update_s` that `heard_s` is for.
+    pub heard_update_s: f64,
     pub last_audio_s: f64,
     pub sources: Vec<CallSource>,
     pub talkgroup_info: Option<Talkgroup>,
@@ -334,11 +341,13 @@ pub struct CallManager {
     ids: CallIds,
     /// The site's standing patches.
     pub patches: Patches,
+    /// The clock at the last [`tick`](Self::tick): when messages handled now came in.
+    now_s: f64,
 }
 
 impl CallManager {
     pub fn new(cfg: CallConfig) -> Self {
-        CallManager { calls: Vec::new(), cfg, site: 0, system: 0, ids: CallIds::default(), patches: Patches::default() }
+        CallManager { calls: Vec::new(), cfg, site: 0, system: 0, ids: CallIds::default(), patches: Patches::default(), now_s: 0.0 }
     }
 
     /// For site `site` of system `system`, drawing ids from `ids` (shared with the other sites).
@@ -378,6 +387,13 @@ impl CallManager {
                     }
                 }
                 _ => {}
+            }
+        }
+        // What changed came in now: the timeout counts from here, not from its air time.
+        for c in &mut self.calls {
+            if c.heard_update_s != c.last_update_s {
+                c.heard_update_s = c.last_update_s;
+                c.heard_s = c.last_update_s.max(self.now_s);
             }
         }
     }
@@ -451,13 +467,14 @@ impl CallManager {
     /// Advance the clock: end calls that have gone quiet, and split those
     /// past the length limit.
     pub fn tick(&mut self, now_s: f64, host: &mut dyn RecorderHost, ev: &mut Vec<CallEvent>) {
+        self.now_s = now_s;
         let t = self.cfg.call_timeout_s;
         let max = if self.cfg.max_call_s > 0.0 { self.cfg.max_call_s } else { STUCK_CALL_S };
         let mut i = self.calls.len();
         while i > 0 {
             i -= 1;
             let c = &self.calls[i];
-            let quiet_cc = now_s - c.last_update_s > t;
+            let quiet_cc = now_s - c.heard_s > t;
             let quiet_audio = now_s - c.last_audio_s > t;
             if quiet_cc && (!c.recording || quiet_audio) {
                 let c = self.calls.remove(i);
@@ -482,6 +499,8 @@ impl CallManager {
             reason: None,
             start_s: now_s,
             last_update_s: old.last_update_s.max(now_s),
+            heard_s: now_s,
+            heard_update_s: old.last_update_s.max(now_s),
             last_audio_s: now_s,
             // The one talking now carries on.
             sources: old.sources.last().map(|s| CallSource { time_s: now_s, ..s.clone() }).into_iter().collect(),
@@ -573,6 +592,9 @@ impl CallManager {
             mode: m.mode,
             start_s: m.time_s,
             last_update_s: m.time_s,
+            // Stamped once the messages are handled (`handle`).
+            heard_s: m.time_s,
+            heard_update_s: f64::NAN,
             last_audio_s: m.time_s,
             sources: if m.source > 0 { vec![CallSource { src: m.source as u32, time_s: m.time_s, audio_pos: None, flags: Flags::of(m), position: None }] } else { vec![] },
             talkgroup_info: tg.clone(),
@@ -706,6 +728,28 @@ mod tests {
         m.handle(&[Message { kind: MessageType::PatchDelete, time_s: 2.5, patch: Some(Patch { sg: 65001, ga: [0; 3] }), ..Default::default() }], &mut Host, &mut ev);
         m.handle(&[msg(MessageType::Update, 2.5, 101)], &mut Host, &mut ev);
         assert_eq!(m.calls[0].patched_talkgroups, vec![101, 65001]);
+    }
+
+    #[test]
+    fn the_timeout_counts_from_when_an_update_comes_in_not_its_air_time() {
+        // The engine's blocks, 50 ms apart: the messages that came in, then the clock.
+        // Each message comes off the control channel 450 ms after it was on the air.
+        let mut m = Sys::new(CallConfig { call_timeout_s: 1.0, ..Default::default() }, Talkgroups::default());
+        let mut ev = Vec::new();
+        let sent_ms = [(MessageType::Grant, 0), (MessageType::Update, 800), (MessageType::Update, 1600)];
+        let (mut up, mut ended_ms) = (false, None);
+        for now_ms in (50..=5000).step_by(50) {
+            let came_in = |t: i64| (now_ms - 50..now_ms).contains(&(t + 450));
+            let due: Vec<Message> = sent_ms.iter().filter(|(_, t)| came_in(*t)).map(|(kind, t)| msg(*kind, *t as f64 / 1000.0, 101)).collect();
+            m.handle(&due, &mut Host, &mut ev);
+            m.tick(now_ms as f64 / 1000.0, &mut Host, &mut ev);
+            up |= !m.calls.is_empty();
+            if up && m.calls.is_empty() && ended_ms.is_none() {
+                ended_ms = Some(now_ms);
+            }
+        }
+        // The last update came in at 2.05 s: the call ends 1 s after that, not 1 s after its 1.6 s on the air.
+        assert_eq!(ended_ms, Some(3100));
     }
 
     #[test]
