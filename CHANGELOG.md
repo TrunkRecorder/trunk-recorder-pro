@@ -5,6 +5,8 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+## [0.2.4] — 2026-10-19
+
 - **Every page that drills down goes back the same way**: a system on Radio now starts with
   "← All systems" and the systems beside it, as Decode does with its sites, instead of a button on
   the right of the system's header. A talkgroup's or radio's page starts with "← <system>"; RF's
