@@ -9,7 +9,6 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   5 s from one buffer's arrival to another's, not over the status tick's second, which counted a
   whole RTL-SDR transfer (55 ms at 2.4 MS/s) in or out of it. Healthy dongles no longer warn that
   they deliver 5% off their rate; one that goes quiet still falls to zero.
-
 - **Reinstall a plugin in place** (by taclane, #38): a plugin's card has **Reinstall** where it
   would say **Update to vX** with nothing newer, taking it again from where it came (the
   registry, its GitHub repository's latest release, or your build's file) with its settings kept.
