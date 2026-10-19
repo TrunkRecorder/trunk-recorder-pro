@@ -5,6 +5,8 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+## [0.2.3] — 2026-10-19
+
 - **Listen says why a system is missing** instead of "No recorded calls yet": a system whose calls'
   audio isn't kept (Keep audio off, its own or the Recording tab's) has nothing to play, so its
   talkgroups are left out of the Talkgroups tab, and a card above the calls names it and where to
