@@ -153,17 +153,13 @@ pub struct HostInfo {
     pub version: String,
 }
 
-/// The index calls and events use for the first conventional system; the
-/// next ones count down from it (65534, 65533, …). Each is a system of its
-/// own in [`Hello::systems`], with its own short name and settings.
-pub const CONVENTIONAL: u16 = 65535;
-
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SystemInfo {
-    /// The number events carry for it (`system`) while the recorder runs
-    /// (conventional systems: [`CONVENTIONAL`] and down). It can change
-    /// between runs: know systems by `short_name`.
+    /// The number events carry for it (`system`) while the recorder runs:
+    /// from 0, the trunked systems then the conventional ones (each a
+    /// system of its own here). It can change between runs: know systems by
+    /// `short_name`.
     pub index: u16,
     /// The system's short name: its identity (unique among all the
     /// recorder's systems), its folder, and what users know it by. Every
@@ -190,6 +186,11 @@ pub struct CallInfo {
     /// [`SystemInfo::index`]: for this run only; `short_name` is the system's identity.
     pub system: u16,
     pub short_name: String,
+    /// The site it is on (its name; a system of one site's is its short
+    /// name; empty for a conventional system's call). A call heard on
+    /// several sites is told once, by the site that had it first.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub site: String,
     pub talkgroup: u32,
     /// The talkgroup's alpha tag, when known.
     pub talkgroup_tag: String,
@@ -205,6 +206,11 @@ pub struct CallInfo {
     /// Some of its encrypted voice was decrypted (the system had the key).
     pub decrypted: bool,
     pub emergency: bool,
+    /// Full duplex, packet mode and priority (P25's service options: 1
+    /// lowest, 4 the default, 7 highest; 0 not given), as the grant said.
+    pub duplex: bool,
+    pub packet: bool,
+    pub priority: u8,
     /// Recorded (false: only followed, or not recorded — see `reason`).
     pub recording: bool,
     /// Why it isn't recorded: "encrypted", "unknown_tg", "no_recorder", "no_source", …
@@ -213,9 +219,31 @@ pub struct CallInfo {
     pub start_time: f64,
     /// Radios heard on the call so far.
     pub units: Vec<u32>,
+    /// The same radios, in order, with what each one's transmission said of
+    /// itself.
+    pub sources: Vec<CallSource>,
     /// Talkgroups patched with this one so far, its own included, ascending;
     /// empty when it isn't patched.
     pub patched_talkgroups: Vec<u32>,
+}
+
+/// A radio heard on a call, and what its transmission said of itself: P25's
+/// service options (from the grant, link control and Phase 2's voice
+/// channel user messages), or the flags other protocols have.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CallSource {
+    pub unit: u32,
+    /// Unix seconds it was first heard on the call.
+    pub time: f64,
+    pub emergency: bool,
+    pub encrypted: bool,
+    /// Full duplex (half otherwise).
+    pub duplex: bool,
+    /// Packet mode (circuit otherwise).
+    pub packet: bool,
+    /// 1 lowest, 4 the default, 7 highest; 0 not given.
+    pub priority: u8,
 }
 
 /// A recorded call whose files are on disk.
@@ -245,48 +273,149 @@ pub struct CallFiles {
     pub m4a: Option<PathBuf>,
 }
 
-/// Trunk Recorder's call JSON. Fields this crate doesn't name are in `extra`.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+/// A call's JSON, in Trunk Recorder's format: the `.json` file beside its
+/// audio. The recorder makes one of these for every call and writes it as
+/// it serialises (field order, flags as 0/1, levels to a tenth of a dB);
+/// read back, it accepts Trunk Recorder's own files too (flags as 0/1 or
+/// booleans). Fields neither writes are kept in `extra`. Its default is the
+/// recorder's for what wasn't heard (`-1`, `"off"`, `"digital"`).
+///
+/// Serialise it as JSON with serde_json ([`CallRecord::to_json`]): its
+/// numbers are written through serde_json's raw values, which other serde
+/// formats don't take.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CallRecord {
     pub call_num: u64,
-    pub short_name: String,
+    /// Hz.
+    pub freq: u64,
+    /// How far off its channel the voice carrier came in, Hz (the mean over the call).
+    pub freq_error: i64,
+    /// Levels while it was heard, dB (null: not measured).
+    #[serde(serialize_with = "tenth_or_null")]
+    pub signal: Option<f64>,
+    #[serde(serialize_with = "tenth_or_null")]
+    pub noise: Option<f64>,
+    #[serde(serialize_with = "tenth_or_null")]
+    pub snr: Option<f64>,
+    /// Voice frames decoded without errors, % (null: no digital voice).
+    #[serde(serialize_with = "tenth_or_null")]
+    pub clean_voice_pct: Option<f64>,
+    pub source_num: i64,
+    pub recorder_num: i64,
+    pub tdma_slot: i64,
+    #[serde(deserialize_with = "flag", serialize_with = "flag_out")]
+    pub phase2_tdma: bool,
+    /// Unix seconds.
+    pub start_time: i64,
+    pub stop_time: i64,
+    /// Unix ms.
+    pub start_time_ms: i64,
+    pub stop_time_ms: i64,
+    #[serde(deserialize_with = "flag", serialize_with = "flag_out")]
+    pub emergency: bool,
+    pub priority: i64,
+    /// Packet mode.
+    #[serde(deserialize_with = "flag", serialize_with = "flag_out")]
+    pub mode: bool,
+    #[serde(deserialize_with = "flag", serialize_with = "flag_out")]
+    pub duplex: bool,
+    #[serde(deserialize_with = "flag", serialize_with = "flag_out")]
+    pub encrypted: bool,
+    /// The cipher its encryption sync named (-1: none heard).
+    pub algid: i64,
+    pub key_id: i64,
+    /// Its encrypted voice was decrypted, at least in part (this recorder's addition).
+    #[serde(deserialize_with = "flag", serialize_with = "flag_out")]
+    pub decrypted: bool,
+    /// Seconds of audio.
+    #[serde(serialize_with = "plain")]
+    pub call_length: f64,
+    pub call_length_ms: i64,
     pub talkgroup: u32,
     pub talkgroup_tag: String,
     pub talkgroup_description: String,
     pub talkgroup_group_tag: String,
     pub talkgroup_group: String,
-    /// Hz.
-    pub freq: u64,
-    /// Unix seconds.
-    pub start_time: i64,
-    pub stop_time: i64,
-    /// Seconds of audio.
-    pub call_length: f64,
-    #[serde(deserialize_with = "flag")]
-    pub emergency: bool,
-    #[serde(deserialize_with = "flag")]
-    pub encrypted: bool,
-    /// Its encrypted voice was decrypted, at least in part (this recorder's
-    /// addition, beside `algid` and `key_id`, which are in `extra`).
-    #[serde(deserialize_with = "flag")]
-    pub decrypted: bool,
-    pub priority: i64,
-    #[serde(deserialize_with = "flag")]
-    pub phase2_tdma: bool,
-    pub tdma_slot: i64,
+    /// DMR: its colour code (-1: none).
+    pub color_code: i64,
+    /// NXDN: its RAN (-1: none).
+    pub ran: i64,
+    /// An analog call's tone (Trunk Recorder's): "ctcss", "dcs", "search" (identified, not matched) or "off".
+    pub tone_mode: String,
+    pub tone_detected: String,
+    #[serde(serialize_with = "thousandth")]
+    pub tone_confidence: f64,
     /// "digital" | "digital tdma" | "analog"
     pub audio_type: String,
-    #[serde(rename = "freqList")]
-    pub freq_list: Vec<FreqEntry>,
-    #[serde(rename = "srcList")]
-    pub src_list: Vec<SrcEntry>,
+    pub short_name: String,
+    /// The site its copy was kept from (this recorder's addition; a system
+    /// of one site: its short name; none for a conventional system's).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub site: String,
     /// Every talkgroup patched with this one during the call, its own
     /// included; absent (empty) when it wasn't patched with another.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub patched_talkgroups: Vec<u32>,
+    #[serde(rename = "freqList")]
+    pub freq_list: Vec<FreqEntry>,
+    /// Voice frame errors over the call, in stretches of its audio.
+    #[serde(rename = "errorList")]
+    pub error_list: Vec<ErrorInterval>,
+    #[serde(rename = "srcList")]
+    pub src_list: Vec<SrcEntry>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
+}
+
+impl Default for CallRecord {
+    fn default() -> Self {
+        CallRecord {
+            call_num: 0,
+            freq: 0,
+            freq_error: 0,
+            signal: None,
+            noise: None,
+            snr: None,
+            clean_voice_pct: None,
+            source_num: 0,
+            recorder_num: 0,
+            tdma_slot: 0,
+            phase2_tdma: false,
+            start_time: 0,
+            stop_time: 0,
+            start_time_ms: 0,
+            stop_time_ms: 0,
+            emergency: false,
+            priority: 0,
+            mode: false,
+            duplex: false,
+            encrypted: false,
+            algid: -1,
+            key_id: -1,
+            decrypted: false,
+            call_length: 0.0,
+            call_length_ms: 0,
+            talkgroup: 0,
+            talkgroup_tag: String::new(),
+            talkgroup_description: String::new(),
+            talkgroup_group_tag: String::new(),
+            talkgroup_group: String::new(),
+            color_code: -1,
+            ran: -1,
+            tone_mode: "off".into(),
+            tone_detected: String::new(),
+            tone_confidence: 0.0,
+            audio_type: "digital".into(),
+            short_name: String::new(),
+            site: String::new(),
+            patched_talkgroups: Vec::new(),
+            freq_list: Vec::new(),
+            error_list: Vec::new(),
+            src_list: Vec::new(),
+            extra: Map::new(),
+        }
+    }
 }
 
 impl CallRecord {
@@ -297,17 +426,23 @@ impl CallRecord {
     pub fn spike_count(&self) -> u64 {
         self.freq_list.iter().map(|f| f.spike_count).sum()
     }
+    /// As the `.json` file has it.
+    pub fn to_json(&self) -> String {
+        serde_json::to_string(self).unwrap_or_default()
+    }
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FreqEntry {
     pub freq: u64,
     /// Unix seconds.
     pub time: i64,
     /// Seconds into the audio.
+    #[serde(serialize_with = "plain")]
     pub pos: f64,
     /// Seconds.
+    #[serde(serialize_with = "plain")]
     pub len: f64,
     pub error_count: u64,
     pub spike_count: u64,
@@ -315,8 +450,26 @@ pub struct FreqEntry {
     pub extra: Map<String, Value>,
 }
 
+/// A stretch of the call's audio, and its voice frames' errors.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ErrorInterval {
+    /// Seconds into the audio.
+    #[serde(serialize_with = "plain")]
+    pub pos: f64,
+    /// Seconds.
+    #[serde(serialize_with = "plain")]
+    pub len: f64,
+    pub frames: u64,
+    /// Bit errors corrected.
+    pub error_count: u64,
+    /// Frames too damaged to use.
+    pub bad_frames: u64,
+    pub max_frame_errors: u64,
+}
+
 /// A radio heard on the call.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SrcEntry {
     /// Radio ID.
@@ -324,21 +477,72 @@ pub struct SrcEntry {
     /// Unix seconds.
     pub time: i64,
     /// Seconds into the audio.
+    #[serde(serialize_with = "plain")]
     pub pos: f64,
-    #[serde(deserialize_with = "flag")]
+    /// What its transmission said of itself (this recorder's: Trunk
+    /// Recorder writes only `emergency` here).
+    #[serde(deserialize_with = "flag", serialize_with = "flag_out")]
     pub emergency: bool,
+    #[serde(deserialize_with = "flag", serialize_with = "flag_out")]
+    pub encrypted: bool,
+    #[serde(deserialize_with = "flag", serialize_with = "flag_out")]
+    pub duplex: bool,
+    /// Packet mode.
+    #[serde(deserialize_with = "flag", serialize_with = "flag_out")]
+    pub mode: bool,
+    /// 1 lowest, 4 the default, 7 highest; 0 not given.
+    pub priority: i64,
     pub signal_system: String,
     /// The radio's name from the unit tags file.
     pub tag: String,
     /// Its talker alias, heard over the air.
     pub tag_ota: String,
     /// Where it said it was (GPS, decimal degrees), when it did.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "millionth")]
     pub lat: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "millionth")]
     pub lon: Option<f64>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
+}
+
+// How the call JSON writes its numbers (as Trunk Recorder's files have
+// them): a flag as 0/1, a level to a tenth, a confidence to a thousandth, a
+// position to a millionth, seconds as Rust prints them ("4", not "4.0").
+
+fn number<S: serde::Serializer>(text: String, s: S) -> Result<S::Ok, S::Error> {
+    use serde::ser::Error;
+    serde_json::value::RawValue::from_string(text).map_err(S::Error::custom)?.serialize(s)
+}
+
+fn finite<S: serde::Serializer>(v: f64, text: impl FnOnce(f64) -> String, s: S) -> Result<S::Ok, S::Error> {
+    if v.is_finite() { number(text(v), s) } else { s.serialize_none() }
+}
+
+fn flag_out<S: serde::Serializer>(v: &bool, s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_u8(*v as u8)
+}
+
+fn plain<S: serde::Serializer>(v: &f64, s: S) -> Result<S::Ok, S::Error> {
+    finite(*v, |v| format!("{v}"), s)
+}
+
+fn thousandth<S: serde::Serializer>(v: &f64, s: S) -> Result<S::Ok, S::Error> {
+    finite(*v, |v| format!("{v:.3}"), s)
+}
+
+fn tenth_or_null<S: serde::Serializer>(v: &Option<f64>, s: S) -> Result<S::Ok, S::Error> {
+    match v {
+        Some(v) => finite(*v, |v| format!("{v:.1}"), s),
+        None => s.serialize_none(),
+    }
+}
+
+fn millionth<S: serde::Serializer>(v: &Option<f64>, s: S) -> Result<S::Ok, S::Error> {
+    match v {
+        Some(v) => finite(*v, |v| format!("{v:.6}"), s),
+        None => s.serialize_none(),
+    }
 }
 
 /// Trunk Recorder writes flags as 0/1 and as booleans; take either.
@@ -358,6 +562,9 @@ pub struct UnitEvent {
     /// [`SystemInfo::index`]: for this run only; `short_name` is the system's identity.
     pub system: u16,
     pub short_name: String,
+    /// The site whose control channel told it (its name).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub site: String,
     /// "registration" | "deregistration" | "affiliation" | "acknowledge" |
     /// "location" | "data_grant" | "answer_request" | "call_alert" |
     /// "emergency_alarm"
@@ -367,6 +574,9 @@ pub struct UnitEvent {
     /// The talkgroup involved (affiliation, location, answer request, call
     /// alert, emergency alarm).
     pub talkgroup: Option<u32>,
+    /// The message said it is an emergency (an emergency alarm, a data
+    /// grant's options).
+    pub emergency: bool,
     /// Unix seconds.
     pub time: f64,
 }
@@ -409,6 +619,9 @@ pub struct Status {
 pub struct SystemStatus {
     pub index: u16,
     pub short_name: String,
+    /// One entry per site: this one's name (a system of one site: its short
+    /// name). `site` below is its number, as the control channel says it.
+    pub site_name: String,
     /// The control channel being decoded (none: searching).
     pub control_channel_hz: Option<u64>,
     /// Control channel messages decoded per second.
@@ -618,6 +831,25 @@ pub mod base64 {
 mod tests {
     use super::*;
 
+    /// A Trunk Recorder file (flags as booleans, a field this crate doesn't
+    /// name) reads; written back, flags are 0/1 as the recorder's own files
+    /// have them, levels to a tenth, seconds as written, and the unknown field kept.
+    #[test]
+    fn a_call_record_round_trips_as_the_recorders_files_are() {
+        let tr = r#"{"freq":851012500,"signal":-31.24,"snr":null,"emergency":true,"encrypted":false,"call_length":4,"talkgroup":101,"short_name":"dcfd",
+            "srcList":[{"src":7,"pos":1.5,"emergency":false,"lat":30.0529}],"freqList":[{"freq":851012500,"len":4.0}],"rec_state_type":"STOPPED"}"#;
+        let r: CallRecord = serde_json::from_str(tr).unwrap();
+        assert!(r.emergency && !r.encrypted && r.signal == Some(-31.24) && r.snr.is_none());
+        let back = r.to_json();
+        assert!(back.contains("\"signal\":-31.2,\"noise\":null,\"snr\":null,"), "{back}");
+        assert!(back.contains("\"emergency\":1,") && back.contains("\"encrypted\":0,"), "{back}");
+        assert!(back.contains("\"call_length\":4,") && back.contains("\"len\":4,"), "{back}");
+        assert!(back.contains("\"pos\":1.5,\"emergency\":0,") && back.contains("\"lat\":30.052900"), "{back}");
+        assert!(back.ends_with("\"rec_state_type\":\"STOPPED\"}"), "{back}");
+        // Read and written again, it's the same.
+        assert_eq!(serde_json::from_str::<CallRecord>(&back).unwrap().to_json(), back);
+    }
+
     #[test]
     fn base64_roundtrip() {
         for n in 0..10 {
@@ -647,8 +879,8 @@ mod tests {
         assert_eq!(c.patched_talkgroups, [101, 65001]);
         assert_eq!((c.error_count(), c.spike_count()), (3, 1));
         assert_eq!(c.src_list[0].tag_ota, "E1");
-        assert_eq!(c.extra["color_code"], -1);
-        // And back, with the unknown field kept.
+        assert_eq!(c.color_code, -1);
+        // And back.
         let v = serde_json::to_value(&c).unwrap();
         assert_eq!(v["color_code"], -1);
         assert_eq!(v["srcList"][0]["src"], 1234);

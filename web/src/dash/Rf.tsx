@@ -11,7 +11,7 @@ import { Card, Choice, Hint, LiveSpark, Meter, Stat, TimeSeries, type Line } fro
 import { compact, mhz, num, signed } from "../fmt.ts";
 import type { ChannelSnapshot, Source, SourceStatus } from "../protocol.ts";
 import { Waterfall } from "../Waterfall.tsx";
-import { K, recentAvg, running, sourceGuard, sourceHealth, useHistory, val } from "./data.ts";
+import { K, recentAvg, running, runningSites, sourceGuard, sourceHealth, useHistory, val } from "./data.ts";
 import { ccMarks } from "./Systems.tsx";
 import { systemChoices } from "./Calls.tsx";
 import { quality } from "./Decode.tsx";
@@ -185,7 +185,7 @@ function BandRow({ s, label, sources, ccs, conv, calls }: {
  */
 function BandOverview({ s }: { s: AppState }) {
   if (!s.sources.length) return null;
-  const ccs = s.status?.systems.flatMap((y) => (y.controlChannelHz ? [{ hz: y.controlChannelHz, name: y.shortName }] : [])) ?? [];
+  const ccs = s.status?.systems.flatMap((y) => y.sites.flatMap((x) => (x.controlChannelHz ? [{ hz: x.controlChannelHz, name: y.shortName }] : []))) ?? [];
   const conv = (s.config?.conventional ?? []).flatMap((c) => c.channels.filter((ch) => ch.enabled).map((ch) => ({ hz: ch.freqHz, name: c.shortName, label: ch.name })));
   // The bands in use, low to high; a source straddling two goes in the one its center's in.
   const lows = new Map<string, number>();
@@ -315,7 +315,7 @@ function SourceWaterfall({ s, i, title }: { s: AppState; i: number; title?: stri
     >
       {on &&
         (s.spectra[i] ? (
-          <Waterfall radio={s.spectra[i]} label={src.label} ccs={ccMarks(s.config, s.status?.systems ?? [])} calls={s.calls} multi={systemChoices(s).length > 1} colorOf={color} />
+          <Waterfall radio={s.spectra[i]} label={src.label} ccs={ccMarks(s.config, runningSites(s.status?.systems ?? []))} calls={s.calls} multi={systemChoices(s).length > 1} colorOf={color} />
         ) : (
           <div className="chart-empty">Waiting for the spectrum…</div>
         ))}

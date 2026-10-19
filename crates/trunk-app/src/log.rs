@@ -9,31 +9,24 @@
 //! `talkgroupDisplayFormat` (id / id_tag / tag_id), `statusAsString` and
 //! colour (ANSI, as Trunk Recorder's console has it).
 
-use serde::{Deserialize, Serialize};
 
-/// Trunk Recorder's (boost's) levels.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum Level {
-    Trace,
-    Debug,
-    #[default]
-    Info,
-    Warning,
-    Error,
-    Fatal,
+choice! {
+    /// Trunk Recorder's (boost's) levels.
+    #[derive(PartialOrd, Ord, Hash)]
+    pub enum Level {
+        Trace = "trace",
+        Debug = "debug",
+        #[default]
+        Info = "info",
+        Warning = "warning" | "warn",
+        Error = "error",
+        Fatal = "fatal",
+    }
 }
 
 impl Level {
     pub fn as_str(self) -> &'static str {
-        match self {
-            Level::Trace => "trace",
-            Level::Debug => "debug",
-            Level::Info => "info",
-            Level::Warning => "warning",
-            Level::Error => "error",
-            Level::Fatal => "fatal",
-        }
+        self.name()
     }
     pub fn parse(s: &str) -> Option<Level> {
         Some(match s.trim().to_ascii_lowercase().as_str() {
@@ -130,28 +123,28 @@ impl Record {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum FrequencyFormat {
-    /// 8.579875e+08
-    Exp,
-    /// 857.987500 MHz
-    #[default]
-    Mhz,
-    /// 857987500 Hz
-    Hz,
+choice! {
+    pub enum FrequencyFormat {
+        /// 8.579875e+08
+        Exp = "exp",
+        /// 857.987500 MHz
+        #[default]
+        Mhz = "mhz",
+        /// 857987500 Hz
+        Hz = "hz",
+    }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TalkgroupFormat {
-    /// `      3747`
-    #[default]
-    Id,
-    /// `      3747 (DCFD Disp)`
-    IdTag,
-    /// `(DCFD Disp) 3747`
-    TagId,
+choice! {
+    pub enum TalkgroupFormat {
+        /// `      3747`
+        #[default]
+        Id = "id",
+        /// `      3747 (DCFD Disp)`
+        IdTag = "id_tag",
+        /// `(DCFD Disp) 3747`
+        TagId = "tag_id",
+    }
 }
 
 /// How lines read (Trunk Recorder's console options).

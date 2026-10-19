@@ -60,26 +60,42 @@ pub struct Plan {
     pub write_wav: bool,
     pub write_json: bool,
     pub write_frames: bool,
+    /// An .m4a is encoded: to keep (compressWav), or for a plugin that wants
+    /// one. Should that fail, the WAV is written instead, when it wasn't.
     pub make_m4a: bool,
     /// What isn't kept may go to the RAM spool.
     pub spool: bool,
 }
 
-/// A call's [`Plan`]: `takers` plugins take finished calls, one of which
-/// `needs_wav` (the WAV itself, or no `encoder` to make it an M4A).
-pub fn plan(rules: FileRules, takers: usize, needs_wav: bool, encoder: bool) -> Plan {
-    let plugins = takers > 0;
+/// What the plugins take of a finished call ([`super::PluginHost::plugin_audio`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PluginAudio {
+    /// The plugins it goes to.
+    pub takers: usize,
+    /// One takes the WAV file.
+    pub wav: bool,
+    /// One wants an .m4a.
+    pub m4a: bool,
+}
+
+/// A call's [`Plan`], the one place that says which of its files are
+/// written: by its system's `rules`, what its `plugins` take, and whether
+/// there's an `encoder` (for an .m4a). The finish thread writes them, and
+/// the plugins are handed them as they are.
+pub fn plan(rules: FileRules, plugins: PluginAudio, encoder: bool) -> Plan {
+    let to_plugins = plugins.takers > 0;
     let (keep_audio, keep_json) = (rules.audio_archive, rules.call_log);
     let keep_m4a = keep_audio && rules.compress_wav;
     Plan {
         keep_audio,
         keep_json,
         keep_m4a,
-        write_wav: keep_audio || (plugins && needs_wav),
-        write_json: keep_json || plugins,
-        write_frames: keep_audio || plugins,
-        make_m4a: rules.compress_wav && encoder && (keep_audio || plugins),
-        spool: plugins && !(keep_audio && keep_json && keep_m4a),
+        // (A plugin that wants an .m4a takes the WAV when none can be made.)
+        write_wav: keep_audio || (to_plugins && (plugins.wav || (plugins.m4a && !encoder))),
+        write_json: keep_json || to_plugins,
+        write_frames: keep_audio || to_plugins,
+        make_m4a: encoder && ((rules.compress_wav && (keep_audio || to_plugins)) || (to_plugins && plugins.m4a)),
+        spool: to_plugins && !(keep_audio && keep_json && keep_m4a),
     }
 }
 
@@ -104,6 +120,8 @@ struct Pending {
     base: PathBuf,
     /// The same in the spool, where the ones only for the plugins are.
     spooled: Option<PathBuf>,
+    /// Whether a WAV was written (None: look, for a ticket from before this was kept).
+    wav: Option<bool>,
     since: Instant,
 }
 
@@ -116,6 +134,9 @@ pub struct Ticket {
     pub base: PathBuf,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub spooled: Option<PathBuf>,
+    /// A WAV was written (absent in tickets from before this was kept: looked for).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wav: Option<bool>,
 }
 
 /// Told what a call kept once its plugins are done: (its path, audio kept, JSON kept).
@@ -139,10 +160,11 @@ impl Archive {
         }
     }
 
-    /// Call `rel` (at `base`, and `spooled`) goes to `plugins` plugins, each
-    /// of which will report on it. With none, it's settled now.
-    pub fn expect(&self, rel: &str, plugins: usize, rules: FileRules, base: &Path, spooled: Option<&Path>) {
-        let x = Pending { left: plugins, held: 0, failed: false, rules, base: base.to_path_buf(), spooled: spooled.map(Path::to_path_buf), since: Instant::now() };
+    /// Call `rel` (at `base`, and `spooled`; `wav`: whether a WAV was
+    /// written) goes to `plugins` plugins, each of which will report on it.
+    /// With none, it's settled now.
+    pub fn expect(&self, rel: &str, plugins: usize, rules: FileRules, base: &Path, spooled: Option<&Path>, wav: Option<bool>) {
+        let x = Pending { left: plugins, held: 0, failed: false, rules, base: base.to_path_buf(), spooled: spooled.map(Path::to_path_buf), wav, since: Instant::now() };
         let mut p = self.pending.lock().unwrap();
         // Calls a plugin never reported on: failed.
         let lost: Vec<(String, Pending)> = p.extract_if(|_, x| x.held == 0 && x.since.elapsed() >= GIVE_UP).collect();
@@ -168,7 +190,7 @@ impl Archive {
 
     /// What's to be done with call `rel`'s files (None: nothing waits on its plugins).
     pub fn ticket(&self, rel: &str) -> Option<Ticket> {
-        self.pending.lock().unwrap().get(rel).map(|x| Ticket { rules: x.rules, base: x.base.clone(), spooled: x.spooled.clone() })
+        self.pending.lock().unwrap().get(rel).map(|x| Ticket { rules: x.rules, base: x.base.clone(), spooled: x.spooled.clone(), wav: x.wav })
     }
 
     /// Call `rel` is held back from one of its plugins.
@@ -189,7 +211,7 @@ impl Archive {
     /// After a restart: call `rel` is still held back from `plugins` plugins.
     /// (Those that had it already are forgotten with the run before.)
     pub fn restore(&self, rel: &str, plugins: usize, t: Ticket) {
-        let x = Pending { left: plugins, held: plugins, failed: false, rules: t.rules, base: t.base, spooled: t.spooled, since: Instant::now() };
+        let x = Pending { left: plugins, held: plugins, failed: false, rules: t.rules, base: t.base, spooled: t.spooled, wav: t.wav, since: Instant::now() };
         self.pending.lock().unwrap().insert(rel.to_string(), x);
     }
 
@@ -215,7 +237,7 @@ fn settle(x: &Pending) -> (bool, bool) {
     let audio = r.audio_archive || keep_all;
     let at = |base: &Path, ext: &str| PathBuf::from(format!("{}.{ext}", base.display()));
     let places = |ext: &str| [Some(at(&x.base, ext)), x.spooled.as_ref().map(|s| at(s, ext))].into_iter().flatten().collect::<Vec<_>>();
-    let wav = places("wav").iter().any(|p| p.exists());
+    let wav = x.wav.unwrap_or_else(|| places("wav").iter().any(|p| p.exists()));
     // An .m4a made only for the plugins goes, unless it's the only audio.
     let json = r.call_log || keep_all;
     let keep = [("wav", audio), ("sdr", audio), ("frames.jsonl", audio), ("m4a", audio && (r.compress_wav || !wav)), ("json", json)];
@@ -296,7 +318,7 @@ mod tests {
                 let told = std::sync::Arc::new(Mutex::new(None));
                 let t = told.clone();
                 a.on_settle(Box::new(move |_, audio, json| *t.lock().unwrap() = Some((audio, json))));
-                a.expect(&rel, answers.len(), r, &base, None);
+                a.expect(&rel, answers.len(), r, &base, None, None);
                 for o in answers.iter().flatten() {
                     a.result(&rel, *o);
                 }
@@ -305,7 +327,7 @@ mod tests {
                     // A plugin that never answers: an hour on, the next call settles it.
                     // (With everything kept, nothing waits on it.)
                     a.pending.lock().unwrap().get_mut(&rel).unwrap().since = Instant::now() - GIVE_UP;
-                    a.expect("next", 0, rules(true, true, true, true), &dir.join("next"), None);
+                    a.expect("next", 0, rules(true, true, true, true), &dir.join("next"), None, None);
                 }
                 let (keep_audio, keep_json) = kept(r, failed);
                 let mut want = Vec::new();
@@ -341,7 +363,7 @@ mod tests {
                 let base = dir.join(format!("{audio}{json}{on_failure}{o:?}"));
                 write(&base, &["wav", "json"]);
                 let a = Archive::default();
-                a.expect("x", 1, r, &base, None);
+                a.expect("x", 1, r, &base, None, None);
                 a.result("x", o);
                 got.push(left(&base));
             }
@@ -357,7 +379,7 @@ mod tests {
         let base = dir.join("a");
         write(&base, &["wav", "json"]);
         let a = Archive::default();
-        a.expect("a", 3, rules(false, false, false, true), &base, None);
+        a.expect("a", 3, rules(false, false, false, true), &base, None, None);
         a.result("a", Outcome::Ok);
         a.result("a", Outcome::Skipped);
         assert_eq!(left(&base), ["wav", "json"]);
@@ -378,12 +400,12 @@ mod tests {
             let base = dir.join(format!("{audio}{json}{on_failure}"));
             write(&base, &["wav", "json"]);
             let a = Archive::default();
-            a.expect("x", 0, r, &base, None);
+            a.expect("x", 0, r, &base, None, None);
             let want: Vec<&str> = [("wav", audio), ("json", json)].into_iter().filter(|x| x.1).map(|x| x.0).collect();
             assert_eq!(left(&base), want, "audio {audio} json {json} keep-on-failure {on_failure}");
             assert!(a.pending.lock().unwrap().is_empty());
-            for (needs_wav, encoder) in [(false, false), (true, true), (false, true)] {
-                let p = plan(r, 0, needs_wav, encoder);
+            for (wav, m4a, encoder) in [(false, false, false), (true, true, true), (false, true, true)] {
+                let p = plan(r, PluginAudio { takers: 0, wav, m4a }, encoder);
                 assert_eq!((p.write_wav, p.write_json, p.write_frames, p.make_m4a, p.spool), (audio, json, audio, false, false));
             }
         }
@@ -399,15 +421,16 @@ mod tests {
         for (audio, json, m4a, on_failure) in BOOLS.iter().flat_map(|&a| BOOLS.iter().flat_map(move |&j| BOOLS.iter().flat_map(move |&m| BOOLS.map(|f| (a, j, m, f))))) {
             let r = rules(audio, json, m4a, on_failure);
             for takers in [0, 1, 2] {
-                for (needs_wav, encoder) in [(false, false), (false, true), (true, false), (true, true)] {
-                    let p = plan(r, takers, needs_wav, encoder);
+                for (takes_wav, wants_m4a, encoder) in BOOLS.iter().flat_map(|&w| BOOLS.iter().flat_map(move |&m| BOOLS.map(|e| (w, m, e)))) {
+                    let p = plan(r, PluginAudio { takers, wav: takes_wav, m4a: wants_m4a }, encoder);
                     let plugins = takers > 0;
-                    let case = format!("audio {audio} json {json} m4a {m4a} keep-on-failure {on_failure}, {takers} plugins, needs WAV {needs_wav}, encoder {encoder}: {p:?}");
+                    let case = format!("audio {audio} json {json} m4a {m4a} keep-on-failure {on_failure}, {takers} plugins taking WAV {takes_wav} M4A {wants_m4a}, encoder {encoder}: {p:?}");
                     assert_eq!((p.keep_audio, p.keep_json, p.keep_m4a), (audio, json, audio && m4a), "{case}");
-                    assert_eq!(p.write_wav, audio || (plugins && needs_wav), "{case}");
+                    // The WAV: kept, or a plugin's (one that wants an .m4a, too, when none can be made).
+                    assert_eq!(p.write_wav, audio || (plugins && (takes_wav || (wants_m4a && !encoder))), "{case}");
                     assert_eq!(p.write_json, json || plugins, "{case}");
                     assert_eq!(p.write_frames, audio || plugins, "{case}");
-                    assert_eq!(p.make_m4a, m4a && encoder && (audio || plugins), "{case}");
+                    assert_eq!(p.make_m4a, encoder && ((m4a && (audio || plugins)) || (plugins && wants_m4a)), "{case}");
                     assert_eq!(p.spool, plugins && !(audio && json && m4a), "{case}");
                 }
             }
@@ -430,35 +453,35 @@ mod tests {
         };
         // Done: nothing is left anywhere.
         let (b, s) = call("a", &[], &["json", "m4a"]);
-        a.expect("a", 1, plugins_only, &b, Some(&s));
+        a.expect("a", 1, plugins_only, &b, Some(&s), None);
         a.result("a", Outcome::Ok);
         assert!(left(&b).is_empty() && left(&s).is_empty());
         // Failed: the M4A (the only audio) and the JSON move to the recordings folder.
         let (b, s) = call("b", &[], &["json", "m4a"]);
-        a.expect("b", 1, plugins_only, &b, Some(&s));
+        a.expect("b", 1, plugins_only, &b, Some(&s), None);
         a.result("b", Outcome::Failed);
         assert_eq!((left(&b), left(&s)), (vec!["m4a", "json"], vec![]));
         // Failed, but failures change nothing: gone.
         let (b, s) = call("c", &[], &["json", "m4a"]);
-        a.expect("c", 1, rules(false, false, false, false), &b, Some(&s));
+        a.expect("c", 1, rules(false, false, false, false), &b, Some(&s), None);
         a.result("c", Outcome::Failed);
         assert!(left(&b).is_empty() && left(&s).is_empty());
         // The JSON kept, written to the recordings folder; the spooled M4A goes.
         let (b, s) = call("d", &["json"], &["m4a"]);
-        a.expect("d", 1, rules(false, true, false, true), &b, Some(&s));
+        a.expect("d", 1, rules(false, true, false, true), &b, Some(&s), None);
         a.result("d", Outcome::Skipped);
         assert_eq!((left(&b), left(&s)), (vec!["json"], vec![]));
         // Never answered: after an hour it has failed, so it moves to the recordings folder…
         let (b, s) = call("e", &[], &["json", "m4a"]);
-        a.expect("e", 1, plugins_only, &b, Some(&s));
+        a.expect("e", 1, plugins_only, &b, Some(&s), None);
         a.pending.lock().unwrap().get_mut("e").unwrap().since = Instant::now() - GIVE_UP;
-        a.expect("next", 0, plugins_only, &capture.join("sys/next"), None);
+        a.expect("next", 0, plugins_only, &capture.join("sys/next"), None, None);
         assert_eq!((left(&b), left(&s)), (vec!["m4a", "json"], vec![]));
         // …or, with failures changing nothing, goes.
         let (b, s) = call("f", &[], &["json", "m4a"]);
-        a.expect("f", 1, rules(false, false, false, false), &b, Some(&s));
+        a.expect("f", 1, rules(false, false, false, false), &b, Some(&s), None);
         a.pending.lock().unwrap().get_mut("f").unwrap().since = Instant::now() - GIVE_UP;
-        a.expect("next", 0, plugins_only, &capture.join("sys/next"), None);
+        a.expect("next", 0, plugins_only, &capture.join("sys/next"), None, None);
         assert!(left(&b).is_empty() && left(&s).is_empty() && a.pending.lock().unwrap().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }

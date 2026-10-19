@@ -1,0 +1,35 @@
+[package]
+name = "rtlsdr-nusb"
+version = "0.3.0"
+# Trunk Recorder Pro's fork: the receive buffers' size and number are
+# settable (Trunk Recorder's buflen). See README.md.
+edition = "2024"
+rust-version = "1.88"
+description = "Rust-native RTL-SDR driver built on nusb."
+license = "Apache-2.0"
+repository = "https://github.com/bastibl/rtlsdr-nusb"
+documentation = "https://docs.rs/rtlsdr-nusb"
+keywords = ["rtlsdr", "sdr", "usb", "radio", "nusb"]
+categories = ["hardware-support", "api-bindings", "asynchronous"]
+
+[features]
+default = []
+tokio = ["nusb/tokio"]
+smol = ["nusb/smol"]
+
+[dependencies]
+nusb = "0.2.7"
+num-complex = "0.4"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+futures-lite = "2"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen-futures = "0.4"
+
+[dev-dependencies]
+futures-lite = "2"
+
+[package.metadata.docs.rs]
+targets = ["x86_64-unknown-linux-gnu"]
+features = ["smol"]

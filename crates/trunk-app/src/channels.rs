@@ -3,17 +3,18 @@
 //! rules are in web/src/config.ts — keep them together).
 //!
 //! ```text
-//! TG Number,Frequency,Tone,Mode,Alpha Tag,Description,Tag,Category,Squelch dB,Enable
-//! 1001,154.4300,,fm,County Fire Dispatch,,Fire Dispatch,Fire,,true
-//! ,154.3250,D223N,fm,County A Fire,,,Fire,,true
-//! ,154.3250,151.4,fm,County B Fire,,,Fire,,true
-//! ,460.1250,,p25,PD Tac 2,,Law Tac,Police,12,true
+//! TG Number,Frequency,Tone,Mode,Alpha Tag,Description,Tag,Category,Squelch dB,Bandwidth kHz,Enable
+//! 1001,154.4300,,fm,County Fire Dispatch,,Fire Dispatch,Fire,,,true
+//! ,154.3250,D223N,fm,County A Fire,,,Fire,,,true
+//! ,154.3250,151.4,fm,County B Fire,,,Fire,,,true
+//! ,460.1250,,p25,PD Tac 2,,Law Tac,Police,12,,true
+//! ,119.1000,,am,DCA Tower,,Aircraft,Airport,,,true
 //! ```
 //!
 //! - A header row names the columns, in any order, any case. Trunk Recorder's
-//!   channel file reads as is; `Mode` and `Squelch dB` are additions.
+//!   channel file reads as is; `Mode`, `Squelch dB` and `Bandwidth kHz` are additions.
 //! - `Frequency`: MHz when it has a decimal point (and is under 10 000), else Hz.
-//! - `Mode`: `fm` / `analog` / `A`, `p25` / `digital` / `D`, `dmr`,
+//! - `Mode`: `fm` / `analog` / `A`, `am`, `p25` / `digital` / `D`, `dmr`,
 //!   `nxdn48` (or `nxdn`) / `nxdn96`; empty = fm.
 //! - `TG Number`: empty = the frequency in kHz (further rows on the same
 //!   frequency: that and a digit, 1543251, 1543252 …).
@@ -26,6 +27,7 @@
 //!   colour code dmr and a RAN nxdn48.
 //! - `Squelch dB`: dB above the noise floor; empty = the section's. Trunk
 //!   Recorder's `Squelch` column is an absolute level and is not read.
+//! - `Bandwidth kHz`: an analog channel's filter width, 4–20; empty = the mode's.
 //! - `Enable`: `false` / `no` / `0` switches a channel off; empty = on.
 //! - Commas, semicolons or tabs (from the header row); a UTF-8 byte-order
 //!   mark and decimal commas (with semicolons) are accepted, as Excel
@@ -35,7 +37,7 @@ use crate::config::{Channel, ChannelMode};
 use trunk_core::trunk::Access;
 
 /// The columns [`write`] produces.
-pub const HEADER: &str = "TG Number,Frequency,Tone,Mode,Alpha Tag,Description,Tag,Category,Squelch dB,Enable";
+pub const HEADER: &str = "TG Number,Frequency,Tone,Mode,Alpha Tag,Description,Tag,Category,Squelch dB,Bandwidth kHz,Enable";
 
 /// What a CSV held: its channels and anything worth telling the user.
 #[derive(Debug, Default)]
@@ -107,12 +109,13 @@ pub fn parse(text: &str) -> Result<Parsed, String> {
     let c_group = col(&["category", "group"]);
     let c_mode = col(&["mode"]);
     let c_sq = col(&["squelch db", "squelchdb"]);
+    let c_bw = col(&["bandwidth khz", "bandwidthkhz", "bandwidth"]);
     let c_tr_sq = col(&["squelch"]);
     let c_enable = col(&["enable", "enabled"]);
     let c_tone = col(&["tone"]);
 
     let mut out = Parsed::default();
-    let (mut bad_freq, mut bad_mode, mut bad_tg, mut bad_sq) = (vec![], vec![], vec![], vec![]);
+    let (mut bad_freq, mut bad_mode, mut bad_tg, mut bad_sq, mut bad_bw) = (vec![], vec![], vec![], vec![], vec![]);
     let (mut bad_tone, mut search) = (vec![], false);
     for &(row, line) in &lines[1..] {
         let f = split(line, delim);
@@ -127,6 +130,7 @@ pub fn parse(text: &str) -> Result<Parsed, String> {
             "" if raw.to_uppercase().starts_with("CC") => ChannelMode::Dmr,
             "" if raw.to_uppercase().starts_with("RAN") => ChannelMode::Nxdn48,
             "" | "fm" | "nfm" | "analog" | "a" => ChannelMode::Fm,
+            "am" => ChannelMode::Am,
             "p25" | "digital" | "d" => ChannelMode::P25,
             "dmr" => ChannelMode::Dmr,
             "nxdn" | "nxdn48" => ChannelMode::Nxdn48,
@@ -156,6 +160,17 @@ pub fn parse(text: &str) -> Result<Parsed, String> {
                 }
             },
         };
+        let (lo, hi) = crate::config::BANDWIDTH_KHZ;
+        let bandwidth_khz = match at(c_bw) {
+            "" => None,
+            s => match (if decimal_comma { s.replace(',', ".") } else { s.to_string() }).parse::<f64>() {
+                Ok(v) if (lo..=hi).contains(&v) && matches!(mode, ChannelMode::Fm | ChannelMode::Am) => Some(v),
+                _ => {
+                    bad_bw.push(row);
+                    None
+                }
+            },
+        };
         let enabled = !matches!(at(c_enable).to_lowercase().as_str(), "false" | "no" | "0" | "off");
         search |= raw.eq_ignore_ascii_case("s");
         let conv = mode.conv();
@@ -175,6 +190,7 @@ pub fn parse(text: &str) -> Result<Parsed, String> {
             tag: at(c_tag).to_string(),
             group: at(c_group).to_string(),
             squelch_db,
+            bandwidth_khz,
             tone,
             enabled,
         });
@@ -183,13 +199,16 @@ pub fn parse(text: &str) -> Result<Parsed, String> {
         out.notes.push(format!("Skipped row(s) {} — no usable frequency.", rows_list(&bad_freq)));
     }
     if !bad_mode.is_empty() {
-        out.notes.push(format!("Row(s) {}: unknown Mode (use fm, p25, dmr, nxdn48 or nxdn96) — read as fm.", rows_list(&bad_mode)));
+        out.notes.push(format!("Row(s) {}: unknown Mode (use fm, am, p25, dmr, nxdn48 or nxdn96) — read as fm.", rows_list(&bad_mode)));
     }
     if !bad_tg.is_empty() {
         out.notes.push(format!("Row(s) {}: TG Number isn't a positive whole number — using the default.", rows_list(&bad_tg)));
     }
     if !bad_sq.is_empty() {
         out.notes.push(format!("Row(s) {}: Squelch dB must be 3–40 (dB above the noise) — using the default.", rows_list(&bad_sq)));
+    }
+    if !bad_bw.is_empty() {
+        out.notes.push(format!("Row(s) {}: Bandwidth kHz must be 4–20, on an fm or am channel — using the default.", rows_list(&bad_bw)));
     }
     if !bad_tone.is_empty() {
         out.notes.push(format!("Tone not read (the row records any): {}.", bad_tone.join("; ")));
@@ -230,6 +249,7 @@ pub fn write(channels: &[Channel]) -> String {
             cell(&c.tone),
             match c.mode {
                 ChannelMode::Fm => "fm".into(),
+                ChannelMode::Am => "am".into(),
                 ChannelMode::P25 => "p25".into(),
                 ChannelMode::Dmr => "dmr".into(),
                 ChannelMode::Nxdn48 => "nxdn48".into(),
@@ -240,6 +260,7 @@ pub fn write(channels: &[Channel]) -> String {
             cell(&c.tag),
             cell(&c.group),
             c.squelch_db.map_or(String::new(), |v| v.to_string()),
+            c.bandwidth_khz.map_or(String::new(), |v| v.to_string()),
             c.enabled.to_string(),
         ];
         out.push_str(&row.join(","));
@@ -293,6 +314,7 @@ mod tests {
                 tag: String::new(),
                 group: "Fire".into(),
                 squelch_db: Some(10.5),
+                bandwidth_khz: None,
                 tone: "D023N".into(),
                 enabled: true,
             },
@@ -305,6 +327,7 @@ mod tests {
                 tag: String::new(),
                 group: String::new(),
                 squelch_db: None,
+                bandwidth_khz: None,
                 tone: String::new(),
                 enabled: false,
             },
@@ -321,5 +344,15 @@ mod tests {
         assert_eq!(eu.channels[0].mode, ChannelMode::P25);
         assert_eq!(eu.channels[0].squelch_db, Some(12.5));
         assert!(parse("Name,Mode\nx,fm\n").unwrap_err().contains("No Frequency column"));
+    }
+
+    #[test]
+    fn am_and_bandwidth_round_trip() {
+        let p = parse("Frequency,Mode,Alpha Tag,Bandwidth kHz\n119.1,am,Tower,\n128.1,AM,Approach,6\n154.43,fm,Fire,16\n460.125,p25,PD,16\n").unwrap();
+        let got: Vec<_> = p.channels.iter().map(|c| (c.mode, c.bandwidth_khz)).collect();
+        assert_eq!(got, [(ChannelMode::Am, None), (ChannelMode::Am, Some(6.0)), (ChannelMode::Fm, Some(16.0)), (ChannelMode::P25, None)]);
+        assert!(p.notes.iter().any(|n| n.contains("Row(s) 5: Bandwidth")), "{:?}", p.notes);
+        let back = parse(&write(&p.channels)).unwrap();
+        assert_eq!(back.channels, p.channels);
     }
 }

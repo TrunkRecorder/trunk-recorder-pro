@@ -17,6 +17,13 @@ pub const TSDU: u8 = 0x7;
 pub const LDU2: u8 = 0xA;
 pub const PDU: u8 = 0xC;
 pub const TDULC: u8 = 0xF;
+/// The DUIDs in use (BAAC-C §2.11); the rest are reserved, never sent.
+pub const DUIDS: [u8; 7] = [HDU, TDU, LDU1, TSDU, LDU2, PDU, TDULC];
+
+/// A DUID's parity bit, the NID's 64th (BAAA-A Table 8-4): set for the LDUs.
+fn nid_parity(duid: u8) -> u64 {
+    (duid == LDU1 || duid == LDU2) as u64
+}
 
 pub fn duid_name(d: u8) -> &'static str {
     match d {
@@ -207,11 +214,13 @@ pub fn encode_nid(nac: u16, duid: u8) -> u64 {
             word |= 1 << i;
         }
     }
-    (word << 1) | (duid == LDU1 || duid == LDU2) as u64
+    (word << 1) | nid_parity(duid)
 }
 
-/// Decode a NID word; `None` if BCH fails (> 4 errors, as op25) or the
-/// DUID/parity check fails.
+/// Decode a NID word; `None` past 4 errors or for a reserved DUID. BCH(63,16)
+/// corrects up to 11 (BAAA-A §8.5), but a random word would then decode one
+/// time in 500: past 4 (one in 10⁸), only [`Framer`]'s recovery against the
+/// known NAC takes it.
 pub fn decode_nid(acc: u64) -> Option<Nid> {
     let parity = (acc & 1) as u8;
     let mut a = acc >> 1;
@@ -234,13 +243,13 @@ pub fn decode_nid(acc: u64) -> Option<Nid> {
     }
     let nac = ((word >> 52) & 0xfff) as u16;
     let duid = ((word >> 48) & 0xf) as u8;
-    if matches!(duid, 0 | 3 | 7 | 12 | 15) && parity != 0 {
+    if !DUIDS.contains(&duid) {
         return None;
     }
-    if matches!(duid, 5 | 10) && parity == 0 {
-        return None;
-    }
-    Some(Nid { nac, duid, errors: ec as u8 })
+    // The parity bit makes the code (64,16,24): a wrong one is one more
+    // error, not a lost frame.
+    let errors = ec as u32 + (parity as u64 != nid_parity(duid)) as u32;
+    (errors <= 4).then_some(Nid { nac, duid, errors: errors as u8 })
 }
 
 #[derive(Clone, Debug, Default)]
@@ -323,6 +332,9 @@ pub struct Framer {
     expecting: bool,
     expect_inv: bool,
     last_nac: Option<u16>,
+    /// The site's NAC, when known (a voice channel's, from its control
+    /// channel): a NID too damaged to decode is matched against it.
+    site_nac: Option<u16>,
     times: [f64; 24],
     active: bool,
     inv: bool,
@@ -333,6 +345,12 @@ pub struct Framer {
 }
 
 impl Framer {
+    /// The site's NAC: NIDs too damaged to decode are recovered against it
+    /// from the first frame (not only once one has decoded).
+    pub fn expect_nac(&mut self, nac: Option<u16>) {
+        self.site_nac = nac;
+    }
+
     pub fn new(opt: FramerOptions) -> Self {
         Framer {
             opt,
@@ -343,6 +361,7 @@ impl Framer {
             expecting: false,
             expect_inv: false,
             last_nac: None,
+            site_nac: None,
             times: [0.0; 24],
             active: false,
             inv: false,
@@ -459,10 +478,10 @@ impl Framer {
     }
 
     fn recover_nid(&mut self, acc: u64) -> Option<Nid> {
-        let nac = self.last_nac.filter(|_| self.opt.nid_recover)?;
+        let nac = self.site_nac.or(self.last_nac).filter(|_| self.opt.nid_recover)?;
         let soft = self.f.soft.len() >= 112;
         let mut best: Option<(f32, u8, u32)> = None;
-        for d in [HDU, TDU, LDU1, TSDU, LDU2, PDU, TDULC] {
+        for d in DUIDS {
             let diff = acc ^ encode_nid(nac, d);
             let hard = diff.count_ones();
             let cost = if soft {

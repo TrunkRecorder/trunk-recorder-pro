@@ -8,7 +8,7 @@
 //! the one vocabulary the call manager speaks.
 //!
 //! ```text
-//! P25:      receiver bank → framer → TSBKs (and MBTs) → TsbkParser → Message
+//! P25:      receiver bank → framer → TSBKs (and MBTs) → Osp → P25Parser → Message
 //! SmartNet: 2FSK → OSW framer → Parser → Message
 //! DMR:      every carrier of the site: 4FSK → bursts → CSBK / link control → Message
 //! NXDN:     every carrier of the site: 4FSK → frames → CAC / VCALL / SCCH → Message
@@ -18,9 +18,9 @@ use std::collections::BTreeMap;
 
 use num_complex::Complex32;
 
-use super::engine::{NoteLevel, SmartnetConfig, SystemConfig};
+use super::engine::{NoteLevel, SmartnetConfig, SiteConfig};
 use super::identity::{IdField, Identity};
-use super::message::{Message, MessageType, TsbkParser};
+use super::message::{Message, MessageType, P25Parser};
 use super::patches;
 use super::voice::VoiceParams;
 use crate::dmr;
@@ -104,7 +104,7 @@ pub trait ControlChannel: Send {
         false
     }
     /// What it can say about its site: the fields the site lock
-    /// (`SystemConfig::expect`) compares. None: no site lock.
+    /// (`SiteConfig::expect`) compares. None: no site lock.
     fn identity_fields(&self) -> &'static [IdField] {
         &[]
     }
@@ -113,8 +113,6 @@ pub trait ControlChannel: Send {
     fn voice_params(&self, _identity: &Identity) -> VoiceParams {
         VoiceParams::default()
     }
-    /// The multi-site group the air puts this site in, if it says.
-    fn site_group(&self, identity: &Identity) -> Option<String>;
     /// How it is modulated, for the dashboard ("" while unknown).
     fn modulation(&self) -> &'static str;
     /// Watching several carriers: the one carrying the control channel now.
@@ -140,15 +138,19 @@ pub trait ControlChannel: Send {
     /// Its receivers' measurements for the dashboard's history (framing,
     /// eye opening, deviation…; see [`crate::metrics`]). Default: none.
     fn report(&self, _sink: &mut dyn Sink) {}
+    /// How well its receiver hears the control channel (the dashboard's).
+    fn quality(&self) -> super::voice::ChannelQuality {
+        Default::default()
+    }
 }
 
 /// The control channel for system `cfg`; `rate` is a channel's sample rate.
-pub fn build(cfg: &SystemConfig, rate: f64) -> Box<dyn ControlChannel> {
+pub fn build(cfg: &SiteConfig, rate: f64) -> Box<dyn ControlChannel> {
     match &cfg.protocol {
         Protocol::P25 => Box::new(P25 {
             bank_cfg: cfg.bank,
             bank: Bank::new(rate, cfg.bank),
-            parser: TsbkParser::default(),
+            parser: P25Parser::default(),
             identity: Identity::default(),
             nac_votes: BTreeMap::new(),
             good: 0,
@@ -176,7 +178,7 @@ pub fn build(cfg: &SystemConfig, rate: f64) -> Box<dyn ControlChannel> {
 struct P25 {
     bank_cfg: BankConfig,
     bank: Bank,
-    parser: TsbkParser,
+    parser: P25Parser,
     identity: Identity,
     /// (Ordered: a tie goes to the higher NAC, every run.)
     nac_votes: BTreeMap<u16, u32>,
@@ -199,15 +201,12 @@ impl P25 {
             *self.nac_votes.entry(f.nid.nac).or_default() += 1;
             self.identity.set_opt(IdField::Nac, self.nac_votes.iter().max_by_key(|&(_, &c)| c).map(|(&n, _)| n as u32));
             let t = self.t0 + f.sample / self.rate;
-            let cf = control_frame(g, f.nid.duid, self.identity.wacn().zip(self.identity.sys_id()));
+            let cf = control_frame(g, f.nid.duid);
             self.bad += cf.lost as u64;
             self.air += cf.air;
-            for blk in &cf.blocks {
+            for o in &cf.osps {
                 self.good += 1;
-                let msgs = match blk {
-                    Ok(tsbk) => self.parser.parse(tsbk, f.nid.nac, t),
-                    Err(m) => vec![TsbkParser::unknown_mbt(m, f.nid.nac, t)],
-                };
+                let msgs = self.parser.parse(o, f.nid.nac, t);
                 for m in &msgs {
                     match m.kind {
                         MessageType::Status => {
@@ -236,6 +235,9 @@ impl ControlChannel for P25 {
     fn name(&self) -> &'static str {
         "P25"
     }
+    fn quality(&self) -> super::voice::ChannelQuality {
+        self.bank.quality()
+    }
     fn report(&self, sink: &mut dyn Sink) {
         self.bank.report(sink);
         // A rate: over the symbol rate, the share of the channel's air decoded.
@@ -258,7 +260,12 @@ impl ControlChannel for P25 {
     fn push(&mut self, _carrier: usize, iq: &[Complex32], t0: f64, rate: f64, out: &mut Vec<Step>) {
         (self.t0, self.rate) = (t0, rate);
         let mut groups = Vec::new();
+        let was = self.bank.detected();
         self.bank.push(iq, &mut groups);
+        if let Some(m) = self.bank.detected().filter(|_| was.is_none()) {
+            let (what, setting) = if m == "CQPSK" { ("CQPSK (simulcast)", "qpsk") } else { ("C4FM", "fsk4") };
+            self.notes.push((NoteLevel::Info, format!("Modulation detected: {what}; only its receivers run now (set modulation \"{setting}\" to skip detecting it)")));
+        }
         self.groups(&groups, out);
     }
     fn flush(&mut self, out: &mut Vec<Step>) {
@@ -283,12 +290,12 @@ impl ControlChannel for P25 {
             (Some(nac), Some(sys), Some(wacn)) => Some((nac as u32, sys, wacn)),
             _ => None,
         };
-        VoiceParams { tdma_key }
-    }
-    fn site_group(&self, id: &Identity) -> Option<String> {
-        Some(format!("p25:{:x}.{:x}", id.wacn()?, id.sys_id()?))
+        VoiceParams { tdma_key, nac: id.nac().map(|n| n as u16) }
     }
     fn modulation(&self) -> &'static str {
+        if let Some(m) = self.bank.detected() {
+            return m;
+        }
         // Frames per receiver: the two CQPSK ones, then C4FM.
         let (q, c) = self.bank.frames_per_rx().iter().enumerate().fold((0, 0), |(q, c), (i, &n)| if i < 2 { (q + n, c) } else { (q, c + n) });
         if q + c < 8 {
@@ -362,9 +369,6 @@ impl ControlChannel for Smartnet {
     fn identity_fields(&self) -> &'static [IdField] {
         &[IdField::SysId, IdField::Site]
     }
-    fn site_group(&self, id: &Identity) -> Option<String> {
-        Some(format!("smartnet:{:x}", id.sys_id()?))
-    }
     fn modulation(&self) -> &'static str {
         "2FSK"
     }
@@ -399,10 +403,6 @@ impl ControlChannel for Dmr {
         // Blocks (CSBKs, link control) decoded and lost, on every carrier.
         let slots = || self.site.carriers.iter().flat_map(|c| c.chan.slots.iter());
         (slots().map(|s| s.good_blocks).sum(), slots().map(|s| s.bad_blocks).sum())
-    }
-    fn site_group(&self, _: &Identity) -> Option<String> {
-        // A DMR site doesn't announce a system: only a configured group joins sites.
-        None
     }
     fn modulation(&self) -> &'static str {
         self.site.variant.map_or("DMR", |v| v.name())
@@ -456,9 +456,6 @@ impl ControlChannel for Nxdn {
             nxdn::trunking::Kind::TypeC => &[IdField::SysId, IdField::Site],
             nxdn::trunking::Kind::TypeD => &[],
         }
-    }
-    fn site_group(&self, id: &Identity) -> Option<String> {
-        Some(format!("nxdn:{:x}", id.sys_id()?))
     }
     fn modulation(&self) -> &'static str {
         match self.site.status().rate {

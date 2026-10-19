@@ -42,7 +42,7 @@ test("replace: a first import takes the config's radios, systems and settings", 
   const r = importTrunkRecorderConfig(tr800, defaultConfig(), { "county.csv": csv });
   assert.deepEqual(serials(r.config), ["800a@855"]);
   assert.deepEqual(names(r.config), ["county800"]);
-  assert.equal(r.config.systems[0].talkgroupsName, "county.csv");
+  assert.deepEqual(Object.keys(r.talkgroups), ["county800"], "its talkgroup file, apart from the config");
   assert.equal(r.config.recording.captureDir, "/tr/audio");
   assert.equal(r.config.recording.callTimeoutS, 3);
   assert.equal(r.config.log?.level, "debug");
@@ -75,7 +75,6 @@ test("merge: split configs imported one by one make one setup", () => {
   assert.deepEqual(serials(c), ["800a@855", "700a@770", "vhf@155"], "the 800 MHz dongle both name is there once");
   assert.deepEqual(names(c), ["county800", "state700", "vhf"]);
   assert.equal(c.conventional[0].channels.length, 2);
-  assert.equal(c.systems[1].talkgroupsName, "state.csv");
   // The first config's settings stay.
   assert.equal(c.recording.captureDir, "/tr/audio");
   assert.equal(c.recording.callTimeoutS, 3);
@@ -155,4 +154,25 @@ test("merge: the setup it was given is left untouched", () => {
   importTrunkRecorderConfig(JSON.stringify({ sources: [rtl("new", 450_000_000)], systems: [p25("x", 852_000_000)] }), c, {}, true);
   importTrunkRecorderConfig(tr700, c, {});
   assert.deepEqual(c, copy);
+});
+
+test("an RTL-SDR's buflen and buffers come along", () => {
+  const tr = JSON.stringify({
+    sources: [
+      { device: "rtl=00000101,buflen=65536", center: 855_000_000, rate: 2_400_000, gain: 30 },
+      { device: "rtl=00000102,buflen=65536,buffers=24", center: 857_000_000, rate: 2_400_000, gain: 30 },
+      { device: "rtl=00000103,buflen=1000", center: 859_000_000, rate: 2_400_000, gain: 30 },
+      rtl("00000104", 861_000_000),
+    ],
+    systems: [p25("county800", 855_012_500)],
+  });
+  const r = importTrunkRecorderConfig(tr, defaultConfig());
+  const got = r.config.sources.map((s: Source) => (s.type === "rtlsdr" ? [s.serial, s.bufLen, s.buffers] : s.type));
+  assert.deepEqual(got, [
+    ["00000101", 65_536, 0],
+    ["00000102", 65_536, 24],
+    ["00000103", 0, 0],
+    ["00000104", 0, 0],
+  ]);
+  assert.ok(r.notes.some((n) => n.includes("buflen=1000")));
 });

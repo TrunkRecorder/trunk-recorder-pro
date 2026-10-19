@@ -5,17 +5,19 @@
 // leaving part way keeps what was done. Experienced users skip it.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { autoCenter, enabledChannels, formatMhz, importTrunkRecorderConfig, newAirspy, resolvedCenters, sourceCovering, newDongle, newSoapy, newSystem, newUsrp, parseFreqList, startProblem, trConfigFiles, uniqueShortName, usableHalfWidth, type ImportTodo } from "./config.ts";
+import { autoCenter, enabledChannels, formatMhz, importTrunkRecorderConfig, newAirspy, resolvedCenters, sourceCovering, newDongle, newSoapy, newSystem, newUsrp, parseFreqList, planCenters, startProblem, trConfigFiles, uniqueShortName, usableHalfWidth, type ImportTodo } from "./config.ts";
 import {
+  can,
   applySurvey,
   addDmrSite,
   addNxdnSite,
-  bumpEpoch,
   dismissError,
   findRadios,
   listDir,
+  renameSystem,
   readTrConfig,
   refreshDevices,
+  setTalkgroups,
   setTodo,
   start,
   startSurvey,
@@ -27,6 +29,8 @@ import {
   web,
   type AppState,
 } from "./controller.ts";
+import { cleanShortName } from "./fieldText.ts";
+import { FileInput } from "./inputs.tsx";
 import type { Config, Source, SurveyCandidate, SurveyMonitor, SurveySuggestion, System } from "./protocol.ts";
 import { pluginCopies } from "./protocol.ts";
 import { normalizeTalkgroupCsv, parseRadioReferencePaste, parseTalkgroupCsv, talkgroupsToCsv, type Talkgroup } from "./talkgroups.ts";
@@ -86,7 +90,7 @@ export function SetupGuide(props: { mode: "start" | "import"; onClose: () => voi
   const [found, setFound] = useState<Found | null>(null);
   const defaultDir = useRef(c?.recording.captureDir ?? "");
   const body = useRef<HTMLDivElement>(null);
-  const order: Step[] = ["welcome", ...STEPS.filter((x) => !web || x.id !== "storage").map((x) => x.id), "done"];
+  const order: Step[] = ["welcome", ...STEPS.filter((x) => can("service") || x.id !== "storage").map((x) => x.id), "done"];
   const go = (to: Step) => {
     setStep(to);
     body.current?.scrollTo({ top: 0 });
@@ -330,7 +334,7 @@ function RadiosStep(props: { s: AppState; c: Config; onNext: () => void; onBack:
   const selected = free.filter((d) => chosen.has(d.key));
   const look = () => {
     refreshDevices();
-    if (!web) findRadios();
+    if (can("drivers")) findRadios();
   };
   useEffect(look, []);
 
@@ -345,7 +349,6 @@ function RadiosStep(props: { s: AppState; c: Config; onNext: () => void; onBack:
       // A radio already set up keeps its settings (frequency correction, gain).
       x.sources = selected.map((d) => x.sources.find((o) => sourceKey(o) === d.key) ?? d.source);
     });
-    bumpEpoch();
     props.onNext();
   };
 
@@ -540,7 +543,7 @@ function tipsFor(os: Os, s: AppState): Tip[] {
       ),
     });
   }
-  if (!web && s.radios) {
+  if (can("drivers") && s.radios) {
     const r = s.radios;
     const d = DRIVERS[os];
     const missing = [!r.airspy.available && ["Airspy", d.airspy], !r.usrp.available && ["USRP (UHD)", d.usrp], r.soapy && !r.soapy.available && ["HackRF, SDRplay, LimeSDR… (SoapySDR)", d.soapy]].filter(
@@ -712,14 +715,14 @@ function ScanStep(props: { s: AppState; c: Config; found: Found | null; onFound:
   const [bands, setBands] = useState<string[] | null>(null);
   const [manual, setManual] = useState(false);
   const picked = bands ?? s.surveyBands.filter((b) => b.defaultOn).map((b) => b.id);
-  const unsupported = web && ["usrp", "airspy", "soapy"].includes(c.sources[source]?.type ?? "");
+  const unsupported = !can("drivers") && ["usrp", "airspy", "soapy"].includes(c.sources[source]?.type ?? "");
   const scan = () => startSurvey(source, picked, c.sources[source]?.type === "rtlsdr");
   // Re-scanning after adding one replaces it rather than adding a second.
   const target = found ? found.system : ("new" as const);
 
   const useIt = (sug: SurveySuggestion, m: SurveyMonitor) => {
     const system = target === "new" ? c.systems.length : target;
-    applySurvey(sv.stage === "idle" ? source : sv.source, sug, target);
+    applySurvey(sv.stage === "idle" ? source : sv.source, sug, target === "new" ? "new" : { system: target, site: 0 });
     stopSurvey();
     props.onFound({ system, source: sv.stage === "idle" ? source : sv.source, sug, voice: m.voice });
   };
@@ -850,12 +853,12 @@ function ScanStep(props: { s: AppState; c: Config; found: Found | null; onFound:
           <Check ok={m.good >= 10} title="Hearing it clearly">
             {total ? `${pct}% of messages decoded` : "Waiting for messages…"}
           </Check>
-          <Check ok={id.sysId !== null} title="Who it is">
-            {id.sysId !== null ? (
+          <Check ok={id.sysId != null} title="Who it is">
+            {id.sysId != null ? (
               <span className="ob-mono">
                 System ID {hex(id.sysId)}
-                {id.wacn !== null ? ` · WACN ${hex(id.wacn)}` : ""}
-                {id.site !== null ? ` · site ${id.rfss ?? "?"}-${id.site}` : ""}
+                {id.wacn != null ? ` · WACN ${hex(id.wacn)}` : ""}
+                {id.site != null ? ` · site ${id.rfss ?? "?"}-${id.site}` : ""}
               </span>
             ) : (
               "Waiting…"
@@ -880,7 +883,7 @@ function ScanStep(props: { s: AppState; c: Config; found: Found | null; onFound:
               {others.map((x) => (
                 <button key={x.freqHz} className="ob-chip" onClick={() => surveyListen(x.freqHz)}>
                   <span className="ob-mono">{formatMhz(x.correctedHz ?? x.freqHz, 4)}</span>
-                  <span className="ob-chip-sub">{x.identity.sysId !== null ? `System ID ${hex(x.identity.sysId)}` : x.kind === "smartnet" ? "SmartNet" : "P25"}</span>
+                  <span className="ob-chip-sub">{x.identity.sysId != null ? `System ID ${hex(x.identity.sysId)}` : x.kind === "smartnet" ? "SmartNet" : "P25"}</span>
                 </button>
               ))}
             </div>
@@ -990,7 +993,6 @@ function ManualSystem(props: { c: Config; target: number | "new"; onDone: (syste
       if (props.target === "new") x.systems.push(sys);
       else x.systems[props.target] = { ...sys, shortName: x.systems[props.target].shortName, name: x.systems[props.target].name };
     });
-    bumpEpoch();
     props.onDone(system);
   };
   return (
@@ -1028,69 +1030,13 @@ interface Chan {
 
 const covers = (center: number, rate: number, hz: number, guard?: number) => Math.abs(hz - center) <= usableHalfWidth(rate, guard);
 
-/** Off the DC spike at the centre: nudge until no channel sits within 10 kHz, keeping what it covers. */
-function offDc(center: number, rate: number, chans: number[], guard?: number): number {
-  const n = (c: number) => chans.filter((f) => covers(c, rate, f, guard)).length;
-  const want = n(center);
-  for (let k = 0; k < 24; k++) {
-    const c = center + (k % 2 ? -1 : 1) * Math.ceil(k / 2) * 15_000;
-    if (chans.every((f) => Math.abs(f - c) > 10_000) && n(c) >= want) return Math.round(c / 1000) * 1000;
-  }
-  return center;
-}
-
-/**
- * Centres for every radio: the scanning one where the survey put it (it
- * covers the control channel), the others over the busiest voice channels
- * still out of reach — or next to the first when nothing is. `guards`: each
- * radio's guardHz (undefined = the default), as the recorder reckons reach.
- */
-function planCenters(
-  rates: (number | null)[],
-  guards: (number | undefined)[],
-  fixed: (number | null)[],
-  first: number,
-  firstCenter: number,
-  ccs: number[],
-  voice: Chan[],
-): (number | null)[] {
-  const out: (number | null)[] = fixed.slice();
-  if (fixed[first] === null) out[first] = firstCenter;
-  const all = [...ccs, ...voice.map((v) => v.hz)];
-  const reached = (hz: number) => out.some((c, k) => c !== null && rates[k] !== null && covers(c, rates[k]!, hz, guards[k]));
-  rates.forEach((rate, k) => {
-    if (rate === null || out[k] !== null) return;
-    const guard = guards[k];
-    const half = usableHalfWidth(rate, guard);
-    const left = voice.filter((v) => !reached(v.hz));
-    let best: number;
-    if (left.length) {
-      // Each channel still out of reach as the window's low edge; keep the window that takes in the most calls.
-      let score = -1;
-      best = left[0].hz;
-      for (const v of left) {
-        const c = v.hz + half - 1000;
-        const sc = left.filter((o) => covers(c, rate, o.hz, guard)).reduce((a, o) => a + o.weight, 0);
-        if (sc > score) [score, best] = [sc, c];
-      }
-    } else {
-      // Nothing left: alongside the first, on the side with more of the system.
-      const mid = all.reduce((a, f) => a + f, 0) / Math.max(1, all.length);
-      const firstHalf = rates[first] != null ? usableHalfWidth(rates[first]!, guards[first]) : half;
-      best = firstCenter + (mid >= firstCenter ? 1 : -1) * (firstHalf + half);
-    }
-    out[k] = offDc(best, rate, all, guard);
-  });
-  return out;
-}
-
 function CoverageStep(props: { c: Config; found: Found | null; onNext: () => void; onBack: () => void }) {
   const { c, found } = props;
   const sys = found ? c.systems[found.system] : undefined;
-  const ccs = sys?.controlChannelsHz ?? [];
+  const ccs = sys?.sites.flatMap((x) => x.controlChannelsHz) ?? [];
   const voice: Chan[] = useMemo(() => {
     if (found?.voice.length) return found.voice.map((v) => ({ hz: v.freqHz, weight: Math.max(1, v.grants) }));
-    return (sys?.voiceChannelsHz ?? []).map((hz) => ({ hz, weight: 1 }));
+    return (sys?.sites.flatMap((x) => x.voiceChannelsHz) ?? []).map((hz) => ({ hz, weight: 1 }));
   }, [found, sys]);
   const rates = c.sources.map((x) => x.rateHz);
   const guards = c.sources.map((x) => x.guardHz);
@@ -1099,7 +1045,7 @@ function CoverageStep(props: { c: Config; found: Found | null; onNext: () => voi
   const first = found && c.sources[found.source] ? found.source : 0;
   const recommended = useMemo(() => {
     const firstCenter = found?.sug?.centerHz || autoCenter(ccs, rates[first] ?? 2_400_000, guards[first]) || ccs[0] || 0;
-    return planCenters(rates, guards, fixed, first, firstCenter, ccs, voice);
+    return planCenters(c.sources.map((x, k) => ({ rateHz: x.rateHz, guardHz: x.guardHz, fixedHz: fixed[k] })), first, firstCenter, ccs, voice);
   }, [c.sources.length, found]);
   const [centers, setCenters] = useState<(number | null)[]>(recommended);
 
@@ -1121,7 +1067,6 @@ function CoverageStep(props: { c: Config; found: Found | null; onNext: () => voi
         if (ctr !== null && x.sources[k]) x.sources[k].centerHz = ctr;
       });
     });
-    bumpEpoch();
     props.onNext();
   };
 
@@ -1313,7 +1258,8 @@ const slug = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, "").sli
 function NameStep(props: { c: Config; sys: System; index: number; onNext: () => void; onBack: () => void }) {
   const { c, sys, index } = props;
   const [touched, setTouched] = useState(false);
-  const edit = (fn: (x: System) => void) => updateConfig((x) => fn(x.systems[index]));
+  // (A new name: its talkgroup file and plugin settings that name it follow, as in Setup.)
+  const rename = (x: Config, to: string) => renameSystem(x, x.systems[index], to);
   const dup = c.systems.some((x, k) => k !== index && x.shortName === sys.shortName);
   const now = new Date();
   const folder = c.recording.captureDir.split(/[\\/]/).filter(Boolean).pop() || "Recordings";
@@ -1330,9 +1276,9 @@ function NameStep(props: { c: Config; sys: System; index: number; onNext: () => 
             autoFocus
             onChange={(e) => {
               const name = e.target.value;
-              edit((x) => {
-                x.name = name;
-                if (!touched && slug(name)) x.shortName = uniqueShortName(c, slug(name), c.systems[index]);
+              updateConfig((x) => {
+                x.systems[index].name = name;
+                if (!touched && slug(name)) rename(x, uniqueShortName(c, slug(name), c.systems[index]));
               });
             }}
           />
@@ -1344,7 +1290,7 @@ function NameStep(props: { c: Config; sys: System; index: number; onNext: () => 
             value={sys.shortName}
             onChange={(e) => {
               setTouched(true);
-              edit((x) => void (x.shortName = e.target.value.replace(/[^\w.-]/g, "")));
+              updateConfig((x) => rename(x, cleanShortName(e.target.value)));
             }}
           />
           <span className={`ob-hint${dup || !sys.shortName ? " bad" : ""}`}>
@@ -1363,7 +1309,7 @@ function NameStep(props: { c: Config; sys: System; index: number; onNext: () => 
           <IconFolder /> {now.getFullYear()} / {now.getMonth() + 1} / {now.getDate()}
         </div>
         <div className="d3">
-          <IconWave /> <span className="ob-mono">1201-{Math.floor(now.getTime() / 1000)}_{Math.round(sys.controlChannelsHz[0] ?? 851012500)}.wav</span>
+          <IconWave /> <span className="ob-mono">1201-{Math.floor(now.getTime() / 1000)}_{Math.round(sys.sites[0]?.controlChannelsHz[0] ?? 851012500)}.wav</span>
         </div>
       </div>
       <Nav onBack={props.onBack} onNext={props.onNext} disabled={!sys.shortName || dup} why="Pick a short name" />
@@ -1480,23 +1426,20 @@ function FolderPicker(props: { start: string; onPick: (path: string) => void }) 
 // ── talkgroups ───────────────────────────────────────────────────────────────
 
 function TalkgroupsStep(props: { sys: System; index: number; onNext: () => void; onBack: () => void }) {
-  const { sys, index } = props;
-  const [how, setHow] = useState<"later" | "paste" | "file">(sys.talkgroupsCsv ? "file" : "later");
+  const { sys } = props;
+  const csv = useApp().talkgroups[sys.shortName] ?? "";
+  const [how, setHow] = useState<"later" | "paste" | "file">(csv ? "file" : "later");
   const [paste, setPaste] = useState("");
   const parsed = useMemo(() => parseRadioReferencePaste(paste), [paste]);
   const fileRef = useRef<HTMLInputElement>(null);
-  const loaded = sys.talkgroupsCsv ? parseTalkgroupCsv(sys.talkgroupsCsv).size : 0;
-  const setList = (csv: string, name: string) =>
-    updateConfig((x) => {
-      x.systems[index].talkgroupsCsv = csv;
-      x.systems[index].talkgroupsName = name;
-    });
+  const loaded = csv ? parseTalkgroupCsv(csv).size : 0;
+  const setList = (next: string) => setTalkgroups(sys.shortName, next);
   const onFile = async (f: File | undefined) => {
     if (!f) return;
-    setList(normalizeTalkgroupCsv(await f.text()), f.name);
+    setList(normalizeTalkgroupCsv(await f.text()));
     props.onNext();
   };
-  const id = sys.expect;
+  const id = sys.sites[0]?.expect ?? {};
   return (
     <section className="ob-step">
       <Head
@@ -1513,9 +1456,9 @@ function TalkgroupsStep(props: { sys: System; index: number; onNext: () => void;
       {loaded > 0 && (
         <div className="ob-note ok">
           <span>
-            <b>{loaded} talkgroup names loaded</b> from {sys.talkgroupsName || "your list"}.
+            <b>{loaded} talkgroup names loaded</b>.
           </span>
-          <button className="ob-link" onClick={() => setList("", "")}>
+          <button className="ob-link" onClick={() => setList("")}>
             Remove
           </button>
         </div>
@@ -1584,7 +1527,7 @@ function TalkgroupsStep(props: { sys: System; index: number; onNext: () => void;
                       <button
                         className="ob-btn primary"
                         onClick={() => {
-                          setList(talkgroupsToCsv(parsed), "RadioReference (pasted)");
+                          setList(talkgroupsToCsv(parsed));
                           props.onNext();
                         }}
                       >
@@ -1605,7 +1548,7 @@ function TalkgroupsStep(props: { sys: System; index: number; onNext: () => void;
           <button className="ob-btn" onClick={() => fileRef.current?.click()}>
             Choose a CSV file…
           </button>
-          <input ref={fileRef} type="file" accept=".csv,text/csv" hidden onChange={(e) => void onFile(e.target.files?.[0])} />
+          <FileInput inputRef={fileRef} accept=".csv,text/csv" onFile={(f) => void onFile(f)} />
         </div>
       )}
       <Nav onBack={props.onBack} onNext={props.onNext} nextLabel={how === "later" && !loaded ? "Skip for now" : "Continue"} />
@@ -1632,7 +1575,8 @@ function DoneStep(props: { s: AppState; c: Config; sys: System | undefined; onSt
   const { c, sys } = props;
   const problem = startProblem(c);
   const radios = c.sources.length;
-  const tgs = sys?.talkgroupsCsv ? parseTalkgroupCsv(sys.talkgroupsCsv).size : 0;
+  const tgCsv = sys ? props.s.talkgroups[sys.shortName] : undefined;
+  const tgs = tgCsv ? parseTalkgroupCsv(tgCsv).size : 0;
   return (
     <section className="ob-step ob-welcome">
       <div className="ob-hero">
@@ -1651,11 +1595,11 @@ function DoneStep(props: { s: AppState; c: Config; sys: System | undefined; onSt
             <IconTower />
             <span>
               {sys.name || sys.shortName}
-              <span className="ob-quiet ob-mono"> · {sys.controlChannelsHz.map((f) => formatMhz(f, 4)).join(", ")} MHz</span>
+              <span className="ob-quiet ob-mono"> · {sys.sites.flatMap((x) => x.controlChannelsHz).map((f) => formatMhz(f, 4)).join(", ")} MHz</span>
             </span>
           </li>
         )}
-        {!web && (
+        {can("service") && (
           <li>
             <IconFolder />
             <span className="ob-mono">{c.recording.captureDir}</span>
@@ -1756,7 +1700,7 @@ function ImportPick(props: { s: AppState; onLoaded: (l: Loaded) => void; onBack?
         }
       />
       {error && <div className="ob-note bad">{error}</div>}
-      {!web && <ConfigPicker />}
+      {can("service") && <ConfigPicker />}
       <div className="ob-center-actions">
         {web ? (
           <button className="ob-btn primary big" onClick={() => fileRef.current?.click()}>
@@ -1767,7 +1711,7 @@ function ImportPick(props: { s: AppState; onLoaded: (l: Loaded) => void; onBack?
             Or upload a config.json
           </button>
         )}
-        <input ref={fileRef} type="file" accept=".json,application/json" hidden onChange={(e) => void upload(e.target.files?.[0])} />
+        <FileInput inputRef={fileRef} accept=".json,application/json" onFile={(f) => void upload(f)} />
       </div>
       <Nav onBack={props.onBack} />
     </section>
@@ -1888,7 +1832,10 @@ function ImportReview(props: { s: AppState; c: Config; loaded: Loaded; onBack: (
   const convCount = cfg.conventional.filter((v) => brings(v.shortName)).reduce((n, v) => n + v.channels.length, 0);
   // Systems whose control channel no radio hears (as the radios stand, swaps included).
   const centers = resolvedCenters(cfg);
-  const unheard = (x: System) => x.enabled && x.controlChannelsHz.length > 0 && !x.controlChannelsHz.some((f) => sourceCovering(cfg, centers, f) >= 0);
+  const unheard = (x: System) => {
+    const ccs = x.enabled ? x.sites.filter((y) => y.enabled).flatMap((y) => y.controlChannelsHz) : [];
+    return ccs.length > 0 && !ccs.some((f) => sourceCovering(cfg, centers, f) >= 0);
+  };
   const installed = (id: string) => {
     const p = s.plugins?.plugins.find((x) => x.id === id);
     return !!p && !p.problem;
@@ -1915,7 +1862,8 @@ function ImportReview(props: { s: AppState; c: Config; loaded: Loaded; onBack: (
       }
       x.plugins = plugins;
     });
-    bumpEpoch();
+    // Each system's talkgroup file, beside the config.
+    for (const [system, csv] of Object.entries(result.talkgroups)) if (brings(system)) setTalkgroups(system, csv);
     // Radios that aren't ready yet join what's left to do.
     const radios: ImportTodo[] = cfg.sources.flatMap((src, index): ImportTodo[] => {
       if (!bringsSource(index)) return [];
@@ -1923,7 +1871,7 @@ function ImportReview(props: { s: AppState; c: Config; loaded: Loaded; onBack: (
       if ((src.type === "usrp" || src.type === "airspy" || src.type === "soapy") && sourceState(src, s).tone === "bad") return [{ kind: "driver", index, driver: src.type }];
       return [];
     });
-    const plugins: ImportTodo[] = web ? [] : result.plugins.map((p) => ({ kind: "plugin", id: p.id, name: s.plugins?.plugins.find((x) => x.id === p.id)?.manifest?.name ?? p.name }));
+    const plugins: ImportTodo[] = !can("plugins") ? [] : result.plugins.map((p) => ({ kind: "plugin", id: p.id, name: s.plugins?.plugins.find((x) => x.id === p.id)?.manifest?.name ?? p.name }));
     const coverage: ImportTodo[] = cfg.systems.filter((x) => brings(x.shortName) && unheard(x)).map((x) => ({ kind: "coverage", system: x.shortName }));
     setTodo([...(merge ? s.todo : []), ...result.todo, ...radios, ...coverage, ...plugins]);
     props.onDone();
@@ -1988,13 +1936,14 @@ function ImportReview(props: { s: AppState; c: Config; loaded: Loaded; onBack: (
         <ul className="ob-rows">
           {cfg.systems.filter((x) => brings(x.shortName)).map((x) => {
             const file = named.find((n) => n.kind === "talkgroups" && n.system === x.shortName)?.file;
-            const tgs = x.talkgroupsCsv ? parseTalkgroupCsv(x.talkgroupsCsv).size : 0;
+            const tgs = result.talkgroups[x.shortName] ? parseTalkgroupCsv(result.talkgroups[x.shortName]).size : 0;
             return (
               <li key={x.shortName} className={(file && missing(file)) || unheard(x) ? "warn" : "ok"}>
                 <span className="ob-row-main">
                   <b>{x.shortName}</b>
                   <span className="ob-quiet">
-                    {x.type === "smartnet" ? "SmartNet" : x.type === "dmr" ? "DMR" : x.type === "nxdn" ? "NXDN" : "P25"} · {x.controlChannelsHz.map((f) => formatMhz(f, 4)).join(", ") || "no control channel"}
+                    {x.type === "smartnet" ? "SmartNet" : x.type === "dmr" ? "DMR" : x.type === "nxdn" ? "NXDN" : "P25"}
+                    {x.sites.length > 1 ? ` · ${x.sites.length} sites` : ""} · {x.sites.flatMap((y) => y.controlChannelsHz).map((f) => formatMhz(f, 4)).join(", ") || "no control channel"}
                   </span>
                 </span>
                 {unheard(x) && <span className="ob-pill warn">Control channel out of reach</span>}
@@ -2038,7 +1987,7 @@ function ImportReview(props: { s: AppState; c: Config; loaded: Loaded; onBack: (
           )}
         </ul>
 
-        {!web && (
+        {can("service") && (
           <>
             <h3 className="ob-sub">
               <IconFolder /> Recordings
@@ -2060,7 +2009,7 @@ function ImportReview(props: { s: AppState; c: Config; loaded: Loaded; onBack: (
               {result.plugins.map((p) => {
                 const systems = Object.keys(p.systems);
                 const streams = Array.isArray(p.config.streams) ? p.config.streams.length : 0;
-                const ok = !web && installed(p.id);
+                const ok = can("plugins") && installed(p.id);
                 return (
                   <li key={p.id} className={ok ? "ok" : "warn"}>
                     <span className="ob-row-main">
@@ -2069,7 +2018,7 @@ function ImportReview(props: { s: AppState; c: Config; loaded: Loaded; onBack: (
                         {streams ? `${streams} stream${streams === 1 ? "" : "s"}` : systems.length ? `for ${systems.join(", ")}` : "settings for every system"}
                       </span>
                     </span>
-                    <span className={`ob-pill ${ok ? "ok" : "warn"}`}>{web ? "Needs the desktop app" : ok ? "Will be turned on" : "Settings kept · add the plugin"}</span>
+                    <span className={`ob-pill ${ok ? "ok" : "warn"}`}>{!can("plugins") ? "Needs the desktop app" : ok ? "Will be turned on" : "Settings kept · add the plugin"}</span>
                   </li>
                 );
               })}
@@ -2136,7 +2085,7 @@ function FilePick(props: { label: string; onFile: (f: File | undefined) => void 
       <button className="ob-btn small" onClick={() => ref.current?.click()}>
         Choose file…
       </button>
-      <input ref={ref} type="file" accept=".csv,text/csv,text/plain" hidden onChange={(e) => props.onFile(e.target.files?.[0])} />
+      <FileInput inputRef={ref} accept=".csv,text/csv,text/plain" onFile={props.onFile} />
     </span>
   );
 }

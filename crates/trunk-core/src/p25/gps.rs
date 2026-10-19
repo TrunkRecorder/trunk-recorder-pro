@@ -17,7 +17,7 @@
 
 use crate::position::Position;
 
-use super::alias::MacMsg;
+use super::mac::MacMsg;
 
 const MOTOROLA: u8 = 0x90;
 const HARRIS: u8 = 0xa4;
@@ -60,7 +60,7 @@ pub struct LcPositions {
 }
 
 impl LcPositions {
-    /// One link control word (`mfid` as [`super::voice::LinkControl::mfid`]).
+    /// One link control word (`mfid` as [`super::lc::LinkControl::mfid`]).
     /// `talker`: the unit talking now.
     pub fn lcw(&mut self, w: &[u8; 9], mfid: u8, talker: Option<u32>) -> Option<Position> {
         let (lat, lon, source) = match (mfid, w[0] & 0x3f) {

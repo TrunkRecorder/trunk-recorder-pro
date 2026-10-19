@@ -4,21 +4,22 @@
 //! [`super`]); when a saved config changes them while recording, the server
 //! calls [`Plugins::reload`], which swaps in a new [`PluginHost`].
 //!
-//! Browser → server: `plugins` (the list), `addPlugin {path}` (again for a
-//! rebuilt copy: a reinstall), `removePlugin
-//! {id}` (the server forgets it in the config), `pluginStore {refresh?}` (the registry's list),
-//! `installPlugin {id}` (from the registry; also an update) or `installPlugin
-//! {repository, tag?}` (a GitHub release that isn't in it). Server → browser:
-//! `plugins`, `pluginRuntime {id, runtime}` (its state, counts and recent
-//! log, as they change), `pluginStore`, and `pluginInstall {key, id, stage,
-//! message?}` as an install goes ("finding", "downloading", "checking",
-//! "installing", then "done" or "failed").
+//! Browser → server: `plugins` (the list), `addPlugin {path}`, `removePlugin
+//! {id}` (the server forgets it in the config), `store {kind: "plugin",
+//! refresh?}` (the registry's list), `install {kind: "plugin", id}` (from the
+//! registry; also an update) or `install {kind: "plugin", repository, tag?}`
+//! (a GitHub release that isn't in it). Server → browser: `plugins`,
+//! `pluginRuntime {id, runtime}` (its state, counts and recent log, as they
+//! change), `store`, and `installProgress {kind, key, id, stage, message?}`
+//! as an install goes ("finding", "downloading", "checking", "installing",
+//! then "done" or "failed").
 
+use trunk_app::protocol::{body, Install, StoreKind, ToClient};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -29,6 +30,7 @@ use super::delay::Delays;
 use super::hold::Hold;
 use super::host::Notes;
 use super::store::{self, Catalog};
+use crate::store::Shelf;
 use super::{describe, executable, plugins_dir, Archive, Encoder, Note, PluginHost, Spec};
 use crate::config::{Config, PluginSetup};
 use crate::runtime::{publish, Hub};
@@ -181,18 +183,28 @@ pub struct LogEntry {
 }
 
 const LOG_LINES: usize = 50;
-/// How long the registry's list is used before it's fetched again; sooner
-/// when it couldn't be fetched.
-const STORE_FRESH: Duration = Duration::from_secs(15 * 60);
-const STORE_RETRY: Duration = Duration::from_secs(60);
 
 /// An executable's modification time, and what `--describe` said then.
 type Described = (Option<SystemTime>, Result<Manifest, String>);
 
+/// `h` once nothing else uses it (the engine or finish thread may hold it
+/// for the call in hand), to shut it down.
+fn alone(mut h: Arc<PluginHost>) -> PluginHost {
+    loop {
+        match Arc::try_unwrap(h) {
+            Ok(h) => return h,
+            Err(back) => {
+                h = back;
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+    }
+}
+
 /// The plugins' part of the app's shared state.
 pub struct Plugins {
-    /// The plugins running while recording.
-    pub host: RwLock<Option<PluginHost>>,
+    /// The plugins running while recording ([`Plugins::host`]: a clone, used without the lock).
+    host: Mutex<Option<Arc<PluginHost>>>,
     /// Calls whose files wait on the plugins' results.
     pub archive: Arc<Archive>,
     /// What plugins are to have late (their delays), until it's due.
@@ -202,10 +214,8 @@ pub struct Plugins {
     runtime: Arc<Mutex<BTreeMap<String, Runtime>>>,
     /// Manifests by executable (and its modification time): `--describe` runs once per build.
     manifests: Mutex<HashMap<PathBuf, Described>>,
-    /// The registry's list, and when it was got.
-    store: Mutex<Option<(Instant, Catalog)>>,
-    /// Installs under way, by their key (the id, or the repository asked for).
-    installing: Mutex<BTreeSet<String>>,
+    /// The registry's list, and the installs under way.
+    shelf: Shelf<store::Index>,
     hub: Hub,
     /// Where health changes go as events (the dashboard's feed, alert watchers).
     monitor: Arc<trunk_app::stats::Shared>,
@@ -216,14 +226,13 @@ impl Plugins {
         let archive: Arc<Archive> = Arc::default();
         let p = Plugins {
             monitor,
-            host: RwLock::new(None),
+            host: Mutex::new(None),
             hold: Hold::new(archive.clone()),
             archive,
             env: Mutex::new(None),
             runtime: Arc::new(Mutex::new(BTreeMap::new())),
             manifests: Mutex::new(HashMap::new()),
-            store: Mutex::new(None),
-            installing: Mutex::new(BTreeSet::new()),
+            shelf: Shelf::new(&store::REGISTRY),
             hub,
         };
         p.hold.set_notes(p.notes());
@@ -275,7 +284,7 @@ impl Plugins {
 
     /// The `plugins` message: what's installed and what each is. (Their
     /// settings are in the config.)
-    pub fn list_json(&self, cfg: &Config) -> Value {
+    pub fn list(&self, cfg: &Config) -> ToClient {
         let all = Self::entries(cfg);
         let runtime = self.runtime.lock().unwrap().clone();
         let plugins: Vec<Value> = all
@@ -299,8 +308,8 @@ impl Plugins {
                 })
             })
             .collect();
-        let found = Encoder::find(&cfg.recording.m4a.encoder).map(|e| e.name());
-        json!({ "type": "plugins", "plugins": plugins, "encoderFound": found })
+        let found = Encoder::find(cfg.recording.m4a.encoder).map(|e| e.name());
+        ToClient::Plugins(body(json!({ "plugins": plugins, "encoderFound": found })))
     }
 
     /// Start the config's enabled plugins for a recording.
@@ -309,7 +318,13 @@ impl Plugins {
         self.set_delays(cfg);
         let host = self.new_host(cfg, true, Arc::new(AtomicBool::new(true)));
         self.hold.attach(host.as_ref().map(PluginHost::outlet));
-        *self.host.write().unwrap() = host;
+        *self.host.lock().unwrap() = host.map(Arc::new);
+    }
+
+    /// The plugins running now, if recording: held only as long as used, so
+    /// swapping them (a reload) never waits on a call being finished.
+    pub fn host(&self) -> Option<Arc<PluginHost>> {
+        self.host.lock().unwrap().clone()
     }
 
     /// Stop the plugins (recording ended): they get `grace` to finish.
@@ -317,9 +332,9 @@ impl Plugins {
         *self.env.lock().unwrap() = None;
         // (Before it stops: what's due meanwhile waits for the next recording.)
         self.hold.detach();
-        let old = self.host.write().unwrap().take();
-        if let Some(mut h) = old {
-            h.shutdown(grace);
+        let old = self.host.lock().unwrap().take();
+        if let Some(h) = old {
+            alone(h).shutdown(grace);
         }
         let mut rt = self.runtime.lock().unwrap();
         for r in rt.values_mut() {
@@ -345,11 +360,11 @@ impl Plugins {
         let new = self.new_host(cfg, false, go.clone());
         // What's held goes to the new plugins (queued until they start).
         self.hold.attach(new.as_ref().map(PluginHost::outlet));
-        let old = std::mem::replace(&mut *self.host.write().unwrap(), new);
+        let old = std::mem::replace(&mut *self.host.lock().unwrap(), new.map(Arc::new));
         match old {
-            Some(mut h) => {
+            Some(h) => {
                 std::thread::spawn(move || {
-                    h.shutdown(Duration::from_secs(10));
+                    alone(h).shutdown(Duration::from_secs(10));
                     go.store(true, Ordering::Relaxed);
                 });
             }
@@ -387,7 +402,7 @@ impl Plugins {
     /// Each plugin's figures into the dashboard's series (`plg/<id>/…`), with
     /// its process's restarts, drops and uptime folded into its runtime.
     pub fn report(&self, sink: &mut dyn Sink) {
-        let procs = self.host.read().unwrap().as_ref().map(|h| h.process_stats()).unwrap_or_default();
+        let procs = self.host().map(|h| h.process_stats()).unwrap_or_default();
         let mut held: BTreeMap<String, usize> = BTreeMap::new();
         for (label, n) in self.hold.calls() {
             *held.entry(super::parse_label(&label).0.to_string()).or_default() += n;
@@ -399,13 +414,13 @@ impl Plugins {
             let n = held.remove(id).unwrap_or(0);
             if r.held != n {
                 r.held = n;
-                changed.push(json!({ "type": "pluginRuntime", "id": id, "runtime": r }));
+                changed.push(ToClient::PluginRuntime { id: id.clone(), runtime: json!(r) });
             }
         }
         for (id, n) in held {
             let r = rt.entry(id.clone()).or_default();
             r.held = n;
-            changed.push(json!({ "type": "pluginRuntime", "id": id, "runtime": r }));
+            changed.push(ToClient::PluginRuntime { id: id.clone(), runtime: json!(r) });
         }
         for v in changed {
             publish(&self.hub, v);
@@ -449,22 +464,17 @@ impl Plugins {
         }
     }
 
-    /// Every plugin's runtime (for a dashboard that just connected).
-    pub fn runtime_json(&self) -> Value {
-        json!(*self.runtime.lock().unwrap())
-    }
-
     fn publish_all_runtime(&self) {
         let rt = self.runtime.lock().unwrap().clone();
         for (id, r) in rt {
-            publish(&self.hub, json!({ "type": "pluginRuntime", "id": id, "runtime": r }));
+            publish(&self.hub, ToClient::PluginRuntime { id: id.clone(), runtime: json!(r) });
         }
     }
 
     /// What plugins say, as log lines, runtime updates and results for the interface.
     fn notes(&self) -> Notes {
         let (hub, runtime, archive, monitor) = (self.hub.clone(), self.runtime.clone(), self.archive.clone(), self.monitor.clone());
-        let log = super::notes_to_hub(hub.clone());
+        let log = super::notes_to_log();
         Arc::new(move |n: Note| {
             if let Note::Result { path, outcome, .. } = &n {
                 archive.result(path, *outcome);
@@ -507,7 +517,7 @@ impl Plugins {
                         if was != r.state && !(was == "starting" || was == "off") || r.state == "error" && was != "error" {
                             let e = trunk_app::stats::MonitorEvent::PluginHealth { plugin: id.clone(), state: r.state.to_string(), message: message.clone() };
                             if let Some(v) = monitor.emit(now(), e) {
-                                publish(&hub, v);
+                                publish(&hub, ToClient::MonitorEvent(body(v)));
                             }
                         }
                     }
@@ -524,7 +534,7 @@ impl Plugins {
                     }
                     Note::Metrics { metrics, .. } => r.set_metrics(copy, metrics.clone()),
                 }
-                publish(&hub, json!({ "type": "pluginRuntime", "id": id, "runtime": r }));
+                publish(&hub, ToClient::PluginRuntime { id: id.clone(), runtime: json!(r) });
             }
             log(n);
         })
@@ -532,27 +542,23 @@ impl Plugins {
 
     /// `addPlugin {path}`: a plugin executable of the user's own (a build).
     /// Returns its id and path, for the server to put in the config, and a
-    /// notice. Adding one that's already there again takes the file afresh
-    /// (a rebuilt copy): its settings stay.
-    pub fn add(&self, v: &Value, cfg: &Config) -> Result<(String, PathBuf, String), String> {
-        let path = v["path"].as_str().map(str::trim).filter(|p| !p.is_empty()).ok_or("Which executable?")?;
+    /// notice. The same file again (rebuilt) is a reinstall: its settings stay.
+    pub fn add(&self, path: &str, cfg: &Config) -> Result<(String, PathBuf, String), String> {
+        let path = Some(path.trim()).filter(|p| !p.is_empty()).ok_or("Which executable?")?;
         let path = PathBuf::from(shellexpand_home(path));
         let path = std::fs::canonicalize(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let before = self.manifest(&path).ok().map(|m| m.version);
-        self.manifests.lock().unwrap().remove(&path);
+        let before = self.manifests.lock().unwrap().remove(&path).and_then(|(_, m)| m.ok()).map(|m| m.version);
         let m = self.manifest(&path)?;
         let id = m.id.clone();
         let existing = executable(&id, cfg.plugins.get(&id).unwrap_or(&PluginSetup::default()));
-        let same = existing == path || std::fs::canonicalize(&existing).is_ok_and(|e| e == path);
-        let have = cfg.plugins.get(&id).is_some_and(|p| !p.path.is_empty());
-        if existing.is_file() && !same {
+        if existing.is_file() && existing != path {
             return Err(format!("There's already a plugin called {id} ({})", existing.display()));
         }
         let (name, version) = (&m.name, &m.version);
         let notice = match before {
-            Some(old) if same && have && &old != version => format!("Reinstalled {name}: {old} to {version}."),
-            _ if same && have => format!("Reinstalled {name} {version}."),
-            _ => format!("Added {name} {version}. Set it up, then turn it on."),
+            _ if existing != path => format!("Added {name} {version}. Set it up, then turn it on."),
+            Some(old) if &old != version => format!("Reinstalled {name} {version} in place of {old}."),
+            _ => format!("Reinstalled {name} {version}."),
         };
         Ok((id, path, notice))
     }
@@ -560,8 +566,8 @@ impl Plugins {
     /// `removePlugin {id}`: an installed copy is deleted (a build of the
     /// user's own isn't). Its data folder stays. The server then forgets it
     /// in the config; returns its id.
-    pub fn remove(&self, v: &Value, cfg: &Config) -> Result<String, String> {
-        let id = v["id"].as_str().ok_or("no plugin id")?.to_string();
+    pub fn remove(&self, id: &str, cfg: &Config) -> Result<String, String> {
+        let id = id.to_string();
         if !store::valid_id(&id) {
             return Err(format!("bad plugin id {id:?}"));
         }
@@ -577,49 +583,28 @@ impl Plugins {
 
     /// The registry's list: fetched again when it's old, or when `refresh`.
     pub fn catalog(&self, refresh: bool) -> Catalog {
-        let mut c = self.store.lock().unwrap();
-        if let Some((t, cat)) = c.as_ref() {
-            let fresh = if cat.source == "registry" { STORE_FRESH } else { STORE_RETRY };
-            if !refresh && t.elapsed() < fresh {
-                return cat.clone();
-            }
-        }
-        let cat = store::catalog();
-        *c = Some((Instant::now(), cat.clone()));
-        cat
+        self.shelf.catalog(refresh)
     }
 
-    /// The `pluginStore` message.
-    pub fn store_json(&self, refresh: bool) -> Value {
+    /// The `store` message for plugins.
+    pub fn store(&self, refresh: bool) -> ToClient {
         store_message(&self.catalog(refresh))
     }
 
-    /// `installPlugin {id}` or `installPlugin {repository, tag?}`. Says how
-    /// it goes in `pluginInstall` messages, to everyone; blocks until done.
-    /// A new plugin is off (nothing in the config changes); after an update
-    /// the server reloads the plugins, so a running one restarts with it.
-    pub fn install(&self, v: &Value, cfg: &Config) {
-        let key = v["id"].as_str().or(v["repository"].as_str()).unwrap_or_default().trim().to_string();
-        let say = |id: &str, stage: &str, message: Option<&str>| publish(&self.hub, json!({ "type": "pluginInstall", "key": key, "id": id, "stage": stage, "message": message }));
-        if !self.installing.lock().unwrap().insert(key.clone()) {
-            return say("", "failed", Some("That's being installed already."));
-        }
-        let mut id = String::new();
-        let r = self.install_one(v, cfg, &mut id, &|id, stage| say(id, stage, None));
-        self.installing.lock().unwrap().remove(&key);
-        match r {
-            Ok(notice) => say(&id, "done", Some(&notice)),
-            Err(e) => say(&id, "failed", Some(&e)),
-        }
+    /// `install {kind: "plugin", id}` or `{…, repository, tag?}`: says how it
+    /// goes to `report`; blocks until done. A new plugin is off (nothing in
+    /// the config changes); after an update the server reloads the plugins,
+    /// so a running one restarts with it.
+    pub fn install(&self, what: &Install, cfg: &Config, report: &dyn Fn(crate::store::Progress)) {
+        self.shelf.install(what.key(), report, |id, stage| self.install_one(what, cfg, id, stage));
     }
 
-    fn install_one(&self, v: &Value, cfg: &Config, id_out: &mut String, stage: &dyn Fn(&str, &'static str)) -> Result<String, String> {
-        stage("", "finding");
-        let listing = match v["id"].as_str() {
-            Some(id) => self.catalog(false).find(id).cloned().ok_or_else(|| format!("{id} isn't in the plugin registry"))?,
-            None => {
-                let repo = v["repository"].as_str().map(str::trim).filter(|r| !r.is_empty()).ok_or("Which plugin? Its GitHub repository, or its release's page.")?;
-                let l = store::release_listing(repo, v["tag"].as_str())?;
+    fn install_one(&self, what: &Install, cfg: &Config, id_out: &mut String, stage: &dyn Fn(&str, &'static str)) -> Result<String, String> {
+        let listing = match what {
+            Install::Listed { id } => self.catalog(false).find(id).cloned().ok_or_else(|| format!("{id} isn't in the plugin registry"))?,
+            Install::Release { repository, tag } => {
+                let repo = Some(repository.trim()).filter(|r| !r.is_empty()).ok_or("Which plugin? Its GitHub repository, or its release's page.")?;
+                let l = store::release_listing(repo, tag.as_deref())?;
                 // A listed plugin's id is its own.
                 if let Some(listed) = self.catalog(false).find(&l.id) {
                     if !listed.repository.eq_ignore_ascii_case(&l.repository) {
@@ -670,8 +655,8 @@ fn now() -> f64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
 }
 
-/// The `pluginStore` message for a catalog.
-pub(crate) fn store_message(cat: &store::Catalog) -> Value {
+/// The plugins' `store` message for a catalog.
+pub(crate) fn store_message(cat: &store::Catalog) -> ToClient {
     let plugins: Vec<Value> = cat
         .index
         .plugins
@@ -682,5 +667,5 @@ pub(crate) fn store_message(cat: &store::Catalog) -> Value {
             v
         })
         .collect();
-    json!({ "type": "pluginStore", "source": cat.source, "fetched": cat.fetched, "problem": cat.problem, "target": store::target(), "plugins": plugins })
+    ToClient::Store { kind: StoreKind::Plugin, list: body(json!({ "source": cat.source, "fetched": cat.fetched, "problem": cat.problem, "target": store::target(), "listings": plugins })) }
 }

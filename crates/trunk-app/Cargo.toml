@@ -12,6 +12,8 @@ trunk-core.workspace = true
 trunk-recorder-plugin.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# The interface protocol's message names (`protocol`).
+strum = { version = "0.28", features = ["derive"] }
 # KFDtool's encrypted key container (`ekc`): PBKDF2-HMAC-SHA512, AES-256-CBC, compressed XML. Pure Rust.
 pbkdf2 = "0.13.0"
 sha2 = "0.11.1"

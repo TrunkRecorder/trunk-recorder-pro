@@ -10,23 +10,26 @@
 //! tests in protocol_tests.rs check what is sent against it). GET
 //! /api/version identifies a running instance.
 //!
-//! Interfaces: the built-in one at /builtin/, the user's own (folders named
-//! in `server.interfaces`) at /ui/<name>/, a list of them at /ui/ and
-//! /api/interfaces; / shows `server.home` (or `--ui <folder>`), else the
-//! built-in one.
+//! The built-in interface is served on the recorder's port (`server.port`);
+//! every other interface on a port of its own ([`crate::interfaces`]), with
+//! the same API beside it ([`api`]) and what its access allows
+//! ([`crate::access`]): which port a request came in on is its [`Door`].
 //!
-//! A connection gets `hello`, then `plugins`; then what everyone hears
-//! (`state`, `status` ~2/s, `spectrum` ~7/s per source, `log`, `concluded`,
-//! …) and the answers to its own commands.
+//! A connection gets `hello`, then (with control access) `plugins` and
+//! `interfaces`; then
+//! what everyone hears (`state`, `status` ~2/s, `spectrum` ~7/s per source,
+//! `log`, `concluded`, …) and the answers to its own commands.
 //!
 //! Every request passes [`guard`]: pages from other sites are refused unless
 //! listed in `server.allowedOrigins`.
 
+use trunk_app::protocol::{body, Body, Command, StatsQuery, StoreKind, ToClient};
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Path as UrlPath, Request, State};
+use axum::extract::{Extension, Path as UrlPath, Request, State};
 use axum::http::{header, HeaderValue, StatusCode, Uri};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Redirect, Response};
@@ -35,7 +38,8 @@ use axum::Router;
 use rust_embed::RustEmbed;
 use serde_json::{json, Value};
 
-use crate::config::Config;
+use crate::access::{self, Door};
+use crate::config::{ApiAccess, Config};
 use crate::runtime::{self, publish, Ctx, Out};
 use crate::sdr;
 
@@ -60,26 +64,14 @@ pub async fn serve(ctx: Arc<Ctx>, listener: std::net::TcpListener) -> std::io::R
     listener.set_nonblocking(true)?;
     let loopback = listener.local_addr()?.ip().is_loopback();
     let listener = tokio::net::TcpListener::from_std(listener)?;
-    let app = Router::new()
-        .route("/api/ws", get(ws))
-        .route("/api/version", get(|| async { axum::Json(json!({ "app": APP_ID, "version": env!("CARGO_PKG_VERSION") })) }))
-        .route("/api/docs", get(|| async { api_file("README.md") }))
-        .route("/api/schema", get(|| async { api_file("protocol.schema.json") }))
-        .route("/api/protocol.ts", get(|| async { ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], PROTOCOL).into_response() }))
-        .route("/api/interfaces", get(interfaces_json))
-        .route("/api/{*path}", get(|UrlPath(p): UrlPath<String>| async move { api_file(&p) }))
-        .route("/calls/{*path}", get(call_file))
-        .route("/builtin", get(|| async { Redirect::permanent("/builtin/") }))
-        .route("/builtin/", get(|| async { builtin("") }))
-        .route("/builtin/{*path}", get(|UrlPath(p): UrlPath<String>| async move { builtin(&p) }))
-        .route("/ui", get(|| async { Redirect::permanent("/ui/") }))
-        .route("/ui/", get(ui_index))
-        .route("/ui/{name}", get(|UrlPath(n): UrlPath<String>| async move { Redirect::permanent(&format!("/ui/{}/", url_segment(&n))) }))
-        .route("/ui/{name}/", get(|State(ctx): State<Arc<Ctx>>, UrlPath(n): UrlPath<String>, uri: Uri| async move { ui_file(&ctx, &n, "", &uri).await }))
-        .route("/ui/{name}/{*path}", get(|State(ctx): State<Arc<Ctx>>, UrlPath((n, p)): UrlPath<(String, String)>, uri: Uri| async move { ui_file(&ctx, &n, &p, &uri).await }))
-        .fallback(home)
+    let app = api(Router::new())
+        .route("/store/screenshots/{sha256}", get(store_screenshot))
+        .route("/interfaces/{id}/screenshots/{n}", get(interface_screenshot))
+        .fallback(|uri: Uri| async move { builtin(uri.path().trim_start_matches('/')) })
+        .layer(Extension(Door::Builtin))
         .layer(middleware::from_fn_with_state((ctx.clone(), loopback), guard))
         .with_state(ctx.clone());
+    tokio::spawn(crate::interfaces::serve::reconcile(ctx.clone()));
     #[cfg(unix)]
     tokio::spawn(reopen_log_on_hangup());
     let ctx2 = ctx.clone();
@@ -90,20 +82,38 @@ pub async fn serve(ctx: Arc<Ctx>, listener: std::net::TcpListener) -> std::io::R
             _ = terminate() => log::info!("Caught an Exit Signal..."),
         }
         let ctx3 = ctx2.clone();
-        let _ = tokio::task::spawn_blocking(move || {
-            let mut quitting = ctx3.lifecycle.lock().unwrap();
-            *quitting = true;
-            stop_survey(&ctx3);
-            if let Some(r) = ctx3.runner.lock().unwrap().take() {
-                r.stop();
-            }
-        })
-        .await;
-        publish(&ctx2.hub, json!({ "type": "quit" }));
+        let _ = tokio::task::spawn_blocking(move || ctx3.quit()).await;
+        publish(&ctx2.hub, ToClient::Quit);
         // Let the sessions deliver it before the connections close.
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        crate::interfaces::serve::stop_all(&ctx2);
     };
     axum::serve(listener, app).with_graceful_shutdown(shutdown).await
+}
+
+/// The recorder's API, served on every interface's port: the WebSocket,
+/// the docs and client beside it, and the recorded calls.
+fn api(r: Router<Arc<Ctx>>) -> Router<Arc<Ctx>> {
+    r.route("/api/ws", get(ws))
+        .route("/api/version", get(|| async { axum::Json(json!({ "app": APP_ID, "version": env!("CARGO_PKG_VERSION"), "api": crate::interfaces::API_VERSION })) }))
+        .route("/api/docs", get(|| async { api_file("README.md") }))
+        .route("/api/schema", get(|| async { api_file("protocol.schema.json") }))
+        .route("/api/protocol.ts", get(|| async { ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], PROTOCOL).into_response() }))
+        .route("/api/{*path}", get(|UrlPath(p): UrlPath<String>| async move { api_file(&p) }))
+        .route("/calls/{*path}", get(call_file))
+}
+
+/// Interface `id`'s server: its folder, and the API with its access.
+pub(crate) fn interface_app(ctx: Arc<Ctx>, id: String, stop: tokio::sync::watch::Receiver<bool>, loopback: bool) -> Router {
+    let name = id.clone();
+    api(Router::new())
+        .fallback(move |State(ctx): State<Arc<Ctx>>, uri: Uri| {
+            let id = name.clone();
+            async move { interface_file(&ctx, &id, &uri).await }
+        })
+        .layer(Extension(Door::Interface { id, stop }))
+        .layer(middleware::from_fn_with_state((ctx.clone(), loopback), guard))
+        .with_state(ctx)
 }
 
 /// SIGHUP: reopen the log file (logrotate moved it).
@@ -223,7 +233,7 @@ fn is_loopback_name(name: &str) -> bool {
 }
 
 /// The built-in interface's file `path` (its index.html for anything else:
-/// it routes with the URL's #).
+/// it routes with the URL's #). Only on its own port.
 fn builtin(path: &str) -> Response {
     let path = if path.is_empty() { "index.html" } else { path };
     match Ui::get(path).or_else(|| Ui::get("index.html")) {
@@ -239,57 +249,55 @@ fn builtin(path: &str) -> Response {
     }
 }
 
-/// `/`: the home interface — `--ui <folder>`, else `server.home`, else the built-in one.
-async fn home(State(ctx): State<Arc<Ctx>>, uri: Uri) -> Response {
-    let raw = uri.path().trim_start_matches('/');
-    let dir = ctx.home_dir.clone().or_else(|| {
-        let home = ctx.config.lock().unwrap().server.home.clone();
-        (!home.is_empty()).then(|| interface_dir(&ctx, &home).ok()).flatten()
-    });
-    match (dir, percent_decode(raw)) {
-        (None, _) => builtin(raw),
-        (Some(dir), Some(rel)) => folder_file(&dir, &rel, &uri).await,
-        (Some(_), None) => StatusCode::BAD_REQUEST.into_response(),
+/// A screenshot of an interface in the store (the Interfaces page shows
+/// them), fetched and checked by the recorder, so the page needn't reach
+/// GitHub. Built-in interface's port only.
+async fn store_screenshot(State(ctx): State<Arc<Ctx>>, UrlPath(sha): UrlPath<String>) -> Response {
+    match tokio::task::spawn_blocking(move || ctx.interfaces.store_screenshot(&sha)).await {
+        Ok(Ok((data, mime))) => ([(header::CONTENT_TYPE, mime), (header::CACHE_CONTROL, "max-age=86400, immutable")], data).into_response(),
+        Ok(Err(e)) => (StatusCode::NOT_FOUND, e).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
 
-/// A file of interface `name` (/ui/<name>/<path>).
-async fn ui_file(ctx: &Ctx, name: &str, path: &str, uri: &Uri) -> Response {
-    match interface_dir(ctx, name) {
-        Ok(dir) => folder_file(&dir, path, uri).await,
-        Err(e) => not_found(&e),
+/// Screenshot `n` of an installed interface (its interface.json's), from its folder.
+async fn interface_screenshot(State(ctx): State<Arc<Ctx>>, UrlPath((id, n)): UrlPath<(String, usize)>) -> Response {
+    let found = {
+        let cfg = ctx.config.lock().unwrap();
+        ctx.interfaces.screenshot(&cfg, &ctx.config_path, &id, n)
+    };
+    let Some((file, mime)) = found else { return StatusCode::NOT_FOUND.into_response() };
+    match tokio::fs::read(&file).await {
+        Ok(data) => ([(header::CONTENT_TYPE, mime), (header::CACHE_CONTROL, "no-cache")], data).into_response(),
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
     }
 }
 
-/// Interface `name`'s folder (it may not exist).
-fn interface_dir(ctx: &Ctx, name: &str) -> Result<PathBuf, String> {
-    let cfg = ctx.config.lock().unwrap();
-    let i = cfg.server.interfaces.iter().find(|i| i.name == name).ok_or_else(|| format!("There's no interface named “{name}” in the config."))?;
-    Ok(interface_path(&ctx.config_path, &i.path))
-}
-
-/// An interface's folder: absolute, ~/…, or relative to the config file's folder.
-fn interface_path(config_path: &Path, path: &str) -> PathBuf {
-    let path = path.trim();
-    if let Some(rest) = path.strip_prefix("~/") {
-        return trunk_app::config::home().join(rest);
-    }
-    let p = Path::new(path);
-    if p.is_absolute() {
-        p.to_path_buf()
-    } else {
-        config_path.parent().unwrap_or(Path::new(".")).join(p)
+/// A file of interface `id`, on its port.
+async fn interface_file(ctx: &Ctx, id: &str, uri: &Uri) -> Response {
+    let dir = {
+        let cfg = ctx.config.lock().unwrap();
+        ctx.interfaces.all(&cfg, &ctx.config_path).remove(id).map(|(_, dir)| dir)
+    };
+    match (dir, percent_decode(uri.path().trim_start_matches('/'))) {
+        (Some(dir), Some(rel)) => folder_file(&dir, &rel, uri).await,
+        (None, _) => not_found(&format!("There's no interface {id} any more.")),
+        (_, None) => StatusCode::BAD_REQUEST.into_response(),
     }
 }
 
 /// File `rel` of an interface's folder, as it is on disk now (edits show on
 /// reload): a folder's index.html, and the root's index.html for a path
 /// that isn't a file and has no extension (a page that routes itself).
-/// Nothing outside the folder, links included.
+/// Nothing outside the folder, links included, and no hidden files (its
+/// `.install.json`, a `.git`).
 async fn folder_file(root: &Path, rel: &str, uri: &Uri) -> Response {
     let rel = Path::new(rel);
     if rel.components().any(|c| !matches!(c, Component::Normal(_))) {
         return StatusCode::BAD_REQUEST.into_response();
+    }
+    if rel.components().any(|c| c.as_os_str().to_string_lossy().starts_with('.')) {
+        return not_found(&format!("{} is hidden.", uri.path()));
     }
     let Ok(root) = tokio::fs::canonicalize(root).await else {
         return not_found(&format!("The interface's folder {} isn't there.", root.display()));
@@ -309,7 +317,10 @@ async fn folder_file(root: &Path, rel: &str, uri: &Uri) -> Response {
         _ => return not_found(&format!("{} isn't in the interface's folder {}.", uri.path(), root.display())),
     };
     match tokio::fs::read(&real).await {
-        Ok(bytes) => ([(header::CONTENT_TYPE, mime_of(&real.to_string_lossy())), (header::CACHE_CONTROL, "no-cache".to_string())], bytes).into_response(),
+        Ok(bytes) => {
+            let headers = [(header::CONTENT_TYPE, mime_of(&real.to_string_lossy())), (header::CACHE_CONTROL, "no-cache".to_string()), (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string())];
+            (headers, bytes).into_response()
+        }
         Err(e) => not_found(&format!("{}: {e}", real.display())),
     }
 }
@@ -317,7 +328,7 @@ async fn folder_file(root: &Path, rel: &str, uri: &Uri) -> Response {
 fn not_found(why: &str) -> Response {
     let page = format!(
         "<!doctype html><meta charset=utf-8><title>Not found</title><body style=\"font:15px system-ui;margin:40px\"><h1>Not found</h1><p>{}</p>\
-         <p><a href=\"/builtin/\">Trunk Recorder Pro</a> · <a href=\"/ui/\">Interfaces</a></p>",
+         <p><a href=\"/\">Home</a> · <a href=\"/api/docs\">The API</a></p>",
         html_escape(why)
     );
     (StatusCode::NOT_FOUND, [(header::CONTENT_TYPE, "text/html; charset=utf-8")], page).into_response()
@@ -344,74 +355,8 @@ fn mime_of(path: &str) -> String {
     if text { format!("{mime}; charset=utf-8") } else { mime }
 }
 
-/// The interfaces: `GET /api/interfaces`.
-async fn interfaces_json(State(ctx): State<Arc<Ctx>>) -> Response {
-    axum::Json(interfaces_list(&ctx)).into_response()
-}
-
-fn interfaces_list(ctx: &Ctx) -> Value {
-    let cfg = ctx.config.lock().unwrap().clone();
-    let list: Vec<Value> = cfg
-        .server
-        .interfaces
-        .iter()
-        .map(|i| {
-            let dir = interface_path(&ctx.config_path, &i.path);
-            let problem = trunk_app::config::Interface::name_problem(&i.name).or_else(|| {
-                if !dir.is_dir() {
-                    Some(format!("The folder {} isn't there.", dir.display()))
-                } else if !dir.join("index.html").is_file() {
-                    Some(format!("{} has no index.html.", dir.display()))
-                } else {
-                    None
-                }
-            });
-            json!({ "name": i.name, "path": i.path, "folder": dir.display().to_string(), "url": format!("/ui/{}/", url_segment(&i.name)), "problem": problem })
-        })
-        .collect();
-    let home = match &ctx.home_dir {
-        Some(d) => json!({ "folder": d.display().to_string() }),
-        None if cfg.server.home.is_empty() => json!("builtin"),
-        None => json!(cfg.server.home),
-    };
-    json!({ "home": home, "builtin": "/builtin/", "interfaces": list })
-}
-
-/// `/ui/`: the interfaces, the examples and the docs, as links.
-async fn ui_index(State(ctx): State<Arc<Ctx>>) -> Response {
-    let v = interfaces_list(&ctx);
-    let mut rows = String::from("<li><a href=\"/builtin/\">Trunk Recorder Pro</a> <span>the built-in interface</span></li>");
-    for i in v["interfaces"].as_array().into_iter().flatten() {
-        let (name, folder) = (i["name"].as_str().unwrap_or(""), i["folder"].as_str().unwrap_or(""));
-        let note = match i["problem"].as_str() {
-            Some(p) => format!("<b>{}</b>", html_escape(p)),
-            None => html_escape(folder),
-        };
-        rows += &format!("<li><a href=\"/ui/{}/\">{}</a> <span>{note}</span></li>", url_segment(name), html_escape(name));
-    }
-    let mut examples = String::new();
-    for f in ApiDocs::iter().filter(|f| f.starts_with("examples/") && f.ends_with(".html")) {
-        examples += &format!("<li><a href=\"/api/{f}\">{}</a></li>", html_escape(f.trim_start_matches("examples/")));
-    }
-    let page = format!(
-        "<!doctype html><meta charset=utf-8><meta name=viewport content=\"width=device-width\"><title>Interfaces</title>\
-         <style>body{{font:15px system-ui;margin:40px auto;max-width:760px;padding:0 16px}}li{{margin:6px 0}}span{{color:#777;margin-left:8px}}</style>\
-         <h1>Interfaces</h1><ul>{rows}</ul>\
-         <p>Add your own in the config's <code>server.interfaces</code> (Setup → Recording → Interfaces), or run <code>trunk-pro --ui &lt;folder&gt;</code>.</p>\
-         <h2>Examples</h2><ul>{examples}</ul>\
-         <h2>Build your own</h2><ul><li><a href=\"/api/docs\">The API</a> (docs/api/README.md)</li><li><a href=\"/api/llms.txt\">For an LLM</a> (llms.txt)</li>\
-         <li><a href=\"/api/client.js\">client.js</a></li><li><a href=\"/api/protocol.ts\">protocol.ts</a></li></ul>"
-    );
-    ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], page).into_response()
-}
-
 fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
-}
-
-/// A name as one URL path segment.
-fn url_segment(s: &str) -> String {
-    s.bytes().map(|b| if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") }).collect()
 }
 
 /// "%20" → " "; None for bad escapes or bytes that aren't UTF-8.
@@ -475,29 +420,27 @@ async fn call_file(State(ctx): State<Arc<Ctx>>, UrlPath(path): UrlPath<String>, 
     StatusCode::NOT_FOUND.into_response()
 }
 
-async fn ws(State(ctx): State<Arc<Ctx>>, up: WebSocketUpgrade) -> Response {
-    up.on_upgrade(move |socket| session(ctx, socket))
+async fn ws(State(ctx): State<Arc<Ctx>>, Extension(door): Extension<Door>, up: WebSocketUpgrade) -> Response {
+    up.on_upgrade(move |socket| session(ctx, socket, door))
 }
 
-/// End a running survey (frees its radio) and tell the browsers.
-fn stop_survey(ctx: &Ctx) {
-    let r = ctx.survey.lock().unwrap().take();
-    if let Some(r) = r {
-        r.stop();
-        *ctx.survey_last.lock().unwrap() = None;
-        publish(&ctx.hub, crate::survey::idle_json());
+/// What a connection through `door` may do now; None once its interface is gone or off.
+fn access_of(ctx: &Ctx, door: &Door) -> Option<ApiAccess> {
+    match door {
+        Door::Builtin => Some(ApiAccess::Control),
+        Door::Interface { id, .. } => ctx.interfaces.access(&ctx.config.lock().unwrap(), id),
     }
 }
 
-pub(crate) fn devices_json() -> Value {
-    json!({ "type": "devices", "devices": sdr::devices() })
+pub(crate) fn devices() -> ToClient {
+    ToClient::Devices { devices: json!(sdr::devices()) }
 }
 
 /// The `dir` message, for the interface's folder picker: a folder on this
 /// computer, its subfolders and its .json files (a Trunk Recorder config to
 /// import); "" = the home folder. A path that doesn't exist yet lists the
 /// nearest folder above it that does.
-pub(crate) fn dir_json(path: &str) -> Value {
+pub(crate) fn dir(path: &str) -> ToClient {
     let home = trunk_app::config::home();
     let want = if path.trim().is_empty() { home.clone() } else { PathBuf::from(path.trim()) };
     let mut at = want.as_path();
@@ -530,8 +473,7 @@ pub(crate) fn dir_json(path: &str) -> Value {
     }
     dirs.sort_by_key(|n| n.to_lowercase());
     files.sort_by_key(|n| n.to_lowercase());
-    json!({
-        "type": "dir",
+    ToClient::Dir(body(json!({
         "path": at.display().to_string(),
         "parent": at.parent().map(|p| p.display().to_string()),
         "dirs": dirs,
@@ -539,18 +481,18 @@ pub(crate) fn dir_json(path: &str) -> Value {
         "home": home.display().to_string(),
         "sep": std::path::MAIN_SEPARATOR.to_string(),
         "error": error,
-    })
+    })))
 }
 
 /// The `trConfig` message: a Trunk Recorder config.json (the file, or a folder
 /// holding one) with the talkgroup and channel files it names, read here so
 /// the browser imports them in one go. A name resolves beside the config (as
 /// Trunk Recorder run from its folder does), else by its file name there.
-pub(crate) fn tr_config_json(path: &str) -> Value {
+pub(crate) fn tr_config(path: &str) -> ToClient {
     let p = PathBuf::from(path.trim());
     let file = if p.is_dir() { p.join("config.json") } else { p };
     let shown = file.display().to_string();
-    let fail = |e: String| json!({ "type": "trConfig", "path": shown, "error": e });
+    let fail = |e: String| ToClient::TrConfig(body(json!({ "path": shown, "error": e })));
     let text = match std::fs::read_to_string(&file) {
         Ok(t) => t,
         Err(e) => return fail(format!("Couldn't read {shown}: {e}")),
@@ -576,44 +518,69 @@ pub(crate) fn tr_config_json(path: &str) -> Value {
             }
         }
     }
-    json!({ "type": "trConfig", "path": shown, "text": text, "files": files, "error": null })
+    ToClient::TrConfig(body(json!({ "path": shown, "text": text, "files": files, "error": null })))
 }
 
-/// The `hello` a connection starts with: everything the interface shows.
-/// `devices` and `radios` are found off the async workers (they open USB).
-pub(crate) fn hello_json(ctx: &Ctx, devices: Value, radios: Value) -> Value {
+/// What a connection is told first, as ordinary messages: how the recorder
+/// is now, then `hello` (it's caught up). `control`: with what only control
+/// access gets (devices, key containers, plugins, interfaces); a listen-only
+/// connection gets the config without secrets ([`Out::of`]).
+pub(crate) async fn greeting(ctx: &Arc<Ctx>, control: bool) -> Vec<ToClient> {
+    let found = tokio::task::spawn_blocking(move || (control.then(|| json!(sdr::devices())), crate::radio::radios_json(false))).await;
+    let (devices, radios) = found.unwrap_or((None, Value::Null));
+    let mut m = greeting_now(ctx, devices, radios);
+    if control {
+        m.push(plugins_list(ctx).await);
+        let cfg = ctx.config.lock().unwrap().clone();
+        m.push(ctx.interfaces.list(&cfg, &ctx.config_path));
+    }
+    m.push(ToClient::Hello {
+        version: env!("CARGO_PKG_VERSION").into(),
+        platform: std::env::consts::OS.into(),
+        api: crate::interfaces::API_VERSION,
+        config_path: control.then(|| ctx.config_path.display().to_string()),
+        survey_bands: trunk_app::survey::bands_json(),
+        capabilities: trunk_app::protocol::Capability::ALL.to_vec(),
+    });
+    m
+}
+
+/// The greeting's messages that need nothing found or listed: `devices` for control access only.
+pub(crate) fn greeting_now(ctx: &Ctx, devices: Option<Value>, radios: Value) -> Vec<ToClient> {
     let config = ctx.config.lock().unwrap().clone();
-    let history: Vec<Value> = ctx.history.lock().unwrap().iter().take(runtime::HISTORY).cloned().collect();
-    // Each system's talker aliases, as saved (CSV).
-    let units: serde_json::Map<String, Value> = config
-        .systems
-        .iter()
-        .map(|s| &s.short_name)
-        .chain(config.conventional.iter().map(|c| &c.short_name))
-        .filter_map(|n| std::fs::read_to_string(crate::runtime::units_path(n)).ok().map(|csv| (n.clone(), Value::String(csv))))
-        .collect();
-    json!({
-        "type": "hello",
-        "version": env!("CARGO_PKG_VERSION"),
-        "platform": std::env::consts::OS,
-        "config": config,
-        "configPath": ctx.config_path.display().to_string(),
-        "devices": devices,
-        "phase": ctx.phase.lock().unwrap().to_json(),
-        "history": history,
-        "units": units,
+    let mut m = vec![ctx.phase.lock().unwrap().message(), ToClient::Config { config: Box::new(config.clone()), version: ctx.config_version.load(Ordering::SeqCst) }];
+    m.extend(ctx.talkgroups.lock().unwrap().iter().map(|(system, csv)| ToClient::Talkgroups { system: system.clone(), csv: csv.clone() }));
+    // Each system's talker aliases, as saved.
+    for n in config.systems.iter().map(|s| &s.short_name).chain(config.conventional.iter().map(|c| &c.short_name)) {
+        if let Ok(csv) = std::fs::read_to_string(crate::runtime::units_path(n)) {
+            m.push(ToClient::Units { system: n.clone(), csv });
+        }
+    }
+    // The codes conventional frequencies carried, as saved.
+    let heard = std::fs::read_to_string(crate::runtime::heard_path(&config)).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok());
+    m.push(ToClient::Heard { heard: heard.unwrap_or(json!({})) });
+    m.push(ToClient::History { entries: ctx.history.lock().unwrap().iter().take(runtime::HISTORY).cloned().collect() });
+    m.push(ToClient::Radios { radios });
+    m.push(ctx.survey_last.lock().unwrap().clone().unwrap_or_else(crate::survey::idle));
+    // The dashboard: recent notable events (oldest first), the computer as last sampled.
+    m.extend(ctx.shared.recent_events().into_iter().map(|e| ToClient::MonitorEvent(body(e))));
+    m.extend(ctx.host_last.lock().unwrap().clone());
+    if let Some(devices) = devices {
+        m.push(ToClient::Devices { devices });
         // Key containers waiting for a password, and which are unlocked.
-        "keys": crate::unlock::status_json(ctx),
-        // The codes conventional frequencies carried, as saved.
-        "heard": std::fs::read_to_string(crate::runtime::heard_path(&config)).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).unwrap_or(json!({})),
-        "radios": radios,
-        "surveyBands": trunk_app::survey::bands_json(),
-        "survey": ctx.survey_last.lock().unwrap().clone().unwrap_or_else(crate::survey::idle_json),
-        // The dashboard: recent notable events, the computer as last sampled, every plugin's runtime.
-        "events": ctx.shared.recent_events(),
-        "host": ctx.host_last.lock().unwrap().clone(),
-        "pluginRuntime": ctx.plugins.runtime_json(),
-    })
+        m.push(crate::unlock::status(ctx));
+    }
+    m
+}
+
+/// A message as a connection with (or without) control access hears it, if it may.
+pub(crate) fn text_for(out: &Out, control: bool) -> Option<String> {
+    match out {
+        Out::Text(s) => Some(s.clone()),
+        Out::Control(s) => control.then(|| s.clone()),
+        Out::Config { full, listen } => Some(if control { full } else { listen }.clone()),
+        Out::Topic { .. } | Out::Audio { .. } | Out::Quit => None,
+    }
 }
 
 /// What one connection watches ([`trunk_app::stats::Topics`]); counted in
@@ -639,65 +606,36 @@ impl Drop for Subs {
     }
 }
 
-/// A query's time span: `range` ("10m", "1h", "6h", "24h", "7d") back from
-/// now, or `from` / `to` (Unix s).
-fn span(v: &Value, now: i64) -> (i64, i64) {
-    let back = match v["range"].as_str().unwrap_or("1h") {
-        "10m" => 600,
-        "1h" => 3600,
-        "6h" => 6 * 3600,
-        "24h" => 86400,
-        "7d" => 7 * 86400,
-        _ => 3600,
-    };
-    let to = v["to"].as_i64().unwrap_or(now);
-    (v["from"].as_i64().unwrap_or(to - back), to)
-}
-
 fn unix_now() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
 }
 
-/// `statsQuery {id, series, range | from/to, points?}`: the minute history.
-pub(crate) fn stats_query(ctx: &Ctx, v: &Value) -> Value {
-    let (from, to) = span(v, unix_now());
-    let patterns: Vec<String> = v["series"].as_array().into_iter().flatten().filter_map(|t| t.as_str()).take(200).map(String::from).collect();
-    let points = v["points"].as_u64().unwrap_or(0) as usize;
+/// `statsQuery`: the minute history.
+pub(crate) fn stats_query(ctx: &Ctx, q: &StatsQuery) -> ToClient {
     let h = ctx.series.lock().unwrap();
-    json!({ "type": "statsResult", "id": v["id"], "from": from, "to": to, "loading": h.loading, "series": h.query(&patterns, from, to, points) })
+    q.answer(&h, unix_now(), h.loading)
 }
 
 /// `radioQuery`: the registry, with talkgroup names from the config and radio names as saved.
-pub(crate) fn radio_query(ctx: &Ctx, v: &Value) -> Value {
-    let cfg = ctx.config.lock().unwrap().clone();
-    let tables = trunk_app::stats::talkgroup_tables(&cfg);
-    let mut aliases: std::collections::HashMap<String, trunk_core::trunk::UnitAliases> = Default::default();
-    for n in cfg.systems.iter().map(|s| &s.short_name).chain(cfg.conventional.iter().map(|c| &c.short_name)) {
-        if let Ok(csv) = std::fs::read_to_string(crate::runtime::units_path(n)) {
-            aliases.insert(n.clone(), trunk_core::trunk::UnitAliases::parse_csv(&csv));
-        }
-    }
-    let tg = |sys: &str, t: u32| trunk_app::stats::tg_info(&tables, sys, t);
-    let unit = |sys: &str, u: u32| aliases.get(sys).and_then(|a| a.get(u)).map(str::to_string);
-    let names = trunk_app::stats::Names { tg: &tg, unit: &unit };
-    let mut out = ctx.shared.radio.lock().unwrap().query(v, unix_now(), &names);
-    out["type"] = json!("radioResult");
-    out["id"] = v["id"].clone();
-    out
+pub(crate) fn radio_query(ctx: &Ctx, q: &Body) -> ToClient {
+    ctx.shared.radio_query(&Value::Object(q.clone()), unix_now())
 }
 
-async fn session(ctx: Arc<Ctx>, mut socket: WebSocket) {
+async fn session(ctx: Arc<Ctx>, mut socket: WebSocket, door: Door) {
     let mut rx = ctx.hub.subscribe();
-    let found = tokio::task::spawn_blocking(|| (json!(sdr::devices()), crate::radio::radios_json(false))).await;
-    let (devices, radios) = found.unwrap_or((Value::Null, Value::Null));
-    let hello = hello_json(&ctx, devices, radios);
-    if socket.send(Message::Text(hello.to_string().into())).await.is_err() {
-        return;
+    let Some(mut access) = access_of(&ctx, &door) else { return };
+    let control = access == ApiAccess::Control;
+    for m in greeting(&ctx, control).await {
+        let Some(text) = text_for(&Out::of(&m), control) else { continue };
+        if socket.send(Message::Text(text.into())).await.is_err() {
+            return;
+        }
     }
-    let plugins = plugins_json(&ctx).await;
-    if socket.send(Message::Text(plugins.to_string().into())).await.is_err() {
-        return;
-    }
+    // An interface's connections close when it's no longer served on its port.
+    let mut stop = match &door {
+        Door::Interface { stop, .. } => Some(stop.clone()),
+        Door::Builtin => None,
+    };
     // Live audio: off until the browser asks; optionally one system and/or talkgroup only.
     let mut listen: Option<Listen> = None;
     let mut subs = Subs { ctx: ctx.clone(), topics: Default::default() };
@@ -707,27 +645,59 @@ async fn session(ctx: Arc<Ctx>, mut socket: WebSocket) {
                 Ok(out) => {
                     let m = match &*out {
                         Out::Text(s) => Message::Text(s.clone().into()),
+                        Out::Control(s) if access == ApiAccess::Control => Message::Text(s.clone().into()),
+                        Out::Control(_) => continue,
+                        // The config changed: so may this connection's access.
+                        Out::Config { full, listen } => {
+                            let Some(a) = access_of(&ctx, &door) else {
+                                let _ = socket.send(Message::Close(None)).await;
+                                return;
+                            };
+                            access = a;
+                            Message::Text(if access == ApiAccess::Control { full } else { listen }.clone().into())
+                        }
                         Out::Topic { topic, text } if subs.topics.contains(topic) => Message::Text(text.clone().into()),
                         Out::Topic { .. } => continue,
                         Out::Audio { short_name, tg, frame } => match &listen {
                             Some(l) if l.wants(short_name, *tg) => Message::Binary(frame.clone().into()),
                             _ => continue,
                         },
+                        Out::Quit => Message::Text(ToClient::Quit.to_json().into()),
                     };
-                    let quit = matches!(&*out, Out::Text(s) if s == r#"{"type":"quit"}"#);
+                    let quit = matches!(&*out, Out::Quit);
                     if socket.send(m).await.is_err() || quit {
                         let _ = socket.send(Message::Close(None)).await;
                         return;
                     }
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                // It may have missed a config change: its access is read again.
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => match access_of(&ctx, &door) {
+                    Some(a) => access = a,
+                    None => return,
+                },
                 Err(_) => return,
+            },
+            _ = async {
+                match stop.as_mut() {
+                    Some(s) => drop(s.wait_for(|stopped| *stopped).await),
+                    None => std::future::pending().await,
+                }
+            } => {
+                let _ = socket.send(Message::Close(None)).await;
+                return;
             },
             msg = socket.recv() => match msg {
                 Some(Ok(Message::Text(t))) => {
-                    let Ok(v) = serde_json::from_str::<Value>(&t) else { continue };
-                    if let Some(reply) = command(&ctx, &v, &mut listen, &mut subs).await {
-                        if socket.send(Message::Text(reply.to_string().into())).await.is_err() {
+                    // As it is now, not as the last config message this connection saw.
+                    let Some(now) = access_of(&ctx, &door) else { return };
+                    access = now;
+                    let reply = match Command::parse(&t) {
+                        Ok(c) if access == ApiAccess::Control || c.listen_may_send() => command(&ctx, c, &mut listen, &mut subs).await,
+                        Ok(c) => Some(ToClient::error(access::refusal(c.kind()))),
+                        Err(e) => Some(ToClient::error(e)),
+                    };
+                    if let Some(reply) = reply {
+                        if socket.send(Message::Text(reply.to_json().into())).await.is_err() {
                             return;
                         }
                     }
@@ -749,9 +719,9 @@ fn edit_config(ctx: &Ctx, f: impl FnOnce(&mut crate::config::Config)) -> Result<
         return Ok(());
     }
     cfg.save(&ctx.config_path).map_err(|e| format!("Couldn't save the config: {e}"))?;
+    ctx.config_changed(&cfg);
     let c = cfg.clone();
     drop(cfg);
-    publish(&ctx.hub, json!({ "type": "config", "config": c }));
     ctx.plugins.set_delays(&c);
     if crate::plugins::changed(&old, &c) {
         ctx.plugins.reload(&c);
@@ -759,322 +729,305 @@ fn edit_config(ctx: &Ctx, f: impl FnOnce(&mut crate::config::Config)) -> Result<
     Ok(())
 }
 
+fn void<T>(_: T) {}
+
 /// The `plugins` message (asking plugins who they are can take a moment).
-async fn plugins_json(ctx: &Arc<Ctx>) -> Value {
+async fn plugins_list(ctx: &Arc<Ctx>) -> ToClient {
     let ctx2 = ctx.clone();
     tokio::task::spawn_blocking(move || {
         let cfg = ctx2.config.lock().unwrap().clone();
-        ctx2.plugins.list_json(&cfg)
+        ctx2.plugins.list(&cfg)
     })
     .await
-    .unwrap_or(Value::Null)
+    .unwrap_or_else(|e| ToClient::error(e.to_string()))
 }
 
-/// Which live audio a connection wants: every call, or one system's
-/// (65535: conventional) and/or one talkgroup's.
-/// What live audio a connection asked for: one system's (by short name)
-/// and / or one talkgroup's, or everything.
+/// What live audio a connection asked for: one system's (by short name;
+/// whichever of its sites a call plays from) and / or one talkgroup's, or
+/// everything.
 struct Listen {
     system: Option<String>,
     talkgroup: Option<u32>,
 }
 
 impl Listen {
-    fn from_json(v: &Value) -> Listen {
-        Listen { system: v["system"].as_str().map(String::from), talkgroup: v["talkgroup"].as_u64().map(|t| t as u32) }
-    }
     fn wants(&self, short_name: &str, tg: u32) -> bool {
         self.system.as_deref().is_none_or(|s| s == short_name) && self.talkgroup.is_none_or(|t| t == tg)
     }
 }
 
-async fn command(ctx: &Arc<Ctx>, v: &Value, listen: &mut Option<Listen>, subs: &mut Subs) -> Option<Value> {
-    match v["type"].as_str()? {
+/// `msg` as an error message, if there is one.
+fn failed(msg: Result<(), String>) -> Option<ToClient> {
+    msg.err().map(ToClient::error)
+}
+
+/// Do what a connection asked (its access allows it); its answer, if any, is for it alone.
+async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs: &mut Subs) -> Option<ToClient> {
+    match cmd {
         // What this connection watches: costly messages (waterfalls, the
         // control channel log, detail views) only go to those that ask.
-        "subscribe" => {
-            let topics: std::collections::BTreeSet<String> = v["topics"].as_array().into_iter().flatten().filter_map(|t| t.as_str()).take(64).map(String::from).collect();
-            subs.set(topics);
-            Some(json!({ "type": "subscribed", "topics": subs.topics }))
+        Command::Subscribe { topics } => {
+            subs.set(topics.into_iter().take(64).collect());
+            Some(ToClient::Subscribed { topics: subs.topics.iter().cloned().collect() })
         }
-        "statsQuery" => {
-            let (ctx2, v) = (ctx.clone(), v.clone());
-            tokio::task::spawn_blocking(move || stats_query(&ctx2, &v)).await.ok()
-        }
-        "radioQuery" => {
-            let (ctx2, v) = (ctx.clone(), v.clone());
-            tokio::task::spawn_blocking(move || radio_query(&ctx2, &v)).await.ok()
-        }
-        "olderCalls" => {
+        Command::StatsQuery(q) => {
             let ctx2 = ctx.clone();
-            let (before, limit) = (v["before"].as_i64().unwrap_or(i64::MAX), v["limit"].as_u64().unwrap_or(100).clamp(1, 500) as usize);
-            tokio::task::spawn_blocking(move || runtime::older_calls(&ctx2, before, limit)).await.ok()
+            tokio::task::spawn_blocking(move || stats_query(&ctx2, &q)).await.ok()
         }
-        "setConfig" => match serde_json::from_value::<Config>(v["config"].clone()) {
+        Command::RadioQuery(q) => {
+            let ctx2 = ctx.clone();
+            tokio::task::spawn_blocking(move || radio_query(&ctx2, &q)).await.ok()
+        }
+        Command::OlderCalls { before, limit } => {
+            let ctx2 = ctx.clone();
+            tokio::task::spawn_blocking(move || runtime::older_calls(&ctx2, before, limit.clamp(1, 500))).await.ok()
+        }
+        Command::SetConfig { config, version } => match Config::from_value(config) {
             Ok(mut c) => {
                 // While linked, a conventional system's channels are its file's
                 // (re-read: a spreadsheet may have changed it). Files are linked
                 // with "channelFile".
                 c.load_channel_files(&ctx.config_path);
-                let saved = c.save(&ctx.config_path);
-                let old = std::mem::replace(&mut *ctx.config.lock().unwrap(), c.clone());
-                // A talkgroup file changed while recording (an Ignore flag set): the session takes it now.
-                if ctx.runner.lock().unwrap().is_some() {
-                    let mut cmds = ctx.engine_cmds.lock().unwrap();
-                    for s in &c.systems {
-                        if old.systems.iter().find(|o| o.short_name == s.short_name).is_some_and(|o| o.talkgroups_csv != s.talkgroups_csv) {
-                            cmds.push(crate::runtime::EngineCmd::Talkgroups { short_name: s.short_name.clone(), csv: s.talkgroups_csv.clone() });
-                        }
+                // Only an edit of the config as it is now: another browser's change since isn't lost.
+                let (old, saved, now) = {
+                    let mut cur = ctx.config.lock().unwrap();
+                    let at = ctx.config_version.load(Ordering::SeqCst);
+                    if version != at {
+                        let error = "The config was changed elsewhere meanwhile, so this edit wasn't saved: here it is as it is now.".to_string();
+                        return Some(ToClient::ConfigSaved { version: at, error: Some(error) });
                     }
-                }
+                    let saved = c.save(&ctx.config_path);
+                    let old = std::mem::replace(&mut *cur, c.clone());
+                    (old, saved, ctx.config_changed(&cur))
+                };
                 if old.log != c.log {
                     crate::logging::configure(&c.log, ctx.config_path.parent().unwrap_or(std::path::Path::new(".")));
                 }
-                publish(&ctx.hub, json!({ "type": "config", "config": c }));
                 if old.keys != c.keys || old.systems != c.systems || old.conventional != c.conventional {
                     crate::unlock::config_changed(ctx, &c);
                 }
                 // Their delays apply at once, to what's waiting too (no restart).
                 ctx.plugins.set_delays(&c);
+                // Interfaces turned on or off, moved, added: served so at once.
+                if old.server.interfaces != c.server.interfaces {
+                    tokio::spawn(crate::interfaces::serve::reconcile(ctx.clone()));
+                }
                 // Plugins' settings changed while recording: they restart with them.
                 if crate::plugins::changed(&old, &c) {
                     let ctx2 = ctx.clone();
                     let _ = tokio::task::spawn_blocking(move || ctx2.plugins.reload(&c)).await;
                 }
-                saved.err().map(|e| json!({ "type": "error", "message": format!("Couldn't save the config: {e}") }))
+                Some(ToClient::ConfigSaved { version: now, error: saved.err().map(|e| format!("Couldn't save the config: {e}")) })
             }
-            Err(e) => Some(json!({ "type": "error", "message": format!("Bad config: {e}") })),
+            Err(e) => Some(ToClient::ConfigSaved { version: ctx.config_version.load(Ordering::SeqCst), error: Some(format!("Bad config: {e}")) }),
         },
-        // Link conventional system `index`'s channels to a CSV (created from
-        // its list if new), reload it (the same path again), or unlink ("").
+        // (Written beside the config; a recording takes it at once.)
+        Command::SetTalkgroups { system, csv } => failed(runtime::set_talkgroups(ctx, &system, csv)),
         // A key container with no passwordFile, unlocked with a password typed in, or locked again
         // (docs/configuration/systems.md). The password is never kept.
-        "unlockKeys" => {
-            let (ctx2, name) = (ctx.clone(), v["source"].as_str().unwrap_or("").to_string());
-            let password = zeroize::Zeroizing::new(v["password"].as_str().unwrap_or("").to_string());
-            let r = tokio::task::spawn_blocking(move || crate::unlock::unlock(&ctx2, &name, &password)).await.unwrap_or_else(|e| Err(e.to_string()));
-            r.err().map(|e| json!({ "type": "error", "message": e }))
+        Command::UnlockKeys { source, password } => {
+            let (ctx2, password) = (ctx.clone(), zeroize::Zeroizing::new(password));
+            let r = tokio::task::spawn_blocking(move || crate::unlock::unlock(&ctx2, &source, &password)).await.unwrap_or_else(|e| Err(e.to_string()));
+            failed(r)
         }
-        "lockKeys" => {
-            crate::unlock::lock(ctx, v["source"].as_str().unwrap_or(""));
+        Command::LockKeys { source } => {
+            crate::unlock::lock(ctx, &source);
             None
         }
-        "channelFile" => {
-            let path = v["path"].as_str().unwrap_or("").to_string();
-            let k = v["index"].as_u64().unwrap_or(0) as usize;
-            let mut c = ctx.config.lock().unwrap().clone();
-            let r = c.link_channel_file(k, &ctx.config_path, &path);
-            if r.is_ok() || c.conventional.get(k).is_some_and(|x| !x.channel_file.is_empty()) {
-                let saved = c.save(&ctx.config_path);
-                *ctx.config.lock().unwrap() = c.clone();
-                publish(&ctx.hub, json!({ "type": "config", "config": c }));
-                if let Err(e) = saved {
-                    return Some(json!({ "type": "error", "message": format!("Couldn't save the config: {e}") }));
+        // Link conventional system `index`'s channels to a CSV (created from
+        // its list if new), reload it (the same path again), or unlink ("").
+        Command::ChannelFile { index, path } => {
+            let mut r = Ok(());
+            // (A failed link that left the channels unlinked is no edit.)
+            let saved = edit_config(&ctx, |c| {
+                let before = c.clone();
+                r = c.link_channel_file(index, &ctx.config_path, &path);
+                if r.is_err() && c.conventional.get(index).is_none_or(|x| x.channel_file.is_empty()) {
+                    *c = before;
                 }
+            });
+            if let Err(e) = saved {
+                return Some(ToClient::error(e));
             }
-            r.err().map(|e| json!({ "type": "error", "message": e }))
+            failed(r)
         }
-        "start" => {
+        Command::Start => {
             let cfg = ctx.config.lock().unwrap().clone();
             let ctx2 = ctx.clone();
-            let r = tokio::task::spawn_blocking(move || {
-                let quitting = ctx2.lifecycle.lock().unwrap();
-                if *quitting {
-                    return None;
-                }
-                stop_survey(&ctx2);
-                if let Some(old) = ctx2.runner.lock().unwrap().take() {
-                    old.stop();
-                }
-                ctx2.set_phase("starting", None, false);
-                match runtime::start(ctx2.clone(), cfg) {
-                    Ok(r) => {
-                        *ctx2.runner.lock().unwrap() = Some(r);
-                        None
-                    }
-                    Err(e) => {
-                        ctx2.set_phase("idle", Some(e.clone()), false);
-                        Some(e)
-                    }
-                }
-            })
-            .await
-            .ok()
-            .flatten();
-            r.map(|e| json!({ "type": "error", "message": e }))
+            tokio::task::spawn_blocking(move || ctx2.begin_recording(cfg)).await.ok().and_then(Result::err).map(ToClient::error)
         }
-        "stop" => {
+        Command::Stop => {
             let ctx2 = ctx.clone();
-            let _ = tokio::task::spawn_blocking(move || {
-                let _held = ctx2.lifecycle.lock().unwrap();
-                if let Some(r) = ctx2.runner.lock().unwrap().take() {
-                    r.stop();
-                }
-            })
-            .await;
+            let _ = tokio::task::spawn_blocking(move || ctx2.stop_recording()).await;
             None
         }
-        "devices" => tokio::task::spawn_blocking(devices_json).await.ok(),
-        "findRadios" => {
+        Command::Devices => tokio::task::spawn_blocking(devices).await.ok(),
+        Command::FindRadios => {
             let radios = tokio::task::spawn_blocking(|| crate::radio::radios_json(true)).await.unwrap_or(Value::Null);
-            Some(json!({ "type": "radios", "radios": radios }))
+            Some(ToClient::Radios { radios })
         }
-        "quit" => {
+        Command::Quit => {
             let ctx2 = ctx.clone();
-            let _ = tokio::task::spawn_blocking(move || stop_survey(&ctx2)).await;
+            let _ = tokio::task::spawn_blocking(move || ctx2.stop_survey()).await;
             ctx.quit.notify_one();
             None
         }
-        "surveyStart" => {
+        Command::SurveyStart(b) => {
             let cfg = ctx.config.lock().unwrap().clone();
-            let req = trunk_app::survey::Request::from_json(v);
+            let req = trunk_app::survey::Request::from_json(&Value::Object(b));
             let ctx2 = ctx.clone();
-            let r = tokio::task::spawn_blocking(move || {
-                let quitting = ctx2.lifecycle.lock().unwrap();
-                if *quitting {
-                    return None;
-                }
-                {
-                    let mut runner = ctx2.runner.lock().unwrap();
-                    match runner.take() {
-                        // (Its capture files ended: nothing is recording.)
-                        Some(r) if r.finished() => r.stop(),
-                        Some(r) => {
-                            *runner = Some(r);
-                            return Some("Stop recording first — the scan needs the radio to itself.".to_string());
-                        }
-                        None => {}
-                    }
-                }
-                stop_survey(&ctx2);
-                match crate::survey::start(ctx2.clone(), cfg, req) {
-                    Ok(r) => {
-                        *ctx2.survey.lock().unwrap() = Some(r);
-                        None
-                    }
-                    Err(e) => Some(e),
-                }
+            tokio::task::spawn_blocking(move || ctx2.begin_survey(cfg, req)).await.ok().and_then(Result::err).map(ToClient::error)
+        }
+        // (Behind the lifecycle lock, which a start or stop may hold for seconds.)
+        Command::SurveyListen { freq_hz } => {
+            let ctx2 = ctx.clone();
+            let _ = tokio::task::spawn_blocking(move || ctx2.survey_send(crate::survey::UserCmd::Listen(freq_hz))).await;
+            None
+        }
+        Command::SurveyRescan => {
+            let ctx2 = ctx.clone();
+            let _ = tokio::task::spawn_blocking(move || ctx2.survey_send(crate::survey::UserCmd::Rescan)).await;
+            None
+        }
+        Command::SurveyStop => {
+            let ctx2 = ctx.clone();
+            let _ = tokio::task::spawn_blocking(move || ctx2.stop_survey()).await;
+            None
+        }
+        // A moment with the radio alone (nothing may start meanwhile); the answer is this connection's.
+        Command::ProfileSource(b) => {
+            let cfg = ctx.config.lock().unwrap().clone();
+            let req = trunk_app::profile::Request::from_json(&Value::Object(b));
+            let ctx2 = ctx.clone();
+            let answer = tokio::task::spawn_blocking(move || {
+                let source = req.source;
+                ctx2.with_radios("profiling", || crate::profile::run(&cfg, &req)).map(|r| r.unwrap_or_else(|e| trunk_app::profile::error_json(source, &e)))
             })
             .await
             .ok()
             .flatten();
-            r.map(|e| json!({ "type": "error", "message": e }))
+            answer.map(|v| ToClient::SourceProfile(body(v)))
         }
-        "surveyListen" => {
-            if let (Some(r), Some(f)) = (ctx.survey.lock().unwrap().as_ref(), v["freqHz"].as_f64()) {
-                r.send(crate::survey::UserCmd::Listen(f));
-            }
-            None
-        }
-        "surveyRescan" => {
-            if let Some(r) = ctx.survey.lock().unwrap().as_ref() {
-                r.send(crate::survey::UserCmd::Rescan);
-            }
-            None
-        }
-        "surveyStop" => {
+        Command::ReadTrConfig { path } => tokio::task::spawn_blocking(move || tr_config(&path)).await.ok(),
+        Command::ListDir { path } => tokio::task::spawn_blocking(move || dir(&path)).await.ok(),
+        Command::Plugins => Some(plugins_list(ctx).await),
+        Command::Store { kind, refresh } => {
             let ctx2 = ctx.clone();
-            let _ = tokio::task::spawn_blocking(move || stop_survey(&ctx2)).await;
-            None
-        }
-        // A moment with the radio alone (nothing may start meanwhile); the answer is this connection's.
-        "profileSource" => {
-            let cfg = ctx.config.lock().unwrap().clone();
-            let req = trunk_app::profile::Request::from_json(v);
-            let ctx2 = ctx.clone();
-            tokio::task::spawn_blocking(move || {
-                let quitting = ctx2.lifecycle.lock().unwrap();
-                if *quitting {
-                    return None;
-                }
-                {
-                    let mut runner = ctx2.runner.lock().unwrap();
-                    match runner.take() {
-                        Some(r) if r.finished() => r.stop(),
-                        Some(r) => {
-                            *runner = Some(r);
-                            return Some(trunk_app::profile::error_json(req.source, "Stop recording first — profiling needs the radio to itself."));
-                        }
-                        None => {}
-                    }
-                }
-                stop_survey(&ctx2);
-                Some(crate::profile::run(&cfg, &req))
+            tokio::task::spawn_blocking(move || match kind {
+                StoreKind::Plugin => ctx2.plugins.store(refresh),
+                StoreKind::Interface => ctx2.interfaces.store(refresh),
             })
             .await
             .ok()
-            .flatten()
-        }
-        "readTrConfig" => {
-            let path = v["path"].as_str().unwrap_or("").to_string();
-            tokio::task::spawn_blocking(move || tr_config_json(&path)).await.ok()
-        }
-        "listDir" => {
-            let path = v["path"].as_str().unwrap_or("").to_string();
-            tokio::task::spawn_blocking(move || dir_json(&path)).await.ok()
-        }
-        "plugins" => Some(plugins_json(ctx).await),
-        "pluginStore" => {
-            let (ctx2, refresh) = (ctx.clone(), v["refresh"].as_bool() == Some(true));
-            tokio::task::spawn_blocking(move || ctx2.plugins.store_json(refresh)).await.ok()
         }
         // In the background: it takes a while, and this connection should
-        // hear how it goes (pluginInstall), as everyone does.
-        "installPlugin" => {
-            let (ctx2, v) = (ctx.clone(), v.clone());
+        // hear how it goes (installProgress), as everyone does. An update of
+        // a running plugin restarts it with the new version; a new interface
+        // is served at once, on a port of its own, with the access its
+        // listing asks.
+        Command::Install { kind: StoreKind::Plugin, what } => {
+            let ctx2 = ctx.clone();
             tokio::spawn(async move {
                 let ctx3 = ctx2.clone();
                 let _ = tokio::task::spawn_blocking(move || {
                     let cfg = ctx3.config.lock().unwrap().clone();
-                    ctx3.plugins.install(&v, &cfg);
-                    // An update of a running plugin: it restarts with the new version.
+                    ctx3.plugins.install(&what, &cfg, &crate::store::announce(&ctx3.hub, StoreKind::Plugin));
                     let cfg = ctx3.config.lock().unwrap().clone();
                     ctx3.plugins.reload(&cfg);
                 })
                 .await;
-                publish(&ctx2.hub, plugins_json(&ctx2).await);
+                publish(&ctx2.hub, plugins_list(&ctx2).await);
             });
             None
         }
-        "addPlugin" | "removePlugin" => {
-            let (ctx2, v) = (ctx.clone(), v.clone());
+        Command::Install { kind: StoreKind::Interface, what } => {
+            let ctx2 = ctx.clone();
+            tokio::spawn(async move {
+                let ctx3 = ctx2.clone();
+                let r = tokio::task::spawn_blocking(move || {
+                    let cfg = ctx3.config.lock().unwrap().clone();
+                    let done = ctx3.interfaces.install(&what, &cfg, &crate::store::announce(&ctx3.hub, StoreKind::Interface))?;
+                    let taken = ctx3.interfaces.taken();
+                    edit_config(&ctx3, |c| done.apply(c, &taken)).err()
+                })
+                .await;
+                if let Ok(Some(e)) = r {
+                    publish(&ctx2.hub, ToClient::error(e));
+                }
+                crate::interfaces::serve::reconcile(ctx2).await;
+            });
+            None
+        }
+        Command::AddPlugin { path } => {
+            let ctx2 = ctx.clone();
             let r = tokio::task::spawn_blocking(move || {
                 let cfg = ctx2.config.lock().unwrap().clone();
-                if v["type"] == "addPlugin" {
-                    let (id, path, notice) = ctx2.plugins.add(&v, &cfg)?;
-                    edit_config(&ctx2, |c| c.plugins.entry(id).or_default().path = path.display().to_string())?;
-                    // A rebuilt copy of a running plugin: it restarts with it.
-                    let cfg = ctx2.config.lock().unwrap().clone();
+                let (id, path, notice) = ctx2.plugins.add(&path, &cfg)?;
+                // A rebuilt copy of one that's on (the config doesn't change): it restarts with it.
+                if cfg.plugins.get(&id).is_some_and(|p| p.enabled && Path::new(&p.path) == path) {
                     ctx2.plugins.reload(&cfg);
-                    Ok(Some(notice))
-                } else {
-                    let id = ctx2.plugins.remove(&v, &cfg)?;
-                    edit_config(&ctx2, |c| crate::plugins::forget(c, &id))?;
-                    Ok(None)
                 }
+                edit_config(&ctx2, |c| c.plugins.entry(id).or_default().path = path.display().to_string())?;
+                Ok(notice)
             })
             .await
             .unwrap_or_else(|e| Err(e.to_string()));
             // Everyone sees the change (or the list as it still is).
-            publish(&ctx.hub, plugins_json(ctx).await);
-            match r {
-                Ok(Some(notice)) => Some(json!({ "type": "notice", "message": notice })),
-                Ok(None) => None,
-                Err(e) => Some(json!({ "type": "error", "message": e })),
-            }
+            publish(&ctx.hub, plugins_list(ctx).await);
+            Some(r.map_or_else(ToClient::error, ToClient::notice))
         }
-        "listen" => {
-            *listen = (v["on"].as_bool() == Some(true)).then(|| Listen::from_json(v));
+        Command::RemovePlugin { id } => {
+            let ctx2 = ctx.clone();
+            let r = tokio::task::spawn_blocking(move || {
+                let cfg = ctx2.config.lock().unwrap().clone();
+                let id = ctx2.plugins.remove(&id, &cfg)?;
+                edit_config(&ctx2, |c| crate::plugins::forget(c, &id))
+            })
+            .await
+            .unwrap_or_else(|e| Err(e.to_string()));
+            publish(&ctx.hub, plugins_list(ctx).await);
+            failed(r)
+        }
+        Command::Interfaces => {
+            let cfg = ctx.config.lock().unwrap().clone();
+            Some(ctx.interfaces.list(&cfg, &ctx.config_path))
+        }
+        Command::AddInterface { path } => {
+            let ctx2 = ctx.clone();
+            let r = tokio::task::spawn_blocking(move || {
+                let cfg = ctx2.config.lock().unwrap().clone();
+                let (id, entry) = ctx2.interfaces.add(&path, &cfg, &ctx2.config_path)?;
+                let notice = format!("Added {id}, on port {}.", entry.port);
+                edit_config(&ctx2, |c| void(c.server.interfaces.insert(id, entry)))?;
+                Ok(notice)
+            })
+            .await
+            .unwrap_or_else(|e| Err(e.to_string()));
+            crate::interfaces::serve::reconcile(ctx.clone()).await;
+            Some(r.map_or_else(ToClient::error, ToClient::notice))
+        }
+        Command::RemoveInterface { id } => {
+            let ctx2 = ctx.clone();
+            let r = tokio::task::spawn_blocking(move || {
+                let cfg = ctx2.config.lock().unwrap().clone();
+                ctx2.interfaces.remove(&id, &cfg)?;
+                edit_config(&ctx2, |c| void(c.server.interfaces.remove(&id)))
+            })
+            .await
+            .unwrap_or_else(|e| Err(e.to_string()));
+            crate::interfaces::serve::reconcile(ctx.clone()).await;
+            failed(r)
+        }
+        Command::Listen { on, system, talkgroup } => {
+            *listen = on.then_some(Listen { system, talkgroup });
             None
         }
-        _ => None,
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{admit, folder_file, interface_path, percent_decode, Listen};
-    use serde_json::json;
+    use super::{admit, folder_file, percent_decode, Listen};
     use axum::http::{header, StatusCode, Uri};
     use std::path::Path;
 
@@ -1087,6 +1040,31 @@ mod tests {
         (status, if location.is_empty() { mime } else { location }, body)
     }
 
+    /// An edit of the config as it was before someone else's change is
+    /// refused (and told the version now); one of the config as it is, saved.
+    #[tokio::test]
+    async fn a_config_edit_names_the_version_it_edits() {
+        use super::{command, Subs};
+        use trunk_app::protocol::{Command, ToClient};
+        let dir = std::env::temp_dir().join(format!("trunk-pro-cfgver-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ctx = crate::protocol_tests::ctx(crate::protocol_tests::conventional_config(), &dir);
+        let (mut listen, mut subs) = (None, Subs { ctx: ctx.clone(), topics: Default::default() });
+        let mut edited = serde_json::to_value(crate::protocol_tests::conventional_config()).unwrap();
+        edited["recording"]["minCallS"] = 3.into();
+        let set = |version| Command::SetConfig { config: edited.clone(), version };
+        match command(&ctx, set(1), &mut listen, &mut subs).await {
+            Some(ToClient::ConfigSaved { version: 2, error: None }) => {}
+            r => panic!("not saved: {:?}", r.map(|m| m.to_value())),
+        }
+        assert_eq!(ctx.config.lock().unwrap().recording.min_call_s, 3.0);
+        match command(&ctx, set(1), &mut listen, &mut subs).await {
+            Some(ToClient::ConfigSaved { version: 2, error: Some(_) }) => {}
+            r => panic!("not refused: {:?}", r.map(|m| m.to_value())),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[tokio::test]
     async fn an_interface_folder_is_served_and_nothing_outside_it() {
         let base = std::env::temp_dir().join(format!("trunk-pro-ui-{}", std::process::id()));
@@ -1097,6 +1075,7 @@ mod tests {
         std::fs::write(root.join("app.js"), "js").unwrap();
         std::fs::write(root.join("sub/index.html"), "sub").unwrap();
         std::fs::write(base.join("secret.txt"), "secret").unwrap();
+        std::fs::write(root.join(".install.json"), "{}").unwrap();
         #[cfg(unix)]
         std::os::unix::fs::symlink(base.join("secret.txt"), root.join("link.txt")).unwrap();
 
@@ -1113,6 +1092,7 @@ mod tests {
         assert_eq!(get(&root, "../secret.txt", "/ui/x/../secret.txt").await.0, StatusCode::BAD_REQUEST);
         #[cfg(unix)]
         assert_eq!(get(&root, "link.txt", "/ui/x/link.txt").await.0, StatusCode::NOT_FOUND);
+        assert_eq!(get(&root, ".install.json", "/.install.json").await.0, StatusCode::NOT_FOUND);
         // No folder: says so.
         assert!(get(&base.join("gone"), "", "/").await.2.contains("isn't there"));
         let _ = std::fs::remove_dir_all(&base);
@@ -1123,10 +1103,6 @@ mod tests {
         assert_eq!(percent_decode("my%20ui/a%2Bb.js").as_deref(), Some("my ui/a+b.js"));
         assert_eq!(percent_decode("bad%2"), None);
         assert_eq!(percent_decode("%FF"), None);
-        let cfg = Path::new("/etc/trunk-pro/config.json");
-        assert_eq!(interface_path(cfg, "ui/wall"), Path::new("/etc/trunk-pro/ui/wall"));
-        assert_eq!(interface_path(cfg, "/srv/wall"), Path::new("/srv/wall"));
-        assert!(interface_path(cfg, "~/wall").ends_with("wall") && !interface_path(cfg, "~/wall").starts_with("/etc"));
     }
 
     #[test]
@@ -1169,10 +1145,10 @@ mod tests {
     /// Live audio is asked for by a system's short name.
     #[test]
     fn listening_by_short_name() {
-        let l = Listen::from_json(&json!({ "on": true, "system": "dcfd", "talkgroup": null }));
+        let l = Listen { system: Some("dcfd".into()), talkgroup: None };
         assert!(l.wants("dcfd", 101) && !l.wants("wmata", 101));
-        let l = Listen::from_json(&json!({ "on": true, "system": "wmata", "talkgroup": 101 }));
+        let l = Listen { system: Some("wmata".into()), talkgroup: Some(101) };
         assert!(l.wants("wmata", 101) && !l.wants("wmata", 102) && !l.wants("dcfd", 101));
-        assert!(Listen::from_json(&json!({ "system": null, "talkgroup": null })).wants("conv", 7));
+        assert!(Listen { system: None, talkgroup: None }.wants("conv", 7));
     }
 }

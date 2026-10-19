@@ -70,6 +70,10 @@ pub struct Msd {
     /// The pulse (scaled so a lone symbol reads its level after the
     /// receiver's filter), every 1/OVERSAMPLE sample from −(SPAN+1) symbols.
     table: Vec<f32>,
+    /// The table by fraction: `rows[r][m]` is `table[m·OVERSAMPLE + r]`, for
+    /// r up to OVERSAMPLE (that row is row 0 a sample on), so a pulse's
+    /// samples — one row and the next — are read in order and its loop vectorises.
+    rows: Vec<Vec<f32>>,
     half: f64,
     /// Channel IQ from sample `iq_base` on.
     iq: VecDeque<Complex32>,
@@ -116,12 +120,15 @@ impl Msd {
         let k_norm: f64 = (-m..=m).map(|i| tx.at(i as f64 / sps) * rx[(i + m) as usize] / sum).sum();
         let half = (SPAN + 1) as f64 * sps;
         let len = (2.0 * half * OVERSAMPLE).ceil() as usize + 2;
-        let table = (0..len).map(|i| (tx.at((i as f64 / OVERSAMPLE - half) / sps) / k_norm) as f32).collect();
+        let table: Vec<f32> = (0..len).map(|i| (tx.at((i as f64 / OVERSAMPLE - half) / sps) / k_norm) as f32).collect();
+        let step = OVERSAMPLE as usize;
+        let rows = (0..=step).map(|r| (0..len.div_ceil(step) + 1).map(|m| table.get(m * step + r).copied().unwrap_or(0.0)).collect()).collect();
         Msd {
             feedback,
             sps,
             w: (2.0 * PI / rate) as f32,
             table,
+            rows,
             half,
             iq: VecDeque::new(),
             iq_base: 0,
@@ -211,13 +218,13 @@ impl Msd {
         if first >= out.len() || x as usize + 1 >= self.table.len() {
             return;
         }
-        let (mut k, fr) = (x as usize, (x - (x as usize) as f64) as f32);
-        for o in &mut out[first..] {
-            if k + 1 >= self.table.len() {
-                break;
-            }
-            *o += level * (self.table[k] + (self.table[k + 1] - self.table[k]) * fr);
-            k += step;
+        let (k, fr) = (x as usize, (x - (x as usize) as f64) as f32);
+        // Sample i reads table[k + i·step] and the next, while that's in the table.
+        let n = (self.table.len() - 1 - k).div_ceil(step).min(out.len() - first);
+        let (r, m) = (k % step, k / step);
+        let (a, b) = (&self.rows[r][m..m + n], &self.rows[r + 1][m..m + n]);
+        for ((o, &a), &b) in out[first..first + n].iter_mut().zip(a).zip(b) {
+            *o += level * (a + (b - a) * fr);
         }
     }
 

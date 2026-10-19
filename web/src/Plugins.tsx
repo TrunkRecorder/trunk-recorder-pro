@@ -13,9 +13,8 @@ import { useEffect, useState } from "react";
 import {
   addPlugin,
   addSystemPluginCopy,
-  fetchPluginStore,
-  installPlugin,
-  installPluginFrom,
+  installFromGitHub,
+  installFromStore,
   pluginOn,
   removePlugin,
   removeSystemPluginCopy,
@@ -35,59 +34,15 @@ import {
 import { activeSystems } from "./config.ts";
 import { EveryDelays, PluginDelay } from "./Delays.tsx";
 import { IconPuzzle, IconUpload, IconWave } from "./Onboarding.tsx";
-import { showTodo, Toggle } from "./Setup.tsx";
-import { Group, Section } from "./SetupLayout.tsx";
+import { showTodo } from "./Setup.tsx";
+import { DraftInput, Toggle } from "./inputs.tsx";
+import { numberList, textList } from "./fieldText.ts";
+import { Group, Section, Switch } from "./SetupLayout.tsx";
 import { openTodos } from "./todo.ts";
 import { copyOverride, copyOwn, pluginCopies } from "./protocol.ts";
-import type { Config, PluginInfo, PluginInstall, PluginManifest, PluginSchema, PluginStore, PluginValues, PluginsList, StoreListing } from "./protocol.ts";
-
-/** Is version `a` newer than `b`? Semver: a prerelease is older than its release. */
-function newer(a: string, b: string): boolean {
-  const parse = (v: string) => {
-    const [core, pre] = v.replace(/^v/, "").split("+")[0].split(/-(.*)/s);
-    const n = core.split(".").map(Number);
-    return n.length === 3 && n.every(Number.isInteger) ? { n, pre: pre ?? null } : null;
-  };
-  const x = parse(a);
-  const y = parse(b);
-  if (!x || !y) return false;
-  for (let i = 0; i < 3; i++) if (x.n[i] !== y.n[i]) return x.n[i] > y.n[i];
-  if (x.pre === null || y.pre === null) return x.pre === null && y.pre !== null;
-  return x.pre > y.pre;
-}
-
-const STAGES: Record<PluginInstall["stage"], string> = {
-  finding: "Finding it…",
-  downloading: "Downloading…",
-  checking: "Checking it…",
-  installing: "Installing…",
-  done: "Installed",
-  failed: "Didn't install",
-};
-
-/** The tier, as a chip. */
-function TierChip(props: { tier: StoreListing["tier"] | "unreviewed"; title?: string }) {
-  switch (props.tier) {
-    case "official":
-      return (
-        <span className="chip ok" title={props.title ?? "From the recorder's authors; reviewed"}>
-          Official
-        </span>
-      );
-    case "community":
-      return (
-        <span className="chip" title={props.title ?? "Third-party; reviewed"}>
-          Community
-        </span>
-      );
-    default:
-      return (
-        <span className="chip warn" title={props.title ?? "Not from the registry; unreviewed"}>
-          Not reviewed
-        </span>
-      );
-  }
-}
+import { fieldsOf } from "./pluginSettings.ts";
+import type { Config, InstallProgress, PluginInfo, PluginListing, PluginManifest, PluginSchema, PluginValues, PluginsList } from "./protocol.ts";
+import { Author, InstallStage, newer, STAGES, StoreCard, StorePanel, TierChip, webUrl, type StoreWords } from "./StoreParts.tsx";
 
 /** "apiKey" → "Api key": a label for a field the plugin didn't title. */
 function spell(key: string): string {
@@ -97,12 +52,6 @@ function spell(key: string): string {
     .trim()
     .toLowerCase();
   return words.charAt(0).toUpperCase() + words.slice(1);
-}
-
-function fieldsOf(schema: PluginSchema | undefined): [string, PluginSchema][] {
-  const props = schema?.properties ?? {};
-  const order = schema?.["x-order"] ?? Object.keys(props);
-  return order.filter((k) => props[k]).map((k) => [k, props[k]]);
 }
 
 const hasFields = (schema: PluginSchema | undefined) => fieldsOf(schema).length > 0;
@@ -180,29 +129,6 @@ function systemsOf(c: Config): { at: SystemRef; name: string; copies: (id: strin
   return out;
 }
 
-/** A system was renamed: plugin settings that name it (`x-system` fields) follow. Changes `x`. */
-export function renameSystemRefs(x: Config, from: string, to: string, plugins: PluginInfo[]): void {
-  if (!from || from === to) return;
-  const walk = (schema: PluginSchema | undefined, v: unknown) => {
-    if (!v || typeof v !== "object") return;
-    const obj = v as PluginValues;
-    for (const [k, f] of fieldsOf(schema)) {
-      if (f["x-system"] && obj[k] === from) obj[k] = to;
-      else if (f.type === "object") walk(f, obj[k]);
-      else if (f.type === "array" && f.items?.type === "object" && Array.isArray(obj[k])) for (const item of obj[k] as unknown[]) walk(f.items, item);
-    }
-  };
-  for (const p of plugins) {
-    if (!p.manifest) continue;
-    walk(p.manifest.config, x.plugins?.[p.id]?.settings);
-    for (const sys of [...x.systems, ...x.conventional])
-      for (const v of pluginCopies(sys.plugins?.[p.id])) {
-        walk(p.manifest.system_config, v);
-        walk(p.manifest.config, copyOverride(v));
-      }
-  }
-}
-
 function isUrl(s: string): boolean {
   try {
     const u = new URL(s);
@@ -214,6 +140,9 @@ function isUrl(s: string): boolean {
 
 /** One setting. Empty text means "not set": the value for every system
  * (`inherited`), else the plugin's default, applies — shown as the placeholder. */
+const textByComma = textList(/,/);
+const numbersByComma = numberList(/,/);
+
 function SchemaField(props: { name: string; schema: PluginSchema; value: unknown; onChange: (v: unknown) => void; id: string; inherited?: unknown; required?: boolean }) {
   const { schema: f, value, onChange, id, inherited } = props;
   const label = f.title ?? spell(props.name);
@@ -265,13 +194,7 @@ function SchemaField(props: { name: string; schema: PluginSchema; value: unknown
   if (f.type === "boolean") {
     const on = typeof value === "boolean" ? value : fallback === true;
     return (
-      <label className="toggle" htmlFor={id}>
-        <input id={id} type="checkbox" checked={on} onChange={(e) => onChange(e.target.checked)} />
-        <span>
-          {label}
-          {hint && <span className="field-hint"> — {hint}</span>}
-        </span>
-      </label>
+      <Toggle id={id} label={label} hint={hint} checked={on} onChange={onChange} />
     );
   }
 
@@ -329,16 +252,13 @@ function SchemaField(props: { name: string; schema: PluginSchema; value: unknown
     const items = Array.isArray(value) ? value : [];
     const numeric = f.items?.type === "integer" || f.items?.type === "number";
     control = (
-      <input
+      <DraftInput
         id={id}
         className={numeric ? "mono" : ""}
-        value={items.join(", ")}
+        codec={numeric ? numbersByComma : textByComma}
+        value={items}
         placeholder={Array.isArray(fallback) && fallback.length ? fallback.join(", ") : "Separate with commas"}
-        onChange={(e) => {
-          const parts = e.target.value.split(",").map((x) => x.trim());
-          const vals = numeric ? parts.filter((x) => x !== "").map(Number) : parts.filter((x, i) => x !== "" || i === parts.length - 1);
-          onChange(vals.length ? vals : undefined);
-        }}
+        onChange={(vals) => onChange(vals.length ? vals : undefined)}
       />
     );
     if (numeric && items.some((x) => typeof x === "number" && Number.isNaN(x))) problem = "Numbers, separated with commas";
@@ -654,11 +574,7 @@ function PluginHead(props: { p: PluginInfo; on: boolean; tone: string; state: st
         </div>
         <span className={`plugin-state tone-${props.tone}`}>{props.state}</span>
       </div>
-      <label className="switch" title={p.problem ? "It can't run: see below" : ""}>
-        <input type="checkbox" role="switch" checked={on} disabled={!!p.problem && !on} onChange={(e) => setPluginEnabled(p.id, e.target.checked)} />
-        <span className="switch-track" aria-hidden="true" />
-        <span>{on ? "On" : "Off"}</span>
-      </label>
+      <Switch label={on ? "On" : "Off"} title={p.problem ? "It can't run: see below" : ""} checked={on} disabled={!!p.problem && !on} onChange={(v) => setPluginEnabled(p.id, v)} />
     </div>
   );
 }
@@ -753,7 +669,7 @@ function stateOf(p: PluginInfo, on: boolean, recording: boolean): { tone: "ok" |
 }
 
 /** An installed plugin on the Plugins page: how it's doing, its log, updates; "Set up" goes to Setup. */
-function PluginCard(props: { p: PluginInfo; recording: boolean; listing?: StoreListing; install?: PluginInstall }) {
+function PluginCard(props: { p: PluginInfo; recording: boolean; listing?: PluginListing; install?: InstallProgress }) {
   const { p, recording, listing, install } = props;
   const m = p.manifest;
   const s = useApp();
@@ -766,13 +682,14 @@ function PluginCard(props: { p: PluginInfo; recording: boolean; listing?: StoreL
   const needs = on && m && s.config ? pluginNeeds(m, s.config, p.id) : [];
   // A newer version in the registry (not for a build of the user's own, or a plugin from elsewhere).
   const update = listing && m && !p.custom && !p.unlistedFrom && !listing.unavailable && newer(listing.version, m.version) ? listing : null;
-  // The same again (a forced pull): the user's file, the GitHub repository's latest release, or the registry's version.
-  const reinstall = p.custom
-    ? { go: () => addPlugin(p.path), what: `Take ${p.path} again, for a rebuilt copy.` }
+  // Taken again from where it came (the newer version, if there is one): the user's file, the
+  // GitHub repository's latest release, or the registry. Its settings stay.
+  const again = p.custom
+    ? () => addPlugin(p.path)
     : p.unlistedFrom
-      ? { go: () => installPluginFrom(p.unlistedFrom!), what: `Install ${p.unlistedFrom}'s latest release again.` }
-      : listing && !listing.unavailable && !update
-        ? { go: () => installPlugin(p.id), what: `Download v${listing.version} from the registry again.` }
+      ? () => installFromGitHub("plugin", p.unlistedFrom!)
+      : listing && !listing.unavailable
+        ? () => installFromStore("plugin", p.id)
         : null;
 
   // Just installed from this browser: on to setting it up.
@@ -794,6 +711,7 @@ function PluginCard(props: { p: PluginInfo; recording: boolean; listing?: StoreL
           <>
             {listing && !p.custom && !p.unlistedFrom && <TierChip tier={listing.tier} />}
             {update && <span className="chip warn">v{update.version} available</span>}
+            <Author repository={m?.repository || p.unlistedFrom} />
           </>
         }
       />
@@ -816,10 +734,10 @@ function PluginCard(props: { p: PluginInfo; recording: boolean; listing?: StoreL
         <p className="small muted plugin-meta">
           {needsM4a && "Uploads M4A audio · "}
           {m.subscribe.length ? `Hears ${m.subscribe.map((t) => TOPIC_NAMES[t] ?? t).join(", ")}` : "Hears nothing"}
-          {(m.homepage || m.repository) && (
+          {webUrl(m.homepage || m.repository) && (
             <>
               {" · "}
-              <a href={m.homepage || m.repository} target="_blank" rel="noreferrer">
+              <a href={webUrl(m.homepage || m.repository)} target="_blank" rel="noreferrer">
                 {m.homepage ? "Website" : "Source"}
               </a>
             </>
@@ -838,16 +756,11 @@ function PluginCard(props: { p: PluginInfo; recording: boolean; listing?: StoreL
             {STAGES[install.stage]}
           </span>
         ) : (
-          update && (
-            <button className="btn primary" onClick={() => installPlugin(p.id)} title={recording && on ? "It restarts with the new version." : undefined}>
-              Update to v{update.version}
+          again && (
+            <button className={`btn${update ? " primary" : ""}`} onClick={again} title={recording && on ? "It restarts with it." : undefined}>
+              {update ? `Update to v${update.version}` : "Reinstall"}
             </button>
           )
-        )}
-        {!install && reinstall && (
-          <button className="btn" onClick={reinstall.go} title={`${reinstall.what} Its settings stay.${recording && on ? " It restarts with it." : ""}`}>
-            Reinstall
-          </button>
         )}
         <span className="spacer" />
         <button
@@ -934,193 +847,37 @@ function AddPlugin() {
   );
 }
 
-/** "3 minutes ago", for when the list was fetched. */
-function ago(t: number): string {
-  const s = Math.max(0, Date.now() / 1000 - t);
-  if (s < 60) return "just now";
-  if (s < 3600) return `${Math.round(s / 60)} min ago`;
-  if (s < 86400) return `${Math.round(s / 3600)} h ago`;
-  return new Date(t * 1000).toLocaleDateString();
-}
+/** What the plugin registry says on this page. */
+const PLUGIN_STORE: StoreWords = {
+  title: "Find plugins",
+  searchHint: "OpenMHz, upload, stream…",
+  empty: "The registry has no plugins yet.",
+  warning: "Unreviewed. Plugins get full access to this computer.",
+  repoExample: "https://github.com/someone/trunk-plugin-pager",
+  template: "Must use the plugin template's release workflow.",
+};
 
-function StoreSource(props: { store: PluginStore }) {
-  const st = props.store;
-  if (st.source === "registry") return <p className="muted small">Registry checked {st.fetched ? ago(st.fetched) : "now"}.</p>;
-  const when = st.source === "saved" && st.fetched ? `the list from ${new Date(st.fetched * 1000).toLocaleString()}` : "the built-in list";
-  return (
-    <p className="small warn-text" title={st.problem ?? undefined}>
-      Registry unreachable; showing {when}.
-    </p>
-  );
-}
-
-/** One of the registry's plugins: what it is, and Install / Update / Installed. */
-function StoreCard(props: { l: StoreListing; installed?: PluginInfo; install?: PluginInstall; recording: boolean }) {
+/** One of the registry's plugins: Install / Update / Installed. */
+function StoreListingCard(props: { l: PluginListing; installed?: PluginInfo; install?: InstallProgress }) {
   const { l, installed, install } = props;
   const have = installed?.manifest?.version;
   let action: React.ReactNode;
-  if (install) {
+  if (install) action = <InstallStage install={install} />;
+  else if (installed?.custom) action = <span className="small muted">Your build is installed</span>;
+  else if (l.unavailable) action = <span className="small muted">{l.unavailable}</span>;
+  else if (installed && have && !installed.unlistedFrom && !newer(l.version, have)) action = <span className="chip ok">Installed{have !== l.version ? ` v${have}` : ""}</span>;
+  else
     action = (
-      <span className="small muted install-stage" role="status">
-        {STAGES[install.stage]}
-      </span>
-    );
-  } else if (installed?.custom) {
-    action = <span className="small muted">Your build is installed</span>;
-  } else if (l.unavailable) {
-    action = <span className="small muted">{l.unavailable}</span>;
-  } else if (installed && have && !installed.unlistedFrom && !newer(l.version, have)) {
-    action = <span className="chip ok">Installed{have !== l.version ? ` v${have}` : ""}</span>;
-  } else if (installed && have) {
-    action = (
-      <button className="btn primary" onClick={() => installPlugin(l.id)}>
-        {installed.unlistedFrom ? `Install the registry's v${l.version}` : `Update to v${l.version}`}
+      <button className="btn primary" onClick={() => installFromStore("plugin", l.id)}>
+        {installed && have ? (installed.unlistedFrom ? `Install the registry's v${l.version}` : `Update to v${l.version}`) : "Install"}
       </button>
     );
-  } else {
-    action = (
-      <button className="btn primary" onClick={() => installPlugin(l.id)}>
-        Install
-      </button>
-    );
-  }
-  return (
-    <article className="plugin-card store-card" aria-labelledby={`sn-${l.id}`}>
-      <div className="plugin-head">
-        <span className="plugin-icon tone-off" aria-hidden="true">
-          <IconPuzzle />
-        </span>
-        <div className="plugin-title">
-          <div className="row">
-            <strong id={`sn-${l.id}`}>{l.name}</strong>
-            <span className="chip">v{l.version}</span>
-            <TierChip tier={l.tier} />
-          </div>
-        </div>
-        {action}
-      </div>
-      <p className="plugin-desc">{l.description}</p>
-      <p className="small muted plugin-meta">
-        {l.license && `${l.license} · `}
-        {l.homepage && (
-          <>
-            <a href={l.homepage} target="_blank" rel="noreferrer">
-              Website
-            </a>
-            {" · "}
-          </>
-        )}
-        <a href={l.repository} target="_blank" rel="noreferrer">
-          Source
-        </a>
-      </p>
-    </article>
-  );
+  return <StoreCard l={l} icon={<IconPuzzle />} action={action} />;
 }
 
-/** A plugin from a GitHub release that isn't in the registry. */
-function InstallFromGitHub(props: { busy: boolean }) {
-  const [open, setOpen] = useState(false);
-  const [repo, setRepo] = useState("");
-  const [tag, setTag] = useState("");
-  if (!open)
-    return (
-      <button className="btn ghost" onClick={() => setOpen(true)}>
-        Install from GitHub…
-      </button>
-    );
-  return (
-    <form
-      className="add-plugin"
-      onSubmit={(e) => {
-        e.preventDefault();
-        if (!repo.trim()) return;
-        installPluginFrom(repo.trim(), tag);
-        setRepo("");
-        setTag("");
-        setOpen(false);
-      }}
-    >
-      <p className="small warn-text">Unreviewed. Plugins get full access to this computer.</p>
-      <div className="grid2">
-        <div className="field">
-          <label className="field-label" htmlFor="gh-repo">
-            GitHub repository or release URL
-          </label>
-          <input id="gh-repo" className="mono" autoFocus value={repo} placeholder="https://github.com/someone/trunk-plugin-pager" onChange={(e) => setRepo(e.target.value)} />
-        </div>
-        <div className="field">
-          <label className="field-label" htmlFor="gh-tag">
-            Release (optional)
-          </label>
-          <input id="gh-tag" className="mono" value={tag} placeholder="latest" onChange={(e) => setTag(e.target.value)} />
-        </div>
-      </div>
-      <span className="field-hint">Must use the plugin template's release workflow.</span>
-      <div className="row">
-        <button className="btn primary" type="submit" disabled={!repo.trim() || props.busy}>
-          Install
-        </button>
-        <button className="btn ghost" type="button" onClick={() => setOpen(false)}>
-          Cancel
-        </button>
-      </div>
-    </form>
-  );
-}
-
-function PluginStorePanel(props: { list: PluginsList; recording: boolean }) {
-  const s = useApp();
-  const store = s.pluginStore;
-  const [query, setQuery] = useState("");
-  useEffect(() => {
-    if (!store) fetchPluginStore();
-  }, [store]);
-  const q = query.trim().toLowerCase();
-  const order = { official: 0, community: 1, unlisted: 2 };
-  const listings = (store?.plugins ?? [])
-    .filter((l) => !q || [l.id, l.name, l.description].some((f) => f.toLowerCase().includes(q)))
-    .sort((a, b) => order[a.tier] - order[b.tier] || a.name.localeCompare(b.name));
-  // Installs from GitHub, by repository: shown until they're done.
-  const fromGitHub = Object.values(s.pluginInstalls).filter((i) => !store?.plugins.some((l) => l.id === i.key));
-
-  return (
-    <section className="panel" aria-labelledby="store-title">
-      <header className="panel-head">
-        <h2 id="store-title">Find plugins</h2>
-        <button className="btn ghost small" onClick={() => fetchPluginStore(true)} disabled={!store}>
-          Check again
-        </button>
-      </header>
-      {!store ? (
-        <p className="muted">Loading…</p>
-      ) : (
-        <div className="stack">
-          <StoreSource store={store} />
-          {store.plugins.length > 4 && (
-            <div className="field">
-              <label className="field-label" htmlFor="store-search">
-                Search
-              </label>
-              <input id="store-search" type="search" value={query} placeholder="OpenMHz, upload, stream…" onChange={(e) => setQuery(e.target.value)} />
-            </div>
-          )}
-          {listings.map((l) => (
-            <StoreCard key={l.id} l={l} installed={props.list.plugins.find((p) => p.id === l.id)} install={s.pluginInstalls[l.id]} recording={props.recording} />
-          ))}
-          {listings.length === 0 && <p className="empty">{q ? `No plugins match “${query.trim()}”.` : "The registry has no plugins yet."}</p>}
-          {fromGitHub.map((i) => (
-            <p key={i.key} className="small muted" role="status">
-              {i.key}: {STAGES[i.stage]}
-            </p>
-          ))}
-          <div className="row">
-            <InstallFromGitHub busy={fromGitHub.length > 0} />
-          </div>
-        </div>
-      )}
-    </section>
-  );
+function PluginStorePanel(props: { list: PluginsList }) {
+  const installs = useApp().installs.plugin;
+  return <StorePanel kind="plugin" words={PLUGIN_STORE} card={(l) => <StoreListingCard key={l.id} l={l} installed={props.list.plugins.find((p) => p.id === l.id)} install={installs[l.id]} />} />;
 }
 
 export function PluginsPage() {
@@ -1145,14 +902,14 @@ export function PluginsPage() {
               key={p.id}
               p={p}
               recording={recording}
-              listing={s.pluginStore?.plugins.find((l) => l.id === p.id)}
-              install={s.pluginInstalls[p.id] ?? (p.unlistedFrom ? s.pluginInstalls[p.unlistedFrom] : undefined)}
+              listing={s.stores.plugin?.listings.find((l) => l.id === p.id)}
+              install={s.installs.plugin[p.id] ?? (p.unlistedFrom ? s.installs.plugin[p.unlistedFrom] : undefined)}
             />
           ))}
           {plugins.length === 0 && <p className="empty">No plugins yet.</p>}
         </div>
       </section>
-      <PluginStorePanel list={list} recording={recording} />
+      <PluginStorePanel list={list} />
     </div>
   );
 }

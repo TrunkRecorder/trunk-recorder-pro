@@ -16,27 +16,53 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use chrono::{Local, Offset, TimeZone};
 use serde_json::{json, Value};
 use tokio::sync::broadcast;
-use trunk_app::{Output, Session};
+use trunk_app::protocol::{body, Audience, ToClient};
+use trunk_app::{Feeder, Output, Session};
 
 use crate::config::{AirspyGain, Config, SampleFormat, Source};
 use crate::plugins::{self, FileRules, PluginHost};
 use crate::radio::{airspy, soapy, uhd};
 use crate::sdr::{self, RtlConfig, SourceMsg};
 
-/// A message for every connected browser.
+/// A message for the connected browsers, serialized once for all of them.
 pub enum Out {
+    /// For every connection.
     Text(String),
+    /// Only for connections with control access ([`Audience::Control`]).
+    Control(String),
+    /// The config: as it is, and as a listen-only connection sees it.
+    Config { full: String, listen: String },
     /// Only for browsers that subscribed to `topic` (see [`trunk_app::stats::Topics`]).
     Topic { topic: String, text: String },
     /// Live audio (binary frame) for talkgroup `tg` of the system with short
     /// name `short_name` (the frame carries the system's number this run).
     Audio { short_name: String, tg: u32, frame: Vec<u8> },
+    /// The recorder is quitting: every connection is told, then closed.
+    Quit,
+}
+
+impl Out {
+    /// `m`, as each kind of connection may hear it.
+    pub fn of(m: &ToClient) -> Out {
+        match m {
+            ToClient::Quit => Out::Quit,
+            ToClient::Config { .. } => {
+                let mut listen = m.to_value();
+                listen["config"] = crate::access::redact_config(listen["config"].take());
+                Out::Config { full: m.to_json(), listen: listen.to_string() }
+            }
+            _ if m.audience() == Audience::Control => Out::Control(m.to_json()),
+            _ => Out::Text(m.to_json()),
+        }
+    }
 }
 
 pub type Hub = broadcast::Sender<Arc<Out>>;
 
-pub fn publish(hub: &Hub, v: Value) {
-    let _ = hub.send(Arc::new(Out::Text(v.to_string())));
+/// Send `m` to the browsers that may have it. Every message to all of them
+/// goes this way.
+pub fn publish(hub: &Hub, m: ToClient) {
+    let _ = hub.send(Arc::new(Out::of(&m)));
 }
 
 #[derive(Clone, Debug, Default)]
@@ -48,8 +74,8 @@ pub struct PhaseInfo {
 }
 
 impl PhaseInfo {
-    pub fn to_json(&self) -> Value {
-        json!({ "type": "state", "phase": self.phase, "error": self.error, "ended": self.ended })
+    pub fn message(&self) -> ToClient {
+        ToClient::State { phase: self.phase, error: self.error.clone(), ended: self.ended }
     }
 }
 
@@ -57,44 +83,52 @@ impl PhaseInfo {
 pub struct Ctx {
     pub config_path: PathBuf,
     pub config: Mutex<Config>,
+    /// The config's version: one more each time it changes ([`Ctx::config_changed`]).
+    pub config_version: AtomicU64,
+    /// Each system's talkgroup file, as kept beside the config ([`talkgroups_path`]).
+    pub talkgroups: Mutex<trunk_app::config::TalkgroupFiles>,
     pub hub: Hub,
-    pub runner: Mutex<Option<Runner>>,
-    /// Held through a start, stop, survey start or quit, so two never
-    /// interleave (two Starts at once would leave a recorder nothing stops);
-    /// true once quitting, when nothing may start any more.
-    pub lifecycle: Mutex<bool>,
+    /// What the radios are doing ([`Lifecycle`]): changed only through its
+    /// methods on `Ctx`, each holding the lock throughout, so two never
+    /// interleave (two Starts at once would leave a recorder nothing stops).
+    pub lifecycle: Mutex<Lifecycle>,
+    /// The phase the browsers are told (the engine thread reports it as it goes).
     pub phase: Mutex<PhaseInfo>,
     /// Recently concluded calls (newest first), as sent to the browser.
     pub history: Mutex<VecDeque<Value>>,
     /// Signalled by a browser's `quit`.
     pub quit: tokio::sync::Notify,
-    /// The first-run survey, when one is running (never with recording).
-    pub survey: Mutex<Option<crate::survey::SurveyRunner>>,
-    /// Its latest snapshot, for browsers that connect meanwhile.
-    pub survey_last: Mutex<Option<Value>>,
+    /// The survey's latest snapshot, for browsers that connect meanwhile.
+    pub survey_last: Mutex<Option<ToClient>>,
     pub plugins: plugins::manage::Plugins,
-    /// `--ui <folder>`: the interface / shows, over `server.home`.
-    pub home_dir: Option<PathBuf>,
+    /// The address every interface listens on (`--bind`, else `server.bind`).
+    pub bind: std::net::IpAddr,
+    /// The interfaces besides the built-in one, and their listeners.
+    pub interfaces: crate::interfaces::Interfaces,
     /// The radio registry and the event monitor: outlive recordings.
     pub shared: Arc<trunk_app::stats::Shared>,
     /// The dashboard's minute history (a week), and where new minutes go.
     pub series: Arc<Mutex<trunk_app::stats::History>>,
     pub store: crate::statstore::Store,
-    /// How many connected browsers watch each topic; `topics_gen` changes with it.
+    /// How many connected browsers watch each topic (the recording is told as it changes).
     pub topics: Mutex<std::collections::BTreeMap<String, usize>>,
-    pub topics_gen: AtomicU64,
-    /// For the engine thread, while recording.
-    pub engine_cmds: Mutex<Vec<EngineCmd>>,
+    /// The recording's engine thread, while there is one: everything it's told comes this way ([`Ctx::tell_engine`]).
+    pub engine: Mutex<Option<mpsc::Sender<EngineCmd>>>,
     /// The latest `host` message (the computer and plugins), for browsers that connect.
-    pub host_last: Mutex<Option<Value>>,
+    pub host_last: Mutex<Option<ToClient>>,
     /// The RAM spool (`recording.ramSpool`), as last opened.
     pub spool: Mutex<Option<Arc<crate::spool::Spool>>>,
     /// Key containers unlocked from the interface ([`crate::unlock`]).
     pub unlocked: crate::unlock::Unlocked,
 }
 
-/// Something for the running session to do.
+/// Something for the running session to do: the one way into the engine
+/// thread, which waits on it ([`Ctx::engine`]).
 pub enum EngineCmd {
+    /// A source's error or end, by way of its decoding thread.
+    Source(SourceMsg),
+    /// What the connected browsers watch changed.
+    Topics(trunk_app::stats::Topics),
     /// A system's talkgroup file changed (an Ignore flag set from the dashboard).
     Talkgroups { short_name: String, csv: String },
     /// A system's keys changed (a key container unlocked or locked): calls in progress take them too.
@@ -121,22 +155,153 @@ impl Ctx {
         for a in add {
             *t.entry(a.clone()).or_default() += 1;
         }
-        self.topics_gen.fetch_add(1, Ordering::Relaxed);
+        // (The snapshot is taken under the lock: the engine hears the changes in their order.)
+        let topics = trunk_app::stats::Topics::new(t.keys().cloned());
+        crate::logging::log_watched(t.contains_key("log"));
+        drop(t);
+        self.tell_engine(EngineCmd::Topics(topics));
+    }
+
+    /// Tell the recording's engine thread, if there is one.
+    pub fn tell_engine(&self, c: EngineCmd) {
+        if let Some(tx) = &*self.engine.lock().unwrap() {
+            let _ = tx.send(c);
+        }
     }
 
     /// Hand an event to the monitor, and to the browsers when it's one for the feed.
     pub fn event(&self, e: trunk_app::stats::MonitorEvent) {
         let t = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
         if let Some(v) = self.shared.emit(t, e) {
-            publish(&self.hub, v);
+            publish(&self.hub, ToClient::MonitorEvent(body(v)));
         }
+    }
+
+    /// The config is now `c` (call with its lock held, so versions follow
+    /// the changes in order): a new version, told to every browser. Returns it.
+    pub fn config_changed(&self, c: &Config) -> u64 {
+        let files = self.talkgroups.lock().unwrap().clone();
+        self.shared.names.lock().unwrap().set_config(c, &files);
+        let version = self.config_version.fetch_add(1, Ordering::SeqCst) + 1;
+        publish(&self.hub, ToClient::Config { config: Box::new(c.clone()), version });
+        version
     }
 
     pub fn set_phase(&self, phase: &'static str, error: Option<String>, ended: bool) {
         let p = PhaseInfo { phase, error, ended };
-        publish(&self.hub, p.to_json());
+        publish(&self.hub, p.message());
         *self.phase.lock().unwrap() = p;
     }
+
+    /// Start recording with `cfg`, in place of whatever the radios were
+    /// doing (nothing once quitting). The engine thread reports the phase.
+    pub fn begin_recording(self: &Arc<Self>, cfg: Config) -> Result<(), String> {
+        let mut l = self.lifecycle.lock().unwrap();
+        if matches!(*l, Lifecycle::Quitting) {
+            return Ok(());
+        }
+        self.end(&mut l);
+        self.set_phase("starting", None, false);
+        match start(self.clone(), cfg) {
+            Ok(r) => {
+                *l = Lifecycle::Recording(r);
+                Ok(())
+            }
+            Err(e) => {
+                self.set_phase("idle", Some(e.clone()), false);
+                Err(e)
+            }
+        }
+    }
+
+    /// Start a survey (`survey`, once the radios are free: [`Ctx::free_radios`]).
+    pub fn begin_survey(self: &Arc<Self>, cfg: Config, req: trunk_app::survey::Request) -> Result<(), String> {
+        let mut l = self.lifecycle.lock().unwrap();
+        if matches!(*l, Lifecycle::Quitting) {
+            return Ok(());
+        }
+        self.free_radios(&mut l, "the scan")?;
+        *l = Lifecycle::Surveying(crate::survey::start(self.clone(), cfg, req)?);
+        Ok(())
+    }
+
+    /// `f` with the radios to itself (profiling a source): nothing starts
+    /// meanwhile. None once quitting; Err while recording.
+    pub fn with_radios<T>(&self, what: &str, f: impl FnOnce() -> T) -> Option<Result<T, String>> {
+        let mut l = self.lifecycle.lock().unwrap();
+        if matches!(*l, Lifecycle::Quitting) {
+            return None;
+        }
+        Some(self.free_radios(&mut l, what).map(|()| f()))
+    }
+
+    /// The radios free for `what`: a survey ends, a recording whose capture
+    /// files ended too, but one still recording isn't stopped for it.
+    fn free_radios(&self, l: &mut Lifecycle, what: &str) -> Result<(), String> {
+        if let Lifecycle::Recording(r) = l {
+            if !r.finished() {
+                return Err(format!("Stop recording first — {what} needs the radio to itself."));
+            }
+        }
+        self.end(l);
+        Ok(())
+    }
+
+    /// Stop recording, if it is.
+    pub fn stop_recording(&self) {
+        let mut l = self.lifecycle.lock().unwrap();
+        if matches!(*l, Lifecycle::Recording(_)) {
+            self.end(&mut l);
+        }
+    }
+
+    /// End a running survey (frees its radio) and tell the browsers.
+    pub fn stop_survey(&self) {
+        let mut l = self.lifecycle.lock().unwrap();
+        if matches!(*l, Lifecycle::Surveying(_)) {
+            self.end(&mut l);
+        }
+    }
+
+    /// Something for the running survey (a frequency to monitor, a rescan).
+    pub fn survey_send(&self, c: crate::survey::UserCmd) {
+        if let Lifecycle::Surveying(r) = &*self.lifecycle.lock().unwrap() {
+            r.send(c);
+        }
+    }
+
+    /// Stop everything, for good: nothing starts once quitting.
+    pub fn quit(&self) {
+        let mut l = self.lifecycle.lock().unwrap();
+        self.end(&mut l);
+        *l = Lifecycle::Quitting;
+    }
+
+    /// Whatever the radios are doing stops (the lock held).
+    fn end(&self, l: &mut Lifecycle) {
+        match std::mem::replace(l, Lifecycle::Idle) {
+            Lifecycle::Recording(r) => r.stop(),
+            Lifecycle::Surveying(r) => {
+                r.stop();
+                *self.survey_last.lock().unwrap() = None;
+                publish(&self.hub, crate::survey::idle());
+            }
+            Lifecycle::Quitting => *l = Lifecycle::Quitting,
+            Lifecycle::Idle => {}
+        }
+    }
+}
+
+/// What the radios are doing: one thing at a time.
+#[derive(Default)]
+pub enum Lifecycle {
+    #[default]
+    Idle,
+    Recording(Runner),
+    /// The first-run survey (never with recording).
+    Surveying(crate::survey::SurveyRunner),
+    /// The recorder is exiting: nothing starts any more.
+    Quitting,
 }
 
 pub struct Runner {
@@ -170,7 +335,7 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
                 mine.channel_file_status = read.channel_file_status.clone();
             }
         }
-        publish(&ctx.hub, serde_json::json!({ "type": "config", "config": &*shared }));
+        ctx.config_changed(&shared);
         if let Some(e) = errors.into_iter().next() {
             return Err(e);
         }
@@ -186,7 +351,8 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
     // `now_ms` is the one plus the other (wall time that never jumps).
     let epoch_ms = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_millis() as f64);
     let epoch_at = Instant::now();
-    let mut session = Session::new(cfg.clone(), epoch_ms, &|name| fs::read_to_string(bandplan_path(name)).ok(), local_offset)?;
+    let talkgroups = ctx.talkgroups.lock().unwrap().clone();
+    let mut session = Session::new(cfg.clone(), &talkgroups, epoch_ms, &|name| fs::read_to_string(bandplan_path(name)).ok(), local_offset)?;
     session.attach(ctx.shared.clone());
     for k in keys {
         for s in &k.skipped {
@@ -196,6 +362,9 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
             log::warn!("Key source {} is locked: unlock it in Setup → Recording to decrypt {}", k.name, k.systems.join(", "));
             continue;
         };
+        for w in ring.warnings() {
+            log::warn!("Key source {}: {w}", k.name);
+        }
         let n = ring.keys().len();
         log::info!("Key source {}: {n} encryption key{} loaded, for {}", k.name, if n == 1 { "" } else { "s" }, k.systems.join(", "));
         for s in &k.systems {
@@ -206,8 +375,14 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
     session.load_heard(&fs::read_to_string(heard_path(&cfg)).unwrap_or_default());
     session.load_tune(&fs::read_to_string(tune_path()).unwrap_or_default());
     ctx.plugins.start(&cfg);
+    if cfg.sources.iter().any(|s| matches!(s, Source::Rtlsdr { .. })) {
+        if let Some(hint) = cfg.rtl_buflen_hint(sdr::rtl_most_on_a_bus()) {
+            log::warn!("{hint}");
+        }
+    }
     let stop = Arc::new(AtomicBool::new(false));
-    let (tx, rx) = mpsc::sync_channel::<SourceMsg>(256);
+    // Each source's samples queue for its own decoding thread ([`feed_source`]).
+    let mut queues = Vec::new();
     let centers = cfg.resolved_centers();
     let mut threads = Vec::new();
     // A thread that can't be made: what was started is stopped again.
@@ -220,37 +395,26 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
         e.to_string()
     };
     for (i, (src, center)) in cfg.sources.iter().zip(&centers).enumerate() {
-        let (tx, stop) = (tx.clone(), stop.clone());
-        let src = src.clone();
-        let center = *center;
-        let spawned = std::thread::Builder::new().name(format!("source-{i}")).spawn(move || match src {
-            Source::Rtlsdr { serial, rate_hz, gain_db, agc, ppm, .. } => {
-                sdr::run(i, RtlConfig { serial, center_hz: center as u64, rate_hz: rate_hz as u32, gain_db: (!agc).then_some(gain_db), ppm }, tx, stop)
-            }
-            Source::Usrp { args, rate_hz, gain_db, agc, antenna, ppm, .. } => {
-                uhd::run(i, uhd::UsrpConfig { args, center_hz: center, rate_hz, gain_db, agc, antenna, ppm }, tx, stop)
-            }
-            Source::Airspy { serial, rate_hz, gain_mode, gain_step, lna_step, mixer_step, vga_step, agc, bias_tee, ppm, .. } => {
-                let gain = airspy_gain(gain_mode, gain_step, lna_step, mixer_step, vga_step, agc);
-                airspy::run(i, airspy::AirspyConfig { serial, center_hz: center, rate_hz, gain, bias_tee, ppm }, tx, stop)
-            }
-            Source::Soapy { args, rate_hz, agc, gain_db, gains, antenna, settings, ppm, .. } => {
-                let gains = gains.into_iter().collect();
-                soapy::run(i, soapy::SoapyConfig { args, center_hz: center, rate_hz, agc, gain_db, gains, antenna, settings, ppm }, tx, stop)
-            }
-            Source::File { path, rate_hz, realtime, format, .. } => run_file(i, &path, rate_hz, realtime, SampleFormat::of(format, &path), tx, stop),
-        });
+        let (tx, rx) = mpsc::sync_channel::<SourceMsg>(256);
+        queues.push(rx);
+        let (stop, center) = (stop.clone(), *center);
+        let spawned = spawn_source(&src, i, center, tx, stop, None, &format!("source-{i}"));
         match spawned {
             Ok(t) => threads.push(t),
             Err(e) => return Err(undo(threads, e)),
         }
     }
-    drop(tx);
     let (ctx2, stop2) = (ctx.clone(), stop.clone());
-    let spawned = std::thread::Builder::new().name("engine".into()).spawn(move || engine_thread(ctx2, cfg, session, rx, stop2, (epoch_ms, epoch_at)));
+    // The engine's commands: open before its thread is, so none sent meanwhile is lost.
+    let ctl = mpsc::channel::<EngineCmd>();
+    *ctx.engine.lock().unwrap() = Some(ctl.0.clone());
+    let spawned = std::thread::Builder::new().name("engine".into()).spawn(move || engine_thread(ctx2, cfg, session, queues, stop2, (epoch_ms, epoch_at), ctl));
     match spawned {
         Ok(t) => threads.push(t),
-        Err(e) => return Err(undo(threads, e)),
+        Err(e) => {
+            *ctx.engine.lock().unwrap() = None;
+            return Err(undo(threads, e));
+        }
     }
     Ok(Runner { stop, threads })
 }
@@ -263,9 +427,7 @@ fn warn_readable_keys(ctx: &Ctx, cfg: &Config) {
         use std::os::unix::fs::PermissionsExt;
         for p in cfg.key_files(&ctx.config_path) {
             if fs::metadata(&p).is_ok_and(|m| m.permissions().mode() & 0o077 != 0) {
-                let text = format!("Keys file {} can be read by other users (chmod 600 it)", p.display());
-                log::warn!("{text}");
-                publish(&ctx.hub, json!({ "type": "log", "lines": [{ "timeS": 0, "kind": "error", "text": text }] }));
+                log::warn!("Keys file {} can be read by other users (chmod 600 it)", p.display());
             }
         }
     }
@@ -277,7 +439,41 @@ fn bandplan_path(short_name: &str) -> PathBuf {
     crate::paths::data_dir().join(format!("{short_name}.bandplan"))
 }
 
-/// Where a system's radios' talker aliases are kept (Trunk Recorder's unitTagsOTA CSV).
+/// Where a system's talkgroup file is kept (`<short name>.talkgroups.csv`, beside the config).
+pub(crate) fn talkgroups_path(short_name: &str) -> PathBuf {
+    trunk_app::config::talkgroups_path(&crate::paths::data_dir(), short_name)
+}
+
+/// The talkgroup files of `cfg`'s systems (trunked and conventional), as kept.
+pub fn load_talkgroups(cfg: &Config) -> trunk_app::config::TalkgroupFiles {
+    let names = cfg.systems.iter().map(|s| &s.short_name).chain(cfg.conventional.iter().map(|c| &c.short_name));
+    names.filter_map(|name| fs::read_to_string(talkgroups_path(name)).ok().map(|csv| (name.clone(), csv))).collect()
+}
+
+/// System `system`'s talkgroup file is now `csv` ("": none): kept, told to
+/// every browser, and taken by the recording at once.
+pub fn set_talkgroups(ctx: &Ctx, system: &str, csv: String) -> Result<(), String> {
+    if system.trim().is_empty() || system.contains(['/', '\\']) || system.starts_with('.') {
+        return Err(format!("bad short name {system:?}"));
+    }
+    let path = talkgroups_path(system);
+    if csv.trim().is_empty() {
+        if path.exists() {
+            fs::remove_file(&path).map_err(|e| format!("Couldn't delete {}: {e}", path.display()))?;
+        }
+        ctx.talkgroups.lock().unwrap().remove(system);
+    } else {
+        trunk_app::config::write_atomic(&path, &csv).map_err(|e| format!("Couldn't save {}: {e}", path.display()))?;
+        ctx.talkgroups.lock().unwrap().insert(system.to_string(), csv.clone());
+    }
+    ctx.tell_engine(EngineCmd::Talkgroups { short_name: system.to_string(), csv: csv.clone() });
+    // (The config first, then the names: as config_changed takes them.)
+    let (cfg, files) = (ctx.config.lock().unwrap().clone(), ctx.talkgroups.lock().unwrap().clone());
+    ctx.shared.names.lock().unwrap().set_config(&cfg, &files);
+    publish(&ctx.hub, ToClient::Talkgroups { system: system.to_string(), csv });
+    Ok(())
+}
+
 pub(crate) fn units_path(short_name: &str) -> PathBuf {
     crate::paths::data_dir().join(format!("{short_name}.units.csv"))
 }
@@ -296,6 +492,19 @@ fn save_bandplans(session: &Session, saved: &mut std::collections::HashMap<Strin
 /// Where the radio registry (talkgroups, radios, frequencies heard) is kept, a file per system.
 fn radio_dir() -> PathBuf {
     crate::paths::data_dir().join("radio")
+}
+
+/// The names the radio registry answers with, as saved: each system's
+/// talkgroups (`cfg` with its talkgroup files) and talker aliases. A
+/// recording keeps them current from then on.
+pub fn load_names(shared: &trunk_app::stats::Shared, cfg: &Config, talkgroups: &trunk_app::config::TalkgroupFiles) {
+    let mut book = shared.names.lock().unwrap();
+    book.set_config(cfg, talkgroups);
+    for n in cfg.systems.iter().map(|s| &s.short_name).chain(cfg.conventional.iter().map(|c| &c.short_name)) {
+        if let Ok(csv) = fs::read_to_string(units_path(n)) {
+            book.set_units(n, &csv);
+        }
+    }
 }
 
 /// Read the radio registry saved by earlier runs.
@@ -361,6 +570,29 @@ fn save_units(session: &mut Session) {
 }
 
 /// Replay a capture file as a source, paced to real time or as fast as possible.
+/// A thread named `name` streaming source `src` (number `i`) into `tx` at
+/// `center` until `stop`; `ctl`: retune and gain requests (the survey). A
+/// capture file plays at its own centre. Recording and the survey both
+/// start their sources this way.
+pub(crate) fn spawn_source(src: &Source, i: usize, center: f64, tx: SyncSender<SourceMsg>, stop: Arc<AtomicBool>, ctl: Option<Arc<sdr::Control>>, name: &str) -> std::io::Result<JoinHandle<()>> {
+    let src = src.clone();
+    std::thread::Builder::new().name(name.to_string()).spawn(move || match src {
+        Source::Rtlsdr { serial, rate_hz, gain_db, agc, ppm, buf_len, buffers, .. } => {
+            sdr::run_with(i, RtlConfig { serial, center_hz: center as u64, rate_hz: rate_hz as u32, gain_db: (!agc).then_some(gain_db), ppm, buf_len, buffers }, tx, stop, ctl)
+        }
+        Source::Usrp { args, rate_hz, gain_db, agc, antenna, ppm, .. } => sdr::run_with(i, uhd::UsrpConfig { args, center_hz: center, rate_hz, gain_db, agc, antenna, ppm }, tx, stop, ctl),
+        Source::Airspy { serial, rate_hz, gain_mode, gain_step, lna_step, mixer_step, vga_step, agc, bias_tee, packing, ppm, .. } => {
+            let gain = airspy_gain(gain_mode, gain_step, lna_step, mixer_step, vga_step, agc);
+            sdr::run_with(i, airspy::AirspyConfig { serial, center_hz: center, rate_hz, gain, bias_tee, packing, ppm }, tx, stop, ctl)
+        }
+        Source::Soapy { args, rate_hz, agc, gain_db, gains, antenna, settings, ppm, .. } => {
+            let gains = gains.into_iter().collect();
+            sdr::run_with(i, soapy::SoapyConfig { args, center_hz: center, rate_hz, agc, gain_db, gains, antenna, settings, ppm }, tx, stop, ctl)
+        }
+        Source::File { path, rate_hz, realtime, format, .. } => run_file(i, &path, rate_hz, realtime, SampleFormat::of(format, &path), tx, stop),
+    })
+}
+
 pub(crate) fn run_file(source: usize, path: &str, rate_hz: f64, realtime: bool, format: SampleFormat, tx: SyncSender<SourceMsg>, stop: Arc<AtomicBool>) {
     let mut f = match fs::File::open(path) {
         Ok(f) => f,
@@ -374,8 +606,10 @@ pub(crate) fn run_file(source: usize, path: &str, rate_hz: f64, realtime: bool, 
     let chunk = 32768 * bps;
     let t0 = Instant::now();
     let mut sent = 0u64;
+    let pool = crate::sdr::Pool::default();
+    let mut buf = vec![0u8; chunk];
     while !stop.load(Ordering::Relaxed) {
-        let mut buf = vec![0u8; chunk];
+        buf.resize(chunk, 0);
         let n = read_full(&mut f, &mut buf);
         if n < bps {
             break;
@@ -383,7 +617,7 @@ pub(crate) fn run_file(source: usize, path: &str, rate_hz: f64, realtime: bool, 
         buf.truncate(n - n % bps);
         sent += (buf.len() / bps) as u64;
         let msg = match format {
-            SampleFormat::Cu8 => SourceMsg::Data { source, bytes: buf, dropped: 0, at: Instant::now() },
+            SampleFormat::Cu8 => SourceMsg::Data { source, bytes: pool.copy(&buf), dropped: 0, at: Instant::now() },
             _ => SourceMsg::Iq { source, samples: trunk_app::samples::to_iq(format, &buf), dropped: 0, at: Instant::now() },
         };
         if tx.send(msg).is_err() {
@@ -437,9 +671,7 @@ fn open_spool(ctx: &Ctx, cfg: &Config) {
         match crate::spool::Spool::open(want, &crate::paths::data_dir()) {
             Ok(s) => Some(Arc::new(s)),
             Err(e) => {
-                let text = format!("No RAM spool ({e}): calls go to the recordings folder");
-                log::warn!("{text}");
-                publish(&ctx.hub, json!({ "type": "log", "lines": [{ "timeS": 0, "kind": "error", "text": text }] }));
+                log::warn!("No RAM spool ({e}): calls go to the recordings folder");
                 None
             }
         }
@@ -449,31 +681,152 @@ fn open_spool(ctx: &Ctx, cfg: &Config) {
     *ctx.spool.lock().unwrap() = spool;
 }
 
-/// `epoch`: the wall clock (Unix ms) at an instant, for the session's clock.
-fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Receiver<SourceMsg>, stop: Arc<AtomicBool>, epoch: (f64, Instant)) {
-    ctx.set_phase("running", None, false);
-    let dir = PathBuf::from(&cfg.recording.capture_dir);
-    // Each system's file rules, by a call's `system` (trunked or conventional).
-    let rules = {
-        let cfg = cfg.clone();
-        move |system: u16| FileRules::of(&cfg.recording_of(system))
-    };
-    let spool = ctx.spool.lock().unwrap().clone();
-    let (fin_tx, fin_rx) = mpsc::sync_channel::<Finish>(1024);
-    let finisher = {
-        let (ctx, dir, spool, m4a) = (ctx.clone(), dir.clone(), spool.clone(), cfg.recording.m4a.clone());
-        std::thread::Builder::new().name("finish".into()).spawn(move || finish_calls(&ctx, &dir, spool.as_deref(), fin_rx, &m4a)).expect("thread")
-    };
-    // Calls are written on the finish thread, so a slow disk doesn't hold up decoding.
-    let fin = |f: Finish, plugins: Option<&PluginHost>| {
-        if let Err(mpsc::TrySendError::Full(f)) = fin_tx.try_send(f) {
-            // (Behind on writing or encoding: this one is written here, without its M4A, rather than waiting.)
-            finish_one(&ctx, &dir, spool.as_deref(), Finish { rules: FileRules { compress_wav: false, ..f.rules }, ..f }, None, plugins);
-        }
-    };
+/// One source's decoding thread: its samples into the engine as they come
+/// (each source on a core of its own), anything else to the engine thread.
+/// On stop, what the source had already sent is decoded first (up to the
+/// queue's 256 blocks: about 2.5 s of 10 ms USRP / Soapy blocks, about 14 s
+/// of RTL-SDR's at 2.4 MSPS): calls in progress keep it.
+fn feed_source(feeder: Feeder, rx: mpsc::Receiver<SourceMsg>, ctl: mpsc::Sender<EngineCmd>, stop: Arc<AtomicBool>, epoch: (f64, Instant), air: Air) {
     let now_ms = || epoch.0 + epoch.1.elapsed().as_secs_f64() * 1000.0;
     // An instant on the same clock (when a driver handed samples over).
     let at_ms = |at: Instant| epoch.0 + at.saturating_duration_since(epoch.1).as_secs_f64() * 1000.0;
+    // (An Airspy's real samples become IQ here, on this thread: see [`crate::sdr::IqFrom`].)
+    let mut iqf = crate::sdr::IqFrom::default();
+    let mut take = |m: SourceMsg| match iqf.iq(m) {
+        SourceMsg::Data { source, bytes, dropped, at } => {
+            debug_assert_eq!(source, feeder.source());
+            air.keep_up(&stop);
+            feeder.push(&bytes, dropped, at_ms(at));
+            air.fed((bytes.len() / 2) as u64 + dropped);
+        }
+        SourceMsg::Iq { source, samples, dropped, at } => {
+            debug_assert_eq!(source, feeder.source());
+            air.keep_up(&stop);
+            feeder.push_iq(&samples, dropped, at_ms(at));
+            air.fed(samples.len() as u64 + dropped);
+        }
+        m => {
+            let _ = ctl.send(EngineCmd::Source(m));
+        }
+    };
+    loop {
+        if stop.load(Ordering::Relaxed) {
+            rx.try_iter().for_each(&mut take);
+            return;
+        }
+        match rx.recv_timeout(Duration::from_millis(50)) {
+            Ok(m) => take(m),
+            Err(RecvTimeoutError::Timeout) => feeder.idle(now_ms()),
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    air.done();
+}
+
+/// How far into its air each capture played as fast as it goes is, ms
+/// (`u64::MAX`: done, or a source that keeps time by itself). Such a capture
+/// has no clock to keep it in step with the others: it waits while it's
+/// more than [`Air::LEAD_MS`] ahead of the slowest of them, as sources on the
+/// air never are by much (a grant on one source opens a channel on another
+/// where that one is). Sources on the air never wait, nor are waited for.
+struct Air {
+    at_ms: Arc<Vec<AtomicU64>>,
+    me: usize,
+    rate_hz: f64,
+    samples: std::cell::Cell<u64>,
+    paced: bool,
+}
+
+impl Air {
+    const LEAD_MS: u64 = 100;
+
+    fn fed(&self, n: u64) {
+        if self.paced {
+            return;
+        }
+        self.samples.set(self.samples.get() + n);
+        self.at_ms[self.me].store((self.samples.get() as f64 / self.rate_hz * 1000.0) as u64, Ordering::Relaxed);
+    }
+
+    fn keep_up(&self, stop: &AtomicBool) {
+        if self.paced {
+            return;
+        }
+        let mine = self.at_ms[self.me].load(Ordering::Relaxed);
+        while !stop.load(Ordering::Relaxed) && self.at_ms.iter().enumerate().any(|(i, a)| i != self.me && a.load(Ordering::Relaxed).saturating_add(Self::LEAD_MS) < mine) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    fn done(&self) {
+        self.at_ms[self.me].store(u64::MAX, Ordering::Relaxed);
+    }
+}
+
+/// `queues`: each source's samples. `epoch`: the wall clock (Unix ms) at an
+/// instant, for the session's clock. `ctl`: everything for this thread — the
+/// sources' errors and ends (by way of their decoding threads), and the
+/// browsers' and the server's changes ([`Ctx::engine`] holds its sender).
+fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<mpsc::Receiver<SourceMsg>>, stop: Arc<AtomicBool>, epoch: (f64, Instant), ctl: (mpsc::Sender<EngineCmd>, mpsc::Receiver<EngineCmd>)) {
+    ctx.set_phase("running", None, false);
+    let (ctl_tx, rx) = ctl;
+    session.set_topics(ctx.topics());
+    let at_ms: Arc<Vec<AtomicU64>> = Arc::new(cfg.sources.iter().map(|_| AtomicU64::new(0)).collect());
+    let feeders: Vec<JoinHandle<()>> = queues
+        .into_iter()
+        .enumerate()
+        .map(|(i, q)| {
+            let (f, ctl, stop) = (session.feeder(i), ctl_tx.clone(), stop.clone());
+            let src = &cfg.sources[i];
+            let paced = !matches!(src, Source::File { realtime: false, .. });
+            if paced {
+                at_ms[i].store(u64::MAX, Ordering::Relaxed);
+            }
+            let air = Air { at_ms: at_ms.clone(), me: i, rate_hz: src.rate_hz(), samples: Default::default(), paced };
+            std::thread::Builder::new().name(format!("dsp-{i}")).spawn(move || feed_source(f, q, ctl, stop, epoch, air)).expect("thread")
+        })
+        .collect();
+    drop(ctl_tx);
+    let dir = PathBuf::from(&cfg.recording.capture_dir);
+    // Each system's file rules, by a call's `system` (trunked or conventional).
+    let rules = {
+        let (each, all) = (cfg.recordings().iter().map(FileRules::of).collect::<Vec<_>>(), FileRules::of(&cfg.recording));
+        move |system: u16| each.get(system as usize).copied().unwrap_or(all)
+    };
+    let spool = ctx.spool.lock().unwrap().clone();
+    let encoder = plugins::Encoder::find(cfg.recording.m4a.encoder).map(|e| (e, cfg.recording.m4a.bitrate_kbps.clamp(8, 320)));
+    if encoder.is_none() && cfg.recordings().iter().any(|r| r.compress_wav) {
+        log::warn!("{}", if cfg.recording.m4a.encoder == crate::config::M4aEncoder::None { "M4A encoding is off: calls are kept as WAV only" } else { "No M4A encoder found (install ffmpeg): calls are kept as WAV only" });
+    }
+    // Calls are finished on threads of their own (each may be encoding an
+    // .m4a), so a slow disk or encoder doesn't hold up decoding.
+    let (fin_tx, fin_rx) = mpsc::sync_channel::<Finish>(1024);
+    let fin_rx = Arc::new(Mutex::new(fin_rx));
+    let finishers: Vec<JoinHandle<()>> = (0..finishers())
+        .map(|i| {
+            let (ctx, dir, spool, encoder, rx) = (ctx.clone(), dir.clone(), spool.clone(), encoder.clone(), fin_rx.clone());
+            std::thread::Builder::new().name(format!("finish-{i}")).spawn(move || finish_calls(&ctx, &dir, spool.as_deref(), &rx, encoder.as_ref())).expect("thread")
+        })
+        .collect();
+    let fin = |f: Finish| {
+        // Behind on writing or encoding: decoding is on the sources' own
+        // threads, so this waits a while; past that, it's finished here (by
+        // the same plan) rather than dropped.
+        let until = Instant::now() + FINISH_WAIT;
+        let mut f = f;
+        loop {
+            match fin_tx.try_send(f) {
+                Ok(()) => return,
+                Err(mpsc::TrySendError::Full(back)) if Instant::now() < until => {
+                    f = back;
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(mpsc::TrySendError::Full(back)) => return finish_one(&ctx, &dir, spool.as_deref(), back, encoder.as_ref()),
+                Err(mpsc::TrySendError::Disconnected(_)) => return,
+            }
+        }
+    };
+    let now_ms = || epoch.0 + epoch.1.elapsed().as_secs_f64() * 1000.0;
     let mut out = Vec::new();
     let mut ended_all = false;
     // Band plans (and DMR channel tables) as last saved: learned ones survive a crash or kill too.
@@ -481,45 +834,24 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Rec
     let mut plans_at = Instant::now();
     let mut tune_at = Instant::now();
     let mut registry_at = Instant::now();
-    let mut topics_gen = u64::MAX;
     loop {
         if stop.load(Ordering::Relaxed) {
             break;
         }
-        match rx.recv_timeout(Duration::from_millis(50)) {
-            Ok(SourceMsg::Data { source, bytes, dropped, at }) => {
-                let t = Instant::now();
-                session.push(source, &bytes, dropped, at_ms(at));
-                session.add_busy_ms(t.elapsed().as_secs_f64() * 1000.0);
-            }
-            Ok(SourceMsg::Iq { source, samples, dropped, at }) => {
-                let t = Instant::now();
-                session.push_iq(source, &samples, dropped, at_ms(at));
-                session.add_busy_ms(t.elapsed().as_secs_f64() * 1000.0);
-            }
-            Ok(SourceMsg::Error { source, error }) => session.source_error(source, &error),
-            Ok(SourceMsg::Tuned { .. }) => {}
-            Ok(SourceMsg::End { source }) => {
-                if session.source_ended(source) {
-                    // (Not "ended" when the user stopped it: the file thread ends on stop too.)
-                    ended_all = !stop.load(Ordering::Relaxed);
-                    break;
-                }
-            }
-            Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => break,
-        }
-        // (The plugins can be swapped meanwhile: their settings changed.)
-        let plugins = ctx.plugins.host.read().unwrap();
-        session.plugin_topics = plugins.as_ref().map_or(Default::default(), |p| p.topics);
-        session.want_audio = ctx.hub.receiver_count() > 0 || plugins.as_ref().is_some_and(|p| p.audio);
-        let g = ctx.topics_gen.load(Ordering::Relaxed);
-        if g != topics_gen {
-            topics_gen = g;
-            session.set_topics(ctx.topics());
-        }
-        for c in std::mem::take(&mut *ctx.engine_cmds.lock().unwrap()) {
+        // (What the sources decoded meanwhile is collected below, every 20 ms at most.)
+        // (What the sources decoded meanwhile is collected below, every 20 ms at most.)
+        let mut next = rx.recv_timeout(Duration::from_millis(20)).ok();
+        while let Some(c) = next {
             match c {
+                EngineCmd::Source(SourceMsg::Error { source, error }) => session.source_error(source, &error),
+                EngineCmd::Source(SourceMsg::End { source }) => {
+                    if session.source_ended(source) {
+                        // (Not "ended" when the user stopped it: the file thread ends on stop too.)
+                        ended_all = !stop.load(Ordering::Relaxed);
+                    }
+                }
+                EngineCmd::Source(_) => {}
+                EngineCmd::Topics(t) => session.set_topics(t),
                 EngineCmd::Talkgroups { short_name, csv } => {
                     if session.set_talkgroups(&short_name, &csv) {
                         log::info!("[{short_name}] Talkgroups updated");
@@ -529,9 +861,17 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Rec
                     session.set_keys(&short_name, ring);
                 }
             }
+            next = rx.try_recv().ok();
         }
+        if ended_all {
+            break;
+        }
+        // (The plugins can be swapped meanwhile: their settings changed. This iteration's, held by no lock.)
+        let plugins = ctx.plugins.host();
+        session.plugin_topics = plugins.as_ref().map_or(Default::default(), |p| p.topics);
+        session.want_audio = ctx.hub.receiver_count() > 0 || plugins.as_ref().is_some_and(|p| p.audio);
         session.poll(now_ms(), &mut out);
-        deliver(&ctx, &mut out, plugins.as_ref(), &rules, &fin);
+        deliver(&ctx, &mut out, plugins.as_deref(), &rules, &fin);
         drop(plugins);
         save_units(&mut session);
         if tune_at.elapsed() >= Duration::from_secs(60) {
@@ -547,22 +887,20 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, rx: mpsc::Rec
             save_registry(&ctx.shared);
         }
     }
+    *ctx.engine.lock().unwrap() = None;
     ctx.set_phase("stopping", None, false);
-    // What the sources had already sent (up to the queue's 256 blocks: about
-    // 2.5 s of 10 ms USRP / Soapy blocks, about 14 s of RTL-SDR's at
-    // 2.4 MSPS): calls in progress keep it.
-    for m in rx.try_iter() {
-        match m {
-            SourceMsg::Data { source, bytes, dropped, at } => session.push(source, &bytes, dropped, at_ms(at)),
-            SourceMsg::Iq { source, samples, dropped, at } => session.push_iq(source, &samples, dropped, at_ms(at)),
-            _ => {}
-        }
+    // The decoding threads finish what their sources had already sent
+    // ([`feed_source`]); once the sources are gone (stopped, or files at their end).
+    for f in feeders {
+        let _ = f.join();
     }
     session.poll(now_ms(), &mut out);
     session.finish(&mut out);
-    deliver(&ctx, &mut out, ctx.plugins.host.read().unwrap().as_ref(), &rules, &fin);
+    deliver(&ctx, &mut out, ctx.plugins.host().as_deref(), &rules, &fin);
     drop(fin_tx);
-    let _ = finisher.join();
+    for f in finishers {
+        let _ = f.join();
+    }
     // Uploads in flight get a moment to finish.
     ctx.plugins.stop(Duration::from_secs(10));
     let _ = fs::create_dir_all(crate::paths::data_dir());
@@ -581,102 +919,103 @@ struct Finish {
     rel: String,
     system: u16,
     wav: Vec<u8>,
-    json: String,
+    record: trunk_recorder_plugin::CallRecord,
     frames: Option<trunk_core::trunk::Capture>,
-    /// Its history entry (`{path, record}`).
-    entry: Value,
     rules: FileRules,
     /// Some of it was decrypted with our keys: only plugins with `shareDecrypted` take it.
     decrypted: bool,
 }
 
-/// Each call: its files, then (once they're on disk) the `concluded`
-/// message and history, its .m4a (compressWav), and the plugins, whose
-/// results settle what's kept ([`crate::plugins::Archive`]).
-fn finish_calls(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, rx: mpsc::Receiver<Finish>, m4a: &crate::config::M4a) {
-    let encoder = plugins::Encoder::find(&m4a.encoder).map(|e| (e, m4a.bitrate_kbps.clamp(8, 320)));
-    let mut warned = false;
-    for f in rx {
-        if f.rules.compress_wav && encoder.is_none() && !std::mem::replace(&mut warned, true) {
-            let text = if m4a.encoder == "none" { "M4A encoding is off: calls are kept as WAV only" } else { "No M4A encoder found (install ffmpeg): calls are kept as WAV only" };
-            log::warn!("{text}");
-            publish(&ctx.hub, json!({ "type": "log", "lines": [{ "timeS": 0, "kind": "error", "text": text }] }));
-        }
-        let host = ctx.plugins.host.read().unwrap();
-        finish_one(ctx, dir, spool, f, encoder.as_ref(), host.as_ref());
+/// How many calls are finished at once (each may be encoding an .m4a).
+fn finishers() -> usize {
+    std::thread::available_parallelism().map_or(1, |n| n.get() / 2).clamp(1, 3)
+}
+
+/// How long decoding waits for a place in the finish queue before finishing a call itself.
+const FINISH_WAIT: Duration = Duration::from_secs(5);
+
+/// A finish thread: each call it's given, until the recording ends.
+fn finish_calls(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, rx: &Mutex<mpsc::Receiver<Finish>>, encoder: Option<&(plugins::Encoder, u32)>) {
+    loop {
+        let Ok(f) = rx.lock().unwrap().recv() else { return };
+        finish_one(ctx, dir, spool, f, encoder);
     }
 }
 
-/// `host`: the plugins, as the caller already holds them (taking the lock
-/// again on the engine thread could deadlock with a plugin reload waiting).
-///
-/// What's kept once the plugins are done goes to the recordings folder, and
-/// what only they need to the spool, when there is one with room. The WAV is
-/// written only when it's kept or a plugin takes it: an .m4a is encoded
-/// from memory.
-fn finish_one(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, f: Finish, encoder: Option<&(plugins::Encoder, u32)>, host: Option<&PluginHost>) {
+/// A call's files, all of them, as its [`plugins::plan`] says: what's kept
+/// goes to the recordings folder, what only the plugins need to the spool
+/// when there is one with room. Then the `concluded` message and history,
+/// the .m4a (to keep, or for a plugin; its WAV instead should that fail),
+/// and the plugins, handed the files as they are; their results settle
+/// what's kept ([`crate::plugins::Archive`]).
+fn finish_one(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, f: Finish, encoder: Option<&(plugins::Encoder, u32)>) {
+    let host = ctx.plugins.host();
     let r = f.rules;
-    let takers = host.map_or(0, |h| h.call_takers(f.decrypted));
-    let p = plugins::plan(r, takers, host.is_some_and(|h| h.needs_wav()), encoder.is_some());
-    let (keep_audio, keep_json, keep_m4a, write_wav) = (p.keep_audio, p.keep_json, p.keep_m4a, p.write_wav);
+    let to_plugins = host.as_ref().map_or(Default::default(), |h| h.plugin_audio(f.decrypted));
+    let p = plugins::plan(r, to_plugins, encoder.is_some());
+    let (keep_audio, keep_json, keep_m4a) = (p.keep_audio, p.keep_json, p.keep_m4a);
     let base = dir.join(&f.rel);
-    let need = f.json.len() + f.wav.len() / 4 + if write_wav && !keep_audio { f.wav.len() } else { 0 };
+    // (The record written once, as the .json file has it.)
+    let json = f.record.to_json();
+    let need = json.len() + f.wav.len() / 4 + if p.write_wav && !keep_audio { f.wav.len() } else { 0 };
     let spooled = spool.filter(|s| p.spool && s.room_for(need as u64)).map(|s| s.dir.join(&f.rel));
     let at = |kept: bool, ext: &str| PathBuf::from(format!("{}.{ext}", if kept { &base } else { spooled.as_ref().unwrap_or(&base) }.display()));
     let (wav_at, json_at, frames_at, m4a_at) = (at(keep_audio, "wav"), at(keep_json, "json"), at(keep_audio, f.frames.as_ref().map_or("sdr", |c| c.ext)), at(keep_m4a, "m4a"));
     for d in [&wav_at, &json_at, &m4a_at].into_iter().filter_map(|p| p.parent()) {
         let _ = fs::create_dir_all(d);
     }
-    let ok = (!write_wav || fs::write(&wav_at, &f.wav).is_ok())
-        && (!p.write_json || fs::write(&json_at, &f.json).is_ok())
+    let ok = (!p.write_wav || fs::write(&wav_at, &f.wav).is_ok())
+        && (!p.write_json || fs::write(&json_at, &json).is_ok())
         && f.frames.as_ref().filter(|_| p.write_frames).is_none_or(|c| fs::write(&frames_at, &c.bytes).is_ok());
     if !ok {
-        log::error!("Couldn't write {}", base.display());
-        publish(&ctx.hub, json!({ "type": "log", "lines": [{ "timeS": 0, "kind": "error", "text": format!("couldn't write {}", base.display()) }] }));
+        log::warn!("Couldn't write {}", base.display());
         return;
     }
     // Whether its audio and JSON stay once the plugins are done (a plugin's failure may keep them after all: archive::settle).
-    let mut entry = f.entry;
+    let mut entry = trunk_app::session::call_entry(&f.rel, &f.record);
     entry["audio"] = json!(keep_audio);
     entry["json"] = json!(keep_json);
-    publish(&ctx.hub, json!({ "type": "concluded", "entry": &entry }));
+    publish(&ctx.hub, ToClient::Concluded { entry: entry.clone() });
     {
         let mut h = ctx.history.lock().unwrap();
         h.push_front(entry);
         h.truncate(HISTORY_KEPT);
     }
-    let mut audio = plugins::CallAudio {
-        wav: Arc::new(f.wav),
-        wav_written: write_wav,
-        files: trunk_recorder_plugin::CallFiles { json: json_at, wav: wav_at, m4a: None },
-        m4a_to: m4a_at,
-    };
+    let mut wav_written = p.write_wav;
+    let mut m4a = None;
     if let Some((e, kbps)) = encoder.filter(|_| p.make_m4a) {
-        match e.m4a(&audio.wav, &audio.m4a_to, *kbps) {
-            Ok(()) => audio.files.m4a = Some(audio.m4a_to.clone()),
+        match e.m4a(&f.wav, &m4a_at, *kbps) {
+            Ok(()) => m4a = Some(m4a_at),
             Err(err) => {
-                log::error!("M4A of {}: {err}", f.rel);
-                publish(&ctx.hub, json!({ "type": "log", "lines": [{ "timeS": 0, "kind": "error", "text": format!("M4A of {}: {err}", f.rel) }] }));
+                m4a_failed(&f.rel, &err);
                 // The call's audio is then the WAV.
-                if !audio.wav_written {
-                    audio.wav_written = fs::write(&audio.files.wav, &*audio.wav).is_ok();
+                if !wav_written {
+                    wav_written = fs::write(&wav_at, &f.wav).is_ok();
                 }
             }
         }
     }
-    ctx.plugins.archive.expect(&f.rel, takers, r, &base, spooled.as_deref());
+    ctx.plugins.archive.expect(&f.rel, to_plugins.takers, r, &base, spooled.as_deref(), Some(wav_written));
     if let Some(h) = host {
-        h.concluded(f.system, &f.rel, &f.json, audio, f.decrypted);
+        h.concluded(f.system, &f.rel, f.record, trunk_recorder_plugin::CallFiles { json: json_at, wav: wav_at, m4a }, f.decrypted);
+    }
+}
+
+/// An .m4a couldn't be made: said, at most once a minute.
+fn m4a_failed(rel: &str, err: &str) {
+    static LAST: Mutex<Option<Instant>> = Mutex::new(None);
+    let mut last = LAST.lock().unwrap();
+    if last.is_none_or(|t| t.elapsed() > Duration::from_secs(60)) {
+        *last = Some(Instant::now());
+        log::warn!("M4A of {rel}: {err} (its audio is the WAV)");
     }
 }
 
 /// Forward everything to the browsers and plugins; calls go to be stored.
-fn deliver(ctx: &Ctx, out: &mut Vec<Output>, plugins: Option<&PluginHost>, rules: &dyn Fn(u16) -> FileRules, finish: &dyn Fn(Finish, Option<&PluginHost>)) {
+fn deliver(ctx: &Ctx, out: &mut Vec<Output>, plugins: Option<&PluginHost>, rules: &dyn Fn(u16) -> FileRules, finish: &dyn Fn(Finish)) {
     for o in out.drain(..) {
         match o {
-            Output::Text(t) => {
-                let _ = ctx.hub.send(Arc::new(Out::Text(t)));
-            }
+            Output::Message(m) => publish(&ctx.hub, m),
             Output::Audio { short_name, tg, frame, decrypted, .. } => {
                 if let Some(p) = plugins {
                     p.audio_frame(&frame, decrypted);
@@ -689,11 +1028,11 @@ fn deliver(ctx: &Ctx, out: &mut Vec<Output>, plugins: Option<&PluginHost>, rules
                 }
             }
             Output::Log(r) => crate::logging::record(&r),
-            Output::Topic { topic, text } => {
-                let _ = ctx.hub.send(Arc::new(Out::Topic { topic, text }));
+            Output::Topic { topic, msg } => {
+                let _ = ctx.hub.send(Arc::new(Out::Topic { topic, text: msg.to_json() }));
             }
             Output::Rollup(r) => ctx.store.add(r),
-            Output::File { rel, system, wav, json, frames, entry, decrypted } => finish(Finish { rel, system, wav, json, frames, entry, rules: rules(system), decrypted }, plugins),
+            Output::File { rel, system, wav, record, frames, decrypted } => finish(Finish { rel, system, wav, record, frames, rules: rules(system), decrypted }),
         }
     }
 }
@@ -710,7 +1049,7 @@ pub fn call_files(ctx: &Ctx, rel: &str, audio: bool, json: bool) {
     e["audio"] = json!(audio);
     e["json"] = json!(json);
     drop(h);
-    publish(&ctx.hub, json!({ "type": "callFiles", "path": rel, "audio": audio, "json": json }));
+    publish(&ctx.hub, ToClient::CallFiles { path: rel.to_string(), audio, json });
 }
 
 /// Fill the history list with the newest calls already on disk, in the
@@ -739,10 +1078,12 @@ const OLDER_WINDOW_MS: i64 = 24 * 3600 * 1000;
 /// started before `before_ms`, newest first, from the last 24 hours. Only the
 /// day folders of Trunk Recorder's layout are read (a system with its own
 /// filename format isn't searched), so this stays cheap without an index.
-pub fn older_calls(ctx: &Ctx, before_ms: i64, limit: usize) -> Value {
+pub fn older_calls(ctx: &Ctx, before_ms: i64, limit: usize) -> ToClient {
     let (dir, names) = {
         let c = ctx.config.lock().unwrap();
-        let names: Vec<String> = c.systems.iter().map(|s| s.short_name.clone()).chain(c.conventional.iter().map(|v| v.short_name.clone())).collect();
+        // (And a site's, as a system of its own: its calls from before are under its name.)
+        let mut names: Vec<String> = c.systems.iter().flat_map(|s| std::iter::once(s.short_name.clone()).chain(trunk_app::migrate::old_names(s))).collect();
+        names.extend(c.conventional.iter().map(|v| v.short_name.clone()));
         (PathBuf::from(&c.recording.capture_dir), names)
     };
     let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
@@ -797,7 +1138,7 @@ pub fn older_calls(ctx: &Ctx, before_ms: i64, limit: usize) -> Value {
     }
     entries.sort_by(|a, b| b.0.cmp(&a.0));
     let entries: Vec<Value> = entries.into_iter().map(|(_, e)| e).collect();
-    json!({ "type": "olderCalls", "before": before_ms, "entries": entries, "more": read < found.len() })
+    ToClient::OlderCalls { before: before_ms, entries, more: read < found.len() }
 }
 
 /// The newest `limit` calls already on disk (for the history list at startup).

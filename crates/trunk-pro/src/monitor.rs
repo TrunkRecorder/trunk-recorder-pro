@@ -7,6 +7,7 @@
 //! as it fills), and what's left in it too long moved out; and on macOS,
 //! whether Spotlight indexes the recordings folder (`platform.spotlight`).
 
+use trunk_app::protocol::{body, ToClient};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -30,8 +31,8 @@ const SWEEP_EVERY: Duration = Duration::from_secs(600);
 const SPOTLIGHT_EVERY: Duration = Duration::from_secs(24 * 3600);
 
 /// The `host` message: the series' values this tick, and the platform's own figures.
-pub fn message(t: f64, agg: &Aggregator, platform: serde_json::Value) -> serde_json::Value {
-    json!({ "type": "host", "t": (t * 10.0).round() / 10.0, "values": agg.values_json(), "platform": platform })
+pub fn message(t: f64, agg: &Aggregator, platform: serde_json::Value) -> ToClient {
+    ToClient::Host(body(json!({ "t": (t * 10.0).round() / 10.0, "values": agg.values_json(), "platform": platform })))
 }
 
 pub fn start(ctx: Arc<Ctx>) {
@@ -87,8 +88,8 @@ fn run_with(ctx: Arc<Ctx>, mut platform: Platform) {
             }
         }
         let msg = message(t, &agg, p);
-        publish(&ctx.hub, msg.clone());
-        *ctx.host_last.lock().unwrap() = Some(msg);
+        *ctx.host_last.lock().unwrap() = Some(msg.clone());
+        publish(&ctx.hub, msg);
         std::thread::sleep(EVERY);
     }
 }

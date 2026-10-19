@@ -45,7 +45,7 @@ The importer reads Trunk Recorder's keys and writes this app's. A key not listed
 
 | Trunk Recorder | Trunk Recorder Pro |
 |---|---|
-| `driver: "osmosdr"`, `device: "rtl=…"` | `rtlsdr` source. A serial becomes `serial`; a device index (`rtl=0`) becomes `""`, the first free dongle. A `rate` over 3.2 MSPS becomes 2.4 MSPS |
+| `driver: "osmosdr"`, `device: "rtl=…"` | `rtlsdr` source. A serial becomes `serial`; a device index (`rtl=0`) becomes `""`, the first free dongle. `buflen=` → `bufLen`, `buffers=` → `buffers`. A `rate` over 3.2 MSPS becomes 2.4 MSPS |
 | `device` containing `airspy` | `airspy` source. The serial from `airspy=0x…`; `bias=1` → `biasTee`. `lnaGain`, `mixGain`, `ifGain` / `vgaGain` (or `gainSettings` LNA / MIX / IF) → manual mode steps; otherwise `gain` → the linearity step (0–21). A rate the Airspy can't do becomes 6 MSPS |
 | `device: "hackrf=…"`, `bladerf`, `airspyhf`, `lime` / `limesdr`, `sdrplay`, `plutosdr`, `redpitaya`, `xtrx`, or `soapy=…` | `soapy` source with matching `args` (`driver=hackrf`, plus `serial=…` when the device string had one; `soapy=` arguments kept as they are). Stage gains (`lnaGain`, `vgaGain`, `ampGain`, `ifGain`, `bbGain`, `mixGain`, `tiaGain`, `pgaGain`, `vga1Gain`, `vga2Gain`, `gainSettings`) → `gains`. AGC is on if `agc` was, or if no gain was given |
 | `driver: "usrp"` | `usrp` source; `device` → `args`, `antenna` → `antenna` |
@@ -64,20 +64,20 @@ USRP, Airspy and SoapySDR sources need their driver installed on this computer; 
 
 | Trunk Recorder | Trunk Recorder Pro |
 |---|---|
-| `type: "p25"`, `"smartnet"`, `"dmr"` | A trunked system of that type, one per entry, as in Trunk Recorder |
+| `type: "p25"`, `"smartnet"`, `"dmr"` | A trunked system of that type with one site, one per entry (but see `multiSite` below) |
 | `shortName` | `shortName` (made unique if two systems share one) |
-| `control_channels` | `controlChannelsHz` |
-| `modulation: "qpsk"` / `"fsk4"` | `modulation` the same; anything else, or no `modulation`, becomes `"auto"` |
-| `talkgroupsFile` | `talkgroupsCsv` (the file's contents) and `talkgroupsName`. Semicolon, tab or bar delimiters become commas, header names are tidied |
+| `control_channels` | its site's `controlChannelsHz` |
+| `modulation: "qpsk"` / `"fsk4"` | its site's `modulation` the same; anything else, or no `modulation`, becomes `"auto"` |
+| `talkgroupsFile` | The system's talkgroup file, `<shortName>.talkgroups.csv` beside the config (not a config key). Semicolon, tab or bar delimiters become commas, header names are tidied |
 | `unitTagsFile`, `unitTagsMode` | `unitNames.csv` (contents), `unitNames.name`, `unitNames.mode` |
-| `bandplan` | `bandplan` (default `800_standard`) |
+| `bandplan` | its site's `bandplan` (default `800_standard`), and the keys below |
 | `bandplanBase`, `bandplanSpacing`, `bandplanHigh` (MHz) | `bandplanBaseHz`, `bandplanSpacingHz`, `bandplanHighHz` (Hz) |
 | `bandplanOffset` | `bandplanOffset` |
 | Top-level `defaultMode: "analog"` | `defaultMode: "analog"` on every SmartNet system (it only affects SmartNet) |
 | DMR `lcnTable` | `lcnTableHz` |
 | DMR `channels` | `dmrChannelsHz` |
-| `multiSite: true` with `multiSiteSystemName` | `siteGroup` = that name. With no name, the site is grouped from what its control channel announces |
-| `multiSite` off, when other systems have it on | A `siteGroup` of its own (its short name), so every call there is kept |
+| `multiSite: true` with `multiSiteSystemName` | Systems with the same name become one system, named so, with a site each, named as Trunk Recorder named it. The first one's talkgroup file, unit names and rules are the system's; the import notes a talkgroup file that wasn't used |
+| `multiSite` without a `multiSiteSystemName`, or off | A system of its own. If two of them announce the same system on the air, Setup offers **Make them one system** |
 | `siteId` | A to-do: set a **Site lock** for that site |
 
 ### Conventional systems
@@ -155,7 +155,9 @@ The browser version has no plugins, so there these settings aren't kept.
   number (NAC, WACN, System ID, RFSS, site).
 - **Recorder counts** (`digitalRecorders`, `analogRecorders` and the like) and
   `signalDetectorThreshold`. There are no per-source recorders here; see below.
-- **A conventional system's `talkgroupsFile`.** Name the channels in the channel rows instead.
+- **A conventional system's `talkgroupsFile`.** Not imported. Load it into the conventional system in
+  Setup (**Talkgroup names** appears once the system has a P25, DMR or NXDN channel), or name the
+  channels in the channel rows.
 - **`conversationMode: false`** (a file per transmission). Each call is one file here; the import
   notes it.
 - **Unsupported system types** (anything but the six above) are skipped, with a note.
@@ -186,6 +188,13 @@ antenna. Only conventional channels have one (`squelchDb`, default 8, per system
 Trunked systems need none: calls start from the control channel's grants. See the
 [conventional guide](guides/conventional.md).
 
+### A system has sites
+
+In Trunk Recorder each site is a system of its own, joined by `multiSite`. Here one system (one short
+name, folder and talkgroup file) lists its sites, each a control channel to follow. A call heard on
+several of them is saved once, keeping the best copy rather than the first. The call JSON's
+`short_name` is the system, and `site` the site its copy was kept from.
+
 ### No recorder counts
 
 Trunk Recorder gives each source a number of digital and analog recorders. Here every source's
@@ -204,15 +213,16 @@ be split by CTCSS/DCS tone, NAC, colour code or RAN ([tones guide](guides/tones.
 
 Trunk Recorder's plugins are shared libraries built against it. Here a plugin is a separate program
 the recorder starts and talks to, installed from the **Plugins** page (or `trunk-pro plugin install`)
-without building anything. OpenMHz, Broadcastify Calls, Rdio Scanner, simplestream and upload-script
-plugins are published. See [plugins](plugins/README.md).
+without building anything. OpenMHz, Broadcastify Calls, Rdio Scanner, simplestream, upload-script and MQTT
+plugins are published. A Trunk Recorder MQTT status plugin entry isn't imported (it's listed under
+**Other plugins**); install [MQTT](plugins/mqtt.md) and fill in its settings in Setup. See [plugins](plugins/README.md).
 
 ### Files and settings live in the app's folder
 
 The config is in the app's config folder ([where](configuration/README.md#where-the-file-is)), not
-the folder you run it from, and keys are camelCase with frequencies in Hz. Talkgroup and unit files
-are stored **inside** the config (`talkgroupsCsv`, `unitNames.csv`), so editing the original CSV
-afterwards changes nothing: load it again in Setup. A conventional system can stay linked to a
+the folder you run it from, and keys are camelCase with frequencies in Hz. Talkgroup files are copied beside the
+config (`<shortName>.talkgroups.csv`) and unit files stored **inside** it (`unitNames.csv`), so editing
+the original CSV afterwards changes nothing: load it again in Setup. A conventional system can stay linked to a
 channel CSV, though (`channelFile`), re-read at every Start.
 
 ### What stays compatible

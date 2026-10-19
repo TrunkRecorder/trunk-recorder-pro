@@ -468,7 +468,7 @@ mod tests {
         let base = dir.join("rec/dcfd/a");
         std::fs::create_dir_all(base.parent().unwrap()).unwrap();
         std::fs::write(base.with_extension("wav"), b"x").unwrap();
-        archive.expect("dcfd/a", 1, rules, &base, None);
+        archive.expect("dcfd/a", 1, rules, &base, None, Some(true));
         let hold = Hold::new(archive);
         hold.open(&dir.join("hold"));
         hold.set_delays(delays(json!({ "pluginDelays": [{ "delayS": 3600 }] })));

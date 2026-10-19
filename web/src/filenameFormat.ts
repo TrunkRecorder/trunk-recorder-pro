@@ -5,7 +5,7 @@
 
 /** The call tokens, as filename.rs knows them. */
 export const FILENAME_TOKENS = [
-  "talkgroup", "talkgroup_tag", "talkgroup_alpha_tag", "talkgroup_description", "talkgroup_group", "talkgroup_display", "short_name", "freq", "freq_mhz",
+  "talkgroup", "talkgroup_tag", "talkgroup_alpha_tag", "talkgroup_description", "talkgroup_group", "talkgroup_display", "short_name", "site", "freq", "freq_mhz",
   "call_num", "tdma_slot", "sys_num", "epoch", "source_num", "recorder_num", "audio_type", "emergency", "encrypted", "priority", "signal", "noise", "color_code", "ran",
 ];
 
@@ -138,6 +138,7 @@ export const SAMPLE_CALL = {
   talkgroup_description: "Fire / EMS Dispatch",
   talkgroup_group: "Fire",
   short_name: "county",
+  site: "north",
   freq: 851012500,
   call_num: 42,
   tdma_slot: "",

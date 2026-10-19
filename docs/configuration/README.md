@@ -41,22 +41,32 @@ with `--config` files in different folders never share band plans, talker aliase
 - **Frequencies are in Hz, everywhere.** 857.9875 MHz is `857987500`. Keys carry their unit in the
   name: `…Hz`, `…Db`, `…S` (seconds), `…Kbps`, `…Mb`, `…PerS`. The Airspy gains are the driver's
   steps (`…Step`), not dB.
-- **A key ending in `Csv` holds a file's contents, not a path** (`talkgroupsCsv`, `unitNames.csv`).
+- **A key ending in `Csv` holds a file's contents, not a path** (`unitNames.csv`).
   A key ending in `File` holds a path (`channelFile`).
 - **A missing key takes its default**, listed in each table. The few marked ✓ in the Required column
   have no default: a source without its `centerHz`, for example, makes the file unreadable.
 - **A missing `sources` key gives one RTL-SDR** with default settings (first free dongle, Auto
   center, 2.4 MSPS, 25.4 dB), not none.
 - **A value of the wrong type makes the whole file unreadable**: a string where a number belongs, an
-  unknown source `type`, a fraction in an integer field (`"ppm": 1.5` on an RTL-SDR), a misspelled
-  value in a fixed list (`"level": "warn"` instead of `"warning"`). The app then refuses to start, with
-  `<file>: not a config this version reads (<what was wrong>)`. It never replaces a file it can't read
-  with the defaults.
+  unknown source `type`, a fraction in an integer field (`"ppm": 1.5` on an RTL-SDR), a value that
+  isn't one of a fixed list (`"level": "warn"` instead of `"warning"`, a system `"type": "P25x"`). The
+  app then refuses to start, with `<file>: not a config this version reads (<what was wrong>)`. It
+  never replaces a file it can't read with the defaults.
+- **Fixed lists are closed.** Where a key takes one of a few names (a system's `type`, `modulation`,
+  `vocoder`, `m4a.encoder`, a channel's `mode`…), the pages list them. They are read in any case
+  (`"P25"` is `"p25"`), and `""` is the default; any other value is refused as above, where older
+  versions fell back to the default without a word. A source's `type` is read in any case too, but
+  can't be left empty.
 - **Keys this version doesn't know are kept** and saved back as they were, at the top level and
-  inside a trunked system, a conventional system, `recording`, `server` and `log`. Notes of your own
-  there survive the interface saving the file. Unknown keys anywhere else (inside a source, a
-  channel, `expect`, `unitNames`, a system's own `recording`, `m4a`, `ramSpool`, an interface, a
-  plugin's entry, `monitor`) are dropped the next time the file is saved.
+  inside a trunked system, a site, a conventional system, `recording`, `server`, `log`, a key source
+  and a delay rule. Notes of your own there survive the interface saving the file. Unknown keys
+  anywhere else (inside a source, a channel, `expect`, `unitNames`, a system's own `recording`,
+  `m4a`, `ramSpool`, an interface, a plugin's entry, `monitor`) are dropped the next time the file is
+  saved.
+- **Talkgroups aren't in the config.** Each system's talkgroup file is a file of its own beside it
+  (`<shortName>.talkgroups.csv`); see [Files kept beside the config](#files-kept-beside-the-config).
+  A config from an older version that holds them (`talkgroupsCsv`) is upgraded when it's read: the
+  talkgroups are moved out into those files, and the log says so.
 - **The interface saves the whole file on every change**, so hand edits made while the app is running
   are overwritten by the next change in the interface. Stop the app, or make the change in the
   interface, rather than editing underneath it.
@@ -70,10 +80,10 @@ with `--config` files in different folders never share band plans, talker aliase
 | Key | Required | Default | Type | Description |
 |---|:---:|---|---|---|
 | `sources` | | one RTL-SDR | array | Radios and capture files. [sources.md](sources.md) |
-| `systems` | | `[]` | array | Trunked systems, one entry per site. [systems.md](systems.md) |
+| `systems` | | `[]` | array | Trunked systems, each with its sites. [systems.md](systems.md) |
 | `conventional` | | `[]` | array | Conventional systems, each a group of single-frequency channels. [conventional.md](conventional.md) |
 | `recording` | | see page | object | Where calls go and which are kept. [recording.md](recording.md) |
-| `server` | | see page | object | The web interface's address and port, custom interfaces. [server-and-log.md](server-and-log.md#server) |
+| `server` | | see page | object | The built-in interface's address and port; the other interfaces, each on a port of its own. [server-and-log.md](server-and-log.md#server) |
 | `log` | | see page | object | How much is logged and where to. [server-and-log.md](server-and-log.md#log) |
 | `monitor` | | see page | object | The dashboard's internet checks. [server-and-log.md](server-and-log.md#monitor) |
 | `plugins` | | `{}` | object | Which plugins run and their recorder-wide settings, by plugin id. [plugins.md](plugins.md) |
@@ -89,7 +99,7 @@ One RTL-SDR placed automatically, one P25 system, recordings in a folder of your
     { "type": "rtlsdr", "serial": "", "centerHz": 0, "rateHz": 2400000, "ppm": 0 }
   ],
   "systems": [
-    { "shortName": "dcfd", "type": "p25", "controlChannelsHz": [857987500, 858987500] }
+    { "shortName": "dcfd", "type": "p25", "sites": [{ "controlChannelsHz": [857987500, 858987500] }] }
   ],
   "recording": { "captureDir": "/home/me/TrunkRecorderPro" }
 }
@@ -119,24 +129,22 @@ the example.
       "shortName": "dcfd",
       "name": "DC Fire and EMS",
       "type": "p25",
-      "controlChannelsHz": [857987500, 858987500],
-      "modulation": "auto",
-      "talkgroupsCsv": "Decimal,Hex,Mode,Alpha Tag,Description,Tag,Category\n1201,4b1,D,FD Disp,Fire Dispatch,Fire Dispatch,DC Fire\n",
-      "talkgroupsName": "dcfd.csv",
-      "expect": { "nac": 1091 },
+      "sites": [{ "controlChannelsHz": [857987500, 858987500], "modulation": "auto", "expect": { "nac": 1091 } }],
       "recording": { "minCallS": 1 },
       "plugins": { "openmhz": { "apiKey": "...", "systemName": "dcfd" } }
     },
     {
       "shortName": "wmata",
       "type": "smartnet",
-      "controlChannelsHz": [489087500],
-      "bandplan": "400_custom",
-      "bandplanBaseHz": 489012500,
-      "bandplanSpacingHz": 12500,
-      "bandplanOffset": 380,
-      "bandplanHighHz": 490000000,
-      "defaultMode": "analog"
+      "defaultMode": "analog",
+      "sites": [{
+        "controlChannelsHz": [489087500],
+        "bandplan": "400_custom",
+        "bandplanBaseHz": 489012500,
+        "bandplanSpacingHz": 12500,
+        "bandplanOffset": 380,
+        "bandplanHighHz": 490000000
+      }]
     }
   ],
   "conventional": [
@@ -166,7 +174,7 @@ Notes on the example (the frequencies and band plan numbers are placeholders; us
   (`centerHz: 0`): the first is placed over the first system, the second over whatever the first
   doesn't reach. The second leaves 100 kHz unused at each edge instead of the default 75 kHz. The
   third is set by hand to 154.4 MHz for the conventional channels (Auto would work too).
-- **`dcfd`.** `modulation: "auto"` runs both P25 receivers and keeps the better frame. `expect`
+- **`dcfd`.** `modulation: "auto"` detects which P25 receiver the channels need, then runs only that. `expect`
   locks it to NAC `0x443`, written in decimal (1091). Its own `recording` drops calls under a second;
   every other rule follows the global `recording`. Its OpenMHz key is a per-system plugin setting.
 - **`wmata`.** A UHF SmartNet system needs `400_custom` and the four band plan numbers; Find my
@@ -190,6 +198,7 @@ Recording won't start if:
 
 - there is no source;
 - a `file` source has no `path` (`Choose the capture file to replay.`);
+- an RTL-SDR's `bufLen` isn't a multiple of 512 or is over 16 MiB, or its `buffers` is over 256;
 - there is nothing to record: no trunked system that is enabled and has a control channel, and no
   enabled channel in an enabled conventional system;
 - a system, trunked or conventional, has an empty `shortName`, or two share one (enabled or not);
@@ -199,14 +208,18 @@ Recording won't start if:
   `bandplanSpacingHz` or `bandplanHighHz`, or has the high frequency at or below the base;
 - a DMR or NXDN system has a control channel, `dmrChannelsHz` or `nxdnChannelsHz` frequency outside
   every source's usable bandwidth;
-- a trunked system has no control channel inside any source's usable bandwidth;
-- there are more than 256 conventional systems;
+- a trunked system's site has no control channel inside any source's usable bandwidth;
+- two sites of one system have the same name;
 - an enabled conventional frequency is in two conventional systems, is 0 or less, or is outside every
   source's usable bandwidth;
 - a channel's `tone` can't be read for its mode (including a CTCSS tone that isn't a standard one:
   `151.5 Hz isn't a standard CTCSS tone — 151.4?`);
 - rows sharing a frequency have different modes, two of them have no `tone`, or two have codes that
   can't be told apart (`D023N` and `D047I` are the same DCS signal);
+- a conventional channel's `bandwidthKhz` is outside 4–20, or its system's `demod` has `amLowCutHz`
+  outside 0–600, `squelchOpenMs` outside 0–500 or `squelchHangMs` outside 0–1000;
+- a `filenameFormat` (the global one, or a system's own) has a `{` with no `}` or a token that isn't
+  listed under [File names](recording.md#file-names) (`Unknown tokens: {shortName}, {tg}.`);
 - a linked `channelFile` can't be read.
 
 "Usable bandwidth" is the source's sample rate less its guard band at each edge: see
@@ -219,10 +232,10 @@ then Start). A few apply at once:
 
 | Applies at once | Applies at the next Start | Applies when the app restarts |
 |---|---|---|
-| A trunked system's talkgroup file (`talkgroupsCsv`): an Ignore or Priority change takes effect immediately | Sources, systems, conventional channels, squelch | `server.bind`, `server.port` |
+| A trunked system's talkgroup file (`<shortName>.talkgroups.csv`): an Ignore or Priority change takes effect immediately | Sources, systems, conventional channels, squelch | `server.bind`, `server.port` |
 | Plugin settings (`plugins`, each system's `plugins`) and `recording.m4a`: running plugins restart with them | Recording rules, `filenameFormat`, `captureDir` | `monitor.probeHosts` |
 | `log` settings | `recording.ramSpool` (the interface says "from the next start") | |
-| `server.allowedOrigins`, `server.interfaces`, `server.home` | A linked `channelFile` is re-read at every Start | |
+| `server.allowedOrigins`, `server.interfaces` (an interface moves to its new port at once) | A linked `channelFile` is re-read at every Start | |
 
 ## Files kept beside the config
 
@@ -232,6 +245,7 @@ config folder above; with `--config elsewhere/config.json`, it's `elsewhere/`.
 | File or folder | What it holds |
 |---|---|
 | `<shortName>.bandplan` | Each trunked system's learned band plan (P25 IDEN tables, DMR and NXDN channel tables), so grants can be followed at once next time |
+| `<shortName>.talkgroups.csv` | Each system's [talkgroup file](systems.md#talkgroup-file), in Trunk Recorder's CSV format. Setup writes it |
 | `<shortName>.units.csv` | Talker aliases heard over the air, per system |
 | `conventional.heard.json` | The tones, NACs, colour codes and RANs each conventional frequency carried (the Heard list) |
 | `radio/` | The radio registry: the talkgroups, radios and frequencies each system has heard, one `.json` per system |
@@ -239,6 +253,8 @@ config folder above; with `--config elsewhere/config.json`, it's `elsewhere/`.
 | `plugins/<id>/` | Installed plugins |
 | `plugin-data/<id>/` | Each plugin's own data (calls waiting to upload, for example), and its working folder |
 | `plugin-registry.json` | The plugin store's cached index |
+| `interfaces/<id>/` | Interfaces installed from the interface store |
+| `interface-registry.json` | The interface store's cached index |
 | `plugin-hold/` | Finished calls waiting out a [plugin delay](plugins.md#delays), one `.json` each. Deleting one drops that call for its plugin |
 | `logs/` | Log files, when `log.file` is on and `log.dir` is empty |
 | `spool/` | macOS only: where the RAM spool's RAM disk is mounted, when `recording.ramSpool` is on |

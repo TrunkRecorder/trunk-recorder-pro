@@ -27,7 +27,7 @@ under **Recording override**.
 | `callTimeoutS` | | `3` | number | Per system. A call ends this long after its last grant or audio, s. The interface allows 1–30 |
 | `recordUnknown` | | `true` | bool | Per system. Record talkgroups that aren't in the talkgroup file. Only matters when there is a talkgroup file; a talkgroup patched with a listed one is recorded anyway |
 | `recordEncrypted` | | `false` | bool | Per system. Keep calls flagged encrypted (by the grant or the talkgroup's `Mode`), with their radios, even with no audio. Encrypted transmissions are always left out of the audio, unless decrypted (see [systems.md](systems.md#encryption-keys-keys)). Config only: not in the interface |
-| `recordUnitToUnit` | | `true` | bool | Per system. Record P25 unit-to-unit (private) calls |
+| `recordUnitToUnit` | | `true` | bool | Per system. Record P25 individual calls: unit-to-unit (private) and telephone interconnect |
 | `keepSilentCalls` | | `false` | bool | Per system. Keep calls with no audio (encrypted, or nothing decoded) |
 | `minCallS` | | `0` | number | Per system. Delete calls with less audio than this, s, before they're uploaded. `0` keeps all. The interface allows 0–60 |
 | `maxCallS` | | `0` | number | Per system. Save a call this long and carry on in a new one, s; nothing is lost. `0`: parts of 600 s, so a stuck carrier never records without bound. The interface allows 0–3600 |
@@ -41,7 +41,7 @@ under **Recording override**.
 | `archiveFilesOnFailure` | | `true` | bool | Per system. **Keep when a plugin fails**: a plugin's failure keeps the audio and JSON whatever the two above say (a skip doesn't) |
 | `filenameFormat` | | `""` | string | Per system. Folders and file names under `captureDir`. See [File names](#file-names) |
 | `dropDuplicateCalls` | | `true` | bool | Multi-site: a call heard on several sites of one system is saved once, keeping the cleanest copy or the talkgroup's Preferred Site. See [systems.md](systems.md#multi-site) |
-| `vocoder` | | `"fixed"` | string | The IMBE voice decoder for P25 Phase 1 (trunked and conventional): `"fixed"` (fixed-point, usually sounds most natural), `"enhanced"` or `"mbelib"`. An unknown value is `"fixed"` |
+| `vocoder` | | `"fixed"` | string | The IMBE voice decoder for P25 Phase 1 (trunked and conventional): `"fixed"` (also `"fixed-point"`; usually sounds most natural), `"enhanced"` or `"mbelib"` (any case; anything else is refused when the config is read) |
 | `captureFrames` | | `false` | bool | Also save each digital call's vocoder frames as `<call>.sdr` (NXDN: `<call>.frames.jsonl`), for diagnosis and `trunk-pro tool revoice` |
 | `m4a` | | see below | object | The M4A encoder for `compressWav` and for plugins that upload M4A |
 | `ramSpool` | | see below | object | Keep files only the upload plugins need in RAM instead of `captureDir` |
@@ -54,7 +54,7 @@ encrypted part-way is kept with its clear transmissions.
 
 | Key | Required | Default | Type | Description |
 |---|:---:|---|---|---|
-| `encoder` | | `"auto"` | string | `"auto"` (ffmpeg, then afconvert, then fdkaac, whichever is found first), `"ffmpeg"`, `"afconvert"` (macOS), `"fdkaac"` or `"none"` (WAV only) |
+| `encoder` | | `"auto"` | string | `"auto"` (ffmpeg, then afconvert, then fdkaac, whichever is found first), `"ffmpeg"`, `"afconvert"` (macOS), `"fdkaac"` or `"none"` (WAV only). Any case; anything else is refused when the config is read |
 | `bitrateKbps` | | `32` | integer | AAC bitrate, 8–320 kb/s |
 
 Each call is encoded once, and the same `.m4a` serves `compressWav` and every plugin. Changing
@@ -84,7 +84,7 @@ A trunked or conventional system's own `recording` object can override any rule 
 above. A rule left out follows the global `recording`.
 
 ```json
-{ "shortName": "fireground", "type": "p25", "controlChannelsHz": [851012500],
+{ "shortName": "fireground", "type": "p25", "sites": [{ "controlChannelsHz": [851012500] }],
   "recording": { "minCallS": 2, "recordUnknown": false } }
 ```
 
@@ -107,11 +107,15 @@ With `filenameFormat` empty, calls are saved as Trunk Recorder saves them, in lo
 ```
 
 Month and day aren't zero-padded (`2026/10/4`). `<freq>` is in Hz. `.<slot>` is added for P25
-Phase 2 and DMR calls.
+Phase 2 and DMR calls. A system's sites share its folder; the call JSON's `site` says which site's
+copy it is. Calls saved by an older version, when each site was a system, stay in each site's old
+folder and are still found.
 
 Otherwise `filenameFormat` is a path template relative to `captureDir`, with `/` making folders,
 built from Trunk Recorder's tokens. The interface's **Folders and file names** editor shows a preview
-and flags unknown tokens.
+and flags unknown tokens. The format is checked when recording starts, the global one and each
+system's own: an unknown token (`{shortName}`, `{tg}`) or a `{` with no `}` stops the start with a
+message naming it.
 
 ```json
 "filenameFormat": "{short_name}/{time:%Y-%m-%d}/{talkgroup}-{time:%H%M%S}"
@@ -120,7 +124,8 @@ and flags unknown tokens.
 | Token | Gives |
 |---|---|
 | `{short_name}` | The system's short name |
-| `{sys_num}` | The system's number (trunked from 0; conventional 65535 down) |
+| `{site}` | The site the call was kept from, by name (a system of one site: its short name; none for a conventional system) |
+| `{sys_num}` | The system's number: 0, 1, 2… for the systems being recorded, trunked first, then conventional (before 0.2.0 a conventional system's was counted down from 65535) |
 | `{talkgroup}`, `{talkgroup_display}` | The talkgroup number |
 | `{talkgroup_alpha_tag}` | The talkgroup's alpha tag |
 | `{talkgroup_description}` | Its description |
@@ -148,4 +153,4 @@ Rendering rules:
   `_`, so a talkgroup tag can't make folders.
 - A `:` from a time format (`iso`, `%H:%M`) becomes `-`.
 - Empty folder names, `.` and `..` are dropped, so the path can't leave `captureDir`.
-- An unknown token is left as typed.
+- A format that comes out empty is saved as `call-call_<call_num>`.

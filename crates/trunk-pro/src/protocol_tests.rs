@@ -2,8 +2,8 @@
 //! writing their own interface in docs/api/. Its JSON Schema
 //! (docs/api/protocol.schema.json, from `npm run schema` in web/) is checked
 //! here against what the recorder really sends and handles: messages from a
-//! recording session (a conventional call), a survey, the server's replies,
-//! and every message type named in the code.
+//! recording session (a conventional call), a survey, the server's replies;
+//! and protocol.ts's message types against [`ToClient`] and [`Command`].
 
 use std::collections::{BTreeSet, VecDeque};
 use std::f64::consts::PI;
@@ -11,6 +11,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};
+use trunk_app::protocol::{body, Command, ToClient};
 use trunk_app::survey::{Request, SurveySession};
 use trunk_app::{Config, Output, Session};
 use trunk_core::Complex32;
@@ -63,9 +64,9 @@ fn check_all(direction: &str, msgs: &[Value]) {
 fn texts(out: &mut Vec<Output>, into: &mut Vec<Value>) {
     for o in out.drain(..) {
         match o {
-            Output::Text(t) | Output::Topic { text: t, .. } => into.push(serde_json::from_str(&t).unwrap()),
+            Output::Message(m) | Output::Topic { msg: m, .. } => into.push(m.to_value()),
             // Stored, a call is announced as the platform does it (runtime::finish_one).
-            Output::File { entry, .. } => into.push(json!({ "type": "concluded", "entry": entry })),
+            Output::File { rel, record, .. } => into.push(json!({ "type": "concluded", "entry": trunk_app::session::call_entry(&rel, &record) })),
             _ => {}
         }
     }
@@ -104,7 +105,7 @@ fn air(fs: f64, secs: f64, mut each: impl FnMut(&[Complex32], f64)) {
     }
 }
 
-fn conventional_config() -> Config {
+pub(crate) fn conventional_config() -> Config {
     serde_json::from_value(json!({
         "sources": [{ "type": "rtlsdr", "serial": "", "centerHz": 155000000, "rateHz": 2400000, "gainDb": 25, "agc": false, "ppm": 0 }],
         "conventional": [{ "shortName": "conv", "channels": [{ "freqHz": 155200000, "mode": "fm", "name": "Fire", "tone": "151.4" }] }],
@@ -117,7 +118,7 @@ fn conventional_config() -> Config {
 /// spectrum, log, heard, concluded, the dashboard's stats and details.
 #[test]
 fn a_recording_sessions_messages() {
-    let mut s = Session::new(conventional_config(), 1.75e12, &|_| None, |_| 0).unwrap();
+    let mut s = Session::new(conventional_config(), &Default::default(), 1.75e12, &|_| None, |_| 0).unwrap();
     s.set_topics(trunk_app::stats::Topics::new(["spectrum:0", "log", "rf:0", "decode:conv"].map(String::from)));
     let (mut out, mut msgs) = (Vec::new(), Vec::new());
     air(2_400_000.0, 4.5, |iq, t| {
@@ -148,19 +149,18 @@ fn a_late_radio_keeps_to_the_wall_clock() {
     let epoch = 1.75e12;
     // When the call starts, ms after the recording did.
     let start_of = |cfg: Config| {
-        let mut s = Session::new(cfg, epoch, &|_| None, |_| 0).unwrap();
+        let mut s = Session::new(cfg, &Default::default(), epoch, &|_| None, |_| 0).unwrap();
         let mut out = Vec::new();
         s.poll(epoch, &mut out);
         let mut files = Vec::new();
         air(2_400_000.0, 4.5, |iq, t| {
             s.push_iq(0, iq, 0, epoch + 3000.0 + t * 1000.0);
             s.poll(epoch + 3000.0 + t * 1000.0, &mut out);
-            files.extend(out.drain(..).filter_map(|o| if let Output::File { json, .. } = o { Some(json) } else { None }));
+            files.extend(out.drain(..).filter_map(|o| if let Output::File { record, .. } = o { Some(record) } else { None }));
         });
         s.finish(&mut out);
-        files.extend(out.drain(..).filter_map(|o| if let Output::File { json, .. } = o { Some(json) } else { None }));
-        let call: Value = serde_json::from_str(files.first().expect("a call")).unwrap();
-        call["start_time_ms"].as_f64().unwrap() - epoch
+        files.extend(out.drain(..).filter_map(|o| if let Output::File { record, .. } = o { Some(record) } else { None }));
+        files.first().expect("a call").start_time_ms as f64 - epoch
     };
     let radio = start_of(conventional_config());
     assert!((radio - 3500.0).abs() < 100.0, "the call starts {radio} ms in");
@@ -185,19 +185,18 @@ fn a_late_radio_keeps_to_the_wall_clock() {
 #[test]
 fn a_busy_engine_does_not_make_the_radio_look_late() {
     let epoch = 1.75e12;
-    let mut s = Session::new(conventional_config(), epoch, &|_| None, |_| 0).unwrap();
+    let mut s = Session::new(conventional_config(), &Default::default(), epoch, &|_| None, |_| 0).unwrap();
     let mut out = Vec::new();
     s.poll(epoch, &mut out);
     let mut files = Vec::new();
     air(2_400_000.0, 4.5, |iq, t| {
         s.push_iq(0, iq, 0, epoch + t * 1000.0);
         s.poll(epoch + 2000.0 + t * 1000.0, &mut out);
-        files.extend(out.drain(..).filter_map(|o| if let Output::File { json, .. } = o { Some(json) } else { None }));
+        files.extend(out.drain(..).filter_map(|o| if let Output::File { record, .. } = o { Some(record) } else { None }));
     });
     s.finish(&mut out);
-    files.extend(out.drain(..).filter_map(|o| if let Output::File { json, .. } = o { Some(json) } else { None }));
-    let call: Value = serde_json::from_str(files.first().expect("a call")).unwrap();
-    let start = call["start_time_ms"].as_f64().unwrap() - epoch;
+    files.extend(out.drain(..).filter_map(|o| if let Output::File { record, .. } = o { Some(record) } else { None }));
+    let start = files.first().expect("a call").start_time_ms as f64 - epoch;
     assert!((start - 500.0).abs() < 100.0, "the call starts {start} ms in");
 }
 
@@ -207,7 +206,7 @@ fn a_busy_engine_does_not_make_the_radio_look_late() {
 fn autotune_starts_from_the_saved_score() {
     let mut cfg = conventional_config();
     cfg.sources[0] = serde_json::from_value(json!({ "type": "rtlsdr", "serial": "", "centerHz": 155000000, "rateHz": 2400000, "gainDb": 25, "agc": false, "ppm": 2, "autoTune": true })).unwrap();
-    let mut s = Session::new(cfg, 1.75e12, &|_| None, |_| 0).unwrap();
+    let mut s = Session::new(cfg, &Default::default(), 1.75e12, &|_| None, |_| 0).unwrap();
     s.load_tune(r#"{"RTL-SDR (first)": {"errorPpm": 3.0, "atPpm": 1}, "Airspy SN 1": {"errorPpm": -1.0, "atPpm": 0}}"#);
     assert_eq!(s.tune_unsaved(), None, "nothing new to save");
     let (mut out, mut msgs) = (Vec::new(), Vec::new());
@@ -221,7 +220,7 @@ fn autotune_starts_from_the_saved_score() {
 /// Without subscriptions, the costly messages aren't made.
 #[test]
 fn unwatched_topics_are_not_sent() {
-    let mut s = Session::new(conventional_config(), 1.75e12, &|_| None, |_| 0).unwrap();
+    let mut s = Session::new(conventional_config(), &Default::default(), 1.75e12, &|_| None, |_| 0).unwrap();
     let (mut out, mut msgs) = (Vec::new(), Vec::new());
     air(2_400_000.0, 3.0, |iq, t| {
         s.push_iq(0, iq, 0, 1.75e12 + t * 1000.0);
@@ -251,35 +250,35 @@ fn a_surveys_messages() {
         s.poll(t * 1000.0, &mut out);
         texts(&mut out, &mut msgs);
     });
-    msgs.push(s.snapshot());
-    msgs.push(crate::survey::idle_json());
+    msgs.push(ToClient::Survey(body(s.snapshot())).to_value());
+    msgs.push(crate::survey::idle().to_value());
     assert!(msgs.iter().any(|m| m["type"] == "surveySpectrum"));
     check_all("FromRecorder", &msgs);
 }
 
-fn ctx(cfg: Config, dir: &Path) -> Arc<crate::runtime::Ctx> {
+pub(crate) fn ctx(cfg: Config, dir: &Path) -> Arc<crate::runtime::Ctx> {
     let (hub, _) = tokio::sync::broadcast::channel(16);
     let shared = trunk_app::stats::Shared::new();
     let series = Arc::new(Mutex::new(trunk_app::stats::History::default()));
     Arc::new(crate::runtime::Ctx {
         config_path: dir.join("config.json"),
         config: Mutex::new(cfg),
+        config_version: std::sync::atomic::AtomicU64::new(1),
+        talkgroups: Mutex::new(Default::default()),
         hub: hub.clone(),
-        runner: Mutex::new(None),
-        lifecycle: Mutex::new(false),
+        lifecycle: Mutex::new(crate::runtime::Lifecycle::Idle),
         phase: Mutex::new(crate::runtime::PhaseInfo { phase: "idle", error: None, ended: false }),
         history: Mutex::new(VecDeque::new()),
         quit: tokio::sync::Notify::new(),
-        survey: Mutex::new(None),
         survey_last: Mutex::new(None),
         plugins: crate::plugins::manage::Plugins::new(hub.clone(), shared.clone()),
-        home_dir: None,
+        bind: std::net::Ipv4Addr::LOCALHOST.into(),
+        interfaces: crate::interfaces::Interfaces::new(None, 8080),
         shared,
         series: series.clone(),
         store: crate::statstore::Store::start(dir.join("stats"), series),
         topics: Mutex::new(Default::default()),
-        topics_gen: std::sync::atomic::AtomicU64::new(0),
-        engine_cmds: Mutex::new(Vec::new()),
+        engine: Mutex::new(None),
         host_last: Mutex::new(None),
         spool: Mutex::new(None),
         unlocked: Default::default(),
@@ -342,17 +341,17 @@ fn the_servers_messages() {
             { "type": "file", "path": "x.cu8", "centerHz": 851000000, "rateHz": 2400000, "realtime": true, "format": "cu8" }
         ],
         "systems": [
-            { "shortName": "p25", "controlChannelsHz": [851012500], "recording": { "minCallS": 2 }, "siteGroup": "g" },
-            { "shortName": "dmr", "type": "dmr", "controlChannelsHz": [452175000], "lcnTableHz": { "101": 452275000 }, "colorCode": 1 },
-            { "shortName": "smartnet", "type": "smartnet", "controlChannelsHz": [856112500], "bandplan": "800_standard" }
+            { "shortName": "p25", "recording": { "minCallS": 2 }, "sites": [{ "controlChannelsHz": [851012500] }, { "name": "p25-2", "controlChannelsHz": [851512500] }] },
+            { "shortName": "dmr", "type": "dmr", "sites": [{ "controlChannelsHz": [452175000], "lcnTableHz": { "101": 452275000 }, "colorCode": 1 }] },
+            { "shortName": "smartnet", "type": "smartnet", "sites": [{ "controlChannelsHz": [856112500], "bandplan": "800_standard" }] }
         ]
     }))
     .unwrap();
     cfg.sources.extend(more.sources);
     cfg.systems = more.systems;
     cfg.server.allowed_origins = vec!["http://localhost:3000".into()];
-    cfg.server.interfaces = vec![trunk_app::config::Interface { name: "wall".into(), path: "ui/wall".into() }];
-    cfg.server.home = "wall".into();
+    cfg.server.interfaces.insert("wall".into(), trunk_app::config::Interface { port: 8081, path: "ui/wall".into(), ..Default::default() });
+    cfg.server.interfaces.insert("trunkamp".into(), trunk_app::config::Interface { port: 8082, access: trunk_app::config::ApiAccess::Control, ..Default::default() });
 
     let ctx = ctx(cfg.clone(), &dir);
     // Something in the registry and the history to ask about.
@@ -369,19 +368,39 @@ fn the_servers_messages() {
         r.call_start("p25", &c, now - 10);
         r.call_end("p25", &c, now - 6);
         r.message("p25", &trunk_core::trunk::Message { kind: trunk_core::trunk::MessageType::Affiliation, source: 7, talkgroup: 101, ..Default::default() }, now);
-        r.concluded("p25", &json!({ "freq": 851_012_500u64, "snr": 18.5, "errorList": [{ "frames": 50, "error_count": 2, "bad_frames": 0 }] }), now);
+        r.concluded("p25", &serde_json::from_value(json!({ "freq": 851_012_500u64, "snr": 18.5, "errorList": [{ "frames": 50, "error_count": 2, "bad_frames": 0 }] })).unwrap(), now);
     }
     ctx.series.lock().unwrap().insert(&trunk_app::stats::Rollup { t: now / 60 * 60, values: [("sys/p25/cc/good".to_string(), [30.0, 28.0, 33.0])].into() });
-    ctx.event(trunk_app::stats::MonitorEvent::ControlLost { system: "p25".into(), freq_hz: Some(851_012_500) });
+    ctx.event(trunk_app::stats::MonitorEvent::ControlLost { system: "p25".into(), site: Some("south".into()), freq_hz: Some(851_012_500) });
     ctx.event(trunk_app::stats::MonitorEvent::PluginHealth { plugin: "openmhz".into(), state: "warning".into(), message: "3 uploads waiting".into() });
     let mut agg = trunk_app::stats::Aggregator::default();
     let mut platform = crate::platform::Platform::new(vec![crate::platform::Watched { name: "data", path: dir.clone() }], Arc::new(crate::platform::Probes::default()));
     agg.begin(now as f64);
     let p = platform.sample(&mut agg, true);
     *ctx.host_last.lock().unwrap() = Some(crate::monitor::message(now as f64, &agg, p));
-    let hello = crate::server::hello_json(&ctx, serde_json::json!(crate::sdr::devices()), crate::radio::radios_json(false));
-    assert_eq!(hello["events"].as_array().map(Vec::len), Some(2));
-    let mut queries = vec![crate::server::stats_query(&ctx, &json!({ "id": 1, "series": ["sys/p25/*"], "range": "1h" }))];
+    ctx.talkgroups.lock().unwrap().insert("p25".into(), "101,Fire Dispatch\n".into());
+    // The greeting: hello last, after how things are now; less of it for listen access.
+    let heard = |control| {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let msgs = rt.block_on(crate::server::greeting(&ctx, control));
+        msgs.iter().filter_map(|m| crate::server::text_for(&crate::runtime::Out::of(m), control)).map(|t| serde_json::from_str::<Value>(&t).unwrap()).collect::<Vec<Value>>()
+    };
+    let (greeting, listening) = (heard(true), heard(false));
+    let kinds = |g: &[Value]| g.iter().map(|m| m["type"].as_str().unwrap().to_string()).collect::<Vec<String>>();
+    let (all, some) = (kinds(&greeting), kinds(&listening));
+    assert_eq!(all.last().map(String::as_str), Some("hello"));
+    assert_eq!(all.iter().filter(|k| *k == "monitorEvent").count(), 2);
+    for k in ["state", "config", "talkgroups", "heard", "history", "radios", "survey", "host", "devices", "keys", "plugins", "interfaces"] {
+        assert!(all.iter().any(|a| a == k), "the greeting has no {k}: {all:?}");
+    }
+    for k in ["devices", "keys", "plugins", "interfaces"] {
+        assert!(!some.iter().any(|a| a == k), "a listen-only greeting has {k}");
+    }
+    assert!(greeting.last().unwrap()["configPath"].is_string() && listening.last().unwrap().get("configPath").is_none());
+    let config = |g: &[Value]| g.iter().find(|m| m["type"] == "config").unwrap()["config"].clone();
+    assert_eq!(config(&listening), crate::access::redact_config(config(&greeting)));
+    let q = serde_json::from_value(json!({ "id": 1, "series": ["sys/p25/*"], "range": "1h" })).unwrap();
+    let mut queries = vec![crate::server::stats_query(&ctx, &q).to_value()];
     assert!(queries[0]["series"]["sys/p25/cc/good"]["v"].is_array(), "{}", queries[0]);
     for q in [
         json!({ "id": 2, "what": "summary" }),
@@ -393,131 +412,92 @@ fn the_servers_messages() {
         json!({ "id": 8, "what": "lengths", "system": "p25", "hours": 24 }),
         json!({ "id": 9, "what": "talkgroups", "system": "nowhere" }),
     ] {
-        queries.push(crate::server::radio_query(&ctx, &q));
+        queries.push(crate::server::radio_query(&ctx, &body(q)).to_value());
     }
     assert_eq!(queries[2]["rows"][0]["alphaTag"], "", "no talkgroup file for p25 here");
     assert_eq!(queries[4]["talkers"].as_array().map(Vec::len), Some(2));
+    // Named from the name book the server keeps (talkgroup files and the config; aliases as saved).
+    let files: trunk_app::config::TalkgroupFiles = [("p25".to_string(), "Decimal,Hex,Alpha Tag,Mode,Description,Tag,Category\n101,65,FD Dispatch,D,Dispatch,Fire Dispatch,Fire\n".to_string())].into();
+    ctx.shared.names.lock().unwrap().set_config(&cfg, &files);
+    ctx.shared.names.lock().unwrap().set_units("p25", "7,Engine 7\n");
+    let named = |q: Value| crate::server::radio_query(&ctx, &body(q)).to_value().to_string();
+    assert!(named(json!({ "id": 10, "what": "talkgroups", "system": "p25", "hours": 24 })).contains("FD Dispatch"));
+    assert!(named(json!({ "id": 11, "what": "units", "system": "p25" })).contains("Engine 7"));
     let msgs = vec![
-        hello,
-        json!({ "type": "config", "config": cfg }),
-        json!({ "type": "config", "config": Config::default() }),
-        crate::runtime::PhaseInfo { phase: "running", error: Some("x".into()), ended: false }.to_json(),
-        crate::server::devices_json(),
-        json!({ "type": "radios", "radios": crate::radio::radios_json(false) }),
-        ctx.plugins.list_json(&cfg),
+        ToClient::Config { config: Box::new(cfg.clone()), version: 2 },
+        ToClient::Config { config: Box::default(), version: 1 },
+        ToClient::ConfigSaved { version: 3, error: None },
+        ToClient::ConfigSaved { version: 3, error: Some("changed elsewhere".into()) },
+        crate::runtime::PhaseInfo { phase: "running", error: Some("x".into()), ended: false }.message(),
+        crate::server::devices(),
+        ToClient::Radios { radios: crate::radio::radios_json(false) },
+        ctx.plugins.list(&cfg),
         crate::plugins::manage::store_message(&crate::plugins::store::built_in()),
-        crate::server::dir_json(&dir.display().to_string()),
-        crate::server::dir_json(&dir.join("missing").display().to_string()),
-        crate::server::tr_config_json(&dir.display().to_string()),
-        crate::server::tr_config_json(&dir.join("nothing.json").display().to_string()),
-        json!({ "type": "quit" }),
-        json!({ "type": "subscribed", "topics": ["spectrum:0", "log"] }),
+        ctx.interfaces.list(&cfg, &ctx.config_path),
+        crate::interfaces::store::message(&crate::interfaces::store::REGISTRY.built_in()),
+        ToClient::InstallProgress { kind: trunk_app::protocol::StoreKind::Interface, key: "trunkamp".into(), id: "trunkamp".into(), stage: "downloading", message: None },
+        ToClient::InstallProgress { kind: trunk_app::protocol::StoreKind::Plugin, key: "a/b".into(), id: String::new(), stage: "failed", message: Some("no release".into()) },
+        crate::server::dir(&dir.display().to_string()),
+        crate::server::dir(&dir.join("missing").display().to_string()),
+        crate::server::tr_config(&dir.display().to_string()),
+        crate::server::tr_config(&dir.join("nothing.json").display().to_string()),
+        ToClient::Quit,
+        ToClient::Subscribed { topics: vec!["spectrum:0".into(), "log".into()] },
+        // What the recorder itself logs (logging::to_browsers).
+        ToClient::Log { lines: vec![json!({ "timeS": 0, "time": 1_750_000_000.5, "level": "warning", "kind": "error", "text": "No RAM spool" })] },
     ];
-    let msgs: Vec<Value> = msgs.into_iter().chain(queries).chain(ctx.shared.recent_events()).collect();
+    let msgs: Vec<Value> = greeting.into_iter().chain(msgs.iter().map(ToClient::to_value)).chain(queries).chain(ctx.shared.recent_events()).collect();
     let _ = std::fs::remove_dir_all(&dir);
     check_all("FromRecorder", &msgs);
 }
 
-/// Every Rust source file the messages come from.
-fn sources() -> Vec<(String, String)> {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-    let mut files = Vec::new();
-    let mut dirs = vec![root.join("trunk-app/src"), root.join("trunk-pro/src")];
-    while let Some(d) = dirs.pop() {
-        for e in std::fs::read_dir(&d).unwrap().filter_map(|e| e.ok()) {
-            let p = e.path();
-            if p.is_dir() {
-                dirs.push(p);
-            } else if p.extension().is_some_and(|x| x == "rs") && !p.ends_with("protocol_tests.rs") {
-                files.push((p.display().to_string(), std::fs::read_to_string(&p).unwrap()));
-            }
-        }
-    }
-    files
-}
-
-/// Each `json!({ "type": "…"` (or `["type"] = json!("…")`) in the code: a message sent.
-fn sent_types() -> BTreeSet<String> {
-    let mut found = BTreeSet::new();
-    for (_, text) in sources() {
-        let mut rest = text.as_str();
-        while let Some(i) = rest.find("\"type\": \"") {
-            let before = rest[..i].trim_end();
-            let after = &rest[i + 9..];
-            let name: String = after.chars().take_while(|c| c.is_ascii_alphanumeric()).collect();
-            if before.ends_with("json!({") {
-                found.insert(name);
-            }
-            rest = after;
-        }
-        let mut rest = text.as_str();
-        while let Some(i) = rest.find("[\"type\"] = json!(\"") {
-            let after = &rest[i + 18..];
-            found.insert(after.chars().take_while(|c| c.is_ascii_alphanumeric()).collect());
-            rest = after;
-        }
-    }
-    found
-}
-
-/// The types the server's `command` answers.
-fn handled_types() -> BTreeSet<String> {
-    let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/server.rs")).unwrap();
-    let body = &text[text.find("async fn command(").unwrap()..];
-    let body = &body[..body.find("\n}\n").unwrap()];
-    let mut found = BTreeSet::new();
-    for line in body.lines().map(str::trim) {
-        let Some(arm) = line.split_once(" =>").map(|(a, _)| a) else { continue };
-        if !arm.starts_with('"') {
-            continue;
-        }
-        for name in arm.split('|').map(|n| n.trim().trim_matches('"')) {
-            found.insert(name.to_string());
-        }
-    }
-    found
-}
-
-/// Messages protocol.ts declares that the recorder never sends, or sends
-/// without declaring; types the server handles that aren't declared, or
-/// declared ones it ignores.
+/// protocol.ts declares the messages [`ToClient`] can be and the commands
+/// [`Command`] reads: no more, no fewer.
 #[test]
 fn every_message_type_is_declared() {
-    let from = declared("FromRecorder");
-    let sent = sent_types();
-    let undeclared: Vec<_> = sent.difference(&from).collect();
-    assert!(undeclared.is_empty(), "sent but not in protocol.ts's FromRecorder: {undeclared:?}");
-    let never: Vec<_> = from.difference(&sent).collect();
-    assert!(never.is_empty(), "in protocol.ts's FromRecorder but never sent: {never:?}");
-
-    let to = declared("ToRecorder");
-    let handled = handled_types();
-    let undeclared: Vec<_> = handled.difference(&to).collect();
-    assert!(undeclared.is_empty(), "handled but not in protocol.ts's ToRecorder: {undeclared:?}");
-    let ignored: Vec<_> = to.difference(&handled).collect();
-    assert!(ignored.is_empty(), "in protocol.ts's ToRecorder but not handled: {ignored:?}");
+    let names = |v: &[&str]| v.iter().map(|n| n.to_string()).collect::<BTreeSet<String>>();
+    let (from, sent) = (declared("FromRecorder"), names(ToClient::TYPES));
+    assert_eq!(sent.difference(&from).collect::<Vec<_>>(), Vec::<&String>::new(), "sent but not in protocol.ts's FromRecorder");
+    assert_eq!(from.difference(&sent).collect::<Vec<_>>(), Vec::<&String>::new(), "in protocol.ts's FromRecorder but never sent");
+    let (to, read) = (declared("ToRecorder"), names(Command::TYPES));
+    assert_eq!(read.difference(&to).collect::<Vec<_>>(), Vec::<&String>::new(), "read but not in protocol.ts's ToRecorder");
+    assert_eq!(to.difference(&read).collect::<Vec<_>>(), Vec::<&String>::new(), "in protocol.ts's ToRecorder but not read");
 }
 
 /// What the interface sends is what the server reads (the shapes, as the docs give them).
 #[test]
 fn messages_to_the_recorder() {
     let msgs = vec![
-        json!({ "type": "setConfig", "config": serde_json::to_value(conventional_config()).unwrap() }),
+        json!({ "type": "setConfig", "config": serde_json::to_value(conventional_config()).unwrap(), "version": 1 }),
         json!({ "type": "start" }),
         json!({ "type": "stop" }),
         json!({ "type": "listen", "on": true, "system": null, "talkgroup": 101 }),
         json!({ "type": "listDir", "path": "" }),
         json!({ "type": "surveyStart", "source": 0, "bands": ["800"], "findGain": true }),
         json!({ "type": "profileSource", "source": 0, "centerHz": 460_000_000 }),
-        json!({ "type": "installPlugin", "id": "openmhz" }),
-        json!({ "type": "installPlugin", "repository": "someone/plugin", "tag": "v1.0.0" }),
+        json!({ "type": "install", "kind": "plugin", "id": "openmhz" }),
+        json!({ "type": "install", "kind": "interface", "repository": "someone/ui", "tag": "v1.0.0" }),
+        json!({ "type": "store", "kind": "plugin", "refresh": true }),
         json!({ "type": "subscribe", "topics": ["spectrum:0", "rf:0", "decode:dcfd", "log", "platform"] }),
         json!({ "type": "statsQuery", "id": 1, "series": ["sys/dcfd/cc/*"], "range": "24h", "points": 200 }),
         json!({ "type": "statsQuery", "id": 2, "series": ["plat/cpu"], "from": 1_750_000_000, "to": 1_750_086_400 }),
         json!({ "type": "radioQuery", "id": 3, "what": "talkgroups", "system": "dcfd", "hours": 168, "limit": 100 }),
         json!({ "type": "radioQuery", "id": 4, "what": "unit", "system": "dcfd", "key": 1234 }),
+        json!({ "type": "channelFile", "index": 0, "path": "" }),
+        json!({ "type": "unlockKeys", "source": "county", "password": "p" }),
+        json!({ "type": "olderCalls", "before": 1_750_000_000_000i64, "limit": 50 }),
+        json!({ "type": "surveyListen", "freqHz": 851_012_500 }),
+        json!({ "type": "store", "kind": "interface" }),
+        json!({ "type": "removeInterface", "id": "trunkamp" }),
+        json!({ "type": "setTalkgroups", "system": "dcfd", "csv": "Decimal,Alpha Tag\n101,FD Disp\n" }),
     ];
     check_all("ToRecorder", &msgs);
+    // And the recorder reads each as the docs give it.
+    for m in &msgs {
+        if let Err(e) = Command::parse(&m.to_string()) {
+            panic!("{e}: {m}");
+        }
+    }
 }
 
 /// A key container with no passwordFile starts locked; a wrong password changes nothing, the right
@@ -529,10 +509,10 @@ fn a_key_container_is_unlocked_and_locked_from_the_interface() {
     let ekc = concat!(env!("CARGO_MANIFEST_DIR"), "/../trunk-app/src/testdata/dummy-test-keys.ekc");
     let mut cfg = Config::default();
     cfg.keys.insert("county".into(), crate::config::KeySource { file: ekc.into(), ..Default::default() });
-    cfg.systems.push(crate::config::System { short_name: "fire".into(), keys: "county".into(), control_channels_hz: vec![851_012_500.0], ..Default::default() });
+    cfg.systems.push(crate::config::System { keys: "county".into(), ..crate::config::System::one_site("fire", crate::config::Site { control_channels_hz: vec![851_012_500.0], ..Default::default() }) });
     let c = ctx(cfg.clone(), &dir);
-    let unlocked = |c: &crate::runtime::Ctx| crate::unlock::status_json(c)["sources"][0]["unlocked"].as_bool();
-    assert_eq!(crate::unlock::status_json(&c)["sources"][0]["systems"], json!(["fire"]));
+    let unlocked = |c: &crate::runtime::Ctx| crate::unlock::status(c).to_value()["sources"][0]["unlocked"].as_bool();
+    assert_eq!(crate::unlock::status(&c).to_value()["sources"][0]["systems"], json!(["fire"]));
     assert_eq!(unlocked(&c), Some(false));
     let e = crate::unlock::unlock(&c, "county", "nope").unwrap_err();
     assert!(e.contains("wrong password") && !e.contains("nope"), "{e}");
@@ -543,7 +523,7 @@ fn a_key_container_is_unlocked_and_locked_from_the_interface() {
     // A start reads the keys it holds.
     let keys = cfg.load_keys(&c.config_path, &|n| crate::unlock::held(&c, &cfg, n)).unwrap();
     assert_eq!(keys[0].ring.as_ref().map(|r| r.keys().len()), Some(3));
-    check_all("FromRecorder", &[crate::unlock::status_json(&c)]);
+    check_all("FromRecorder", &[crate::unlock::status(&c).to_value()]);
     crate::unlock::lock(&c, "county");
     assert_eq!(unlocked(&c), Some(false));
     assert!(cfg.load_keys(&c.config_path, &|n| crate::unlock::held(&c, &cfg, n)).unwrap()[0].ring.is_none(), "locked");

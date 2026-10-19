@@ -10,10 +10,12 @@ use std::collections::VecDeque;
 
 use num_complex::Complex32;
 
-use super::frame::{blocks_dibits, frame_dibits, Frame, Framer, FramerOptions, LDU1, LDU2, PDU, TDU, TSDU};
-use super::mbt::{self, Mbt, Pdu};
+use super::frame::{blocks_dibits, frame_dibits, Frame, Framer, FramerOptions, HDU, LDU1, LDU2, PDU, TDU, TSDU};
+use super::mbt::{self, Pdu};
+use super::osp::{self, Osp};
 use super::tsbk::{tsbk_last, tsbk_ok, trellis_viterbi, Tsbk};
-use super::voice::{decode_ldu1_lc, decode_ldu2_es, ldu_imbe, EncryptionSync, ImbeParams, LinkControl};
+use super::lc::LinkControl;
+use super::voice::{decode_hdu, decode_ldu1_lc, decode_ldu2_es, ldu_imbe, EncryptionSync, HduInfo, ImbeParams};
 use crate::dsp::c4fm::{C4fm, C4fmOptions, SYMBOL_RATE};
 use crate::dsp::cqpsk::{self, Cqpsk};
 use crate::dsp::{Receiver, Symbol};
@@ -33,12 +35,54 @@ pub struct BankConfig {
     /// Pass bit reliabilities to the framer (soft Viterbi / soft FEC). Off:
     /// hard decisions only, for comparisons.
     pub soft: bool,
+    /// With both kinds of receiver (`modulation: auto`): find which the
+    /// channel needs, then run only that ([`Detect`]). Off: both, always.
+    pub detect: bool,
 }
 
 impl Default for BankConfig {
     fn default() -> Self {
-        BankConfig { cqpsk: true, cqpsk_eq: true, c4fm: true, eq_taps: 9, eq_mu: 0.02, framer: FramerOptions::default(), soft: true }
+        BankConfig { cqpsk: true, cqpsk_eq: true, c4fm: true, eq_taps: 9, eq_mu: 0.02, framer: FramerOptions::default(), soft: true, detect: true }
     }
+}
+
+/// The CQPSK receivers and the C4FM one, as kinds of receiver ([`Detect`]).
+const KINDS: usize = 2;
+const CQPSK_KIND: usize = 0;
+const C4FM_KIND: usize = 1;
+
+/// Frame slots seen before a kind is chosen, at the least; with no clear
+/// winner by the most, the better one (C4FM on a tie) is taken.
+const DETECT_SLOTS: u32 = 40;
+const DETECT_MAX_SLOTS: u32 = 200;
+/// A clear winner: at least this many NID corrections fewer (two lost
+/// frames' worth), and no more than this share of the other's.
+const DETECT_MARGIN: u32 = 22;
+const DETECT_SHARE: f32 = 0.75;
+/// No frame slot for this long, s: the signal's gone; detect afresh when it's back.
+const DETECT_LOST_S: f64 = 10.0;
+
+/// `modulation: auto`: which kind of receiver the channel needs, found
+/// once. On real air one kind does all the work (`tool snr`: on simulcast
+/// CQPSK the C4FM receiver adds nothing at any SNR, and decodes less than
+/// half of it at 7 dB; on C4FM the CQPSK receivers find no frame at all),
+/// while running both costs as much again or more. Both run until one
+/// has clearly needed fewer NID corrections over [`DETECT_SLOTS`] frame
+/// slots or more — a frame it missed counting as 11, the most a NID
+/// corrects — and then only that one. (One window isn't enough: on a
+/// strong simulcast signal C4FM can find every frame of 40.) Detected
+/// again from scratch when the channel is reopened (another control
+/// channel) or after [`DETECT_LOST_S`] without a frame.
+#[derive(Default)]
+struct Detect {
+    /// Each kind's NID corrections summed over the slots seen (a slot it missed: 11).
+    errs: [u32; KINDS],
+    slots: u32,
+    /// The kind chosen; the other's receivers no longer run.
+    locked: Option<usize>,
+    /// Channel samples pushed, and the last frame slot's sample.
+    pos: f64,
+    last_slot: f64,
 }
 
 /// CQPSK receivers are kept as such so they can share a matched filter.
@@ -53,11 +97,15 @@ struct Rx {
     /// Sample instant of the latest symbol.
     progress: f64,
     frames: u64,
+    /// The channel sample its first sample was (a kind woken from rest starts afresh, later).
+    offset: f64,
 }
 
 struct Pending {
     sample: f64,
     frames: Group,
+    /// Each frame's kind of receiver.
+    kinds: Vec<usize>,
 }
 
 pub struct Bank {
@@ -72,17 +120,28 @@ pub struct Bank {
     /// The lead CQPSK receiver's matched filter output for this push.
     filtered: [Vec<f32>; 2],
     pub groups: u64,
+    /// None: every receiver runs, always (one kind configured, or `detect` off).
+    detect: Option<Detect>,
+    /// To start the other kind's receivers afresh when detecting again.
+    rate: f64,
+    cfg: BankConfig,
+    c4fm: C4fmOptions,
+    nac: Option<u16>,
 }
 
 impl Bank {
-    pub fn new(rate: f64, cfg: BankConfig) -> Self {
-        Self::with_c4fm(rate, cfg, C4fmOptions::default())
+    /// The site's NAC, for the framers' NID recovery ([`Framer::expect_nac`]).
+    pub fn expect_nac(&mut self, nac: Option<u16>) {
+        self.nac = nac;
+        for r in &mut self.rx {
+            r.framer.expect_nac(nac);
+        }
     }
 
-    /// With the C4FM receiver's variant options (weak-signal comparisons).
-    pub fn with_c4fm(rate: f64, cfg: BankConfig, c4fm: C4fmOptions) -> Self {
+    /// Its receivers, by kind, as configured.
+    fn receivers(rate: f64, cfg: BankConfig, c4fm: C4fmOptions) -> Vec<Rx> {
         let mut rx = Vec::new();
-        let mut add = |d: Demod| rx.push(Rx { demod: d, framer: Framer::new(cfg.framer), progress: 0.0, frames: 0 });
+        let mut add = |d: Demod| rx.push(Rx { demod: d, framer: Framer::new(cfg.framer), progress: 0.0, frames: 0, offset: 0.0 });
         if cfg.cqpsk {
             add(Demod::Cqpsk(Box::new(Cqpsk::new(rate, cqpsk::Options::default()))));
         }
@@ -92,7 +151,58 @@ impl Bank {
         if cfg.c4fm {
             add(Demod::Other(Box::new(C4fm::with_options(rate, c4fm))));
         }
+        rx
+    }
+
+    fn kind(r: &Rx) -> usize {
+        match r.demod {
+            Demod::Cqpsk(_) => CQPSK_KIND,
+            Demod::Other(_) => C4FM_KIND,
+        }
+    }
+
+    /// Whether receiver `r` runs now.
+    fn running(&self, r: &Rx) -> bool {
+        self.detect.as_ref().is_none_or(|d| d.locked.is_none_or(|k| k == Self::kind(r)))
+    }
+
+    /// The kind detected, once one is: "CQPSK" or "C4FM".
+    pub fn detected(&self) -> Option<&'static str> {
+        self.detect.as_ref()?.locked.map(|k| if k == CQPSK_KIND { "CQPSK" } else { "C4FM" })
+    }
+
+    /// Detect afresh: the kind not chosen started again, from now.
+    fn redetect(&mut self) {
+        let Some(d) = self.detect.as_mut() else { return };
+        let Some(chosen) = d.locked.take() else { return };
+        *d = Detect { pos: d.pos, last_slot: d.pos, ..Default::default() };
+        let (k, pos) = (1 - chosen, d.pos);
+        let fresh = Self::receivers(self.rate, self.cfg, self.c4fm);
+        for (r, f) in self.rx.iter_mut().zip(fresh) {
+            if Self::kind(r) == k {
+                let frames = r.frames;
+                *r = f;
+                // (It counts its samples from 0: from now, on the channel's count.)
+                (r.frames, r.offset, r.progress) = (frames, pos, pos);
+                r.framer.expect_nac(self.nac);
+            }
+        }
+    }
+
+    pub fn new(rate: f64, cfg: BankConfig) -> Self {
+        Self::with_c4fm(rate, cfg, C4fmOptions::default())
+    }
+
+    /// With the C4FM receiver's variant options (weak-signal comparisons).
+    pub fn with_c4fm(rate: f64, cfg: BankConfig, c4fm: C4fmOptions) -> Self {
+        let rx = Self::receivers(rate, cfg, c4fm);
+        let both = rx.iter().any(|r| Self::kind(r) == CQPSK_KIND) && rx.iter().any(|r| Self::kind(r) == C4FM_KIND);
         Bank {
+            detect: (cfg.detect && both).then(Detect::default),
+            rate,
+            cfg,
+            c4fm,
+            nac: None,
             rx,
             pending: VecDeque::new(),
             guard: 36.0 * rate / SYMBOL_RATE,
@@ -110,12 +220,20 @@ impl Bank {
 
     /// Feed channel IQ; groups that are complete are appended to `out`, in time order.
     pub fn push(&mut self, iq: &[Complex32], out: &mut Vec<Group>) {
+        if self.detect.as_ref().is_some_and(|d| d.locked.is_some() && d.pos - d.last_slot > DETECT_LOST_S * self.rate) {
+            self.redetect();
+        }
+        let resting = self.detect.as_ref().and_then(|d| d.locked).map(|k| 1 - k);
         // The first CQPSK receiver's matched filter output serves the others
         // that filter the same way (it is most of their work).
         let mut lead: Option<usize> = None;
         for i in 0..self.rx.len() {
             let (before, rest) = self.rx.split_at_mut(i);
             let r = &mut rest[0];
+            let kind = Self::kind(r);
+            if resting == Some(kind) {
+                continue;
+            }
             self.syms.clear();
             match &mut r.demod {
                 Demod::Cqpsk(c) => match lead.map(|j| &before[j].demod) {
@@ -127,6 +245,11 @@ impl Bank {
                     }
                 },
                 Demod::Other(d) => d.push(iq, &mut self.syms),
+            }
+            if r.offset != 0.0 {
+                for s in self.syms.iter_mut() {
+                    s.sample += r.offset;
+                }
             }
             if let Some(s) = self.syms.last() {
                 r.progress = s.sample;
@@ -143,11 +266,15 @@ impl Bank {
                 let sample = f.sample;
                 if let Some(g) = self.pending.iter_mut().find(|g| (g.sample - sample).abs() < self.guard) {
                     g.frames.push(f);
+                    g.kinds.push(kind);
                 } else {
                     let at = self.pending.iter().position(|g| g.sample > sample).unwrap_or(self.pending.len());
-                    self.pending.insert(at, Pending { sample, frames: vec![f] });
+                    self.pending.insert(at, Pending { sample, frames: vec![f], kinds: vec![kind] });
                 }
             }
+        }
+        if let Some(d) = self.detect.as_mut() {
+            d.pos += iq.len() as f64;
         }
         self.release(false, out);
     }
@@ -159,7 +286,7 @@ impl Bank {
 
     /// How far above the channel the carrier is, Hz, from whichever receiver measures it.
     pub fn offset_hz(&self) -> Option<f32> {
-        self.rx.iter().find_map(|r| match &r.demod {
+        self.rx.iter().filter(|r| self.running(r)).find_map(|r| match &r.demod {
             Demod::Cqpsk(c) => c.offset_hz(),
             Demod::Other(d) => d.offset_hz(),
         })
@@ -175,6 +302,22 @@ impl Bank {
 /// syncs found, NIDs that failed, frames carried over a missed sync
 /// (flywheel), CQPSK equaliser resets — the C4FM receiver's eye opening and
 /// the lead CQPSK receiver's phase error.
+impl Bank {
+    /// The running C4FM receiver's eye opening, and the lead CQPSK receiver's phase error.
+    pub fn quality(&self) -> crate::trunk::voice::ChannelQuality {
+        crate::trunk::voice::ChannelQuality {
+            sep: self.rx.iter().filter(|r| self.running(r)).find_map(|r| match &r.demod {
+                Demod::Other(d) => d.quality(),
+                Demod::Cqpsk(_) => None,
+            }),
+            phase_err_deg: self.rx.iter().filter(|r| self.running(r)).find_map(|r| match &r.demod {
+                Demod::Cqpsk(c) => c.phase_error_deg(),
+                Demod::Other(_) => None,
+            }),
+        }
+    }
+}
+
 impl Instrumented for Bank {
     fn report(&self, sink: &mut dyn Sink) {
         let (mut syncs, mut nid_fails, mut flywheels, mut eq_resets) = (0, 0, 0, 0);
@@ -191,16 +334,11 @@ impl Instrumented for Bank {
         sink.counter("flywheels", flywheels);
         sink.counter("eqResets", eq_resets);
         sink.counter("frames", self.groups);
-        if let Some(q) = self.rx.iter().find_map(|r| match &r.demod {
-            Demod::Other(d) => d.quality(),
-            Demod::Cqpsk(_) => None,
-        }) {
+        let q = self.quality();
+        if let Some(q) = q.sep {
             sink.gauge("sep", q as f64);
         }
-        if let Some(e) = self.rx.iter().find_map(|r| match &r.demod {
-            Demod::Cqpsk(c) => c.phase_error_deg(),
-            Demod::Other(_) => None,
-        }) {
+        if let Some(e) = q.phase_err_deg {
             sink.gauge("phaseErr", e as f64);
         }
         if let Some(off) = self.offset_hz() {
@@ -211,7 +349,8 @@ impl Instrumented for Bank {
 
 impl Bank {
     fn release(&mut self, all: bool, out: &mut Vec<Group>) {
-        let min_progress = self.rx.iter().map(|r| r.progress).fold(f64::INFINITY, f64::min);
+        // (The kind not chosen doesn't hold the other up.)
+        let min_progress = self.rx.iter().filter(|r| self.running(r)).map(|r| r.progress).fold(f64::INFINITY, f64::min);
         while let Some(front) = self.pending.front() {
             if !all && front.sample + self.hold >= min_progress {
                 break;
@@ -223,8 +362,40 @@ impl Bank {
             }
             self.last_released = Some(g.sample);
             self.groups += 1;
+            self.detect_on(&g);
             out.push(g.frames);
         }
+    }
+
+    /// One more frame slot for [`Detect`]: each kind's NID corrections; a kind chosen once one is clearly better.
+    fn detect_on(&mut self, g: &Pending) {
+        let Some(d) = self.detect.as_mut() else { return };
+        d.last_slot = d.last_slot.max(g.sample);
+        if d.locked.is_some() {
+            return;
+        }
+        let mut best = [None::<u8>; KINDS];
+        for (f, &k) in g.frames.iter().zip(&g.kinds) {
+            best[k] = Some(best[k].map_or(f.nid.errors, |e| e.min(f.nid.errors)));
+        }
+        d.slots += 1;
+        for k in 0..KINDS {
+            d.errs[k] += best[k].map_or(11, |e| e.min(11)) as u32;
+        }
+        if d.slots < DETECT_SLOTS {
+            return;
+        }
+        let (q, c) = (d.errs[CQPSK_KIND], d.errs[C4FM_KIND]);
+        let clear = |w: u32, l: u32| w + DETECT_MARGIN <= l && w as f32 <= DETECT_SHARE * l as f32;
+        d.locked = if clear(q, c) {
+            Some(CQPSK_KIND)
+        } else if clear(c, q) {
+            Some(C4FM_KIND)
+        } else if d.slots >= DETECT_MAX_SLOTS {
+            Some(if q < c { CQPSK_KIND } else { C4FM_KIND })
+        } else {
+            None
+        };
     }
 }
 
@@ -286,9 +457,8 @@ pub fn best_pdu(g: &Group) -> Pdu {
 /// What a control channel frame (a group of copies) held.
 #[derive(Default)]
 pub struct ControlFrame {
-    /// Its trunking messages: each TSBK, an MBT as the TSBK it stands for
-    /// ([`Mbt::to_tsbk`]) or, when it has none, as itself.
-    pub blocks: Vec<Result<Tsbk, Mbt>>,
+    /// Its trunking messages: each TSBK's, or the MBT's.
+    pub osps: Vec<Osp>,
     /// Messages no receiver decoded.
     pub lost: usize,
     /// Symbols of air the decoded ones account for ([`air_symbols`]).
@@ -296,15 +466,14 @@ pub struct ControlFrame {
 }
 
 /// A control channel frame group's messages (its frame's DUID `duid`).
-/// `own`: the site's (WACN, System ID), when known (see [`Mbt::to_tsbk`]).
-pub fn control_frame(g: &Group, duid: u8, own: Option<(u32, u32)>) -> ControlFrame {
+pub fn control_frame(g: &Group, duid: u8) -> ControlFrame {
     match duid {
         TSDU => {
             let (blocks, lost) = best_tsbks(g);
-            ControlFrame { air: air_symbols(blocks.len() + lost, blocks.len()), lost, blocks: blocks.into_iter().map(Ok).collect() }
+            ControlFrame { air: air_symbols(blocks.len() + lost, blocks.len()), lost, osps: blocks.iter().map(osp::from_tsbk).collect() }
         }
         PDU => match best_pdu(g) {
-            Pdu::Mbt(m) => ControlFrame { air: air_symbols(m.blocks(), m.blocks()), lost: 0, blocks: vec![m.to_tsbk(own).ok_or(m)] },
+            Pdu::Mbt(m) => ControlFrame { air: air_symbols(m.blocks(), m.blocks()), lost: 0, osps: vec![osp::from_mbt(&m)] },
             Pdu::Other(_) => ControlFrame::default(),
             Pdu::Lost => ControlFrame { lost: 1, ..Default::default() },
         },
@@ -347,6 +516,10 @@ fn imbe_score(p: &ImbeParams) -> f32 {
     (p.cost + p.erased as f32 * mean / 2.0) / mean
 }
 
+/// The HDU, from whichever receivers' copy decodes.
+pub fn best_hdu(g: &Group) -> Option<HduInfo> {
+    g.iter().filter(|f| f.nid.duid == HDU).find_map(|f| decode_hdu(&f.raw))
+}
 pub fn best_lc(g: &Group) -> Option<LinkControl> {
     g.iter().filter(|f| f.nid.duid == LDU1).find_map(|f| decode_ldu1_lc(&f.raw))
 }
@@ -378,5 +551,38 @@ mod tests {
         assert!(imbe_score(&clear) < imbe_score(&faded));
         // Without erased bits the score is as it was.
         assert_eq!(imbe_score(&clear), 0.012 / 1.357);
+    }
+}
+
+#[cfg(test)]
+mod detect_tests {
+    use super::*;
+    use crate::p25::synth::{dibits, imbe, modulate, Tx};
+
+    /// On a C4FM signal the bank settles on C4FM, and finds every frame
+    /// the bank with both kinds always on finds.
+    #[test]
+    fn auto_locks_to_the_kind_that_decodes() {
+        let rate = 37_500.0;
+        let tx = Tx { nac: 0x293, talkgroup: 1201, source: 1_234_567, cipher: None, voice: (0..18 * 40).map(imbe).collect() };
+        let mut ph = 0.0;
+        let mut iq = modulate(&dibits(&tx.frames()), rate, 0.0, 0.3, &mut ph);
+        // (The channel runs on after the transmission, as live: the C4FM
+        // receiver's ~0.1 s latency holds its last frame till then.)
+        iq.extend(vec![Complex32::default(); (0.5 * rate) as usize]);
+        crate::nxdn::synth::add_noise(&mut iq, 0.01, &mut 1);
+        let run = |detect: bool| {
+            let mut b = Bank::new(rate, BankConfig { detect, ..Default::default() });
+            let mut out = Vec::new();
+            for c in iq.chunks(192) {
+                b.push(c, &mut out);
+            }
+            b.flush(&mut out);
+            (out.len(), b.detected())
+        };
+        let (all, none) = run(false);
+        let (detected, kind) = run(true);
+        assert_eq!((none, kind), (None, Some("C4FM")));
+        assert_eq!(detected, all, "the same frames");
     }
 }

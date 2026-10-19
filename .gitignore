@@ -13,7 +13,8 @@ research/native-bench/cpp/recorder
 web/node_modules
 web/dist/
 web/dist-web/
-web/src/web/pkg/
+# (No trailing slash: a symlink to another checkout's build is left out too.)
+web/src/web/pkg
 
 # WMATA deployment: binaries and the OpenMHz key
 /wmata/bin/

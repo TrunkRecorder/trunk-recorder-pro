@@ -319,7 +319,7 @@ impl Registry {
                 }
                 None
             }
-            MessageType::UuVGrant | MessageType::UuAnsReq => {
+            MessageType::UuVGrant | MessageType::UuAnsReq | MessageType::PhoneGrant => {
                 let s = self.sys(system, t);
                 s.unit(unit, t);
                 if m.talkgroup != 0 {
@@ -341,13 +341,13 @@ impl Registry {
     }
 
     /// A recorded call's file (Trunk Recorder's call JSON): how its frequency decoded.
-    pub fn concluded(&mut self, system: &str, record: &Value, t: i64) {
-        let Some(freq) = record["freq"].as_u64() else { return };
+    pub fn concluded(&mut self, system: &str, record: &trunk_recorder_plugin::CallRecord, t: i64) {
+        let freq = record.freq;
         let (mut frames, mut errors, mut bad) = (0u64, 0u64, 0u64);
-        for i in record["errorList"].as_array().into_iter().flatten() {
-            frames += i["frames"].as_u64().unwrap_or(0);
-            errors += i["error_count"].as_u64().unwrap_or(0);
-            bad += i["bad_frames"].as_u64().unwrap_or(0);
+        for i in &record.error_list {
+            frames += i.frames;
+            errors += i.error_count;
+            bad += i.bad_frames;
         }
         let s = self.sys(system, t);
         let f = s.freqs.entry(freq).or_default();
@@ -360,9 +360,9 @@ impl Registry {
         f.frames += frames;
         f.errors += errors;
         f.bad += bad;
-        f.snr = ewma(f.snr, record["snr"].as_f64());
-        f.ferr = ewma(f.ferr, record["freq_error"].as_f64());
-        f.clean = ewma(f.clean, record["clean_voice_pct"].as_f64());
+        f.snr = ewma(f.snr, record.snr);
+        f.ferr = ewma(f.ferr, Some(record.freq_error as f64));
+        f.clean = ewma(f.clean, record.clean_voice_pct);
         f.last = t;
         bump_hour(&mut f.hours, t.div_euclid(3600), |v: &mut (u32, u64, u64, u64)| {
             v.0 += 1;
@@ -692,7 +692,14 @@ mod tests {
         let m = Message { kind: MessageType::Affiliation, source: 42, talkgroup: 100, ..Default::default() };
         assert_eq!(r.message("x", &m, 10), Some((42, 100)));
         assert_eq!(r.message("x", &m, 11), None, "the same again isn't news");
-        let rec = json!({ "freq": 851_000_000u64, "snr": 20.0, "freq_error": -30, "clean_voice_pct": 98.0, "errorList": [{ "frames": 100, "error_count": 5, "bad_frames": 1 }] });
+        let rec = trunk_recorder_plugin::CallRecord {
+            freq: 851_000_000,
+            snr: Some(20.0),
+            freq_error: -30,
+            clean_voice_pct: Some(98.0),
+            error_list: vec![trunk_recorder_plugin::ErrorInterval { frames: 100, error_count: 5, bad_frames: 1, ..Default::default() }],
+            ..Default::default()
+        };
         r.concluded("x", &rec, 20);
         let saved = r.take_dirty();
         assert_eq!(saved.len(), 1);

@@ -12,6 +12,7 @@ use serde_json::{json, Value};
 use trunk_core::survey::{Command, GainState, Kind, Stage, Survey, SurveyConfig, BANDS};
 
 use crate::config::{auto_center, usable_half_width, Config, Source};
+use crate::protocol::ToClient;
 #[cfg(test)]
 use crate::config::DEFAULT_GUARD_HZ;
 use crate::session::Output;
@@ -144,13 +145,13 @@ impl SurveySession {
             self.last_spec_ms = now_ms;
             if let Some((center, bins)) = self.survey.spectrum(512) {
                 let bins: Vec<f32> = bins.iter().map(|v| (v * 10.0).round() / 10.0).collect();
-                out.push(Output::Text(json!({ "type": "surveySpectrum", "source": self.source, "centerHz": center, "rateHz": self.survey.rate_hz(), "bins": bins }).to_string()));
+                out.push(Output::Message(ToClient::SurveySpectrum { source: self.source, center_hz: center, rate_hz: self.survey.rate_hz(), bins }));
             }
         }
         if self.changed && now_ms - self.last_ms >= 400.0 {
             self.last_ms = now_ms;
             self.changed = false;
-            out.push(Output::Text(self.snapshot().to_string()));
+            out.push(Output::Message(ToClient::Survey(crate::protocol::body(self.snapshot()))));
         }
     }
 
@@ -232,11 +233,7 @@ impl SurveySession {
             "voiceCovered": covered,
             "voiceTotal": voice.len(),
             "spanHz": if hi > lo { hi - lo } else { 0.0 },
-            "nac": m.identity.nac(),
-            "sysId": m.identity.sys_id(),
-            "wacn": m.identity.wacn(),
-            "rfss": m.identity.rfss(),
-            "site": m.identity.site(),
+            "identity": crate::session::identity_json(&m.identity),
             "voiceChannels": voice,
         }))
     }
@@ -245,7 +242,7 @@ impl SurveySession {
 /// A learned SmartNet band plan in the config's terms (Trunk Recorder's names).
 fn plan_json(p: &trunk_core::smartnet::plan::PlanConfig) -> Value {
     if p.name == "400_custom" {
-        json!({ "bandplan": p.name, "bandplanBase": p.base_hz, "bandplanSpacing": p.spacing_hz, "bandplanOffset": p.offset, "bandplanHigh": p.high_hz })
+        json!({ "bandplan": p.name, "bandplanBaseHz": p.base_hz, "bandplanSpacingHz": p.spacing_hz, "bandplanOffset": p.offset, "bandplanHighHz": p.high_hz })
     } else {
         json!({ "bandplan": p.name })
     }

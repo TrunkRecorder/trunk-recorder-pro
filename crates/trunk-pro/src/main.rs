@@ -28,9 +28,11 @@
 //!     ones, leave out short transmissions)  --auto-tune (correct the sources'
 //!     frequency error as measured on the control channels; reported either way)
 //!     --guard Hz (left unused at each edge of a source's band; default 75000)
-//!     More systems (or sites): --system name:Hz[,Hz…][:nac=443,sysid=445,wacn=bee00,rfss=1,site=3,group=name]
-//!     (repeatable; the identity is optional — a control channel that
-//!     disagrees isn't followed). With several, calls go to <out>/<name>/.
+//!     More systems (or sites): --system name[/site]:Hz[,Hz…][:nac=443,sysid=445,wacn=bee00,rfss=1,site=3]
+//!     (repeatable; "dcfd/south" is site south of system dcfd, and a call
+//!     heard on several sites of a system is saved once; the identity is
+//!     optional — a control channel that disagrees isn't followed). With
+//!     several systems, calls go to <out>/<name>/.
 //!     SmartNet: --smartnet 800_standard|800_reband|800_splinter|900|400_custom
 //!     (400_custom: --bp-base Hz --bp-spacing Hz --bp-offset N --bp-high Hz)
 //!     [--analog-default] (talkgroups never heard granted are analog FM)
@@ -39,7 +41,7 @@
 //!     watch) [--lcn n=Hz,…] (its channel table) [--color-code N]
 //!     NXDN: --nxdn-trunk typeC|typeD [--nxdn-rate 48|96] [--nxdn-channels Hz,…]
 //!     [--lcn n=Hz,…] [--ran N]
-//!     Conventional channels (with or without --cc): --fm Hz[,Hz…]  --p25 Hz[,Hz…]
+//!     Conventional channels (with or without --cc): --fm Hz[,Hz…]  --am Hz[,Hz…]  --p25 Hz[,Hz…]
 //!     --dmr Hz[,Hz…]  --nxdn48 Hz[,Hz…]  --nxdn96 Hz[,Hz…]
 //!     or --channels channels.csv (the channel-file format; see README)
 //!     --squelch dB (open threshold above the noise floor, default 8)
@@ -82,9 +84,15 @@
 //!     Plugins (set up in the config's `plugins`, and each system's): find them in the registry,
 //!     install, update and uninstall them, list them, show one's manifest, or
 //!     run one against calls already on disk.
+//!
+//! trunk-pro interface search | install | update | add | uninstall | list …
+//!     Interfaces besides the built-in one (the config's `server.interfaces`), each on a
+//!     port of its own: find them in the store, install, update, add a folder of your own.
 //! ```
 
+mod access;
 mod dmrtool;
+mod interfaces;
 mod logging;
 mod monitor;
 mod nxdntool;
@@ -101,6 +109,8 @@ mod server;
 mod spool;
 mod spotlight;
 mod statstore;
+mod store;
+mod toolkit;
 #[cfg(test)]
 mod protocol_tests;
 mod survey;
@@ -115,7 +125,7 @@ use std::io::Read;
 use std::path::Path;
 use std::time::Instant;
 
-use trunk_core::trunk::{parse_csv, CallConfig, ConvChannel, ConvConfig, ConvMode, ConvSystem, Engine, EngineConfig, Event, IdField, Identity, Protocol, SaveRules, SourceConfig, SystemConfig, DEFAULT_GUARD_HZ};
+use trunk_core::trunk::{parse_csv, CallConfig, ConvChannel, ConvConfig, ConvMode, Engine, EngineConfig, SystemConfig, Voice, Event, IdField, Identity, Protocol, SaveRules, SourceConfig, SiteConfig, DEFAULT_GUARD_HZ};
 
 /// `--key value` / `--flag` arguments after the positionals.
 pub struct Args {
@@ -128,7 +138,7 @@ pub struct Args {
 /// any option, these included (`--start=0`).
 const FLAGS: &[&str] = &[
     "analog-default", "auto-tune", "bursts", "capture-frames", "diversity", "dmr-trunk", "frames", "full", "hard-fec", "keep-silent", "messages", "no-gain", "no-open",
-    "no-unknown", "osw", "quality", "quiet", "record-encrypted", "s16", "separation", "start",
+    "no-unknown", "osw", "quality", "quiet", "record-encrypted", "s16", "separation", "start", "threads",
 ];
 
 impl Args {
@@ -191,8 +201,8 @@ usage:
   trunk-pro [serve] [--port 8080] [--bind 127.0.0.1] [--config file.json] [--no-open] [--start] [--ui folder]
       Start the recorder and open its web interface (the default). Use
       --bind 0.0.0.0 to reach it from other machines (no authentication!).
-      --ui serves your own interface (a folder with an index.html) at /;
-      the built-in one stays at /builtin/. See /api/docs.
+      --ui serves a folder with an index.html as an interface for this run,
+      on the next free port, and opens it. See docs/interfaces.
       --start begins recording with the saved settings at once.
       --log-level debug: more in the log (stderr; files and syslog as set up).
   trunk-pro devices [--usrp]
@@ -203,15 +213,15 @@ usage:
       Record raw IQ, like rtl_sdr.
   trunk-pro replay <capture.cu8> --center Hz --rate Hz --cc Hz[,Hz…] [--out calls] …
   trunk-pro replay --source cap.cu8,center,rate [--source …] --cc Hz …
-  trunk-pro replay <capture> … --system name:Hz[,Hz…][:nac=443,site=3] [--system …]
-  trunk-pro replay <capture> --center Hz --rate Hz --fm Hz[,Hz…] --p25 Hz[,Hz…] [--squelch 8]
+  trunk-pro replay <capture> … --system name[/site]:Hz[,Hz…][:nac=443,site=3] [--system …]
+  trunk-pro replay <capture> --center Hz --rate Hz --fm Hz[,Hz…] --am Hz[,Hz…] --p25 Hz[,Hz…] [--squelch 8]
   trunk-pro replay <capture> --center Hz --rate Hz --dmr Hz,… --nxdn48 Hz,… --nxdn96 Hz,…
   trunk-pro replay <capture> --center Hz --rate Hz --cc Hz,… --dmr-trunk [--dmr-channels Hz,…] [--lcn n=Hz,…] [--color-code N]
   trunk-pro replay <capture> --center Hz --rate Hz --cc Hz,… --nxdn-trunk typeC|typeD [--nxdn-rate 48|96] [--nxdn-channels Hz,…] [--lcn n=Hz,…] [--ran N]
   trunk-pro replay <capture> --center Hz --rate Hz --cc Hz --smartnet 800_standard|800_reband|800_splinter|900|400_custom
   trunk-pro replay <capture> --center Hz --rate Hz --channels channels.csv
       Record calls from captures instead of dongles (a trunked system from
-      --cc, more from --system, conventional analog FM / P25 / DMR / NXDN
+      --cc, more from --system, conventional analog FM / AM / P25 / DMR / NXDN
       channels, or both). --format cu8|cs16|cf32 (else from the extension),
       --guard Hz (each band edge left unused; 75000), --auto-tune (correct
       the frequency error measured on the control channel), --messages
@@ -250,6 +260,10 @@ usage:
       Plugins: find them in the registry, install, update and uninstall them,
       list them, show one's manifest, or run one against calls already on
       disk (`trunk-pro plugin` for the options).
+  trunk-pro interface search | install | update | add | uninstall | list …
+      Interfaces besides the built-in one, each on a port of its own: find
+      them in the store, install and update them, add a folder of your own
+      (`trunk-pro interface` for the options).
   trunk-pro --version
 
 Docs: https://github.com/TrunkRecorder/trunk-recorder-pro
@@ -270,6 +284,7 @@ fn main() {
         Some("survey") => survey::cli(&Args::parse(&argv[1..])),
         Some("rolloff") => profile::cli(&Args::parse(&argv[1..])),
         Some("plugin") => plugins::cli::run(&Args::parse(&argv[1..])),
+        Some("interface") => interfaces::cli::run(&Args::parse(&argv[1..])),
         _ => die(USAGE),
     }
 }
@@ -348,6 +363,7 @@ fn replay(a: &Args) {
     let conventional: Vec<ConvChannel> = hz_list("fm")
         .into_iter()
         .map(|f| ConvChannel::new(f, ConvMode::Fm))
+        .chain(hz_list("am").into_iter().map(|f| ConvChannel::new(f, ConvMode::Am)))
         .chain(hz_list("p25").into_iter().map(|f| ConvChannel::new(f, ConvMode::P25)))
         .chain(hz_list("dmr").into_iter().map(|f| ConvChannel::new(f, ConvMode::Dmr)))
         .chain(hz_list("nxdn48").into_iter().map(|f| ConvChannel::new(f, ConvMode::Nxdn(trunk_core::nxdn::Rate::N48))))
@@ -360,7 +376,7 @@ fn replay(a: &Args) {
             }
             let mut cfg = config::Config::default();
             cfg.conventional = vec![config::Conventional { channels: parsed.channels, ..Default::default() }];
-            cfg.engine_config(0.0).conventional
+            cfg.engine_config(0.0, &Default::default()).conventional
         }))
         .collect();
     let out_dir = a.get("out").unwrap_or("calls").to_string();
@@ -382,7 +398,20 @@ fn replay(a: &Args) {
         min_transmission_s: a.num("min-transmission", 0.0),
         ..Default::default()
     };
-    // Trunked systems: --cc (one, named --short-name) and/or --system (repeatable).
+    // --keys: every system decrypts with the same keys file (a KFDtool container, with --keys-password-file).
+    let keys = a.get("keys").map(|p| {
+        let l = trunk_app::keys::load(std::path::Path::new(p), a.get("keys-password-file").map(std::path::Path::new)).unwrap_or_else(|e| die(&e));
+        for s in &l.skipped {
+            eprintln!("--keys: key left out: {s}");
+        }
+        for w in l.ring.warnings() {
+            eprintln!("--keys: {w}");
+        }
+        std::sync::Arc::new(l.ring)
+    });
+    // Every system goes by the same rules, talkgroups and keys.
+    let system = |name: &str, sites| SystemConfig { calls, save, talkgroups: talkgroups.clone(), keys: keys.clone(), ..SystemConfig::trunked(name, sites) };
+    // Trunked systems: --cc (one, named --short-name) and/or --system (repeatable; sites of one system share its name).
     let mut systems: Vec<SystemConfig> = Vec::new();
     if !ccs.is_empty() {
         // --smartnet <band plan>: the --cc system is SmartNet.
@@ -390,12 +419,8 @@ fn replay(a: &Args) {
             bandplan: tool::smartnet_bandplan(a, if plan == "1" { "800_standard" } else { plan }),
             analog_default: a.flag("analog-default"),
         });
-        systems.push(SystemConfig {
-            short_name: a.get("short-name").unwrap_or("replay").into(),
+        let site = SiteConfig {
             control_channels: ccs,
-            calls,
-            save,
-            talkgroups: talkgroups.clone(),
             // --dmr-trunk: the --cc frequencies are a DMR site's; --dmr-channels
             // more voice frequencies to watch; --lcn 101=452275000,… its channel table.
             // --nxdn-trunk [typeC|typeD]: an NXDN site's (--nxdn-rate 48|96,
@@ -419,40 +444,40 @@ fn replay(a: &Args) {
                 None => smartnet.map_or(Protocol::P25, Protocol::SmartNet),
             },
             ..Default::default()
-        });
+        };
+        systems.push(system(a.get("short-name").unwrap_or("replay"), vec![site]));
     }
     for spec in a.all("system") {
-        let sys = parse_system(spec, calls, &talkgroups).unwrap_or_else(|e| die(&format!("--system {spec}: {e}")));
-        systems.push(SystemConfig { save, ..sys });
-    }
-    // --keys: every system decrypts with the same keys file (a KFDtool container, with --keys-password-file).
-    let keys = a.get("keys").map(|p| {
-        let l = trunk_app::keys::load(std::path::Path::new(p), a.get("keys-password-file").map(std::path::Path::new)).unwrap_or_else(|e| die(&e));
-        for s in &l.skipped {
-            eprintln!("--keys: key left out: {s}");
+        let (name, site) = parse_system(spec).unwrap_or_else(|e| die(&format!("--system {spec}: {e}")));
+        match systems.iter_mut().find(|s| s.short_name == name) {
+            Some(s) => s.sites.push(site),
+            None => systems.push(system(&name, vec![site])),
         }
-        std::sync::Arc::new(l.ring)
-    });
-    for s in systems.iter_mut() {
-        s.keys = keys.clone();
     }
     let multi = systems.len() > 1;
+    let sites = trunk_core::trunk::sites(&systems).count() > 1;
+    // The conventional channels: one system of their own, "conv".
+    let mut conventional = conventional;
+    if !conventional.is_empty() {
+        conventional.iter_mut().for_each(|c| c.system = systems.len());
+        systems.push(system("conv", vec![]));
+    }
     let cfg = EngineConfig {
         systems,
         sources,
         preroll_s: a.num("preroll", 1.0),
         max_recorders: a.num("recorders", 32.0) as usize,
-        conv_systems: vec![ConvSystem { short_name: "conv".into(), calls, save, talkgroups, keys, ..Default::default() }],
         epoch_ms_at_zero: a.num("epoch", 0.0) * 1000.0,
         conventional,
         conv: ConvConfig { squelch_db: a.num("squelch", ConvConfig::default().squelch_db), ..Default::default() },
         capture_frames: a.flag("capture-frames"),
         ..Default::default()
     };
-    let mut engine = Engine::new(cfg).unwrap_or_else(|e| die(&e));
-    // One band plan file per system (with several: <file>.<shortName>).
+    let engine = Engine::new(cfg).unwrap_or_else(|e| die(&e));
+    // One band plan file per site (with several: <file>.<shortName>, <file>.<shortName>.<site>).
     let bandplans: Vec<String> = a.get("bandplan").map_or_else(Vec::new, |p| {
-        engine.systems().iter().map(|s| if multi { format!("{p}.{}", s.short_name) } else { p.to_string() }).collect()
+        let systems = engine.systems();
+        trunk_core::trunk::sites(&systems).map(|(n, s)| if sites { format!("{p}.{}", trunk_app::session::bandplan_key(&systems[n as usize], s)) } else { p.to_string() }).collect()
     });
     for (i, p) in bandplans.iter().enumerate() {
         if let Ok(s) = fs::read_to_string(p) {
@@ -477,32 +502,79 @@ fn replay(a: &Args) {
     // Interleave the sources in ~13.6 ms chunks (rtl_sdr's 32768-sample transfers
     // at 2.4 MSPS), so their clocks advance together as they would live.
     let chunk_s = 32768.0 / 2_400_000.0;
-    let mut pos = vec![0usize; data.len()];
     let mut written = 0;
-    loop {
-        let mut any = false;
-        for (i, (file, len)) in data.iter_mut().enumerate() {
-            let bps = formats[i].bytes_per_sample();
-            let n = ((engine.sources()[i].rate_hz * chunk_s) as usize) * bps;
-            let end = (pos[i] + n).min(*len - *len % bps);
-            if pos[i] < end {
-                buf.resize(end - pos[i], 0);
-                file.read_exact(&mut buf).unwrap_or_else(|e| die(&format!("{}: {e}", files[i])));
-                match formats[i] {
-                    config::SampleFormat::Cu8 => engine.push_u8(i, &buf),
-                    f => engine.push_iq(i, &trunk_app::samples::to_iq(f, &buf)),
-                }
-                pos[i] = end;
-                any = true;
+    if a.flag("threads") {
+        // --threads: each source fed from a thread of its own, as live — none
+        // more than LEAD chunks (~55 ms of air) ahead of the slowest.
+        const LEAD: usize = 4;
+        let done: Vec<std::sync::atomic::AtomicUsize> = data.iter().map(|_| Default::default()).collect();
+        let running = std::sync::atomic::AtomicUsize::new(data.len());
+        std::thread::scope(|sc| {
+            for (i, (mut file, len)) in data.drain(..).enumerate() {
+                let (engine, done, running, files, formats) = (&engine, &done, &running, &files, &formats);
+                std::thread::Builder::new()
+                    .name(format!("dsp-{i}"))
+                    .spawn_scoped(sc, move || {
+                        use std::sync::atomic::Ordering::SeqCst;
+                        let bps = formats[i].bytes_per_sample();
+                        let n = ((engine.sources()[i].rate_hz * chunk_s) as usize) * bps;
+                        let (mut pos, mut k, mut buf) = (0usize, 0usize, Vec::new());
+                        loop {
+                            let end = (pos + n).min(len - len % bps);
+                            if pos >= end {
+                                break;
+                            }
+                            while done.iter().enumerate().any(|(j, d)| j != i && d.load(SeqCst) + LEAD < k && d.load(SeqCst) != usize::MAX) {
+                                std::thread::yield_now();
+                            }
+                            buf.resize(end - pos, 0);
+                            file.read_exact(&mut buf).unwrap_or_else(|e| die(&format!("{}: {e}", files[i])));
+                            match formats[i] {
+                                config::SampleFormat::Cu8 => engine.push_u8(i, &buf),
+                                f => engine.push_iq(i, &trunk_app::samples::to_iq(f, &buf)),
+                            }
+                            pos = end;
+                            k += 1;
+                            done[i].store(k, SeqCst);
+                        }
+                        // (Finished: no longer holds the others back.)
+                        done[i].store(usize::MAX, SeqCst);
+                        running.fetch_sub(1, SeqCst);
+                    })
+                    .expect("thread");
             }
-        }
-        written += handle_events(&mut engine, &out_dir, multi, quiet, a.flag("messages"));
-        if !any {
-            break;
+            while running.load(std::sync::atomic::Ordering::SeqCst) > 0 {
+                written += handle_events(&engine, &out_dir, multi, quiet, a.flag("messages"));
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        });
+    } else {
+        let mut pos = vec![0usize; data.len()];
+        loop {
+            let mut any = false;
+            for (i, (file, len)) in data.iter_mut().enumerate() {
+                let bps = formats[i].bytes_per_sample();
+                let n = ((engine.sources()[i].rate_hz * chunk_s) as usize) * bps;
+                let end = (pos[i] + n).min(*len - *len % bps);
+                if pos[i] < end {
+                    buf.resize(end - pos[i], 0);
+                    file.read_exact(&mut buf).unwrap_or_else(|e| die(&format!("{}: {e}", files[i])));
+                    match formats[i] {
+                        config::SampleFormat::Cu8 => engine.push_u8(i, &buf),
+                        f => engine.push_iq(i, &trunk_app::samples::to_iq(f, &buf)),
+                    }
+                    pos[i] = end;
+                    any = true;
+                }
+            }
+            written += handle_events(&engine, &out_dir, multi, quiet, a.flag("messages"));
+            if !any {
+                break;
+            }
         }
     }
     engine.finish();
-    written += handle_events(&mut engine, &out_dir, multi, quiet, a.flag("messages"));
+    written += handle_events(&engine, &out_dir, multi, quiet, a.flag("messages"));
     let cpu = t0.elapsed().as_secs_f64();
     for (i, p) in bandplans.iter().enumerate() {
         let _ = fs::write(p, engine.bandplan(i));
@@ -511,11 +583,11 @@ fn replay(a: &Args) {
     println!("\n{air_s:.1} s of air in {cpu:.2} s ({:.0}× real time). {written} call(s) written to {out_dir}/", air_s / cpu);
     let hex = |v: Option<u32>| v.map_or("?".into(), |v| format!("{v:x}"));
     let dec = |v: Option<u32>| v.map_or("?".into(), |v| v.to_string());
-    for s in &st.systems {
+    for s in &st.sites {
         let id = &s.identity;
         println!(
             "  {}: CC {} good / {} bad {}, {}, NAC {} WACN {} SysID {} RFSS {} site {}, {} call(s){}",
-            s.short_name,
+            if s.site_name == s.short_name { s.short_name.clone() } else { format!("{}/{}", s.short_name, s.site_name) },
             s.good,
             s.bad,
             if s.modulation == "2FSK" { "OSWs" } else { "TSBKs" },
@@ -536,17 +608,19 @@ fn replay(a: &Args) {
     }
 }
 
-/// `--system name:Hz[,Hz…][:nac=443,sysid=445,wacn=bee00,rfss=1,site=3,group=name]` —
-/// NAC / SysID / WACN in hex; only a control channel with that identity is followed.
-fn parse_system(spec: &str, calls: CallConfig, talkgroups: &trunk_core::trunk::Talkgroups) -> Result<SystemConfig, String> {
+/// `--system name[/site]:Hz[,Hz…][:nac=443,sysid=445,wacn=bee00,rfss=1,site=3]` —
+/// NAC / SysID / WACN in hex; only a control channel with that identity is
+/// followed. `dcfd/south`: site south of system dcfd.
+fn parse_system(spec: &str) -> Result<(String, SiteConfig), String> {
     let mut parts = spec.splitn(3, ':');
-    let name = parts.next().unwrap_or("").trim();
+    let head = parts.next().unwrap_or("");
+    let (name, site) = head.split_once('/').unwrap_or((head, ""));
+    let (name, site) = (name.trim(), site.trim());
     if name.is_empty() {
         return Err("no short name".into());
     }
     let ccs: Vec<f64> = parts.next().unwrap_or("").split(',').map(|v| v.trim().parse::<f64>().map_err(|_| format!("bad frequency \"{v}\""))).collect::<Result<_, _>>()?;
     let mut expect = Identity::default();
-    let mut site_group = String::new();
     for kv in parts.next().unwrap_or("").split(',').filter(|s| !s.is_empty()) {
         let (k, v) = kv.split_once('=').ok_or_else(|| format!("\"{kv}\": want key=value"))?;
         let h = || u32::from_str_radix(v.trim(), 16).map_err(|_| format!("bad {k} \"{v}\""));
@@ -557,39 +631,62 @@ fn parse_system(spec: &str, calls: CallConfig, talkgroups: &trunk_core::trunk::T
             "wacn" => expect.set(IdField::Wacn, h()?),
             "rfss" => expect.set(IdField::Rfss, d()?),
             "site" => expect.set(IdField::Site, d()?),
-            "group" => site_group = v.trim().into(),
-            other => return Err(format!("unknown key {other} (nac, sysid, wacn, rfss, site, group)")),
+            other => return Err(format!("unknown key {other} (nac, sysid, wacn, rfss, site)")),
         }
     }
-    Ok(SystemConfig { short_name: name.into(), control_channels: ccs, calls, talkgroups: talkgroups.clone(), expect, site_group, ..Default::default() })
+    Ok((name.into(), SiteConfig { name: site.into(), control_channels: ccs, expect, ..Default::default() }))
 }
 
-/// "[name] " for a line about `system` when there are several; else "".
-fn sys_tag(engine: &Engine, system: u16) -> String {
-    match engine.systems().get(system as usize) {
-        Some(s) if engine.systems().len() > 1 => format!("[{}] ", s.short_name),
-        None if trunk_core::trunk::conventional_index(system).is_some() && !engine.systems().is_empty() => "[conv] ".into(),
+/// "[name] " ("[name/site] ") for a line about `system` (its site `site`)
+/// when there are several sites (a conventional one: any); else "".
+fn sys_tag(engine: &Engine, system: u16, site: Option<u16>) -> String {
+    let systems = engine.systems();
+    let sites: Vec<_> = trunk_core::trunk::sites(&systems).collect();
+    match site.and_then(|s| sites.get(s as usize)) {
+        Some(&(n, s)) if sites.len() > 1 => format!("[{}] ", systems[n as usize].site_key(s)),
+        None if site.is_none() && !sites.is_empty() => systems.get(system as usize).map_or(String::new(), |s| format!("[{}] ", s.short_name)),
+        _ => String::new(),
+    }
+}
+
+/// [`sys_tag`] for site `site`.
+fn site_tag(engine: &Engine, site: u16) -> String {
+    let system = trunk_core::trunk::sites(&engine.systems()).nth(site as usize).map_or(0, |(n, _)| n);
+    sys_tag(engine, system, Some(site))
+}
+
+/// "[name] " for a line about system `system` when there are several trunked
+/// ones (a conventional one: any); else "".
+fn system_tag(engine: &Engine, system: u16) -> String {
+    let systems = engine.systems();
+    let trunked = systems.iter().filter(|s| !s.is_conventional()).count();
+    match systems.get(system as usize) {
+        Some(s) if trunked > if s.is_conventional() { 0 } else { 1 } => format!("[{}] ", s.short_name),
         _ => String::new(),
     }
 }
 
 /// Several systems: each writes to `<out>/<shortName>/`.
-fn handle_events(engine: &mut Engine, out_dir: &str, multi: bool, quiet: bool, messages: bool) -> usize {
+fn handle_events(engine: &Engine, out_dir: &str, multi: bool, quiet: bool, messages: bool) -> usize {
     let mut written = 0;
     for ev in engine.drain_events() {
         match ev {
-            Event::ControlChannel { system, freq_hz } if !quiet => println!("{}control channel {:.4} MHz", sys_tag(engine, system), freq_hz as f64 / 1e6),
-            Event::Note { system, text, .. } => eprintln!("{}{text}", sys_tag(engine, system)),
-            Event::Message { system, msg } if messages => println!("{:7.2}s  {}{} {}", msg.time_s, sys_tag(engine, system), msg.kind.as_str(), msg.meta),
+            Event::ControlChannel { site, freq_hz } if !quiet => println!("{}control channel {:.4} MHz", site_tag(engine, site), freq_hz as f64 / 1e6),
+            Event::Note { system, site, text, .. } => eprintln!("{}{text}", sys_tag(engine, system, site)),
+            Event::Message { site, msg } if messages => println!("{:7.2}s  {}{} {}", msg.time_s, site_tag(engine, site), msg.kind.as_str(), msg.meta),
             Event::CallStart(c) if !quiet => println!(
                 "{:7.2}s  {}CALL {} start TG {} {:.4} MHz{}{}{} → {}",
                 c.start_s,
-                sys_tag(engine, c.system),
+                sys_tag(engine, c.system, c.site),
                 c.id,
                 c.talkgroup,
                 c.freq_hz as f64 / 1e6,
-                if c.analog { " FM" } else { "" },
-                if c.phase2_tdma { format!(" slot {}", c.tdma_slot) } else { String::new() },
+                match c.voice {
+                    Voice::Am => " AM",
+                    Voice::Fm => " FM",
+                    _ => "",
+                },
+                if let Voice::P25Tdma { slot } = c.voice { format!(" slot {slot}") } else { String::new() },
                 if c.patched_talkgroups.is_empty() { String::new() } else { format!(" patched {:?}", c.patched_talkgroups) },
                 if c.recording { "recording".into() } else { format!("monitoring ({})", c.reason.map_or("", |r| r.as_str())) }
             ),
@@ -601,15 +698,15 @@ fn handle_events(engine: &mut Engine, out_dir: &str, multi: bool, quiet: bool, m
             } if !quiet => {
                 println!(
                     "{}ALIAS unit {unit} = \"{alias}\" (TG {talkgroup})",
-                    sys_tag(engine, system)
+                    system_tag(engine, system)
                 )
             }
             Event::CallEnd(c) if !quiet => {
                 let srcs: Vec<String> = c.sources.iter().map(|s| s.src.to_string()).collect();
-                println!("{:7.2}s  {}CALL {} end   TG {} srcs [{}]{}", c.last_update_s.max(c.last_audio_s), sys_tag(engine, c.system), c.id, c.talkgroup, srcs.join(","), if c.decrypted { " ENC DEC" } else if c.encrypted { " ENC" } else { "" });
+                println!("{:7.2}s  {}CALL {} end   TG {} srcs [{}]{}", c.last_update_s.max(c.last_audio_s), sys_tag(engine, c.system, c.site), c.id, c.talkgroup, srcs.join(","), if c.decrypted { " ENC DEC" } else if c.encrypted { " ENC" } else { "" });
             }
             Event::Duplicate { call, kept } if !quiet => {
-                println!("         {}CALL {} TG {} not saved: a copy of {}CALL {}", sys_tag(engine, call.system), call.id, call.talkgroup, sys_tag(engine, kept.system), kept.id)
+                println!("         {}CALL {} TG {} not saved: a copy of {}CALL {}", sys_tag(engine, call.system, call.site), call.id, call.talkgroup, sys_tag(engine, kept.system, kept.site), kept.id)
             }
             Event::Concluded(k) => {
                 // (Appended, not with_extension: a TDMA base name ends in ".<slot>".)
@@ -617,7 +714,7 @@ fn handle_events(engine: &mut Engine, out_dir: &str, multi: bool, quiet: bool, m
                 let _ = fs::create_dir_all(&dir);
                 let base = dir.join(&k.base_name).display().to_string();
                 let _ = fs::write(format!("{base}.wav"), trunk_core::wav::encode(&k.audio, 8000));
-                let _ = fs::write(format!("{base}.json"), &k.json);
+                let _ = fs::write(format!("{base}.json"), k.record.to_json());
                 if let Some(c) = &k.frames {
                     let _ = fs::write(format!("{base}.{}", c.ext), &c.bytes);
                 }
@@ -642,13 +739,15 @@ fn capture(a: &Args) {
         rate_hz: a.num("rate", 2_400_000.0) as u32,
         gain_db: a.get("gain").and_then(|g| g.parse().ok()),
         ppm: a.num("ppm", 0.0) as i32,
+        buf_len: a.num("buflen", 0.0) as u32,
+        buffers: a.num("buffers", 0.0) as u32,
     };
     let want = (a.num("seconds", 10.0) * cfg.rate_hz as f64) as u64 * 2;
     let (tx, rx) = mpsc::sync_channel(64);
     let stop = Arc::new(AtomicBool::new(false));
     let s2 = stop.clone();
     let c2 = cfg.clone();
-    let th = std::thread::spawn(move || sdr::run(0, c2, tx, s2));
+    let th = std::thread::spawn(move || sdr::run_with(0, c2, tx, s2, None));
     let mut f = std::io::BufWriter::new(fs::File::create(out).unwrap_or_else(|e| die(&format!("{out}: {e}"))));
     let (mut got, mut dropped) = (0u64, 0u64);
     let t0 = Instant::now();
@@ -661,7 +760,7 @@ fn capture(a: &Args) {
                 dropped += d;
             }
             Ok(sdr::SourceMsg::Error { error, .. }) => eprintln!("{error}"),
-            Ok(sdr::SourceMsg::Iq { .. } | sdr::SourceMsg::Tuned { .. }) => {}
+            Ok(sdr::SourceMsg::Iq { .. } | sdr::SourceMsg::Real16 { .. } | sdr::SourceMsg::Tuned { .. }) => {}
             Ok(sdr::SourceMsg::End { .. }) | Err(_) => break,
         }
     }
@@ -695,7 +794,18 @@ fn serve(a: &Args) {
     paths::init(&config_path);
     let cfg = config::Config::load(&config_path).unwrap_or_else(|e| fatal(&e));
     let level = a.get("log-level").map(|l| trunk_app::log::Level::parse(l).unwrap_or_else(|| fatal(&format!("--log-level {l}: trace, debug, info, warning, error or fatal"))));
-    logging::init(&cfg.log, config_path.parent().unwrap_or(Path::new(".")), level);
+    let (hub, _) = tokio::sync::broadcast::channel(4096);
+    logging::init(&cfg.log, config_path.parent().unwrap_or(Path::new(".")), level, hub.clone());
+    // An older config, upgraded: saved so (the old one kept beside it), and told.
+    if !cfg.notes.is_empty() {
+        match trunk_app::migrate::save(&cfg, &config_path) {
+            Ok(old) => log::info!("{} updated (the old one is {})", config_path.display(), old.display()),
+            Err(e) => log::warn!("{}: couldn't save the updated config ({e})", config_path.display()),
+        }
+        for n in &cfg.notes {
+            log::info!("{n}");
+        }
+    }
     // (For this run only: the config, saved from the interface, keeps its own.)
     let port = match a.get("port") {
         Some(p) => p.parse::<u16>().unwrap_or_else(|_| fatal(&format!("--port {p}: a port number, 1–65535"))),
@@ -703,7 +813,8 @@ fn serve(a: &Args) {
     };
     let bind = a.get("bind").unwrap_or(&cfg.server.bind);
     let addr: std::net::SocketAddr = format!("{bind}:{port}").parse().unwrap_or_else(|e| fatal(&format!("bind address: {e}")));
-    let url = format!("http://{}:{}", if addr.ip().is_unspecified() { "localhost".into() } else { addr.ip().to_string() }, addr.port());
+    let host = if addr.ip().is_unspecified() { "localhost".into() } else { addr.ip().to_string() };
+    let url = format!("http://{host}:{}", addr.port());
     let listener = match std::net::TcpListener::bind(addr) {
         Ok(l) => l,
         Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
@@ -720,40 +831,49 @@ fn serve(a: &Args) {
         }
         Err(e) => fatal(&format!("web server on {addr}: {e}")),
     };
-    // An interface of the user's own at / (docs/api), for this run.
-    let home_dir = a.get("ui").map(|d| {
-        let d = Path::new(d);
-        let d = std::fs::canonicalize(d).unwrap_or_else(|e| fatal(&format!("--ui {}: {e}", d.display())));
+    // A folder served as an interface for this run (an author's test bench), on a port of its own.
+    let dev = a.get("ui").map(|d| {
+        let d = std::fs::canonicalize(d).unwrap_or_else(|e| fatal(&format!("--ui {d}: {e}")));
         if !d.join("index.html").is_file() {
             fatal(&format!("--ui {}: no index.html there", d.display()));
         }
-        d
+        let id = match interfaces::Manifest::read(&d) {
+            Ok(Some(m)) => m.id,
+            Ok(None) => interfaces::slug(&d.file_name().unwrap_or_default().to_string_lossy()),
+            Err(e) => fatal(&format!("--ui {}: {e}", d.display())),
+        };
+        let mut s = cfg.server.clone();
+        s.port = port;
+        s.interfaces.remove(&id);
+        interfaces::Dev { id, folder: d, port: s.free_port(&[]) }
     });
-    let (hub, _) = tokio::sync::broadcast::channel(4096);
+    let ui_url = dev.as_ref().map(|d| format!("http://{host}:{}/", d.port));
     // The dashboard's measurements: the radio registry (from earlier runs) and a week of history.
     let shared = trunk_app::stats::Shared::new();
     runtime::load_registry(&shared);
     let series = Arc::new(Mutex::new(trunk_app::stats::History::default()));
     let store = statstore::Store::start(paths::data_dir().join("stats"), series.clone());
+    let talkgroups = runtime::load_talkgroups(&cfg);
+    runtime::load_names(&shared, &cfg, &talkgroups);
     let ctx = Arc::new(runtime::Ctx {
         config_path: config_path.clone(),
         config: Mutex::new(cfg),
+        config_version: std::sync::atomic::AtomicU64::new(1),
+        talkgroups: Mutex::new(talkgroups),
         hub: hub.clone(),
-        runner: Mutex::new(None),
-        lifecycle: Mutex::new(false),
+        lifecycle: Mutex::new(runtime::Lifecycle::Idle),
         phase: Mutex::new(runtime::PhaseInfo { phase: "idle", error: None, ended: false }),
         history: Mutex::new(VecDeque::new()),
         quit: tokio::sync::Notify::new(),
-        survey: Mutex::new(None),
         survey_last: Mutex::new(None),
         plugins: plugins::manage::Plugins::new(hub.clone(), shared.clone()),
-        home_dir,
+        bind: addr.ip(),
+        interfaces: interfaces::Interfaces::new(dev, addr.port()),
         shared,
         series,
         store,
         topics: Mutex::new(Default::default()),
-        topics_gen: std::sync::atomic::AtomicU64::new(0),
-        engine_cmds: Mutex::new(Vec::new()),
+        engine: Mutex::new(None),
         host_last: Mutex::new(None),
         spool: Mutex::new(None),
         unlocked: Default::default(),
@@ -782,17 +902,15 @@ fn serve(a: &Args) {
     let auto = a.flag("start") || ctx.config.lock().unwrap().server.auto_start;
     if auto {
         let cfg = ctx.config.lock().unwrap().clone();
-        ctx.set_phase("starting", None, false);
-        match runtime::start(ctx.clone(), cfg) {
-            Ok(r) => *ctx.runner.lock().unwrap() = Some(r),
-            Err(e) => {
-                log::error!("Not started: {e}");
-                ctx.set_phase("idle", Some(e), false);
-            }
+        if let Err(e) = ctx.begin_recording(cfg) {
+            log::error!("Not started: {e}");
         }
     }
+    if let Some(u) = &ui_url {
+        log::info!("--ui: your interface is at {u}");
+    }
     if !a.flag("no-open") {
-        open_browser(&url);
+        open_browser(ui_url.as_deref().unwrap_or(&url));
     }
     let rt = tokio::runtime::Runtime::new().unwrap_or_else(|e| fatal(&e.to_string()));
     if let Err(e) = rt.block_on(server::serve(ctx.clone(), listener)) {

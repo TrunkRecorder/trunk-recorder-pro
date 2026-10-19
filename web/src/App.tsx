@@ -3,8 +3,9 @@
 
 import { useEffect, useRef, type ReactNode } from "react";
 import { startProblem } from "./config.ts";
-import { closeGuide, dismissError, openGuide, quitApp, setNotice, setView, start, stop, useApp, useSelect, web, type View } from "./controller.ts";
+import { can, closeGuide, dismissError, openGuide, quitApp, setNotice, setView, start, stop, useApp, useSelect, web, type View } from "./controller.ts";
 import { guideWanted, SetupGuide } from "./Onboarding.tsx";
+import { InterfacesPage } from "./Interfaces.tsx";
 import { PluginsPage } from "./Plugins.tsx";
 import { Setup } from "./Setup.tsx";
 import { Light } from "./charts.tsx";
@@ -27,6 +28,7 @@ const ICON: Record<View, ReactNode> = {
   listen: <path d="M3 11a7 7 0 0 1 14 0v4a2 2 0 0 1-2 2h-1v-6h3M3 11v4a2 2 0 0 0 2 2h1v-6H3" fill="none" strokeWidth="1.6" />,
   live: <path d="M4 3h3l2 4-2 1.5a10 10 0 0 0 4.5 4.5L13 11l4 2v3a1 1 0 0 1-1 1A14 14 0 0 1 3 4a1 1 0 0 1 1-1z" fill="none" strokeWidth="1.6" />,
   plugins: <path d="M7 2v4M13 2v4M5 6h10v4a5 5 0 0 1-10 0zM10 15v3" fill="none" strokeWidth="1.6" />,
+  interfaces: <path d="M4 3.5h12a1.5 1.5 0 0 1 1.5 1.5v10a1.5 1.5 0 0 1-1.5 1.5H4A1.5 1.5 0 0 1 2.5 15V5A1.5 1.5 0 0 1 4 3.5zM2.5 7.5h15" fill="none" strokeWidth="1.6" />,
   platform: <path d="M3 4h14v9H3zM7 17h6M10 13v4" fill="none" strokeWidth="1.6" />,
   setup: <path d="M10 7a3 3 0 1 0 0 6 3 3 0 0 0 0-6zM10 1.5v3M10 15.5v3M1.5 10h3M15.5 10h3M4 4l2 2M14 14l2 2M4 16l2-2M14 6l2-2" fill="none" strokeWidth="1.6" />,
 };
@@ -39,12 +41,13 @@ const LABEL: Record<View, string> = {
   listen: "Listen",
   live: "Live",
   plugins: "Plugins",
+  interfaces: "Interfaces",
   platform: "Platform",
   setup: "Setup",
 };
 
 function Nav({ view, health }: { view: View; health: Record<string, Health> }) {
-  const pages: View[] = ["overview", "listen", "rf", "decode", "radio", "live", ...(web ? [] : (["plugins", "platform"] as View[])), "setup"];
+  const pages: View[] = ["overview", "listen", "rf", "decode", "radio", "live", ...((["plugins", "interfaces", "platform"] as const).filter((v) => can(v === "platform" ? "host" : v)) as View[]), "setup"];
   return (
     <nav className="rail-nav" aria-label="Sections">
       {pages.map((p) => {
@@ -79,9 +82,11 @@ function Page({ view }: { view: View }) {
     case "live":
       return <LivePage s={s} />;
     case "plugins":
-      return web ? null : <PluginHealthPage manage={<PluginsPage />} />;
+      return can("plugins") ? <PluginHealthPage manage={<PluginsPage />} /> : null;
+    case "interfaces":
+      return can("interfaces") ? <InterfacesPage /> : null;
     case "platform":
-      return web ? null : <PlatformPage />;
+      return can("host") ? <PlatformPage /> : null;
     case "setup":
       return <Setup />;
   }
@@ -163,7 +168,7 @@ export function App() {
                 Start
               </button>
             )}
-            {!web && s.connected && (
+            {can("service") && s.connected && (
               <button className="btn ghost" onClick={quitApp} title="Stop recording and quit the app">
                 Quit
               </button>

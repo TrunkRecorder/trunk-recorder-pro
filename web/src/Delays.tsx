@@ -5,8 +5,9 @@
 // is decided by the recorder (crates/trunk-pro/src/plugins/delay.rs);
 // `inEffect` here follows the same rules, to show what they come to.
 
-import { useEffect, useState } from "react";
 import { systemAt, updateConfig, useApp, type SystemRef } from "./controller.ts";
+import { minutes, talkgroupList } from "./fieldText.ts";
+import { DraftInput, Field } from "./inputs.tsx";
 import type { Config, DelayRule, PluginInfo } from "./protocol.ts";
 
 /** Where a list of rules is: every system's (the top of the config), or one system's. */
@@ -91,49 +92,6 @@ const nameOf = (list: PluginInfo[], id: string) => list.find((p) => p.id === id.
 
 // ── inputs ───────────────────────────────────────────────────────────────────
 
-/** A delay in minutes (decimals allowed); empty: none. */
-function MinutesInput(props: { s: number; label: string; onChange: (s: number) => void }) {
-  const shown = (s: number) => (s > 0 ? String(Math.round((s / 60) * 100) / 100) : "");
-  const [text, setText] = useState(shown(props.s));
-  useEffect(() => setText((t) => (parse(t) === props.s ? t : shown(props.s))), [props.s]); // eslint-disable-line react-hooks/exhaustive-deps
-  function parse(t: string): number {
-    const v = Number(t.trim().replace(",", "."));
-    return t.trim() === "" || !Number.isFinite(v) || v < 0 ? 0 : Math.round(v * 60);
-  }
-  return (
-    <input
-      className="mono narrow"
-      inputMode="decimal"
-      aria-label={props.label}
-      placeholder="none"
-      value={text}
-      onChange={(e) => {
-        setText(e.target.value);
-        props.onChange(parse(e.target.value));
-      }}
-    />
-  );
-}
-
-/** Talkgroups as typed ("1001, 1000-1099, 507*"); empty: all. */
-function TalkgroupsInput(props: { value: string[]; onChange: (v: string[]) => void }) {
-  const split = (t: string) => t.split(/[\s,;]+/).filter(Boolean);
-  const [text, setText] = useState(props.value.join(", "));
-  useEffect(() => setText((t) => (split(t).join(",") === props.value.join(",") ? t : props.value.join(", "))), [props.value]); // eslint-disable-line react-hooks/exhaustive-deps
-  return (
-    <input
-      className="mono"
-      aria-label="Talkgroups"
-      placeholder="all"
-      value={text}
-      onChange={(e) => {
-        setText(e.target.value);
-        props.onChange(split(e.target.value));
-      }}
-    />
-  );
-}
-
 /** A list of rules: talkgroups, plugin and delay each. */
 function RuleTable(props: { at: Scope; rules: DelayRule[]; plugins: PluginInfo[] }) {
   const { at, rules, plugins } = props;
@@ -167,7 +125,7 @@ function RuleTable(props: { at: Scope; rules: DelayRule[]; plugins: PluginInfo[]
                 return (
                   <tr key={i}>
                     <td>
-                      <TalkgroupsInput value={r.talkgroups ?? []} onChange={(v) => edit(i, (x) => void (x.talkgroups = v))} />
+                      <DraftInput className="mono" aria-label="Talkgroups" placeholder="all" codec={talkgroupList} value={r.talkgroups ?? []} onChange={(v) => edit(i, (x) => void (x.talkgroups = v))} />
                     </td>
                     <td>
                       <select
@@ -186,7 +144,7 @@ function RuleTable(props: { at: Scope; rules: DelayRule[]; plugins: PluginInfo[]
                       </select>
                     </td>
                     <td>
-                      <MinutesInput s={r.delayS} label="Delay, min" onChange={(s) => edit(i, (x) => void (x.delayS = s))} />
+                      <DraftInput className="mono narrow" inputMode="decimal" aria-label="Delay, min" placeholder="none" codec={minutes} value={r.delayS} onChange={(s) => edit(i, (x) => void (x.delayS = s))} />
                     </td>
                     <td>
                       <button type="button" className="btn ghost small danger" aria-label={`Remove delay ${i + 1}`} onClick={() => editRules(at, (rs) => rs.filter((_, j) => j !== i))}>
@@ -297,11 +255,9 @@ export function PluginDelay(props: { p: PluginInfo; c: Config }) {
         Delay
         <span className="muted"> — {delayText(s)}</span>
       </summary>
-      <label className="field">
-        <span className="field-label">Delay on every system, min</span>
-        <MinutesInput s={s} label="Delay, min" onChange={set} />
-        <span className="field-hint">Calls reach it this long after they end. A system can change it, and delay talkgroups, on its card</span>
-      </label>
+      <Field label="Delay on every system, min" hint="Calls reach it this long after they end. A system can change it, and delay talkgroups, on its card">
+        <DraftInput className="mono narrow" inputMode="decimal" aria-label="Delay, min" placeholder="none" codec={minutes} value={s} onChange={set} />
+      </Field>
       {other.length > 0 && (
         <p className="field-hint">
           With systems' own delays: {other.map((x) => `${x.name} ${delayText(x.s)}`).join(", ")} (other talkgroups).

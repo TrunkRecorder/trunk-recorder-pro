@@ -15,8 +15,10 @@
 
 use std::collections::VecDeque;
 
-use super::fec::{rs_decode, rs_decode_erasures};
-use super::voice::hexbits_to_bytes;
+use super::crypt::algid_name;
+use super::fec::{hexbit_rel, rs_decode_soft};
+use super::mac::MacPdu;
+use super::voice::{hexbits_to_bytes, EncryptionSync};
 use crate::dsp::Symbol;
 use crate::tables::{DUID_LOOKUP, ISCH_CODEWORDS, LFSR_SEED_MATRIX};
 
@@ -47,6 +49,8 @@ pub const SLOT_CHANNEL: [usize; 12] = [0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 0];
 /// `mask[s·180 + i]`.
 pub fn xor_mask(nac: u32, sys_id: u32, wacn: u32) -> Vec<u8> {
     let seed = ((wacn as u64 & 0xfffff) << 24) | ((sys_id as u64 & 0xfff) << 12) | (nac as u64 & 0xfff);
+    // A zero seed would scramble nothing (BBAC-1 §7.2.5, eq. 5).
+    let seed = if seed == 0 { (1 << 44) - 1 } else { seed };
     // reg = seed · M over GF(2); rows and the register are MSB = column 0.
     let mut r = 0u64;
     for (i, row) in LFSR_SEED_MATRIX.iter().enumerate() {
@@ -93,6 +97,15 @@ pub fn isch_lookup(d: &[u8]) -> i32 {
     best
 }
 
+/// An I-ISCH's fields (BBAC §5.5, Figure 5-2): the logical channel, which
+/// I-ISCH of the superframe it is, and the superframe's place in its
+/// ultraframe. None for the reserved values (channel 2 or 3, location 3):
+/// a decode that lands on one is wrong.
+pub fn isch_info(v: i32) -> Option<(usize, usize, u8)> {
+    let (chn, loc) = ((v >> 5 & 3) as usize, (v >> 3 & 3) as usize);
+    (v >= 0 && chn < 2 && loc < 3).then_some((chn, loc, (v & 3) as u8))
+}
+
 /// Burst DUID dibits sit at burst positions 10, 47, 132, 169.
 const DUID_POS: [usize; 4] = [10, 47, 132, 169];
 
@@ -100,6 +113,37 @@ const DUID_POS: [usize; 4] = [10, 47, 132, 169];
 pub fn duid_decode(burst: &[u8]) -> i8 {
     let v = DUID_POS.iter().fold(0usize, |v, &p| v << 2 | (burst[p] & 3) as usize);
     DUID_LOOKUP[v]
+}
+
+/// The DUID's 16 codewords (8 bits each): those whose every one-bit
+/// neighbour decodes to them.
+fn duid_codewords() -> &'static [(u8, i8); 16] {
+    static CW: std::sync::OnceLock<[(u8, i8); 16]> = std::sync::OnceLock::new();
+    CW.get_or_init(|| {
+        let mut cw = [(0u8, 0i8); 16];
+        let mut n = 0;
+        for v in 0..=255u8 {
+            let d = DUID_LOOKUP[v as usize];
+            if d >= 0 && (0..8).all(|b| DUID_LOOKUP[(v ^ 1 << b) as usize] == d) {
+                cw[n] = (v, d);
+                n += 1;
+            }
+        }
+        cw
+    })
+}
+
+/// A burst type's DUID codeword (8 bits, the 4 DUID dibits in order).
+pub fn duid_codeword(kind: i8) -> u8 {
+    duid_codewords().iter().find(|c| c.1 == kind).map_or(0, |c| c.0)
+}
+
+/// The burst type by soft inclusive search (BBAC §5.4.2): the codeword
+/// whose disagreeing bits are the least reliable, `rel` 2 per burst dibit.
+pub fn duid_decode_soft(burst: &[u8], rel: &[f32]) -> i8 {
+    let bits: Vec<(u8, f32)> = DUID_POS.iter().flat_map(|&p| [(burst[p] >> 1 & 1, rel[2 * p]), (burst[p] & 1, rel[2 * p + 1])]).collect();
+    let cost = |cw: u8| (0..8).filter(|&i| (cw >> (7 - i) & 1) != bits[i].0).map(|i| bits[i].1).sum::<f32>();
+    duid_codewords().iter().min_by(|a, b| cost(a.0).total_cmp(&cost(b.0))).map_or(-1, |c| c.1)
 }
 
 // ── ACCH / MAC PDUs (p25p2_tdma.cc handle_acch_frame, crc12) ────────────────
@@ -124,123 +168,95 @@ pub fn crc12(bits: &[u8], len: usize) -> u32 {
 const SACCH_RUNS: [(usize, usize); 3] = [(11, 36), (48, 84), (133, 36)];
 const FACCH_RUNS: [(usize, usize); 4] = [(11, 36), (48, 31), (100, 32), (133, 36)];
 
-#[derive(Clone, Debug)]
-pub struct MacPdu {
-    pub opcode: u8,
-    pub offset: u8,
-    pub bytes: Vec<u8>,
-}
-
-pub const MAC_SIGNAL: u8 = 0;
-pub const MAC_PTT: u8 = 1;
-pub const MAC_END_PTT: u8 = 2;
-pub const MAC_IDLE: u8 = 3;
-pub const MAC_ACTIVE: u8 = 4;
-pub const MAC_HANGTIME: u8 = 6;
-
-/// op25 handle_acch_frame (SACCH / FACCH): RS(63,35) with erasures, CRC-12.
-pub fn decode_acch(burst: &[u8], fast: bool) -> Option<MacPdu> {
+/// A SACCH (I-OEMI, RS(52,30,23)) or FACCH (S-OEMI, RS(45,26,20)) MAC PDU
+/// (BBAC §5.6.1, Table 5-5): the mother code RS(63,35) shortened (the first
+/// 5 / 9 symbols, known zeros) and punctured (the last 6 / 9, erasures),
+/// then the CRC-12 over the corrected word. `rel`: 2 per burst dibit.
+pub fn decode_acch(burst: &[u8], rel: Option<&[f32]>, fast: bool) -> Option<MacPdu> {
     let runs: &[(usize, usize)] = if fast { &FACCH_RUNS } else { &SACCH_RUNS };
-    let mut bits: Vec<u8> = Vec::with_capacity(312);
+    let (mut bits, mut brel): (Vec<u8>, Vec<f32>) = (Vec::with_capacity(312), Vec::with_capacity(312));
     for &(s, n) in runs {
-        for &d in &burst[s..s + n] {
-            bits.push(d >> 1 & 1);
-            bits.push(d & 1);
+        for i in s..s + n {
+            bits.extend([burst[i] >> 1 & 1, burst[i] & 1]);
+            brel.extend(rel.map_or([1.0; 2], |r| [r[2 * i], r[2 * i + 1]]));
         }
     }
-    let mut hb = [0u8; 63];
-    let first = if fast { 9 } else { 5 };
-    let len = if fast { 270 } else { 312 };
-    let erasures: &[usize] =
-        if fast { &[0, 1, 2, 3, 4, 5, 6, 7, 8, 54, 55, 56, 57, 58, 59, 60, 61, 62] } else { &[0, 1, 2, 3, 4, 57, 58, 59, 60, 61, 62] };
-    for (j, i) in (0..len).step_by(6).enumerate() {
+    let (first, info) = if fast { (9, 26) } else { (5, 30) };
+    let punctured: Vec<usize> = (if fast { 54 } else { 57 }..63).collect();
+    let (mut hb, mut hrel) = ([0u8; 63], [f32::INFINITY; 63]);
+    for (j, i) in (0..bits.len()).step_by(6).enumerate() {
         hb[first + j] = bits[i..i + 6].iter().fold(0, |v, &b| v << 1 | b);
+        hrel[first + j] = hexbit_rel(&brel[i..i + 6]);
     }
-    if rs_decode_erasures(&mut hb, 28, erasures, 0) < 0 {
+    // (The CRC-12 checks what is left.)
+    if rs_decode_soft(&mut hb, 28, &punctured, first, &hrel, 0) < 0 {
         return None;
     }
-    let payload = if fast { 144 } else { 168 };
-    for (j, i) in (0..payload).step_by(6).enumerate() {
-        for b in 0..6 {
-            bits[i + b] = hb[first + j] >> (5 - b) & 1;
-        }
-    }
-    // op25 reads the CRC from the received (uncorrected) bits past the
-    // payload — only the payload was rewritten. Kept as op25 does it.
-    let rx = bits[payload..payload + 12].iter().fold(0u32, |v, &b| v << 1 | b as u32);
-    if rx != crc12(&bits, payload) {
+    let word: Vec<u8> = hb[first..first + info].iter().flat_map(|h| (0..6).rev().map(move |b| h >> b & 1)).collect();
+    let payload = 6 * info - 12;
+    let rx = word[payload..].iter().fold(0u32, |v, &b| v << 1 | b as u32);
+    if rx != crc12(&word, payload) {
         return None;
     }
-    let bytes: Vec<u8> = bits[..payload].chunks(8).map(|c| c.iter().fold(0u8, |v, &b| v << 1 | b)).collect();
-    Some(MacPdu { opcode: bytes[0] >> 5 & 7, offset: bytes[0] >> 2 & 7, bytes })
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct MacPtt {
-    /// The message indicator of the transmission's first superframe.
-    pub mi: [u8; 9],
-    pub algid: u8,
-    pub keyid: u16,
-    pub source: u32,
-    pub group: u32,
-}
-
-/// MAC_PTT fields (op25 handle_mac_ptt).
-pub fn parse_mac_ptt(b: &[u8]) -> MacPtt {
-    MacPtt {
-        mi: b[1..10].try_into().unwrap(),
-        algid: b[10],
-        keyid: (b[11] as u16) << 8 | b[12] as u16,
-        source: (b[13] as u32) << 16 | (b[14] as u32) << 8 | b[15] as u32,
-        group: (b[16] as u32) << 8 | b[17] as u32,
-    }
+    Some(MacPdu::new(word[..payload].chunks(8).map(|c| c.iter().fold(0u8, |v, &b| v << 1 | b)).collect()))
 }
 
 // ── ESS (4V ESS-B + 2V ESS-A, RS(44,16,29)) ──────────────────────────────────
 
-/// 4 hexbits of ESS-B from a 4V burst.
-pub fn read_ess_b(x: &[u8]) -> [u8; 4] {
-    std::array::from_fn(|h| (x[84 + 3 * h] & 3) << 4 | (x[85 + 3 * h] & 3) << 2 | (x[86 + 3 * h] & 3))
+/// A hexbit's reliability from its three dibits at `j` (`rel`: 2 per
+/// burst dibit; none: all sure).
+fn rel3(rel: Option<&[f32]>, j: usize) -> f32 {
+    rel.map_or(1.0, |r| hexbit_rel(&r[2 * j..2 * j + 6]))
 }
-/// 28 hexbits of ESS-A from a 2V burst (skipping the DUID dibit at 132).
-pub fn read_ess_a(x: &[u8]) -> [u8; 28] {
-    let mut hb = [0u8; 28];
+
+/// 4 hexbits of ESS-B from a 4V burst, and their reliabilities.
+pub fn read_ess_b(x: &[u8], rel: Option<&[f32]>) -> ([u8; 4], [f32; 4]) {
+    (std::array::from_fn(|h| (x[84 + 3 * h] & 3) << 4 | (x[85 + 3 * h] & 3) << 2 | (x[86 + 3 * h] & 3)), std::array::from_fn(|h| rel3(rel, 84 + 3 * h)))
+}
+/// 28 hexbits of ESS-A from a 2V burst (skipping the DUID dibit at 132), and their reliabilities.
+pub fn read_ess_a(x: &[u8], rel: Option<&[f32]>) -> ([u8; 28], [f32; 28]) {
+    let (mut hb, mut hr) = ([0u8; 28], [0f32; 28]);
     let mut j = 84;
-    for (i, h) in hb.iter_mut().enumerate() {
-        *h = (x[j] & 3) << 4 | (x[j + 1] & 3) << 2 | (x[j + 2] & 3);
+    for i in 0..28 {
+        hb[i] = (x[j] & 3) << 4 | (x[j + 1] & 3) << 2 | (x[j + 2] & 3);
+        hr[i] = rel3(rel, j);
         j += if i == 15 { 4 } else { 3 };
     }
-    hb
+    (hb, hr)
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Ess {
-    pub algid: u8,
-    pub keyid: u16,
-    /// The next superframe's message indicator.
-    pub mi: [u8; 9],
-}
-
-/// op25 handle_4V2V_ess: rs28.decode(ESS_B, ESS_A), ≤ 14 corrections.
-pub fn decode_ess(ess_b: &[u8; 16], ess_a: &[u8; 28]) -> Option<Ess> {
-    let mut cw = [0u8; 63];
-    for i in 0..16 {
-        cw[19 + i] = ess_b[i] & 63;
+/// The ESS (BBAC §5.6.2, RS(44,16,29): 19 symbols shortened): the 4V
+/// bursts' ESS-B segments (16 information hexbits; a segment not heard: its
+/// four erased), the 2V's ESS-A (28 parity), and each's reliabilities. Taken
+/// if it decodes, names an ALGID there is (§5.6.2.1 step 3), and is a sync
+/// that can have been sent ([`EncryptionSync::plausible`]).
+pub fn decode_ess(ess_b: &[Option<([u8; 4], [f32; 4])>; 4], ess_a: &[u8; 28], ess_a_rel: &[f32; 28]) -> Option<EncryptionSync> {
+    let (mut cw, mut rel) = ([0u8; 63], [f32::INFINITY; 63]);
+    let mut erasures = Vec::new();
+    for (k, seg) in ess_b.iter().enumerate() {
+        for i in 0..4 {
+            let at = 19 + 4 * k + i;
+            match seg {
+                Some((h, r)) => (cw[at], rel[at]) = (h[i] & 63, r[i]),
+                None => erasures.push(at),
+            }
+        }
     }
     for i in 0..28 {
-        cw[35 + i] = ess_a[i] & 63;
+        (cw[35 + i], rel[35 + i]) = (ess_a[i] & 63, ess_a_rel[i]);
     }
-    let ec = rs_decode(&mut cw, 28, 19);
-    if !(0..=14).contains(&ec) {
+    // No CRC: keep some roots to tell a wrong word by.
+    if rs_decode_soft(&mut cw, 28, &erasures, 19, &rel, 6) < 0 {
         return None;
     }
     let b = &cw[19..35];
-    Some(Ess {
+    let es = EncryptionSync {
         algid: ((b[0] as u16) << 2 | (b[1] as u16) >> 4) as u8,
         keyid: ((b[1] as u16 & 15) << 12) | (b[2] as u16) << 6 | b[3] as u16,
         // Hexbits 4..16.
         mi: hexbits_to_bytes(&cw, 23),
-    })
+    };
+    (algid_name(es.algid) != "unknown" && es.plausible()).then_some(es)
 }
 
 // ── Framer (p25p2_framer.cc + p25p2_sync.cc) ─────────────────────────────────
@@ -257,6 +273,9 @@ pub struct Packet {
     pub sample: f64,
     pub dibits: [u8; SLOT_DIBITS],
     pub rel: Vec<f32>,
+    /// The superframe's place in its ultraframe (0..3, from its I-ISCHs;
+    /// BBAC §3.2.2), when one has been heard.
+    pub ultraframe: Option<u8>,
 }
 
 /// Streaming slot framer, the op25 way: a 40-bit S-ISCH (≤ 4 bit errors,
@@ -274,6 +293,7 @@ pub struct Framer {
     inverted: bool,
     sf_slot: usize,
     confident: bool,
+    ultraframe: Option<u8>,
     pub packets: u64,
 }
 
@@ -285,7 +305,7 @@ impl Default for Framer {
 
 impl Framer {
     pub fn new() -> Self {
-        Framer { hist: VecDeque::new(), base: 0, n: 0, sr: 0, in_sync: 0, pkt_start: None, inverted: false, sf_slot: 0, confident: false, packets: 0 }
+        Framer { hist: VecDeque::new(), base: 0, n: 0, sr: 0, in_sync: 0, pkt_start: None, inverted: false, sf_slot: 0, confident: false, ultraframe: None, packets: 0 }
     }
 
     pub fn push(&mut self, s: &Symbol, out: &mut Vec<Packet>) {
@@ -333,25 +353,27 @@ impl Framer {
             rel[2 * i] = s.rel_hi;
             rel[2 * i + 1] = s.rel_lo;
         }
-        // check_confidence
+        // check_confidence: an I-ISCH says where in the superframe this is.
         self.sf_slot = (self.sf_slot + 1) % 12;
         let rc = isch_lookup(&dibits);
-        let mut checkval = rc;
-        let mut chn = -1;
-        if rc >= 0 {
-            chn = rc >> 5 & 3;
-            checkval = (rc >> 3 & 3) * 4 + chn;
-        }
+        let info = isch_info(rc);
+        let checkval = match info {
+            Some((chn, loc, _)) => (loc * 4 + chn) as i32,
+            None if rc == -2 => -2,
+            None => -1,
+        };
         if EXPECTED_SYNC[self.sf_slot] != checkval && checkval != -1 {
             self.confident = false;
+            self.ultraframe = None;
         }
-        if chn >= 0 {
+        if let Some((_, _, uf)) = info {
             self.confident = true;
             self.sf_slot = checkval as usize;
+            self.ultraframe = Some(uf);
         }
         if self.confident && self.sf_slot < 12 {
             self.packets += 1;
-            out.push(Packet { sf_slot: self.sf_slot, sample: self.hist[at].sample, dibits, rel });
+            out.push(Packet { sf_slot: self.sf_slot, sample: self.hist[at].sample, dibits, rel, ultraframe: self.ultraframe });
         }
     }
 }
@@ -360,6 +382,7 @@ impl Framer {
 mod tests {
     use super::*;
     use crate::ambe::decode_vcw;
+    use crate::p25::mac::{parse_mac_ptt, MacPtt, MAC_PTT};
 
     // Vectors from the archived TS encoder (phase2.ts encodeSlot, loopback-
     // tested there against op25): scrambler seed NAC 0x443 / SysID 0x445 /
@@ -424,14 +447,52 @@ mod tests {
     fn mac_ptt() {
         let m = xor_mask(0x443, 0x445, 0xbee00);
         let mut x = descramble(&dibits(PTT), 10, &m);
-        let pdu = decode_acch(&x, false).expect("PTT decodes");
+        let pdu = decode_acch(&x, None, false).expect("PTT decodes");
         assert_eq!((pdu.opcode, pdu.offset), (MAC_PTT, 0));
         assert_eq!(parse_mac_ptt(&pdu.bytes), MacPtt { mi: [0; 9], algid: 0x80, keyid: 0, source: 1118562, group: 2207 });
-        // RS(63,35) corrects symbol errors in the payload.
-        for i in [20, 60, 70, 150] {
+        // RS(52,30) corrects symbol errors in the payload, and the CRC-12
+        // (in the information symbols) is checked as corrected: an error in
+        // it is no reason to drop the PDU.
+        let crc_at = 48 + 3 * 16; // the CRC: information hexbits 28-29, the second run's 17th and 18th
+        for i in [20, 60, 70, 150, crc_at] {
             x[i] ^= 3;
         }
-        assert_eq!(decode_acch(&x, false).map(|p| p.bytes), Some(pdu.bytes));
+        assert_eq!(decode_acch(&x, None, false).map(|p| p.bytes.clone()), Some(pdu.bytes.clone()));
+        // With the shortened symbols known zeros (not erasures), 11 symbol errors come back (2·11 + 6 = 28).
+        let mut y = descramble(&dibits(PTT), 10, &m);
+        for h in 0..11 {
+            y[11 + 3 * h] ^= 1;
+        }
+        assert_eq!(decode_acch(&y, None, false).map(|p| p.bytes), Some(pdu.bytes));
+    }
+
+    /// BBAC §5.5: channel 2/3 and location 3 are reserved; the ultraframe count is bits 1-0.
+    #[test]
+    fn isch_fields() {
+        assert_eq!(isch_info(8), Some((0, 1, 0)));
+        // (Reserved, channel 6-5, location 4-3, FR 2, ultraframe 1-0.)
+        assert_eq!(isch_info(0b00_00_10_0_11), Some((0, 2, 3)));
+        assert_eq!(isch_info(0b00_10_00_0_00), None, "channel 2");
+        assert_eq!(isch_info(0b00_00_11_0_00), None, "location 3");
+        assert_eq!(isch_info(-2), None);
+    }
+
+    /// BBAC §5.4.2: an unreliable DUID dibit is outvoted by the reliable ones.
+    #[test]
+    fn soft_duid() {
+        let mut v4 = dibits(V4)[10..].to_vec();
+        let mut rel = vec![1.0f32; 2 * BURST_DIBITS];
+        v4[47] ^= 3; // both bits of one DUID dibit wrong…
+        rel[94] = 0.01; // …and known to be unsure
+        rel[95] = 0.01;
+        assert_ne!(duid_decode(&v4), BURST_4V);
+        assert_eq!(duid_decode_soft(&v4, &rel), BURST_4V);
+    }
+
+    /// BBAC-1 §7.2.5: a zero seed is replaced, so it still scrambles.
+    #[test]
+    fn a_zero_seed_scrambles() {
+        assert!(xor_mask(0, 0, 0).iter().any(|&d| d != 0));
     }
 
     #[test]

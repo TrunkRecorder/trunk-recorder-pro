@@ -24,31 +24,17 @@ use trunk_core::p25::diversity::{best_imbe, best_tsbks, Bank, BankConfig};
 use trunk_core::p25::frame::{LDU1, LDU2, TSDU};
 use trunk_core::smartnet;
 
+use crate::toolkit::{hex, Capture};
 use crate::{die, Args};
 
 /// Channel IQ of `freq` from a capture, through a head of `cutoff` Hz.
 fn channel(a: &Args, cutoff: f64) -> (Vec<Complex32>, f64) {
-    let path = a.positional.get(1).unwrap_or_else(|| die("tool snr: no capture"));
-    let mut cap = std::fs::read(path).unwrap_or_else(|e| die(&format!("{path}: {e}")));
-    let fs = a.num("rate", 2_400_000.0);
-    if let Some(s) = a.get("seconds").and_then(|v| v.parse::<f64>().ok()) {
-        cap.truncate((s * fs) as usize * 2);
-    }
-    let mut chz = Channelizer::new(fs, 24_000.0, 0.1);
+    let cap = Capture::from_args_seconds(a, "snr");
+    let mut chz = Channelizer::new(cap.fs, 24_000.0, 0.1);
     let rate = chz.output_rate();
-    let (head, _, _) = chz.add_head(a.num("freq", 0.0) - a.num("center", 0.0), cutoff, 0.0);
+    let (head, _, _) = chz.add_head(a.num("freq", 0.0) - cap.center, cutoff, 0.0);
     let mut iq = Vec::new();
-    let mut off = 0;
-    while off < cap.len() {
-        let (used, ran) = chz.feed_u8(&cap[off..]);
-        off += used;
-        if ran {
-            iq.extend_from_slice(chz.output(head).unwrap());
-        }
-        if used == 0 {
-            break;
-        }
-    }
+    cap.channelize(&mut chz, |chz| iq.extend_from_slice(chz.output(head).unwrap()));
     (iq, rate)
 }
 
@@ -137,6 +123,10 @@ pub struct Variant {
     pub c4fm: C4fmOptions,
     /// P25: the C4FM receiver alone (no CQPSK receivers).
     pub c4fm_only: bool,
+    /// P25: the CQPSK receivers alone (no C4FM receiver).
+    pub cqpsk_only: bool,
+    /// P25: settle on the kind of receiver the channel needs (`nodetect`: every receiver always).
+    pub detect: bool,
     /// DMR: no soft combining of repeated blocks.
     pub no_combining: bool,
     pub fsk2: smartnet::Fsk2Options,
@@ -150,6 +140,8 @@ pub struct Variant {
 fn variant(name: &str, kind: &str) -> Variant {
     let mut o = if kind == "dmr" { C4fmOptions::dmr() } else { C4fmOptions::default() };
     let mut c4fm_only = false;
+    let mut cqpsk_only = false;
+    let mut detect = true;
     let mut no_combining = false;
     let mut fsk2 = smartnet::Fsk2Options::default();
     let mut grid_errs = None;
@@ -160,6 +152,8 @@ fn variant(name: &str, kind: &str) -> Variant {
         match part {
             "base" | "" => {}
             "c4fm-only" => c4fm_only = true,
+            "cqpsk-only" => cqpsk_only = true,
+            "nodetect" => detect = false,
             "nocombine" => no_combining = true,
             "coherent" => cq.coherent = true,
             "noamp" => cq.soft_amplitude = false,
@@ -175,7 +169,7 @@ fn variant(name: &str, kind: &str) -> Variant {
             }
         }
     }
-    Variant { name: name.into(), c4fm: o, c4fm_only, no_combining, fsk2, grid_errs, cqpsk: cq }
+    Variant { name: name.into(), c4fm: o, c4fm_only, cqpsk_only, detect, no_combining, fsk2, grid_errs, cqpsk: cq }
 }
 
 /// What a decode of the channel got: each message's time (s) and content,
@@ -202,10 +196,6 @@ fn matched(clean: &[(f64, String)], got: &[(f64, String)]) -> u64 {
         }
     }
     n
-}
-
-fn hex(b: &[u8]) -> String {
-    b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
 fn run_dmr(iq: &[Complex32], rate: f64, v: &Variant) -> Count {
@@ -246,7 +236,13 @@ fn run_dmr(iq: &[Complex32], rate: f64, v: &Variant) -> Count {
 
 fn run_p25(iq: &[Complex32], rate: f64, v: &Variant) -> Count {
     // The live receiver set (CQPSK, CQPSK/EQ, C4FM), or C4FM alone with `c4fm-only`.
-    let cfg = if v.c4fm_only { BankConfig { cqpsk: false, cqpsk_eq: false, ..Default::default() } } else { BankConfig::default() };
+    let cfg = if v.c4fm_only {
+        BankConfig { cqpsk: false, cqpsk_eq: false, ..Default::default() }
+    } else if v.cqpsk_only {
+        BankConfig { c4fm: false, ..Default::default() }
+    } else {
+        BankConfig { detect: v.detect, ..Default::default() }
+    };
     let mut bank = Bank::with_c4fm(rate, cfg, v.c4fm);
     let mut groups = Vec::new();
     let mut n = Count::default();
