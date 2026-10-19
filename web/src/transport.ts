@@ -18,6 +18,11 @@ export interface Transport {
   callUrl(path: string, ext: CallExt): Promise<string>;
 }
 
+/** A tab hidden this long that then gets a message was likely frozen: what's queued for it is old. */
+const FROZEN_MS = 30_000;
+/** Whether the tab is hidden now (never, where there's no document: tests). */
+const hidden = (): boolean => typeof document !== "undefined" && document.hidden;
+
 export class WsTransport implements Transport {
   readonly kind = "desktop" as const;
   onMessage: (msg: FromRecorder) => void = () => {};
@@ -27,9 +32,26 @@ export class WsTransport implements Transport {
   private queue: ToRecorder[] = [];
   private retryMs = 500;
   private closed = false;
+  /** When the last message was taken, and whether the tab was hidden since. */
+  private lastMessage = 0;
+  private hiddenSince = false;
 
   constructor(private readonly url = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api/ws`) {
+    globalThis.document?.addEventListener("visibilitychange", () => {
+      if (hidden()) this.hiddenSince = true;
+    });
     this.connect();
+  }
+
+  /** A tab frozen in the background is handed every message it missed at once
+   *  when it wakes: they'd be shown as if live. Reconnect instead, and be told
+   *  how things are now. */
+  private stale(): boolean {
+    const now = performance.now();
+    const frozen = this.hiddenSince && this.lastMessage > 0 && now - this.lastMessage > FROZEN_MS;
+    this.lastMessage = now;
+    this.hiddenSince = hidden();
+    return frozen;
   }
 
   private connect(): void {
@@ -37,10 +59,16 @@ export class WsTransport implements Transport {
     ws.binaryType = "arraybuffer";
     ws.onopen = () => {
       this.retryMs = 500;
+      this.lastMessage = 0;
       this.onConnection(true);
       for (const m of this.queue.splice(0)) ws.send(JSON.stringify(m));
     };
     ws.onmessage = (ev) => {
+      if (this.stale()) {
+        ws.onmessage = null;
+        ws.close();
+        return;
+      }
       if (typeof ev.data === "string") this.onMessage(JSON.parse(ev.data) as FromRecorder);
       else {
         const a = decodeAudioFrame(ev.data as ArrayBuffer);
