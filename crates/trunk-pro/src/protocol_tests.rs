@@ -141,6 +141,39 @@ fn a_recording_sessions_messages() {
     check_all("FromRecorder", &msgs);
 }
 
+/// An RTL-SDR hands over 131,072 samples at a time (55 ms at 2.4 MS/s), each
+/// a few ms late: the rate shown for it holds steady, not a chunk more or less
+/// a window; and falls when it goes quiet.
+#[test]
+fn a_chunky_radio_shows_a_steady_rate() {
+    let epoch = 1.75e12;
+    let mut s = Session::new(conventional_config(), &Default::default(), epoch, &|_| None, |_| 0).unwrap();
+    let (mut out, mut msgs) = (Vec::new(), Vec::new());
+    let chunk = vec![127u8; 2 * 131_072];
+    let rate = |msgs: &[Value]| msgs.iter().rfind(|m| m["type"] == "status").unwrap()["sources"][0]["rateMeasured"].as_f64().unwrap();
+    let mut now = 0.0;
+    let mut rates = Vec::new();
+    for k in 1..=200 {
+        let at = k as f64 * 131_072.0 / 2.4e6 * 1000.0 + [0.0, 4.0, 1.0, 7.0, 2.0][k % 5];
+        while now < at {
+            s.poll(epoch + now, &mut out);
+            now += 20.0;
+        }
+        s.push(0, &chunk, 0, epoch + at);
+        texts(&mut out, &mut msgs);
+        if now > 6000.0 {
+            rates.push(rate(&msgs));
+        }
+    }
+    assert!(rates.iter().all(|r| (r / 2.4e6 - 1.0).abs() < 0.002), "{rates:?}");
+    for _ in 0..350 {
+        s.poll(epoch + now, &mut out);
+        now += 20.0;
+    }
+    texts(&mut out, &mut msgs);
+    assert!(rate(&msgs) < 0.1 * 2.4e6, "{}", rate(&msgs));
+}
+
 /// A radio whose first samples come 3 s after recording starts (a USRP
 /// loading its FPGA, say): the session sets its clock from the wall clock,
 /// so a transmission 0.5 s into its samples is saved as 3.5 s in, not 0.5 s.

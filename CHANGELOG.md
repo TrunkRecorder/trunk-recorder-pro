@@ -5,6 +5,11 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **A radio's delivered rate holds steady** on the RF page (by taclane, #43): it's measured over
+  5 s from one buffer's arrival to another's, not over the status tick's second, which counted a
+  whole RTL-SDR transfer (55 ms at 2.4 MS/s) in or out of it. Healthy dongles no longer warn that
+  they deliver 5% off their rate; one that goes quiet still falls to zero.
+
 ## [0.2.1] — 2026-10-18
 
 - **A dashboard card opens what it's about from anywhere on it**, not only its title: a system's
