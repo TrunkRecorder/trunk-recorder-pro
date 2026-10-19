@@ -34,6 +34,9 @@ import { parseTalkgroupCsv } from "../talkgroups.ts";
 import { BrowserStorage } from "../web/BrowserStorage.tsx";
 import { aliasOf } from "./Calls.tsx";
 
+/** What the Listen page reads of the store (the page selects only this). */
+type ListenState = Pick<AppState, "connected" | "config" | "units" | "talkgroups">;
+
 /** A talkgroup as the scanner shows it. */
 interface Tg {
   system: string;
@@ -47,16 +50,18 @@ interface Tg {
 
 /**
  * Every system and talkgroup there is to hear: each system's talkgroup file,
- * and what calls were heard on (conventional channels, talkgroups not in a file).
+ * and what calls were heard on (conventional channels, talkgroups not in a
+ * file).
  */
-function catalog(s: Pick<AppState, "config">, calls: CallEntry[]): Map<string, Tg[]> {
+function catalog(s: Pick<AppState, "config" | "talkgroups">, calls: CallEntry[]): Map<string, Tg[]> {
   const out = new Map<string, Map<number, Tg>>();
   const sys = (name: string) => out.get(name) ?? out.set(name, new Map()).get(name)!;
   for (const x of s.config?.systems ?? []) {
     if (!x.enabled) continue;
-    const m = sys(x.shortName);
-    for (const t of parseTalkgroupCsv(x.talkgroupsCsv).values()) {
-      if (!t.ignore) m.set(t.number, { system: x.shortName, talkgroup: t.number, key: tgKey(x.shortName, t.number), alphaTag: t.alphaTag, description: t.description, tag: t.tag, group: t.group });
+    const name = x.shortName;
+    const m = sys(name);
+    for (const t of parseTalkgroupCsv(s.talkgroups[name] ?? "").values()) {
+      if (!t.ignore && !m.has(t.number)) m.set(t.number, { system: name, talkgroup: t.number, key: tgKey(name, t.number), alphaTag: t.alphaTag, description: t.description, tag: t.tag, group: t.group });
     }
   }
   for (const v of s.config?.conventional ?? []) if (v.enabled) sys(v.shortName);
@@ -84,7 +89,7 @@ const timeOf = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: "2-di
 const mmss = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 
 /** The radio that spoke first, by name when known. */
-function unitOf(s: AppState, c: CallEntry): string {
+function unitOf(s: ListenState, c: CallEntry): string {
   const u = c.record.srcList?.find((x) => x.src > 0);
   if (!u) return "";
   return aliasOf(s, systemOf(c), u.src, u.tag || u.tag_ota) ?? String(u.src);
@@ -94,7 +99,7 @@ function Led({ color, blink }: { color: string; blink?: boolean }) {
   return <span className={`led${blink ? " blink" : ""}`} style={{ background: color, color }} aria-hidden="true" />;
 }
 
-function Display({ s }: { s: AppState }) {
+function Display({ s }: { s: ListenState }) {
   const l = useListen((x) => x);
   const c = l.playing;
   if (!c) {
@@ -203,7 +208,7 @@ function Controls() {
   );
 }
 
-function Recent({ s }: { s: AppState }) {
+function Recent({ s }: { s: ListenState }) {
   const played = useListen((x) => x.played);
   if (!played.length) return null;
   return (
@@ -221,8 +226,8 @@ function Recent({ s }: { s: AppState }) {
   );
 }
 
-function Scanner({ s }: { s: AppState }) {
-  const l = useListen((x) => ({ feed: x.feed, queue: x.queue.length, missed: x.missed, hold: x.sel.hold }));
+function Scanner({ s }: { s: ListenState }) {
+  const l = useListen((x) => ({ feed: x.feed, queue: x.queue.length, missed: x.missed, hold: x.sel.hold, sel: x.sel }));
   const status = !s.connected ? "No link" : l.feed ? "Live" : "Feed off";
   return (
     <section className="panel scanner">
@@ -249,7 +254,7 @@ function Scanner({ s }: { s: AppState }) {
 
 // ── the calls ────────────────────────────────────────────────────────────────
 
-function CallList({ s }: { s: AppState }) {
+function CallList({ s }: { s: ListenState }) {
   const l = useListen((x) => ({ calls: x.calls, sel: x.sel, queue: x.queue, playing: x.playing, loadingOlder: x.loadingOlder, moreOlder: x.moreOlder }));
   const [onlySelected, setOnlySelected] = useState(true);
   const [filter, setFilter] = useState("");
@@ -351,9 +356,9 @@ function Chips({ title, by, sel, tgs, known }: { title: string; by: (t: Tg) => s
   );
 }
 
-function Talkgroups({ s }: { s: AppState }) {
+export function Talkgroups({ s }: { s: ListenState }) {
   const l = useListen((x) => ({ calls: x.calls, sel: x.sel }));
-  const cat = useMemo(() => catalog(s, l.calls), [s.config, l.calls]);
+  const cat = useMemo(() => catalog(s, l.calls), [s.config, s.talkgroups, l.calls]);
   const [filter, setFilter] = useState("");
   const all = useMemo(() => [...cat.values()].flat(), [cat]);
   const known = useMemo(() => all.map((t) => t.key), [all]);
@@ -407,6 +412,7 @@ function Talkgroups({ s }: { s: AppState }) {
       {[...cat].map(([system, tgs]) => {
         const sysOn = !sel.offSystems.includes(system);
         const shown = tgs.filter(match);
+        const sites = s.config?.systems.find((x) => x.shortName === system)?.sites.length ?? 0;
         if (f && !shown.length) return null;
         return (
           <div key={system} className="tg-system">
@@ -414,6 +420,7 @@ function Talkgroups({ s }: { s: AppState }) {
               <input type="checkbox" checked={sysOn} onChange={(e) => setSystemOn(system, e.target.checked)} />
               <Led color={systemColor(s.config, system)} />
               <b>{system}</b>
+              {sites > 1 && <span className="chip small" title="A call plays whichever site it was kept from">{sites} sites</span>}
               <span className="muted small">
                 {sysOn ? tgs.filter((t) => !sel.offTalkgroups.includes(t.key)).length : 0} of {tgs.length} talkgroups
               </span>
@@ -438,9 +445,10 @@ function Talkgroups({ s }: { s: AppState }) {
   );
 }
 
-export function ListenPage() {
-  const s = useSelect((x) => ({ connected: x.connected, config: x.config, units: x.units }) as AppState);
-  const [tab, setTab] = useState<"calls" | "talkgroups">("calls");
+/** `tab`: the side panel's tab to open on (the calls). */
+export function ListenPage({ tab: first = "calls" }: { tab?: "calls" | "talkgroups" } = {}) {
+  const s: ListenState = useSelect((x) => ({ connected: x.connected, config: x.config, units: x.units, talkgroups: x.talkgroups }));
+  const [tab, setTab] = useState<"calls" | "talkgroups">(first);
   const off = useListen((x) => x.sel.offSystems.length + x.sel.offTalkgroups.length);
   return (
     <div className="listen">

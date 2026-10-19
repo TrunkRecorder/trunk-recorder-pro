@@ -1,9 +1,9 @@
 [workspace]
 resolver = "3"
-members = ["crates/trunk-core", "crates/trunk-app", "crates/trunk-pro", "crates/trunk-web", "crates/trunk-recorder-plugin"]
+members = ["crates/trunk-core", "crates/trunk-app", "crates/trunk-pro", "crates/trunk-web", "crates/trunk-recorder-plugin", "crates/rtlsdr-nusb"]
 
 [workspace.package]
-version = "0.1.13"
+version = "0.2.1"
 edition = "2024"
 # The oldest Rust that builds the app (sysinfo needs 1.95). The plugin SDK
 # sets its own, lower one.
@@ -18,7 +18,7 @@ trunk-recorder-plugin = { path = "crates/trunk-recorder-plugin", default-feature
 rustfft = "6"
 num-complex = "0.4"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["raw_value"] }
 
 # Debug builds optimize a little: unoptimized, the DSP runs ~100x slower
 # than release (every Complex32 op, iterator step and NEON intrinsic is a
@@ -38,3 +38,8 @@ debug = 1
 inherits = "release"
 debug = false
 strip = true
+
+# rtlsdr-nusb with settable receive buffers (crates/rtlsdr-nusb: a fork of
+# 0.3.0, Apache-2.0): several RTL-SDRs on one USB 2.0 bus need smaller transfers.
+[patch.crates-io]
+rtlsdr-nusb = { path = "crates/rtlsdr-nusb" }

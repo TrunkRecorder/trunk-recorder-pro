@@ -645,6 +645,8 @@ const PROBE_BANK: BankConfig = BankConfig {
     eq_mu: 0.02,
     framer: crate::p25::frame::FramerOptions { flywheel: true, flywheel_errs: 12, nid_recover: true, nid_max_errs: 11 },
     soft: true,
+    // (A probe is short: it tells the modulation by which kind decodes.)
+    detect: false,
 };
 
 /// One hop of the scan.
@@ -1077,7 +1079,7 @@ impl Monitor {
             self.chz.noise_profile(&mut self.noise);
             let off = self.head_hz - self.center;
             let fs = self.chz.fs();
-            let s = (((off + fs / 2.0) / fs * self.noise.len() as f64) as usize).min(self.noise.len() - 1);
+            let s = crate::dsp::channelizer::floor_slice(self.noise.len(), fs, off);
             let nb = self.noise[s];
             if nb > 0.0 {
                 let r = ((self.chz.band_power(off, 5000.0) - nb) / nb).max(1e-3);
@@ -1172,7 +1174,7 @@ impl Monitor {
             MessageType::Grant | MessageType::Update | MessageType::UuVGrant | MessageType::UuVUpdate | MessageType::PhoneGrant | MessageType::PhoneUpdate if m.freq_hz != 0 => {
                 let v = self.voice.entry(m.freq_hz).or_insert(VoiceChannel { freq_hz: m.freq_hz, grants: 0, tdma: false });
                 v.grants += 1;
-                v.tdma |= m.phase2_tdma;
+                v.tdma |= m.voice.tdma();
             }
             _ => {}
         }

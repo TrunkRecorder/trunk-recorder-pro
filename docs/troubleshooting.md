@@ -12,10 +12,18 @@ what to put in a bug report.
 /home/pi/.config/trunk-pro/config.json: not a config this version reads (expected `,` or `}` at line 41 column 5)
 ```
 
-The config file isn't valid JSON, or a value has the wrong type (text where a number goes, say).
+The config file isn't valid JSON, a value has the wrong type (text where a number goes, say), or a
+choice isn't one the app lists (a system `type` of `P25x`, a `vocoder` of `best`):
+
+```text
+config.json: not a config this version reads (unknown variant `P25x`, expected one of `p25`, `smartnet`, `dmr`, `nxdn` at line 12 column 20)
+```
+
 The part in brackets says what and where. This usually comes from a hand edit: a missing comma,
-a trailing comma, or a stray quote. Fix that line, or move the file aside and start again (the
-app starts with the default config, one RTL-SDR and no systems, when there's no file).
+a trailing comma, a stray quote or a misspelt choice (choices are read in any case, so `P25` is
+fine). Fix that line, or move the file aside and start again (the app starts with the default
+config, one RTL-SDR and no systems, when there's no file). The choices each key takes are listed
+in the [config reference](configuration/README.md#general-rules).
 
 A Trunk Recorder `config.json` is a different format. Don't point `--config` at one; bring it over
 with **Import Trunk Recorder config…** instead (see
@@ -32,6 +40,7 @@ Other things that stop it at start, each with its message:
 | `--port x: a port number, 1–65535` | A number in that range |
 | `bind address: …` | `--bind` or `server.bind` must be an IP address (`127.0.0.1`, `0.0.0.0`), not a host name |
 | `--ui <folder>: no index.html there` | Point `--ui` at a folder with an `index.html` |
+| `Interface <id>: can't serve it on port <n>: …` | Another program has the port (or it's below 1024): pick another on the Interfaces page |
 
 Started from Finder, Explorer or a desktop launcher, these show as a dialog (macOS) or a
 notification (Linux) titled "Trunk Recorder Pro couldn't start".
@@ -72,6 +81,8 @@ the log says `Not started: <why>`. The reasons:
 | `Add a system with a control channel, or a conventional channel.` | A trunked system only counts once it's enabled and has a control channel |
 | `Every system needs a short name.` | Give it one in Setup |
 | `Two systems are named "x" — each needs a short name of its own …` | Short names are folder names and how plugins tell systems apart, so they must differ (conventional systems included) |
+| `Two sites of x are named "y" — each needs a name of its own.` | Site names are unique within their system |
+| `Source N: the USB transfer size must be a multiple of 512 bytes, at most 16 MiB …` or `Source N: at most 256 USB transfers in flight.` | An RTL-SDR's `bufLen` or `buffers` (Setup's **USB transfer size**) is out of range; `65536` is the usual value |
 | `Set a center frequency for source N — it couldn't be placed automatically …` | Automatic centring couldn't fit the channels. Set the centre yourself, or add a source. See [Radios](guides/radios.md). |
 | `No control channel of x falls inside any source's bandwidth — move a center frequency or add a source.` | At least one control channel must be inside a source's usable band (its band minus the guard band at each edge) |
 | `x: DMR (or NXDN) frequencies outside every source's bandwidth: … MHz` | Every control and voice frequency of a DMR or NXDN site has to be covered |
@@ -80,7 +91,9 @@ the log says `Not started: <why>`. The reasons:
 | `Conventional channel … MHz is in both a and b …` | A frequency can belong to only one conventional system |
 | `A conventional channel has no frequency yet.` | Fill it in or remove the row |
 | `Conventional channel … MHz: …` | Its tone, NAC, colour code or RAN can't be read; see [Tones](guides/tones.md) |
-| `At most 256 conventional systems.` | |
+| `Conventional channel … MHz: a bandwidth is 4–20 kHz.` | A channel's **Bandwidth kHz** is outside that range |
+| `<system>: AM low cut is 0–600 Hz.` (also `Squelch open delay is 0–500 ms.`, `Squelch hang is 0–1000 ms.`) | A conventional system's demodulation setting is out of range |
+| `File name format: Unknown token: {x}.` (or `<system>'s file name format: …`) | A file name format has a token that isn't one of [the listed ones](configuration/recording.md#file-names), or a `{` with no `}` |
 
 A linked channel file that can't be read also stops the start, with the file's problem as the
 message.
@@ -187,7 +200,7 @@ amber: that points at reception (multipath, a marginal signal), not at traffic.
 Control channel 857.26250 MHz is not this system: NAC 2A3 (expected 2A4)
 ```
 
-The system has a site lock (`expect` in the config, set by Find my system or by hand) and the
+The site has a site lock (its `expect` in the config, set by Find my system or by hand) and the
 control channel it found belongs to a different system or site. Its grants aren't followed and the
 recorder keeps hunting. Either the frequency belongs to another site (fix the control channel list),
 or the expected identity is wrong (fix or clear it). See [Multiple sites](guides/multi-site.md).
@@ -234,8 +247,18 @@ doesn't collect them in time, they're lost. Causes, most likely first:
 - **CPU.** Check the Platform page and **Decoding load** on the Overview. A lower sample rate,
   fewer sources, or a faster computer helps.
 - **USB.** Several dongles on one hub or one bus, a long or poor cable, or a Raspberry Pi with a weak
-  power supply. Spread dongles across ports.
+  power supply. Spread dongles across ports. With 4 or more RTL-SDRs on one USB 2.0 bus, set
+  **USB transfer size** to 64 KiB on each (`bufLen: 65536`, Trunk Recorder's `buflen`): see
+  [several dongles on one USB bus](configuration/sources.md#type-rtlsdr). An RTL-SDR can't report
+  these losses itself; the recorder notices them as samples falling behind the clock and logs
+  "lost without its driver saying so".
 - **Something else on the computer** hogging it for a moment (a backup, a screen-sharing session).
+
+**Airspys** hand their samples over through libairspy, whose own thread drops a buffer
+(6.5 ms at 10 MS/s) when it runs more than ~50 ms late. The recorder now takes the Airspy's raw
+samples and turns them into IQ on its own decoding thread, so libairspy's thread only copies.
+If an Airspy's channels ever look wrong (nothing decodes, or the spectrum looks mirrored), start
+the recorder with `TRUNK_PRO_AIRSPY_LIBRARY_IQ=1` to have libairspy convert as before, and tell us.
 
 **USRPs** have a very small buffer by default, so the app asks UHD for a bigger one
 (`num_recv_frames=256`, about 65 ms) unless your device arguments set `num_recv_frames`
@@ -302,8 +325,9 @@ and choose the recordings folder. The app checks again once a day. If it can't t
 Refused a page from http://192.168.1.50:3000: add it to server.allowedOrigins in the config to let it use the interface.
 ```
 
-The app only lets its own pages drive it, so other web pages can't. Add the page's origin to
-**Other pages allowed to use the API** in Setup → Recording → Interfaces. See
+The app only lets its own pages drive it, so other web pages can't. Each interface it serves
+uses the API on its own port: a page on port 8081 is refused on 8080. For a page served by
+something else, add its origin to **Pages served elsewhere** on the Interfaces page. See
 [Remote access](guides/interface.md#remote-access).
 
 ## Where is the log?

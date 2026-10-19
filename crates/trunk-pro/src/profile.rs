@@ -33,12 +33,13 @@ fn measure(cfg: &Config, req: &Request) -> Result<Value, String> {
     };
     let stop = Arc::new(AtomicBool::new(false));
     let (tx, rx) = mpsc::sync_channel::<SourceMsg>(256);
-    let th = crate::survey::spawn_source(src, req.source, center, tx, stop.clone(), Arc::new(Control::default()))?;
+    let th = crate::runtime::spawn_source(src, req.source, center, tx, stop.clone(), Some(Arc::new(Control::default())), &format!("profile-source-{}", req.source)).map_err(|e| e.to_string())?;
     let mut p = Profiler::new(src.rate_hz(), profile::SECONDS);
     let mut last = Instant::now();
     let mut err = None;
+    let mut iqf = crate::sdr::IqFrom::default();
     while !p.done() {
-        match rx.recv_timeout(Duration::from_millis(100)) {
+        match rx.recv_timeout(Duration::from_millis(100)).map(|m| iqf.iq(m)) {
             Ok(SourceMsg::Data { bytes, .. }) => {
                 p.push_u8(&bytes);
                 last = Instant::now();
@@ -52,7 +53,7 @@ fn measure(cfg: &Config, req: &Request) -> Result<Value, String> {
                 break;
             }
             Ok(SourceMsg::End { .. }) | Err(RecvTimeoutError::Disconnected) => break,
-            Ok(SourceMsg::Tuned { .. }) => {}
+            Ok(SourceMsg::Tuned { .. } | SourceMsg::Real16 { .. }) => {}
             Err(RecvTimeoutError::Timeout) if last.elapsed() > TIMEOUT => {
                 err = Some("the source sent nothing".into());
                 break;
@@ -87,6 +88,8 @@ pub fn cli(a: &crate::Args) {
             ppm: 0,
             auto_tune: false,
             guard_hz,
+            buf_len: a.num("buflen", 0.0) as u32,
+            buffers: a.num("buffers", 0.0) as u32,
         },
     };
     let cfg = Config { sources: vec![src], ..Default::default() };

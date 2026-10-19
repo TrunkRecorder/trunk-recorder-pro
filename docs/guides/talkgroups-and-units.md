@@ -11,18 +11,18 @@ A trunked system works without a talkgroup file: every call is recorded and file
 number. With one, calls get names (the alpha tag, description and category go into the call JSON
 and can be used in file names), and you can choose what to record.
 
-Each system has its own. It's the **Talkgroups** field on the system card in **Setup** →
+Each system has its own, shared by all its sites. It's the **Talkgroups** field on the system card in **Setup** →
 **Systems**:
 
 - **Load CSV…** loads a Trunk Recorder talkgroup CSV.
 - **Paste from RadioReference…** reads a talkgroup table copied from RadioReference's web page.
   See [Pasting from RadioReference](#pasting-from-radioreference).
-- **Download** saves the system's talkgroup file as a CSV (named after the file you loaded, or
-  `<shortName>-talkgroups.csv`).
+- **Download** saves the system's talkgroup file as a CSV, `<shortName>.talkgroups.csv`.
 - **Clear** removes it.
 
-The file isn't kept as a path: its text goes into the config, in the system's `talkgroupsCsv`,
-with the original file name in `talkgroupsName`. To change it later, edit your copy and load it
+The talkgroup file isn't part of the config, and isn't kept as a path: Setup saves a copy beside the
+config file, as `<shortName>.talkgroups.csv`, and renames it when you rename the system. (A config
+from before 0.2.0 had them inside it; they're moved out into these files the first time it's read.) To change it later, edit your copy and load it
 again, or **Download**, edit, and load. Changes made while recording take effect at once (the log
 says "Talkgroups updated").
 
@@ -76,7 +76,7 @@ Either way:
 | `Mode` | see [Mode](#mode) |
 | `Priority` | only `-1` matters: it means ignore, as in Trunk Recorder |
 | `Ignore` | `x`, `yes`, `y`, `true`, `1` or `ignore`: never record it. Trunk Recorder Pro's own column |
-| `Preferred Site` | multi-site: the short name of the site whose copy to keep |
+| `Preferred Site` | multi-site: the name of the site whose copy to keep (its **Site name** in Setup; a site without one goes by the system's short name) |
 | `Preferred NAC` | multi-site: the same as Trunk Recorder writes it (a NAC, or RFSS and site as `RRRRssss`, in decimal) |
 
 The multi-site columns are explained in
@@ -97,6 +97,11 @@ The `Mode` column uses RadioReference's letters. Two things depend on it:
 
 `De` and `Te` (encrypted only sometimes) are recorded. Analog only makes sense on a SmartNet
 system with analog channels; see [SmartNet](smartnet.md#analog-and-digital-voice).
+
+A conventional system has a talkgroup file of its own too, shown in Setup → **Conventional** (as
+**Talkgroup names**) once the system has a P25, DMR or NXDN channel. Those channels name the
+talkgroups they hear by it; it isn't shared with a trunked system. See
+[Conventional channels](conventional.md#talkgroup-names-on-digital-channels).
 
 ## Choosing what to record
 
@@ -140,14 +145,14 @@ What it reads from the paste:
   `T` becomes `TE`, anything else `E`); `ONLINE` after a number is skipped.
 - A row without a mode gets `D`.
 
-The result is stored as a normal talkgroup file named "RadioReference (pasted)", so **Download**
-gives you a CSV you can edit and load again.
+The result is saved as a normal talkgroup file, so **Download** gives you a CSV you can edit and
+load again.
 
 ## Unit names
 
 A system can have its own names for radio IDs ("Engine 12" for 1234). This is Trunk Recorder's
 `unitTagsFile`. On the system card, **Unit names** → **Load CSV…** loads one; **Clear** removes it.
-Like the talkgroup file, it's kept inside the config, under the system's `unitNames`.
+Unlike the talkgroup file, it's kept inside the config, under the system's `unitNames`.
 
 The file has no header. Each line is a unit ID and its name:
 
@@ -182,7 +187,7 @@ With no unit names file, a radio is named by its talker alias.
 ```
 
 The name chosen goes into each source's `tag` in the call JSON's `srcList`; the talker alias heard,
-if any, goes into `tag_ota` whatever the mode. The **Calls** page shows names next to unit IDs.
+if any, goes into `tag_ota` whatever the mode. The **Live** page shows names next to unit IDs.
 
 Conventional systems take a unit names file too, on their own card.
 

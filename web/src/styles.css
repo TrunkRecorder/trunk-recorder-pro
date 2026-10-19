@@ -1002,6 +1002,8 @@ h2.big { font-size: 26px; text-transform: none; letter-spacing: -0.01em; color: 
 .card-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .card-title h3 { margin: 0; font-size: 15px; font-weight: 600; }
 .card .why { margin: 0; }
+.card-opens { cursor: pointer; }
+.card-opens:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
 .card-more { align-self: flex-start; background: none; border: 0; color: var(--accent); cursor: pointer; padding: 0; font-size: 12.5px; }
 .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: var(--gap); align-items: start; }
 .card-grid.wide { grid-template-columns: repeat(auto-fit, minmax(min(100%, 520px), 1fr)); }
@@ -1034,6 +1036,9 @@ h2.big { font-size: 26px; text-transform: none; letter-spacing: -0.01em; color: 
 .barlist li { display: grid; grid-template-columns: minmax(90px, 160px) minmax(0, 1fr) 40px; gap: 10px; align-items: center; font-size: 13px; }
 .barlist .bar { height: 8px; border-radius: 0 4px 4px 0; background: var(--series-1); min-width: 2px; }
 .barlist b { text-align: right; }
+.barlist li.opens { cursor: pointer; border-radius: 4px; }
+.barlist li.opens:hover { background: var(--panel-2); }
+.barlist li.opens:hover .linkish { color: var(--accent); }
 .timeline li { display: grid; grid-template-columns: 110px minmax(0, 1fr) auto; gap: 10px; align-items: baseline; font-size: 13px; border-bottom: 1px solid var(--line); padding-bottom: 4px; }
 .timeline { max-height: 260px; overflow-y: auto; }
 .stackbar { display: flex; height: 18px; border-radius: 4px; overflow: hidden; gap: 2px; }
@@ -1223,6 +1228,10 @@ table.calls tr.ignored td { opacity: 0.55; }
 .listen-more { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding-top: 10px; }
 
 .tg-chips { margin: 10px 0; }
+/* A system of several sites: a row each under its control channel figure. */
+.site-rows { display: grid; gap: 3px; margin-top: 8px; }
+.site-row { display: grid; grid-template-columns: auto auto auto 1fr; gap: 8px; align-items: center; }
+.site-row .mono.muted { justify-self: end; }
 .tg-chips h2 { margin-bottom: 6px; }
 .chip3.on { border-color: var(--accent); color: var(--text); box-shadow: inset 0 -2px 0 var(--accent); }
 .chip3.some { border-color: color-mix(in srgb, var(--accent) 50%, var(--line)); border-style: dashed; }
@@ -1261,3 +1270,34 @@ table.calls tr.ignored td { opacity: 0.55; }
 .setup .system-card.set-card.collapsed:hover { border-left-color: var(--sys-color, var(--line)); }
 @media (prefers-reduced-motion: reduce) { .set-card-chevron { transition: none; } }
 @container (max-width: 760px) { .set-card-head.foldable { padding: 0 18px 0 0; } .set-card-toggle { padding: 14px 0 14px 12px; } }
+
+/* A system's sites (Setup's SiteCard): smaller cards inside its Sites group. */
+.sites-list { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.setup .site-card.set-card { border-radius: 10px; background: var(--panel-2); }
+.site-card .set-card-head.foldable { padding: 0 14px 0 0; }
+.site-card .set-card-toggle { padding: 10px 0 10px 12px; border-radius: 9px 0 0 9px; }
+.site-card .set-card-title h3 { font-size: var(--fs-group); }
+.site-card .set-card-sub { font-size: 12.5px; }
+.site-body { padding: 16px 18px 18px; }
+.set-card-needs .same-system { margin: 0; }
+.set-card-needs .same-system + .same-system { margin-top: 8px; }
+
+/* Interfaces (Interfaces.tsx): the ports table and a card's access menu. */
+.iface-ports { display: flex; flex-direction: column; border-top: 1px solid var(--line); margin-bottom: 10px; }
+.iface-ports-row { display: grid; grid-template-columns: minmax(140px, 1fr) auto minmax(0, 1.4fr); gap: 12px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.iface-ports-row a { color: var(--accent); overflow-wrap: anywhere; }
+.iface-port { display: inline-flex; align-items: center; gap: 8px; }
+.iface-port input { width: 7ch; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; font: inherit; font-family: var(--mono); color: inherit; }
+.iface-port input[aria-invalid="true"] { border-color: var(--bad); }
+.iface-access { display: inline-flex; align-items: center; gap: 6px; }
+@media (max-width: 640px) { .iface-ports-row { grid-template-columns: 1fr auto; } .iface-ports-row > :last-child { grid-column: 1 / -1; } }
+
+/* Store cards: screenshots (StoreParts.tsx). */
+.shots { display: flex; gap: 8px; overflow-x: auto; padding: 2px 0 4px; }
+.shot { flex: none; padding: 0; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); cursor: zoom-in; overflow: hidden; }
+.shot img { display: block; height: 120px; width: auto; max-width: 240px; object-fit: cover; }
+.shot:hover, .shot:focus-visible { border-color: var(--accent); }
+.shot-view { position: fixed; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center; padding: 16px; background: color-mix(in srgb, var(--bg) 85%, transparent); }
+.shot-view figure { margin: 0; max-width: min(1200px, 100%); max-height: 100%; display: flex; flex-direction: column; gap: 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 10px; }
+.shot-view img { max-width: 100%; max-height: calc(100vh - 120px); object-fit: contain; border-radius: 6px; }
+.shot-view figcaption { gap: 8px; }

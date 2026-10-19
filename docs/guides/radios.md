@@ -217,7 +217,7 @@ the Radios tab, whose usable range covers it**. Control channels are the same: e
 the first source that covers it. Where two radios overlap, the one higher in the list gets the
 channels in the overlap.
 
-A call whose frequency no source covers isn't recorded; the **Calls** page says *outside tuned
+A call whose frequency no source covers isn't recorded; the **Live** page says *outside tuned
 range*, and the **Radio system** page counts these as *Out of band* (*No source covers the
 frequency*). A system with no control channel inside any source can't start: *no control channel
 falls inside a source's bandwidth — move the center frequency*.

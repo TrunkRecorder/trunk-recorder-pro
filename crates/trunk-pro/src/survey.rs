@@ -3,6 +3,7 @@
 //! publishes what it finds to the browsers. Also `trunk-pro survey`, the
 //! same from the command line.
 
+use trunk_app::protocol::{body, ToClient};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::Arc;
@@ -15,9 +16,8 @@ use trunk_app::Output;
 use trunk_core::survey::{Command, Stage};
 
 use crate::config::{Config, Source};
-use crate::radio::{airspy, soapy, uhd};
 use crate::runtime::{self, Ctx};
-use crate::sdr::{self, Control, RtlConfig, SourceMsg};
+use crate::sdr::{Control, SourceMsg};
 
 /// What the interface asks of a running survey.
 pub enum UserCmd {
@@ -43,33 +43,6 @@ impl SurveyRunner {
     }
 }
 
-/// Start source `req.source`'s thread, able to retune; its first centre is
-/// set by the survey's first command.
-pub(crate) fn spawn_source(src: &Source, i: usize, center: f64, tx: mpsc::SyncSender<SourceMsg>, stop: Arc<AtomicBool>, ctl: Arc<Control>) -> Result<JoinHandle<()>, String> {
-    let src = src.clone();
-    std::thread::Builder::new()
-        .name(format!("survey-source-{i}"))
-        .spawn(move || match src {
-            Source::Rtlsdr { serial, rate_hz, gain_db, agc, ppm, .. } => {
-                sdr::run_with(i, RtlConfig { serial, center_hz: center as u64, rate_hz: rate_hz as u32, gain_db: (!agc).then_some(gain_db), ppm }, tx, stop, Some(ctl))
-            }
-            Source::Usrp { args, rate_hz, gain_db, agc, antenna, ppm, .. } => {
-                uhd::run_with(i, uhd::UsrpConfig { args, center_hz: center, rate_hz, gain_db, agc, antenna, ppm }, tx, stop, Some(ctl))
-            }
-            Source::Airspy { serial, rate_hz, gain_mode, gain_step, lna_step, mixer_step, vga_step, agc, bias_tee, ppm, .. } => {
-                let gain = runtime::airspy_gain(gain_mode, gain_step, lna_step, mixer_step, vga_step, agc);
-                airspy::run_with(i, airspy::AirspyConfig { serial, center_hz: center, rate_hz, gain, bias_tee, ppm }, tx, stop, Some(ctl))
-            }
-            Source::Soapy { args, rate_hz, agc, gain_db, gains, antenna, settings, ppm, .. } => {
-                let gains = gains.into_iter().collect();
-                soapy::run_with(i, soapy::SoapyConfig { args, center_hz: center, rate_hz, agc, gain_db, gains, antenna, settings, ppm }, tx, stop, Some(ctl))
-            }
-            // A capture can't be tuned: the survey looks at its one centre.
-            Source::File { path, rate_hz, realtime, format, .. } => runtime::run_file(i, &path, rate_hz, realtime, crate::config::SampleFormat::of(format, &path), tx, stop),
-        })
-        .map_err(|e| e.to_string())
-}
-
 /// Pass the survey's radio commands to the source; a capture confirms at once.
 fn apply(session: &mut SurveySession, ctl: &Control, file_center: Option<f64>) {
     while let Some(c) = session.command() {
@@ -87,6 +60,8 @@ fn feed(session: &mut SurveySession, msg: SourceMsg) -> bool {
         SourceMsg::Data { bytes, .. } => session.survey().push_u8(&bytes),
         SourceMsg::Iq { samples, .. } => session.survey().push_iq(&samples),
         SourceMsg::Tuned { center_hz, .. } => session.survey().tuned(center_hz),
+        // (The callers turn these into Iq first.)
+        SourceMsg::Real16 { .. } => {}
         SourceMsg::Error { error, .. } => session.source_error(&error),
         SourceMsg::End { .. } => {
             session.survey().finish();
@@ -114,7 +89,7 @@ pub fn start(ctx: Arc<Ctx>, cfg: Config, req: Request) -> Result<SurveyRunner, S
         *ctl.current_hz.lock().unwrap() = Some(first);
     }
     let (tx, rx) = mpsc::sync_channel::<SourceMsg>(256);
-    let mut threads = vec![spawn_source(&cfg.sources[req.source], req.source, first, tx, stop.clone(), ctl.clone())?];
+    let mut threads = vec![runtime::spawn_source(&cfg.sources[req.source], req.source, first, tx, stop.clone(), Some(ctl.clone()), &format!("survey-source-{}", req.source)).map_err(|e| e.to_string())?];
     // The opening tune is confirmed by the first samples.
     let mut opened = fixed.is_some();
     let (cmd_tx, cmd_rx) = mpsc::channel::<UserCmd>();
@@ -126,6 +101,7 @@ pub fn start(ctx: Arc<Ctx>, cfg: Config, req: Request) -> Result<SurveyRunner, S
                 let t0 = Instant::now();
                 let mut out = Vec::new();
                 let mut running = true;
+                let mut iqf = crate::sdr::IqFrom::default();
                 while !stop2.load(Ordering::Relaxed) {
                     while let Ok(c) = cmd_rx.try_recv() {
                         match c {
@@ -137,6 +113,7 @@ pub fn start(ctx: Arc<Ctx>, cfg: Config, req: Request) -> Result<SurveyRunner, S
                     if running {
                         match rx.recv_timeout(Duration::from_millis(50)) {
                             Ok(m) => {
+                                let m = iqf.iq(m);
                                 if !opened && matches!(m, SourceMsg::Data { .. } | SourceMsg::Iq { .. }) {
                                     opened = true;
                                     session.survey().tuned(first);
@@ -151,14 +128,11 @@ pub fn start(ctx: Arc<Ctx>, cfg: Config, req: Request) -> Result<SurveyRunner, S
                     }
                     session.poll(t0.elapsed().as_secs_f64() * 1000.0, &mut out);
                     for o in out.drain(..) {
-                        if let Output::Text(t) = o {
-                            // (Keys are sorted, so look at the type, not the text's start.)
-                            if let Ok(v) = serde_json::from_str::<Value>(&t) {
-                                if v["type"] == "survey" {
-                                    *ctx.survey_last.lock().unwrap() = Some(v);
-                                }
+                        if let Output::Message(m) = o {
+                            if let ToClient::Survey(_) = m {
+                                *ctx.survey_last.lock().unwrap() = Some(m.clone());
                             }
-                            let _ = ctx.hub.send(Arc::new(runtime::Out::Text(t)));
+                            runtime::publish(&ctx.hub, m);
                         }
                     }
                 }
@@ -169,8 +143,8 @@ pub fn start(ctx: Arc<Ctx>, cfg: Config, req: Request) -> Result<SurveyRunner, S
 }
 
 /// The message a browser gets when no survey is running.
-pub fn idle_json() -> Value {
-    json!({ "type": "survey", "stage": "idle" })
+pub fn idle() -> ToClient {
+    ToClient::Survey(body(json!({ "stage": "idle" })))
 }
 
 /// `trunk-pro survey`: scan with a dongle (or look at a capture) and print
@@ -191,6 +165,8 @@ pub fn cli(a: &crate::Args) {
             ppm: a.num("ppm", 0.0) as i32,
             auto_tune: false,
             guard_hz: crate::config::DEFAULT_GUARD_HZ,
+            buf_len: a.num("buflen", 0.0) as u32,
+            buffers: a.num("buffers", 0.0) as u32,
         }];
     }
     let bands = a.get("bands").map(|b| json!(b.split(',').collect::<Vec<_>>())).unwrap_or(Value::Null);
@@ -207,7 +183,7 @@ pub fn cli(a: &crate::Args) {
         *ctl.current_hz.lock().unwrap() = Some(first);
     }
     let (tx, rx) = mpsc::sync_channel::<SourceMsg>(256);
-    let th = spawn_source(&cfg.sources[0], 0, first, tx, stop.clone(), ctl.clone()).unwrap_or_else(|e| crate::die(&e));
+    let th = runtime::spawn_source(&cfg.sources[0], 0, first, tx, stop.clone(), Some(ctl.clone()), "survey-source-0").unwrap_or_else(|e| crate::die(&e.to_string()));
     let listen_s = a.num("seconds", 30.0);
     let t0 = Instant::now();
     let mut opened = fixed.is_some();
@@ -216,10 +192,12 @@ pub fn cli(a: &crate::Args) {
     let mut last;
     let mut n_found = 0;
     let mut last_err: Option<String> = None;
+    let mut iqf = crate::sdr::IqFrom::default();
     loop {
         apply(&mut session, &ctl, fixed);
         let running = match rx.recv_timeout(Duration::from_millis(50)) {
             Ok(m) => {
+                let m = iqf.iq(m);
                 if !opened && matches!(m, SourceMsg::Data { .. } | SourceMsg::Iq { .. }) {
                     opened = true;
                     session.survey().tuned(first);

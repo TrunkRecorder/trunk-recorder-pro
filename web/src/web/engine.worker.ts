@@ -3,27 +3,12 @@
 // server, so the interface is identical. Calls are stored in OPFS.
 
 import init, { survey_bands, WebProfiler, WebRtl, WebSession, WebSurvey } from "./pkg/trunk_web.js";
-import type { Config, FromRecorder, HeardCode } from "../protocol.ts";
+import type { Config, FromRecorder, HeardCode, ToRecorder } from "../protocol.ts";
 import { activeSystems, resolvedCenters } from "../config.ts";
 import { listCalls, readText, saveCall, writeText } from "./opfs.ts";
 
-export type ToWorker =
-  | { type: "init"; config: Config }
-  | { type: "setConfig"; config: Config }
-  | { type: "files"; files: (File | null)[] }
-  | { type: "start" }
-  | { type: "stop" }
-  | { type: "devices" }
-  | { type: "listen"; on: boolean; system: string | null; talkgroup: number | null }
-  | { type: "surveyStart"; source: number; bands: string[]; findGain: boolean }
-  | { type: "surveyListen"; freqHz: number }
-  | { type: "surveyRescan" }
-  | { type: "surveyStop" }
-  | { type: "profileSource"; source: number; centerHz: number }
-  | { type: "olderCalls"; before: number; limit: number }
-  | { type: "subscribe"; topics: string[] }
-  | { type: "statsQuery"; id: number; series: string[]; range?: string; from?: number; to?: number; points?: number }
-  | { type: "radioQuery"; id: number; what: string; system?: string; key?: number; hours?: number; limit?: number };
+/** Page → worker: the protocol's commands (those it can't do get an `error`), and its own setup. */
+export type ToWorker = ToRecorder | { type: "init"; config: Config; talkgroups: Record<string, string> } | { type: "files"; files: (File | null)[] };
 
 /** Worker → page: a protocol message, or a live audio frame. */
 export type FromWorker = { msg: FromRecorder } | { audio: ArrayBuffer; tg: number };
@@ -33,6 +18,10 @@ const post = (msg: FromRecorder) => postMessage({ msg } satisfies FromWorker);
 const wallMs = () => performance.timeOrigin + performance.now();
 
 let config: Config | null = null;
+/** The config's version (one page edits it: every edit is taken). */
+let configVersion = 1;
+/** Each system's talkgroup file, by short name (the page keeps them). */
+let talkgroups: Record<string, string> = {};
 let files: (File | null)[] = [];
 let session: WebSession | null = null;
 let rtls: WebRtl[] = [];
@@ -276,7 +265,7 @@ async function start(): Promise<void> {
       if (p) plans[x.shortName] = p;
     }
     // The session's clock: Unix ms that never jump (performance.now() from the page's start).
-    session = new WebSession(JSON.stringify(cfg), wallMs(), JSON.stringify(plans));
+    session = new WebSession(JSON.stringify(cfg), JSON.stringify(talkgroups), wallMs(), JSON.stringify(plans));
     session.load_units(JSON.stringify(await savedUnits(cfg)));
     session.load_heard((await readText(heardFile(cfg))) ?? "");
     session.load_tune((await readText(TUNE_FILE)) ?? "");
@@ -383,31 +372,37 @@ onmessage = async (ev: MessageEvent<ToWorker>) => {
   switch (m.type) {
     case "init":
       config = m.config;
+      talkgroups = m.talkgroups;
+      // The greeting, as the desktop app's (crates/trunk-pro server.rs): how things are, then hello.
+      post(phase);
+      post({ type: "config", config: m.config, version: configVersion });
+      for (const [system, csv] of Object.entries(m.talkgroups)) post({ type: "talkgroups", system, csv });
+      for (const [system, csv] of Object.entries(await savedUnits(m.config))) post({ type: "units", system, csv });
+      post({ type: "heard", heard: await savedHeard(m.config) });
+      post({ type: "history", entries: await listCalls(300) });
+      post({ type: "survey", stage: "idle" });
+      post({ type: "devices", devices: await devices() });
       post({
         type: "hello",
         version: __APP_VERSION__,
         platform: "web",
-        config: m.config,
+        api: 1,
         configPath: "this browser",
-        devices: await devices(),
-        phase,
-        history: await listCalls(300),
-        units: await savedUnits(m.config),
-        heard: await savedHeard(m.config),
         surveyBands: await ready.then(() => JSON.parse(survey_bands())).catch(() => []),
-        survey: { type: "survey", stage: "idle" },
+        // The page is the recorder: no program of its own, no drivers but WebUSB's RTL-SDR, no plugins.
+        capabilities: [],
       });
       break;
-    case "setConfig": {
-      // A talkgroup file changed while recording (an Ignore flag): the session takes it now.
-      const old = config;
+    case "setConfig":
       config = m.config;
-      if (session && old) {
-        for (const x of m.config.systems) {
-          const was = old.systems.find((o) => o.shortName === x.shortName);
-          if (was && was.talkgroupsCsv !== x.talkgroupsCsv) session.set_talkgroups(x.shortName, x.talkgroupsCsv);
-        }
-      }
+      post({ type: "configSaved", version: ++configVersion });
+      break;
+    case "setTalkgroups": {
+      // (A recording takes it at once: an Ignore flag set, a tag fixed.)
+      if (m.csv.trim()) talkgroups[m.system] = m.csv;
+      else delete talkgroups[m.system];
+      session?.set_talkgroups(m.system, m.csv);
+      post({ type: "talkgroups", system: m.system, csv: m.csv });
       break;
     }
     case "subscribe":
@@ -461,6 +456,9 @@ onmessage = async (ev: MessageEvent<ToWorker>) => {
     case "profileSource":
       await profileSource(m);
       break;
+    default:
+      // What hello's capabilities said this recorder can't do (the desktop app's commands).
+      post({ type: "error", message: `The browser version can't do "${m.type}": that needs the desktop app.` });
   }
 };
 

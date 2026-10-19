@@ -14,27 +14,87 @@ use std::sync::Arc;
 use super::message::{Message, MessageType};
 use super::patches::Patches;
 use super::talkgroups::{Talkgroup, Talkgroups};
-use super::voice::CipherId;
+use super::voice::{CipherId, VoiceKind};
 use crate::dsp::tones::{Tone, ToneHeard};
 use crate::position::Position;
 
 pub type CallId = u32;
 
-/// `Call::system` of the first conventional system's calls; the next ones
-/// count down from it (see [`conventional_system`]).
-pub const CONVENTIONAL: u16 = u16::MAX;
-/// At most this many conventional systems.
-pub const MAX_CONVENTIONAL: usize = 256;
-
-/// The `Call::system` of conventional system `k` (from 0).
-pub fn conventional_system(k: usize) -> u16 {
-    CONVENTIONAL - k.min(MAX_CONVENTIONAL - 1) as u16
+/// What a call's voice is on: the kind of voice channel, and where on it.
+/// Each control channel's parser says so in its grants
+/// ([`Message::voice`]); a conventional channel says so by its mode.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Voice {
+    /// P25 Phase 1 (FDMA): IMBE.
+    #[default]
+    P25,
+    /// P25 Phase 2 (TDMA) on slot `slot` (0 / 1): AMBE+2.
+    P25Tdma { slot: u8 },
+    /// DMR on slot `slot` (0 / 1), with its colour code once known.
+    Dmr { slot: u8, color_code: Option<u8> },
+    /// NXDN at its rate.
+    Nxdn(crate::nxdn::Rate),
+    /// Analog FM (SmartNet's analog grants, conventional FM channels).
+    Fm,
+    /// Analog AM (conventional channels).
+    Am,
 }
 
-/// Which conventional system a `Call::system` is, or None for a trunked one.
-pub fn conventional_index(system: u16) -> Option<usize> {
-    let k = (CONVENTIONAL - system) as usize;
-    (k < MAX_CONVENTIONAL).then_some(k)
+impl Voice {
+    /// The kind of voice channel it needs.
+    pub fn kind(self) -> VoiceKind {
+        match self {
+            Voice::P25 => VoiceKind::Fdma,
+            Voice::P25Tdma { .. } => VoiceKind::Tdma,
+            Voice::Dmr { .. } => VoiceKind::Dmr,
+            Voice::Nxdn(r) => VoiceKind::Nxdn(r),
+            Voice::Fm => VoiceKind::Analog,
+            Voice::Am => VoiceKind::Am,
+        }
+    }
+
+    /// Its slot (0 / 1) on a two-slot channel: P25 Phase 2 or DMR.
+    pub fn slot(self) -> Option<u8> {
+        match self {
+            Voice::P25Tdma { slot } | Voice::Dmr { slot, .. } => Some(slot),
+            _ => None,
+        }
+    }
+
+    pub fn analog(self) -> bool {
+        matches!(self, Voice::Fm | Voice::Am)
+    }
+
+    /// P25 Phase 2 (Trunk Recorder's `phase2_tdma`).
+    pub fn tdma(self) -> bool {
+        matches!(self, Voice::P25Tdma { .. })
+    }
+
+    /// Its voice is of a kind that can be decrypted (P25 Phase 1 or 2).
+    pub fn decryptable(self) -> bool {
+        matches!(self, Voice::P25 | Voice::P25Tdma { .. })
+    }
+
+    /// DMR: its colour code.
+    pub fn color_code(self) -> Option<u8> {
+        match self {
+            Voice::Dmr { color_code, .. } => color_code,
+            _ => None,
+        }
+    }
+
+    /// NXDN: its rate.
+    pub fn nxdn(self) -> Option<crate::nxdn::Rate> {
+        match self {
+            Voice::Nxdn(r) => Some(r),
+            _ => None,
+        }
+    }
+
+    /// Two grants for one channel's same place: P25 Phase 2 or not, the same slot.
+    fn same_place(self, other: Voice) -> bool {
+        self.tdma() == other.tdma() && self.slot().unwrap_or(0) == other.slot().unwrap_or(0)
+    }
 }
 
 /// Hands out call ids; clones share the sequence (one per engine).
@@ -137,15 +197,23 @@ impl From<crate::p25::osp::ServiceOptions> for Flags {
 #[derive(Clone, Debug, Default)]
 pub struct Call {
     pub id: CallId,
-    /// The system (index in the engine's list) that made it; a conventional
-    /// system's counts down from [`CONVENTIONAL`] ([`conventional_index`]).
+    /// The site that made it (its number among the engine's sites,
+    /// [`super::engine::sites`]); none for a conventional call.
+    pub site: Option<u16>,
+    /// Its system's number (its place in the engine's systems).
     pub system: u16,
+    /// Multi-site: a copy of a call another site of its system had first —
+    /// one call, which plugins and stats count by its first copy.
+    pub twin: bool,
     pub talkgroup: u32,
     pub freq_hz: u64,
-    pub phase2_tdma: bool,
-    pub tdma_slot: u8,
+    /// What its voice is on.
+    pub voice: Voice,
     pub unit_to_unit: bool,
     pub recording: bool,
+    /// Followed without a recorder (its voice channel's link control only:
+    /// encrypted, not recorded).
+    pub followed: bool,
     pub reason: Option<Reason>,
     pub encrypted: bool,
     /// The cipher its voice's encryption sync named (the latest, if more than one).
@@ -156,8 +224,6 @@ pub struct Call {
     pub priority: u8,
     pub duplex: bool,
     pub mode: bool,
-    /// Analog voice (a conventional FM channel).
-    pub analog: bool,
     pub start_s: f64,
     pub last_update_s: f64,
     pub last_audio_s: f64,
@@ -166,10 +232,6 @@ pub struct Call {
     /// Every talkgroup patched with this one while the call lasted, its own
     /// included, ascending (TR's patched_talkgroups); empty when never patched.
     pub patched_talkgroups: Vec<u32>,
-    /// DMR: the colour code the voice came with (a DMR call's slot is `tdma_slot`).
-    pub color_code: Option<u8>,
-    /// NXDN: the rate its voice is at (set: an NXDN call).
-    pub nxdn: Option<crate::nxdn::Rate>,
     /// NXDN: the RAN its frames carried.
     pub ran: Option<u8>,
     /// Conventional P25: the NAC its frames carried.
@@ -181,15 +243,9 @@ pub struct Call {
 }
 
 impl Call {
-    /// Its voice is of a kind that can be decrypted (P25 Phase 1 or 2).
-    pub fn decryptable(&self) -> bool {
-        !self.analog && self.color_code.is_none() && self.nxdn.is_none()
-    }
-
-    /// Its TDMA slot (0 / 1), for a call on a two-slot channel: P25 Phase 2
-    /// or DMR.
-    pub fn slot(&self) -> Option<u8> {
-        (self.phase2_tdma || self.color_code.is_some()).then_some(self.tdma_slot)
+    /// Audio of it was heard at `time_s`.
+    pub fn note_audio(&mut self, time_s: f64) {
+        self.last_audio_s = self.last_audio_s.max(time_s);
     }
 
     /// Fold in the talkgroups patched with it now (`members`); true when that added any.
@@ -258,39 +314,46 @@ pub enum CallEvent {
     End(Call),
 }
 
-#[derive(Default)]
-pub struct CallManager {
-    pub calls: Vec<Call>,
-    pub talkgroups: Talkgroups,
-    pub cfg: CallConfig,
-    /// Stamped on every call made here.
-    pub system: u16,
-    ids: CallIds,
-    /// The system's standing patches.
-    pub patches: Patches,
+/// What a system decides about its calls that can change while recording,
+/// as its sites' call managers see it when the control channel speaks.
+#[derive(Clone, Copy, Debug)]
+pub struct Policy<'a> {
+    pub talkgroups: &'a Talkgroups,
     /// The system has encryption keys: encrypted calls it may be able to
     /// decrypt are recorded, to find out (the key ID comes with the voice).
     pub can_decrypt: bool,
 }
 
+#[derive(Default)]
+pub struct CallManager {
+    pub calls: Vec<Call>,
+    pub cfg: CallConfig,
+    /// Stamped on every call made here: its site, and its site's system.
+    pub site: u16,
+    pub system: u16,
+    ids: CallIds,
+    /// The site's standing patches.
+    pub patches: Patches,
+}
+
 impl CallManager {
-    pub fn new(cfg: CallConfig, talkgroups: Talkgroups) -> Self {
-        CallManager { calls: Vec::new(), talkgroups, cfg, system: 0, ids: CallIds::default(), patches: Patches::default(), can_decrypt: false }
+    pub fn new(cfg: CallConfig) -> Self {
+        CallManager { calls: Vec::new(), cfg, site: 0, system: 0, ids: CallIds::default(), patches: Patches::default() }
     }
 
-    /// For system `system`, drawing ids from `ids` (shared with the other systems).
-    pub fn with_ids(cfg: CallConfig, talkgroups: Talkgroups, system: u16, ids: CallIds) -> Self {
-        CallManager { system, ids, ..Self::new(cfg, talkgroups) }
+    /// For site `site` of system `system`, drawing ids from `ids` (shared with the other sites).
+    pub fn with_ids(cfg: CallConfig, site: u16, system: u16, ids: CallIds) -> Self {
+        CallManager { site, system, ids, ..Self::new(cfg) }
     }
 
-    pub fn handle(&mut self, msgs: &[Message], host: &mut dyn RecorderHost, ev: &mut Vec<CallEvent>) {
+    pub fn handle(&mut self, msgs: &[Message], policy: Policy, host: &mut dyn RecorderHost, ev: &mut Vec<CallEvent>) {
         for m in msgs {
             match m.kind {
-                MessageType::Grant => self.grant(m, false, host, ev),
-                MessageType::Update if self.cfg.new_call_from_update => self.grant(m, false, host, ev),
+                MessageType::Grant => self.grant(m, false, policy, host, ev),
+                MessageType::Update if self.cfg.new_call_from_update => self.grant(m, false, policy, host, ev),
                 MessageType::Update => self.update(m, ev),
                 // Individual calls: unit-to-unit, and a radio's telephone call.
-                MessageType::UuVGrant | MessageType::PhoneGrant if self.cfg.record_unit_to_unit => self.grant(m, true, host, ev),
+                MessageType::UuVGrant | MessageType::PhoneGrant if self.cfg.record_unit_to_unit => self.grant(m, true, policy, host, ev),
                 MessageType::UuVUpdate | MessageType::PhoneUpdate if self.cfg.record_unit_to_unit => self.update(m, ev),
                 MessageType::PatchAdd => {
                     if let Some(p) = m.patch {
@@ -301,7 +364,7 @@ impl CallManager {
                             for c in self.calls.iter_mut() {
                                 if c.note_patch(self.patches.members_of(c.talkgroup)) {
                                     if c.reason == Some(Reason::UnknownTg) {
-                                        Self::admit(c, &self.cfg, &self.talkgroups, self.can_decrypt, host);
+                                        Self::admit(c, &self.cfg, policy, host);
                                     }
                                     ev.push(CallEvent::Update(c.clone()));
                                 }
@@ -324,9 +387,10 @@ impl CallManager {
     }
 
     /// The recorder delivered audio for this call.
+    #[cfg(test)]
     pub fn note_audio(&mut self, id: CallId, time_s: f64) {
         if let Some(c) = self.call_mut(id) {
-            c.last_audio_s = c.last_audio_s.max(time_s);
+            c.note_audio(time_s);
         }
     }
 
@@ -342,6 +406,36 @@ impl CallManager {
         let Some(src) = src else { return false };
         c.sources.push(CallSource { src, time_s, audio_pos: None, flags, position: None });
         true
+    }
+
+    /// What a voice channel's link control said of the call at `now_s`
+    /// (who talks, encrypted, emergency), trunked or conventional; `tx`: its
+    /// recording's transmissions, which drop an encrypted one's audio.
+    /// Returns whether the call changed.
+    pub fn note_info(c: &mut Call, tx: Option<&mut super::record::Transmissions>, source: Option<u32>, flags: Flags, now_s: f64) -> bool {
+        if flags.encrypted {
+            if let Some(tx) = tx {
+                tx.mark_encrypted(now_s);
+            }
+        }
+        let mut changed = false;
+        if flags.encrypted && !c.encrypted {
+            c.encrypted = true;
+            changed = true;
+        }
+        if flags.emergency && !c.emergency {
+            c.emergency = true;
+            changed = true;
+        }
+        changed | Self::note_source(c, source, now_s, flags)
+    }
+
+    /// Its voice was decrypted (at `now_s`): its transmission's audio is kept. Returns whether the call changed.
+    pub fn note_decrypted(c: &mut Call, tx: Option<&mut super::record::Transmissions>, now_s: f64) -> bool {
+        if let Some(tx) = tx {
+            tx.mark_decrypted(now_s);
+        }
+        !std::mem::replace(&mut c.decrypted, true)
     }
 
     /// A voice channel gave a radio's position: kept on its latest entry
@@ -384,6 +478,7 @@ impl CallManager {
         let mut c = Call {
             id: self.ids.next(),
             recording: false,
+            followed: false,
             reason: None,
             start_s: now_s,
             last_update_s: old.last_update_s.max(now_s),
@@ -413,7 +508,7 @@ impl CallManager {
     }
 
     fn matches(c: &Call, m: &Message) -> bool {
-        c.talkgroup == m.talkgroup && c.freq_hz == m.freq_hz && c.tdma_slot == m.tdma_slot && c.phase2_tdma == m.phase2_tdma
+        c.talkgroup == m.talkgroup && c.freq_hz == m.freq_hz && c.voice.same_place(m.voice)
     }
 
     fn refresh(c: &mut Call, m: &Message, patches: &Patches) -> bool {
@@ -441,7 +536,7 @@ impl CallManager {
         }
     }
 
-    fn grant(&mut self, m: &Message, unit_to_unit: bool, host: &mut dyn RecorderHost, ev: &mut Vec<CallEvent>) {
+    fn grant(&mut self, m: &Message, unit_to_unit: bool, p: Policy, host: &mut dyn RecorderHost, ev: &mut Vec<CallEvent>) {
         if m.freq_hz == 0 {
             return; // channel not resolvable yet (no IDEN seen)
         }
@@ -451,16 +546,23 @@ impl CallManager {
             }
             return;
         }
-        let tg = self.talkgroups.get(&m.talkgroup).cloned();
+        let tg = p.talkgroups.get(&m.talkgroup).cloned();
         let mut c = Call {
             id: self.ids.next(),
+            site: Some(self.site),
             system: self.system,
+            twin: false,
             talkgroup: m.talkgroup,
             freq_hz: m.freq_hz,
-            phase2_tdma: m.phase2_tdma,
-            tdma_slot: m.tdma_slot,
+            // The control channel says (SmartNet), or the talkgroup file does (TR's mode
+            // "A": a Phase 1 grant is of analog voice; a two-slot grant keeps its slot).
+            voice: match m.voice {
+                Voice::P25 if tg.as_ref().is_some_and(|t| t.mode.starts_with('A')) => Voice::Fm,
+                v => v,
+            },
             unit_to_unit,
             recording: false,
+            followed: false,
             reason: None,
             encrypted: m.encrypted || tg.as_ref().is_some_and(|t| t.encrypted_mode()),
             cipher: None,
@@ -469,41 +571,37 @@ impl CallManager {
             priority: m.priority,
             duplex: m.duplex,
             mode: m.mode,
-            // The control channel says (SmartNet), or the talkgroup file does (TR's mode "A").
-            analog: m.analog || tg.as_ref().is_some_and(|t| t.mode.starts_with('A')),
             start_s: m.time_s,
             last_update_s: m.time_s,
             last_audio_s: m.time_s,
             sources: if m.source > 0 { vec![CallSource { src: m.source as u32, time_s: m.time_s, audio_pos: None, flags: Flags::of(m), position: None }] } else { vec![] },
             talkgroup_info: tg.clone(),
             patched_talkgroups: self.patches.members_of(m.talkgroup),
-            color_code: m.color_code,
-            nxdn: m.nxdn,
             ran: m.ran,
             nac: None,
             tone: None,
             tone_set: None,
         };
-        Self::admit(&mut c, &self.cfg, &self.talkgroups, self.can_decrypt, host);
+        Self::admit(&mut c, &self.cfg, p, host);
         ev.push(CallEvent::Start(c.clone()));
         self.calls.push(c);
     }
 
     /// Record, follow or skip a call: Trunk Recorder's start_recorder()
     /// gates, in its order. A talkgroup not in the file is recorded while
-    /// it's patched with one that is. `can_decrypt`: the system has keys.
-    fn admit(c: &mut Call, cfg: &CallConfig, talkgroups: &Talkgroups, can_decrypt: bool, host: &mut dyn RecorderHost) {
+    /// it's patched with one that is.
+    fn admit(c: &mut Call, cfg: &CallConfig, p: Policy, host: &mut dyn RecorderHost) {
         c.reason = None;
-        let known = c.talkgroup_info.is_some() || c.patched_talkgroups.iter().any(|g| talkgroups.contains_key(g));
+        let known = c.talkgroup_info.is_some() || c.patched_talkgroups.iter().any(|g| p.talkgroups.contains_key(g));
         if c.talkgroup_info.as_ref().is_some_and(|t| t.ignore) {
             c.reason = Some(Reason::Ignored);
-        } else if !known && !cfg.record_unknown && !talkgroups.is_empty() {
+        } else if !known && !cfg.record_unknown && !p.talkgroups.is_empty() {
             c.reason = Some(Reason::UnknownTg);
-        } else if c.encrypted && !cfg.record_encrypted && !(can_decrypt && c.decryptable()) {
+        } else if c.encrypted && !cfg.record_encrypted && !(p.can_decrypt && c.voice.decryptable()) {
             // No audio to record, but its terminators' link control is in
             // the clear: who spoke, and their talker aliases.
             c.reason = Some(Reason::Encrypted);
-            host.follow(c);
+            c.followed = host.follow(c);
         } else {
             match host.record(c) {
                 Ok(()) => c.recording = true,
@@ -527,6 +625,32 @@ mod tests {
         fn release(&mut self, _: &Call) {}
     }
 
+    /// A one-site system: its call manager, with the policy it is handed.
+    struct Sys {
+        m: CallManager,
+        tgs: Talkgroups,
+        can_decrypt: bool,
+    }
+    impl Sys {
+        fn new(cfg: CallConfig, tgs: Talkgroups) -> Self {
+            Sys { m: CallManager::new(cfg), tgs, can_decrypt: false }
+        }
+        fn handle(&mut self, msgs: &[Message], host: &mut Host, ev: &mut Vec<CallEvent>) {
+            self.m.handle(msgs, Policy { talkgroups: &self.tgs, can_decrypt: self.can_decrypt }, host, ev);
+        }
+    }
+    impl std::ops::Deref for Sys {
+        type Target = CallManager;
+        fn deref(&self) -> &CallManager {
+            &self.m
+        }
+    }
+    impl std::ops::DerefMut for Sys {
+        fn deref_mut(&mut self) -> &mut CallManager {
+            &mut self.m
+        }
+    }
+
     fn msg(kind: MessageType, t: f64, tg: u32) -> Message {
         Message { kind, time_s: t, talkgroup: tg, freq_hz: 851_000_000, source: 7, ..Default::default() }
     }
@@ -534,9 +658,9 @@ mod tests {
         Message { kind: MessageType::PatchAdd, time_s: t, patch: Some(Patch { sg, ga }), ..Default::default() }
     }
     /// Talkgroup 101 is in the file; supergroups aren't.
-    fn manager() -> CallManager {
+    fn manager() -> Sys {
         let tgs = [(101, Talkgroup { number: 101, alpha_tag: "Fire Disp".into(), ..Default::default() })].into_iter().collect();
-        CallManager::new(CallConfig { record_unknown: false, ..Default::default() }, tgs)
+        Sys::new(CallConfig { record_unknown: false, ..Default::default() }, tgs)
     }
 
     #[test]
@@ -586,12 +710,13 @@ mod tests {
 
     #[test]
     fn a_call_past_the_length_limit_carries_on_in_a_new_one() {
-        let mut m = CallManager::new(CallConfig { max_call_s: 10.0, ..Default::default() }, Talkgroups::default());
+        let mut m = Sys::new(CallConfig { max_call_s: 10.0, ..Default::default() }, Talkgroups::default());
         let mut ev = Vec::new();
         m.handle(&[msg(MessageType::Grant, 0.0, 101)], &mut Host, &mut ev);
         for k in 1..=12 {
             m.handle(&[msg(MessageType::Update, k as f64, 101)], &mut Host, &mut ev);
-            m.note_audio(m.calls[0].id, k as f64);
+            let id = m.calls[0].id;
+            m.note_audio(id, k as f64);
             m.tick(k as f64, &mut Host, &mut ev);
         }
         let ends: Vec<(CallId, f64)> = ev.iter().filter_map(|e| if let CallEvent::End(c) = e { Some((c.id, c.start_s)) } else { None }).collect();
@@ -602,14 +727,14 @@ mod tests {
 
     #[test]
     fn encrypted_calls_are_recorded_when_the_system_may_decrypt_them() {
-        let enc = |t: f64, tg: u32, phase2: bool| Message { encrypted: true, phase2_tdma: phase2, ..msg(MessageType::Grant, t, tg) };
-        let mut m = CallManager::new(CallConfig::default(), Talkgroups::default());
+        let enc = |t: f64, tg: u32, phase2: bool| Message { encrypted: true, voice: if phase2 { Voice::P25Tdma { slot: 0 } } else { Voice::P25 }, ..msg(MessageType::Grant, t, tg) };
+        let mut m = Sys::new(CallConfig::default(), Talkgroups::default());
         let mut ev = Vec::new();
         m.handle(&[enc(0.0, 101, false)], &mut Host, &mut ev);
         assert_eq!(m.calls[0].reason, Some(Reason::Encrypted));
         m.can_decrypt = true;
         // P25: recorded, to see whether a key fits; DMR not yet.
-        let dmr = Message { color_code: Some(1), ..enc(0.0, 104, false) };
+        let dmr = Message { voice: Voice::Dmr { slot: 0, color_code: Some(1) }, ..enc(0.0, 104, false) };
         m.handle(&[enc(0.0, 102, false), enc(0.0, 103, true), dmr], &mut Host, &mut ev);
         assert!(m.calls[1].recording && m.calls[1].reason.is_none());
         assert!(m.calls[2].recording && m.calls[2].reason.is_none());
@@ -619,7 +744,7 @@ mod tests {
     #[test]
     fn an_ignored_talkgroup_is_not_recorded() {
         let tgs = [(101, Talkgroup { number: 101, ignore: true, ..Default::default() })].into_iter().collect();
-        let mut m = CallManager::new(CallConfig::default(), tgs);
+        let mut m = Sys::new(CallConfig::default(), tgs);
         let mut ev = Vec::new();
         m.handle(&[msg(MessageType::Grant, 0.0, 101), msg(MessageType::Grant, 0.0, 102)], &mut Host, &mut ev);
         assert_eq!((m.calls[0].recording, m.calls[0].reason), (false, Some(Reason::Ignored)));
@@ -632,9 +757,9 @@ mod tests {
         let mut ev = Vec::new();
         m.handle(&[patch(0.0, 65001, [101, 0, 0]), msg(MessageType::Grant, 0.5, 65001), msg(MessageType::Grant, 0.5, 303)], &mut Host, &mut ev);
         let errors = Default::default();
-        let info = ConcludeInfo { short_name: "s", epoch_ms_at_zero: 0.0, audio_seconds: 1.0, errors: &errors, recorder_num: 0, end_s: 1.0, units: None, unit_tags: None, freq_error_hz: 0, reception: Default::default() };
-        assert!(call_record(&m.calls[0], &info).0.contains("\"short_name\":\"s\",\"patched_talkgroups\":[101,65001],\"freqList\""));
-        assert!(!call_record(&m.calls[1], &info).0.contains("patched"));
+        let info = ConcludeInfo { short_name: "s", site: "", epoch_ms_at_zero: 0.0, audio_seconds: 1.0, errors: &errors, recorder_num: 0, end_s: 1.0, units: None, unit_tags: None, freq_error_hz: 0, reception: Default::default() };
+        assert!(call_record(&m.calls[0], &info).0.to_json().contains("\"short_name\":\"s\",\"patched_talkgroups\":[101,65001],\"freqList\""));
+        assert!(!call_record(&m.calls[1], &info).0.to_json().contains("patched"));
     }
 
     /// Each radio keeps what its own transmission said: the grant's options
@@ -642,7 +767,7 @@ mod tests {
     /// naming no one is about whoever is talking.
     #[test]
     fn each_source_keeps_its_own_flags() {
-        let mut m = CallManager::new(CallConfig::default(), Talkgroups::default());
+        let mut m = Sys::new(CallConfig::default(), Talkgroups::default());
         let mut ev = Vec::new();
         let grant = Message { emergency: true, duplex: true, priority: 7, ..msg(MessageType::Grant, 0.0, 101) };
         m.handle(&[grant], &mut Host, &mut ev);
@@ -653,5 +778,23 @@ mod tests {
         assert!(!CallManager::note_source(c, Some(8), 2.0, Flags::emergency(true)), "nothing new");
         let flags: Vec<(u32, Flags)> = c.sources.iter().map(|s| (s.src, s.flags)).collect();
         assert_eq!(flags, [(7, Flags { emergency: true, duplex: true, priority: 7, ..Default::default() }), (8, Flags { emergency: true, encrypted: true, priority: 4, ..Default::default() })]);
+    }
+
+    /// The talkgroup file's mode "A" (Trunk Recorder's) says a Phase 1 grant is of analog voice; a two-slot grant keeps its slot.
+    #[test]
+    fn an_analog_talkgroup_keeps_a_two_slot_grants_slot() {
+        let tgs = |mode: &str| [(101, Talkgroup { number: 101, mode: mode.into(), ..Default::default() })].into_iter().collect();
+        let mut ev = Vec::new();
+        let mut m = Sys::new(CallConfig::default(), tgs("A"));
+        m.handle(&[Message { voice: Voice::P25Tdma { slot: 1 }, ..msg(MessageType::Grant, 0.0, 101) }], &mut Host, &mut ev);
+        assert_eq!(m.m.calls[0].voice, Voice::P25Tdma { slot: 1 });
+        m.handle(&[Message { voice: Voice::P25Tdma { slot: 1 }, ..msg(MessageType::Update, 1.0, 101) }], &mut Host, &mut ev);
+        assert_eq!((m.m.calls.len(), m.m.calls[0].last_update_s), (1, 1.0), "its update is its own");
+        let mut m = Sys::new(CallConfig::default(), tgs("A"));
+        m.handle(&[msg(MessageType::Grant, 0.0, 101)], &mut Host, &mut ev);
+        assert_eq!(m.m.calls[0].voice, Voice::Fm);
+        let mut m = Sys::new(CallConfig::default(), tgs("D"));
+        m.handle(&[msg(MessageType::Grant, 0.0, 101)], &mut Host, &mut ev);
+        assert_eq!(m.m.calls[0].voice, Voice::P25);
     }
 }

@@ -31,36 +31,12 @@ use trunk_core::nxdn::frame::{Body, Frame, Framer, RfChannel};
 use trunk_core::nxdn::layer3::{Context, Message};
 use trunk_core::nxdn::Rate;
 
+use crate::toolkit::{AudioOut, Capture};
 use crate::{die, Args};
 
-fn capture(a: &Args, what: &str) -> (Vec<u8>, f64, f64) {
-    let path = a.positional.get(1).unwrap_or_else(|| die(&format!("tool {what}: no capture")));
-    let mut cap = std::fs::read(path).unwrap_or_else(|e| die(&format!("{path}: {e}")));
-    let fs = a.num("fs", a.num("rate", 2_400_000.0));
-    if let Some(s) = a.get("seconds").and_then(|v| v.parse::<f64>().ok()) {
-        cap.truncate((s * fs) as usize * 2);
-    }
-    (cap, fs, a.num("center", 0.0))
-}
-
-/// Run the capture through the channelizer, calling `each` with every head's output.
-fn channelize(cap: &[u8], chz: &mut Channelizer, mut each: impl FnMut(&Channelizer)) {
-    let mut off = 0;
-    while off < cap.len() {
-        let (used, ran) = chz.feed_u8(&cap[off..]);
-        off += used;
-        if !ran {
-            if used == 0 {
-                break;
-            }
-            continue;
-        }
-        each(chz);
-    }
-}
-
 pub fn run_scan(a: &Args) {
-    let (cap, fs, center) = capture(a, "nxdnscan");
+    let cap = Capture::from_args_seconds(a, "nxdnscan");
+    let (fs, center) = (cap.fs, cap.center);
     let mut chz = Channelizer::new(fs, 24_000.0, 0.1);
     let rate = chz.output_rate();
     let span = trunk_core::trunk::usable_half_width(fs, a.num("guard", trunk_core::trunk::DEFAULT_GUARD_HZ));
@@ -98,7 +74,7 @@ pub fn run_scan(a: &Args) {
         .collect();
     let t0 = Instant::now();
     let (mut syms, mut frames) = (Vec::new(), Vec::new());
-    channelize(&cap, &mut chz, |chz| {
+    cap.channelize(&mut chz, |chz| {
         for c in chans.iter_mut() {
             for r in c.rxs.iter_mut() {
                 syms.clear();
@@ -119,7 +95,7 @@ pub fn run_scan(a: &Args) {
             }
         }
     });
-    let secs = cap.len() as f64 / 2.0 / fs;
+    let secs = cap.air();
     eprintln!("{} channels × 2 rates, {secs:.1} s of capture in {:.1} s", chans.len(), t0.elapsed().as_secs_f64());
     let mut found: Vec<(&Ch, &Rx)> = chans.iter().flat_map(|c| c.rxs.iter().map(move |r| (c, r))).filter(|(_, r)| r.lich >= 6).collect();
     found.sort_by_key(|(_, r)| std::cmp::Reverse(r.lich));
@@ -167,7 +143,8 @@ fn parsed(o: &[u8], ctx: Context, dfa: bool) -> (Message, Option<String>) {
 }
 
 pub fn run(a: &Args) {
-    let (cap, fs, center) = capture(a, "nxdn");
+    let cap = Capture::from_args_seconds(a, "nxdn");
+    let (fs, center) = (cap.fs, cap.center);
     let freq = a.num("freq", 0.0);
     let nxdn = Rate::parse(a.get("nxdn").unwrap_or("48")).unwrap_or_else(|| die("--nxdn 48|96"));
     let all = a.flag("frames");
@@ -184,7 +161,7 @@ pub fn run(a: &Args) {
     let mut rx = C4fm::with_options(rate, opts);
     let mut framer = Framer::new();
     let mut vocoder = mbe::Decoder::new(mbe::lcg(1), mbe::Profile::Enhanced);
-    let mut audio_out = a.get("audio").map(|p| BufWriter::new(File::create(p).unwrap_or_else(|e| die(&format!("{p}: {e}")))));
+    let mut audio_out = AudioOut::open(a, "audio");
     let stdout = std::io::stdout();
     let mut out = BufWriter::new(stdout.lock());
     let mut c = Counts::default();
@@ -193,7 +170,7 @@ pub fn run(a: &Args) {
     let (mut syms, mut frames) = (Vec::new(), Vec::<Frame>::new());
     let t0 = Instant::now();
     let mut last_msg = String::new();
-    channelize(&cap, &mut chz, |chz| {
+    cap.channelize(&mut chz, |chz| {
         syms.clear();
         frames.clear();
         rx.push(chz.output(head).unwrap(), &mut syms);
@@ -261,9 +238,7 @@ pub fn run(a: &Args) {
                                             let k = vocoder.ambe(&v.bits, v.errs, &mut buf);
                                             *c.vocoded.entry(format!("{k:?}")).or_default() += 1;
                                             mbe::to_limited(&mut buf);
-                                            for x in buf {
-                                                w.write_all(&x.to_le_bytes()).unwrap();
-                                            }
+                                            w.samples(&buf);
                                         }
                                     }
                                 }
@@ -298,7 +273,7 @@ pub fn run(a: &Args) {
         }
     });
     out.flush().unwrap();
-    let secs = cap.len() as f64 / 2.0 / fs;
+    let secs = cap.air();
     let pct = |p: (u64, u64)| if p.1 == 0 { "-".to_string() } else { format!("{}/{} ({:.1} %)", p.0, p.1, 100.0 * p.0 as f64 / p.1 as f64) };
     eprintln!("{secs:.1} s of capture in {:.2} s; receiver separation {:?}", t0.elapsed().as_secs_f64(), rx.separation());
     eprintln!("frames {} (syncs {}{}), LICH valid {}", c.frames, framer.syncs, if framer.inverted { ", inverted" } else { "" }, c.lich);

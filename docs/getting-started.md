@@ -128,15 +128,19 @@ If you know the control channels, press **Add a system** on the **Systems** tab 
 - **Short name**: the folder its calls go in (letters, digits, `.`, `_` and `-`).
 - **Name**: optional, for display.
 - **Type**: **P25**, **SmartNet / SmartZone**, **DMR (trunked)** or **NXDN (trunked)**.
+
+Then, on its site under **Sites** (open it):
+
 - **Control channels, MHz**: the site's control channels, separated by commas
   (`857.9875, 858.9875`). It starts on the first; later ones are fallbacks, tried in turn when the
   control channel goes quiet.
-- **Modulation** (P25): leave it on **Auto (both receivers)** unless you know better.
+- **Modulation** (P25): leave it on **Detect** unless you know better: the log says what it found.
 - For SmartNet, the **Band plan**: see [SmartNet](guides/smartnet.md). For DMR and NXDN, see
   [DMR](guides/dmr.md) and [NXDN](guides/nxdn.md).
 
 Each system card shows whether its control channel lands inside a source ("control channel on
-source 1") or not ("no control channel inside a source"). The other keys are described in the
+source 1") or not ("no control channel inside a source"). To record another site of the same
+system, **Add site** under **Sites**: see [Multi-site](guides/multi-site.md). The other keys are described in the
 [configuration reference](configuration/systems.md).
 
 ## Set up the radio
@@ -210,8 +214,8 @@ keep up), if samples hit full scale (lower the gain), or if its frequency is off
 2 ppm with AutoTune off. The **RF** page has the detail: each radio's noise floor, headroom,
 frequency error and waterfall.
 
-When calls start, they show on the **Calls** page: on the air now (press one to listen live) and
-recently recorded. A call that wasn't recorded says why, for example *outside tuned range* when no
+When calls start, they show on the **Live** page (press one to listen live), and once recorded
+on **Listen**. A call that wasn't recorded says why, for example *outside tuned range* when no
 radio covers its voice frequency. The **Radio system** page counts these reasons over time; lots
 of *Out of band* means you need another radio or a different center.
 
@@ -227,7 +231,7 @@ Calls are written to the recordings folder (**Recordings folder** on the **Recor
 
 for example `dcfd/2026/10/6/101-1791320000_858237500.wav`. The JSON beside each call has the same
 fields as Trunk Recorder's, so tools written for Trunk Recorder can read them. In the browser
-version, calls are kept in the browser's storage instead and exported from **Recorded calls**.
+version, calls are kept in the browser's storage instead and exported from the **Listen** page.
 
 File names, the call JSON, M4A copies and what is kept or deleted are covered in
 [Recordings](guides/recordings.md).

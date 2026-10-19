@@ -412,8 +412,8 @@ function TgView({ s, sys, tg }: { s: AppState; sys: DashSystem; tg: number }) {
           ) : (
             <ul className="barlist">
               {talkers.map((t) => (
-                <li key={t.unit}>
-                  <button className="linkish" onClick={() => setView("radio", sys.name, "unit", t.unit)}>
+                <li key={t.unit} className="opens" onClick={() => setView("radio", sys.name, "unit", t.unit)}>
+                  <button className="linkish">
                     {aliasOf(s, sys.name, t.unit) ?? (t.alias || t.unit)}
                   </button>
                   <span className="bar" style={{ width: `${(t.n / maxN) * 100}%` }} />
@@ -572,8 +572,11 @@ function UnitView({ s, sys, unit }: { s: AppState; sys: DashSystem; unit: number
 
 /** Which system a page is about: its colour, name, kind and site, and the way back to all of them. */
 function SystemHeader({ s, sys, multi }: { s: AppState; sys: DashSystem; multi: boolean }) {
-  const id = sys.status?.identity;
-  const site = id && (id.sysId != null || id.site != null) ? [id.sysId != null ? `SysID ${id.sysId.toString(16).toUpperCase()}` : "", id.site != null ? `site ${id.rfss ?? "?"}-${id.site}` : ""].filter(Boolean).join(" · ") : "";
+  // Its sites as their control channels say: "SysID 1A2 · site 1-3", or "SysID 1A2 · sites 1-3, 1-4".
+  const ids = sys.sites.flatMap((x) => (x.status ? [x.status.identity] : []));
+  const sysId = ids.find((i) => i.sysId != null)?.sysId;
+  const numbers = ids.filter((i) => i.site != null).map((i) => `${i.rfss ?? "?"}-${i.site}`);
+  const site = [sysId != null ? `SysID ${sysId.toString(16).toUpperCase()}` : "", numbers.length ? `site${numbers.length > 1 ? "s" : ""} ${numbers.join(", ")}` : ""].filter(Boolean).join(" · ");
   return (
     <div className="sys-header" style={{ borderLeftColor: systemColor(s.config, sys.name) }}>
       <div>
@@ -638,8 +641,8 @@ function AllSystems({ s, systems }: { s: AppState; systems: DashSystem[] }) {
             {top.length > 0 ? (
               <ul className="barlist">
                 {top.map((r) => (
-                  <li key={r.tg}>
-                    <button className="linkish" onClick={() => setView("radio", x.name, "tg", r.tg)}>
+                  <li key={r.tg} className="opens" onClick={() => setView("radio", x.name, "tg", r.tg)}>
+                    <button className="linkish">
                       <TgName r={r} />
                     </button>
                     <span className="bar" style={{ width: `${(r.secs / Math.max(1, top[0].secs)) * 100}%`, background: systemColor(s.config, x.name) }} />
@@ -666,9 +669,6 @@ function AllSystems({ s, systems }: { s: AppState; systems: DashSystem[] }) {
                 {sm.newTgs.length > 6 ? "…" : ""}
               </p>
             )}
-            <button className="card-more" onClick={() => setView("radio", x.name)}>
-              Open {x.name} ▸
-            </button>
           </Card>
         );
       })}

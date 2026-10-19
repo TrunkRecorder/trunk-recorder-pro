@@ -655,6 +655,9 @@ export function RadialEgo(props: { center: { label: string; sub?: string }; inne
 
 // ── layout ───────────────────────────────────────────────────────────────────
 
+/** What, inside a card, does something of its own when clicked. */
+const OWN_CLICK = "a, button, input, select, textarea, label, summary, [role=button], [role=tab], [role=radio], canvas, .bip-node, .ego-node, .heatstrip, .opens, .card-detail";
+
 /**
  * A card: title, a status light and why, actions, and a body. `open` /
  * `onToggle`: a part that expands for detail (remembered per `id`).
@@ -676,8 +679,17 @@ export function Card(props: { title: ReactNode; level?: Level; why?: string; act
       // Not remembered.
     }
   };
+  // A card that opens something opens it from anywhere on it, except what
+  // does something of its own or text being selected.
+  const go = props.onTitle;
+  const onCard = go
+    ? (e: React.MouseEvent) => {
+        if (e.defaultPrevented || (e.target as Element).closest(OWN_CLICK) || window.getSelection()?.toString()) return;
+        go();
+      }
+    : undefined;
   return (
-    <section className={`card${props.level ? ` card-${props.level}` : ""}${props.className ? ` ${props.className}` : ""}`}>
+    <section className={`card${props.level ? ` card-${props.level}` : ""}${go ? " card-opens" : ""}${props.className ? ` ${props.className}` : ""}`} onClick={onCard}>
       <header className="card-head">
         <div className="card-title">
           {props.level && props.level !== "idle" && <Light level={props.level} title={props.why} />}

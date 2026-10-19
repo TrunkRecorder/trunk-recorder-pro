@@ -69,6 +69,7 @@ const TOKENS: &[&str] = &[
     "talkgroup_group",
     "talkgroup_display",
     "short_name",
+    "site",
     "freq",
     "freq_mhz",
     "call_num",
@@ -105,6 +106,8 @@ fn token(t: &str, r: &Value, sys_num: u16, utc_offset_s: i32) -> String {
         "talkgroup_description" => text("talkgroup_description"),
         "talkgroup_group" => text("talkgroup_group"),
         "short_name" => text("short_name"),
+        // The site its copy was kept from (a conventional call has none).
+        "site" => text("site"),
         "freq" => num("freq"),
         "freq_mhz" => format!("{:.4}", r["freq"].as_f64().unwrap_or(0.0) / 1e6),
         "call_num" => num("call_num"),
@@ -283,6 +286,13 @@ mod tests {
         let f = "{short_name}/{time:%Y}/{time:%-m}/{time:%-d}/{talkgroup}-{epoch}_{freq}";
         assert_eq!(render(f, &c, 0, 0), format!("{}-call_7", default_path("x", "101-1709164800_851012500", 1709164800, 0)));
         assert_eq!(render("{time:%-H}{time:%-M}{time:%-S}{time:%-q}", &c, 0, 0), "000%-q-call_7");
+    }
+
+    #[test]
+    fn a_calls_site() {
+        let c = json!({ "call_num": 1, "short_name": "dcfd", "site": "south" });
+        assert_eq!(render("{short_name}/{site}", &c, 0, 0), "dcfd/south-call_1");
+        assert_eq!(render("{short_name}/{site}", &json!({ "call_num": 2, "short_name": "fire" }), 0, 0), "fire-call_2", "a conventional call has none: no folder");
     }
 
     #[test]

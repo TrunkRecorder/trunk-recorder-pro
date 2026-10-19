@@ -1,52 +1,62 @@
 # Trunked Systems
 
-Each entry in `systems` is one trunked system, or one **site** of a multi-site system. This page lists
-the keys for P25, SmartNet, DMR and NXDN systems, the talkgroup file format, unit names and the site
-lock. For how to set each kind up, see the guides: [P25](../guides/p25.md),
-[SmartNet](../guides/smartnet.md), [DMR](../guides/dmr.md), [NXDN](../guides/nxdn.md),
-[multi-site](../guides/multi-site.md) and [talkgroups and units](../guides/talkgroups-and-units.md).
+Each entry in `systems` is one trunked system: its talkgroups, radios and rules, and its `sites`,
+each a control channel to follow. This page lists the keys for P25, SmartNet, DMR and NXDN systems
+and their sites, the talkgroup file format, unit names and the site lock. For how to set each kind
+up, see the guides: [P25](../guides/p25.md), [SmartNet](../guides/smartnet.md),
+[DMR](../guides/dmr.md), [NXDN](../guides/nxdn.md), [multi-site](../guides/multi-site.md) and
+[talkgroups and units](../guides/talkgroups-and-units.md).
 
 ```json
 "systems": [
-  { "shortName": "dcfd", "type": "p25", "controlChannelsHz": [857987500, 858987500],
-    "talkgroupsCsv": "Decimal,Alpha Tag,Mode\n1201,FD Disp,D\n", "expect": { "nac": 1091 } },
-  { "shortName": "wmata", "type": "smartnet", "controlChannelsHz": [489087500],
-    "bandplan": "400_custom", "bandplanBaseHz": 489012500, "bandplanSpacingHz": 12500,
-    "bandplanOffset": 380, "bandplanHighHz": 490000000 }
+  { "shortName": "dcfd", "type": "p25",
+    "sites": [{ "controlChannelsHz": [857987500, 858987500], "expect": { "nac": 1091 } }] },
+  { "shortName": "wmata", "type": "smartnet",
+    "sites": [{ "controlChannelsHz": [489087500], "bandplan": "400_custom", "bandplanBaseHz": 489012500,
+                "bandplanSpacingHz": 12500, "bandplanOffset": 380, "bandplanHighHz": 490000000 }] }
 ]
 ```
 
 A trunked system shares a handful of voice frequencies among many talkgroups. A **control channel**
 continuously announces which talkgroup is being given (granted) which frequency, and the recorder
-follows those grants. A system is recorded only when it is `enabled` **and** has at least one control
-channel. Each site you record from its own control channel is its own entry, with its own
-`shortName` and folder, as in Trunk Recorder.
+follows those grants. A system is recorded only when it is `enabled` **and** has an enabled site
+with at least one control channel. A system with several sites, each with its own control channel,
+is still one entry: one short name, one folder, one talkgroup file. (Trunk Recorder makes each site
+a system of its own.)
 
 ## Keys for every trunked system
 
 | Key | Required | Default | Type | Description |
 |---|:---:|---|---|---|
-| `shortName` | | `"sys1"` | string | The system's identity: its recordings folder, the `short_name` in call JSON, its learned band plan and talker alias files, and how plugins know it. Every system, trunked or conventional, enabled or not, needs its own. Keep it to letters, digits, `-` and `_` |
+| `shortName` | | `"sys1"` | string | The system's identity: its recordings folder, the `short_name` in call JSON, its talker alias file, and how plugins know it. Every system, trunked or conventional, enabled or not, needs its own. Keep it to letters, digits, `-` and `_` |
 | `name` | | `""` | string | What people call it ("County Public Safety"), for display |
-| `type` | | `"p25"` | string | `"p25"`, `"smartnet"`, `"dmr"` or `"nxdn"` (any case). Anything else is treated as P25 |
+| `type` | | `"p25"` | string | `"p25"`, `"smartnet"`, `"dmr"` or `"nxdn"` (any case). Anything else is refused when the config is read |
 | `enabled` | | `true` | bool | `false` keeps it in the config without recording it |
-| `controlChannelsHz` | | `[]` | array of numbers | P25 and SmartNet: the control channel and its alternates, Hz. The recorder hunts through them, moving on when one goes quiet for 5 s. DMR and NXDN: every frequency listed is watched at once (NXDN Type-D: the repeaters) |
-| `talkgroupsCsv` | | `""` | string | The talkgroup file's **contents**, not a path. See [Talkgroup file](#talkgroup-file) |
-| `talkgroupsName` | | `""` | string | The name of the file the talkgroups came from, for display |
+| `sites` | | `[]` | array | Where it is recorded from: one entry per site. See [Keys for each site](#keys-for-each-site) |
 | `unitNames` | | empty | object | Names for the system's radios. See [Unit names](#unit-names) |
-| `expect` | | `{}` | object | Site lock: only follow a control channel with this identity. See [Site lock](#site-lock-expect) |
-| `voiceChannelsHz` | | `[]` | array of numbers | Voice channels Find my system heard. Used only to place Auto sources so they cover them too |
-| `siteGroup` | | `""` | string | Groups sites whose calls are the same calls. See [Multi-site](#multi-site) |
 | `keys` | | `""` | string | P25: the encryption keys it decrypts with, a key source's name (desktop app only; not in the interface). See [Encryption keys](#encryption-keys-keys) |
 | `recording` | | `{}` | object | This system's own call rules; a rule left out follows the global `recording`. See [recording.md](recording.md#per-system-rules) |
 | `plugins` | | `{}` | object | This system's plugin settings, by plugin id. See [plugins.md](plugins.md#per-system-settings) |
 | `pluginDelays` | | `[]` | array | How long plugins wait for this system's calls (all of them, some talkgroups', some plugins'). See [plugins.md](plugins.md#delays) |
 
+## Keys for each site
+
+| Key | Required | Default | Type | Description |
+|---|:---:|---|---|---|
+| `name` | | the system's `shortName` | string | The site's name, unique in its system: what the talkgroup file's `Preferred Site` names, the `site` in call JSON and the log. Leave it out for a system of one site |
+| `enabled` | | `true` | bool | `false` keeps the site without recording from it (**Record** on its card) |
+| `controlChannelsHz` | | `[]` | array of numbers | P25 and SmartNet: the control channel and its alternates, Hz. The recorder hunts through them, moving on when one goes quiet for 5 s. DMR and NXDN: every frequency listed is watched at once (NXDN Type-D: the repeaters) |
+| `expect` | | `{}` | object | Site lock: only follow a control channel with this identity. See [Site lock](#site-lock-expect) |
+| `voiceChannelsHz` | | `[]` | array of numbers | Voice channels Find my system heard. Used only to place Auto sources so they cover them too |
+
+The protocol keys below are a site's too, except `defaultMode` (SmartNet) and `nxdnType` (NXDN),
+which are the system's.
+
 ## P25 and SmartNet
 
 | Key | Required | Default | Type | Description |
 |---|:---:|---|---|---|
-| `modulation` | | `"auto"` | string | `"auto"`: run both receivers and keep the better result for each frame. `"qpsk"`: CQPSK / LSM simulcast only. `"fsk4"`: C4FM only. Any other value is `"auto"`. Auto costs more CPU; set the one your system uses if you know it |
+| `modulation` | | `"auto"` | string | `"auto"`: detect it — both receivers run until one clearly decodes better (a few seconds), then only that one, on each channel; detected again when the control channel moves or after 10 s without a frame. `"qpsk"`: CQPSK / LSM simulcast only. `"fsk4"`: C4FM only (any case; anything else is refused when the config is read). The log says what was detected; set the one your system uses if you know it |
 
 P25 Phase 2 voice needs no setting: a Phase 2 grant is followed as Phase 2.
 
@@ -59,7 +69,7 @@ P25 Phase 2 voice needs no setting: a Phase 2 grant is followed as Phase 2.
 | `bandplanSpacingHz` | with `400_custom` | | number | Channel spacing, Hz |
 | `bandplanOffset` | | `0` | integer | The first channel number |
 | `bandplanHighHz` | with `400_custom` | | number | Top of the band, Hz. Must be above `bandplanBaseHz` |
-| `defaultMode` | | `""` (digital) | string | `"analog"`: a talkgroup never seen granted before is recorded as analog FM. Otherwise as P25 digital |
+| `defaultMode` | | `"digital"` | string | `"analog"`: a talkgroup never seen granted before is recorded as analog FM. `"digital"` (or `""`): as P25 digital. Any other value is refused |
 
 Find my system fills in the four `400_custom` numbers for SmartNet OBT systems.
 
@@ -71,15 +81,15 @@ Find my system fills in the four `400_custom` numbers for SmartNet OBT systems.
 | `lcnTableHz` | | `{}` | object | Logical channel number → frequency, Hz: `{ "101": 452275000 }` (Trunk Recorder's `lcnTable`). Wins over channels learned from the air; channels left out are learned |
 | `colorCode` | | `null` | integer or null | Only this colour code, 0–15. `null`: the control channel's |
 
-DMR sites announce no system identity, so `expect` is ignored; use `colorCode`, and give the sites of
-one system the same `siteGroup`.
+DMR sites announce no system identity, so `expect` is ignored; use `colorCode`, and list the sites
+of one system under it.
 
 ## NXDN
 
 | Key | Required | Default | Type | Description |
 |---|:---:|---|---|---|
-| `nxdnType` | | `""` (= `"typeC"`) | string | `"typeC"`: a control channel assigns calls to channels (Kenwood NEXEDGE, Icom IDAS Type-C). `"typeD"`: IDAS distributed trunking with no control channel; list every repeater in `controlChannelsHz` |
-| `nxdnRate` | | `""` (= `"nxdn48"`) | string | The control channel's rate (Type-D: the repeaters'): `"nxdn48"` (4800 bps, 6.25 kHz) or `"nxdn96"` (9600 bps, 12.5 kHz). Voice channels go at the rate each grant names |
+| `nxdnType` | | `"typeC"` | string | `"typeC"`: a control channel assigns calls to channels (Kenwood NEXEDGE, Icom IDAS Type-C). `"typeD"`: IDAS distributed trunking with no control channel; list every repeater in `controlChannelsHz` |
+| `nxdnRate` | | `"nxdn48"` | string | The control channel's rate (Type-D: the repeaters'): `"nxdn48"` (`"48"`, `"4800"`; 4800 bps, 6.25 kHz) or `"nxdn96"` (`"96"`, `"9600"`; 9600 bps, 12.5 kHz). Voice channels go at the rate each grant names |
 | `nxdnChannelsHz` | | `[]` | array of numbers | Voice frequencies to watch besides the control channels, Hz. A grant to a channel number not in `lcnTableHz` is learned when its call comes up on one of them. Each must be inside a source |
 | `lcnTableHz` | | `{}` | object | Channel number → frequency, Hz: `{ "12": 451118750 }` (RadioReference lists them as LCNs for many systems). Wins over channels learned from the air. Not needed when the site uses Direct Frequency Assignment. Type-D: repeater number → frequency |
 | `ran` | | `null` | integer or null | Only this RAN, 0–63. `null`: the control channel's |
@@ -87,15 +97,16 @@ one system the same `siteGroup`.
 An NXDN Type-C grant names a channel number. Its frequency comes from `lcnTableHz`; from the grant
 itself when the site uses Direct Frequency Assignment; or is learned when the granted group's call
 comes up on a frequency in `nxdnChannelsHz`. Until then the grant is logged as "frequency not known
-yet", and the dashboard lists the channel numbers still unknown. Learned tables are kept in
-`<shortName>.bandplan` beside the config.
+yet", and the dashboard lists the channel numbers still unknown. Learned tables are kept per site
+beside the config: `<shortName>.bandplan`, or `<shortName>.<site>.bandplan` for a site with a name
+of its own.
 
 ## Site lock (`expect`)
 
 A control channel announcing a different identity than the lock is not followed: its grants are
 ignored and the recorder moves on to the next control channel. Until every locked field has been
-heard, grants wait. Use it to keep one site of a multi-site system from wandering onto a neighbour on
-a nearby frequency.
+heard, grants wait. Use it to keep a site from wandering onto a neighbouring site, or another
+system, on a nearby frequency. Each site has its own.
 
 | Key | Required | Default | Type | Description |
 |---|:---:|---|---|---|
@@ -118,22 +129,28 @@ Only the fields a protocol announces are compared:
 
 ## Multi-site
 
-A call on a multi-site system is usually granted on several sites at once. Each copy is recorded;
-when the last one ends, only the best copy is saved (the one decoded most cleanly, or the talkgroup's
-Preferred Site). Turn that off with `recording.dropDuplicateCalls` to keep every copy.
+A system with several sites usually hears a call granted on more than one of them at once. Each
+copy is recorded; when the last one ends, only the best copy is saved (the one decoded most
+cleanly, or the talkgroup's Preferred Site). Turn that off with `recording.dropDuplicateCalls` to
+keep every copy.
 
-Sites are grouped into one system by what their control channels announce: P25 by WACN and System ID,
-SmartNet by System ID, NXDN Type-C by system code. Two entries following the *same* site are never
-grouped.
+Only the sites listed under one system are copies of each other. Two systems are never joined while
+recording, whatever their control channels announce; when two systems announce the same system on
+the air, Setup offers **Make them one system**. To prefer a site for a talkgroup, use the talkgroup
+file's `Preferred Site` or `Preferred NAC` column.
 
-A non-empty `siteGroup` replaces that grouping:
+```json
+{ "shortName": "capmax", "type": "dmr",
+  "sites": [{ "name": "north", "controlChannelsHz": [452175000] },
+            { "name": "south", "controlChannelsHz": [452525000] }] }
+```
 
-- Systems with the same `siteGroup` are grouped.
-- A `siteGroup` used by only one system keeps that system on its own.
-
-Give DMR and NXDN Type-D sites a group name, since they announce no system identity. Give systems
-linked by ISSI one too. To prefer a site for a talkgroup, use the talkgroup file's `Preferred Site`
-or `Preferred NAC` column.
+An older config, whose systems were each one site, is rewritten on load (the old file is kept as
+`config.json.before-sites`). Each old system becomes a site named as it was. Those with the same
+`siteGroup`, or with site locks naming one system (the same type and WACN and System ID; SmartNet:
+System ID; NXDN Type-C: system code), become one system, with the first one's short name and
+settings; the log says what wasn't kept. Systems that were joined only by what they announced on
+the air stay apart until you make them one in Setup.
 
 ## Encryption keys (`keys`)
 
@@ -225,9 +242,13 @@ sync). **Lock** forgets the keys and they stop at once. The password is never sa
 
 ## Talkgroup file
 
-`talkgroupsCsv` holds a Trunk Recorder talkgroup file, as text. RadioReference's talkgroup CSV export
-reads as is. The interface loads it from a file or a RadioReference paste; by hand, put the file's
-contents in the string with each line ending in `\n`.
+A system's talkgroups are a Trunk Recorder talkgroup file, kept beside the config file as
+`<shortName>.talkgroups.csv` (not in the config). RadioReference's talkgroup CSV export reads as is.
+Setup loads it from a file or a RadioReference paste and saves it there, and renames it when the
+system is renamed. By hand, put the file in the config's folder under that name. A conventional
+system has its own file the same way, which names the talkgroups its P25, DMR and NXDN channels hear.
+A config from an older version, which kept the file inside it as `talkgroupsCsv`, is upgraded when
+it's read: the talkgroups are moved out into these files.
 
 ```csv
 Decimal,Hex,Mode,Alpha Tag,Description,Tag,Category,Priority
@@ -258,7 +279,7 @@ Parsing:
 | `Alpha Tag`, `Description`, `Tag`, `Category` | Names, written to the call JSON and shown in the interface |
 | `Priority` | A negative priority means never record (as in Trunk Recorder). Default 1 |
 | `Ignore` | `true`, `yes`, `y`, `1`, `x` or `ignore` (any case): never record |
-| `Preferred Site` | Multi-site: a site's `shortName`. Its copy of a call is kept when it has at least 90 % of the best copy's clean audio |
+| `Preferred Site` | Multi-site: a site's `name` (a site with none: the system's `shortName`). Its copy of a call is kept when it has at least 90 % of the best copy's clean audio |
 | `Preferred NAC` | The same, by the site's NAC, or by RFSS and site written `RRRRssss` (RFSS 1, site 23: `10023`) |
 
 A talkgroup not in the file is still recorded unless `recordUnknown` is off; see
@@ -282,7 +303,7 @@ aliases heard over the air. Each trunked and conventional system has its own.
 |---|:---:|---|---|---|
 | `csv` | | `""` | string | The file's **contents**: `unit,name` lines with no header, `#` for comments. A unit written between slashes (`/^14(\d{2})$/`) is a regular expression; `$1` or `\1` in the name inserts its groups. The first match wins |
 | `name` | | `""` | string | The file it came from, for display |
-| `mode` | | `""` (= `"user"`) | string | `"user"`: your names first, then talker aliases heard. `"ota"`: aliases heard first. `"user_only"`: only your names. `"none"`: no names |
+| `mode` | | `"user"` | string | `"user"`: your names first, then talker aliases heard. `"ota"`: aliases heard first. `"user_only"`: only your names. `"none"`: no names. Any other value is refused |
 
 Talker aliases heard over the air are kept in `<shortName>.units.csv` beside the config file
 ([Files kept beside the config](README.md#files-kept-beside-the-config)).

@@ -40,7 +40,7 @@ pub mod store;
 
 pub use archive::{plan, Archive, FileRules};
 pub use encode::Encoder;
-pub use host::{CallAudio, Note, PluginHost, Spec};
+pub use host::{Note, PluginHost, Spec};
 
 use std::collections::BTreeMap;
 use std::io::Read;
@@ -214,34 +214,33 @@ pub fn systems_of(cfg: &crate::config::Config) -> Vec<trunk_recorder_plugin::Sys
         .collect()
 }
 
-/// Plugin notes as log lines (the plugins view follows each plugin's state
+/// Plugin notes as log lines, which the log shows the browsers too
+/// ([`crate::logging::text`]; the plugins view follows each plugin's state
 /// and results in its `pluginRuntime`).
-pub fn notes_to_hub(hub: crate::runtime::Hub) -> host::Notes {
-    use serde_json::json;
+pub fn notes_to_log() -> host::Notes {
     use trunk_recorder_plugin::{Level, Outcome, State};
-    let log = move |hub: &crate::runtime::Hub, plugin: &str, error: bool, text: &str| {
+    let log = |plugin: &str, error: bool, text: &str| {
         let text = if plugin.is_empty() { format!("Plugins: {text}") } else { format!("[{plugin}] {text}") };
         if error {
-            log::error!("{text}");
+            log::error!(target: "plugin", "{text}");
         } else {
-            log::info!("{text}");
+            log::info!(target: "plugin", "{text}");
         }
-        crate::runtime::publish(hub, json!({ "type": "log", "lines": [{ "timeS": 0, "kind": if error { "error" } else { "plugin" }, "text": text }] }));
     };
     std::sync::Arc::new(move |n: Note| match n {
         Note::Log { plugin, level, text } => {
             if level != Level::Debug {
-                log(&hub, &plugin, level <= Level::Warn, &text);
+                log(&plugin, level <= Level::Warn, &text);
             }
         }
         Note::State { plugin, state, message } => {
             if state == State::Error {
-                log(&hub, &plugin, true, &message);
+                log(&plugin, true, &message);
             }
         }
         Note::Result { plugin, path, outcome, message, .. } => {
             if outcome == Outcome::Failed {
-                log(&hub, &plugin, true, &format!("{path}: {message}"));
+                log(&plugin, true, &format!("{path}: {message}"));
             }
         }
         // (In the plugin's pluginRuntime.)
@@ -267,8 +266,8 @@ mod tests {
     fn what_plugins_get_from_the_config() {
         let c: Config = serde_json::from_value(json!({
             "systems": [
-                { "shortName": "dcfd", "controlChannelsHz": [857987500], "plugins": { "openmhz": { "apiKey": "k" } } },
-                { "shortName": "wmata", "controlChannelsHz": [489087500] }
+                { "shortName": "dcfd", "sites": [{ "controlChannelsHz": [857987500] }], "plugins": { "openmhz": { "apiKey": "k" } } },
+                { "shortName": "wmata", "sites": [{ "controlChannelsHz": [489087500] }] }
             ],
             "conventional": [{ "shortName": "conv", "plugins": { "openmhz": { "apiKey": "c" } } }],
             "plugins": {
@@ -301,18 +300,18 @@ mod tests {
     fn plugins_know_systems_by_short_name() {
         let c: Config = serde_json::from_value(json!({
             "systems": [
-                { "shortName": "old", "enabled": false, "controlChannelsHz": [851000000], "plugins": { "openmhz": { "apiKey": "old" } } },
+                { "shortName": "old", "enabled": false, "sites": [{ "controlChannelsHz": [851000000] }], "plugins": { "openmhz": { "apiKey": "old" } } },
                 { "shortName": "draft", "plugins": { "openmhz": { "apiKey": "draft" } } },
-                { "shortName": "dcfd", "controlChannelsHz": [857987500], "plugins": { "openmhz": { "apiKey": "dcfd" } } }
+                { "shortName": "dcfd", "sites": [{ "controlChannelsHz": [857987500] }], "plugins": { "openmhz": { "apiKey": "dcfd" } } }
             ],
             "conventional": [{ "shortName": "county", "channels": [{ "freqHz": 154430000 }], "plugins": { "openmhz": { "apiKey": "conv" } } }],
             "plugins": { "openmhz": { "enabled": true } }
         }))
         .unwrap();
         let systems = systems_of(&c);
-        let conv = trunk_core::trunk::conventional_system(0);
-        assert_eq!(systems.iter().map(|s| (s.index, s.short_name.as_str(), s.kind.as_str())).collect::<Vec<_>>(), [(0, "dcfd", "p25"), (conv, "county", "conventional")]);
-        assert_eq!(c.engine_config(0.0).systems[0].short_name, "dcfd", "the engine numbers dcfd 0 too");
+        assert_eq!(systems.iter().map(|s| (s.index, s.short_name.as_str(), s.kind.as_str())).collect::<Vec<_>>(), [(0, "dcfd", "p25"), (1, "county", "conventional")]);
+        let e = c.engine_config(0.0, &Default::default());
+        assert_eq!(e.systems.iter().map(|s| s.short_name.as_str()).collect::<Vec<_>>(), ["dcfd", "county"], "the engine numbers them so too");
         let specs = Spec::enabled(&c);
         assert_eq!(specs[0].systems.get("dcfd"), Some(&json!({ "apiKey": "dcfd" })));
         assert_eq!(specs[0].systems.get("county"), Some(&json!({ "apiKey": "conv" })));
@@ -325,8 +324,8 @@ mod tests {
     fn a_second_copy_runs_for_its_systems_only() {
         let c: Config = serde_json::from_value(json!({
             "systems": [
-                { "shortName": "dcfd", "controlChannelsHz": [857987500], "plugins": { "openmhz": [{ "apiKey": "a" }, { "apiKey": "b" }] } },
-                { "shortName": "wmata", "controlChannelsHz": [489087500], "plugins": { "openmhz": { "apiKey": "w" } } }
+                { "shortName": "dcfd", "sites": [{ "controlChannelsHz": [857987500] }], "plugins": { "openmhz": [{ "apiKey": "a" }, { "apiKey": "b" }] } },
+                { "shortName": "wmata", "sites": [{ "controlChannelsHz": [489087500] }], "plugins": { "openmhz": { "apiKey": "w" } } }
             ],
             "plugins": { "openmhz": { "enabled": true, "settings": { "server": "s" } } }
         }))

@@ -58,7 +58,7 @@ For each system (the system's card, or its `plugins.rdioscanner` in `config.json
   "systems": [
     {
       "shortName": "dcfd",
-      "controlChannelsHz": [857987500],
+      "sites": [{ "controlChannelsHz": [857987500] }],
       "plugins": { "rdioscanner": { "apiKey": "your-rdio-scanner-api-key", "systemId": 1 } }
     }
   ]

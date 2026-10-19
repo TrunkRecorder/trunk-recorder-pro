@@ -72,7 +72,8 @@ function subscribe(l: () => void): () => void {
 
 /** Re-render when new values arrive (at most once a frame); returns a counter. */
 export function useSeriesTick(): number {
-  return useSyncExternalStore(subscribe, () => version);
+  const get = () => version;
+  return useSyncExternalStore(subscribe, get, get);
 }
 
 /** A series' recent points; re-renders as they come. */

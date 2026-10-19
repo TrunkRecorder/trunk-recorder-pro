@@ -29,6 +29,7 @@ use trunk_core::metrics::{key_part, Scoped, Sink};
 use trunk_core::trunk::{Engine, Event, MessageType};
 
 use crate::config::Config;
+use crate::protocol::ToClient;
 use crate::session::Output;
 pub use aggregate::{Aggregator, Rollup};
 pub use events::{Monitor, MonitorEvent, Watcher};
@@ -41,11 +42,13 @@ const TICK_MS: f64 = 1000.0;
 /// A source clipping more than this share of samples, %, is an event.
 const CLIP_EVENT_PCT: f64 = 0.5;
 
-/// What outlives a session: the radio registry and the event monitor
-/// (shared with the platform, which answers queries and adds its own events).
+/// What outlives a session: the radio registry, the names it answers with,
+/// and the event monitor (shared with the platform, which answers queries
+/// and adds its own events).
 #[derive(Default)]
 pub struct Shared {
     pub radio: Mutex<Registry>,
+    pub names: Mutex<NameBook>,
     pub monitor: Mutex<Monitor>,
 }
 
@@ -61,6 +64,46 @@ impl Shared {
 
     pub fn recent_events(&self) -> Vec<Value> {
         self.monitor.lock().unwrap().recent()
+    }
+
+    /// A `radioQuery`: the registry, with talkgroups and radios named from
+    /// the [`NameBook`] (`now`: Unix s). The desktop app's server and the
+    /// browser build's worker both answer this way.
+    pub fn radio_query(&self, q: &Value, now: i64) -> ToClient {
+        let book = self.names.lock().unwrap();
+        let tg = |sys: &str, t: u32| tg_info(&book.talkgroups, sys, t);
+        let unit = |sys: &str, u: u32| book.units.get(sys).and_then(|a| a.get(u)).map(str::to_string);
+        let mut out = self.radio.lock().unwrap().query(q, now, &Names { tg: &tg, unit: &unit });
+        out["id"] = q["id"].clone();
+        ToClient::RadioResult(crate::protocol::body(out))
+    }
+}
+
+/// The names the radio registry's answers use ([`Shared::radio_query`]):
+/// each system's talkgroups (its talkgroup file's, a conventional system's
+/// channels) and talker aliases, by short name. A running session keeps
+/// them as its engine has them; the desktop app fills them from its files
+/// when it starts and when they change.
+#[derive(Default)]
+pub struct NameBook {
+    talkgroups: HashMap<String, trunk_core::trunk::Talkgroups>,
+    units: HashMap<String, trunk_core::trunk::UnitAliases>,
+}
+
+impl NameBook {
+    /// Each system's talkgroups, as an engine built from `cfg` and these talkgroup files has them.
+    pub fn set_config(&mut self, cfg: &Config, files: &crate::config::TalkgroupFiles) {
+        self.set_systems(&cfg.engine_config(0.0, files).systems);
+    }
+
+    /// Each system's talkgroups, from an engine's systems.
+    pub fn set_systems(&mut self, systems: &[trunk_core::trunk::SystemConfig]) {
+        self.talkgroups = systems.iter().map(|s| (s.short_name.clone(), s.talkgroups.clone())).collect();
+    }
+
+    /// System `short_name`'s talker aliases, from their CSV (as saved).
+    pub fn set_units(&mut self, short_name: &str, csv: &str) {
+        self.units.insert(short_name.to_string(), trunk_core::trunk::UnitAliases::parse_csv(csv));
     }
 }
 
@@ -122,7 +165,8 @@ struct Day {
 
 pub struct Stats {
     agg: Aggregator,
-    meters: Vec<SampleMeter>,
+    /// (Each behind a lock: a source's feeder thread meters it.)
+    meters: Vec<Arc<Mutex<SampleMeter>>>,
     /// Each source's series name (its label).
     names: Vec<String>,
     tally: Tally,
@@ -147,7 +191,7 @@ impl Stats {
         let names: Vec<String> = cfg.sources.iter().map(|s| key_part(&s.label())).collect();
         Stats {
             agg: Aggregator::default(),
-            meters: vec![SampleMeter::default(); names.len()],
+            meters: names.iter().map(|_| Default::default()).collect(),
             trouble: vec![(false, false); names.len()],
             names,
             tally: Tally::default(),
@@ -168,8 +212,13 @@ impl Stats {
     }
 
     /// Source `i`'s sample meter (the session feeds it).
-    pub fn meter(&mut self, i: usize) -> &mut SampleMeter {
-        &mut self.meters[i]
+    pub fn meter(&self, i: usize) -> std::sync::MutexGuard<'_, SampleMeter> {
+        self.meters[i].lock().unwrap()
+    }
+
+    /// Source `i`'s sample meter, for a thread that feeds it ([`crate::session::Feeder`]).
+    pub fn meter_handle(&self, i: usize) -> Arc<Mutex<SampleMeter>> {
+        self.meters[i].clone()
     }
 
     /// Unix seconds, as last set.
@@ -184,7 +233,7 @@ impl Stats {
 
     fn emit(&mut self, e: MonitorEvent, out: &mut Vec<Output>) {
         if let Some(v) = self.shared.emit(self.now, e) {
-            out.push(Output::Text(v.to_string()));
+            out.push(Output::Message(ToClient::MonitorEvent(crate::protocol::body(v))));
         }
     }
 
@@ -210,7 +259,7 @@ impl Stats {
                     self.emit(MonitorEvent::TgFirstSeen { system: name.to_string(), talkgroup: c.talkgroup, alpha_tag }, out);
                 }
                 for u in firsts.units {
-                    let alias = engine.unit_alias(c.system, u).unwrap_or("").to_string();
+                    let alias = engine.unit_alias(c.system, u).unwrap_or_default();
                     self.emit(MonitorEvent::UnitFirstSeen { system: name.to_string(), unit: u, alias }, out);
                 }
                 if self.shared.monitor.lock().unwrap().wants_frequent() {
@@ -230,7 +279,7 @@ impl Stats {
                 self.day.air_s += secs;
                 let firsts = self.shared.radio.lock().unwrap().call_end(name, c, t);
                 for u in firsts {
-                    let alias = engine.unit_alias(c.system, u).unwrap_or("").to_string();
+                    let alias = engine.unit_alias(c.system, u).unwrap_or_default();
                     self.emit(MonitorEvent::UnitFirstSeen { system: name.to_string(), unit: u, alias }, out);
                 }
                 if self.shared.monitor.lock().unwrap().wants_frequent() {
@@ -254,18 +303,18 @@ impl Stats {
                 }
             }
             Event::Concluded(k) => {
-                let record: Value = serde_json::from_str(&k.json).unwrap_or(Value::Null);
+                let record = &k.record;
                 let bytes = 44 + k.audio.len() as u64 * 2;
                 self.tally.add(format!("{sys}/audioBytes"), bytes);
                 self.tally.add("all/audioBytes".into(), bytes);
                 self.roll_day();
                 self.day.audio_bytes += bytes;
-                for i in record["errorList"].as_array().into_iter().flatten() {
-                    self.tally.add(format!("{sys}/voice/frames"), i["frames"].as_u64().unwrap_or(0));
-                    self.tally.add(format!("{sys}/voice/errors"), i["error_count"].as_u64().unwrap_or(0));
-                    self.tally.add(format!("{sys}/voice/bad"), i["bad_frames"].as_u64().unwrap_or(0));
+                for i in &record.error_list {
+                    self.tally.add(format!("{sys}/voice/frames"), i.frames);
+                    self.tally.add(format!("{sys}/voice/errors"), i.error_count);
+                    self.tally.add(format!("{sys}/voice/bad"), i.bad_frames);
                 }
-                self.shared.radio.lock().unwrap().concluded(name, &record, t);
+                self.shared.radio.lock().unwrap().concluded(name, record, t);
             }
             Event::NotSaved(_) => self.tally.add(format!("{sys}/notSaved"), 1),
             Event::Duplicate { .. } => self.tally.add(format!("{sys}/dup"), 1),
@@ -276,9 +325,10 @@ impl Stats {
     /// Once a second of wall clock (`now_ms`, the session's clock): the
     /// `stats` message, a [`Rollup`] each new minute, the detail messages
     /// someone is watching, and the edge-triggered events. `busy_ms`: the
-    /// session's decoding time so far (the load). `system_name`: a call's
-    /// system number's short name.
-    pub fn tick(&mut self, now_ms: f64, busy_ms: f64, engine: &Engine, system_name: &dyn Fn(u16) -> String, out: &mut Vec<Output>) {
+    /// session's decoding time so far (the load). `site_names`: a call's
+    /// system's short name and (by its site's number) site name.
+    /// `decode_sites`: a system's sites' and patches' detail (by short name).
+    pub fn tick(&mut self, now_ms: f64, busy_ms: f64, engine: &Engine, site_names: &dyn Fn(u16, Option<u16>) -> (String, String), decode_sites: DecodeSites, out: &mut Vec<Output>) {
         if self.last_tick_ms.is_some_and(|t| now_ms - t < TICK_MS) {
             return;
         }
@@ -294,8 +344,8 @@ impl Stats {
             out.push(Output::Rollup(r));
         }
         engine.report(&self.names, &mut self.agg);
-        for (i, m) in self.meters.iter_mut().enumerate() {
-            m.report(&mut Scoped::new(&mut self.agg, format!("src/{}", self.names[i])));
+        for (i, m) in self.meters.iter().enumerate() {
+            m.lock().unwrap().report(&mut Scoped::new(&mut self.agg, format!("src/{}", self.names[i])));
         }
         self.tally.report(&mut self.agg);
         if dt > 0.0 {
@@ -307,21 +357,24 @@ impl Stats {
         self.agg.gauge("day/airS", self.day.air_s);
         self.agg.gauge("day/audioBytes", self.day.audio_bytes as f64);
         self.edges(engine, out);
-        out.push(Output::Text(json!({ "type": "stats", "t": (self.now * 10.0).round() / 10.0, "values": self.agg.values_json() }).to_string()));
-        self.details(engine, system_name, out);
+        out.push(Output::Message(ToClient::Stats { t: (self.now * 10.0).round() / 10.0, values: self.agg.values_json() }));
+        self.details(engine, site_names, decode_sites, out);
     }
 
     /// Events on a change of state: a control channel lost or regained, a
     /// source starting to drop samples or clip.
     fn edges(&mut self, engine: &Engine, out: &mut Vec<Output>) {
-        for y in engine.status().systems {
-            let Some(l) = self.agg.get(&format!("sys/{}/cc/locked", key_part(&y.short_name))) else { continue };
+        let systems = engine.systems();
+        let sites: Vec<_> = trunk_core::trunk::sites(&systems).collect();
+        for y in engine.status().sites {
+            let Some(&(system, cfg)) = sites.get(y.site as usize) else { continue };
+            let key = systems[system as usize].site_key(cfg);
+            let Some(l) = self.agg.get(&format!("{}/cc/locked", key.stats_key())) else { continue };
             let now = l > 0.5;
-            let (name, freq_hz) = (y.short_name, y.control_channel_hz);
-            let was = self.locked.insert(name.clone(), now);
-            match (was, now) {
-                (Some(true), false) => self.emit(MonitorEvent::ControlLost { system: name, freq_hz }, out),
-                (Some(false), true) => self.emit(MonitorEvent::ControlRegained { system: name, freq_hz }, out),
+            let (system, site, freq_hz) = (key.system.to_string(), key.own_name().map(str::to_string), y.control_channel_hz);
+            match (self.locked.insert(key.to_string(), now), now) {
+                (Some(true), false) => self.emit(MonitorEvent::ControlLost { system, site, freq_hz }, out),
+                (Some(false), true) => self.emit(MonitorEvent::ControlRegained { system, site, freq_hz }, out),
                 _ => {}
             }
         }
@@ -344,7 +397,7 @@ impl Stats {
     }
 
     /// `rfDetail` / `decodeDetail` for the topics someone watches.
-    fn details(&self, engine: &Engine, system_name: &dyn Fn(u16) -> String, out: &mut Vec<Output>) {
+    fn details(&self, engine: &Engine, site_names: &dyn Fn(u16, Option<u16>) -> (String, String), decode_sites: DecodeSites, out: &mut Vec<Output>) {
         let rf: Vec<usize> = (0..self.names.len()).filter(|i| self.topics.has(&format!("rf:{i}"))).collect();
         let decode: Vec<&str> = self.topics.iter().filter_map(|t| t.strip_prefix("decode:")).collect();
         if rf.is_empty() && decode.is_empty() {
@@ -353,38 +406,30 @@ impl Stats {
         let channels = engine.channels();
         let r1 = |v: f64| (v * 10.0).round() / 10.0;
         let ch_json = |c: &trunk_core::trunk::ChannelSnapshot| {
+            let (system, site) = site_names(c.system, c.site);
             json!({
-                "system": system_name(c.system), "freqHz": c.freq_hz, "source": c.source, "kind": c.kind,
+                "system": system, "site": if site.is_empty() { None } else { Some(site) }, "freqHz": c.freq_hz, "source": c.source, "kind": c.kind.name(),
                 "powerDb": r1(c.power_db), "noiseDb": r1(c.noise_db), "snrDb": r1(c.power_db - c.noise_db),
-                "offsetHz": c.offset_hz.map(|v| v.round()), "quality": c.quality.map(|v| r1(v as f64)),
-                "phaseErrDeg": c.phase_err.map(|v| r1(v as f64)), "calls": c.calls,
+                "offsetHz": c.offset_hz.map(|v| v.round()), "quality": c.quality.sep.map(|v| r1(v as f64)),
+                "phaseErrDeg": c.quality.phase_err_deg.map(|v| r1(v as f64)), "calls": c.calls,
             })
         };
         for i in rf {
             let profile: Vec<f64> = engine.noise_profile(i, 64).into_iter().map(r1).collect();
             let chans: Vec<Value> = channels.iter().filter(|c| c.source == i).map(ch_json).collect();
             let topic = format!("rf:{i}");
-            out.push(Output::Topic { text: json!({ "type": "rfDetail", "source": i, "profile": profile, "channels": chans }).to_string(), topic });
+            out.push(Output::Topic { msg: ToClient::RfDetail { source: i, profile, channels: chans }, topic });
         }
         for name in decode {
-            let chans: Vec<Value> = channels.iter().filter(|c| system_name(c.system) == name).map(ch_json).collect();
-            out.push(Output::Topic { topic: format!("decode:{name}"), text: json!({ "type": "decodeDetail", "system": name, "channels": chans }).to_string() });
+            let chans: Vec<Value> = channels.iter().filter(|c| site_names(c.system, c.site).0 == name).map(ch_json).collect();
+            let (sites, patches) = decode_sites(engine, name);
+            out.push(Output::Topic { topic: format!("decode:{name}"), msg: ToClient::DecodeDetail { system: name.to_string(), channels: chans, sites, patches } });
         }
     }
 }
 
-/// The talkgroup files of `cfg`'s systems, parsed: (short name → talkgroups),
-/// for [`Names`].
-pub fn talkgroup_tables(cfg: &Config) -> HashMap<String, trunk_core::trunk::Talkgroups> {
-    let mut m = HashMap::new();
-    for s in &cfg.systems {
-        m.insert(s.short_name.clone(), trunk_core::trunk::parse_csv(&s.talkgroups_csv));
-    }
-    for c in &cfg.conventional {
-        m.entry(c.short_name.clone()).or_insert_with(trunk_core::trunk::Talkgroups::new);
-    }
-    m
-}
+/// A system's (by short name) `decodeDetail` sites and patches.
+pub type DecodeSites = fn(&Engine, &str) -> (Vec<Value>, Vec<Value>);
 
 /// A talkgroup's name and Ignore flag from parsed tables.
 pub fn tg_info(tables: &HashMap<String, trunk_core::trunk::Talkgroups>, system: &str, tg: u32) -> Option<TgInfo> {

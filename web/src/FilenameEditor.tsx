@@ -18,6 +18,7 @@ const TOKEN_LABEL: Record<string, string> = {
   talkgroup_group: "Category",
   talkgroup_display: "Talkgroup",
   short_name: "System",
+  site: "Site",
   freq: "Frequency, Hz",
   freq_mhz: "Frequency, MHz",
   epoch: "Start, Unix time",
@@ -57,7 +58,7 @@ const TIME_LABEL: Record<string, string> = {
 
 const GROUPS: { title: string; tokens: string[] }[] = [
   { title: "Talkgroup", tokens: ["talkgroup", "talkgroup_alpha_tag", "talkgroup_tag", "talkgroup_description", "talkgroup_group"] },
-  { title: "Call", tokens: ["short_name", "freq", "freq_mhz", "epoch", "call_num", "tdma_slot", "audio_type", "emergency", "encrypted", "priority"] },
+  { title: "Call", tokens: ["short_name", "site", "freq", "freq_mhz", "epoch", "call_num", "tdma_slot", "audio_type", "emergency", "encrypted", "priority"] },
   { title: "Radio", tokens: ["sys_num", "source_num", "recorder_num", "signal", "noise", "color_code", "ran"] },
 ];
 const TIMES = ["%Y", "%m", "%-m", "%d", "%-d", "%H", "%M", "%S", "%f", "%Y-%m-%d", "%H%M%S", "iso", "%j", "%a"];

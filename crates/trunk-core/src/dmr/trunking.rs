@@ -31,6 +31,7 @@ use crate::bits::field;
 use crate::dsp::c4fm::C4fm;
 use crate::dsp::{Receiver, Symbol};
 use crate::trunk::message::{Message, MessageType};
+use crate::trunk::Voice;
 
 pub const FID_CONNECT_PLUS: u8 = 0x06;
 
@@ -300,7 +301,7 @@ impl Site {
 
     fn base(&self, idx: usize, slot: u8, kind: MessageType, t: f64) -> Message {
         let c = &self.carriers[idx];
-        Message { kind, time_s: t, color_code: Some(c.chan.slots[slot as usize].color_code.unwrap_or(0)), ..Default::default() }
+        Message { kind, time_s: t, voice: Voice::Dmr { slot, color_code: Some(c.chan.slots[slot as usize].color_code.unwrap_or(0)) }, ..Default::default() }
     }
 
     fn event(&mut self, idx: usize, slot: u8, e: SlotEvent, t: f64, out: &mut Vec<Message>) {
@@ -351,7 +352,6 @@ impl Site {
                 };
                 let mut m = self.base(idx, slot, kind, t);
                 m.freq_hz = hz;
-                m.tdma_slot = slot;
                 m.talkgroup = tg;
                 m.source = if src != 0 { src as i64 } else { -1 };
                 m.encrypted = lc.encrypted();
@@ -446,7 +446,8 @@ impl Site {
         };
         let mut m = self.base(idx, slot_of_block, kind, t);
         m.freq_hz = hz.unwrap_or(0);
-        m.tdma_slot = slot;
+        // (The colour code of the slot the grant came on; the slot it grants.)
+        m.voice = Voice::Dmr { slot, color_code: m.voice.color_code() };
         m.talkgroup = tg;
         m.source = src.map_or(-1, |s| s as i64);
         m.emergency = emergency;
@@ -610,7 +611,7 @@ mod tests {
         let mut out = Vec::new();
         let g = csbk([0xb1, 0x00, 0x06, 0x58, 0x00, 0x00, 0xce, 0x00, 0x07, 0xe7]);
         s.csbk(0, 0, &g, None, 1.0, &mut out);
-        assert_eq!((out[0].kind, out[0].freq_hz, out[0].talkgroup, out[0].tdma_slot, out[0].source), (MessageType::Grant, 0, 206, 1, 2023));
+        assert_eq!((out[0].kind, out[0].freq_hz, out[0].talkgroup, out[0].voice.slot().unwrap_or(9), out[0].source), (MessageType::Grant, 0, 206, 1, 2023));
         let lc = super::super::slot::Lc([0x00, 0x10, 0x40, 0x00, 0x00, 0xce, 0x00, 0x07, 0xe7]);
         // Colour code 0, from the control channel and on the voice channel's slot.
         s.color_code = Some(0);
@@ -618,7 +619,7 @@ mod tests {
         out.clear();
         s.event(1, 1, SlotEvent::Lc { lc, from: LcFrom::Header }, 1.4, &mut out);
         assert_eq!(s.resolve(101), Some(452_275_000));
-        assert!(out[0].encrypted && out[0].freq_hz == 452_275_000 && out[0].tdma_slot == 1);
+        assert!(out[0].encrypted && out[0].freq_hz == 452_275_000 && out[0].voice.slot().unwrap_or(9) == 1);
         // The next grant for the channel resolves at once.
         out.clear();
         s.csbk(0, 0, &g, None, 30.0, &mut out);
@@ -692,12 +693,12 @@ mod tests {
         let mut out = Vec::new();
         // Configured channel 7.
         s.csbk(0, 0, &tier3_grant(0x31, 7, 0, 3001, 12), None, 1.0, &mut out);
-        assert_eq!((out[0].kind, out[0].freq_hz, out[0].tdma_slot, out[0].talkgroup, out[0].source), (MessageType::Grant, 451_012_500, 0, 3001, 12));
+        assert_eq!((out[0].kind, out[0].freq_hz, out[0].voice.slot().unwrap_or(9), out[0].talkgroup, out[0].source), (MessageType::Grant, 451_012_500, 0, 3001, 12));
         assert_eq!(s.variant, Some(Variant::TierIII));
         // A private call with absolute parameters (channel 0xFFF, MBC).
         out.clear();
         s.csbk(0, 0, &tier3_grant(0x30, 0xfff, 1, 777, 12), Some(&absolute(9, 451_587_500)), 2.0, &mut out);
-        assert_eq!((out[0].kind, out[0].freq_hz, out[0].tdma_slot), (MessageType::UuVGrant, 451_587_500, 1));
+        assert_eq!((out[0].kind, out[0].freq_hz, out[0].voice.slot().unwrap_or(9)), (MessageType::UuVGrant, 451_587_500, 1));
         // C_BCAST type 5: channel 12's frequency.
         let mut ann = [0u8; 10];
         ann[0] = 0x28;
@@ -721,7 +722,7 @@ mod tests {
         let mut out = Vec::new();
         s.csbk(0, 0, &Csbk(b), None, 1.0, &mut out);
         assert_eq!(s.variant, Some(Variant::ConnectPlus));
-        assert_eq!((out[0].freq_hz, out[0].tdma_slot, out[0].talkgroup, out[0].source), (453_100_000, 1, 55, 4242));
+        assert_eq!((out[0].freq_hz, out[0].voice.slot().unwrap_or(9), out[0].talkgroup, out[0].source), (453_100_000, 1, 55, 4242));
     }
 
     #[test]

@@ -9,7 +9,7 @@ import { radioQuery, setView, usePolled, useApp, useTopic, type AppState, type S
 import { Card, Choice, HeatStrip, LiveSpark, Stat, TimeSeries, Trend, type Line } from "../charts.tsx";
 import { mhz, num, signed } from "../fmt.ts";
 import type { FreqRow, SeriesData, SourceStatus } from "../protocol.ts";
-import { change, dashSystems, K, KIND_LABEL, recentAvg, running, sourceGuard, systemHealth, useHistory, useUsual, val, type DashSystem, type Usual } from "./data.ts";
+import { change, dashSystems, K, KIND_LABEL, recentAvg, running, runningSites, siteHealth, sourceGuard, systemHealth, useHistory, useUsual, val, type DashSite, type DashSystem, type Usual } from "./data.ts";
 import { DmrSites, hex, Neighbours, NxdnSites, Patches } from "./Systems.tsx";
 
 /** `a / b` step by step (errors per frame from the two rates). */
@@ -86,25 +86,28 @@ function freqHints(rows: FreqRow[], s: AppState): string[] {
   return out.slice(0, 4);
 }
 
-function DecodeCard({ s, x, usual, freqs }: { s: AppState; x: DashSystem; usual: Usual | null; freqs?: FreqRow[] }) {
-  const h = systemHealth(s, x, usual);
+/** A site's control channel (a conventional system: its voice), and its system's voice when `voice`. */
+function DecodeCard({ s, x, site, usual, freqs, voice = true }: { s: AppState; x: DashSystem; site?: DashSite; usual: Usual | null; freqs?: FreqRow[]; voice?: boolean }) {
+  const h = site ? siteHealth(s, site, usual) : systemHealth(s, x);
   const k = (n: string) => K.sys(x.name, n);
-  const good = recentAvg(k("cc/good"), 60) ?? 0;
-  const bad = recentAvg(k("cc/bad"), 60) ?? 0;
+  const cc = (n: string) => (site ? K.cc(site, n) : K.sys(x.name, `cc/${n}`));
+  const good = recentAvg(cc("good"), 60) ?? 0;
+  const bad = recentAvg(cc("bad"), 60) ?? 0;
   const lost = good + bad > 0 ? (100 * bad) / (good + bad) : null;
   // P25: symbols of air decoded a second, over 4800: the share of the
   // channel accounted for, which messages a second can't show where an MBT
   // takes several TSBKs' air.
-  const airSym = recentAvg(k("cc/airSym"), 60);
+  const airSym = recentAvg(cc("airSym"), 60);
   const air = airSym === null ? null : Math.min(100, airSym / 48);
   const vbad = voiceBadPct(x.name);
   const vf = recentAvg(k("voice/frames"), 600) ?? 0;
   const ve = recentAvg(k("voice/errors"), 600) ?? 0;
-  const syncs = recentAvg(k("cc/syncs"), 60) ?? 0;
-  const misses = (recentAvg(k("cc/nidFails"), 60) ?? 0) + (recentAvg(k("cc/flywheels"), 60) ?? 0);
-  const sep = val(s, k("cc/sep"));
-  const perr = val(s, k("cc/phaseErr"));
-  const st = x.status;
+  const syncs = recentAvg(cc("syncs"), 60) ?? 0;
+  const misses = (recentAvg(cc("nidFails"), 60) ?? 0) + (recentAvg(cc("flywheels"), 60) ?? 0);
+  const sep = val(s, cc("sep"));
+  const perr = val(s, cc("phaseErr"));
+  const st = site?.status;
+  const several = x.sites.length > 1;
   // CQPSK carries it (or only CQPSK runs): its phase error, not C4FM's eye.
   const cqpsk = st?.modulation === "CQPSK" || (sep === null && perr !== null);
   return (
@@ -113,11 +116,12 @@ function DecodeCard({ s, x, usual, freqs }: { s: AppState; x: DashSystem; usual:
         <span className="row">
           <span className="sys-dot" style={{ background: systemColor(s.config, x.name) }} />
           {x.name}
+          {several && site && <span className="muted"> / {site.name}</span>}
         </span>
       }
       level={h.level}
       why={h.why}
-      onTitle={() => setView("decode", x.name)}
+      onTitle={() => setView("decode", x.name, ...(several && site ? [site.name] : []))}
       actions={<span className="badge-kind">{st?.modulation ? `${KIND_LABEL[x.kind]} · ${st.modulation}` : KIND_LABEL[x.kind]}</span>}
     >
       <div className="src-grid">
@@ -125,10 +129,10 @@ function DecodeCard({ s, x, usual, freqs }: { s: AppState; x: DashSystem; usual:
           <>
             <Stat
               label="Control messages"
-              value={num(val(s, k("cc/good")))}
+              value={num(val(s, cc("good")))}
               unit="/s"
-              trend={<Trend delta={change(recentAvg(k("cc/good"), 60), usual)} />}
-              spark={<LiveSpark k={k("cc/good")} band={usual ? [usual.lo, usual.hi] : null} lo={0} />}
+              trend={<Trend delta={change(recentAvg(cc("good"), 60), usual)} />}
+              spark={<LiveSpark k={cc("good")} band={usual ? [usual.lo, usual.hi] : null} lo={0} />}
               sub={st?.controlChannelHz ? `${formatMhz(st.controlChannelHz)} MHz` : "hunting"}
             />
             <Stat
@@ -136,7 +140,7 @@ function DecodeCard({ s, x, usual, freqs }: { s: AppState; x: DashSystem; usual:
               value={lost === null ? "—" : num(lost, 1)}
               unit="%"
               level={lost !== null && lost > 10 ? (lost > 30 ? "bad" : "warn") : undefined}
-              spark={<LiveSpark k={k("cc/bad")} color="var(--serious)" lo={0} />}
+              spark={<LiveSpark k={cc("bad")} color="var(--serious)" lo={0} />}
               hint="Control messages not decoded. A few % is normal."
             />
             {x.kind === "p25" && (
@@ -144,20 +148,20 @@ function DecodeCard({ s, x, usual, freqs }: { s: AppState; x: DashSystem; usual:
                 label="Coverage"
                 value={air === null ? "—" : num(air, 1)}
                 unit="%"
-                spark={<LiveSpark k={k("cc/airSym")} mul={1 / 48} lo={0} hi={100} title="Coverage, last 10 min (0–100 %)" />}
+                spark={<LiveSpark k={cc("airSym")} mul={1 / 48} lo={0} hi={100} title="Coverage, last 10 min (0–100 %)" />}
                 hint="An estimate from timing: the control channel's air that decoded, against the most it could carry over that time. Unlike messages a second, it reads the same on every system (a multi-block message takes two or three TSBKs' air). Frames never caught count against it. 96–98 % is healthy."
               />
             )}
             {x.kind === "smartnet" ? (
-              <Stat label="Deviation" value={num(val(s, k("cc/deviation")), 0)} unit="Hz" sub={`carrier ${signed(val(s, k("cc/offset")), 0)} Hz`} hint="Normal is about ±2.4 kHz; less means weak or filtered." />
+              <Stat label="Deviation" value={num(val(s, cc("deviation")), 0)} unit="Hz" sub={`carrier ${signed(val(s, cc("offset")), 0)} Hz`} hint="Normal is about ±2.4 kHz; less means weak or filtered." />
             ) : cqpsk ? (
               <Stat
                 label="Phase error"
                 value={perr === null ? "—" : num(perr, 1)}
                 unit="° rms"
                 level={perr === null ? undefined : perr >= PHASE_BAD ? "bad" : perr >= PHASE_WARN ? "warn" : undefined}
-                spark={<LiveSpark k={k("cc/phaseErr")} color="var(--series-3)" lo={0} />}
-                sub={`carrier ${signed(val(s, k("cc/offset")), 0)} Hz`}
+                spark={<LiveSpark k={cc("phaseErr")} color="var(--series-3)" lo={0} />}
+                sub={`carrier ${signed(val(s, cc("offset")), 0)} Hz`}
                 hint="CQPSK phase error: under 10° clean, 20°+ marginal, ~25° noise."
               />
             ) : (
@@ -165,8 +169,8 @@ function DecodeCard({ s, x, usual, freqs }: { s: AppState; x: DashSystem; usual:
                 label="Eye opening"
                 value={sep === null ? "—" : num(sep, 1)}
                 level={sep !== null && sep < 4 ? "warn" : undefined}
-                spark={<LiveSpark k={k("cc/sep")} color="var(--series-3)" lo={0} />}
-                sub={`carrier ${signed(val(s, k("cc/offset")), 0)} Hz`}
+                spark={<LiveSpark k={cc("sep")} color="var(--series-3)" lo={0} />}
+                sub={`carrier ${signed(val(s, cc("offset")), 0)} Hz`}
                 hint="C4FM symbol separation: 10+ clean, under 4 errors, ~1 noise. Simulcast reads low."
               />
             )}
@@ -175,22 +179,22 @@ function DecodeCard({ s, x, usual, freqs }: { s: AppState; x: DashSystem; usual:
                 label="Framing"
                 value={syncs > 0 ? num((100 * misses) / (syncs + misses), 1) : "—"}
                 unit="% missed"
-                sub={`${num((recentAvg(k("cc/eqResets"), 60) ?? 0) * 60, 0)} equaliser resets/min`}
+                sub={`${num((recentAvg(cc("eqResets"), 60) ?? 0) * 60, 0)} equaliser resets/min`}
                 hint="Frames with a failed header (NID) or missed sync."
               />
             )}
           </>
         )}
-        <Stat
+        {voice && <Stat
           label="Voice lost"
           value={vbad === null ? "—" : num(vbad, 1)}
           unit="% of frames"
           level={vbad === null ? undefined : vbad >= 8 ? "bad" : vbad >= 2 ? "warn" : undefined}
           sub={vf > 0 ? `${num(ve / vf, 1)} bit errors fixed per frame` : "no voice yet"}
           hint="Unusable voice frames, 10 min. Under 2% is clean."
-        />
+        />}
       </div>
-      {freqs && freqs.length > 0 && (
+      {voice && freqs && freqs.length > 0 && (
         <div className="freq-strip">
           <HeatStrip
             v={freqs.map((f) => f.badPct)}
@@ -213,19 +217,29 @@ const RANGES: { v: StatsRange; label: string }[] = [
   { v: "7d", label: "7 days" },
 ];
 
-function SystemDetail({ s, name }: { s: AppState; name: string }) {
+function SystemDetail({ s, name, siteName }: { s: AppState; name: string; siteName?: string }) {
   const x = dashSystems(s).find((y) => y.name === name);
   const [range, setRange] = useState<StatsRange>("24h");
   useTopic(`decode:${name}`);
+  // The site shown (a system of several: chosen; else its only one).
+  const site = x?.sites.find((y) => y.name === siteName) ?? x?.sites[0];
   const k = (n: string) => K.sys(name, n);
-  const hist = useHistory([k("cc/good"), k("cc/bad"), k("cc/airSym"), k("cc/sep"), k("cc/phaseErr"), k("cc/snr"), k("cc/offset"), k("voice/frames"), k("voice/bad")], range, 360);
-  const usual = useUsual([k("cc/good")]);
+  const cc = (n: string) => (site ? K.cc(site, n) : k(`cc/${n}`));
+  const hist = useHistory([cc("good"), cc("bad"), cc("airSym"), cc("sep"), cc("phaseErr"), cc("snr"), cc("offset"), k("voice/frames"), k("voice/bad")], range, 360);
+  const usual = useUsual([cc("good")]);
   const freqs = usePolled(`dfreqs:${name}:${range}`, () => radioQuery({ what: "freqs", system: name, hours: range === "7d" ? 168 : 24 }), 120_000);
   const rows = (freqs?.rows ?? []) as FreqRow[];
   const live = s.decodeDetail[name];
   const line = (key: string, label: string, c: string, extra: Partial<Line> = {}): Line => ({ label, color: c, data: hist?.[key] ?? null, ...extra });
   if (!x) return <p className="empty">No system called {name}.</p>;
-  const st = x.status;
+  const st = site?.status;
+  // The site shown, with its detail (while watched: what its control channel announces).
+  const here = runningSites(x.status ? [x.status] : [])
+    .filter((y) => y.name === site?.name)
+    .flatMap((y) => {
+      const d = live?.sites.find((z) => z.index === y.index);
+      return d ? [{ ...y, ...d }] : [];
+    });
   const hints = freqHints(rows, s);
   return (
     <div className="stack">
@@ -233,9 +247,10 @@ function SystemDetail({ s, name }: { s: AppState; name: string }) {
         <button className="btn ghost small" onClick={() => setView("decode")}>
           ← All systems
         </button>
+        {x.sites.length > 1 && site && <Choice value={site.name} options={x.sites.map((y) => ({ v: y.name, label: y.name }))} onChange={(v) => setView("decode", name, v)} label="Site" />}
       </div>
-      <DecodeCard s={s} x={x} usual={usual[k("cc/good")]} freqs={rows} />
-      {st && !st.dmr && !st.nxdn && (
+      <DecodeCard s={s} x={x} site={site} usual={usual[cc("good")]} freqs={rows} />
+      {st && x.kind !== "dmr" && x.kind !== "nxdn" && (
         <div className="kv small">
           <span>
             NAC <b className="mono">{hex(st.identity.nac)}</b>
@@ -250,7 +265,7 @@ function SystemDetail({ s, name }: { s: AppState; name: string }) {
             Site <b className="mono">{st.identity.site != null ? `${st.identity.rfss ?? "?"}-${st.identity.site}` : "—"}</b>
           </span>
           <span>
-            {st.callsConcluded} calls saved this run · {st.activeCalls} active
+            {x.status?.callsConcluded ?? 0} calls saved this run · {x.status?.activeCalls ?? 0} active
           </span>
         </div>
       )}
@@ -295,9 +310,9 @@ function SystemDetail({ s, name }: { s: AppState; name: string }) {
         {x.kind !== "conventional" && (
           <Card title="Control channel">
             <TimeSeries
-              lines={[line(k("cc/good"), "Decoded /s", "var(--series-1)", { band: true }), line(k("cc/bad"), "Lost /s", "var(--serious)")]}
+              lines={[line(cc("good"), "Decoded /s", "var(--series-1)", { band: true }), line(cc("bad"), "Lost /s", "var(--serious)")]}
               zero
-              marks={usual[k("cc/good")] ? [{ v: usual[k("cc/good")]!.avg, label: "usual" }] : []}
+              marks={usual[cc("good")] ? [{ v: usual[cc("good")]!.avg, label: "usual" }] : []}
             />
           </Card>
         )}
@@ -307,7 +322,7 @@ function SystemDetail({ s, name }: { s: AppState; name: string }) {
                 channel accounted for. Unlike "Lost /s" it counts frames never
                 synced on, and weighs a message by its air. */}
             <TimeSeries
-              lines={[{ label: "Coverage, %", color: "var(--series-1)", data: scaled(hist?.[k("cc/airSym")], 1 / 48, 100), band: true }]}
+              lines={[{ label: "Coverage, %", color: "var(--series-1)", data: scaled(hist?.[cc("airSym")], 1 / 48, 100), band: true }]}
               hi={100}
               fmt={(v) => v.toFixed(1)}
               empty="No coverage measured yet."
@@ -319,12 +334,12 @@ function SystemDetail({ s, name }: { s: AppState; name: string }) {
         </Card>
         {x.kind !== "conventional" && (
           <Card title="Signal and demodulation">
-            <TimeSeries lines={[line(k("cc/snr"), "SNR, dB", "var(--series-1)"), x.kind === "p25" && (hist?.[k("cc/sep")] == null || st?.modulation === "CQPSK") ? line(k("cc/phaseErr"), "Phase error, °", "var(--series-3)") : line(k("cc/sep"), "Eye opening", "var(--series-3)")]} />
+            <TimeSeries lines={[line(cc("snr"), "SNR, dB", "var(--series-1)"), x.kind === "p25" && (hist?.[cc("sep")] == null || st?.modulation === "CQPSK") ? line(cc("phaseErr"), "Phase error, °", "var(--series-3)") : line(cc("sep"), "Eye opening", "var(--series-3)")]} />
           </Card>
         )}
         {x.kind !== "conventional" && (
           <Card title="Carrier offset">
-            <TimeSeries lines={[line(k("cc/offset"), "Hz from nominal", "var(--series-2)", { band: true })]} fmt={(v) => v.toFixed(0)} />
+            <TimeSeries lines={[line(cc("offset"), "Hz from nominal", "var(--series-2)", { band: true })]} fmt={(v) => v.toFixed(0)} />
           </Card>
         )}
       </div>
@@ -378,10 +393,10 @@ function SystemDetail({ s, name }: { s: AppState; name: string }) {
           </div>
         )}
       </Card>
-      {st && <Neighbours s={s} systems={[st]} />}
-      {st && <Patches systems={[st]} />}
-      {st?.dmr && <DmrSites systems={[st]} />}
-      {st?.nxdn && <NxdnSites systems={[st]} />}
+      {st && <Neighbours s={s} sites={here} />}
+      {live && <Patches patches={live.patches} />}
+      {here.some((y) => y.dmr) && <DmrSites sites={here} />}
+      {here.some((y) => y.nxdn) && <NxdnSites sites={here} />}
     </div>
   );
 }
@@ -390,18 +405,22 @@ export function DecodePage() {
   const s = useApp();
   const systems = dashSystems(s);
   const on = running(s);
-  const usual = useUsual(systems.filter((x) => x.kind !== "conventional").map((x) => K.sys(x.name, "cc/good")));
+  const usual = useUsual(systems.flatMap((x) => x.sites.map((y) => K.cc(y, "good"))));
   const names = systems.map((x) => x.name).join(",");
   const freqs = usePolled(`freqs:${names}:${on}`, () => Promise.all(systems.map((x) => radioQuery({ what: "freqs", system: x.name, hours: 24 }))), on ? 120_000 : 0);
-  if (s.path[0]) return <SystemDetail s={s} name={s.path[0]} />;
+  if (s.path[0]) return <SystemDetail s={s} name={String(s.path[0])} siteName={s.path[1] === undefined ? undefined : String(s.path[1])} />;
   if (!systems.length) return <p className="empty">No systems set up yet.</p>;
   return (
     <div className="page">
       {!on && <p className="empty">Not recording — showing past data.</p>}
       <div className="card-grid wide">
-        {systems.map((x) => (
-          <DecodeCard key={x.name} s={s} x={x} usual={usual[K.sys(x.name, "cc/good")]} freqs={freqs?.find((f) => f.system === x.name)?.rows as FreqRow[] | undefined} />
-        ))}
+        {/* A card per site: its control channel's decoding (the system's voice on its first). */}
+        {systems.flatMap((x) => {
+          const rows = freqs?.find((f) => f.system === x.name)?.rows as FreqRow[] | undefined;
+          return x.sites.length
+            ? x.sites.map((y, i) => <DecodeCard key={`${x.name}/${y.name}`} s={s} x={x} site={y} usual={usual[K.cc(y, "good")]} freqs={rows} voice={i === 0} />)
+            : [<DecodeCard key={x.name} s={s} x={x} usual={null} freqs={rows} />];
+        })}
       </div>
     </div>
   );

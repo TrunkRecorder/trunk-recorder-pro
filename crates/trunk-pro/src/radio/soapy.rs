@@ -380,20 +380,13 @@ fn pairs(s: &str) -> Vec<(String, String)> {
     s.split(',').filter_map(|p| p.split_once('=')).map(|(k, v)| (k.trim().to_string(), v.trim().to_string())).filter(|(k, _)| !k.is_empty()).collect()
 }
 
-pub fn run(source: usize, cfg: SoapyConfig, tx: SyncSender<SourceMsg>, stop: Arc<AtomicBool>) {
-    run_with(source, cfg, tx, stop, None)
-}
-
-/// [`run`], retuned on request.
-pub fn run_with(source: usize, mut cfg: SoapyConfig, tx: SyncSender<SourceMsg>, stop: Arc<AtomicBool>, ctl: Option<Arc<Control>>) {
-    while !stop.load(Ordering::Relaxed) {
-        if let Some(c) = ctl.as_ref().and_then(|c| *c.current_hz.lock().unwrap()) {
-            cfg.center_hz = c;
-        }
-        if let Err(e) = stream_once(source, &cfg, &tx, &stop, ctl.as_deref()) {
-            let _ = tx.send(SourceMsg::Error { source, error: e });
-            std::thread::sleep(Duration::from_secs(3));
-        }
+impl crate::sdr::Radio for SoapyConfig {
+    const BACKOFF: Duration = Duration::from_secs(3);
+    fn retune_to(&mut self, hz: f64) {
+        self.center_hz = hz;
+    }
+    fn stream_once(&self, source: usize, tx: &SyncSender<SourceMsg>, stop: &Arc<AtomicBool>, ctl: Option<&Control>) -> Result<(), String> {
+        stream_once(source, self, tx, stop, ctl)
     }
 }
 

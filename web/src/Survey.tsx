@@ -1,24 +1,39 @@
 // "Find my system": the survey. Scan the bands for P25, SmartNet, trunked DMR and NXDN control channels,
 // listen to the best one, and add it as a system — control channels, site
 // identity, the dongle's frequency correction, gain and centre from what it
-// announces. Neighbouring sites it announces can be added as systems too.
+// announces. Neighbouring sites it announces can be added as sites of it too.
 // SmartNet doesn't announce its band plan: listening learns it from which
 // carrier comes up when a channel number is granted.
 // The recorder does the work (crates/trunk-core/src/survey.rs); this shows it.
 
-import { useState } from "react";
-import { formatGain, formatMhz, systemWithChannel } from "./config.ts";
-import { addDmrSite, addNxdnChannel, addNxdnSite, addSite, applySurvey, setNotice, startSurvey, stopSurvey, surveyListen, surveyRescan, useApp, web } from "./controller.ts";
-import type { Config, SiteIdentity, SurveyCandidate, SurveyIdentity, SurveyMonitor, SurveySuggestion } from "./protocol.ts";
+import { Fragment, useState } from "react";
+import { formatGain, formatMhz, siteNameOf, systemWithChannel } from "./config.ts";
+import {
+  can,
+  addDmrSite,
+  addNxdnChannel,
+  addNxdnSite,
+  addSite,
+  applySurvey,
+  setNotice,
+  startSurvey,
+  stopSurvey,
+  surveyListen,
+  surveyRescan,
+  systemOfSite,
+  useApp,
+  type SurveyTarget,
+} from "./controller.ts";
+import type { Config, SiteIdentity, SurveyCandidate, SurveyMonitor, SurveySuggestion } from "./protocol.ts";
 import { Waterfall } from "./Waterfall.tsx";
 
 const hex = (v: number | null | undefined) => (v === null || v === undefined ? "?" : v.toString(16).toUpperCase());
 
-function idText(id: SurveyIdentity): string {
+function idText(id: SiteIdentity): string {
   const parts: string[] = [];
-  if (id.nac !== null) parts.push(`NAC ${hex(id.nac)}`);
-  if (id.sysId !== null) parts.push(`SysID ${hex(id.sysId)}`);
-  if (id.rfss !== null && id.site !== null) parts.push(`site ${id.rfss}-${id.site}`);
+  if (id.nac != null) parts.push(`NAC ${hex(id.nac)}`);
+  if (id.sysId != null) parts.push(`SysID ${hex(id.sysId)}`);
+  if (id.rfss != null && id.site != null) parts.push(`site ${id.rfss}-${id.site}`);
   return parts.join(" · ");
 }
 
@@ -35,7 +50,7 @@ const KIND: Record<SurveyCandidate["kind"], string> = {
 const isControl = (c: SurveyCandidate) => c.kind === "control" || c.kind === "smartnet";
 
 /** The site key of a scanned control channel: its secondaries share it. */
-const siteKey = (id: SurveyIdentity) => (id.sysId !== null && id.site !== null ? `${id.nac}/${id.sysId}/${id.rfss}/${id.site}` : null);
+const siteKey = (id: SiteIdentity) => (id.sysId != null && id.site != null ? `${id.nac}/${id.sysId}/${id.rfss}/${id.site}` : null);
 
 function Candidates(props: { c: Config; list: SurveyCandidate[]; listening: number | null; onListen?: (hz: number) => void }) {
   // Add a scanned control channel as a system — with its site's other control channels found in the scan.
@@ -45,7 +60,7 @@ function Candidates(props: { c: Config; list: SurveyCandidate[]; listening: numb
     // (On the 6.25 kHz channel raster.)
     const ccs = same.map((x) => Math.round((x.correctedHz ?? x.freqHz) / 6250) * 6250);
     const id = cand.identity;
-    const expect: SiteIdentity = { nac: id.nac, sysId: id.sysId, rfss: id.rfss, site: id.site, wacn: id.wacn };
+    const expect: SiteIdentity = { ...id };
     const name = addSite(ccs, expect);
     setNotice(`Added ${name}: control channel${ccs.length === 1 ? "" : "s"} ${ccs.map((f) => formatMhz(f)).join(", ")} MHz.`);
   };
@@ -211,7 +226,7 @@ function SmartnetPlan(props: { s: NonNullable<SurveyMonitor["smartnet"]> }) {
     <>
       <span className="mono">
         {b.bandplan === "400_custom"
-          ? `${b.bandplan}: channel ${b.bandplanOffset} = ${formatMhz(b.bandplanBase ?? 0)} MHz, ${(b.bandplanSpacing ?? 0) / 1000} kHz steps`
+          ? `${b.bandplan}: channel ${b.bandplanOffset} = ${formatMhz(b.bandplanBaseHz ?? 0)} MHz, ${(b.bandplanSpacingHz ?? 0) / 1000} kHz steps`
           : b.bandplan}
       </span>{" "}
       ({found})
@@ -229,23 +244,35 @@ function MonitorView(props: { m: SurveyMonitor; sug: SurveySuggestion | null; c:
   const rtl = src?.type === "rtlsdr";
   const id = m.identity;
   const gainSteps = m.gain.steps.length;
-  // The system this is already (one of its control channels), else a new one.
-  const existing = sug ? c.systems.findIndex((x) => sug.controlChannels.some((f) => x.controlChannelsHz.some((g) => Math.abs(f - g) < 6_000))) : -1;
-  const [picked, setTarget] = useState<number | "new" | null>(null);
-  const target = picked ?? (existing >= 0 ? existing : "new");
+  // The site this is already (one of its control channels), else a site of the system it is of, else a new system.
+  const near = (f: number, g: number) => Math.abs(f - g) < 6_000;
+  const existing = sug
+    ? c.systems.flatMap((x, k) => x.sites.map((y, j) => ({ system: k, site: j, y }))).find(({ y }) => sug.controlChannels.some((f) => y.controlChannelsHz.some((g) => near(f, g))))
+    : undefined;
+  const of = sug ? systemOfSite(c, sug.identity) : -1;
+  const [picked, setTarget] = useState<SurveyTarget | null>(null);
+  const target: SurveyTarget = picked ?? (existing ? { system: existing.system, site: existing.site } : of >= 0 ? { system: of, site: "new" } : "new");
+  const targetSys = target === "new" ? undefined : c.systems[target.system];
+  const replacing = target !== "new" && target.site !== "new";
+  const encode = (t: SurveyTarget) => (t === "new" ? "new" : `${t.system}:${t.site}`);
+  const decode = (v: string): SurveyTarget => {
+    if (v === "new") return "new";
+    const [k, j] = v.split(":");
+    return { system: Number(k), site: j === "new" ? "new" : Number(j) };
+  };
   const apply = () => {
     if (!sug) return;
     const done = applySurvey(props.source, sug, target);
     stopSurvey();
     const bits = [`control channel${sug.controlChannels.length === 1 ? "" : "s"} ${mhzList(sug.controlChannels)} MHz`];
     if (sug.type === "smartnet" && sug.bandplan) bits.unshift(`SmartNet, band plan ${sug.bandplan.bandplan}`);
-    if (sug.site !== null) bits.push(`site lock ${sug.rfss ?? "?"}-${sug.site}`);
+    if (sug.identity.site != null) bits.push(`site lock ${sug.identity.rfss ?? "?"}-${sug.identity.site}`);
     if (src && src.type !== "file") {
       if (sug.ppmApply !== null) bits.push(`correction ${sug.ppmApply > 0 ? "+" : ""}${sug.ppmApply} ppm`);
       if (rtl && sug.gainDb !== null) bits.push(`gain ${formatGain(sug.gainDb)} dB`);
       bits.push(done.centered ? `center ${formatMhz(sug.centerHz, 4)} MHz` : `source ${props.source + 1} unchanged (in use) — needs a source at ${formatMhz(sug.centerHz, 4)} MHz`);
     }
-    setNotice(`${target === "new" ? "Added" : "Updated"} ${done.system}: ${bits.join(", ")}.`);
+    setNotice(`${replacing ? "Updated" : "Added"} ${done.system}: ${bits.join(", ")}.`);
     props.onDone();
   };
   const neighbour = (a: SurveyMonitor["adjacent"][number]) => {
@@ -266,15 +293,15 @@ function MonitorView(props: { m: SurveyMonitor; sug: SurveySuggestion | null; c:
           )}
         </Check>
         {m.smartnet ? (
-          <Check state={id.sysId !== null ? "ok" : "wait"} label="System">
-            {id.sysId !== null ? <span className="mono">SmartNet · System ID {hex(id.sysId)}</span> : "SmartNet — waiting for the system ID broadcast…"}
+          <Check state={id.sysId != null ? "ok" : "wait"} label="System">
+            {id.sysId != null ? <span className="mono">SmartNet · System ID {hex(id.sysId)}</span> : "SmartNet — waiting for the system ID broadcast…"}
           </Check>
         ) : (
-        <Check state={id.wacn !== null && id.sysId !== null ? "ok" : "wait"} label="System">
-          {id.wacn !== null || id.sysId !== null || id.nac !== null ? (
+        <Check state={id.wacn != null && id.sysId != null ? "ok" : "wait"} label="System">
+          {id.wacn != null || id.sysId != null || id.nac != null ? (
             <span className="mono">
               WACN {hex(id.wacn)} · SysID {hex(id.sysId)} · NAC {hex(id.nac)}
-              {id.rfss !== null && id.site !== null ? ` · RFSS ${id.rfss} site ${id.site}` : ""}
+              {id.rfss != null && id.site != null ? ` · RFSS ${id.rfss} site ${id.site}` : ""}
             </span>
           ) : (
             "waiting for the network status broadcast…"
@@ -333,7 +360,7 @@ function MonitorView(props: { m: SurveyMonitor; sug: SurveySuggestion | null; c:
                     {have ? (
                       <span>· in {have.shortName}</span>
                     ) : (
-                      <button className="btn ghost small" onClick={() => neighbour(a)} title="Add as its own system">
+                      <button className="btn ghost small" onClick={() => neighbour(a)} title="Add as a site of its system (a new system if it isn't set up)">
                         Add
                       </button>
                     )}
@@ -367,13 +394,19 @@ function MonitorView(props: { m: SurveyMonitor; sug: SurveySuggestion | null; c:
         <div className="banner">
           <div className="stack">
             <div>
-              <b>Ready to record.</b> This {target === "new" ? "adds a system with" : `sets ${c.systems[target]?.shortName ?? "the system"}'s`} control channel
+              <b>Ready to record.</b> This{" "}
+              {target === "new"
+                ? "adds a system with"
+                : replacing
+                  ? `sets ${targetSys && targetSys.sites.length > 1 ? `${targetSys.shortName}'s site ${siteNameOf(targetSys, targetSys.sites[target.site as number])}` : (targetSys?.shortName ?? "the system")}'s`
+                  : `adds a site to ${targetSys?.shortName ?? "the system"} with`}{" "}
+              control channel
               {sug.controlChannels.length === 1 ? "" : "s"} <span className="mono">{mhzList(sug.controlChannels)}</span> MHz
-              {sug.site !== null && (
+              {sug.identity.site != null && (
                 <>
                   , locked to site{" "}
                   <span className="mono">
-                    {sug.rfss ?? "?"}-{sug.site}
+                    {sug.identity.rfss ?? "?"}-{sug.identity.site}
                   </span>
                 </>
               )}
@@ -407,17 +440,22 @@ function MonitorView(props: { m: SurveyMonitor; sug: SurveySuggestion | null; c:
             {!m.ready && <div className="small muted">Still measuring…</div>}
             <div className="row">
               {c.systems.length > 0 && (
-                <select value={String(target)} onChange={(e) => setTarget(e.target.value === "new" ? "new" : Number(e.target.value))} aria-label="Add as, or replace">
+                <select value={encode(target)} onChange={(e) => setTarget(decode(e.target.value))} aria-label="Add as, or replace">
                   <option value="new">as a new system</option>
                   {c.systems.map((x, k) => (
-                    <option key={k} value={k}>
-                      replacing {x.shortName}
-                    </option>
+                    <Fragment key={k}>
+                      {x.type === (sug.type === "smartnet" ? "smartnet" : "p25") && <option value={`${k}:new`}>as a site of {x.shortName}</option>}
+                      {x.sites.map((y, j) => (
+                        <option key={j} value={`${k}:${j}`}>
+                          replacing {x.sites.length > 1 ? `${x.shortName}'s site ${siteNameOf(x, y)}` : x.shortName}
+                        </option>
+                      ))}
+                    </Fragment>
                   ))}
                 </select>
               )}
               <button className="btn primary" onClick={apply}>
-                {target === "new" ? "Add this system" : "Update it"}
+                {target === "new" ? "Add this system" : replacing ? "Update it" : "Add this site"}
               </button>
             </div>
           </div>
@@ -439,7 +477,7 @@ export function SurveyPanel(props: { c: Config }) {
   const bands = picked ?? s.surveyBands.filter((b) => b.defaultOn).map((b) => b.id);
   const src = c.sources[Math.min(source, c.sources.length - 1)];
   const active = sv.stage !== "idle";
-  const unsupported = web && (src?.type === "usrp" || src?.type === "airspy" || src?.type === "soapy");
+  const unsupported = !can("drivers") && (src?.type === "usrp" || src?.type === "airspy" || src?.type === "soapy");
   const bandLabel = (id: string) => s.surveyBands.find((b) => b.id === id)?.label ?? id;
 
   if (!s.surveyBands.length) return null;

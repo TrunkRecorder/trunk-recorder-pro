@@ -8,6 +8,12 @@ import type { CallView, TalkgroupName } from "../protocol.ts";
 import { unitName } from "../units.ts";
 import { tgText } from "./Systems.tsx";
 
+/** An analog call on one of its conventional system's AM channels (calls say only analog). */
+function isAm(s: AppState, c: CallView): boolean {
+  const v = s.config?.conventional.find((x) => x.shortName === c.systemName);
+  return !!v?.channels.some((ch) => ch.mode === "am" && Math.abs(ch.freqHz - c.freqHz) < 1);
+}
+
 export function clock(s: number): string {
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
@@ -32,7 +38,7 @@ export function Unit({ id, alias }: { id: number; alias: string | undefined }) {
  * talker alias heard (live, or `saved` with the call), as the recorder picks
  * a call's `tag`.
  */
-export const aliasOf = (s: AppState, system: string, id: number, saved?: string) => {
+export const aliasOf = (s: Pick<AppState, "config" | "units">, system: string, id: number, saved?: string) => {
   const c = s.config;
   const names = c?.systems.find((x) => x.shortName === system)?.unitNames ?? c?.conventional.find((x) => x.shortName === system)?.unitNames;
   const heard = () => s.units[system]?.[id] || saved || undefined;
@@ -176,6 +182,7 @@ export function ActiveCalls({ s }: { s: AppState }) {
                     <td className="sys-name">
                       <span className="sys-dot" style={{ background: systemColor(s.config, c.systemName) }} />
                       {c.systemName}
+                      {c.site && c.site !== c.systemName && <span className="muted"> / {c.site}</span>}
                     </td>
                   )}
                   <td>
@@ -184,7 +191,7 @@ export function ActiveCalls({ s }: { s: AppState }) {
                     {c.emergency && <span className="badge bad">EMERG</span>}
                     <PatchedWith tgs={c.patched ?? []} />
                     {c.alsoOn?.length ? (
-                      <div className="patched small" title="Same call on other sites; best copy saved">
+                      <div className="patched small" title="The same call on other sites of its system; the best copy is saved">
                         also on {c.alsoOn.join(", ")}
                       </div>
                     ) : null}
@@ -192,7 +199,7 @@ export function ActiveCalls({ s }: { s: AppState }) {
                   <td className="mono">
                     {formatMhz(c.freqHz, 4)}
                     {c.slot !== null && <span className="muted"> · s{c.slot}</span>}
-                    {c.analog && <span className="muted"> · FM{c.tone ? ` ${c.tone}` : ""}</span>}
+                    {c.analog && <span className="muted"> · {isAm(s, c) ? "AM" : "FM"}{c.tone ? ` ${c.tone}` : ""}</span>}
                     {c.nxdn && <span className="muted"> · {c.nxdn.toUpperCase()}{c.ran != null ? ` RAN ${c.ran}` : ""}</span>}
                   </td>
                   <td className="unit-cell">{c.sources.length ? <Unit id={c.sources.at(-1)!} alias={aliasOf(s, c.systemName, c.sources.at(-1)!)} /> : "—"}</td>
@@ -202,8 +209,8 @@ export function ActiveCalls({ s }: { s: AppState }) {
                   </td>
                   <td>
                     {c.state === "recording" && (
-                      // Heard on several sites: one copy plays, from whichever site has it.
-                      <button className="btn ghost small" onClick={() => setListen(true, c.alsoOn?.length ? null : c.systemName, c.talkgroup)} title="This talkgroup only">
+                      // (Heard on several sites: one copy plays, from whichever site has it.)
+                      <button className="btn ghost small" onClick={() => setListen(true, c.systemName, c.talkgroup)} title="This talkgroup only">
                         Listen
                       </button>
                     )}
@@ -248,7 +255,7 @@ export function Log({ s }: { s: AppState }) {
           .reverse()
           .map((l, i) => (
             <div key={i} className={`k-${l.kind}`}>
-              <span className="muted">{l.timeS.toFixed(1).padStart(7)}s</span> {multi && l.system ? <span className="muted">[{l.system}] </span> : null}
+              <span className="muted">{l.time ? new Date(l.time * 1000).toLocaleTimeString([], { hour12: false }).padStart(8) : `${l.timeS.toFixed(1).padStart(7)}s`}</span> {multi && l.system ? <span className="muted">[{l.system}] </span> : null}
               {l.text}
             </div>
           ))}
