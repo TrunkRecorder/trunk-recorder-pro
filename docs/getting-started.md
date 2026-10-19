@@ -214,7 +214,7 @@ keep up), if samples hit full scale (lower the gain), or if its frequency is off
 2 ppm with AutoTune off. The **RF** page has the detail: each radio's noise floor, headroom,
 frequency error and waterfall.
 
-When calls start, they show on the **Live** page (press one to listen live), and once recorded
+When calls start, they show on a system's page under **Radio system** (press one to listen live), and once recorded
 on **Listen**. A call that wasn't recorded says why, for example *outside tuned range* when no
 radio covers its voice frequency. The **Radio system** page counts these reasons over time; lots
 of *Out of band* means you need another radio or a different center.

@@ -187,7 +187,7 @@ With no unit names file, a radio is named by its talker alias.
 ```
 
 The name chosen goes into each source's `tag` in the call JSON's `srcList`; the talker alias heard,
-if any, goes into `tag_ota` whatever the mode. The **Live** page shows names next to unit IDs.
+if any, goes into `tag_ota` whatever the mode. A system's page under **Radio system** shows names next to unit IDs.
 
 Conventional systems take a unit names file too, on their own card.
 

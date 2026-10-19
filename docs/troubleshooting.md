@@ -351,7 +351,7 @@ the journal:
 journalctl --user -u trunk-pro -f
 ```
 
-The Live page's **Control channel log** is a live view of control messages, not this log.
+The **Control channel log** at the bottom of a system's Radio system page is a live view of control messages, not this log.
 
 ## Making a capture
 

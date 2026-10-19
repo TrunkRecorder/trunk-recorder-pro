@@ -5,6 +5,13 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **The Live page is each system's now**: a system's page under **Radio system** has its
+  **Active calls** (with **Listen live** for that system, and its talkgroups and radios linking to
+  their pages) in place of the "On the air now" card, and its **Control channel log** at the
+  bottom. The Live page, which showed every system's calls and messages together, is gone; links
+  to it open Radio system.
+- **Platform comes before Plugins** in the side rail.
+
 ## [0.2.4] — 2026-10-19
 
 - **Every page that drills down goes back the same way**: a system on Radio now starts with

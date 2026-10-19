@@ -148,14 +148,14 @@ export interface AppState {
 
 export type SetupTab = "systems" | "conventional" | "radios" | "recording" | "plugins";
 
-export type View = "overview" | "listen" | "rf" | "decode" | "radio" | "live" | "plugins" | "interfaces" | "platform" | "setup";
-const VIEWS: View[] = ["overview", "listen", "rf", "decode", "radio", "live", "plugins", "interfaces", "platform", "setup"];
+export type View = "overview" | "listen" | "rf" | "decode" | "radio" | "plugins" | "interfaces" | "platform" | "setup";
+const VIEWS: View[] = ["overview", "listen", "rf", "decode", "radio", "plugins", "interfaces", "platform", "setup"];
 
 /** `#/radio/dcfd/tg/101` → ["radio", ["dcfd", "tg", "101"]]; the old `#plugins` too. */
 function routeFromHash(): { view: View; path: string[] } {
   const parts = location.hash.replace(/^#\/?/, "").split("/").filter(Boolean).map(decodeURIComponent);
-  // (Live was Calls.)
-  const v = (parts[0] === "calls" ? "live" : parts[0]) as View;
+  // (Live, once Calls, is each system's Radio system page now.)
+  const v = (parts[0] === "calls" || parts[0] === "live" ? "radio" : parts[0]) as View;
   return VIEWS.includes(v) ? { view: v, path: parts.slice(1) } : { view: "overview", path: [] };
 }
 
@@ -355,7 +355,8 @@ function take(m: FromRecorder): void {
       break;
     }
     case "log":
-      set({ log: [...state.log, ...m.lines].slice(-400) });
+      // (Each system's page shows its own: enough that a quiet one's aren't pushed out by a busy one.)
+      set({ log: [...state.log, ...m.lines].slice(-2000) });
       break;
     case "concluded":
       set({ history: [m.entry, ...state.history].slice(0, 500) });

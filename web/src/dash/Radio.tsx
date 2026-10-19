@@ -9,7 +9,7 @@ import { radioQuery, setTalkgroupIgnore, setView, usePolled, useApp, type AppSta
 import { BackBar, Bipartite, Card, Choice, Heatmap, HeatStrip, Histogram, Light, RadialEgo, Stat, type Node } from "../charts.tsx";
 import { ago, clockAt, compact, dur, hmm, num } from "../fmt.ts";
 import type { CipherSeen, LengthHistogram, RadioResult, TgRow, UnitRow } from "../protocol.ts";
-import { aliasOf } from "./Calls.tsx";
+import { ActiveCalls, aliasOf, Log } from "./Calls.tsx";
 import { dashSystems, K, KIND_LABEL, running, total, useHistory, type DashSystem } from "./data.ts";
 
 type Hours = "24" | "168";
@@ -90,35 +90,6 @@ function Reasons({ name, range }: { name: string; range: "24h" | "7d" }) {
             )}
           </ul>
         </>
-      )}
-    </Card>
-  );
-}
-
-function ActiveNow({ s, sys }: { s: AppState; sys: DashSystem }) {
-  const calls = s.calls.filter((c) => c.systemName === sys.name);
-  return (
-    <Card title="On the air now">
-      {calls.length === 0 ? (
-        <p className="empty">Quiet.</p>
-      ) : (
-        <ul className="air">
-          {calls.map((c) => (
-            <li key={c.id}>
-              <button className="linkish" onClick={() => setView("radio", sys.name, "tg", c.talkgroup)}>
-                <span className={`dot dot-${c.state}${c.encrypted ? " dot-enc" : ""}`} />
-                <TgName r={{ tg: c.talkgroup, alphaTag: c.alphaTag }} />
-              </button>
-              <span className="row">
-                {[...new Set(c.sources)].slice(-4).map((u) => (
-                  <button key={u} className="chip" onClick={() => setView("radio", sys.name, "unit", u)}>
-                    {aliasOf(s, sys.name, u) ?? u}
-                  </button>
-                ))}
-              </span>
-            </li>
-          ))}
-        </ul>
       )}
     </Card>
   );
@@ -332,9 +303,10 @@ function SystemView({ s, sys }: { s: AppState; sys: DashSystem }) {
         />
         <Stat label="Unknown" value={summary ? summary.unknownTgs24h : "—"} sub="not in the talkgroup file" />
       </div>
+      <ActiveCalls s={s} system={sys.name} />
       <div className="columns">
         <Reasons name={sys.name} range={hours === "24" ? "24h" : "7d"} />
-        <ActiveNow s={s} sys={sys} />
+        <Lengths h={lenR?.histogram} />
       </div>
       {busy.length > 0 && (
         <Card title={`Busiest ${busy.length} by hour`}>
@@ -348,10 +320,8 @@ function SystemView({ s, sys }: { s: AppState; sys: DashSystem }) {
       )}
       <Network s={s} sys={sys} tgs={tgs} units={units} />
       <Talkgroups sys={sys} rows={tgs} hours={h} />
-      <div className="columns">
-        <Units s={s} sys={sys} rows={units} total={unitsR?.total ?? units.length} />
-        <Lengths h={lenR?.histogram} />
-      </div>
+      <Units s={s} sys={sys} rows={units} total={unitsR?.total ?? units.length} />
+      <Log s={s} system={sys.name} />
     </div>
   );
 }
