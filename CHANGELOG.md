@@ -5,6 +5,11 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Listen says why a system is missing** instead of "No recorded calls yet": a system whose calls'
+  audio isn't kept (Keep audio off, its own or the Recording tab's) has nothing to play, so its
+  talkgroups are left out of the Talkgroups tab, and a card above the calls names it and where to
+  turn Keep audio on.
+
 ## [0.2.2] — 2026-10-18
 
 - **A radio's delivered rate holds steady** on the RF page (by taclane, #43): it's measured over

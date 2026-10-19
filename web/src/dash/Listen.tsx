@@ -29,7 +29,7 @@ import {
   wanted,
   type Selection,
 } from "../listen.ts";
-import type { CallEntry } from "../protocol.ts";
+import type { CallEntry, Config, RecordingOverride } from "../protocol.ts";
 import { parseTalkgroupCsv } from "../talkgroups.ts";
 import { BrowserStorage } from "../web/BrowserStorage.tsx";
 import { aliasOf } from "./Calls.tsx";
@@ -49,24 +49,37 @@ interface Tg {
 }
 
 /**
+ * The systems whose calls' audio isn't kept (Keep audio, audioArchive, off:
+ * theirs or the Recording tab's): it's deleted once the plugins are done, so
+ * there's nothing to play. (In the browser every call's is kept.)
+ */
+export function audioNotKept(config: Config | null): string[] {
+  if (web || !config) return [];
+  const kept = (o: RecordingOverride | undefined) => o?.audioArchive ?? config.recording.audioArchive;
+  return [...config.systems, ...config.conventional].filter((x) => x.enabled && !kept(x.recording)).map((x) => x.shortName);
+}
+
+/**
  * Every system and talkgroup there is to hear: each system's talkgroup file,
  * and what calls were heard on (conventional channels, talkgroups not in a
- * file).
+ * file). Not the systems whose audio isn't kept.
  */
 function catalog(s: Pick<AppState, "config" | "talkgroups">, calls: CallEntry[]): Map<string, Tg[]> {
   const out = new Map<string, Map<number, Tg>>();
+  const silent = new Set(audioNotKept(s.config));
   const sys = (name: string) => out.get(name) ?? out.set(name, new Map()).get(name)!;
   for (const x of s.config?.systems ?? []) {
-    if (!x.enabled) continue;
+    if (!x.enabled || silent.has(x.shortName)) continue;
     const name = x.shortName;
     const m = sys(name);
     for (const t of parseTalkgroupCsv(s.talkgroups[name] ?? "").values()) {
       if (!t.ignore && !m.has(t.number)) m.set(t.number, { system: name, talkgroup: t.number, key: tgKey(name, t.number), alphaTag: t.alphaTag, description: t.description, tag: t.tag, group: t.group });
     }
   }
-  for (const v of s.config?.conventional ?? []) if (v.enabled) sys(v.shortName);
+  for (const v of s.config?.conventional ?? []) if (v.enabled && !silent.has(v.shortName)) sys(v.shortName);
   for (const c of calls) {
     const name = systemOf(c);
+    if (silent.has(name)) continue;
     const m = sys(name);
     const r = c.record;
     if (!m.has(r.talkgroup)) {
@@ -253,6 +266,21 @@ function Scanner({ s }: { s: ListenState }) {
 }
 
 // ── the calls ────────────────────────────────────────────────────────────────
+
+/** Why systems are missing from Listen: their calls' audio isn't kept. */
+function NoAudio({ config }: { config: Config | null }) {
+  const systems = audioNotKept(config);
+  if (!systems.length) return null;
+  const one = systems.length === 1;
+  return (
+    <div className="banner subtle small">
+      <span>
+        <b>{systems.join(", ")}</b> {one ? "isn't" : "aren't"} here: {one ? "its" : "their"} calls' audio is deleted once the plugins are done with it (Keep audio is off), so there's nothing to play. To hear{" "}
+        {one ? "it" : "them"}, turn on Keep audio in Setup, in {one ? "the system's" : "each system's"} Overrides or on the Recording tab.
+      </span>
+    </div>
+  );
+}
 
 function CallList({ s }: { s: ListenState }) {
   const l = useListen((x) => ({ calls: x.calls, sel: x.sel, queue: x.queue, playing: x.playing, loadingOlder: x.loadingOlder, moreOlder: x.moreOlder }));
@@ -462,6 +490,7 @@ export function ListenPage({ tab: first = "calls" }: { tab?: "calls" | "talkgrou
             Talkgroups{off ? <span className="muted small"> · some off</span> : null}
           </button>
         </div>
+        <NoAudio config={s.config} />
         {tab === "calls" ? <CallList s={s} /> : <Talkgroups s={s} />}
         {web && (
           <footer className="panel-foot muted small">
