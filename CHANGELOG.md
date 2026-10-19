@@ -5,6 +5,14 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Every page that drills down goes back the same way**: a system on Radio now starts with
+  "← All systems" and the systems beside it, as Decode does with its sites, instead of a button on
+  the right of the system's header. A talkgroup's or radio's page starts with "← <system>"; RF's
+  source page with "← All sources".
+- **A system's overrides in Setup are two groups**: **Plugins** (its plugin settings and plugin
+  delays) and **Recording**, in two parts: **Recording** (what's recorded and kept, loudness) and
+  **Archive** (folders and file names, the M4A, and what stays once the plugins are done).
+
 ## [0.2.3] — 2026-10-19
 
 - **Listen says why a system is missing** instead of "No recorded calls yet": a system whose calls'

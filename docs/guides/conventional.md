@@ -34,7 +34,7 @@ has its own:
 - short name, which is the folder its calls go to and the name plugins see,
 - squelch (for its channels that don't set their own),
 - channel list, or a linked channel file,
-- unit names, plugin settings, and recording rules (**Recording override**),
+- unit names, plugin settings and delays (**Plugins**), and recording rules (**Recording**),
 - on/off switch for the whole group.
 
 A frequency can belong to only one conventional system.
@@ -309,10 +309,10 @@ Each saved call also records how strong it was: `signal`, `noise` and `snr` in i
 
 | What you see | Try |
 |---|---|
-| Lots of very short calls with only noise | Raise the channel's squelch a few dB. Set **Shortest call, s** in the system's **Recording override** to drop what's left. |
+| Lots of very short calls with only noise | Raise the channel's squelch a few dB. Set **Shortest call, s** under the system's **Recording** override to drop what's left. |
 | Calls appear whenever a strong neighbouring channel is busy | Raise that channel's squelch. Check that your gain isn't so high the dongle is overloading. |
 | Weak units are missing, or calls start mid-word | Lower the squelch, a few dB at a time. Improve the antenna or gain; see [Radios](radios.md). |
-| One conversation is split into many calls | Raise **Call timeout, s** in the system's **Recording override**. |
+| One conversation is split into many calls | Raise **Call timeout, s** under the system's **Recording** override. |
 | Separate conversations are merged into one call | Lower **Call timeout, s**. |
 | Calls are cut into 10-minute pieces | A carrier is stuck on. Raise the squelch, or set **Longest call, s** if the channel really is that busy. |
 

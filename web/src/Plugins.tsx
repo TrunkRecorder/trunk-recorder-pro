@@ -356,7 +356,6 @@ export function SystemPluginSettings(props: { system: SystemRef }) {
   };
   return (
     <div className="system-plugins stack" id={typeof props.system === "number" ? `need-sysplug-${sys.shortName}` : `need-convplug-${sys.shortName}`}>
-      <h4>Plugins</h4>
       {plugins.flatMap((p) => {
         const m = p.manifest!;
         const every = c.plugins?.[p.id]?.settings;

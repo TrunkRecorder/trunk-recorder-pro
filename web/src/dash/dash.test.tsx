@@ -97,3 +97,13 @@ test("Radio: each system's card opens its system from anywhere on it, without an
   assert.equal((html.match(/class="card card-opens sys-section"/g) ?? []).length, 2, "both systems' cards open them");
   assert.doesNotMatch(text(html), /Open dcfd/);
 });
+
+test("Radio: a system's page goes back as Decode's does, with the systems beside; a talkgroup's goes back to its system", () => {
+  twoSites();
+  setView("radio", "dcfd");
+  const page = text(renderToString(<RadioPage />));
+  assert.match(page, /^ ?← All systems dcfd other dcfd P25/, "the way back first, the systems beside it, then the system");
+  setView("radio", "dcfd", "tg", 100);
+  const tg = text(renderToString(<RadioPage />));
+  assert.match(tg, /^ ?← dcfd dcfd P25/, "back to its system, no picker");
+});

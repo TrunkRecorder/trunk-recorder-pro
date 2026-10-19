@@ -110,8 +110,8 @@ talkgroups they hear by it; it isn't shared with a trunked system. See
   button edits the system's talkgroup file for you: it adds an `Ignore` column if there isn't one
   (and a header row to a file without one), and adds a row for a talkgroup that isn't in the file.
 - **Only the talkgroups in the file.** Turn off **Talkgroups not in the talkgroup file** under
-  **Call rules** on the **Recording** tab (`recordUnknown`, on by default), or for one system in its
-  **Recording override**. This only has an effect once the system has a talkgroup file; with none,
+  **Call rules** on the **Recording** tab (`recordUnknown`, on by default), or for one system under
+  **Recording** on its card. This only has an effect once the system has a talkgroup file; with none,
   everything is recorded. A talkgroup that isn't in the file is still recorded while it's patched
   with one that is (a patch's supergroup usually isn't in anyone's file).
 - **Encrypted talkgroups** aren't recorded; see the protocol pages ([P25](p25.md#encrypted-calls)).

@@ -14,8 +14,9 @@ call JSON, M4A files and the RAM spool, see the [recordings guide](../guides/rec
 ```
 
 In Setup these are on the **Recording** tab: the **Recorder** panel, **Call rules**, and (desktop)
-**M4A audio**. Rules marked "per system" can be overridden on each trunked or conventional system
-under **Recording override**.
+**M4A audio**. Rules marked "per system" can be overridden on each trunked or conventional system,
+in the **Recording** group of its card: call rules under **Recording**, and file names, the M4A and
+what's kept under **Archive**.
 
 ## Recording keys
 

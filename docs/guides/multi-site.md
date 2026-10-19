@@ -16,8 +16,8 @@ with its own:
   short name").
 - talkgroup file and unit names;
 - **Sites**: each a control channel to follow, with its modulation and site lock;
-- **Recording override**: its own call rules, where they differ from the **Recording** tab's;
-- plugin settings.
+- **Plugins**: its own plugin settings and plugin delays;
+- **Recording**: its own call rules and what it keeps, where they differ from the **Recording** tab's.
 
 **Record** on the card switches a system off without removing it.
 

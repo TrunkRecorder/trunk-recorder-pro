@@ -1431,10 +1431,14 @@ function ConventionalPanel(props: { c: Config; k: number }) {
         </Group>
       )}
       {chans.length > 0 && (
-        <Group title="Overrides" hint="This system's own plugin settings, plugin delays and call rules. Anything left at Default follows the Recording tab." cols={1}>
+        <Group title="Plugins" hint="This system's own plugin settings and delays. Anything left at Default follows the Plugins tab." cols={1}>
           <SystemPluginSettings system={{ conv: k }} />
           <SystemDelays system={{ conv: k }} />
-          <RecordingOverridePanel
+        </Group>
+      )}
+      {chans.length > 0 && (
+        <Group title="Recording" hint="These channels' own call rules and what they keep. Anything left at Default follows the Recording tab." cols={1}>
+          <RecordingOverrides
             c={c}
             value={conv.recording}
             onChange={(fn) =>
@@ -2056,10 +2060,12 @@ function SystemCard(props: { c: Config; i: number }) {
           }
         />
       </Group>
-      <Group title="Overrides" hint="This system's own plugin settings, plugin delays and call rules. Anything left at Default follows the Recording tab." cols={1}>
+      <Group title="Plugins" hint="This system's own plugin settings and delays. Anything left at Default follows the Plugins tab." cols={1}>
         <SystemPluginSettings system={i} />
         <SystemDelays system={i} />
-        <RecordingOverridePanel
+      </Group>
+      <Group title="Recording" hint="This system's own call rules and what it keeps. Anything left at Default follows the Recording tab." cols={1}>
+        <RecordingOverrides
           c={c}
           value={sys.recording}
           onChange={(fn) =>
@@ -2343,11 +2349,26 @@ function CallRules(props: { c: Config }) {
   );
 }
 
+/** The Recording tab's groups a system's own rules are in, by its card's two overrides. */
+const ARCHIVE_GROUPS = ["Files", "Archive"];
+
+type OverrideProps = { c: Config; value: RecordingOverride | undefined; onChange: (fn: (o: RecordingOverride) => void) => void };
+
 /**
- * A system's own call rules (or the conventional channels'): each setting
- * left at Default follows the Recording tab.
+ * A system's own call rules (or the conventional channels'), in two: what's
+ * recorded and kept (Recording), and where its files go and which stay
+ * (Archive). Each setting left at Default follows the Recording tab.
  */
-function RecordingOverridePanel(props: { c: Config; value: RecordingOverride | undefined; onChange: (fn: (o: RecordingOverride) => void) => void }) {
+function RecordingOverrides(props: OverrideProps) {
+  return (
+    <>
+      <RecordingOverridePanel {...props} title="Recording" groups={RULE_GROUPS.filter((g) => !ARCHIVE_GROUPS.includes(g.title))} />
+      <RecordingOverridePanel {...props} title="Archive" groups={RULE_GROUPS.filter((g) => ARCHIVE_GROUPS.includes(g.title))} />
+    </>
+  );
+}
+
+function RecordingOverridePanel(props: OverrideProps & { title: string; groups: typeof RULE_GROUPS }) {
   const { c, value, onChange } = props;
   const own = value ?? {};
   const base = c.recording;
@@ -2356,14 +2377,14 @@ function RecordingOverridePanel(props: { c: Config; value: RecordingOverride | u
       if (v === undefined) delete o[k];
       else (o as Record<string, unknown>)[k] = v;
     });
-  const rules = RULE_GROUPS.flatMap((g) => g.rules).filter(ruleShown);
+  const rules = props.groups.flatMap((g) => g.rules).filter(ruleShown);
   const mine = rules.filter((r) => own[r.key] !== undefined);
   // The settings this system ends up with (its own, else the Recording tab's).
   const effective = { ...base, ...own } as RecordingRules;
   return (
     <details className="help override">
       <summary>
-        Recording override
+        {props.title}
         <span className="muted">{mine.length ? ` — ${mine.length} changed` : " — defaults"}</span>
       </summary>
       <div className="grid3">

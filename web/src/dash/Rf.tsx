@@ -7,7 +7,7 @@
 import { useState } from "react";
 import { formatGain, formatMhz, systemColor, usableHalfWidth } from "../config.ts";
 import { setView, useApp, useTopic, type AppState, type StatsRange } from "../controller.ts";
-import { Card, Choice, Hint, LiveSpark, Meter, Stat, TimeSeries, type Line } from "../charts.tsx";
+import { BackBar, Card, Choice, Hint, LiveSpark, Meter, Stat, TimeSeries, type Line } from "../charts.tsx";
 import { compact, mhz, num, signed } from "../fmt.ts";
 import type { ChannelSnapshot, Source, SourceStatus } from "../protocol.ts";
 import { Waterfall } from "../Waterfall.tsx";
@@ -342,11 +342,7 @@ function SourceDetail({ s, i }: { s: AppState; i: number }) {
   const meanOffset = offsets.length ? offsets.reduce((a, c) => a + c.offsetHz! / c.freqHz, 0) / offsets.length : null;
   return (
     <div className="stack">
-      <div className="row">
-        <button className="btn ghost small" onClick={() => setView("rf")}>
-          ← All sources
-        </button>
-      </div>
+      <BackBar to="All sources" onBack={() => setView("rf")} />
       <SourceCard s={s} src={src} i={i} />
       <SourceWaterfall s={s} i={i} title="Waterfall" />
       <Card title="Across the band">

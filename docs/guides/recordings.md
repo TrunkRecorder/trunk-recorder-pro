@@ -60,8 +60,8 @@ would be for a call right now. **macOS / Linux** and **Windows** switch the exam
 
 Problems, such as an unknown token or a `{` without a `}`, are listed under the field in red.
 
-Each system and conventional system can have its own format in its **Recording override**; left at
-default, it follows the Recording tab's.
+Each system and conventional system can have its own format, under **Archive** in the **Recording**
+group of its card; left at default, it follows the Recording tab's.
 
 ### Tokens
 
@@ -207,7 +207,7 @@ to disk at all.
 
 Three settings in Setup's **Recording** tab, under **Archive**, decide what of a call stays in the
 recordings folder once the plugins are done with it. Each system can set them again for itself
-(its **Recording override**).
+(under **Archive** in the **Recording** group of its card).
 
 | Setting | Key | Default | On | Off |
 |---|---|---|---|---|
@@ -237,8 +237,8 @@ Some examples:
 - **Upload calls without keeping them:** turn off **Keep audio** and **Keep call JSON**, and leave
   **Keep when a plugin fails** on. Calls a plugin failed on stay, so you can see what went wrong and
   send them again. Calls the plugins skipped (a system they have no settings for, say) are deleted
-  like the rest: if a system's calls should be kept, turn its **Keep audio** back on in its
-  Recording override.
+  like the rest: if a system's calls should be kept, turn its **Keep audio** back on under
+  **Archive** on its card.
 - **Keep only the call log:** turn off **Keep audio** and leave **Keep call JSON** on.
 
 Also:
@@ -312,8 +312,8 @@ whose name ends in `.noindex` is never indexed, which is another way to exclude 
 ## Call rules
 
 These are under **Call rules** on the Recording tab. Each system and conventional system can
-override them in its **Recording override**; each one left at **Default** follows the Recording
-tab.
+override them under **Recording** in the **Recording** group of its card; each one left at
+**Default** follows the Recording tab.
 
 **What is recorded**
 
