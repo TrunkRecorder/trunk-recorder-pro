@@ -194,7 +194,7 @@ encoding falls behind or fails for a call, that call goes to the plugins as WAV,
 so.
 
 The M4A made for the plugins is deleted once they're done with it, unless you also keep M4As
-(**Also save an M4A**). See [Recordings](../guides/recordings.md).
+(**Keep .m4a**). See [Recordings](../guides/recordings.md).
 
 ## What happens to the files
 
@@ -203,9 +203,10 @@ them have answered, the recorder applies the **Archive** settings in Setup's **R
 
 | Setting | On | Off |
 |---|---|---|
-| **Keep audio** | The audio is kept once the plugins are done | It's deleted once the plugins are done |
+| **Keep .wav** | The WAV is kept once the plugins are done | It's deleted once the plugins are done |
+| **Keep .m4a** | An M4A is kept once the plugins are done | The M4A made for a plugin is deleted once the plugins are done |
 | **Keep call JSON** | The call JSON is kept | It's deleted once the plugins are done |
-| **Keep when a plugin fails** | If any plugin reports a failure, the audio and JSON are kept anyway | Failures change nothing |
+| **Keep when a plugin fails** | If any plugin reports a failure, every file the call has is kept anyway | Failures change nothing |
 
 **Done and skipped count the same**: a plugin that skipped a call (a system it has no settings
 for, say) is finished with it, and the call's files go if the Keep settings say so. A plugin that

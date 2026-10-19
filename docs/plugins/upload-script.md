@@ -101,14 +101,14 @@ Some things to know about those paths:
   elsewhere: see [M4A audio](README.md#m4a-audio)). Without one, the third path is where it would
   be, and there's no file there.
 - **The WAV may not be there either.** When there's an M4A encoder and the call's audio isn't kept
-  (**Keep audio** off), the recorder doesn't write the WAV at all for plugins
+  (**Keep .wav** off), the recorder doesn't write the WAV at all for plugins
   that take M4A, and this one does. If your script needs the WAV, leave that setting on, or have
   the script use the M4A.
 - **With a RAM spool**, files that are only kept for the plugins are in the spool folder, not the
   recordings folder. Use the paths you're given rather than building your own.
 - **The files may be deleted after your script finishes.** Once every plugin that takes recorded
-  calls has answered on a call, the recorder applies your **Archive** settings: with **Keep audio**
-  or **Keep call JSON** off, those files go then. A script that wants to keep a copy should copy
+  calls has answered on a call, the recorder applies your **Archive** settings: with **Keep .wav**,
+  **Keep .m4a** or **Keep call JSON** off, those files go then. A script that wants to keep a copy should copy
   it. See
   [What happens to the files](README.md#what-happens-to-the-files).
 
@@ -140,6 +140,7 @@ Then:
 - The arguments are the same, in the same order: your own, then the WAV, the JSON and the M4A.
 - The script now runs with the recordings folder as its working folder, not Trunk Recorder's
   folder.
-- Trunk Recorder's `audioArchive`, `callLog` and `archiveFilesOnFailure` are the **Files**
-  settings in Setup's **Recording** tab, and work the same way: the files are deleted (or kept)
+- Trunk Recorder's `audioArchive`, `callLog` and `archiveFilesOnFailure` are the **Keep .wav**,
+  **Keep .m4a**, **Keep call JSON** and **Keep when a plugin fails** settings in the **Archive**
+  group of Setup's **Recording** tab, and work the same way: the files are deleted (or kept)
   once the script has run. A script that deleted the files itself can keep doing so.

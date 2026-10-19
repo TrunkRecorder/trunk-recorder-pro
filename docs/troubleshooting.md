@@ -277,7 +277,7 @@ raises the noise and overloads the radio. See [Radios](guides/radios.md).
 No M4A encoder found (install ffmpeg): calls are kept as WAV only
 ```
 
-**Also save an M4A** needs an encoder: `ffmpeg` (any system), `afconvert` (built into macOS) or
+**Keep .m4a** needs an encoder: `ffmpeg` (any system), `afconvert` (built into macOS) or
 `fdkaac`, found on your `PATH`. Install ffmpeg (`brew install ffmpeg`, `sudo apt install ffmpeg`).
 `trunk-pro plugin list` says which encoder it would use. `M4A encoding is off: calls are kept as
 WAV only` means the encoder is set to `none`. See [Recordings](guides/recordings.md).

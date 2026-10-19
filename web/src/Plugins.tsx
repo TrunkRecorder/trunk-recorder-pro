@@ -579,12 +579,18 @@ function PluginHead(props: { p: PluginInfo; on: boolean; tone: string; state: st
 }
 
 /** M4A for the plugins that upload it (Setup's Recording tab). */
+/** The plugins on that take an .m4a of each call (made for them whether or not it's kept). */
+export function useM4aPlugins(): PluginInfo[] {
+  const s = useApp();
+  return (s.plugins?.plugins ?? []).filter((p) => pluginOn(s.config, p.id) && p.manifest?.audio_formats.includes("m4a"));
+}
+
 export function M4aSettings() {
   const s = useApp();
   const c = s.config;
   const a = c?.recording.m4a ?? { encoder: "auto", bitrateKbps: 32 };
   const found = s.plugins?.encoderFound ?? null;
-  const wanted = (s.plugins?.plugins ?? []).filter((p) => pluginOn(c, p.id) && p.manifest?.audio_formats.includes("m4a"));
+  const wanted = useM4aPlugins();
   const [kbps, setKbps] = useState(String(a.bitrateKbps));
   useEffect(() => setKbps(String(a.bitrateKbps)), [a.bitrateKbps]);
   return (
@@ -601,7 +607,7 @@ export function M4aSettings() {
         title="Encoding"
         hint={
           <>
-            Used by the plugins that upload M4A, and by <b>Also save an M4A</b>.{" "}
+            Used by the plugins that upload M4A, and by <b>Keep .m4a</b>.{" "}
             {wanted.length > 0 && !found && (
               <span className="bad-text">
                 {wanted.map((p) => p.manifest!.name).join(", ")} {wanted.length > 1 ? "need" : "needs"} it: install ffmpeg.

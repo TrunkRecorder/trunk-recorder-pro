@@ -80,7 +80,7 @@ test("Listen: a system whose audio isn't kept has no talkgroups to pick, and say
   twoSites();
   const c = structuredClone(snapshot().config!);
   const wmata = newSystem(c, { shortName: "wmata", controlChannelsHz: [489_000_000] });
-  wmata.recording = { audioArchive: false };
+  wmata.recording = { archiveWav: false, archiveM4a: false };
   c.systems.push(wmata);
   transport.onMessage({ type: "config", config: c, version: 2 });
   transport.onMessage({ type: "talkgroups", system: "wmata", csv: CSV("32784,8010,Red Line,D,Rail,,") });

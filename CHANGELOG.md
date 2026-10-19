@@ -12,6 +12,13 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 - **A system's overrides in Setup are two groups**: **Plugins** (its plugin settings and plugin
   delays) and **Recording**, in two parts: **Recording** (what's recorded and kept, loudness) and
   **Archive** (folders and file names, the M4A, and what stays once the plugins are done).
+- **Keep .wav and Keep .m4a, each on its own**, in place of **Keep audio** (`audioArchive`) and
+  **Also save an M4A** (`compressWav`), on the Recording tab and in a system's Archive override:
+  keep the M4A and not the WAV, or both, or neither (`archiveWav`, on by default; `archiveM4a`,
+  off). An older config is upgraded as it's read, keeping what it kept. With OpenMHz (or another
+  plugin that uploads M4A) on, an .m4a is made for every call either way, and Keep .m4a's hint
+  says so; off, it's deleted once the plugins are done. An M4A to keep that couldn't be made
+  leaves the WAV in its place, and **Keep when a plugin fails** now keeps every file of the call.
 
 ## [0.2.3] — 2026-10-19
 

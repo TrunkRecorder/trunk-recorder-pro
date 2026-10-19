@@ -62,7 +62,7 @@ import {
   web,
   type SetupTab,
 } from "./controller.ts";
-import { M4aSettings, PluginSetupPanel, SystemPluginSettings } from "./Plugins.tsx";
+import { M4aSettings, PluginSetupPanel, SystemPluginSettings, useM4aPlugins } from "./Plugins.tsx";
 import { renameSystemRefs } from "./pluginSettings.ts";
 import { SystemDelays } from "./Delays.tsx";
 import { IconAntenna, IconDongle, IconFolder, IconPuzzle, IconTower } from "./Onboarding.tsx";
@@ -2223,6 +2223,8 @@ type Rule =
       service?: boolean;
       /** Why it does nothing with these settings (greyed out), if it doesn't. */
       inactive?: (r: RecordingRules) => string | undefined;
+      /** What the plugins on (those taking an .m4a, by name) make of it, if anything. */
+      note?: (m4aPlugins: string[]) => string | undefined;
     }
   | { key: NumRule; kind: "num"; label: string; hint?: string; min: number; max: number; zero?: string }
   | { key: "filenameFormat"; kind: "text"; label: string };
@@ -2266,26 +2268,32 @@ const RULE_GROUPS: { title: string; hint?: string; rules: Rule[] }[] = [
   },
   {
     title: "Files",
-    hint: "Where each call is saved, and in what format.",
-    rules: [
-      { key: "filenameFormat", kind: "text", label: "Folders and file names" },
-      { key: "compressWav", kind: "bool", label: "Also save an M4A", hint: "a tenth the size; needs ffmpeg or afconvert", service: true },
-    ],
+    hint: "Where each call is saved.",
+    rules: [{ key: "filenameFormat", kind: "text", label: "Folders and file names" }],
   },
   {
     // What stays in the recordings folder once the plugins are done with a call (docs/guides/recordings.md).
     title: "Archive",
     hint: "What stays in the recordings folder once the plugins are done with a call.",
     rules: [
-      { key: "audioArchive", kind: "bool", label: "Keep audio", hint: "off: deleted once the plugins are done with the call", service: true },
+      { key: "archiveWav", kind: "bool", label: "Keep .wav", hint: "off: deleted once the plugins are done with the call", service: true },
+      {
+        key: "archiveM4a",
+        kind: "bool",
+        label: "Keep .m4a",
+        hint: "a tenth the size of the WAV; needs ffmpeg or afconvert",
+        service: true,
+        // (An .m4a is made for a plugin that takes one either way: this is only whether it stays.)
+        note: (m) => (m.length ? `${m.join(", ")} ${m.length > 1 ? "get" : "gets"} one either way; off: deleted once the plugins are done` : undefined),
+      },
       { key: "callLog", kind: "bool", label: "Keep call JSON", hint: "off: deleted once the plugins are done with the call", service: true },
       {
         key: "archiveFilesOnFailure",
         kind: "bool",
         label: "Keep when a plugin fails",
-        hint: "keeps the audio and JSON when any plugin reports a failure",
+        hint: "keeps every file of the call when any plugin reports a failure",
         service: true,
-        inactive: (r) => (r.audioArchive && r.callLog ? "both are kept anyway" : undefined),
+        inactive: (r) => (r.archiveWav && r.archiveM4a && r.callLog ? "everything is kept anyway" : undefined),
       },
     ],
   },
@@ -2302,6 +2310,7 @@ function ruleValue(r: Rule, v: Recording[keyof Recording] | undefined): string {
 /** The call rules for the whole recorder (the Recording tab). */
 function CallRules(props: { c: Config }) {
   const r = props.c.recording;
+  const m4a = useM4aPlugins().map((p) => p.manifest!.name);
   const set = <K extends keyof RecordingRules>(k: K, v: RecordingRules[K]) => updateConfig((x) => void ((x.recording as RecordingRules)[k] = v));
   return (
     <section className="set-card">
@@ -2312,7 +2321,7 @@ function CallRules(props: { c: Config }) {
               <Toggle
                 key={rule.key}
                 label={rule.label}
-                hint={rule.inactive?.(r) ?? rule.hint}
+                hint={rule.inactive?.(r) ?? rule.note?.(m4a) ?? rule.hint}
                 checked={!!r[rule.key]}
                 disabled={!!rule.inactive?.(r)}
                 onChange={(v) => set(rule.key, v)}
@@ -2338,9 +2347,9 @@ function CallRules(props: { c: Config }) {
               />
             ),
           )}
-          {g.title === "Archive" && (!r.audioArchive || !r.callLog) && !Object.values(props.c.plugins ?? {}).some((p) => p.enabled) && (
+          {g.title === "Archive" && (!(r.archiveWav || r.archiveM4a) || !r.callLog) && !Object.values(props.c.plugins ?? {}).some((p) => p.enabled) && (
             <p className="muted small wide">
-              No plugin is on, so there's nothing to wait for: {!r.audioArchive && !r.callLog ? "calls aren't saved at all" : !r.audioArchive ? "calls' audio isn't saved at all" : "calls' JSON isn't saved at all"}.
+              No plugin is on, so there's nothing to wait for: {!(r.archiveWav || r.archiveM4a) && !r.callLog ? "calls aren't saved at all" : !r.callLog ? "calls' JSON isn't saved at all" : "calls' audio isn't saved at all"}.
             </p>
           )}
         </Group>
@@ -2378,6 +2387,7 @@ function RecordingOverridePanel(props: OverrideProps & { title: string; groups: 
       else (o as Record<string, unknown>)[k] = v;
     });
   const rules = props.groups.flatMap((g) => g.rules).filter(ruleShown);
+  const m4a = useM4aPlugins().map((p) => p.manifest!.name);
   const mine = rules.filter((r) => own[r.key] !== undefined);
   // The settings this system ends up with (its own, else the Recording tab's).
   const effective = { ...base, ...own } as RecordingRules;
@@ -2406,7 +2416,11 @@ function RecordingOverridePanel(props: OverrideProps & { title: string; groups: 
             <Field
               key={rule.key}
               label={rule.label}
-              hint={(rule.kind === "bool" && rule.inactive?.(effective)) || (mineNow ? `Default: ${ruleValue(rule, base[rule.key])}` : undefined)}
+              hint={
+                (rule.kind === "bool" && rule.inactive?.(effective)) ||
+                [rule.kind === "bool" && rule.note?.(m4a), mineNow && `Default: ${ruleValue(rule, base[rule.key])}`].filter(Boolean).join(" · ") ||
+                undefined
+              }
             >
               {rule.kind === "bool" ? (
                 <select

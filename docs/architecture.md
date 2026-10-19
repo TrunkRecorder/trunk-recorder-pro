@@ -703,7 +703,7 @@ changes what is recorded.
   have late goes to the hold instead of its queue, and is given to it when
   due (a finished call is kept on disk until then, across restarts).
 - **Archive.** `Archive` counts `call.result`s to decide when a call's files
-  can be deleted (`audioArchive: false` / `callLog: false`). It is told at
+  can be deleted (`archiveWav: false`, `archiveM4a: false` / `callLog: false`). It is told at
   finish time whether a WAV was written.
 - **WAV only when needed.** A call's `Plan` (`plugins::plan`) is the one
   place that says which of its files are written. The WAV goes to the

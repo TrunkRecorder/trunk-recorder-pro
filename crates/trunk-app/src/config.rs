@@ -1102,11 +1102,12 @@ recording! {
             /// (Trunk Recorder's digitalLevels / analogLevels).
             pub digital_level_db: f64,
             pub analog_level_db: f64,
-            /// Also keep an .m4a of every call (Trunk Recorder's compressWav).
-            pub compress_wav: bool,
-            /// Keep the audio once every upload plugin has handled the call
-            /// (audioArchive); off, it's deleted then.
-            pub audio_archive: bool,
+            /// Keep each call's .wav once every upload plugin has handled
+            /// it; off, it's deleted then (with `archive_m4a`, Trunk
+            /// Recorder's audioArchive and compressWav: [`crate::migrate`]).
+            pub archive_wav: bool,
+            /// Keep an .m4a of each call (made for it when no plugin wants one).
+            pub archive_m4a: bool,
             /// Keep the call's JSON then (callLog).
             pub call_log: bool,
             /// When an upload failed, keep the files anyway (archiveFilesOnFailure).
@@ -1241,8 +1242,8 @@ impl Default for Recording {
             normalize_audio: true,
             digital_level_db: 0.0,
             analog_level_db: 0.0,
-            compress_wav: false,
-            audio_archive: true,
+            archive_wav: true,
+            archive_m4a: false,
             call_log: true,
             archive_files_on_failure: true,
             filename_format: String::new(),

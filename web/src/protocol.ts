@@ -252,10 +252,10 @@ export interface RecordingRules {
   /** Then raise or lower digital / analog calls, dB (digitalLevels / analogLevels). */
   digitalLevelDb: number;
   analogLevelDb: number;
-  /** Desktop: also keep an .m4a of every call (compressWav). */
-  compressWav: boolean;
-  /** Desktop: keep the audio once every upload plugin has handled the call (audioArchive). */
-  audioArchive: boolean;
+  /** Desktop: keep each call's .wav once every upload plugin has handled it (with archiveM4a, Trunk Recorder's audioArchive). */
+  archiveWav: boolean;
+  /** Desktop: keep an .m4a of each call (Trunk Recorder's compressWav). */
+  archiveM4a: boolean;
   /** Desktop: keep the call's JSON then (callLog). */
   callLog: boolean;
   /** Desktop: when an upload failed, keep the files anyway (archiveFilesOnFailure). */

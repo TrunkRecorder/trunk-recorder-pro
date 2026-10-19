@@ -49,13 +49,13 @@ interface Tg {
 }
 
 /**
- * The systems whose calls' audio isn't kept (Keep audio, audioArchive, off:
+ * The systems whose calls' audio isn't kept (Keep .wav and Keep .m4a off:
  * theirs or the Recording tab's): it's deleted once the plugins are done, so
  * there's nothing to play. (In the browser every call's is kept.)
  */
 export function audioNotKept(config: Config | null): string[] {
   if (web || !config) return [];
-  const kept = (o: RecordingOverride | undefined) => o?.audioArchive ?? config.recording.audioArchive;
+  const kept = (o: RecordingOverride | undefined) => (o?.archiveWav ?? config.recording.archiveWav) || (o?.archiveM4a ?? config.recording.archiveM4a);
   return [...config.systems, ...config.conventional].filter((x) => x.enabled && !kept(x.recording)).map((x) => x.shortName);
 }
 
@@ -275,8 +275,8 @@ function NoAudio({ config }: { config: Config | null }) {
   return (
     <div className="banner subtle small">
       <span>
-        <b>{systems.join(", ")}</b> {one ? "isn't" : "aren't"} here: {one ? "its" : "their"} calls' audio is deleted once the plugins are done with it (Keep audio is off), so there's nothing to play. To hear{" "}
-        {one ? "it" : "them"}, turn on Keep audio in Setup, in {one ? "the system's" : "each system's"} Overrides or on the Recording tab.
+        <b>{systems.join(", ")}</b> {one ? "isn't" : "aren't"} here: {one ? "its" : "their"} calls' audio is deleted once the plugins are done with it (Keep .wav and Keep .m4a are off), so there's nothing to play. To hear{" "}
+        {one ? "it" : "them"}, turn on Keep .wav or Keep .m4a in Setup, under Archive on {one ? "the system's" : "each system's"} card or on the Recording tab.
       </span>
     </div>
   );

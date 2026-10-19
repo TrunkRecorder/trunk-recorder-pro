@@ -1,6 +1,7 @@
 //! Upgrading what an older version left — for a while only: a system's
 //! keys file named in `keys` (before key sources, v0.1.10), interfaces as a
-//! list and `server.home` (before interfaces had ports, v0.1.14), and each
+//! list and `server.home` (before interfaces had ports, v0.1.14), the audio
+//! kept as `audioArchive` and `compressWav` (before v0.2.4), and each
 //! site a system of its own (before v0.1.15; see
 //! research/multi-site-systems.md). Everything that reads an older config,
 //! or the files kept under a former system's name, goes through here; the
@@ -29,6 +30,7 @@ const SITE_KEYS: &[&str] = &[
 pub fn config(v: &mut serde_json::Value) -> Vec<String> {
     keys(v);
     server(v);
+    archive(v);
     let mut notes = sites(v);
     notes.extend(talkgroups(v));
     notes
@@ -112,6 +114,38 @@ fn keys(v: &mut serde_json::Value) {
     }
     if changed {
         v["keys"] = Value::Object(sources);
+    }
+}
+
+/// Before v0.2.4 one setting kept a call's audio (`audioArchive`), and
+/// `compressWav` an .m4a of it too; now each kind of file has its own
+/// (`archiveWav`, `archiveM4a`). The recording settings, and each system's
+/// own, keep what they kept: the WAV with the audio, the M4A with both. (A
+/// Trunk Recorder config says the same, so it's read the same.)
+fn archive(v: &mut serde_json::Value) {
+    use serde_json::Value;
+    let old = |r: &Value, k: &str| r.get(k).and_then(Value::as_bool);
+    // The recording settings' (each default as it was: audio kept, no M4A).
+    let base = v.get("recording").map_or((true, false), |r| (old(r, "audioArchive").unwrap_or(true), old(r, "compressWav").unwrap_or(false)));
+    let upgrade = |r: &mut Value, (audio, m4a): (bool, bool)| {
+        let Some(o) = r.as_object_mut() else { return };
+        let (a, c) = (o.remove("audioArchive").and_then(|x| x.as_bool()), o.remove("compressWav").and_then(|x| x.as_bool()));
+        if a.is_none() && c.is_none() {
+            return;
+        }
+        let (audio, m4a) = (a.unwrap_or(audio), c.unwrap_or(m4a));
+        o.entry("archiveWav").or_insert(Value::Bool(audio));
+        o.entry("archiveM4a").or_insert(Value::Bool(audio && m4a));
+    };
+    if let Some(r) = v.get_mut("recording") {
+        upgrade(r, (true, false));
+    }
+    for list in ["systems", "conventional"] {
+        for sys in v.get_mut(list).and_then(Value::as_array_mut).into_iter().flatten() {
+            if let Some(r) = sys.get_mut("recording") {
+                upgrade(r, base);
+            }
+        }
     }
 }
 
@@ -277,6 +311,33 @@ mod tests {
         let c = Config::from_json(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert!(!serde_json::to_string(&c).unwrap().contains("talkgroupsCsv"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `audioArchive` and `compressWav` become a setting for each kind of
+    /// file, keeping what was kept: everywhere, and in a system's own
+    /// settings by what it set and the rest from the recording settings.
+    #[test]
+    fn the_audio_kept_becomes_a_wav_and_an_m4a() {
+        let c = Config::from_json(
+            r#"{ "recording": { "audioArchive": true, "compressWav": true }, "systems": [
+                { "shortName": "a", "sites": [{ "controlChannelsHz": [1] }], "recording": { "audioArchive": false, "callLog": false } },
+                { "shortName": "b", "sites": [{ "controlChannelsHz": [2] }], "recording": { "compressWav": false } },
+                { "shortName": "c", "sites": [{ "controlChannelsHz": [3] }], "recording": { "minCallS": 2 } } ] }"#,
+        )
+        .unwrap();
+        assert_eq!((c.recording.archive_wav, c.recording.archive_m4a), (true, true));
+        let own = |i: usize| (c.systems[i].recording.archive_wav, c.systems[i].recording.archive_m4a);
+        assert_eq!(own(0), (Some(false), Some(false)), "no audio: neither");
+        assert_eq!(c.systems[0].recording.call_log, Some(false));
+        assert_eq!(own(1), (Some(true), Some(false)), "the audio, without an M4A");
+        assert_eq!(own(2), (None, None), "set nothing: still follows");
+        let saved = serde_json::to_string(&c).unwrap();
+        assert!(!saved.contains("audioArchive") && !saved.contains("compressWav"));
+        // Never set: the defaults, as before (the WAV, no M4A).
+        let c = Config::from_json(r#"{ "systems": [] }"#).unwrap();
+        assert_eq!((c.recording.archive_wav, c.recording.archive_m4a), (true, false));
+        let c = Config::from_json(r#"{ "recording": { "audioArchive": false, "compressWav": true } }"#).unwrap();
+        assert_eq!((c.recording.archive_wav, c.recording.archive_m4a), (false, false));
     }
 
     #[test]

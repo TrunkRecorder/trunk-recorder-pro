@@ -98,8 +98,8 @@ value on every system becomes the global one on the **Recording** tab instead.
 | Trunk Recorder | Trunk Recorder Pro |
 |---|---|
 | `recordUnknown` | `recordUnknown` |
-| `compressWav` | `compressWav` |
-| `audioArchive` | `audioArchive` |
+| `compressWav` | `archiveM4a` |
+| `audioArchive` | `archiveWav` (and `archiveM4a: false` when `audioArchive` is false) |
 | `callLog` | `callLog` |
 | `filenameFormat` (system's, or the top-level one for systems without their own) | `filenameFormat` |
 | `minDuration` | `minCallS` |
@@ -166,12 +166,15 @@ The browser version has no plugins, so there these settings aren't kept.
 
 ## Defaults that differ
 
+This app's own configs from before v0.2.4, with `audioArchive` and `compressWav`, are upgraded to
+`archiveWav` and `archiveM4a` automatically when read.
+
 When a key is missing from the Trunk Recorder config, the import leaves this app's default, which is
 not always Trunk Recorder's:
 
 | Setting | Trunk Recorder's default | Here |
 |---|---|---|
-| `compressWav` | on | off (`compressWav: false`): turn on **Also save an M4A** if you want `.m4a` files kept |
+| `compressWav` | on | off (`archiveM4a: false`): turn on **Keep .m4a** if you want `.m4a` files kept |
 | `archiveFilesOnFailure` | off | on |
 | `multiSite` / duplicate calls | off: every copy saved | on (`dropDuplicateCalls: true`): a call heard on several sites is saved once. The import notes this; turn off **Save a call heard on several sites once** to keep every copy |
 | `modulation` | `qpsk` | `auto` (both receivers) |
