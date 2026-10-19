@@ -621,6 +621,11 @@ pub(crate) fn radio_query(ctx: &Ctx, q: &Body) -> ToClient {
     ctx.shared.radio_query(&Value::Object(q.clone()), unix_now())
 }
 
+/// How long a connection may take to take one message. One that doesn't
+/// read (a tab frozen in the background) is closed rather than waited on, and
+/// gets everything afresh when it reconnects.
+const SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 async fn session(ctx: Arc<Ctx>, mut socket: WebSocket, door: Door) {
     let mut rx = ctx.hub.subscribe();
     let Some(mut access) = access_of(&ctx, &door) else { return };
@@ -665,16 +670,21 @@ async fn session(ctx: Arc<Ctx>, mut socket: WebSocket, door: Door) {
                         Out::Quit => Message::Text(ToClient::Quit.to_json().into()),
                     };
                     let quit = matches!(&*out, Out::Quit);
-                    if socket.send(m).await.is_err() || quit {
-                        let _ = socket.send(Message::Close(None)).await;
-                        return;
+                    match tokio::time::timeout(SEND_TIMEOUT, socket.send(m)).await {
+                        Ok(Ok(())) if !quit => {}
+                        Ok(Ok(())) | Ok(Err(_)) => {
+                            let _ = socket.send(Message::Close(None)).await;
+                            return;
+                        }
+                        Err(_) => return,
                     }
                 }
-                // It may have missed a config change: its access is read again.
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => match access_of(&ctx, &door) {
-                    Some(a) => access = a,
-                    None => return,
-                },
+                // It fell behind and missed messages: what it shows is no
+                // longer so. Closed, it reconnects and is greeted afresh.
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    let _ = tokio::time::timeout(SEND_TIMEOUT, socket.send(Message::Close(None))).await;
+                    return;
+                }
                 Err(_) => return,
             },
             _ = async {
