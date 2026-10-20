@@ -37,7 +37,7 @@ export function recentAvg(key: string, sinceS: number): number | null {
 export interface DashSystem {
   name: string;
   kind: "p25" | "smartnet" | "dmr" | "nxdn" | "conventional";
-  /** The running system's status (trunked, once a control channel is open). */
+  /** The running system's status (trunked: once a control channel is open; conventional: its calls, no sites). */
   status: SystemStatus | null;
   /** Its sites being recorded (a conventional system: none). */
   sites: DashSite[];
@@ -66,7 +66,12 @@ export function dashSystems(s: AppState): DashSystem[] {
     });
     return { name: x.shortName, kind: (x.type ?? "p25") as DashSystem["kind"], status, sites };
   });
-  for (const c of s.config.conventional) if (c.enabled !== false && c.channels.some((ch) => ch.enabled)) out.push({ name: c.shortName, kind: "conventional", status: null, sites: [] });
+  for (const c of s.config.conventional) {
+    if (c.enabled === false || !c.channels.some((ch) => ch.enabled)) continue;
+    const v = s.status?.conventional?.find((y) => y.shortName === c.shortName);
+    const status = v ? { index: v.index, shortName: v.shortName, activeCalls: v.activeCalls, recording: 0, callsConcluded: v.callsConcluded, sites: [] } : null;
+    out.push({ name: c.shortName, kind: "conventional", status, sites: [] });
+  }
   return out;
 }
 

@@ -14,7 +14,7 @@ import { Waterfall } from "../Waterfall.tsx";
 import { K, recentAvg, running, runningSites, sourceGuard, sourceHealth, useHistory, val } from "./data.ts";
 import { ccMarks } from "./Systems.tsx";
 import { systemChoices } from "./Calls.tsx";
-import { quality } from "./Decode.tsx";
+import { channelWhat, quality } from "./Decode.tsx";
 
 /** A source's gain setting, as configured. */
 function gainText(c: Source | undefined): string {
@@ -373,7 +373,7 @@ function SourceDetail({ s, i }: { s: AppState; i: number }) {
                       <span className="sys-dot" style={{ background: color(c.system) }} />
                       {c.system}
                     </td>
-                    <td>{c.kind}</td>
+                    <td>{channelWhat(c)}</td>
                     <td className="mono">{num(c.powerDb)}</td>
                     <td className="mono">{num(c.noiseDb)}</td>
                     <td className="mono">
