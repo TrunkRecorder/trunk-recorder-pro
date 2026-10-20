@@ -181,8 +181,8 @@ impl SurveySession {
                 "offsetHz": m.offset_hz.map(f64::round), "ppm": m.ppm.map(|p| (p * 100.0).round() / 100.0),
                 "gain": {
                     "state": match m.gain.state { GainState::Off => "off", GainState::Waiting => "waiting", GainState::Running => "running", GainState::Done => "done" },
-                    "steps": m.gain.steps.iter().map(|g| json!({ "gainDb": g.gain_db, "snrDb": (g.snr_db * 10.0).round() / 10.0, "okRatio": g.ok_ratio, "clipped": g.clipped })).collect::<Vec<_>>(),
-                    "bestDb": m.gain.best_db,
+                    "steps": m.gain.steps.iter().map(|g| json!({ "gainDb": (g.gain_db as f64 * 10.0).round() / 10.0, "snrDb": (g.snr_db * 10.0).round() / 10.0, "okRatio": g.ok_ratio, "clipped": g.clipped })).collect::<Vec<_>>(),
+                    "bestDb": m.gain.best_db.map(|g| (g as f64 * 10.0).round() / 10.0),
                 },
                 "elapsedS": m.elapsed_s, "ready": m.ready(),
                 "smartnet": m.smartnet.as_ref().map(|s| json!({

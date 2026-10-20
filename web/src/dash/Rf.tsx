@@ -23,11 +23,11 @@ function gainText(c: Source | undefined): string {
     case "rtlsdr":
       return c.agc ? "AGC" : `${formatGain(c.gainDb)} dB`;
     case "usrp":
-      return c.agc ? "AGC" : `${c.gainDb} dB${c.antenna ? ` · ${c.antenna}` : ""}`;
+      return c.agc ? "AGC" : `${formatGain(c.gainDb)} dB${c.antenna ? ` · ${c.antenna}` : ""}`;
     case "airspy":
       return c.gainMode === "manual" ? (c.agc ? `AGC (VGA ${c.vgaStep})` : `LNA ${c.lnaStep} · mixer ${c.mixerStep} · VGA ${c.vgaStep}`) : `${c.gainMode} ${c.gainStep}`;
     case "soapy":
-      return c.agc ? "AGC" : c.gainDb !== null ? `${c.gainDb} dB` : Object.entries(c.gains ?? {}).map(([k, v]) => `${k} ${v}`).join(" · ") || "default";
+      return c.agc ? "AGC" : c.gainDb !== null ? `${formatGain(c.gainDb)} dB` : Object.entries(c.gains ?? {}).map(([k, v]) => `${k} ${formatGain(v)}`).join(" · ") || "default";
     case "file":
       return "capture file";
   }

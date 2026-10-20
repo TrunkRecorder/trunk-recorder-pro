@@ -201,7 +201,7 @@ function DecodeCard({ s, x, site, usual, freqs, voice = true }: { s: AppState; x
             ramp="hot"
             max={BAD_MAX}
             h={18}
-            titles={freqs.map((f) => `${mhz(f.freqHz)} MHz · ${f.calls} calls · ${f.badPct ?? "—"}% of voice frames lost · SNR ${f.snr ?? "—"} dB · ${signed(f.freqError, 0)} Hz`)}
+            titles={freqs.map((f) => `${mhz(f.freqHz)} MHz · ${f.calls} calls · ${f.badPct ?? "—"}% of voice frames lost · SNR ${num(f.snr)} dB · ${signed(f.freqError, 0)} Hz`)}
             label="voice quality by frequency"
           />
           <span className="muted small">voice lost by frequency, 24 h</span>
