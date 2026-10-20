@@ -1040,7 +1040,6 @@ impl Conventional {
                 start_s: start,
                 last_update_s: now_s,
                 heard_s: now_s,
-                heard_update_s: now_s,
                 last_audio_s: now_s,
                 sources: Vec::new(),
                 talkgroup_info: Self::info_for(&ch.rows, row, tg, rules.talkgroups),
@@ -1058,6 +1057,7 @@ impl Conventional {
         }
         let l = o.live[slot].as_mut().unwrap();
         l.call.last_update_s = now_s;
+        l.call.heard_s = now_s;
         l.call.last_audio_s = h.air.map_or(now_s, |a| a.1);
         let mut changed = false;
         if let Some(t) = &mut l.tones {

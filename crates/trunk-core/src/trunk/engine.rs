@@ -1260,7 +1260,7 @@ impl Trunk {
                 }
             }
             let mut host = self.host(radio, sys);
-            self.calls.handle(&st.msgs, sys.policy(), &mut host, call_events);
+            self.calls.handle(&st.msgs, self.now_s, sys.policy(), &mut host, call_events);
         }
         (self.good, self.bad) = cc.counts;
     }
@@ -2384,12 +2384,14 @@ mod tests {
         assert!(even.spectrum(0, 1 << 20).iter().all(|&v| v == -120.0));
     }
 
-    /// Site `i`'s call manager handles `msgs`, as its control channel would hand them over.
+    /// Site `i`'s call manager handles `msgs`, as its control channel would hand them over
+    /// (taken in as they were on the air).
     fn handle(e: &mut Core, i: usize, msgs: &[Message]) {
         let Core { trunks, radio, call_events, systems, .. } = e;
         let sys = &systems[trunks[i].system as usize].cfg;
         let mut host = trunks[i].host(radio, sys);
-        trunks[i].calls.handle(msgs, sys.policy(), &mut host, call_events);
+        let now_s = msgs.iter().map(|m| m.time_s).fold(0.0, f64::max);
+        trunks[i].calls.handle(msgs, now_s, sys.policy(), &mut host, call_events);
     }
 
     /// Site `i`'s clock reads `now_s`: its quiet calls end.

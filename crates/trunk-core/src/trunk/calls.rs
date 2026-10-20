@@ -226,13 +226,12 @@ pub struct Call {
     pub mode: bool,
     pub start_s: f64,
     pub last_update_s: f64,
-    /// When the recorder took in the update at `last_update_s`, by its own
-    /// clock: the call timeout counts from here. A control channel's messages
-    /// arrive some 0.4 s after they were on the air, so counting from
-    /// `last_update_s` would end calls that much early.
+    /// When the recorder took in that update, by its own clock: the call
+    /// timeout counts from here, as Trunk Recorder's does. A control
+    /// channel's messages come out some 0.4 s after they were on the air
+    /// (P25's diversity bank holds them 0.35 s), so counting from
+    /// `last_update_s` would end every call that much early.
     pub heard_s: f64,
-    /// The `last_update_s` that `heard_s` is for.
-    pub heard_update_s: f64,
     pub last_audio_s: f64,
     pub sources: Vec<CallSource>,
     pub talkgroup_info: Option<Talkgroup>,
@@ -341,13 +340,11 @@ pub struct CallManager {
     ids: CallIds,
     /// The site's standing patches.
     pub patches: Patches,
-    /// The clock at the last [`tick`](Self::tick): when messages handled now came in.
-    now_s: f64,
 }
 
 impl CallManager {
     pub fn new(cfg: CallConfig) -> Self {
-        CallManager { calls: Vec::new(), cfg, site: 0, system: 0, ids: CallIds::default(), patches: Patches::default(), now_s: 0.0 }
+        CallManager { calls: Vec::new(), cfg, site: 0, system: 0, ids: CallIds::default(), patches: Patches::default() }
     }
 
     /// For site `site` of system `system`, drawing ids from `ids` (shared with the other sites).
@@ -355,15 +352,15 @@ impl CallManager {
         CallManager { site, system, ids, ..Self::new(cfg) }
     }
 
-    pub fn handle(&mut self, msgs: &[Message], policy: Policy, host: &mut dyn RecorderHost, ev: &mut Vec<CallEvent>) {
+    pub fn handle(&mut self, msgs: &[Message], now_s: f64, policy: Policy, host: &mut dyn RecorderHost, ev: &mut Vec<CallEvent>) {
         for m in msgs {
             match m.kind {
-                MessageType::Grant => self.grant(m, false, policy, host, ev),
-                MessageType::Update if self.cfg.new_call_from_update => self.grant(m, false, policy, host, ev),
-                MessageType::Update => self.update(m, ev),
+                MessageType::Grant => self.grant(m, now_s, false, policy, host, ev),
+                MessageType::Update if self.cfg.new_call_from_update => self.grant(m, now_s, false, policy, host, ev),
+                MessageType::Update => self.update(m, now_s, ev),
                 // Individual calls: unit-to-unit, and a radio's telephone call.
-                MessageType::UuVGrant | MessageType::PhoneGrant if self.cfg.record_unit_to_unit => self.grant(m, true, policy, host, ev),
-                MessageType::UuVUpdate | MessageType::PhoneUpdate if self.cfg.record_unit_to_unit => self.update(m, ev),
+                MessageType::UuVGrant | MessageType::PhoneGrant if self.cfg.record_unit_to_unit => self.grant(m, now_s, true, policy, host, ev),
+                MessageType::UuVUpdate | MessageType::PhoneUpdate if self.cfg.record_unit_to_unit => self.update(m, now_s, ev),
                 MessageType::PatchAdd => {
                     if let Some(p) = m.patch {
                         if self.patches.add(&p, m.time_s) {
@@ -387,13 +384,6 @@ impl CallManager {
                     }
                 }
                 _ => {}
-            }
-        }
-        // What changed came in now: the timeout counts from here, not from its air time.
-        for c in &mut self.calls {
-            if c.heard_update_s != c.last_update_s {
-                c.heard_update_s = c.last_update_s;
-                c.heard_s = c.last_update_s.max(self.now_s);
             }
         }
     }
@@ -467,7 +457,6 @@ impl CallManager {
     /// Advance the clock: end calls that have gone quiet, and split those
     /// past the length limit.
     pub fn tick(&mut self, now_s: f64, host: &mut dyn RecorderHost, ev: &mut Vec<CallEvent>) {
-        self.now_s = now_s;
         let t = self.cfg.call_timeout_s;
         let max = if self.cfg.max_call_s > 0.0 { self.cfg.max_call_s } else { STUCK_CALL_S };
         let mut i = self.calls.len();
@@ -500,7 +489,6 @@ impl CallManager {
             start_s: now_s,
             last_update_s: old.last_update_s.max(now_s),
             heard_s: now_s,
-            heard_update_s: old.last_update_s.max(now_s),
             last_audio_s: now_s,
             // The one talking now carries on.
             sources: old.sources.last().map(|s| CallSource { time_s: now_s, ..s.clone() }).into_iter().collect(),
@@ -530,8 +518,9 @@ impl CallManager {
         c.talkgroup == m.talkgroup && c.freq_hz == m.freq_hz && c.voice.same_place(m.voice)
     }
 
-    fn refresh(c: &mut Call, m: &Message, patches: &Patches) -> bool {
+    fn refresh(c: &mut Call, m: &Message, now_s: f64, patches: &Patches) -> bool {
         c.last_update_s = m.time_s;
+        c.heard_s = now_s;
         let mut changed = c.note_patch(patches.members_of(c.talkgroup));
         if m.encrypted && !c.encrypted {
             c.encrypted = true;
@@ -547,20 +536,20 @@ impl CallManager {
         changed
     }
 
-    fn update(&mut self, m: &Message, ev: &mut Vec<CallEvent>) {
+    fn update(&mut self, m: &Message, now_s: f64, ev: &mut Vec<CallEvent>) {
         for c in self.calls.iter_mut().filter(|c| Self::matches(c, m)) {
-            if Self::refresh(c, m, &self.patches) {
+            if Self::refresh(c, m, now_s, &self.patches) {
                 ev.push(CallEvent::Update(c.clone()));
             }
         }
     }
 
-    fn grant(&mut self, m: &Message, unit_to_unit: bool, p: Policy, host: &mut dyn RecorderHost, ev: &mut Vec<CallEvent>) {
+    fn grant(&mut self, m: &Message, now_s: f64, unit_to_unit: bool, p: Policy, host: &mut dyn RecorderHost, ev: &mut Vec<CallEvent>) {
         if m.freq_hz == 0 {
             return; // channel not resolvable yet (no IDEN seen)
         }
         if let Some(c) = self.calls.iter_mut().find(|c| Self::matches(c, m)) {
-            if Self::refresh(c, m, &self.patches) {
+            if Self::refresh(c, m, now_s, &self.patches) {
                 ev.push(CallEvent::Update(c.clone()));
             }
             return;
@@ -592,9 +581,7 @@ impl CallManager {
             mode: m.mode,
             start_s: m.time_s,
             last_update_s: m.time_s,
-            // Stamped once the messages are handled (`handle`).
-            heard_s: m.time_s,
-            heard_update_s: f64::NAN,
+            heard_s: now_s,
             last_audio_s: m.time_s,
             sources: if m.source > 0 { vec![CallSource { src: m.source as u32, time_s: m.time_s, audio_pos: None, flags: Flags::of(m), position: None }] } else { vec![] },
             talkgroup_info: tg.clone(),
@@ -657,8 +644,13 @@ mod tests {
         fn new(cfg: CallConfig, tgs: Talkgroups) -> Self {
             Sys { m: CallManager::new(cfg), tgs, can_decrypt: false }
         }
+        /// `msgs`, taken in as they were on the air (no control channel delay).
         fn handle(&mut self, msgs: &[Message], host: &mut Host, ev: &mut Vec<CallEvent>) {
-            self.m.handle(msgs, Policy { talkgroups: &self.tgs, can_decrypt: self.can_decrypt }, host, ev);
+            let now_s = msgs.iter().map(|m| m.time_s).fold(0.0, f64::max);
+            self.handle_at(msgs, now_s, host, ev);
+        }
+        fn handle_at(&mut self, msgs: &[Message], now_s: f64, host: &mut Host, ev: &mut Vec<CallEvent>) {
+            self.m.handle(msgs, now_s, Policy { talkgroups: &self.tgs, can_decrypt: self.can_decrypt }, host, ev);
         }
     }
     impl std::ops::Deref for Sys {
@@ -741,15 +733,16 @@ mod tests {
         for now_ms in (50..=5000).step_by(50) {
             let came_in = |t: i64| (now_ms - 50..now_ms).contains(&(t + 450));
             let due: Vec<Message> = sent_ms.iter().filter(|(_, t)| came_in(*t)).map(|(kind, t)| msg(*kind, *t as f64 / 1000.0, 101)).collect();
-            m.handle(&due, &mut Host, &mut ev);
+            m.handle_at(&due, now_ms as f64 / 1000.0, &mut Host, &mut ev);
             m.tick(now_ms as f64 / 1000.0, &mut Host, &mut ev);
             up |= !m.calls.is_empty();
             if up && m.calls.is_empty() && ended_ms.is_none() {
                 ended_ms = Some(now_ms);
             }
         }
-        // The last update came in at 2.05 s: the call ends 1 s after that, not 1 s after its 1.6 s on the air.
-        assert_eq!(ended_ms, Some(3100));
+        // The last update (1.6 s on the air) comes in with the block to 2.1 s: the call ends 1 s
+        // after that. Counted from air time, it ended at 1.05 s, before its first update came in.
+        assert_eq!(ended_ms, Some(3150));
     }
 
     #[test]
