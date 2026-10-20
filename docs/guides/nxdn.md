@@ -129,7 +129,7 @@ Kenwood NEXEDGE radios can send their programmed name ("E12 CAPT") while they ta
 characters at a time in the SACCH and FACCH1 of the traffic channel. Trunk Recorder Pro puts
 the pieces together once the call has named its radio, checks the alias's checksum, and learns it
 as it does a P25 talker alias: it appears as the radio's `tag_ota` in the call JSON and on the
-**Live** page, and is kept in `<shortName>.units.csv`. See
+**Radio system** page, and is kept in `<shortName>.units.csv`. See
 [Talker aliases](talkgroups-and-units.md#talker-aliases) for the file and for how a unit names
 file combines with it. It works on trunked (Type-C) and conventional channels, at both rates.
 
@@ -148,7 +148,7 @@ The system's detail on the **Decode** page has an **NXDN** panel:
 - channels in the table that aren't watched;
 - a warning listing channel numbers that were granted but aren't in the channel table yet.
 
-On the **Live** page an NXDN call shows its rate and RAN after the frequency.
+On a system's page under **Radio system** an NXDN call shows its rate and RAN after the frequency.
 
 ## Diagnostic tools
 

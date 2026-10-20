@@ -140,7 +140,7 @@ sweep for forgotten files waits the longest delay longer.
 
 In Setup, a plugin's card on the **Plugins** tab sets its delay on every system, and **Plugin delays
 on every system** below the cards holds the other top-level rules. A system's card has **Plugin
-delays** under Overrides for its own, with what they come to for each plugin. The Plugins page shows
+delays** under Plugins for its own, with what they come to for each plugin. The Plugins page shows
 how many calls are waiting for each plugin.
 
 ## When changes apply

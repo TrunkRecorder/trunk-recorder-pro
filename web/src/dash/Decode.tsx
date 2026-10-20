@@ -6,7 +6,7 @@
 import { useState } from "react";
 import { formatMhz, systemColor, usableHalfWidth } from "../config.ts";
 import { radioQuery, setView, usePolled, useApp, useTopic, type AppState, type StatsRange } from "../controller.ts";
-import { Card, Choice, HeatStrip, LiveSpark, Stat, TimeSeries, Trend, type Line } from "../charts.tsx";
+import { BackBar, Card, Choice, HeatStrip, LiveSpark, Stat, TimeSeries, Trend, type Line } from "../charts.tsx";
 import { mhz, num, signed } from "../fmt.ts";
 import type { FreqRow, SeriesData, SourceStatus } from "../protocol.ts";
 import { change, dashSystems, K, KIND_LABEL, recentAvg, running, runningSites, siteHealth, sourceGuard, systemHealth, useHistory, useUsual, val, type DashSite, type DashSystem, type Usual } from "./data.ts";
@@ -243,12 +243,9 @@ function SystemDetail({ s, name, siteName }: { s: AppState; name: string; siteNa
   const hints = freqHints(rows, s);
   return (
     <div className="stack">
-      <div className="row">
-        <button className="btn ghost small" onClick={() => setView("decode")}>
-          ← All systems
-        </button>
+      <BackBar to="All systems" onBack={() => setView("decode")}>
         {x.sites.length > 1 && site && <Choice value={site.name} options={x.sites.map((y) => ({ v: y.name, label: y.name }))} onChange={(v) => setView("decode", name, v)} label="Site" />}
-      </div>
+      </BackBar>
       <DecodeCard s={s} x={x} site={site} usual={usual[cc("good")]} freqs={rows} />
       {st && x.kind !== "dmr" && x.kind !== "nxdn" && (
         <div className="kv small">

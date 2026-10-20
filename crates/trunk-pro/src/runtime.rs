@@ -795,7 +795,7 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
     };
     let spool = ctx.spool.lock().unwrap().clone();
     let encoder = plugins::Encoder::find(cfg.recording.m4a.encoder).map(|e| (e, cfg.recording.m4a.bitrate_kbps.clamp(8, 320)));
-    if encoder.is_none() && cfg.recordings().iter().any(|r| r.compress_wav) {
+    if encoder.is_none() && cfg.recordings().iter().any(|r| r.archive_m4a) {
         log::warn!("{}", if cfg.recording.m4a.encoder == crate::config::M4aEncoder::None { "M4A encoding is off: calls are kept as WAV only" } else { "No M4A encoder found (install ffmpeg): calls are kept as WAV only" });
     }
     // Calls are finished on threads of their own (each may be encoding an
@@ -953,14 +953,14 @@ fn finish_one(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, f: Fin
     let r = f.rules;
     let to_plugins = host.as_ref().map_or(Default::default(), |h| h.plugin_audio(f.decrypted));
     let p = plugins::plan(r, to_plugins, encoder.is_some());
-    let (keep_audio, keep_json, keep_m4a) = (p.keep_audio, p.keep_json, p.keep_m4a);
+    let (keep_wav, keep_m4a, keep_json, keep_audio) = (p.keep_wav, p.keep_m4a, p.keep_json, p.keep_audio);
     let base = dir.join(&f.rel);
     // (The record written once, as the .json file has it.)
     let json = f.record.to_json();
-    let need = json.len() + f.wav.len() / 4 + if p.write_wav && !keep_audio { f.wav.len() } else { 0 };
+    let need = json.len() + f.wav.len() / 4 + if p.write_wav && !keep_wav { f.wav.len() } else { 0 };
     let spooled = spool.filter(|s| p.spool && s.room_for(need as u64)).map(|s| s.dir.join(&f.rel));
     let at = |kept: bool, ext: &str| PathBuf::from(format!("{}.{ext}", if kept { &base } else { spooled.as_ref().unwrap_or(&base) }.display()));
-    let (wav_at, json_at, frames_at, m4a_at) = (at(keep_audio, "wav"), at(keep_json, "json"), at(keep_audio, f.frames.as_ref().map_or("sdr", |c| c.ext)), at(keep_m4a, "m4a"));
+    let (wav_at, json_at, frames_at, m4a_at) = (at(keep_wav, "wav"), at(keep_json, "json"), at(keep_audio, f.frames.as_ref().map_or("sdr", |c| c.ext)), at(keep_m4a, "m4a"));
     for d in [&wav_at, &json_at, &m4a_at].into_iter().filter_map(|p| p.parent()) {
         let _ = fs::create_dir_all(d);
     }

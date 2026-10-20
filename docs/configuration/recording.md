@@ -8,14 +8,16 @@ call JSON, M4A files and the RAM spool, see the [recordings guide](../guides/rec
 "recording": {
   "captureDir": "/home/me/TrunkRecorderPro",
   "minCallS": 1,
-  "compressWav": true,
+  "archiveM4a": true,
   "filenameFormat": "{short_name}/{time:%Y-%m-%d}/{talkgroup}-{time:%H%M%S}"
 }
 ```
 
 In Setup these are on the **Recording** tab: the **Recorder** panel, **Call rules**, and (desktop)
-**M4A audio**. Rules marked "per system" can be overridden on each trunked or conventional system
-under **Recording override**.
+**M4A audio**. Rules marked "per system" can be overridden on each trunked or conventional system,
+in the **Recording** group of its card: call rules under **Recording**, and file names, the M4A and
+what's kept under **Archive** (**Keep .wav**, **Keep .m4a**, **Keep call JSON**, **Keep when a
+plugin fails**).
 
 ## Recording keys
 
@@ -35,16 +37,25 @@ under **Recording override**.
 | `normalizeAudio` | | `true` | bool | Per system. Bring every call's speech to the same loudness (about −14 LUFS, peaks limited to −2.5 dBFS) |
 | `digitalLevelDb` | | `0` | number | Per system. Then raise or lower digital calls by this much, dB; the limiter keeps them from clipping. Applied up to ±40; the interface allows ±20 |
 | `analogLevelDb` | | `0` | number | Per system. The same for analog calls |
-| `compressWav` | | `false` | bool | Per system. Also save an `.m4a` of every call. Needs an encoder: see `m4a` |
-| `audioArchive` | | `true` | bool | Per system. **Keep audio**: keep it once the plugins are done with the call. `false`: deleted then (with no plugin, never saved) |
+| `archiveWav` | | `true` | bool | Per system. **Keep .wav**: keep each call's `.wav` once the plugins are done with it. `false`: deleted then (with no plugin, never written) |
+| `archiveM4a` | | `false` | bool | Per system. **Keep .m4a**: keep an `.m4a` of each call. Needs an encoder: see `m4a`. An `.m4a` is still made for a plugin that uploads M4A (OpenMHz, say) whether this is on or not; off, that one is deleted once the plugins are done |
 | `callLog` | | `true` | bool | Per system. **Keep call JSON**: the same, for the call JSON |
-| `archiveFilesOnFailure` | | `true` | bool | Per system. **Keep when a plugin fails**: a plugin's failure keeps the audio and JSON whatever the two above say (a skip doesn't) |
+| `archiveFilesOnFailure` | | `true` | bool | Per system. **Keep when a plugin fails**: a plugin's failure keeps every file the call has (WAV, M4A, JSON, frames) whatever the three above say (a skip doesn't) |
 | `filenameFormat` | | `""` | string | Per system. Folders and file names under `captureDir`. See [File names](#file-names) |
 | `dropDuplicateCalls` | | `true` | bool | Multi-site: a call heard on several sites of one system is saved once, keeping the cleanest copy or the talkgroup's Preferred Site. See [systems.md](systems.md#multi-site) |
 | `vocoder` | | `"fixed"` | string | The IMBE voice decoder for P25 Phase 1 (trunked and conventional): `"fixed"` (also `"fixed-point"`; usually sounds most natural), `"enhanced"` or `"mbelib"` (any case; anything else is refused when the config is read) |
 | `captureFrames` | | `false` | bool | Also save each digital call's vocoder frames as `<call>.sdr` (NXDN: `<call>.frames.jsonl`), for diagnosis and `trunk-pro tool revoice` |
-| `m4a` | | see below | object | The M4A encoder for `compressWav` and for plugins that upload M4A |
+| `m4a` | | see below | object | The M4A encoder for `archiveM4a` and for plugins that upload M4A |
 | `ramSpool` | | see below | object | Keep files only the upload plugins need in RAM instead of `captureDir` |
+
+If `archiveM4a` is on but no `.m4a` could be made (no encoder, or the encode failed), the `.wav` is
+kept in its place: a call whose audio is to be kept never loses all of it. The frames file
+(`captureFrames`) stays when either kind of audio is kept.
+
+Configs from before v0.2.4 with `audioArchive` and `compressWav` are upgraded automatically when
+read: `archiveWav` takes `audioArchive`'s value, and `archiveM4a` is on when both were on (a
+system's own override takes any value it didn't set from the top-level `recording`). The old keys
+are removed on save.
 
 When a call flagged encrypted at its grant isn't kept (`recordEncrypted` off), it isn't recorded at
 all, unless its system has [encryption keys](systems.md#encryption-keys-keys). One that turns
@@ -57,12 +68,12 @@ encrypted part-way is kept with its clear transmissions.
 | `encoder` | | `"auto"` | string | `"auto"` (ffmpeg, then afconvert, then fdkaac, whichever is found first), `"ffmpeg"`, `"afconvert"` (macOS), `"fdkaac"` or `"none"` (WAV only). Any case; anything else is refused when the config is read |
 | `bitrateKbps` | | `32` | integer | AAC bitrate, 8–320 kb/s |
 
-Each call is encoded once, and the same `.m4a` serves `compressWav` and every plugin. Changing
+Each call is encoded once, and the same `.m4a` serves `archiveM4a` and every plugin. Changing
 `m4a` while recording restarts the plugins.
 
 ### `ramSpool`
 
-With `audioArchive` or `callLog` off, some files exist only so the plugins can have them, and are
+With `archiveWav`, `archiveM4a` or `callLog` off, some files exist only so the plugins can have them, and are
 deleted right after (see [The archive](../guides/recordings.md#the-archive-whats-kept-and-whats-deleted)). The RAM spool keeps those in memory instead of writing them to the disk
 (easier on an SD card or SSD).
 
@@ -91,7 +102,7 @@ above. A rule left out follows the global `recording`.
 | Key | Type |
 |---|---|
 | `callTimeoutS`, `minCallS`, `maxCallS`, `minTransmissionS`, `digitalLevelDb`, `analogLevelDb` | number |
-| `recordUnknown`, `recordEncrypted`, `recordUnitToUnit`, `keepSilentCalls`, `normalizeAudio`, `compressWav`, `audioArchive`, `callLog`, `archiveFilesOnFailure` | bool |
+| `recordUnknown`, `recordEncrypted`, `recordUnitToUnit`, `keepSilentCalls`, `normalizeAudio`, `archiveWav`, `archiveM4a`, `callLog`, `archiveFilesOnFailure` | bool |
 | `filenameFormat` | string |
 
 Other keys in a system's `recording` (`captureDir`, `vocoder` and the like) are recorder-wide only;

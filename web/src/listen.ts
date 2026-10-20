@@ -278,7 +278,7 @@ export function setFeed(on: boolean): void {
     set({ feed: false, queue: [], missed: 0, playing: null, paused: false, played: was ? [was, ...state.played].slice(0, PLAYED_MAX) : state.played });
     return;
   }
-  // One sound at a time: the Live page's live audio stops.
+  // One sound at a time: a Radio system page's live audio stops.
   if (snapshot().listen) setListen(false);
   // (A click: the browser now lets audio play.)
   audio?.play().catch(() => {});
@@ -380,7 +380,7 @@ onRecorderMessage((m) => {
   }
 });
 
-// Live audio switched on on the Live page: the feed stops (one sound at a time).
+// Live audio switched on on a Radio system page: the feed stops (one sound at a time).
 subscribe(() => {
   if (snapshot().listen && state.feed) setFeed(false);
 });

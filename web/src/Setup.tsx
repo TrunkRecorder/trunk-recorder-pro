@@ -62,7 +62,7 @@ import {
   web,
   type SetupTab,
 } from "./controller.ts";
-import { M4aSettings, PluginSetupPanel, SystemPluginSettings } from "./Plugins.tsx";
+import { M4aSettings, PluginSetupPanel, SystemPluginSettings, useM4aPlugins } from "./Plugins.tsx";
 import { renameSystemRefs } from "./pluginSettings.ts";
 import { SystemDelays } from "./Delays.tsx";
 import { IconAntenna, IconDongle, IconFolder, IconPuzzle, IconTower } from "./Onboarding.tsx";
@@ -1431,10 +1431,14 @@ function ConventionalPanel(props: { c: Config; k: number }) {
         </Group>
       )}
       {chans.length > 0 && (
-        <Group title="Overrides" hint="This system's own plugin settings, plugin delays and call rules. Anything left at Default follows the Recording tab." cols={1}>
+        <Group title="Plugins" hint="This system's own plugin settings and delays. Anything left at Default follows the Plugins tab." cols={1}>
           <SystemPluginSettings system={{ conv: k }} />
           <SystemDelays system={{ conv: k }} />
-          <RecordingOverridePanel
+        </Group>
+      )}
+      {chans.length > 0 && (
+        <Group title="Recording" hint="These channels' own call rules and what they keep. Anything left at Default follows the Recording tab." cols={1}>
+          <RecordingOverrides
             c={c}
             value={conv.recording}
             onChange={(fn) =>
@@ -2056,10 +2060,12 @@ function SystemCard(props: { c: Config; i: number }) {
           }
         />
       </Group>
-      <Group title="Overrides" hint="This system's own plugin settings, plugin delays and call rules. Anything left at Default follows the Recording tab." cols={1}>
+      <Group title="Plugins" hint="This system's own plugin settings and delays. Anything left at Default follows the Plugins tab." cols={1}>
         <SystemPluginSettings system={i} />
         <SystemDelays system={i} />
-        <RecordingOverridePanel
+      </Group>
+      <Group title="Recording" hint="This system's own call rules and what it keeps. Anything left at Default follows the Recording tab." cols={1}>
+        <RecordingOverrides
           c={c}
           value={sys.recording}
           onChange={(fn) =>
@@ -2217,6 +2223,8 @@ type Rule =
       service?: boolean;
       /** Why it does nothing with these settings (greyed out), if it doesn't. */
       inactive?: (r: RecordingRules) => string | undefined;
+      /** What the plugins on (those taking an .m4a, by name) make of it, if anything. */
+      note?: (m4aPlugins: string[]) => string | undefined;
     }
   | { key: NumRule; kind: "num"; label: string; hint?: string; min: number; max: number; zero?: string }
   | { key: "filenameFormat"; kind: "text"; label: string };
@@ -2260,26 +2268,32 @@ const RULE_GROUPS: { title: string; hint?: string; rules: Rule[] }[] = [
   },
   {
     title: "Files",
-    hint: "Where each call is saved, and in what format.",
-    rules: [
-      { key: "filenameFormat", kind: "text", label: "Folders and file names" },
-      { key: "compressWav", kind: "bool", label: "Also save an M4A", hint: "a tenth the size; needs ffmpeg or afconvert", service: true },
-    ],
+    hint: "Where each call is saved.",
+    rules: [{ key: "filenameFormat", kind: "text", label: "Folders and file names" }],
   },
   {
     // What stays in the recordings folder once the plugins are done with a call (docs/guides/recordings.md).
     title: "Archive",
     hint: "What stays in the recordings folder once the plugins are done with a call.",
     rules: [
-      { key: "audioArchive", kind: "bool", label: "Keep audio", hint: "off: deleted once the plugins are done with the call", service: true },
+      { key: "archiveWav", kind: "bool", label: "Keep .wav", hint: "off: deleted once the plugins are done with the call", service: true },
+      {
+        key: "archiveM4a",
+        kind: "bool",
+        label: "Keep .m4a",
+        hint: "a tenth the size of the WAV; needs ffmpeg or afconvert",
+        service: true,
+        // (An .m4a is made for a plugin that takes one either way: this is only whether it stays.)
+        note: (m) => (m.length ? `${m.join(", ")} ${m.length > 1 ? "get" : "gets"} one either way; off: deleted once the plugins are done` : undefined),
+      },
       { key: "callLog", kind: "bool", label: "Keep call JSON", hint: "off: deleted once the plugins are done with the call", service: true },
       {
         key: "archiveFilesOnFailure",
         kind: "bool",
         label: "Keep when a plugin fails",
-        hint: "keeps the audio and JSON when any plugin reports a failure",
+        hint: "keeps every file of the call when any plugin reports a failure",
         service: true,
-        inactive: (r) => (r.audioArchive && r.callLog ? "both are kept anyway" : undefined),
+        inactive: (r) => (r.archiveWav && r.archiveM4a && r.callLog ? "everything is kept anyway" : undefined),
       },
     ],
   },
@@ -2296,6 +2310,7 @@ function ruleValue(r: Rule, v: Recording[keyof Recording] | undefined): string {
 /** The call rules for the whole recorder (the Recording tab). */
 function CallRules(props: { c: Config }) {
   const r = props.c.recording;
+  const m4a = useM4aPlugins().map((p) => p.manifest!.name);
   const set = <K extends keyof RecordingRules>(k: K, v: RecordingRules[K]) => updateConfig((x) => void ((x.recording as RecordingRules)[k] = v));
   return (
     <section className="set-card">
@@ -2306,7 +2321,7 @@ function CallRules(props: { c: Config }) {
               <Toggle
                 key={rule.key}
                 label={rule.label}
-                hint={rule.inactive?.(r) ?? rule.hint}
+                hint={rule.inactive?.(r) ?? rule.note?.(m4a) ?? rule.hint}
                 checked={!!r[rule.key]}
                 disabled={!!rule.inactive?.(r)}
                 onChange={(v) => set(rule.key, v)}
@@ -2332,9 +2347,9 @@ function CallRules(props: { c: Config }) {
               />
             ),
           )}
-          {g.title === "Archive" && (!r.audioArchive || !r.callLog) && !Object.values(props.c.plugins ?? {}).some((p) => p.enabled) && (
+          {g.title === "Archive" && (!(r.archiveWav || r.archiveM4a) || !r.callLog) && !Object.values(props.c.plugins ?? {}).some((p) => p.enabled) && (
             <p className="muted small wide">
-              No plugin is on, so there's nothing to wait for: {!r.audioArchive && !r.callLog ? "calls aren't saved at all" : !r.audioArchive ? "calls' audio isn't saved at all" : "calls' JSON isn't saved at all"}.
+              No plugin is on, so there's nothing to wait for: {!(r.archiveWav || r.archiveM4a) && !r.callLog ? "calls aren't saved at all" : !r.callLog ? "calls' JSON isn't saved at all" : "calls' audio isn't saved at all"}.
             </p>
           )}
         </Group>
@@ -2343,11 +2358,26 @@ function CallRules(props: { c: Config }) {
   );
 }
 
+/** The Recording tab's groups a system's own rules are in, by its card's two overrides. */
+const ARCHIVE_GROUPS = ["Files", "Archive"];
+
+type OverrideProps = { c: Config; value: RecordingOverride | undefined; onChange: (fn: (o: RecordingOverride) => void) => void };
+
 /**
- * A system's own call rules (or the conventional channels'): each setting
- * left at Default follows the Recording tab.
+ * A system's own call rules (or the conventional channels'), in two: what's
+ * recorded and kept (Recording), and where its files go and which stay
+ * (Archive). Each setting left at Default follows the Recording tab.
  */
-function RecordingOverridePanel(props: { c: Config; value: RecordingOverride | undefined; onChange: (fn: (o: RecordingOverride) => void) => void }) {
+function RecordingOverrides(props: OverrideProps) {
+  return (
+    <>
+      <RecordingOverridePanel {...props} title="Recording" groups={RULE_GROUPS.filter((g) => !ARCHIVE_GROUPS.includes(g.title))} />
+      <RecordingOverridePanel {...props} title="Archive" groups={RULE_GROUPS.filter((g) => ARCHIVE_GROUPS.includes(g.title))} />
+    </>
+  );
+}
+
+function RecordingOverridePanel(props: OverrideProps & { title: string; groups: typeof RULE_GROUPS }) {
   const { c, value, onChange } = props;
   const own = value ?? {};
   const base = c.recording;
@@ -2356,14 +2386,15 @@ function RecordingOverridePanel(props: { c: Config; value: RecordingOverride | u
       if (v === undefined) delete o[k];
       else (o as Record<string, unknown>)[k] = v;
     });
-  const rules = RULE_GROUPS.flatMap((g) => g.rules).filter(ruleShown);
+  const rules = props.groups.flatMap((g) => g.rules).filter(ruleShown);
+  const m4a = useM4aPlugins().map((p) => p.manifest!.name);
   const mine = rules.filter((r) => own[r.key] !== undefined);
   // The settings this system ends up with (its own, else the Recording tab's).
   const effective = { ...base, ...own } as RecordingRules;
   return (
     <details className="help override">
       <summary>
-        Recording override
+        {props.title}
         <span className="muted">{mine.length ? ` — ${mine.length} changed` : " — defaults"}</span>
       </summary>
       <div className="grid3">
@@ -2385,7 +2416,11 @@ function RecordingOverridePanel(props: { c: Config; value: RecordingOverride | u
             <Field
               key={rule.key}
               label={rule.label}
-              hint={(rule.kind === "bool" && rule.inactive?.(effective)) || (mineNow ? `Default: ${ruleValue(rule, base[rule.key])}` : undefined)}
+              hint={
+                (rule.kind === "bool" && rule.inactive?.(effective)) ||
+                [rule.kind === "bool" && rule.note?.(m4a), mineNow && `Default: ${ruleValue(rule, base[rule.key])}`].filter(Boolean).join(" · ") ||
+                undefined
+              }
             >
               {rule.kind === "bool" ? (
                 <select

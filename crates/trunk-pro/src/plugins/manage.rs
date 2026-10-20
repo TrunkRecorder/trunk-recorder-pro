@@ -541,19 +541,26 @@ impl Plugins {
     }
 
     /// `addPlugin {path}`: a plugin executable of the user's own (a build).
-    /// Returns its id and path, for the server to put in the config, and a notice.
+    /// Returns its id and path, for the server to put in the config, and a
+    /// notice. The same file again (rebuilt) is a reinstall: its settings stay.
     pub fn add(&self, path: &str, cfg: &Config) -> Result<(String, PathBuf, String), String> {
         let path = Some(path.trim()).filter(|p| !p.is_empty()).ok_or("Which executable?")?;
         let path = PathBuf::from(shellexpand_home(path));
         let path = std::fs::canonicalize(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-        self.manifests.lock().unwrap().remove(&path);
+        let before = self.manifests.lock().unwrap().remove(&path).and_then(|(_, m)| m.ok()).map(|m| m.version);
         let m = self.manifest(&path)?;
         let id = m.id.clone();
         let existing = executable(&id, cfg.plugins.get(&id).unwrap_or(&PluginSetup::default()));
         if existing.is_file() && existing != path {
             return Err(format!("There's already a plugin called {id} ({})", existing.display()));
         }
-        Ok((id, path, format!("Added {} {}. Set it up, then turn it on.", m.name, m.version)))
+        let (name, version) = (&m.name, &m.version);
+        let notice = match before {
+            _ if existing != path => format!("Added {name} {version}. Set it up, then turn it on."),
+            Some(old) if &old != version => format!("Reinstalled {name} {version} in place of {old}."),
+            _ => format!("Reinstalled {name} {version}."),
+        };
+        Ok((id, path, notice))
     }
 
     /// `removePlugin {id}`: an installed copy is deleted (a build of the

@@ -13,6 +13,7 @@ import { useEffect, useState } from "react";
 import {
   addPlugin,
   addSystemPluginCopy,
+  installFromGitHub,
   installFromStore,
   pluginOn,
   removePlugin,
@@ -355,7 +356,6 @@ export function SystemPluginSettings(props: { system: SystemRef }) {
   };
   return (
     <div className="system-plugins stack" id={typeof props.system === "number" ? `need-sysplug-${sys.shortName}` : `need-convplug-${sys.shortName}`}>
-      <h4>Plugins</h4>
       {plugins.flatMap((p) => {
         const m = p.manifest!;
         const every = c.plugins?.[p.id]?.settings;
@@ -579,12 +579,18 @@ function PluginHead(props: { p: PluginInfo; on: boolean; tone: string; state: st
 }
 
 /** M4A for the plugins that upload it (Setup's Recording tab). */
+/** The plugins on that take an .m4a of each call (made for them whether or not it's kept). */
+export function useM4aPlugins(): PluginInfo[] {
+  const s = useApp();
+  return (s.plugins?.plugins ?? []).filter((p) => pluginOn(s.config, p.id) && p.manifest?.audio_formats.includes("m4a"));
+}
+
 export function M4aSettings() {
   const s = useApp();
   const c = s.config;
   const a = c?.recording.m4a ?? { encoder: "auto", bitrateKbps: 32 };
   const found = s.plugins?.encoderFound ?? null;
-  const wanted = (s.plugins?.plugins ?? []).filter((p) => pluginOn(c, p.id) && p.manifest?.audio_formats.includes("m4a"));
+  const wanted = useM4aPlugins();
   const [kbps, setKbps] = useState(String(a.bitrateKbps));
   useEffect(() => setKbps(String(a.bitrateKbps)), [a.bitrateKbps]);
   return (
@@ -601,7 +607,7 @@ export function M4aSettings() {
         title="Encoding"
         hint={
           <>
-            Used by the plugins that upload M4A, and by <b>Also save an M4A</b>.{" "}
+            Used by the plugins that upload M4A, and by <b>Keep .m4a</b>.{" "}
             {wanted.length > 0 && !found && (
               <span className="bad-text">
                 {wanted.map((p) => p.manifest!.name).join(", ")} {wanted.length > 1 ? "need" : "needs"} it: install ffmpeg.
@@ -681,6 +687,15 @@ function PluginCard(props: { p: PluginInfo; recording: boolean; listing?: Plugin
   const needs = on && m && s.config ? pluginNeeds(m, s.config, p.id) : [];
   // A newer version in the registry (not for a build of the user's own, or a plugin from elsewhere).
   const update = listing && m && !p.custom && !p.unlistedFrom && !listing.unavailable && newer(listing.version, m.version) ? listing : null;
+  // Taken again from where it came (the newer version, if there is one): the user's file, the
+  // GitHub repository's latest release, or the registry. Its settings stay.
+  const again = p.custom
+    ? () => addPlugin(p.path)
+    : p.unlistedFrom
+      ? () => installFromGitHub("plugin", p.unlistedFrom!)
+      : listing && !listing.unavailable
+        ? () => installFromStore("plugin", p.id)
+        : null;
 
   // Just installed from this browser: on to setting it up.
   useEffect(() => {
@@ -746,9 +761,9 @@ function PluginCard(props: { p: PluginInfo; recording: boolean; listing?: Plugin
             {STAGES[install.stage]}
           </span>
         ) : (
-          update && (
-            <button className="btn primary" onClick={() => installFromStore("plugin", p.id)} title={recording && on ? "It restarts with the new version." : undefined}>
-              Update to v{update.version}
+          again && (
+            <button className={`btn${update ? " primary" : ""}`} onClick={again} title={recording && on ? "It restarts with it." : undefined}>
+              {update ? `Update to v${update.version}` : "Reinstall"}
             </button>
           )
         )}
@@ -758,12 +773,12 @@ function PluginCard(props: { p: PluginInfo; recording: boolean; listing?: Plugin
           disabled={!!install}
           onClick={() => {
             const what = p.custom
-              ? `Remove ${m?.name ?? p.id} and its settings? ${p.path} stays.`
+              ? `Uninstall ${m?.name ?? p.id} and delete its settings? Your file ${p.path} stays.`
               : `Uninstall ${m?.name ?? p.id} and delete its settings?`;
             if (confirm(what)) removePlugin(p.id);
           }}
         >
-          {p.custom ? "Remove" : "Uninstall"}
+          Uninstall
         </button>
       </div>
     </article>
@@ -893,7 +908,7 @@ export function PluginsPage() {
               p={p}
               recording={recording}
               listing={s.stores.plugin?.listings.find((l) => l.id === p.id)}
-              install={s.installs.plugin[p.id]}
+              install={s.installs.plugin[p.id] ?? (p.unlistedFrom ? s.installs.plugin[p.unlistedFrom] : undefined)}
             />
           ))}
           {plugins.length === 0 && <p className="empty">No plugins yet.</p>}

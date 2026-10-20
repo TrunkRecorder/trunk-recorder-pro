@@ -3,7 +3,7 @@
 The dashboard pages show how the recorder is doing: whether each system's control channel is
 decoding as usual, how well the radios hear the air, how clean the voice is, what the system is
 doing, and whether the computer and plugins are keeping up. This page goes through each one and
-what its numbers mean. For the frame around them, Setup and the Listen and Live pages, see
+what its numbers mean. For the frame around them, Setup and the Listen page, see
 [The web interface](interface.md).
 
 Most numbers come with a small chart of the last 10 minutes, and many pages have an **Over time**
@@ -118,7 +118,7 @@ Click a system's name for its own page, which adds:
 
 The system as heard. With several systems it first shows a card each (talkgroups and radios in
 24 hours, new talkgroups, talkgroups not in its file, the busiest talkgroups, what's on the air);
-**Open <system> ▸** goes to one. The **Span** is 24 hours or 7 days.
+clicking a system's card goes to it. The **Span** is 24 hours or 7 days.
 
 | Number | What it is |
 |---|---|
@@ -130,11 +130,12 @@ The system as heard. With several systems it first shows a card each (talkgroups
 
 **What happened to calls** splits the calls by what became of them: **Recorded**, **Followed
 only**, **Ignored**, **Encrypted**, **Not in the file**, **No recorder** and **Out of band**. The
-last two are calls you missed; see the reasons table on [the Live page](interface.md#active-calls).
+last two are calls you missed; see the reasons table under [Active calls](#active-calls).
 
-Then: **On the air now**, **Busiest … by hour**, **Who talks on what** (talkgroups and the
-busiest radios, linked by how often each radio talks on each), the **Talkgroups** table, the
-**Radios** table, and **Call lengths**.
+Below the numbers: **Active calls** (see below), **What happened to calls** and **Call lengths**,
+**Busiest … by hour**, **Who talks on what** (talkgroups and the busiest radios, linked by how
+often each radio talks on each), the **Talkgroups** table, the **Radios** table, and at the
+bottom the **Control channel log**.
 
 The **Talkgroups** table can show **All**, **New**, **Unknown**, **Ignored** or **Encrypted** (more
 than half their calls encrypted), sorted by **Airtime**, **Calls**, **Latest** or **Newest**. The
@@ -143,6 +144,61 @@ it takes effect at once, even while recording. Click it again (**Ignored ✕**) 
 
 Click a talkgroup or a radio anywhere for its own page: its last 7 days, who talks on it (or what
 it talks on), what's affiliated with it, and its latest transmissions.
+
+### Active calls
+
+Near the top of a system's page: every call of that system on the air now, recording ones first. It
+replaces the small "On the air now" card, and the old Live page (`#/live` and `#/calls` links open
+the Radio system page).
+
+| Column | What it shows |
+|---|---|
+| **Talkgroup** | Its number and name (click it for the talkgroup's page), `EMERG` for an emergency call, what it's patched with, `· <site>` for a call heard on another site of the system, and `also on …` when the same call is on other sites (the best copy is saved) |
+| **Freq, MHz** | The voice channel, with `s0`/`s1` for a TDMA slot, `FM` (and its tone) for analog, `NXDN48`/`NXDN96` and the RAN for NXDN |
+| **Source** | The radio talking now: its name or talker alias when known, else its unit ID. Click it for the radio's page. |
+| **Time** | How long the call has gone on |
+| **State** | `recording`, `recording (encrypted)`, or why it isn't being recorded |
+| (button) | **Listen** plays just that talkgroup |
+
+The reasons a call isn't recorded:
+
+| State | Why | What to do |
+|---|---|---|
+| `encrypted — not recorded` | The call is encrypted and encrypted calls are off | Nothing: encrypted audio can't be decoded |
+| `outside tuned range` | No source covers its voice frequency | Move a source's centre, or add a source. See [Radios](radios.md). |
+| `no free recorder` | Every recorder is busy | Raise **Recorders** in Setup → Recording |
+| `not in talkgroup list` | It's not in the talkgroup file and **Talkgroups not in the talkgroup file** is off | Add it, or turn that on in Call rules |
+| `ignored (talkgroup list)` | It's set to Ignore in the talkgroup file | Un-ignore it on the Radio system page |
+| `monitoring` | Followed, not recorded, for another reason | |
+
+### Listening live
+
+Tick **Listen live** to hear that system's calls as they're decoded, like a scanner. It stays on
+one call until that call has been quiet for 2 seconds, then takes the next one. The line under the
+heading shows what's playing (`▶ TG 3747 · <radio>`).
+
+- Live audio is one system at a time: on another system's page it says "Listening to <system>".
+- Turning on Listen's **Live feed** turns **Listen live** off, and the other way round (one sound
+  at a time).
+- The **Listen** button on a recording call plays only that talkgroup. A button then appears
+  next to **Listen live** (`TG 3747 only ✕`); click it to go back to everything.
+- Only calls being recorded can be heard.
+- The audio comes from the recorder over the same connection as the rest of the page, so it works
+  from another machine too.
+- Safari can pause the audio when you switch tabs or audio devices; a click or key press anywhere
+  on the page starts it again.
+
+### Control channel log
+
+At the bottom of a system's page, collapsed. Click **Control channel log** to open it. It shows that
+system's last 150 control channel messages as they arrive, newest first (a site's name in brackets
+for a system with several sites): grants, updates, patches, the system's identity, neighbouring
+sites, talker aliases, protocol notes (such as a DMR site's colour code and kind), plugin notes and
+errors. Tick **Show unit activity** to also see affiliations, registrations and the like.
+
+The log is only made while it's open, because turning every control message into a line costs
+the recorder some work. This is not the same as the app's log file: see
+[Log levels and log files](../troubleshooting.md#where-is-the-log).
 
 ## Plugins
 

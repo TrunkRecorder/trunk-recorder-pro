@@ -5,6 +5,51 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+## [0.2.5] — 2026-10-19
+
+- **The Live page is each system's now**: a system's page under **Radio system** has its
+  **Active calls** (with **Listen live** for that system, and its talkgroups and radios linking to
+  their pages) in place of the "On the air now" card, and its **Control channel log** at the
+  bottom. The Live page, which showed every system's calls and messages together, is gone; links
+  to it open Radio system.
+- **Platform comes before Plugins** in the side rail.
+
+## [0.2.4] — 2026-10-19
+
+- **Every page that drills down goes back the same way**: a system on Radio now starts with
+  "← All systems" and the systems beside it, as Decode does with its sites, instead of a button on
+  the right of the system's header. A talkgroup's or radio's page starts with "← <system>"; RF's
+  source page with "← All sources".
+- **A system's overrides in Setup are two groups**: **Plugins** (its plugin settings and plugin
+  delays) and **Recording**, in two parts: **Recording** (what's recorded and kept, loudness) and
+  **Archive** (folders and file names, the M4A, and what stays once the plugins are done).
+- **Keep .wav and Keep .m4a, each on its own**, in place of **Keep audio** (`audioArchive`) and
+  **Also save an M4A** (`compressWav`), on the Recording tab and in a system's Archive override:
+  keep the M4A and not the WAV, or both, or neither (`archiveWav`, on by default; `archiveM4a`,
+  off). An older config is upgraded as it's read, keeping what it kept. With OpenMHz (or another
+  plugin that uploads M4A) on, an .m4a is made for every call either way, and Keep .m4a's hint
+  says so; off, it's deleted once the plugins are done. An M4A to keep that couldn't be made
+  leaves the WAV in its place, and **Keep when a plugin fails** now keeps every file of the call.
+
+## [0.2.3] — 2026-10-19
+
+- **Listen says why a system is missing** instead of "No recorded calls yet": a system whose calls'
+  audio isn't kept (Keep audio off, its own or the Recording tab's) has nothing to play, so its
+  talkgroups are left out of the Talkgroups tab, and a card above the calls names it and where to
+  turn Keep audio on.
+
+## [0.2.2] — 2026-10-18
+
+- **A radio's delivered rate holds steady** on the RF page (by taclane, #43): it's measured over
+  5 s from one buffer's arrival to another's, not over the status tick's second, which counted a
+  whole RTL-SDR transfer (55 ms at 2.4 MS/s) in or out of it. Healthy dongles no longer warn that
+  they deliver 5% off their rate; one that goes quiet still falls to zero.
+- **Reinstall a plugin in place** (by taclane, #38): a plugin's card has **Reinstall** where it
+  would say **Update to vX** with nothing newer, taking it again from where it came (the
+  registry, its GitHub repository's latest release, or your build's file) with its settings kept.
+  Adding your build's file again does the same, and restarts it if it's on. A build of your own
+  says **Uninstall** too (its file stays).
+
 ## [0.2.1] — 2026-10-18
 
 - **A dashboard card opens what it's about from anywhere on it**, not only its title: a system's

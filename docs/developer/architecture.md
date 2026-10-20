@@ -804,7 +804,7 @@ encodes nothing itself. A call decrypted with the recorder's keys goes only to p
 
 For each call its finisher calls `archive.expect(rel, takers, rules, …)`, where takers = live
 processes subscribed to `call.concluded`, and says whether a WAV was written. Each `call.result`
-counts down. At zero the call's `audioArchive`, `callLog`, `archiveFilesOnFailure` and `compressWav`
+counts down. At zero the call's `archiveWav`, `archiveM4a`, `callLog` and `archiveFilesOnFailure`
 rules are applied (delete, or move out of the RAM spool): `ok` and `skipped` count the same, and
 only a `failed` keeps the files (with `archiveFilesOnFailure`). An unsettled call counts as failed
 after 1 h. With no takers, `archive::plan` writes only what the Keep rules keep, and the call
@@ -1238,8 +1238,9 @@ same frequency).
 | `captureFrames` | false | | save vocoder frames as `.sdr` |
 | `normalizeAudio` | true | yes | |
 | `digitalLevelDb`, `analogLevelDb` | 0 | yes | ±40 |
-| `compressWav` | false | yes | keep M4A instead of WAV |
-| `audioArchive`, `callLog` | true | yes | keep audio / JSON once the plugins are done |
+| `archiveWav` | true | yes | keep the WAV once the plugins are done |
+| `archiveM4a` | false | yes | keep an M4A of each call |
+| `callLog` | true | yes | keep the JSON once the plugins are done |
 | `archiveFilesOnFailure` | true | yes | |
 | `filenameFormat` | "" | yes | "" = `<short>/<Y>/<M>/<D>/<tg>-<epoch>_<freq>` |
 | `dropDuplicateCalls` | true | | multi-site dedupe |
@@ -1370,7 +1371,7 @@ Tag, Category, Squelch dB, Bandwidth kHz, Enable` (`trunk-app/src/channels.rs`).
       ]
     }
   ],
-  "recording": { "captureDir": "/home/me/TrunkRecorderPro", "maxRecorders": 32, "compressWav": true },
+  "recording": { "captureDir": "/home/me/TrunkRecorderPro", "maxRecorders": 32, "archiveM4a": true },
   "server": { "bind": "127.0.0.1", "port": 8080, "autoStart": true },
   "plugins": { "openmhz": { "enabled": true } },
   "log": { "level": "info", "file": true }

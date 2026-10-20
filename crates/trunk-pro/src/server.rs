@@ -963,6 +963,10 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
             let r = tokio::task::spawn_blocking(move || {
                 let cfg = ctx2.config.lock().unwrap().clone();
                 let (id, path, notice) = ctx2.plugins.add(&path, &cfg)?;
+                // A rebuilt copy of one that's on (the config doesn't change): it restarts with it.
+                if cfg.plugins.get(&id).is_some_and(|p| p.enabled && Path::new(&p.path) == path) {
+                    ctx2.plugins.reload(&cfg);
+                }
                 edit_config(&ctx2, |c| c.plugins.entry(id).or_default().path = path.display().to_string())?;
                 Ok(notice)
             })

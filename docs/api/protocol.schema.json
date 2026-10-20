@@ -4480,13 +4480,13 @@
         "analogLevelDb": {
           "type": "number"
         },
-        "compressWav": {
+        "archiveWav": {
           "type": "boolean",
-          "description": "Desktop: also keep an .m4a of every call (compressWav)."
+          "description": "Desktop: keep each call's .wav once every upload plugin has handled it (with archiveM4a, Trunk Recorder's audioArchive)."
         },
-        "audioArchive": {
+        "archiveM4a": {
           "type": "boolean",
-          "description": "Desktop: keep the audio once every upload plugin has handled the call (audioArchive)."
+          "description": "Desktop: keep an .m4a of each call (Trunk Recorder's compressWav)."
         },
         "callLog": {
           "type": "boolean",
@@ -4567,12 +4567,12 @@
       "required": [
         "analogLevelDb",
         "archiveFilesOnFailure",
-        "audioArchive",
+        "archiveM4a",
+        "archiveWav",
         "callLog",
         "callTimeoutS",
         "captureDir",
         "captureFrames",
-        "compressWav",
         "digitalLevelDb",
         "dropDuplicateCalls",
         "filenameFormat",
@@ -4634,13 +4634,13 @@
         "analogLevelDb": {
           "type": "number"
         },
-        "compressWav": {
+        "archiveWav": {
           "type": "boolean",
-          "description": "Desktop: also keep an .m4a of every call (compressWav)."
+          "description": "Desktop: keep each call's .wav once every upload plugin has handled it (with archiveM4a, Trunk Recorder's audioArchive)."
         },
-        "audioArchive": {
+        "archiveM4a": {
           "type": "boolean",
-          "description": "Desktop: keep the audio once every upload plugin has handled the call (audioArchive)."
+          "description": "Desktop: keep an .m4a of each call (Trunk Recorder's compressWav)."
         },
         "callLog": {
           "type": "boolean",

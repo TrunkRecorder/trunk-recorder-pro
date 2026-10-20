@@ -460,7 +460,7 @@ Every message is a JSON object with a `type`. Exact fields are in
 | `keys` | On connecting, and after an unlock, a lock or a config change (control access) | `sources[]`: `{ name, systems, unlocked }`, each key container that waits for a password |
 | `statsResult` | Answers `statsQuery` | `id`, `from`, `to`, `loading` (the history files are still being read), `series`: name → `{ t0, stepS, v, lo, hi, n }` |
 | `radioResult` | Answers `radioQuery` | `id`, `what`, and by `what`: `rows` (talkgroups / radios / frequencies), `row` and its detail, `systems` (summary), `histogram` |
-| `concluded` | A call was recorded | `entry`: `{ path, record, audio, json }`; `audio` / `json`: whether they stay in the recordings folder once the plugins are done (**Keep audio** / **Keep call JSON**; false: deleted then) |
+| `concluded` | A call was recorded | `entry`: `{ path, record, audio, json }`; `audio` / `json`: whether they stay in the recordings folder once the plugins are done (`audio`: some audio, .wav or .m4a, stays: **Keep .wav** / **Keep .m4a**; `json`: **Keep call JSON**; false: deleted then) |
 | `callFiles` | A call's upload plugins are done, and it kept other than its entry said (an upload failed and its files stay) | `path`, `audio`, `json` |
 | `log` | Topic `log` (warnings and errors always) | `lines[]`: `{ timeS, kind, text, system?, time?, level? }` — `kind` e.g. `"error"`, `"control"`, `"alias"`, `"plugin"`, `"info"`, or a control-message kind; the decoder's lines have `timeS` (seconds into the recording), the recorder's own `time` (Unix seconds) and `level` |
 | `unitAlias` | A talker alias was heard | `system` (short name), `unit`, `alias` |
@@ -567,12 +567,13 @@ Each recorded call's files are under the recordings folder at
 
 - `/calls/<path>.wav`: the audio, 8 kHz mono
 - `/calls/<path>.json`: the same `CallRecord` that came in `concluded`
-- `/calls/<path>.m4a`: when `recording.compressWav` is on
+- `/calls/<path>.m4a`: when an .m4a was kept (`recording.archiveM4a`). The server falls back
+  between the `.wav` and the `.m4a` for whichever exists
 
 URL-encode each segment of the path:
 `path.split("/").map(encodeURIComponent).join("/")`. An `<audio>` element can
 play the `.wav` directly. The files can be deleted once the plugins are done
-with them (`recording.audioArchive: false`), so older calls in the history
+with them (`recording.archiveWav` and `archiveM4a` off), so older calls in the history
 may have no files.
 
 `CallRecord` is Trunk Recorder's call JSON, so tools written for Trunk

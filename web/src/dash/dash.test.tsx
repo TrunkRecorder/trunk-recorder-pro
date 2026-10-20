@@ -7,7 +7,6 @@ import { renderToString } from "react-dom/server";
 import { defaultConfig, newSystem } from "../config.ts";
 import { setView, snapshot, transport } from "../controller.ts";
 import type { CallView, Config, EngineStatus, FromRecorder, SiteIdentity, SiteStatus, SystemStatus } from "../protocol.ts";
-import { LivePage } from "./Calls.tsx";
 import { DecodePage } from "./Decode.tsx";
 import { Overview } from "./Overview.tsx";
 import { RadioPage } from "./Radio.tsx";
@@ -82,12 +81,16 @@ test("Decode: a system's page shows what its sites announce (decodeDetail), not 
   assert.ok(page.includes("site 1-9"), page);
 });
 
-test("Live: one filter choice per system; a call says its site, and the others carrying it", () => {
-  twoSites([{ id: 7, system: 0, systemName: "dcfd", site: "south", alsoOn: ["dcfd"], talkgroup: 100, alphaTag: "Fire", freqHz: 851_600_000, slot: null, state: "recording", reason: null, sources: [], startS: 1 }]);
-  const page = text(renderToString(<LivePage s={snapshot()} />));
-  assert.match(page, /All dcfd other/);
-  assert.match(page, /dcfd \/ south/);
-  assert.match(page, /also on dcfd/);
+test("Radio: a system's page has its calls on the air now, saying the site and the others carrying it, and its log; not another's", () => {
+  twoSites([
+    { id: 7, system: 0, systemName: "dcfd", site: "south", alsoOn: ["dcfd"], talkgroup: 100, alphaTag: "Fire", freqHz: 851_600_000, slot: null, state: "recording", reason: null, sources: [], startS: 1 },
+    { id: 8, system: 1, systemName: "other", site: "other", talkgroup: 555, alphaTag: "Elsewhere", freqHz: 852_600_000, slot: null, state: "recording", reason: null, sources: [], startS: 1 },
+  ]);
+  setView("radio", "dcfd");
+  const page = text(renderToString(<RadioPage />));
+  assert.match(page, /Active calls Listen live .*100 Fire · south also on dcfd/);
+  assert.doesNotMatch(page, /Elsewhere/, "another system's call isn't here");
+  assert.match(page, /Control channel log/);
 });
 
 test("Radio: each system's card opens its system from anywhere on it, without an Open link", () => {
@@ -96,4 +99,14 @@ test("Radio: each system's card opens its system from anywhere on it, without an
   const html = renderToString(<RadioPage />);
   assert.equal((html.match(/class="card card-opens sys-section"/g) ?? []).length, 2, "both systems' cards open them");
   assert.doesNotMatch(text(html), /Open dcfd/);
+});
+
+test("Radio: a system's page goes back as Decode's does, with the systems beside; a talkgroup's goes back to its system", () => {
+  twoSites();
+  setView("radio", "dcfd");
+  const page = text(renderToString(<RadioPage />));
+  assert.match(page, /^ ?← All systems dcfd other dcfd P25/, "the way back first, the systems beside it, then the system");
+  setView("radio", "dcfd", "tg", 100);
+  const tg = text(renderToString(<RadioPage />));
+  assert.match(tg, /^ ?← dcfd dcfd P25/, "back to its system, no picker");
 });

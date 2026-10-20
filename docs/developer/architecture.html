@@ -496,7 +496,7 @@ svg .label-free { fill: var(--muted); font: 11px var(--mono); }
       <tr><td>Restarts</td><td>Back-off from 1 s doubling to 60 s, reset after a run longer than 60 s. Exit code 78 means a config error: not restarted, and calls stop waiting for it.</td></tr>
       <tr><td>Settings change</td><td>Plugins are restarted; new processes start only after the old ones exit (they share data folders). Events wait meanwhile.</td></tr>
       <tr><td>Shutdown</td><td><code>shutdown {grace_s}</code> is queued behind pending events and stdin closes after it. A plugin gets its grace (10 s at stop) from when it has read it, after up to 30 s to drain, then it is killed.</td></tr>
-      <tr><td>Archive</td><td>For each call, takers = live processes subscribed to <code>call.concluded</code>. Each <code>call.result</code> counts down; at zero <code>audioArchive</code>, <code>callLog</code>, <code>archiveFilesOnFailure</code> and <code>compressWav</code> decide what to delete: <code>ok</code> and <code>skipped</code> count the same; only a <code>failed</code> keeps files (with <code>archiveFilesOnFailure</code>). An unsettled call counts as failed after 1 h. With no takers the Keep rules alone decide.</td></tr>
+      <tr><td>Archive</td><td>For each call, takers = live processes subscribed to <code>call.concluded</code>. Each <code>call.result</code> counts down; at zero <code>archiveWav</code>, <code>archiveM4a</code>, <code>callLog</code> and <code>archiveFilesOnFailure</code> decide what to delete: <code>ok</code> and <code>skipped</code> count the same; only a <code>failed</code> keeps files (with <code>archiveFilesOnFailure</code>). An unsettled call counts as failed after 1 h. With no takers the Keep rules alone decide.</td></tr>
       <tr><td>Audio formats</td><td>WAV always; M4A if an encoder exists (ffmpeg, afconvert or fdkaac) and the plugin asked. One plan (<code>plugins::plan</code>) decides every file; the finisher pipes the WAV to the encoder from memory, and writes the WAV to disk only when kept, when a plugin takes WAV, or when encoding failed.</td></tr>
       <tr><td>RAM spool</td><td>With <code>recording.ramSpool</code>, files that will be deleted once plugins are done go to a RAM disk (macOS <code>hdiutil</code>, Linux <code>/dev/shm</code>) to spare the SSD. No room → recordings folder. Files older than 2 h are moved out.</td></tr>
       <tr><td>Store</td><td>One store for plugins and interfaces (<code>trunk-pro/src/store.rs</code>: <code>Registry</code>, <code>Shelf</code>, <code>download</code>, <code>stage</code>, <code>put_in_place</code>, <code>Release</code>; thin <code>plugins/store.rs</code> and <code>interfaces/store.rs</code>), asked with <code>store {kind}</code> and <code>install {kind, …}</code>. Registry <code>index.json</code> from the TrunkRecorder/plugins repository (cached 15 min in <code>plugin-registry.json</code>, built-in fallback). Install: download ≤ 200 MiB → SHA-256 must match → unpack to staging (no links, no path escapes) → <code>--describe</code> must match id and version → atomic rename into place. A GitHub release with <code>SHA256SUMS</code> can be installed unlisted.</td></tr>
@@ -1563,7 +1563,7 @@ diagram($("dia-plugins"), {
     { id: "proc", x: 930, y: 160, label: "Plugin process", sub: "own process group · cwd plugin-data/<id>", w: 190, cls: "k-out", text: "Any executable that speaks the protocol; usually built on the Rust SDK. Its manifest came from <code>--describe</code>." },
     { id: "sup", x: 720, y: 240, label: "supervisor", sub: "plugin-<id> · reads stdout", text: "Parses <code>PluginMessage</code>s (lines that aren't JSON become log lines; bad UTF-8 is replaced, never fatal), restarts the process with back-off, honours exit code 78." },
     { id: "err", x: 930, y: 330, label: "stderr reader", sub: "→ log lines", w: 190, text: "Every stderr line is logged under the plugin's name." },
-    { id: "arch", x: 500, y: 330, label: "Archive", sub: "counts call.result", text: "When every taker has answered, applies <code>audioArchive</code>, <code>callLog</code>, <code>archiveFilesOnFailure</code>, <code>compressWav</code>: deletes, or moves files out of the RAM spool." },
+    { id: "arch", x: 500, y: 330, label: "Archive", sub: "counts call.result", text: "When every taker has answered, applies <code>archiveWav</code>, <code>archiveM4a</code>, <code>callLog</code>, <code>archiveFilesOnFailure</code>: deletes, or moves files out of the RAM spool." },
     { id: "ui", x: 270, y: 330, label: "Plugins page", sub: "state · metrics · drops", text: "Runtime state for the interface: worst state across copies, metrics, restarts, dropped events, results per minute for the last hour." }
   ],
   edges: [["eng", "disp"], ["fin", "disp"], ["disp", "hold", "delayed", { dash: true, s: "bt" }], ["hold", "q", "when due", { dash: true, s: "rb", lx: -40, ly: -6 }], ["disp", "q"], ["q", "wr"], ["wr", "proc", "JSON lines"], ["proc", "sup", "stdout", { s: "lr" }], ["proc", "err", "stderr", { s: "bt" }], ["sup", "arch", "call.result", { s: "bt" }], ["sup", "ui", "status · metrics"]],
@@ -1821,8 +1821,8 @@ const CFG = {
   "recording.normalizeAudio": ["bool", "true", "Per system. Loudness to −12 dBFS speech."],
   "recording.digitalLevelDb": ["dB", "0", "Per system. ±40."],
   "recording.analogLevelDb": ["dB", "0", "Per system. ±40."],
-  "recording.compressWav": ["bool", "false", "Per system. Keep M4A instead of WAV."],
-  "recording.audioArchive": ["bool", "true", "Per system. Keep audio after plugins upload it."],
+  "recording.archiveWav": ["bool", "true", "Per system. Keep the WAV after plugins upload it."],
+  "recording.archiveM4a": ["bool", "false", "Per system. Keep an M4A of each call."],
   "recording.callLog": ["bool", "true", "Per system. Keep the JSON after upload."],
   "recording.archiveFilesOnFailure": ["bool", "true", "Per system."],
   "recording.filenameFormat": ["string", "\"\"", "Per system. \"\" = <short>/<Y>/<M>/<D>/<tg>-<epoch>_<freq>."],
@@ -1858,7 +1858,7 @@ const CFG_EXAMPLE = {
     { freqHz: 852087500, mode: "fm", name: "FG North", tone: "151.4" },
     { freqHz: 852087500, mode: "fm", name: "FG South", tone: "D023N" },
     { freqHz: 851812500, mode: "p25", name: "PD Tac 2", tone: "NAC 293", squelchDb: 12 }] }],
-  recording: { captureDir: "/home/me/TrunkRecorderPro", prerollS: 1, maxRecorders: 32, callTimeoutS: 3, compressWav: true, vocoder: "fixed", m4a: { encoder: "auto", bitrateKbps: 32 }, ramSpool: { enabled: false, sizeMb: 256 } },
+  recording: { captureDir: "/home/me/TrunkRecorderPro", prerollS: 1, maxRecorders: 32, callTimeoutS: 3, archiveM4a: true, vocoder: "fixed", m4a: { encoder: "auto", bitrateKbps: 32 }, ramSpool: { enabled: false, sizeMb: 256 } },
   server: { bind: "127.0.0.1", port: 8080, autoStart: true },
   plugins: { openmhz: { enabled: true } },
   log: { level: "info", file: true },

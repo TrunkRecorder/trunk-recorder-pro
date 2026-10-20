@@ -6,10 +6,10 @@
 import { useMemo, useState } from "react";
 import { systemColor } from "../config.ts";
 import { radioQuery, setTalkgroupIgnore, setView, usePolled, useApp, type AppState } from "../controller.ts";
-import { Bipartite, Card, Choice, Heatmap, HeatStrip, Histogram, Light, RadialEgo, Stat, type Node } from "../charts.tsx";
+import { BackBar, Bipartite, Card, Choice, Heatmap, HeatStrip, Histogram, Light, RadialEgo, Stat, type Node } from "../charts.tsx";
 import { ago, clockAt, compact, dur, hmm, num } from "../fmt.ts";
 import type { CipherSeen, LengthHistogram, RadioResult, TgRow, UnitRow } from "../protocol.ts";
-import { aliasOf } from "./Calls.tsx";
+import { ActiveCalls, aliasOf, Log } from "./Calls.tsx";
 import { dashSystems, K, KIND_LABEL, running, total, useHistory, type DashSystem } from "./data.ts";
 
 type Hours = "24" | "168";
@@ -90,35 +90,6 @@ function Reasons({ name, range }: { name: string; range: "24h" | "7d" }) {
             )}
           </ul>
         </>
-      )}
-    </Card>
-  );
-}
-
-function ActiveNow({ s, sys }: { s: AppState; sys: DashSystem }) {
-  const calls = s.calls.filter((c) => c.systemName === sys.name);
-  return (
-    <Card title="On the air now">
-      {calls.length === 0 ? (
-        <p className="empty">Quiet.</p>
-      ) : (
-        <ul className="air">
-          {calls.map((c) => (
-            <li key={c.id}>
-              <button className="linkish" onClick={() => setView("radio", sys.name, "tg", c.talkgroup)}>
-                <span className={`dot dot-${c.state}${c.encrypted ? " dot-enc" : ""}`} />
-                <TgName r={{ tg: c.talkgroup, alphaTag: c.alphaTag }} />
-              </button>
-              <span className="row">
-                {[...new Set(c.sources)].slice(-4).map((u) => (
-                  <button key={u} className="chip" onClick={() => setView("radio", sys.name, "unit", u)}>
-                    {aliasOf(s, sys.name, u) ?? u}
-                  </button>
-                ))}
-              </span>
-            </li>
-          ))}
-        </ul>
       )}
     </Card>
   );
@@ -332,9 +303,10 @@ function SystemView({ s, sys }: { s: AppState; sys: DashSystem }) {
         />
         <Stat label="Unknown" value={summary ? summary.unknownTgs24h : "—"} sub="not in the talkgroup file" />
       </div>
+      <ActiveCalls s={s} system={sys.name} />
       <div className="columns">
         <Reasons name={sys.name} range={hours === "24" ? "24h" : "7d"} />
-        <ActiveNow s={s} sys={sys} />
+        <Lengths h={lenR?.histogram} />
       </div>
       {busy.length > 0 && (
         <Card title={`Busiest ${busy.length} by hour`}>
@@ -348,10 +320,8 @@ function SystemView({ s, sys }: { s: AppState; sys: DashSystem }) {
       )}
       <Network s={s} sys={sys} tgs={tgs} units={units} />
       <Talkgroups sys={sys} rows={tgs} hours={h} />
-      <div className="columns">
-        <Units s={s} sys={sys} rows={units} total={unitsR?.total ?? units.length} />
-        <Lengths h={lenR?.histogram} />
-      </div>
+      <Units s={s} sys={sys} rows={units} total={unitsR?.total ?? units.length} />
+      <Log s={s} system={sys.name} />
     </div>
   );
 }
@@ -378,11 +348,6 @@ function TgView({ s, sys, tg }: { s: AppState; sys: DashSystem; tg: number }) {
   const maxN = Math.max(1, ...talkers.map((t) => t.n));
   return (
     <div className="stack">
-      <div className="row">
-        <button className="btn ghost small" onClick={() => setView("radio", sys.name)}>
-          ← {sys.name}
-        </button>
-      </div>
       <section className="hero">
         <div>
           <h2 className="big">{row.alphaTag || `Talkgroup ${tg}`}</h2>
@@ -493,11 +458,6 @@ function UnitView({ s, sys, unit }: { s: AppState; sys: DashSystem; unit: number
   const affTag = row.aff !== null ? (tgs.find((t) => t.tg === row.aff)?.alphaTag ?? "") : "";
   return (
     <div className="stack">
-      <div className="row">
-        <button className="btn ghost small" onClick={() => setView("radio", sys.name)}>
-          ← {sys.name}
-        </button>
-      </div>
       <section className="hero">
         <div>
           <h2 className="big">{alias || `Radio ${unit}`}</h2>
@@ -570,8 +530,8 @@ function UnitView({ s, sys, unit }: { s: AppState; sys: DashSystem; unit: number
 
 // ── the page ─────────────────────────────────────────────────────────────────
 
-/** Which system a page is about: its colour, name, kind and site, and the way back to all of them. */
-function SystemHeader({ s, sys, multi }: { s: AppState; sys: DashSystem; multi: boolean }) {
+/** Which system a page is about: its colour, name, kind and site. */
+function SystemHeader({ s, sys }: { s: AppState; sys: DashSystem }) {
   // Its sites as their control channels say: "SysID 1A2 · site 1-3", or "SysID 1A2 · sites 1-3, 1-4".
   const ids = sys.sites.flatMap((x) => (x.status ? [x.status.identity] : []));
   const sysId = ids.find((i) => i.sysId != null)?.sysId;
@@ -586,11 +546,6 @@ function SystemHeader({ s, sys, multi }: { s: AppState; sys: DashSystem; multi: 
           {site ? ` · ${site}` : ""}
         </p>
       </div>
-      {multi && (
-        <button className="btn ghost small" onClick={() => setView("radio")}>
-          All systems
-        </button>
-      )}
     </div>
   );
 }
@@ -698,19 +653,30 @@ export function RadioPage() {
   const sys = systems.find((x) => x.name === name);
   if (!sys) return <p className="empty">No system called {name}.</p>;
   const [, what, key] = s.path;
+  // The other systems, beside the way back to them all (as Decode's sites are).
+  const picker = multi && (
+    <div className="filter-row" role="tablist" aria-label="System">
+      {systems.map((x) => (
+        <button key={x.name} className={`btn ghost small${x.name === sys.name ? " on" : ""}`} onClick={() => setView("radio", x.name)}>
+          <span className="sys-dot" style={{ background: systemColor(s.config, x.name) }} />
+          {x.name}
+        </button>
+      ))}
+    </div>
+  );
   return (
     <div className="page">
-      <SystemHeader s={s} sys={sys} multi={multi} />
-      {multi && (
-        <div className="filter-row" role="tablist" aria-label="System">
-          {systems.map((x) => (
-            <button key={x.name} className={`btn ghost small${x.name === sys.name ? " on" : ""}`} onClick={() => setView("radio", x.name)}>
-              <span className="sys-dot" style={{ background: systemColor(s.config, x.name) }} />
-              {x.name}
-            </button>
-          ))}
-        </div>
+      {/* (A talkgroup's or radio's page goes back to its system; a system's, with others, to them all.) */}
+      {what && key ? (
+        <BackBar to={sys.name} onBack={() => setView("radio", sys.name)} />
+      ) : (
+        multi && (
+          <BackBar to="All systems" onBack={() => setView("radio")}>
+            {picker}
+          </BackBar>
+        )
       )}
+      <SystemHeader s={s} sys={sys} />
       {!running(s) && (
         <p className="muted small">
           <Light level="idle" /> Not recording — showing past data.

@@ -75,3 +75,23 @@ test("Listen: a system of sites has one talkgroup list, and a talkgroup switched
   assert.match(showing(), /Fire Dispatch .*TGID 100/);
   setFeed(false);
 });
+
+test("Listen: a system whose audio isn't kept has no talkgroups to pick, and says why", () => {
+  twoSites();
+  const c = structuredClone(snapshot().config!);
+  const wmata = newSystem(c, { shortName: "wmata", controlChannelsHz: [489_000_000] });
+  wmata.recording = { archiveWav: false, archiveM4a: false };
+  c.systems.push(wmata);
+  transport.onMessage({ type: "config", config: c, version: 2 });
+  transport.onMessage({ type: "talkgroups", system: "wmata", csv: CSV("32784,8010,Red Line,D,Rail,,") });
+  concluded({ ...call("wmata", 32784, "Red Line"), path: "wmata/32784-1", record: { ...call("wmata", 32784).record, short_name: "wmata" }, audio: false } as CallEntry);
+  const list = tgList();
+  assert.doesNotMatch(list, /Red Line/, "none of its talkgroups");
+  assert.match(list, /dcfd 2 sites/, "the others still are");
+  assert.match(showing(), /wmata isn&#x27;t here: its calls&#x27; audio is deleted/);
+  // Kept again, it's back and the card goes.
+  wmata.recording = {};
+  transport.onMessage({ type: "config", config: c, version: 3 });
+  assert.match(tgList(), /Red Line/);
+  assert.doesNotMatch(showing(), /isn&#x27;t here/);
+});

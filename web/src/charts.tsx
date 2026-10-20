@@ -730,6 +730,22 @@ export function Choice<T extends string>(props: { value: T; options: { v: T; lab
   );
 }
 
+/**
+ * A drilled-down page's way back up (to every system, every source, or the
+ * system a talkgroup is on), with what picks within the page beside it (a
+ * site). The same on every page that drills down.
+ */
+export function BackBar({ to, onBack, children }: { to: string; onBack: () => void; children?: ReactNode }) {
+  return (
+    <div className="row back-bar">
+      <button className="btn ghost small" onClick={onBack}>
+        ← {to}
+      </button>
+      {children}
+    </div>
+  );
+}
+
 /** A hint that grows intuition: what a figure means, what's normal. */
 export function Hint({ children }: { children: ReactNode }) {
   return <p className="hint">{children}</p>;

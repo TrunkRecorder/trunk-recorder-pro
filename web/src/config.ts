@@ -580,8 +580,10 @@ function trRecording(sys: Record<string, unknown>): RecordingOverride {
   set("minCallS", num("minDuration"));
   set("maxCallS", num("maxDuration"));
   set("minTransmissionS", num("minTransmissionDuration"));
-  set("compressWav", bool("compressWav"));
-  set("audioArchive", bool("audioArchive"));
+  // (audioArchive kept the audio, compressWav an .m4a of it too: as the recorder's migrate.rs reads them.)
+  const archive = bool("audioArchive");
+  set("archiveWav", archive);
+  set("archiveM4a", archive === false ? false : bool("compressWav"));
   set("callLog", bool("callLog"));
   const db = (x: number | undefined, base: number) => (x && x > 0 && x !== base ? Math.round(20 * Math.log10(x / base) * 10) / 10 : undefined);
   set("digitalLevelDb", db(num("digitalLevels"), 1));
