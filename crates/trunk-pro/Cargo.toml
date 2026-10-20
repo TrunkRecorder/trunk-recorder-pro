@@ -49,3 +49,5 @@ libc = "0.2.190"
 
 [dev-dependencies]
 jsonschema = { version = "0.58.4", default-features = false }
+tokio-tungstenite = "0.29"
+futures-util = { version = "0.3", default-features = false }
