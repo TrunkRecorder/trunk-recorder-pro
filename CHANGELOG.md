@@ -9,6 +9,13 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   calls and status replayed as if live: one that heard nothing from the recorder for 30 s (it
   hears from it every 2 s) reconnects, and the recorder closes a connection that stops reading
   for 10 s or falls behind, so it reconnects afresh.
+- **A call times out from when its last update came in, not when it was on the air** (by
+  taclane, #55). A control channel's messages come out some 0.4 s after they were sent (P25's
+  diversity bank holds them 0.35 s), so every call ended that much early: a `callTimeoutS` of 1,
+  carried over from Trunk Recorder, ended calls about half a second after their last update,
+  shorter than the gap between a busy system's updates in hangtime, and split conversations into
+  pieces with empty calls between them. `callTimeoutS` now means seconds after the last update
+  came in; Trunk Recorder's once-a-second checks end calls up to 2 s later than its own setting.
 
 ## [0.2.5] — 2026-10-19
 
