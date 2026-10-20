@@ -32,7 +32,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use num_complex::Complex32;
 
 use super::calls::{Call, CallConfig, CallEvent, CallId, CallIds, CallManager, Policy, Reason, RecorderHost};
-use super::conventional::{ConvChannel, ConvConfig, ConvOut, Conventional};
+use super::conventional::{ConvChannel, ConvConfig, ConvMode, ConvOut, Conventional};
 use super::message::{Message, MessageType};
 use super::multisite::{Held, MultiSite};
 use super::record::{save_call, Reception, SaveContext, Transmissions};
@@ -363,8 +363,22 @@ pub struct Status {
     /// Conventional channels with a head open (a signal on them now).
     pub conventional_open: usize,
     pub calls_concluded: u64,
+    /// Each conventional system's calls (they have no sites to report them).
+    pub conventional: Vec<ConvSystemStatus>,
     /// Each source's frequency error, as measured and as corrected.
     pub sources: Vec<SourceTune>,
+}
+
+/// A conventional system being recorded, as [`Engine::status`] reports it.
+#[derive(Clone, Debug, Default)]
+pub struct ConvSystemStatus {
+    /// Its number (`Call::system`) and short name.
+    pub system: u16,
+    pub short_name: String,
+    pub active_calls: usize,
+    /// Its frequencies with a signal on them now.
+    pub channels_open: usize,
+    pub calls_concluded: u64,
 }
 
 /// One channel the engine listens to, as the dashboard shows it ([`Engine::channels`]).
@@ -385,6 +399,9 @@ pub struct ChannelSnapshot {
     pub quality: ChannelQuality,
     /// Calls on it now.
     pub calls: usize,
+    /// A conventional channel: its mode, and its rows' names.
+    pub mode: Option<ConvMode>,
+    pub names: Vec<String>,
 }
 
 /// What a channel is to the engine ([`ChannelSnapshot`]).
@@ -422,6 +439,8 @@ struct Want {
     offset_hz: Option<f32>,
     quality: ChannelQuality,
     calls: usize,
+    mode: Option<ConvMode>,
+    names: Vec<String>,
 }
 
 /// Noise profile slices per source for the dashboard.
@@ -1586,14 +1605,25 @@ impl Core {
                 let c = t.cc();
                 (c.offset_hz(), c.quality())
             };
-            control.push(Want { system: t.system, site: Some(t.site), hz, src, kind: ChannelKind::Control, offset_hz, quality, calls: 0 });
+            control.push(Want { system: t.system, site: Some(t.site), hz, src, kind: ChannelKind::Control, offset_hz, quality, ..Default::default() });
         }
         let conv = self
             .conv
             .channels()
-            .filter_map(|(hz, system, calls)| {
-                let src = self.radio.source_for(hz)?;
-                Some(Want { system: system as u16, site: None, hz, src, kind: ChannelKind::Conventional, calls, ..Default::default() })
+            .filter_map(|c| {
+                let src = self.radio.source_for(c.freq_hz)?;
+                Some(Want {
+                    system: c.system as u16,
+                    site: None,
+                    hz: c.freq_hz,
+                    src,
+                    kind: ChannelKind::Conventional,
+                    offset_hz: c.offset_hz,
+                    quality: c.quality,
+                    calls: c.calls,
+                    mode: Some(c.mode),
+                    names: c.names.iter().map(|n| n.to_string()).collect(),
+                })
             })
             .collect();
         (control, conv)
@@ -1673,9 +1703,29 @@ impl Core {
             conventional_open: self.conv.open_count(),
             calls_concluded: self.systems.iter().map(|s| s.concluded).sum(),
             sites,
+            conventional: self.conv_status(),
             // ([`Engine::status`] fills these in, from the sources.)
             sources: Vec::new(),
         }
+    }
+
+    /// Each conventional system with channels: its calls now and so far.
+    fn conv_status(&self) -> Vec<ConvSystemStatus> {
+        let mut out: Vec<ConvSystemStatus> = Vec::new();
+        for c in self.conv.channels() {
+            let i = match out.iter().position(|v| v.system as usize == c.system) {
+                Some(i) => i,
+                None => {
+                    let Some(sys) = self.systems.get(c.system) else { continue };
+                    out.push(ConvSystemStatus { system: c.system as u16, short_name: sys.cfg.short_name.clone(), calls_concluded: sys.concluded, ..Default::default() });
+                    out.len() - 1
+                }
+            };
+            out[i].active_calls += c.calls;
+            out[i].channels_open += c.open as usize;
+        }
+        out.sort_by_key(|v| v.system);
+        out
     }
 
     /// End of input: release what the receivers still hold and end every call.
@@ -2120,6 +2170,8 @@ impl Engine {
                 offset_hz: w.offset_hz,
                 quality: w.quality,
                 calls: w.calls,
+                mode: w.mode,
+                names: w.names.clone(),
             }
         };
         let (mut control_out, mut conv_out): (Vec<Option<ChannelSnapshot>>, Vec<Option<ChannelSnapshot>>) = (control.iter().map(|_| None).collect(), conv.iter().map(|_| None).collect());
@@ -2133,7 +2185,7 @@ impl Engine {
             }
             for ch in r.channels.values() {
                 let system = self.shared.site_systems[ch.site as usize];
-                let w = Want { system, site: Some(ch.site), hz: ch.freq_hz, src, kind: ChannelKind::Voice, offset_hz: ch.voice.offset_hz(), quality: ch.voice.quality(), calls: ch.calls.iter().flatten().count() };
+                let w = Want { system, site: Some(ch.site), hz: ch.freq_hz, src, kind: ChannelKind::Voice, offset_hz: ch.voice.offset_hz(), quality: ch.voice.quality(), calls: ch.calls.iter().flatten().count(), ..Default::default() };
                 voice.push(snap(&r.src, &profile, &w));
             }
         }
@@ -2385,6 +2437,30 @@ mod tests {
         e.shared.rx[0].lock().unwrap().src.measured(1.0);
         let t = e.status().sources[0];
         assert_eq!((t.applied_ppm, t.seeded), (1.0, false));
+    }
+
+    /// A conventional system is in the status with its calls, and its
+    /// channels say their mode and names (each once) for the dashboard.
+    #[test]
+    fn conventional_channels_report_their_mode_names_and_calls() {
+        use super::super::conventional::{ConvChannel, ConvMode};
+        let named = |n: &str| Some(super::super::talkgroups::Talkgroup { alpha_tag: n.into(), ..Default::default() });
+        let pd = ConvChannel { talkgroup: Some(2), info: named("Town PD"), ..ConvChannel::new(155.2e6, ConvMode::P25) };
+        let pd2 = ConvChannel { talkgroup: Some(3), info: named("Town PD"), access: Some(super::super::conventional::Access::P25 { nac: Some(0x131), tg: None }), ..ConvChannel::new(155.2e6, ConvMode::P25) };
+        let pw = ConvChannel { talkgroup: Some(4), info: named("Town PW"), ..ConvChannel::new(155.4e6, ConvMode::Fm) };
+        let e = Engine::new(EngineConfig {
+            systems: vec![SystemConfig::conventional("town")],
+            sources: vec![SourceConfig { center_hz: 155e6, rate_hz: 2.4e6, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ }],
+            conventional: vec![pd, pd2, pw],
+            ..Default::default()
+        })
+        .unwrap();
+        let st = e.status();
+        assert_eq!(st.conventional.len(), 1);
+        let v = &st.conventional[0];
+        assert_eq!((v.system, v.short_name.as_str(), v.active_calls, v.channels_open, v.calls_concluded), (0, "town", 0, 0, 0));
+        let chans: Vec<_> = e.channels().into_iter().filter(|c| c.kind == ChannelKind::Conventional).map(|c| (c.freq_hz, c.mode, c.names, c.offset_hz)).collect();
+        assert_eq!(chans, [(155_200_000, Some(ConvMode::P25), vec!["Town PD".to_string()], None), (155_400_000, Some(ConvMode::Fm), vec!["Town PW".to_string()], None)]);
     }
 
     /// An engine on one source, with a conventional channel (so it runs).

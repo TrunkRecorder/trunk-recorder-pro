@@ -729,6 +729,25 @@
         },
         "calls": {
           "type": "number"
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "fm",
+            "am",
+            "p25",
+            "dmr",
+            "nxdn48",
+            "nxdn96"
+          ],
+          "description": "A conventional channel: its mode."
+        },
+        "names": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "A conventional channel: its rows' names, each once."
         }
       },
       "required": [
@@ -954,6 +973,36 @@
       ],
       "additionalProperties": false,
       "description": "A conventional system (Trunk Recorder's conventional / conventionalP25 / conventionalDMR): energy-detected channels with their own short name, squelch, channel file, recording rules, unit names and upload settings. A frequency belongs to one system."
+    },
+    "ConvSystemStatus": {
+      "type": "object",
+      "properties": {
+        "index": {
+          "type": "number"
+        },
+        "shortName": {
+          "type": "string"
+        },
+        "activeCalls": {
+          "type": "number"
+        },
+        "channelsOpen": {
+          "type": "number",
+          "description": "Its frequencies with a signal on them now."
+        },
+        "callsConcluded": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "index",
+        "shortName",
+        "activeCalls",
+        "channelsOpen",
+        "callsConcluded"
+      ],
+      "additionalProperties": false,
+      "description": "One conventional system recording. `index` is what its calls carry as `system`."
     },
     "DelayRule": {
       "type": "object",
@@ -1258,6 +1307,13 @@
             "$ref": "#/definitions/SystemStatus"
           }
         },
+        "conventional": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ConvSystemStatus"
+          },
+          "description": "The conventional systems recording (they have no sites to be in `systems`)."
+        },
         "systemNames": {
           "type": "array",
           "items": {
@@ -1274,6 +1330,7 @@
         "conventionalOpen",
         "callsConcluded",
         "systems",
+        "conventional",
         "systemNames"
       ],
       "additionalProperties": false

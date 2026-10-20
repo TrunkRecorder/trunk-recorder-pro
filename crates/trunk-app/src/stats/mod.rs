@@ -425,12 +425,18 @@ impl Stats {
         let r1 = |v: f64| (v * 10.0).round() / 10.0;
         let ch_json = |c: &trunk_core::trunk::ChannelSnapshot| {
             let (system, site) = site_names(c.system, c.site);
-            json!({
+            let mut v = json!({
                 "system": system, "site": if site.is_empty() { None } else { Some(site) }, "freqHz": c.freq_hz, "source": c.source, "kind": c.kind.name(),
                 "powerDb": r1(c.power_db), "noiseDb": r1(c.noise_db), "snrDb": r1(c.power_db - c.noise_db),
                 "offsetHz": c.offset_hz.map(|v| v.round()), "quality": c.quality.sep.map(|v| r1(v as f64)),
                 "phaseErrDeg": c.quality.phase_err_deg.map(|v| r1(v as f64)), "calls": c.calls,
-            })
+            });
+            // A conventional channel: its mode and its rows' names.
+            if let Some(m) = c.mode {
+                v["mode"] = json!(m.as_str());
+                v["names"] = json!(c.names);
+            }
+            v
         };
         for i in rf {
             let profile: Vec<f64> = engine.noise_profile(i, 64).into_iter().map(r1).collect();

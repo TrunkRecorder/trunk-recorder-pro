@@ -1116,6 +1116,10 @@ impl Session {
             "activeCalls": st.active_calls, "recording": st.recording, "channelsOpen": st.channels_open, "conventionalOpen": st.conventional_open,
             "callsConcluded": st.calls_concluded,
             "systems": systems,
+            // The conventional systems, which have no sites to be in `systems`.
+            "conventional": st.conventional.iter().map(|v| json!({
+                "index": v.system, "shortName": v.short_name, "activeCalls": v.active_calls, "channelsOpen": v.channels_open, "callsConcluded": v.calls_concluded,
+            })).collect::<Vec<_>>(),
             // Every system's short name, by the number its calls and audio carry.
             "systemNames": self.cfg.call_systems().iter().map(|s| s.short_name).collect::<Vec<_>>(),
         });

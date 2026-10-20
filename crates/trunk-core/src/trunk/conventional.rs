@@ -539,6 +539,23 @@ struct Open {
     cipher_ahead: [Option<CipherId>; 2],
 }
 
+/// A conventional frequency as the dashboard shows it ([`Conventional::channels`]).
+pub struct ConvNow<'a> {
+    pub freq_hz: f64,
+    pub system: usize,
+    pub mode: ConvMode,
+    /// Its rows' names (alpha tags), each once, in order.
+    pub names: Vec<&'a str>,
+    /// A signal is on it now.
+    pub open: bool,
+    /// Calls in progress on it.
+    pub calls: usize,
+    /// While open: how far above the channel its carrier is, Hz, and how
+    /// well its decoder hears it (digital modes).
+    pub offset_hz: Option<f32>,
+    pub quality: voice::ChannelQuality,
+}
+
 /// One frequency, and the rows on it (what they share is checked: [`Conventional::check`]).
 struct Chan {
     freq_hz: f64,
@@ -749,9 +766,28 @@ impl Conventional {
         self.chans.iter().filter(|c| c.open.is_some()).count()
     }
 
-    /// Each channel: its frequency, its system, and its calls in progress.
-    pub fn channels(&self) -> impl Iterator<Item = (f64, usize, usize)> + '_ {
-        self.chans.iter().map(|c| (c.freq_hz, c.system, c.open.as_ref().map_or(0, |o| o.live.iter().flatten().count())))
+    /// Each channel as it is now: its frequency, system, mode and names, and
+    /// while a signal is on it its calls, carrier offset and decoding.
+    pub fn channels(&self) -> impl Iterator<Item = ConvNow<'_>> + '_ {
+        self.chans.iter().map(|c| {
+            let mut names: Vec<&str> = Vec::new();
+            for n in c.rows.iter().filter_map(|r| r.info.as_ref()).map(|t| t.alpha_tag.trim()) {
+                if !n.is_empty() && !names.contains(&n) {
+                    names.push(n);
+                }
+            }
+            let open = c.open.as_ref();
+            ConvNow {
+                freq_hz: c.freq_hz,
+                system: c.system,
+                mode: c.mode,
+                names,
+                open: open.is_some(),
+                calls: open.map_or(0, |o| o.live.iter().flatten().count()),
+                offset_hz: open.and_then(|o| o.voice.offset_hz()),
+                quality: open.map(|o| o.voice.quality()).unwrap_or_default(),
+            }
+        })
     }
 
     /// Calls in progress.
