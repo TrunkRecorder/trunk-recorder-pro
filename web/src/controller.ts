@@ -48,6 +48,7 @@ import type {
 import {
   type ImportTodo,
   activeSites,
+  callSigns,
   newConventional,
   newSiteName,
   newSystem,
@@ -375,6 +376,9 @@ function take(m: FromRecorder): void {
       break;
     case "surveySpectrum":
       set({ surveySpectrum: m });
+      break;
+    case "surveyReport":
+      saveSurveyReport(m.report);
       break;
     case "sourceProfile": {
       const { type: _, ...profile } = m;
@@ -1035,6 +1039,60 @@ export function surveyRescan(): void {
 export function stopSurvey(): void {
   transport.send({ type: "surveyStop" });
 }
+/** "Identify surveyed sites": the FCC licenses within `radiusM` of (lat, lon) for what the survey heard (sent to trunkrecorder.pro). */
+export function surveyIdentify(lat: number, lon: number, radiusM: number): void {
+  transport.send({ type: "surveyIdentify", lat, lon, radiusM });
+}
+/** Save the survey as a JSON document (what sharing a survey will send). */
+export function downloadSurvey(): void {
+  surveyReportWanted = true;
+  transport.send({ type: "surveyReport" });
+}
+let surveyReportWanted = false;
+
+function saveSurveyReport(report: unknown): void {
+  if (!surveyReportWanted || !report) return;
+  surveyReportWanted = false;
+  const url = URL.createObjectURL(new Blob([JSON.stringify(report, null, 2)], { type: "application/json" }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `survey-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-")}.json`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+/** "DISTRICT OF COLUMBIA" → "District of Columbia". */
+function licenseeName(s: string): string {
+  const small = new Set(["of", "the", "and", "for", "in", "on", "at"]);
+  return s.toLowerCase().replace(/[a-z][a-z'.&-]*/g, (w, i: number) => (i > 0 && small.has(w) ? w : w[0].toUpperCase() + w.slice(1)));
+}
+
+/** Who "Identify surveyed sites" found licensed on any of these frequencies: the nearest licensee (active ones first) and its call signs there. */
+export function licensedOn(freqs: number[]): { licensee: string; callSigns: string[] } | null {
+  const l = state.survey?.stage !== "idle" ? state.survey?.licenses : undefined;
+  if (!l || l.stage === "idle") return null;
+  const hits = l.results
+    .filter((r) => freqs.some((f) => Math.abs(r.freqHz - f) <= 3125))
+    .flatMap((r) => r.licenses.map((x) => ({ ...x, historical: r.historical })))
+    .filter((x) => x.licensee)
+    .sort((a, b) => Number(a.historical) - Number(b.historical) || (a.distanceM ?? Infinity) - (b.distanceM ?? Infinity));
+  const top = hits[0]?.licensee;
+  if (!top) return null;
+  return { licensee: licenseeName(top), callSigns: callSigns(hits.filter((x) => x.licensee === top).map((x) => x.callSign)) };
+}
+
+/** What the license lookup found, into a system just made from the survey (its name, if it has none, and call signs) or a site added to one (call signs the system doesn't have). */
+function withLicenses(sys: System, site: Site, isNew: boolean): void {
+  const found = licensedOn(site.controlChannelsHz);
+  if (!found) return;
+  if (isNew) {
+    if (!sys.name) sys.name = found.licensee;
+    if (found.callSigns.length) sys.fccCallSigns = callSigns([...(sys.fccCallSigns ?? []), ...found.callSigns]);
+    return;
+  }
+  const extra = found.callSigns.filter((x) => !(sys.fccCallSigns ?? []).includes(x));
+  if (extra.length) site.fccCallSigns = callSigns([...(site.fccCallSigns ?? []), ...extra]);
+}
 
 /** What applying a survey result did to source `i`. */
 export interface SurveyApplied {
@@ -1100,14 +1158,17 @@ export function applySurvey(i: number, sug: SurveySuggestion, target: SurveyTarg
       sys = newSystem(c, { shortName: shortNameFor(c, expect, type === "smartnet"), type, ...fields });
       c.systems.push(sys);
       site = sys.sites[0];
+      withLicenses(sys, site, true);
     } else if (target.site !== "new" && sys.sites[target.site]) {
       // Replaced: its name and modulation stay.
       sys.type = type;
       site = normalizeSite({ ...sys.sites[target.site], ...fields }, sys);
       sys.sites[target.site] = site;
+      withLicenses(sys, site, false);
     } else {
       site = newSiteOf(sys, { name: newSiteName(sys, expect), ...fields });
       sys.sites.push(site);
+      withLicenses(sys, site, false);
     }
     sys.enabled = true;
     const src = c.sources[i];
@@ -1150,10 +1211,12 @@ export function addSite(controlChannels: number[], expect: SiteIdentity): string
       const sys = c.systems[k];
       const site = newSiteOf(sys, { name: newSiteName(sys, expect), controlChannelsHz: controlChannels, expect });
       sys.sites.push(site);
+      withLicenses(sys, site, false);
       name = siteLabel(sys, site);
       return;
     }
     const sys = newSystem(c, { shortName: shortNameFor(c, expect), controlChannelsHz: controlChannels, expect });
+    withLicenses(sys, sys.sites[0], true);
     c.systems.push(sys);
     name = sys.shortName;
   });
@@ -1170,6 +1233,7 @@ export function addDmrSite(freqHz: number, colorCode: number | null): string {
       controlChannelsHz: [freqHz],
       ...(colorCode === null ? {} : { colorCode }),
     });
+    withLicenses(sys, sys.sites[0], true);
     c.systems.push(sys);
     name = sys.shortName;
   });
@@ -1187,6 +1251,7 @@ export function addNxdnSite(freqHz: number, rate: "nxdn48" | "nxdn96", ran: numb
       ...(rate === "nxdn96" ? { nxdnRate: rate } : {}),
       ...(ran === null ? {} : { ran }),
     });
+    withLicenses(sys, sys.sites[0], true);
     c.systems.push(sys);
     name = sys.shortName;
   });

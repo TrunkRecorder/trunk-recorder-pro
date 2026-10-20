@@ -167,6 +167,17 @@ pub struct SystemInfo {
     pub short_name: String,
     /// "p25" | "smartnet" | "dmr" | "nxdn" | "conventional"
     pub kind: String,
+    /// What people call it ("County Public Safety"); empty when the user gave no name.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    /// The call signs of its FCC licenses ("WQZZ123"), as the user's config
+    /// has them: optional, so often empty.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub fcc_call_signs: Vec<String>,
+    /// Its sites (trunked systems; none for conventional), by the name calls
+    /// and unit events carry as `site`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub sites: Vec<SiteInfo>,
     /// The plugin's settings for this system (see [`Manifest::system_config`]);
     /// null when the user left them empty.
     pub config: Value,
@@ -175,6 +186,18 @@ pub struct SystemInfo {
     /// Null: as in `Hello::config`.
     #[serde(skip_serializing_if = "Value::is_null")]
     pub settings: Value,
+}
+
+/// One site of a [`SystemInfo`].
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SiteInfo {
+    /// What calls and unit events carry as `site`.
+    pub name: String,
+    /// The call signs of this site's own FCC licenses (besides the system's),
+    /// as the user's config has them: optional, so often empty.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub fcc_call_signs: Vec<String>,
 }
 
 /// A call as it starts or ends.

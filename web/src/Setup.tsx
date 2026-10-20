@@ -1,4 +1,4 @@
-import { Fragment, useId, useRef, useState } from "react";
+import { Fragment, useEffect, useId, useRef, useState } from "react";
 import {
   activeSites,
   activeSystems,
@@ -9,6 +9,7 @@ import {
   SQUELCH_HANG_MAX_MS,
   SQUELCH_OPEN_MAX_MS,
   channelsToCsv,
+  callSigns,
   channelTalkgroups,
   defaultLog,
   enabledChannels,
@@ -1807,6 +1808,9 @@ function SiteCard(props: { c: Config; i: number; k: number; onRemoveSystem: () =
             }
           />
         </Field>
+        <Field label="FCC call signs" hint="Optional: this site's own licenses, besides the system's">
+          <CallSignsInput value={site.fccCallSigns} onChange={(v) => edit((x) => { if (v.length) x.fccCallSigns = v; else delete x.fccCallSigns; })} />
+        </Field>
         {sys.type !== "dmr" && sys.type !== "nxdn" && (
           <Field label={sys.type === "smartnet" ? "P25 voice modulation" : "Modulation"}>
             <select value={site.modulation} onChange={(e) => edit((x) => void (x.modulation = e.target.value as Site["modulation"]))}>
@@ -1986,6 +1990,9 @@ function SystemCard(props: { c: Config; i: number }) {
         </Field>
         <Field label="Name">
           <input value={sys.name ?? ""} placeholder="County Public Safety" onChange={(e) => edit((x) => void (x.name = e.target.value))} />
+        </Field>
+        <Field label="FCC call signs" hint="Optional: its licenses, for reference (plugins are told them)">
+          <CallSignsInput value={sys.fccCallSigns} placeholder="WQZZ123" onChange={(v) => edit((x) => { if (v.length) x.fccCallSigns = v; else delete x.fccCallSigns; })} />
         </Field>
         <Field label="Type">
           <select
@@ -2694,5 +2701,25 @@ export function Setup() {
 
       {tab === "plugins" && can("plugins") && <PluginSetupPanel />}
     </div>
+  );
+}
+
+/** FCC call signs, typed as a list ("WQZZ123, WPXT459"): taken when the field is left. */
+function CallSignsInput(props: { value: string[] | undefined; placeholder?: string; onChange: (v: string[]) => void }) {
+  const shown = (props.value ?? []).join(", ");
+  const [text, setText] = useState(shown);
+  useEffect(() => setText(shown), [shown]);
+  return (
+    <input
+      className="mono"
+      value={text}
+      placeholder={props.placeholder}
+      onChange={(e) => setText(e.target.value)}
+      onBlur={() => {
+        const v = callSigns(text);
+        setText(v.join(", "));
+        if (v.join() !== (props.value ?? []).join()) props.onChange(v);
+      }}
+    />
   );
 }

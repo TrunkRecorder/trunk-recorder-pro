@@ -901,6 +901,20 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
             let _ = tokio::task::spawn_blocking(move || ctx2.survey_send(crate::survey::UserCmd::Rescan)).await;
             None
         }
+        Command::SurveyIdentify { lat, lon, radius_m } => {
+            let api_base = ctx.config.lock().unwrap().server.trp_api_base().to_string();
+            let ctx2 = ctx.clone();
+            let _ = tokio::task::spawn_blocking(move || ctx2.survey_send(crate::survey::UserCmd::Identify { lat, lon, radius_m, api_base })).await;
+            None
+        }
+        Command::SurveyReport => {
+            let last = ctx.survey_last.lock().unwrap().clone();
+            let report = match last {
+                Some(ToClient::Survey(b)) => trunk_app::survey::report(&Value::Object(b), env!("CARGO_PKG_VERSION"), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_millis() as f64)),
+                _ => Value::Null,
+            };
+            Some(ToClient::SurveyReport { report })
+        }
         Command::SurveyStop => {
             let ctx2 = ctx.clone();
             let _ = tokio::task::spawn_blocking(move || ctx2.stop_survey()).await;

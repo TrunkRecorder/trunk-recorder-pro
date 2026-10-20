@@ -727,6 +727,10 @@
                 "$ref": "#/definitions/InterfaceSetup"
               },
               "description": "The other interfaces, by id, each on a port of its own (desktop app; docs/interfaces)."
+            },
+            "trpApi": {
+              "type": "string",
+              "description": "Where the trunkrecorder.pro API is, for the survey's license lookup (absent: https://trunkrecorder.pro)."
             }
           },
           "required": [
@@ -1759,6 +1763,9 @@
                 }
               ]
             },
+            "licenses": {
+              "$ref": "#/definitions/SurveyLicenses"
+            },
             "type": {
               "type": "string",
               "const": "survey"
@@ -1808,6 +1815,21 @@
             "source",
             "type"
           ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "surveyReport"
+            },
+            "report": {}
+          },
+          "required": [
+            "type",
+            "report"
+          ],
+          "additionalProperties": false
         },
         {
           "type": "object",
@@ -4729,6 +4751,13 @@
           "type": "string",
           "description": "Its name, unique in its system (absent: the system's short name). The talkgroup file's Preferred Site names it; calls and plugins say it."
         },
+        "fccCallSigns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The call signs of this site's own FCC licenses (besides the system's); plugins are told them."
+        },
         "enabled": {
           "type": "boolean"
         },
@@ -5637,6 +5666,189 @@
       "additionalProperties": false,
       "description": "A signal the scan found. `freqHz` as heard (uncorrected); `correctedHz` once the ppm is known."
     },
+    "SurveyLicense": {
+      "type": "object",
+      "properties": {
+        "callSign": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "licensee": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "serviceCode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "serviceDesc": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "freqHz": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "emission": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "distanceM": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "bearingDeg": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "bearingCardinal": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "city": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "\"A\" active; anything else has lapsed."
+        },
+        "locationKind": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "callSign",
+        "licensee",
+        "serviceCode",
+        "serviceDesc",
+        "freqHz",
+        "emission",
+        "distanceM",
+        "bearingDeg",
+        "bearingCardinal",
+        "city",
+        "state",
+        "status",
+        "locationKind"
+      ],
+      "additionalProperties": false,
+      "description": "An FCC license near the user on a frequency the survey heard (the trunkrecorder.pro API's)."
+    },
+    "SurveyLicenses": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "stage": {
+              "type": "string",
+              "const": "idle"
+            }
+          },
+          "required": [
+            "stage"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "stage": {
+              "type": "string",
+              "enum": [
+                "running",
+                "done",
+                "error"
+              ]
+            },
+            "lat": {
+              "type": "number"
+            },
+            "lon": {
+              "type": "number"
+            },
+            "radiusM": {
+              "type": "number"
+            },
+            "error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "results": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "freqHz": {
+                    "type": "number"
+                  },
+                  "historical": {
+                    "type": "boolean"
+                  },
+                  "licenses": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/definitions/SurveyLicense"
+                    }
+                  }
+                },
+                "required": [
+                  "freqHz",
+                  "historical",
+                  "licenses"
+                ],
+                "additionalProperties": false
+              },
+              "description": "`historical`: none active on it, so these are lapsed licenses."
+            }
+          },
+          "required": [
+            "stage",
+            "lat",
+            "lon",
+            "radiusM",
+            "error",
+            "results"
+          ],
+          "additionalProperties": false
+        }
+      ],
+      "description": "\"Identify surveyed sites\": the licenses found for each frequency looked up."
+    },
     "SurveyMonitor": {
       "type": "object",
       "properties": {
@@ -6013,6 +6225,13 @@
         "name": {
           "type": "string",
           "description": "What people call it (\"County Public Safety\"); the short name is its folder."
+        },
+        "fccCallSigns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The call signs of its FCC licenses (\"WQZZ123\"), for reference; plugins are told them."
         },
         "type": {
           "type": "string",
@@ -6514,6 +6733,44 @@
             "type": {
               "type": "string",
               "const": "surveyStop"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "surveyIdentify"
+            },
+            "lat": {
+              "type": "number"
+            },
+            "lon": {
+              "type": "number"
+            },
+            "radiusM": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "lat",
+            "lon",
+            "radiusM"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "surveyReport"
             }
           },
           "required": [

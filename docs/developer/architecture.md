@@ -781,7 +781,7 @@ encodes nothing itself. A call decrypted with the recorder's keys goes only to p
 
 ### 8.3 Conversation
 
-1. Host → `hello` { api, host, config, systems [ {index, short_name, kind, config, settings} ],
+1. Host → `hello` { api, host, config, systems [ {index, short_name, kind, name?, fcc_call_signs?, sites? [ {name, fcc_call_signs?} ], config, settings} ],
    capture_dir, data_dir, audio_formats }. `index` is the system's number this run (from 0,
    trunked then conventional); `kind` says which, `conventional` included; `settings` are the
    plugin's own settings as a system's `override` changes them.
@@ -1087,7 +1087,7 @@ Constants: `API_VERSION` = 1, `EXIT_CONFIG` = 78.
 
 | `type` | Payload fields |
 |---|---|
-| `hello` | `api`, `host { name, version }`, `config`, `systems: [SystemInfo { index, short_name, kind, config, settings }]`, `capture_dir`, `data_dir`, `audio_formats` |
+| `hello` | `api`, `host { name, version }`, `config`, `systems: [SystemInfo { index, short_name, kind, name, fcc_call_signs, sites: [SiteInfo { name, fcc_call_signs }], config, settings }]` (name, call signs and sites left out when empty), `capture_dir`, `data_dir`, `audio_formats` |
 | `call.start`, `call.end` | once per call, from its first copy: `CallInfo { id, system, short_name, site, talkgroup, talkgroup_tag, freq_hz, tdma_slot, analog, encrypted, algid, key_id, decrypted, emergency, duplex, packet, priority, recording, reason, start_time, units, sources: [CallSource { unit, time, emergency, encrypted, duplex, packet, priority }], patched_talkgroups }` |
 | `call.concluded` | `path`, `system`, `call: CallRecord` (the call JSON), `files { json, wav, m4a }` |
 | `unit` | `system`, `short_name`, `site`, `kind` (registration, deregistration, affiliation, acknowledge, location, data_grant, answer_request, call_alert, emergency_alarm), `unit`, `talkgroup`, `emergency`, `time` |

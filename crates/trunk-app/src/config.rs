@@ -280,6 +280,10 @@ pub struct System {
     /// What people call it ("County Public Safety"); the short name is its folder.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub name: String,
+    /// The call signs of its FCC licenses ("WQZZ123"): the user's, or what the
+    /// survey's license lookup found. Only for reference: plugins are told them.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub fcc_call_signs: Vec<String>,
     #[serde(rename = "type")]
     pub kind: SystemKind,
     pub enabled: bool,
@@ -324,6 +328,10 @@ pub struct Site {
     /// talkgroup file's Preferred Site names it; calls and plugins say it.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub name: String,
+    /// The call signs of this site's FCC licenses, when they differ from (or
+    /// add to) the system's. Only for reference: plugins are told them.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub fcc_call_signs: Vec<String>,
     pub enabled: bool,
     pub control_channels_hz: Vec<f64>,
     pub modulation: Modulation,
@@ -619,6 +627,7 @@ impl Default for System {
             keys: String::new(),
             short_name: "sys1".into(),
             name: String::new(),
+            fcc_call_signs: vec![],
             kind: SystemKind::P25,
             enabled: true,
             unit_names: UnitNames::default(),
@@ -636,6 +645,7 @@ impl Default for Site {
     fn default() -> Self {
         Site {
             name: String::new(),
+            fcc_call_signs: vec![],
             enabled: true,
             control_channels_hz: vec![],
             modulation: Modulation::Auto,
@@ -1305,6 +1315,10 @@ pub struct Server {
     /// store or folders of the user's own, each served on a port of its own
     /// with the recorder's API beside it (docs/interfaces).
     pub interfaces: BTreeMap<String, Interface>,
+    /// Where the trunkrecorder.pro API is (the survey's license lookup):
+    /// empty for https://trunkrecorder.pro; another for testing one.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub trp_api: String,
     /// Keys this version doesn't know (a newer version's, a hand edit's):
     /// kept, and saved back as they were.
     #[serde(flatten)]
@@ -1313,11 +1327,17 @@ pub struct Server {
 
 impl Default for Server {
     fn default() -> Self {
-        Server { bind: "127.0.0.1".into(), port: 8080, auto_start: false, allowed_origins: vec![], interfaces: BTreeMap::new(), other: BTreeMap::new() }
+        Server { bind: "127.0.0.1".into(), port: 8080, auto_start: false, allowed_origins: vec![], interfaces: BTreeMap::new(), trp_api: String::new(), other: BTreeMap::new() }
     }
 }
 
 impl Server {
+    /// The trunkrecorder.pro API's base URL (no trailing slash).
+    pub fn trp_api_base(&self) -> &str {
+        let t = self.trp_api.trim().trim_end_matches('/');
+        if t.is_empty() { "https://trunkrecorder.pro" } else { t }
+    }
+
     /// The first port above the built-in interface's that nothing in the
     /// config uses (nor `taken`).
     pub fn free_port(&self, taken: &[u16]) -> u16 {
@@ -2220,6 +2240,21 @@ const RTL_BUSY_COUNT: usize = 4;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// FCC call signs are optional: read where given (a system's, a site's), and not written when there are none.
+    #[test]
+    fn fcc_call_signs_are_optional() {
+        let sys: System = serde_json::from_value(serde_json::json!({
+            "shortName": "dcfd", "fccCallSigns": ["WPXT459"], "sites": [{ "controlChannelsHz": [857987500], "fccCallSigns": ["KNJU834"] }, { "controlChannelsHz": [858987500] }]
+        }))
+        .unwrap();
+        assert_eq!(sys.fcc_call_signs, ["WPXT459"]);
+        assert_eq!(sys.sites[0].fcc_call_signs, ["KNJU834"]);
+        let v = serde_json::to_value(&sys).unwrap();
+        assert_eq!(v["fccCallSigns"], serde_json::json!(["WPXT459"]));
+        assert!(v["sites"][1].get("fccCallSigns").is_none() && !sys.other.contains_key("fccCallSigns"));
+        assert!(serde_json::to_value(System::default()).unwrap().get("fccCallSigns").is_none());
+    }
 
     /// A system's `keys` that named a file (before key sources) becomes a source named after the file;
     /// systems that named the same file share it, and one already a source's name is left as it is.

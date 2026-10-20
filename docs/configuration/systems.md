@@ -30,6 +30,7 @@ a system of its own.)
 |---|:---:|---|---|---|
 | `shortName` | | `"sys1"` | string | The system's identity: its recordings folder, the `short_name` in call JSON, its talker alias file, and how plugins know it. Every system, trunked or conventional, enabled or not, needs its own. Keep it to letters, digits, `-` and `_` |
 | `name` | | `""` | string | What people call it ("County Public Safety"), for display |
+| `fccCallSigns` | | `[]` | array of strings | Optional: the call signs of its FCC licenses (`["WPXT459"]`), for reference. **Identify surveyed sites** fills them in for a system added from the survey. Plugins are told them (`hello`'s `systems[].fcc_call_signs`) |
 | `type` | | `"p25"` | string | `"p25"`, `"smartnet"`, `"dmr"` or `"nxdn"` (any case). Anything else is refused when the config is read |
 | `enabled` | | `true` | bool | `false` keeps it in the config without recording it |
 | `sites` | | `[]` | array | Where it is recorded from: one entry per site. See [Keys for each site](#keys-for-each-site) |
@@ -44,6 +45,7 @@ a system of its own.)
 | Key | Required | Default | Type | Description |
 |---|:---:|---|---|---|
 | `name` | | the system's `shortName` | string | The site's name, unique in its system: what the talkgroup file's `Preferred Site` names, the `site` in call JSON and the log. Leave it out for a system of one site |
+| `fccCallSigns` | | `[]` | array of strings | Optional: the call signs of this site's own FCC licenses, besides the system's. Plugins are told them (`hello`'s `systems[].sites[].fcc_call_signs`) |
 | `enabled` | | `true` | bool | `false` keeps the site without recording from it (**Record** on its card) |
 | `controlChannelsHz` | | `[]` | array of numbers | P25 and SmartNet: the control channel and its alternates, Hz. The recorder hunts through them, moving on when one goes quiet for 5 s. DMR and NXDN: every frequency listed is watched at once (NXDN Type-D: the repeaters) |
 | `expect` | | `{}` | object | Site lock: only follow a control channel with this identity. See [Site lock](#site-lock-expect) |

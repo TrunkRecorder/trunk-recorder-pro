@@ -251,6 +251,34 @@ source that covers its control channel.
 
 You can still edit everything by hand afterwards on the **Systems** and **Radios** tabs.
 
+## Identify surveyed sites
+
+**Identify surveyed sites**, under the signals found, looks up who holds the FCC licenses on
+them. It's optional, and nothing is sent until you ask. FCC licenses are tied to where the
+transmitters are, so it needs your location:
+
+- **Use my location** asks the browser. If you've already allowed this page, it fills in at once.
+  Browsers share a location only with pages on HTTPS or `localhost`, so for an interface opened
+  over the network by its address, type the location instead.
+- Or type a latitude and longitude. Right-click a spot in Google Maps to copy them.
+- **Look for licenses within** sets how far: 10 to 150 km (50 by default). Wide-area systems can
+  have towers 50 km or more away.
+
+The frequencies found and the location go to trunkrecorder.pro, which answers from the FCC's
+license database (Universal Licensing System) and keeps nothing. If you'd rather not share a
+location, choose **Not now**: no lookup is made, and the survey works exactly the same. This
+browser remembers the location and distance for next time.
+
+The **Licensed to** column then shows each signal's nearest licensee, with its call sign, radio
+service and how far away and in which direction it is, plus up to four more. *lapsed* means no
+active license is nearby on that frequency, so these are expired or cancelled ones. A system
+added from the survey is named after its licensee (if it has no name yet) and gets its call signs
+as `fccCallSigns`. You can edit both on the system's card. A site added to a system gets any call
+signs the system doesn't have. See [systems](../configuration/systems.md).
+
+**Download survey** saves what was found as a JSON file: the signals, what the monitored control
+channel announced, the licenses, and the location rounded to about 1 km.
+
 ## From the command line
 
 `trunk-pro survey` runs the same scan with an RTL-SDR, or looks at a capture file, and prints
