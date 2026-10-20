@@ -5,6 +5,11 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **A tab woken from the background shows how things are now** (by taclane, #54), not minutes of
+  calls and status replayed as if live: one that heard nothing from the recorder for 30 s (it
+  hears from it every 2 s) reconnects, and the recorder closes a connection that stops reading
+  for 10 s or falls behind, so it reconnects afresh.
+
 ## [0.2.5] — 2026-10-19
 
 - **The Live page is each system's now**: a system's page under **Radio system** has its
