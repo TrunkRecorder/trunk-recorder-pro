@@ -149,7 +149,7 @@ export interface System {
   /** Who holds its FCC license, as the FCC has it ("DISTRICT OF COLUMBIA"), for reference; plugins are told it. */
   fccName?: string;
   /** Its FCC license's call sign ("WPXT459"), for reference; plugins are told it. */
-  fccLicense?: string;
+  fccCallSign?: string;
   /** "smartnet": a Motorola SmartNet / SmartZone control channel (voice P25 or analog FM).
    *  "dmr": a trunked DMR site (Capacity Plus, Capacity Max, Connect Plus, Tier III); every
    *  control channel and `dmrChannelsHz` frequency is watched.
@@ -182,7 +182,7 @@ export interface Site {
   name?: string;
   /** This site's own FCC licensee and license call sign, apart from the system's; plugins are told them. */
   fccName?: string;
-  fccLicense?: string;
+  fccCallSign?: string;
   enabled: boolean;
   controlChannelsHz: number[];
   modulation: "auto" | "fsk4" | "qpsk";

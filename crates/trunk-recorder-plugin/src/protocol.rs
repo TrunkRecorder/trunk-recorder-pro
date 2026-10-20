@@ -176,7 +176,7 @@ pub struct SystemInfo {
     pub fcc_name: String,
     /// Its FCC license's call sign ("WPXT459"): optional, so often empty.
     #[serde(skip_serializing_if = "String::is_empty")]
-    pub fcc_license: String,
+    pub fcc_call_sign: String,
     /// Its sites (trunked systems; none for conventional), by the name calls
     /// and unit events carry as `site`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -202,7 +202,7 @@ pub struct SiteInfo {
     #[serde(skip_serializing_if = "String::is_empty")]
     pub fcc_name: String,
     #[serde(skip_serializing_if = "String::is_empty")]
-    pub fcc_license: String,
+    pub fcc_call_sign: String,
 }
 
 /// A call as it starts or ends.

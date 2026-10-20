@@ -4792,7 +4792,7 @@
           "type": "string",
           "description": "This site's own FCC licensee and license call sign, apart from the system's; plugins are told them."
         },
-        "fccLicense": {
+        "fccCallSign": {
           "type": "string"
         },
         "enabled": {
@@ -6185,7 +6185,7 @@
           "type": "string",
           "description": "Who holds its FCC license, as the FCC has it (\"DISTRICT OF COLUMBIA\"), for reference; plugins are told it."
         },
-        "fccLicense": {
+        "fccCallSign": {
           "type": "string",
           "description": "Its FCC license's call sign (\"WPXT459\"), for reference; plugins are told it."
         },

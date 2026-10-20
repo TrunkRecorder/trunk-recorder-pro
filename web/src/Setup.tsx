@@ -1812,8 +1812,8 @@ function SiteCard(props: { c: Config; i: number; k: number; onRemoveSystem: () =
         <Field label="FCC name" hint="Optional: this site's own licensee, if not the system's">
           <input value={site.fccName ?? ""} onChange={(e) => edit((x) => fcc(x, "fccName", e.target.value))} />
         </Field>
-        <Field label="FCC license" hint="Optional: its call sign">
-          <input className="mono" value={site.fccLicense ?? ""} onChange={(e) => edit((x) => fcc(x, "fccLicense", e.target.value.toUpperCase()))} />
+        <Field label="FCC call sign" hint="Optional: this site's own, if not the system's">
+          <input className="mono" value={site.fccCallSign ?? ""} onChange={(e) => edit((x) => fcc(x, "fccCallSign", e.target.value.toUpperCase()))} />
         </Field>
         {sys.type !== "dmr" && sys.type !== "nxdn" && (
           <Field label={sys.type === "smartnet" ? "P25 voice modulation" : "Modulation"}>
@@ -1999,8 +1999,8 @@ function SystemCard(props: { c: Config; i: number }) {
         <Field label="FCC name" hint="Optional: who holds its license, as the FCC has it (plugins are told it)">
           <input value={sys.fccName ?? ""} placeholder="DISTRICT OF COLUMBIA" onChange={(e) => edit((x) => fcc(x, "fccName", e.target.value))} />
         </Field>
-        <Field label="FCC license" hint="Optional: its call sign. Identify looks both up">
-          <input className="mono" value={sys.fccLicense ?? ""} placeholder="WPXT459" onChange={(e) => edit((x) => fcc(x, "fccLicense", e.target.value.toUpperCase()))} />
+        <Field label="FCC call sign" hint="Optional: its license's call sign. Identify looks both up">
+          <input className="mono" value={sys.fccCallSign ?? ""} placeholder="WPXT459" onChange={(e) => edit((x) => fcc(x, "fccCallSign", e.target.value.toUpperCase()))} />
         </Field>
         <Field label="Type">
           <select
@@ -2713,7 +2713,7 @@ export function Setup() {
 }
 
 /** Set an optional FCC field (left out when empty). */
-function fcc(x: { fccName?: string; fccLicense?: string }, key: "fccName" | "fccLicense", v: string): void {
+function fcc(x: { fccName?: string; fccCallSign?: string }, key: "fccName" | "fccCallSign", v: string): void {
   if (v.trim()) x[key] = v;
   else delete x[key];
 }

@@ -1107,7 +1107,7 @@ export function licenseeName(s: string): string {
 /** A licensee found on some frequencies: how many of them, its call sign there, and how near. */
 export interface Licensee {
   fccName: string;
-  fccLicense: string;
+  fccCallSign: string;
   /** How many of the frequencies looked up it is licensed on. */
   frequencies: number;
   distanceM: number | null;
@@ -1127,7 +1127,7 @@ export function licensees(results: LicenseResultRow[], freqs: number[]): License
       const k = `${x.licensee}|${x.callSign}`;
       const had = by.get(k);
       const near = (x.distanceM ?? Infinity) < (had?.distanceM ?? Infinity);
-      const e = had ?? { fccName: x.licensee, fccLicense: x.callSign, frequencies: 0, distanceM: x.distanceM, bearingCardinal: x.bearingCardinal, service: x.serviceDesc, lapsed: r.historical, seen: new Set<number>() };
+      const e = had ?? { fccName: x.licensee, fccCallSign: x.callSign, frequencies: 0, distanceM: x.distanceM, bearingCardinal: x.bearingCardinal, service: x.serviceDesc, lapsed: r.historical, seen: new Set<number>() };
       if (near) Object.assign(e, { distanceM: x.distanceM, bearingCardinal: x.bearingCardinal });
       e.lapsed &&= r.historical;
       e.seen.add(r.freqHz);
@@ -1140,16 +1140,16 @@ export function licensees(results: LicenseResultRow[], freqs: number[]): License
     .sort((a, b) => b.frequencies - a.frequencies || Number(a.lapsed) - Number(b.lapsed) || (a.distanceM ?? Infinity) - (b.distanceM ?? Infinity));
 }
 
-/** What the survey's license lookup found, into a system just made from it (its FCC name and license, and its name if it has none) or a site added to one (its own, when not the system's). */
+/** What the survey's license lookup found, into a system just made from it (its FCC name and call sign, and its name if it has none) or a site added to one (its own, when not the system's). */
 function withLicenses(sys: System, site: Site, isNew: boolean): void {
   const l = state.surveyLicenses;
   const top = l?.stage === "done" ? licensees(l.results, site.controlChannelsHz)[0] : undefined;
   if (!top) return;
   if (isNew) {
     if (!sys.name) sys.name = licenseeName(top.fccName);
-    if (!sys.fccName && !sys.fccLicense) Object.assign(sys, { fccName: top.fccName, fccLicense: top.fccLicense });
-  } else if (top.fccLicense !== sys.fccLicense && !site.fccLicense) {
-    Object.assign(site, { fccName: top.fccName, fccLicense: top.fccLicense });
+    if (!sys.fccName && !sys.fccCallSign) Object.assign(sys, { fccName: top.fccName, fccCallSign: top.fccCallSign });
+  } else if (top.fccCallSign !== sys.fccCallSign && !site.fccCallSign) {
+    Object.assign(site, { fccName: top.fccName, fccCallSign: top.fccCallSign });
   }
 }
 
@@ -1159,16 +1159,16 @@ export function siteFrequencies(sites: Site[]): LicenseSignal[] {
   return [...new Set(all.filter((f) => f > 0).map((f) => Math.round(f / 6250) * 6250))].slice(0, 64).map((freqHz) => ({ freqHz }));
 }
 
-/** Set a system's (or one of its sites') FCC name and license; empty ones are removed. */
-export function setFcc(system: number, site: number | null, fccName: string, fccLicense: string): void {
+/** Set a system's (or one of its sites') FCC name and call sign; empty ones are removed. */
+export function setFcc(system: number, site: number | null, fccName: string, fccCallSign: string): void {
   updateConfig((c) => {
     const sys = c.systems[system];
     const t: System | Site | undefined = site === null ? sys : sys?.sites[site];
     if (!t) return;
     if (fccName.trim()) t.fccName = fccName.trim();
     else delete t.fccName;
-    if (fccLicense.trim()) t.fccLicense = fccLicense.trim().toUpperCase();
-    else delete t.fccLicense;
+    if (fccCallSign.trim()) t.fccCallSign = fccCallSign.trim().toUpperCase();
+    else delete t.fccCallSign;
   });
 }
 

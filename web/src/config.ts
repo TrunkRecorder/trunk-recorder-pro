@@ -100,17 +100,17 @@ const SITE_KEYS = [
 
 /** Every key of System this version knows (the rest are kept as they are: a newer version's, a hand edit's). */
 const SYSTEM_KEYS: (keyof System)[] = [
-  "shortName", "name", "fccName", "fccLicense", "type", "nxdnType", "defaultMode", "enabled", "recording", "unitNames", "keys", "plugins", "pluginDelays", "sites",
+  "shortName", "name", "fccName", "fccCallSign", "type", "nxdnType", "defaultMode", "enabled", "recording", "unitNames", "keys", "plugins", "pluginDelays", "sites",
 ];
 
 /** Every key of Site this version knows. */
-const SITE_FIELDS: readonly string[] = ["name", "fccName", "fccLicense", "enabled", ...SITE_KEYS];
+const SITE_FIELDS: readonly string[] = ["name", "fccName", "fccCallSign", "enabled", ...SITE_KEYS];
 
-/** The optional FCC name and license, as the config keeps them (absent when empty; a call sign upper case). */
-function fccFields(x: { fccName?: unknown; fccLicense?: unknown }): { fccName?: string; fccLicense?: string } {
+/** The optional FCC name and call sign, as the config keeps them (absent when empty; a call sign upper case). */
+function fccFields(x: { fccName?: unknown; fccCallSign?: unknown }): { fccName?: string; fccCallSign?: string } {
   const name = typeof x.fccName === "string" ? x.fccName.trim() : "";
-  const license = typeof x.fccLicense === "string" ? x.fccLicense.trim().toUpperCase() : "";
-  return { ...(name ? { fccName: name } : {}), ...(license ? { fccLicense: license } : {}) };
+  const license = typeof x.fccCallSign === "string" ? x.fccCallSign.trim().toUpperCase() : "";
+  return { ...(name ? { fccName: name } : {}), ...(license ? { fccCallSign: license } : {}) };
 }
 
 /**

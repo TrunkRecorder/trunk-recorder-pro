@@ -93,7 +93,7 @@ pub struct System<C, S> {
     pub name: String,
     /// Who holds its FCC license, and the license's call sign, if the user gave them.
     pub fcc_name: String,
-    pub fcc_license: String,
+    pub fcc_call_sign: String,
     /// Its sites, each with its own FCC license if the user gave one.
     pub sites: Vec<SiteInfo>,
     /// The plugin's settings for this system (`None`: left empty).
@@ -272,7 +272,7 @@ fn start<P: Plugin>(host: Host, hello: Hello) -> Result<P, String> {
             Value::Null => None,
             v => Some(parse::<P::SystemConfig>(v, &format!("settings for {}", s.short_name))?),
         };
-        systems.push(System { index: s.index, short_name: s.short_name, kind: s.kind, name: s.name, fcc_name: s.fcc_name, fcc_license: s.fcc_license, sites: s.sites, config, settings });
+        systems.push(System { index: s.index, short_name: s.short_name, kind: s.kind, name: s.name, fcc_name: s.fcc_name, fcc_call_sign: s.fcc_call_sign, sites: s.sites, config, settings });
     }
     let setup = Setup { config, systems, host: hello.host, capture_dir: hello.capture_dir, data_dir: hello.data_dir, audio_formats: hello.audio_formats };
     P::start(host, setup)

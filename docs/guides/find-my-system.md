@@ -280,7 +280,7 @@ There are three places to ask:
   nearby on that frequency, so these are expired or cancelled ones.
 - **A system or site already set up**: **Identify** on its card looks up its control, voice and
   repeater frequencies and lists who is licensed on the most of them. **Use** keeps one as its
-  **FCC name** and **FCC license**.
+  **FCC name** and **FCC call sign**.
 
 A system added from the survey gets the licensee of its control channel as its FCC name and
 license, and as its name if it has none. A site added to a system gets its own when it differs from

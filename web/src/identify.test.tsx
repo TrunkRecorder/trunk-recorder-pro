@@ -1,6 +1,6 @@
 // Identifying systems from FCC licenses: the location fields say why and that
 // declining is fine; licenses found show in the survey's table, name a
-// system added from it, and can be kept as a system's FCC name and license.
+// system added from it, and can be kept as a system's FCC name and call sign.
 // `npm test`.
 import "./testEnv.ts";
 import assert from "node:assert/strict";
@@ -78,7 +78,7 @@ test("Identify: the survey's signals are looked up (not the weak unknown one), a
   assert.ok(!html.includes("Download survey"));
 });
 
-test("Identify: a system added from the survey gets its FCC name and license, and its name", async () => {
+test("Identify: a system added from the survey gets its FCC name and call sign, and its name", async () => {
   const sent = surveyed();
   identifySurvey(38.9, -77.03, 50_000);
   await answer(sent);
@@ -90,33 +90,33 @@ test("Identify: a system added from the survey gets its FCC name and license, an
   const sys = snapshot().config!.systems.at(-1)!;
   assert.equal(sys.name, "District of Columbia");
   assert.equal(sys.fccName, "DISTRICT OF COLUMBIA");
-  assert.equal(sys.fccLicense, "WPXT459");
+  assert.equal(sys.fccCallSign, "WPXT459");
 });
 
-test("Identify on a system: its frequencies, who is licensed on the most of them, kept as its FCC name and license", () => {
+test("Identify on a system: its frequencies, who is licensed on the most of them, kept as its FCC name and call sign", () => {
   surveyed();
   const sys = normalizeSystem({ shortName: "dcfd", sites: [{ controlChannelsHz: [857_987_500, 858_987_500], voiceChannelsHz: [857_987_500, 0] }] });
   assert.deepEqual(siteFrequencies(sys.sites), [{ freqHz: 857_987_500 }, { freqHz: 858_987_500 }]);
   const found = licensees(results, [857_987_500, 858_987_500]);
-  assert.deepEqual(found.map((x) => [x.fccLicense, x.frequencies]), [["WPXT459", 2], ["KNJU834", 1]]);
+  assert.deepEqual(found.map((x) => [x.fccCallSign, x.frequencies]), [["WPXT459", 2], ["KNJU834", 1]]);
   assert.ok(renderToString(<IdentifyFcc sys={sys} system={0} site={null} />).includes("Identify"));
   transport.onMessage({ type: "config", config: { ...defaultConfig(), systems: [sys] }, version: 2 });
   setFcc(0, null, "DISTRICT OF COLUMBIA", "wpxt459");
   setFcc(0, 0, "", "KNJU834");
   const got = snapshot().config!.systems[0];
   assert.equal(got.fccName, "DISTRICT OF COLUMBIA");
-  assert.equal(got.fccLicense, "WPXT459");
-  assert.equal(got.sites[0].fccLicense, "KNJU834");
+  assert.equal(got.fccCallSign, "WPXT459");
+  assert.equal(got.sites[0].fccCallSign, "KNJU834");
   assert.equal(got.sites[0].fccName, undefined);
 });
 
-test("FCC name and license: optional, a system's and a site's its own when read", () => {
-  const sys = normalizeSystem({ shortName: "dcfd", fccName: " DISTRICT OF COLUMBIA ", fccLicense: "wpxt459", sites: [{ controlChannelsHz: [1], fccLicense: "knju834" }] });
+test("FCC name and call sign: optional, a system's and a site's its own when read", () => {
+  const sys = normalizeSystem({ shortName: "dcfd", fccName: " DISTRICT OF COLUMBIA ", fccCallSign: "wpxt459", sites: [{ controlChannelsHz: [1], fccCallSign: "knju834" }] });
   assert.equal(sys.fccName, "DISTRICT OF COLUMBIA");
-  assert.equal(sys.fccLicense, "WPXT459");
-  assert.equal(sys.sites[0].fccLicense, "KNJU834");
+  assert.equal(sys.fccCallSign, "WPXT459");
+  assert.equal(sys.sites[0].fccCallSign, "KNJU834");
   const none = normalizeSystem({ shortName: "x", fccName: "  " });
-  assert.ok(!("fccName" in none) && !("fccLicense" in none));
+  assert.ok(!("fccName" in none) && !("fccCallSign" in none));
 });
 
 test("a typed location: as a map copies it, or nothing", () => {

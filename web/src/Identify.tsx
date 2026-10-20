@@ -245,7 +245,7 @@ function LicenseeRow(props: { x: Licensee; of: number; current: boolean; onUse: 
     <li className="row licensee">
       <span className="stack-tight">
         <span>
-          {x.fccName} <span className="mono">{x.fccLicense}</span>
+          {x.fccName} <span className="mono">{x.fccCallSign}</span>
           {x.lapsed && <span className="tag">lapsed</span>}
         </span>
         <span className="muted small">{[`on ${x.frequencies} of ${props.of} frequencies`, distance(x.distanceM, x.bearingCardinal), x.service].filter(Boolean).join(" · ")}</span>
@@ -262,7 +262,7 @@ function LicenseeRow(props: { x: Licensee; of: number; current: boolean; onUse: 
   );
 }
 
-/** Setup's Identify on a system (`site` null) or one of its sites: where, then who is licensed on its frequencies, to keep as its FCC name and license. */
+/** Setup's Identify on a system (`site` null) or one of its sites: where, then who is licensed on its frequencies, to keep as its FCC name and call sign. */
 export function IdentifyFcc(props: { sys: System; system: number; site: number | null }) {
   const [open, setOpen] = useState(false);
   const [where, setWhere] = useState(savedWhere);
@@ -308,15 +308,15 @@ export function IdentifyFcc(props: { sys: System; system: number; site: number |
             <>
               {found.length ? (
                 <>
-                  <p className="small">{`Licensed on its ${signals.length} frequenc${signals.length === 1 ? "y" : "ies"} within ${Math.round(l.radiusM / 1000)} km. Use one as its FCC name and license:`}</p>
+                  <p className="small">{`Licensed on its ${signals.length} frequenc${signals.length === 1 ? "y" : "ies"} within ${Math.round(l.radiusM / 1000)} km. Use one as its FCC name and call sign:`}</p>
                   <ul className="licensees">
                     {found.slice(0, 8).map((x) => (
                       <LicenseeRow
-                        key={`${x.fccName}|${x.fccLicense}`}
+                        key={`${x.fccName}|${x.fccCallSign}`}
                         x={x}
                         of={signals.length}
-                        current={x.fccLicense === target?.fccLicense}
-                        onUse={() => (setFcc(props.system, props.site, x.fccName, x.fccLicense), close())}
+                        current={x.fccCallSign === target?.fccCallSign}
+                        onUse={() => (setFcc(props.system, props.site, x.fccName, x.fccCallSign), close())}
                       />
                     ))}
                   </ul>

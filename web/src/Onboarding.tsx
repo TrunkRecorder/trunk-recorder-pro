@@ -902,7 +902,7 @@ export function ScanStep(props: { s: AppState; c: Config; found: Found | null; o
             <Check ok={lookup?.stage === "done" || lookup?.stage === "error"} title="Licensed to">
               {(() => {
                 const top = licensedOn([m.advertisedHz ?? m.heardHz, ...m.secondary]);
-                if (top) return `${licenseeName(top.fccName)} · ${top.fccLicense}${top.lapsed ? " (lapsed)" : ""}`;
+                if (top) return `${licenseeName(top.fccName)} · ${top.fccCallSign}${top.lapsed ? " (lapsed)" : ""}`;
                 if (lookup?.stage === "error") return lookup.error;
                 return lookup?.stage === "done" ? "No FCC license found nearby" : "Looking it up…";
               })()}
@@ -978,7 +978,7 @@ export function ScanStep(props: { s: AppState; c: Config; found: Found | null; o
               )}
               {(() => {
                 const top = licensedOn([raster(x.correctedHz ?? x.freqHz)]);
-                return top && <span className="ob-card-sub">{`${licenseeName(top.fccName)} · ${top.fccLicense}`}</span>;
+                return top && <span className="ob-card-sub">{`${licenseeName(top.fccName)} · ${top.fccCallSign}`}</span>;
               })()}
             </button>
           ))}
