@@ -1202,7 +1202,7 @@ export function addNxdnChannel(freqHz: number, rate: "nxdn48" | "nxdn96", ran: n
       conv = newConventional(c);
       c.conventional.push(conv);
     }
-    conv.channels.push({ freqHz, mode: rate, name: "", enabled: true, ...(ran ? { tone: `RAN ${ran}` } : {}) });
+    conv.channels.push({ freqHz, mode: rate, name: "", enabled: true, ...(ran ? { code: String(ran) } : {}) });
     name = conv.shortName;
   });
   return name;

@@ -82,14 +82,22 @@ export interface Radios {
   soapy?: SoapyState;
 }
 
-/** A conventional channel. `talkgroup` defaults to the frequency in kHz; `squelchDb` to the section's. */
+/**
+ * A conventional channel. `talkgroup` (TG Number) is what calls are filed
+ * under; absent: the talkgroup the air names (P25, DMR, NXDN), else the
+ * frequency in kHz. `squelchDb` defaults to the section's.
+ */
 export interface Channel {
   freqHz: number;
   mode: "fm" | "am" | "p25" | "dmr" | "nxdn48" | "nxdn96";
   name: string;
   talkgroup?: number;
-  /** FM: the CTCSS tone or DCS code it records, Trunk Recorder's form ("151.4", "D023N"); absent / "": any. */
-  tone?: string;
+  /** The code it records: FM's CTCSS tone or DCS code ("151.4", "D023N"), P25's NAC ("293"), DMR's colour code ("1"), NXDN's RAN ("5"); absent / "": any. */
+  code?: string;
+  /** DMR: record only this slot (1, 2). */
+  slot?: number;
+  /** P25, DMR, NXDN: record only transmissions naming this talkgroup. */
+  matchTalkgroup?: number;
   description?: string;
   tag?: string;
   group?: string;
@@ -673,6 +681,8 @@ export interface CallRecord {
   /** The site its copy was kept from (a system of one site: its short name). */
   site?: string;
   talkgroup: number;
+  /** Conventional P25 / DMR / NXDN: the talkgroup the air named (`talkgroup` is what the call is filed under, which a channel row may set to another number). */
+  talkgroup_ota?: number;
   talkgroup_tag: string;
   talkgroup_description: string;
   /** The talkgroup file's Tag and Category columns. */

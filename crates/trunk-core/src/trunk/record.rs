@@ -208,6 +208,7 @@ pub fn call_record(call: &Call, info: &ConcludeInfo) -> (CallRecord, String) {
         call_length: secs.round(),
         call_length_ms: (secs * 1000.0).round() as i64,
         talkgroup: call.talkgroup,
+        talkgroup_ota: call.talkgroup_ota,
         talkgroup_tag: t(|t| &t.alpha_tag),
         talkgroup_description: t(|t| &t.description),
         talkgroup_group_tag: t(|t| &t.tag),

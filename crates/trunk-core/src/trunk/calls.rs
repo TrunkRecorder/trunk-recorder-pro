@@ -206,6 +206,10 @@ pub struct Call {
     /// one call, which plugins and stats count by its first copy.
     pub twin: bool,
     pub talkgroup: u32,
+    /// Conventional digital: the talkgroup the air named, which its row may
+    /// file under another `talkgroup` (None: analog, nothing named yet, or
+    /// trunked — the grant's is the air's).
+    pub talkgroup_ota: Option<u32>,
     pub freq_hz: u64,
     /// What its voice is on.
     pub voice: Voice,
@@ -553,6 +557,7 @@ impl CallManager {
             system: self.system,
             twin: false,
             talkgroup: m.talkgroup,
+            talkgroup_ota: None,
             freq_hz: m.freq_hz,
             // The control channel says (SmartNet), or the talkgroup file does (TR's mode
             // "A": a Phase 1 grant is of analog voice; a two-slot grant keeps its slot).

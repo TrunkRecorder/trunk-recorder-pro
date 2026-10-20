@@ -137,7 +137,8 @@ It is written on a single line.
 | `decrypted` | `1` when some of an encrypted call's voice was decrypted with a [key](../configuration/systems.md#encryption-keys-keys), else `0` |
 | `priority`, `mode`, `duplex` | As Trunk Recorder writes them (`mode` and `duplex` are always `0` on conventional calls) |
 | `call_length`, `call_length_ms` | Length of the saved audio, seconds (rounded) and milliseconds |
-| `talkgroup` | Talkgroup number |
+| `talkgroup` | Talkgroup number. On a conventional channel, the row's TG Number if it has one, else the talkgroup the air named, else a default from the frequency: see [Tones](tones.md#the-number-a-call-is-filed-under) |
+| `talkgroup_ota` | Conventional P25, DMR and NXDN calls only: the talkgroup the air named, whenever it named one, even when equal to `talkgroup`. Absent otherwise, and on trunked calls |
 | `talkgroup_tag` | The talkgroup's alpha tag |
 | `talkgroup_description` | Its description |
 | `talkgroup_group_tag` | Its tag |
@@ -155,7 +156,8 @@ It is written on a single line.
 
 Compared with Trunk Recorder's JSON:
 
-- `snr`, `clean_voice_pct`, `ran`, `errorList` and the three tone fields are additions.
+- `snr`, `clean_voice_pct`, `ran`, `talkgroup_ota`, `errorList` and the three tone fields are
+  additions.
 - `signal` and `noise` are in dBFS with a decimal, not whole numbers.
 - `freqList` has one entry for the whole call rather than one per transmission.
 - Trunk Recorder pretty-prints its JSON; this is one line. JSON readers don't mind.

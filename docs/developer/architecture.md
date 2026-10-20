@@ -365,8 +365,13 @@ learned and left out (`LineWatch`).
    carrier; a false open raises the bar 3 dB.
 5. The head closes 0.5 s after the carrier is gone and no call is live.
 6. Several rows on one frequency are told apart by CTCSS / DCS (FM: held up to 1 s while the
-   tone detector decides), NAC (P25), colour code / slot / talkgroup (DMR) or RAN / talkgroup
-   (NXDN). Traffic no row takes is reported as `ConvSkipped`.
+   tone detector decides) or by an `Access` built from the row's `code`, `slot` and
+   `matchTalkgroup` by `Access::join`: `Access::P25 { nac, tg }`, colour code / slot / talkgroup
+   (DMR) or RAN / talkgroup (NXDN). Traffic no row takes is reported as `ConvSkipped`. The number
+   a call is filed under is the row's `talkgroup`, else the talkgroup the air named, else the
+   frequency default (kHz, then kHz×10 + k); a row never overwrites it for being one of several.
+   The air's talkgroup is kept as `talkgroup_ota`, and a new one within an open call still starts
+   a new call.
 7. A conventional call is the engine's `Call` (no site; its `voice` from the channel's mode, a
    DMR call on its slot from the start), and conventional reports through the engine's own
    `Event`s (`ConvOut::Event`), link control applied as for a trunked call
@@ -964,6 +969,7 @@ call JSON + WAV on disk → `HostMessage::CallConcluded` → plugin → `PluginM
 | `talkgroup_info` | `Option<Talkgroup>` | from the talkgroup file |
 | `patched_talkgroups` | `Vec<u32>` | |
 | `ran`, `nac` | options | NXDN RAN; conventional P25 NAC |
+| `talkgroup_ota` | `Option<u32>` | conventional P25 / DMR / NXDN: the talkgroup the air named, whenever it named one |
 | `tone`, `tone_set` | options | conventional CTCSS/DCS heard / configured |
 
 **`CallEvent`**: `Start(Call)`, `Update(Call)`, `End(Call)`.
@@ -1064,7 +1070,9 @@ Trunk Recorder's keys plus reception figures, in this order: `call_num`, `freq`,
 `freq_error`, `signal`, `noise`, `snr`, `clean_voice_pct`, `source_num` (always 0),
 `recorder_num`, `tdma_slot`, `phase2_tdma`, `start_time`, `stop_time`, `start_time_ms`,
 `stop_time_ms`, `emergency`, `priority`, `mode`, `duplex`, `encrypted`, `algid`, `key_id` (−1 if
-none), `decrypted`, `call_length`, `call_length_ms`, `talkgroup`, `talkgroup_tag`,
+none), `decrypted`, `call_length`, `call_length_ms`, `talkgroup`, `talkgroup_ota`
+(conventional P25 / DMR / NXDN calls whose air named a talkgroup; this recorder's addition, absent
+otherwise), `talkgroup_tag`,
 `talkgroup_description`, `talkgroup_group_tag`, `talkgroup_group`, `color_code` (−1 if none),
 `ran` (−1 if none), `tone_mode`, `tone_detected`, `tone_confidence`, `audio_type` (analog |
 digital tdma | digital), `short_name`, `site` (the site's name; none for conventional),
@@ -1088,7 +1096,7 @@ Constants: `API_VERSION` = 1, `EXIT_CONFIG` = 78.
 | `type` | Payload fields |
 |---|---|
 | `hello` | `api`, `host { name, version }`, `config`, `systems: [SystemInfo { index, short_name, kind, config, settings }]`, `capture_dir`, `data_dir`, `audio_formats` |
-| `call.start`, `call.end` | once per call, from its first copy: `CallInfo { id, system, short_name, site, talkgroup, talkgroup_tag, freq_hz, tdma_slot, analog, encrypted, algid, key_id, decrypted, emergency, duplex, packet, priority, recording, reason, start_time, units, sources: [CallSource { unit, time, emergency, encrypted, duplex, packet, priority }], patched_talkgroups }` |
+| `call.start`, `call.end` | once per call, from its first copy: `CallInfo { id, system, short_name, site, talkgroup, talkgroup_ota, talkgroup_tag, freq_hz, tdma_slot, analog, encrypted, algid, key_id, decrypted, emergency, duplex, packet, priority, recording, reason, start_time, units, sources: [CallSource { unit, time, emergency, encrypted, duplex, packet, priority }], patched_talkgroups }` |
 | `call.concluded` | `path`, `system`, `call: CallRecord` (the call JSON), `files { json, wav, m4a }` |
 | `unit` | `system`, `short_name`, `site`, `kind` (registration, deregistration, affiliation, acknowledge, location, data_grant, answer_request, call_alert, emergency_alarm), `unit`, `talkgroup`, `emergency`, `time` |
 | `audio` | `call_id`, `system`, `short_name`, `talkgroup`, `sample_rate`, `pcm` (base64 i16 LE) |
@@ -1210,15 +1218,18 @@ system) is rewritten on load by `migrate::config`; the desktop app saves it upgr
 | `squelchDb` | 8 | open threshold above the noise floor |
 | `demod` | {} | analog: `fmDeemphasis`, `amLevel` (fast / slow), `amLowCutHz` (0–600), `squelchOpenMs` (0–500), `squelchHangMs` (0–1000) |
 | `channelFile` | "" | CSV path; when set, `channels` is read from it |
-| `channels[]` | [] | `{freqHz (required), mode: fm/am/p25/dmr/nxdn48/nxdn96, name, talkgroup, tone, description, tag, group, squelchDb, bandwidthKhz (analog, 4–20), enabled}` |
+| `channels[]` | [] | `{freqHz (required), mode: fm/am/p25/dmr/nxdn48/nxdn96, name, talkgroup, code, slot (DMR, 1/2), matchTalkgroup (P25/DMR/NXDN), description, tag, group, squelchDb, bandwidthKhz (analog, 4–20), enabled}` |
 | `recording`, `plugins`, `pluginDelays`, `unitNames`, `keys` | | as for systems |
 
 Its P25, DMR and NXDN channels name the talkgroups they hear by its own talkgroup file
 (`<shortName>.talkgroups.csv`); their P25 receivers are the default bank.
 
-`tone` examples: CTCSS `151.4`, DCS `D023N`, `NAC 293`, `CC 1 TS 2 TG 201`, `RAN 5 TG 201`.
-Without a talkgroup, a channel is numbered by its kHz (then kHz×10 + k for more rows on the
-same frequency).
+`code` examples (bare): CTCSS `151.4`, DCS `D023N`, P25 NAC `293`, DMR colour code `1`, NXDN RAN
+`5`. A combined string such as `CC1 TS2 TG201` or `NAC 293 TG 1` is split into `code`, `slot` and
+`matchTalkgroup`. An older `tone` key is upgraded on load (P25 rows that shared a frequency with no
+talkgroup get their old default written in). A call's number is the row's `talkgroup`, else the
+talkgroup the air named, else the channel's kHz (then kHz×10 + k for more rows on the same
+frequency).
 
 ### 10.6 `recording`
 
@@ -1299,7 +1310,7 @@ by it. There is no limit on conventional systems.
    control channel inside one.
 8. One frequency in two conventional systems.
 9. A channel frequency ≤ 0, or outside every source.
-10. A tone that doesn't parse for its mode.
+10. A code that doesn't parse for its mode.
 11. An analog channel's `bandwidthKhz` outside 4–20, or a `demod` setting out of range.
 12. A file name format with a token nobody knows (the config's, or a system's own).
 13. Rows sharing a frequency that can't be told apart.
@@ -1333,7 +1344,7 @@ found on the air with `plan_centers`, through the same `off_dc`.
 
 Talkgroup CSV (`<short>.talkgroups.csv`, beside the config): headed (`Decimal, Hex, Mode, Alpha Tag,
 Description, Tag, Category, Priority, Preferred NAC, Preferred Site, Ignore`, any order) or Trunk
-Recorder's headerless form. Channel CSV: `TG Number, Frequency, Tone, Mode, Alpha Tag, Description,
+Recorder's headerless form. Channel CSV: `TG Number, Frequency, Code, Slot, Match TG, Mode, Alpha Tag, Description,
 Tag, Category, Squelch dB, Bandwidth kHz, Enable` (`trunk-app/src/channels.rs`).
 
 ### 10.13 Example
@@ -1365,9 +1376,9 @@ Tag, Category, Squelch dB, Bandwidth kHz, Enable` (`trunk-app/src/channels.rs`).
     {
       "shortName": "county-fire-conv", "enabled": true, "squelchDb": 8,
       "channels": [
-        { "freqHz": 852087500, "mode": "fm", "name": "FG North", "tone": "151.4" },
-        { "freqHz": 852087500, "mode": "fm", "name": "FG South", "tone": "D023N" },
-        { "freqHz": 851812500, "mode": "p25", "name": "PD Tac 2", "tone": "NAC 293", "squelchDb": 12 }
+        { "freqHz": 852087500, "mode": "fm", "name": "FG North", "code": "151.4" },
+        { "freqHz": 852087500, "mode": "fm", "name": "FG South", "code": "D023N" },
+        { "freqHz": 851812500, "mode": "p25", "name": "PD Tac 2", "code": "293", "squelchDb": 12 }
       ]
     }
   ],

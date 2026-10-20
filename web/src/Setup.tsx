@@ -9,7 +9,7 @@ import {
   SQUELCH_HANG_MAX_MS,
   SQUELCH_OPEN_MAX_MS,
   channelsToCsv,
-  channelTalkgroups,
+  defaultTalkgroups,
   defaultLog,
   enabledChannels,
   formatFromPath,
@@ -76,7 +76,7 @@ import { DraftInput, Field, FileInput, NumberInput, Toggle } from "./inputs.tsx"
 import { asTyped, cleanShortName, lcnTable, mhz, mhzList, msps } from "./fieldText.ts";
 import { unitNameCount } from "./units.ts";
 import { openTodos } from "./todo.ts";
-import { parseAccess, sameTone } from "./tones.ts";
+import { parseAccess, sameAccess, type AccessParts } from "./tones.ts";
 
 /** Each card's key (the controller's `cardKey`), seeded from what its entry is now; `all`: its list. */
 const srcKey = (x: Source, i: number, all: Source[]) => cardKey(x, `src:${i}`, all);
@@ -216,33 +216,83 @@ const modeOptions = MODE_OPTIONS.map((o) => (
   </option>
 ));
 
-const TONE_HINT = {
+const CODE_HINT = {
   fm: { placeholder: "any", title: "CTCSS tone or DCS code (151.4 PL, 023 DPL). Empty: any." },
   am: { placeholder: "—", title: "AM carries no tone or code." },
-  p25: { placeholder: "any NAC", title: "NAC, hex (293). Empty: any." },
-  dmr: { placeholder: "any CC", title: "Colour code, optional slot and talkgroup (CC1 TS2 TG201). Empty: any." },
-  nxdn48: { placeholder: "any RAN", title: "RAN, optional talkgroup (RAN 5 TG 201). Empty or RAN 0: any." },
-  nxdn96: { placeholder: "any RAN", title: "RAN, optional talkgroup (RAN 5 TG 201). Empty or RAN 0: any." },
+  p25: { placeholder: "any NAC", title: "NAC, hex (293). Empty: any. NAC 293 TG 1 fills Match TG too." },
+  dmr: { placeholder: "any CC", title: "Colour code (1). Empty: any. RadioReference's CC1 TS2 TG201 fills Slot and Match TG too." },
+  nxdn48: { placeholder: "any RAN", title: "RAN (5). Empty or 0: any. RAN 5 TG 201 fills Match TG too." },
+  nxdn96: { placeholder: "any RAN", title: "RAN (5). Empty or 0: any. RAN 5 TG 201 fills Match TG too." },
 };
 
-/** A channel's code (CTCSS / DCS, NAC, colour code, RAN): kept as typed, tidied when left. */
-function ToneInput(props: { mode: Channel["mode"]; tone: string; disabled?: boolean; onChange: (tone: string) => void }) {
-  const parsed = parseAccess(props.mode, props.tone);
+/** Digital modes: those whose transmissions name their talkgroup. */
+const digital = (mode: Channel["mode"]) => mode !== "fm" && mode !== "am";
+
+/** A row's access fields set to `p` (absent when empty). */
+function setAccess(x: Channel, p: AccessParts) {
+  if (p.code) x.code = p.code;
+  else delete x.code;
+  if (p.slot !== undefined) x.slot = p.slot;
+  else delete x.slot;
+  if (p.matchTalkgroup !== undefined) x.matchTalkgroup = p.matchTalkgroup;
+  else delete x.matchTalkgroup;
+}
+
+/**
+ * What a row records: its code (CTCSS / DCS, NAC, colour code, RAN; kept as
+ * typed, tidied when left — a pasted `CC1 TS2 TG201` fills the slot and
+ * talkgroup too), DMR's slot, and a digital mode's talkgroup.
+ */
+function AccessInput(props: { ch: Channel; disabled?: boolean; onChange: (p: AccessParts) => void }) {
+  const { ch } = props;
+  const code = ch.code ?? "";
+  const parsed = parseAccess(ch.mode, code);
   const error = "error" in parsed ? parsed.error : null;
+  const now: AccessParts = { code, slot: ch.slot, matchTalkgroup: ch.matchTalkgroup };
+  const tidy = () => {
+    if ("error" in parsed) return;
+    const p = { code: parsed.code, slot: parsed.slot ?? ch.slot, matchTalkgroup: parsed.matchTalkgroup ?? ch.matchTalkgroup };
+    if (p.code !== code || p.slot !== ch.slot || p.matchTalkgroup !== ch.matchTalkgroup) props.onChange(p);
+  };
   return (
-    <DraftInput
-      className={`mono narrow${error ? " invalid" : ""}`}
-      disabled={props.disabled}
-      value={props.tone}
-      codec={asTyped}
-      placeholder={TONE_HINT[props.mode].placeholder}
-      readOnly={props.mode === "am" && !props.tone}
-      aria-label="Tone"
-      aria-invalid={!!error}
-      title={error ?? TONE_HINT[props.mode].title}
-      onChange={props.onChange}
-      onBlur={() => "tone" in parsed && parsed.tone !== props.tone && props.onChange(parsed.tone)}
-    />
+    <span className="access-input">
+      <DraftInput
+        className={`mono narrow${error ? " invalid" : ""}`}
+        disabled={props.disabled}
+        value={code}
+        codec={asTyped}
+        placeholder={CODE_HINT[ch.mode].placeholder}
+        readOnly={ch.mode === "am" && !code}
+        aria-label="Code"
+        aria-invalid={!!error}
+        title={error ?? CODE_HINT[ch.mode].title}
+        onChange={(c) => props.onChange({ ...now, code: c })}
+        onBlur={tidy}
+      />
+      {ch.mode === "dmr" && (
+        <select
+          value={ch.slot ?? ""}
+          disabled={props.disabled}
+          aria-label="Slot"
+          title="The slot it records; either: both"
+          onChange={(e) => props.onChange({ ...now, slot: e.target.value ? Number(e.target.value) : undefined })}
+        >
+          <option value="">either slot</option>
+          <option value="1">slot 1</option>
+          <option value="2">slot 2</option>
+        </select>
+      )}
+      {digital(ch.mode) && (
+        <NumberInput
+          narrow
+          disabled={props.disabled}
+          value={ch.matchTalkgroup}
+          placeholder="any TG"
+          label="Match TG: record only transmissions naming this talkgroup"
+          onChange={(v) => props.onChange({ ...now, matchTalkgroup: v === undefined || v <= 0 ? undefined : Math.round(v) })}
+        />
+      )}
+    </span>
   );
 }
 
@@ -254,16 +304,17 @@ const SHOWN_CODES = 8;
  * codes), most heard first, each with an Add that makes a row for it — the
  * way to find a frequency's codes without knowing them.
  */
-function HeardRow(props: { rows: Channel[]; heard: HeardCode[]; linked: boolean; onAdd: (code: string) => void }) {
+function HeardRow(props: { rows: Channel[]; heard: HeardCode[]; linked: boolean; onAdd: (p: AccessParts) => void }) {
   const mode = props.rows[0].mode;
   // Only what this mode's Tone can say (NXDN's RAN 0 is any: "RAN 0 TG 201" is "TG 201").
   const nxdn = mode === "nxdn48" || mode === "nxdn96";
   const codes = props.heard.flatMap((h) => {
     const p = parseAccess(mode, h.code);
-    return "tone" in p && (p.tone === h.code || (nxdn && /^RAN 0\b/.test(h.code))) ? [{ ...h, code: p.tone }] : [];
+    return "error" in p || (nxdn && /^RAN 0\b/.test(h.code) && !p.matchTalkgroup) ? [] : [{ ...h, parts: p }];
   });
   if (!codes.length) return null;
-  const listed = (code: string) => props.rows.some((r) => (code ? !!r.tone && sameTone(r.tone, code) : !r.tone));
+  // Already recorded by a row of its own (not just by the catch-all).
+  const listed = (p: AccessParts) => props.rows.some((r) => sameAccess({ code: r.code ?? "", slot: r.slot, matchTalkgroup: r.matchTalkgroup }, p));
   const label = (code: string) => (!code ? NONE_LABEL[mode] : mode === "fm" && /^\d/.test(code) ? `${code} Hz` : code);
   const shown = codes.slice(0, SHOWN_CODES);
   return (
@@ -280,14 +331,14 @@ function HeardRow(props: { rows: Channel[]; heard: HeardCode[]; linked: boolean;
               {h.calls && h.skipped ? ", " : ""}
               {h.skipped ? `${h.skipped} not recorded` : ""}
             </span>
-            {listed(h.code) ? (
+            {listed(h.parts) ? (
               <span className="muted small" title="Already listed">
                 {" "}
                 ✓
               </span>
             ) : (
               !props.linked && (
-                <button className="btn ghost small" title={`Add a row for ${label(h.code)}`} onClick={() => props.onAdd(h.code)}>
+                <button className="btn ghost small" title={`Add a row for ${label(h.code)}`} onClick={() => props.onAdd(h.parts)}>
                   Add
                 </button>
               )
@@ -1029,20 +1080,20 @@ function ConventionalPanel(props: { c: Config; k: number }) {
   const heard = useApp().heard;
   /** The last row on row i's frequency. */
   const lastOfFreq = (i: number) => chans.reduce((at, o, k) => (Math.abs(o.freqHz - chans[i].freqHz) < 1 ? Math.max(at, k) : at), i);
-  /** Another row on row i's frequency (after the last of them), for another tone — `tone` when it is known. */
-  const addTone = (i: number, tone = "") => {
+  /** Another row on row i's frequency (after the last of them), for another code — `access` when it is known. */
+  const addRule = (i: number, access: AccessParts = { code: "" }) => {
     const ch = chans[i];
     const at = lastOfFreq(i);
-    const row: Channel = { freqHz: ch.freqHz, mode: ch.mode, name: "", enabled: true, tone };
+    const row: Channel = { freqHz: ch.freqHz, mode: ch.mode, name: "", enabled: true };
+    setAccess(row, access);
     if (ch.bandwidthKhz !== undefined) row.bandwidthKhz = ch.bandwidthKhz;
-    // A DMR / NXDN code naming a talkgroup files under it; others get the next free number.
-    if (!(ch.mode !== "fm" && ch.mode !== "p25" && /\bTG \d/.test(tone))) row.talkgroup = nextTalkgroup(chans, ch.freqHz);
-    if (!tone) delete row.tone;
+    // Analog: the next free number. Digital: the air's, until one is typed.
+    if (!digital(ch.mode)) row.talkgroup = nextTalkgroup(chans, ch.freqHz);
     if (ch.squelchDb !== undefined) row.squelchDb = ch.squelchDb;
     ids.current.splice(at + 1, 0, nextRowId++);
     edit((x) => void x.channels.splice(at + 1, 0, row));
   };
-  const talkgroups = channelTalkgroups(chans);
+  const talkgroups = defaultTalkgroups(chans);
   const shared = (i: number) => chans.some((o, k) => k !== i && Math.abs(o.freqHz - chans[i].freqHz) < 1);
   const add = (list: Channel[]) => {
     ids.current.push(...list.map(() => nextRowId++));
@@ -1225,11 +1276,11 @@ function ConventionalPanel(props: { c: Config; k: number }) {
                     <th>Frequency, MHz</th>
                     <th>Mode</th>
                     <th title="Analog: the channel filter's width">Bandwidth</th>
-                    <th title="Tone, NAC, colour code or RAN to record; blank takes the rest">
-                      Tone
+                    <th title="Tone, NAC, colour code or RAN to record, and (DMR) the slot and (digital) the talkgroup; blank takes the rest, the most specific row that fits wins">
+                      Records
                     </th>
                     <th>Name</th>
-                    <th title="Calls are filed under it; P25 uses the on-air one">Talkgroup</th>
+                    <th title="Calls are filed under it. Empty: digital modes the talkgroup the air names, else the frequency in kHz. The air's is kept in the call's JSON as talkgroup_ota">TG Number</th>
                     <th title="dB above the noise floor">Squelch</th>
                     <th />
                   </tr>
@@ -1254,7 +1305,10 @@ function ConventionalPanel(props: { c: Config; k: number }) {
                               x.mode = e.target.value as Channel["mode"];
                               // A bandwidth is the mode's (AM's and FM's mean different channels); AM has no codes.
                               delete x.bandwidthKhz;
-                              if (x.mode === "am") delete x.tone;
+                              // The code is the mode's; Match TG only digital modes', Slot only DMR's.
+                              if (x.mode === "am") delete x.code;
+                              if (!digital(x.mode)) delete x.matchTalkgroup;
+                              if (x.mode !== "dmr") delete x.slot;
                             })
                           }
                         >
@@ -1277,18 +1331,7 @@ function ConventionalPanel(props: { c: Config; k: number }) {
                         />
                       </td>
                       <td>
-                        <ToneInput
-                          key={ch.mode}
-                          mode={ch.mode}
-                          tone={ch.tone ?? ""}
-                          disabled={linked}
-                          onChange={(t) =>
-                            editRow(i, (x) => {
-                              if (t) x.tone = t;
-                              else delete x.tone;
-                            })
-                          }
-                        />
+                        <AccessInput key={ch.mode} ch={ch} disabled={linked} onChange={(p) => editRow(i, (x) => setAccess(x, p))} />
                       </td>
                       <td>
                         <input value={ch.name} disabled={linked} placeholder="Name" aria-label="Name" onChange={(e) => editRow(i, (x) => void (x.name = e.target.value))} />
@@ -1298,8 +1341,8 @@ function ConventionalPanel(props: { c: Config; k: number }) {
                           narrow
                           disabled={linked}
                           value={ch.talkgroup}
-                          placeholder={ch.freqHz ? String(talkgroups[i]) : "auto"}
-                          label="Talkgroup"
+                          placeholder={ch.freqHz ? (digital(ch.mode) ? `air's, else ${talkgroups[i]}` : String(talkgroups[i])) : "auto"}
+                          label="TG Number: calls are filed under it"
                           onChange={(v) =>
                             editRow(i, (x) => {
                               if (v === undefined || v <= 0) delete x.talkgroup;
@@ -1329,11 +1372,11 @@ function ConventionalPanel(props: { c: Config; k: number }) {
                             {ch.freqHz > 0 && ch.mode !== "am" && (
                               <button
                                 className="btn ghost small"
-                                title={`Another ${{ fm: "tone", p25: "NAC", dmr: "colour code or talkgroup", nxdn48: "RAN or talkgroup", nxdn96: "RAN or talkgroup" }[ch.mode]} on this frequency`}
+                                title={`Another ${{ fm: "tone", p25: "NAC or talkgroup", dmr: "colour code, slot or talkgroup", nxdn48: "RAN or talkgroup", nxdn96: "RAN or talkgroup" }[ch.mode]} on this frequency`}
                                 aria-label="Add a row on this frequency"
-                                onClick={() => addTone(i)}
+                                onClick={() => addRule(i)}
                               >
-                                {{ fm: "+ tone", p25: "+ NAC", dmr: "+ code", nxdn48: "+ code", nxdn96: "+ code" }[ch.mode]}
+                                {ch.mode === "fm" ? "+ tone" : "+ rule"}
                               </button>
                             )}
                             <button className="btn ghost small danger" title="Remove" aria-label="Remove channel" onClick={() => remove(i)}>
@@ -1348,7 +1391,7 @@ function ConventionalPanel(props: { c: Config; k: number }) {
                           rows={chans.filter((o) => Math.abs(o.freqHz - ch.freqHz) < 1)}
                           heard={heard[String(Math.round(ch.freqHz))]}
                           linked={linked}
-                          onAdd={(code) => addTone(i, code)}
+                          onAdd={(p) => addRule(i, p)}
                         />
                       )}
                     </Fragment>
@@ -1392,13 +1435,15 @@ function ConventionalPanel(props: { c: Config; k: number }) {
         <details className="help">
           <summary>CSV format</summary>
           <p className="small">
-            A header row, then one channel per row; <b>Export CSV</b> writes one to start from. Columns, in any order: <code>TG Number</code> (empty = the
-            frequency in kHz), <code>Frequency</code> (MHz with a decimal point, or Hz), <code>Mode</code> (<code>fm</code>, <code>am</code>, <code>p25</code>,{" "}
-            <code>dmr</code>, <code>nxdn48</code> or <code>nxdn96</code>; empty = fm, or what the Tone says: a NAC p25, a colour code dmr, a RAN nxdn48),{" "}
-            <code>Tone</code> (the code the row records: a CTCSS tone <code>151.4</code>, a DCS code <code>D023N</code>, a NAC <code>NAC 293</code>, a
-            colour code <code>CC1 TS2 TG201</code>, a RAN <code>RAN 5</code>; empty = any), <code>Alpha Tag</code>, <code>Description</code>,{" "}
-            <code>Tag</code>, <code>Category</code>, <code>Squelch dB</code> (above the noise; empty = the default), <code>Bandwidth kHz</code> (fm and am: the
-            channel filter's width, 4–20; empty = the default), <code>Enable</code> (<code>false</code> =
+            A header row, then one channel per row; <b>Export CSV</b> writes one to start from. Columns, in any order: <code>TG Number</code> (what calls are
+            filed under; empty = p25, dmr and nxdn the talkgroup the air names, else the frequency in kHz), <code>Frequency</code> (MHz with a decimal point,
+            or Hz), <code>Mode</code> (<code>fm</code>, <code>am</code>, <code>p25</code>, <code>dmr</code>, <code>nxdn48</code> or <code>nxdn96</code>; empty
+            = fm, or what the Code says: a NAC p25, a colour code dmr, a RAN nxdn48), <code>Code</code> (what the row records: a CTCSS tone{" "}
+            <code>151.4</code>, a DCS code <code>D023N</code>, a NAC <code>293</code>, a colour code <code>1</code>, a RAN <code>5</code>; empty = any;
+            RadioReference's <code>CC1 TS2 TG201</code> fills the next two as well; Trunk Recorder's <code>Tone</code> column reads as Code),{" "}
+            <code>Slot</code> (dmr: 1 or 2), <code>Match TG</code> (p25, dmr, nxdn: only transmissions naming this talkgroup), <code>Alpha Tag</code>,{" "}
+            <code>Description</code>, <code>Tag</code>, <code>Category</code>, <code>Squelch dB</code> (above the noise; empty = the default),{" "}
+            <code>Bandwidth kHz</code> (fm and am: the channel filter's width, 4–20; empty = the default), <code>Enable</code> (<code>false</code> =
             off). Trunk Recorder's channel file reads as is; its <code>Squelch</code> column (an absolute level) isn't used.
           </p>
         </details>

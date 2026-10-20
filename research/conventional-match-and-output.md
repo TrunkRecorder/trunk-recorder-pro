@@ -1,8 +1,9 @@
 # Proposal: conventional rows that say what they match and what they file under
 
 A design proposal (2026-10-18), prompted by a user's "channel file v2" sketch and the question of
-what to do with talkgroups that arrive over the air. Nothing here is built; the last section
-lists what would change.
+what to do with talkgroups that arrive over the air. **Implemented 2026-10-19** on the same branch
+(PR #53); [What was built](#what-was-built) says how, where it differs from the proposal, and how the
+open questions were decided.
 
 ## Summary
 
@@ -86,9 +87,11 @@ string (which is still read, see Upgrade); `talkgroup` keeps its name and become
 4. **A new talkgroup on the air is a new call**, as today, compared on the air's number, so a
    catch-all that folds TG 1 and TG 2 into 46012 still cuts between them. The first transmission
    that names a talkgroup labels the call it arrived in.
-5. **The air's number is kept** when a row changes it: the call record gets `talkgroup_ota`
-   (this recorder's field, like `site` and `decrypted`), written only when it differs from
-   `talkgroup`. Plugins key on `talkgroup`; the file keeps the truth.
+5. **The air's number is kept**: the call record gets `talkgroup_ota` (this recorder's field,
+   like `site` and `decrypted`) whenever the air named a talkgroup — also when it equals
+   `talkgroup`, so a reader never has to infer "absent means the same". Left out for analog calls,
+   for calls whose air named none, and for trunked calls (the grant's number is the air's). Plugins
+   key on `talkgroup`; the file keeps the truth.
 
 ## Processing
 
@@ -155,7 +158,7 @@ slot_call(chan, slot, heard):
     if live is None:
         live = start_call(tg, names(system, rule, tg), air_tg = heard.tg, voice = chan.mode.voice(slot, heard))
     feed(live, heard)                           # audio, frames, sources, positions
-    at end: record.talkgroup = live.tg; record.talkgroup_ota = live.air_tg if != live.tg
+    at end: record.talkgroup = live.tg; record.talkgroup_ota = live.air_tg   # when Some
 ```
 
 ## Examples
@@ -211,7 +214,7 @@ from today; `Code` is the old `Tone` column.
 The system's talkgroup file `townville.talkgroups.csv` has `1,...,PD Dispatch` and `2,...,PD Tac`.
 
 A transmission with NAC 293, TG 1 → the catch-all; no `TG Number` → the air's: filed under
-**1** "PD Dispatch" (from the file). Next transmission TG 2 while the call is open → a new
+**1** "PD Dispatch" (from the file), `talkgroup_ota: 1`. Next transmission TG 2 while the call is open → a new
 call, **2** "PD Tac". Unchanged from today. This is the row for a channel whose talkgroups are
 globally meaningful to its users.
 
@@ -386,7 +389,8 @@ on a P25 row.
 - **One deliberate behaviour change**, for the changelog: a typed `TG Number` on a digital row
   wins over the air's number, where it was ignored before. It is what the column says.
 - **Call record**: `talkgroup_ota` is new (SDK: one optional field, left out when absent, like
-  `site`). Nothing else in the record changes.
+  `site`), on every conventional digital call whose air named a talkgroup. Nothing else in the
+  record changes.
 - **Plugins and interfaces**: see `talkgroup` as before; a plugin wanting the air's number reads
   `talkgroup_ota`.
 
@@ -431,16 +435,47 @@ The architecture review just folded conventional's pipeline into the engine's; t
 one. The user sees the difference where it matters: which columns a mode shows, and what a blank
 `TG Number` means for it. The guide presents them as two workflows on the same row.
 
-## Open questions
+## What was built
 
-- **`talkgroup_ota`'s name.** Trunk Recorder has no such field; `talkgroup_ota` follows
-  `tag_ota`. Alternatives: `air_talkgroup`, `talkgroup_heard`.
-- **A `Match TG` on an FM row** is meaningless (FM names no number); refuse it at Start, or
-  ignore it? Refusing is consistent with the AM rule.
-- **The Setup table width.** Three match columns instead of one makes the row wide; the `Slot`
-  and `Match TG` inputs show only for the modes that have them, which keeps FM rows as they are.
-- **Should a catch-all P25 row with names (example 5's "other") name every talkgroup it takes
-  "Townville (other)"**, or only when the talkgroup file has no entry? The rule above says the
-  row's names first. The other order (file first, row as fallback) suits example 3 with a
-  partial file better. Either is a one-line choice in `names`; the proposal picks the row's
-  because a row is the more specific statement.
+The design as above, with these choices:
+
+- **`Access` kept, not reshaped.** Instead of a new `Match { code, slot, tg }`, the existing enum
+  gained P25's talkgroup: `Access::P25 { nac, tg }` beside `Dmr { cc, slot, tg }` and
+  `Nxdn { ran, tg }`. `Access::join(mode, code, slot, tg)` builds a row's from the three config
+  fields (a `code` that names the slot or talkgroup too, RadioReference's `CC1 TS2 TG201`, must
+  agree with them), and `Access::parts` splits one back. `route_digital` and `pick` stay two
+  functions (FM still holds for its tone); neither writes the row's number into the heard
+  talkgroup any more.
+- **Engine.** `ConvChannel.talkgroup: Option<u32>` beside `default_talkgroup`; `slot_call` files
+  under `row.talkgroup.or(air).unwrap_or(default)`. `Live` keeps `air_tg` and the routed `row`: a
+  new air talkgroup or another row's transmission starts a new call (digital traffic that hasn't
+  named its talkgroup yet stays with the call it follows). `info_for` → `names` (rule 3).
+  `Call.talkgroup_ota`; `heard_code` reports the air's talkgroup, and P25's now includes it
+  (`NAC 293 TG 1`), so Setup's Heard list can add a per-talkgroup row.
+- **Config.** `Channel` has `code`, `slot`, `matchTalkgroup` in place of `tone`; `migrate.rs`
+  splits an old `tone` and calls `keep_p25_numbers` (example 6's upgrade), which the CSV reader also
+  applies to a file with a `Tone` column and no `Code`. `channel_talkgroups` →
+  `default_talkgroups` (the default only). `Config::problem` refuses through `Access::join`: a
+  `matchTalkgroup` on FM / AM, a `slot` off DMR, any selector on AM.
+- **CSV.** `TG Number,Frequency,Code,Slot,Match TG,Mode,…`; `Tone` read as `Code`.
+- **Setup.** One "Records" cell: the Code input, a slot select on DMR rows, a Match TG number on
+  digital rows — the row stays as wide as before. The TG Number placeholder reads `air's, else
+  460125` on digital rows. "+ NAC / + code" → "+ rule" (FM keeps "+ tone").
+- **SDK 0.5.1**: `talkgroup_ota: Option<u32>` on `CallRecord` and `CallInfo`.
+
+The open questions, decided:
+
+- **The name**: `talkgroup_ota`, after `tag_ota`. Written whenever the air named one (rule 5).
+- **`Match TG` on an FM row**: refused at Start, as a code on an AM row is; so is a `Slot` off DMR.
+- **Table width**: Slot and Match TG share the code's cell and show only for the modes that have them.
+- **Names**: the row's first, then the talkgroup file (rule 3). A catch-all P25 row that wants the
+  file's names leaves its own names empty.
+
+### Tests
+
+`trunk::conventional`: `p25_rows_file_under_their_number_and_keep_the_airs` (examples 3, 4),
+`p25_rows_split_a_frequency_by_talkgroup` (example 5, with the skipped `NAC 4F1 TG 1`),
+`a_new_talkgroup_on_a_folding_row_is_a_new_call` (example 10),
+`analog_records_name_no_air_talkgroup`; `dmr::synth` remaps TG 4321 → 9001 (example 7);
+`nxdn::synth` a typed number wins; `channels.rs` `code_slot_and_match_tg`; `migrate.rs`
+`a_channels_tone_becomes_code_slot_and_talkgroup`; web `tones.test.ts` and `migrate.test.ts`.

@@ -171,7 +171,8 @@ CallEntry: a recorded call (rec.history, the "concluded" message)
   { path, record }. path has no extension; the files are
   /calls/<path>.wav and .json (rec.callUrl(entry)).
   record is Trunk Recorder's call JSON (snake_case):
-    talkgroup, talkgroup_tag, talkgroup_description, talkgroup_group,
+    talkgroup, talkgroup_ota? (conventional P25/DMR/NXDN: the talkgroup the air named), talkgroup_tag,
+    talkgroup_description, talkgroup_group,
     short_name (the system), site? (the site its copy was kept from), start_time / stop_time (Unix seconds),
     start_time_ms, call_length (seconds of audio), freq (Hz),
     emergency (1/0), encrypted (1/0), audio_type ("analog" | "digital" |

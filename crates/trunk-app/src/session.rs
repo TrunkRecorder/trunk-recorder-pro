@@ -797,6 +797,7 @@ impl Session {
             short_name: self.system_name(c.system).to_string(),
             site: self.site_name(c.site),
             talkgroup: c.talkgroup,
+            talkgroup_ota: c.talkgroup_ota,
             talkgroup_tag: c.talkgroup_info.as_ref().map_or(String::new(), |t| t.alpha_tag.clone()),
             freq_hz: c.freq_hz,
             tdma_slot: c.voice.slot(),

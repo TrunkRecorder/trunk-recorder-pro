@@ -137,6 +137,7 @@ main { display: flex; flex-direction: column; gap: 16px; }
 table.channels input:not([type="checkbox"]), table.channels select { background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 4px 7px; min-width: 0; width: 100%; }
 table.channels input.narrow { width: 7em; }
 table.channels td { padding: 4px 6px; }
+table.channels .access-input { display: inline-flex; gap: 4px; align-items: center; white-space: nowrap; }
 table.channels input.invalid { border-color: var(--bad); }
 table.channels tr.shared-freq td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
 table.channels .row-actions { display: inline-flex; gap: 4px; white-space: nowrap; }

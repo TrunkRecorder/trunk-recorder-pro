@@ -66,9 +66,10 @@ Notes:
   is), in the order the config lists them.
 - **Pre-roll.** Conventional calls start 0.3 s before the signal was detected; `recording.prerollS`
   applies to trunked calls only.
-- **Talkgroup names.** P25, DMR and NXDN conventional calls that carry a talkgroup take its name from
-  the conventional system's own talkgroup file (`<shortName>.talkgroups.csv` beside the config; Setup
-  shows it on a conventional system with digital channels), else from the channel rows. A
+- **Talkgroup names.** A conventional call takes its row's names, if the row has any; else the
+  conventional system's own talkgroup file's for the number it's filed under
+  (`<shortName>.talkgroups.csv` beside the config; Setup shows it on a conventional system with
+  digital channels) — so a digital row with no names lets the file name each talkgroup the air sends. A
   conventional system doesn't borrow the names, or the settings, of a trunked system: give it its
   own file. The file's format is the [talkgroup file](systems.md#talkgroup-file)'s.
 - **Frequency error.** A conventional call's `freq_error` is measured as a trunked call's is, from
@@ -85,45 +86,78 @@ Notes:
 | `description` | | `""` | string | Description in the call JSON |
 | `tag` | | `""` | string | Tag in the call JSON |
 | `group` | | `""` | string | Category in the call JSON |
-| `talkgroup` | | see below | integer | The number its calls are filed under |
-| `tone` | | `""` (any) | string | Record only transmissions carrying this code. See [Tones and codes](#tones-and-codes) |
+| `talkgroup` | | see below | integer | The number its calls are filed under (Setup: TG Number) |
+| `code` | | `""` (any) | string | Record only transmissions carrying this code: a tone, NAC, colour code or RAN. See [Codes, slots and talkgroups](#codes-slots-and-talkgroups) |
+| `slot` | | any | integer | `dmr`: record only this slot, 1 or 2 |
+| `matchTalkgroup` | | any | integer | `p25`, `dmr`, `nxdn48`, `nxdn96`: record only transmissions naming this talkgroup (Setup: Match TG) |
 | `squelchDb` | | the system's | number | This channel's own squelch, dB above the noise floor |
 | `bandwidthKhz` | | the mode's | number | `fm` and `am`: the channel filter's width, kHz, 4–20. FM: 11 (12.5 kHz channels), 16 for wide FM (25 kHz). AM: 11 below 225 MHz, 16 from 225 MHz (UHF military air); 6 for 8.33 kHz channels. Rows sharing a frequency need the same |
 | `enabled` | | `true` | bool | `false` keeps the row without recording it |
 
 ### Talkgroup numbers
 
-A channel with no `talkgroup` is filed under its frequency in kHz (154.430 MHz → `154430`). A further
-row on the same frequency gets that with a digit added: `1543251`, `1543252`… (counted among all rows
-on the frequency, enabled or not, so switching one off renumbers nothing).
+A call is filed under:
 
-Digital calls keep what the air says:
+1. the row's `talkgroup`, if it gives one;
+2. else the talkgroup the air named (`p25`, `dmr`, `nxdn48`, `nxdn96`), if it did;
+3. else the frequency in kHz (154.430 MHz → `154430`). A further row on the same frequency gets that
+   with a digit added: `1543251`, `1543252`… (counted among all rows on the frequency, enabled or
+   not, so switching one off renumbers nothing).
 
-- **P25** calls are filed under the talkgroup the radio sends, unless several rows split the
-  frequency.
-- **DMR and NXDN** calls always keep the talkgroup (group) the air names, when it names one; the rows
-  give those talkgroups names. A DMR or NXDN row with no `talkgroup` takes the `TG` in its `tone`.
+| Mode | An empty `talkgroup` files under |
+|---|---|
+| `fm`, `am` | the frequency default |
+| `p25`, `dmr`, `nxdn48`, `nxdn96` | the air's talkgroup; the frequency default when a transmission names none |
 
-### Tones and codes
+A digital call's record keeps the talkgroup the air named as `talkgroup_ota`, also when a row files it
+under another number. That lets several P25 channels whose radios all send TG 1 — the common case —
+each file under a number of its own, and keep the 1:
 
-`tone` picks a channel's transmissions out of everything on its frequency. Several rows on one
-frequency split it among users: each row records the transmissions with its code, and a row with no
-code (at most one) records the rest.
+```json
+{ "freqHz": 460125000, "mode": "p25", "talkgroup": 46012, "name": "Townville PD" },
+{ "freqHz": 460175000, "mode": "p25", "talkgroup": 46017, "name": "Townville FD" }
+```
 
-| Mode | `tone` examples | What it matches |
-|---|---|---|
-| `fm` | `151.4`, `151.4 PL`, `D023N`, `023 DPL`, `D047I` | A CTCSS tone (67.0–254.1 Hz, standard tones only) or DCS code |
-| `p25` | `293`, `NAC 293`, `293 NAC`, `$293`, `0x293` | The NAC, in hex (up to 3 digits). `F7E` and `F7F` (a radio's "receive any") mean any |
-| `dmr` | `CC 1`, `CC1 TS2`, `CC 1 TS 2 TG 201`, `Slot 2` | Colour code 0–15, slot 1 or 2, talkgroup; any combination |
-| `nxdn48`, `nxdn96` | `RAN 5`, `RAN 5 TG 201`, `5` | RAN 0–63, group 1–65535. RAN 0 means any |
-| `am` | (none) | AM carries no code: `tone` must be empty, and a frequency has one row |
+A new talkgroup on the air is a new call, also when a row files both under one number. The names are
+the row's, if it has any; else the conventional system's talkgroup file's for the number filed under.
 
-Empty, `0`, `S`, `search`, `any` or `none` mean any. Rules for rows sharing a frequency:
+### Codes, slots and talkgroups
+
+`code`, `slot` and `matchTalkgroup` pick a row's transmissions out of everything on its frequency;
+a row records the transmissions that fit all it gives. Several rows on one frequency split it among
+users: the most specific row that fits takes a transmission, and a row with none of them (at most
+one) takes the rest. A transmission no row takes isn't recorded (Setup lists it under the
+frequency, with an Add button).
+
+| Mode | `code` examples | What it matches | `slot` | `matchTalkgroup` |
+|---|---|---|---|---|
+| `fm` | `151.4`, `151.4 PL`, `D023N`, `023 DPL`, `D047I` | A CTCSS tone (67.0–254.1 Hz, standard tones only) or DCS code | — | — |
+| `p25` | `293`, `NAC 293`, `293 NAC`, `$293`, `0x293` | The NAC, in hex (up to 3 digits). `F7E` and `F7F` (a radio's "receive any") mean any | — | 1–65535 |
+| `dmr` | `1`, `CC 1` | Colour code 0–15 | 1, 2 | 1–16777215 |
+| `nxdn48`, `nxdn96` | `5`, `RAN 5` | RAN 0–63. RAN 0 means any | — | 1–65535 |
+| `am` | (none) | AM carries no code: all three must be empty, and a frequency has one row | — | — |
+
+Empty, `0`, `S`, `search`, `any` or `none` mean any. A `code` may name the slot and talkgroup too —
+RadioReference's `CC1 TS2 TG201`, `NAC 293 TG 1`, `RAN 5 TG 201` — and is read as the three (if it
+agrees with `slot` and `matchTalkgroup`). Example: one P25 frequency, TG 1 and TG 2 filed apart, the
+rest as the air names them:
+
+```json
+{ "freqHz": 453500000, "mode": "p25", "code": "293", "matchTalkgroup": 1, "talkgroup": 45351, "name": "Townville PW" },
+{ "freqHz": 453500000, "mode": "p25", "code": "293", "matchTalkgroup": 2, "talkgroup": 45353, "name": "Townville Parks" },
+{ "freqHz": 453500000, "mode": "p25", "code": "293", "name": "Townville (other)" }
+```
+
+Rules for rows sharing a frequency:
 
 - They must all have the same `mode`.
-- At most one may have no code.
-- No two may have codes that can't be told apart (`D023N` and `D047I` are the same DCS signal).
+- At most one may have no code, slot or talkgroup.
+- No two may record the same transmissions (`D023N` and `D047I` are the same DCS signal).
 - The channel opens at the lowest `squelchDb` among them.
+
+Before v0.2.6 a row had one `tone` for all three, and P25 rows sharing a frequency filed under their
+own (default) number; an older config is upgraded when it's read, those P25 rows given the number
+they filed under.
 
 Recording won't start while any of these is broken; the message names the frequency.
 
@@ -146,12 +180,14 @@ Channel files are a desktop feature; the browser version has no file to link. Se
 ### CSV format
 
 ```csv
-TG Number,Frequency,Tone,Mode,Alpha Tag,Description,Tag,Category,Squelch dB,Bandwidth kHz,Enable
-1001,154.4300,,fm,County Fire Dispatch,,Fire Dispatch,Fire,,,true
-,154.3250,D223N,fm,County A Fire,,,Fire,,,true
-,154.3250,151.4,fm,County B Fire,,,Fire,,,true
-,460.1250,,p25,PD Tac 2,,Law Tac,Police,12,,true
-,119.1000,,am,Tower,,Aircraft,Airport,,,true
+TG Number,Frequency,Code,Slot,Match TG,Mode,Alpha Tag,Description,Tag,Category,Squelch dB,Bandwidth kHz,Enable
+1001,154.4300,,,,fm,County Fire Dispatch,,Fire Dispatch,Fire,,,true
+,154.3250,D223N,,,fm,County A Fire,,,Fire,,,true
+,154.3250,151.4,,,fm,County B Fire,,,Fire,,,true
+,460.1250,,,,p25,PD Tac 2,,Law Tac,Police,12,,true
+45351,453.5000,293,,1,p25,Townville PW,,Public Works,Public Works,,,true
+9001,451.5000,1,1,1,dmr,Dispatch,,Business,Business,,,true
+,119.1000,,,,am,Tower,,Aircraft,Airport,,,true
 ```
 
 A header row is required. Columns are matched in any case and any order; others are ignored.
@@ -159,9 +195,11 @@ A header row is required. Columns are matched in any case and any order; others 
 | Column | Also accepted | Meaning |
 |---|---|---|
 | `Frequency` ✓ | `Freq`, `FreqHz` | MHz when it has a decimal point (`154.4300`), otherwise Hz (`154430000`) |
-| `Mode` | | `fm`, `am`, `p25`, `dmr`, `nxdn48` (or `nxdn`), `nxdn96`; also `nfm`, `analog`, `A` (= fm), `digital`, `D` (= p25). Empty = `fm`, or `p25` / `dmr` / `nxdn48` when `Tone` holds a NAC / colour code / RAN |
-| `TG Number` | `Talkgroup`, `TG` | A positive whole number; empty = the default above |
-| `Tone` | | As `tone` above. RadioReference's spellings (`151.4 PL`, `023 DPL`, `293 NAC`, `CC1 TS2 TG201`, `RAN 5`) work |
+| `Mode` | | `fm`, `am`, `p25`, `dmr`, `nxdn48` (or `nxdn`), `nxdn96`; also `nfm`, `analog`, `A` (= fm), `digital`, `D` (= p25). Empty = `fm`, or `p25` / `dmr` / `nxdn48` when `Code` holds a NAC / colour code / RAN |
+| `TG Number` | `Talkgroup`, `TG` | A positive whole number; empty = as [above](#talkgroup-numbers) |
+| `Code` | `Tone` | As `code` above. RadioReference's spellings (`151.4 PL`, `023 DPL`, `293 NAC`, `CC1 TS2 TG201`, `RAN 5`) work; a slot or talkgroup in it fills `Slot` / `Match TG` |
+| `Slot` | `TS` | As `slot` above |
+| `Match TG` | `MatchTalkgroup` | As `matchTalkgroup` above |
 | `Alpha Tag` | `Name` | The channel's name |
 | `Description`, `Tag` | | Names in the call JSON |
 | `Category` | `Group` | Category in the call JSON |
@@ -174,8 +212,11 @@ Parsing:
 - Commas, semicolons or tabs (guessed from the header row). With semicolons or tabs, decimal commas
   (`154,43`) are read as decimal points, as Excel writes them in some locales.
 - Fields can be quoted. Blank lines, `#` comments and a byte-order mark are skipped.
-- A row with no usable frequency is skipped. A bad `Mode`, `TG Number`, `Squelch dB`, `Bandwidth kHz` or `Tone` is
-  read as the default. Setup lists each such row after reading the file.
+- A row with no usable frequency is skipped. A bad `Mode`, `TG Number`, `Squelch dB`, `Bandwidth kHz`,
+  `Code`, `Slot` or `Match TG` is read as the default. Setup lists each such row after reading the file.
+- A file with a `Tone` column and no `Code` (Trunk Recorder's, or this recorder's before v0.2.6) gets
+  the same upgrade as a config: P25 rows sharing a frequency with no `TG Number` are given the number
+  they filed under before.
 - **Trunk Recorder's channel file reads as is.** Its `Squelch` column (an absolute level) is not
   read: use `Squelch dB`. A `Tone` of `S` (search) needs no setting here, since every analog call's
   tone is identified and written to its JSON anyway.

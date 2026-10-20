@@ -401,10 +401,10 @@ mod tests {
         let (fs, center, freq) = (1_200_000.0, 460_000_000.0, 460_056_250.0);
         let iq = keyed(&conv_tx(Rate::N48), fs, freq - center);
         let mode = ConvMode::Nxdn(Rate::N48);
-        let row = |code: &str, tg: u32, name: &str| ConvChannel {
+        let row = |code: &str, tg: Option<u32>, name: &str| ConvChannel {
             access: Access::parse(mode, code).unwrap(),
             talkgroup: tg,
-            info: Some(Talkgroup { number: tg, alpha_tag: name.into(), ..Default::default() }),
+            info: Some(Talkgroup { number: tg.unwrap_or(0), alpha_tag: name.into(), ..Default::default() }),
             ..ConvChannel::new(freq, mode)
         };
         let calls = |rows: Vec<ConvChannel>| {
@@ -412,9 +412,11 @@ mod tests {
             let (done, skipped) = run_engine(cfg, &iq);
             (done.into_iter().map(|k| (k.call.talkgroup, k.call.talkgroup_info.map(|t| t.alpha_tag))).collect::<Vec<_>>(), skipped)
         };
-        assert_eq!(calls(vec![row("RAN 3", 1, "Ops"), row("RAN 4", 2, "Other")]).0, [(3100, Some("Ops".to_string()))]);
-        assert_eq!(calls(vec![row("RAN 3 TG 3100", 1, "Exact"), row("RAN 3", 2, "Site")]).0, [(3100, Some("Exact".to_string()))]);
-        let (none, skipped) = calls(vec![row("RAN 9", 1, "A")]);
+        assert_eq!(calls(vec![row("RAN 3", None, "Ops"), row("RAN 4", None, "Other")]).0, [(3100, Some("Ops".to_string()))]);
+        assert_eq!(calls(vec![row("RAN 3 TG 3100", None, "Exact"), row("RAN 3", Some(2), "Site")]).0, [(3100, Some("Exact".to_string()))]);
+        // A number of its own wins over the air's.
+        assert_eq!(calls(vec![row("RAN 3", Some(77), "Ops")]).0, [(77, Some("Ops".to_string()))]);
+        let (none, skipped) = calls(vec![row("RAN 9", None, "A")]);
         assert!(none.is_empty());
         assert_eq!(skipped, ["RAN 3 TG 3100"]);
     }

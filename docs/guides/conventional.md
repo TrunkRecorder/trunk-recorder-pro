@@ -56,18 +56,22 @@ panel that appears:
 2. Type frequencies in MHz into **Add frequencies, MHz** (for example `154.430, 155.100,
    460.125`), pick the mode beside it, and click **Add**. Or click **Add a channel** for one row.
 3. Fill in the table. Each row has **On**, **Frequency, MHz**, **Mode**, **Bandwidth** (analog
-   only; see [Bandwidth](#bandwidth)), **Tone**, **Name**, **Talkgroup** and **Squelch**.
+   only; see [Bandwidth](#bandwidth)), **Code**, **Name**, **Talkgroup** and **Squelch**. DMR rows
+   also have **Slot**, and P25, DMR and NXDN rows **Match TG**.
 4. Leave **Squelch, dB above noise** at 8 to start with. See [Tuning the squelch](#tuning-the-squelch).
 
 The **Talkgroup** column is the number calls are filed under: in file names, the call JSON and
 uploads. Leave it blank and it defaults to the frequency in kHz (154.430 MHz becomes 154430),
 which stays the same however you reorder the list. A second row on the same frequency gets that
-number with a digit added (1543251, 1543252, ...). P25 channels use the talkgroup the radio sends
-when there is a single row on the frequency, and DMR and NXDN calls keep the talkgroup on the air.
+number with a digit added (1543251, 1543252, ...). A digital (P25, DMR or NXDN) row with no
+Talkgroup is filed under the talkgroup the radio sends, when it sends one. The air's number is also
+written to the call JSON as `talkgroup_ota`.
 
-**Tone** limits a row to transmissions carrying one CTCSS tone, DCS code, NAC, colour code or RAN.
-Leave it blank to record everything on the frequency. Splitting a shared frequency is covered in
-[Tones and access codes](tones.md).
+**Code** limits a row to transmissions carrying one CTCSS tone, DCS code, NAC, colour code or RAN,
+written bare (`151.4`, `D023N`, `293`, `1`, `5`). **Slot** (DMR) and **Match TG** (P25, DMR, NXDN)
+narrow it further. Leave them blank to record everything on the frequency. Splitting a shared
+frequency is covered in [Tones and access codes](tones.md). A config with an older `tone` key is
+upgraded when it loads.
 
 **Import CSV…** reads a channel file and asks whether to **Replace the list** or **Add to the
 list**. **Export CSV** writes the current list as a CSV you can edit.
@@ -95,7 +99,7 @@ Channel files aren't available in the browser version.
   "squelchDb": 8,
   "channels": [
     { "freqHz": 154430000, "mode": "fm",  "name": "County Fire Dispatch", "talkgroup": 1001 },
-    { "freqHz": 155100000, "mode": "fm",  "name": "EMS Ops", "tone": "151.4" },
+    { "freqHz": 155100000, "mode": "fm",  "name": "EMS Ops", "code": "151.4" },
     { "freqHz": 460125000, "mode": "p25", "name": "PD Tac 2", "squelchDb": 12 },
     { "freqHz": 453000000, "mode": "fm",  "enabled": false }
   ]
@@ -122,17 +126,19 @@ Frequencies in the config are in Hz. Every key is listed in the
 A header row names the columns, in any order and any case; then one channel per row:
 
 ```csv
-TG Number,Frequency,Tone,Mode,Alpha Tag,Description,Tag,Category,Squelch dB,Bandwidth kHz,Enable
-1001,154.4300,,fm,County Fire Dispatch,,Fire Dispatch,Fire,,,true
-,154.3250,D223N,fm,County A Fire,,,Fire,,,true
-,154.3250,151.4,fm,County B Fire,,,Fire,,,true
-,460.1250,,p25,PD Tac 2,,Law Tac,Police,12,,true
-,119.1000,,am,Tower,,Aircraft,Airport,,,true
+TG Number,Frequency,Code,Slot,Match TG,Mode,Alpha Tag,Description,Tag,Category,Squelch dB,Bandwidth kHz,Enable
+1001,154.4300,,,,fm,County Fire Dispatch,,Fire Dispatch,Fire,,,true
+,154.3250,D223N,,,fm,County A Fire,,,Fire,,,true
+,154.3250,151.4,,,fm,County B Fire,,,Fire,,,true
+,460.1250,,,,p25,PD Tac 2,,Law Tac,Police,12,,true
+,119.1000,,,,am,Tower,,Aircraft,Airport,,,true
 ```
 
 - `Frequency` is MHz when it has a decimal point, otherwise Hz.
-- `Mode` is `fm`, `am`, `p25`, `dmr`, `nxdn48` or `nxdn96`; empty means `fm`, unless `Tone` holds
-  a NAC (then `p25`), a colour code (`dmr`) or a RAN (`nxdn48`).
+- `Mode` is `fm`, `am`, `p25`, `dmr`, `nxdn48` or `nxdn96`; empty means `fm`, unless `Code` holds
+  a NAC (then `p25`), a colour code (`dmr`) or a RAN (`nxdn48`). An old `Tone` column still reads,
+  as `Code`. A combined string such as `CC1 TS2 TG201` in `Code` is split into `Code`, `Slot` and
+  `Match TG`.
 - `Squelch dB` is 3-40 dB above the noise floor; empty uses the system's.
 - `Bandwidth kHz` is an `fm` or `am` row's filter width, 4-20; empty uses the mode's default.
 - `Enable` set to `false`, `no`, `0` or `off` turns a row off.
@@ -329,7 +335,7 @@ If a channel isn't recording as you expect, work through these:
 4. **What does the SNR do?** On the RF page, watch the channel during a transmission. If the SNR
    never gets near the squelch, lower the squelch or improve reception. If it sits above the squelch
    while idle, raise it.
-5. **Is a tone filtering it out?** If the row has a **Tone**, transmissions with a different code
+5. **Is a tone filtering it out?** If the row has a **Code**, transmissions with a different code
    (or none) aren't recorded. The **Heard** line under the channel counts them as "not recorded".
    See [Tones and access codes](tones.md).
 6. **Are calls dropped after recording?** **Shortest call, s**, **Shortest transmission, s** and
@@ -356,7 +362,14 @@ saved. There is no separate log line for each detection.
 
 P25, DMR and NXDN channels can carry a talkgroup number. A call's names come from the conventional
 system's own talkgroup file (`<shortName>.talkgroups.csv` beside the config; Setup shows it on a
-conventional system with digital channels), else from the row it was recorded under.
+conventional system with digital channels), else from the row it was recorded under. The
+file is looked up by the number the call is filed under, and the row's own names win when it has
+any.
+
+Several P25 channels whose radios all send talkgroup 1 would all be filed under 1. Give each row
+its own **Talkgroup** number: calls are filed and named under it, and the air's 1 stays in
+`talkgroup_ota`. A new talkgroup on the air within an open call still starts a new call, even when
+the row files both under the same number.
 
 ## Coming from Trunk Recorder
 
@@ -366,7 +379,7 @@ conventional system with digital channels), else from the row it was recorded un
 - **No signal detector settings.** There is no `signalDetectorThreshold` and no `Signal Detector`
   column to set: detection always works from the noise floor as described above.
 - **Channel files read as they are.** **Import CSV…** and channel files accept Trunk Recorder's
-  format, `Tone` included. Its `Comment` and `Signal Detector` columns are ignored, and its
+  format, with its `Tone` column read as **Code**. Its `Comment` and `Signal Detector` columns are ignored, and its
   `Squelch` column isn't read; use `Squelch dB` instead. Add a `Mode` column to mix analog and
   digital in one file.
 - **System types merge.** `conventional`, `conventionalP25` and `conventionalDMR` systems become

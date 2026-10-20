@@ -192,6 +192,12 @@ pub struct CallInfo {
     #[serde(skip_serializing_if = "String::is_empty")]
     pub site: String,
     pub talkgroup: u32,
+    /// Conventional P25 / DMR / NXDN: the talkgroup the air named (this
+    /// recorder's addition, like `site`). `talkgroup` is what the call is
+    /// filed under, which a channel row may set to another number; none
+    /// for analog, trunked calls, or a call whose air named none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub talkgroup_ota: Option<u32>,
     /// The talkgroup's alpha tag, when known.
     pub talkgroup_tag: String,
     pub freq_hz: u64,
@@ -333,6 +339,12 @@ pub struct CallRecord {
     pub call_length: f64,
     pub call_length_ms: i64,
     pub talkgroup: u32,
+    /// Conventional P25 / DMR / NXDN: the talkgroup the air named (this
+    /// recorder's addition, like `site`). `talkgroup` is what the call is
+    /// filed under, which a channel row may set to another number; none
+    /// for analog, trunked calls, or a call whose air named none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub talkgroup_ota: Option<u32>,
     pub talkgroup_tag: String,
     pub talkgroup_description: String,
     pub talkgroup_group_tag: String,
@@ -397,6 +409,7 @@ impl Default for CallRecord {
             call_length: 0.0,
             call_length_ms: 0,
             talkgroup: 0,
+            talkgroup_ota: None,
             talkgroup_tag: String::new(),
             talkgroup_description: String::new(),
             talkgroup_group_tag: String::new(),

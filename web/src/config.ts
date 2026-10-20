@@ -2,7 +2,6 @@
 
 import type { Channel, Config, Conventional, LogSettings, RecordingOverride, Site, SiteIdentity, Source, System, SystemStatus, UnitNames } from "./protocol.ts";
 import { normalizeTalkgroupCsv, splitCsvLine } from "./talkgroups.ts";
-import { dmrTalkgroup } from "./tones.ts";
 import { defaultConfig, parseChannelCsv, readConfig, usableHalfWidth } from "./rules.ts";
 
 // The recorder's rules, as it applies them (rules.ts):
@@ -326,15 +325,13 @@ export function defaultTalkgroup(freqHz: number): number {
 const sameFreq = (a: number, b: number) => Math.abs(a - b) < 1;
 
 /**
- * Each channel's talkgroup: its own; else a DMR / NXDN row's talkgroup in its Tone;
- * else by its place among the rows on its frequency — the frequency in kHz,
- * then that with a digit (154325, 1543251 …). The recorder's channel_talkgroups.
+ * What each channel files a call under when neither it nor the air names a
+ * talkgroup: by its place among the rows on its frequency — the frequency in
+ * kHz, then that with a digit (154325, 1543251 …). The recorder's
+ * default_talkgroups.
  */
-export function channelTalkgroups(channels: Channel[]): number[] {
+export function defaultTalkgroups(channels: Channel[]): number[] {
   return channels.map((c, i) => {
-    if (c.talkgroup !== undefined) return c.talkgroup;
-    const air = c.mode === "dmr" || c.mode === "nxdn48" || c.mode === "nxdn96" ? dmrTalkgroup(c.tone) : undefined;
-    if (air !== undefined) return air;
     const k = channels.slice(0, i).filter((o) => sameFreq(o.freqHz, c.freqHz)).length;
     return k === 0 ? defaultTalkgroup(c.freqHz) : defaultTalkgroup(c.freqHz) * 10 + k;
   });
@@ -342,7 +339,7 @@ export function channelTalkgroups(channels: Channel[]): number[] {
 
 /** A talkgroup for another row on `freqHz`: the first of 1543251, 1543252 … no row uses. */
 export function nextTalkgroup(channels: Channel[], freqHz: number): number {
-  const used = new Set(channelTalkgroups(channels));
+  const used = new Set(channels.map((c, i) => c.talkgroup ?? defaultTalkgroups(channels)[i]));
   let k = 1;
   while (used.has(defaultTalkgroup(freqHz) * 10 + k)) k++;
   return defaultTalkgroup(freqHz) * 10 + k;

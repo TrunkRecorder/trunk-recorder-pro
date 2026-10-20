@@ -5,6 +5,22 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Conventional rows say what they record and what they file it under**: a row's Tone is now
+  **Code** (tone, NAC, colour code or RAN), **Slot** (DMR) and **Match TG** (P25, DMR, NXDN), and
+  the most specific row that fits takes a transmission. P25 rows can now split a frequency by
+  talkgroup, not just by NAC. An older config's `tone`, and a channel file's `Tone` column, are read
+  as the three; RadioReference's `CC1 TS2 TG201` pasted into Code still works.
+- **A typed TG Number on a digital row now wins** over the talkgroup the air names (before, it was
+  used only when the air named none). Several P25 channels whose radios all send TG 1 can each file
+  under a number of their own. An empty TG Number keeps the air's, as before. P25 rows that shared a
+  frequency (and filed under their own number) have that number written in on upgrade, so nothing
+  already recorded files differently.
+- **`talkgroup_ota` in the call JSON**: a conventional P25, DMR or NXDN call keeps the talkgroup the
+  air named, also when its row files it under another number. A new talkgroup on the air still
+  starts a new call. Plugins see it on `CallRecord` and `CallInfo` (SDK 0.5.1).
+- **A row's names come first**: a conventional call takes its row's names, if the row has any, else
+  the system's talkgroup file's for the number it's filed under.
+
 ## [0.2.5] — 2026-10-19
 
 - **The Live page is each system's now**: a system's page under **Radio system** has its
