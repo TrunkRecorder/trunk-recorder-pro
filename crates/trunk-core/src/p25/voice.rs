@@ -7,7 +7,7 @@
 //! indexes that layout.
 
 use super::fec::{
-    golay18_codewords, golay23_decode, golay23_decode_soft, golay23_encode, golay24_codewords, golay24_decode, hamming1063_codewords,
+    golay18_codewords, golay23_decode, golay23_decode_soft, golay23_decode_soft2, golay23_encode, golay24_codewords, golay24_decode, hamming1063_codewords,
     hamming1063_decode, hamming15_decode, hamming15_decode_soft, hamming15_encode, ml_decode, rs_decode_erasures, rs_decode_gmd, Fec,
 };
 use super::frame::Frame;
@@ -53,6 +53,10 @@ fn pngen(pr: &mut u32, nbits: u32) -> u32 {
 /// 144-bit IMBE codeword → u0..u7. With `soft` (144 reliabilities, parallel
 /// to `cw`) the Golay words are Chase-decoded and the Hamming words decoded by
 /// maximum likelihood.
+///
+/// u0 seeds the PN mask over u1..u6, so a wrong u0 unscrambles the rest
+/// wrong too. Soft, when u0 wasn't clean, its Chase runner-up is tried as
+/// well, and whichever pairing costs least over all seven words wins.
 pub fn imbe_header_decode(cw: &[u8; 144], soft: Option<&[f32; 144]>) -> ImbeParams {
     let count = |r: &Fec| if r.errs < 0 { 4 } else { r.errs as u32 };
     let golay = |v: u32, at: usize| match soft {
@@ -63,36 +67,52 @@ pub fn imbe_header_decode(cw: &[u8; 144], soft: Option<&[f32; 144]>) -> ImbePara
         Some(s) => hamming15_decode_soft(v, &s[at..at + 15]),
         None => hamming15_decode(v),
     };
-    let mut p = ImbeParams::default();
-    let r0 = golay(extract(cw, 0, 23), 0);
-    p.u[0] = r0.data;
-    p.e0 = count(&r0);
-    p.errs = p.e0;
-    p.cost0 = r0.cost;
-    p.cost = r0.cost;
+    let (r0, alt) = match soft {
+        Some(s) => golay23_decode_soft2(extract(cw, 0, 23), &s[..23]),
+        None => (golay23_decode(extract(cw, 0, 23)), None),
+    };
+    let decode = |r0: Fec| {
+        let mut p = ImbeParams::default();
+        p.u[0] = r0.data;
+        p.e0 = count(&r0);
+        p.errs = p.e0;
+        p.cost0 = r0.cost;
+        p.cost = r0.cost;
+        let mut pr = p.u[0] << 4;
+        for k in 1..=3 {
+            let m = pngen(&mut pr, 23);
+            let r = golay(extract(cw, 23 * k, 23 * (k + 1)) ^ m, 23 * k);
+            p.u[k] = r.data;
+            p.errs += count(&r);
+            p.cost += r.cost;
+        }
+        for k in 4..=6 {
+            let m = pngen(&mut pr, 15);
+            let s = 92 + (k - 4) * 15;
+            let r = hamming(extract(cw, s, s + 15) ^ m, s);
+            p.u[k] = r.data;
+            p.errs += count(&r);
+            p.cost += r.cost;
+        }
+        p.u[7] = extract(cw, 137, 144) << 1;
+        p
+    };
+    let mut p = decode(r0);
+    if let Some(alt) = alt.filter(|a| U0_RUNNER_UP.load(std::sync::atomic::Ordering::Relaxed) && a.cost < p.cost) {
+        let q = decode(alt);
+        if q.cost < p.cost {
+            p = q;
+        }
+    }
     if let Some(s) = soft {
         p.mean_rel = s.iter().sum::<f32>() / 144.0;
         p.erased = s.iter().filter(|&&r| r == 0.0).count() as u32;
     }
-    let mut pr = p.u[0] << 4;
-    for k in 1..=3 {
-        let m = pngen(&mut pr, 23);
-        let r = golay(extract(cw, 23 * k, 23 * (k + 1)) ^ m, 23 * k);
-        p.u[k] = r.data;
-        p.errs += count(&r);
-        p.cost += r.cost;
-    }
-    for k in 4..=6 {
-        let m = pngen(&mut pr, 15);
-        let s = 92 + (k - 4) * 15;
-        let r = hamming(extract(cw, s, s + 15) ^ m, s);
-        p.u[k] = r.data;
-        p.errs += count(&r);
-        p.cost += r.cost;
-    }
-    p.u[7] = extract(cw, 137, 144) << 1;
     p
 }
+
+/// Research switch for `tool snr` (the u0 runner-up on or off).
+pub static U0_RUNNER_UP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
 /// u0..u7 → the 144-bit codeword: [`imbe_header_decode`] backwards (for
 /// test signals).

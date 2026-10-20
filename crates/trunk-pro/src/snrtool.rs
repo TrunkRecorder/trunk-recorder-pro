@@ -140,6 +140,8 @@ pub struct Variant {
     pub cqpsk: trunk_core::dsp::cqpsk::Options,
     /// P25: hard-decision LC / ES / HDU / TDULC (no soft Hamming/Golay, no GMD RS).
     pub hard_sig: bool,
+    /// P25: IMBE without trying u0's runner-up.
+    pub no_u0: bool,
 }
 
 /// A variant: its protocol's receiver (`base`) with `+`-joined changes.
@@ -151,7 +153,7 @@ fn variant(name: &str, kind: &str) -> Variant {
     let mut no_combining = false;
     let mut fsk2 = smartnet::Fsk2Options::default();
     let mut grid_errs = None;
-    let mut hard_sig = false;
+    let (mut hard_sig, mut no_u0) = (false, false);
     // Phase 2 voice's receiver as the engine runs it.
     let mut cq = trunk_core::dsp::cqpsk::Options { baud: trunk_core::p25::phase2::SYMBOL_RATE, df_beta: 0.5, ..Default::default() };
 
@@ -163,6 +165,7 @@ fn variant(name: &str, kind: &str) -> Variant {
             "nodetect" => detect = false,
             "nocombine" => no_combining = true,
             "hardsig" => hard_sig = true,
+            "nou0" => no_u0 = true,
             "coherent" => cq.coherent = true,
             "noamp" => cq.soft_amplitude = false,
             p if p.starts_with("df=") => cq.df_beta = p[3..].parse().unwrap_or(0.0),
@@ -177,7 +180,7 @@ fn variant(name: &str, kind: &str) -> Variant {
             }
         }
     }
-    Variant { name: name.into(), c4fm: o, c4fm_only, cqpsk_only, detect, no_combining, fsk2, grid_errs, cqpsk: cq, hard_sig }
+    Variant { name: name.into(), c4fm: o, c4fm_only, cqpsk_only, detect, no_combining, fsk2, grid_errs, cqpsk: cq, hard_sig, no_u0 }
 }
 
 /// What a decode of the channel got: each message's time (s) and content,
@@ -256,6 +259,7 @@ fn run_p25(iq: &[Complex32], rate: f64, v: &Variant) -> Count {
     let mut bank = Bank::with_c4fm(rate, cfg, v.c4fm);
     let mut groups = Vec::new();
     let mut n = Count::default();
+    voice::U0_RUNNER_UP.store(!v.no_u0, std::sync::atomic::Ordering::Relaxed);
     let soft = !v.hard_sig;
     for c in iq.chunks(4096) {
         groups.clear();

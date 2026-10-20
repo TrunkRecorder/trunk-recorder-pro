@@ -153,14 +153,21 @@ pub fn hamming15_decode_soft(r: u32, w: &[f32]) -> Fec {
 /// Golay(23,12), Chase-II: flip every subset of the 5 least reliable bits,
 /// hard-decode each, keep the lowest-cost codeword.
 pub fn golay23_decode_soft(r: u32, w: &[f32]) -> Fec {
+    golay23_decode_soft2(r, w).0
+}
+
+/// [`golay23_decode_soft`], and the runner-up among the codewords it
+/// tried, if it tried another (none when `r` is already a codeword).
+pub fn golay23_decode_soft2(r: u32, w: &[f32]) -> (Fec, Option<Fec>) {
     let r = r & 0x7fffff;
     if golay23_syn(r) == 0 {
-        return Fec { data: r >> 11, errs: 0, cost: 0.0, margin: 0.0 };
+        return (Fec { data: r >> 11, errs: 0, cost: 0.0, margin: f32::INFINITY }, None);
     }
     let mut idx: [usize; 23] = std::array::from_fn(|i| i);
     idx.select_nth_unstable_by(5, |&a, &b| w[a].total_cmp(&w[b]));
     let lrb = &idx[..5];
     let (mut best, mut best_cw) = (f32::INFINITY, r);
+    let (mut next, mut next_cw) = (f32::INFINITY, None);
     for m in 0..32u32 {
         let mut t = r;
         for (k, &i) in lrb.iter().enumerate() {
@@ -169,13 +176,20 @@ pub fn golay23_decode_soft(r: u32, w: &[f32]) -> Fec {
             }
         }
         let c = golay23_encode(golay23_decode(t).data);
+        if c == best_cw || Some(c) == next_cw {
+            continue;
+        }
         let cost = weight((c ^ r) & 0x7fffff, w, 23);
         if cost < best {
+            (next, next_cw) = (best, (best != f32::INFINITY).then_some(best_cw));
             best = cost;
             best_cw = c;
+        } else if cost < next {
+            (next, next_cw) = (cost, Some(c));
         }
     }
-    Fec { data: best_cw >> 11, errs: ((best_cw ^ r) & 0x7fffff).count_ones() as i32, cost: best, margin: 0.0 }
+    let fec = |cw: u32, cost: f32, margin: f32| Fec { data: cw >> 11, errs: ((cw ^ r) & 0x7fffff).count_ones() as i32, cost, margin };
+    (fec(best_cw, best, next - best), next_cw.map(|c| fec(c, next, 0.0)))
 }
 
 /// Maximum likelihood over every codeword of a small code (`cws[d]`: data
