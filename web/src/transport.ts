@@ -18,10 +18,13 @@ export interface Transport {
   callUrl(path: string, ext: CallExt): Promise<string>;
 }
 
-/** A tab hidden this long that then gets a message was likely frozen: what's queued for it is old. */
+/** The recorder sends every connection its host status every 2 s (monitor.rs's `EVERY`):
+ *  nothing for this long, and the tab wasn't running (frozen in the background, the
+ *  computer asleep). What's queued for it then is old. */
 const FROZEN_MS = 30_000;
-/** Whether the tab is hidden now (never, where there's no document: tests). */
-const hidden = (): boolean => typeof document !== "undefined" && document.hidden;
+
+/** Whether a message at `now` comes too late after the last one (`last`, 0: none yet) to be live. ms. */
+export const frozen = (last: number, now: number): boolean => last > 0 && now - last > FROZEN_MS;
 
 export class WsTransport implements Transport {
   readonly kind = "desktop" as const;
@@ -32,26 +35,11 @@ export class WsTransport implements Transport {
   private queue: ToRecorder[] = [];
   private retryMs = 500;
   private closed = false;
-  /** When the last message was taken, and whether the tab was hidden since. */
+  /** When the last message came, ms. */
   private lastMessage = 0;
-  private hiddenSince = false;
 
   constructor(private readonly url = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api/ws`) {
-    globalThis.document?.addEventListener("visibilitychange", () => {
-      if (hidden()) this.hiddenSince = true;
-    });
     this.connect();
-  }
-
-  /** A tab frozen in the background is handed every message it missed at once
-   *  when it wakes: they'd be shown as if live. Reconnect instead, and be told
-   *  how things are now. */
-  private stale(): boolean {
-    const now = performance.now();
-    const frozen = this.hiddenSince && this.lastMessage > 0 && now - this.lastMessage > FROZEN_MS;
-    this.lastMessage = now;
-    this.hiddenSince = hidden();
-    return frozen;
   }
 
   private connect(): void {
@@ -64,11 +52,15 @@ export class WsTransport implements Transport {
       for (const m of this.queue.splice(0)) ws.send(JSON.stringify(m));
     };
     ws.onmessage = (ev) => {
-      if (this.stale()) {
+      // A tab that wasn't running is handed everything it missed at once when it wakes: it'd be
+      // shown as if live. Reconnected instead, it's told how things are now.
+      const now = Date.now();
+      if (frozen(this.lastMessage, now)) {
         ws.onmessage = null;
         ws.close();
         return;
       }
+      this.lastMessage = now;
       if (typeof ev.data === "string") this.onMessage(JSON.parse(ev.data) as FromRecorder);
       else {
         const a = decodeAudioFrame(ev.data as ArrayBuffer);

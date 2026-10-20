@@ -626,13 +626,19 @@ pub(crate) fn radio_query(ctx: &Ctx, q: &Body) -> ToClient {
 /// gets everything afresh when it reconnects.
 const SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// One message to a connection, within [`SEND_TIMEOUT`]: false when it's
+/// gone or isn't reading, and is to be dropped.
+async fn send(socket: &mut WebSocket, m: Message) -> bool {
+    matches!(tokio::time::timeout(SEND_TIMEOUT, socket.send(m)).await, Ok(Ok(())))
+}
+
 async fn session(ctx: Arc<Ctx>, mut socket: WebSocket, door: Door) {
     let mut rx = ctx.hub.subscribe();
     let Some(mut access) = access_of(&ctx, &door) else { return };
     let control = access == ApiAccess::Control;
     for m in greeting(&ctx, control).await {
         let Some(text) = text_for(&Out::of(&m), control) else { continue };
-        if socket.send(Message::Text(text.into())).await.is_err() {
+        if !send(&mut socket, Message::Text(text.into())).await {
             return;
         }
     }
@@ -655,7 +661,7 @@ async fn session(ctx: Arc<Ctx>, mut socket: WebSocket, door: Door) {
                         // The config changed: so may this connection's access.
                         Out::Config { full, listen } => {
                             let Some(a) = access_of(&ctx, &door) else {
-                                let _ = socket.send(Message::Close(None)).await;
+                                send(&mut socket, Message::Close(None)).await;
                                 return;
                             };
                             access = a;
@@ -670,19 +676,15 @@ async fn session(ctx: Arc<Ctx>, mut socket: WebSocket, door: Door) {
                         Out::Quit => Message::Text(ToClient::Quit.to_json().into()),
                     };
                     let quit = matches!(&*out, Out::Quit);
-                    match tokio::time::timeout(SEND_TIMEOUT, socket.send(m)).await {
-                        Ok(Ok(())) if !quit => {}
-                        Ok(Ok(())) | Ok(Err(_)) => {
-                            let _ = socket.send(Message::Close(None)).await;
-                            return;
-                        }
-                        Err(_) => return,
+                    if !send(&mut socket, m).await || quit {
+                        send(&mut socket, Message::Close(None)).await;
+                        return;
                     }
                 }
                 // It fell behind and missed messages: what it shows is no
                 // longer so. Closed, it reconnects and is greeted afresh.
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                    let _ = tokio::time::timeout(SEND_TIMEOUT, socket.send(Message::Close(None))).await;
+                    send(&mut socket, Message::Close(None)).await;
                     return;
                 }
                 Err(_) => return,
@@ -693,7 +695,7 @@ async fn session(ctx: Arc<Ctx>, mut socket: WebSocket, door: Door) {
                     None => std::future::pending().await,
                 }
             } => {
-                let _ = socket.send(Message::Close(None)).await;
+                send(&mut socket, Message::Close(None)).await;
                 return;
             },
             msg = socket.recv() => match msg {
@@ -707,7 +709,7 @@ async fn session(ctx: Arc<Ctx>, mut socket: WebSocket, door: Door) {
                         Err(e) => Some(ToClient::error(e)),
                     };
                     if let Some(reply) = reply {
-                        if socket.send(Message::Text(reply.to_json().into())).await.is_err() {
+                        if !send(&mut socket, Message::Text(reply.to_json().into())).await {
                             return;
                         }
                     }
