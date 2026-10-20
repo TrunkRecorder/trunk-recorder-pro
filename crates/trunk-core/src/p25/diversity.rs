@@ -518,13 +518,13 @@ fn imbe_score(p: &ImbeParams) -> f32 {
 
 /// The HDU, from whichever receivers' copy decodes.
 pub fn best_hdu(g: &Group) -> Option<HduInfo> {
-    g.iter().filter(|f| f.nid.duid == HDU).find_map(|f| decode_hdu(&f.raw))
+    g.iter().filter(|f| f.nid.duid == HDU).find_map(|f| decode_hdu(f, true))
 }
 pub fn best_lc(g: &Group) -> Option<LinkControl> {
-    g.iter().filter(|f| f.nid.duid == LDU1).find_map(|f| decode_ldu1_lc(&f.raw))
+    g.iter().filter(|f| f.nid.duid == LDU1).find_map(|f| decode_ldu1_lc(f, true))
 }
 pub fn best_es(g: &Group) -> Option<EncryptionSync> {
-    g.iter().filter(|f| f.nid.duid == LDU2).find_map(|f| decode_ldu2_es(&f.raw))
+    g.iter().filter(|f| f.nid.duid == LDU2).find_map(|f| decode_ldu2_es(f, true))
 }
 
 #[cfg(test)]

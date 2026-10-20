@@ -1,5 +1,5 @@
 //! `trunk-pro tool snr <capture> --center Hz --rate Hz --freq Hz --kind dmr|p25|smartnet
-//! [--seconds N] [--snr 40,20,16,14,12,10,8,6] [--variant base,…] [--cutoff Hz]`
+//! [--seconds N] [--snr 40,20,16,14,12,10,8,6] [--variant base,…] [--cutoff Hz] [--kinds]`
 //! (`--kind p2 --nac --sysid --wacn`: P25 Phase 2 voice; `--quality`: a real
 //! channel as it is, per variant) —
 //! weak-signal curves from a strong capture: one channel's IQ is cut out
@@ -10,8 +10,11 @@
 //!
 //! Counted per SNR, as a percentage of the noiseless run: its messages decoded
 //! again, the same content within 0.2 s (dmr: CSBKs, LCs and AMBE codewords;
-//! p25: TSBKs and IMBE codewords; smartnet: OSWs) — so a message or codeword
-//! decoded wrong doesn't count, however sure its FEC was. Per receiver variant (see [`Variant`]).
+//! p25: TSBKs, IMBE codewords and the voice channel's signalling — HDU, LC,
+//! ES, TDULC, per kind with `--kinds`; smartnet: OSWs) — so a message or
+//! codeword decoded wrong doesn't count, however sure its FEC was. Those
+//! decoded that the clean run didn't get are counted too, in brackets:
+//! miscorrections, mostly. Per receiver variant (see [`Variant`]).
 
 use std::f64::consts::PI;
 use std::fmt::Write as _;
@@ -21,7 +24,8 @@ use trunk_core::dmr::{self, Framer, SlotEvent};
 use trunk_core::dsp::c4fm::{C4fm, C4fmOptions};
 use trunk_core::dsp::{Channelizer, Receiver};
 use trunk_core::p25::diversity::{best_imbe, best_tsbks, Bank, BankConfig};
-use trunk_core::p25::frame::{LDU1, LDU2, TSDU};
+use trunk_core::p25::frame::{HDU, LDU1, LDU2, TDULC, TSDU};
+use trunk_core::p25::voice;
 use trunk_core::smartnet;
 
 use crate::toolkit::{hex, Capture};
@@ -134,6 +138,8 @@ pub struct Variant {
     pub grid_errs: Option<u32>,
     /// P25 Phase 2 (and CQPSK generally): the receiver's settings.
     pub cqpsk: trunk_core::dsp::cqpsk::Options,
+    /// P25: hard-decision LC / ES / HDU / TDULC (no soft Hamming/Golay, no GMD RS).
+    pub hard_sig: bool,
 }
 
 /// A variant: its protocol's receiver (`base`) with `+`-joined changes.
@@ -145,6 +151,7 @@ fn variant(name: &str, kind: &str) -> Variant {
     let mut no_combining = false;
     let mut fsk2 = smartnet::Fsk2Options::default();
     let mut grid_errs = None;
+    let mut hard_sig = false;
     // Phase 2 voice's receiver as the engine runs it.
     let mut cq = trunk_core::dsp::cqpsk::Options { baud: trunk_core::p25::phase2::SYMBOL_RATE, df_beta: 0.5, ..Default::default() };
 
@@ -155,6 +162,7 @@ fn variant(name: &str, kind: &str) -> Variant {
             "cqpsk-only" => cqpsk_only = true,
             "nodetect" => detect = false,
             "nocombine" => no_combining = true,
+            "hardsig" => hard_sig = true,
             "coherent" => cq.coherent = true,
             "noamp" => cq.soft_amplitude = false,
             p if p.starts_with("df=") => cq.df_beta = p[3..].parse().unwrap_or(0.0),
@@ -169,7 +177,7 @@ fn variant(name: &str, kind: &str) -> Variant {
             }
         }
     }
-    Variant { name: name.into(), c4fm: o, c4fm_only, cqpsk_only, detect, no_combining, fsk2, grid_errs, cqpsk: cq }
+    Variant { name: name.into(), c4fm: o, c4fm_only, cqpsk_only, detect, no_combining, fsk2, grid_errs, cqpsk: cq, hard_sig }
 }
 
 /// What a decode of the channel got: each message's time (s) and content,
@@ -178,6 +186,8 @@ fn variant(name: &str, kind: &str) -> Variant {
 struct Count {
     blocks: Vec<(f64, String)>,
     voice: Vec<(f64, String)>,
+    /// P25 voice signalling: HDU, LDU1 LC, LDU2 ES, TDULC.
+    sig: Vec<(f64, String)>,
 }
 
 /// How many of `got` the clean run also has: same content, within 0.2 s.
@@ -246,11 +256,22 @@ fn run_p25(iq: &[Complex32], rate: f64, v: &Variant) -> Count {
     let mut bank = Bank::with_c4fm(rate, cfg, v.c4fm);
     let mut groups = Vec::new();
     let mut n = Count::default();
+    let soft = !v.hard_sig;
     for c in iq.chunks(4096) {
         groups.clear();
         bank.push(c, &mut groups);
         for g in &groups {
             let t = g[0].sample / rate;
+            // Signalling: from whichever receiver's copy decodes, as the tracker takes it.
+            let first = |duid: u8| g.iter().filter(move |f| f.nid.duid == duid);
+            let sig = match g[0].nid.duid {
+                HDU => first(HDU).find_map(|f| voice::decode_hdu(f, soft)).map(|h| format!("h{h:?}")),
+                LDU1 => first(LDU1).find_map(|f| voice::decode_ldu1_lc(f, soft)).map(|l| format!("l{}", hex(&l.raw))),
+                LDU2 => first(LDU2).find_map(|f| voice::decode_ldu2_es(f, soft)).map(|e| format!("e{e:?}")),
+                TDULC => first(TDULC).find_map(|f| voice::decode_tdulc(f, soft)).map(|l| format!("t{}", hex(&l.raw))),
+                _ => None,
+            };
+            n.sig.extend(sig.map(|c| (t, c)));
             if g[0].nid.duid == TSDU {
                 n.blocks.extend(best_tsbks(g).0.iter().map(|b| (t, hex(b))));
             } else if g.iter().any(|f| f.nid.duid == LDU1 || f.nid.duid == LDU2) {
@@ -351,26 +372,53 @@ pub fn run(a: &Args) {
     let s = signal_power(&iq, rate, &clean[0]);
     let mut head = format!("{:>6}", "SNR dB");
     for (v, c) in variants.iter().zip(&clean) {
-        let _ = write!(head, "  {:>22}", format!("{} ({}/{})", v.name, c.blocks.len(), c.voice.len()));
+        let _ = write!(head, "  {:>28}", match c.sig.len() {
+            0 => format!("{} ({}/{})", v.name, c.blocks.len(), c.voice.len()),
+            k => format!("{} ({}/{k}/{})", v.name, c.blocks.len(), c.voice.len()),
+        });
     }
-    println!("{} s of {kind} at {:.0} Hz; clean counts (blocks/voice) in the header", iq.len() as f64 / rate, a.num("freq", 0.0));
+    println!("{} s of {kind} at {:.0} Hz; clean counts (blocks/voice, P25 voice: blocks/signalling/voice) in the header; (n): blocks and signalling decoded that the clean run didn't get", iq.len() as f64 / rate, a.num("freq", 0.0));
     println!("{head}");
     let seeds: Vec<u64> = (0..a.num("trials", 1.0) as u64).map(|k| 0x9e37_79b9_7f4a_7c15 ^ k.wrapping_mul(0x1234_5678_9abc)).collect();
+    let kinds = a.get("kinds").is_some();
     for &snr in &snrs {
         let mut line = format!("{snr:>6.1}");
+        // `--kinds`: P25 voice signalling per word kind (variant, kind) → (clean, matched, wrong).
+        let mut by_kind: std::collections::BTreeMap<(String, &str), (u64, u64, u64)> = Default::default();
         let noisy: Vec<Vec<Complex32>> = seeds.iter().map(|&sd| add_noise(&iq, rate, s, snr, &taps, sd)).collect();
         for (v, c) in variants.iter().zip(&clean) {
-            let (mut b, mut vo) = (0u64, 0u64);
+            let (mut b, mut vo, mut sg, mut wrong) = (0u64, 0u64, 0u64, 0u64);
             for x in &noisy {
                 let n = run(x, v);
-                b += matched(&c.blocks, &n.blocks);
+                let mb = matched(&c.blocks, &n.blocks);
+                let ms = matched(&c.sig, &n.sig);
+                for (k, name) in [('h', "HDU"), ('l', "LC"), ('e', "ES"), ('t', "TDULC")] {
+                    let of = |l: &[(f64, String)]| l.iter().filter(|x| x.1.starts_with(k)).cloned().collect::<Vec<_>>();
+                    let (cl, nl) = (of(&c.sig), of(&n.sig));
+                    let m = matched(&cl, &nl);
+                    let e = by_kind.entry((v.name.clone(), name)).or_insert((0, 0, 0));
+                    *e = (e.0 + cl.len() as u64, e.1 + m, e.2 + nl.len() as u64 - m);
+                }
+                b += mb;
+                sg += ms;
+                wrong += (n.blocks.len() + n.sig.len()) as u64 - mb - ms;
                 vo += matched(&c.voice, &n.voice);
             }
             let t = seeds.len() as f64;
             let pct = |x: u64, of: usize| if of == 0 { "-".to_string() } else { format!("{:.1}", 100.0 * x as f64 / t / of as f64) };
-            let _ = write!(line, "  {:>22}", format!("{} / {}", pct(b, c.blocks.len()), pct(vo, c.voice.len())));
+            let _ = write!(line, "  {:>28}", match c.sig.len() {
+                0 => format!("{} / {} ({wrong})", pct(b, c.blocks.len()), pct(vo, c.voice.len())),
+                _ => format!("{} / {} / {} ({wrong})", pct(b, c.blocks.len()), pct(sg, c.sig.len()), pct(vo, c.voice.len())),
+            });
         }
         println!("{line}");
+        if kinds {
+            for ((v, k), (of, m, w)) in &by_kind {
+                if *of > 0 {
+                    println!("{:>6}  {v} {k}: {:.1} % ({w} wrong)", "", 100.0 * *m as f64 / *of as f64);
+                }
+            }
+        }
     }
 }
 
