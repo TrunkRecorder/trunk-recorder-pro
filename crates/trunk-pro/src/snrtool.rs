@@ -140,6 +140,8 @@ pub struct Variant {
     pub cqpsk: trunk_core::dsp::cqpsk::Options,
     /// P25: hard-decision LC / ES / HDU / TDULC (no soft Hamming/Golay, no GMD RS).
     pub hard_sig: bool,
+    /// P25: list Viterbi for TSBKs (`list=K`, `delta=` its metric limit).
+    pub list: (usize, f32),
 }
 
 /// A variant: its protocol's receiver (`base`) with `+`-joined changes.
@@ -152,6 +154,7 @@ fn variant(name: &str, kind: &str) -> Variant {
     let mut fsk2 = smartnet::Fsk2Options::default();
     let mut grid_errs = None;
     let mut hard_sig = false;
+    let mut list = (0, f32::INFINITY);
     // Phase 2 voice's receiver as the engine runs it.
     let mut cq = trunk_core::dsp::cqpsk::Options { baud: trunk_core::p25::phase2::SYMBOL_RATE, df_beta: 0.5, ..Default::default() };
 
@@ -163,6 +166,8 @@ fn variant(name: &str, kind: &str) -> Variant {
             "nodetect" => detect = false,
             "nocombine" => no_combining = true,
             "hardsig" => hard_sig = true,
+            p if p.starts_with("list=") => list.0 = p[5..].parse().unwrap_or(0),
+            p if p.starts_with("delta=") => list.1 = p[6..].parse().unwrap_or(f32::INFINITY),
             "coherent" => cq.coherent = true,
             "noamp" => cq.soft_amplitude = false,
             p if p.starts_with("df=") => cq.df_beta = p[3..].parse().unwrap_or(0.0),
@@ -177,7 +182,7 @@ fn variant(name: &str, kind: &str) -> Variant {
             }
         }
     }
-    Variant { name: name.into(), c4fm: o, c4fm_only, cqpsk_only, detect, no_combining, fsk2, grid_errs, cqpsk: cq, hard_sig }
+    Variant { name: name.into(), c4fm: o, c4fm_only, cqpsk_only, detect, no_combining, fsk2, grid_errs, cqpsk: cq, hard_sig, list }
 }
 
 /// What a decode of the channel got: each message's time (s) and content,
@@ -257,6 +262,8 @@ fn run_p25(iq: &[Complex32], rate: f64, v: &Variant) -> Count {
     let mut groups = Vec::new();
     let mut n = Count::default();
     let soft = !v.hard_sig;
+    trunk_core::p25::diversity::TSBK_LIST_K.store(v.list.0, std::sync::atomic::Ordering::Relaxed);
+    trunk_core::p25::diversity::TSBK_LIST_DELTA.store(v.list.1.to_bits(), std::sync::atomic::Ordering::Relaxed);
     for c in iq.chunks(4096) {
         groups.clear();
         bank.push(c, &mut groups);

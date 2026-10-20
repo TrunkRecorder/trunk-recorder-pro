@@ -13,7 +13,8 @@ use num_complex::Complex32;
 use super::frame::{blocks_dibits, frame_dibits, Frame, Framer, FramerOptions, HDU, LDU1, LDU2, PDU, TDU, TSDU};
 use super::mbt::{self, Pdu};
 use super::osp::{self, Osp};
-use super::tsbk::{tsbk_last, tsbk_ok, trellis_viterbi, Tsbk};
+use super::tsbk::{trellis_list, tsbk_last, tsbk_ok, trellis_viterbi, Tsbk};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering::Relaxed};
 use super::lc::LinkControl;
 use super::voice::{decode_hdu, decode_ldu1_lc, decode_ldu2_es, ldu_imbe, EncryptionSync, HduInfo, ImbeParams};
 use crate::dsp::c4fm::{C4fm, C4fmOptions, SYMBOL_RATE};
@@ -408,6 +409,10 @@ pub fn best_frame(g: &Group) -> &Frame {
 
 /// Every CRC-valid TSBK of the group's TSDUs, one per block position, up to
 /// the last-block flag; `missing` counts blocks no receiver decoded.
+/// RESEARCH: list Viterbi's list length (≤ 1: off) and its metric limit (f32 bits).
+pub static TSBK_LIST_K: AtomicUsize = AtomicUsize::new(0);
+pub static TSBK_LIST_DELTA: AtomicU32 = AtomicU32::new(0x7f80_0000);
+
 pub fn best_tsbks(g: &Group) -> (Vec<Tsbk>, usize) {
     let mut slot: [Option<Tsbk>; 3] = [None; 3];
     let mut max_blocks = 0;
@@ -423,6 +428,29 @@ pub fn best_tsbks(g: &Group) -> (Vec<Tsbk>, usize) {
             if tsbk_ok(&t) {
                 *s = Some(t);
             }
+        }
+    }
+    // RESEARCH: list Viterbi for the blocks no receiver's best path got.
+    let k = TSBK_LIST_K.load(Relaxed);
+    let delta = f32::from_bits(TSBK_LIST_DELTA.load(Relaxed));
+    if k > 1 {
+        for (b, s) in slot.iter_mut().enumerate().take(max_blocks) {
+            if s.is_some() {
+                continue;
+            }
+            let at = 112 + b * 196;
+            let mut cands: Vec<(f32, Tsbk)> = g
+                .iter()
+                .filter(|f| f.nid.duid == TSDU && f.bits.len() >= at + 196)
+                .flat_map(|f| {
+                    let l = trellis_list(&f.bits[at..at + 196], (!f.soft.is_empty()).then(|| &f.soft[at..at + 196]), k);
+                    let best = l[0].1;
+                    l.into_iter().skip(1).map(move |(t, m)| (m - best, t))
+                })
+                .filter(|c| c.0 <= delta)
+                .collect();
+            cands.sort_by(|a, b| a.0.total_cmp(&b.0));
+            *s = cands.into_iter().map(|c| c.1).find(tsbk_ok);
         }
     }
     let last = slot.iter().position(|s| s.is_some_and(|t| tsbk_last(&t))).map_or(3, |i| i + 1);
