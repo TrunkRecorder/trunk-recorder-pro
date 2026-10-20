@@ -5,6 +5,8 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+## [0.2.6] — 2026-10-20
+
 - **A tab woken from the background shows how things are now** (by taclane, #54), not minutes of
   calls and status replayed as if live: one that heard nothing from the recorder for 30 s (it
   hears from it every 2 s) reconnects, and the recorder closes a connection that stops reading
@@ -16,6 +18,10 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   shorter than the gap between a busy system's updates in hangtime, and split conversations into
   pieces with empty calls between them. `callTimeoutS` now means seconds after the last update
   came in; Trunk Recorder's once-a-second checks end calls up to 2 s later than its own setting.
+- **Numbers show as they should**: an SNR, an airtime or a gain no longer reads like
+  8.600000381469727 (in a frequency's tooltip on Overview and Decode, a USRP's or SoapySDR's gain
+  on RF, a talkgroup's or radio's airtime). A gain the survey finds is saved as 49.6, not
+  49.599998474121094.
 
 ## [0.2.5] — 2026-10-19
 
