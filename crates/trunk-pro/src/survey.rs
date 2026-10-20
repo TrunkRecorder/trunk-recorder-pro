@@ -23,10 +23,6 @@ use crate::sdr::{Control, SourceMsg};
 pub enum UserCmd {
     Listen(f64),
     Rescan,
-    /// Look up the licenses near (lat, lon) within the radius (m), at this API.
-    Identify { lat: f64, lon: f64, radius_m: f64, api_base: String },
-    /// The lookup's answer.
-    Licenses(Result<Value, String>),
 }
 
 pub struct SurveyRunner {
@@ -97,7 +93,6 @@ pub fn start(ctx: Arc<Ctx>, cfg: Config, req: Request) -> Result<SurveyRunner, S
     // The opening tune is confirmed by the first samples.
     let mut opened = fixed.is_some();
     let (cmd_tx, cmd_rx) = mpsc::channel::<UserCmd>();
-    let answers = cmd_tx.clone();
     let stop2 = stop.clone();
     threads.push(
         std::thread::Builder::new()
@@ -112,18 +107,6 @@ pub fn start(ctx: Arc<Ctx>, cfg: Config, req: Request) -> Result<SurveyRunner, S
                         match c {
                             UserCmd::Listen(f) => session.survey().listen(f),
                             UserCmd::Rescan => session.survey().rescan(),
-                            // The request on a thread of its own: the survey keeps listening.
-                            UserCmd::Identify { lat, lon, radius_m, api_base } => match session.identify(lat, lon, radius_m) {
-                                Ok(request) => {
-                                    let answers = answers.clone();
-                                    let _ = std::thread::Builder::new().name("survey-licenses".into()).spawn(move || {
-                                        let _ = answers.send(UserCmd::Licenses(crate::licenses::identify(&api_base, &request)));
-                                    });
-                                }
-                                Err(e) => session.licenses_failed(&e),
-                            },
-                            UserCmd::Licenses(Ok(answer)) => session.set_licenses(&answer),
-                            UserCmd::Licenses(Err(e)) => session.licenses_failed(&e),
                         }
                     }
                     apply(&mut session, &ctl, fixed);
@@ -256,14 +239,14 @@ pub fn cli(a: &crate::Args) {
     drop(rx);
     let _ = th.join();
     println!("{}", json!({ "monitor": last["monitor"], "suggest": last["suggest"], "message": last["message"], "wallS": t0.elapsed().as_secs_f64() }));
-    // --identify lat,lon[,km]: the FCC licenses near there on what was heard.
+    // --identify lat,lon[,km]: who is licensed near there on what was heard.
     if let Some(at) = a.get("identify") {
         let n: Vec<f64> = at.split(',').filter_map(|x| x.trim().parse().ok()).collect();
         if n.len() < 2 {
             crate::die("--identify takes lat,lon or lat,lon,km");
         }
         let api = a.get("api").unwrap_or("https://trunkrecorder.pro").trim_end_matches('/').to_string();
-        let answer = session.identify(n[0], n[1], n.get(2).copied().unwrap_or(50.0) * 1000.0).and_then(|req| crate::licenses::identify(&api, &req));
+        let answer = trunk_app::licenses::request(n[0], n[1], n.get(2).copied().unwrap_or(50.0) * 1000.0, &session.heard()).and_then(|req| crate::licenses::identify(&api, &req));
         match answer {
             Ok(v) => println!("{}", json!({ "licenses": v["results"] })),
             Err(e) => eprintln!("survey: {e}"),

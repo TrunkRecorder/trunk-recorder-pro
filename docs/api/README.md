@@ -471,8 +471,8 @@ Every message is a JSON object with a `type`. Exact fields are in
 | `radios` | On connecting; answers `findRadios` | `radios`: the optional USRP / Airspy / SoapySDR drivers and their devices |
 | `dir` | Answers `listDir` | a folder: `path`, `parent`, `dirs`, `files` (.json), `home`, `sep`, `error` |
 | `trConfig` | Answers `readTrConfig` | a Trunk Recorder config.json's `text`, the `files` it names, or `error` |
-| `survey` | The survey's progress | `stage` (`idle` / `scanning` / `monitoring` / `done`), candidates, the channel monitored, the suggested system, `licenses` (what `surveyIdentify` found: `stage` `idle` / `running` / `done` / `error`, `lat`, `lon`, `radiusM`, `error`, `results[]` of `{ freqHz, historical, licenses[] }`) |
-| `surveyReport` | Answers `surveyReport`, to its sender | `report`: the survey as a document (`v` 1: `app`, `time`, `location` rounded to 0.01° or null, `radiusM`, `bands`, `candidates`, `system`, `licenses`), or null with no survey |
+| `survey` | The survey's progress | `stage` (`idle` / `scanning` / `monitoring` / `done`), candidates, the channel monitored, the suggested system |
+| `licenseResult` | Answers `licenseQuery`, to its sender | `id`, `results[]` of `{ freqHz, historical, licenses[] }` (each license: `callSign`, `licensee`, `serviceCode`, `serviceDesc`, `freqHz`, `emission`, `distanceM`, `bearingDeg`, `bearingCardinal`, `city`, `state`, `status`, `locationKind`; `historical`: none active, so lapsed ones), or `error` |
 | `surveySpectrum` | While surveying | like `spectrum` |
 | `sourceProfile` | Answers `profileSource` | `source`, then `error`, or `centerHz`, `rateHz`, `spectrum` / `floor` (1024 points, dB, −rate/2 … +rate/2), `rows` (a waterfall), `referenceDb`, `lowHz` / `highHz` (how far in the floor is 3 dB down), `lowDropDb` / `highDropDb`, `suggestedGuardHz` |
 | `pluginRuntime` | A plugin's totals changed (control access) | `id`, `runtime` (state, counts, recent log; `metrics` — queue, upload time, endpoints — when the plugin reports them; restarts, events dropped, uptime; results per minute for the last hour) |
@@ -505,8 +505,7 @@ too.
 | `surveyStart` | `source`, `bands` (ids from `hello.surveyBands`), `findGain` | Scan for systems with radio `source` (not while recording). |
 | `surveyListen` | `freqHz` | Monitor this signal. |
 | `surveyRescan` / `surveyStop` | — | Scan again / end the survey. |
-| `surveyIdentify` | `lat`, `lon`, `radiusM` | Look up the FCC licenses within `radiusM` of the location for what the survey heard. The recorder sends the frequencies and the location to trunkrecorder.pro (`server.trpApi`); the answer comes in `survey`'s `licenses`. |
-| `surveyReport` | — | The survey as a document (→ `surveyReport`). |
+| `licenseQuery` | `id`, `lat`, `lon`, `radiusM`, `signals[]` of `{ freqHz, widthHz? }` | Who is licensed on these frequencies within `radiusM` (at most 150 km) of the location (→ `licenseResult`). The recorder sends the frequencies and the location to trunkrecorder.pro (`server.trpApi`); only when the user asks. |
 | `profileSource` | `source`, `centerHz` | Look at radio `source`'s band for a couple of seconds, tuned to `centerHz` (a capture keeps its own), and measure how it rolls off at the edges (→ `sourceProfile`; not while recording). |
 | `plugins` | — | List plugins again (→ `plugins`). |
 | `addPlugin` | `path` | Add a plugin executable of your own. |

@@ -104,26 +104,6 @@ pub struct SurveySession {
     last_ms: f64,
     last_spec_ms: f64,
     changed: bool,
-    licenses: Licenses,
-}
-
-/// At most this many frequencies in one license lookup (the API's limit).
-pub const IDENTIFY_MAX: usize = 64;
-
-/// What "Identify surveyed sites" found: the FCC licenses near the user for
-/// each frequency the survey heard. The platform makes the request (the
-/// trunkrecorder.pro API, `POST /api/v1/fcc/identify`) and hands the answer
-/// back; only ever when the user asked, with the location they gave.
-#[derive(Clone, Debug, Default)]
-struct Licenses {
-    /// "idle" | "running" | "done" | "error"
-    stage: &'static str,
-    lat: f64,
-    lon: f64,
-    radius_m: f64,
-    error: Option<String>,
-    /// The API's `results`: `[{ freqHz, historical, licenses: [...] }]`.
-    results: Vec<Value>,
 }
 
 impl SurveySession {
@@ -139,7 +119,6 @@ impl SurveySession {
             last_ms: f64::NEG_INFINITY,
             last_spec_ms: f64::NEG_INFINITY,
             changed: true,
-            licenses: Licenses { stage: "idle", ..Default::default() },
         })
     }
 
@@ -159,70 +138,19 @@ impl SurveySession {
         self.changed = true;
     }
 
-    /// The license lookup's request body for what the survey has heard near
-    /// (`lat`, `lon`): its signals (not the weak unknown ones) and the
-    /// monitored system's control channels, on the 6.25 kHz raster; an error
-    /// when there is nothing to look up. The lookup is running from now.
-    pub fn identify(&mut self, lat: f64, lon: f64, radius_m: f64) -> Result<Value, String> {
-        if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lon) {
-            return Err("That location isn't a latitude and longitude.".into());
-        }
-        let signals = self.identify_signals();
-        if signals.is_empty() {
-            return Err("Nothing found to identify yet.".into());
-        }
-        self.licenses = Licenses { stage: "running", lat, lon, radius_m, ..Default::default() };
-        self.changed = true;
-        let signals: Vec<Value> = signals.iter().map(|(f, w)| json!({ "freqHz": f, "widthHz": w })).collect();
-        Ok(json!({ "lat": lat, "lon": lon, "radiusM": radius_m, "signals": signals }))
-    }
-
-    /// The frequencies (Hz) and widths to look up.
-    fn identify_signals(&self) -> Vec<(f64, f64)> {
+    /// What to look licenses up for: the monitored system's control
+    /// channels first (the ones that name it), then the signals found, the
+    /// strongest first (not the weak unknown ones).
+    pub fn heard(&self) -> Vec<crate::licenses::Signal> {
         let s = &self.survey;
-        let raster = |f: f64| (f / 6250.0).round() * 6250.0;
-        let mut out: Vec<(f64, f64)> = Vec::new();
-        let mut add = |f: f64, w: f64| {
-            let f = raster(f);
-            if f > 0.0 && !out.iter().any(|&(g, _)| (g - f).abs() < 1.0) && out.len() < IDENTIFY_MAX {
-                out.push((f, w));
-            }
-        };
-        // The monitored system's own control channels first: the ones that name it.
+        let mut out: Vec<crate::licenses::Signal> = Vec::new();
         if let Some(m) = s.system() {
-            for f in m.advertised_hz.into_iter().chain(m.secondary.iter().copied()) {
-                add(f as f64, 12_500.0);
-            }
+            out.extend(m.advertised_hz.into_iter().chain(m.secondary.iter().copied()).map(|f| crate::licenses::Signal { freq_hz: f as f64, width_hz: None }));
         }
         let mut cands: Vec<_> = s.candidates().iter().filter(|c| c.kind != Kind::Other || c.snr_db >= 10.0).collect();
         cands.sort_by(|a, b| (a.kind == Kind::Other).cmp(&(b.kind == Kind::Other)).then(b.snr_db.total_cmp(&a.snr_db)));
-        for c in cands {
-            add(s.corrected(c.freq_hz).unwrap_or(c.freq_hz), c.width_hz.clamp(6_250.0, 25_000.0));
-        }
+        out.extend(cands.iter().map(|c| crate::licenses::Signal { freq_hz: s.corrected(c.freq_hz).unwrap_or(c.freq_hz), width_hz: Some(c.width_hz) }));
         out
-    }
-
-    /// The lookup's answer (the API's whole response).
-    pub fn set_licenses(&mut self, answer: &Value) {
-        self.licenses.results = answer["results"].as_array().cloned().unwrap_or_default();
-        self.licenses.stage = "done";
-        self.licenses.error = None;
-        self.changed = true;
-    }
-
-    /// The lookup failed: why, for the user.
-    pub fn licenses_failed(&mut self, error: &str) {
-        self.licenses.stage = "error";
-        self.licenses.error = Some(error.to_string());
-        self.changed = true;
-    }
-
-    fn licenses_json(&self) -> Value {
-        let l = &self.licenses;
-        if l.stage == "idle" {
-            return json!({ "stage": "idle" });
-        }
-        json!({ "stage": l.stage, "lat": l.lat, "lon": l.lon, "radiusM": l.radius_m, "error": l.error, "results": l.results })
     }
 
     /// A snapshot every 400 ms of wall clock (at once after a stage change),
@@ -292,7 +220,6 @@ impl SurveySession {
             "candidates": candidates,
             "monitor": monitor,
             "suggest": self.suggest(),
-            "licenses": self.licenses_json(),
         })
     }
 
@@ -325,47 +252,6 @@ impl SurveySession {
             "voiceChannels": voice,
         }))
     }
-}
-
-/// The survey as a document to keep or share: what was heard, what the
-/// monitored control channel announced, and the licenses found, from a
-/// `survey` snapshot. Versioned (`v`): it's what a survey shared with
-/// trunkrecorder.pro will be, for a collection of systems to import. The
-/// location is rounded to 0.01° (about 1 km); none unless the user gave one
-/// for the license lookup.
-pub fn report(snapshot: &Value, app_version: &str, time_ms: f64) -> Value {
-    let l = &snapshot["licenses"];
-    let round = |v: &Value| v.as_f64().map(|x| (x * 100.0).round() / 100.0);
-    let location = match (round(&l["lat"]), round(&l["lon"])) {
-        (Some(lat), Some(lon)) => json!({ "lat": lat, "lon": lon }),
-        _ => Value::Null,
-    };
-    // What each signal is, not how this receiver happened to hear it.
-    let keep = ["freqHz", "correctedHz", "band", "snrDb", "widthHz", "kind", "modulation", "identity", "dmr", "nxdn"];
-    let candidates: Vec<Value> = snapshot["candidates"]
-        .as_array()
-        .map(|a| a.iter().map(|c| keep.iter().filter_map(|&k| c.get(k).filter(|v| !v.is_null()).map(|v| (k.to_string(), v.clone()))).collect::<serde_json::Map<_, _>>().into()).collect())
-        .unwrap_or_default();
-    let m = &snapshot["monitor"];
-    let system = if m.is_null() {
-        Value::Null
-    } else {
-        json!({
-            "freqHz": m["advertisedHz"], "identity": m["identity"], "secondary": m["secondary"], "adjacent": m["adjacent"],
-            "voice": m["voice"], "modulation": m["modulation"], "type": snapshot["suggest"]["type"], "bandplan": snapshot["suggest"]["bandplan"],
-        })
-    };
-    json!({
-        "v": 1,
-        "app": { "name": "trunk-pro", "version": app_version },
-        "time": time_ms.round(),
-        "location": location,
-        "radiusM": l["radiusM"],
-        "bands": snapshot["bands"],
-        "candidates": candidates,
-        "system": system,
-        "licenses": l.get("results").cloned().unwrap_or_else(|| json!([])),
-    })
 }
 
 /// A learned SmartNet band plan in the config's terms (Trunk Recorder's names).
@@ -415,40 +301,6 @@ mod tests {
         for f in &voice[..5] {
             assert!((f - c).abs() <= usable_half_width(2_400_000.0, DEFAULT_GUARD_HZ), "{f} outside {c}");
         }
-    }
-
-    /// The license lookup: nothing heard is nothing to ask; its answer and
-    /// its error are in the snapshot; the report rounds the location and keeps
-    /// what each signal is.
-    #[test]
-    fn license_lookup_and_report() {
-        let cfg = Config::default();
-        let req = Request::from_json(&json!({ "source": 0 }));
-        let mut s = SurveySession::new(&cfg, &req).unwrap();
-        assert_eq!(s.snapshot()["licenses"], json!({ "stage": "idle" }));
-        assert!(s.identify(95.0, 0.0, 50_000.0).is_err());
-        assert!(s.identify(38.9, -77.03, 50_000.0).unwrap_err().contains("Nothing found"));
-        s.set_licenses(&json!({ "v": 1, "results": [{ "freqHz": 857987500, "historical": false, "licenses": [{ "callSign": "WPXT459" }] }] }));
-        let snap = s.snapshot();
-        assert_eq!(snap["licenses"]["stage"], "done");
-        assert_eq!(snap["licenses"]["results"][0]["licenses"][0]["callSign"], "WPXT459");
-        s.licenses_failed("no network");
-        assert_eq!(s.snapshot()["licenses"]["error"], "no network");
-
-        let snap = json!({
-            "bands": ["800"],
-            "candidates": [{ "freqHz": 857987000.0, "correctedHz": 857987500.0, "snrDb": 21.5, "kind": "control", "good": 9, "bad": 1, "frames": 10, "identity": { "nac": 1091 }, "dmr": null }],
-            "monitor": null,
-            "licenses": { "stage": "done", "lat": 38.90721, "lon": -77.03687, "radiusM": 50000.0, "results": [{ "freqHz": 857987500 }] },
-        });
-        let r = report(&snap, "1.2.3", 1_700_000_000_000.0);
-        assert_eq!(r["v"], 1);
-        assert_eq!(r["location"], json!({ "lat": 38.91, "lon": -77.04 }));
-        assert_eq!(r["candidates"][0], json!({ "freqHz": 857987000.0, "correctedHz": 857987500.0, "snrDb": 21.5, "kind": "control", "identity": { "nac": 1091 } }));
-        assert_eq!(r["licenses"][0]["freqHz"], 857987500);
-        assert!(r["system"].is_null());
-        // No location given: none in it.
-        assert!(report(&json!({ "licenses": { "stage": "idle" } }), "1.2.3", 0.0)["location"].is_null());
     }
 
     #[test]

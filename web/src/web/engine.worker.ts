@@ -165,28 +165,20 @@ async function surveyStart(req: { source: number; bands: string[]; findGain: boo
   }
 }
 
-/** "Identify surveyed sites": what the survey heard, and the location the
- *  user gave, to the trunkrecorder.pro API; its answer into the survey. */
-async function surveyIdentify(lat: number, lon: number, radiusM: number): Promise<void> {
-  const s = survey;
-  if (!s) return;
-  let body: string;
-  try {
-    body = s.identify(lat, lon, radiusM);
-  } catch (e) {
-    s.licenses_failed(e instanceof Error ? e.message : String(e));
-    return;
-  }
+/** Who is licensed on some frequencies near the location the user gave:
+ *  asked of the trunkrecorder.pro API (as the desktop app does). */
+async function licenseQuery(m: Extract<ToRecorder, { type: "licenseQuery" }>): Promise<void> {
   const base = (config?.server?.trpApi || "https://trunkrecorder.pro").replace(/\/+$/, "");
+  const answer = (results: unknown[], error: string | null) => post({ type: "licenseResult", id: m.id, results: results as never, error });
+  const body = JSON.stringify({ lat: m.lat, lon: m.lon, radiusM: m.radiusM, signals: m.signals.slice(0, 64) });
   try {
     const r = await fetch(`${base}/api/v1/fcc/identify`, { method: "POST", headers: { "content-type": "application/json" }, body });
-    const text = await r.text();
-    if (survey !== s) return;
-    if (r.ok) s.set_licenses(text);
-    else if (r.status === 429) s.licenses_failed("Too many license lookups for now: try again in a minute.");
-    else s.licenses_failed(`The license lookup failed: ${(() => { try { return JSON.parse(text).error; } catch { return `HTTP ${r.status}`; } })()}`);
+    const v = await r.json().catch(() => null);
+    if (r.ok && Array.isArray(v?.results)) answer(v.results, null);
+    else if (r.status === 429) answer([], "Too many license lookups for now: try again in a minute.");
+    else answer([], `The license lookup failed: ${v?.error ?? `HTTP ${r.status}`}`);
   } catch (e) {
-    if (survey === s) s.licenses_failed(`Couldn't reach ${base} to look up licenses (${e instanceof Error ? e.message : String(e)}). The survey works without it.`);
+    answer([], `Couldn't reach ${base} to look up licenses (${e instanceof Error ? e.message : String(e)}).`);
   }
 }
 
@@ -475,11 +467,8 @@ onmessage = async (ev: MessageEvent<ToWorker>) => {
     case "surveyRescan":
       survey?.rescan();
       break;
-    case "surveyIdentify":
-      await surveyIdentify(m.lat, m.lon, m.radiusM);
-      break;
-    case "surveyReport":
-      post({ type: "surveyReport", report: survey ? JSON.parse(survey.report(__APP_VERSION__, Date.now())) : null });
+    case "licenseQuery":
+      void licenseQuery(m);
       break;
     case "surveyStop":
       await surveyStop();

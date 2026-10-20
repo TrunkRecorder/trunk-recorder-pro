@@ -13,6 +13,9 @@ import {
   addNxdnSite,
   dismissError,
   findRadios,
+  identifySurvey,
+  licenseeName,
+  licensees,
   listDir,
   renameSystem,
   readTrConfig,
@@ -36,6 +39,7 @@ import { pluginCopies } from "./protocol.ts";
 import { normalizeTalkgroupCsv, parseRadioReferencePaste, parseTalkgroupCsv, talkgroupsToCsv, type Talkgroup } from "./talkgroups.ts";
 import { openTodos } from "./todo.ts";
 import { Waterfall } from "./Waterfall.tsx";
+import { savedWhere, takeWhere, WhereFields, WhyLocation, type Where } from "./Identify.tsx";
 
 // ── when to offer it ─────────────────────────────────────────────────────────
 
@@ -707,7 +711,7 @@ const isControl = (x: SurveyCandidate) => x.kind === "control" || x.kind === "sm
 const hex = (v: number | null | undefined) => (v == null ? "?" : v.toString(16).toUpperCase());
 const raster = (hz: number) => Math.round(hz / 6250) * 6250;
 
-function ScanStep(props: { s: AppState; c: Config; found: Found | null; onFound: (f: Found) => void; onBack: () => void; onNext: () => void }) {
+export function ScanStep(props: { s: AppState; c: Config; found: Found | null; onFound: (f: Found) => void; onBack: () => void; onNext: () => void }) {
   const { s, c, found } = props;
   const sv = s.survey;
   const radios = c.sources.map((x, i) => ({ x, i })).filter(({ x }) => x.type !== "file");
@@ -716,7 +720,22 @@ function ScanStep(props: { s: AppState; c: Config; found: Found | null; onFound:
   const [manual, setManual] = useState(false);
   const picked = bands ?? s.surveyBands.filter((b) => b.defaultOn).map((b) => b.id);
   const unsupported = !can("drivers") && ["usrp", "airspy", "soapy"].includes(c.sources[source]?.type ?? "");
-  const scan = () => startSurvey(source, picked, c.sources[source]?.type === "rtlsdr");
+  // Naming what it finds from FCC licenses: optional, with the location given here.
+  const [naming, setNaming] = useState(() => !!savedWhere().text);
+  const [where, setWhere] = useState<Where>(savedWhere);
+  const at = useRef<{ lat: number; lon: number; radiusM: number } | null>(null);
+  const scan = () => {
+    at.current = naming ? takeWhere(where) : null;
+    startSurvey(source, picked, c.sources[source]?.type === "rtlsdr");
+  };
+  // Once the sweep is over (and again when the system announces its control channels): who holds them.
+  const swept = sv.stage === "monitoring" || sv.stage === "done";
+  const announced = sv.stage !== "idle" && !!sv.suggest;
+  useEffect(() => {
+    if (swept && at.current) identifySurvey(at.current.lat, at.current.lon, at.current.radiusM);
+  }, [swept, announced]);
+  const lookup = s.surveyLicenses;
+  const licensedOn = (freqs: number[]) => (lookup?.stage === "done" ? licensees(lookup.results, freqs)[0] : undefined);
   // Re-scanning after adding one replaces it rather than adding a second.
   const target = found ? found.system : ("new" as const);
 
@@ -791,6 +810,21 @@ function ScanStep(props: { s: AppState; c: Config; found: Found | null; onFound:
             ))}
           </div>
         </div>
+        <div className="ob-more">
+          <h3 className="ob-more-title">Name what it finds (optional)</h3>
+          <label className="toggle">
+            <input type="checkbox" checked={naming} onChange={(e) => setNaming(e.target.checked)} />
+            <span>Look up who holds the FCC license for each system found</span>
+          </label>
+          {naming ? (
+            <div className="stack">
+              <WhyLocation what="the systems found" />
+              <WhereFields value={where} onChange={setWhere} />
+            </div>
+          ) : (
+            <p className="ob-aside">Leave this off to scan without sharing a location; the scan works the same.</p>
+          )}
+        </div>
         {unsupported && <div className="ob-note bad">This radio needs the desktop app to scan.</div>}
         <div className="ob-center-actions">
           <button className="ob-btn primary big" disabled={!s.connected || s.phase !== "idle" || unsupported || !picked.length || !s.surveyBands.length} onClick={scan}>
@@ -864,6 +898,16 @@ function ScanStep(props: { s: AppState; c: Config; found: Found | null; onFound:
               "Waiting…"
             )}
           </Check>
+          {at.current && (
+            <Check ok={lookup?.stage === "done" || lookup?.stage === "error"} title="Licensed to">
+              {(() => {
+                const top = licensedOn([m.advertisedHz ?? m.heardHz, ...m.secondary]);
+                if (top) return `${licenseeName(top.fccName)} · ${top.fccLicense}${top.lapsed ? " (lapsed)" : ""}`;
+                if (lookup?.stage === "error") return lookup.error;
+                return lookup?.stage === "done" ? "No FCC license found nearby" : "Looking it up…";
+              })()}
+            </Check>
+          )}
           <Check ok={m.ppm !== null} title="Radio tuning">
             {m.ppm !== null ? `Corrected by ${m.ppm > 0 ? "+" : ""}${m.ppm.toFixed(1)} ppm` : "Measuring…"}
           </Check>
@@ -932,6 +976,10 @@ function ScanStep(props: { s: AppState; c: Config; found: Found | null; onFound:
                   {x.dmr?.colorCode != null ? ` · colour code ${x.dmr.colorCode}` : ""}
                 </span>
               )}
+              {(() => {
+                const top = licensedOn([raster(x.correctedHz ?? x.freqHz)]);
+                return top && <span className="ob-card-sub">{`${licenseeName(top.fccName)} · ${top.fccLicense}`}</span>;
+              })()}
             </button>
           ))}
         </div>

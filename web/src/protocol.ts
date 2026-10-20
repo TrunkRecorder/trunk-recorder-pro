@@ -146,8 +146,10 @@ export interface System {
   shortName: string;
   /** What people call it ("County Public Safety"); the short name is its folder. */
   name?: string;
-  /** The call signs of its FCC licenses ("WQZZ123"), for reference; plugins are told them. */
-  fccCallSigns?: string[];
+  /** Who holds its FCC license, as the FCC has it ("DISTRICT OF COLUMBIA"), for reference; plugins are told it. */
+  fccName?: string;
+  /** Its FCC license's call sign ("WPXT459"), for reference; plugins are told it. */
+  fccLicense?: string;
   /** "smartnet": a Motorola SmartNet / SmartZone control channel (voice P25 or analog FM).
    *  "dmr": a trunked DMR site (Capacity Plus, Capacity Max, Connect Plus, Tier III); every
    *  control channel and `dmrChannelsHz` frequency is watched.
@@ -178,8 +180,9 @@ export interface Site {
   /** Its name, unique in its system (absent: the system's short name). The talkgroup file's
    *  Preferred Site names it; calls and plugins say it. */
   name?: string;
-  /** The call signs of this site's own FCC licenses (besides the system's); plugins are told them. */
-  fccCallSigns?: string[];
+  /** This site's own FCC licensee and license call sign, apart from the system's; plugins are told them. */
+  fccName?: string;
+  fccLicense?: string;
   enabled: boolean;
   controlChannelsHz: number[];
   modulation: "auto" | "fsk4" | "qpsk";
@@ -889,18 +892,12 @@ export interface SurveyLicense {
   locationKind: string | null;
 }
 
-/** "Identify surveyed sites": the licenses found for each frequency looked up. */
-export type SurveyLicenses =
-  | { stage: "idle" }
-  | {
-      stage: "running" | "done" | "error";
-      lat: number;
-      lon: number;
-      radiusM: number;
-      error: string | null;
-      /** `historical`: none active on it, so these are lapsed licenses. */
-      results: { freqHz: number; historical: boolean; licenses: SurveyLicense[] }[];
-    };
+/** The licenses found on one frequency looked up; `historical`: none active on it, so these have lapsed. */
+export interface LicenseResultRow {
+  freqHz: number;
+  historical: boolean;
+  licenses: SurveyLicense[];
+}
 
 export type SurveyState =
   | { stage: "idle" }
@@ -914,7 +911,6 @@ export type SurveyState =
       candidates: SurveyCandidate[];
       monitor: SurveyMonitor | null;
       suggest: SurveySuggestion | null;
-      licenses?: SurveyLicenses;
     };
 
 // ── plugins (desktop app) ─────────────────────────────────────────────────────
@@ -1440,8 +1436,8 @@ export type FromRecorder =
   | { type: "heard"; heard: Record<string, HeardCode[]> }
   | ({ type: "survey" } & SurveyState)
   | ({ type: "surveySpectrum" } & Spectrum)
-  /** Answers surveyReport: the survey as a document (null: no survey). */
-  | { type: "surveyReport"; report: unknown }
+  /** Answers licenseQuery: the licenses found on each frequency, or why there are none. */
+  | { type: "licenseResult"; id: number; results: LicenseResultRow[]; error: string | null }
   | ({ type: "sourceProfile" } & SourceProfile)
   | { type: "devices"; devices: Device[] }
   /** A folder on the recorder's computer (answers listDir). */
@@ -1503,10 +1499,8 @@ export type ToRecorder =
   | { type: "surveyListen"; freqHz: number }
   | { type: "surveyRescan" }
   | { type: "surveyStop" }
-  /** Look up the FCC licenses within `radiusM` of (lat, lon) for what the survey heard (sent to trunkrecorder.pro). */
-  | { type: "surveyIdentify"; lat: number; lon: number; radiusM: number }
-  /** The survey as a document; answered with surveyReport. */
-  | { type: "surveyReport" }
+  /** Who is licensed on these frequencies within `radiusM` of (lat, lon): sent to trunkrecorder.pro; answered with licenseResult. */
+  | { type: "licenseQuery"; id: number; lat: number; lon: number; radiusM: number; signals: { freqHz: number; widthHz?: number }[] }
   /** Look at source `source`'s band (tuned to `centerHz`; a capture keeps its own) for its roll-off; answered with sourceProfile. Not while recording. */
   | { type: "profileSource"; source: number; centerHz: number }
   | { type: "plugins" }

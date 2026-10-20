@@ -24,7 +24,8 @@ import {
   useApp,
   type SurveyTarget,
 } from "./controller.ts";
-import type { Config, SiteIdentity, SurveyCandidate, SurveyLicenses, SurveyMonitor, SurveySuggestion } from "./protocol.ts";
+import type { Config, SiteIdentity, SurveyCandidate, SurveyMonitor, SurveySuggestion } from "./protocol.ts";
+import type { LicenseLookup } from "./controller.ts";
 import { IdentifyBar, LicenseCell, licensesOn } from "./Identify.tsx";
 import { Waterfall } from "./Waterfall.tsx";
 
@@ -53,7 +54,7 @@ const isControl = (c: SurveyCandidate) => c.kind === "control" || c.kind === "sm
 /** The site key of a scanned control channel: its secondaries share it. */
 const siteKey = (id: SiteIdentity) => (id.sysId != null && id.site != null ? `${id.nac}/${id.sysId}/${id.rfss}/${id.site}` : null);
 
-function Candidates(props: { c: Config; list: SurveyCandidate[]; listening: number | null; onListen?: (hz: number) => void; licenses?: SurveyLicenses }) {
+function Candidates(props: { c: Config; list: SurveyCandidate[]; listening: number | null; onListen?: (hz: number) => void; licenses: LicenseLookup | null }) {
   // Add a scanned control channel as a system — with its site's other control channels found in the scan.
   const add = (cand: SurveyCandidate) => {
     const key = siteKey(cand.identity);
@@ -607,10 +608,10 @@ export function SurveyPanel(props: { c: Config }) {
                 Signals found ({sv.candidates.filter(isControl).length} control channel
                 {sv.candidates.filter(isControl).length === 1 ? "" : "s"})
               </summary>
-              <Candidates c={c} list={sv.candidates} listening={sv.monitor?.freqHz ?? null} onListen={surveyListen} licenses={sv.licenses} />
+              <Candidates c={c} list={sv.candidates} listening={sv.monitor?.freqHz ?? null} onListen={surveyListen} licenses={s.surveyLicenses} />
             </details>
           )}
-          <IdentifyBar licenses={sv.licenses} canIdentify={s.connected && sv.candidates.length > 0} />
+          <IdentifyBar licenses={s.surveyLicenses} canIdentify={s.connected && sv.candidates.length > 0} />
         </div>
       )}
     </section>

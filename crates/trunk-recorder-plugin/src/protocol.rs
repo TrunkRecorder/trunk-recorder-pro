@@ -170,10 +170,13 @@ pub struct SystemInfo {
     /// What people call it ("County Public Safety"); empty when the user gave no name.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub name: String,
-    /// The call signs of its FCC licenses ("WQZZ123"), as the user's config
-    /// has them: optional, so often empty.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub fcc_call_signs: Vec<String>,
+    /// Who holds its FCC license, as the FCC has it ("DISTRICT OF COLUMBIA"),
+    /// as the user's config has it: optional, so often empty.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub fcc_name: String,
+    /// Its FCC license's call sign ("WPXT459"): optional, so often empty.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub fcc_license: String,
     /// Its sites (trunked systems; none for conventional), by the name calls
     /// and unit events carry as `site`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -194,10 +197,12 @@ pub struct SystemInfo {
 pub struct SiteInfo {
     /// What calls and unit events carry as `site`.
     pub name: String,
-    /// The call signs of this site's own FCC licenses (besides the system's),
-    /// as the user's config has them: optional, so often empty.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub fcc_call_signs: Vec<String>,
+    /// This site's own FCC licensee and license call sign (apart from the
+    /// system's), as the user's config has them: optional, so often empty.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub fcc_name: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub fcc_license: String,
 }
 
 /// A call as it starts or ends.

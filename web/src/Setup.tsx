@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useId, useRef, useState } from "react";
+import { Fragment, useId, useRef, useState } from "react";
 import {
   activeSites,
   activeSystems,
@@ -9,7 +9,6 @@ import {
   SQUELCH_HANG_MAX_MS,
   SQUELCH_OPEN_MAX_MS,
   channelsToCsv,
-  callSigns,
   channelTalkgroups,
   defaultLog,
   enabledChannels,
@@ -71,6 +70,7 @@ import type { AirspyGainMode, Channel, Config, Conventional, Demod, Device, Hear
 import { DEFAULT_FORMAT, FilenameEditor } from "./FilenameEditor.tsx";
 import { GuardBand } from "./Rolloff.tsx";
 import { SurveyPanel } from "./Survey.tsx";
+import { IdentifyFcc } from "./Identify.tsx";
 import { addCard, Card, ExpandAll, Group, Section, setCardOpen, Switch } from "./SetupLayout.tsx";
 import { TalkgroupsField } from "./TalkgroupsField.tsx";
 import { DraftInput, Field, FileInput, NumberInput, Toggle } from "./inputs.tsx";
@@ -1789,6 +1789,7 @@ function SiteCard(props: { c: Config; i: number; k: number; onRemoveSystem: () =
       actions={
         <>
           <Switch label="Record" checked={site.enabled} onChange={(v) => edit((x) => void (x.enabled = v))} />
+          <IdentifyFcc sys={sys} system={i} site={k} />
           <button className="btn ghost small" onClick={remove}>
             Remove
           </button>
@@ -1808,8 +1809,11 @@ function SiteCard(props: { c: Config; i: number; k: number; onRemoveSystem: () =
             }
           />
         </Field>
-        <Field label="FCC call signs" hint="Optional: this site's own licenses, besides the system's">
-          <CallSignsInput value={site.fccCallSigns} onChange={(v) => edit((x) => { if (v.length) x.fccCallSigns = v; else delete x.fccCallSigns; })} />
+        <Field label="FCC name" hint="Optional: this site's own licensee, if not the system's">
+          <input value={site.fccName ?? ""} onChange={(e) => edit((x) => fcc(x, "fccName", e.target.value))} />
+        </Field>
+        <Field label="FCC license" hint="Optional: its call sign">
+          <input className="mono" value={site.fccLicense ?? ""} onChange={(e) => edit((x) => fcc(x, "fccLicense", e.target.value.toUpperCase()))} />
         </Field>
         {sys.type !== "dmr" && sys.type !== "nxdn" && (
           <Field label={sys.type === "smartnet" ? "P25 voice modulation" : "Modulation"}>
@@ -1956,6 +1960,7 @@ function SystemCard(props: { c: Config; i: number }) {
       actions={
         <>
           <Switch label="Record" checked={sys.enabled} onChange={(v) => edit((x) => void (x.enabled = v))} />
+          <IdentifyFcc sys={sys} system={i} site={null} />
           <button className="btn ghost small" onClick={() => remove()}>
             Remove
           </button>
@@ -1991,8 +1996,11 @@ function SystemCard(props: { c: Config; i: number }) {
         <Field label="Name">
           <input value={sys.name ?? ""} placeholder="County Public Safety" onChange={(e) => edit((x) => void (x.name = e.target.value))} />
         </Field>
-        <Field label="FCC call signs" hint="Optional: its licenses, for reference (plugins are told them)">
-          <CallSignsInput value={sys.fccCallSigns} placeholder="WQZZ123" onChange={(v) => edit((x) => { if (v.length) x.fccCallSigns = v; else delete x.fccCallSigns; })} />
+        <Field label="FCC name" hint="Optional: who holds its license, as the FCC has it (plugins are told it)">
+          <input value={sys.fccName ?? ""} placeholder="DISTRICT OF COLUMBIA" onChange={(e) => edit((x) => fcc(x, "fccName", e.target.value))} />
+        </Field>
+        <Field label="FCC license" hint="Optional: its call sign. Identify looks both up">
+          <input className="mono" value={sys.fccLicense ?? ""} placeholder="WPXT459" onChange={(e) => edit((x) => fcc(x, "fccLicense", e.target.value.toUpperCase()))} />
         </Field>
         <Field label="Type">
           <select
@@ -2704,22 +2712,8 @@ export function Setup() {
   );
 }
 
-/** FCC call signs, typed as a list ("WQZZ123, WPXT459"): taken when the field is left. */
-function CallSignsInput(props: { value: string[] | undefined; placeholder?: string; onChange: (v: string[]) => void }) {
-  const shown = (props.value ?? []).join(", ");
-  const [text, setText] = useState(shown);
-  useEffect(() => setText(shown), [shown]);
-  return (
-    <input
-      className="mono"
-      value={text}
-      placeholder={props.placeholder}
-      onChange={(e) => setText(e.target.value)}
-      onBlur={() => {
-        const v = callSigns(text);
-        setText(v.join(", "));
-        if (v.join() !== (props.value ?? []).join()) props.onChange(v);
-      }}
-    />
-  );
+/** Set an optional FCC field (left out when empty). */
+function fcc(x: { fccName?: string; fccLicense?: string }, key: "fccName" | "fccLicense", v: string): void {
+  if (v.trim()) x[key] = v;
+  else delete x[key];
 }

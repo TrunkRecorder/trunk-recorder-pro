@@ -267,25 +267,6 @@ impl WebSurvey {
     pub fn source_error(&mut self, error: &str) {
         self.s.source_error(error);
     }
-    /// The license lookup's request body (JSON) for what has been heard
-    /// near (`lat`, `lon`); the worker posts it to the trunkrecorder.pro API.
-    pub fn identify(&mut self, lat: f64, lon: f64, radius_m: f64) -> Result<String, JsError> {
-        self.s.identify(lat, lon, radius_m).map(|v| v.to_string()).map_err(|e| JsError::new(&e))
-    }
-    /// The API's answer (JSON).
-    pub fn set_licenses(&mut self, answer_json: &str) {
-        match serde_json::from_str::<serde_json::Value>(answer_json) {
-            Ok(v) if v["results"].is_array() => self.s.set_licenses(&v),
-            _ => self.s.licenses_failed("The license lookup answered with something other than licenses."),
-        }
-    }
-    pub fn licenses_failed(&mut self, error: &str) {
-        self.s.licenses_failed(error);
-    }
-    /// The survey as a document (JSON): [`trunk_app::survey::report`].
-    pub fn report(&self, app_version: &str, now_ms: f64) -> String {
-        trunk_app::survey::report(&self.s.snapshot(), app_version, now_ms).to_string()
-    }
     /// Messages since the last poll: [{t:"text", json}].
     pub fn poll(&mut self, now_ms: f64) -> Array {
         self.s.poll(now_ms, &mut self.out);

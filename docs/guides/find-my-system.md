@@ -253,9 +253,9 @@ You can still edit everything by hand afterwards on the **Systems** and **Radios
 
 ## Identify surveyed sites
 
-**Identify surveyed sites**, under the signals found, looks up who holds the FCC licenses on
-them. It's optional, and nothing is sent until you ask. FCC licenses are tied to where the
-transmitters are, so it needs your location:
+Who holds the FCC license on a frequency names the system on it. Looking it up is optional, and
+nothing is sent until you ask. FCC licenses are tied to where the transmitters are, so it needs
+your location:
 
 - **Use my location** asks the browser. If you've already allowed this page, it fills in at once.
   Browsers share a location only with pages on HTTPS or `localhost`, so for an interface opened
@@ -264,20 +264,28 @@ transmitters are, so it needs your location:
 - **Look for licenses within** sets how far: 10 to 150 km (50 by default). Wide-area systems can
   have towers 50 km or more away.
 
-The frequencies found and the location go to trunkrecorder.pro, which answers from the FCC's
-license database (Universal Licensing System) and keeps nothing. If you'd rather not share a
-location, choose **Not now**: no lookup is made, and the survey works exactly the same. This
-browser remembers the location and distance for next time.
+The frequencies and the location go to trunkrecorder.pro, which answers from the FCC's license
+database (Universal Licensing System) and keeps nothing. If you'd rather not share a location,
+leave it out: no lookup is made, and everything works exactly the same. This browser remembers the
+location and distance for next time.
 
-The **Licensed to** column then shows each signal's nearest licensee, with its call sign, radio
-service and how far away and in which direction it is, plus up to four more. *lapsed* means no
-active license is nearby on that frequency, so these are expired or cancelled ones. A system
-added from the survey is named after its licensee (if it has no name yet) and gets its call signs
-as `fccCallSigns`. You can edit both on the system's card. A site added to a system gets any call
-signs the system doesn't have. See [systems](../configuration/systems.md).
+There are three places to ask:
 
-**Download survey** saves what was found as a JSON file: the signals, what the monitored control
-channel announced, the licenses, and the location rounded to about 1 km.
+- **The setup guide**: when choosing bands, turn on **Look up who holds the FCC license for each
+  system found** and give the location. When the scan finds a system, the guide shows who it is
+  *Licensed to*.
+- **The survey** (Systems tab): **Identify surveyed sites**, under the signals found. The
+  **Licensed to** column then shows each signal's nearest licensee, its call sign, radio service and
+  how far away and in which direction, plus up to four more. *lapsed* means no active license is
+  nearby on that frequency, so these are expired or cancelled ones.
+- **A system or site already set up**: **Identify** on its card looks up its control, voice and
+  repeater frequencies and lists who is licensed on the most of them. **Use** keeps one as its
+  **FCC name** and **FCC license**.
+
+A system added from the survey gets the licensee of its control channel as its FCC name and
+license, and as its name if it has none. A site added to a system gets its own when it differs from
+the system's. You can edit them on the card; they are optional, and plugins are told them. See
+[systems](../configuration/systems.md).
 
 ## From the command line
 

@@ -100,16 +100,17 @@ const SITE_KEYS = [
 
 /** Every key of System this version knows (the rest are kept as they are: a newer version's, a hand edit's). */
 const SYSTEM_KEYS: (keyof System)[] = [
-  "shortName", "name", "fccCallSigns", "type", "nxdnType", "defaultMode", "enabled", "recording", "unitNames", "keys", "plugins", "pluginDelays", "sites",
+  "shortName", "name", "fccName", "fccLicense", "type", "nxdnType", "defaultMode", "enabled", "recording", "unitNames", "keys", "plugins", "pluginDelays", "sites",
 ];
 
 /** Every key of Site this version knows. */
-const SITE_FIELDS: readonly string[] = ["name", "fccCallSigns", "enabled", ...SITE_KEYS];
+const SITE_FIELDS: readonly string[] = ["name", "fccName", "fccLicense", "enabled", ...SITE_KEYS];
 
-/** FCC call signs as the config keeps them: upper case, each once ("wqzz123, WQZZ123" → ["WQZZ123"]). */
-export function callSigns(x: unknown): string[] {
-  const list = Array.isArray(x) ? x : typeof x === "string" ? x.split(/[\s,;]+/) : [];
-  return [...new Set(list.filter((v): v is string => typeof v === "string").map((v) => v.trim().toUpperCase()).filter(Boolean))];
+/** The optional FCC name and license, as the config keeps them (absent when empty; a call sign upper case). */
+function fccFields(x: { fccName?: unknown; fccLicense?: unknown }): { fccName?: string; fccLicense?: string } {
+  const name = typeof x.fccName === "string" ? x.fccName.trim() : "";
+  const license = typeof x.fccLicense === "string" ? x.fccLicense.trim().toUpperCase() : "";
+  return { ...(name ? { fccName: name } : {}), ...(license ? { fccLicense: license } : {}) };
 }
 
 /**
@@ -132,7 +133,7 @@ export function normalizeSite(x: Partial<Site>, sys: Pick<System, "type">): Site
   return {
     ...unknownKeys(x, SITE_FIELDS),
     ...(x.name?.trim() ? { name: x.name } : {}),
-    ...(callSigns(x.fccCallSigns).length ? { fccCallSigns: callSigns(x.fccCallSigns) } : {}),
+    ...fccFields(x),
     enabled: x.enabled ?? true,
     controlChannelsHz: Array.isArray(x.controlChannelsHz) ? x.controlChannelsHz : [],
     modulation: x.modulation ?? "auto",
@@ -179,7 +180,7 @@ export function normalizeSystem(x: SystemInput): System {
     ...unknownKeys(x, [...SYSTEM_KEYS, ...SITE_KEYS]),
     shortName: x.shortName ?? "sys1",
     ...(x.name?.trim() ? { name: x.name } : {}),
-    ...(callSigns(x.fccCallSigns).length ? { fccCallSigns: callSigns(x.fccCallSigns) } : {}),
+    ...fccFields(x),
     type,
     ...(type === "nxdn" && x.nxdnType === "typeD" ? { nxdnType: "typeD" as const } : {}),
     ...(type === "smartnet" && x.defaultMode === "analog" ? { defaultMode: "analog" as const } : {}),

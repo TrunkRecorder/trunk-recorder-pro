@@ -280,10 +280,13 @@ pub struct System {
     /// What people call it ("County Public Safety"); the short name is its folder.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub name: String,
-    /// The call signs of its FCC licenses ("WQZZ123"): the user's, or what the
-    /// survey's license lookup found. Only for reference: plugins are told them.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub fcc_call_signs: Vec<String>,
+    /// Who holds its FCC license, as the FCC has it ("DISTRICT OF COLUMBIA"),
+    /// and the license's call sign ("WPXT459"): optional, for reference —
+    /// the user's, or what a license lookup found. Plugins are told them.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub fcc_name: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub fcc_license: String,
     #[serde(rename = "type")]
     pub kind: SystemKind,
     pub enabled: bool,
@@ -328,10 +331,12 @@ pub struct Site {
     /// talkgroup file's Preferred Site names it; calls and plugins say it.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub name: String,
-    /// The call signs of this site's FCC licenses, when they differ from (or
-    /// add to) the system's. Only for reference: plugins are told them.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub fcc_call_signs: Vec<String>,
+    /// This site's own FCC licensee and license call sign, when it has one
+    /// apart from the system's: optional, for reference. Plugins are told them.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub fcc_name: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub fcc_license: String,
     pub enabled: bool,
     pub control_channels_hz: Vec<f64>,
     pub modulation: Modulation,
@@ -627,7 +632,8 @@ impl Default for System {
             keys: String::new(),
             short_name: "sys1".into(),
             name: String::new(),
-            fcc_call_signs: vec![],
+            fcc_name: String::new(),
+            fcc_license: String::new(),
             kind: SystemKind::P25,
             enabled: true,
             unit_names: UnitNames::default(),
@@ -645,7 +651,8 @@ impl Default for Site {
     fn default() -> Self {
         Site {
             name: String::new(),
-            fcc_call_signs: vec![],
+            fcc_name: String::new(),
+            fcc_license: String::new(),
             enabled: true,
             control_channels_hz: vec![],
             modulation: Modulation::Auto,
@@ -2241,19 +2248,21 @@ const RTL_BUSY_COUNT: usize = 4;
 mod tests {
     use super::*;
 
-    /// FCC call signs are optional: read where given (a system's, a site's), and not written when there are none.
+    /// The FCC name and license are optional: read where given (a system's, a site's), and not written when empty.
     #[test]
-    fn fcc_call_signs_are_optional() {
+    fn fcc_name_and_license_are_optional() {
         let sys: System = serde_json::from_value(serde_json::json!({
-            "shortName": "dcfd", "fccCallSigns": ["WPXT459"], "sites": [{ "controlChannelsHz": [857987500], "fccCallSigns": ["KNJU834"] }, { "controlChannelsHz": [858987500] }]
+            "shortName": "dcfd", "fccName": "DISTRICT OF COLUMBIA", "fccLicense": "WPXT459",
+            "sites": [{ "controlChannelsHz": [857987500], "fccLicense": "KNJU834" }, { "controlChannelsHz": [858987500] }]
         }))
         .unwrap();
-        assert_eq!(sys.fcc_call_signs, ["WPXT459"]);
-        assert_eq!(sys.sites[0].fcc_call_signs, ["KNJU834"]);
+        assert_eq!((sys.fcc_name.as_str(), sys.fcc_license.as_str()), ("DISTRICT OF COLUMBIA", "WPXT459"));
+        assert_eq!(sys.sites[0].fcc_license, "KNJU834");
         let v = serde_json::to_value(&sys).unwrap();
-        assert_eq!(v["fccCallSigns"], serde_json::json!(["WPXT459"]));
-        assert!(v["sites"][1].get("fccCallSigns").is_none() && !sys.other.contains_key("fccCallSigns"));
-        assert!(serde_json::to_value(System::default()).unwrap().get("fccCallSigns").is_none());
+        assert_eq!(v["fccLicense"], "WPXT459");
+        assert!(v["sites"][1].get("fccLicense").is_none() && v["sites"][0].get("fccName").is_none() && !sys.other.contains_key("fccName"));
+        let none = serde_json::to_value(System::default()).unwrap();
+        assert!(none.get("fccName").is_none() && none.get("fccLicense").is_none());
     }
 
     /// A system's `keys` that named a file (before key sources) becomes a source named after the file;

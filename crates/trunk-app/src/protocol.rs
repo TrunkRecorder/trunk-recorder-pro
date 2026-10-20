@@ -82,8 +82,8 @@ pub enum ToClient {
     Heard { heard: Value },
     Survey(Body),
     SurveySpectrum { source: usize, center_hz: f64, rate_hz: f64, bins: Vec<f32> },
-    /// Answers `surveyReport` (null: no survey running).
-    SurveyReport { report: Value },
+    /// Answers `licenseQuery`, to its sender: the API's `results`, or why there are none.
+    LicenseResult { id: u64, results: Vec<Value>, error: Option<String> },
     SourceProfile(Body),
     Devices { devices: Value },
     Dir(Body),
@@ -237,12 +237,9 @@ pub enum Command {
     SurveyListen { freq_hz: f64 },
     SurveyRescan,
     SurveyStop,
-    /// "Identify surveyed sites": look up the FCC licenses within `radius_m`
-    /// of the location the user gave for what the survey heard (sent to
-    /// trunkrecorder.pro; the answer comes in the `survey` snapshot's `licenses`).
-    SurveyIdentify { lat: f64, lon: f64, radius_m: f64 },
-    /// The survey as a document ([`crate::survey::report`]): answered with `surveyReport`.
-    SurveyReport,
+    /// Who is licensed on `signals` within `radius_m` of the location the
+    /// user gave (sent to trunkrecorder.pro): answered with `licenseResult`.
+    LicenseQuery { id: u64, lat: f64, lon: f64, radius_m: f64, signals: Vec<crate::licenses::Signal> },
     ProfileSource(Body),
     Plugins,
     AddPlugin { path: String },

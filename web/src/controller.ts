@@ -41,6 +41,7 @@ import type {
   SurveyBand,
   Capability,
   SurveyState,
+  LicenseResultRow,
   SurveySuggestion,
   Site,
   System,
@@ -48,7 +49,6 @@ import type {
 import {
   type ImportTodo,
   activeSites,
-  callSigns,
   newConventional,
   newSiteName,
   newSystem,
@@ -110,6 +110,8 @@ export interface AppState {
   /** What the recorder can do beyond recording (hello): see [`can`]. */
   capabilities: Capability[];
   surveySpectrum: Spectrum | null;
+  /** The licenses looked up for the survey's signals ("Identify surveyed sites"); null: none asked for since it started. */
+  surveyLicenses: LicenseLookup | null;
   /** A source's roll-off as last measured (Setup), and the source being measured now (null: none). */
   profile: SourceProfile | null;
   profiling: number | null;
@@ -197,6 +199,7 @@ let state: AppState = {
   surveyBands: [],
   capabilities: [],
   surveySpectrum: null,
+  surveyLicenses: null,
   profile: null,
   profiling: null,
   plugins: null,
@@ -377,8 +380,9 @@ function take(m: FromRecorder): void {
     case "surveySpectrum":
       set({ surveySpectrum: m });
       break;
-    case "surveyReport":
-      saveSurveyReport(m.report);
+    case "licenseResult":
+      licenseWaiting.get(m.id)?.({ results: m.results, error: m.error });
+      licenseWaiting.delete(m.id);
       break;
     case "sourceProfile": {
       const { type: _, ...profile } = m;
@@ -1021,7 +1025,7 @@ export function listDir(path: string): void {
 
 export function startSurvey(source: number, bands: string[], findGain: boolean): void {
   flushConfig();
-  set({ error: null, surveySpectrum: null });
+  set({ error: null, surveySpectrum: null, surveyLicenses: null });
   transport.send({ type: "surveyStart", source, bands, findGain });
 }
 /** Measure source `source`'s roll-off, tuned to `centerHz` (a capture keeps its own); the answer lands in `profile`. */
@@ -1039,59 +1043,133 @@ export function surveyRescan(): void {
 export function stopSurvey(): void {
   transport.send({ type: "surveyStop" });
 }
-/** "Identify surveyed sites": the FCC licenses within `radiusM` of (lat, lon) for what the survey heard (sent to trunkrecorder.pro). */
-export function surveyIdentify(lat: number, lon: number, radiusM: number): void {
-  transport.send({ type: "surveyIdentify", lat, lon, radiusM });
-}
-/** Save the survey as a JSON document (what sharing a survey will send). */
-export function downloadSurvey(): void {
-  surveyReportWanted = true;
-  transport.send({ type: "surveyReport" });
-}
-let surveyReportWanted = false;
+// ── FCC license lookups ──────────────────────────────────────────────────────
 
-function saveSurveyReport(report: unknown): void {
-  if (!surveyReportWanted || !report) return;
-  surveyReportWanted = false;
-  const url = URL.createObjectURL(new Blob([JSON.stringify(report, null, 2)], { type: "application/json" }));
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `survey-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-")}.json`;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+/** A license lookup as it goes: where it was asked for, and what came back. */
+export interface LicenseLookup {
+  stage: "running" | "done" | "error";
+  lat: number;
+  lon: number;
+  radiusM: number;
+  results: LicenseResultRow[];
+  error: string | null;
+}
+/** A frequency to look up, and how wide its signal is. */
+export type LicenseSignal = { freqHz: number; widthHz?: number };
+
+let licenseIds = 0;
+const licenseWaiting = new Map<number, (r: { results: LicenseResultRow[]; error: string | null }) => void>();
+
+/** Who is licensed on `signals` within `radiusM` of (lat, lon): asked of trunkrecorder.pro, by the recorder. */
+export function lookupLicenses(lat: number, lon: number, radiusM: number, signals: LicenseSignal[]): Promise<{ results: LicenseResultRow[]; error: string | null }> {
+  const id = ++licenseIds;
+  return new Promise((resolve) => {
+    licenseWaiting.set(id, resolve);
+    // No answer (the recorder went away): say so rather than wait for ever.
+    setTimeout(() => licenseWaiting.get(id)?.({ results: [], error: "No answer from the license lookup." }), 30_000);
+    transport.send({ type: "licenseQuery", id, lat, lon, radiusM, signals });
+  });
+}
+
+/** What the survey heard, to look licenses up for: the monitored system's control channels first, then the signals found, strongest first (not the weak unknown ones). */
+export function surveySignals(sv: SurveyState): LicenseSignal[] {
+  if (sv.stage === "idle") return [];
+  const ccs = sv.monitor ? [sv.monitor.advertisedHz, ...sv.monitor.secondary].filter((f): f is number => !!f).map((freqHz) => ({ freqHz })) : [];
+  const found = sv.candidates
+    .filter((x) => x.kind !== "other" || x.snrDb >= 10)
+    .sort((a, b) => Number(a.kind === "other") - Number(b.kind === "other") || b.snrDb - a.snrDb)
+    .map((x) => ({ freqHz: x.correctedHz ?? x.freqHz, widthHz: Math.min(25_000, Math.max(6_250, x.widthHz)) }));
+  const out: LicenseSignal[] = [];
+  for (const x of [...ccs, ...found]) {
+    const f = Math.round(x.freqHz / 6250) * 6250;
+    if (out.length < 64 && !out.some((y) => y.freqHz === f)) out.push({ ...x, freqHz: f });
+  }
+  return out;
+}
+
+/** "Identify surveyed sites": look up the survey's signals near (lat, lon); the answer lands in `surveyLicenses`. */
+export function identifySurvey(lat: number, lon: number, radiusM: number): void {
+  const signals = surveySignals(state.survey);
+  if (!signals.length) return;
+  const asked: LicenseLookup = { stage: "running", lat, lon, radiusM, results: [], error: null };
+  set({ surveyLicenses: asked });
+  void lookupLicenses(lat, lon, radiusM, signals).then((r) => {
+    if (state.surveyLicenses === asked) set({ surveyLicenses: { ...asked, stage: r.error ? "error" : "done", ...r } });
+  });
 }
 
 /** "DISTRICT OF COLUMBIA" → "District of Columbia". */
-function licenseeName(s: string): string {
+export function licenseeName(s: string): string {
   const small = new Set(["of", "the", "and", "for", "in", "on", "at"]);
   return s.toLowerCase().replace(/[a-z][a-z'.&-]*/g, (w, i: number) => (i > 0 && small.has(w) ? w : w[0].toUpperCase() + w.slice(1)));
 }
 
-/** Who "Identify surveyed sites" found licensed on any of these frequencies: the nearest licensee (active ones first) and its call signs there. */
-export function licensedOn(freqs: number[]): { licensee: string; callSigns: string[] } | null {
-  const l = state.survey?.stage !== "idle" ? state.survey?.licenses : undefined;
-  if (!l || l.stage === "idle") return null;
-  const hits = l.results
-    .filter((r) => freqs.some((f) => Math.abs(r.freqHz - f) <= 3125))
-    .flatMap((r) => r.licenses.map((x) => ({ ...x, historical: r.historical })))
-    .filter((x) => x.licensee)
-    .sort((a, b) => Number(a.historical) - Number(b.historical) || (a.distanceM ?? Infinity) - (b.distanceM ?? Infinity));
-  const top = hits[0]?.licensee;
-  if (!top) return null;
-  return { licensee: licenseeName(top), callSigns: callSigns(hits.filter((x) => x.licensee === top).map((x) => x.callSign)) };
+/** A licensee found on some frequencies: how many of them, its call sign there, and how near. */
+export interface Licensee {
+  fccName: string;
+  fccLicense: string;
+  /** How many of the frequencies looked up it is licensed on. */
+  frequencies: number;
+  distanceM: number | null;
+  bearingCardinal: string | null;
+  service: string | null;
+  /** None of its licenses there is active. */
+  lapsed: boolean;
 }
 
-/** What the license lookup found, into a system just made from the survey (its name, if it has none, and call signs) or a site added to one (call signs the system doesn't have). */
-function withLicenses(sys: System, site: Site, isNew: boolean): void {
-  const found = licensedOn(site.controlChannelsHz);
-  if (!found) return;
-  if (isNew) {
-    if (!sys.name) sys.name = found.licensee;
-    if (found.callSigns.length) sys.fccCallSigns = callSigns([...(sys.fccCallSigns ?? []), ...found.callSigns]);
-    return;
+/** Who is licensed on `freqs` (within half a 6.25 kHz channel), by license: the most frequencies first, then the nearest (active before lapsed). */
+export function licensees(results: LicenseResultRow[], freqs: number[]): Licensee[] {
+  const by = new Map<string, Licensee & { seen: Set<number> }>();
+  for (const r of results) {
+    if (!freqs.some((f) => Math.abs(r.freqHz - f) <= 3125)) continue;
+    for (const x of r.licenses) {
+      if (!x.licensee || !x.callSign) continue;
+      const k = `${x.licensee}|${x.callSign}`;
+      const had = by.get(k);
+      const near = (x.distanceM ?? Infinity) < (had?.distanceM ?? Infinity);
+      const e = had ?? { fccName: x.licensee, fccLicense: x.callSign, frequencies: 0, distanceM: x.distanceM, bearingCardinal: x.bearingCardinal, service: x.serviceDesc, lapsed: r.historical, seen: new Set<number>() };
+      if (near) Object.assign(e, { distanceM: x.distanceM, bearingCardinal: x.bearingCardinal });
+      e.lapsed &&= r.historical;
+      e.seen.add(r.freqHz);
+      e.frequencies = e.seen.size;
+      by.set(k, e);
+    }
   }
-  const extra = found.callSigns.filter((x) => !(sys.fccCallSigns ?? []).includes(x));
-  if (extra.length) site.fccCallSigns = callSigns([...(site.fccCallSigns ?? []), ...extra]);
+  return [...by.values()]
+    .map(({ seen: _, ...e }) => e)
+    .sort((a, b) => b.frequencies - a.frequencies || Number(a.lapsed) - Number(b.lapsed) || (a.distanceM ?? Infinity) - (b.distanceM ?? Infinity));
+}
+
+/** What the survey's license lookup found, into a system just made from it (its FCC name and license, and its name if it has none) or a site added to one (its own, when not the system's). */
+function withLicenses(sys: System, site: Site, isNew: boolean): void {
+  const l = state.surveyLicenses;
+  const top = l?.stage === "done" ? licensees(l.results, site.controlChannelsHz)[0] : undefined;
+  if (!top) return;
+  if (isNew) {
+    if (!sys.name) sys.name = licenseeName(top.fccName);
+    if (!sys.fccName && !sys.fccLicense) Object.assign(sys, { fccName: top.fccName, fccLicense: top.fccLicense });
+  } else if (top.fccLicense !== sys.fccLicense && !site.fccLicense) {
+    Object.assign(site, { fccName: top.fccName, fccLicense: top.fccLicense });
+  }
+}
+
+/** The frequencies of a site (or every site of a system) worth looking licenses up for: control, voice and repeater channels. */
+export function siteFrequencies(sites: Site[]): LicenseSignal[] {
+  const all = sites.flatMap((x) => [...x.controlChannelsHz, ...x.voiceChannelsHz, ...(x.dmrChannelsHz ?? []), ...(x.nxdnChannelsHz ?? []), ...Object.values(x.lcnTableHz ?? {})]);
+  return [...new Set(all.filter((f) => f > 0).map((f) => Math.round(f / 6250) * 6250))].slice(0, 64).map((freqHz) => ({ freqHz }));
+}
+
+/** Set a system's (or one of its sites') FCC name and license; empty ones are removed. */
+export function setFcc(system: number, site: number | null, fccName: string, fccLicense: string): void {
+  updateConfig((c) => {
+    const sys = c.systems[system];
+    const t: System | Site | undefined = site === null ? sys : sys?.sites[site];
+    if (!t) return;
+    if (fccName.trim()) t.fccName = fccName.trim();
+    else delete t.fccName;
+    if (fccLicense.trim()) t.fccLicense = fccLicense.trim().toUpperCase();
+    else delete t.fccLicense;
+  });
 }
 
 /** What applying a survey result did to source `i`. */
