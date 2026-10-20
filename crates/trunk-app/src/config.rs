@@ -25,7 +25,7 @@ pub enum Source {
         center_hz: f64,
         rate_hz: f64,
         #[serde(default = "rtl_gain")]
-        gain_db: f32,
+        gain_db: f64,
         #[serde(default)]
         agc: bool,
         ppm: i32,
@@ -166,7 +166,7 @@ choice! {
 fn guard_default() -> f64 {
     DEFAULT_GUARD_HZ
 }
-fn rtl_gain() -> f32 {
+fn rtl_gain() -> f64 {
     RTL_DEFAULT_GAIN_DB
 }
 fn airspy_gain() -> u8 {
@@ -1405,7 +1405,7 @@ choice! {
 /// strong transmitters without clipping the ADC: on an 858 MHz simulcast
 /// system 38.6 dB gave ~3x the FEC errors (and 5 % repeated voice frames)
 /// that 23–28 dB did.
-pub const RTL_DEFAULT_GAIN_DB: f32 = 25.4;
+pub const RTL_DEFAULT_GAIN_DB: f64 = 25.4;
 
 /// A system calls can come from ([`Config::call_systems`]).
 #[derive(Clone, Copy, Debug)]

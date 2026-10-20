@@ -183,7 +183,7 @@ function SystemCard({ s, x, usuals, summary, freqs }: { s: AppState; x: DashSyst
             v={freqs.map((f) => f.badPct)}
             ramp="hot"
             max={BAD_MAX}
-            titles={freqs.map((f) => `${mhz(f.freqHz)} MHz · ${f.calls} calls · ${f.badPct ?? "—"}% of voice frames lost${f.snr !== null ? ` · SNR ${f.snr} dB` : ""}`)}
+            titles={freqs.map((f) => `${mhz(f.freqHz)} MHz · ${f.calls} calls · ${f.badPct ?? "—"}% of voice frames lost${f.snr !== null ? ` · SNR ${num(f.snr)} dB` : ""}`)}
             onCell={() => setView("decode", x.name)}
             label="decode quality by frequency"
           />
