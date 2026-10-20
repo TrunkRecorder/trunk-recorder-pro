@@ -2,7 +2,8 @@
 //! a path under the recordings folder made of `{token}`s, with `/` making
 //! folders; `-call_<call number>` is added to the name, as Trunk Recorder does.
 //!
-//! Tokens: `{talkgroup}`, `{talkgroup_tag}` (the tag, "Fire Dispatch"),
+//! Tokens: `{talkgroup}`, `{talkgroup_ota}` (a conventional digital call's
+//! talkgroup as the air named it; empty for others), `{talkgroup_tag}` (the tag, "Fire Dispatch"),
 //! `{talkgroup_alpha_tag}`, `{talkgroup_description}`, `{talkgroup_group}`,
 //! `{talkgroup_display}`, `{short_name}`, `{freq}` (Hz), `{freq_mhz}`,
 //! `{call_num}`, `{tdma_slot}` (empty when it has none), `{sys_num}`,
@@ -63,6 +64,7 @@ pub fn problem(format: &str) -> Option<String> {
 
 const TOKENS: &[&str] = &[
     "talkgroup",
+    "talkgroup_ota",
     "talkgroup_tag",
     "talkgroup_alpha_tag",
     "talkgroup_description",
@@ -100,6 +102,7 @@ fn token(t: &str, r: &Value, sys_num: u16, utc_offset_s: i32) -> String {
     }
     match t {
         "talkgroup" | "talkgroup_display" => num("talkgroup"),
+        "talkgroup_ota" => r["talkgroup_ota"].as_u64().map_or(String::new(), |t| t.to_string()),
         // Trunk Recorder's JSON names the alpha tag talkgroup_tag, and the tag talkgroup_group_tag.
         "talkgroup_tag" => text("talkgroup_group_tag"),
         "talkgroup_alpha_tag" => text("talkgroup_tag"),
@@ -293,6 +296,14 @@ mod tests {
         let c = json!({ "call_num": 1, "short_name": "dcfd", "site": "south" });
         assert_eq!(render("{short_name}/{site}", &c, 0, 0), "dcfd/south-call_1");
         assert_eq!(render("{short_name}/{site}", &json!({ "call_num": 2, "short_name": "fire" }), 0, 0), "fire-call_2", "a conventional call has none: no folder");
+    }
+
+    #[test]
+    fn a_calls_air_talkgroup() {
+        let c = json!({ "call_num": 3, "talkgroup": 46012, "talkgroup_ota": 1 });
+        assert_eq!(render("{talkgroup}/{talkgroup_ota}", &c, 0, 0), "46012/1-call_3");
+        assert_eq!(render("{talkgroup}_{talkgroup_ota}", &json!({ "call_num": 4, "talkgroup": 5 }), 0, 0), "5_-call_4", "none named: empty");
+        assert_eq!(problem("{talkgroup_ota}"), None);
     }
 
     #[test]

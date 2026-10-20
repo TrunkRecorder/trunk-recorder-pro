@@ -12,6 +12,7 @@ export const DEFAULT_FORMAT = "{short_name}/{time:%Y}/{time:%-m}/{time:%-d}/{tal
 
 const TOKEN_LABEL: Record<string, string> = {
   talkgroup: "Talkgroup",
+  talkgroup_ota: "Air talkgroup",
   talkgroup_alpha_tag: "Alpha tag",
   talkgroup_tag: "Tag",
   talkgroup_description: "Description",
@@ -57,7 +58,7 @@ const TIME_LABEL: Record<string, string> = {
 };
 
 const GROUPS: { title: string; tokens: string[] }[] = [
-  { title: "Talkgroup", tokens: ["talkgroup", "talkgroup_alpha_tag", "talkgroup_tag", "talkgroup_description", "talkgroup_group"] },
+  { title: "Talkgroup", tokens: ["talkgroup", "talkgroup_ota", "talkgroup_alpha_tag", "talkgroup_tag", "talkgroup_description", "talkgroup_group"] },
   { title: "Call", tokens: ["short_name", "site", "freq", "freq_mhz", "epoch", "call_num", "tdma_slot", "audio_type", "emergency", "encrypted", "priority"] },
   { title: "Radio", tokens: ["sys_num", "source_num", "recorder_num", "signal", "noise", "color_code", "ran"] },
 ];

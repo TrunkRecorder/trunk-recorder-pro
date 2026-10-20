@@ -60,6 +60,9 @@ pub struct CallTag {
     pub tag: String,
     pub encrypted: bool,
     pub freq_hz: f64,
+    /// Conventional digital: the talkgroup the air named, shown when its row
+    /// files the call under another (`TG: 46012 (air 1)`).
+    pub ota: Option<u32>,
 }
 
 /// What a call's state is, for status lines.
@@ -192,10 +195,11 @@ impl Format {
     fn talkgroup(&self, c: &CallTag, color: bool) -> String {
         let (on, off) = if color { (if c.encrypted { RED } else { MAG }, RST) } else { ("", "") };
         let tag = if c.tag.trim().is_empty() { "-" } else { c.tag.trim() };
+        let air = c.ota.filter(|&t| t != c.talkgroup).map_or(String::new(), |t| format!(" (air {t})"));
         match self.talkgroup {
-            TalkgroupFormat::Id => format!("{on}{:>10}{off}", c.talkgroup),
-            TalkgroupFormat::IdTag => format!("{:>10} ({on}{tag:>23}{off})", c.talkgroup),
-            TalkgroupFormat::TagId => format!("{on}{tag:>23}{off} ({:>10})", c.talkgroup),
+            TalkgroupFormat::Id => format!("{on}{:>10}{off}{air}", c.talkgroup),
+            TalkgroupFormat::IdTag => format!("{:>10}{air} ({on}{tag:>23}{off})", c.talkgroup),
+            TalkgroupFormat::TagId => format!("{on}{tag:>23}{off} ({:>10}{air})", c.talkgroup),
         }
     }
 
@@ -296,7 +300,7 @@ mod tests {
     use super::*;
 
     fn call() -> CallTag {
-        CallTag { num: 12, talkgroup: 3747, tag: "DCFD Disp".into(), encrypted: false, freq_hz: 857_987_500.0 }
+        CallTag { num: 12, talkgroup: 3747, tag: "DCFD Disp".into(), encrypted: false, freq_hz: 857_987_500.0, ota: None }
     }
 
     #[test]
@@ -316,10 +320,15 @@ mod tests {
         let f = Format::default();
         assert_eq!(line(&st, &f, false).rsplit('\t').next(), Some("Elapsed:    4 State: Monitoring: UNKNOWN TG"));
         let done =
-            Record { body: Body::Concluded { length_s: 8.46, signal_db: Some(-22.4), noise_db: Some(-51.9), snr_db: Some(29.5), clean_pct: Some(100.0) }, ..r };
+            Record { body: Body::Concluded { length_s: 8.46, signal_db: Some(-22.4), noise_db: Some(-51.9), snr_db: Some(29.5), clean_pct: Some(100.0) }, ..r.clone() };
         assert!(
             line(&done, &f, false).ends_with("Concluding Recorded Call - Call Length: 8.5s\t Signal: -22dBFS\t Noise: -52dBFS\t SNR: 30dB\t Clean voice: 100%")
         );
         assert_eq!(Level::parse("WARN"), Some(Level::Warning));
+        // A conventional row filing the air's talkgroup under its own: both shown.
+        let remapped = Record { call: Some(CallTag { talkgroup: 46012, ota: Some(1), ..call() }), ..r.clone() };
+        assert_eq!(line(&remapped, &f, false), "[dcfd]\t12C\tTG:      46012 (air 1)\tFreq: 857.987500 MHz\tStarting P25 Recorder");
+        let same = Record { call: Some(CallTag { ota: Some(3747), ..call() }), ..r };
+        assert!(line(&same, &f, false).contains("TG:       3747\t"), "the same number isn't repeated");
     }
 }

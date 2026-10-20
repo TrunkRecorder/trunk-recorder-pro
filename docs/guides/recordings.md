@@ -70,6 +70,7 @@ group of its card; left at default, it follows the Recording tab's.
 | `{short_name}` | The system's short name |
 | `{sys_num}` | The system's number, from 0: the trunked systems, then the conventional ones |
 | `{talkgroup}`, `{talkgroup_display}` | The talkgroup number |
+| `{talkgroup_ota}` | A conventional P25, DMR or NXDN call's talkgroup as the air named it (its row may file it under another `{talkgroup}`); empty for other calls |
 | `{talkgroup_alpha_tag}` | The talkgroup's alpha tag, e.g. `FD_Disp` |
 | `{talkgroup_tag}` | The talkgroup's tag, e.g. `Fire_Dispatch` |
 | `{talkgroup_description}` | The talkgroup's description |

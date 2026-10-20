@@ -5,7 +5,7 @@
 
 /** The call tokens, as filename.rs knows them. */
 export const FILENAME_TOKENS = [
-  "talkgroup", "talkgroup_tag", "talkgroup_alpha_tag", "talkgroup_description", "talkgroup_group", "talkgroup_display", "short_name", "site", "freq", "freq_mhz",
+  "talkgroup", "talkgroup_ota", "talkgroup_tag", "talkgroup_alpha_tag", "talkgroup_description", "talkgroup_group", "talkgroup_display", "short_name", "site", "freq", "freq_mhz",
   "call_num", "tdma_slot", "sys_num", "epoch", "source_num", "recorder_num", "audio_type", "emergency", "encrypted", "priority", "signal", "noise", "color_code", "ran",
 ];
 
@@ -133,6 +133,7 @@ export function filenameProblem(format: string): string | null {
 /** A made-up call to show a format with. */
 export const SAMPLE_CALL = {
   talkgroup: 1201,
+  talkgroup_ota: 1,
   talkgroup_tag: "Fire Dispatch",
   talkgroup_alpha_tag: "FD Disp",
   talkgroup_description: "Fire / EMS Dispatch",

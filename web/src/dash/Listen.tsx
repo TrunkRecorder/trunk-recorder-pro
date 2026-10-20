@@ -32,7 +32,7 @@ import {
 import type { CallEntry, Config, RecordingOverride } from "../protocol.ts";
 import { parseTalkgroupCsv } from "../talkgroups.ts";
 import { BrowserStorage } from "../web/BrowserStorage.tsx";
-import { aliasOf } from "./Calls.tsx";
+import { aliasOf, AirTg } from "./Calls.tsx";
 
 /** What the Listen page reads of the store (the page selects only this). */
 type ListenState = Pick<AppState, "connected" | "config" | "units" | "talkgroups">;
@@ -148,7 +148,10 @@ function Display({ s }: { s: ListenState }) {
       <dl className="scan-fields">
         <div>
           <dt>TGID</dt>
-          <dd className="mono">{r.talkgroup}</dd>
+          <dd className="mono">
+            {r.talkgroup}
+            <AirTg tg={r.talkgroup} ota={r.talkgroup_ota} />
+          </dd>
         </div>
         <div>
           <dt>Freq</dt>

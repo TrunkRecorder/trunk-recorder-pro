@@ -18,6 +18,13 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 - **`talkgroup_ota` in the call JSON**: a conventional P25, DMR or NXDN call keeps the talkgroup the
   air named, also when its row files it under another number. A new talkgroup on the air still
   starts a new call. Plugins see it on `CallRecord` and `CallInfo` (SDK 0.5.1).
+- **Shown where calls are**: the console log's `TG:` reads `46012 (air 1)` when a row files the
+  air's talkgroup under another number, as do Live calls and the Listen page (`air 1`); the
+  archive path has a `{talkgroup_ota}` token.
+- **Setup's channel table shows what each row records** as chips coloured by kind — tone / DCS,
+  NAC / colour code / RAN, slot, talkgroup, or everything else — opening the row's Code, Slot and
+  Match TG to edit; a code that doesn't read is marked. The CSV format's help is an example and a
+  table of the columns.
 - **A row's names come first**: a conventional call takes its row's names, if the row has any, else
   the system's talkgroup file's for the number it's filed under.
 

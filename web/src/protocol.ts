@@ -636,6 +636,8 @@ export interface CallView {
   /** The site it is on (its name; none for a conventional system's call). */
   site?: string;
   talkgroup: number;
+  /** Conventional P25 / DMR / NXDN: the talkgroup the air named (a channel row may file the call under another). */
+  talkgroupOta?: number | null;
   alphaTag: string;
   freqHz: number;
   slot: number | null;

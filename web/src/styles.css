@@ -1302,3 +1302,29 @@ table.calls tr.ignored td { opacity: 0.55; }
 .shot-view figure { margin: 0; max-width: min(1200px, 100%); max-height: 100%; display: flex; flex-direction: column; gap: 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 10px; }
 .shot-view img { max-width: 100%; max-height: calc(100vh - 120px); object-fit: contain; border-radius: 6px; }
 .shot-view figcaption { gap: 8px; }
+
+/* A conventional call's talkgroup as the air named it, beside the number it is filed under. */
+.air-tg { color: var(--muted); font-family: ui-monospace, monospace; white-space: nowrap; }
+
+/* Conventional channels: what a row records, as chips coloured by kind (as the archive path's tokens are), and what it files under. */
+.match-line { display: inline-flex; flex-wrap: nowrap; align-items: center; gap: 3px; padding: 2px 4px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: inherit; font: inherit; cursor: pointer; text-align: left; }
+.match-line:hover:not(:disabled), .match-line.open { border-color: var(--line); background: var(--bg); }
+.match-line:disabled { cursor: default; }
+.match-chip { display: inline-flex; align-items: center; padding: 1px 7px; border-radius: 6px; border: 1px solid transparent; font-size: 12px; line-height: 18px; white-space: nowrap; font-family: ui-monospace, monospace; color: var(--text); }
+.match-chip.k-tone { background: color-mix(in srgb, #a371f7 20%, transparent); }
+.match-chip.k-code { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+.match-chip.k-slot { background: color-mix(in srgb, var(--warn) 20%, transparent); }
+.match-chip.k-tg { background: color-mix(in srgb, var(--ok) 20%, transparent); }
+.match-chip.k-any { border: 1px dashed var(--line); color: var(--muted); font-family: inherit; }
+.match-chip.k-out { border-color: var(--line); font-weight: 600; }
+.match-chip.k-out.auto { font-weight: 400; font-style: italic; color: var(--muted); }
+.match-chip.bad { background: color-mix(in srgb, var(--bad) 16%, transparent); border-color: var(--bad); }
+.match-arrow { color: var(--muted); padding: 0 2px; }
+.match-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin: 4px 0 8px; }
+.match-legend .match-chip { font-family: inherit; }
+table.channels tr.rule-edit td { padding-top: 0; padding-bottom: 8px; }
+table.channels tr.rule-edit .field-hint { display: block; max-width: 72ch; white-space: normal; }
+.rule-fields { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.csv-help .csv-example { overflow-x: auto; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
+.csv-help table.csv-columns { border-collapse: collapse; margin: 6px 0; }
+.csv-help table.csv-columns th, .csv-help table.csv-columns td { text-align: left; vertical-align: top; padding: 3px 10px 3px 0; border-bottom: 1px solid var(--line); }

@@ -742,6 +742,7 @@ impl Session {
             tag: c.talkgroup_info.as_ref().map_or(String::new(), |t| t.alpha_tag.clone()),
             encrypted: c.encrypted,
             freq_hz: c.freq_hz as f64,
+            ota: c.talkgroup_ota,
         }
     }
 
@@ -1136,6 +1137,8 @@ fn call_view(c: &Call, system_name: &str, patched: Vec<Value>) -> Value {
         "system": c.system,
         "systemName": system_name,
         "talkgroup": c.talkgroup,
+        // Conventional digital: the talkgroup the air named.
+        "talkgroupOta": c.talkgroup_ota,
         "alphaTag": c.talkgroup_info.as_ref().map_or("", |t| t.alpha_tag.as_str()),
         "freqHz": c.freq_hz,
         "slot": c.voice.slot(),

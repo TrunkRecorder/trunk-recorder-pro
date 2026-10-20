@@ -138,6 +138,7 @@ message naming it.
 | `{site}` | The site the call was kept from, by name (a system of one site: its short name; none for a conventional system) |
 | `{sys_num}` | The system's number: 0, 1, 2… for the systems being recorded, trunked first, then conventional (before 0.2.0 a conventional system's was counted down from 65535) |
 | `{talkgroup}`, `{talkgroup_display}` | The talkgroup number |
+| `{talkgroup_ota}` | A conventional P25, DMR or NXDN call's talkgroup as the air named it (its row may file it under another `{talkgroup}`); empty for other calls |
 | `{talkgroup_alpha_tag}` | The talkgroup's alpha tag |
 | `{talkgroup_description}` | Its description |
 | `{talkgroup_tag}` | Its tag ("Fire Dispatch") |

@@ -387,6 +387,13 @@
         "talkgroup": {
           "type": "number"
         },
+        "talkgroupOta": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Conventional P25 / DMR / NXDN: the talkgroup the air named (a channel row may file the call under another)."
+        },
         "alphaTag": {
           "type": "string"
         },
