@@ -879,7 +879,16 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
         ) : null}
       </Group>
       {src.type !== "file" && (
-        <Group title="Gain" hint={src.type === "airspy" ? "A preset, or each stage set by hand." : "Too little loses weak signals; too much overloads near strong ones."}>
+        <Group
+          title="Gain"
+          hint={`${src.type === "airspy" ? "A preset, or each stage set by hand." : "Too little loses weak signals; too much overloads near strong ones."} ${
+            src.type === "rtlsdr" || src.type === "airspy"
+              ? "Changes apply at once, also while recording."
+              : src.type === "usrp" || src.type === "soapy"
+                ? "The gain in dB applies at once while recording; AGC and the rest when recording starts."
+                : "Changes apply when recording starts (Stop, then Start)."
+          }`}
+        >
           {src.type === "rtlsdr" && (
             <Field label="Gain, dB" hint={src.agc ? "A fixed gain usually works better" : "Most dongles: 0–49.6"}>
               <div className="row">

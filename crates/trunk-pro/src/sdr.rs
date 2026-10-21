@@ -186,12 +186,46 @@ pub struct Control {
     pub gain_db: Mutex<Option<f32>>,
     /// The centre last applied, so a reopened device comes back there.
     pub current_hz: Mutex<Option<f64>>,
+    /// A gain changed in Setup while recording (RTL-SDR): applied
+    /// between blocks, with no [`SourceMsg::Tuned`] (nothing moved).
+    pub live_gain: Mutex<Option<LiveGain>>,
+    /// The live gain last applied, so a reopened device keeps it.
+    pub current_gain: Mutex<Option<LiveGain>>,
+    /// An Airspy's gain changed in Setup while recording (its own kind of setting).
+    pub live_airspy: Mutex<Option<crate::radio::airspy::AirspyGain>>,
+    /// The Airspy gain last applied, so a reopened device keeps it.
+    pub current_airspy: Mutex<Option<crate::radio::airspy::AirspyGain>>,
+}
+
+/// A gain to apply while running: the device's AGC, or `gain_db` set by hand.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LiveGain {
+    pub agc: bool,
+    pub gain_db: f32,
 }
 
 impl Control {
     /// Pending requests (taken).
     pub fn take(&self) -> (Option<f64>, Option<f32>) {
         (self.freq_hz.lock().unwrap().take(), self.gain_db.lock().unwrap().take())
+    }
+
+    /// A pending live gain (taken), remembered as the current one.
+    pub fn take_live_gain(&self) -> Option<LiveGain> {
+        let g = self.live_gain.lock().unwrap().take();
+        if g.is_some() {
+            *self.current_gain.lock().unwrap() = g;
+        }
+        g
+    }
+
+    /// A pending live Airspy gain (taken), remembered as the current one.
+    pub fn take_live_airspy(&self) -> Option<crate::radio::airspy::AirspyGain> {
+        let g = self.live_airspy.lock().unwrap().take();
+        if g.is_some() {
+            *self.current_airspy.lock().unwrap() = g;
+        }
+        g
     }
 }
 
@@ -206,6 +240,8 @@ pub trait Radio: Send + 'static {
     fn stream_once(&self, source: usize, tx: &SyncSender<SourceMsg>, stop: &Arc<AtomicBool>, ctl: Option<&Control>) -> Result<(), String>;
     /// On its thread, before it first opens.
     fn prepare_thread(&self) {}
+    /// It opens with the gain last changed live through `ctl` (from Setup while recording).
+    fn keep_gain(&mut self, _ctl: &Control) {}
 }
 
 /// Stream `radio` until `stop` is set; blocks go to `tx`. Reopens it after
@@ -216,6 +252,9 @@ pub fn run_with<R: Radio>(source: usize, mut radio: R, tx: SyncSender<SourceMsg>
     while !stop.load(Ordering::Relaxed) {
         if let Some(c) = ctl.as_ref().and_then(|c| *c.current_hz.lock().unwrap()) {
             radio.retune_to(c);
+        }
+        if let Some(c) = ctl.as_ref() {
+            radio.keep_gain(c);
         }
         if let Err(e) = radio.stream_once(source, &tx, &stop, ctl.as_deref()) {
             let _ = tx.send(SourceMsg::Error { source, error: e });
@@ -228,6 +267,11 @@ impl Radio for RtlConfig {
     const BACKOFF: Duration = Duration::from_secs(2);
     fn retune_to(&mut self, hz: f64) {
         self.center_hz = hz as u64;
+    }
+    fn keep_gain(&mut self, ctl: &Control) {
+        if let Some(g) = *ctl.current_gain.lock().unwrap() {
+            self.gain_db = (!g.agc).then_some(g.gain_db);
+        }
     }
     fn stream_once(&self, source: usize, tx: &SyncSender<SourceMsg>, stop: &Arc<AtomicBool>, ctl: Option<&Control>) -> Result<(), String> {
         stream_once(source, self, tx, stop, ctl)
@@ -274,6 +318,13 @@ fn stream_once(source: usize, cfg: &RtlConfig, tx: &SyncSender<SourceMsg>, stop:
                 if let Err(e) = dev.set_gain(GainConfig::Manual(g)).wait() {
                     break Err(format!("gain {g} dB: {e}"));
                 }
+            }
+            if let Some(g) = c.take_live_gain() {
+                let name = if cfg.serial.is_empty() { "(first)" } else { &cfg.serial };
+                if let Err(e) = dev.set_gain(if g.agc { GainConfig::Auto } else { GainConfig::Manual(g.gain_db) }).wait() {
+                    break Err(format!("gain {} dB: {e}", g.gain_db));
+                }
+                log::info!("RTL-SDR {name}: gain now {}", if g.agc { "AGC".to_string() } else { format!("{} dB", g.gain_db) });
             }
             if freq.is_some() || gain.is_some() {
                 let hz = dev.actual_frequency_hz() as f64;
