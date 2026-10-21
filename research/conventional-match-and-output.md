@@ -3,7 +3,7 @@
 A design proposal (2026-10-18), prompted by a user's "channel file v2" sketch and the question of
 what to do with talkgroups that arrive over the air. **Implemented 2026-10-19** on the same branch
 (PR #53); [What was built](#what-was-built) says how, where it differs from the proposal, and how the
-open questions were decided.
+open questions were decided; [After review](#after-review-2026-10-20) covers the review's requests.
 
 ## Summary
 
@@ -479,3 +479,43 @@ The open questions, decided:
 `analog_records_name_no_air_talkgroup`; `dmr::synth` remaps TG 4321 → 9001 (example 7);
 `nxdn::synth` a typed number wins; `channels.rs` `code_slot_and_match_tg`; `migrate.rs`
 `a_channels_tone_becomes_code_slot_and_talkgroup`; web `tones.test.ts` and `migrate.test.ts`.
+
+## After review (2026-10-20)
+
+What the comments on #53 asked for, and how each was taken in as part of the same model rather
+than beside it.
+
+- **The air's talkgroup in the call JSON** (ge0metrix): already there as `talkgroup_ota` on this
+  branch; the JSON quoted in the comment came from a build of `main` (it filed TG 1 under 1 with the
+  row's name, which this branch files under the row's 10).
+- **The NAC in the call JSON** (gofaster, ge0metrix), and **the kind of system** (gofaster: `p25T |
+  smartnetT | dmrCapP | p25C | dmrC | nxdn48c | fm | am`). The record already said some of what the
+  air carried (`color_code`, `ran`, the tone fields), so P25's `nac` joins them: a conventional
+  channel's from its frames (`Call.nac`, which `Heard` already carried), a trunked call's from its
+  site's control channel (the grant's NID). The system kind is two fields, not one code per
+  combination: `system_type` is how the call was found (`p25`, `smartnet`, `dmr`, `nxdn`,
+  `conventional` — `SystemInfo.kind`'s words, from `Protocol::kind`) and `voice_mode` what its
+  voice was (`Voice::mode_name`: a conventional row's `mode` words, plus `p25_phase2`). Every case
+  in the comment is a pair (`conventional`/`nxdn48`, `smartnet`/`fm`); a DMR site's variant
+  (Capacity Plus, Tier III) is the site's, not the call's, and stays on the status page. Archive
+  path tokens `{nac}` (three hex digits), `{system_type}`, `{voice_mode}`.
+- **Talkgroup names missing on the Radio page** (gofaster; on `main` too). Rule 3 (names: the
+  row's, else the file's) was applied per call, so Listen had them; the server's `NameBook`, which
+  names the Radio page's talkgroups, only read talkgroup files. It now also reads the rows
+  (`ConvChannel::names_ahead`: a row's names for a number known before a call — its TG Number, or
+  an analog row's default), ahead of the file as rule 3 says. A number from the air isn't known
+  until a call carries it, so the registry keeps each talkgroup's last name (`Tg.name`) as the
+  fallback: a catch-all "Townville (other)" names every talkgroup it files. One lookup
+  (`tg_alpha`) for every name on the page. The rows are not put into the engine's talkgroup table:
+  that would give a nameless row another row's names, which rule 3 dropped.
+- **Setup's card closing while the Short name is typed** (gofaster). Not a conventional bug: a
+  pause saves the config, and when the recorder's copy arrived after the save's answer it replaced
+  the browser's without the (never sent) card keys, so each card was keyed afresh from its new
+  name. `keepCards` gives the recorder's copy the keys of the entries it replaces (by short name,
+  sites by name, else by place); trunked systems and edits from another browser had it too.
+- **Editing a row's other names** (chat: "you can't … edit the meta besides TG Alpha in the UI").
+  The row was already channel / match / output, but Setup showed only part of the output. The
+  row's editor now has the match (**Records**: Code, Slot, Match TG) and the rest of the output
+  (**Names**: Description, Tag, Category; Name and TG Number stay in the table), with the tags and
+  categories the system already uses offered. Every row has **Edit**; AM rows open it for their
+  names. Export CSV already wrote every column; the guide now says so.

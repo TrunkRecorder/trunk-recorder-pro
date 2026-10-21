@@ -36,9 +36,9 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   `nxdn96`, `fm` or `am`) and, for P25, `nac`: the NAC a conventional channel's frames carried, a
   trunked system's site NAC. The archive path has `{system_type}`, `{voice_mode}` and `{nac}`
   tokens. SDK 0.5.1 has the fields on `CallRecord`.
-- **The Radio page names a conventional system's talkgroups** as Listen does (from #53's review;
-  also on 0.2.6): by the row, else the talkgroup file; a talkgroup filed under the air's number is
-  named as its last named call was.
+- **The Radio page names a conventional system's talkgroups** as Listen does (from #53's review; it
+  showed bare numbers in 0.2.6 too): by the row, else the talkgroup file; a talkgroup filed under the
+  air's number is named as its last named call was.
 - **Setup keeps a system's card open while its Short name is typed** (from #53's review): a pause
   saved the edit, and the recorder's copy coming back closed the card.
 
