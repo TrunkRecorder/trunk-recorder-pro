@@ -2,14 +2,14 @@
 //! trunked systems (sites) and/or conventional channels, recording rules and the web server. Stored as JSON in the platform
 //! config folder; the browser interface reads and edits it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use trunk_core::dsp::AnalogTuning;
 use trunk_core::p25::diversity::BankConfig;
 use trunk_core::trunk::{
-    check_channels, Access, parse_csv, CallConfig, Protocol, ConvChannel, ConvConfig, ConvMode, EngineConfig, IdField, Identity, SaveRules, SourceConfig,
+    check_channels, Access, parse_csv, CallConfig, Protocol, ConvChannel, Talkgroups, ConvConfig, ConvMode, EngineConfig, IdField, Identity, SaveRules, SourceConfig,
     SiteConfig, SystemConfig, Talkgroup, UnitTags, UnitTagsMode,
 };
 pub use trunk_core::trunk::{usable_half_width, DEFAULT_GUARD_HZ};
@@ -1889,6 +1889,21 @@ impl Config {
         out
     }
 
+    /// What conventional rows name talkgroups known before a call is heard
+    /// ([`ConvChannel::names_ahead`]), by system short name: the dashboard's
+    /// names for them, ahead of the talkgroup file's, as a call's are. (A
+    /// number that comes from the air is named by the calls that carry it.)
+    pub fn row_talkgroups(&self) -> HashMap<String, Talkgroups> {
+        let names: Vec<&str> = self.active_systems().map(|s| s.short_name.as_str()).chain(self.active_conventional().map(|v| v.short_name.as_str())).collect();
+        let mut out: HashMap<String, Talkgroups> = HashMap::new();
+        for c in self.engine_channels() {
+            if let (Some(t), Some(name)) = (c.names_ahead(), names.get(c.system)) {
+                out.entry(name.to_string()).or_default().entry(t.number).or_insert_with(|| t.clone());
+            }
+        }
+        out
+    }
+
     /// The systems being recorded (enabled, with a site that is), in the
     /// engine's order — a call's `system` indexes this.
     pub fn active_systems(&self) -> impl Iterator<Item = &System> {
@@ -2451,6 +2466,38 @@ mod tests {
         let e = c.engine_config(0.0, &files);
         let fire = e.systems.iter().find(|s| s.short_name == "fire").unwrap();
         assert!(fire.talkgroups.contains_key(&7) && !fire.talkgroups.contains_key(&1), "its own, not county's");
+    }
+
+    /// The dashboard names a conventional system's talkgroups as its calls
+    /// are named: by a row, for the numbers known ahead, before the file.
+    #[test]
+    fn rows_name_the_numbers_they_file_under() {
+        let c: Config = serde_json::from_str(
+            r#"{
+                "sources": [{ "type": "rtlsdr", "serial": "", "centerHz": 155000000, "rateHz": 2400000, "agc": true, "ppm": 0 }],
+                "conventional": [{ "shortName": "town", "channels": [
+                    { "freqHz": 154430000, "mode": "fm", "name": "Fire Dispatch" },
+                    { "freqHz": 460125000, "mode": "p25", "talkgroup": 46012, "name": "Townville PD", "tag": "Law Dispatch" },
+                    { "freqHz": 453500000, "mode": "p25", "name": "Townville (other)" },
+                    { "freqHz": 155100000, "mode": "fm" }
+                ] }]
+            }"#,
+        )
+        .unwrap();
+        let rows = c.row_talkgroups();
+        let town = &rows["town"];
+        let mut named: Vec<(u32, &str)> = town.values().map(|t| (t.number, t.alpha_tag.as_str())).collect();
+        named.sort();
+        // The analog row's default and the P25 row's TG Number; not the catch-all (its numbers come from the air), nor a row without names.
+        assert_eq!(named, [(46012, "Townville PD"), (154430, "Fire Dispatch")]);
+        assert_eq!(town[&46012].tag, "Law Dispatch");
+        // Ahead of the talkgroup file, whose Ignore flag stays.
+        let mut book = crate::stats::NameBook::default();
+        let files: TalkgroupFiles = [("town".to_string(), "46012,File name\n9,Nine,,,,,,,true\n".to_string())].into();
+        book.set_config(&c, &files);
+        assert_eq!(book.tg("town", 46012).map(|t| t.alpha_tag), Some("Townville PD".into()));
+        assert_eq!(book.tg("town", 154430).map(|t| t.alpha_tag), Some("Fire Dispatch".into()));
+        assert!(book.tg("town", 7).is_none());
     }
 
     #[test]

@@ -381,6 +381,14 @@ impl ConvChannel {
         ConvChannel { freq_hz, mode, talkgroup: None, default_talkgroup, info: None, squelch_db: None, access: None, system: 0, analog }
     }
 
+    /// Its names, when the number they go with is known before a call is
+    /// heard: its TG Number, or an analog row's default (the air names
+    /// none). None when the number comes from the air, or it has no names.
+    pub fn names_ahead(&self) -> Option<&Talkgroup> {
+        let known = self.talkgroup.is_some() || matches!(self.mode, ConvMode::Fm | ConvMode::Am);
+        self.info.as_ref().filter(|_| known)
+    }
+
     pub fn default_talkgroup(freq_hz: f64) -> u32 {
         (freq_hz / 1000.0).round() as u32
     }

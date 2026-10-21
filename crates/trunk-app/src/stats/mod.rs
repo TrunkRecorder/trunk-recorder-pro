@@ -71,7 +71,7 @@ impl Shared {
     /// browser build's worker both answer this way.
     pub fn radio_query(&self, q: &Value, now: i64) -> ToClient {
         let book = self.names.lock().unwrap();
-        let tg = |sys: &str, t: u32| tg_info(&book.talkgroups, sys, t);
+        let tg = |sys: &str, t: u32| book.tg(sys, t);
         let unit = |sys: &str, u: u32| book.units.get(sys).and_then(|a| a.get(u)).map(str::to_string);
         let mut out = self.radio.lock().unwrap().query(q, now, &Names { tg: &tg, unit: &unit });
         out["id"] = q["id"].clone();
@@ -80,13 +80,15 @@ impl Shared {
 }
 
 /// The names the radio registry's answers use ([`Shared::radio_query`]):
-/// each system's talkgroups (its talkgroup file's, a conventional system's
-/// channels) and talker aliases, by short name. A running session keeps
+/// each system's talkgroups (its talkgroup file's, and what a conventional
+/// system's rows name) and talker aliases, by short name. A running session keeps
 /// them as its engine has them; the desktop app fills them from its files
 /// when it starts and when they change.
 #[derive(Default)]
 pub struct NameBook {
     talkgroups: HashMap<String, trunk_core::trunk::Talkgroups>,
+    /// Conventional rows' names for the numbers they file under ([`Config::row_talkgroups`]).
+    rows: HashMap<String, trunk_core::trunk::Talkgroups>,
     units: HashMap<String, trunk_core::trunk::UnitAliases>,
 }
 
@@ -94,6 +96,22 @@ impl NameBook {
     /// Each system's talkgroups, as an engine built from `cfg` and these talkgroup files has them.
     pub fn set_config(&mut self, cfg: &Config, files: &crate::config::TalkgroupFiles) {
         self.set_systems(&cfg.engine_config(0.0, files).systems);
+        self.set_rows(cfg);
+    }
+
+    /// The names `cfg`'s conventional rows give.
+    pub fn set_rows(&mut self, cfg: &Config) {
+        self.rows = cfg.row_talkgroups();
+    }
+
+    /// Talkgroup `tg` of `system`: named as its calls are — by a row, else
+    /// by the talkgroup file (whose Ignore flag it keeps either way).
+    pub fn tg(&self, system: &str, tg: u32) -> Option<TgInfo> {
+        let file = tg_info(&self.talkgroups, system, tg);
+        match self.rows.get(system).and_then(|r| r.get(&tg)) {
+            Some(row) => Some(TgInfo { alpha_tag: row.alpha_tag.clone(), ignore: file.is_some_and(|f| f.ignore) }),
+            None => file,
+        }
     }
 
     /// Each system's talkgroups, from an engine's systems.

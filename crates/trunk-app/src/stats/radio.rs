@@ -39,6 +39,10 @@ const EWMA: f32 = 0.1;
 pub struct Tg {
     pub first: i64,
     pub last: i64,
+    /// The alpha tag its last named call carried: what it's called when
+    /// neither a row nor the talkgroup file names its number (a conventional
+    /// row that files under the air's talkgroup names every one it hears).
+    pub name: String,
     pub calls: u32,
     pub secs: f32,
     /// Calls that were encrypted.
@@ -48,6 +52,27 @@ pub struct Tg {
     pub ciphers: Vec<(u8, u16, u32, i64)>,
     /// (hour = Unix s / 3600, calls, seconds), oldest first, last week only.
     pub hours: VecDeque<(i64, (u32, f32))>,
+}
+
+impl Tg {
+    /// A call of it began or ended: keep the name it carried, if any.
+    fn note_name(&mut self, c: &Call) {
+        if let Some(t) = c.talkgroup_info.as_ref().filter(|t| !t.alpha_tag.is_empty()) {
+            if t.alpha_tag != self.name {
+                self.name = t.alpha_tag.clone();
+            }
+        }
+    }
+}
+
+/// What talkgroup `tg` of system `name` is called: by a conventional row or
+/// the talkgroup file ([`Names::tg`]), else as its last named call was.
+fn tg_alpha(name: &str, s: &SystemRadio, tg: u32, names: &Names) -> String {
+    (names.tg)(name, tg)
+        .map(|i| i.alpha_tag)
+        .filter(|a| !a.is_empty())
+        .or_else(|| s.tgs.get(&tg).map(|g| g.name.clone()))
+        .unwrap_or_default()
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -216,6 +241,7 @@ impl Registry {
             let new = !s.tgs.contains_key(&c.talkgroup);
             let g = s.tgs.entry(c.talkgroup).or_insert_with(|| Tg { first: t, ..Default::default() });
             g.last = t;
+            g.note_name(c);
             firsts.tg = new && base;
         }
         for src in &c.sources {
@@ -237,6 +263,7 @@ impl Registry {
         if !c.unit_to_unit {
             let g = s.tgs.entry(c.talkgroup).or_insert_with(|| Tg { first: start, ..Default::default() });
             g.last = t;
+            g.note_name(c);
             g.calls += 1;
             g.secs += secs;
             g.enc += c.encrypted as u32;
@@ -467,7 +494,7 @@ fn tg_row(name: &str, s: &SystemRadio, tg: u32, g: &Tg, now: i64, hours: i64, na
     let (c, sec) = hourly(g, now, hours);
     json!({
         "tg": tg,
-        "alphaTag": info.as_ref().map_or("", |i| i.alpha_tag.as_str()),
+        "alphaTag": tg_alpha(name, s, tg, names),
         "known": info.is_some(),
         "ignore": info.as_ref().is_some_and(|i| i.ignore),
         "first": g.first, "last": g.last,
@@ -554,7 +581,7 @@ fn tg_detail(name: &str, s: &SystemRadio, tg: u32, now: i64, hours: i64, names: 
 
 fn unit_detail(name: &str, s: &SystemRadio, id: u32, now: i64, names: &Names) -> Value {
     let Some(u) = s.units.get(&id) else { return json!({ "unit": id, "row": null }) };
-    let tg_name = |tg: u32| (names.tg)(name, tg).map(|i| i.alpha_tag).unwrap_or_default();
+    let tg_name = |tg: u32| tg_alpha(name, s, tg, names);
     let partners = partners(s, id, 24);
     json!({
         "unit": id,
@@ -612,7 +639,7 @@ fn summary(name: &str, s: &SystemRadio, now: i64, names: &Names) -> Value {
         .tgs
         .iter()
         .filter(|(_, g)| is_new(s, g.first, now))
-        .map(|(k, g)| json!({ "tg": k, "first": g.first, "alphaTag": (names.tg)(name, *k).map(|i| i.alpha_tag).unwrap_or_default() }))
+        .map(|(k, g)| json!({ "tg": k, "first": g.first, "alphaTag": tg_alpha(name, s, *k, names) }))
         .collect();
     let unknown = s.tgs.iter().filter(|(k, g)| g.last >= day && (names.tg)(name, **k).is_none()).count();
     json!({
@@ -684,6 +711,24 @@ mod tests {
         let q = r.query(&json!({ "what": "summary" }), t0 + 7300, &n);
         assert_eq!(q["systems"]["dcfd"]["unknownTgs24h"], 1);
         assert_eq!(q["systems"]["dcfd"]["newTgs"][0]["tg"], 200);
+    }
+
+    #[test]
+    fn a_talkgroup_nothing_names_is_named_as_its_calls_were() {
+        // A conventional catch-all that files under the air's talkgroup names every one it hears.
+        let mut r = Registry::default();
+        let t0 = 1_700_000_000;
+        let mut c = call(7, &[], 0.0, 2.0);
+        c.talkgroup_info = Some(trunk_core::trunk::Talkgroup { number: 7, alpha_tag: "Townville (other)".into(), ..Default::default() });
+        r.call_start("conv", &c, t0);
+        r.call_end("conv", &c, t0 + 2);
+        // A later call that carried no name keeps it.
+        c.talkgroup_info = None;
+        r.call_end("conv", &c, t0 + 5);
+        let (tg, unit) = names();
+        let n = Names { tg: &tg, unit: &unit };
+        let q = r.query(&json!({ "what": "talkgroups", "system": "conv", "hours": 24 }), t0 + 10, &n);
+        assert_eq!((q["rows"][0]["alphaTag"].as_str(), q["rows"][0]["known"].as_bool()), (Some("Townville (other)"), Some(false)));
     }
 
     #[test]

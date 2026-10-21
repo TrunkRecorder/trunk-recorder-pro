@@ -374,7 +374,11 @@ impl Session {
             .collect();
         let recordings = cfg.recordings();
         let meas = Stats::new(&cfg, Shared::new(), local_offset);
-        meas.shared().names.lock().unwrap().set_systems(&systems);
+        {
+            let mut book = meas.shared().names.lock().unwrap();
+            book.set_systems(&systems);
+            book.set_rows(&cfg);
+        }
         Ok(Session {
             meas,
             cfg,
@@ -412,7 +416,9 @@ impl Session {
     /// registry and the event monitor, instead of this session's own.
     pub fn attach(&mut self, shared: Arc<Shared>) {
         self.meas = Stats::new(&self.cfg, shared, self.local_offset);
-        self.meas.shared().names.lock().unwrap().set_systems(&self.engine.systems());
+        let mut book = self.meas.shared().names.lock().unwrap();
+        book.set_systems(&self.engine.systems());
+        book.set_rows(&self.cfg);
     }
 
     /// The registry and monitor this session feeds.
