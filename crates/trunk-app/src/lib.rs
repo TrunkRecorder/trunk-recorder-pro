@@ -11,6 +11,7 @@ pub mod ekc;
 pub mod filename;
 pub mod heard;
 pub mod keys;
+pub mod licenses;
 pub mod log;
 pub mod migrate;
 pub mod profile;

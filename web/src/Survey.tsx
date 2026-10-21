@@ -25,6 +25,8 @@ import {
   type SurveyTarget,
 } from "./controller.ts";
 import type { Config, SiteIdentity, SurveyCandidate, SurveyMonitor, SurveySuggestion } from "./protocol.ts";
+import type { LicenseLookup } from "./controller.ts";
+import { IdentifyBar, LicenseCell, licensesOn } from "./Identify.tsx";
 import { Waterfall } from "./Waterfall.tsx";
 
 const hex = (v: number | null | undefined) => (v === null || v === undefined ? "?" : v.toString(16).toUpperCase());
@@ -52,7 +54,7 @@ const isControl = (c: SurveyCandidate) => c.kind === "control" || c.kind === "sm
 /** The site key of a scanned control channel: its secondaries share it. */
 const siteKey = (id: SiteIdentity) => (id.sysId != null && id.site != null ? `${id.nac}/${id.sysId}/${id.rfss}/${id.site}` : null);
 
-function Candidates(props: { c: Config; list: SurveyCandidate[]; listening: number | null; onListen?: (hz: number) => void }) {
+function Candidates(props: { c: Config; list: SurveyCandidate[]; listening: number | null; onListen?: (hz: number) => void; licenses: LicenseLookup | null }) {
   // Add a scanned control channel as a system — with its site's other control channels found in the scan.
   const add = (cand: SurveyCandidate) => {
     const key = siteKey(cand.identity);
@@ -94,6 +96,7 @@ function Candidates(props: { c: Config; list: SurveyCandidate[]; listening: numb
   const [showOther, setShowOther] = useState(false);
   const others = props.list.filter((c) => c.kind === "other").length;
   const rows = props.list.filter((c) => showOther || c.kind !== "other");
+  const looked = props.licenses?.stage === "done";
   const decoded = (c: SurveyCandidate) => (c.good + c.bad ? `${Math.round((100 * c.good) / (c.good + c.bad))} %` : "");
   return (
     <div className="stack">
@@ -107,6 +110,7 @@ function Candidates(props: { c: Config; list: SurveyCandidate[]; listening: numb
                 <th>What</th>
                 <th>System</th>
                 <th>Decoded</th>
+                {looked && <th>Licensed to</th>}
                 <th />
               </tr>
             </thead>
@@ -131,6 +135,11 @@ function Candidates(props: { c: Config; list: SurveyCandidate[]; listening: numb
                         : idText(c.identity)}
                   </td>
                   <td className="mono small">{decoded(c)}</td>
+                  {looked && (
+                    <td>
+                      <LicenseCell found={licensesOn(props.licenses, Math.round((c.correctedHz ?? c.freqHz) / 6250) * 6250)} />
+                    </td>
+                  )}
                   <td className="actions">
                     {c.kind === "control" &&
                       (() => {
@@ -599,9 +608,10 @@ export function SurveyPanel(props: { c: Config }) {
                 Signals found ({sv.candidates.filter(isControl).length} control channel
                 {sv.candidates.filter(isControl).length === 1 ? "" : "s"})
               </summary>
-              <Candidates c={c} list={sv.candidates} listening={sv.monitor?.freqHz ?? null} onListen={surveyListen} />
+              <Candidates c={c} list={sv.candidates} listening={sv.monitor?.freqHz ?? null} onListen={surveyListen} licenses={s.surveyLicenses} />
             </details>
           )}
+          <IdentifyBar licenses={s.surveyLicenses} canIdentify={s.connected && sv.candidates.length > 0} />
         </div>
       )}
     </section>

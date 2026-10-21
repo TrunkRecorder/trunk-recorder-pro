@@ -165,6 +165,23 @@ async function surveyStart(req: { source: number; bands: string[]; findGain: boo
   }
 }
 
+/** Who is licensed on some frequencies near the location the user gave:
+ *  asked of the trunkrecorder.pro API (as the desktop app does). */
+async function licenseQuery(m: Extract<ToRecorder, { type: "licenseQuery" }>): Promise<void> {
+  const base = (config?.server?.trpApi || "https://trunkrecorder.pro").replace(/\/+$/, "");
+  const answer = (results: unknown[], error: string | null) => post({ type: "licenseResult", id: m.id, results: results as never, error });
+  const body = JSON.stringify({ lat: m.lat, lon: m.lon, radiusM: m.radiusM, signals: m.signals.slice(0, 64) });
+  try {
+    const r = await fetch(`${base}/api/v1/fcc/identify`, { method: "POST", headers: { "content-type": "application/json" }, body });
+    const v = await r.json().catch(() => null);
+    if (r.ok && Array.isArray(v?.results)) answer(v.results, null);
+    else if (r.status === 429) answer([], "Too many license lookups for now: try again in a minute.");
+    else answer([], `The license lookup failed: ${v?.error ?? `HTTP ${r.status}`}`);
+  } catch (e) {
+    answer([], `Couldn't reach ${base} to look up licenses (${e instanceof Error ? e.message : String(e)}).`);
+  }
+}
+
 async function pumpSurveyRtl(s: WebSurvey, rtl: WebRtl): Promise<void> {
   while (surveying && survey === s) {
     try {
@@ -449,6 +466,9 @@ onmessage = async (ev: MessageEvent<ToWorker>) => {
       break;
     case "surveyRescan":
       survey?.rescan();
+      break;
+    case "licenseQuery":
+      void licenseQuery(m);
       break;
     case "surveyStop":
       await surveyStop();

@@ -138,6 +138,21 @@ impl SurveySession {
         self.changed = true;
     }
 
+    /// What to look licenses up for: the monitored system's control
+    /// channels first (the ones that name it), then the signals found, the
+    /// strongest first (not the weak unknown ones).
+    pub fn heard(&self) -> Vec<crate::licenses::Signal> {
+        let s = &self.survey;
+        let mut out: Vec<crate::licenses::Signal> = Vec::new();
+        if let Some(m) = s.system() {
+            out.extend(m.advertised_hz.into_iter().chain(m.secondary.iter().copied()).map(|f| crate::licenses::Signal { freq_hz: f as f64, width_hz: None }));
+        }
+        let mut cands: Vec<_> = s.candidates().iter().filter(|c| c.kind != Kind::Other || c.snr_db >= 10.0).collect();
+        cands.sort_by(|a, b| (a.kind == Kind::Other).cmp(&(b.kind == Kind::Other)).then(b.snr_db.total_cmp(&a.snr_db)));
+        out.extend(cands.iter().map(|c| crate::licenses::Signal { freq_hz: s.corrected(c.freq_hz).unwrap_or(c.freq_hz), width_hz: Some(c.width_hz) }));
+        out
+    }
+
     /// A snapshot every 400 ms of wall clock (at once after a stage change),
     /// the spectrum every 150 ms.
     pub fn poll(&mut self, now_ms: f64, out: &mut Vec<Output>) {

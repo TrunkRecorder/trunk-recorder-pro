@@ -239,4 +239,17 @@ pub fn cli(a: &crate::Args) {
     drop(rx);
     let _ = th.join();
     println!("{}", json!({ "monitor": last["monitor"], "suggest": last["suggest"], "message": last["message"], "wallS": t0.elapsed().as_secs_f64() }));
+    // --identify lat,lon[,km]: who is licensed near there on what was heard.
+    if let Some(at) = a.get("identify") {
+        let n: Vec<f64> = at.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+        if n.len() < 2 {
+            crate::die("--identify takes lat,lon or lat,lon,km");
+        }
+        let api = a.get("api").unwrap_or("https://trunkrecorder.pro").trim_end_matches('/').to_string();
+        let answer = trunk_app::licenses::request(n[0], n[1], n.get(2).copied().unwrap_or(50.0) * 1000.0, &session.heard()).and_then(|req| crate::licenses::identify(&api, &req));
+        match answer {
+            Ok(v) => println!("{}", json!({ "licenses": v["results"] })),
+            Err(e) => eprintln!("survey: {e}"),
+        }
+    }
 }

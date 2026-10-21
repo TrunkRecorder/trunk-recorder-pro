@@ -475,6 +475,8 @@ fn the_servers_messages() {
         crate::server::tr_config(&dir.display().to_string()),
         crate::server::tr_config(&dir.join("nothing.json").display().to_string()),
         ToClient::Quit,
+        ToClient::LicenseResult { id: 1, results: vec![json!({ "freqHz": 857_987_500, "historical": false, "licenses": [{ "callSign": "WPXT459", "licensee": "DISTRICT OF COLUMBIA", "serviceCode": "YE", "serviceDesc": null, "freqHz": 857_987_500, "emission": "8K10F1E", "distanceM": 1374, "bearingDeg": 115, "bearingCardinal": "ESE", "city": "WASHINGTON", "state": "DC", "status": "A", "locationKind": "fixed" }] })], error: None },
+        ToClient::LicenseResult { id: 2, results: vec![], error: Some("Couldn't reach https://trunkrecorder.pro".into()) },
         ToClient::Subscribed { topics: vec!["spectrum:0".into(), "log".into()] },
         // What the recorder itself logs (logging::to_browsers).
         ToClient::Log { lines: vec![json!({ "timeS": 0, "time": 1_750_000_000.5, "level": "warning", "kind": "error", "text": "No RAM spool" })] },
@@ -520,6 +522,7 @@ fn messages_to_the_recorder() {
         json!({ "type": "unlockKeys", "source": "county", "password": "p" }),
         json!({ "type": "olderCalls", "before": 1_750_000_000_000i64, "limit": 50 }),
         json!({ "type": "surveyListen", "freqHz": 851_012_500 }),
+        json!({ "type": "licenseQuery", "id": 1, "lat": 38.9, "lon": -77.03, "radiusM": 50_000, "signals": [{ "freqHz": 857_987_500 }, { "freqHz": 489_087_500, "widthHz": 12_500 }] }),
         json!({ "type": "store", "kind": "interface" }),
         json!({ "type": "removeInterface", "id": "trunkamp" }),
         json!({ "type": "setTalkgroups", "system": "dcfd", "csv": "Decimal,Alpha Tag\n101,FD Disp\n" }),

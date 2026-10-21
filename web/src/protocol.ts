@@ -146,6 +146,10 @@ export interface System {
   shortName: string;
   /** What people call it ("County Public Safety"); the short name is its folder. */
   name?: string;
+  /** Who holds its FCC license, as the FCC has it ("DISTRICT OF COLUMBIA"), for reference; plugins are told it. */
+  fccName?: string;
+  /** Its FCC license's call sign ("WPXT459"), for reference; plugins are told it. */
+  fccCallSign?: string;
   /** "smartnet": a Motorola SmartNet / SmartZone control channel (voice P25 or analog FM).
    *  "dmr": a trunked DMR site (Capacity Plus, Capacity Max, Connect Plus, Tier III); every
    *  control channel and `dmrChannelsHz` frequency is watched.
@@ -176,6 +180,9 @@ export interface Site {
   /** Its name, unique in its system (absent: the system's short name). The talkgroup file's
    *  Preferred Site names it; calls and plugins say it. */
   name?: string;
+  /** This site's own FCC licensee and license call sign, apart from the system's; plugins are told them. */
+  fccName?: string;
+  fccCallSign?: string;
   enabled: boolean;
   controlChannelsHz: number[];
   modulation: "auto" | "fsk4" | "qpsk";
@@ -377,6 +384,8 @@ export interface Config {
     allowedOrigins?: string[];
     /** The other interfaces, by id, each on a port of its own (desktop app; docs/interfaces). */
     interfaces?: Record<string, InterfaceSetup>;
+    /** Where the trunkrecorder.pro API is, for the survey's license lookup (absent: https://trunkrecorder.pro). */
+    trpApi?: string;
   };
   /** The plugins, by id (desktop app). Their settings for each system are in the system. */
   plugins?: Record<string, PluginSetup>;
@@ -863,6 +872,31 @@ export interface SurveySuggestion {
   /** The site it heard. */
   identity: SiteIdentity;
   voiceChannels: number[];
+}
+
+/** An FCC license near the user on a frequency the survey heard (the trunkrecorder.pro API's). */
+export interface SurveyLicense {
+  callSign: string | null;
+  licensee: string | null;
+  serviceCode: string | null;
+  serviceDesc: string | null;
+  freqHz: number | null;
+  emission: string | null;
+  distanceM: number | null;
+  bearingDeg: number | null;
+  bearingCardinal: string | null;
+  city: string | null;
+  state: string | null;
+  /** "A" active; anything else has lapsed. */
+  status: string | null;
+  locationKind: string | null;
+}
+
+/** The licenses found on one frequency looked up; `historical`: none active on it, so these have lapsed. */
+export interface LicenseResultRow {
+  freqHz: number;
+  historical: boolean;
+  licenses: SurveyLicense[];
 }
 
 export type SurveyState =
@@ -1402,6 +1436,8 @@ export type FromRecorder =
   | { type: "heard"; heard: Record<string, HeardCode[]> }
   | ({ type: "survey" } & SurveyState)
   | ({ type: "surveySpectrum" } & Spectrum)
+  /** Answers licenseQuery: the licenses found on each frequency, or why there are none. */
+  | { type: "licenseResult"; id: number; results: LicenseResultRow[]; error: string | null }
   | ({ type: "sourceProfile" } & SourceProfile)
   | { type: "devices"; devices: Device[] }
   /** A folder on the recorder's computer (answers listDir). */
@@ -1463,6 +1499,8 @@ export type ToRecorder =
   | { type: "surveyListen"; freqHz: number }
   | { type: "surveyRescan" }
   | { type: "surveyStop" }
+  /** Who is licensed on these frequencies within `radiusM` of (lat, lon): sent to trunkrecorder.pro; answered with licenseResult. */
+  | { type: "licenseQuery"; id: number; lat: number; lon: number; radiusM: number; signals: { freqHz: number; widthHz?: number }[] }
   /** Look at source `source`'s band (tuned to `centerHz`; a capture keeps its own) for its roll-off; answered with sourceProfile. Not while recording. */
   | { type: "profileSource"; source: number; centerHz: number }
   | { type: "plugins" }

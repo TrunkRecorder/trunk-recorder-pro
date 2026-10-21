@@ -210,7 +210,23 @@ pub fn describe(exe: &Path) -> Result<Manifest, String> {
 pub fn systems_of(cfg: &crate::config::Config) -> Vec<trunk_recorder_plugin::SystemInfo> {
     cfg.call_systems()
         .into_iter()
-        .map(|s| trunk_recorder_plugin::SystemInfo { index: s.index, short_name: s.short_name.to_string(), kind: s.kind.into(), ..Default::default() })
+        .map(|s| {
+            // Name, FCC license and sites: a trunked system's (conventional has none of these).
+            let sys = cfg.systems.iter().find(|y| y.short_name == s.short_name && s.kind != "conventional");
+            let sites = sys.map_or_else(Vec::new, |y| {
+                y.active_sites().map(|t| trunk_recorder_plugin::SiteInfo { name: y.site_name(t).to_string(), fcc_name: t.fcc_name.clone(), fcc_call_sign: t.fcc_call_sign.clone() }).collect()
+            });
+            trunk_recorder_plugin::SystemInfo {
+                index: s.index,
+                short_name: s.short_name.to_string(),
+                kind: s.kind.into(),
+                name: sys.map_or_else(String::new, |y| y.name.clone()),
+                fcc_name: sys.map_or_else(String::new, |y| y.fcc_name.clone()),
+                fcc_call_sign: sys.map_or_else(String::new, |y| y.fcc_call_sign.clone()),
+                sites,
+                ..Default::default()
+            }
+        })
         .collect()
 }
 
@@ -260,6 +276,26 @@ mod tests {
         let mut b = a.clone();
         b.plugins.get_mut("openmhz").unwrap().share_decrypted = true;
         assert!(changed(&a, &b) && changed(&b, &a));
+    }
+
+    /// A system's name, FCC license and sites (each with its own) are told to plugins; left out, they're absent.
+    #[test]
+    fn plugins_are_told_a_systems_fcc_call_sign_and_sites() {
+        let c: Config = serde_json::from_value(json!({
+            "systems": [
+                { "shortName": "dcfd", "name": "DC Fire", "fccName": "DISTRICT OF COLUMBIA", "fccCallSign": "WPXT459",
+                  "sites": [{ "controlChannelsHz": [857987500] }, { "name": "south", "fccCallSign": "KNJU834", "controlChannelsHz": [858987500] }] },
+                { "shortName": "wmata", "sites": [{ "controlChannelsHz": [489087500] }] }
+            ]
+        }))
+        .unwrap();
+        let s = systems_of(&c);
+        assert_eq!(s[0].name, "DC Fire");
+        assert_eq!((s[0].fcc_name.as_str(), s[0].fcc_call_sign.as_str()), ("DISTRICT OF COLUMBIA", "WPXT459"));
+        assert_eq!(s[0].sites.iter().map(|x| (x.name.as_str(), x.fcc_call_sign.as_str())).collect::<Vec<_>>(), [("dcfd", ""), ("south", "KNJU834")]);
+        let wire = serde_json::to_value(&s[1]).unwrap();
+        assert!(wire.get("fcc_name").is_none() && wire.get("fcc_call_sign").is_none() && wire.get("name").is_none(), "{wire}");
+        assert_eq!(wire["sites"][0]["name"], "wmata");
     }
 
     #[test]

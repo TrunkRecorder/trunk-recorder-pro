@@ -727,6 +727,10 @@
                 "$ref": "#/definitions/InterfaceSetup"
               },
               "description": "The other interfaces, by id, each on a port of its own (desktop app; docs/interfaces)."
+            },
+            "trpApi": {
+              "type": "string",
+              "description": "Where the trunkrecorder.pro API is, for the survey's license lookup (absent: https://trunkrecorder.pro)."
             }
           },
           "required": [
@@ -1808,6 +1812,37 @@
             "source",
             "type"
           ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "licenseResult"
+            },
+            "id": {
+              "type": "number"
+            },
+            "results": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/LicenseResultRow"
+              }
+            },
+            "error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "results",
+            "error"
+          ],
+          "additionalProperties": false
         },
         {
           "type": "object",
@@ -3204,6 +3239,30 @@
         "counts"
       ],
       "additionalProperties": false
+    },
+    "LicenseResultRow": {
+      "type": "object",
+      "properties": {
+        "freqHz": {
+          "type": "number"
+        },
+        "historical": {
+          "type": "boolean"
+        },
+        "licenses": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/SurveyLicense"
+          }
+        }
+      },
+      "required": [
+        "freqHz",
+        "historical",
+        "licenses"
+      ],
+      "additionalProperties": false,
+      "description": "The licenses found on one frequency looked up; `historical`: none active on it, so these have lapsed."
     },
     "LockableKeys": {
       "type": "object",
@@ -4729,6 +4788,13 @@
           "type": "string",
           "description": "Its name, unique in its system (absent: the system's short name). The talkgroup file's Preferred Site names it; calls and plugins say it."
         },
+        "fccName": {
+          "type": "string",
+          "description": "This site's own FCC licensee and license call sign, apart from the system's; plugins are told them."
+        },
+        "fccCallSign": {
+          "type": "string"
+        },
         "enabled": {
           "type": "boolean"
         },
@@ -5637,6 +5703,107 @@
       "additionalProperties": false,
       "description": "A signal the scan found. `freqHz` as heard (uncorrected); `correctedHz` once the ppm is known."
     },
+    "SurveyLicense": {
+      "type": "object",
+      "properties": {
+        "callSign": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "licensee": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "serviceCode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "serviceDesc": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "freqHz": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "emission": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "distanceM": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "bearingDeg": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "bearingCardinal": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "city": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "\"A\" active; anything else has lapsed."
+        },
+        "locationKind": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "callSign",
+        "licensee",
+        "serviceCode",
+        "serviceDesc",
+        "freqHz",
+        "emission",
+        "distanceM",
+        "bearingDeg",
+        "bearingCardinal",
+        "city",
+        "state",
+        "status",
+        "locationKind"
+      ],
+      "additionalProperties": false,
+      "description": "An FCC license near the user on a frequency the survey heard (the trunkrecorder.pro API's)."
+    },
     "SurveyMonitor": {
       "type": "object",
       "properties": {
@@ -6013,6 +6180,14 @@
         "name": {
           "type": "string",
           "description": "What people call it (\"County Public Safety\"); the short name is its folder."
+        },
+        "fccName": {
+          "type": "string",
+          "description": "Who holds its FCC license, as the FCC has it (\"DISTRICT OF COLUMBIA\"), for reference; plugins are told it."
+        },
+        "fccCallSign": {
+          "type": "string",
+          "description": "Its FCC license's call sign (\"WPXT459\"), for reference; plugins are told it."
         },
         "type": {
           "type": "string",
@@ -6518,6 +6693,54 @@
           },
           "required": [
             "type"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "licenseQuery"
+            },
+            "id": {
+              "type": "number"
+            },
+            "lat": {
+              "type": "number"
+            },
+            "lon": {
+              "type": "number"
+            },
+            "radiusM": {
+              "type": "number"
+            },
+            "signals": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "freqHz": {
+                    "type": "number"
+                  },
+                  "widthHz": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "freqHz"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "lat",
+            "lon",
+            "radiusM",
+            "signals"
           ],
           "additionalProperties": false
         },

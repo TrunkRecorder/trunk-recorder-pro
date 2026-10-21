@@ -901,6 +901,17 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
             let _ = tokio::task::spawn_blocking(move || ctx2.survey_send(crate::survey::UserCmd::Rescan)).await;
             None
         }
+        // (The request takes up to 15 s: off the connection's task.)
+        Command::LicenseQuery { id, lat, lon, radius_m, signals } => {
+            let api_base = ctx.config.lock().unwrap().server.trp_api_base().to_string();
+            let answer = tokio::task::spawn_blocking(move || trunk_app::licenses::request(lat, lon, radius_m, &signals).and_then(|req| crate::licenses::identify(&api_base, &req)))
+                .await
+                .unwrap_or_else(|e| Err(e.to_string()));
+            Some(match answer {
+                Ok(v) => ToClient::LicenseResult { id, results: v["results"].as_array().cloned().unwrap_or_default(), error: None },
+                Err(e) => ToClient::LicenseResult { id, results: vec![], error: Some(e) },
+            })
+        }
         Command::SurveyStop => {
             let ctx2 = ctx.clone();
             let _ = tokio::task::spawn_blocking(move || ctx2.stop_survey()).await;
