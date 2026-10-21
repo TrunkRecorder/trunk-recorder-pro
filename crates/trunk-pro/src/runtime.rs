@@ -1032,6 +1032,16 @@ fn deliver(ctx: &Ctx, out: &mut Vec<Output>, plugins: Option<&PluginHost>, rules
                 let _ = ctx.hub.send(Arc::new(Out::Topic { topic, text: msg.to_json() }));
             }
             Output::Rollup(r) => ctx.store.add(r),
+            // Into the config where it has none, saved and sent to the browsers.
+            Output::CallSign { short_name, site, call_sign } => {
+                let mut learned = false;
+                let saved = crate::server::edit_config(ctx, |c| learned = c.learn_call_sign(&short_name, &site, &call_sign));
+                match saved {
+                    Err(e) => log::warn!("{short_name}: heard its FCC call sign {call_sign}, but {e}"),
+                    Ok(()) if learned => log::info!("{short_name}: FCC call sign {call_sign} (site {site}), from its control channel"),
+                    Ok(()) => {}
+                }
+            }
             Output::File { rel, system, wav, record, frames, decrypted } => finish(Finish { rel, system, wav, record, frames, rules: rules(system), decrypted }),
         }
     }

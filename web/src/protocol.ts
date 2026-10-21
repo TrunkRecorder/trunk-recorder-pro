@@ -544,6 +544,10 @@ export interface SiteStatus {
   callsConcluded: number;
   /** The control channel is another system's / site's: why (its grants are not followed). */
   mismatch: string | null;
+  /** The FCC call sign that names it, of those its control channel's base station IDs say (Motorola's): once it has listened long enough to have heard them all. */
+  callsign?: string | null;
+  /** Every call sign its base station IDs say, each with the channel it's for (a site's licenses can be one a channel). */
+  callsigns?: { callSign: string; freqHz: number | null }[];
 }
 
 /** One running site's detail (decodeDetail): what its control channel announces. */

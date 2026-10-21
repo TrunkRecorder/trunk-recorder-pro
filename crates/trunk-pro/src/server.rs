@@ -723,7 +723,7 @@ async fn session(ctx: Arc<Ctx>, mut socket: WebSocket, door: Door) {
 
 /// Change the config on the recorder's side (a plugin added or removed):
 /// saved, sent to every browser, and the plugins restarted if it changes them.
-fn edit_config(ctx: &Ctx, f: impl FnOnce(&mut crate::config::Config)) -> Result<(), String> {
+pub(crate) fn edit_config(ctx: &Ctx, f: impl FnOnce(&mut crate::config::Config)) -> Result<(), String> {
     let mut cfg = ctx.config.lock().unwrap();
     let old = cfg.clone();
     f(&mut cfg);

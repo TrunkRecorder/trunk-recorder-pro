@@ -5043,6 +5043,36 @@
             "null"
           ],
           "description": "The control channel is another system's / site's: why (its grants are not followed)."
+        },
+        "callsign": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The FCC call sign that names it, of those its control channel's base station IDs say (Motorola's): once it has listened long enough to have heard them all."
+        },
+        "callsigns": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "callSign": {
+                "type": "string"
+              },
+              "freqHz": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "callSign",
+              "freqHz"
+            ],
+            "additionalProperties": false
+          },
+          "description": "Every call sign its base station IDs say, each with the channel it's for (a site's licenses can be one a channel)."
         }
       },
       "required": [

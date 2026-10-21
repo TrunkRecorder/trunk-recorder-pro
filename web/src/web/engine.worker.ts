@@ -2,7 +2,7 @@
 // RTL-SDR driver (WebUSB), speaking the same protocol as the desktop app's
 // server, so the interface is identical. Calls are stored in OPFS.
 
-import init, { survey_bands, WebProfiler, WebRtl, WebSession, WebSurvey } from "./pkg/trunk_web.js";
+import init, { learn_call_sign, survey_bands, WebProfiler, WebRtl, WebSession, WebSurvey } from "./pkg/trunk_web.js";
 import type { Config, FromRecorder, HeardCode, ToRecorder } from "../protocol.ts";
 import { activeSystems, resolvedCenters } from "../config.ts";
 import { listCalls, readText, saveCall, writeText } from "./opfs.ts";
@@ -64,9 +64,17 @@ async function devices() {
 }
 
 /** Hand the session's outputs to the page / storage. */
-function deliver(outs: { t: string; json?: string; system?: number; shortName?: string; tg?: number; frame?: Uint8Array; rel?: string; wav?: Uint8Array; entry?: string }[]): void {
+function deliver(outs: { t: string; json?: string; system?: number; shortName?: string; tg?: number; frame?: Uint8Array; rel?: string; wav?: Uint8Array; entry?: string; site?: string; callSign?: string }[]): void {
   for (const o of outs) {
     if (o.t === "text") post(JSON.parse(o.json!) as FromRecorder);
+    else if (o.t === "callSign") {
+      // A site's FCC call sign, heard on the air: into the config where it has none (the page stores it).
+      const learned = config && learn_call_sign(JSON.stringify(config), o.shortName!, o.site!, o.callSign!);
+      if (learned) {
+        config = JSON.parse(learned) as Config;
+        post({ type: "config", config, version: ++configVersion });
+      }
+    }
     else if (o.t === "audio") {
       if (listen.on && (listen.system === null || listen.system === o.shortName) && (listen.talkgroup === null || listen.talkgroup === o.tg)) {
         const buf = o.frame!.slice().buffer;

@@ -3,7 +3,7 @@
 // eye is, the framer's misses) and its voice (decode errors) — by frequency,
 // so a bad channel, a band edge or a source's ppm shows up as a pattern.
 
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { formatMhz, systemColor, usableHalfWidth } from "../config.ts";
 import { radioQuery, setView, usePolled, useApp, useTopic, type AppState, type StatsRange } from "../controller.ts";
 import { BackBar, Card, Choice, HeatStrip, LiveSpark, Stat, TimeSeries, Trend, type Line } from "../charts.tsx";
@@ -261,6 +261,18 @@ function SystemDetail({ s, name, siteName }: { s: AppState; name: string; siteNa
           <span>
             Site <b className="mono">{st.identity.site != null ? `${st.identity.rfss ?? "?"}-${st.identity.site}` : "—"}</b>
           </span>
+          {!!st.callsigns?.length && (
+            <span title="The FCC call signs its control channel's base station IDs say, each for a channel">
+              Call sign{st.callsigns.length > 1 ? "s" : ""}{" "}
+              {st.callsigns.map((x, i) => (
+                <Fragment key={x.callSign}>
+                  {i > 0 && ", "}
+                  <b className="mono">{x.callSign}</b>
+                  {x.freqHz ? <span className="muted">{` ${formatMhz(x.freqHz, 4)}`}</span> : null}
+                </Fragment>
+              ))}
+            </span>
+          )}
           <span>
             {x.status?.callsConcluded ?? 0} calls saved this run · {x.status?.activeCalls ?? 0} active
           </span>

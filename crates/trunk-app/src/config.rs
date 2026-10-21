@@ -1656,7 +1656,42 @@ fn source_types(v: &mut serde_json::Value) {
     }
 }
 
+/// An FCC call sign as one can be: 3 to 8 letters and digits, with both.
+pub fn plausible_call_sign(s: &str) -> bool {
+    (3..=8).contains(&s.len())
+        && s.bytes().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+        && s.bytes().any(|c| c.is_ascii_digit())
+        && s.bytes().any(|c| c.is_ascii_uppercase())
+}
+
 impl Config {
+    /// The FCC call sign a site's control channel identifies itself by
+    /// (Motorola's base station ID), into the config where there is none:
+    /// the system's when it has none; else the site's own when it has none
+    /// and it isn't the system's. Never in place of one the user gave.
+    /// Whether it went in.
+    pub fn learn_call_sign(&mut self, short_name: &str, site: &str, call_sign: &str) -> bool {
+        if !plausible_call_sign(call_sign) {
+            return false;
+        }
+        let Some(sys) = self.systems.iter_mut().find(|s| s.short_name == short_name) else { return false };
+        if sys.fcc_call_sign.is_empty() {
+            sys.fcc_call_sign = call_sign.to_string();
+            return true;
+        }
+        if sys.fcc_call_sign == call_sign {
+            return false;
+        }
+        let k = sys.sites.iter().position(|t| sys.site_name(t) == site);
+        match k.map(|k| &mut sys.sites[k]) {
+            Some(t) if t.fcc_call_sign.is_empty() => {
+                t.fcc_call_sign = call_sign.to_string();
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// The config at `path`, with a linked channel file read in; the
     /// defaults when there's no file yet. A file that isn't a config is an
     /// error, not the defaults (which would be saved over it).
@@ -2247,6 +2282,30 @@ const RTL_BUSY_COUNT: usize = 4;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A call sign heard on the air goes where there is none: the system's, then a site's own; never over the user's.
+    #[test]
+    fn a_call_sign_heard_goes_where_there_is_none() {
+        let mut c: Config = serde_json::from_value(serde_json::json!({ "systems": [
+            { "shortName": "dcfd", "sites": [{ "name": "north", "controlChannelsHz": [1] }, { "name": "south", "controlChannelsHz": [2] }] },
+            { "shortName": "wmata", "fccCallSign": "WPVX388", "sites": [{ "controlChannelsHz": [3] }] }
+        ] }))
+        .unwrap();
+        assert!(!c.learn_call_sign("dcfd", "north", "wpxt459"), "not a call sign as sent");
+        assert!(!c.learn_call_sign("dcfd", "north", "ABCDEFGHI"));
+        assert!(c.learn_call_sign("dcfd", "north", "WPXT459"));
+        assert_eq!(c.systems[0].fcc_call_sign, "WPXT459");
+        // The same again, or the system's on another site: nothing.
+        assert!(!c.learn_call_sign("dcfd", "north", "WPXT459") && !c.learn_call_sign("dcfd", "south", "WPXT459"));
+        // A site with its own: its own.
+        assert!(c.learn_call_sign("dcfd", "south", "KNJU834"));
+        assert_eq!((c.systems[0].fcc_call_sign.as_str(), c.systems[0].sites[1].fcc_call_sign.as_str()), ("WPXT459", "KNJU834"));
+        assert!(!c.learn_call_sign("dcfd", "south", "KNJU999"), "a site's own stays");
+        // A system of one site: by the system's short name; the user's stays.
+        assert!(c.learn_call_sign("wmata", "wmata", "WSKT665"));
+        assert_eq!((c.systems[1].fcc_call_sign.as_str(), c.systems[1].sites[0].fcc_call_sign.as_str()), ("WPVX388", "WSKT665"));
+        assert!(!c.learn_call_sign("nope", "nope", "WSKT665"));
+    }
 
     /// The FCC name and call sign are optional: read where given (a system's, a site's), and not written when empty.
     #[test]

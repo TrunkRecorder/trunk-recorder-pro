@@ -31,7 +31,7 @@ a system of its own.)
 | `shortName` | | `"sys1"` | string | The system's identity: its recordings folder, the `short_name` in call JSON, its talker alias file, and how plugins know it. Every system, trunked or conventional, enabled or not, needs its own. Keep it to letters, digits, `-` and `_` |
 | `name` | | `""` | string | What people call it ("County Public Safety"), for display |
 | `fccName` | | `""` | string | Optional: who holds its FCC license, as the FCC has it (`"DISTRICT OF COLUMBIA"`), for reference. **Identify** on its card, or the survey, fills it in |
-| `fccCallSign` | | `""` | string | Optional: its FCC license's call sign (`"WPXT459"`). Plugins are told both (`hello`'s `systems[].fcc_name`, `fcc_call_sign`) |
+| `fccCallSign` | | `""` | string | Optional: its FCC license's call sign (`"WPXT459"`). Filled in when empty from what a Motorola P25 control channel sends (see [P25](../guides/p25.md#fcc-call-sign-motorola-base-station-id)). Plugins are told both (`hello`'s `systems[].fcc_name`, `fcc_call_sign`) |
 | `type` | | `"p25"` | string | `"p25"`, `"smartnet"`, `"dmr"` or `"nxdn"` (any case). Anything else is refused when the config is read |
 | `enabled` | | `true` | bool | `false` keeps it in the config without recording it |
 | `sites` | | `[]` | array | Where it is recorded from: one entry per site. See [Keys for each site](#keys-for-each-site) |
@@ -47,7 +47,7 @@ a system of its own.)
 |---|:---:|---|---|---|
 | `name` | | the system's `shortName` | string | The site's name, unique in its system: what the talkgroup file's `Preferred Site` names, the `site` in call JSON and the log. Leave it out for a system of one site |
 | `fccName` | | `""` | string | Optional: this site's own FCC licensee, when it isn't the system's |
-| `fccCallSign` | | `""` | string | Optional: this site's own FCC call sign. Plugins are told both (`hello`'s `systems[].sites[]`) |
+| `fccCallSign` | | `""` | string | Optional: this site's own FCC call sign (filled in when its control channel sends one that isn't the system's). Plugins are told both (`hello`'s `systems[].sites[]`) |
 | `enabled` | | `true` | bool | `false` keeps the site without recording from it (**Record** on its card) |
 | `controlChannelsHz` | | `[]` | array of numbers | P25 and SmartNet: the control channel and its alternates, Hz. The recorder hunts through them, moving on when one goes quiet for 5 s. DMR and NXDN: every frequency listed is watched at once (NXDN Type-D: the repeaters) |
 | `expect` | | `{}` | object | Site lock: only follow a control channel with this identity. See [Site lock](#site-lock-expect) |
