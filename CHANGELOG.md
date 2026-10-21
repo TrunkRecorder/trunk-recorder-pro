@@ -5,6 +5,12 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Gain changes apply while recording** on RTL-SDRs and Airspys (the
+  gain and AGC on or off; an Airspy's preset or stages), and on USRPs and
+  SoapySDR devices (the gain in dB, AGC off), without a Stop and Start; the
+  log says which radio took it, and a radio reopened after an error keeps
+  the gain it was given. Other radio settings still apply when recording
+  starts, which the log says too.
 - **P25 Phase 1 voice repeats fewer good frames.** A frame whose FEC corrected a lot of errors
   is repeated only when the errors fall in its pitch word *and* there are many in total, as
   TIA-102.BABA-A §7.7 has it, not on either one (an `||` inherited from op25, which taclane

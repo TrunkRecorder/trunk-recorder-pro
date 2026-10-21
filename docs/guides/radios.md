@@ -149,6 +149,11 @@ usually works better for trunked systems, so the default is AGC off (except on S
 
 On an Airspy, **Linearity** is best near transmitters and **Sensitivity** for weak signals.
 
+A gain changed in Setup while recording applies at once on an RTL-SDR or an Airspy (AGC on or off
+too, and an Airspy's preset or stages), and on a USRP or SoapySDR device for the gain in dB with
+AGC off; the log says so for each radio.
+Anything else about a radio applies when recording starts next: Stop, then Start.
+
 How to set it:
 
 - **Let the survey do it.** On an RTL-SDR, Find my system tries gains from 19.7 to 49.6 dB while
