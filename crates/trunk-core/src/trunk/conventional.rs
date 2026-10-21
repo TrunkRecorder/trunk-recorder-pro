@@ -1763,6 +1763,8 @@ mod tests {
         let (calls, _) = p25_calls(&[(0.3, 0x293, 1)], vec![p25_row("", None, "")], 3.0);
         assert_eq!(filed(&calls), [(1, Some(1), String::new())]);
         assert!(calls[0].1.contains(r#""talkgroup":1,"talkgroup_ota":1,"#), "{}", calls[0].1);
+        // The NAC the frames carried, and what kind of call it was.
+        assert!(calls[0].1.contains(r#""nac":659,"#) && calls[0].1.contains(r#""system_type":"conventional","voice_mode":"p25","#), "{}", calls[0].1);
         // A number of its own: filed under it, the air's kept.
         let (calls, _) = p25_calls(&[(0.3, 0x293, 1)], vec![p25_row("", Some(46012), "Townville PD")], 3.0);
         assert_eq!(filed(&calls), [(46012, Some(1), "Townville PD".into())]);
@@ -1795,5 +1797,6 @@ mod tests {
         let [(c, _, json)] = &calls[..] else { panic!("{} calls", calls.len()) };
         assert_eq!((c.talkgroup, c.talkgroup_ota), (5, None));
         assert!(!json.contains("talkgroup_ota"), "{json}");
+        assert!(json.contains(r#""nac":-1,"#) && json.contains(r#""voice_mode":"fm","#), "{json}");
     }
 }

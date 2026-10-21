@@ -377,6 +377,9 @@ pub struct CallRecord {
     pub talkgroup_description: String,
     pub talkgroup_group_tag: String,
     pub talkgroup_group: String,
+    /// P25: the NAC its voice carried on a conventional channel, its site's
+    /// on a trunked system (-1: none; this recorder's addition).
+    pub nac: i64,
     /// DMR: its colour code (-1: none).
     pub color_code: i64,
     /// NXDN: its RAN (-1: none).
@@ -388,6 +391,15 @@ pub struct CallRecord {
     pub tone_confidence: f64,
     /// "digital" | "digital tdma" | "analog"
     pub audio_type: String,
+    /// The kind of system it came on, as [`SystemInfo::kind`] has it: "p25" |
+    /// "smartnet" | "dmr" | "nxdn" | "conventional" (this recorder's addition).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub system_type: String,
+    /// What its voice was: "p25" | "p25_phase2" | "dmr" | "nxdn48" | "nxdn96"
+    /// | "fm" | "am" — a conventional channel's `mode`, or a trunked grant's
+    /// (this recorder's addition).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub voice_mode: String,
     pub short_name: String,
     /// The site its copy was kept from (this recorder's addition; a system
     /// of one site: its short name; none for a conventional system's).
@@ -442,12 +454,15 @@ impl Default for CallRecord {
             talkgroup_description: String::new(),
             talkgroup_group_tag: String::new(),
             talkgroup_group: String::new(),
+            nac: -1,
             color_code: -1,
             ran: -1,
             tone_mode: "off".into(),
             tone_detected: String::new(),
             tone_confidence: 0.0,
             audio_type: "digital".into(),
+            system_type: String::new(),
+            voice_mode: String::new(),
             short_name: String::new(),
             site: String::new(),
             patched_talkgroups: Vec::new(),

@@ -10,7 +10,9 @@
 //! `{epoch}`, `{source_num}`, `{recorder_num}`, `{audio_type}`,
 //! `{emergency}`, `{encrypted}`, `{priority}`, `{signal}`, `{noise}` (dBFS,
 //! whole dB cut toward zero as Trunk Recorder does; 0 when unmeasured),
-//! `{color_code}`, `{ran}`; and the start time, `{time:FORMAT}` in local time or
+//! `{nac}` (P25's, three hex digits; empty for others), `{color_code}`, `{ran}`,
+//! `{system_type}` (`p25`, `smartnet`, `dmr`, `nxdn`, `conventional`),
+//! `{voice_mode}` (`p25`, `p25_phase2`, `dmr`, `nxdn48`, `nxdn96`, `fm`, `am`); and the start time, `{time:FORMAT}` in local time or
 //! `{ztime:FORMAT}` in UTC, FORMAT being strftime's (`%Y %m %d %H %M %S`,
 //! `%f` for milliseconds, `%-m` for no padding, …) or `iso` / `iso_ms`. Text from the talkgroup
 //! file has `\ / : * ? " < > |` and spaces made `_`.
@@ -86,8 +88,11 @@ const TOKENS: &[&str] = &[
     "priority",
     "signal",
     "noise",
+    "nac",
     "color_code",
     "ran",
+    "system_type",
+    "voice_mode",
 ];
 
 fn token(t: &str, r: &Value, sys_num: u16, utc_offset_s: i32) -> String {
@@ -127,7 +132,8 @@ fn token(t: &str, r: &Value, sys_num: u16, utc_offset_s: i32) -> String {
         // Decimal dBFS (or null) in the JSON; Trunk Recorder casts to int.
         "signal" | "noise" => (r[t].as_f64().unwrap_or(0.0) as i64).to_string(),
         "source_num" | "recorder_num" | "emergency" | "encrypted" | "priority" | "color_code" | "ran" => num(t),
-        "audio_type" => text("audio_type"),
+        "audio_type" | "system_type" | "voice_mode" => text(t),
+        "nac" => r["nac"].as_i64().filter(|&n| n >= 0).map_or(String::new(), |n| format!("{n:03X}")),
         _ => format!("{{{t}}}"),
     }
 }
@@ -304,6 +310,9 @@ mod tests {
         assert_eq!(render("{talkgroup}/{talkgroup_ota}", &c, 0, 0), "46012/1-call_3");
         assert_eq!(render("{talkgroup}_{talkgroup_ota}", &json!({ "call_num": 4, "talkgroup": 5 }), 0, 0), "5_-call_4", "none named: empty");
         assert_eq!(problem("{talkgroup_ota}"), None);
+        let c = json!({ "call_num": 5, "nac": 0x293, "system_type": "conventional", "voice_mode": "p25" });
+        assert_eq!(render("{system_type}/{voice_mode}/{nac}", &c, 0, 0), "conventional/p25/293-call_5");
+        assert_eq!(render("{nac}x", &json!({ "call_num": 6, "nac": -1 }), 0, 0), "x-call_6", "none: empty");
     }
 
     #[test]

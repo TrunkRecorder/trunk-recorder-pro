@@ -86,6 +86,8 @@ group of its card; left at default, it follows the Recording tab's.
 | `{emergency}`, `{encrypted}` | `1` or `0` |
 | `{priority}`, `{source_num}`, `{recorder_num}` | As in the call JSON |
 | `{color_code}`, `{ran}` | DMR colour code, NXDN RAN; `-1` when the call has none |
+| `{nac}` | A P25 call's NAC, three hex digits (`293`); empty when it has none |
+| `{system_type}`, `{voice_mode}` | As in the call JSON: `conventional`, `p25`… |
 | `{signal}`, `{noise}` | The call's signal and noise levels in whole dBFS (-45.7 becomes `-45`, as in Trunk Recorder); `0` when not measured |
 
 `FORMAT` is strftime's: `%Y` year, `%m` month, `%d` day, `%H%M%S` time, `%j` day of the year, `%a`
@@ -144,10 +146,13 @@ It is written on a single line.
 | `talkgroup_description` | Its description |
 | `talkgroup_group_tag` | Its tag |
 | `talkgroup_group` | Its category |
+| `nac` | P25: the NAC its voice carried on a conventional channel, its site's on a trunked system, as a number (`659` is NAC `293`); `-1` for none |
 | `color_code` | DMR colour code; `-1` for none |
 | `ran` | NXDN RAN; `-1` for none |
 | `tone_mode`, `tone_detected`, `tone_confidence` | Analog conventional calls' tone: see [Tones](tones.md#how-tones-are-identified) |
 | `audio_type` | `analog`, `digital` or `digital tdma` |
+| `system_type` | The kind of system it came on: `p25`, `smartnet`, `dmr`, `nxdn` or `conventional` (the same words plugins get) |
+| `voice_mode` | What its voice was: `p25`, `p25_phase2`, `dmr`, `nxdn48`, `nxdn96`, `fm` or `am`. With `system_type`, a conventional P25 call is `conventional` / `p25`, a SmartNet analog one `smartnet` / `fm` |
 | `short_name` | The system's short name |
 | `site` | The site the kept copy was heard on (a system of one site: its short name). Not on conventional calls. A call heard on several sites is saved once |
 | `patched_talkgroups` | Only when the talkgroup was patched with others: all of them |
@@ -157,8 +162,8 @@ It is written on a single line.
 
 Compared with Trunk Recorder's JSON:
 
-- `snr`, `clean_voice_pct`, `ran`, `talkgroup_ota`, `errorList` and the three tone fields are
-  additions.
+- `snr`, `clean_voice_pct`, `nac`, `ran`, `talkgroup_ota`, `system_type`, `voice_mode`, `errorList`
+  and the three tone fields are additions.
 - `signal` and `noise` are in dBFS with a decimal, not whole numbers.
 - `freqList` has one entry for the whole call rather than one per transmission.
 - Trunk Recorder pretty-prints its JSON; this is one line. JSON readers don't mind.

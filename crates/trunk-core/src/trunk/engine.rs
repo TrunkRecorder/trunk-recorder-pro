@@ -1952,6 +1952,7 @@ impl Core {
             &SaveContext {
                 rules: sys.cfg.save,
                 short_name: &sys.cfg.short_name,
+                system_type: trunk.map_or("conventional", |t| t.cfg.protocol.kind()),
                 site: trunk.map_or("", |t| &t.cfg.name),
                 epoch_ms_at_zero: self.epoch_ms_at_zero,
                 units: Some(&sys.aliases),

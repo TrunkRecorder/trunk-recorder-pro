@@ -726,11 +726,17 @@ export interface CallRecord {
   mode: number;
   /** TDMA / DMR slot (0 otherwise). */
   tdma_slot: number;
+  /** P25: the NAC its voice carried (conventional) or its site's (trunked); -1 otherwise (absent in calls saved before). */
+  nac?: number;
   /** DMR color code; -1 otherwise. */
   color_code: number;
   /** NXDN RAN; -1 otherwise (absent in calls saved before NXDN). */
   ran?: number;
   audio_type: "analog" | "digital" | "digital tdma";
+  /** The kind of system it came on (absent in calls saved before). */
+  system_type?: "p25" | "smartnet" | "dmr" | "nxdn" | "conventional";
+  /** What its voice was: a conventional row's mode, or a trunked grant's (absent in calls saved before). */
+  voice_mode?: "p25" | "p25_phase2" | "dmr" | "nxdn48" | "nxdn96" | "fm" | "am";
   /** Conventional analog: the tone it was matched on ("ctcss" / "dcs"), "search" (identified, not required), else "off". */
   tone_mode: "ctcss" | "dcs" | "search" | "off";
   /** The tone heard ("151.4 Hz", "D023N"), or "". */

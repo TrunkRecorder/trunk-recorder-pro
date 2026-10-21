@@ -6,7 +6,7 @@
 /** The call tokens, as filename.rs knows them. */
 export const FILENAME_TOKENS = [
   "talkgroup", "talkgroup_ota", "talkgroup_tag", "talkgroup_alpha_tag", "talkgroup_description", "talkgroup_group", "talkgroup_display", "short_name", "site", "freq", "freq_mhz",
-  "call_num", "tdma_slot", "sys_num", "epoch", "source_num", "recorder_num", "audio_type", "emergency", "encrypted", "priority", "signal", "noise", "color_code", "ran",
+  "call_num", "tdma_slot", "sys_num", "epoch", "source_num", "recorder_num", "audio_type", "emergency", "encrypted", "priority", "signal", "noise", "nac", "color_code", "ran", "system_type", "voice_mode",
 ];
 
 export type Piece =
@@ -152,8 +152,12 @@ export const SAMPLE_CALL = {
   priority: 1,
   signal: -48,
   noise: -112,
+  // (As the recorder writes the NAC in a path: three hex digits.)
+  nac: "293",
   color_code: -1,
   ran: -1,
+  system_type: "p25",
+  voice_mode: "p25",
 };
 
 const DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];

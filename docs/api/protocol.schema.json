@@ -140,6 +140,10 @@
           "type": "number",
           "description": "TDMA / DMR slot (0 otherwise)."
         },
+        "nac": {
+          "type": "number",
+          "description": "P25: the NAC its voice carried (conventional) or its site's (trunked); -1 otherwise (absent in calls saved before)."
+        },
         "color_code": {
           "type": "number",
           "description": "DMR color code; -1 otherwise."
@@ -155,6 +159,30 @@
             "digital",
             "digital tdma"
           ]
+        },
+        "system_type": {
+          "type": "string",
+          "enum": [
+            "p25",
+            "smartnet",
+            "dmr",
+            "nxdn",
+            "conventional"
+          ],
+          "description": "The kind of system it came on (absent in calls saved before)."
+        },
+        "voice_mode": {
+          "type": "string",
+          "enum": [
+            "p25",
+            "p25_phase2",
+            "dmr",
+            "nxdn48",
+            "nxdn96",
+            "fm",
+            "am"
+          ],
+          "description": "What its voice was: a conventional row's mode, or a trunked grant's (absent in calls saved before)."
         },
         "tone_mode": {
           "type": "string",

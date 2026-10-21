@@ -150,6 +150,9 @@ message naming it.
 | `{ztime:FORMAT}` | The same in UTC (`iso` ends in `Z`) |
 | `{call_num}` | The call's number |
 | `{tdma_slot}` | The slot (Phase 2, DMR); empty when the call has none |
+| `{system_type}` | The kind of system: `p25`, `smartnet`, `dmr`, `nxdn` or `conventional` |
+| `{voice_mode}` | What the call's voice was: `p25`, `p25_phase2`, `dmr`, `nxdn48`, `nxdn96`, `fm` or `am` |
+| `{nac}` | A P25 call's NAC, three hex digits (`293`); empty for other calls |
 | `{color_code}` | DMR colour code |
 | `{ran}` | An NXDN call's RAN; −1 otherwise |
 | `{source_num}`, `{recorder_num}` | Which source and recorder |
