@@ -205,6 +205,10 @@ with: a control channel that is too far off to decode can't be measured. Set the
 my system set it), then turn on AutoTune to follow drift. While recording, the source card shows
 how much AutoTune is correcting by (*corrected by +0.40 ppm*).
 
+Conventional channels take up a source's correction too, between calls. A source with only
+conventional channels has no control channel to measure; digital rows you mark can measure it
+from their calls instead. See [Conventional channels: frequency correction](conventional.md#frequency-correction).
+
 ## Running several radios
 
 More radios cover more spectrum: a second dongle can catch the voice channels the first can't

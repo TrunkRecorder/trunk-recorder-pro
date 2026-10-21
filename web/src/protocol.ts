@@ -105,6 +105,8 @@ export interface Channel {
   /** FM / AM: the channel filter's width, kHz (4–20); absent = the mode's (FM 11, AM 11 or 16 from 225 MHz). */
   bandwidthKhz?: number;
   enabled: boolean;
+  /** Digital rows: its calls' carrier offsets score its source's AutoTune (a repeater output to trust, not radios on simplex). Absent: off. */
+  autoTune?: boolean;
 }
 
 /** How a conventional system's analog channels are demodulated; each left out is the default. */

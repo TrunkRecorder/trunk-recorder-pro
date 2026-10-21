@@ -169,6 +169,9 @@ pub struct ConvChannel {
     pub system: usize,
     /// Analog: how it's demodulated (rows sharing a frequency share it).
     pub analog: AnalogTuning,
+    /// Its calls' carrier offsets score its source's AutoTune (digital
+    /// rows: a repeater output to trust, not radios on simplex).
+    pub tune_ref: bool,
 }
 
 /// How a row picks its transmissions out of a frequency's (the channel's
@@ -378,7 +381,7 @@ impl ConvChannel {
     pub fn new(freq_hz: f64, mode: ConvMode) -> Self {
         let analog = if mode == ConvMode::Am { AnalogTuning::am(freq_hz) } else { AnalogTuning::default() };
         let default_talkgroup = Self::default_talkgroup(freq_hz);
-        ConvChannel { freq_hz, mode, talkgroup: None, default_talkgroup, info: None, squelch_db: None, access: None, system: 0, analog }
+        ConvChannel { freq_hz, mode, talkgroup: None, default_talkgroup, info: None, squelch_db: None, access: None, system: 0, analog, tune_ref: false }
     }
 
     /// Its names, when the number they go with is known before a call is
@@ -426,7 +429,8 @@ pub enum ConvOut {
     Event(Event),
     /// A call is over: the engine saves it. `recorder_num`: the index of the
     /// channel (frequency) it came on.
-    End { call: Call, audio: Vec<f32>, frames: CallFrames, recorder_num: u32, tx: Transmissions, reception: Reception, freq_error_hz: Option<f64> },
+    /// `tune_source`: its frequency scores this source's AutoTune ([`ConvChannel::tune_ref`]).
+    End { call: Call, audio: Vec<f32>, frames: CallFrames, recorder_num: u32, tx: Transmissions, reception: Reception, freq_error_hz: Option<f64>, tune_source: Option<usize> },
     /// A radio's talker alias, heard on a P25 channel of system `.0` ([`Call::system`]).
     Alias(u16, Alias),
     /// A key of system `.0` that decrypts its voice to noise.
@@ -575,6 +579,12 @@ struct Chan {
     /// recorded call would be counted.
     skipped: [Option<(String, f64)>; 2],
     source: usize,
+    /// Its source's centre, and the AutoTune correction `offset_hz` places it
+    /// with, ppm (changed between calls: [`Conventional::on_block`]).
+    center_hz: f64,
+    tune_ppm: f64,
+    /// Its calls score the source's AutoTune: a digital row asks it.
+    tune_ref: bool,
     offset_hz: f64,
     slice: usize,
     power: f64,
@@ -683,7 +693,8 @@ impl Conventional {
             let slice = floor_slice(n, rate, offset_hz);
             let bar = squelch_db.unwrap_or(cfg.squelch_db);
             let (freq_hz, mode, system, analog, shape) = (c.freq_hz, c.mode, c.system, c.analog, ChannelShape::of(c.mode, &c.analog));
-            chans.push(Chan { freq_hz, mode, system, analog, shape, squelch_db, rows, routed, skipped: [None, None], source: src, offset_hz, slice, power: 0.0, watch: (mode == ConvMode::Am).then(am::LineWatch::default), ignored: Vec::new(), bar_db: bar, raised: false, open: None });
+            let tune_ref = !mode.analog() && rows.iter().any(|r| r.tune_ref);
+            chans.push(Chan { freq_hz, mode, system, analog, shape, squelch_db, rows, routed, skipped: [None, None], source: src, center_hz: center, tune_ppm: 0.0, tune_ref, offset_hz, slice, power: 0.0, watch: (mode == ConvMode::Am).then(am::LineWatch::default), ignored: Vec::new(), bar_db: bar, raised: false, open: None });
         }
         if !outside.is_empty() {
             return Err(format!("Conventional channel(s) outside every source's bandwidth: {} MHz — move a center frequency or disable them.", outside.join(", ")));
@@ -799,10 +810,18 @@ impl Conventional {
     /// `ids`: the engine's call ids. `systems`: the engine's (a channel's `system` indexes them).
     /// `gap`: the block is silence standing in for samples that never came
     /// ([`super::Engine::push_gap`]): calls open run on, nothing new opens,
-    /// and the noise floor is left as it was.
-    pub fn on_block<'s>(&mut self, source: usize, chz: &mut Channelizer, now_s: f64, gap: bool, ids: &CallIds, system: &dyn Fn(usize) -> &'s SystemConfig, out: &mut Vec<ConvOut>) {
+    /// and the noise floor is left as it was. `tune_ppm`: the source's
+    /// AutoTune correction now, which a channel takes up between calls.
+    #[allow(clippy::too_many_arguments)]
+    pub fn on_block<'s>(&mut self, source: usize, chz: &mut Channelizer, now_s: f64, gap: bool, tune_ppm: f64, ids: &CallIds, system: &dyn Fn(usize) -> &'s SystemConfig, out: &mut Vec<ConvOut>) {
         if !self.chans.iter().any(|c| c.source == source) {
             return;
+        }
+        let n = self.floors[source].slices.len();
+        for ch in self.chans.iter_mut().filter(|c| c.source == source && c.open.is_none() && c.tune_ppm != tune_ppm) {
+            ch.tune_ppm = tune_ppm;
+            ch.offset_hz = ch.freq_hz * (1.0 + tune_ppm * 1e-6) - ch.center_hz;
+            ch.slice = floor_slice(n, chz.fs(), ch.offset_hz);
         }
         let fl = &mut self.floors[source];
         if now_s >= fl.next_s && !gap {
@@ -873,10 +892,11 @@ impl Conventional {
                 }
             }
             // Wind down.
+            let tune = ch.tune_ref.then_some(ch.source);
             let o = ch.open.as_mut().unwrap();
             for live in o.live.iter_mut() {
                 if live.as_ref().is_some_and(|l| now_s - l.call.last_audio_s > rules.call_timeout_s) {
-                    Self::end(live.take().unwrap(), idx as u32, out);
+                    Self::end(live.take().unwrap(), idx as u32, tune, out);
                 }
             }
             let o = ch.open.as_ref().unwrap();
@@ -925,6 +945,8 @@ impl Conventional {
     /// Run the open channel's receiver over `iq` (air up to `now_s`).
     #[allow(clippy::too_many_arguments)]
     fn run(ch: &mut Chan, iq: &[Complex32], now_s: f64, meter_thr: f32, num: u32, ids: &CallIds, rules: &CallRules, max_call_s: f64, out: &mut Vec<ConvOut>) {
+        // The correction it was placed with, Hz: an offset measured is on top of it.
+        let applied_hz = ch.tune_ppm * 1e-6 * ch.freq_hz;
         let o = ch.open.as_mut().unwrap();
         let mut heard: [Heard; 2] = Default::default();
         // Digital: the carrier by the meter; analog: by the decoder's squelch, at the same threshold.
@@ -936,7 +958,7 @@ impl Conventional {
         // Its calls' frequency error, while the carrier is up and the receiver can tell.
         if let Some(off) = o.voice.offset_hz().filter(|_| carrier) {
             for l in o.live.iter_mut().flatten() {
-                l.freq_error.0 += off as f64;
+                l.freq_error.0 += off as f64 + applied_hz;
                 l.freq_error.1 += 1;
             }
         }
@@ -1117,7 +1139,7 @@ impl Conventional {
             let new_row = l.row != r && (ch.mode.analog() || air_tg.is_some());
             if too_long || new_tg || new_row {
                 let l = o.live[slot].take().unwrap();
-                Self::end(l, num, out);
+                Self::end(l, num, ch.tune_ref.then_some(ch.source), out);
             } else if air_tg.is_some() && l.air_tg.is_none() {
                 let info = Self::names(row, tg, rules.talkgroups);
                 let l = o.live[slot].as_mut().unwrap();
@@ -1233,9 +1255,9 @@ impl Conventional {
         row.info.clone().map(|t| Talkgroup { number: tg, ..t }).or_else(|| talkgroups.get(&tg).cloned())
     }
 
-    fn end(l: Live, num: u32, out: &mut Vec<ConvOut>) {
+    fn end(l: Live, num: u32, tune_source: Option<usize>, out: &mut Vec<ConvOut>) {
         let freq_error_hz = (l.freq_error.1 > 0).then(|| l.freq_error.0 / l.freq_error.1 as f64);
-        out.push(ConvOut::End { call: l.call, audio: l.audio, frames: l.frames, recorder_num: num, tx: l.tx, reception: l.reception, freq_error_hz });
+        out.push(ConvOut::End { call: l.call, audio: l.audio, frames: l.frames, recorder_num: num, tx: l.tx, reception: l.reception, freq_error_hz, tune_source });
     }
 
     /// End of input: flush the receivers and end every call.
@@ -1253,7 +1275,7 @@ impl Conventional {
             }
             let o = ch.open.take().unwrap();
             for l in o.live.into_iter().flatten() {
-                Self::end(l, idx as u32, out);
+                Self::end(l, idx as u32, ch.tune_ref.then_some(ch.source), out);
             }
         }
     }
@@ -1743,6 +1765,62 @@ mod tests {
     /// Unencrypted P25 transmissions `(start s, NAC, talkgroup)` on the
     /// frequency of `rows` (155.05 MHz): the calls concluded with their JSON,
     /// and the codes no row took.
+    /// A P25 repeater 700 Hz high (4.5 ppm at 155.05 MHz), heard twice on a
+    /// source with AutoTune: a row asked to scores the source from its calls,
+    /// and its calls keep saying the whole offset once the channel is
+    /// corrected; a row not asked to leaves the source alone.
+    #[test]
+    fn a_tune_ref_row_scores_its_source_and_keeps_the_whole_offset() {
+        use crate::p25::synth::{dibits, imbe, modulate, Tx};
+        let run = |tune_ref: bool| {
+            let (fs, center, freq, err_hz) = (480_000.0, 155_000_000.0, 155_050_000.0, 700.0);
+            let mut x = 3u32;
+            let mut pad = |n: usize| -> Vec<u8> {
+                (0..n)
+                    .map(|_| {
+                        x = x.wrapping_mul(1664525).wrapping_add(1013904223);
+                        (x >> 30) as u8
+                    })
+                    .collect()
+            };
+            let mut iq = vec![Complex32::default(); (fs * 9.0) as usize];
+            for at in [0.3, 5.0] {
+                let tx = Tx { nac: 0x293, talkgroup: 1, source: 42, cipher: None, voice: (0..90).map(imbe).collect() };
+                let mut d = pad(1200);
+                d.extend(dibits(&tx.frames()));
+                d.extend(pad(1200));
+                let mut ph = 0.0;
+                for (k, v) in modulate(&d, fs, freq - center + err_hz, 0.3, &mut ph).into_iter().enumerate() {
+                    if let Some(s) = iq.get_mut((at * fs) as usize + k) {
+                        *s += v;
+                    }
+                }
+            }
+            crate::nxdn::synth::add_noise(&mut iq, 0.003, &mut 9);
+            let row = ConvChannel { talkgroup: Some(1), tune_ref, ..ConvChannel::new(freq, ConvMode::P25) };
+            let cfg = EngineConfig {
+                sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: true, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
+                conventional: vec![row],
+                systems: vec![conv_system("conv")],
+                ..Default::default()
+            };
+            let e = Engine::new(cfg).unwrap();
+            for c in iq.chunks(32_768) {
+                e.push_iq(0, c);
+            }
+            e.finish();
+            let errs: Vec<f64> = e.drain_events().into_iter().filter_map(|ev| if let Event::Concluded(k) = ev { Some(k.record.freq_error as f64) } else { None }).collect();
+            (e.status().sources[0], errs)
+        };
+        let (tuned, errs) = run(true);
+        assert_eq!(errs.len(), 2, "{errs:?}");
+        assert!(errs.iter().all(|e| (e - 700.0).abs() < 120.0), "the whole offset, corrected or not: {errs:?}");
+        let ppm = tuned.error_ppm.expect("scored");
+        assert!((ppm - 4.51).abs() < 0.8 && tuned.applied_ppm == ppm, "{tuned:?}");
+        let (left, _) = run(false);
+        assert_eq!((left.error_ppm, left.applied_ppm), (None, 0.0));
+    }
+
     fn p25_calls(txs: &[(f64, u16, u16)], rows: Vec<ConvChannel>, secs: f64) -> (Vec<(Call, String)>, Vec<String>) {
         use crate::p25::synth::{dibits, imbe, modulate, Tx};
         let (fs, center, freq) = (480_000.0, 155_000_000.0, 155_050_000.0);

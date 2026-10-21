@@ -659,6 +659,10 @@
         },
         "enabled": {
           "type": "boolean"
+        },
+        "autoTune": {
+          "type": "boolean",
+          "description": "Digital rows: its calls' carrier offsets score its source's AutoTune (a repeater output to trust, not radios on simplex). Absent: off."
         }
       },
       "required": [

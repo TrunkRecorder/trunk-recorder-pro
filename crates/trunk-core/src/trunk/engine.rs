@@ -479,6 +479,18 @@ const TUNE_EVERY_S: f64 = 10.0;
 /// off by more than this, Hz, but not more often than every TUNE_RETUNE_S.
 const TUNE_RETUNE_HZ: f64 = 150.0;
 const TUNE_RETUNE_S: f64 = 200.0;
+/// A conventional call is left out of a score it is this far from, ppm,
+/// once TUNE_CONV_SETTLED have been kept: one radio off its frequency
+/// doesn't pull the source.
+const TUNE_CONV_SPREAD_PPM: f64 = 2.0;
+const TUNE_CONV_SETTLED: usize = 5;
+
+/// The median of `x` (None when empty).
+fn median(mut x: Vec<f64>) -> Option<f64> {
+    x.sort_by(f64::total_cmp);
+    let n = x.len();
+    (n > 0).then(|| (x[(n - 1) / 2] + x[n / 2]) / 2.0)
+}
 
 struct Source {
     /// Every source's settings (the engine's one copy), and which this is.
@@ -488,6 +500,10 @@ struct Source {
     /// Recent frequency errors measured on it, ppm: its control channels'
     /// (every TUNE_EVERY_S) and its calls' (one each).
     errors: VecDeque<f64>,
+    /// Conventional calls' errors, ppm, by frequency (Hz) — those of
+    /// channels asked to ([`ConvChannel::tune_ref`]). Scored only while
+    /// `errors` is empty: a control channel is the better reference.
+    conv_errors: Vec<(u64, VecDeque<f64>)>,
     /// The score an earlier run left, ppm, until something is measured.
     seed: Option<f64>,
     /// The correction new channels get, ppm.
@@ -504,7 +520,7 @@ struct Source {
 impl Source {
     fn new(cfgs: &Arc<[SourceConfig]>, index: usize, history_s: f64) -> Source {
         let rate = cfgs[index].rate_hz;
-        Source { cfgs: cfgs.clone(), index, chz: Channelizer::new(rate, MIN_CHANNEL_RATE, history_s), errors: VecDeque::new(), seed: None, tune_ppm: 0.0, in_gap: false, half: None, clock_offset_s: 0.0 }
+        Source { cfgs: cfgs.clone(), index, chz: Channelizer::new(rate, MIN_CHANNEL_RATE, history_s), errors: VecDeque::new(), conv_errors: Vec::new(), seed: None, tune_ppm: 0.0, in_gap: false, half: None, clock_offset_s: 0.0 }
     }
     /// Its settings.
     fn cfg(&self) -> &SourceConfig {
@@ -521,17 +537,41 @@ impl Source {
         }
         self.retune();
     }
+    /// A conventional call's frequency error on `freq_hz`, ppm.
+    fn measured_conv(&mut self, freq_hz: u64, ppm: f64) {
+        if !ppm.is_finite() || ppm.abs() > 50.0 {
+            return;
+        }
+        let kept: usize = self.conv_errors.iter().map(|(_, e)| e.len()).sum();
+        if self.errors.is_empty() && kept >= TUNE_CONV_SETTLED && self.error_ppm().is_some_and(|score| (ppm - score).abs() > TUNE_CONV_SPREAD_PPM) {
+            return;
+        }
+        let i = match self.conv_errors.iter().position(|(f, _)| *f == freq_hz) {
+            Some(i) => i,
+            None => {
+                self.conv_errors.push((freq_hz, VecDeque::new()));
+                self.conv_errors.len() - 1
+            }
+        };
+        let e = &mut self.conv_errors[i].1;
+        e.push_back(ppm);
+        if e.len() > TUNE_KEEP {
+            e.pop_front();
+        }
+        self.retune();
+    }
     fn retune(&mut self) {
         if self.cfg().auto_tune {
             self.tune_ppm = self.error_ppm().or(self.seed).unwrap_or(0.0);
         }
     }
-    /// The running score: the median of the measurements kept.
+    /// The running score: the median of the measurements kept — else of
+    /// each conventional frequency's median, so a busy channel counts once.
     fn error_ppm(&self) -> Option<f64> {
-        let mut x: Vec<f64> = self.errors.iter().copied().collect();
-        x.sort_by(f64::total_cmp);
-        let n = x.len();
-        (n > 0).then(|| (x[(n - 1) / 2] + x[n / 2]) / 2.0)
+        if !self.errors.is_empty() {
+            return median(self.errors.iter().copied().collect());
+        }
+        median(self.conv_errors.iter().filter_map(|(_, e)| median(e.iter().copied().collect())).collect())
     }
     /// Its time on the engine's clock: its sample clock, plus its offset.
     fn time(&self) -> f64 {
@@ -1768,7 +1808,15 @@ impl Core {
         for o in out.drain(..) {
             match o {
                 ConvOut::Event(e) => self.events.push(e),
-                ConvOut::End { call, audio, frames, recorder_num, tx, reception, freq_error_hz } => {
+                ConvOut::End { call, audio, frames, recorder_num, tx, reception, freq_error_hz, tune_source } => {
+                    // AutoTune: a call long enough on a channel that scores its source.
+                    if let (Some(src), Some(hz)) = (tune_source, freq_error_hz) {
+                        if call.freq_hz > 0 && call.last_update_s - call.start_s >= TUNE_CALL_MIN_S {
+                            if let Some(r) = self.radio.rx.get(src) {
+                                r.lock().unwrap().src.measured_conv(call.freq_hz, hz / call.freq_hz as f64 * 1e6);
+                            }
+                        }
+                    }
                     self.write_call(Held { call: call.clone(), audio, frames, recorder_num, tx, reception, freq_error_hz });
                     self.events.push(Event::CallEnd(call));
                 }
@@ -1803,7 +1851,8 @@ impl Core {
             let mut out = std::mem::take(&mut self.conv_out);
             {
                 let mut rx = self.radio.rx[source].lock().unwrap();
-                self.conv.on_block(source, &mut rx.src.chz, dsp.time, dsp.in_gap, &self.call_ids, &|i| &self.systems[i].cfg, &mut out);
+                let tune_ppm = rx.src.tune_ppm;
+                self.conv.on_block(source, &mut rx.src.chz, dsp.time, dsp.in_gap, tune_ppm, &self.call_ids, &|i| &self.systems[i].cfg, &mut out);
             }
             self.emit_conv(out);
         }
@@ -2424,6 +2473,23 @@ mod tests {
         let mut off = tuned_source(false);
         off.measured(2.0);
         assert_eq!((off.error_ppm(), off.tune_ppm), (Some(2.0), 0.0));
+    }
+
+    /// Conventional calls score a source a frequency at a time (a busy
+    /// channel counts once), leave out one far off once settled, and give
+    /// way to a control channel's measurements.
+    #[test]
+    fn conventional_calls_score_by_frequency_and_give_way_to_a_control_channel() {
+        let mut s = tuned_source(true);
+        for p in [1.5, 1.6, 1.4, 1.5] {
+            s.measured_conv(453_375_000, p);
+        }
+        s.measured_conv(451_750_000, 1.7);
+        assert!((s.error_ppm().unwrap() - 1.6).abs() < 1e-9 && (s.tune_ppm - 1.6).abs() < 1e-9, "{:?}", s.error_ppm());
+        s.measured_conv(451_750_000, 9.0);
+        assert_eq!(s.conv_errors[1].1.len(), 1, "a call far off the score is left out");
+        s.measured(0.4);
+        assert_eq!((s.error_ppm(), s.tune_ppm), (Some(0.4), 0.4), "a control channel's measurement wins");
     }
 
     /// An earlier run's score corrects until something is measured.
