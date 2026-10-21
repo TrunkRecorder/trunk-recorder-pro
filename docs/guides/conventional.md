@@ -56,15 +56,18 @@ panel that appears:
 2. Type frequencies in MHz into **Add frequencies, MHz** (for example `154.430, 155.100,
    460.125`), pick the mode beside it, and click **Add**. Or click **Add a channel** for one row.
 3. Fill in the table. Each row has **On**, **Frequency, MHz**, **Mode**, **Bandwidth** (analog
-   only; see [Bandwidth](#bandwidth)), **Code**, **Name**, **Talkgroup** and **Squelch**. DMR rows
-   also have **Slot**, and P25, DMR and NXDN rows **Match TG**.
+   only; see [Bandwidth](#bandwidth)), **Records** (what it takes, as chips), **Name** (the alpha
+   tag), **TG Number** and **Squelch**. **Edit** opens the rest of the row: its **Code**, DMR's
+   **Slot** and a digital row's **Match TG**, and the **Description**, **Tag** and **Category** its
+   calls carry (offering the tags and categories the system uses already). A row's tag and category
+   show under its name.
 4. Leave **Squelch, dB above noise** at 8 to start with. See [Tuning the squelch](#tuning-the-squelch).
 
-The **Talkgroup** column is the number calls are filed under: in file names, the call JSON and
+The **TG Number** column is the number calls are filed under: in file names, the call JSON and
 uploads. Leave it blank and it defaults to the frequency in kHz (154.430 MHz becomes 154430),
 which stays the same however you reorder the list. A second row on the same frequency gets that
 number with a digit added (1543251, 1543252, ...). A digital (P25, DMR or NXDN) row with no
-Talkgroup is filed under the talkgroup the radio sends, when it sends one. The air's number is also
+TG Number is filed under the talkgroup the radio sends, when it sends one. The air's number is also
 written to the call JSON as `talkgroup_ota`.
 
 **Code** limits a row to transmissions carrying one CTCSS tone, DCS code, NAC, colour code or RAN,
@@ -74,7 +77,8 @@ frequency is covered in [Tones and access codes](tones.md). A config with an old
 upgraded when it loads.
 
 **Import CSV…** reads a channel file and asks whether to **Replace the list** or **Add to the
-list**. **Export CSV** writes the current list as a CSV you can edit.
+list**. **Export CSV** writes the whole list, codes and names included, as a CSV you can edit and
+import again (or link as a [channel file](#in-a-spreadsheet-desktop-app)).
 
 ### In a spreadsheet (desktop app)
 
@@ -360,14 +364,15 @@ saved. There is no separate log line for each detection.
 
 ## Talkgroup names on digital channels
 
-P25, DMR and NXDN channels can carry a talkgroup number. A call's names come from the conventional
-system's own talkgroup file (`<shortName>.talkgroups.csv` beside the config; Setup shows it on a
-conventional system with digital channels), else from the row it was recorded under. The
-file is looked up by the number the call is filed under, and the row's own names win when it has
-any.
+P25, DMR and NXDN channels can carry a talkgroup number. A call's names are the row's it was
+recorded under, if the row has any; else the conventional system's own talkgroup file's
+(`<shortName>.talkgroups.csv` beside the config; Setup shows it on a conventional system with
+digital channels), looked up by the number the call is filed under. The Radio page names
+talkgroups the same way; a talkgroup filed under the air's number, on a row with names, is named
+once a call of it has been heard.
 
 Several P25 channels whose radios all send talkgroup 1 would all be filed under 1. Give each row
-its own **Talkgroup** number: calls are filed and named under it, and the air's 1 stays in
+its own **TG Number**: calls are filed and named under it, and the air's 1 stays in
 `talkgroup_ota`. A new talkgroup on the air within an open call still starts a new call, even when
 the row files both under the same number.
 

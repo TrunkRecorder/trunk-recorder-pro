@@ -21,7 +21,7 @@ test("Setup's channels: each row's code, slot and talkgroup as chips, and what i
       channels: [
         row(154_325_000, "fm", { code: "D223N", name: "County A Fire" }),
         row(154_325_000, "fm", { name: "154.325 (other)" }),
-        row(460_125_000, "p25", { talkgroup: 46012, name: "Townville PD" }),
+        row(460_125_000, "p25", { talkgroup: 46012, name: "Townville PD", tag: "Law Dispatch", group: "Police" }),
         row(453_500_000, "p25", { code: "293", matchTalkgroup: 1, talkgroup: 45351, name: "Townville PW" }),
         row(453_500_000, "p25", { code: "293", name: "Townville (other)" }),
         row(451_500_000, "dmr", { code: "1", slot: 1, matchTalkgroup: 1, talkgroup: 9001, name: "Dispatch" }),
@@ -50,4 +50,12 @@ test("Setup's channels: each row's code, slot and talkgroup as chips, and what i
   assert.ok(html.includes('class="match-chip k-tg"') && html.includes('class="match-chip k-slot"') && html.includes('class="match-chip k-code"'));
   assert.match(text(html), /Each row records tone \/ DCS NAC \/ colour code slot talkgroup everything else/);
   assert.match(text(html), /CSV format .* Match TG p25, dmr, nxdn: only transmissions naming this talkgroup/);
+  // Names beside the alpha tag: shown under it, edited in the row's editor, the system's own offered.
+  const meta = [...html.matchAll(/class="row-meta small"[^>]*>(.*?)<\/button>/g)].map((m) => text(m[1]).trim());
+  assert.deepEqual(meta, ["Law Dispatch · Police"]);
+  assert.equal(html.match(/title="Its codes, and its description, tag and category"/g)?.length, 7, "every row has an Edit");
+  const editor = html.slice(html.indexOf('class="rule-edit"'));
+  assert.match(text(editor), /Records .* Names Description Tag Category/);
+  const tagList = editor.match(/list="([^"]+-tag)"/)?.[1];
+  assert.ok(tagList && html.includes(`<datalist id="${tagList}"><option value="Law Dispatch"></option></datalist>`), "the system's tags offered");
 });

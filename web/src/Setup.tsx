@@ -1,4 +1,4 @@
-import { Fragment, useId, useRef, useState } from "react";
+import { Fragment, useId, useMemo, useRef, useState } from "react";
 import {
   activeSites,
   activeSystems,
@@ -73,6 +73,7 @@ import { SurveyPanel } from "./Survey.tsx";
 import { IdentifyFcc } from "./Identify.tsx";
 import { addCard, Card, ExpandAll, Group, Section, setCardOpen, Switch } from "./SetupLayout.tsx";
 import { TalkgroupsField } from "./TalkgroupsField.tsx";
+import { readTalkgroupCsv } from "./talkgroups.ts";
 import { DraftInput, Field, FileInput, NumberInput, Toggle } from "./inputs.tsx";
 import { asTyped, cleanShortName, lcnTable, mhz, mhzList, msps } from "./fieldText.ts";
 import { unitNameCount } from "./units.ts";
@@ -350,16 +351,15 @@ function matchChips(ch: Channel, shared: boolean): { kind: MatchKind; text: stri
 }
 
 /** A row at a glance: the chips of what it records. Clicking opens the row's editor. */
-function MatchLine(props: { ch: Channel; shared: boolean; open: boolean; disabled: boolean; onToggle: () => void }) {
+function MatchLine(props: { ch: Channel; shared: boolean; open: boolean; onToggle: () => void }) {
   const { ch } = props;
   const chips = matchChips(ch, props.shared);
   return (
     <button
       type="button"
       className={`match-line${props.open ? " open" : ""}`}
-      disabled={props.disabled}
       aria-expanded={props.open}
-      title={ch.mode === "am" ? "AM has no codes: every transmission" : "What this row records, and what its calls are filed under — click to change"}
+      title={ch.mode === "am" ? "AM has no codes: every transmission. Click to edit the row" : "What this row records — click to edit the row"}
       onClick={props.onToggle}
     >
       {chips.map((c, k) => (
@@ -392,29 +392,87 @@ function MatchLegend(props: { modes: Set<Channel["mode"]> }) {
       ))}
       <span className="muted">
         · calls are filed under its TG Number{dig ? " (empty: the talkgroup the air names, kept in the call's JSON as talkgroup_ota either way)" : ""}. The most specific row
-        that fits takes a transmission; click a row's chips to change them.
+        that fits takes a transmission. <b>Edit</b> opens a row's codes and its description, tag and category.
       </span>
     </div>
   );
 }
 
-/** Under a row: its code, slot and talkgroup to edit, each labelled, with what the mode takes. */
-function RuleEditor(props: { ch: Channel; disabled: boolean; onChange: (p: AccessParts) => void; onDone: () => void }) {
+/** A row's names beside its alpha tag (the table's Name), as a talkgroup file has them. */
+type NameField = "description" | "tag" | "group";
+const NAME_FIELDS: [NameField, string, string][] = [
+  ["description", "Description", "Fire / EMS dispatch"],
+  ["tag", "Tag", "Fire Dispatch"],
+  ["group", "Category", "Fire"],
+];
+
+/** The Tag and Category values a conventional system uses already (its rows', its talkgroup file's), most used first: offered as each row's are typed. */
+function useNameSuggestions(conv: Conventional): { tag: string[]; group: string[] } {
+  const csv = useApp().talkgroups[conv.shortName] ?? "";
+  return useMemo(() => {
+    const file = [...readTalkgroupCsv(csv).talkgroups.values()];
+    const ranked = (values: string[]) => {
+      const n = new Map<string, number>();
+      for (const v of values.map((v) => v.trim()).filter(Boolean)) n.set(v, (n.get(v) ?? 0) + 1);
+      return [...n.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([v]) => v);
+    };
+    return {
+      tag: ranked([...conv.channels.map((c) => c.tag ?? ""), ...file.map((t) => t.tag)]),
+      group: ranked([...conv.channels.map((c) => c.group ?? ""), ...file.map((t) => t.group)]),
+    };
+  }, [conv.channels, csv]);
+}
+
+/**
+ * Under a row: what the table has no room for, each labelled. What it
+ * records (its code, DMR's slot, a digital mode's talkgroup) and the names
+ * its calls carry beside the alpha tag: description, tag and category, as
+ * in a talkgroup file (the call JSON's talkgroup_description,
+ * talkgroup_group_tag and talkgroup_group; uploads send them on).
+ */
+function RowEditor(props: {
+  ch: Channel;
+  disabled: boolean;
+  /** The datalists offering the system's tags and categories. */
+  lists: Record<"tag" | "group", string>;
+  onAccess: (p: AccessParts) => void;
+  onName: (field: NameField, value: string) => void;
+  onDone: () => void;
+}) {
   const { ch } = props;
   return (
     <tr className="rule-edit">
       <td />
       <td colSpan={8}>
-        <div className="rule-fields">
-          <AccessInput ch={ch} disabled={props.disabled} onChange={props.onChange} />
+        <div className="row-editor">
+          <fieldset>
+            <legend>Records</legend>
+            {ch.mode === "am" ? <span className="muted small">Every transmission: AM carries no codes.</span> : <AccessInput ch={ch} disabled={props.disabled} onChange={props.onAccess} />}
+          </fieldset>
+          <fieldset>
+            <legend>Names</legend>
+            {NAME_FIELDS.map(([field, label, placeholder]) => (
+              <label key={field} className="row-name">
+                <span className="small muted">{label}</span>
+                <input
+                  value={ch[field] ?? ""}
+                  disabled={props.disabled}
+                  placeholder={placeholder}
+                  list={field === "description" ? undefined : props.lists[field]}
+                  onChange={(e) => props.onName(field, e.target.value)}
+                />
+              </label>
+            ))}
+          </fieldset>
           <button className="btn small" onClick={props.onDone}>
             Done
           </button>
         </div>
         <div className="field-hint">
-          {CODE_HINT[ch.mode].title}
+          {ch.mode !== "am" && CODE_HINT[ch.mode].title}
           {ch.mode === "dmr" && " Slot: either, or one."}
           {digital(ch.mode) && " Match TG: only transmissions naming this talkgroup (empty: any). Give the row a TG Number to file them under another; the air's stays in the call's JSON as talkgroup_ota."}
+          {" "}Names go with every call the row takes, as a talkgroup file's do (empty: the talkgroup file's for the number filed under, if the row has no names at all).
         </div>
       </td>
     </tr>
@@ -1203,7 +1261,10 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
     edit((x) => void x.channels.splice(i, 1));
   };
   const heard = useApp().heard;
-  /** The rows (by id) whose rule editor is open. */
+  const suggest = useNameSuggestions(conv);
+  const listId = useId();
+  const lists = { tag: `${listId}-tag`, group: `${listId}-group` };
+  /** The rows (by id) whose editor is open. */
   const [editing, setEditing] = useState<Set<number>>(() => new Set());
   const toggleEdit = (id: number) =>
     setEditing((e) => {
@@ -1315,7 +1376,7 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
       )}
       <Group
         title="Channels"
-        hint="Each frequency, what it records (tone, NAC, colour code, RAN, slot, talkgroup) and the talkgroup number its calls are filed under. Several rows can share a frequency."
+        hint="Each frequency, what it records (tone, NAC, colour code, RAN, slot, talkgroup), the talkgroup number its calls are filed under, and their names. Several rows can share a frequency."
         full
         cols={1}
         actions={
@@ -1405,6 +1466,13 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
         {chans.length > 0 && (
           <>
             <MatchLegend modes={new Set(chans.map((c) => c.mode))} />
+            {(["tag", "group"] as const).map((f) => (
+              <datalist key={f} id={lists[f]}>
+                {suggest[f].map((v) => (
+                  <option key={v} value={v} />
+                ))}
+              </datalist>
+            ))}
             <div className="table-wrap channels-wrap">
               <table className="calls channels">
                 <thead>
@@ -1470,12 +1538,16 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
                           ch={ch}
                           shared={shared(i)}
                           open={editing.has(ids.current[i])}
-                          disabled={linked || ch.mode === "am"}
                           onToggle={() => toggleEdit(ids.current[i])}
                         />
                       </td>
                       <td>
-                        <input value={ch.name} disabled={linked} placeholder="Name" aria-label="Name" onChange={(e) => editRow(i, (x) => void (x.name = e.target.value))} />
+                        <input value={ch.name} disabled={linked} placeholder="Name" aria-label="Name (alpha tag)" onChange={(e) => editRow(i, (x) => void (x.name = e.target.value))} />
+                        {(ch.tag || ch.group || ch.description) && (
+                          <button type="button" className="row-meta small" title={ch.description || "Its description, tag and category — click to edit"} onClick={() => toggleEdit(ids.current[i])}>
+                            {[ch.tag, ch.group].filter(Boolean).join(" · ") || ch.description}
+                          </button>
+                        )}
                       </td>
                       <td>
                         <NumberInput
@@ -1512,8 +1584,17 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
                         />
                       </td>
                       <td>
+                        <span className="row-actions">
+                          <button
+                            className="btn ghost small"
+                            aria-expanded={editing.has(ids.current[i])}
+                            title="Its codes, and its description, tag and category"
+                            onClick={() => toggleEdit(ids.current[i])}
+                          >
+                            Edit
+                          </button>
                         {!linked && (
-                          <span className="row-actions">
+                          <>
                             {ch.freqHz > 0 && ch.mode !== "am" && (
                               <button
                                 className="btn ghost small"
@@ -1527,16 +1608,19 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
                             <button className="btn ghost small danger" title="Remove" aria-label="Remove channel" onClick={() => remove(i)}>
                               ×
                             </button>
-                          </span>
+                          </>
                         )}
+                        </span>
                         </td>
                       </tr>
-                      {(editing.has(ids.current[i]) || "error" in parseAccess(ch.mode, ch.code ?? "")) && ch.mode !== "am" && (
-                        <RuleEditor
+                      {(editing.has(ids.current[i]) || "error" in parseAccess(ch.mode, ch.code ?? "")) && (
+                        <RowEditor
                           key={`e${ch.mode}`}
                           ch={ch}
                           disabled={linked}
-                          onChange={(p) => editRow(i, (x) => setAccess(x, p))}
+                          lists={lists}
+                          onAccess={(p) => editRow(i, (x) => setAccess(x, p))}
+                          onName={(f, v) => editRow(i, (x) => void (v ? (x[f] = v) : delete x[f]))}
                           onDone={() => setEditing((e) => (e.delete(ids.current[i]) ? new Set(e) : e))}
                         />
                       )}

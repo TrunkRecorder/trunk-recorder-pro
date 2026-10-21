@@ -1325,6 +1325,18 @@ table.calls tr.ignored td { opacity: 0.55; }
 table.channels tr.rule-edit td { padding-top: 0; padding-bottom: 8px; }
 table.channels tr.rule-edit .field-hint { display: block; max-width: 72ch; white-space: normal; }
 .rule-fields { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+/* A channel row's editor: what it records, and its names. */
+.row-editor { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 16px; }
+.row-editor fieldset { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px; margin: 0; padding: 4px 10px 8px; border: 1px solid var(--line); border-radius: 8px; min-width: 0; }
+.row-editor legend { padding: 0 4px; font-size: 12px; color: var(--muted); }
+.row-editor .access-input > * { flex: none; }
+.row-editor .access-input > select { width: auto; }
+.row-editor .row-name { display: flex; flex-direction: column; gap: 2px; }
+.row-editor .row-name input { width: 15ch; }
+.row-editor .row-name:first-child input { width: 22ch; }
+/* Under a row's name: its tag and category, opening its editor. */
+.row-meta { display: block; max-width: 24ch; margin-top: 2px; padding: 0; border: 0; background: none; color: var(--muted); font: inherit; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+.row-meta:hover { color: var(--text); text-decoration: underline; }
 .csv-help .csv-example { overflow-x: auto; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
 .csv-help table.csv-columns { border-collapse: collapse; margin: 6px 0; }
 .csv-help table.csv-columns th, .csv-help table.csv-columns td { text-align: left; vertical-align: top; padding: 3px 10px 3px 0; border-bottom: 1px solid var(--line); }

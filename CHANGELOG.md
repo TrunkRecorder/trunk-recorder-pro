@@ -27,6 +27,20 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   table of the columns.
 - **A row's names come first**: a conventional call takes its row's names, if the row has any, else
   the system's talkgroup file's for the number it's filed under.
+- **Every name on a conventional row can be edited in Setup**: **Edit** opens a row's codes and the
+  Description, Tag and Category its calls carry (before, only the Name could be changed without
+  editing the config), offering the tags and categories the system uses already. A row's tag and
+  category show under its name. **Export CSV** writes them all.
+- **The call JSON says what kind of call it was**: `system_type` (`p25`, `smartnet`, `dmr`, `nxdn`
+  or `conventional`, as plugins have it), `voice_mode` (`p25`, `p25_phase2`, `dmr`, `nxdn48`,
+  `nxdn96`, `fm` or `am`) and, for P25, `nac`: the NAC a conventional channel's frames carried, a
+  trunked system's site NAC. The archive path has `{system_type}`, `{voice_mode}` and `{nac}`
+  tokens. SDK 0.5.1 has the fields on `CallRecord`.
+- **The Radio page names a conventional system's talkgroups** as Listen does (from #53's review;
+  also on 0.2.6): by the row, else the talkgroup file; a talkgroup filed under the air's number is
+  named as its last named call was.
+- **Setup keeps a system's card open while its Short name is typed** (from #53's review): a pause
+  saved the edit, and the recorder's copy coming back closed the card.
 
 ## [0.2.6] — 2026-10-20
 
