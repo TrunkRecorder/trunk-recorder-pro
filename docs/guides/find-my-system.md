@@ -251,6 +251,42 @@ source that covers its control channel.
 
 You can still edit everything by hand afterwards on the **Systems** and **Radios** tabs.
 
+## Identify surveyed sites
+
+Who holds the FCC license on a frequency names the system on it. Looking it up is optional, and
+nothing is sent until you ask. FCC licenses are tied to where the transmitters are, so it needs
+your location:
+
+- **Use my location** asks the browser. If you've already allowed this page, it fills in at once.
+  Browsers share a location only with pages on HTTPS or `localhost`, so for an interface opened
+  over the network by its address, type the location instead.
+- Or type a latitude and longitude. Right-click a spot in Google Maps to copy them.
+- **Look for licenses within** sets how far: 10 to 150 km (50 by default). Wide-area systems can
+  have towers 50 km or more away.
+
+The frequencies and the location go to trunkrecorder.pro, which answers from the FCC's license
+database (Universal Licensing System) and keeps nothing. If you'd rather not share a location,
+leave it out: no lookup is made, and everything works exactly the same. This browser remembers the
+location and distance for next time.
+
+There are three places to ask:
+
+- **The setup guide**: when choosing bands, turn on **Look up who holds the FCC license for each
+  system found** and give the location. When the scan finds a system, the guide shows who it is
+  *Licensed to*.
+- **The survey** (Systems tab): **Identify surveyed sites**, under the signals found. The
+  **Licensed to** column then shows each signal's nearest licensee, its call sign, radio service and
+  how far away and in which direction, plus up to four more. *lapsed* means no active license is
+  nearby on that frequency, so these are expired or cancelled ones.
+- **A system or site already set up**: **Identify** on its card looks up its control, voice and
+  repeater frequencies and lists who is licensed on the most of them. **Use** keeps one as its
+  **FCC name** and **FCC call sign**.
+
+A system added from the survey gets the licensee of its control channel as its FCC name and
+license, and as its name if it has none. A site added to a system gets its own when it differs from
+the system's. You can edit them on the card; they are optional, and plugins are told them. See
+[systems](../configuration/systems.md).
+
 ## From the command line
 
 `trunk-pro survey` runs the same scan with an RTL-SDR, or looks at a capture file, and prints

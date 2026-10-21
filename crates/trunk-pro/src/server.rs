@@ -621,13 +621,24 @@ pub(crate) fn radio_query(ctx: &Ctx, q: &Body) -> ToClient {
     ctx.shared.radio_query(&Value::Object(q.clone()), unix_now())
 }
 
+/// How long a connection may take to take one message. One that doesn't
+/// read (a tab frozen in the background) is closed rather than waited on, and
+/// gets everything afresh when it reconnects.
+const SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// One message to a connection, within [`SEND_TIMEOUT`]: false when it's
+/// gone or isn't reading, and is to be dropped.
+async fn send(socket: &mut WebSocket, m: Message) -> bool {
+    matches!(tokio::time::timeout(SEND_TIMEOUT, socket.send(m)).await, Ok(Ok(())))
+}
+
 async fn session(ctx: Arc<Ctx>, mut socket: WebSocket, door: Door) {
     let mut rx = ctx.hub.subscribe();
     let Some(mut access) = access_of(&ctx, &door) else { return };
     let control = access == ApiAccess::Control;
     for m in greeting(&ctx, control).await {
         let Some(text) = text_for(&Out::of(&m), control) else { continue };
-        if socket.send(Message::Text(text.into())).await.is_err() {
+        if !send(&mut socket, Message::Text(text.into())).await {
             return;
         }
     }
@@ -650,7 +661,7 @@ async fn session(ctx: Arc<Ctx>, mut socket: WebSocket, door: Door) {
                         // The config changed: so may this connection's access.
                         Out::Config { full, listen } => {
                             let Some(a) = access_of(&ctx, &door) else {
-                                let _ = socket.send(Message::Close(None)).await;
+                                send(&mut socket, Message::Close(None)).await;
                                 return;
                             };
                             access = a;
@@ -665,16 +676,17 @@ async fn session(ctx: Arc<Ctx>, mut socket: WebSocket, door: Door) {
                         Out::Quit => Message::Text(ToClient::Quit.to_json().into()),
                     };
                     let quit = matches!(&*out, Out::Quit);
-                    if socket.send(m).await.is_err() || quit {
-                        let _ = socket.send(Message::Close(None)).await;
+                    if !send(&mut socket, m).await || quit {
+                        send(&mut socket, Message::Close(None)).await;
                         return;
                     }
                 }
-                // It may have missed a config change: its access is read again.
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => match access_of(&ctx, &door) {
-                    Some(a) => access = a,
-                    None => return,
-                },
+                // It fell behind and missed messages: what it shows is no
+                // longer so. Closed, it reconnects and is greeted afresh.
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    send(&mut socket, Message::Close(None)).await;
+                    return;
+                }
                 Err(_) => return,
             },
             _ = async {
@@ -683,7 +695,7 @@ async fn session(ctx: Arc<Ctx>, mut socket: WebSocket, door: Door) {
                     None => std::future::pending().await,
                 }
             } => {
-                let _ = socket.send(Message::Close(None)).await;
+                send(&mut socket, Message::Close(None)).await;
                 return;
             },
             msg = socket.recv() => match msg {
@@ -697,7 +709,7 @@ async fn session(ctx: Arc<Ctx>, mut socket: WebSocket, door: Door) {
                         Err(e) => Some(ToClient::error(e)),
                     };
                     if let Some(reply) = reply {
-                        if socket.send(Message::Text(reply.to_json().into())).await.is_err() {
+                        if !send(&mut socket, Message::Text(reply.to_json().into())).await {
                             return;
                         }
                     }
@@ -889,6 +901,17 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
             let _ = tokio::task::spawn_blocking(move || ctx2.survey_send(crate::survey::UserCmd::Rescan)).await;
             None
         }
+        // (The request takes up to 15 s: off the connection's task.)
+        Command::LicenseQuery { id, lat, lon, radius_m, signals } => {
+            let api_base = ctx.config.lock().unwrap().server.trp_api_base().to_string();
+            let answer = tokio::task::spawn_blocking(move || trunk_app::licenses::request(lat, lon, radius_m, &signals).and_then(|req| crate::licenses::identify(&api_base, &req)))
+                .await
+                .unwrap_or_else(|e| Err(e.to_string()));
+            Some(match answer {
+                Ok(v) => ToClient::LicenseResult { id, results: v["results"].as_array().cloned().unwrap_or_default(), error: None },
+                Err(e) => ToClient::LicenseResult { id, results: vec![], error: Some(e) },
+            })
+        }
         Command::SurveyStop => {
             let ctx2 = ctx.clone();
             let _ = tokio::task::spawn_blocking(move || ctx2.stop_survey()).await;
@@ -1062,6 +1085,52 @@ mod tests {
             Some(ToClient::ConfigSaved { version: 2, error: Some(_) }) => {}
             r => panic!("not refused: {:?}", r.map(|m| m.to_value())),
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A connection that falls behind (a tab frozen in the background) is
+    /// closed, not carried on with gaps as if what it shows were live: it
+    /// reconnects and is greeted afresh (#54).
+    #[tokio::test]
+    async fn a_connection_that_falls_behind_is_closed_to_start_afresh() {
+        use futures_util::StreamExt;
+        use tokio_tungstenite::tungstenite::Message as Ws;
+        let dir = std::env::temp_dir().join(format!("trunk-pro-lag-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ctx = crate::protocol_tests::ctx(crate::protocol_tests::conventional_config(), &dir);
+        let app = super::api(axum::Router::new()).layer(axum::Extension(super::Door::Builtin)).with_state(ctx.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}/api/ws", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await });
+        // Connected and greeted: everything up to hello.
+        let greeted = || async {
+            let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+            while let Some(Ok(m)) = ws.next().await {
+                if m.to_text().is_ok_and(|t| t.contains(r#""type":"hello""#)) {
+                    return ws;
+                }
+            }
+            panic!("no hello");
+        };
+        let mut ws = greeted().await;
+        // More than the hub holds, published before its session runs (this test's runtime is one thread).
+        for i in 0..100 {
+            crate::runtime::publish(&ctx.hub, trunk_app::protocol::ToClient::notice(format!("n{i}")));
+        }
+        let mut stale = 0;
+        let closed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                match ws.next().await {
+                    Some(Ok(Ws::Close(_))) | None | Some(Err(_)) => return,
+                    Some(Ok(m)) if m.to_text().is_ok_and(|t| t.contains(r#""type":"notice""#)) => stale += 1,
+                    _ => {}
+                }
+            }
+        })
+        .await;
+        assert!(closed.is_ok(), "closed, not carried on");
+        assert_eq!(stale, 0, "none of what it fell behind on");
+        greeted().await;
         let _ = std::fs::remove_dir_all(&dir);
     }
 

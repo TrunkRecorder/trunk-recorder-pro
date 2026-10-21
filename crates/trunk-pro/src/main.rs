@@ -55,6 +55,7 @@
 //!
 //! trunk-pro survey [--serial S] [--bands 800,700,…] [--gain dB | --no-gain] [--ppm 0] [--rate Hz] [--seconds 30]
 //! trunk-pro survey <capture> --center Hz --rate Hz [--format cu8|cs16|cf32]
+//!     either: [--identify lat,lon[,km]] [--api URL] (FCC licenses near there, from trunkrecorder.pro)
 //!     Find P25, SmartNet, trunked DMR and NXDN systems: scan the bands (800,
 //!     700, 900, uhf, vhf, uhf-fed, biz-uhf, biz-vhf, t-band; or look at a
 //!     capture), then listen to the best control channel; JSON lines of what
@@ -93,6 +94,7 @@
 mod access;
 mod dmrtool;
 mod interfaces;
+mod licenses;
 mod logging;
 mod monitor;
 mod nxdntool;
@@ -228,6 +230,7 @@ usage:
       (print every control channel message), --quiet.
   trunk-pro survey [--serial S] [--bands 800,700,900,uhf,vhf,uhf-fed,biz-uhf,biz-vhf,t-band] [--gain dB | --no-gain] [--ppm 0] [--rate Hz] [--seconds 30]
   trunk-pro survey <capture> --center Hz --rate Hz [--format cu8|cs16|cf32]
+      either: [--identify lat,lon[,km]] [--api URL]
       Find P25, SmartNet, trunked DMR and NXDN systems from scratch: scan for
       control channels, then listen to the best one and report its IDs,
       alternates, neighbours, voice channels and the dongle's frequency

@@ -1260,7 +1260,7 @@ impl Trunk {
                 }
             }
             let mut host = self.host(radio, sys);
-            self.calls.handle(&st.msgs, sys.policy(), &mut host, call_events);
+            self.calls.handle(&st.msgs, self.now_s, sys.policy(), &mut host, call_events);
         }
         (self.good, self.bad) = cc.counts;
     }
@@ -2384,12 +2384,20 @@ mod tests {
         assert!(even.spectrum(0, 1 << 20).iter().all(|&v| v == -120.0));
     }
 
-    /// Site `i`'s call manager handles `msgs`, as its control channel would hand them over.
+    /// Site `i` follows `msgs` as its control channel decoded them, the engine's clock at `now_s`.
+    fn follow(e: &mut Core, i: usize, msgs: &[Message], now_s: f64) {
+        let Core { trunks, radio, events, call_events, systems, .. } = e;
+        let t = &mut trunks[i];
+        t.now_s = now_s;
+        let step = Step { good: true, msgs: msgs.to_vec(), identity: t.identity.clone() };
+        let cc = CcResult { site: t.site, head: None, steps: vec![step], params: vec![VoiceParams::default()], samples: 0, notes: Vec::new(), control_hz: None, counts: (t.good, t.bad), offset_hz: None };
+        t.follow(radio, &systems[t.system as usize].cfg, cc, events, call_events);
+    }
+
+    /// Site `i` follows `msgs`, taken in as they were on the air.
     fn handle(e: &mut Core, i: usize, msgs: &[Message]) {
-        let Core { trunks, radio, call_events, systems, .. } = e;
-        let sys = &systems[trunks[i].system as usize].cfg;
-        let mut host = trunks[i].host(radio, sys);
-        trunks[i].calls.handle(msgs, sys.policy(), &mut host, call_events);
+        let now_s = msgs.iter().map(|m| m.time_s).fold(e.trunks[i].now_s, f64::max);
+        follow(e, i, msgs, now_s);
     }
 
     /// Site `i`'s clock reads `now_s`: its quiet calls end.
@@ -2404,6 +2412,21 @@ mod tests {
         let mut sys = SystemConfig::trunked(short_name, vec![SiteConfig { control_channels: vec![851.0125e6], ..Default::default() }]);
         f(&mut sys);
         EngineConfig { systems: vec![sys], sources: vec![SourceConfig { center_hz: 851e6, rate_hz: 2.4e6, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ }], ..Default::default() }
+    }
+
+    /// A control channel's messages come out after they were on the air (P25's diversity
+    /// bank holds them 0.35 s): a call times out `callTimeoutS` after the engine took in its
+    /// last update, not after that update's air time (#55).
+    #[test]
+    fn a_call_times_out_from_when_its_last_update_was_taken_in() {
+        let mut e = Core::new(one_site("s", |s| s.calls.call_timeout_s = 1.0)).unwrap();
+        let msg = |kind, t| Message { kind, time_s: t, talkgroup: 101, freq_hz: 851_500_000, ..Default::default() };
+        follow(&mut e, 0, &[msg(MessageType::Grant, 0.0)], 0.45);
+        follow(&mut e, 0, &[msg(MessageType::Update, 1.0)], 1.45);
+        tick(&mut e, 0, 2.2);
+        assert_eq!(e.trunks[0].calls.calls.len(), 1, "1.2 s after its last update was on the air, 0.75 s after it came in");
+        tick(&mut e, 0, 2.5);
+        assert!(e.trunks[0].calls.calls.is_empty(), "1.05 s after it came in");
     }
 
     /// A call split at `maxCallS` with every recorder in use goes on

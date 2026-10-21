@@ -75,13 +75,21 @@ research a system on RadioReference and set gain and frequency correction.
 
 ## Building from source
 
-Rust 1.95+ and Node 20+:
+Rust 1.95+, Node 20+, the WebAssembly target and `wasm-bindgen-cli` at the version in
+`Cargo.lock` (0.2.129). The interface runs the recorder's own config rules as WebAssembly, so that
+is built first: `npm run wasm` makes `web/src/web/pkg`, which isn't in the repository.
 
 ```bash
-(cd web && npm ci && npx vite build)    # the interface, embedded in the binary
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --version 0.2.129 --locked
+(cd web && npm ci && npm run wasm)      # the WebAssembly rules -> web/src/web/pkg
+(cd web && npm run build)               # the interface -> web/dist, embedded in the binary
 cargo build --release                   # target/release/trunk-pro
 ```
 
+Build the interface before the binary, which embeds it when compiled. Without `npm run wasm` the
+interface build stops at `Could not resolve "./web/pkg/trunk_web.js"`.
+[Building from source](docs/install/README.md#building-from-source) has more detail;
 [Development](docs/development.md) covers the browser build, packaging and making a release.
 
 ## Help

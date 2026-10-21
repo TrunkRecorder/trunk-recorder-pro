@@ -26,7 +26,7 @@ plugin fails**).
 | `captureDir` | | `~/TrunkRecorderPro` | string | The recordings folder. Write an absolute path: `~` isn't expanded, and a relative path is taken from wherever the app was started |
 | `prerollS` | | `1` | number | Seconds of air from before each grant added to the start of a trunked call. The interface allows 0–3 |
 | `maxRecorders` | | `32` | integer | Calls recorded at once, across all trunked systems. The interface allows 1–64 |
-| `callTimeoutS` | | `3` | number | Per system. A call ends this long after its last grant or audio, s. The interface allows 1–30 |
+| `callTimeoutS` | | `3` | number | Per system. A call ends this long after its last grant or update came in (or its last audio), s. Trunk Recorder checks once a second, so the same value there ends calls up to 2 s later. The interface allows 1–30 |
 | `recordUnknown` | | `true` | bool | Per system. Record talkgroups that aren't in the talkgroup file. Only matters when there is a talkgroup file; a talkgroup patched with a listed one is recorded anyway |
 | `recordEncrypted` | | `false` | bool | Per system. Keep calls flagged encrypted (by the grant or the talkgroup's `Mode`), with their radios, even with no audio. Encrypted transmissions are always left out of the audio, unless decrypted (see [systems.md](systems.md#encryption-keys-keys)). Config only: not in the interface |
 | `recordUnitToUnit` | | `true` | bool | Per system. Record P25 individual calls: unit-to-unit (private) and telephone interconnect |

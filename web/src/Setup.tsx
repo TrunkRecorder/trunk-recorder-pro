@@ -70,6 +70,7 @@ import type { AirspyGainMode, Channel, Config, Conventional, Demod, Device, Hear
 import { DEFAULT_FORMAT, FilenameEditor } from "./FilenameEditor.tsx";
 import { GuardBand } from "./Rolloff.tsx";
 import { SurveyPanel } from "./Survey.tsx";
+import { IdentifyFcc } from "./Identify.tsx";
 import { addCard, Card, ExpandAll, Group, Section, setCardOpen, Switch } from "./SetupLayout.tsx";
 import { TalkgroupsField } from "./TalkgroupsField.tsx";
 import { DraftInput, Field, FileInput, NumberInput, Toggle } from "./inputs.tsx";
@@ -2020,6 +2021,7 @@ function SiteCard(props: { c: Config; i: number; k: number; onRemoveSystem: () =
       actions={
         <>
           <Switch label="Record" checked={site.enabled} onChange={(v) => edit((x) => void (x.enabled = v))} />
+          <IdentifyFcc sys={sys} system={i} site={k} />
           <button className="btn ghost small" onClick={remove}>
             Remove
           </button>
@@ -2038,6 +2040,12 @@ function SiteCard(props: { c: Config; i: number; k: number; onRemoveSystem: () =
               })
             }
           />
+        </Field>
+        <Field label="FCC name" hint="Optional: this site's own licensee, if not the system's">
+          <input value={site.fccName ?? ""} onChange={(e) => edit((x) => fcc(x, "fccName", e.target.value))} />
+        </Field>
+        <Field label="FCC call sign" hint="Optional: this site's own, if not the system's">
+          <input className="mono" value={site.fccCallSign ?? ""} onChange={(e) => edit((x) => fcc(x, "fccCallSign", e.target.value.toUpperCase()))} />
         </Field>
         {sys.type !== "dmr" && sys.type !== "nxdn" && (
           <Field label={sys.type === "smartnet" ? "P25 voice modulation" : "Modulation"}>
@@ -2184,6 +2192,7 @@ function SystemCard(props: { c: Config; i: number }) {
       actions={
         <>
           <Switch label="Record" checked={sys.enabled} onChange={(v) => edit((x) => void (x.enabled = v))} />
+          <IdentifyFcc sys={sys} system={i} site={null} />
           <button className="btn ghost small" onClick={() => remove()}>
             Remove
           </button>
@@ -2218,6 +2227,12 @@ function SystemCard(props: { c: Config; i: number }) {
         </Field>
         <Field label="Name">
           <input value={sys.name ?? ""} placeholder="County Public Safety" onChange={(e) => edit((x) => void (x.name = e.target.value))} />
+        </Field>
+        <Field label="FCC name" hint="Optional: who holds its license, as the FCC has it (plugins are told it)">
+          <input value={sys.fccName ?? ""} placeholder="DISTRICT OF COLUMBIA" onChange={(e) => edit((x) => fcc(x, "fccName", e.target.value))} />
+        </Field>
+        <Field label="FCC call sign" hint="Optional: its license's call sign. Identify looks both up">
+          <input className="mono" value={sys.fccCallSign ?? ""} placeholder="WPXT459" onChange={(e) => edit((x) => fcc(x, "fccCallSign", e.target.value.toUpperCase()))} />
         </Field>
         <Field label="Type">
           <select
@@ -2927,4 +2942,10 @@ export function Setup() {
       {tab === "plugins" && can("plugins") && <PluginSetupPanel />}
     </div>
   );
+}
+
+/** Set an optional FCC field (left out when empty). */
+function fcc(x: { fccName?: string; fccCallSign?: string }, key: "fccName" | "fccCallSign", v: string): void {
+  if (v.trim()) x[key] = v;
+  else delete x[key];
 }

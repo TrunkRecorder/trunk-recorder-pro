@@ -25,7 +25,7 @@ pub enum Source {
         center_hz: f64,
         rate_hz: f64,
         #[serde(default = "rtl_gain")]
-        gain_db: f32,
+        gain_db: f64,
         #[serde(default)]
         agc: bool,
         ppm: i32,
@@ -166,7 +166,7 @@ choice! {
 fn guard_default() -> f64 {
     DEFAULT_GUARD_HZ
 }
-fn rtl_gain() -> f32 {
+fn rtl_gain() -> f64 {
     RTL_DEFAULT_GAIN_DB
 }
 fn airspy_gain() -> u8 {
@@ -280,6 +280,13 @@ pub struct System {
     /// What people call it ("County Public Safety"); the short name is its folder.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub name: String,
+    /// Who holds its FCC license, as the FCC has it ("DISTRICT OF COLUMBIA"),
+    /// and the license's call sign ("WPXT459"): optional, for reference —
+    /// the user's, or what a license lookup found. Plugins are told them.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub fcc_name: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub fcc_call_sign: String,
     #[serde(rename = "type")]
     pub kind: SystemKind,
     pub enabled: bool,
@@ -324,6 +331,12 @@ pub struct Site {
     /// talkgroup file's Preferred Site names it; calls and plugins say it.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub name: String,
+    /// This site's own FCC licensee and license call sign, when it has one
+    /// apart from the system's: optional, for reference. Plugins are told them.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub fcc_name: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub fcc_call_sign: String,
     pub enabled: bool,
     pub control_channels_hz: Vec<f64>,
     pub modulation: Modulation,
@@ -619,6 +632,8 @@ impl Default for System {
             keys: String::new(),
             short_name: "sys1".into(),
             name: String::new(),
+            fcc_name: String::new(),
+            fcc_call_sign: String::new(),
             kind: SystemKind::P25,
             enabled: true,
             unit_names: UnitNames::default(),
@@ -636,6 +651,8 @@ impl Default for Site {
     fn default() -> Self {
         Site {
             name: String::new(),
+            fcc_name: String::new(),
+            fcc_call_sign: String::new(),
             enabled: true,
             control_channels_hz: vec![],
             modulation: Modulation::Auto,
@@ -1337,6 +1354,10 @@ pub struct Server {
     /// store or folders of the user's own, each served on a port of its own
     /// with the recorder's API beside it (docs/interfaces).
     pub interfaces: BTreeMap<String, Interface>,
+    /// Where the trunkrecorder.pro API is (the survey's license lookup):
+    /// empty for https://trunkrecorder.pro; another for testing one.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub trp_api: String,
     /// Keys this version doesn't know (a newer version's, a hand edit's):
     /// kept, and saved back as they were.
     #[serde(flatten)]
@@ -1345,11 +1366,17 @@ pub struct Server {
 
 impl Default for Server {
     fn default() -> Self {
-        Server { bind: "127.0.0.1".into(), port: 8080, auto_start: false, allowed_origins: vec![], interfaces: BTreeMap::new(), other: BTreeMap::new() }
+        Server { bind: "127.0.0.1".into(), port: 8080, auto_start: false, allowed_origins: vec![], interfaces: BTreeMap::new(), trp_api: String::new(), other: BTreeMap::new() }
     }
 }
 
 impl Server {
+    /// The trunkrecorder.pro API's base URL (no trailing slash).
+    pub fn trp_api_base(&self) -> &str {
+        let t = self.trp_api.trim().trim_end_matches('/');
+        if t.is_empty() { "https://trunkrecorder.pro" } else { t }
+    }
+
     /// The first port above the built-in interface's that nothing in the
     /// config uses (nor `taken`).
     pub fn free_port(&self, taken: &[u16]) -> u16 {
@@ -1437,7 +1464,7 @@ choice! {
 /// strong transmitters without clipping the ADC: on an 858 MHz simulcast
 /// system 38.6 dB gave ~3x the FEC errors (and 5 % repeated voice frames)
 /// that 23–28 dB did.
-pub const RTL_DEFAULT_GAIN_DB: f32 = 25.4;
+pub const RTL_DEFAULT_GAIN_DB: f64 = 25.4;
 
 /// A system calls can come from ([`Config::call_systems`]).
 #[derive(Clone, Copy, Debug)]
@@ -2252,6 +2279,23 @@ const RTL_BUSY_COUNT: usize = 4;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The FCC name and call sign are optional: read where given (a system's, a site's), and not written when empty.
+    #[test]
+    fn fcc_name_and_license_are_optional() {
+        let sys: System = serde_json::from_value(serde_json::json!({
+            "shortName": "dcfd", "fccName": "DISTRICT OF COLUMBIA", "fccCallSign": "WPXT459",
+            "sites": [{ "controlChannelsHz": [857987500], "fccCallSign": "KNJU834" }, { "controlChannelsHz": [858987500] }]
+        }))
+        .unwrap();
+        assert_eq!((sys.fcc_name.as_str(), sys.fcc_call_sign.as_str()), ("DISTRICT OF COLUMBIA", "WPXT459"));
+        assert_eq!(sys.sites[0].fcc_call_sign, "KNJU834");
+        let v = serde_json::to_value(&sys).unwrap();
+        assert_eq!(v["fccCallSign"], "WPXT459");
+        assert!(v["sites"][1].get("fccCallSign").is_none() && v["sites"][0].get("fccName").is_none() && !sys.other.contains_key("fccName"));
+        let none = serde_json::to_value(System::default()).unwrap();
+        assert!(none.get("fccName").is_none() && none.get("fccCallSign").is_none());
+    }
 
     /// A system's `keys` that named a file (before key sources) becomes a source named after the file;
     /// systems that named the same file share it, and one already a source's name is left as it is.

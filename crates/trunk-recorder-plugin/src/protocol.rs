@@ -167,6 +167,20 @@ pub struct SystemInfo {
     pub short_name: String,
     /// "p25" | "smartnet" | "dmr" | "nxdn" | "conventional"
     pub kind: String,
+    /// What people call it ("County Public Safety"); empty when the user gave no name.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    /// Who holds its FCC license, as the FCC has it ("DISTRICT OF COLUMBIA"),
+    /// as the user's config has it: optional, so often empty.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub fcc_name: String,
+    /// Its FCC license's call sign ("WPXT459"): optional, so often empty.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub fcc_call_sign: String,
+    /// Its sites (trunked systems; none for conventional), by the name calls
+    /// and unit events carry as `site`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub sites: Vec<SiteInfo>,
     /// The plugin's settings for this system (see [`Manifest::system_config`]);
     /// null when the user left them empty.
     pub config: Value,
@@ -175,6 +189,20 @@ pub struct SystemInfo {
     /// Null: as in `Hello::config`.
     #[serde(skip_serializing_if = "Value::is_null")]
     pub settings: Value,
+}
+
+/// One site of a [`SystemInfo`].
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SiteInfo {
+    /// What calls and unit events carry as `site`.
+    pub name: String,
+    /// This site's own FCC licensee and license call sign (apart from the
+    /// system's), as the user's config has them: optional, so often empty.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub fcc_name: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub fcc_call_sign: String,
 }
 
 /// A call as it starts or ends.

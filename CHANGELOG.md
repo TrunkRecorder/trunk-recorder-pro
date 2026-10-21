@@ -28,6 +28,24 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 - **A row's names come first**: a conventional call takes its row's names, if the row has any, else
   the system's talkgroup file's for the number it's filed under.
 
+## [0.2.6] — 2026-10-20
+
+- **A tab woken from the background shows how things are now** (by taclane, #54), not minutes of
+  calls and status replayed as if live: one that heard nothing from the recorder for 30 s (it
+  hears from it every 2 s) reconnects, and the recorder closes a connection that stops reading
+  for 10 s or falls behind, so it reconnects afresh.
+- **A call times out from when its last update came in, not when it was on the air** (by
+  taclane, #55). A control channel's messages come out some 0.4 s after they were sent (P25's
+  diversity bank holds them 0.35 s), so every call ended that much early: a `callTimeoutS` of 1,
+  carried over from Trunk Recorder, ended calls about half a second after their last update,
+  shorter than the gap between a busy system's updates in hangtime, and split conversations into
+  pieces with empty calls between them. `callTimeoutS` now means seconds after the last update
+  came in; Trunk Recorder's once-a-second checks end calls up to 2 s later than its own setting.
+- **Numbers show as they should**: an SNR, an airtime or a gain no longer reads like
+  8.600000381469727 (in a frequency's tooltip on Overview and Decode, a USRP's or SoapySDR's gain
+  on RF, a talkgroup's or radio's airtime). A gain the survey finds is saved as 49.6, not
+  49.599998474121094.
+
 ## [0.2.5] — 2026-10-19
 
 - **The Live page is each system's now**: a system's page under **Radio system** has its

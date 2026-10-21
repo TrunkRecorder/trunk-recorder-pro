@@ -280,6 +280,7 @@ trunk-pro replay vhf.cu8 --center 154500000 --rate 2400000 --fm 154130000,154415
 trunk-pro survey [--serial S] [--bands 800,700,…] [--gain dB | --no-gain] [--ppm 0] [--seconds 30]
                  [--rate 2400000]
 trunk-pro survey <capture> --center Hz [--rate Hz] [--format cu8|cs16|cf32]
+    either: [--identify lat,lon[,km]] [--api URL]
 ```
 
 The command-line version of **Find my system**: scans the bands for control channels (P25,
@@ -298,6 +299,8 @@ settings (`suggest`) and how long it took.
 | `--no-gain` | | Don't search for the best gain |
 | `--ppm n` | 0 | Frequency correction while scanning |
 | `--seconds n` | 30 | How long to listen to the best control channel |
+| `--identify lat,lon[,km]` | | Then look up the FCC licenses within `km` (50) of there for what was heard, from trunkrecorder.pro: a last JSON line, `{"licenses": [...]}` |
+| `--api URL` | https://trunkrecorder.pro | The API `--identify` asks |
 | `--rate Hz` | 2400000 | Sample rate |
 | `<capture>` `--center` `--format` | | Look at a capture instead of scanning with a dongle. An unknown `--format` is refused |
 

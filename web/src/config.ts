@@ -99,11 +99,18 @@ const SITE_KEYS = [
 
 /** Every key of System this version knows (the rest are kept as they are: a newer version's, a hand edit's). */
 const SYSTEM_KEYS: (keyof System)[] = [
-  "shortName", "name", "type", "nxdnType", "defaultMode", "enabled", "recording", "unitNames", "keys", "plugins", "pluginDelays", "sites",
+  "shortName", "name", "fccName", "fccCallSign", "type", "nxdnType", "defaultMode", "enabled", "recording", "unitNames", "keys", "plugins", "pluginDelays", "sites",
 ];
 
 /** Every key of Site this version knows. */
-const SITE_FIELDS: readonly string[] = ["name", "enabled", ...SITE_KEYS];
+const SITE_FIELDS: readonly string[] = ["name", "fccName", "fccCallSign", "enabled", ...SITE_KEYS];
+
+/** The optional FCC name and call sign, as the config keeps them (absent when empty; a call sign upper case). */
+function fccFields(x: { fccName?: unknown; fccCallSign?: unknown }): { fccName?: string; fccCallSign?: string } {
+  const name = typeof x.fccName === "string" ? x.fccName.trim() : "";
+  const license = typeof x.fccCallSign === "string" ? x.fccCallSign.trim().toUpperCase() : "";
+  return { ...(name ? { fccName: name } : {}), ...(license ? { fccCallSign: license } : {}) };
+}
 
 /**
  * A system as code that makes one writes it: the system's fields, with one
@@ -125,6 +132,7 @@ export function normalizeSite(x: Partial<Site>, sys: Pick<System, "type">): Site
   return {
     ...unknownKeys(x, SITE_FIELDS),
     ...(x.name?.trim() ? { name: x.name } : {}),
+    ...fccFields(x),
     enabled: x.enabled ?? true,
     controlChannelsHz: Array.isArray(x.controlChannelsHz) ? x.controlChannelsHz : [],
     modulation: x.modulation ?? "auto",
@@ -171,6 +179,7 @@ export function normalizeSystem(x: SystemInput): System {
     ...unknownKeys(x, [...SYSTEM_KEYS, ...SITE_KEYS]),
     shortName: x.shortName ?? "sys1",
     ...(x.name?.trim() ? { name: x.name } : {}),
+    ...fccFields(x),
     type,
     ...(type === "nxdn" && x.nxdnType === "typeD" ? { nxdnType: "typeD" as const } : {}),
     ...(type === "smartnet" && x.defaultMode === "analog" ? { defaultMode: "analog" as const } : {}),
