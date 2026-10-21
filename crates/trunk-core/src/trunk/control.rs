@@ -12,6 +12,7 @@
 //! SmartNet: 2FSK → OSW framer → Parser → Message
 //! DMR:      every carrier of the site: 4FSK → bursts → CSBK / link control → Message
 //! NXDN:     every carrier of the site: 4FSK → frames → CAC / VCALL / SCCH → Message
+//! EDACS:    9600 baud 2FSK → framer (3× vote, BCH) → Parser → Message
 //! ```
 
 use std::collections::BTreeMap;
@@ -24,6 +25,7 @@ use super::message::{Message, MessageType, P25Parser};
 use super::patches;
 use super::voice::VoiceParams;
 use crate::dmr;
+use crate::edacs;
 use crate::metrics::{Instrumented, Sink};
 use crate::nxdn;
 use crate::p25::diversity::{best_frame, control_frame, Bank, BankConfig, Group};
@@ -43,6 +45,8 @@ pub enum Protocol {
     Dmr(dmr::DmrConfig),
     /// Every control channel (and [`nxdn::trunking::NxdnConfig::channels`]) is watched.
     Nxdn(nxdn::trunking::NxdnConfig),
+    /// EDACS Standard / Networked: the site's channel list.
+    Edacs(edacs::EdacsConfig),
 }
 
 /// What a system's protocol has to show beyond what every system shows.
@@ -55,6 +59,8 @@ pub enum ProtocolStatus {
     Dmr(dmr::SiteStatus),
     /// Type-C / Type-D, the site's location and RAN, channel table and carriers.
     Nxdn(nxdn::trunking::SiteStatus),
+    /// The site's ID and its control channel's LCN, once it has said.
+    Edacs { site: Option<u32>, cc_lcn: Option<u8> },
 }
 
 /// Which carriers a system listens to.
@@ -88,6 +94,9 @@ pub trait ControlChannel: Send {
     fn restart(&mut self, _rate: f64) {}
     /// A different control channel: what was learned of the site may not hold.
     fn forget_site(&mut self) {}
+    /// The frequency of the control channel it is listening to, Hz (after each
+    /// [`ControlChannel::restart`]; a hunted control channel's).
+    fn on_frequency(&mut self, _hz: u64) {}
     /// IQ of carrier `carrier` (0 for a hunted control channel), whose first
     /// sample was at air time `t0`, at `rate`.
     fn push(&mut self, carrier: usize, iq: &[Complex32], t0: f64, rate: f64, out: &mut Vec<Step>);
@@ -127,6 +136,14 @@ pub trait ControlChannel: Send {
     fn patch_hold_s(&self) -> f64 {
         patches::P25_HOLD_S
     }
+    /// Watching: a channel raster (first frequency, step, Hz) whose power it
+    /// wants each block, across the sources its carriers are on (EDACS:
+    /// to find which frequency an unknown channel number is).
+    fn scan_raster(&self) -> Option<(f64, f64)> {
+        None
+    }
+    /// Each raster frequency's power in the block that ended at `t`.
+    fn scan(&mut self, _t: f64, _powers: &[(u64, f32)]) {}
     /// What it learned that's worth keeping between runs (a band plan,
     /// a channel table), as text; and loading it back.
     fn bandplan(&self) -> String {
@@ -161,6 +178,12 @@ pub fn build(cfg: &SiteConfig, rate: f64) -> Box<dyn ControlChannel> {
             rate,
         }),
         Protocol::SmartNet(sn) => Box::new(Smartnet { cfg: sn.clone(), cc: None, good: 0, bad: 0, identity: Identity::default() }),
+        Protocol::Edacs(ec) => {
+            let ccs: Vec<u64> = cfg.control_channels.iter().map(|&f| f.round() as u64).collect();
+            let site = edacs::site::Site::new(ec.clone(), &ccs, rate);
+            let note = format!("Watching {} EDACS frequencies (the control channel, and each channel to check the list)", site.carriers().len());
+            Box::new(Edacs { site, identity: Identity::default(), note })
+        }
         Protocol::Dmr(dc) => {
             let note = format!("Watching {} DMR frequencies", cfg.control_channels.len() + dc.channels.len());
             Box::new(Dmr { site: dmr::Site::new(&cfg.control_channels, rate, dc.clone()), note })
@@ -369,6 +392,72 @@ impl ControlChannel for Smartnet {
     }
     fn status(&self) -> ProtocolStatus {
         ProtocolStatus::SmartNet
+    }
+}
+
+/// EDACS: every frequency of the site watched at once ([`edacs::site::Site`]):
+/// the control channel wherever it is, and each LCN's frequency checked (and
+/// learned) by which carrier keys when a call is assigned it. The identity
+/// is the site's ID.
+struct Edacs {
+    site: edacs::site::Site,
+    identity: Identity,
+    note: String,
+}
+
+impl ControlChannel for Edacs {
+    fn name(&self) -> &'static str {
+        "EDACS"
+    }
+    fn plan(&self) -> CarrierPlan {
+        CarrierPlan::Watch { carriers: self.site.carriers(), cutoff_hz: edacs::CHANNEL_CUTOFF_HZ, note: self.note.clone() }
+    }
+    fn push(&mut self, carrier: usize, iq: &[Complex32], t0: f64, rate: f64, out: &mut Vec<Step>) {
+        let (good0, _) = self.site.counts();
+        let mut msgs = Vec::new();
+        self.site.push(carrier, iq, t0, rate, &mut msgs);
+        let good = self.site.counts().0 > good0;
+        self.identity.set_opt(IdField::Site, self.site.parser.site);
+        out.push(Step { good: good || !msgs.is_empty(), msgs, identity: self.identity.clone() });
+    }
+    fn forget_site(&mut self) {
+        self.identity = Identity::default();
+    }
+    fn counts(&self) -> (u64, u64) {
+        self.site.counts()
+    }
+    fn offset_hz(&self) -> Option<f32> {
+        self.site.offset_hz()
+    }
+    fn control_hz(&self) -> Option<u64> {
+        self.site.control_hz()
+    }
+    fn identity_fields(&self) -> &'static [IdField] {
+        &[IdField::Site]
+    }
+    fn modulation(&self) -> &'static str {
+        "2FSK 9600"
+    }
+    fn take_notes(&mut self) -> Vec<(NoteLevel, String)> {
+        self.site.take_notes().into_iter().map(|(warn, t)| (if warn { NoteLevel::Warning } else { NoteLevel::Info }, t)).collect()
+    }
+    fn patch_hold_s(&self) -> f64 {
+        patches::SMARTNET_HOLD_S
+    }
+    fn scan_raster(&self) -> Option<(f64, f64)> {
+        self.site.scan_raster()
+    }
+    fn scan(&mut self, t: f64, powers: &[(u64, f32)]) {
+        self.site.scan(t, powers);
+    }
+    fn bandplan(&self) -> String {
+        self.site.map_to_string()
+    }
+    fn load_bandplan(&mut self, s: &str) {
+        self.site.map_from_str(s);
+    }
+    fn status(&self) -> ProtocolStatus {
+        ProtocolStatus::Edacs { site: self.site.parser.site, cc_lcn: self.site.parser.cc_lcn }
     }
 }
 

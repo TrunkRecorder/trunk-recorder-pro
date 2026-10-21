@@ -421,7 +421,7 @@ pub struct SaveContext<'a> {
 /// The frames as an `.sdr` file when the call's mode has a layout there, else JSON lines.
 fn capture(call: &Call, frames: &[VoiceFrame], audio_len: usize, freq_error_hz: Option<f64>, reception: &Reception, cx: &SaveContext) -> Capture {
     let mode = match call.voice {
-        Voice::Nxdn(_) => None,
+        Voice::Nxdn(_) | Voice::ProVoice => None,
         Voice::Dmr { .. } => Some(SdrMode::Dmr),
         Voice::P25Tdma { .. } => Some(SdrMode::P25Tdma),
         Voice::P25 | Voice::Fm | Voice::Am => Some(SdrMode::P25Fdma),
