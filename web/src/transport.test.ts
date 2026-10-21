@@ -3,7 +3,7 @@
 import "./testEnv.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { WsTransport } from "./transport.ts";
+import { behind, WsTransport } from "./transport.ts";
 
 /** The sockets opened, newest last: each says what it was told and whether it was closed. */
 const sockets: Socket[] = [];
@@ -68,5 +68,41 @@ test("host statuses falling behind the server's clock close the connection; a st
   }
   assert.ok(ws.closed, "it reconnects once 10 s behind");
   assert.ok(seen.length < 17, "and stops showing the backlog");
+  tr.close();
+});
+
+test("behind: more than 10 s past the least lag on the connection", () => {
+  assert.ok(!behind(300_000, 310_000), "10 s is still live");
+  assert.ok(behind(300_000, 310_001));
+  assert.ok(!behind(-5_000, -4_000), "a server clock ahead of this one is no different");
+});
+
+test("a reconnected connection measures its lag afresh: the old one's least isn't held against it", (t) => {
+  (globalThis as Record<string, unknown>).WebSocket = Socket;
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1_000_000 });
+  const tr = new WsTransport("ws://test");
+  const seen: unknown[] = [];
+  tr.onMessage = (m) => seen.push(m);
+  const open = () => {
+    const ws = sockets.at(-1)!;
+    ws.onopen!();
+    return { ws, status: (t: number) => ws.onmessage?.({ data: JSON.stringify({ type: "host", t }) }) };
+  };
+  const first = open();
+  first.status(1_000);
+  t.mock.timers.tick(2_000);
+  first.status(1_002 - 20);
+  assert.ok(first.ws.closed, "20 s behind: dropped");
+  first.ws.onclose!();
+  t.mock.timers.tick(500);
+  // The server's clock now a minute behind this one (restarted, set back): a steady lag all the same.
+  const second = open();
+  assert.notEqual(second.ws, first.ws, "it reconnected");
+  for (let i = 0, server = 1_002 - 60; i < 5; i++, server += 2) {
+    second.status(server);
+    t.mock.timers.tick(2_000);
+  }
+  assert.ok(!second.ws.closed, "no reconnecting over and over");
+  assert.equal(seen.length, 6);
   tr.close();
 });
