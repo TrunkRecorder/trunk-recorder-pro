@@ -103,6 +103,7 @@ test("Decode: a conventional system's page has its calls, and each channel's mod
   });
   setView("decode");
   assert.match(text(renderToString(<DecodePage />)), /Calls 7 this run .*1 on the air now/);
+  assert.match(text(renderToString(<Overview />)), /town Conventional .*Calls 7 this run .*2 channels · 1 open now/);
   setView("decode", "town");
   const snap = (freqHz: number, mode: Channel["mode"], names: string[]) => ({
     system: "town", site: null, freqHz, source: 0, kind: "conventional" as const, powerDb: -60, noiseDb: -80, snrDb: 20, offsetHz: null, quality: null, phaseErrDeg: null, calls: 0, mode, names,
