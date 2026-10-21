@@ -36,7 +36,7 @@ export function recentAvg(key: string, sinceS: number): number | null {
 
 export interface DashSystem {
   name: string;
-  kind: "p25" | "smartnet" | "dmr" | "nxdn" | "conventional";
+  kind: "p25" | "smartnet" | "dmr" | "nxdn" | "edacs" | "conventional";
   /** The running system's status (trunked, once a control channel is open). */
   status: SystemStatus | null;
   /** Its sites being recorded (a conventional system: none). */
@@ -81,7 +81,7 @@ export function runningSites(systems: SystemStatus[]): RunningSite[] {
   return systems.flatMap((y) => y.sites.map((x) => ({ ...x, shortName: y.shortName, label: x.name === y.shortName ? y.shortName : `${y.shortName}/${x.name}` })));
 }
 
-export const KIND_LABEL: Record<DashSystem["kind"], string> = { p25: "P25", smartnet: "SmartNet", dmr: "DMR", nxdn: "NXDN", conventional: "Conventional" };
+export const KIND_LABEL: Record<DashSystem["kind"], string> = { p25: "P25", smartnet: "SmartNet", dmr: "DMR", nxdn: "NXDN", edacs: "EDACS", conventional: "Conventional" };
 
 export const running = (s: AppState) => s.phase === "running" || s.phase === "starting";
 

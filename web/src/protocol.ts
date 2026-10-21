@@ -161,8 +161,10 @@ export interface System {
    *  "dmr": a trunked DMR site (Capacity Plus, Capacity Max, Connect Plus, Tier III); every
    *  control channel and `dmrChannelsHz` frequency is watched.
    *  "nxdn": an NXDN site (Type-C: a control channel; Type-D / IDAS: every repeater listed);
-   *  every control channel and `nxdnChannelsHz` frequency is watched. */
-  type: "p25" | "smartnet" | "dmr" | "nxdn";
+   *  every control channel and `nxdnChannelsHz` frequency is watched.
+   *  "edacs": an EDACS Standard or Networked site (voice analog FM or ProVoice); `lcnTableHz`
+   *  is its channel list. */
+  type: "p25" | "smartnet" | "dmr" | "nxdn" | "edacs";
   /** NXDN: "typeC" (a control channel; the default) or "typeD" (IDAS distributed: list every repeater). */
   nxdnType?: "typeC" | "typeD";
   /** SmartNet: the voice of a talkgroup never heard granted. */
@@ -201,7 +203,8 @@ export interface Site {
   bandplanOffset?: number;
   bandplanHighHz?: number;
   /** DMR: logical channel number → frequency, Hz (Trunk Recorder's lcnTable); the rest is learned.
-   *  NXDN: the channel table, channel number → frequency (Type-D: repeater number → frequency). */
+   *  NXDN: the channel table, channel number → frequency (Type-D: repeater number → frequency).
+   *  EDACS: the site's channel list, LCN (1–25) → frequency; it can't be learned from the air. */
   lcnTableHz?: Record<string, number>;
   /** DMR: voice frequencies to watch besides the control channels (Trunk Recorder's channels). */
   dmrChannelsHz?: number[];
@@ -214,6 +217,11 @@ export interface Site {
   nxdnChannelsHz?: number[];
   /** NXDN: only this RAN. */
   ran?: number;
+  /** EDACS: the system scrambles its control channel with ESK 0xA0. */
+  esk?: boolean;
+  /** EDACS: learn channels on frequencies in no list even before the site has identified itself
+   *  (a site that decodes well but never sends its site ID). */
+  learnUnlisted?: boolean;
 }
 
 /**
