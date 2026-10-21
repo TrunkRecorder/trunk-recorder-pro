@@ -22,6 +22,9 @@ pub struct Fec {
     pub errs: i32,
     /// Soft decoders: summed reliability of the bits overridden.
     pub cost: f32,
+    /// Soft decoders: the runner-up codeword's cost over this one's — how
+    /// sure the decision is (0: a tie).
+    pub margin: f32,
 }
 
 pub fn golay24_encode(data: u32) -> u32 {
@@ -80,16 +83,16 @@ pub fn golay24_decode(cw: u32) -> Fec {
     let cw = cw & 0xffffff;
     let e = t[golay24_syn(cw) as usize];
     if e < 0 {
-        return Fec { data: (cw >> 12) & 0xfff, errs: -1, cost: 0.0 };
+        return Fec { data: (cw >> 12) & 0xfff, errs: -1, cost: 0.0, margin: 0.0 };
     }
-    Fec { data: ((cw ^ e as u32) >> 12) & 0xfff, errs: (e as u32).count_ones() as i32, cost: 0.0 }
+    Fec { data: ((cw ^ e as u32) >> 12) & 0xfff, errs: (e as u32).count_ones() as i32, cost: 0.0, margin: 0.0 }
 }
 pub fn golay23_decode(cw: u32) -> Fec {
     static T: OnceLock<Vec<i32>> = OnceLock::new();
     let t = T.get_or_init(|| syndrome_table(23, 11, 3, golay23_syn));
     let cw = cw & 0x7fffff;
     let e = t[golay23_syn(cw) as usize] as u32;
-    Fec { data: ((cw ^ e) >> 11) & 0xfff, errs: e.count_ones() as i32, cost: 0.0 }
+    Fec { data: ((cw ^ e) >> 11) & 0xfff, errs: e.count_ones() as i32, cost: 0.0, margin: 0.0 }
 }
 pub fn hamming15_decode(cw: u32) -> Fec {
     static T: OnceLock<Vec<i32>> = OnceLock::new();
@@ -97,9 +100,9 @@ pub fn hamming15_decode(cw: u32) -> Fec {
     let cw = cw & 0x7fff;
     let e = t[hamming15_syn(cw) as usize];
     if e < 0 {
-        return Fec { data: (cw >> 4) & 0x7ff, errs: -1, cost: 0.0 };
+        return Fec { data: (cw >> 4) & 0x7ff, errs: -1, cost: 0.0, margin: 0.0 };
     }
-    Fec { data: ((cw ^ e as u32) >> 4) & 0x7ff, errs: (e as u32).count_ones() as i32, cost: 0.0 }
+    Fec { data: ((cw ^ e as u32) >> 4) & 0x7ff, errs: (e as u32).count_ones() as i32, cost: 0.0, margin: 0.0 }
 }
 
 /// Summed reliability of the bits set in `diff` (bit b of an N-bit word ↔ w[N−1−b]).
@@ -121,7 +124,7 @@ pub fn hamming15_decode_soft(r: u32, w: &[f32]) -> Fec {
     let r = r & 0x7fff;
     // Already a codeword: it is its own nearest, at zero cost.
     if hamming15_syn(r) == 0 {
-        return Fec { data: r >> 4, errs: 0, cost: 0.0 };
+        return Fec { data: r >> 4, errs: 0, cost: 0.0, margin: 0.0 };
     }
     let cws = CW.get_or_init(|| (0..2048).map(|d| hamming15_encode(d) as u16).collect());
     // Every codeword's cost as [`weight`] sums it (differing bits from the
@@ -144,7 +147,7 @@ pub fn hamming15_decode_soft(r: u32, w: &[f32]) -> Fec {
             best_d = d as u32;
         }
     }
-    Fec { data: best_d, errs: (cws[best_d as usize] as u32 ^ r).count_ones() as i32, cost: best }
+    Fec { data: best_d, errs: (cws[best_d as usize] as u32 ^ r).count_ones() as i32, cost: best, margin: 0.0 }
 }
 
 /// Golay(23,12), Chase-II: flip every subset of the 5 least reliable bits,
@@ -152,7 +155,7 @@ pub fn hamming15_decode_soft(r: u32, w: &[f32]) -> Fec {
 pub fn golay23_decode_soft(r: u32, w: &[f32]) -> Fec {
     let r = r & 0x7fffff;
     if golay23_syn(r) == 0 {
-        return Fec { data: r >> 11, errs: 0, cost: 0.0 };
+        return Fec { data: r >> 11, errs: 0, cost: 0.0, margin: 0.0 };
     }
     let mut idx: [usize; 23] = std::array::from_fn(|i| i);
     idx.select_nth_unstable_by(5, |&a, &b| w[a].total_cmp(&w[b]));
@@ -172,7 +175,42 @@ pub fn golay23_decode_soft(r: u32, w: &[f32]) -> Fec {
             best_cw = c;
         }
     }
-    Fec { data: best_cw >> 11, errs: ((best_cw ^ r) & 0x7fffff).count_ones() as i32, cost: best }
+    Fec { data: best_cw >> 11, errs: ((best_cw ^ r) & 0x7fffff).count_ones() as i32, cost: best, margin: 0.0 }
+}
+
+/// Maximum likelihood over every codeword of a small code (`cws[d]`: data
+/// `d`'s `nbits`-bit word), with the margin to the runner-up: exact where
+/// Chase-II only searches near the hard decision.
+pub fn ml_decode(r: u32, w: &[f32], nbits: usize, cws: &[u32]) -> Fec {
+    let (mut best, mut best_d, mut next) = (f32::INFINITY, 0, f32::INFINITY);
+    for (d, &cw) in cws.iter().enumerate() {
+        let c = weight(cw ^ r, w, nbits);
+        if c < best {
+            next = best;
+            best = c;
+            best_d = d;
+        } else if c < next {
+            next = c;
+        }
+    }
+    Fec { data: best_d as u32, errs: (cws[best_d] ^ r).count_ones() as i32, cost: best, margin: next - best }
+}
+
+/// Every Golay(24,12) codeword, by data.
+pub fn golay24_codewords() -> &'static [u32] {
+    static CW: OnceLock<Vec<u32>> = OnceLock::new();
+    CW.get_or_init(|| (0..4096).map(golay24_encode).collect())
+}
+/// Every Golay(18,6) codeword (the (24,12) with its first six data bits
+/// zero, and deleted), by data.
+pub fn golay18_codewords() -> &'static [u32] {
+    static CW: OnceLock<Vec<u32>> = OnceLock::new();
+    CW.get_or_init(|| (0..64).map(|d| golay24_encode(d) & 0x3ffff).collect())
+}
+/// Every Hamming(10,6) codeword, by data.
+pub fn hamming1063_codewords() -> &'static [u32] {
+    static CW: OnceLock<Vec<u32>> = OnceLock::new();
+    CW.get_or_init(|| (0..64).map(|d| hamming1063_encode(d as u8)).collect())
 }
 
 /// op25_hamming.h hmg1063EncTbl: a hexbit's 4 parity bits.
@@ -411,6 +449,31 @@ pub fn rs_decode_soft(cw: &mut [u8; 63], nroots: usize, erasures: &[usize], shor
     -1
 }
 
+/// Generalised minimum distance decoding: the word as heard (the code's
+/// full capacity, as a hard decoder takes it), and failing that, with its 2,
+/// 4, … least reliable symbols (`rel`) erased. An erasure try is kept only
+/// with `spare` parity symbols left over (2·errors + erasures ≤ nroots −
+/// spare): erasing until anything decodes would rewrite a word too damaged
+/// to the nearest codeword, and nothing would be left to notice.
+pub fn rs_decode_gmd(cw: &mut [u8; 63], nroots: usize, shortened_below: usize, rel: &[f32; 63], spare: usize) -> i32 {
+    let heard = *cw;
+    let r = rs_decode_erasures(cw, nroots, &[], shortened_below);
+    if r >= 0 {
+        return r;
+    }
+    let mut doubtful: Vec<usize> = (shortened_below..63).collect();
+    doubtful.sort_by(|&a, &b| rel[a].total_cmp(&rel[b]));
+    for f in (2..=nroots.saturating_sub(spare)).step_by(2) {
+        *cw = heard;
+        let r = rs_decode_erasures(cw, nroots, &doubtful[..f], shortened_below);
+        if r >= 0 && 2 * (r as usize).saturating_sub(f) + f <= nroots - spare {
+            return r;
+        }
+    }
+    *cw = heard;
+    -1
+}
+
 /// A hexbit's reliability: its least reliable bit's.
 pub fn hexbit_rel(bits: &[f32]) -> f32 {
     bits.iter().copied().fold(f32::INFINITY, f32::min)
@@ -480,6 +543,54 @@ mod tests {
         // A third error is past it.
         bad[55] ^= 3;
         assert!(rs_decode_erasures(&mut bad, 12, &erasures, 39) < 0 || bad != sent);
+    }
+
+    /// GMD: 8 symbol errors in RS(24,12,13) are past the hard decoder (6),
+    /// but come back when they are the least reliable symbols; a try that
+    /// would leave fewer than `spare` roots over is refused, the word as heard.
+    #[test]
+    fn rs_gmd_uses_reliabilities_within_spare() {
+        let mut sent = [0u8; 63];
+        for (i, c) in sent[39..51].iter_mut().enumerate() {
+            *c = (i as u8 * 7 + 3) & 63;
+        }
+        rs_encode(&mut sent, 12);
+        let mut bad = sent;
+        let mut rel = [1.0f32; 63];
+        for p in [40, 43, 45, 48, 52, 55, 58, 61] {
+            bad[p] ^= 0x21;
+            rel[p] = 0.1;
+        }
+        let mut d = bad;
+        assert!(rs_decode_erasures(&mut d, 12, &[], 39) < 0 || d != sent, "past the hard decoder");
+        let mut d = bad;
+        assert_eq!(rs_decode_gmd(&mut d, 12, 39, &rel, 4), 8);
+        assert_eq!(d, sent);
+        // Spare 6: at most 6 erasures, leaving 2 errors (2·2 + 6 > 12 − 6).
+        let mut d = bad;
+        assert_eq!(rs_decode_gmd(&mut d, 12, 39, &rel, 6), -1);
+        assert_eq!(d, bad);
+    }
+
+    /// Maximum likelihood over a small code is the brute-force nearest
+    /// codeword by reliability, and its margin is the runner-up's distance.
+    #[test]
+    fn ml_decode_is_nearest_by_reliability() {
+        let cws = hamming1063_codewords();
+        let w = [0.9, 0.1, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 1.0];
+        for d in 0..64 {
+            // Two errors, one on the least reliable bit: past a hard Hamming
+            // (10,6,3), but the soft decision is still the sent word.
+            let r = cws[d] ^ (1 << 8) ^ (1 << 1);
+            let got = ml_decode(r, &w, 10, cws);
+            let mut costs: Vec<f32> = cws.iter().map(|&c| weight(c ^ r, &w, 10)).collect();
+            costs.sort_by(f32::total_cmp);
+            assert_eq!(got.cost, costs[0]);
+            assert_eq!(got.margin, costs[1] - costs[0]);
+            if got.cost == weight(cws[d] ^ r, &w, 10) && got.margin > 0.0 {
+                assert_eq!(got.data as usize, d);
+            }
+        }
     }
 
     #[test]

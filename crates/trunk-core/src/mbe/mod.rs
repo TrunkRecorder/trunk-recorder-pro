@@ -795,25 +795,42 @@ pub struct Decoder {
     er: f64,
     /// Smoothed spectral energy S_E (TIA), for adaptive smoothing.
     se: f64,
-    /// Phase 1 frame repeat (TIA §7.7): E0 ≥ `repeat_e0` or
-    /// ET ≥ `repeat_et` + 40·ER.
-    repeat_e0: u32,
-    repeat_et: f64,
+    /// Phase 1 frame repeat rule.
+    repeat: Repeat,
     /// The fixed-point IMBE decoder ([`Profile::Fixed`]).
     fixed: Option<Box<fixed::FixedImbe>>,
     /// The tone (ID, level) the last AMBE+2 frame played, for a tone frame the FEC damaged.
     tone: Option<(u8, u8)>,
 }
 
-/// Repeat thresholds for soft-decision FEC counts (the default). A soft
-/// decoder corrects past the hard codes' limits, and it counts what it
-/// corrected: E0 = 3 (the most a hard Golay(23,12) decoder corrects) or ET
-/// of 10–15 is usually still a good frame. Measured on DCFD simulcast
-/// against a cleaner receiver's audio of the same calls, playing such frames
-/// beat repeating them 72–79 % of the time; at E0 ≥ 4 repeating wins.
-const SOFT_REPEAT: (u32, f64) = (4, 16.0);
-/// TIA-102.BABA-A's thresholds, for hard-decision counts (Trunk Recorder's).
-const HARD_REPEAT: (u32, f64) = (3, 10.0);
+/// When a Phase 1 frame is repeated, besides an invalid pitch: E0 ≥ `e0`
+/// and (`both`) or (not `both`) ET ≥ `et` + 40·ER.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Repeat {
+    pub e0: u32,
+    pub et: f64,
+    pub both: bool,
+}
+
+impl Repeat {
+    /// The rule, given the outcome of its two tests.
+    pub fn hit(&self, e0: bool, et: bool) -> bool {
+        if self.both { e0 && et } else { e0 || et }
+    }
+}
+
+/// The repeat rule for soft-decision FEC counts (the default): TIA's shape,
+/// both tests, with higher thresholds. A soft decoder corrects past the hard
+/// codes' limits, and it counts what it corrected: E0 = 3 (the most a hard
+/// Golay(23,12) decoder corrects) or ET of 10–15 is usually still a good
+/// frame. On DCFD simulcast with noise added (`tool snr --repeat`, 8–14 dB),
+/// the audio is closest to the noiseless decode's with this rule: 0.19 dB
+/// mean log-spectral distance under E0 ≥ 4 or ET ≥ 16 + 40·ER, 0.3–0.6 dB
+/// under TIA's thresholds, and never repeating is worse at 8 dB.
+const SOFT_REPEAT: Repeat = Repeat { e0: 4, et: 16.0, both: true };
+/// TIA-102.BABA-A §7.7's rule, for hard-decision counts: E0 ≥ 2 and
+/// ET ≥ 10 + 40·ER (eqs. 97, 98). op25 and Trunk Recorder repeat on either.
+const HARD_REPEAT: Repeat = Repeat { e0: 2, et: 10.0, both: true };
 
 impl Decoder {
     pub fn new(rand: Rng, profile: Profile) -> Self {
@@ -827,8 +844,7 @@ impl Decoder {
             uv: UvSynth::new(),
             er: 0.0,
             se: 0.0,
-            repeat_e0: SOFT_REPEAT.0,
-            repeat_et: SOFT_REPEAT.1,
+            repeat: SOFT_REPEAT,
             fixed: (profile == Profile::Fixed).then(|| Box::new(fixed::FixedImbe::new())),
             tone: None,
         };
@@ -836,9 +852,14 @@ impl Decoder {
         d
     }
 
-    /// Error counts come from hard-decision FEC: TIA's repeat thresholds.
+    /// Error counts come from hard-decision FEC: TIA's repeat rule.
     pub fn hard_fec(&mut self) {
-        (self.repeat_e0, self.repeat_et) = HARD_REPEAT;
+        self.repeat = HARD_REPEAT;
+    }
+
+    /// Another repeat rule, for measuring one.
+    pub fn set_repeat(&mut self, r: Repeat) {
+        self.repeat = r;
     }
 
     pub fn reset(&mut self) {
@@ -858,7 +879,7 @@ impl Decoder {
     pub fn imbe(&mut self, d: &[u8; 88], e0: u32, et: u32, erased: bool, out: &mut [f32; FRAME_SAMPLES]) -> Kind {
         if let Some(f) = self.fixed.as_mut() {
             let mut s = [0i16; FRAME_SAMPLES];
-            let r = f.decode_checked(&fixed::frame_vector(d), e0, et, erased, self.repeat_e0, self.repeat_et as f32, &mut s);
+            let r = f.decode_checked(&fixed::frame_vector(d), e0, et, erased, self.repeat, &mut s);
             // Back to mbelib's float scale (to_limited / to_unit multiply by 7).
             for (o, &v) in out.iter_mut().zip(s.iter()) {
                 *o = v as f32 * (32768.0 / 7.0 / 32768.0);
@@ -900,7 +921,7 @@ impl Decoder {
             return Kind::Muted;
         }
         let ok = !erased && decode_imbe4400_parms(d, &mut self.cur, &mut self.prev);
-        if !ok || e0 >= self.repeat_e0 || et as f64 >= self.repeat_et + 40.0 * self.er {
+        if !ok || self.repeat.hit(e0 >= self.repeat.e0, et as f64 >= self.repeat.et + 40.0 * self.er) {
             if self.prev.repeat >= 4 {
                 self.fade_out(out);
                 return Kind::Muted;
