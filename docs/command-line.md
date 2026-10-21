@@ -444,14 +444,16 @@ Replay it with a different key and it's noise.
 ```bash
 trunk-pro tool snr <capture.cu8> --center Hz --rate Hz --freq Hz --kind dmr|p25|smartnet|p2
                    [--seconds N] [--snr 40,20,16,14,12,10,8,6] [--variant base,…] [--cutoff Hz]
-                   [--trials 1] [--nac --sysid --wacn]
+                   [--trials 1] [--nac --sysid --wacn] [--repeat]
 ```
 
 Takes one strong channel from a capture and decodes it again and again with noise added at each
 SNR, counting how much of what the clean run decoded still comes through. It's how receiver
 changes are compared. `--kind p2` needs `--nac`, `--sysid` and `--wacn` (hex). `--quality`
 (with `--kind p2`) reports a real channel as it is, and `--separation` the C4FM receiver's level
-separation at each SNR.
+separation at each SNR. `--repeat` (with `--kind p25`) scores the vocoder's frame-repeat rules,
+on soft- and hard-decision error counts: wrong frames played, good frames repeated, and how far
+the audio is from the clean run's.
 
 ### tool revoice
 
@@ -462,7 +464,7 @@ trunk-pro tool revoice <call.sdr | call.frames.jsonl> <out.wav> [--profile enhan
 
 Runs a call's saved vocoder frames through the vocoder again, for example to hear it with another
 vocoder. The frames are saved when **Save vocoder frames** is on in Setup → Recording (or with
-`replay --capture-frames`). `--hard-fec` uses the standard's repeat thresholds; `--s16` writes raw
+`replay --capture-frames`). `--hard-fec` uses the standard's repeat rule; `--s16` writes raw
 16-bit samples instead of a WAV.
 
 ### tool sdr

@@ -5,6 +5,12 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **P25 Phase 1 voice repeats fewer good frames.** A frame whose FEC corrected a lot of errors
+  is repeated only when the errors fall in its pitch word *and* there are many in total, as
+  TIA-102.BABA-A §7.7 has it, not on either one (an `||` inherited from op25, which taclane
+  found). With noise added to a DCFD capture, the audio comes out closer to the clean decode's
+  at every SNR tried. `tool snr --repeat` measures repeat rules.
+
 ## [0.2.6] — 2026-10-20
 
 - **A tab woken from the background shows how things are now** (by taclane, #54), not minutes of

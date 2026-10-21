@@ -18,7 +18,7 @@
 //! `tool revoice <call.sdr | call.frames.jsonl> <out.wav> [--profile
 //! enhanced|fixed|mbelib] [--seed 1] [--hard-fec] [--s16]` — vocode a call's
 //! frame capture (the recording setting "Save vocoder frames") again, e.g.
-//! with another vocoder profile; `--hard-fec` uses TIA's repeat thresholds,
+//! with another vocoder profile; `--hard-fec` uses TIA's repeat rule,
 //! `--s16` writes raw 16-bit samples at the vocoder's own scale instead of a
 //! WAV.
 //!

@@ -1,7 +1,9 @@
 //! `trunk-pro tool snr <capture> --center Hz --rate Hz --freq Hz --kind dmr|p25|smartnet
-//! [--seconds N] [--snr 40,20,16,14,12,10,8,6] [--variant base,…] [--cutoff Hz] [--kinds]`
+//! [--seconds N] [--snr 40,20,16,14,12,10,8,6] [--variant base,…] [--cutoff Hz] [--kinds]
+//! [--repeat]`
 //! (`--kind p2 --nac --sysid --wacn`: P25 Phase 2 voice; `--quality`: a real
-//! channel as it is, per variant) —
+//! channel as it is, per variant; `--repeat`: P25 IMBE frame-repeat rules,
+//! see [`repeat_rules`]) —
 //! weak-signal curves from a strong capture: one channel's IQ is cut out
 //! once, then decoded again and again with noise added at each SNR (signal
 //! power over the noise in 12.5 kHz). The noise is shaped by the same
@@ -193,6 +195,10 @@ struct Count {
     voice: Vec<(f64, String)>,
     /// P25 voice signalling: HDU, LDU1 LC, LDU2 ES, TDULC.
     sig: Vec<(f64, String)>,
+    /// P25 IMBE codewords: time, u0..u7, E0, ET (`--repeat`), from soft
+    /// decoding of the receiver bank and hard decoding of its best frame.
+    imbe: Vec<(f64, [u32; 8], u32, u32)>,
+    imbe_hard: Vec<(f64, [u32; 8], u32, u32)>,
 }
 
 /// How many of `got` the clean run also has: same content, within 0.2 s.
@@ -284,6 +290,10 @@ fn run_p25(iq: &[Complex32], rate: f64, v: &Variant) -> Count {
             } else if g.iter().any(|f| f.nid.duid == LDU1 || f.nid.duid == LDU2) {
                 for (k, p) in best_imbe(g).iter().enumerate() {
                     n.voice.push((t + k as f64 * 0.02, format!("{:x?}", p.u)));
+                    n.imbe.push((t + k as f64 * 0.02, p.u, p.e0, p.errs));
+                }
+                for (k, p) in voice::ldu_imbe(trunk_core::p25::diversity::best_frame(g), false).iter().enumerate() {
+                    n.imbe_hard.push((t + k as f64 * 0.02, p.u, p.e0, p.errs));
                 }
             }
         }
@@ -388,6 +398,9 @@ pub fn run(a: &Args) {
     println!("{head}");
     let seeds: Vec<u64> = (0..a.num("trials", 1.0) as u64).map(|k| 0x9e37_79b9_7f4a_7c15 ^ k.wrapping_mul(0x1234_5678_9abc)).collect();
     let kinds = a.get("kinds").is_some();
+    if a.flag("repeat") {
+        return repeat_rules(&clean[0], &snrs, &seeds, |x| run(x, &variants[0]), |sd, snr| add_noise(&iq, rate, s, snr, &taps, sd));
+    }
     for &snr in &snrs {
         let mut line = format!("{snr:>6.1}");
         // `--kinds`: P25 voice signalling per word kind (variant, kind) → (clean, matched, wrong).
@@ -490,5 +503,141 @@ pub fn separation(a: &Args) {
         }
         sep.sort_by(f32::total_cmp);
         println!("{snr:6.1} dB: separation median {:.2} (10 % {:.2}, 90 % {:.2})", sep[sep.len() / 2], sep[sep.len() / 10], sep[sep.len() * 9 / 10]);
+    }
+}
+
+/// `--repeat`: IMBE frame-repeat rules scored against the noiseless run, on
+/// soft- and hard-decision error counts. Bits: per codeword the clean run
+/// decoded with ET = 0, frames repeated, wrong frames played (any of u0..u6 /
+/// u0 itself) and right frames repeated. Audio: the frames through the
+/// fixed-point vocoder under each rule, the mean log-spectral distance
+/// (125–3800 Hz) of each 20 ms frame to the clean run's audio of it, over
+/// voiced frames, and over the frames where some rule repeats and another
+/// doesn't. ER follows TIA eq. 96; a 0.5 s gap starts a new call.
+fn repeat_rules(clean: &Count, snrs: &[f64], seeds: &[u64], run: impl Fn(&[Complex32]) -> Count, noise: impl Fn(u64, f64) -> Vec<Complex32>) {
+    use trunk_core::mbe::{self, Repeat};
+    type Cw = (f64, [u32; 8], u32, u32);
+    let r = |e0, et, both| Repeat { e0, et, both };
+    // The rule in use first, then the alternatives it was chosen over.
+    let soft_rules = [("E0>=4 & ET>=16+40ER", r(4, 16.0, true)), ("E0>=4 | ET>=16+40ER", r(4, 16.0, false)), ("E0>=2 & ET>=10+40ER (TIA)", r(2, 10.0, true)), ("never", r(99, 999.0, true))];
+    let hard_rules = [("E0>=2 & ET>=10+40ER (TIA)", r(2, 10.0, true)), ("E0>=3 | ET>=10+40ER", r(3, 10.0, false)), ("E0>=2 | ET>=10+40ER (op25)", r(2, 10.0, false)), ("never", r(99, 999.0, true))];
+    // A stream through the fixed-point vocoder: audio and whether each frame was repeated.
+    let vocode = |cws: &[Cw], rule: Repeat| -> Vec<([f32; 160], bool)> {
+        let mut d = mbe::Decoder::new(mbe::lcg(1), mbe::Profile::Fixed);
+        d.set_repeat(rule);
+        let mut last = f64::NEG_INFINITY;
+        cws.iter()
+            .map(|&(t, u, e0, et)| {
+                if t - last > 0.5 {
+                    d.reset();
+                }
+                last = t;
+                let mut o = [0f32; 160];
+                let k = d.imbe(&voice::imbe_params_to_bits(&u), e0, et, false, &mut o);
+                (o, k != mbe::Kind::Voice)
+            })
+            .collect()
+    };
+    // Power spectrum, Hann window, bins of 31.25 Hz from 125 to 3800 Hz.
+    let tw: Vec<Vec<(f64, f64)>> = (4..122)
+        .map(|b| {
+            (0..160)
+                .map(|n| {
+                    let w = 0.5 - 0.5 * (2.0 * PI * n as f64 / 160.0).cos();
+                    let a = 2.0 * PI * b as f64 * n as f64 / 256.0;
+                    (w * a.cos(), -w * a.sin())
+                })
+                .collect()
+        })
+        .collect();
+    let spec = |x: &[f32; 160]| -> Vec<f64> {
+        tw.iter()
+            .map(|row| {
+                let (mut re, mut im) = (0.0f64, 0.0f64);
+                for (&v, &(c, s)) in x.iter().zip(row) {
+                    re += v as f64 * c;
+                    im += v as f64 * s;
+                }
+                re * re + im * im
+            })
+            .collect()
+    };
+    let truth: Vec<&Cw> = clean.imbe.iter().filter(|c| c.3 == 0).collect();
+    let refa = vocode(&clean.imbe, soft_rules[0].1);
+    // Reference spectra of the clean frames that played as voice, with a floor 40 dB under their peak.
+    let refs: Vec<Option<(f64, Vec<f64>)>> = refa
+        .iter()
+        .map(|(o, rep)| {
+            let p = spec(o);
+            let peak = p.iter().cloned().fold(0.0, f64::max);
+            (!rep && peak > 1e-4).then(|| (peak * 1e-4, p))
+        })
+        .collect();
+    println!("{} clean codewords, {} with ET = 0, {} voiced", clean.imbe.len(), truth.len(), refs.iter().flatten().count());
+    for &snr in snrs {
+        let noisy: Vec<Count> = seeds.iter().map(|&sd| run(&noise(sd, snr))).collect();
+        for (label, rules, hard) in [("soft", &soft_rules[..], false), ("hard", &hard_rules[..], true)] {
+            // rule → (scored, repeated, wrong played, u0 wrong played, right repeated, LSD sum, LSD n, disputed LSD sum, disputed n)
+            let mut tot = vec![(0u64, 0u64, 0u64, 0u64, 0u64, 0f64, 0u64, 0f64, 0u64); rules.len()];
+            let (mut scored, mut wrong_all, mut u0_all) = (0u64, 0u64, 0u64);
+            for n in &noisy {
+                let cws = if hard { &n.imbe_hard } else { &n.imbe };
+                let outs: Vec<_> = rules.iter().map(|(_, r)| vocode(cws, *r)).collect();
+                let (mut er, mut last) = (0.0f64, f64::NEG_INFINITY);
+                for (i, &(t, u, e0, et)) in cws.iter().enumerate() {
+                    if t - last > 0.5 {
+                        er = 0.0;
+                    }
+                    last = t;
+                    er = 0.95 * er + 0.000365 * et as f64;
+                    let Some(ci) = clean.imbe.iter().position(|c| (c.0 - t).abs() < 0.01) else { continue };
+                    let c = &clean.imbe[ci];
+                    let disputed = outs.iter().any(|o| o[i].1) && outs.iter().any(|o| !o[i].1);
+                    let bits = c.3 == 0;
+                    let wrong = u[..7] != c.1[..7];
+                    let u0 = u[0] != c.1[0];
+                    let b0 = ((u[0] >> 4) & 0xfc) | ((u[7] >> 2) & 3);
+                    if bits {
+                        scored += 1;
+                        wrong_all += wrong as u64;
+                        u0_all += u0 as u64;
+                    }
+                    for (k, (_, rule)) in rules.iter().enumerate() {
+                        let x = &mut tot[k];
+                        if bits {
+                            let rep = b0 > 207 || rule.hit(e0 >= rule.e0, et as f64 >= rule.et + 40.0 * er);
+                            x.0 += 1;
+                            x.1 += rep as u64;
+                            x.2 += (wrong && !rep) as u64;
+                            x.3 += (u0 && !rep) as u64;
+                            x.4 += (!wrong && rep) as u64;
+                        }
+                        if let Some((floor, rp)) = &refs[ci] {
+                            let p = spec(&outs[k][i].0);
+                            let d = (rp.iter().zip(&p).map(|(a, b)| (10.0 * ((a + floor) / (b + floor)).log10()).powi(2)).sum::<f64>() / rp.len() as f64).sqrt();
+                            x.5 += d;
+                            x.6 += 1;
+                            if disputed {
+                                x.7 += d;
+                                x.8 += 1;
+                            }
+                        }
+                    }
+                }
+            }
+            let sc = scored.max(1) as f64;
+            println!("SNR {snr} dB, {label} counts: {scored} codewords, {:.2} % wrong, {:.2} % u0 wrong; LSD over {} voiced frames, {} disputed", 100.0 * wrong_all as f64 / sc, 100.0 * u0_all as f64 / sc, tot[0].6, tot[0].8);
+            for ((name, _), x) in rules.iter().zip(&tot) {
+                println!(
+                    "  {name:<28} repeated {:>6.2} %  wrong played {:>5}  u0 wrong {:>3}  right repeated {:>5}  LSD {:>6.3} dB  disputed {:>6.3} dB",
+                    100.0 * x.1 as f64 / sc,
+                    x.2,
+                    x.3,
+                    x.4,
+                    x.5 / x.6.max(1) as f64,
+                    x.7 / x.8.max(1) as f64
+                );
+            }
+        }
     }
 }
