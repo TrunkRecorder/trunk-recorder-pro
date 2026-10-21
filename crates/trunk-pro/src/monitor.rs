@@ -19,9 +19,11 @@ use trunk_core::metrics::Sink;
 use crate::platform::{Platform, Probes, Watched};
 use crate::runtime::{publish, Ctx};
 
-/// Every connection hears from the recorder this often, recording or not:
-/// a browser that heard nothing for far longer wasn't running (transport.ts's
-/// `FROZEN_MS`).
+/// Every connection hears from the recorder this often, recording or not: the
+/// `host` message is the connections' heartbeat, so it goes to all of them,
+/// never behind a topic or access. A browser that heard nothing for far longer
+/// wasn't running (transport.ts's `FROZEN_MS`); one whose `host` statuses lag
+/// the `t` stamped on them more and more is taking in a backlog (`BEHIND_MS`).
 pub const EVERY: Duration = Duration::from_secs(2);
 /// A watched disk below this much free, %, is an event.
 const DISK_LOW_PCT: f64 = 5.0;
