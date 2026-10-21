@@ -521,8 +521,9 @@ impl P25Parser {
             Msg::MotBaseStationId { callsign, ch } => {
                 self.on(&mut m, *ch);
                 m.kind = MessageType::BaseStationId;
-                m.meta = format!("Base station ID {callsign} {} MHz", mhz(m.freq_hz));
-                m.callsign = Some(callsign.clone());
+                // (None: the station is identified another way, as by Morse code on that channel.)
+                m.meta = if callsign.is_empty() { format!("Base station ID {} MHz, no call sign", mhz(m.freq_hz)) } else { format!("Base station ID {callsign} {} MHz", mhz(m.freq_hz)) };
+                m.callsign = Some(callsign.clone()).filter(|c| !c.is_empty());
             }
             Msg::HarrisRegroup { simulselect, sg, member, activate, key_id } => {
                 let what = if *simulselect { "simulselect" } else { "patch" };

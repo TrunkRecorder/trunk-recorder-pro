@@ -363,6 +363,61 @@
       "additionalProperties": false,
       "description": "Trunk Recorder's call JSON: each call's .json file, and `record` in `concluded` and `hello.history`."
     },
+    "CallSignHolder": {
+      "type": "object",
+      "properties": {
+        "callSign": {
+          "type": "string"
+        },
+        "licensee": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "serviceCode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "serviceDesc": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "city": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "callSign",
+        "licensee",
+        "serviceCode",
+        "serviceDesc",
+        "status",
+        "city",
+        "state"
+      ],
+      "additionalProperties": false,
+      "description": "Who holds a call sign (the trunkrecorder.pro API's)."
+    },
     "CallView": {
       "type": "object",
       "properties": {
@@ -790,6 +845,10 @@
           "type": "string",
           "description": "What people call it; the short name is its folder."
         },
+        "fcc": {
+          "$ref": "#/definitions/FccLicenses",
+          "description": "Its channels' FCC licenses by frequency (they can be different licensees'): see FccLicenses."
+        },
         "enabled": {
           "type": "boolean"
         },
@@ -1171,6 +1230,37 @@
         "systemNames"
       ],
       "additionalProperties": false
+    },
+    "FccLicense": {
+      "type": "object",
+      "properties": {
+        "callSign": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "from": {
+          "type": "string",
+          "enum": [
+            "user",
+            "air",
+            "lookup"
+          ]
+        }
+      },
+      "required": [
+        "callSign"
+      ],
+      "additionalProperties": false,
+      "description": "Who is licensed on a frequency: its call sign, who holds it (as the FCC has it; absent: not looked up), and where that came from: the user (never replaced), the air (a Motorola base station ID), or a license lookup."
+    },
+    "FccLicenses": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/definitions/FccLicense"
+      },
+      "description": "A system's FCC licenses by frequency (Hz on the 6.25 kHz raster, as a string). Optional, for reference; plugins are told them."
     },
     "FreqRow": {
       "type": "object",
@@ -1827,6 +1917,37 @@
               "type": "array",
               "items": {
                 "$ref": "#/definitions/LicenseResultRow"
+              }
+            },
+            "error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "results",
+            "error"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "callSignResult"
+            },
+            "id": {
+              "type": "number"
+            },
+            "results": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/CallSignHolder"
               }
             },
             "error": {
@@ -4788,13 +4909,6 @@
           "type": "string",
           "description": "Its name, unique in its system (absent: the system's short name). The talkgroup file's Preferred Site names it; calls and plugins say it."
         },
-        "fccName": {
-          "type": "string",
-          "description": "This site's own FCC licensee and license call sign, apart from the system's; plugins are told them."
-        },
-        "fccCallSign": {
-          "type": "string"
-        },
         "enabled": {
           "type": "boolean"
         },
@@ -5043,6 +5157,29 @@
             "null"
           ],
           "description": "The control channel is another system's / site's: why (its grants are not followed)."
+        },
+        "callsigns": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "callSign": {
+                "type": "string"
+              },
+              "freqHz": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "callSign",
+              "freqHz"
+            ],
+            "additionalProperties": false
+          },
+          "description": "Every call sign its base station IDs say, each with the channel it's for (a site's licenses can be one a channel)."
         }
       },
       "required": [
@@ -6181,13 +6318,9 @@
           "type": "string",
           "description": "What people call it (\"County Public Safety\"); the short name is its folder."
         },
-        "fccName": {
-          "type": "string",
-          "description": "Who holds its FCC license, as the FCC has it (\"DISTRICT OF COLUMBIA\"), for reference; plugins are told it."
-        },
-        "fccCallSign": {
-          "type": "string",
-          "description": "Its FCC license's call sign (\"WPXT459\"), for reference; plugins are told it."
+        "fcc": {
+          "$ref": "#/definitions/FccLicenses",
+          "description": "Its FCC licenses by frequency (control, voice): see FccLicenses."
         },
         "type": {
           "type": "string",
@@ -6693,6 +6826,30 @@
           },
           "required": [
             "type"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "callSignQuery"
+            },
+            "id": {
+              "type": "number"
+            },
+            "callSigns": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "callSigns"
           ],
           "additionalProperties": false
         },

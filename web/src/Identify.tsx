@@ -5,8 +5,9 @@
 // worker) asks the trunkrecorder.pro API (POST /api/v1/fcc/identify).
 
 import { useEffect, useState } from "react";
-import { identifySurvey, licensees, lookupLicenses, setFcc, siteFrequencies, type Licensee, type LicenseLookup } from "./controller.ts";
-import type { LicenseResultRow, SurveyLicense, System } from "./protocol.ts";
+import { fccKey } from "./config.ts";
+import { editFcc, identifySurvey, lookupCallSigns, lookupLicenses, lookupLicensesByFreq, mergeLookup, nameCallSigns, type FccTarget, type LicenseLookup } from "./controller.ts";
+import type { FccLicense, FccLicenses, LicenseResultRow, SurveyLicense } from "./protocol.ts";
 
 const LOCATION_KEY = "trp.surveyLocation";
 const RADIUS_KEY = "trp.surveyRadiusKm";
@@ -238,39 +239,88 @@ export function IdentifyBar(props: { licenses: LicenseLookup | null; canIdentify
   );
 }
 
-/** A licensee to choose: who, its call sign, on how many of the frequencies, and how far. */
-function LicenseeRow(props: { x: Licensee; of: number; current: boolean; onUse: () => void }) {
-  const { x } = props;
+const mhzOf = (k: string) => (Number(k) / 1e6).toFixed(4);
+const FROM: Record<string, string> = { air: "heard", lookup: "lookup" };
+
+/** A system's FCC licenses by frequency, to edit: what's typed is the user's (never replaced). */
+export function FccTable(props: { target: FccTarget; fcc: FccLicenses | undefined }) {
+  const rows = Object.entries(props.fcc ?? {}).sort(([a], [b]) => Number(a) - Number(b));
+  const [mhz, setMhz] = useState("");
+  const set = (k: string, l: FccLicense | null) =>
+    editFcc(props.target, (f) => {
+      if (l) f[k] = l;
+      else delete f[k];
+    });
+  const hz = Math.round(Number(mhz) * 1e6);
+  const add = () => {
+    if (!(hz > 0)) return;
+    const k = fccKey(hz);
+    if (!props.fcc?.[k]) set(k, { callSign: "" });
+    setMhz("");
+  };
   return (
-    <li className="row licensee">
-      <span className="stack-tight">
-        <span>
-          {x.fccName} <span className="mono">{x.fccCallSign}</span>
-          {x.lapsed && <span className="tag">lapsed</span>}
-        </span>
-        <span className="muted small">{[`on ${x.frequencies} of ${props.of} frequencies`, distance(x.distanceM, x.bearingCardinal), x.service].filter(Boolean).join(" · ")}</span>
-      </span>
-      <span className="spacer" />
-      {props.current ? (
-        <span className="muted small">in use</span>
-      ) : (
-        <button className="btn small" onClick={props.onUse}>
-          Use
-        </button>
+    <div className="stack">
+      {rows.length > 0 && (
+        <div className="table-wrap">
+          <table className="calls fcc-table">
+            <thead>
+              <tr>
+                <th>MHz</th>
+                <th>Call sign</th>
+                <th>Licensee</th>
+                <th />
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(([k, l]) => (
+                <tr key={k}>
+                  <td className="mono">{mhzOf(k)}</td>
+                  <td>
+                    <input className="mono" value={l.callSign} aria-label={`Call sign on ${mhzOf(k)} MHz`} onChange={(e) => set(k, { ...l, callSign: e.target.value.toUpperCase().trim(), from: undefined })} />
+                  </td>
+                  <td>
+                    <input value={l.name ?? ""} aria-label={`Licensee on ${mhzOf(k)} MHz`} onChange={(e) => set(k, { ...l, name: e.target.value || undefined, from: undefined })} />
+                  </td>
+                  <td className="muted small">{l.from ? FROM[l.from] : "yours"}</td>
+                  <td className="actions">
+                    <button className="btn ghost small" onClick={() => set(k, null)} aria-label={`Remove ${mhzOf(k)} MHz`}>
+                      Remove
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
-    </li>
+      <div className="row">
+        <input className="mono" value={mhz} placeholder="MHz" aria-label="Frequency, MHz" onChange={(e) => setMhz(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()} />
+        <button className="btn ghost small" disabled={!(hz > 0)} onClick={add}>
+          Add a frequency
+        </button>
+      </div>
+    </div>
   );
 }
 
-/** Setup's Identify on a system (`site` null) or one of its sites: where, then who is licensed on its frequencies, to keep as its FCC name and call sign. */
-export function IdentifyFcc(props: { sys: System; system: number; site: number | null }) {
+/** Setup's Identify on a system or a conventional system: names for the call signs heard on the air (no location), and who is licensed on its frequencies near where the user is, into its FCC licenses. */
+export function IdentifyFcc(props: { target: FccTarget; what: string; freqs: number[]; fcc: FccLicenses | undefined }) {
   const [open, setOpen] = useState(false);
   const [where, setWhere] = useState(savedWhere);
   const [l, setL] = useState<LicenseLookup | null>(null);
-  const sites = props.site === null ? props.sys.sites : [props.sys.sites[props.site]].filter(Boolean);
-  const signals = siteFrequencies(sites);
-  const target = props.site === null ? props.sys : props.sys.sites[props.site];
-  const close = () => (setOpen(false), setL(null));
+  const [named, setNamed] = useState<string | null>(null);
+  const signals = props.freqs.slice(0, 64).map((freqHz) => ({ freqHz }));
+  const unnamed = [...new Set(Object.values(props.fcc ?? {}).filter((x) => x.callSign && !x.name).map((x) => x.callSign))];
+  const close = () => (setOpen(false), setL(null), setNamed(null));
+  const nameThem = () => {
+    setNamed("Looking them up…");
+    void lookupCallSigns(unnamed).then((r) => {
+      let n = 0;
+      if (!r.error) editFcc(props.target, (f) => void (n = nameCallSigns(f, r.results)));
+      setNamed(r.error ?? `Named ${n} of ${unnamed.length}.`);
+    });
+  };
   const go = () => {
     const p = takeWhere(where);
     if (!p) return;
@@ -278,62 +328,88 @@ export function IdentifyFcc(props: { sys: System; system: number; site: number |
     setL(asked);
     void lookupLicenses(p.lat, p.lon, p.radiusM, signals).then((r) => setL({ ...asked, stage: r.error ? "error" : "done", ...r }));
   };
-  const found = l?.stage === "done" ? licensees(l.results, signals.map((x) => x.freqHz)) : [];
-  const what = props.site === null ? props.sys.name || props.sys.shortName : "this site";
+  const found = l?.stage === "done" ? lookupLicensesByFreq(l.results) : {};
+  const merged = { ...(props.fcc ?? {}) };
+  const changes = mergeLookup(merged, found);
   return (
     <>
-      <button className="btn ghost small" disabled={!signals.length} onClick={() => setOpen(true)} title="Look up who holds its FCC license (optional)">
+      <button className="btn ghost small" disabled={!signals.length && !unnamed.length} onClick={() => setOpen(true)} title="Look up who holds its FCC licenses (optional)">
         Identify
       </button>
       {open && (
-        <Modal title={`Identify ${what}`} onClose={close}>
-          {!l || l.stage === "error" ? (
-            <>
-              <WhyLocation what={what} />
-              <WhereFields value={where} onChange={setWhere} />
-              {l?.stage === "error" && <div className="banner bad small">{l.error}</div>}
+        <Modal title={`Identify ${props.what}`} onClose={close}>
+          {unnamed.length > 0 && (
+            <div className="stack">
+              <p className="small">{`${unnamed.length} call sign${unnamed.length === 1 ? "" : "s"} heard on the air ${unnamed.length === 1 ? "has" : "have"} no licensee yet. Looking ${unnamed.length === 1 ? "it" : "them"} up sends only the call sign${unnamed.length === 1 ? "" : "s"} to trunkrecorder.pro, no location.`}</p>
               <div className="row">
-                <span className="spacer" />
-                <button className="btn ghost" onClick={close}>
-                  Not now
+                <button className="btn" disabled={named === "Looking them up…"} onClick={nameThem}>
+                  Look up their licensees
                 </button>
-                <button className="btn primary" disabled={!parseLatLon(where.text)} onClick={go}>
-                  Identify
-                </button>
+                {named && <span className="muted small">{named}</span>}
               </div>
-            </>
-          ) : l.stage === "running" ? (
-            <p className="muted">{`Looking up ${signals.length} frequenc${signals.length === 1 ? "y" : "ies"}…`}</p>
-          ) : (
-            <>
-              {found.length ? (
-                <>
-                  <p className="small">{`Licensed on its ${signals.length} frequenc${signals.length === 1 ? "y" : "ies"} within ${Math.round(l.radiusM / 1000)} km. Use one as its FCC name and call sign:`}</p>
-                  <ul className="licensees">
-                    {found.slice(0, 8).map((x) => (
-                      <LicenseeRow
-                        key={`${x.fccName}|${x.fccCallSign}`}
-                        x={x}
-                        of={signals.length}
-                        current={x.fccCallSign === target?.fccCallSign}
-                        onUse={() => (setFcc(props.system, props.site, x.fccName, x.fccCallSign), close())}
-                      />
-                    ))}
-                  </ul>
-                </>
-              ) : (
-                <p className="small">{`Nobody is licensed on its frequencies within ${Math.round(l.radiusM / 1000)} km. Try farther, or check its frequencies.`}</p>
-              )}
-              <div className="row">
-                <button className="btn ghost" onClick={() => setL(null)}>
-                  Look again
-                </button>
-                <span className="spacer" />
-                <button className="btn ghost" onClick={close}>
-                  Close
-                </button>
-              </div>
-            </>
+            </div>
+          )}
+          {signals.length > 0 &&
+            (!l || l.stage === "error" ? (
+              <>
+                <WhyLocation what={props.what} />
+                <WhereFields value={where} onChange={setWhere} />
+                {l?.stage === "error" && <div className="banner bad small">{l.error}</div>}
+                <div className="row">
+                  <span className="spacer" />
+                  <button className="btn ghost" onClick={close}>
+                    Not now
+                  </button>
+                  <button className="btn primary" disabled={!parseLatLon(where.text)} onClick={go}>
+                    Identify
+                  </button>
+                </div>
+              </>
+            ) : l.stage === "running" ? (
+              <p className="muted">{`Looking up ${signals.length} frequenc${signals.length === 1 ? "y" : "ies"}…`}</p>
+            ) : (
+              <>
+                {Object.keys(found).length ? (
+                  <>
+                    <p className="small">{`Licensed within ${Math.round(l.radiusM / 1000)} km, the nearest on each frequency (yours, and call signs heard on the air, stay):`}</p>
+                    <ul className="licensees">
+                      {Object.entries(found)
+                        .sort(([a], [b]) => Number(a) - Number(b))
+                        .map(([k, x]) => (
+                          <li key={k} className="row licensee small">
+                            <span className="mono">{mhzOf(k)}</span>
+                            <span className="mono">{x.callSign}</span>
+                            <span>{x.name}</span>
+                            <span className="spacer" />
+                            <span className="muted">{merged[k] === x || (merged[k]?.name === x.name && props.fcc?.[k]?.name !== x.name) ? "new" : "kept"}</span>
+                          </li>
+                        ))}
+                    </ul>
+                  </>
+                ) : (
+                  <p className="small">{`Nobody is licensed on its frequencies within ${Math.round(l.radiusM / 1000)} km. Try farther, or check its frequencies.`}</p>
+                )}
+                <div className="row">
+                  <button className="btn ghost" onClick={() => setL(null)}>
+                    Look again
+                  </button>
+                  <span className="spacer" />
+                  <button className="btn ghost" onClick={close}>
+                    Close
+                  </button>
+                  <button className="btn primary" disabled={!changes} onClick={() => (editFcc(props.target, (f) => void mergeLookup(f, found)), close())}>
+                    {changes ? `Keep ${changes}` : "Nothing new"}
+                  </button>
+                </div>
+              </>
+            ))}
+          {!signals.length && (
+            <div className="row">
+              <span className="spacer" />
+              <button className="btn ghost" onClick={close}>
+                Close
+              </button>
+            </div>
           )}
         </Modal>
       )}

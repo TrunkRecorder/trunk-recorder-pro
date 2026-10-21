@@ -723,7 +723,7 @@ async fn session(ctx: Arc<Ctx>, mut socket: WebSocket, door: Door) {
 
 /// Change the config on the recorder's side (a plugin added or removed):
 /// saved, sent to every browser, and the plugins restarted if it changes them.
-fn edit_config(ctx: &Ctx, f: impl FnOnce(&mut crate::config::Config)) -> Result<(), String> {
+pub(crate) fn edit_config(ctx: &Ctx, f: impl FnOnce(&mut crate::config::Config)) -> Result<(), String> {
     let mut cfg = ctx.config.lock().unwrap();
     let old = cfg.clone();
     f(&mut cfg);
@@ -910,6 +910,21 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
             Some(match answer {
                 Ok(v) => ToClient::LicenseResult { id, results: v["results"].as_array().cloned().unwrap_or_default(), error: None },
                 Err(e) => ToClient::LicenseResult { id, results: vec![], error: Some(e) },
+            })
+        }
+        Command::CallSignQuery { id, call_signs } => {
+            let api_base = ctx.config.lock().unwrap().server.trp_api_base().to_string();
+            let mut calls: Vec<String> = call_signs.iter().map(|c| c.trim().to_uppercase()).filter(|c| crate::config::plausible_call_sign(c)).collect();
+            calls.sort();
+            calls.dedup();
+            calls.truncate(64);
+            if calls.is_empty() {
+                return Some(ToClient::CallSignResult { id, results: vec![], error: Some("No call signs to look up.".into()) });
+            }
+            let answer = tokio::task::spawn_blocking(move || crate::licenses::call_signs(&api_base, &calls)).await.unwrap_or_else(|e| Err(e.to_string()));
+            Some(match answer {
+                Ok(v) => ToClient::CallSignResult { id, results: v["results"].as_array().cloned().unwrap_or_default(), error: None },
+                Err(e) => ToClient::CallSignResult { id, results: vec![], error: Some(e) },
             })
         }
         Command::SurveyStop => {

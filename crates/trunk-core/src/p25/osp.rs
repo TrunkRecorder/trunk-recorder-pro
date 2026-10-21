@@ -17,6 +17,36 @@ use super::tsbk::Tsbk;
 pub const MFID_MOTOROLA: u8 = 0x90;
 pub const MFID_L3HARRIS: u8 = 0xa4;
 
+/// A site's FCC call sign as Motorola's base station ID sends it (the
+/// ASTRO 25 Base Station Identification Receive Implementation Guide, 1.0):
+/// eight 6-bit characters, each its ASCII less 43 ('0'..'9' $05..$0E,
+/// 'A'..'Z' $16..$2F), $00 for none. The same in a control channel's
+/// MOT_BSI_GRANT, a voice channel's LC_MOT_BSI and a Phase 2 MAC_MOT_BSI.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CallSign([u8; 8]);
+
+impl CallSign {
+    /// From the six octets that carry it (character 1 in the first's top bits).
+    pub fn from_octets(b: &[u8]) -> CallSign {
+        let v = b[..6].iter().fold(0u64, |v, &x| v << 8 | x as u64);
+        let mut c = [0u8; 8];
+        for (i, x) in c.iter_mut().enumerate() {
+            let n = (v >> (42 - 6 * i) & 0x3f) as u8;
+            // (Values the guide doesn't give a character are dropped, as none is.)
+            *x = match n {
+                0x05..=0x0e | 0x16..=0x2f => n + 43,
+                _ => 0,
+            };
+        }
+        CallSign(c)
+    }
+
+    /// The call sign ("WPXT459"); empty when it says none.
+    pub fn text(&self) -> String {
+        self.0.iter().filter(|&&c| c != 0).map(|&c| c as char).collect()
+    }
+}
+
 /// A channel: a 4-bit identifier (which band plan) and a 12-bit number (§2.3.9).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Channel(pub u16);
@@ -228,8 +258,9 @@ pub enum Msg {
     MotPatchUpdate { calls: Vec<(Channel, u16)> },
     /// Opcode $0A (not in AABH; as SDRTrunk reads it): a radio's emergency button.
     MotEmergencyAlarm { group: u16, source: u32 },
-    /// Opcode $0B (not in AABH; as SDRTrunk reads it): the site's callsign
-    /// (its CW ID) and channel.
+    /// MOT_BSI_GRANT (opcode $0B; Motorola's BSI receive guide §1.7.1, not
+    /// AABH): the site's FCC call sign, and the channel it's sent on (in
+    /// Morse code, or this control channel).
     MotBaseStationId { callsign: String, ch: Channel },
     // ── L3Harris (MFID $A4) ──
     /// GRG_EXENC_CMD (AABH §4.3.2.1): a supergroup's member, a talkgroup
@@ -448,10 +479,8 @@ fn tsbk_msg(o: Octets, opcode: u8, mfid: u8) -> Msg {
         (MFID_MOTOROLA, 0x08) => Acknowledge { service: o.u8(2) & 0x3f, source: Some(o.u24(4)), target: o.u24(7) },
         (MFID_MOTOROLA, 0x0a) => MotEmergencyAlarm { group: o.u16(5), source: o.u24(7) },
         (MFID_MOTOROLA, 0x0b) => {
-            // Eight 6-bit characters from octet 2 (+ 43 for ASCII; 0 none).
-            let v = (o.u32(2) as u64) << 16 | o.u16(6) as u64;
-            let callsign = (0..8).map(|i| (v >> (42 - 6 * i) & 0x3f) as u8).filter(|&c| c != 0).map(|c| (c + 43) as char).collect();
-            MotBaseStationId { callsign, ch: o.ch(8) }
+            let b: Vec<u8> = (2..8).map(|i| o.u8(i)).collect();
+            MotBaseStationId { callsign: CallSign::from_octets(&b).text(), ch: o.ch(8) }
         }
         (MFID_L3HARRIS, 0x30) => {
             // GRG_Options: simulselect, talkgroup (G), activate (A), sequence.
@@ -872,6 +901,21 @@ mod tests {
         assert_eq!(m.msg, Msg::MotPatchGrant { protected: true, ch: Channel(0x1001), rx: Some(Channel(0x2001)), sg: 2001, source: 0x0a0b0c });
         let m = tsbk(0x03, MFID_MOTOROLA, [0x10, 0x02, 0x07, 0xd1, 0x10, 0x03, 0x07, 0xd2]);
         assert_eq!(m.msg, Msg::MotPatchUpdate { calls: vec![(Channel(0x1002), 2001), (Channel(0x1003), 2002)] });
+    }
+
+    /// The BSI guide's MOT_BSI_GRANT: eight characters from octet 2 (values
+    /// with no character, and padding, dropped), then the channel.
+    #[test]
+    fn base_station_id() {
+        let v = [0x2cu64, 0x25, 0x2d, 0x29, 0x09, 0x0a, 0x0e, 0x00].iter().fold(0u64, |v, &c| v << 6 | c);
+        let mut a = [0u8; 8];
+        a[..6].copy_from_slice(&v.to_be_bytes()[2..]);
+        a[6..].copy_from_slice(&[0x10, 0x5c]);
+        let m = tsbk(0x0b, MFID_MOTOROLA, a);
+        assert!(matches!(&m.msg, Msg::MotBaseStationId { callsign, ch } if callsign == "WPXT459" && ch.number() == 0x05c), "{:?}", m.msg);
+        // $01..$04 and $0F..$15 are no characters.
+        let junk = [0x01u64, 0x16, 0x10, 0x05, 0, 0, 0, 0].iter().fold(0u64, |v, &c| v << 6 | c);
+        assert_eq!(CallSign::from_octets(&junk.to_be_bytes()[2..]).text(), "A0");
     }
 
     /// A manufacturer's opcode is its own: Motorola $04 isn't a unit-to-unit grant.

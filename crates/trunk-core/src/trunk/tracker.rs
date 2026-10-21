@@ -303,6 +303,12 @@ impl VoiceTracker {
         if let Some(p) = self.positions.lcw(&lc.raw, lc.mfid, self.talker) {
             out.push(TrackerOut::Position(p));
         }
+        if let Lc::BaseStationId(c) = lc.msg {
+            let c = c.text();
+            if !c.is_empty() {
+                out.push(TrackerOut::BaseStationId(c));
+            }
+        }
     }
 
     /// Link control says the voice is encrypted: until a sync says.
@@ -660,5 +666,22 @@ mod tests {
         assert_eq!(t.talker, None);
         t.link_control(lc::parse(&[0x49, 0, 0xbe, 0xe0, 0x03, 0xa9, 0x01, 0x02, 0x03]), 0.0, &mut out);
         assert_eq!(t.talker, Some(0x010203));
+    }
+
+    /// Motorola's LC_MOT_BSI on a voice channel: its call sign, once heard; an empty one is none.
+    #[test]
+    fn a_voice_channel_says_its_call_sign() {
+        let mut t = tracker(None);
+        t.start(0.0, None);
+        // "KNJU834": K=$20 N=$23 J=$1F U=$2A 8=$0D 3=$08 4=$09, none.
+        let v = [0x20u64, 0x23, 0x1f, 0x2a, 0x0d, 0x08, 0x09, 0x00].iter().fold(0u64, |v, &c| v << 6 | c);
+        let mut w = [0x05, 0x90, 0, 0, 0, 0, 0, 0, 0];
+        w[2..8].copy_from_slice(&v.to_be_bytes()[2..]);
+        let mut out = Vec::new();
+        t.link_control(lc::parse(&w), 0.0, &mut out);
+        assert!(out.contains(&TrackerOut::BaseStationId("KNJU834".into())), "{out:?}");
+        let mut out = Vec::new();
+        t.link_control(lc::parse(&[0x05, 0x90, 0, 0, 0, 0, 0, 0, 0]), 0.0, &mut out);
+        assert!(!out.iter().any(|o| matches!(o, TrackerOut::BaseStationId(_))));
     }
 }

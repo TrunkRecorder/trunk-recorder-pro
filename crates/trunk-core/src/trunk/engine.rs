@@ -290,6 +290,10 @@ pub enum Event {
     Audio { call_id: CallId, system: u16, talkgroup: u32, samples: Vec<f32>, decrypted: bool },
     /// System `system` (any of its sites) heard a radio's talker alias it didn't know (or knew by another name).
     UnitAlias { system: u16, unit: u32, alias: String, talkgroup: u32 },
+    /// A frequency of system `system` is identified by this FCC call sign
+    /// (Motorola's base station ID: a control channel's for one of its
+    /// channels, or a voice channel's for itself). Each time it's heard anew.
+    CallSign { system: u16, freq_hz: u64, call_sign: String },
     /// A radio on a call of system `system` gave a new GPS position (decimal degrees).
     UnitPosition { system: u16, unit: u32, lat: f64, lon: f64, talkgroup: u32 },
     Concluded(Concluded),
@@ -337,6 +341,10 @@ pub struct SiteStatus {
     pub mismatch: Option<String>,
     /// Neighbouring sites its control channel announces.
     pub adjacent: Vec<AdjacentSite>,
+    /// The FCC call signs its control channel's base station IDs say
+    /// (Motorola's MOT_BSI_GRANT), each with the channel it's for, Hz: a
+    /// site's licenses can be several, one a channel. Never another site's.
+    pub callsigns: Vec<(String, u64)>,
     /// Patches standing now: (supergroup, the talkgroups patched into it).
     pub patches: Vec<(u32, Vec<u32>)>,
     /// A trunked DMR site: its kind, rest channel, channel table, carriers.
@@ -1016,6 +1024,8 @@ struct Trunk {
     /// Why this control channel is not ours, while it isn't.
     mismatch: Option<String>,
     adjacent: std::collections::BTreeMap<(u32, u32, u32), AdjacentSite>,
+    /// The call signs its base station IDs say, by the channel (Hz) each is for.
+    callsigns: std::collections::BTreeMap<u64, String>,
     /// What its protocol says of itself, once: the identity fields its site
     /// lock goes by, and whether a control channel is reopened at a correction.
     id_fields: &'static [IdField],
@@ -1119,6 +1129,7 @@ impl Trunk {
             self.cc().forget_site();
             self.mismatch = None;
             self.adjacent.clear();
+            self.callsigns.clear();
         }
         events.push(Event::ControlChannel { site: self.site, freq_hz: hz.round() as u64 });
         Ok(())
@@ -1226,6 +1237,13 @@ impl Trunk {
             for m in st.msgs.iter().filter(|m| m.kind == MessageType::Adjacent && m.freq_hz > 0) {
                 self.adjacent.insert((m.sys_id, m.rfss, m.site), AdjacentSite { sys_id: m.sys_id, rfss: m.rfss, site: m.site, freq_hz: m.freq_hz });
             }
+            for m in st.msgs.iter().filter(|m| m.kind == MessageType::BaseStationId) {
+                if let Some(c) = m.callsign.as_ref().filter(|_| m.freq_hz > 0) {
+                    if self.callsigns.insert(m.freq_hz, c.clone()).as_ref() != Some(c) {
+                        events.push(Event::CallSign { system: self.system, freq_hz: m.freq_hz, call_sign: c.clone() });
+                    }
+                }
+            }
             if lock {
                 let conflict = self.identity.conflict(&self.cfg.expect, fields);
                 if conflict != self.mismatch {
@@ -1320,6 +1338,7 @@ impl Trunk {
             calls_concluded: self.concluded,
             mismatch: self.mismatch.clone(),
             adjacent: self.adjacent.values().copied().collect(),
+            callsigns: if self.mismatch.is_none() { self.callsigns.iter().map(|(&hz, c)| (c.clone(), hz)).collect() } else { vec![] },
             patches: self.calls.patches.active(),
             protocol,
         }
@@ -1438,6 +1457,7 @@ impl Core {
                 identity: Identity::default(),
                 mismatch: None,
                 adjacent: Default::default(),
+                callsigns: Default::default(),
                 id_fields: &[],
                 reopens: false,
                 voice_params: VoiceParams::default(),
@@ -1839,6 +1859,11 @@ impl Core {
                 TrackerOut::Alias(a) => {
                     let tg = call.map(|c| c.talkgroup);
                     self.learn_alias(system, Some(site), a, tg);
+                }
+                TrackerOut::BaseStationId(call_sign) => {
+                    if let Some(c) = call {
+                        self.events.push(Event::CallSign { system, freq_hz: c.freq_hz, call_sign });
+                    }
                 }
                 TrackerOut::AliasLc(sign) => {
                     let tg = call.map_or(0, |c| c.talkgroup);

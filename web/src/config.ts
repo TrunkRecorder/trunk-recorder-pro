@@ -1,6 +1,6 @@
 // Config helpers for the setup form (the recorder validates again).
 
-import type { Channel, Config, Conventional, LogSettings, RecordingOverride, Site, SiteIdentity, Source, System, SystemStatus, UnitNames } from "./protocol.ts";
+import type { Channel, Config, Conventional, FccLicense, FccLicenses, LogSettings, RecordingOverride, Site, SiteIdentity, Source, System, SystemStatus, UnitNames } from "./protocol.ts";
 import { normalizeTalkgroupCsv, splitCsvLine } from "./talkgroups.ts";
 import { dmrTalkgroup } from "./tones.ts";
 import { defaultConfig, parseChannelCsv, readConfig, usableHalfWidth } from "./rules.ts";
@@ -55,7 +55,8 @@ export function enabledChannels(c: Config): Channel[] {
 
 /** A conventional system with its defaults filled in. */
 export function normalizeConventional(x: Partial<Conventional>): Conventional {
-  return { shortName: "conv", enabled: true, squelchDb: 8, ...x, channels: Array.isArray(x.channels) ? x.channels : [] };
+  const { fcc: _, ...rest } = x;
+  return { shortName: "conv", enabled: true, squelchDb: 8, ...rest, ...fccMap(x.fcc), channels: Array.isArray(x.channels) ? x.channels : [] };
 }
 
 /** A new conventional system (not yet in the config), named uniquely: conv, conv2… */
@@ -100,17 +101,37 @@ const SITE_KEYS = [
 
 /** Every key of System this version knows (the rest are kept as they are: a newer version's, a hand edit's). */
 const SYSTEM_KEYS: (keyof System)[] = [
-  "shortName", "name", "fccName", "fccCallSign", "type", "nxdnType", "defaultMode", "enabled", "recording", "unitNames", "keys", "plugins", "pluginDelays", "sites",
+  "shortName", "name", "fcc", "type", "nxdnType", "defaultMode", "enabled", "recording", "unitNames", "keys", "plugins", "pluginDelays", "sites",
 ];
 
 /** Every key of Site this version knows. */
-const SITE_FIELDS: readonly string[] = ["name", "fccName", "fccCallSign", "enabled", ...SITE_KEYS];
+const SITE_FIELDS: readonly string[] = ["name", "enabled", ...SITE_KEYS];
 
-/** The optional FCC name and call sign, as the config keeps them (absent when empty; a call sign upper case). */
-function fccFields(x: { fccName?: unknown; fccCallSign?: unknown }): { fccName?: string; fccCallSign?: string } {
-  const name = typeof x.fccName === "string" ? x.fccName.trim() : "";
-  const license = typeof x.fccCallSign === "string" ? x.fccCallSign.trim().toUpperCase() : "";
-  return { ...(name ? { fccName: name } : {}), ...(license ? { fccCallSign: license } : {}) };
+/** A frequency's key in FccLicenses: Hz on the 6.25 kHz raster. */
+export const fccKey = (hz: number) => String(Math.round(hz / 6250) * 6250);
+
+/** FCC licenses as the config keeps them: keys on the raster, call signs upper case, empty ones and names left out; absent when there are none. */
+function fccMap(x: unknown): { fcc?: FccLicenses } {
+  const out: FccLicenses = {};
+  for (const [k, v] of Object.entries(plain<Record<string, unknown>>(x) ?? {})) {
+    const e = plain<Partial<FccLicense>>(v);
+    const callSign = typeof e?.callSign === "string" ? e.callSign.trim().toUpperCase() : "";
+    const hz = Number(k);
+    if (!callSign || !(hz > 0)) continue;
+    const name = typeof e?.name === "string" ? e.name.trim() : "";
+    const from = e?.from === "air" || e?.from === "lookup" ? e.from : undefined;
+    out[fccKey(hz)] = { callSign, ...(name ? { name } : {}), ...(from ? { from } : {}) };
+  }
+  return Object.keys(out).length ? { fcc: out } : {};
+}
+
+/** The license that names a system: its control channels' (in order), else the call sign on the most of its frequencies. */
+export function fccPrimary(fcc: FccLicenses | undefined, controlChannelsHz: number[]): FccLicense | null {
+  if (!fcc) return null;
+  for (const f of controlChannelsHz) if (fcc[fccKey(f)]) return fcc[fccKey(f)];
+  const n = new Map<string, { k: number; l: FccLicense }>();
+  for (const l of Object.values(fcc)) n.set(l.callSign, { k: (n.get(l.callSign)?.k ?? 0) + 1, l });
+  return [...n.values()].sort((a, b) => b.k - a.k || a.l.callSign.localeCompare(b.l.callSign))[0]?.l ?? null;
 }
 
 /**
@@ -133,7 +154,6 @@ export function normalizeSite(x: Partial<Site>, sys: Pick<System, "type">): Site
   return {
     ...unknownKeys(x, SITE_FIELDS),
     ...(x.name?.trim() ? { name: x.name } : {}),
-    ...fccFields(x),
     enabled: x.enabled ?? true,
     controlChannelsHz: Array.isArray(x.controlChannelsHz) ? x.controlChannelsHz : [],
     modulation: x.modulation ?? "auto",
@@ -180,7 +200,7 @@ export function normalizeSystem(x: SystemInput): System {
     ...unknownKeys(x, [...SYSTEM_KEYS, ...SITE_KEYS]),
     shortName: x.shortName ?? "sys1",
     ...(x.name?.trim() ? { name: x.name } : {}),
-    ...fccFields(x),
+    ...fccMap(x.fcc),
     type,
     ...(type === "nxdn" && x.nxdnType === "typeD" ? { nxdnType: "typeD" as const } : {}),
     ...(type === "smartnet" && x.defaultMode === "analog" ? { defaultMode: "analog" as const } : {}),

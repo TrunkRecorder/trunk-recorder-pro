@@ -156,7 +156,6 @@ pub fn build(cfg: &SiteConfig, rate: f64) -> Box<dyn ControlChannel> {
             good: 0,
             bad: 0,
             air: 0,
-            callsign: None,
             notes: Vec::new(),
             t0: 0.0,
             rate,
@@ -186,8 +185,6 @@ struct P25 {
     bad: u64,
     /// Symbols of air the decoded blocks account for (see [`crate::p25::diversity::air_symbols`]).
     air: u64,
-    /// The site's callsign (Motorola's base station ID), and news of it.
-    callsign: Option<String>,
     notes: Vec<(NoteLevel, String)>,
     /// The last push's start time and rate (for the flush).
     t0: f64,
@@ -217,10 +214,6 @@ impl P25 {
                             self.identity.set(IdField::SysId, m.sys_id);
                             self.identity.set(IdField::Rfss, m.rfss);
                             self.identity.set(IdField::Site, m.site);
-                        }
-                        MessageType::BaseStationId if m.callsign != self.callsign => {
-                            self.callsign = m.callsign.clone();
-                            self.notes.push((NoteLevel::Info, format!("Site callsign {}", m.callsign.as_deref().unwrap_or(""))));
                         }
                         _ => {}
                     }
@@ -255,7 +248,6 @@ impl ControlChannel for P25 {
     fn forget_site(&mut self) {
         self.identity = Identity::default();
         self.nac_votes.clear();
-        self.callsign = None;
     }
     fn push(&mut self, _carrier: usize, iq: &[Complex32], t0: f64, rate: f64, out: &mut Vec<Step>) {
         (self.t0, self.rate) = (t0, rate);
