@@ -429,6 +429,11 @@ fn the_servers_messages() {
     for k in ["devices", "keys", "plugins", "interfaces"] {
         assert!(!some.iter().any(|a| a == k), "a listen-only greeting has {k}");
     }
+    // `host` is every connection's heartbeat (transport.ts's frozen and behind checks): it goes to
+    // all of them, listen-only and watching no topics, stamped with the server's clock.
+    let host = ctx.host_last.lock().unwrap().clone().unwrap();
+    assert!(matches!(crate::runtime::Out::of(&host), crate::runtime::Out::Text(_)), "host is sent to some connections only");
+    assert!(listening.iter().find(|m| m["type"] == "host").unwrap()["t"].is_number());
     assert!(greeting.last().unwrap()["configPath"].is_string() && listening.last().unwrap().get("configPath").is_none());
     let config = |g: &[Value]| g.iter().find(|m| m["type"] == "config").unwrap()["config"].clone();
     assert_eq!(config(&listening), crate::access::redact_config(config(&greeting)));
