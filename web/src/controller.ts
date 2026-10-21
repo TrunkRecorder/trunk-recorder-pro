@@ -42,6 +42,8 @@ import type {
   Capability,
   SurveyState,
   LicenseResultRow,
+  CallSignHolder,
+  FccLicenses,
   SurveySuggestion,
   Site,
   System,
@@ -49,6 +51,8 @@ import type {
 import {
   type ImportTodo,
   activeSites,
+  fccKey,
+  fccPrimary,
   newConventional,
   newSiteName,
   newSystem,
@@ -383,6 +387,10 @@ function take(m: FromRecorder): void {
     case "licenseResult":
       licenseWaiting.get(m.id)?.({ results: m.results, error: m.error });
       licenseWaiting.delete(m.id);
+      break;
+    case "callSignResult":
+      callSignWaiting.get(m.id)?.({ results: m.results, error: m.error });
+      callSignWaiting.delete(m.id);
       break;
     case "sourceProfile": {
       const { type: _, ...profile } = m;
@@ -1100,6 +1108,18 @@ export function lookupLicenses(lat: number, lon: number, radiusM: number, signal
   });
 }
 
+const callSignWaiting = new Map<number, (r: { results: CallSignHolder[]; error: string | null }) => void>();
+
+/** Who holds these call signs (heard on the air): asked of trunkrecorder.pro, by the recorder; no location. */
+export function lookupCallSigns(callSigns: string[]): Promise<{ results: CallSignHolder[]; error: string | null }> {
+  const id = ++licenseIds;
+  return new Promise((resolve) => {
+    callSignWaiting.set(id, resolve);
+    setTimeout(() => callSignWaiting.get(id)?.({ results: [], error: "No answer from the license lookup." }), 30_000);
+    transport.send({ type: "callSignQuery", id, callSigns });
+  });
+}
+
 /** What the survey heard, to look licenses up for: the monitored system's control channels first, then the signals found, strongest first (not the weak unknown ones). */
 export function surveySignals(sv: SurveyState): LicenseSignal[] {
   if (sv.stage === "idle") return [];
@@ -1135,8 +1155,8 @@ export function licenseeName(s: string): string {
 
 /** A licensee found on some frequencies: how many of them, its call sign there, and how near. */
 export interface Licensee {
-  fccName: string;
-  fccCallSign: string;
+  licensee: string;
+  callSign: string;
   /** How many of the frequencies looked up it is licensed on. */
   frequencies: number;
   distanceM: number | null;
@@ -1156,7 +1176,7 @@ export function licensees(results: LicenseResultRow[], freqs: number[]): License
       const k = `${x.licensee}|${x.callSign}`;
       const had = by.get(k);
       const near = (x.distanceM ?? Infinity) < (had?.distanceM ?? Infinity);
-      const e = had ?? { fccName: x.licensee, fccCallSign: x.callSign, frequencies: 0, distanceM: x.distanceM, bearingCardinal: x.bearingCardinal, service: x.serviceDesc, lapsed: r.historical, seen: new Set<number>() };
+      const e = had ?? { licensee: x.licensee, callSign: x.callSign, frequencies: 0, distanceM: x.distanceM, bearingCardinal: x.bearingCardinal, service: x.serviceDesc, lapsed: r.historical, seen: new Set<number>() };
       if (near) Object.assign(e, { distanceM: x.distanceM, bearingCardinal: x.bearingCardinal });
       e.lapsed &&= r.historical;
       e.seen.add(r.freqHz);
@@ -1169,36 +1189,82 @@ export function licensees(results: LicenseResultRow[], freqs: number[]): License
     .sort((a, b) => b.frequencies - a.frequencies || Number(a.lapsed) - Number(b.lapsed) || (a.distanceM ?? Infinity) - (b.distanceM ?? Infinity));
 }
 
-/** What the survey's license lookup found, into a system just made from it (its FCC name and call sign, and its name if it has none) or a site added to one (its own, when not the system's). */
-function withLicenses(sys: System, site: Site, isNew: boolean): void {
-  const l = state.surveyLicenses;
-  const top = l?.stage === "done" ? licensees(l.results, site.controlChannelsHz)[0] : undefined;
-  if (!top) return;
-  if (isNew) {
-    if (!sys.name) sys.name = licenseeName(top.fccName);
-    if (!sys.fccName && !sys.fccCallSign) Object.assign(sys, { fccName: top.fccName, fccCallSign: top.fccCallSign });
-  } else if (top.fccCallSign !== sys.fccCallSign && !site.fccCallSign) {
-    Object.assign(site, { fccName: top.fccName, fccCallSign: top.fccCallSign });
+/** What a location lookup found for each frequency, as FCC licenses: the nearest licensee on it (active before lapsed). */
+export function lookupLicensesByFreq(results: LicenseResultRow[]): FccLicenses {
+  const out: FccLicenses = {};
+  for (const r of results) {
+    const x = r.licenses.find((l) => l.callSign && l.licensee);
+    if (x) out[fccKey(r.freqHz)] = { callSign: x.callSign!.toUpperCase(), name: x.licensee!, from: "lookup" };
   }
+  return out;
 }
 
-/** The frequencies of a site (or every site of a system) worth looking licenses up for: control, voice and repeater channels. */
+/**
+ * A lookup's licenses into `fcc`: on a frequency with none, or another
+ * lookup's; on one with the same call sign, its name if it has none. Never
+ * in place of the user's, or a call sign heard on the air. How many changed.
+ */
+export function mergeLookup(fcc: FccLicenses, found: FccLicenses): number {
+  let n = 0;
+  for (const [k, l] of Object.entries(found)) {
+    const had = fcc[k];
+    if (!had || (had.from === "lookup" && had.callSign !== l.callSign)) {
+      fcc[k] = l;
+      n++;
+    } else if (had.callSign === l.callSign && !had.name && l.name) {
+      fcc[k] = { ...had, name: l.name };
+      n++;
+    }
+  }
+  return n;
+}
+
+/** Names for the call signs `fcc` has without one, from a call sign lookup. How many it named. */
+export function nameCallSigns(fcc: FccLicenses, holders: CallSignHolder[]): number {
+  let n = 0;
+  for (const [k, l] of Object.entries(fcc)) {
+    const h = holders.find((x) => x.callSign === l.callSign && x.licensee);
+    if (h && !l.name) {
+      fcc[k] = { ...l, name: h.licensee! };
+      n++;
+    }
+  }
+  return n;
+}
+
+/** A system's or a conventional system's licenses, by its place in the config. */
+export type FccTarget = { kind: "system" | "conventional"; index: number };
+
+/** Change a system's FCC licenses with `f` (absent again when it leaves none). */
+export function editFcc(target: FccTarget, f: (fcc: FccLicenses) => void): void {
+  updateConfig((c) => {
+    const x = target.kind === "system" ? c.systems[target.index] : c.conventional[target.index];
+    if (!x) return;
+    const fcc = { ...(x.fcc ?? {}) };
+    f(fcc);
+    if (Object.keys(fcc).length) x.fcc = fcc;
+    else delete x.fcc;
+  });
+}
+
+/** What the survey's license lookup found, into a system just made from it or added to: the licensee on each of the site's control and voice channels, and the system's name (if it has none). */
+function withLicenses(sys: System, site: Site, isNew: boolean): void {
+  const l = state.surveyLicenses;
+  if (l?.stage !== "done") return;
+  const freqs = [...site.controlChannelsHz, ...site.voiceChannelsHz].map(fccKey);
+  const found = Object.fromEntries(Object.entries(lookupLicensesByFreq(l.results)).filter(([k]) => freqs.includes(k)));
+  if (!Object.keys(found).length) return;
+  const fcc = { ...(sys.fcc ?? {}) };
+  mergeLookup(fcc, found);
+  sys.fcc = fcc;
+  const top = fccPrimary(fcc, site.controlChannelsHz);
+  if (isNew && !sys.name && top?.name) sys.name = licenseeName(top.name);
+}
+
+/** The frequencies of some sites (or a conventional system's channels) worth looking licenses up for: control, voice and repeater channels. */
 export function siteFrequencies(sites: Site[]): LicenseSignal[] {
   const all = sites.flatMap((x) => [...x.controlChannelsHz, ...x.voiceChannelsHz, ...(x.dmrChannelsHz ?? []), ...(x.nxdnChannelsHz ?? []), ...Object.values(x.lcnTableHz ?? {})]);
   return [...new Set(all.filter((f) => f > 0).map((f) => Math.round(f / 6250) * 6250))].slice(0, 64).map((freqHz) => ({ freqHz }));
-}
-
-/** Set a system's (or one of its sites') FCC name and call sign; empty ones are removed. */
-export function setFcc(system: number, site: number | null, fccName: string, fccCallSign: string): void {
-  updateConfig((c) => {
-    const sys = c.systems[system];
-    const t: System | Site | undefined = site === null ? sys : sys?.sites[site];
-    if (!t) return;
-    if (fccName.trim()) t.fccName = fccName.trim();
-    else delete t.fccName;
-    if (fccCallSign.trim()) t.fccCallSign = fccCallSign.trim().toUpperCase();
-    else delete t.fccCallSign;
-  });
 }
 
 /** What applying a survey result did to source `i`. */

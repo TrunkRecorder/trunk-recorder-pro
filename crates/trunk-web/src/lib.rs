@@ -69,6 +69,13 @@ fn to_js(out: &mut Vec<Output>, history: &mut History) -> Array {
                 history.insert(&r);
                 continue;
             }
+            // The worker puts it in the config ([`learn_call_sign`]).
+            Output::CallSign { short_name, freq_hz, call_sign } => {
+                set(&obj, "t", "callSign");
+                set(&obj, "shortName", short_name);
+                set(&obj, "freqHz", freq_hz);
+                set(&obj, "callSign", call_sign);
+            }
             // (One page, which asked for its topics.)
             Output::Message(m) | Output::Topic { msg: m, .. } => {
                 set(&obj, "t", "text");
@@ -209,6 +216,15 @@ impl WebSession {
     pub fn bandplans(&self) -> String {
         serde_json::Value::Object(self.s.bandplans().into_iter().map(|(n, p)| (n, serde_json::Value::String(p))).collect()).to_string()
     }
+}
+
+/// A call sign heard on the air for `freq_hz` of system `short_name`, into
+/// config `config_json`'s FCC licenses ([`Config::learn_call_sign`]): the
+/// config (JSON) when it changed, else undefined.
+#[wasm_bindgen]
+pub fn learn_call_sign(config_json: &str, short_name: &str, freq_hz: f64, call_sign: &str) -> Option<String> {
+    let mut cfg = Config::from_json(config_json).ok()?;
+    cfg.learn_call_sign(short_name, freq_hz, call_sign).then(|| serde_json::to_string(&cfg).unwrap_or_default())
 }
 
 /// The bands the survey can scan: JSON [{id, label, loHz, hiHz, defaultOn}].

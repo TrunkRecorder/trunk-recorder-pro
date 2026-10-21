@@ -786,7 +786,7 @@ encodes nothing itself. A call decrypted with the recorder's keys goes only to p
 
 ### 8.3 Conversation
 
-1. Host → `hello` { api, host, config, systems [ {index, short_name, kind, name?, fcc_name?, fcc_call_sign?, sites? [ {name, fcc_name?, fcc_call_sign?} ], config, settings} ],
+1. Host → `hello` { api, host, config, systems [ {index, short_name, kind, name?, fcc? { "<Hz>": {call_sign, name?} }, fcc_call_sign?, fcc_name?, sites? [ {name} ], config, settings} ],
    capture_dir, data_dir, audio_formats }. `index` is the system's number this run (from 0,
    trunked then conventional); `kind` says which, `conventional` included; `settings` are the
    plugin's own settings as a system's `override` changes them.
@@ -919,7 +919,7 @@ call JSON + WAV on disk → `HostMessage::CallConcluded` → plugin → `PluginM
 | `patch` | `Option<Patch { sg: u32, ga: [u32; 3] }>` | |
 | `ran` | `Option<u8>` | NXDN |
 | `opcode` | u8 | |
-| `callsign` | `Option<String>` | Motorola: the site's CW ID |
+| `callsign` | `Option<String>` | Motorola: the call sign a base station ID names (`freq_hz` its channel) |
 | `meta` | String | human summary |
 
 **`Step`**: `good: bool`, `msgs: Vec<Message>`, `identity: Identity`.
@@ -1095,7 +1095,7 @@ Constants: `API_VERSION` = 1, `EXIT_CONFIG` = 78.
 
 | `type` | Payload fields |
 |---|---|
-| `hello` | `api`, `host { name, version }`, `config`, `systems: [SystemInfo { index, short_name, kind, name, fcc_name, fcc_call_sign, sites: [SiteInfo { name, fcc_name, fcc_call_sign }], config, settings }]` (name, FCC fields and sites left out when empty), `capture_dir`, `data_dir`, `audio_formats` |
+| `hello` | `api`, `host { name, version }`, `config`, `systems: [SystemInfo { index, short_name, kind, name, fcc (by frequency), fcc_call_sign / fcc_name (the one that names it), sites: [SiteInfo { name }], config, settings }]` (name, FCC fields and sites left out when empty), `capture_dir`, `data_dir`, `audio_formats` |
 | `call.start`, `call.end` | once per call, from its first copy: `CallInfo { id, system, short_name, site, talkgroup, talkgroup_ota, talkgroup_tag, freq_hz, tdma_slot, analog, encrypted, algid, key_id, decrypted, emergency, duplex, packet, priority, recording, reason, start_time, units, sources: [CallSource { unit, time, emergency, encrypted, duplex, packet, priority }], patched_talkgroups }` |
 | `call.concluded` | `path`, `system`, `call: CallRecord` (the call JSON), `files { json, wav, m4a }` |
 | `unit` | `system`, `short_name`, `site`, `kind` (registration, deregistration, affiliation, acknowledge, location, data_grant, answer_request, call_alert, emergency_alarm), `unit`, `talkgroup`, `emergency`, `time` |

@@ -920,6 +920,7 @@ impl Conventional {
                 TrackerOut::Position(p) => h.positions.push(p),
                 TrackerOut::WrongKey(c) => out.push(ConvOut::WrongKey(ch.system as u16, c)),
                 TrackerOut::AliasLc(_) => {}
+                TrackerOut::BaseStationId(call_sign) => out.push(ConvOut::Event(Event::CallSign { system: ch.system as u16, freq_hz: ch.freq_hz.round() as u64, call_sign })),
             }
         }
         for (slot, h) in heard.iter_mut().enumerate() {

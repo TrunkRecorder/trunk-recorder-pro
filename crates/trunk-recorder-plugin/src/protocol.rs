@@ -170,13 +170,18 @@ pub struct SystemInfo {
     /// What people call it ("County Public Safety"); empty when the user gave no name.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub name: String,
-    /// Who holds its FCC license, as the FCC has it ("DISTRICT OF COLUMBIA"),
-    /// as the user's config has it: optional, so often empty.
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub fcc_name: String,
-    /// Its FCC license's call sign ("WPXT459"): optional, so often empty.
+    /// Its FCC licenses by frequency (Hz, as a string): who is licensed on
+    /// each of its channels, from the user, the air (Motorola's base station
+    /// ID) or a license lookup. Optional, so often empty.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub fcc: std::collections::BTreeMap<String, FccLicense>,
+    /// The call sign that names it, of those: its control channel's, else
+    /// the one on the most frequencies ("WPXT459"); empty when none.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub fcc_call_sign: String,
+    /// Who holds that license, as the FCC has it ("DISTRICT OF COLUMBIA"); empty when not known.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub fcc_name: String,
     /// Its sites (trunked systems; none for conventional), by the name calls
     /// and unit events carry as `site`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -197,12 +202,16 @@ pub struct SystemInfo {
 pub struct SiteInfo {
     /// What calls and unit events carry as `site`.
     pub name: String,
-    /// This site's own FCC licensee and license call sign (apart from the
-    /// system's), as the user's config has them: optional, so often empty.
+}
+
+/// Who is licensed on one of a system's frequencies ([`SystemInfo::fcc`]).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FccLicense {
+    pub call_sign: String,
+    /// As the FCC has it; empty when not looked up.
     #[serde(skip_serializing_if = "String::is_empty")]
-    pub fcc_name: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub fcc_call_sign: String,
+    pub name: String,
 }
 
 /// A call as it starts or ends.

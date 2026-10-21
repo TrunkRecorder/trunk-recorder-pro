@@ -4,7 +4,7 @@
 //! (set: the standard's implicit MFID; clear: octet 1 names the
 //! manufacturer, whose opcodes are its own) and the 6-bit opcode (LCO).
 
-use super::osp::{ServiceOptions, MFID_MOTOROLA};
+use super::osp::{CallSign, ServiceOptions, MFID_MOTOROLA};
 
 /// One link control word.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -38,6 +38,9 @@ pub enum Lc {
     /// LCO 15 (§7.3.8): the call is over and the channel released (not
     /// just this transmission).
     CallTermination { unit: u32 },
+    /// Motorola's LC_MOT_BSI (LCO 5; its BSI receive guide §1.7.2): the
+    /// channel's FCC call sign, at a call's start and now and then in it.
+    BaseStationId(CallSign),
     /// The rest is encrypted.
     Protected,
     #[default]
@@ -109,6 +112,7 @@ pub fn parse(w: &[u8; 9]) -> LinkControl {
             (0, 0x09) => Lc::SourceIdExtension { wacn: u24(2) >> 4, sys_id: u16_at(4) & 0xfff, id: u24(6) },
             (0, 0x0a) => Lc::UnitVoiceUser { opts, target: u24(3), source: u24(6), extended: true },
             (0, 0x0f) => Lc::CallTermination { unit: u24(6) },
+            (MFID_MOTOROLA, 0x05) => Lc::BaseStationId(CallSign::from_octets(&w[2..8])),
             (MFID_MOTOROLA, 0x00) => Lc::PatchVoiceUser { opts: ServiceOptions(w[2] & 0x40), sg: u16_at(4), source: u24(6), extended: w[3] & 1 != 0 },
             _ => Lc::Other,
         }
@@ -121,6 +125,20 @@ mod tests {
     use super::*;
 
     // Each word as its figure lays it out.
+
+    /// The BSI guide's LC_MOT_BSI: P SF clear, LCO 5, MFID $90, eight characters from octet 2.
+    #[test]
+    fn base_station_id() {
+        // "KNJU834": K=$20 N=$23 J=$1F U=$2A 8=$0D 3=$08 4=$09, none.
+        let v = [0x20u64, 0x23, 0x1f, 0x2a, 0x0d, 0x08, 0x09, 0x00].iter().fold(0u64, |v, &c| v << 6 | c);
+        let mut w = [0x05, 0x90, 0, 0, 0, 0, 0, 0, 0];
+        w[2..8].copy_from_slice(&v.to_be_bytes()[2..]);
+        let Lc::BaseStationId(c) = parse(&w).msg else { panic!("{:?}", parse(&w).msg) };
+        assert_eq!(c.text(), "KNJU834");
+        // The standard's LCO 5 isn't it.
+        w[1] = 0x00;
+        assert!(!matches!(parse(&w).msg, Lc::BaseStationId(_)));
+    }
 
     /// §7.3.1: options, S (octet 3 bit 0), group, source.
     #[test]

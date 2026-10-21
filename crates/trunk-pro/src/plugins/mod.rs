@@ -208,22 +208,28 @@ pub fn describe(exe: &Path) -> Result<Manifest, String> {
 
 /// Every system calls can come from, as plugins know them (settings not filled in).
 pub fn systems_of(cfg: &crate::config::Config) -> Vec<trunk_recorder_plugin::SystemInfo> {
+    use crate::config::{fcc_primary, FccLicenses};
     cfg.call_systems()
         .into_iter()
         .map(|s| {
-            // Name, FCC license and sites: a trunked system's (conventional has none of these).
+            // Name, FCC licenses and sites: a trunked system's or a conventional one's.
             let sys = cfg.systems.iter().find(|y| y.short_name == s.short_name && s.kind != "conventional");
-            let sites = sys.map_or_else(Vec::new, |y| {
-                y.active_sites().map(|t| trunk_recorder_plugin::SiteInfo { name: y.site_name(t).to_string(), fcc_name: t.fcc_name.clone(), fcc_call_sign: t.fcc_call_sign.clone() }).collect()
-            });
+            let conv = cfg.conventional.iter().find(|y| y.short_name == s.short_name && s.kind == "conventional");
+            let (name, fcc, ccs): (String, FccLicenses, Vec<f64>) = match (sys, conv) {
+                (Some(y), _) => (y.name.clone(), y.fcc.clone(), y.active_sites().flat_map(|t| t.control_channels_hz.iter().copied()).collect()),
+                (None, Some(c)) => (c.name.clone(), c.fcc.clone(), vec![]),
+                _ => Default::default(),
+            };
+            let primary = fcc_primary(&fcc, &ccs).cloned().unwrap_or_default();
             trunk_recorder_plugin::SystemInfo {
                 index: s.index,
                 short_name: s.short_name.to_string(),
                 kind: s.kind.into(),
-                name: sys.map_or_else(String::new, |y| y.name.clone()),
-                fcc_name: sys.map_or_else(String::new, |y| y.fcc_name.clone()),
-                fcc_call_sign: sys.map_or_else(String::new, |y| y.fcc_call_sign.clone()),
-                sites,
+                name,
+                fcc: fcc.into_iter().map(|(k, l)| (k, trunk_recorder_plugin::FccLicense { call_sign: l.call_sign, name: l.name })).collect(),
+                fcc_call_sign: primary.call_sign,
+                fcc_name: primary.name,
+                sites: sys.map_or_else(Vec::new, |y| y.active_sites().map(|t| trunk_recorder_plugin::SiteInfo { name: y.site_name(t).to_string() }).collect()),
                 ..Default::default()
             }
         })
@@ -278,24 +284,30 @@ mod tests {
         assert!(changed(&a, &b) && changed(&b, &a));
     }
 
-    /// A system's name, FCC license and sites (each with its own) are told to plugins; left out, they're absent.
+    /// A system's name, FCC licenses (and the one that names it) and sites are told to plugins, a
+    /// conventional system's licenses too; left out, they're absent.
     #[test]
-    fn plugins_are_told_a_systems_fcc_call_sign_and_sites() {
+    fn plugins_are_told_a_systems_fcc_licenses_and_sites() {
         let c: Config = serde_json::from_value(json!({
             "systems": [
-                { "shortName": "dcfd", "name": "DC Fire", "fccName": "DISTRICT OF COLUMBIA", "fccCallSign": "WPXT459",
-                  "sites": [{ "controlChannelsHz": [857987500] }, { "name": "south", "fccCallSign": "KNJU834", "controlChannelsHz": [858987500] }] },
+                { "shortName": "dcfd", "name": "DC Fire",
+                  "fcc": { "859087500": { "callSign": "KNJA391", "from": "air" }, "857987500": { "callSign": "WPXT459", "name": "DISTRICT OF COLUMBIA" } },
+                  "sites": [{ "controlChannelsHz": [857987500] }, { "name": "south", "controlChannelsHz": [858987500] }] },
                 { "shortName": "wmata", "sites": [{ "controlChannelsHz": [489087500] }] }
-            ]
+            ],
+            "conventional": [{ "shortName": "county", "fcc": { "155475000": { "callSign": "KQX123" } }, "channels": [{ "freqHz": 155475000, "mode": "fm" }] }]
         }))
         .unwrap();
         let s = systems_of(&c);
         assert_eq!(s[0].name, "DC Fire");
-        assert_eq!((s[0].fcc_name.as_str(), s[0].fcc_call_sign.as_str()), ("DISTRICT OF COLUMBIA", "WPXT459"));
-        assert_eq!(s[0].sites.iter().map(|x| (x.name.as_str(), x.fcc_call_sign.as_str())).collect::<Vec<_>>(), [("dcfd", ""), ("south", "KNJU834")]);
+        assert_eq!((s[0].fcc_call_sign.as_str(), s[0].fcc_name.as_str()), ("WPXT459", "DISTRICT OF COLUMBIA"));
+        assert_eq!(s[0].fcc["859087500"], trunk_recorder_plugin::FccLicense { call_sign: "KNJA391".into(), name: String::new() });
+        assert_eq!(s[0].sites.iter().map(|x| x.name.as_str()).collect::<Vec<_>>(), ["dcfd", "south"]);
         let wire = serde_json::to_value(&s[1]).unwrap();
-        assert!(wire.get("fcc_name").is_none() && wire.get("fcc_call_sign").is_none() && wire.get("name").is_none(), "{wire}");
+        assert!(wire.get("fcc").is_none() && wire.get("fcc_call_sign").is_none() && wire.get("name").is_none(), "{wire}");
         assert_eq!(wire["sites"][0]["name"], "wmata");
+        let county = s.iter().find(|x| x.short_name == "county").unwrap();
+        assert_eq!(county.fcc_call_sign, "KQX123");
     }
 
     #[test]

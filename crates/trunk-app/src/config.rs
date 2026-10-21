@@ -280,13 +280,9 @@ pub struct System {
     /// What people call it ("County Public Safety"); the short name is its folder.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub name: String,
-    /// Who holds its FCC license, as the FCC has it ("DISTRICT OF COLUMBIA"),
-    /// and the license's call sign ("WPXT459"): optional, for reference —
-    /// the user's, or what a license lookup found. Plugins are told them.
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub fcc_name: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub fcc_call_sign: String,
+    /// Its FCC licenses by frequency: see [`FccLicenses`].
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub fcc: FccLicenses,
     #[serde(rename = "type")]
     pub kind: SystemKind,
     pub enabled: bool,
@@ -331,12 +327,6 @@ pub struct Site {
     /// talkgroup file's Preferred Site names it; calls and plugins say it.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub name: String,
-    /// This site's own FCC licensee and license call sign, when it has one
-    /// apart from the system's: optional, for reference. Plugins are told them.
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub fcc_name: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub fcc_call_sign: String,
     pub enabled: bool,
     pub control_channels_hz: Vec<f64>,
     pub modulation: Modulation,
@@ -394,8 +384,69 @@ fn is_default<T: Default + PartialEq>(v: &T) -> bool {
     *v == T::default()
 }
 
+/// A system's FCC licenses, by frequency (Hz on the 6.25 kHz raster, as a
+/// string: [`fcc_key`]): who is licensed on each of its control, voice and
+/// conventional channels. Optional, for reference; plugins are told them.
+/// A system's ID is its control channel's ([`fcc_primary`]).
+///
+/// ```json
+/// "fcc": { "857987500": { "callSign": "WPXT459", "name": "DISTRICT OF COLUMBIA", "from": "lookup" },
+///          "859087500": { "callSign": "KNJA391", "from": "air" } }
+/// ```
+pub type FccLicenses = BTreeMap<String, FccLicense>;
+
+/// Who is licensed on a frequency.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct FccLicense {
+    /// The license's call sign ("WPXT459").
+    pub call_sign: String,
+    /// Who holds it, as the FCC has it ("DISTRICT OF COLUMBIA"); empty: not looked up.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    #[serde(skip_serializing_if = "is_default")]
+    pub from: FccFrom,
+}
+
+/// A frequency's key in [`FccLicenses`]: Hz on the 6.25 kHz raster.
+pub fn fcc_key(freq_hz: f64) -> String {
+    (((freq_hz / 6250.0).round() * 6250.0) as u64).to_string()
+}
+
+/// The license that names a system: its control channels' (in order), else
+/// the call sign on the most of its frequencies (a tie: the first in order).
+pub fn fcc_primary<'a>(fcc: &'a FccLicenses, control_channels_hz: &[f64]) -> Option<&'a FccLicense> {
+    let own = control_channels_hz.iter().find_map(|&f| fcc.get(&fcc_key(f)).filter(|l| !l.call_sign.is_empty()));
+    own.or_else(|| {
+        let mut n: BTreeMap<&str, (usize, &FccLicense)> = BTreeMap::new();
+        for l in fcc.values().filter(|l| !l.call_sign.is_empty()) {
+            n.entry(&l.call_sign).or_insert((0, l)).0 += 1;
+        }
+        n.values().rev().max_by_key(|(k, _)| *k).map(|(_, l)| *l)
+    })
+}
+
+/// An FCC call sign as one can be: 3 to 8 letters and digits, with both.
+pub fn plausible_call_sign(s: &str) -> bool {
+    (3..=8).contains(&s.len())
+        && s.bytes().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+        && s.bytes().any(|c| c.is_ascii_digit())
+        && s.bytes().any(|c| c.is_ascii_uppercase())
+}
+
 // The config's closed choices ([`choice!`](crate::choice)): a value not
 // listed is an error when the file is read, as a wrong type is.
+
+choice! {
+    /// Where an [`FccLicense`] came from: the user (never replaced), heard
+    /// on the air (a Motorola base station ID), or a license lookup.
+    pub enum FccFrom {
+        #[default]
+        User = "user",
+        Air = "air",
+        Lookup = "lookup",
+    }
+}
 
 
 choice! {
@@ -632,8 +683,7 @@ impl Default for System {
             keys: String::new(),
             short_name: "sys1".into(),
             name: String::new(),
-            fcc_name: String::new(),
-            fcc_call_sign: String::new(),
+            fcc: BTreeMap::new(),
             kind: SystemKind::P25,
             enabled: true,
             unit_names: UnitNames::default(),
@@ -651,8 +701,6 @@ impl Default for Site {
     fn default() -> Self {
         Site {
             name: String::new(),
-            fcc_name: String::new(),
-            fcc_call_sign: String::new(),
             enabled: true,
             control_channels_hz: vec![],
             modulation: Modulation::Auto,
@@ -738,6 +786,10 @@ pub struct Conventional {
     /// What people call it ("County Fire"); the short name is its folder.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub name: String,
+    /// Its channels' FCC licenses by frequency (they can be different
+    /// licensees'): see [`FccLicenses`].
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub fcc: FccLicenses,
     /// Record it.
     pub enabled: bool,
     /// Open threshold for every channel, dB above the measured noise floor.
@@ -809,6 +861,7 @@ impl Default for Conventional {
             keys: String::new(),
             short_name: "conv".into(),
             name: String::new(),
+            fcc: BTreeMap::new(),
             enabled: true,
             squelch_db: ConvConfig::default().squelch_db,
             demod: Demod::default(),
@@ -1689,6 +1742,32 @@ fn source_types(v: &mut serde_json::Value) {
 }
 
 impl Config {
+    /// A call sign heard on the air on `freq_hz` (Motorola's base station
+    /// ID: what a control channel says of a channel, or a voice channel of
+    /// itself), into system `short_name`'s (trunked or conventional)
+    /// [`FccLicenses`]: over a lookup's or another heard there, never over
+    /// the user's. Whether it changed.
+    pub fn learn_call_sign(&mut self, short_name: &str, freq_hz: f64, call_sign: &str) -> bool {
+        if !plausible_call_sign(call_sign) || freq_hz <= 0.0 {
+            return false;
+        }
+        let fcc = match self.systems.iter_mut().find(|s| s.short_name == short_name) {
+            Some(s) => &mut s.fcc,
+            None => match self.conventional.iter_mut().find(|c| c.short_name == short_name) {
+                Some(c) => &mut c.fcc,
+                None => return false,
+            },
+        };
+        let e = fcc.entry(fcc_key(freq_hz)).or_default();
+        if (e.from == FccFrom::User && !e.call_sign.is_empty()) || (e.from == FccFrom::Air && e.call_sign == call_sign) {
+            return false;
+        }
+        // A lookup's name is the heard call sign's only when it named the same one.
+        let name = if e.call_sign == call_sign { std::mem::take(&mut e.name) } else { String::new() };
+        *e = FccLicense { call_sign: call_sign.to_string(), name, from: FccFrom::Air };
+        true
+    }
+
     /// The config at `path`, with a linked channel file read in; the
     /// defaults when there's no file yet. A file that isn't a config is an
     /// error, not the defaults (which would be saved over it).
@@ -2295,21 +2374,47 @@ const RTL_BUSY_COUNT: usize = 4;
 mod tests {
     use super::*;
 
-    /// The FCC name and call sign are optional: read where given (a system's, a site's), and not written when empty.
+    /// A call sign heard on a frequency goes into its system's licenses there (trunked or
+    /// conventional, on the raster): over a lookup's (keeping its name only for the same
+    /// call sign) and another heard, never over the user's.
     #[test]
-    fn fcc_name_and_license_are_optional() {
-        let sys: System = serde_json::from_value(serde_json::json!({
-            "shortName": "dcfd", "fccName": "DISTRICT OF COLUMBIA", "fccCallSign": "WPXT459",
-            "sites": [{ "controlChannelsHz": [857987500], "fccCallSign": "KNJU834" }, { "controlChannelsHz": [858987500] }]
+    fn a_call_sign_heard_goes_in_by_frequency() {
+        let mut c: Config = serde_json::from_value(serde_json::json!({
+            "systems": [{ "shortName": "dcfd", "sites": [{ "controlChannelsHz": [857987500] }],
+                          "fcc": { "859087500": { "callSign": "KNJA391", "name": "DISTRICT OF COLUMBIA", "from": "lookup" },
+                                   "860000000": { "callSign": "WMINE1" } } }],
+            "conventional": [{ "shortName": "county", "channels": [] }]
         }))
         .unwrap();
-        assert_eq!((sys.fcc_name.as_str(), sys.fcc_call_sign.as_str()), ("DISTRICT OF COLUMBIA", "WPXT459"));
-        assert_eq!(sys.sites[0].fcc_call_sign, "KNJU834");
-        let v = serde_json::to_value(&sys).unwrap();
-        assert_eq!(v["fccCallSign"], "WPXT459");
-        assert!(v["sites"][1].get("fccCallSign").is_none() && v["sites"][0].get("fccName").is_none() && !sys.other.contains_key("fccName"));
-        let none = serde_json::to_value(System::default()).unwrap();
-        assert!(none.get("fccName").is_none() && none.get("fccCallSign").is_none());
+        assert!(!c.learn_call_sign("dcfd", 859_987_500.0, "knje616"), "not a call sign as sent");
+        assert!(!c.learn_call_sign("dcfd", 0.0, "KNJE616"));
+        assert!(c.learn_call_sign("dcfd", 859_987_600.0, "KNJE616"));
+        let f = &c.systems[0].fcc;
+        assert_eq!(f["859987500"], FccLicense { call_sign: "KNJE616".into(), name: String::new(), from: FccFrom::Air });
+        // The same again: nothing. The lookup's, confirmed: its name kept.
+        assert!(!c.learn_call_sign("dcfd", 859_987_500.0, "KNJE616"));
+        assert!(c.learn_call_sign("dcfd", 859_087_500.0, "KNJA391"));
+        assert_eq!(c.systems[0].fcc["859087500"], FccLicense { call_sign: "KNJA391".into(), name: "DISTRICT OF COLUMBIA".into(), from: FccFrom::Air });
+        // The user's stays; a conventional system's go in too.
+        assert!(!c.learn_call_sign("dcfd", 860_000_000.0, "KNJA391"));
+        assert!(c.learn_call_sign("county", 155_475_000.0, "KQX123"));
+        assert_eq!(c.conventional[0].fcc["155475000"].call_sign, "KQX123");
+        assert!(!c.learn_call_sign("nope", 155_475_000.0, "KQX123"));
+    }
+
+    /// The license that names a system: its control channel's, else the call sign on the most frequencies.
+    #[test]
+    fn the_license_that_names_a_system() {
+        let lic = |c: &str| FccLicense { call_sign: c.into(), ..Default::default() };
+        let fcc: FccLicenses = [("859087500", lic("KNJA391")), ("859987500", lic("KNJE616")), ("860012500", lic("KNJE616"))].into_iter().map(|(k, v)| (k.to_string(), v)).collect();
+        assert_eq!(fcc_primary(&fcc, &[857_987_500.0]).map(|l| l.call_sign.as_str()), Some("KNJE616"));
+        assert_eq!(fcc_primary(&fcc, &[857_987_500.0, 859_087_500.0]).map(|l| l.call_sign.as_str()), Some("KNJA391"));
+        assert_eq!(fcc_primary(&FccLicenses::new(), &[857_987_500.0]), None);
+        // Optional: none written when there are none; `from` the user's when left out.
+        assert!(serde_json::to_value(System::default()).unwrap().get("fcc").is_none());
+        let sys: System = serde_json::from_value(serde_json::json!({ "shortName": "x", "fcc": { "857987500": { "callSign": "WPXT459" } } })).unwrap();
+        assert_eq!(sys.fcc["857987500"].from, FccFrom::User);
+        assert_eq!(serde_json::to_value(&sys).unwrap()["fcc"], serde_json::json!({ "857987500": { "callSign": "WPXT459" } }));
     }
 
     /// A system's `keys` that named a file (before key sources) becomes a source named after the file;

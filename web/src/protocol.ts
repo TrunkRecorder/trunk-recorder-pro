@@ -121,6 +121,15 @@ export interface Demod {
   squelchHangMs?: number;
 }
 
+/** Who is licensed on a frequency: its call sign, who holds it (as the FCC has it; absent: not looked up), and where that came from: the user (never replaced), the air (a Motorola base station ID), or a license lookup. */
+export interface FccLicense {
+  callSign: string;
+  name?: string;
+  from?: "user" | "air" | "lookup";
+}
+/** A system's FCC licenses by frequency (Hz on the 6.25 kHz raster, as a string). Optional, for reference; plugins are told them. */
+export type FccLicenses = Record<string, FccLicense>;
+
 /**
  * A site's identity (NAC, WACN, System ID are hex on the air): what a site in
  * the config expects (absent: any), and what a control channel said of itself
@@ -154,10 +163,8 @@ export interface System {
   shortName: string;
   /** What people call it ("County Public Safety"); the short name is its folder. */
   name?: string;
-  /** Who holds its FCC license, as the FCC has it ("DISTRICT OF COLUMBIA"), for reference; plugins are told it. */
-  fccName?: string;
-  /** Its FCC license's call sign ("WPXT459"), for reference; plugins are told it. */
-  fccCallSign?: string;
+  /** Its FCC licenses by frequency (control, voice): see FccLicenses. */
+  fcc?: FccLicenses;
   /** "smartnet": a Motorola SmartNet / SmartZone control channel (voice P25 or analog FM).
    *  "dmr": a trunked DMR site (Capacity Plus, Capacity Max, Connect Plus, Tier III); every
    *  control channel and `dmrChannelsHz` frequency is watched.
@@ -188,9 +195,6 @@ export interface Site {
   /** Its name, unique in its system (absent: the system's short name). The talkgroup file's
    *  Preferred Site names it; calls and plugins say it. */
   name?: string;
-  /** This site's own FCC licensee and license call sign, apart from the system's; plugins are told them. */
-  fccName?: string;
-  fccCallSign?: string;
   enabled: boolean;
   controlChannelsHz: number[];
   modulation: "auto" | "fsk4" | "qpsk";
@@ -341,6 +345,8 @@ export interface Conventional {
   shortName: string;
   /** What people call it; the short name is its folder. */
   name?: string;
+  /** Its channels' FCC licenses by frequency (they can be different licensees'): see FccLicenses. */
+  fcc?: FccLicenses;
   enabled: boolean;
   /** Open threshold above the noise floor, dB (each channel may have its own). */
   squelchDb: number;
@@ -552,6 +558,8 @@ export interface SiteStatus {
   callsConcluded: number;
   /** The control channel is another system's / site's: why (its grants are not followed). */
   mismatch: string | null;
+  /** Every call sign its base station IDs say, each with the channel it's for (a site's licenses can be one a channel). */
+  callsigns?: { callSign: string; freqHz: number | null }[];
 }
 
 /** One running site's detail (decodeDetail): what its control channel announces. */
@@ -908,6 +916,17 @@ export interface SurveyLicense {
   /** "A" active; anything else has lapsed. */
   status: string | null;
   locationKind: string | null;
+}
+
+/** Who holds a call sign (the trunkrecorder.pro API's). */
+export interface CallSignHolder {
+  callSign: string;
+  licensee: string | null;
+  serviceCode: string | null;
+  serviceDesc: string | null;
+  status: string | null;
+  city: string | null;
+  state: string | null;
 }
 
 /** The licenses found on one frequency looked up; `historical`: none active on it, so these have lapsed. */
@@ -1456,6 +1475,8 @@ export type FromRecorder =
   | ({ type: "surveySpectrum" } & Spectrum)
   /** Answers licenseQuery: the licenses found on each frequency, or why there are none. */
   | { type: "licenseResult"; id: number; results: LicenseResultRow[]; error: string | null }
+  /** Answers callSignQuery: each active call sign's holder (unknown or lapsed ones left out), or why there are none. */
+  | { type: "callSignResult"; id: number; results: CallSignHolder[]; error: string | null }
   | ({ type: "sourceProfile" } & SourceProfile)
   | { type: "devices"; devices: Device[] }
   /** A folder on the recorder's computer (answers listDir). */
@@ -1518,6 +1539,8 @@ export type ToRecorder =
   | { type: "surveyRescan" }
   | { type: "surveyStop" }
   /** Who is licensed on these frequencies within `radiusM` of (lat, lon): sent to trunkrecorder.pro; answered with licenseResult. */
+  /** Who holds these call signs (heard on the air): sent to trunkrecorder.pro, no location; answered with callSignResult. */
+  | { type: "callSignQuery"; id: number; callSigns: string[] }
   | { type: "licenseQuery"; id: number; lat: number; lon: number; radiusM: number; signals: { freqHz: number; widthHz?: number }[] }
   /** Look at source `source`'s band (tuned to `centerHz`; a capture keeps its own) for its roll-off; answered with sourceProfile. Not while recording. */
   | { type: "profileSource"; source: number; centerHz: number }

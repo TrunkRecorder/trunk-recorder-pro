@@ -278,14 +278,17 @@ There are three places to ask:
   **Licensed to** column then shows each signal's nearest licensee, its call sign, radio service and
   how far away and in which direction, plus up to four more. *lapsed* means no active license is
   nearby on that frequency, so these are expired or cancelled ones.
-- **A system or site already set up**: **Identify** on its card looks up its control, voice and
-  repeater frequencies and lists who is licensed on the most of them. **Use** keeps one as its
-  **FCC name** and **FCC call sign**.
+- **A system already set up** (trunked or conventional): **Identify** on its card looks up its
+  control, voice and repeater frequencies (a conventional system's channels), and shows the nearest
+  licensee on each; **Keep** puts them in its **FCC licenses**. Call signs heard on the air with no
+  licensee yet can be named without a location: only the call signs are sent.
 
-A system added from the survey gets the licensee of its control channel as its FCC name and
-license, and as its name if it has none. A site added to a system gets its own when it differs from
-the system's. You can edit them on the card; they are optional, and plugins are told them. See
-[systems](../configuration/systems.md).
+What a lookup finds goes in the system's [FCC licenses](../configuration/systems.md#fcc-licenses),
+by frequency: a frequency with nothing yet, or another lookup's, gets it; one with the same call sign
+heard on the air gets its licensee's name. Yours, and call signs heard on the air, are never
+replaced. A system added from the survey gets the licensees of its control and voice channels, and
+the control channel's as its name if it has none. Edit them in its **FCC licenses**; they are
+optional, and plugins are told them.
 
 ## From the command line
 

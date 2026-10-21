@@ -81,6 +81,16 @@ test("Decode: a system's page shows what its sites announce (decodeDetail), not 
   assert.ok(page.includes("site 1-9"), page);
 });
 
+test("Decode: a site's FCC call sign, once its control channel has said it", () => {
+  const c = defaultConfig();
+  c.systems.push(newSystem(c, { shortName: "dcfd", controlChannelsHz: [851_000_000] }));
+  running(c, [system(0, "dcfd", [site(0, "dcfd", { site: 1 })])]);
+  setView("decode", "dcfd");
+  assert.ok(!text(renderToString(<DecodePage />)).includes("Call sign"));
+  running(c, [system(0, "dcfd", [{ ...site(0, "dcfd", { site: 1 }), callsigns: [{ callSign: "KNJA391", freqHz: 859_087_500 }, { callSign: "KNJE616", freqHz: 859_987_500 }] }])]);
+  assert.ok(text(renderToString(<DecodePage />)).includes("Call signs KNJA391 859.0875 , KNJE616 859.9875"), text(renderToString(<DecodePage />)));
+});
+
 test("Radio: a system's page has its calls on the air now, saying the site and the others carrying it, and its log; not another's", () => {
   twoSites([
     { id: 7, system: 0, systemName: "dcfd", site: "south", alsoOn: ["dcfd"], talkgroup: 100, alphaTag: "Fire", freqHz: 851_600_000, slot: null, state: "recording", reason: null, sources: [], startS: 1 },

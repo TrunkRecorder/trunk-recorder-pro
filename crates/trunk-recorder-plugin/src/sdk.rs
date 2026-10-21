@@ -91,10 +91,12 @@ pub struct System<C, S> {
     pub kind: String,
     /// What people call it; empty when the user gave no name.
     pub name: String,
-    /// Who holds its FCC license, and the license's call sign, if the user gave them.
-    pub fcc_name: String,
+    /// Its FCC licenses by frequency (Hz, as a string), and the call sign
+    /// (and licensee) that names it: see [`SystemInfo::fcc`].
+    pub fcc: std::collections::BTreeMap<String, FccLicense>,
     pub fcc_call_sign: String,
-    /// Its sites, each with its own FCC license if the user gave one.
+    pub fcc_name: String,
+    /// Its sites.
     pub sites: Vec<SiteInfo>,
     /// The plugin's settings for this system (`None`: left empty).
     pub config: Option<S>,
@@ -272,7 +274,7 @@ fn start<P: Plugin>(host: Host, hello: Hello) -> Result<P, String> {
             Value::Null => None,
             v => Some(parse::<P::SystemConfig>(v, &format!("settings for {}", s.short_name))?),
         };
-        systems.push(System { index: s.index, short_name: s.short_name, kind: s.kind, name: s.name, fcc_name: s.fcc_name, fcc_call_sign: s.fcc_call_sign, sites: s.sites, config, settings });
+        systems.push(System { index: s.index, short_name: s.short_name, kind: s.kind, name: s.name, fcc: s.fcc, fcc_call_sign: s.fcc_call_sign, fcc_name: s.fcc_name, sites: s.sites, config, settings });
     }
     let setup = Setup { config, systems, host: hello.host, capture_dir: hello.capture_dir, data_dir: hello.data_dir, audio_formats: hello.audio_formats };
     P::start(host, setup)
