@@ -46,11 +46,12 @@ pub enum Output {
     Topic { topic: String, msg: ToClient },
     /// A minute of the dashboard's series, for the history (and its files).
     Rollup(Rollup),
-    /// A site's control channel identified itself by this FCC call sign
-    /// (Motorola's base station ID): once a run for each site and call sign.
-    /// The platform puts it in the config where there is none
+    /// A frequency of system `short_name` is identified by this FCC call
+    /// sign (Motorola's base station ID, on its control channel or the
+    /// voice channel itself): once a run for each frequency and call sign.
+    /// The platform puts it in the config's [`crate::config::FccLicenses`]
     /// ([`Config::learn_call_sign`]), saved.
-    CallSign { short_name: String, site: String, call_sign: String },
+    CallSign { short_name: String, freq_hz: f64, call_sign: String },
 }
 
 /// Trunk Recorder's status summary comes this often (engine time), s.
@@ -351,8 +352,8 @@ pub struct Session {
     /// Each system's control messages counted at (its time, the count), for the decode rate.
     rate_at: Vec<(f64, u64)>,
     next_status_s: f64,
-    /// The call sign each site (by number) was last heard to say.
-    call_signs: std::collections::BTreeMap<u16, String>,
+    /// The call sign each frequency of each system (by number) was last heard to say.
+    call_signs: std::collections::BTreeMap<(u16, u64), String>,
 }
 
 impl Session {
@@ -616,12 +617,6 @@ impl Session {
                 let dt = if self.last_plugin_status_ms == 0.0 { 0.0 } else { (now_ms - self.last_plugin_status_ms) / 1000.0 };
                 self.last_plugin_status_ms = now_ms;
                 out.push(Output::Plugin(HostMessage::Status(self.plugin_status(dt))));
-            }
-            for y in self.engine.status().sites {
-                if let Some(c) = y.callsign.filter(|c| self.call_signs.get(&y.site) != Some(c)) {
-                    self.call_signs.insert(y.site, c.clone());
-                    out.push(Output::CallSign { short_name: y.short_name, site: y.site_name, call_sign: c });
-                }
             }
             let load = self.busy_ms() / (now_ms - start).max(1.0);
             out.push(Output::Message(self.status_message(load)));
@@ -955,6 +950,15 @@ impl Session {
                 let r = self.call_record(Level::Info, &k.call, body);
                 self.records.push(r);
             }
+            // Once a run for each frequency and call sign: the platform takes it into the config.
+            Event::CallSign { system, freq_hz, call_sign } => {
+                if self.call_signs.get(&(system, freq_hz)) != Some(&call_sign) {
+                    self.call_signs.insert((system, freq_hz), call_sign.clone());
+                    let name = self.system_name(system).to_string();
+                    self.records.push(Record::text(Level::Info, Some(&name), format!("{:.4} MHz is call sign {call_sign} (base station ID)", freq_hz as f64 / 1e6)));
+                    out.push(Output::CallSign { short_name: name, freq_hz: freq_hz as f64, call_sign });
+                }
+            }
             Event::UnitAlias { system, unit, alias, talkgroup } => {
                 let name = self.system_name(system).to_string();
                 self.records.push(Record::text(Level::Info, Some(&name), format!("Unit {unit} is \"{alias}\" (TG {talkgroup})")));
@@ -1061,7 +1065,7 @@ impl Session {
                 "identity": identity_json(&y.identity),
                 "good": y.good, "bad": y.bad, "modulation": if y.modulation.is_empty() { None } else { Some(y.modulation) },
                 "activeCalls": y.active_calls, "recording": y.recording, "callsConcluded": y.calls_concluded,
-                "mismatch": y.mismatch, "callsign": y.callsign,
+                "mismatch": y.mismatch,
                 "callsigns": y.callsigns.iter().map(|(c, hz)| json!({ "callSign": c, "freqHz": if *hz == 0 { None } else { Some(hz) } })).collect::<Vec<_>>(),
             })
         };

@@ -1033,12 +1033,13 @@ fn deliver(ctx: &Ctx, out: &mut Vec<Output>, plugins: Option<&PluginHost>, rules
             }
             Output::Rollup(r) => ctx.store.add(r),
             // Into the config where it has none, saved and sent to the browsers.
-            Output::CallSign { short_name, site, call_sign } => {
+            Output::CallSign { short_name, freq_hz, call_sign } => {
                 let mut learned = false;
-                let saved = crate::server::edit_config(ctx, |c| learned = c.learn_call_sign(&short_name, &site, &call_sign));
+                let saved = crate::server::edit_config(ctx, |c| learned = c.learn_call_sign(&short_name, freq_hz, &call_sign));
+                let mhz = freq_hz / 1e6;
                 match saved {
-                    Err(e) => log::warn!("{short_name}: heard its FCC call sign {call_sign}, but {e}"),
-                    Ok(()) if learned => log::info!("{short_name}: FCC call sign {call_sign} (site {site}), from its control channel"),
+                    Err(e) => log::warn!("{short_name}: heard call sign {call_sign} on {mhz:.4} MHz, but {e}"),
+                    Ok(()) if learned => log::info!("{short_name}: FCC call sign {call_sign} for {mhz:.4} MHz, from the air"),
                     Ok(()) => {}
                 }
             }

@@ -448,7 +448,7 @@ Every message is a JSON object with a `type`. Exact fields are in
 | `talkgroups` | On connecting, for each system; whenever one changes | `system` (short name), `csv`: the system's talkgroup file (Trunk Recorder's CSV format; `""`: none) |
 | `plugins` | On connecting (control access); after plugin changes; answers `plugins` | `plugins` (`PluginInfo[]`), `encoderFound` |
 | `state` | Recording starts / stops | `phase`, `error`, `ended` |
-| `status` | ~2/s while running | `status` (`EngineStatus`: totals, `systemNames`: every system's short name by its number, `systems[]` with control channel, decode counts `good`/`bad`, site identity, `callsign` / `callsigns` (the FCC call signs a Motorola control channel sends, each with its `freqHz`; `callsign` the one that names it, after 30 s); neighbours, patches and the like are in `decodeDetail`), `sources[]` (each radio: rate, drops, errors, frequency error), `load` (share of real time the decoder is busy), `calls` (`CallView[]`, on the air now) |
+| `status` | ~2/s while running | `status` (`EngineStatus`: totals, `systemNames`: every system's short name by its number, `systems[]` with control channel, decode counts `good`/`bad`, site identity, `callsigns` (the FCC call signs a Motorola control channel sends, each with its `freqHz`); neighbours, patches and the like are in `decodeDetail`), `sources[]` (each radio: rate, drops, errors, frequency error), `load` (share of real time the decoder is busy), `calls` (`CallView[]`, on the air now) |
 | `spectrum` | Topic `spectrum:<source>`: ~7/s while running | `source`, `centerHz`, `rateHz`, `bins`: 512 levels in dBFS, lowest frequency first, spanning `centerHz ± rateHz/2` |
 | `stats` | 1/s while running | `t` (Unix s), `values`: series name → value now ([Statistics and history](#statistics-and-history)) |
 | `host` | Every 2 s (desktop app) | `t`, `values` (the computer's and plugins' series), `platform` (OS, cores, container and its limits, disks (the RAM spool's too, as `spool`), connectivity checks, `spotlight` (macOS: whether Spotlight indexes the recordings folder), `unavailable`: what this platform can't tell and why) |
@@ -506,6 +506,7 @@ too.
 | `surveyListen` | `freqHz` | Monitor this signal. |
 | `surveyRescan` / `surveyStop` | — | Scan again / end the survey. |
 | `licenseQuery` | `id`, `lat`, `lon`, `radiusM`, `signals[]` of `{ freqHz, widthHz? }` | Who is licensed on these frequencies within `radiusM` (at most 150 km) of the location (→ `licenseResult`). The recorder sends the frequencies and the location to trunkrecorder.pro (`server.trpApi`); only when the user asks. |
+| `callSignQuery` | `id`, `callSigns[]` | Who holds these call signs (heard on the air), from trunkrecorder.pro, no location (→ `callSignResult`: `id`, `results[]` of `{ callSign, licensee, serviceCode, serviceDesc, status, city, state }` for each active one, or `error`). |
 | `profileSource` | `source`, `centerHz` | Look at radio `source`'s band for a couple of seconds, tuned to `centerHz` (a capture keeps its own), and measure how it rolls off at the edges (→ `sourceProfile`; not while recording). |
 | `plugins` | — | List plugins again (→ `plugins`). |
 | `addPlugin` | `path` | Add a plugin executable of your own. |

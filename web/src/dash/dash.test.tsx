@@ -87,7 +87,7 @@ test("Decode: a site's FCC call sign, once its control channel has said it", () 
   running(c, [system(0, "dcfd", [site(0, "dcfd", { site: 1 })])]);
   setView("decode", "dcfd");
   assert.ok(!text(renderToString(<DecodePage />)).includes("Call sign"));
-  running(c, [system(0, "dcfd", [{ ...site(0, "dcfd", { site: 1 }), callsign: "KNJA391", callsigns: [{ callSign: "KNJA391", freqHz: 859_087_500 }, { callSign: "KNJE616", freqHz: 859_987_500 }] }])]);
+  running(c, [system(0, "dcfd", [{ ...site(0, "dcfd", { site: 1 }), callsigns: [{ callSign: "KNJA391", freqHz: 859_087_500 }, { callSign: "KNJE616", freqHz: 859_987_500 }] }])]);
   assert.ok(text(renderToString(<DecodePage />)).includes("Call signs KNJA391 859.0875 , KNJE616 859.9875"), text(renderToString(<DecodePage />)));
 });
 

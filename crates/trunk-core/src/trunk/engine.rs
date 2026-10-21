@@ -290,6 +290,10 @@ pub enum Event {
     Audio { call_id: CallId, system: u16, talkgroup: u32, samples: Vec<f32>, decrypted: bool },
     /// System `system` (any of its sites) heard a radio's talker alias it didn't know (or knew by another name).
     UnitAlias { system: u16, unit: u32, alias: String, talkgroup: u32 },
+    /// A frequency of system `system` is identified by this FCC call sign
+    /// (Motorola's base station ID: a control channel's for one of its
+    /// channels, or a voice channel's for itself). Each time it's heard anew.
+    CallSign { system: u16, freq_hz: u64, call_sign: String },
     /// A radio on a call of system `system` gave a new GPS position (decimal degrees).
     UnitPosition { system: u16, unit: u32, lat: f64, lon: f64, talkgroup: u32 },
     Concluded(Concluded),
@@ -309,19 +313,6 @@ pub struct AdjacentSite {
     pub rfss: u32,
     pub site: u32,
     pub freq_hz: u64,
-}
-
-/// How long a site's base station IDs are listened to before one is taken
-/// as its call sign, s (Motorola's come every few seconds, each channel's in turn).
-pub const CALLSIGN_LISTEN_S: f64 = 30.0;
-
-/// Of the call signs a site's base station IDs say (each one's channel, Hz,
-/// and how often), the one that names it: the control channel's (`cc_hz`)
-/// own; else the one said most, a tie the first in order.
-pub fn choose_callsign(heard: &std::collections::BTreeMap<String, (u64, u32)>, cc_hz: Option<u64>) -> Option<String> {
-    let own = heard.iter().find(|(_, (hz, _))| *hz != 0 && Some(*hz) == cc_hz);
-    // (Ties: max_by_key keeps the last, so ask in reverse order.)
-    own.or_else(|| heard.iter().rev().max_by_key(|(_, (_, n))| *n)).map(|(c, _)| c.clone())
 }
 
 /// One site's state, for the interface.
@@ -351,11 +342,9 @@ pub struct SiteStatus {
     /// Neighbouring sites its control channel announces.
     pub adjacent: Vec<AdjacentSite>,
     /// The FCC call signs its control channel's base station IDs say
-    /// (Motorola's MOT_BSI_GRANT), each with the channel it's for, Hz (0: not
-    /// known): a site's licenses can be several, one a channel. Never another site's.
+    /// (Motorola's MOT_BSI_GRANT), each with the channel it's for, Hz: a
+    /// site's licenses can be several, one a channel. Never another site's.
     pub callsigns: Vec<(String, u64)>,
-    /// The one that names it ([`Trunk::callsign`]), once it has listened long enough to have heard them all.
-    pub callsign: Option<String>,
     /// Patches standing now: (supergroup, the talkgroups patched into it).
     pub patches: Vec<(u32, Vec<u32>)>,
     /// A trunked DMR site: its kind, rest channel, channel table, carriers.
@@ -1035,10 +1024,8 @@ struct Trunk {
     /// Why this control channel is not ours, while it isn't.
     mismatch: Option<String>,
     adjacent: std::collections::BTreeMap<(u32, u32, u32), AdjacentSite>,
-    /// The call signs its base station IDs say: each one's channel (Hz) and how often.
-    callsigns: std::collections::BTreeMap<String, (u64, u32)>,
-    /// When it first said one (its clock).
-    callsign_since: Option<f64>,
+    /// The call signs its base station IDs say, by the channel (Hz) each is for.
+    callsigns: std::collections::BTreeMap<u64, String>,
     /// What its protocol says of itself, once: the identity fields its site
     /// lock goes by, and whether a control channel is reopened at a correction.
     id_fields: &'static [IdField],
@@ -1143,7 +1130,6 @@ impl Trunk {
             self.mismatch = None;
             self.adjacent.clear();
             self.callsigns.clear();
-            self.callsign_since = None;
         }
         events.push(Event::ControlChannel { site: self.site, freq_hz: hz.round() as u64 });
         Ok(())
@@ -1252,10 +1238,10 @@ impl Trunk {
                 self.adjacent.insert((m.sys_id, m.rfss, m.site), AdjacentSite { sys_id: m.sys_id, rfss: m.rfss, site: m.site, freq_hz: m.freq_hz });
             }
             for m in st.msgs.iter().filter(|m| m.kind == MessageType::BaseStationId) {
-                if let Some(c) = &m.callsign {
-                    let e = self.callsigns.entry(c.clone()).or_insert((m.freq_hz, 0));
-                    *e = (m.freq_hz, e.1 + 1);
-                    self.callsign_since.get_or_insert(self.now_s);
+                if let Some(c) = m.callsign.as_ref().filter(|_| m.freq_hz > 0) {
+                    if self.callsigns.insert(m.freq_hz, c.clone()).as_ref() != Some(c) {
+                        events.push(Event::CallSign { system: self.system, freq_hz: m.freq_hz, call_sign: c.clone() });
+                    }
                 }
             }
             if lock {
@@ -1330,17 +1316,6 @@ impl Trunk {
         }
     }
 
-    /// The call sign that names the site, of those its base station IDs say:
-    /// the control channel's own; else the one said most (a tie: the first
-    /// in order). Only after [`CALLSIGN_LISTEN_S`] of them, so a site that
-    /// names several channels' licenses in turn has said them all.
-    fn callsign(&self) -> Option<String> {
-        if self.now_s - self.callsign_since? < CALLSIGN_LISTEN_S {
-            return None;
-        }
-        choose_callsign(&self.callsigns, self.cc_hz)
-    }
-
     fn status(&self, radio: &Radio, sys: &SystemConfig) -> SiteStatus {
         // (One lock at a time: a temporary guard lasts the whole expression.)
         let (modulation, protocol) = {
@@ -1363,8 +1338,7 @@ impl Trunk {
             calls_concluded: self.concluded,
             mismatch: self.mismatch.clone(),
             adjacent: self.adjacent.values().copied().collect(),
-            callsigns: if self.mismatch.is_none() { self.callsigns.iter().map(|(c, &(hz, _))| (c.clone(), hz)).collect() } else { vec![] },
-            callsign: self.callsign().filter(|_| self.mismatch.is_none()),
+            callsigns: if self.mismatch.is_none() { self.callsigns.iter().map(|(&hz, c)| (c.clone(), hz)).collect() } else { vec![] },
             patches: self.calls.patches.active(),
             protocol,
         }
@@ -1484,7 +1458,6 @@ impl Core {
                 mismatch: None,
                 adjacent: Default::default(),
                 callsigns: Default::default(),
-                callsign_since: None,
                 id_fields: &[],
                 reopens: false,
                 voice_params: VoiceParams::default(),
@@ -1886,6 +1859,11 @@ impl Core {
                 TrackerOut::Alias(a) => {
                     let tg = call.map(|c| c.talkgroup);
                     self.learn_alias(system, Some(site), a, tg);
+                }
+                TrackerOut::BaseStationId(call_sign) => {
+                    if let Some(c) = call {
+                        self.events.push(Event::CallSign { system, freq_hz: c.freq_hz, call_sign });
+                    }
                 }
                 TrackerOut::AliasLc(sign) => {
                     let tg = call.map_or(0, |c| c.talkgroup);
@@ -2366,22 +2344,6 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A site's call sign: the control channel's own; else the one said most (a tie: first in order).
-    /// As the DCFD capture sends them: none for the control channel, KNJA391 and KNJE616 for two others.
-    #[test]
-    fn the_call_sign_that_names_a_site() {
-        let heard = |v: &[(&str, u64, u32)]| v.iter().map(|&(c, hz, n)| (c.to_string(), (hz, n))).collect::<std::collections::BTreeMap<_, _>>();
-        let dcfd = heard(&[("KNJA391", 859_087_500, 42), ("KNJE616", 859_987_500, 37)]);
-        assert_eq!(choose_callsign(&dcfd, Some(857_987_500)).as_deref(), Some("KNJA391"));
-        let tie = heard(&[("KNJE616", 859_987_500, 5), ("KNJA391", 859_087_500, 5)]);
-        assert_eq!(choose_callsign(&tie, Some(857_987_500)).as_deref(), Some("KNJA391"));
-        let own = heard(&[("KNJA391", 859_087_500, 42), ("WPXT459", 857_987_500, 3)]);
-        assert_eq!(choose_callsign(&own, Some(857_987_500)).as_deref(), Some("WPXT459"));
-        // A channel not known (0) is never the control channel's.
-        assert_eq!(choose_callsign(&heard(&[("A1B", 0, 1), ("C2D", 1, 9)]), Some(0)).as_deref(), Some("C2D"));
-        assert_eq!(choose_callsign(&heard(&[]), Some(857_987_500)), None);
-    }
     use super::super::calls::Voice;
     use super::super::voice::VoiceKind;
 

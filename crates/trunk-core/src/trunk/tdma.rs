@@ -485,6 +485,7 @@ impl TdmaTracker {
                     self.key = Some((color_code as u32, sys_id as u32, wacn));
                     self.mask = Some(xor_mask(color_code as u32, sys_id as u32, wacn));
                 }
+                Mac::BaseStationId(cs) if !cs.text().is_empty() => out.push((c, TrackerOut::BaseStationId(cs.text()))),
                 _ => {}
             }
             if is_alias_msg(&m) {

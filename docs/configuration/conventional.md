@@ -28,6 +28,7 @@ anywhere a source covers, including alongside a trunked system. Analog channels 
 |---|:---:|---|---|---|
 | `shortName` | | `"conv"` | string | Its identity: recordings folder, `short_name` in call JSON, how plugins know it. No other system, trunked or conventional, may have it |
 | `name` | | `""` | string | What people call it ("County Fire"), for display |
+| `fcc` | | `{}` | object | Optional: who is licensed on each channel's frequency (they can be different licensees'). See [FCC licenses](systems.md#fcc-licenses) |
 | `enabled` | | `true` | bool | `false` keeps it without recording any of its channels |
 | `squelchDb` | | `8` | number | How far above the measured noise floor a signal must rise to open a channel, dB. The interface allows 3–40 |
 | `demod` | | `{}` | object | How its FM and AM channels are demodulated. See [Demodulation](#demodulation-demod) |

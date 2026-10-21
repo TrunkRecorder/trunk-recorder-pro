@@ -64,12 +64,12 @@ async function devices() {
 }
 
 /** Hand the session's outputs to the page / storage. */
-function deliver(outs: { t: string; json?: string; system?: number; shortName?: string; tg?: number; frame?: Uint8Array; rel?: string; wav?: Uint8Array; entry?: string; site?: string; callSign?: string }[]): void {
+function deliver(outs: { t: string; json?: string; system?: number; shortName?: string; tg?: number; frame?: Uint8Array; rel?: string; wav?: Uint8Array; entry?: string; freqHz?: number; callSign?: string }[]): void {
   for (const o of outs) {
     if (o.t === "text") post(JSON.parse(o.json!) as FromRecorder);
     else if (o.t === "callSign") {
-      // A site's FCC call sign, heard on the air: into the config where it has none (the page stores it).
-      const learned = config && learn_call_sign(JSON.stringify(config), o.shortName!, o.site!, o.callSign!);
+      // A frequency's FCC call sign, heard on the air: into its system's licenses (the page stores the config).
+      const learned = config && learn_call_sign(JSON.stringify(config), o.shortName!, o.freqHz!, o.callSign!);
       if (learned) {
         config = JSON.parse(learned) as Config;
         post({ type: "config", config, version: ++configVersion });
@@ -185,6 +185,20 @@ async function licenseQuery(m: Extract<ToRecorder, { type: "licenseQuery" }>): P
     if (r.ok && Array.isArray(v?.results)) answer(v.results, null);
     else if (r.status === 429) answer([], "Too many license lookups for now: try again in a minute.");
     else answer([], `The license lookup failed: ${v?.error ?? `HTTP ${r.status}`}`);
+  } catch (e) {
+    answer([], `Couldn't reach ${base} to look up licenses (${e instanceof Error ? e.message : String(e)}).`);
+  }
+}
+
+/** Who holds some call signs heard on the air (no location): asked of the trunkrecorder.pro API. */
+async function callSignQuery(m: Extract<ToRecorder, { type: "callSignQuery" }>): Promise<void> {
+  const base = (config?.server?.trpApi || "https://trunkrecorder.pro").replace(/\/+$/, "");
+  const answer = (results: unknown[], error: string | null) => post({ type: "callSignResult", id: m.id, results: results as never, error });
+  try {
+    const r = await fetch(`${base}/api/v1/fcc/callsigns`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ callSigns: m.callSigns.slice(0, 64) }) });
+    const v = await r.json().catch(() => null);
+    if (r.ok && Array.isArray(v?.results)) answer(v.results, null);
+    else answer([], r.status === 429 ? "Too many license lookups for now: try again in a minute." : `The license lookup failed: ${v?.error ?? `HTTP ${r.status}`}`);
   } catch (e) {
     answer([], `Couldn't reach ${base} to look up licenses (${e instanceof Error ? e.message : String(e)}).`);
   }
@@ -477,6 +491,9 @@ onmessage = async (ev: MessageEvent<ToWorker>) => {
       break;
     case "licenseQuery":
       void licenseQuery(m);
+      break;
+    case "callSignQuery":
+      void callSignQuery(m);
       break;
     case "surveyStop":
       await surveyStop();

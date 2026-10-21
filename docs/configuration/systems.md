@@ -30,8 +30,7 @@ a system of its own.)
 |---|:---:|---|---|---|
 | `shortName` | | `"sys1"` | string | The system's identity: its recordings folder, the `short_name` in call JSON, its talker alias file, and how plugins know it. Every system, trunked or conventional, enabled or not, needs its own. Keep it to letters, digits, `-` and `_` |
 | `name` | | `""` | string | What people call it ("County Public Safety"), for display |
-| `fccName` | | `""` | string | Optional: who holds its FCC license, as the FCC has it (`"DISTRICT OF COLUMBIA"`), for reference. **Identify** on its card, or the survey, fills it in |
-| `fccCallSign` | | `""` | string | Optional: its FCC license's call sign (`"WPXT459"`). Filled in when empty from what a Motorola P25 control channel sends (see [P25](../guides/p25.md#fcc-call-sign-motorola-base-station-id)). Plugins are told both (`hello`'s `systems[].fcc_name`, `fcc_call_sign`) |
+| `fcc` | | `{}` | object | Optional: who is licensed on each of its frequencies. See [FCC licenses](#fcc-licenses) |
 | `type` | | `"p25"` | string | `"p25"`, `"smartnet"`, `"dmr"` or `"nxdn"` (any case). Anything else is refused when the config is read |
 | `enabled` | | `true` | bool | `false` keeps it in the config without recording it |
 | `sites` | | `[]` | array | Where it is recorded from: one entry per site. See [Keys for each site](#keys-for-each-site) |
@@ -41,13 +40,40 @@ a system of its own.)
 | `plugins` | | `{}` | object | This system's plugin settings, by plugin id. See [plugins.md](plugins.md#per-system-settings) |
 | `pluginDelays` | | `[]` | array | How long plugins wait for this system's calls (all of them, some talkgroups', some plugins'). See [plugins.md](plugins.md#delays) |
 
+## FCC licenses
+
+`fcc` (a system's, or a [conventional system's](conventional.md)) says who is licensed on each of
+its frequencies, keyed by frequency in Hz (on the 6.25 kHz channel raster, as a string). A system
+can hold several licenses, and a conventional system can mix licensees, so each frequency has its
+own. It's optional and for reference; plugins are told it.
+
+```json
+"fcc": {
+  "857987500": { "callSign": "WPXT459", "name": "DISTRICT OF COLUMBIA", "from": "lookup" },
+  "859087500": { "callSign": "KNJA391", "from": "air" }
+}
+```
+
+| Key | Required | Default | Type | Description |
+|---|:---:|---|---|---|
+| `callSign` | ✓ | | string | The license's call sign |
+| `name` | | `""` | string | Who holds it, as the FCC has it |
+| `from` | | `"user"` | string | `"user"` (typed in; never replaced), `"air"` (heard: a Motorola base station ID) or `"lookup"` (Identify) |
+
+The recorder fills it as it hears Motorola P25 base station IDs: a control channel's, for each
+channel it names, and a voice channel's for itself. A call sign heard replaces a lookup's (keeping
+its name when it's the same call sign), never yours. **Identify** on the system's card looks up
+licensees near you, and names call signs heard on the air (sending only the call signs). See
+[P25](../guides/p25.md#fcc-call-signs-motorola-base-station-id).
+
+The call sign that names the system (plugins' `fcc_call_sign`) is its control channel's, else the
+one on the most of its frequencies.
+
 ## Keys for each site
 
 | Key | Required | Default | Type | Description |
 |---|:---:|---|---|---|
 | `name` | | the system's `shortName` | string | The site's name, unique in its system: what the talkgroup file's `Preferred Site` names, the `site` in call JSON and the log. Leave it out for a system of one site |
-| `fccName` | | `""` | string | Optional: this site's own FCC licensee, when it isn't the system's |
-| `fccCallSign` | | `""` | string | Optional: this site's own FCC call sign (filled in when its control channel sends one that isn't the system's). Plugins are told both (`hello`'s `systems[].sites[]`) |
 | `enabled` | | `true` | bool | `false` keeps the site without recording from it (**Record** on its card) |
 | `controlChannelsHz` | | `[]` | array of numbers | P25 and SmartNet: the control channel and its alternates, Hz. The recorder hunts through them, moving on when one goes quiet for 5 s. DMR and NXDN: every frequency listed is watched at once (NXDN Type-D: the repeaters) |
 | `expect` | | `{}` | object | Site lock: only follow a control channel with this identity. See [Site lock](#site-lock-expect) |

@@ -912,6 +912,21 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
                 Err(e) => ToClient::LicenseResult { id, results: vec![], error: Some(e) },
             })
         }
+        Command::CallSignQuery { id, call_signs } => {
+            let api_base = ctx.config.lock().unwrap().server.trp_api_base().to_string();
+            let mut calls: Vec<String> = call_signs.iter().map(|c| c.trim().to_uppercase()).filter(|c| crate::config::plausible_call_sign(c)).collect();
+            calls.sort();
+            calls.dedup();
+            calls.truncate(64);
+            if calls.is_empty() {
+                return Some(ToClient::CallSignResult { id, results: vec![], error: Some("No call signs to look up.".into()) });
+            }
+            let answer = tokio::task::spawn_blocking(move || crate::licenses::call_signs(&api_base, &calls)).await.unwrap_or_else(|e| Err(e.to_string()));
+            Some(match answer {
+                Ok(v) => ToClient::CallSignResult { id, results: v["results"].as_array().cloned().unwrap_or_default(), error: None },
+                Err(e) => ToClient::CallSignResult { id, results: vec![], error: Some(e) },
+            })
+        }
         Command::SurveyStop => {
             let ctx2 = ctx.clone();
             let _ = tokio::task::spawn_blocking(move || ctx2.stop_survey()).await;

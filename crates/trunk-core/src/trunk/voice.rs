@@ -112,6 +112,9 @@ pub enum TrackerOut {
     AliasLc(AliasLc),
     /// The talker's GPS position.
     Position(Position),
+    /// The FCC call sign the voice channel identifies itself by (Motorola's
+    /// LC_MOT_BSI / MAC_MOT_BSI).
+    BaseStationId(String),
 }
 
 /// What a P25 transmission's voice is, as far as is known.

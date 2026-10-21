@@ -70,7 +70,8 @@ import type { AirspyGainMode, Channel, Config, Conventional, Demod, Device, Hear
 import { DEFAULT_FORMAT, FilenameEditor } from "./FilenameEditor.tsx";
 import { GuardBand } from "./Rolloff.tsx";
 import { SurveyPanel } from "./Survey.tsx";
-import { IdentifyFcc } from "./Identify.tsx";
+import { FccTable, IdentifyFcc } from "./Identify.tsx";
+import { siteFrequencies } from "./controller.ts";
 import { addCard, Card, ExpandAll, Group, Section, setCardOpen, Switch } from "./SetupLayout.tsx";
 import { TalkgroupsField } from "./TalkgroupsField.tsx";
 import { DraftInput, Field, FileInput, NumberInput, Toggle } from "./inputs.tsx";
@@ -1088,6 +1089,7 @@ function ConventionalPanel(props: { c: Config; k: number }) {
       actions={
         <>
           <Switch label="Record" checked={conv.enabled} onChange={(v) => edit((x) => void (x.enabled = v))} />
+          <IdentifyFcc target={{ kind: "conventional", index: k }} what={conv.name || conv.shortName} freqs={[...new Set(chans.map((ch) => ch.freqHz).filter((f) => f > 0))]} fcc={conv.fcc} />
           <button
             className="btn ghost small"
             onClick={() => {
@@ -1121,6 +1123,9 @@ function ConventionalPanel(props: { c: Config; k: number }) {
         <Field needs={need(`squelch-${name}`)} anchor={`squelch-${name}`} label="Squelch, dB above noise" hint="For channels without their own">
           <NumberInput label="Squelch, dB above noise" value={conv.squelchDb} onChange={(v) => edit((x) => void (x.squelchDb = Math.max(3, Math.min(40, v ?? 8))))} />
         </Field>
+      </Group>
+      <Group title="FCC licenses" hint="Optional: who is licensed on each channel's frequency (they can be different licensees'). Identify looks them up; Motorola P25 channels say theirs on the air." cols={1}>
+        <FccTable target={{ kind: "conventional", index: k }} fcc={conv.fcc} />
       </Group>
       {chans.some((c) => c.mode !== "fm" && c.mode !== "am") && (
         <Group title="Talkgroup names" hint="For the talkgroups its P25, DMR and NXDN channels name on the air (a row's own name is for calls filed under its talkgroup).">
@@ -1789,7 +1794,6 @@ function SiteCard(props: { c: Config; i: number; k: number; onRemoveSystem: () =
       actions={
         <>
           <Switch label="Record" checked={site.enabled} onChange={(v) => edit((x) => void (x.enabled = v))} />
-          <IdentifyFcc sys={sys} system={i} site={k} />
           <button className="btn ghost small" onClick={remove}>
             Remove
           </button>
@@ -1808,12 +1812,6 @@ function SiteCard(props: { c: Config; i: number; k: number; onRemoveSystem: () =
               })
             }
           />
-        </Field>
-        <Field label="FCC name" hint="Optional: this site's own licensee, if not the system's">
-          <input value={site.fccName ?? ""} onChange={(e) => edit((x) => fcc(x, "fccName", e.target.value))} />
-        </Field>
-        <Field label="FCC call sign" hint="Optional: this site's own, if not the system's">
-          <input className="mono" value={site.fccCallSign ?? ""} onChange={(e) => edit((x) => fcc(x, "fccCallSign", e.target.value.toUpperCase()))} />
         </Field>
         {sys.type !== "dmr" && sys.type !== "nxdn" && (
           <Field label={sys.type === "smartnet" ? "P25 voice modulation" : "Modulation"}>
@@ -1960,7 +1958,7 @@ function SystemCard(props: { c: Config; i: number }) {
       actions={
         <>
           <Switch label="Record" checked={sys.enabled} onChange={(v) => edit((x) => void (x.enabled = v))} />
-          <IdentifyFcc sys={sys} system={i} site={null} />
+          <IdentifyFcc target={{ kind: "system", index: i }} what={sys.name || sys.shortName} freqs={siteFrequencies(sys.sites).map((x) => x.freqHz)} fcc={sys.fcc} />
           <button className="btn ghost small" onClick={() => remove()}>
             Remove
           </button>
@@ -1995,12 +1993,6 @@ function SystemCard(props: { c: Config; i: number }) {
         </Field>
         <Field label="Name">
           <input value={sys.name ?? ""} placeholder="County Public Safety" onChange={(e) => edit((x) => void (x.name = e.target.value))} />
-        </Field>
-        <Field label="FCC name" hint="Optional: who holds its license, as the FCC has it (plugins are told it)">
-          <input value={sys.fccName ?? ""} placeholder="DISTRICT OF COLUMBIA" onChange={(e) => edit((x) => fcc(x, "fccName", e.target.value))} />
-        </Field>
-        <Field label="FCC call sign" hint="Optional: its license's call sign. Identify looks both up">
-          <input className="mono" value={sys.fccCallSign ?? ""} placeholder="WPXT459" onChange={(e) => edit((x) => fcc(x, "fccCallSign", e.target.value.toUpperCase()))} />
         </Field>
         <Field label="Type">
           <select
@@ -2060,6 +2052,9 @@ function SystemCard(props: { c: Config; i: number }) {
           ))}
           {!sys.sites.length && <p className="muted small">No sites: add one with its control channel.</p>}
         </div>
+      </Group>
+      <Group title="FCC licenses" hint="Optional: who is licensed on each frequency. Motorola P25 sites say their call signs on the air; Identify looks licensees up. Plugins are told them." cols={1}>
+        <FccTable target={{ kind: "system", index: i }} fcc={sys.fcc} />
       </Group>
       <Group title="Talkgroups and units" hint="Names for what is heard, and which talkgroups are recorded.">
         <TalkgroupsField sys={sys} needs={need(`tg-${sys.shortName}`)} anchor={`tg-${sys.shortName}`} />
@@ -2710,10 +2705,4 @@ export function Setup() {
       {tab === "plugins" && can("plugins") && <PluginSetupPanel />}
     </div>
   );
-}
-
-/** Set an optional FCC field (left out when empty). */
-function fcc(x: { fccName?: string; fccCallSign?: string }, key: "fccName" | "fccCallSign", v: string): void {
-  if (v.trim()) x[key] = v;
-  else delete x[key];
 }
