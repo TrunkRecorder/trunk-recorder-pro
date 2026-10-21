@@ -31,7 +31,7 @@ a system of its own.)
 | `shortName` | | `"sys1"` | string | The system's identity: its recordings folder, the `short_name` in call JSON, its talker alias file, and how plugins know it. Every system, trunked or conventional, enabled or not, needs its own. Keep it to letters, digits, `-` and `_` |
 | `name` | | `""` | string | What people call it ("County Public Safety"), for display |
 | `fcc` | | `{}` | object | Optional: who is licensed on each of its frequencies. See [FCC licenses](#fcc-licenses) |
-| `type` | | `"p25"` | string | `"p25"`, `"smartnet"`, `"dmr"` or `"nxdn"` (any case). Anything else is refused when the config is read |
+| `type` | | `"p25"` | string | `"p25"`, `"smartnet"`, `"dmr"`, `"nxdn"` or `"edacs"` (any case). Anything else is refused when the config is read |
 | `enabled` | | `true` | bool | `false` keeps it in the config without recording it |
 | `sites` | | `[]` | array | Where it is recorded from: one entry per site. See [Keys for each site](#keys-for-each-site) |
 | `unitNames` | | empty | object | Names for the system's radios. See [Unit names](#unit-names) |
@@ -130,6 +130,44 @@ comes up on a frequency in `nxdnChannelsHz`. Until then the grant is logged as "
 yet", and the dashboard lists the channel numbers still unknown. Learned tables are kept per site
 beside the config: `<shortName>.bandplan`, or `<shortName>.<site>.bandplan` for a site with a name
 of its own.
+
+## EDACS
+
+EDACS Standard and Networked sites (GE / Ericsson / Harris), with analog FM and ProVoice voice.
+Extended Addressing (EA) sites aren't decoded yet.
+
+| Key | Required | Default | Type | Description |
+|---|:---:|---|---|---|
+| `lcnTableHz` | ✓ | `{}` | object | The site's channel list: LCN (1–25) → frequency, Hz, `{ "1": 856187500, "3": 857712500 }`. RadioReference lists each site's channels with their LCNs |
+| `esk` | | `false` | boolean | The system scrambles its control channel with ESK 0xA0 (some Harris systems): its messages don't decode without it |
+| `learnUnlisted` | | `false` | boolean | Learn channels on frequencies in no list even before the site has identified itself (a site whose control channel decodes well but never sends its site ID) |
+
+The control channel grants each call a channel number (LCN) and says whether its voice is analog
+or ProVoice; `lcnTableHz` turns the number into a frequency. Every frequency of the site (its
+`controlChannelsHz` and `lcnTableHz`) is watched at once, so the control channel is found wherever
+the site has moved it, and the list is checked against the air: when a call is assigned an LCN,
+the carrier that keys just then is that channel. Once three calls agree, the LCN is that frequency,
+whatever the list says, and the log says so ("LCN 4 is 860.1125 MHz on the air, not 857.0375 MHz
+as the channel list has it"); what was learned is kept beside the config (`<shortName>.<site>.bandplan`)
+for the next start. An LCN on a frequency in neither list is found too: the site's frequencies sit
+on a channel raster (25 kHz at 800 MHz), and each raster frequency's power inside the sources is
+measured from their spectrum, so the one that keys for the LCN's calls is learned the same way
+(only inside a source's bandwidth). That happens only once the site has identified itself (its
+site ID, the same three times in a row), or with `learnUnlisted`; the system's other sites'
+frequencies, and carriers that are always on (another system's control channel), are never taken:
+on a networked system one call keys several sites at once. Until an LCN's frequency is known its
+calls are logged once and not recorded. A grant to the frequency the control channel is on is never
+followed, whichever LCN it names. A site ID that disagrees with the list's numbers corrects them only
+once three in a row agree. The site lock (`expect`) compares the site number the control channel
+announces (`site`).
+
+On an analog call, the 9600 baud signalling burst at the start of each transmission (on the voice
+channel) is left out of the audio.
+
+Groups are AFS numbers, written in decimal in the talkgroup file (RadioReference's DEC column:
+AFS 03-091 is 457); radios are logical IDs (LIDs). A talkgroup marked `DE` (digital, encrypted) is
+skipped as encrypted. ProVoice is decoded with the same vocoder as P25 Phase 1 (IMBE); the call JSON
+says `"audio_type": "digital"`, analog calls `"analog"`.
 
 ## Site lock (`expect`)
 

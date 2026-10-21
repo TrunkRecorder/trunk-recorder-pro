@@ -22,6 +22,9 @@ Trunk Recorder Pro supports:
   and ETSI Tier III
 - **NXDN** (NXDN48 and NXDN96): Type-C and Type-D trunking. NXDN has been tested on recordings and
   synthesized signals, but not yet on a live trunked system.
+- **EDACS** Standard and Networked sites, with analog and ProVoice voice (see
+  [Trunked systems](configuration/systems.md#edacs)). Analog calls tested live on a networked
+  system; ProVoice on synthesized signals.
 - **Conventional channels**: analog FM, P25, DMR and NXDN, on their own or alongside trunked
   systems. Several users of one frequency can be told apart by CTCSS tone, DCS code, NAC, colour
   code or RAN.
