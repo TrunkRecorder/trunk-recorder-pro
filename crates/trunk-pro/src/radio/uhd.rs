@@ -13,7 +13,7 @@ use libloading::Library;
 use num_complex::Complex32;
 
 use super::{cstr, ppm_corrected, DriverInfo};
-use crate::sdr::{Applied, Control, SourceMsg, Tunable};
+use crate::sdr::{Applied, Control, Gain, SourceMsg, Tunable};
 
 type Handle = *mut c_void;
 type Err = c_int;
@@ -215,6 +215,11 @@ impl crate::sdr::Radio for UsrpConfig {
     fn retune_to(&mut self, hz: f64) {
         self.center_hz = hz;
     }
+    fn gain_to(&mut self, g: Gain) {
+        if let Gain::Db(db) = g {
+            self.gain_db = db as f64;
+        }
+    }
     fn stream_once(&self, source: usize, tx: &SyncSender<SourceMsg>, stop: &Arc<AtomicBool>, ctl: Option<&Control>) -> Result<(), String> {
         stream_once(source, self, tx, stop, ctl)
     }
@@ -267,7 +272,9 @@ impl Tunable for Session<'_> {
         check(self.a, "tune", unsafe { (self.a.set_rx_freq)(self.usrp, &mut req, 0, &mut res) })?;
         Ok(hz)
     }
-    fn set_gain(&mut self, db: f32) -> Result<(), String> {
+    /// A manual gain (AGC on or off waits for the next start).
+    fn set_gain(&mut self, g: Gain) -> Result<(), String> {
+        let Gain::Db(db) = g else { return Ok(()) };
         // SAFETY: an open USRP.
         check(self.a, "set gain", unsafe { (self.a.set_rx_gain)(self.usrp, db as f64, 0, c"".as_ptr()) })
     }

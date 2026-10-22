@@ -7,6 +7,8 @@ use std::time::{Duration, Instant};
 
 use rtlsdr_nusb::{Device, GainConfig, MaybeFuture, RxBuffers, RxStream, SampleMode};
 
+use crate::radio::airspy::AirspyGain;
+
 #[derive(Clone, Debug)]
 pub struct RtlConfig {
     /// Serial number ("" = first dongle).
@@ -178,54 +180,43 @@ pub enum SourceMsg {
     Tuned { center_hz: f64 },
 }
 
-/// Retune / gain requests for a running source (the survey). The source
-/// applies them between blocks and answers each with [`SourceMsg::Tuned`].
+/// Retune / gain requests for a running source: the survey's, and a gain
+/// changed in Setup while recording. The source applies them between blocks
+/// and answers each with [`SourceMsg::Tuned`] (only the survey listens).
 #[derive(Default)]
 pub struct Control {
     pub freq_hz: Mutex<Option<f64>>,
-    pub gain_db: Mutex<Option<f32>>,
-    /// The centre last applied, so a reopened device comes back there.
+    pub gain: Mutex<Option<Gain>>,
+    /// The centre and gain last applied, so a reopened device comes back so.
     pub current_hz: Mutex<Option<f64>>,
-    /// A gain changed in Setup while recording (RTL-SDR): applied
-    /// between blocks, with no [`SourceMsg::Tuned`] (nothing moved).
-    pub live_gain: Mutex<Option<LiveGain>>,
-    /// The live gain last applied, so a reopened device keeps it.
-    pub current_gain: Mutex<Option<LiveGain>>,
-    /// An Airspy's gain changed in Setup while recording (its own kind of setting).
-    pub live_airspy: Mutex<Option<crate::radio::airspy::AirspyGain>>,
-    /// The Airspy gain last applied, so a reopened device keeps it.
-    pub current_airspy: Mutex<Option<crate::radio::airspy::AirspyGain>>,
+    pub current_gain: Mutex<Option<Gain>>,
 }
 
-/// A gain to apply while running: the device's AGC, or `gain_db` set by hand.
+/// A gain for a running radio.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct LiveGain {
-    pub agc: bool,
-    pub gain_db: f32,
+pub enum Gain {
+    /// Its AGC (RTL-SDR; an Airspy's is one of its [`Gain::Airspy`] settings).
+    Agc,
+    /// A manual gain, dB.
+    Db(f32),
+    /// An Airspy's preset or stages.
+    Airspy(AirspyGain),
+}
+
+impl std::fmt::Display for Gain {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Gain::Agc => write!(f, "AGC"),
+            Gain::Db(db) => write!(f, "{db} dB"),
+            Gain::Airspy(g) => write!(f, "{g}"),
+        }
+    }
 }
 
 impl Control {
     /// Pending requests (taken).
-    pub fn take(&self) -> (Option<f64>, Option<f32>) {
-        (self.freq_hz.lock().unwrap().take(), self.gain_db.lock().unwrap().take())
-    }
-
-    /// A pending live gain (taken), remembered as the current one.
-    pub fn take_live_gain(&self) -> Option<LiveGain> {
-        let g = self.live_gain.lock().unwrap().take();
-        if g.is_some() {
-            *self.current_gain.lock().unwrap() = g;
-        }
-        g
-    }
-
-    /// A pending live Airspy gain (taken), remembered as the current one.
-    pub fn take_live_airspy(&self) -> Option<crate::radio::airspy::AirspyGain> {
-        let g = self.live_airspy.lock().unwrap().take();
-        if g.is_some() {
-            *self.current_airspy.lock().unwrap() = g;
-        }
-        g
+    pub fn take(&self) -> (Option<f64>, Option<Gain>) {
+        (self.freq_hz.lock().unwrap().take(), self.gain.lock().unwrap().take())
     }
 
     /// Between blocks: the pending requests applied to `radio` (opened at
@@ -241,6 +232,7 @@ impl Control {
         }
         if let Some(g) = gain {
             radio.set_gain(g)?;
+            *self.current_gain.lock().unwrap() = Some(g);
         }
         let hz = self.current_hz.lock().unwrap().unwrap_or(center_hz);
         Ok(if tx.send(SourceMsg::Tuned { center_hz: hz }).is_ok() { Applied::Tuned } else { Applied::Closed })
@@ -257,12 +249,12 @@ pub enum Applied {
     Closed,
 }
 
-/// An open radio, as the survey's requests change it ([`Control::apply`]).
+/// An open radio, as [`Control`]'s requests change it ([`Control::apply`]).
 pub trait Tunable {
     /// Retune to `hz`; the centre it is at now.
     fn tune(&mut self, hz: f64) -> Result<f64, String>;
-    /// A manual gain, dB.
-    fn set_gain(&mut self, db: f32) -> Result<(), String>;
+    /// Set `g` (a kind of gain the radio doesn't take is left alone).
+    fn set_gain(&mut self, g: Gain) -> Result<(), String>;
 }
 
 /// A radio's driver: [`run_with`] keeps it streaming.
@@ -271,26 +263,26 @@ pub trait Radio: Send + 'static {
     const BACKOFF: Duration;
     /// It opens at `hz` from now on (where the survey last tuned it).
     fn retune_to(&mut self, hz: f64);
+    /// It opens with `g` from now on (the gain last set while running).
+    fn gain_to(&mut self, g: Gain);
     /// Open it and stream into `tx` until `stop` or an error, retuning on
     /// `ctl`'s requests (each answered with [`SourceMsg::Tuned`]).
     fn stream_once(&self, source: usize, tx: &SyncSender<SourceMsg>, stop: &Arc<AtomicBool>, ctl: Option<&Control>) -> Result<(), String>;
     /// On its thread, before it first opens.
     fn prepare_thread(&self) {}
-    /// It opens with the gain last changed live through `ctl` (from Setup while recording).
-    fn keep_gain(&mut self, _ctl: &Control) {}
 }
 
 /// Stream `radio` until `stop` is set; blocks go to `tx`. Reopens it after
 /// errors (a USB stall, a sleep/wake, an unplug) after its back-off, at the
-/// centre `ctl` (the survey) last tuned it to.
+/// centre and gain `ctl` last set.
 pub fn run_with<R: Radio>(source: usize, mut radio: R, tx: SyncSender<SourceMsg>, stop: Arc<AtomicBool>, ctl: Option<Arc<Control>>) {
     radio.prepare_thread();
     while !stop.load(Ordering::Relaxed) {
         if let Some(c) = ctl.as_ref().and_then(|c| *c.current_hz.lock().unwrap()) {
             radio.retune_to(c);
         }
-        if let Some(c) = ctl.as_ref() {
-            radio.keep_gain(c);
+        if let Some(g) = ctl.as_ref().and_then(|c| *c.current_gain.lock().unwrap()) {
+            radio.gain_to(g);
         }
         if let Err(e) = radio.stream_once(source, &tx, &stop, ctl.as_deref()) {
             let _ = tx.send(SourceMsg::Error { source, error: e });
@@ -304,9 +296,11 @@ impl Radio for RtlConfig {
     fn retune_to(&mut self, hz: f64) {
         self.center_hz = hz as u64;
     }
-    fn keep_gain(&mut self, ctl: &Control) {
-        if let Some(g) = *ctl.current_gain.lock().unwrap() {
-            self.gain_db = (!g.agc).then_some(g.gain_db);
+    fn gain_to(&mut self, g: Gain) {
+        match g {
+            Gain::Agc => self.gain_db = None,
+            Gain::Db(db) => self.gain_db = Some(db),
+            Gain::Airspy(_) => {}
         }
     }
     fn stream_once(&self, source: usize, tx: &SyncSender<SourceMsg>, stop: &Arc<AtomicBool>, ctl: Option<&Control>) -> Result<(), String> {
@@ -328,8 +322,13 @@ impl<M: SampleMode> Tunable for Rtl<'_, M> {
         self.rx.start().wait().map_err(|e| format!("USB: {e}"))?;
         Ok(self.dev.actual_frequency_hz() as f64)
     }
-    fn set_gain(&mut self, db: f32) -> Result<(), String> {
-        self.dev.set_gain(GainConfig::Manual(db)).wait().map_err(|e| format!("gain {db} dB: {e}"))
+    fn set_gain(&mut self, g: Gain) -> Result<(), String> {
+        let gain = match g {
+            Gain::Agc => GainConfig::Auto,
+            Gain::Db(db) => GainConfig::Manual(db),
+            Gain::Airspy(_) => return Ok(()),
+        };
+        self.dev.set_gain(gain).wait().map_err(|e| format!("gain {g}: {e}"))
     }
 }
 
@@ -356,13 +355,6 @@ fn stream_once(source: usize, cfg: &RtlConfig, tx: &SyncSender<SourceMsg>, stop:
             break Ok(());
         }
         if let Some(c) = ctl {
-            if let Some(g) = c.take_live_gain() {
-                let name = if cfg.serial.is_empty() { "(first)" } else { &cfg.serial };
-                if let Err(e) = dev.set_gain(if g.agc { GainConfig::Auto } else { GainConfig::Manual(g.gain_db) }).wait() {
-                    break Err(format!("gain {} dB: {e}", g.gain_db));
-                }
-                log::info!("RTL-SDR {name}: gain now {}", if g.agc { "AGC".to_string() } else { format!("{} dB", g.gain_db) });
-            }
             match c.apply(&mut Rtl { dev: &mut dev, rx: &mut rx }, cfg.center_hz as f64, tx) {
                 Err(e) => break Err(e),
                 Ok(Applied::Closed) => break Ok(()),

@@ -17,7 +17,7 @@ use trunk_core::survey::{Command, Stage};
 
 use crate::config::{Config, Source};
 use crate::runtime::{self, Ctx};
-use crate::sdr::{Control, SourceMsg};
+use crate::sdr::{Control, Gain, SourceMsg};
 
 /// What the interface asks of a running survey.
 pub enum UserCmd {
@@ -49,7 +49,7 @@ fn apply(session: &mut SurveySession, ctl: &Control, file_center: Option<f64>) {
         match (c, file_center) {
             (_, Some(center)) => session.survey().tuned(center),
             (Command::Tune(f), None) => *ctl.freq_hz.lock().unwrap() = Some(f),
-            (Command::Gain(g), None) => *ctl.gain_db.lock().unwrap() = Some(g),
+            (Command::Gain(g), None) => *ctl.gain.lock().unwrap() = Some(Gain::Db(g)),
         }
     }
 }

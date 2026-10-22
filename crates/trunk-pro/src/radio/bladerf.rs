@@ -16,7 +16,7 @@ use libloading::Library;
 use num_complex::Complex32;
 
 use super::{cstr, ppm_corrected, DriverInfo};
-use crate::sdr::{Applied, Control, SourceMsg, Tunable};
+use crate::sdr::{Applied, Control, Gain, SourceMsg, Tunable};
 
 type Dev = *mut c_void;
 
@@ -246,6 +246,11 @@ impl crate::sdr::Radio for BladerfConfig {
     fn retune_to(&mut self, hz: f64) {
         self.center_hz = hz;
     }
+    fn gain_to(&mut self, g: Gain) {
+        if let Gain::Db(db) = g {
+            self.gain_db = db as f64;
+        }
+    }
     fn stream_once(&self, source: usize, tx: &SyncSender<SourceMsg>, stop: &Arc<AtomicBool>, ctl: Option<&Control>) -> Result<(), String> {
         stream_once(source, self, tx, stop, ctl)
     }
@@ -265,7 +270,9 @@ impl Tunable for Device<'_> {
         check(self.a, "tune", unsafe { (self.a.set_frequency)(self.dev, RX0, ppm_corrected(hz, self.ppm).round() as u64) })?;
         Ok(hz)
     }
-    fn set_gain(&mut self, db: f32) -> Result<(), String> {
+    /// A manual gain (AGC on or off waits for the next start).
+    fn set_gain(&mut self, g: Gain) -> Result<(), String> {
+        let Gain::Db(db) = g else { return Ok(()) };
         // SAFETY: an open device.
         unsafe {
             check(self.a, "manual gain", (self.a.set_gain_mode)(self.dev, RX0, GAIN_MGC))?;

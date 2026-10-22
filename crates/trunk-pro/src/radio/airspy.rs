@@ -15,7 +15,7 @@ use libloading::Library;
 use num_complex::Complex32;
 
 use super::{ppm_corrected, DriverInfo};
-use crate::sdr::{Applied, Control, Pool, SourceMsg, Tunable};
+use crate::sdr::{Applied, Control, Gain, Pool, SourceMsg, Tunable};
 
 type Dev = *mut c_void;
 
@@ -200,8 +200,8 @@ impl crate::sdr::Radio for AirspyConfig {
     fn retune_to(&mut self, hz: f64) {
         self.center_hz = hz;
     }
-    fn keep_gain(&mut self, ctl: &Control) {
-        if let Some(g) = *ctl.current_airspy.lock().unwrap() {
+    fn gain_to(&mut self, g: Gain) {
+        if let Gain::Airspy(g) = g {
             self.gain = g;
         }
     }
@@ -264,9 +264,12 @@ impl Tunable for Device<'_> {
         check(self.a, "tune", unsafe { (self.a.set_freq)(self.dev, ppm_corrected(hz, self.ppm).round() as u32) })?;
         Ok(hz)
     }
-    /// Left as configured: a survey keeps the linearity gain as set.
-    fn set_gain(&mut self, _db: f32) -> Result<(), String> {
-        Ok(())
+    /// Its own settings, which libairspy takes while streaming (a survey's
+    /// dB is left alone: the linearity gain stays as set).
+    fn set_gain(&mut self, g: Gain) -> Result<(), String> {
+        let Gain::Airspy(g) = g else { return Ok(()) };
+        // SAFETY: an open device.
+        unsafe { set_gain(self.a, self.dev, g) }
     }
 }
 
@@ -365,13 +368,6 @@ fn stream_once(source: usize, cfg: &AirspyConfig, tx: &SyncSender<SourceMsg>, st
                     Err(e) => break Err(e),
                     Ok(Applied::Closed) => break Ok(()),
                     Ok(_) => {}
-                }
-                // Changed in Setup while recording: libairspy takes it while streaming.
-                if let Some(g) = c.take_live_airspy() {
-                    if let Err(e) = set_gain(a, d.dev, g) {
-                        break Err(e);
-                    }
-                    log::info!("Airspy {}: gain now {g}", if cfg.serial.is_empty() { "(first)" } else { &cfg.serial });
                 }
             }
             if stop.load(Ordering::Relaxed) || ctx.closed.load(Ordering::Relaxed) {

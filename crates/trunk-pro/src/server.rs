@@ -826,8 +826,8 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
                     && old.sources.len() == c.sources.len()
                 {
                     for (i, (o, n)) in old.sources.iter().zip(&c.sources).enumerate().filter(|(_, (o, n))| o != n) {
-                        if r.live_source(i, o, n) {
-                            log::info!("Source {}: gain changed while recording, applied now", i + 1);
+                        if let Some(g) = r.live_source(i, o, n) {
+                            log::info!("Source {}: gain changed while recording, applied now: {g}", i + 1);
                         } else {
                             log::info!("Source {}: changed while recording; the change applies when recording starts next (Stop, then Start)", i + 1);
                         }

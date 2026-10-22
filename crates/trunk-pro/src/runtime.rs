@@ -22,7 +22,7 @@ use trunk_app::{Feeder, Output, Session};
 use crate::config::{AirspyGain, Config, SampleFormat, Source};
 use crate::plugins::{self, FileRules, PluginHost};
 use crate::radio::{airspy, bladerf, soapy, uhd};
-use crate::sdr::{self, Control, LiveGain, RtlConfig, SourceMsg};
+use crate::sdr::{self, Control, Gain, RtlConfig, SourceMsg};
 
 /// A message for the connected browsers, serialized once for all of them.
 pub enum Out {
@@ -311,77 +311,47 @@ pub struct Runner {
     controls: Vec<Arc<Control>>,
 }
 
-/// How a source's settings changed, as far as a running source can follow.
-#[derive(Debug, PartialEq)]
-pub enum LiveChange {
-    /// Nothing that matters to the running source.
-    None,
-    /// Only its gain: applied at once.
-    Gain(LiveGain),
-    /// Only its overall gain in dB (USRP, SoapySDR): applied at once.
-    GainDb(f32),
-    /// Only an Airspy's gain (its mode, steps or AGC): applied at once.
-    Airspy(airspy::AirspyGain),
-    /// Something it takes only when recording starts.
-    AtStart,
-}
-
-/// What of `new` a source running with `old` can take while it runs: the gain
-/// (and AGC on an RTL-SDR; an Airspy's mode, steps and AGC; the overall dB on
-/// a USRP or SoapySDR device with its AGC off), when nothing else changed.
-pub fn live_change(old: &Source, new: &Source) -> LiveChange {
-    if old == new {
-        return LiveChange::None;
-    }
+/// The gain to set on a source running with `old` now that it is `new`:
+/// when the gain is all that changed and the radio takes it while running.
+/// The gain in dB always; AGC on or off only on an RTL-SDR or an Airspy (the
+/// others take that at the next start).
+pub fn live_gain(old: &Source, new: &Source) -> Option<Gain> {
     // `old` with `new`'s gain: equal to `new` when only the gain differs.
     let mut o = old.clone();
-    let change = match (&mut o, new) {
+    let gain = match (&mut o, new) {
         (Source::Rtlsdr { gain_db, agc, .. }, Source::Rtlsdr { gain_db: g, agc: a, .. }) => {
             (*gain_db, *agc) = (*g, *a);
-            LiveChange::Gain(LiveGain { agc: *a, gain_db: *g as f32 })
+            if *a { Gain::Agc } else { Gain::Db(*g as f32) }
         }
         (
             Source::Airspy { gain_mode, gain_step, lna_step, mixer_step, vga_step, agc, .. },
             Source::Airspy { gain_mode: m, gain_step: g, lna_step: l, mixer_step: x, vga_step: v, agc: a, .. },
         ) => {
             (*gain_mode, *gain_step, *lna_step, *mixer_step, *vga_step, *agc) = (*m, *g, *l, *x, *v, *a);
-            LiveChange::Airspy(airspy_gain(*m, *g, *l, *x, *v, *a))
+            Gain::Airspy(airspy_gain(*m, *g, *l, *x, *v, *a))
         }
-        (Source::Usrp { gain_db, agc: false, .. }, Source::Usrp { gain_db: g, agc: false, .. }) => {
+        (Source::Usrp { gain_db, agc: false, .. }, Source::Usrp { gain_db: g, agc: false, .. })
+        | (Source::Bladerf { gain_db, agc: false, .. }, Source::Bladerf { gain_db: g, agc: false, .. }) => {
             *gain_db = *g;
-            LiveChange::GainDb(*g as f32)
+            Gain::Db(*g as f32)
         }
         (Source::Soapy { gain_db, agc: false, .. }, Source::Soapy { gain_db: Some(g), agc: false, .. }) => {
             *gain_db = Some(*g);
-            LiveChange::GainDb(*g as f32)
+            Gain::Db(*g as f32)
         }
-        _ => return LiveChange::AtStart,
+        _ => return None,
     };
-    if &o == new { change } else { LiveChange::AtStart }
+    (o == *new).then_some(gain)
 }
 
 impl Runner {
     /// Source `i`'s settings went from `old` to `new` in Setup: its gain is
     /// applied at once when that's all that changed and the radio can take it
-    /// live. Returns false when the change waits for the next start.
-    pub fn live_source(&self, i: usize, old: &Source, new: &Source) -> bool {
-        let Some(c) = self.controls.get(i) else { return false };
-        match live_change(old, new) {
-            LiveChange::None => true,
-            LiveChange::Gain(g) => {
-                *c.live_gain.lock().unwrap() = Some(g);
-                true
-            }
-            LiveChange::GainDb(db) => {
-                *c.gain_db.lock().unwrap() = Some(db);
-                true
-            }
-            LiveChange::Airspy(g) => {
-                *c.live_airspy.lock().unwrap() = Some(g);
-                true
-            }
-            LiveChange::AtStart => false,
-        }
+    /// live ([`live_gain`]): that gain, or None when the change waits for the next start.
+    pub fn live_source(&self, i: usize, old: &Source, new: &Source) -> Option<Gain> {
+        let (c, g) = (self.controls.get(i)?, live_gain(old, new)?);
+        *c.gain.lock().unwrap() = Some(g);
+        Some(g)
     }
 
     /// The engine has stopped by itself (every capture file ended).
@@ -1273,23 +1243,25 @@ mod live_tests {
     #[test]
     fn a_gain_change_goes_live_when_the_radio_can_take_it() {
         let rtl = |gain: f64, agc: bool| src("rtlsdr", json!({ "serial": "1000", "centerHz": 453e6, "rateHz": 2.4e6, "gainDb": gain, "agc": agc, "ppm": 0 }));
-        assert_eq!(live_change(&rtl(33.8, false), &rtl(22.9, false)), LiveChange::Gain(LiveGain { agc: false, gain_db: 22.9 }));
-        assert_eq!(live_change(&rtl(33.8, false), &rtl(33.8, true)), LiveChange::Gain(LiveGain { agc: true, gain_db: 33.8 }));
-        assert_eq!(live_change(&rtl(33.8, false), &rtl(33.8, false)), LiveChange::None);
+        assert_eq!(live_gain(&rtl(33.8, false), &rtl(22.9, false)), Some(Gain::Db(22.9)));
+        assert_eq!(live_gain(&rtl(33.8, false), &rtl(33.8, true)), Some(Gain::Agc), "an RTL-SDR's AGC, live");
         let usrp = |gain: f64, agc: bool| src("usrp", json!({ "args": "", "antenna": "", "centerHz": 853e6, "rateHz": 8e6, "gainDb": gain, "agc": agc, "ppm": 0 }));
-        assert_eq!(live_change(&usrp(40.0, false), &usrp(30.0, false)), LiveChange::GainDb(30.0));
-        assert_eq!(live_change(&usrp(40.0, false), &usrp(40.0, true)), LiveChange::AtStart, "USRP AGC waits for the start");
+        assert_eq!(live_gain(&usrp(40.0, false), &usrp(30.0, false)), Some(Gain::Db(30.0)));
+        assert_eq!(live_gain(&usrp(40.0, false), &usrp(40.0, true)), None, "USRP AGC waits for the start");
+        let blade = |gain: f64, agc: bool| src("bladerf", json!({ "serial": "f12ce103", "centerHz": 857e6, "rateHz": 8e6, "gainDb": gain, "agc": agc }));
+        assert_eq!(live_gain(&blade(30.0, false), &blade(42.0, false)), Some(Gain::Db(42.0)), "a bladeRF's gain, live");
+        assert_eq!(live_gain(&blade(30.0, false), &blade(30.0, true)), None, "bladeRF AGC waits for the start");
         let air = |lna: u8| src("airspy", json!({ "serial": "", "centerHz": 852e6, "rateHz": 6e6, "gainMode": "manual", "lnaStep": lna, "ppm": 0 }));
-        assert_eq!(live_change(&air(10), &air(12)), LiveChange::Airspy(airspy::AirspyGain::Manual { lna: 12, mixer: 10, vga: 10 }), "an Airspy's LNA, live");
+        assert_eq!(live_gain(&air(10), &air(12)), Some(Gain::Airspy(airspy::AirspyGain::Manual { lna: 12, mixer: 10, vga: 10 })), "an Airspy's LNA, live");
     }
 
     #[test]
     fn anything_besides_the_gain_waits_for_the_start() {
         let rtl_at = |center: f64, gain: f64| src("rtlsdr", json!({ "serial": "1000", "centerHz": center, "rateHz": 2.4e6, "gainDb": gain, "ppm": 0 }));
-        assert_eq!(live_change(&rtl_at(453e6, 33.8), &rtl_at(460e6, 22.9)), LiveChange::AtStart, "a retune with it");
+        assert_eq!(live_gain(&rtl_at(453e6, 33.8), &rtl_at(460e6, 22.9)), None, "a retune with it");
         let air_at = |center: f64| src("airspy", json!({ "serial": "", "centerHz": center, "rateHz": 6e6, "gainMode": "manual", "lnaStep": 10, "ppm": 0 }));
-        assert_eq!(live_change(&air_at(852e6), &air_at(853e6)), LiveChange::AtStart, "an Airspy retune waits");
+        assert_eq!(live_gain(&air_at(852e6), &air_at(853e6)), None, "an Airspy retune waits");
         let rtl = src("rtlsdr", json!({ "serial": "", "centerHz": 453e6, "rateHz": 2.4e6, "gainDb": 30, "ppm": 0 }));
-        assert_eq!(live_change(&rtl, &air_at(852e6)), LiveChange::AtStart, "another kind of radio");
+        assert_eq!(live_gain(&rtl, &air_at(852e6)), None, "another kind of radio");
     }
 }
