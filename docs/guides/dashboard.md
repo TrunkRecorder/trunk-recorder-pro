@@ -238,5 +238,27 @@ the spool, and **About … of recordings left** at last week's daily average. **
 internet check (`monitor.probeHosts`, by default `1.1.1.1:443` and `dns.google:443`), and **This
 computer** the system, cores, uptime and anything the platform can't measure.
 
+### Clock
+
+Call times come from this computer's clock. Calls from several recorders are matched by their
+times, and services such as Broadcastify Calls go by them, so the clock is worth watching. The
+recorder only watches it: the operating system's time service (chrony, systemd-timesyncd, ntpd,
+macOS) keeps it. Nothing extra needs installing, and nothing runs with privileges.
+
+| Number | What it is |
+|---|---|
+| **Offset, measured** | This clock less the time server's (`monitor.timeServer`, by default `pool.ntp.org`), from one SNTP query every 15 minutes, and whether this clock is behind or ahead. It's measured here, so it's right whatever the time service says. |
+| **Operating system** | Whether the time service tells the kernel the clock is synchronized, and its own bound on the error. The bound is loose: a synchronized clock often claims hundreds of milliseconds. Linux and macOS; on Windows only the offset is measured. In a container this is the host's clock, which the container shares. |
+| **Round trip** | The query's round trip. The offset is good to about half of it. |
+
+The chart shows the offset over time. The Platform light turns amber, with an event, when the
+offset is 250 ms or more or the operating system says the clock isn't synchronized, and red at 5 s.
+A measurement over an hour old isn't counted. Some networks block NTP (UDP port 123): then nothing
+is measured, the card says the queries go unanswered, and the internet checks don't count it.
+Pointing `monitor.timeServer` at a server inside your network (often your router) can help.
+
+The offset is local: nothing Broadcastify or another service reports. Broadcastify Calls doesn't
+report how far off a recorder's clock is.
+
 On macOS, if Spotlight is indexing the recordings folder, a note at the top explains how to
 exclude it. See [Troubleshooting](../troubleshooting.md#spotlight).

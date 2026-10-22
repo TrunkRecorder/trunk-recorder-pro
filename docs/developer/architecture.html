@@ -1842,7 +1842,7 @@ const CFG = {
   "log.level": ["trace · debug · info · warning · error · fatal", "info", "--log-level overrides."], "log.console": ["bool", "true", ""], "log.file": ["bool", "false", "Daily files, rotated at 100 MB."],
   "log.dir": ["path", "logs beside the config", ""], "log.syslogFriendly": ["bool", "false", ""], "log.syslog": ["bool", "false", ""], "log.color": ["\"\" · console · logfile · all · none", "\"\"", "\"\": the console's when it is a terminal."],
   "log.frequencyFormat": ["exp · mhz · hz", "mhz", ""], "log.talkgroupDisplayFormat": ["id · id_tag · tag_id", "id", ""], "log.statusAsString": ["bool", "true", ""], "log.controlWarnRatePerS": ["number", "10", "Warn below this decode rate; −1 always logs it."],
-  "monitor": ["{ probeHosts }", "", "Internet checks for the dashboard."], "monitor.probeHosts": ["array of host:port", "[\"1.1.1.1:443\", \"dns.google:443\"]", "[] turns them off."]
+  "monitor": ["{ probeHosts, timeServer }", "", "Internet checks and the clock's check for the dashboard."], "monitor.probeHosts": ["array of host:port", "[\"1.1.1.1:443\", \"dns.google:443\"]", "[] turns them off."], "monitor.timeServer": ["string", "\"pool.ntp.org\"", "Asked how far off the clock is (SNTP, every 15 min). \"\" turns it off."]
 };
 const CFG_EXAMPLE = {
   sources: [{ type: "rtlsdr", serial: "00000101", centerHz: 0, rateHz: 2400000, gainDb: 25.4, agc: false, ppm: 1, autoTune: true, guardHz: 75000 }],

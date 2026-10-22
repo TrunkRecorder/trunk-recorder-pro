@@ -20,7 +20,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use trunk_recorder_plugin::Level;
@@ -113,9 +113,6 @@ pub struct Hold {
     notes: Mutex<Option<Notes>>,
 }
 
-fn now_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
-}
 
 impl Hold {
     pub fn new(archive: Arc<Archive>) -> Arc<Hold> {
@@ -221,7 +218,7 @@ impl Hold {
     /// Hold `line` for plugin `label` (`call`: it's that finished call's).
     /// False: too much is held already, and it's dropped.
     pub fn push(self: &Arc<Self>, label: &str, about: &About, line: &Arc<str>, call: Option<&str>) -> bool {
-        let mut item = Item { plugin: label.to_string(), about: about.clone(), at_ms: now_ms(), line: line.clone(), call: call.map(str::to_string), ticket: None, file: None };
+        let mut item = Item { plugin: label.to_string(), about: about.clone(), at_ms: crate::clock::unix_ms(), line: line.clone(), call: call.map(str::to_string), ticket: None, file: None };
         if let Some(rel) = call {
             item.ticket = self.archive.ticket(rel);
             self.archive.hold(rel);
@@ -292,7 +289,7 @@ impl Hold {
     fn run(&self) {
         let mut st = self.state.lock().unwrap();
         loop {
-            let now = now_ms();
+            let now = crate::clock::unix_ms();
             let due: Vec<(u64, u64)> = st.waiting.range(..(now + 1, 0)).map(|(k, _)| *k).collect();
             let mut given = Vec::new();
             let mut dropped = Vec::new();

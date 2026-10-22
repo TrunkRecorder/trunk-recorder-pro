@@ -261,6 +261,9 @@ export function platformHealth(s: AppState): Health {
   if ((v["plat/piThrottled"] ?? 0) > 0) hs.push({ level: "warn", why: "The Pi is throttled (under-voltage or heat)" });
   if (v["net/up"] !== undefined && v["net/up"] < 1) hs.push({ level: v["net/up"] === 0 ? "bad" : "warn", why: v["net/up"] === 0 ? "The internet isn't answering" : "Some connectivity checks fail" });
   if ((v["plat/temp"] ?? 0) > 80) hs.push({ level: "warn", why: `Running hot: ${num(v["plat/temp"], 0)} °C` });
+  // (The recorder decides what's wrong with the clock: the events go by the same.)
+  const clock = h.platform.clock?.problem;
+  if (clock) hs.push({ level: clock.level, why: clock.why });
   return hs.length ? worst(hs) : OK("All normal");
 }
 

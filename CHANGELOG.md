@@ -5,6 +5,16 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **The clock, on the Platform page** (#61): how far off this computer's
+  clock is, measured by one SNTP query to `monitor.timeServer` (default
+  `pool.ntp.org`) every 15 minutes, and whether the operating system says
+  its time service has it synchronized (Linux, macOS). The light turns
+  amber at 250 ms off or when the OS says unsynchronized (red at 5 s), with
+  an event. It only watches the clock: chrony, systemd-timesyncd, ntpd or
+  macOS keep it. No new dependencies, no privileges; in a container it's
+  the host's clock. A time server that doesn't answer (UDP port 123 is often
+  blocked) isn't counted as the internet down.
+
 - **Share a system with the community directory** ([trunkrecorder.pro/directory](https://trunkrecorder.pro/directory/)):
   a switch in each system's Basics (`"share": true`). While it records, the recorder shares what it
   heard: the sites, their control and voice channels, neighbours, call signs heard on the air, and

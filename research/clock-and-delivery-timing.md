@@ -74,11 +74,16 @@ the step isn't recognized as a clock event.
 
 ## Design
 
-### 1. One `clock` module (trunk-app)
+### 1. One `clock` module (trunk-pro)
 
-- `clock::unix_s()` and `clock::unix_ms()` replace the seven helpers and the
-  scattered `UNIX_EPOCH` uses in the app. The SDK keeps its own, since it's
-  a separate published crate.
+In trunk-pro, not trunk-app as first planned: trunk-app is also the browser
+build's engine (wasm), where reading the system clock panics. That's why the
+engine takes the time from its host (`Session::poll`'s Unix ms).
+
+- `clock::unix_s()`, `clock::unix_ms()` and `clock::unix_s_of(SystemTime)`
+  replace the helpers and the scattered `UNIX_EPOCH` uses in trunk-pro. The
+  SDK keeps its own, since it's a separate published crate. The few
+  `UNIX_EPOCH` uses left compare file times, not the time now.
 - `clock::Health { synced, est_error_ms, offset_ms, measured_at, source }`
   is the latest view of the clock, readable from anywhere. A call stamped
   while the clock is known to be unsynced can say so in its JSON. That
@@ -95,8 +100,11 @@ the step isn't recognized as a clock event.
     per-service code, no subprocess, no privileges.
   - In a container it reads the host kernel's clock, which the container
     shares.
-  - Linux certainly; macOS's `ntp_adjtime` is to be confirmed in the `libc`
-    crate.
+  - Linux `adjtimex` (glibc and musl), macOS `ntp_adjtime`, both in the
+    `libc` crate. As read: macOS (timed) status `0x2081`, synced, max error
+    297 ms; the Pi testbed (systemd-timesyncd) `0x2001`, synced, max error
+    897 ms. The kernel's own offset field is only its correction residual
+    (78 µs on the Pi), not the offset from true time, so it isn't shown.
 - **Our own measurement: SNTP.**
   - One 48-byte UDP exchange (`std::net::UdpSocket`) every 10–15 minutes to
     a configured server (default `pool.ntp.org`).
@@ -104,9 +112,16 @@ the step isn't recognized as a clock event.
   - Works on every platform, Windows included, and in containers.
   - It only measures and never sets the clock, so it isn't a second NTP
     client.
-- **`Probes` becomes a list of `Check`s.** `TcpConnect` and `Sntp` share the
-  scheduling, transitions, sink and rows. SNTP reports `clock/offsetMs`,
-  `clock/delayMs`; `ntp_adjtime` reports `clock/synced` and `clock/estErrMs`.
+- **`Probes` runs a list of `Check`s** (`Check::Connect`, `Check::Time`): one
+  thread, each on its own schedule, one record type. The time check doesn't
+  count towards `net/up` and raises no link events, because a blocked UDP
+  port 123 isn't the internet down. SNTP reports `clock/offsetMs` and
+  `clock/delayMs`; the OS reading reports `clock/synced` and `clock/maxErrMs`.
+- **One verdict.** `clock::Health::problem` decides what's wrong: warn at
+  250 ms, bad at 5 s, warn when the OS says unsynced, and a measurement over
+  an hour old counts for nothing. The platform message carries it, and both
+  the dashboard light and the `clockOff`/`clockOk` events go by it, so the
+  thresholds live in one place.
 - **Later, best-effort:** chrony's reference name and last update (its local
   socket protocol, or `chronyc -c tracking`), and timesyncd's server
   (`timedatectl show-timesync`). They're shown when found, never needed.
@@ -156,17 +171,24 @@ would then be reported as a clock step.
 ## Plan
 
 ### Phase 1: host clock
-- [ ] `clock` module: `unix_s`, `unix_ms`, `Health`; replace the helpers and
-      `UNIX_EPOCH` uses in trunk-pro and trunk-app
-- [ ] `Check` trait: `Probes` over `TcpConnect` and `Sntp`
-- [ ] `ntp_adjtime` reading (Linux; macOS if `libc` has it), "unavailable"
+- [x] `clock` module: `unix_s`, `unix_ms`, `unix_s_of`, `Health`; the helpers
+      and `UNIX_EPOCH` uses in trunk-pro replaced
+- [x] `Check` (an enum, not a trait: two kinds): `Probes` over `Connect` and
+      `Time`
+- [x] OS reading: Linux `adjtimex`, macOS `ntp_adjtime`; "unavailable"
       elsewhere
-- [ ] `clock/*` series; Clock card on the Platform page; `platformHealth`
-      warning; monitor events
-- [ ] Docs: what each number means, supported platforms, limits
-      (containers, Windows)
-- [ ] Tests: the SNTP packet and offset math; the adjtime status mapping;
-      a render test for the Clock card
+- [x] `clock/*` series; Clock card on the Platform page; `platformHealth`
+      from the recorder's verdict; `clockOff` / `clockOk` events
+- [x] `monitor.timeServer` (default `pool.ntp.org`, `""` off)
+- [x] Docs: configuration, the dashboard guide's Clock section, the events
+      table
+- [x] Tests: NTP timestamps in both eras; offset and delay; answers refused
+      (short, another request, kiss-o'-death, unsynchronized); the kernel's
+      status; the verdict; a render test for the Clock card and the light;
+      a live query (ignored: needs the network), which agrees with macOS's
+      `sntp` (35 ms vs 33 ms)
+- [ ] A call stamped while the OS says the clock is unsynchronized says so in
+      its JSON (moved to phase 2, which touches the call path anyway)
 
 ### Phase 2: delivery timing
 - [ ] SDK: `CallResult.took_ms` from `CallQueue`; publish; re-release the

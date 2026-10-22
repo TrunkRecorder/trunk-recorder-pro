@@ -92,6 +92,7 @@
 //! ```
 
 mod access;
+mod clock;
 mod directory;
 mod dmrtool;
 mod interfaces;

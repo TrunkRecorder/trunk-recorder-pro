@@ -8,7 +8,7 @@ for one run, see [command-line.md](../command-line.md).
 ```json
 "server": { "bind": "127.0.0.1", "port": 8080, "autoStart": true },
 "log": { "level": "info", "file": true, "dir": "logs" },
-"monitor": { "probeHosts": ["1.1.1.1:443"] }
+"monitor": { "probeHosts": ["1.1.1.1:443"], "timeServer": "pool.ntp.org" }
 ```
 
 ## Server
@@ -86,3 +86,4 @@ What the dashboard's **Platform** page checks.
 | Key | Required | Default | Type | Description |
 |---|:---:|---|---|---|
 | `probeHosts` | | `["1.1.1.1:443", "dns.google:443"]` | array of strings | `host:port`s the app connects to every 15 s for the internet connection's history, with an event when the link goes down or comes back. `[]` = no checks. Read when the app starts. Config only |
+| `timeServer` | | `"pool.ntp.org"` | string | The time server asked how far off the computer's clock is: one SNTP query (a 48-byte UDP packet each way, port 123 unless given as `host:port`; an IPv6 address in brackets) every 15 minutes, every 2 after it doesn't answer. It only measures; the operating system's time service keeps the clock. A server on your network (your router, a GPS clock) works too. A server that doesn't answer isn't counted as the internet down. `""` = not asked. Read when the app starts. Config only |

@@ -8,10 +8,11 @@ import { defaultConfig, newSystem } from "../config.ts";
 import { setView, snapshot, transport } from "../controller.ts";
 import { clearSeries, feedSeries } from "../series.ts";
 import { pageHealth } from "./data.ts";
-import type { CallView, Config, EngineStatus, FromRecorder, SiteIdentity, SiteStatus, SystemStatus } from "../protocol.ts";
+import type { CallView, ClockInfo, Config, EngineStatus, FromRecorder, PlatformInfo, SiteIdentity, SiteStatus, SystemStatus } from "../protocol.ts";
 import { DecodePage } from "./Decode.tsx";
 import { Overview } from "./Overview.tsx";
 import { RadioPage } from "./Radio.tsx";
+import { PlatformPage } from "./Platform.tsx";
 
 const site = (index: number, name: string, identity: Partial<SiteIdentity>): SiteStatus => ({
   index, name, nowS: 10, controlChannelHz: 851_000_000 + index * 500_000,
@@ -140,4 +141,37 @@ test("Radio: calls missed on one of several systems name it, in the navigation's
   const overview = renderToString(<Overview />);
   assert.match(overview, /<h3><span class="sys-tag">.*?other<\/span><\/h3>/, "the Overview's system card names it by its tag");
   assert.equal((overview.match(/class="card card-warn[^"]*"/g) ?? []).length, 1, "and only other's card warns");
+});
+
+/** The computer as the recorder samples it, its clock as given. */
+function host(clock: ClockInfo): void {
+  const platform: PlatformInfo = {
+    os: "Linux", arch: "aarch64", host: "pi", cores: 4, container: null, cpuLimitCores: null, memTotal: 8e9, uptimeS: 3600, disks: [], probes: [], clock,
+    perCore: null, interfaces: null, unavailable: [],
+  };
+  transport.onMessage({ type: "host", t: Date.now() / 1000, values: {}, platform });
+}
+
+const now = () => Date.now() / 1000;
+const synced = { synced: true, maxErrorMs: 897 };
+
+test("Platform: the clock as measured and as the OS says, and the light goes by the recorder's verdict", () => {
+  twoSites();
+  setView("platform");
+  host({ os: synced, server: "pool.ntp.org", measured: { offsetMs: 35, delayMs: 20, stratum: 2, at: now() - 60, current: true }, error: null, problem: null, check: null });
+  let page = text(renderToString(<PlatformPage />));
+  assert.match(page, /Offset, measured 35 ms behind pool\.ntp\.org/);
+  assert.match(page, /Operating system synchronized within 897 ms by its own account/);
+  assert.match(page, /Round trip 20 ms stratum 2/);
+  assert.notEqual(pageHealth(snapshot()).platform.level, "warn");
+  const why = "The clock is 400 ms ahead of pool.ntp.org: call times are off by as much";
+  host({ os: synced, server: "pool.ntp.org", measured: { offsetMs: -400, delayMs: 20, stratum: 2, at: now() - 60, current: true }, error: null, problem: { level: "warn", why }, check: null });
+  page = text(renderToString(<PlatformPage />));
+  assert.match(page, /Clock .*400 ms ahead of pool\.ntp\.org/);
+  assert.deepEqual(pageHealth(snapshot()).platform, { level: "warn", why }, "the navigation's light, in the recorder's words");
+  // Nothing measured (UDP 123 blocked), and an OS that doesn't say.
+  host({ os: null, server: "pool.ntp.org", measured: null, error: "pool.ntp.org: no answer", problem: null, check: { kind: "time", target: "pool.ntp.org", ok: false, rttMs: null, lastOk: null, lastFail: now(), downSince: now(), tries: 3, fails: 3 } });
+  page = text(renderToString(<PlatformPage />));
+  assert.match(page, /Offset, measured — pool\.ntp\.org: no answer/);
+  assert.match(page, /3 of 3 queries unanswered .*UDP port 123/);
 });

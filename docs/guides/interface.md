@@ -144,6 +144,9 @@ coloured light. Click one to go to the page about it. These are the events you c
 | `The RAM spool has only …% free: calls will soon go to the disk` | red | Under 10% free. |
 | `The RAM spool was full: … calls written to the recordings folder instead` | red | Nothing was lost; those calls went to disk. Make the spool bigger, or find out why uploads are slow. |
 | `The RAM spool has room again (…% free)` | green | Back to normal. |
+| `The clock is … behind/ahead of <server>: call times are off by as much` | amber / red | The measured offset is 250 ms or more (red at 5 s). Check the operating system's time service. See [Clock](dashboard.md#clock). |
+| `The operating system says its clock isn't synchronized: …` | amber | The time service (chrony, systemd-timesyncd, ntpd) isn't running or can't reach its servers. |
+| `The clock is right again` | green | Back to normal. |
 
 The app keeps the last 200 events in memory, so a browser that opens later still sees them; they
 are not kept when the app quits. There are no alerts (email, push) yet: events only show in the

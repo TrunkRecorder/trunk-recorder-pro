@@ -19,7 +19,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime};
 
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -99,7 +99,7 @@ impl Default for Runtime {
 
 impl Runtime {
     fn count(&mut self, outcome: Outcome) {
-        let t = now();
+        let t = crate::clock::unix_s();
         self.last_result = Some(t);
         let m = (t as i64).div_euclid(60) * 60;
         if self.minutes.back().is_none_or(|b| b.0 != m) {
@@ -498,7 +498,7 @@ impl Plugins {
                     }
                     Note::Log { level, text, .. } => {
                         if *level != Level::Debug {
-                            r.log.push_back(LogEntry { time: now(), level: level_name(*level), text: tell(text) });
+                            r.log.push_back(LogEntry { time: crate::clock::unix_s(), level: level_name(*level), text: tell(text) });
                             if r.log.len() > LOG_LINES {
                                 r.log.pop_front();
                             }
@@ -516,7 +516,7 @@ impl Plugins {
                         // A change of health is an event (not every "ok" of a starting plugin).
                         if was != r.state && !(was == "starting" || was == "off") || r.state == "error" && was != "error" {
                             let e = trunk_app::stats::MonitorEvent::PluginHealth { plugin: id.clone(), state: r.state.to_string(), message: message.clone() };
-                            if let Some(v) = monitor.emit(now(), e) {
+                            if let Some(v) = monitor.emit(crate::clock::unix_s(), e) {
                                 publish(&hub, ToClient::MonitorEvent(body(v)));
                             }
                         }
@@ -651,9 +651,6 @@ fn level_name(l: Level) -> &'static str {
     }
 }
 
-fn now() -> f64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
-}
 
 /// The plugins' `store` message for a catalog.
 pub(crate) fn store_message(cat: &store::Catalog) -> ToClient {

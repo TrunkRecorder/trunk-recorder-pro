@@ -175,7 +175,7 @@ impl Ctx {
 
     /// Hand an event to the monitor, and to the browsers when it's one for the feed.
     pub fn event(&self, e: trunk_app::stats::MonitorEvent) {
-        let t = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
+        let t = crate::clock::unix_s();
         if let Some(v) = self.shared.emit(t, e) {
             publish(&self.hub, ToClient::MonitorEvent(body(v)));
         }
@@ -407,7 +407,7 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
     open_spool(&ctx, &cfg);
     // The wall clock now, and a monotonic clock from now: the session's
     // `now_ms` is the one plus the other (wall time that never jumps).
-    let epoch_ms = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_millis() as f64);
+    let epoch_ms = crate::clock::unix_ms() as f64;
     let epoch_at = Instant::now();
     let talkgroups = ctx.talkgroups.lock().unwrap().clone();
     let mut session = Session::new(cfg.clone(), &talkgroups, epoch_ms, &|name| fs::read_to_string(bandplan_path(name)).ok(), local_offset)?;
@@ -1094,7 +1094,7 @@ fn share(ctx: &Arc<Ctx>, short_name: String, observation: serde_json::Value, sit
         if d.system.is_empty() {
             return Ok(());
         }
-        let at = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |t| t.as_millis() as f64);
+        let at = crate::clock::unix_ms() as f64;
         crate::server::edit_config(ctx, |c| {
             c.link_shared(&short_name, &d.system, d.rev, &site_names, &d.sites, at);
         })
@@ -1198,7 +1198,7 @@ pub fn older_calls(ctx: &Ctx, before_ms: i64, limit: usize) -> ToClient {
         names.extend(c.conventional.iter().map(|v| v.short_name.clone()));
         (PathBuf::from(&c.recording.capture_dir), names)
     };
-    let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
+    let now_ms = crate::clock::unix_ms() as i64;
     let floor_ms = now_ms - OLDER_WINDOW_MS;
     let before_ms = before_ms.min(now_ms + 60_000);
     // Each system's day folders from `before` back to the window's start.
@@ -1214,7 +1214,7 @@ pub fn older_calls(ctx: &Ctx, before_ms: i64, limit: usize) -> ToClient {
     let start_of = |p: &Path, e: &fs::DirEntry| -> i64 {
         let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("");
         let from_name = stem.split_once('-').and_then(|(_, r)| r.split(['_', '.', '-']).next()).and_then(|s| s.parse::<i64>().ok());
-        from_name.unwrap_or_else(|| e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs() as i64))
+        from_name.unwrap_or_else(|| e.metadata().and_then(|m| m.modified()).map_or(0, |t| crate::clock::unix_s_of(t) as i64))
     };
     let mut found: Vec<(i64, PathBuf)> = Vec::new();
     for f in &folders {

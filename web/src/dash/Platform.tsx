@@ -5,7 +5,7 @@
 // platform can't tell is listed, greyed, with why.
 
 import { useState } from "react";
-import type { PlatformInfo } from "../protocol.ts";
+import type { ClockInfo, PlatformInfo, SeriesData } from "../protocol.ts";
 import { useApp, useTopic, type StatsRange } from "../controller.ts";
 import { Card, Choice, HeatStrip, LiveSpark, Meter, Ribbon, Stat, TimeSeries, type Level } from "../charts.tsx";
 import { ago, bytes, clockAt, dur, num, pct } from "../fmt.ts";
@@ -23,7 +23,7 @@ export function PlatformPage() {
   const s = useApp();
   const [range, setRange] = useState<StatsRange>("24h");
   useTopic("platform");
-  const hist = useHistory(["plat/cpu", "plat/proCpu", "plat/mem", "net/up", "net/rtt", "net/rx", "net/tx", "plat/temp"], range, 360);
+  const hist = useHistory(["plat/cpu", "plat/proCpu", "plat/mem", "net/up", "net/rtt", "net/rx", "net/tx", "plat/temp", "clock/offsetMs"], range, 360);
   const week = useHistory(["all/audioBytes"], "7d", 7);
   const h = s.host;
   if (!h) return <p className="empty">Waiting for the first sample…</p>;
@@ -218,6 +218,7 @@ export function PlatformPage() {
         )}
         {v["net/dns"] !== undefined && <p className="muted small">Name lookups take {num(v["net/dns"], 0)} ms.</p>}
       </Card>
+      <ClockCard c={p.clock} offsets={hist?.["clock/offsetMs"] ?? null} osMissing={missing("clockSynced")} />
       <Card title="This computer">
         <div className="kv">
           <span>
@@ -290,5 +291,55 @@ function SpotlightNote({ spot }: { spot: PlatformInfo["spotlight"] }) {
       </div>
       {spot.state === "unknown" && <button onClick={note}>I've done it</button>}
     </div>
+  );
+}
+
+/** How far a clock is off, in words: "35 ms behind", "1.2 s ahead of". */
+function offsetText(ms: number): { by: string; way: string } {
+  const a = Math.abs(ms);
+  // (As the recorder writes it in the clock's warning.)
+  return { by: a >= 1000 ? `${num(a / 1000, a >= 10_000 ? 0 : 1)} s` : `${num(a, 0)} ms`, way: ms > 0 ? "behind" : "ahead of" };
+}
+
+/**
+ * The clock: what the operating system says of it, and what the time server measured. The
+ * recorder decides what's wrong (`problem`); this only shows it.
+ */
+function ClockCard({ c, offsets, osMissing }: { c: ClockInfo; offsets: SeriesData | null; osMissing?: string }) {
+  const m = c.measured;
+  const level: Level | undefined = c.problem?.level ?? (m?.current || c.os ? "ok" : undefined);
+  const off = m && offsetText(m.offsetMs);
+  return (
+    <Card title="Clock" level={level} why={c.problem?.why}>
+      <div className="src-grid">
+        <Stat
+          label="Offset, measured"
+          value={off ? off.by : "—"}
+          sub={
+            m
+              ? `${off!.way} ${c.server}, ${ago(m.at)}${m.current ? "" : " (too long ago to go by)"}`
+              : c.server
+                ? c.error ?? `asking ${c.server}…`
+                : "no time server set (monitor.timeServer)"
+          }
+          hint="This computer's clock less the time server's, from one SNTP query every 15 minutes. Measured here: no service reports it."
+        />
+        <Stat
+          label="Operating system"
+          value={c.os ? (c.os.synced ? "synchronized" : "not synchronized") : "—"}
+          level={c.os && !c.os.synced ? "warn" : undefined}
+          sub={c.os ? `within ${c.os.maxErrorMs >= 1000 ? `${num(c.os.maxErrorMs / 1000, 1)} s` : `${num(c.os.maxErrorMs, 0)} ms`} by its own account` : osMissing ?? "not read yet"}
+          hint="What the time service keeping the clock (chrony, systemd-timesyncd, ntpd, macOS) tells the kernel. Its error bound is loose."
+        />
+        <Stat label="Round trip" value={m ? num(m.delayMs, 0) : "—"} unit={m ? "ms" : undefined} sub={m ? `stratum ${m.stratum}` : undefined} hint="The query's round trip, less the server's own time: the offset is good to about half of it." />
+      </div>
+      <TimeSeries lines={[{ label: "Offset, ms (+: this clock behind)", color: "var(--series-1)", data: offsets }]} height={110} fmt={(x) => x.toFixed(0)} />
+      {c.check && c.check.fails > 0 && (
+        <p className="muted small">
+          {c.check.fails} of {c.check.tries} queries unanswered{c.error ? ` (last: ${c.error})` : ""}. Some networks block NTP (UDP port 123); the internet checks don't count it.
+        </p>
+      )}
+      <p className="muted small">The recorder only watches the clock: the operating system's time service keeps it.</p>
+    </Card>
   );
 }

@@ -71,6 +71,12 @@ pub enum MonitorEvent {
     SpoolFull { calls: u64 },
     #[serde(rename_all = "camelCase")]
     SpoolRecovered { free_pct: f64 },
+    /// The clock is off, or not synchronized (`why`); `bad`: badly off.
+    #[serde(rename_all = "camelCase")]
+    ClockOff { why: String, bad: bool },
+    /// And right again.
+    #[serde(rename_all = "camelCase")]
+    ClockOk {},
 }
 
 impl MonitorEvent {
@@ -83,14 +89,14 @@ impl MonitorEvent {
     pub fn level(&self) -> &'static str {
         match self {
             MonitorEvent::ControlLost { .. } | MonitorEvent::LinkDown { .. } | MonitorEvent::DiskLow { .. } | MonitorEvent::SpoolFull { .. } => "bad",
-            MonitorEvent::SpoolLow { critical, .. } => if *critical { "bad" } else { "warn" },
+            MonitorEvent::SpoolLow { critical, .. } | MonitorEvent::ClockOff { bad: critical, .. } => if *critical { "bad" } else { "warn" },
             MonitorEvent::SourceDrops { .. } | MonitorEvent::SourceClipping { .. } => "warn",
             MonitorEvent::PluginHealth { state, .. } => match state.as_str() {
                 "error" => "bad",
                 "warning" => "warn",
                 _ => "ok",
             },
-            MonitorEvent::ControlRegained { .. } | MonitorEvent::LinkUp { .. } | MonitorEvent::SourceRecovered { .. } | MonitorEvent::SpoolRecovered { .. } => "ok",
+            MonitorEvent::ControlRegained { .. } | MonitorEvent::LinkUp { .. } | MonitorEvent::SourceRecovered { .. } | MonitorEvent::SpoolRecovered { .. } | MonitorEvent::ClockOk {} => "ok",
             _ => "info",
         }
     }

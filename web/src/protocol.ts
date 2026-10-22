@@ -448,6 +448,8 @@ export interface Config {
 export interface MonitorSettings {
   /** Where to check the internet answers (host:port, a TCP connect every 15 s). Empty: no checks. */
   probeHosts: string[];
+  /** The time server asked how far off the clock is (SNTP every 15 min; port 123 unless given). It only measures. Empty: not asked. */
+  timeServer: string;
 }
 
 /**
@@ -1274,7 +1276,9 @@ export interface MonitorEventBody {
     | "diskLow"
     | "spoolLow"
     | "spoolFull"
-    | "spoolRecovered";
+    | "spoolRecovered"
+    | "clockOff"
+    | "clockOk";
   /** A system's short name (talkgroup, radio, call volume, control channel events). */
   system?: string;
   /** Control channel events: the site's own name, when it has one other than its system's. */
@@ -1301,6 +1305,9 @@ export interface MonitorEventBody {
   critical?: boolean;
   /** spoolFull: calls that went to the recordings folder for want of room. */
   calls?: number;
+  /** clockOff: what's wrong, and whether it's badly off. */
+  why?: string;
+  bad?: boolean;
 }
 
 /** The computer, as last sampled (desktop app). Missing values are listed in `unavailable`. */
@@ -1318,11 +1325,44 @@ export interface PlatformInfo {
   disks: { name: string; path: string; mount: string; totalBytes: number; freeBytes: number; kind?: string; overflowed?: number }[];
   /** macOS: whether Spotlight indexes the recordings folder (null: not checked yet, or not macOS). */
   spotlight?: { path: string; state: "indexed" | "excluded" | "unknown"; why: string } | null;
-  probes: { target: string; ok: boolean | null; rttMs: number | null; lastOk: number | null; lastFail: number | null; downSince: number | null; tries: number; fails: number }[];
+  probes: ProbeRow[];
+  clock: ClockInfo;
   /** With the `platform` topic: each core's use, %, and the interfaces' traffic since the last sample. */
   perCore: number[] | null;
   interfaces: { name: string; rx: number; tx: number; state: string }[] | null;
   unavailable: { field: string; why: string }[];
+}
+
+/** One of the checks and how it's been answering: an internet target ("connect") or the time server ("time"). */
+export interface ProbeRow {
+  kind: "connect" | "time";
+  target: string;
+  ok: boolean | null;
+  rttMs: number | null;
+  lastOk: number | null;
+  lastFail: number | null;
+  downSince: number | null;
+  tries: number;
+  fails: number;
+}
+
+/**
+ * The computer's clock: what the operating system says of it, and what the time server
+ * (monitor.timeServer) measured. Read only: the OS's time service keeps the clock.
+ */
+export interface ClockInfo {
+  /** The OS's word (Linux, macOS; null elsewhere). maxErrorMs: its own loose bound. */
+  os: { synced: boolean; maxErrorMs: number } | null;
+  /** The time server asked (null: none set, or not asked yet). */
+  server: string | null;
+  /** Its last answer: offsetMs > 0 when this clock is behind; `at` Unix s; `current`: recent enough to go by. */
+  measured: { offsetMs: number; delayMs: number; stratum: number; at: number; current: boolean } | null;
+  /** Why the last query failed, while it fails. */
+  error: string | null;
+  /** What's wrong with the clock, decided by the recorder (the light and the events go by it). */
+  problem: { level: "warn" | "bad"; why: string } | null;
+  /** The time server's check: tries, failures, last answer. */
+  check: ProbeRow | null;
 }
 
 /** A talkgroup as heard (radioQuery talkgroups / tg). */

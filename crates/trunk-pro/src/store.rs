@@ -21,7 +21,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -173,13 +173,13 @@ impl Registry {
             Ok((text, index)) => {
                 let _ = std::fs::create_dir_all(crate::paths::data_dir());
                 let _ = crate::config::write_atomic(&self.cache_path(), text);
-                return Catalog { index, source: "registry", fetched: Some(now()), problem: None };
+                return Catalog { index, source: "registry", fetched: Some(crate::clock::unix_s()), problem: None };
             }
             Err(e) => e,
         };
         if let Ok(text) = std::fs::read_to_string(self.cache_path()) {
             if let Ok(index) = self.parse(&text) {
-                let fetched = std::fs::metadata(self.cache_path()).and_then(|m| m.modified()).ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_secs_f64());
+                let fetched = std::fs::metadata(self.cache_path()).and_then(|m| m.modified()).ok().map(crate::clock::unix_s_of);
                 return Catalog { index, source: "saved", fetched, problem: Some(problem) };
             }
         }
@@ -529,9 +529,6 @@ impl Provenance {
     }
 }
 
-pub fn now() -> f64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64())
-}
 
 /// A name part no other install (in this process or another) is using:
 /// two installs of one thing at once mustn't share a staging folder.

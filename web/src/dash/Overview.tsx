@@ -228,6 +228,10 @@ export function eventText(e: MonitorEvent): string {
       return `The RAM spool was full: ${e.calls} call${e.calls === 1 ? "" : "s"} written to the recordings folder instead`;
     case "spoolRecovered":
       return `The RAM spool has room again (${e.freePct}% free)`;
+    case "clockOff":
+      return e.why ?? "The clock is off";
+    case "clockOk":
+      return "The clock is right again";
     default:
       return `${e.kind}${e.system ? ` (${e.system})` : ""}`;
   }

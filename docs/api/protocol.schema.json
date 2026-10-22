@@ -780,6 +780,134 @@
       "additionalProperties": false,
       "description": "A cipher heard on a talkgroup: P25 ALGID and key ID."
     },
+    "ClockInfo": {
+      "type": "object",
+      "properties": {
+        "os": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "synced": {
+                  "type": "boolean"
+                },
+                "maxErrorMs": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "synced",
+                "maxErrorMs"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The OS's word (Linux, macOS; null elsewhere). maxErrorMs: its own loose bound."
+        },
+        "server": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The time server asked (null: none set, or not asked yet)."
+        },
+        "measured": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "offsetMs": {
+                  "type": "number"
+                },
+                "delayMs": {
+                  "type": "number"
+                },
+                "stratum": {
+                  "type": "number"
+                },
+                "at": {
+                  "type": "number"
+                },
+                "current": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "offsetMs",
+                "delayMs",
+                "stratum",
+                "at",
+                "current"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Its last answer: offsetMs > 0 when this clock is behind; `at` Unix s; `current`: recent enough to go by."
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Why the last query failed, while it fails."
+        },
+        "problem": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "level": {
+                  "type": "string",
+                  "enum": [
+                    "warn",
+                    "bad"
+                  ]
+                },
+                "why": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "level",
+                "why"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What's wrong with the clock, decided by the recorder (the light and the events go by it)."
+        },
+        "check": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ProbeRow"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The time server's check: tries, failures, last answer."
+        }
+      },
+      "required": [
+        "os",
+        "server",
+        "measured",
+        "error",
+        "problem",
+        "check"
+      ],
+      "additionalProperties": false,
+      "description": "The computer's clock: what the operating system says of it, and what the time server (monitor.timeServer) measured. Read only: the OS's time service keeps the clock."
+    },
     "Config": {
       "type": "object",
       "properties": {
@@ -2656,7 +2784,9 @@
                 "diskLow",
                 "spoolLow",
                 "spoolFull",
-                "spoolRecovered"
+                "spoolRecovered",
+                "clockOff",
+                "clockOk"
               ]
             },
             "system": {
@@ -2732,6 +2862,13 @@
             "calls": {
               "type": "number",
               "description": "spoolFull: calls that went to the recordings folder for want of room."
+            },
+            "why": {
+              "type": "string",
+              "description": "clockOff: what's wrong, and whether it's badly off."
+            },
+            "bad": {
+              "type": "boolean"
             },
             "type": {
               "type": "string",
@@ -3596,10 +3733,15 @@
             "type": "string"
           },
           "description": "Where to check the internet answers (host:port, a TCP connect every 15 s). Empty: no checks."
+        },
+        "timeServer": {
+          "type": "string",
+          "description": "The time server asked how far off the clock is (SNTP every 15 min; port 123 unless given). It only measures. Empty: not asked."
         }
       },
       "required": [
-        "probeHosts"
+        "probeHosts",
+        "timeServer"
       ],
       "additionalProperties": false
     },
@@ -3925,60 +4067,11 @@
         "probes": {
           "type": "array",
           "items": {
-            "type": "object",
-            "properties": {
-              "target": {
-                "type": "string"
-              },
-              "ok": {
-                "type": [
-                  "boolean",
-                  "null"
-                ]
-              },
-              "rttMs": {
-                "type": [
-                  "number",
-                  "null"
-                ]
-              },
-              "lastOk": {
-                "type": [
-                  "number",
-                  "null"
-                ]
-              },
-              "lastFail": {
-                "type": [
-                  "number",
-                  "null"
-                ]
-              },
-              "downSince": {
-                "type": [
-                  "number",
-                  "null"
-                ]
-              },
-              "tries": {
-                "type": "number"
-              },
-              "fails": {
-                "type": "number"
-              }
-            },
-            "required": [
-              "target",
-              "ok",
-              "rttMs",
-              "lastOk",
-              "lastFail",
-              "downSince",
-              "tries",
-              "fails"
-            ],
-            "additionalProperties": false
+            "$ref": "#/definitions/ProbeRow"
           }
+        },
+        "clock": {
+          "$ref": "#/definitions/ClockInfo"
         },
         "perCore": {
           "anyOf": [
@@ -4059,6 +4152,7 @@
         "uptimeS",
         "disks",
         "probes",
+        "clock",
         "perCore",
         "interfaces",
         "unavailable"
@@ -4596,6 +4690,70 @@
     "PluginValues": {
       "type": "object",
       "additionalProperties": {}
+    },
+    "ProbeRow": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "connect",
+            "time"
+          ]
+        },
+        "target": {
+          "type": "string"
+        },
+        "ok": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "rttMs": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "lastOk": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "lastFail": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "downSince": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "tries": {
+          "type": "number"
+        },
+        "fails": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "kind",
+        "target",
+        "ok",
+        "rttMs",
+        "lastOk",
+        "lastFail",
+        "downSince",
+        "tries",
+        "fails"
+      ],
+      "additionalProperties": false,
+      "description": "One of the checks and how it's been answering: an internet target (\"connect\") or the time server (\"time\")."
     },
     "Radios": {
       "type": "object",
