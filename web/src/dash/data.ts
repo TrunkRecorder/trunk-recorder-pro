@@ -265,9 +265,17 @@ export function rfHealth(s: AppState): Health {
   return worst(s.sources.map((x, i) => sourceHealth(s, x, auto(i))));
 }
 
+/** The worst of several systems' health, each named when there are several (the navigation's light then says which). */
+function worstSystem(systems: DashSystem[], health: (x: DashSystem) => Health): Health {
+  return worst(systems.map((x) => {
+    const h = health(x);
+    return systems.length > 1 && h.level !== "ok" && h.level !== "idle" ? { ...h, why: `${x.name}: ${h.why}` } : h;
+  }));
+}
+
 export function decodeHealth(s: AppState): Health {
   if (!running(s)) return { level: "idle", why: "Not recording" };
-  return worst(dashSystems(s).map((x) => systemHealth(s, x)));
+  return worstSystem(dashSystems(s), (x) => systemHealth(s, x));
 }
 
 export function pluginsHealth(s: AppState): Health {
@@ -277,12 +285,21 @@ export function pluginsHealth(s: AppState): Health {
   return hs.length ? worst(hs) : { level: "idle", why: "No plugins on" };
 }
 
-/** Calls lost for want of a recorder or a source, last few minutes. */
+/** A system's calls lost for want of a recorder or a source, last few minutes: which of the two. */
+export function systemRadioHealth(s: AppState, x: DashSystem): Health {
+  if (!running(s)) return { level: "idle", why: "Not recording" };
+  const busy = (recentAvg(K.sys(x.name, "why/no_recorder"), 300) ?? 0) > 0;
+  const outside = (recentAvg(K.sys(x.name, "why/no_source"), 300) ?? 0) > 0;
+  if (busy && outside) return { level: "warn", why: "Calls are being missed: no free recorder for some, others outside every source's band" };
+  if (busy) return { level: "warn", why: "Calls are being missed: no free recorder. Add recorders, or a source" };
+  if (outside) return { level: "warn", why: "Calls are being missed: their frequencies are outside every source's band (Out of band)" };
+  return OK("Recording what it hears");
+}
+
+/** Calls lost, any system: the system that loses them named. */
 export function radioHealth(s: AppState): Health {
   if (!running(s)) return { level: "idle", why: "Not recording" };
-  const missed = dashSystems(s).reduce((a, x) => a + (recentAvg(K.sys(x.name, "why/no_recorder"), 300) ?? 0) + (recentAvg(K.sys(x.name, "why/no_source"), 300) ?? 0), 0);
-  if (missed > 0) return { level: "warn", why: "Calls are being missed: no free recorder, or outside every source's band" };
-  return OK("Recording what it hears");
+  return worstSystem(dashSystems(s), (x) => systemRadioHealth(s, x));
 }
 
 /** The health of a page, for the navigation's lights. */

@@ -5,6 +5,15 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **System colours never look like a status light.** Systems are now told
+  apart by blue, teal, violet and magenta only; amber, green, orange and
+  red are left to the warning, OK and problem lights (#40).
+- **A warning names its system.** With several systems, the Radio system
+  and Decode lights in the navigation say which system is missing calls or
+  losing its control channel. On the Radio page, that system's card shows
+  the light and why (no free recorder, or out of band), and so do its
+  button in the system picker and its "What happened to calls" card (#41).
+
 ## [0.2.7] — 2026-10-22
 
 - **EDACS** trunked systems (`"type": "edacs"`): Standard and Networked

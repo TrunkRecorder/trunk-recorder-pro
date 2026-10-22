@@ -6,6 +6,8 @@ import { test } from "node:test";
 import { renderToString } from "react-dom/server";
 import { defaultConfig, newSystem } from "../config.ts";
 import { setView, snapshot, transport } from "../controller.ts";
+import { feedSeries } from "../series.ts";
+import { pageHealth } from "./data.ts";
 import type { CallView, Config, EngineStatus, FromRecorder, SiteIdentity, SiteStatus, SystemStatus } from "../protocol.ts";
 import { DecodePage } from "./Decode.tsx";
 import { Overview } from "./Overview.tsx";
@@ -107,7 +109,7 @@ test("Radio: each system's card opens its system from anywhere on it, without an
   twoSites();
   setView("radio");
   const html = renderToString(<RadioPage />);
-  assert.equal((html.match(/class="card card-opens sys-section"/g) ?? []).length, 2, "both systems' cards open them");
+  assert.equal((html.match(/class="card[^"]* card-opens sys-section"/g) ?? []).length, 2, "both systems' cards open them");
   assert.doesNotMatch(text(html), /Open dcfd/);
 });
 
@@ -119,4 +121,19 @@ test("Radio: a system's page goes back as Decode's does, with the systems beside
   setView("radio", "dcfd", "tg", 100);
   const tg = text(renderToString(<RadioPage />));
   assert.match(tg, /^ ?← dcfd dcfd P25/, "back to its system, no picker");
+});
+
+// (Last: the series it feeds stay for the rest of the file.)
+test("Radio: calls missed on one of several systems name it, in the navigation's light and on its card", () => {
+  twoSites();
+  feedSeries(Date.now() / 1000, { "sys/other/why/no_source": 1 });
+  const h = pageHealth(snapshot()).radio;
+  assert.equal(h.level, "warn");
+  assert.match(h.why, /^other: .*outside every source's band/);
+  setView("radio");
+  const html = renderToString(<RadioPage />);
+  assert.equal((html.match(/class="card card-warn card-opens sys-section"/g) ?? []).length, 1, "only other's card warns");
+  assert.match(text(html), /other P25 Calls are being missed: their frequencies are outside every source/);
+  setView("radio", "dcfd");
+  assert.match(renderToString(<RadioPage />), /other<span class="light light-warn"/, "the picker marks the other system");
 });

@@ -14,12 +14,16 @@
   --bad: #ff6b6b;
   --rec: #ff5a5f;
   --trace: #6cd4ff;
+  /* A system's colour (config.ts systemColor): cool hues only — blue, teal,
+     violet, magenta — so none reads as a status light (--ok green, --warn
+     amber, --serious orange, --bad red). Validated with the dataviz checks:
+     every pair apart for normal vision, neighbours under colour blindness. */
   --sys-0: #3fb6ff;
-  --sys-1: #f2b84b;
-  --sys-2: #c792ea;
-  --sys-3: #3fcf8e;
-  --sys-4: #ff8f6b;
-  --sys-5: #7fdbca;
+  --sys-1: #5358ee;
+  --sys-2: #017e9a;
+  --sys-3: #ebaafa;
+  --sys-4: #b8338a;
+  --sys-5: #c065f9;
   --radius: 8px;
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
   color-scheme: dark;
@@ -40,11 +44,11 @@
     --rec: #d63a3f;
     --trace: #0a7bd6;
     --sys-0: #0a7bd6;
-    --sys-1: #b7791f;
-    --sys-2: #8b5cc4;
-    --sys-3: #16965c;
-    --sys-4: #d0582f;
-    --sys-5: #1a8f86;
+    --sys-1: #4f38d9;
+    --sys-2: #05568b;
+    --sys-3: #9e87e0;
+    --sys-4: #ac30c5;
+    --sys-5: #753479;
     color-scheme: light;
   }
 }
@@ -274,6 +278,7 @@ td.unit-cell .unit, .now-playing .unit {
 .coverage .tick.voice { opacity: 0.55; }
 .legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--muted); }
 .filter-row { display: flex; gap: 6px; flex-wrap: wrap; }
+.filter-row .btn .light { margin-left: 6px; }
 .filter-row .btn.on { border-color: var(--accent); box-shadow: inset 0 -2px 0 var(--accent); }
 
 /* pages */
