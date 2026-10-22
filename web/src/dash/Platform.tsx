@@ -8,7 +8,7 @@ import { useState } from "react";
 import type { ClockInfo, PlatformInfo, SeriesData } from "../protocol.ts";
 import { useApp, useTopic, type StatsRange } from "../controller.ts";
 import { Card, Choice, HeatStrip, LiveSpark, Meter, Ribbon, Stat, TimeSeries, type Level } from "../charts.tsx";
-import { ago, bytes, clockAt, dur, num, pct } from "../fmt.ts";
+import { ago, bytes, clockAt, dur, ms, num, pct } from "../fmt.ts";
 import { platformHealth, total, useHistory } from "./data.ts";
 
 const RANGES: { v: StatsRange; label: string }[] = [
@@ -294,11 +294,9 @@ function SpotlightNote({ spot }: { spot: PlatformInfo["spotlight"] }) {
   );
 }
 
-/** How far a clock is off, in words: "35 ms behind", "1.2 s ahead of". */
-function offsetText(ms: number): { by: string; way: string } {
-  const a = Math.abs(ms);
-  // (As the recorder writes it in the clock's warning.)
-  return { by: a >= 1000 ? `${num(a / 1000, a >= 10_000 ? 0 : 1)} s` : `${num(a, 0)} ms`, way: ms > 0 ? "behind" : "ahead of" };
+/** How far a clock is off, in words: "35 ms behind", "1.2 s ahead of" (positive: behind). */
+function offsetText(v: number): { by: string; way: string } {
+  return { by: ms(v), way: v > 0 ? "behind" : "ahead of" };
 }
 
 /**
@@ -342,7 +340,7 @@ function ClockCard({ c, offsets, osMissing }: { c: ClockInfo; offsets: SeriesDat
         </p>
       )}
       {c.driftMs !== null && (
-        <p className={`small${Math.abs(c.driftMs) >= c.warnMs ? " warn" : ""}`} title="Calls are stamped by the clock as it was when recording started, carried on by a clock that never jumps: a correction since then doesn't reach them until the next Start.">
+        <p className={`small${c.problem?.cause === "recording" ? " warn" : ""}`} title="Calls are stamped by the clock as it was when recording started, carried on by a clock that never jumps: a correction since then doesn't reach them until the next Start.">
           Calls are stamped by the clock as it was at Start:{" "}
           {Math.abs(c.driftMs) < 1 ? "the same as the clock now" : `${offsetText(c.driftMs).by} ${offsetText(c.driftMs).way} the clock now`}.
         </p>
@@ -370,7 +368,7 @@ function ClockCard({ c, offsets, osMissing }: { c: ClockInfo; offsets: SeriesDat
         </p>
       )}
       <p className="muted small">
-        The recorder only watches the clock: the operating system's time service keeps it. A warning at {c.warnMs >= 1000 ? `${num(c.warnMs / 1000, 1)} s` : `${num(c.warnMs, 0)} ms`} off (monitor.clockWarnMs).
+        The recorder only watches the clock: the operating system's time service keeps it. A warning at {ms(c.warnMs)} off (monitor.clockWarnMs).
       </p>
     </Card>
   );

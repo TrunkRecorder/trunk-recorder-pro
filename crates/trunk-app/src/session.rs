@@ -834,14 +834,17 @@ impl Session {
     }
 
     /// The radio systems' own clocks (P25's SYNC_BCST, on Phase 2 systems)
-    /// against the clock calls are stamped by: each site's latest.
+    /// against the clock calls are stamped by: each site's latest. None from
+    /// a capture: it carries its own day's.
     pub fn radio_clocks(&self) -> Vec<RadioClock> {
-        self.engine.status().sites.iter().filter_map(|y| y.system_time.map(|(t, ms, valid)| self.radio_clock(&y.site_name, t, ms, valid))).collect()
+        self.engine.status().sites.iter().filter_map(|y| self.radio_clock(y)).collect()
     }
 
-    fn radio_clock(&self, site: &str, t: f64, system_ms: i64, valid: bool) -> RadioClock {
+    /// Site `y`'s radio clock ([`Session::radio_clocks`]).
+    fn radio_clock(&self, y: &trunk_core::trunk::SiteStatus) -> Option<RadioClock> {
+        let (t, system_ms, valid) = y.system_time.filter(|_| !self.cfg.sources.iter().any(|s| matches!(s, Source::File { .. })))?;
         let at_s = self.wall(t);
-        RadioClock { site: site.to_string(), offset_ms: system_ms as f64 - at_s * 1000.0, at_s, valid }
+        Some(RadioClock { site: y.site_name.clone(), offset_ms: system_ms as f64 - at_s * 1000.0, at_s, valid })
     }
 
     /// The log header for a call.
@@ -1175,7 +1178,7 @@ impl Session {
                 "activeCalls": y.active_calls, "recording": y.recording, "callsConcluded": y.calls_concluded,
                 "mismatch": y.mismatch,
                 "callsigns": y.callsigns.iter().map(|(c, hz)| json!({ "callSign": c, "freqHz": if *hz == 0 { None } else { Some(hz) } })).collect::<Vec<_>>(),
-                "radioClock": y.system_time.map(|(t, ms, valid)| { let r = self.radio_clock(&y.site_name, t, ms, valid); json!({ "offsetMs": (r.offset_ms * 10.0).round() / 10.0, "at": r.at_s.round(), "valid": valid }) }),
+                "radioClock": self.radio_clock(y).map(|r| json!({ "offsetMs": (r.offset_ms * 10.0).round() / 10.0, "at": r.at_s.round(), "valid": r.valid })),
             })
         };
         // Each system with a site running, its sites in order.

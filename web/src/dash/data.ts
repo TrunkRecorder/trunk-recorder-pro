@@ -26,6 +26,18 @@ export function val(s: AppState, key: string): number | null {
   return v === undefined ? null : v;
 }
 
+/** One counter's rate over another's, live, over the last `sinceS` (a total of ms over a count of calls: their average). Null when the count didn't move. */
+export function perLive(sum: string, count: string, sinceS: number): number | null {
+  const n = recentAvg(count, sinceS) ?? 0;
+  return n > 0 ? (recentAvg(sum, sinceS) ?? 0) / n : null;
+}
+
+/** The same over a span of history (`useHistory`'s series). */
+export function perIn(hist: Record<string, SeriesData> | null | undefined, sum: string, count: string): number | null {
+  const n = total(hist?.[count]) ?? 0;
+  return n > 0 ? (total(hist?.[sum]) ?? 0) / n : null;
+}
+
 /** The average of a live series over the last `sinceS` seconds. */
 export function recentAvg(key: string, sinceS: number): number | null {
   const { v } = seriesPoints(key, sinceS);

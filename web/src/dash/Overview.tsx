@@ -5,7 +5,7 @@
 import { formatMhz } from "../config.ts";
 import { can, pluginOn, radioQuery, statsSince, setView, start, usePolled, useApp, type AppState } from "../controller.ts";
 import { Card, HeatStrip, LiveSpark, Light, Meter, Sparkline, Stat, SystemTag, Trend } from "../charts.tsx";
-import { ago, bytes, compact, hmm, mhz, num, pct } from "../fmt.ts";
+import { ago, bytes, compact, hmm, mhz, ms, num, pct } from "../fmt.ts";
 import type { FreqRow, MonitorEvent, RadioSummary } from "../protocol.ts";
 import { change, rateOver, dashSystems, K, KIND_LABEL, pluginHealth, platformHealth, recentAvg, running, systemOverallHealth, total, useHistory, usualOf, useUsual, val, type DashSystem, type Usual } from "./data.ts";
 import { SourceCard } from "./Rf.tsx";
@@ -232,11 +232,8 @@ export function eventText(e: MonitorEvent): string {
       return e.why ?? "The clock is off";
     case "clockOk":
       return "The clock is right again";
-    case "clockStep": {
-      const by = Math.abs(e.byMs ?? 0);
-      const amount = by >= 1000 ? `${Math.round(by / 100) / 10} s` : `${Math.round(by)} ms`;
-      return (e.byMs ?? 0) > 0 ? `The clock jumped ${amount} forward (its time service set it, or the computer slept)` : `The clock was set back ${amount}`;
-    }
+    case "clockStep":
+      return (e.byMs ?? 0) > 0 ? `The clock jumped ${ms(e.byMs)} forward (its time service set it, or the computer slept)` : `The clock was set back ${ms(e.byMs)}`;
     default:
       return `${e.kind}${e.system ? ` (${e.system})` : ""}`;
   }

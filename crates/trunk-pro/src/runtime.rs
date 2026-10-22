@@ -118,6 +118,8 @@ pub struct Ctx {
     pub host_last: Mutex<Option<ToClient>>,
     /// The RAM spool (`recording.ramSpool`), as last opened.
     pub spool: Mutex<Option<Arc<crate::spool::Spool>>>,
+    /// The computer's clock, watched (#61): what calls' `clock_off` and the dashboard go by.
+    pub clock: Arc<crate::clock::Clock>,
     /// Key containers unlocked from the interface ([`crate::unlock`]).
     pub unlocked: crate::unlock::Unlocked,
 }
@@ -839,9 +841,7 @@ impl Air {
 fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<mpsc::Receiver<SourceMsg>>, stop: Arc<AtomicBool>, epoch: (f64, Instant), ctl: (mpsc::Sender<EngineCmd>, mpsc::Receiver<EngineCmd>)) {
     ctx.set_phase("running", None, false);
     // Calls are stamped by this clock: the clock's health watches it against the wall clock.
-    crate::clock::recording(Some(epoch));
-    // A capture played back carries its own day's radio clock: only live radios' are compared.
-    let live = !cfg.sources.iter().any(|s| matches!(s, Source::File { .. }));
+    ctx.clock.recording(Some(epoch));
     let mut radio_at = Instant::now();
     let (ctl_tx, rx) = ctl;
     session.set_topics(ctx.topics());
@@ -959,9 +959,9 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
             tune_at = Instant::now();
             save_tune(&mut session);
         }
-        if live && radio_at.elapsed() >= Duration::from_secs(5) {
+        if radio_at.elapsed() >= Duration::from_secs(5) {
             radio_at = Instant::now();
-            crate::clock::set_radio(session.radio_clocks().into_iter().map(|r| crate::clock::Radio { site: r.site, offset_ms: r.offset_ms, at: r.at_s, valid: r.valid }).collect());
+            ctx.clock.set_radio(session.radio_clocks());
         }
         if plans_at.elapsed() >= Duration::from_secs(10) {
             plans_at = Instant::now();
@@ -995,7 +995,7 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
     save_units(&mut session);
     save_tune(&mut session);
     save_registry(&ctx.shared);
-    crate::clock::recording(None);
+    ctx.clock.recording(None);
     stop.store(true, Ordering::Relaxed);
     ctx.set_phase("idle", None, ended_all);
 }
@@ -1042,7 +1042,7 @@ fn finish_one(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, mut f:
     let (keep_wav, keep_m4a, keep_json, keep_audio) = (p.keep_wav, p.keep_m4a, p.keep_json, p.keep_audio);
     let base = dir.join(&f.rel);
     // Stamped while the clock was off: said with it, for whoever matches it with others' calls.
-    f.record.clock_off = crate::clock::health().problem(crate::clock::unix_s()).is_some();
+    f.record.clock_off = ctx.clock.off();
     // (The record written once, as the .json file has it.)
     let json = f.record.to_json();
     let need = json.len() + f.wav.len() / 4 + if p.write_wav && !keep_wav { f.wav.len() } else { 0 };
@@ -1083,8 +1083,7 @@ fn finish_one(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, mut f:
             }
         }
     }
-    ctx.plugins.archive.expect(&f.rel, to_plugins.takers, r, &base, spooled.as_deref(), Some(wav_written));
-    ctx.plugins.deliveries.ended(&f.rel, f.record.stop_time_ms.max(0) as u64, to_plugins.takers);
+    ctx.plugins.archive.expect(&f.rel, to_plugins.takers, r, &base, spooled.as_deref(), Some(wav_written), Some(f.record.stop_time_ms.max(0) as u64));
     if let Some(h) = host {
         h.concluded(f.system, &f.rel, f.record, trunk_recorder_plugin::CallFiles { json: json_at, wav: wav_at, m4a }, f.decrypted);
     }

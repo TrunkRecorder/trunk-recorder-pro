@@ -51,6 +51,13 @@ export function dur(s: number | null | undefined): string {
   return h ? `${d} d ${h} h` : `${d} d`;
 }
 
+/** A time in milliseconds, its size alone: 35 ms · 1.8 s · 65 s (as the recorder's clock warnings write it). */
+export function ms(v: number | null | undefined): string {
+  if (v === null || v === undefined || !Number.isFinite(v)) return "—";
+  const a = Math.abs(v);
+  return a >= 10_000 ? `${Math.round(a / 1000)} s` : a >= 1000 ? `${num(a / 1000, 1)} s` : `${Math.round(a)} ms`;
+}
+
 /** h:mm for an amount of airtime. */
 export function hmm(s: number | null | undefined): string {
   if (s === null || s === undefined || !Number.isFinite(s)) return "—";

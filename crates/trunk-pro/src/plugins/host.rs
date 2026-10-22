@@ -883,7 +883,7 @@ mod tests {
         let manifest = r#"{"id":"taker","name":"Taker","version":"1.0.0","api":1,"subscribe":["call.concluded","audio"]}"#;
         std::fs::write(&exe, format!("#!/bin/sh\nif [ \"$1\" = --describe ]; then echo '{manifest}'; exit 0; fi\necho '{{\"type\":\"ready\"}}'\ncat >> got.jsonl\n")).unwrap();
         std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let hold = Hold::new(Arc::default(), Arc::default());
+        let hold = Hold::new(Arc::default());
         let cfg = json!({ "systems": [{ "shortName": "dcfd", "pluginDelays": [{ "talkgroups": ["5"], "delayS": 3600 }] }] });
         hold.set_delays(super::super::delay::Delays::of(&serde_json::from_value(cfg).unwrap()));
         let systems = vec![SystemInfo { index: 0, short_name: "dcfd".into(), kind: "p25".into(), ..Default::default() }];

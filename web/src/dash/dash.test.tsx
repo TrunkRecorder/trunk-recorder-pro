@@ -167,12 +167,12 @@ test("Platform: the clock as measured and as the OS says, and the light goes by 
   assert.match(page, /Round trip 20 ms stratum 2/);
   assert.notEqual(pageHealth(snapshot()).platform.level, "warn");
   const why = "The clock is 400 ms ahead of pool.ntp.org: call times are off by as much";
-  host({ os: synced, server: "pool.ntp.org", measured: { offsetMs: -400, delayMs: 20, stratum: 2, at: now() - 60, current: true }, error: null, problem: { level: "warn", why }, check: null });
+  host({ os: synced, server: "pool.ntp.org", measured: { offsetMs: -400, delayMs: 20, stratum: 2, at: now() - 60, current: true }, error: null, problem: { level: "warn", cause: "clock", why }, check: null });
   page = text(renderToString(<PlatformPage />));
   assert.match(page, /Clock .*400 ms ahead of pool\.ntp\.org/);
   assert.deepEqual(pageHealth(snapshot()).platform, { level: "warn", why }, "the navigation's light, in the recorder's words");
   // Nothing measured (UDP 123 blocked), and an OS that doesn't say.
-  host({ os: null, server: "pool.ntp.org", measured: null, error: "pool.ntp.org: no answer", problem: null, check: { kind: "time", target: "pool.ntp.org", ok: false, rttMs: null, lastOk: null, lastFail: now(), downSince: now(), tries: 3, fails: 3 } });
+  host({ os: null, server: "pool.ntp.org", measured: null, error: "pool.ntp.org: no answer", problem: null, check: { target: "pool.ntp.org", ok: false, rttMs: null, lastOk: null, lastFail: now(), downSince: now(), tries: 3, fails: 3 } });
   page = text(renderToString(<PlatformPage />));
   assert.match(page, /Offset, measured — pool\.ntp\.org: no answer/);
   assert.match(page, /3 of 3 queries unanswered .*UDP port 123/);
@@ -184,9 +184,11 @@ test("Platform: the time service, the recording's clock and the radio systems' c
   host({
     os: synced, service: { name: "systemd-timesyncd", server: "2.debian.pool.ntp.org (45.33.53.84)", stratum: 2, lastSync: now() - 120 }, driftMs: 1800, warnMs: 500,
     radio: [{ site: "dcfd", offsetMs: -12, at: now() - 30, sane: true, valid: false }, { site: "other", offsetMs: -4 * 3600e3, at: now() - 30, sane: false, valid: true }],
-    problem: { level: "warn", why: "Calls are being stamped 1.8 s behind the right time: the clock was corrected after recording started. Stop and Start again to stamp them by it" },
+    problem: { level: "warn", cause: "recording", why: "Calls are being stamped 1.8 s behind the right time: the clock was corrected after recording started. Stop and Start again to stamp them by it" },
   });
-  const page = text(renderToString(<PlatformPage />));
+  const html = renderToString(<PlatformPage />);
+  assert.match(html, /<p class="small warn"[^>]*>Calls are stamped by the clock as it was at Start/, "amber by the recorder's verdict (its cause), not a rule of its own");
+  const page = text(html);
   assert.match(page, /Kept by systemd-timesyncd from 2\.debian\.pool\.ntp\.org \(45\.33\.53\.84\), stratum 2, last synchronized 2 m/);
   // (driftMs: the wall clock less the recording's: the recording's is behind.)
   assert.match(page, /Calls are stamped by the clock as it was at Start: 1\.8 s behind the clock now/);
@@ -218,7 +220,7 @@ test("Plugins: a call's age at delivery, and its parts, the same for any plugin"
     feedSeries(t - 60 + i * 10, { "plg/broadcastify/delivered": 0.1, "plg/broadcastify/ageMs": 250, "plg/broadcastify/heldMs": 0, "plg/broadcastify/uploads": 0.1, "plg/broadcastify/uploadMs": 40, "plg/broadcastify/waitMs": 210, "plg/broadcastify/age": 2500 });
   }
   const page = text(renderToString(<PluginHealthPage manage={null} />));
-  assert.match(page, /Age at delivery 2\.5 s last 5 min: waiting 2\.1 s · upload 0\.4 s/);
+  assert.match(page, /Age at delivery 2\.5 s last 5 min: waiting 2\.1 s · upload 400 ms/);
   assert.doesNotMatch(page, /held/, "nothing held by a delay rule: not said");
 });
 
@@ -227,6 +229,6 @@ test("Plugins: a plugin that doesn't say its upload time gives the age alone", (
   setView("plugins");
   feedSeries(Date.now() / 1000, { "plg/broadcastify/delivered": 0.1, "plg/broadcastify/ageMs": 6200, "plg/broadcastify/heldMs": 6000, "plg/broadcastify/uploads": 0, "plg/broadcastify/uploadMs": 0, "plg/broadcastify/waitMs": 0 });
   const html = renderToString(<PluginHealthPage manage={null} />);
-  assert.match(text(html), /Age at delivery 62\.0 s last 5 min: held 60\.0 s/);
+  assert.match(text(html), /Age at delivery 62 s last 5 min: held 60 s/);
   assert.match(html, /doesn&#x27;t say its own upload time/);
 });

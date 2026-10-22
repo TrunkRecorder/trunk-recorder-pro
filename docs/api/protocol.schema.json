@@ -957,12 +957,22 @@
                     "bad"
                   ]
                 },
+                "cause": {
+                  "type": "string",
+                  "enum": [
+                    "clock",
+                    "recording",
+                    "radio",
+                    "os"
+                  ]
+                },
                 "why": {
                   "type": "string"
                 }
               },
               "required": [
                 "level",
+                "cause",
                 "why"
               ],
               "additionalProperties": false
@@ -4796,14 +4806,6 @@
     "ProbeRow": {
       "type": "object",
       "properties": {
-        "kind": {
-          "type": "string",
-          "enum": [
-            "connect",
-            "time",
-            "service"
-          ]
-        },
         "target": {
           "type": "string"
         },
@@ -4845,7 +4847,6 @@
         }
       },
       "required": [
-        "kind",
         "target",
         "ok",
         "rttMs",
@@ -4856,7 +4857,7 @@
         "fails"
       ],
       "additionalProperties": false,
-      "description": "One of the checks and how it's been answering: an internet target (\"connect\") or the time server (\"time\")."
+      "description": "Something checked again and again and how it's been answering: an internet target, or the time server."
     },
     "Radios": {
       "type": "object",

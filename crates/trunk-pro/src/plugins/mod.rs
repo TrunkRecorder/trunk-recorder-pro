@@ -42,7 +42,6 @@ mod timing;
 pub use archive::{plan, Archive, FileRules};
 pub use encode::Encoder;
 pub use host::{Note, PluginHost, Spec};
-pub use timing::Deliveries;
 
 use std::collections::BTreeMap;
 use std::io::Read;

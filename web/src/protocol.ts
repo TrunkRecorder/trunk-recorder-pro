@@ -1342,9 +1342,8 @@ export interface PlatformInfo {
   unavailable: { field: string; why: string }[];
 }
 
-/** One of the checks and how it's been answering: an internet target ("connect") or the time server ("time"). */
+/** Something checked again and again and how it's been answering: an internet target, or the time server. */
 export interface ProbeRow {
-  kind: "connect" | "time" | "service";
   target: string;
   ok: boolean | null;
   rttMs: number | null;
@@ -1377,7 +1376,7 @@ export interface ClockInfo {
   /** Why the last query failed, while it fails. */
   error: string | null;
   /** What's wrong with the clock, decided by the recorder (the light and the events go by it). */
-  problem: { level: "warn" | "bad"; why: string } | null;
+  problem: { level: "warn" | "bad"; cause: "clock" | "recording" | "radio" | "os"; why: string } | null;
   /** The time server's check: tries, failures, last answer. */
   check: ProbeRow | null;
 }

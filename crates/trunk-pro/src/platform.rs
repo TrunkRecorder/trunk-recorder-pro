@@ -20,12 +20,6 @@ use trunk_core::metrics::{key_part, Sink};
 
 /// How often the connectivity probes run.
 pub const PROBE_EVERY: Duration = Duration::from_secs(15);
-/// How often the time server is asked (a public pool asks for no more than
-/// every minute or so), and how soon again after it didn't answer.
-const TIME_EVERY: Duration = Duration::from_secs(15 * 60);
-const TIME_RETRY: Duration = Duration::from_secs(2 * 60);
-/// How often the OS's time service is asked what it follows.
-const SERVICE_EVERY: Duration = Duration::from_secs(5 * 60);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 /// Disks and temperatures change slowly: this often.
 const SLOW_EVERY: Duration = Duration::from_secs(30);
@@ -112,156 +106,106 @@ fn pi_throttled() -> Option<u32> {
     u32::from_str_radix(s.trim().trim_start_matches("0x"), 16).ok().map(|v| v & 0xF)
 }
 
-/// What one of the [`Probes`] does each time.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Check {
-    /// A TCP connect to `host:port`: does the internet answer (`net/…`).
-    Connect(String),
-    /// An SNTP query to a time server: how far off the clock is (`clock/…`,
-    /// [`crate::clock::measure`]). A time server that doesn't answer isn't
-    /// the internet down (UDP port 123 is often blocked): it says nothing of `net/up`.
-    Time(String),
-    /// Ask the OS's time service what it follows ([`crate::clock::read_service`]).
-    Service,
-}
-
-impl Check {
-    fn target(&self) -> &str {
-        match self {
-            Check::Connect(t) | Check::Time(t) => t,
-            Check::Service => "time service",
-        }
-    }
-
-    /// How long until it runs again, after it answered or not.
-    fn every(&self, ok: bool) -> Duration {
-        match self {
-            Check::Connect(_) => PROBE_EVERY,
-            Check::Time(_) => if ok { TIME_EVERY } else { TIME_RETRY },
-            Check::Service => SERVICE_EVERY,
-        }
-    }
-
-    /// (answered, round trip ms, name lookup ms).
-    fn run(&self) -> (bool, Option<f64>, Option<f64>) {
-        match self {
-            Check::Connect(t) => probe(t),
-            Check::Time(server) => {
-                let (r, dns) = crate::clock::measure(server);
-                (r.is_ok(), r.ok().map(|m| m.delay_ms), dns)
-            }
-            Check::Service => (crate::clock::read_service().is_some(), None, None),
-        }
-    }
-}
-
-/// One check and how it's been answering.
-#[derive(Clone, Debug)]
-struct Probe {
-    check: Check,
-    ok: Option<bool>,
-    rtt_ms: Option<f64>,
-    last_ok: Option<f64>,
-    last_fail: Option<f64>,
+/// How something checked again and again has been answering (an internet
+/// target here, the time server in [`crate::clock`]): the one place that
+/// keeps the tries and when it went down and came back.
+#[derive(Clone, Debug, Default)]
+pub struct Answers {
+    pub ok: Option<bool>,
+    pub rtt_ms: Option<f64>,
+    pub last_ok: Option<f64>,
+    pub last_fail: Option<f64>,
     /// When it went down (Unix s), while down.
-    down_since: Option<f64>,
-    tries: u64,
-    fails: u64,
+    pub down_since: Option<f64>,
+    pub tries: u64,
+    pub fails: u64,
 }
 
-/// The checks ([`Check`]), each on its own schedule on one thread: a TCP
-/// connect to each internet target (no ICMP: that needs privileges), timed,
-/// and how long a name took to resolve; and the time server's query.
+impl Answers {
+    /// It answered (`ok`, in `rtt_ms`) or not at `now` (Unix s): the change,
+    /// if it's one — (up, how long it was down, s).
+    pub fn note(&mut self, ok: bool, rtt_ms: Option<f64>, now: f64) -> Option<(bool, f64)> {
+        self.tries += 1;
+        let was = self.ok.replace(ok);
+        self.rtt_ms = rtt_ms;
+        if ok {
+            self.last_ok = Some(now);
+            let down = self.down_since.take().map_or(0.0, |s| now - s);
+            (was == Some(false)).then_some((true, down))
+        } else {
+            self.fails += 1;
+            self.last_fail = Some(now);
+            if was != Some(false) {
+                self.down_since = Some(now);
+            }
+            (was == Some(true)).then_some((false, 0.0))
+        }
+    }
+
+    /// Its row for the interface, as `target`.
+    pub fn row(&self, target: &str) -> Value {
+        json!({
+            "target": target, "ok": self.ok, "rttMs": self.rtt_ms.map(|r| (r * 10.0).round() / 10.0),
+            "lastOk": self.last_ok, "lastFail": self.last_fail, "downSince": self.down_since, "tries": self.tries, "fails": self.fails,
+        })
+    }
+}
+
+/// The connectivity probes: a TCP connect to each target (no ICMP: that
+/// needs privileges), timed, and how long a name took to resolve.
 #[derive(Default)]
 pub struct Probes {
-    probes: Mutex<Vec<Probe>>,
+    probes: Mutex<Vec<(String, Answers)>>,
     dns_ms: Mutex<Option<f64>>,
 }
 
 pub type Transition = (String, bool, f64);
 
 impl Probes {
-    /// Run `checks` on a thread of their own, each as often as it says
-    /// ([`Check::every`]); `changed(target, up, down_for_s)` hears each up/down
-    /// change of an internet check.
-    pub fn start(checks: Vec<Check>, changed: impl Fn(Transition) + Send + 'static) -> Arc<Probes> {
-        let probes = checks.iter().map(|c| Probe { check: c.clone(), ok: None, rtt_ms: None, last_ok: None, last_fail: None, down_since: None, tries: 0, fails: 0 }).collect();
-        let p = Arc::new(Probes { probes: Mutex::new(probes), dns_ms: Mutex::new(None) });
-        if checks.is_empty() {
+    /// Probe `targets` (`host:port`) every [`PROBE_EVERY`] on a thread of its
+    /// own; `changed(target, up, down_for_s)` hears each up/down change.
+    pub fn start(targets: Vec<String>, changed: impl Fn(Transition) + Send + 'static) -> Arc<Probes> {
+        let p = Arc::new(Probes { probes: Mutex::new(targets.iter().map(|t| (t.clone(), Answers::default())).collect()), dns_ms: Mutex::new(None) });
+        if targets.is_empty() {
             return p;
         }
         let p2 = p.clone();
-        let _ = std::thread::Builder::new().name("net-probe".into()).spawn(move || {
-            let mut next = vec![Instant::now(); checks.len()];
-            loop {
-                for (i, c) in checks.iter().enumerate() {
-                    if Instant::now() < next[i] {
-                        continue;
-                    }
-                    let (ok, rtt, dns) = c.run();
-                    next[i] = Instant::now() + c.every(ok);
-                    let internet = matches!(c, Check::Connect(_));
-                    if let Some(d) = dns.filter(|_| internet) {
-                        *p2.dns_ms.lock().unwrap() = Some(d);
-                    }
-                    let now = crate::clock::unix_s();
-                    let mut v = p2.probes.lock().unwrap();
-                    let pr = &mut v[i];
-                    pr.tries += 1;
-                    let was = pr.ok;
-                    pr.ok = Some(ok);
-                    pr.rtt_ms = rtt;
-                    if ok {
-                        pr.last_ok = Some(now);
-                        if was == Some(false) {
-                            let down = pr.down_since.take().map_or(0.0, |s| now - s);
-                            if internet {
-                                changed((c.target().to_string(), true, down));
-                            }
-                        }
-                    } else {
-                        pr.fails += 1;
-                        pr.last_fail = Some(now);
-                        if was != Some(false) {
-                            pr.down_since = Some(now);
-                            if was == Some(true) && internet {
-                                changed((c.target().to_string(), false, 0.0));
-                            }
-                        }
-                    }
+        let _ = std::thread::Builder::new().name("net-probe".into()).spawn(move || loop {
+            for (i, t) in targets.iter().enumerate() {
+                let (ok, rtt, dns) = probe(t);
+                if let Some(d) = dns {
+                    *p2.dns_ms.lock().unwrap() = Some(d);
                 }
-                std::thread::sleep(Duration::from_secs(1));
+                let change = p2.probes.lock().unwrap()[i].1.note(ok, rtt, crate::clock::unix_s());
+                if let Some((up, down)) = change {
+                    changed((t.clone(), up, down));
+                }
             }
+            std::thread::sleep(PROBE_EVERY);
         });
         p
     }
 
-    /// The internet checks into `sink` (`net/…`); each check's row (`kind`:
-    /// "connect" or "time").
     fn report(&self, sink: &mut dyn Sink) -> Vec<Value> {
         let v = self.probes.lock().unwrap();
         let mut up = 0;
         let mut known = 0;
         let mut best: Option<f64> = None;
         let mut rows = Vec::new();
-        for p in v.iter() {
-            let internet = matches!(p.check, Check::Connect(_));
-            if let (true, Some(ok)) = (internet, p.ok) {
+        for (target, p) in v.iter() {
+            if let Some(ok) = p.ok {
                 known += 1;
                 up += ok as u32;
                 if ok {
                     best = Some(best.map_or(p.rtt_ms.unwrap_or(0.0), |b: f64| b.min(p.rtt_ms.unwrap_or(b))));
                 }
-                let name = format!("net/probe/{}", key_part(p.check.target()));
+                let name = format!("net/probe/{}", key_part(target));
                 sink.gauge(&format!("{name}/up"), ok as u8 as f64);
                 if let Some(r) = p.rtt_ms {
                     sink.gauge(&format!("{name}/rtt"), r);
                 }
             }
-            rows.push(json!({
-                "kind": match p.check { Check::Connect(_) => "connect", Check::Time(_) => "time", Check::Service => "service" }, "target": p.check.target(), "ok": p.ok, "rttMs": p.rtt_ms.map(|r| (r * 10.0).round() / 10.0),
-                "lastOk": p.last_ok, "lastFail": p.last_fail, "downSince": p.down_since, "tries": p.tries, "fails": p.fails,
-            }));
+            rows.push(p.row(target));
         }
         if known > 0 {
             sink.gauge("net/up", up as f64 / known as f64);
@@ -308,6 +252,7 @@ pub struct Platform {
     pid: Option<Pid>,
     watched: Vec<Watched>,
     pub probes: Arc<Probes>,
+    clock: Arc<crate::clock::Clock>,
     container: Option<&'static str>,
     cpu_limit: Option<f64>,
     last_slow: Option<Instant>,
@@ -319,7 +264,7 @@ pub struct Platform {
 }
 
 impl Platform {
-    pub fn new(watched: Vec<Watched>, probes: Arc<Probes>) -> Platform {
+    pub fn new(watched: Vec<Watched>, probes: Arc<Probes>, clock: Arc<crate::clock::Clock>) -> Platform {
         let mut sys = System::new();
         sys.refresh_cpu_usage();
         sys.refresh_memory();
@@ -331,6 +276,7 @@ impl Platform {
             pid: sysinfo::get_current_pid().ok(),
             watched,
             probes,
+            clock,
             container: container(),
             cpu_limit: cpu_limit_cores(),
             last_slow: None,
@@ -420,8 +366,8 @@ impl Platform {
         sink.counter("net/rx", rx);
         sink.counter("net/tx", tx);
         sink.counter("net/errors", err);
-        let (probes, time): (Vec<Value>, Vec<Value>) = self.probes.report(sink).into_iter().partition(|r| r["kind"] == "connect");
-        let clock = clock_report(sink, time.into_iter().find(|r| r["kind"] == "time"), &mut missing);
+        let probes = self.probes.report(sink);
+        let clock = self.clock.report(sink, &mut missing);
         // The slow ones.
         if self.last_slow.is_none_or(|t| t.elapsed() >= SLOW_EVERY) {
             self.last_slow = Some(Instant::now());
@@ -471,49 +417,21 @@ impl Platform {
     }
 }
 
-/// The clock (`clock/…` series, the `platform` message's `clock`): what the
-/// OS says, read now, and the time server's last answer (`check`: its row).
-fn clock_report(sink: &mut dyn Sink, check: Option<Value>, missing: &mut impl FnMut(&str, &str)) -> Value {
-    let os = crate::clock::read_os();
-    let h = crate::clock::health();
-    let now = crate::clock::unix_s();
-    match os {
-        Some(o) => {
-            sink.gauge("clock/synced", o.synced as u8 as f64);
-            sink.gauge("clock/maxErrMs", o.max_error_ms);
-        }
-        None => missing("clockSynced", "this operating system doesn't say whether its clock is synchronized"),
-    }
-    let current = h.current(now);
-    if let Some(m) = current {
-        sink.gauge("clock/offsetMs", m.offset_ms);
-        sink.gauge("clock/delayMs", m.delay_ms);
-    }
-    if let Some(d) = h.drift_ms {
-        sink.gauge("clock/driftMs", d);
-    }
-    let radio_ref = h.radio_reference(now);
-    if let Some((_, r)) = &radio_ref {
-        sink.gauge("clock/radioMs", *r);
-    }
-    let round = |v: f64| (v * 10.0).round() / 10.0;
-    json!({
-        "warnMs": h.limits().0,
-        "os": os.map(|o| json!({ "synced": o.synced, "maxErrorMs": round(o.max_error_ms) })),
-        "service": h.service.as_ref().map(|s| json!({ "name": s.name, "server": s.server, "stratum": s.stratum, "lastSync": s.last_sync })),
-        "driftMs": h.drift_ms.map(round),
-        "radio": h.radio.iter().map(|r| json!({ "site": r.site, "offsetMs": round(r.offset_ms), "at": r.at.round(), "sane": r.sane(), "valid": r.valid })).collect::<Vec<_>>(),
-        "server": h.server,
-        "measured": h.measured.map(|(m, at)| json!({ "offsetMs": round(m.offset_ms), "delayMs": round(m.delay_ms), "stratum": m.stratum, "at": at, "current": current.is_some() })),
-        "error": h.error,
-        "problem": h.problem(now).map(|(bad, why)| json!({ "level": if bad { "bad" } else { "warn" }, "why": why })),
-        "check": check,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Up and down as they change, not every answer.
+    #[test]
+    fn answers_say_when_it_goes_down_and_comes_back() {
+        let mut a = Answers::default();
+        assert_eq!(a.note(true, Some(20.0), 100.0), None, "the first answer is no change");
+        assert_eq!(a.note(false, None, 115.0), Some((false, 0.0)));
+        assert_eq!(a.note(false, None, 130.0), None);
+        assert_eq!(a.note(true, Some(25.0), 160.0), Some((true, 45.0)), "back, down 45 s");
+        assert_eq!((a.tries, a.fails, a.last_ok, a.last_fail, a.down_since), (4, 2, Some(160.0), Some(130.0), None));
+        assert_eq!(a.row("pool.ntp.org")["rttMs"], 25.0);
+    }
 
     #[test]
     fn cgroup_files() {
@@ -538,7 +456,7 @@ mod tests {
 
     #[test]
     fn samples_this_machine() {
-        let mut p = Platform::new(vec![Watched { name: "data", path: std::env::temp_dir() }], Arc::new(Probes::default()));
+        let mut p = Platform::new(vec![Watched { name: "data", path: std::env::temp_dir() }], Arc::new(Probes::default()), Default::default());
         let mut k = Keys::default();
         let v = p.sample(&mut k, true);
         assert!(k.0.contains(&"plat/cpu".to_string()));

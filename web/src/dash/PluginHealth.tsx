@@ -6,9 +6,9 @@
 import { useState, type ReactNode } from "react";
 import { pluginOn, setView, useApp, type AppState } from "../controller.ts";
 import { Card, Choice, Hint, LiveSpark, Light, Stat, StackedBars, TimeSeries } from "../charts.tsx";
-import { ago, bytes, compact, dur, num, pct } from "../fmt.ts";
+import { ago, bytes, compact, dur, ms, num, pct } from "../fmt.ts";
 import type { PluginInfo, SeriesData } from "../protocol.ts";
-import { K, pluginHealth, recentAvg, total, useHistory } from "./data.ts";
+import { K, perIn, perLive, pluginHealth, recentAvg, total, useHistory } from "./data.ts";
 
 const ENDPOINT_LEVEL = { up: "ok", degraded: "warn", down: "bad", unknown: "idle" } as const;
 
@@ -33,9 +33,6 @@ function extraValue(v: unknown): string {
   return JSON.stringify(v);
 }
 
-/** Milliseconds as seconds, to a tenth. */
-const secs = (ms: number | null) => (ms === null ? "—" : `${num(ms / 1000, ms >= 100_000 ? 0 : 1)} s`);
-
 /** The highest a series reached (a gauge's per-step highs). */
 function highest(d: SeriesData | undefined): number | null {
   const v = (d?.hi ?? d?.v ?? []).filter((x): x is number => x !== null);
@@ -52,14 +49,8 @@ function useDelivery(id: string) {
   const parts = ["delivered", "ageMs", "heldMs", "uploads", "uploadMs", "waitMs"] as const;
   const hour = useHistory([...parts, "age"].map((k) => K.plg(id, k)), "1h", 60);
   const recent = recentAvg(K.plg(id, "delivered"), 300) ?? 0;
-  const per = (sum: (typeof parts)[number], of: "delivered" | "uploads") => {
-    if (recent > 0) {
-      const n = recentAvg(K.plg(id, of), 300) ?? 0;
-      return n > 0 ? (recentAvg(K.plg(id, sum), 300) ?? 0) / n : null;
-    }
-    const n = total(hour?.[K.plg(id, of)]) ?? 0;
-    return n > 0 ? (total(hour?.[K.plg(id, sum)]) ?? 0) / n : null;
-  };
+  const per = (sum: (typeof parts)[number], of: "delivered" | "uploads") =>
+    recent > 0 ? perLive(K.plg(id, sum), K.plg(id, of), 300) : perIn(hour, K.plg(id, sum), K.plg(id, of));
   const delivered = total(hour?.[K.plg(id, "delivered")]) ?? 0;
   return {
     span: recent > 0 ? "5 min" : "hour",
@@ -80,7 +71,7 @@ function PluginCard({ s, p }: { s: AppState; p: PluginInfo }) {
   const [open, setOpen] = useState(false);
   const hist = useHistory([K.plg(p.id, "ok"), K.plg(p.id, "failed"), K.plg(p.id, "queued"), K.plg(p.id, "age")], "24h", 96);
   const d = useDelivery(p.id);
-  const parts = [d.held ? `held ${secs(d.held)}` : "", d.wait !== null ? `waiting ${secs(d.wait)}` : "", d.upload !== null ? `upload ${secs(d.upload)}` : ""].filter(Boolean).join(" · ");
+  const parts = [d.held ? `held ${ms(d.held)}` : "", d.wait !== null ? `waiting ${ms(d.wait)}` : "", d.upload !== null ? `upload ${ms(d.upload)}` : ""].filter(Boolean).join(" · ");
   // The last hour, a column a minute: [ok, skipped, failed].
   const nowM = Math.floor(Date.now() / 60_000) * 60;
   const minutes = Array.from({ length: 60 }, (_, i) => {
@@ -125,11 +116,11 @@ function PluginCard({ s, p }: { s: AppState; p: PluginInfo }) {
             />
             <Stat
               label="Age at delivery"
-              value={d.age !== null ? secs(d.age) : "—"}
+              value={d.age !== null ? ms(d.age) : "—"}
               sub={
                 d.age === null
                   ? "no calls delivered in the last hour"
-                  : `${d.span === "5 min" ? "last 5 min" : "last hour"}${parts ? `: ${parts}` : ""}${d.longest !== null ? ` · longest ${secs(d.longest)}` : ""}`
+                  : `${d.span === "5 min" ? "last 5 min" : "last hour"}${parts ? `: ${parts}` : ""}${d.longest !== null ? ` · longest ${ms(d.longest)}` : ""}`
               }
               spark={<LiveSpark k={K.plg(p.id, "age")} color="var(--series-1)" lo={0} sinceS={3600} />}
               hint={`From a call's end to ${p.manifest?.name ?? p.id}'s success, by this computer's clock: held by delay rules, waiting (files, its queue, failed tries) and its upload.${d.age !== null && d.upload === null ? " It doesn't say its own upload time (a plugin built on SDK 0.6 or later does), so only the age is known." : ""} Measured here; no service reports it.`}

@@ -314,6 +314,7 @@ pub(crate) fn ctx(cfg: Config, dir: &Path) -> Arc<crate::runtime::Ctx> {
         engine: Mutex::new(None),
         host_last: Mutex::new(None),
         spool: Mutex::new(None),
+        clock: Default::default(),
         unlocked: Default::default(),
     })
 }
@@ -407,7 +408,7 @@ fn the_servers_messages() {
     ctx.event(trunk_app::stats::MonitorEvent::ControlLost { system: "p25".into(), site: Some("south".into()), freq_hz: Some(851_012_500) });
     ctx.event(trunk_app::stats::MonitorEvent::PluginHealth { plugin: "openmhz".into(), state: "warning".into(), message: "3 uploads waiting".into() });
     let mut agg = trunk_app::stats::Aggregator::default();
-    let mut platform = crate::platform::Platform::new(vec![crate::platform::Watched { name: "data", path: dir.clone() }], Arc::new(crate::platform::Probes::default()));
+    let mut platform = crate::platform::Platform::new(vec![crate::platform::Watched { name: "data", path: dir.clone() }], Arc::new(crate::platform::Probes::default()), Default::default());
     agg.begin(now as f64);
     let p = platform.sample(&mut agg, true);
     *ctx.host_last.lock().unwrap() = Some(crate::monitor::message(now as f64, &agg, p));

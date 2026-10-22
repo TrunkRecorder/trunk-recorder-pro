@@ -10,12 +10,11 @@
 //! a recording ([`Health::drift_ms`]), and what call times are off by is the
 //! recording clock's error: [`Health::problem`] judges that.
 //!
-//! [`health`] is the latest of it all, for the dashboard, its events and
-//! anything that stamps a time.
+//! [`Clock`] (`ctx.clock`) keeps the latest of it all and the one verdict
+//! ([`Health::problem`]) the dashboard, its events and every finished call go by.
 
 use std::net::{ToSocketAddrs, UdpSocket};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// The time now, Unix seconds.
@@ -47,23 +46,26 @@ const STALE_S: f64 = 3600.0;
 const RADIO_SANE_MS: f64 = 600_000.0;
 /// A wall clock jump of this much or more between two looks is a step.
 const STEP_MS: f64 = 500.0;
+/// How often the time server is asked (a public pool asks for no more than
+/// every minute or so), how soon again after it didn't answer, and how often
+/// the OS's time service is asked what it follows.
+const TIME_EVERY: Duration = Duration::from_secs(15 * 60);
+const TIME_RETRY: Duration = Duration::from_secs(2 * 60);
+const SERVICE_EVERY: Duration = Duration::from_secs(5 * 60);
 
-static WARN: AtomicU64 = AtomicU64::new(WARN_MS.to_bits());
-
-/// The warning threshold, ms (from the config; [`WARN_MS`] by default).
-pub fn set_warn_ms(ms: f64) {
-    WARN.store(if ms.is_finite() && ms > 0.0 { ms } else { WARN_MS }.to_bits(), Ordering::Relaxed);
-}
-
-/// The warning threshold set, ms.
-pub fn warn_ms() -> f64 {
-    f64::from_bits(WARN.load(Ordering::Relaxed))
-}
+/// A radio system's clock against the recording's, as the session hears it.
+pub use trunk_app::session::RadioClock;
 
 /// (warn, bad), ms, for a warning threshold `warn` (None: the default).
 fn limits_for(warn: Option<f64>) -> (f64, f64) {
     let warn = warn.filter(|w| w.is_finite() && *w > 0.0).unwrap_or(WARN_MS);
     (warn, BAD_MS.max(4.0 * warn))
+}
+
+/// A radio system's clock near enough ours to be the right time at all (not
+/// a local time, or unset).
+fn sane(r: &RadioClock) -> bool {
+    r.offset_ms.abs() < RADIO_SANE_MS
 }
 
 /// What the operating system says of its clock.
@@ -86,25 +88,6 @@ pub struct Measured {
     pub stratum: u8,
 }
 
-/// A radio system's clock against the recording's ([`trunk_app::session::RadioClock`]).
-#[derive(Clone, Debug, PartialEq)]
-pub struct Radio {
-    pub site: String,
-    /// The system's time less the recording clock's, ms: positive when the recording's is behind.
-    pub offset_ms: f64,
-    /// When it was heard, Unix s.
-    pub at: f64,
-    /// The system vouches for its time: only then is it gone by.
-    pub valid: bool,
-}
-
-impl Radio {
-    /// Near enough ours to be the right time at all (not a local time, or unset).
-    pub fn sane(&self) -> bool {
-        self.offset_ms.abs() < RADIO_SANE_MS
-    }
-}
-
 /// The time service keeping the clock, as far as it says (Linux: chrony,
 /// systemd-timesyncd).
 #[derive(Clone, Debug, PartialEq)]
@@ -117,7 +100,31 @@ pub struct Service {
     pub last_sync: Option<f64>,
 }
 
-/// The latest of what's known of the clock.
+/// What's wrong with the clock: whose fault it is, for the interface to
+/// point at the right line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Cause {
+    /// The clock itself, measured against the time server.
+    Clock,
+    /// The clock calls are stamped by: right at Start, corrected since.
+    Recording,
+    /// Against the radio systems' clocks (no time server answer).
+    Radio,
+    /// The OS says it isn't synchronized.
+    Os,
+}
+
+/// The verdict ([`Health::problem`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Problem {
+    pub bad: bool,
+    pub cause: Cause,
+    pub why: String,
+}
+
+/// What's known of the clock at one moment: the facts [`Health::problem`]
+/// judges by, plain data (no clock read), so it's tested as it is.
 #[derive(Clone, Debug, Default)]
 pub struct Health {
     /// None: the OS doesn't say (Windows), or nothing read yet.
@@ -133,12 +140,12 @@ pub struct Health {
     /// the wall clock was set ahead since Start, or the computer slept).
     pub drift_ms: Option<f64>,
     /// The radio systems' clocks, each site's latest.
-    pub radio: Vec<Radio>,
-    /// The warning threshold, ms ([`set_warn_ms`]; None: [`WARN_MS`]).
+    pub radio: Vec<RadioClock>,
+    /// The warning threshold, ms (None: [`WARN_MS`]).
     pub warn_ms: Option<f64>,
 }
 
-/// ms in words: ms under a second, then seconds (as the dashboard writes it).
+/// ms in words: ms under a second, then seconds (as the dashboard's `ms()` writes it).
 fn amount(ms: f64) -> String {
     let a = ms.abs();
     if a >= 10_000.0 {
@@ -156,106 +163,197 @@ impl Health {
         self.measured.filter(|(_, at)| now - at < STALE_S).map(|(m, _)| m)
     }
 
-    /// The radio systems' word on the recording clock, when they agree with
-    /// themselves: the median of the recent, sane ones, and a site that said it.
+    /// The radio systems' word on the recording clock: the median of the
+    /// recent, sane ones that vouch for their time, and a site that said it.
     pub fn radio_reference(&self, now: f64) -> Option<(String, f64)> {
-        let mut v: Vec<&Radio> = self.radio.iter().filter(|r| r.valid && now - r.at < 600.0 && r.sane()).collect();
+        let mut v: Vec<&RadioClock> = self.radio.iter().filter(|r| r.valid && now - r.at_s < 600.0 && sane(r)).collect();
         v.sort_by(|a, b| a.offset_ms.total_cmp(&b.offset_ms));
         v.get(v.len() / 2).map(|r| (r.site.clone(), r.offset_ms))
     }
 
-    /// What's wrong with the clock, if anything: (bad, why). The one place
-    /// that decides, for the dashboard's light, the events and the calls'
-    /// `clock_off` alike. The time server is the reference; without an
-    /// answer from it, the radio systems' clocks are.
     /// (warn, bad), ms.
     pub fn limits(&self) -> (f64, f64) {
         limits_for(self.warn_ms)
     }
 
-    pub fn problem(&self, now: f64) -> Option<(bool, String)> {
+    /// What's wrong with the clock, if anything: the one place that
+    /// decides. What's judged is the clock calls are stamped by; the time
+    /// server is the reference, and without an answer from it, the radio
+    /// systems that vouch for their time are.
+    pub fn problem(&self, now: f64) -> Option<Problem> {
         let (warn, bad) = self.limits();
         let way = |ms: f64| if ms > 0.0 { "behind" } else { "ahead of" };
+        let off = |ms: f64, cause, why: String| Some(Problem { bad: ms.abs() >= bad, cause, why });
         if let Some(m) = self.current(now) {
-            let off = m.offset_ms;
-            if off.abs() >= warn {
-                return Some((off.abs() >= bad, format!("The clock is {} {} {}: call times are off by as much", amount(off), way(off), self.server.as_deref().unwrap_or("the time server"))));
+            let o = m.offset_ms;
+            if o.abs() >= warn {
+                return off(o, Cause::Clock, format!("The clock is {} {} {}: call times are off by as much", amount(o), way(o), self.server.as_deref().unwrap_or("the time server")));
             }
             // The clock is right now; the recording's may not be.
-            if let Some(rec) = self.drift_ms.map(|d| off + d).filter(|r| r.abs() >= warn) {
-                return Some((rec.abs() >= bad, format!("Calls are being stamped {} {} the right time: the clock was corrected after recording started. Stop and Start again to stamp them by it", amount(rec), way(rec))));
+            if let Some(rec) = self.drift_ms.map(|d| o + d).filter(|r| r.abs() >= warn) {
+                return off(rec, Cause::Recording, format!("Calls are being stamped {} {} the right time: the clock was corrected after recording started. Stop and Start again to stamp them by it", amount(rec), way(rec)));
             }
         } else if let Some((site, r)) = self.radio_reference(now).filter(|(_, r)| r.abs() >= warn) {
-            return Some((r.abs() >= bad, format!("Calls are being stamped {} {} {site}'s radio system clock: is this computer's clock synchronized?", amount(r), way(r))));
+            return off(r, Cause::Radio, format!("Calls are being stamped {} {} {site}'s radio system clock: is this computer's clock synchronized?", amount(r), way(r)));
         }
         if self.os.is_some_and(|o| !o.synced) {
-            return Some((false, "The operating system says its clock isn't synchronized: is its time service (chrony, systemd-timesyncd, ntpd) running?".into()));
+            return Some(Problem { bad: false, cause: Cause::Os, why: "The operating system says its clock isn't synchronized: is its time service (chrony, systemd-timesyncd, ntpd) running?".into() });
         }
         None
     }
 }
 
-static HEALTH: Mutex<Option<Health>> = Mutex::new(None);
-/// The recording's clock while recording: the wall clock at Start, Unix ms, and the monotonic clock then.
-static RECORDING: Mutex<Option<(f64, Instant)>> = Mutex::new(None);
-
-/// The latest of what's known of the clock.
-pub fn health() -> Health {
-    let mut h = HEALTH.lock().unwrap().clone().unwrap_or_default();
-    h.warn_ms = Some(warn_ms());
-    h.drift_ms = RECORDING.lock().unwrap().map(|(epoch, at)| unix_ms() as f64 - (epoch + at.elapsed().as_secs_f64() * 1000.0));
-    h
+/// The computer's clock, watched (`ctx.clock`): what's known of it, the
+/// time server's answers, the recording's clock while recording, and the
+/// verdict as of the last look ([`Clock::look`], once a monitor tick), which
+/// the dashboard, the events and every finished call go by.
+pub struct Clock {
+    inner: Mutex<Inner>,
 }
 
-fn update(f: impl FnOnce(&mut Health)) {
-    f(HEALTH.lock().unwrap().get_or_insert_with(Health::default));
+struct Inner {
+    health: Health,
+    /// The time server's answers.
+    answers: crate::platform::Answers,
+    /// The wall clock at Start (Unix ms) and the monotonic clock then, while recording.
+    recording: Option<(f64, Instant)>,
+    steps: StepWatch,
+    problem: Option<Problem>,
 }
 
-/// A recording started with its clock at `epoch_ms` (Unix ms) at `at` (None: it stopped).
-pub fn recording(clock: Option<(f64, Instant)>) {
-    *RECORDING.lock().unwrap() = clock;
-    if clock.is_none() {
-        update(|h| h.radio.clear());
+impl Default for Clock {
+    fn default() -> Self {
+        let inner = Inner { health: Health::default(), answers: Default::default(), recording: None, steps: StepWatch::default(), problem: None };
+        Clock { inner: Mutex::new(inner) }
     }
 }
 
-/// The radio systems' clocks, as the recording last heard them.
-pub fn set_radio(radio: Vec<Radio>) {
-    update(|h| h.radio = radio);
-}
+impl Clock {
+    /// Ask `server` (SNTP, when there's one) and the OS's time service, each
+    /// as often as it should be, on a thread of their own.
+    pub fn start(self: &Arc<Self>, server: Option<String>) {
+        let me = self.clone();
+        let _ = std::thread::Builder::new().name("clock".into()).spawn(move || {
+            let (mut next_time, mut next_service) = (Instant::now(), Instant::now());
+            loop {
+                if let Some(s) = server.as_deref().filter(|_| Instant::now() >= next_time) {
+                    let ok = me.measure(s);
+                    next_time = Instant::now() + if ok { TIME_EVERY } else { TIME_RETRY };
+                }
+                if Instant::now() >= next_service {
+                    let service = service();
+                    me.inner.lock().unwrap().health.service = service;
+                    next_service = Instant::now() + SERVICE_EVERY;
+                }
+                std::thread::sleep(Duration::from_secs(1));
+            }
+        });
+    }
 
-/// Read what the OS says ([`os_clock`]) into [`health`].
-pub fn read_os() -> Option<OsClock> {
-    let os = os_clock();
-    update(|h| h.os = os);
-    os
-}
-
-/// Ask the time service what it follows ([`service`]) into [`health`].
-pub fn read_service() -> Option<Service> {
-    let s = service();
-    update(|h| h.service = s.clone());
-    s
-}
-
-/// Query `server` ([`sntp`]) and keep the answer, or why there's none, in
-/// [`health`]. Returns the answer and how long the name took to look up.
-pub fn measure(server: &str) -> (Result<Measured, String>, Option<f64>) {
-    let (r, dns) = sntp(server, Duration::from_secs(3));
-    let now = unix_s();
-    update(|h| {
-        h.server = Some(server.to_string());
-        match &r {
-            Ok(m) => (h.measured, h.error) = (Some((*m, now)), None),
-            Err(e) => h.error = Some(e.clone()),
+    /// Query `server` ([`sntp`]) and keep its answer, or why there's none.
+    fn measure(&self, server: &str) -> bool {
+        let (r, _) = sntp(server, Duration::from_secs(3));
+        let now = unix_s();
+        let mut x = self.inner.lock().unwrap();
+        x.health.server = Some(server.to_string());
+        x.answers.note(r.is_ok(), r.as_ref().ok().map(|m| m.delay_ms), now);
+        let ok = r.is_ok();
+        match r {
+            Ok(m) => (x.health.measured, x.health.error) = (Some((m, now)), None),
+            Err(e) => x.health.error = Some(e),
         }
-    });
-    (r, dns)
+        ok
+    }
+
+    /// A recording started with its clock at `epoch_ms` (Unix ms) at `at`; None: it stopped.
+    pub fn recording(&self, clock: Option<(f64, Instant)>) {
+        let mut x = self.inner.lock().unwrap();
+        x.recording = clock;
+        if clock.is_none() {
+            x.health.radio.clear();
+        }
+    }
+
+    /// The radio systems' clocks, as the recording last heard them.
+    pub fn set_radio(&self, radio: Vec<RadioClock>) {
+        self.inner.lock().unwrap().health.radio = radio;
+    }
+
+    /// Once a tick: read what the OS says, watch for a step, and judge with
+    /// warning threshold `warn_ms`. The events it's worth (a step, the clock
+    /// going off or right).
+    pub fn look(&self, warn_ms: f64) -> Vec<trunk_app::stats::MonitorEvent> {
+        use trunk_app::stats::MonitorEvent;
+        let os = os_clock();
+        let now = unix_s();
+        let mut x = self.inner.lock().unwrap();
+        let mut events = Vec::new();
+        if let Some(by_ms) = x.steps.check() {
+            events.push(MonitorEvent::ClockStep { by_ms: by_ms.round() });
+        }
+        x.health.os = os;
+        x.health.warn_ms = Some(warn_ms);
+        x.health.drift_ms = x.recording.map(|(epoch, at)| unix_ms() as f64 - (epoch + at.elapsed().as_secs_f64() * 1000.0));
+        let problem = x.health.problem(now);
+        let level = |p: &Option<Problem>| p.as_ref().map_or(0, |p| 1 + p.bad as u8);
+        let (was, is) = (level(&x.problem), level(&problem));
+        if is > was {
+            events.extend(problem.as_ref().map(|p| MonitorEvent::ClockOff { why: p.why.clone(), bad: p.bad }));
+        } else if is == 0 && was > 0 {
+            events.push(MonitorEvent::ClockOk {});
+        }
+        x.problem = problem;
+        events
+    }
+
+    /// Whether the clock calls are stamped by is off, as of the last look (a call's `clock_off`).
+    pub fn off(&self) -> bool {
+        self.inner.lock().unwrap().problem.is_some()
+    }
+
+    /// The clock into `sink` (`clock/…`) and the `platform` message's `clock`
+    /// (what the OS can't say, into `missing`).
+    pub fn report(&self, sink: &mut dyn trunk_core::metrics::Sink, missing: &mut impl FnMut(&str, &str)) -> serde_json::Value {
+        let x = self.inner.lock().unwrap();
+        let h = &x.health;
+        let now = unix_s();
+        match h.os {
+            Some(o) => {
+                sink.gauge("clock/synced", o.synced as u8 as f64);
+                sink.gauge("clock/maxErrMs", o.max_error_ms);
+            }
+            None => missing("clockSynced", "this operating system doesn't say whether its clock is synchronized"),
+        }
+        let current = h.current(now);
+        if let Some(m) = current {
+            sink.gauge("clock/offsetMs", m.offset_ms);
+            sink.gauge("clock/delayMs", m.delay_ms);
+        }
+        if let Some(d) = h.drift_ms {
+            sink.gauge("clock/driftMs", d);
+        }
+        if let Some((_, r)) = h.radio_reference(now) {
+            sink.gauge("clock/radioMs", r);
+        }
+        let round = |v: f64| (v * 10.0).round() / 10.0;
+        serde_json::json!({
+            "warnMs": h.limits().0,
+            "os": h.os.map(|o| serde_json::json!({ "synced": o.synced, "maxErrorMs": round(o.max_error_ms) })),
+            "service": h.service.as_ref().map(|s| serde_json::json!({ "name": s.name, "server": s.server, "stratum": s.stratum, "lastSync": s.last_sync })),
+            "driftMs": h.drift_ms.map(round),
+            "radio": h.radio.iter().map(|r| serde_json::json!({ "site": r.site, "offsetMs": round(r.offset_ms), "at": r.at_s.round(), "sane": sane(r), "valid": r.valid })).collect::<Vec<_>>(),
+            "server": h.server,
+            "measured": h.measured.map(|(m, at)| serde_json::json!({ "offsetMs": round(m.offset_ms), "delayMs": round(m.delay_ms), "stratum": m.stratum, "at": at, "current": current.is_some() })),
+            "error": h.error,
+            "problem": x.problem.as_ref().map(|p| serde_json::json!({ "level": if p.bad { "bad" } else { "warn" }, "cause": p.cause, "why": p.why })),
+            "check": h.server.as_ref().map(|s| x.answers.row(s)),
+        })
+    }
 }
 
 /// Watches the wall clock against a monotonic one: a jump between two looks
 /// is a step (the time service set it), or the computer slept.
-pub struct StepWatch {
+struct StepWatch {
     last: (f64, Instant),
 }
 
@@ -267,7 +365,7 @@ impl Default for StepWatch {
 
 impl StepWatch {
     /// The jump since the last look, ms (positive: forward), when it's a step.
-    pub fn check(&mut self) -> Option<f64> {
+    fn check(&mut self) -> Option<f64> {
         let now = (unix_ms() as f64, Instant::now());
         let jump = step(now.0 - self.last.0, now.1.duration_since(self.last.1).as_secs_f64() * 1000.0);
         self.last = now;
@@ -439,6 +537,13 @@ fn from_ntp(t: u64) -> f64 {
 mod tests {
     use super::*;
 
+    impl Health {
+        /// The verdict as (bad, why).
+        fn said(&self, now: f64) -> Option<(bool, String)> {
+            self.problem(now).map(|p| (p.bad, p.why))
+        }
+    }
+
     /// A server's answer: received at `t2`, sent at `t3`, to a request sent at `t1`.
     fn reply(t1: f64, t2: f64, t3: f64, stratum: u8) -> [u8; 48] {
         let mut p = [0u8; 48];
@@ -517,23 +622,25 @@ mod tests {
             ..Default::default()
         };
         // The clock was 2 s ahead at Start, then set right (back 2 s): it's right now, calls aren't.
-        assert_eq!(server(10.0, Some(-2000.0)).problem(now), Some((false, "Calls are being stamped 2.0 s ahead of the right time: the clock was corrected after recording started. Stop and Start again to stamp them by it".into())));
-        assert_eq!(server(10.0, Some(-100.0)).problem(now), None, "within the warning");
-        assert_eq!(server(10.0, None).problem(now), None, "not recording");
+        assert_eq!(server(10.0, Some(-2000.0)).said(now), Some((false, "Calls are being stamped 2.0 s ahead of the right time: the clock was corrected after recording started. Stop and Start again to stamp them by it".into())));
+        assert_eq!(server(10.0, Some(-100.0)).said(now), None, "within the warning");
+        assert_eq!(server(10.0, Some(-2000.0)).problem(now).map(|p| p.cause), Some(Cause::Recording), "the interface points at the recording's clock");
+        assert_eq!(server(10.0, None).said(now), None, "not recording");
         // No time server answer: the radio systems' clocks are the reference.
         let radio = |offsets: &[f64], ago: f64| Health {
-            radio: offsets.iter().enumerate().map(|(i, o)| Radio { site: format!("site{i}"), offset_ms: *o, at: now - ago, valid: true }).collect(),
+            radio: offsets.iter().enumerate().map(|(i, o)| RadioClock { site: format!("site{i}"), offset_ms: *o, at_s: now - ago, valid: true }).collect(),
             ..Default::default()
         };
-        assert_eq!(radio(&[900.0, 850.0, 20.0], 30.0).problem(now), Some((false, "Calls are being stamped 850 ms behind site1's radio system clock: is this computer's clock synchronized?".into())), "the median");
-        assert_eq!(radio(&[900.0], 3600.0).problem(now), None, "heard too long ago");
-        assert_eq!(radio(&[-4.0 * 3600e3], 30.0).problem(now), None, "a system set to its local time isn't gone by");
+        assert_eq!(radio(&[900.0, 850.0, 20.0], 30.0).said(now), Some((false, "Calls are being stamped 850 ms behind site1's radio system clock: is this computer's clock synchronized?".into())), "the median");
+        assert_eq!(radio(&[900.0, 850.0, 20.0], 30.0).problem(now).map(|p| p.cause), Some(Cause::Radio));
+        assert_eq!(radio(&[900.0], 3600.0).said(now), None, "heard too long ago");
+        assert_eq!(radio(&[-4.0 * 3600e3], 30.0).said(now), None, "a system set to its local time isn't gone by");
         let mut unvouched = radio(&[900.0], 30.0);
         unvouched.radio[0].valid = false;
-        assert_eq!(unvouched.problem(now), None, "a time its system marks not valid is shown, not gone by");
+        assert_eq!(unvouched.said(now), None, "a time its system marks not valid is shown, not gone by");
         // With a time server answer, the radio systems are shown, not judged by.
         let both = Health { radio: radio(&[900.0], 30.0).radio, ..server(10.0, Some(0.0)) };
-        assert_eq!(both.problem(now), None);
+        assert_eq!(both.said(now), None);
     }
 
     #[test]
@@ -550,9 +657,9 @@ mod tests {
         let now = 1_761_134_400.0;
         let at = |warn_ms: f64| Health { measured: Some((Measured { offset_ms: 120.0, delay_ms: 30.0, stratum: 2 }, now)), warn_ms: Some(warn_ms), ..Default::default() };
         assert_eq!(at(100.0).limits(), (100.0, 5000.0));
-        assert!(at(100.0).problem(now).is_some_and(|(bad, _)| !bad));
+        assert!(at(100.0).said(now).is_some_and(|(bad, _)| !bad));
         assert_eq!(at(2000.0).limits(), (2000.0, 8000.0), "a problem at 4 times a big warning");
-        assert_eq!(at(2000.0).problem(now), None);
+        assert_eq!(at(2000.0).said(now), None);
         assert_eq!(at(0.0).limits().0, WARN_MS, "nothing sensible: the default");
     }
 
@@ -569,17 +676,48 @@ mod tests {
         assert_eq!(parse_timesyncd("ServerName=\nServerAddress=\nNTPMessage={}\n", None), None, "not synchronizing to anything");
     }
 
+    /// One look judges once: the events say when it changes, and every
+    /// finished call reads the same verdict.
+    #[test]
+    fn a_look_judges_once_for_everything() {
+        use trunk_app::stats::MonitorEvent;
+        let clock = Clock::default();
+        let measure = |offset_ms: f64| clock.inner.lock().unwrap().health.measured = Some((Measured { offset_ms, delay_ms: 20.0, stratum: 2 }, unix_s()));
+        let kinds = |v: Vec<MonitorEvent>| v.into_iter().filter(|e| !matches!(e, MonitorEvent::ClockStep { .. })).collect::<Vec<_>>();
+        measure(12.0);
+        assert!(kinds(clock.look(250.0)).is_empty());
+        assert!(!clock.off());
+        measure(-900.0);
+        assert!(matches!(kinds(clock.look(250.0)).as_slice(), [MonitorEvent::ClockOff { bad: false, .. }]));
+        assert!(clock.off(), "a finished call is marked");
+        assert!(kinds(clock.look(250.0)).is_empty(), "said once");
+        assert!(matches!(kinds(clock.look(1000.0)).as_slice(), [MonitorEvent::ClockOk {}]), "the user's threshold, at once");
+        assert!(!clock.off());
+        struct Gauges(Vec<String>);
+        impl trunk_core::metrics::Sink for Gauges {
+            fn counter(&mut self, _: &str, _: u64) {}
+            fn gauge(&mut self, n: &str, _: f64) {
+                self.0.push(n.into());
+            }
+        }
+        let (mut sink, mut missing) = (Gauges(vec![]), |_: &str, _: &str| {});
+        let v = clock.report(&mut sink, &mut missing);
+        assert!(sink.0.contains(&"clock/offsetMs".to_string()));
+        assert_eq!(v["warnMs"], 1000.0);
+        assert!(v["problem"].is_null());
+    }
+
     #[test]
     fn what_counts_as_a_problem() {
         let now = 1_761_134_400.0;
         let at = |offset_ms: f64, ago: f64| Health { server: Some("pool.ntp.org".into()), measured: Some((Measured { offset_ms, delay_ms: 30.0, stratum: 2 }, now - ago)), ..Default::default() };
-        assert_eq!(at(12.0, 60.0).problem(now), None);
-        assert_eq!(at(-400.0, 60.0).problem(now), Some((false, "The clock is 400 ms ahead of pool.ntp.org: call times are off by as much".into())));
-        assert_eq!(at(65_000.0, 60.0).problem(now), Some((true, "The clock is 65 s behind pool.ntp.org: call times are off by as much".into())));
-        assert_eq!(at(-1840.0, 60.0).problem(now).unwrap().1, "The clock is 1.8 s ahead of pool.ntp.org: call times are off by as much");
-        assert_eq!(at(65_000.0, 2.0 * STALE_S).problem(now), None, "an old measurement isn't gone by");
+        assert_eq!(at(12.0, 60.0).said(now), None);
+        assert_eq!(at(-400.0, 60.0).said(now), Some((false, "The clock is 400 ms ahead of pool.ntp.org: call times are off by as much".into())));
+        assert_eq!(at(65_000.0, 60.0).said(now), Some((true, "The clock is 65 s behind pool.ntp.org: call times are off by as much".into())));
+        assert_eq!(at(-1840.0, 60.0).said(now).unwrap().1, "The clock is 1.8 s ahead of pool.ntp.org: call times are off by as much");
+        assert_eq!(at(65_000.0, 2.0 * STALE_S).said(now), None, "an old measurement isn't gone by");
         let unsynced = Health { os: Some(OsClock { synced: false, max_error_ms: 16_000.0 }), ..Default::default() };
-        assert!(unsynced.problem(now).is_some_and(|(bad, why)| !bad && why.contains("isn't synchronized")));
-        assert_eq!(Health::default().problem(now), None, "nothing known: nothing said");
+        assert!(unsynced.said(now).is_some_and(|(bad, why)| !bad && why.contains("isn't synchronized")));
+        assert_eq!(Health::default().said(now), None, "nothing known: nothing said");
     }
 }

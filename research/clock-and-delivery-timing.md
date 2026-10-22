@@ -112,7 +112,8 @@ engine takes the time from its host (`Session::poll`'s Unix ms).
   - Works on every platform, Windows included, and in containers.
   - It only measures and never sets the clock, so it isn't a second NTP
     client.
-- **`Probes` runs a list of `Check`s** (`Check::Connect`, `Check::Time`): one
+- ~~**`Probes` runs a list of `Check`s**~~ (replaced in the review below: the
+  clock has its own thread, sharing `platform::Answers`) (`Check::Connect`, `Check::Time`): one
   thread, each on its own schedule, one record type. The time check doesn't
   count towards `net/up` and raises no link events, because a blocked UDP
   port 123 isn't the internet down. SNTP reports `clock/offsetMs` and
@@ -146,7 +147,8 @@ The SDK adds `took_ms` to `CallResult`: the upload's own duration, which
 Each is a series under `plg/<id>/…` in the stats store, with failures
 counted apart.
 
-**As built** (`plugins/timing.rs`, `Deliveries`): simpler than the table
+**As built** (`plugins/timing.rs`; `Deliveries` at first, folded into the
+`Archive` in the review below): simpler than the table
 above, with the parts adding up to the age.
 - **Held** is what the hold actually kept the call (from its hand-over), not
   what the rule says.
@@ -266,6 +268,56 @@ would then be reported as a clock step.
       no machine here runs chrony.
 - [ ] TIME_DATE_ANN (0x35, to the second) is still only named: SYNC_BCST is
       what Phase 2 systems send, to 7.5 ms
+
+## Review (2026-10-22): bolted on, or built in?
+
+A review of all three phases for duplication and for things added beside an
+existing mechanism instead of into it. Each item below is done.
+
+- [x] **One ledger per finished call.** `Deliveries` kept its own map of
+      calls by path (plugins left, held, when), fed at the same three
+      places as the `Archive` (finish, the hold's hand-over, each result),
+      with a lifetime of 26 h against the archive's 1 h. The archive now
+      follows every call given to plugins, even one whose files all stay,
+      and times each `ok` from the same entry (`timing::Totals`, kept per
+      plugin). Its `Ticket` keeps the call's end, so a call held across a
+      restart is timed too. `Deliveries` and the hold's second argument are
+      gone.
+- [x] **One verdict, typed, computed once a tick.** It had been computed for
+      the platform message, parsed back out of that JSON by the monitor for
+      events, and computed again for each finished call. Now `Clock::look`
+      (once a monitor tick) judges, makes the events, and caches the verdict.
+      The platform message, the events and `clock_off` all read the cache.
+      The verdict carries a `Cause` (clock, recording, radio, os).
+- [x] **The clock on `Ctx`, not in globals.** `static HEALTH / RECORDING /
+      WARN` became `ctx.clock: Arc<Clock>`, as the app's other shared state
+      is. Tests build their own; `Health` stays plain data that's judged.
+- [x] **The time server's status in one place.** It had been kept both in a
+      probe row and in `Health`. The clock owns it now: its `Answers` beside
+      the measurement.
+- [x] **No string kinds; the right thread.** `Check` (with rows split by
+      `kind` strings, and the time service asked on `net-probe`) is gone.
+      `Probes` is internet checks again. The clock asks its time server and
+      the OS's time service on its own thread. The two share
+      `platform::Answers`: the tries, failures and up/down changes, once.
+- [x] **One radio clock type.** `clock::Radio` copied
+      `session::RadioClock`; the clock uses the session's.
+- [x] **Captures in the session.** The rule that a capture's radio clock
+      isn't compared lived in the runtime, so the site status still showed
+      it. `Session::radio_clock` applies it, for the status and for
+      `radio_clocks` alike.
+- [x] **The dashboard doesn't re-decide.** The drift line was amber by its
+      own threshold; now it's amber when the verdict's cause is the
+      recording's clock.
+- [x] **One ms formatter.** Four in the dashboard (the Clock card twice,
+      the step event, the plugin card) became `fmt.ms()`, matching the Rust
+      `amount()` that writes the warnings.
+- [x] **One "rate over rate".** The plugin card's averages and Decode's
+      `voiceBadPct` use `perLive` / `perIn` (data.ts).
+
+Checked again end to end after the rework: the DCFD capture played live into
+upload-script on SDK 0.6 gave an age of 4.9 s and an upload of 339 ms. The
+clock's message carries the time server's answers and measurement together.
 
 ## Not doing
 

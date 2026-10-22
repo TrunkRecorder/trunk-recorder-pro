@@ -9,7 +9,7 @@ import { radioQuery, setView, usePolled, useApp, useTopic, type AppState, type S
 import { BackBar, Card, Choice, HeatStrip, LiveSpark, Stat, SystemTag, TimeSeries, Trend, type Line } from "../charts.tsx";
 import { mhz, num, signed } from "../fmt.ts";
 import type { FreqRow, SeriesData, SourceStatus } from "../protocol.ts";
-import { change, dashSystems, K, KIND_LABEL, recentAvg, running, runningSites, siteHealth, sourceGuard, systemHealth, useHistory, useUsual, val, type DashSite, type DashSystem, type Usual } from "./data.ts";
+import { change, dashSystems, K, KIND_LABEL, perLive, recentAvg, running, runningSites, siteHealth, sourceGuard, systemHealth, useHistory, useUsual, val, type DashSite, type DashSystem, type Usual } from "./data.ts";
 import { DmrSites, hex, Neighbours, NxdnSites, Patches } from "./Systems.tsx";
 
 /** `a / b` step by step (errors per frame from the two rates). */
@@ -28,8 +28,8 @@ function scaled(a: SeriesData | undefined, mul: number, cap = Infinity): SeriesD
 
 /** Voice frames that couldn't be decoded, %, over the last `sinceS` (live). */
 export function voiceBadPct(name: string, sinceS = 600): number | null {
-  const f = recentAvg(K.sys(name, "voice/frames"), sinceS) ?? 0;
-  return f > 0 ? (100 * (recentAvg(K.sys(name, "voice/bad"), sinceS) ?? 0)) / f : null;
+  const p = perLive(K.sys(name, "voice/bad"), K.sys(name, "voice/frames"), sinceS);
+  return p === null ? null : 100 * p;
 }
 
 /** How a bad-frame share reads. */

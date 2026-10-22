@@ -16,7 +16,7 @@ use serde_json::{json, Value};
 use trunk_app::stats::{Aggregator, MonitorEvent};
 use trunk_core::metrics::Sink;
 
-use crate::platform::{Check, Platform, Probes, Watched};
+use crate::platform::{Platform, Probes, Watched};
 use crate::runtime::{publish, Ctx};
 
 /// Every connection hears from the recorder this often, recording or not: the
@@ -45,35 +45,32 @@ pub fn start(ctx: Arc<Ctx>) {
 }
 
 fn run(ctx: Arc<Ctx>) {
-    let (checks, capture) = {
+    let (targets, time_server, capture) = {
         let c = ctx.config.lock().unwrap();
-        let mut checks: Vec<Check> = c.monitor.probe_hosts.iter().cloned().map(Check::Connect).collect();
-        checks.extend(Some(c.monitor.time_server.trim()).filter(|s| !s.is_empty()).map(|s| Check::Time(s.to_string())));
-        checks.push(Check::Service);
-        (checks, c.recording.capture_dir.clone())
+        (c.monitor.probe_hosts.clone(), Some(c.monitor.time_server.trim().to_string()).filter(|s| !s.is_empty()), c.recording.capture_dir.clone())
     };
+    ctx.clock.start(time_server);
     let c2 = ctx.clone();
-    let probes = Probes::start(checks, move |(target, up, down_s)| {
+    let probes = Probes::start(targets, move |(target, up, down_s)| {
         c2.event(if up { MonitorEvent::LinkUp { target, down_s: down_s.round() } } else { MonitorEvent::LinkDown { target } });
     });
     let watched = vec![Watched { name: "recordings", path: capture.into() }, Watched { name: "data", path: crate::paths::data_dir() }];
-    run_with(ctx, Platform::new(watched, probes));
+    let clock = ctx.clock.clone();
+    run_with(ctx, Platform::new(watched, probes, clock));
 }
 
 fn run_with(ctx: Arc<Ctx>, mut platform: Platform) {
     let mut agg = Aggregator::default();
     let mut low: std::collections::HashMap<String, bool> = Default::default();
     let mut spool = SpoolWatch::default();
-    // The clock's level as last told: 0 fine, 1 off, 2 badly off.
-    let mut clock_level = 0u8;
-    let mut steps = crate::clock::StepWatch::default();
     let spotlight: Arc<Mutex<Option<Value>>> = Default::default();
     let mut spotlight_for: Option<(String, Instant)> = None;
     loop {
         let t = crate::clock::unix_s();
-        crate::clock::set_warn_ms(ctx.config.lock().unwrap().monitor.clock_warn_ms);
-        if let Some(by_ms) = steps.check() {
-            ctx.event(MonitorEvent::ClockStep { by_ms: by_ms.round() });
+        // The clock judged once a tick: the dashboard, the events and the calls go by it.
+        let warn_ms = ctx.config.lock().unwrap().monitor.clock_warn_ms;
+        for e in ctx.clock.look(warn_ms) {
+            ctx.event(e);
         }
         if let Some(r) = agg.begin(t) {
             ctx.store.add(r);
@@ -102,18 +99,6 @@ fn run_with(ctx: Arc<Ctx>, mut platform: Platform) {
                 ctx.event(MonitorEvent::DiskLow { path: name.to_string(), free_pct: (pct * 10.0).round() / 10.0 });
             }
         }
-        let problem = &p["clock"]["problem"];
-        let level = match problem["level"].as_str() {
-            Some("bad") => 2,
-            Some(_) => 1,
-            None => 0,
-        };
-        if level > clock_level {
-            ctx.event(MonitorEvent::ClockOff { why: problem["why"].as_str().unwrap_or_default().to_string(), bad: level == 2 });
-        } else if level == 0 && clock_level > 0 {
-            ctx.event(MonitorEvent::ClockOk {});
-        }
-        clock_level = level;
         let msg = message(t, &agg, p);
         *ctx.host_last.lock().unwrap() = Some(msg.clone());
         publish(&ctx.hub, msg);
