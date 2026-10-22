@@ -78,12 +78,14 @@ export interface SourceKind {
   driver?: Driver;
   /** The name SoapySDR lists it under, when this source drives it natively. */
   soapyDriver?: string;
+  /** Its AGC switches on or off while recording (the gain in dB always does; runtime::live_gain). */
+  liveAgc?: boolean;
   /** The radios it covers, when its name doesn't say ("HackRF, SDRplay…"). */
   covers?: string;
 }
 
 export const SOURCE_KINDS: Record<Source["type"], SourceKind> = {
-  rtlsdr: { label: "RTL-SDR", fresh: newDongle, rates: SAMPLE_RATES, device: "serial", soapyDriver: "rtlsdr" },
+  rtlsdr: { label: "RTL-SDR", fresh: newDongle, rates: SAMPLE_RATES, device: "serial", soapyDriver: "rtlsdr", liveAgc: true },
   usrp: {
     label: "USRP",
     fresh: newUsrp,
@@ -102,6 +104,7 @@ export const SOURCE_KINDS: Record<Source["type"], SourceKind> = {
     device: "serial",
     driver: { name: "libairspy", macos: "brew install airspy", linux: "sudo apt install libairspy0", windows: "put airspy.dll (from airspy-tools) next to trunk-pro.exe" },
     soapyDriver: "airspy",
+    liveAgc: true,
   },
   bladerf: {
     label: "bladeRF",

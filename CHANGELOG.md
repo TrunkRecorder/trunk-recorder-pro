@@ -5,6 +5,12 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Gain changes apply while recording** on RTL-SDRs and Airspys (the
+  gain and AGC on or off; an Airspy's preset or stages), and on USRPs,
+  bladeRFs and SoapySDR devices (the gain in dB, AGC off), without a Stop
+  and Start; the log says the gain each took, and a radio reopened after an error keeps
+  the gain it was given. Other radio settings still apply when recording
+  starts, which the log says too.
 - **bladeRF** sources (optional; bladeRF 2.0 micro xA4 / xA9 and the
   original x40 / x115): used when libbladeRF 2.x is installed (`"type":
   "bladerf"`). Serial, any sample rate to 61.44 MSPS, overall gain or the
