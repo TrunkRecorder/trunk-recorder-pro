@@ -23,6 +23,16 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   system's card, its button in the picker and its "What happened to calls".
   The Overview's system cards include missed calls, and "Missed, 24 h" says
   which systems missed them (#41).
+- **Two SDRplay radios in one process:** a second RSP source no longer
+  fails with `SelectDevice() failed`. SoapySDRPlay3 opens one SDRplay API
+  session per process, which can select only one radio, so trunk-pro now
+  opens one more session whenever a source with `driver=sdrplay` in its
+  device arguments opens while another radio is in use (as SDRTrunk does),
+  including after Setup's Restart. Two radios on one USB bus
+  can still run out of bandwidth: 3 + 3 MS/s failed in testing, and
+  2.5 + 6 MS/s worked. A source at 2 MS/s or
+  below runs its radio at 6 MS/s; use separate USB controllers if a
+  pair doesn't fit.
 
 ## [0.2.7] — 2026-10-22
 

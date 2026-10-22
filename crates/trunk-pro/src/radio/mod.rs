@@ -7,6 +7,7 @@
 
 pub mod airspy;
 pub mod bladerf;
+mod sdrplay;
 pub mod soapy;
 pub mod uhd;
 
