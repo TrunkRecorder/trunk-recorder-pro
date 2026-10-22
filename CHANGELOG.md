@@ -67,6 +67,19 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   2.5 + 6 MS/s worked. A source at 2 MS/s or
   below runs its radio at 6 MS/s; use separate USB controllers if a
   pair doesn't fit.
+- **Send To: which plugins get which calls.** A system's talkgroup file
+  (`<short name>.talkgroups.csv`) can have a `Send To` column, and a
+  conventional channel a `sendTo` (its CSV's `Send To`; a **Send to**
+  column in Setup's channel table), naming the plugins a talkgroup's calls
+  go to, such as `rdioscanner`; anything not named goes to every plugin as
+  before. A plugin taking finished calls that isn't named gets nothing about
+  those calls (the call, its start and end, live audio, unit events), and the
+  archive doesn't wait for it. Plugins that only stream live audio
+  (simplestream) aren't affected. So one set of radios can feed OpenMHz and
+  Rdio Scanner with different lists, without recording the shared
+  frequencies twice. Set per talkgroup on its page (**Radio system** →
+  the talkgroup → **Send to**, which writes the talkgroup file), and per
+  conventional channel in Setup's channel table.
 
 ## [0.2.7] — 2026-10-22
 
