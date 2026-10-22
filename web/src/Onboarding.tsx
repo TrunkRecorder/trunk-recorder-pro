@@ -5,7 +5,7 @@
 // leaving part way keeps what was done. Experienced users skip it.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { autoCenter, enabledChannels, formatMhz, importTrunkRecorderConfig, newAirspy, newBladerf, resolvedCenters, sourceCovering, newDongle, newSoapy, newSystem, newUsrp, parseFreqList, planCenters, startProblem, trConfigFiles, uniqueShortName, usableHalfWidth, type ImportTodo } from "./config.ts";
+import { autoCenter, deviceId, deviceKey, DRIVER_KINDS, type DriverKind, enabledChannels, needsDriver, formatMhz, importTrunkRecorderConfig, resolvedCenters, sourceCovering, newDongle, newSystem, parseFreqList, planCenters, SOURCE_KINDS, sourceFor, sourceKey, startProblem, trConfigFiles, uniqueShortName, usableHalfWidth, type ImportTodo, type Os } from "./config.ts";
 import {
   can,
   applySurvey,
@@ -281,28 +281,10 @@ interface Detected {
   busy: string | null;
 }
 
-/** A source's identity, as a detected radio's key. */
-function sourceKey(x: Source): string {
-  switch (x.type) {
-    case "rtlsdr":
-      return `r:${x.serial}`;
-    case "airspy":
-      return `a:${x.serial}`;
-    case "bladerf":
-      return `b:${x.serial}`;
-    case "usrp":
-      return `u:${x.args}`;
-    case "soapy":
-      return `s:${x.args}`;
-    default:
-      return "";
-  }
-}
-
 /** Every radio the recorder can see, as a source each. */
 function detectRadios(s: AppState): Detected[] {
   const out: Detected[] = s.devices.map((d) => ({
-    key: `r:${d.serial}`,
+    key: deviceKey("rtlsdr", d.serial),
     kind: "rtlsdr",
     name: d.product || "RTL-SDR",
     detail: d.serial ? `Serial ${d.serial}` : "RTL-SDR",
@@ -310,14 +292,22 @@ function detectRadios(s: AppState): Detected[] {
     busy: d.busy ?? null,
   }));
   const r = s.radios;
-  for (const d of r?.airspy.devices ?? []) out.push({ key: `a:${d.serial ?? ""}`, kind: "airspy", name: "Airspy", detail: d.label, source: { ...newAirspy(), serial: d.serial ?? "" } as Source, busy: null });
-  for (const d of r?.bladerf?.devices ?? []) out.push({ key: `b:${d.serial ?? ""}`, kind: "bladerf", name: "bladeRF", detail: d.label, source: { ...newBladerf(), serial: d.serial ?? "" } as Source, busy: null });
-  for (const d of r?.usrp.devices ?? []) out.push({ key: `u:${d.args ?? ""}`, kind: "usrp", name: "USRP", detail: d.label, source: { ...newUsrp(), args: d.args ?? "" } as Source, busy: null });
+  // Each radio with a driver of its own, as its driver found them.
+  const native = new Set(s.devices.length ? ["rtlsdr"] : []);
+  for (const kind of DRIVER_KINDS) {
+    const k = SOURCE_KINDS[kind];
+    if (kind === "soapy") continue;
+    const devices = r?.[kind].devices ?? [];
+    if (devices.length && k.soapyDriver) native.add(k.soapyDriver);
+    for (const d of devices) {
+      const id = (k.device === "serial" ? d.serial : d.args) ?? "";
+      out.push({ key: deviceKey(kind, id), kind, name: k.label, detail: d.label, source: sourceFor(kind, id), busy: null });
+    }
+  }
   // SoapySDR also lists radios with a driver of their own here; those are shown once, natively.
-  const native = new Set([...(s.devices.length ? ["rtlsdr"] : []), ...(r?.airspy.devices?.length ? ["airspy"] : []), ...(r?.bladerf?.devices?.length ? ["bladerf"] : []), ...(r?.usrp.devices?.length ? ["uhd"] : [])]);
   for (const d of r?.soapy?.devices ?? []) {
     if (native.has(d.driver)) continue;
-    out.push({ key: `s:${d.args}`, kind: "soapy", name: d.label || d.driver, detail: `SoapySDR · ${d.driver}`, source: { ...newSoapy(), args: d.args } as Source, busy: null });
+    out.push({ key: deviceKey("soapy", d.args), kind: "soapy", name: d.label || d.driver, detail: `SoapySDR · ${d.driver}`, source: sourceFor("soapy", d.args), busy: null });
   }
   // Two dongles with no serial can't be told apart; keep one.
   return out.filter((d, i) => out.findIndex((o) => o.key === d.key) === i);
@@ -442,7 +432,6 @@ function RadiosStep(props: { s: AppState; c: Config; onNext: () => void; onBack:
 
 // ── troubleshooter ───────────────────────────────────────────────────────────
 
-type Os = "windows" | "macos" | "linux";
 
 function guessOs(platform: string): Os {
   if (platform === "windows" || platform === "macos" || platform === "linux") return platform;
@@ -462,16 +451,6 @@ sudo udevadm control --reload-rules && sudo udevadm trigger`;
 const DVB_BLACKLIST = `echo 'blacklist dvb_usb_rtl28xxu' | sudo tee /etc/modprobe.d/blacklist-rtlsdr.conf
 sudo rmmod dvb_usb_rtl28xxu`;
 
-const DRIVERS: Record<Os, { airspy: string; bladerf: string; usrp: string; soapy: string }> = {
-  macos: { airspy: "brew install airspy", bladerf: "brew install libbladerf", usrp: "brew install uhd", soapy: "brew install soapysdr soapyhackrf" },
-  linux: {
-    airspy: "sudo apt install libairspy0",
-    bladerf: "sudo apt install libbladerf2 bladerf-fpga-hostedxa4",
-    usrp: "sudo apt install libuhd-dev uhd-host",
-    soapy: "sudo apt install soapysdr0.8-module-all",
-  },
-  windows: { airspy: "", bladerf: "", usrp: "", soapy: "" },
-};
 
 function tipsFor(os: Os, s: AppState): Tip[] {
   const tips: Tip[] = [
@@ -557,10 +536,9 @@ function tipsFor(os: Os, s: AppState): Tip[] {
   }
   if (can("drivers") && s.radios) {
     const r = s.radios;
-    const d = DRIVERS[os];
-    const missing = [!r.airspy.available && ["Airspy", d.airspy], r.bladerf && !r.bladerf.available && ["bladeRF", d.bladerf], !r.usrp.available && ["USRP (UHD)", d.usrp], r.soapy && !r.soapy.available && ["HackRF, SDRplay, LimeSDR… (SoapySDR)", d.soapy]].filter(
-      (x): x is [string, string] => !!x,
-    );
+    const state = (kind: DriverKind) => r[kind];
+    const known = DRIVER_KINDS.filter((kind) => state(kind));
+    const missing = known.filter((kind) => !state(kind)?.available);
     tips.push({
       title: "Not an RTL-SDR?",
       art: <IconBox />,
@@ -569,10 +547,16 @@ function tipsFor(os: Os, s: AppState): Tip[] {
           <p>Other radios need their own driver:</p>
           <ul className="ob-drivers">
             <li className="ok">✓ RTL-SDR — built in</li>
-            <li className={r.airspy.available ? "ok" : "no"}>{r.airspy.available ? "✓" : "✕"} Airspy</li>
-            {r.bladerf && <li className={r.bladerf.available ? "ok" : "no"}>{r.bladerf.available ? "✓" : "✕"} bladeRF</li>}
-            <li className={r.usrp.available ? "ok" : "no"}>{r.usrp.available ? "✓" : "✕"} USRP</li>
-            {r.soapy && <li className={r.soapy.available ? "ok" : "no"}>{r.soapy.available ? "✓" : "✕"} SoapySDR (HackRF, SDRplay, LimeSDR, PlutoSDR…)</li>}
+            {known.map((kind) => {
+              const k = SOURCE_KINDS[kind];
+              const ok = !!state(kind)?.available;
+              return (
+                <li key={kind} className={ok ? "ok" : "no"}>
+                  {ok ? "✓" : "✕"} {k.label}
+                  {k.covers ? ` (${k.covers})` : ""}
+                </li>
+              );
+            })}
           </ul>
           {missing.length > 0 &&
             (os === "windows" ? (
@@ -580,9 +564,10 @@ function tipsFor(os: Os, s: AppState): Tip[] {
             ) : (
               <>
                 <p>Install, then restart Trunk Recorder Pro:</p>
-                {missing.map(([name, cmd]) => (
-                  <Command key={name} label={name} cmd={cmd} />
-                ))}
+                {missing.map((kind) => {
+                  const k = SOURCE_KINDS[kind];
+                  return <Command key={kind} label={k.covers ? `${k.covers} (${k.label})` : `${k.label} (${k.driver?.name})`} cmd={k.driver?.[os] ?? ""} />;
+                })}
               </>
             ))}
         </>
@@ -728,7 +713,7 @@ export function ScanStep(props: { s: AppState; c: Config; found: Found | null; o
   const [bands, setBands] = useState<string[] | null>(null);
   const [manual, setManual] = useState(false);
   const picked = bands ?? s.surveyBands.filter((b) => b.defaultOn).map((b) => b.id);
-  const unsupported = !can("drivers") && ["usrp", "airspy", "bladerf", "soapy"].includes(c.sources[source]?.type ?? "");
+  const unsupported = !can("drivers") && !!c.sources[source] && needsDriver(c.sources[source]);
   // Naming what it finds from FCC licenses: optional, with the location given here.
   const [naming, setNaming] = useState(() => !!savedWhere().text);
   const [where, setWhere] = useState<Where>(savedWhere);
@@ -1021,7 +1006,7 @@ export function ScanStep(props: { s: AppState; c: Config; found: Found | null; o
 }
 
 function kindName(x: Source): string {
-  return x.type === "rtlsdr" ? "RTL-SDR" : x.type === "usrp" ? "USRP" : x.type === "airspy" ? "Airspy" : x.type === "bladerf" ? "bladeRF" : x.type === "soapy" ? "SoapySDR" : "file";
+  return SOURCE_KINDS[x.type].label;
 }
 
 function Check(props: { ok: boolean; title: string; children: React.ReactNode }) {
@@ -1838,21 +1823,14 @@ function sourceState(src: Source, s: AppState): { tone: "ok" | "warn" | "bad"; t
   if (src.type === "file") return { tone: "ok", text: "Capture file" };
   if (!s.radios) return { tone: "bad", text: "Needs the desktop app" };
   const d = s.radios[src.type];
-  return d?.available ? { tone: "ok", text: "Driver installed" } : { tone: "bad", text: `Needs ${src.type === "usrp" ? "UHD" : src.type === "airspy" ? "libairspy" : src.type === "bladerf" ? "libbladeRF" : "SoapySDR"} installed` };
+  return d?.available ? { tone: "ok", text: "Driver installed" } : { tone: "bad", text: `Needs ${SOURCE_KINDS[src.type].driver?.name} installed` };
 }
 
-const sourceLabel = (src: Source) =>
-  src.type === "rtlsdr"
-    ? `RTL-SDR${src.serial ? ` · serial ${src.serial}` : ""}`
-    : src.type === "airspy"
-      ? `Airspy${src.serial ? ` · ${src.serial}` : ""}`
-      : src.type === "bladerf"
-        ? `bladeRF${src.serial ? ` · ${src.serial.slice(0, 12)}` : ""}`
-      : src.type === "usrp"
-        ? `USRP${src.args ? ` · ${src.args}` : ""}`
-        : src.type === "soapy"
-          ? `SoapySDR${src.args ? ` · ${src.args}` : ""}`
-          : `Capture · ${src.path.split(/[\\/]/).pop()}`;
+const sourceLabel = (src: Source) => {
+  if (src.type === "file") return `Capture · ${src.path.split(/[\\/]/).pop()}`;
+  const id = deviceId(src);
+  return `${SOURCE_KINDS[src.type].label}${id ? ` · ${id.length > 16 ? `${id.slice(0, 12)}…` : id}` : ""}`;
+};
 
 function ImportReview(props: { s: AppState; c: Config; loaded: Loaded; onBack: () => void; onDone: () => void }) {
   const { s, c, loaded } = props;
@@ -1927,7 +1905,7 @@ function ImportReview(props: { s: AppState; c: Config; loaded: Loaded; onBack: (
     const radios: ImportTodo[] = cfg.sources.flatMap((src, index): ImportTodo[] => {
       if (!bringsSource(index)) return [];
       if (src.type === "rtlsdr" && src.serial && sourceState(src, s).tone !== "ok") return [{ kind: "source", index, serial: src.serial }];
-      if ((src.type === "usrp" || src.type === "airspy" || src.type === "bladerf" || src.type === "soapy") && sourceState(src, s).tone === "bad") return [{ kind: "driver", index, driver: src.type }];
+      if (needsDriver(src) && sourceState(src, s).tone === "bad") return [{ kind: "driver", index, driver: src.type }];
       return [];
     });
     const plugins: ImportTodo[] = !can("plugins") ? [] : result.plugins.map((p) => ({ kind: "plugin", id: p.id, name: s.plugins?.plugins.find((x) => x.id === p.id)?.manifest?.name ?? p.name }));

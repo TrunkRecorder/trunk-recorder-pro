@@ -2,13 +2,11 @@ import { Fragment, useId, useRef, useState } from "react";
 import {
   activeSites,
   activeSystems,
-  AIRSPY_RATES,
   AM_LOW_CUT_MAX_HZ,
   BANDWIDTH_PRESETS,
   defaultBandwidthKhz,
   SQUELCH_HANG_MAX_MS,
   SQUELCH_OPEN_MAX_MS,
-  BLADERF_RATES,
   channelsToCsv,
   channelTalkgroups,
   defaultLog,
@@ -16,13 +14,8 @@ import {
   formatFromPath,
   formatMhz,
   mhzCell,
-  newAirspy,
-  newBladerf,
   newConventional,
   newDongle,
-  newFile,
-  newSoapy,
-  newUsrp,
   nextTalkgroup,
   parseChannelCsv,
   parseFreqList,
@@ -32,15 +25,16 @@ import {
   sameOnTheAir,
   siteActive,
   siteNameOf,
-  SAMPLE_RATES,
-  SOAPY_RATES,
   sourceCovering,
   systemColor,
-  USRP_RATES,
   usableHalfWidth,
   siteLockFields,
   siteText,
   systemType,
+  deviceKey,
+  needsDriver,
+  sourceKey,
+  SOURCE_KINDS,
 } from "./config.ts";
 import {
   can,
@@ -340,35 +334,48 @@ function RateInput(props: { hz: number; options: number[]; onChange: (hz: number
 }
 
 /** Why an optional driver can't be used, and how to install it. */
-function DriverMissing(props: { kind: "usrp" | "airspy" | "bladerf" | "soapy"; detail: string }) {
+function DriverMissing(props: { kind: Source["type"]; detail: string }) {
+  const k = SOURCE_KINDS[props.kind];
+  const d = k.driver;
+  if (!d) return null;
   return (
     <div className="banner bad small wide">
-      {props.kind === "soapy" ? (
-        <span>
-          SoapySDR support needs <b>SoapySDR</b> and your radio&apos;s module, which weren&apos;t found ({props.detail}). Install them — macOS:{" "}
-          <code>brew install soapysdr soapyhackrf</code>; Debian/Ubuntu: <code>sudo apt install soapysdr0.8-module-all</code>; Windows: PothosSDR or
-          radioconda — then restart Trunk Recorder Pro.
-        </span>
-      ) : props.kind === "bladerf" ? (
-        <span>
-          bladeRF support needs <b>libbladeRF 2.x</b>, which wasn&apos;t found ({props.detail}). Install it — Debian/Ubuntu:{" "}
-          <code>sudo apt install libbladerf2 bladerf-fpga-hostedxa4</code> (or Nuand&apos;s PPA, <code>ppa:nuandllc/bladerf</code>); macOS:{" "}
-          <code>brew install libbladerf</code>; Windows: Nuand&apos;s bladeRF installer — then restart Trunk Recorder Pro.
-        </span>
-      ) : props.kind === "usrp" ? (
-        <span>
-          USRP support needs <b>UHD</b>, which wasn&apos;t found ({props.detail}). Install it — macOS: <code>brew install uhd</code>; Debian/Ubuntu:{" "}
-          <code>sudo apt install libuhd-dev uhd-host</code>; Windows: Ettus&apos;s UHD installer — then run <code>uhd_images_downloader</code> and restart
-          Trunk Recorder Pro.
-        </span>
-      ) : (
-        <span>
-          Airspy support needs <b>libairspy</b>, which wasn&apos;t found ({props.detail}). Install it — macOS: <code>brew install airspy</code>; Debian/Ubuntu:{" "}
-          <code>sudo apt install libairspy0</code>; Windows: put <code>airspy.dll</code> (from airspy-tools) next to <code>trunk-pro.exe</code> — then
-          restart Trunk Recorder Pro.
-        </span>
-      )}
+      <span>
+        {k.label} support needs <b>{d.name}</b>, which wasn&apos;t found ({props.detail}). Install it — macOS: <code>{d.macos}</code>; Debian/Ubuntu:{" "}
+        <code>{d.linux}</code>; Windows: {d.windows} — then {d.then ? `${d.then} and ` : ""}restart Trunk Recorder Pro.
+      </span>
     </div>
+  );
+}
+
+/** A radio picked by serial from those its driver found (Airspy, bladeRF). */
+function SerialPicker(props: { kind: "airspy" | "bladerf"; serial: string; used: Set<string>; onChange: (serial: string) => void }) {
+  const s = useApp();
+  const { kind, serial, used } = props;
+  const k = SOURCE_KINDS[kind];
+  const state = s.radios?.[kind];
+  const devices = state?.devices ?? [];
+  return (
+    <Field label={k.label} hint={devices.length ? state?.detail : `${state?.detail ?? k.driver?.name} · none found — plug one in and press Refresh`}>
+      <div className="row">
+        <select value={serial} onChange={(e) => props.onChange(e.target.value)}>
+          <option value="">First available</option>
+          {serial && !devices.some((d) => d.serial === serial) && <option value={serial}>SN {serial} (not connected)</option>}
+          {devices.map((d) => {
+            const inUse = used.has(deviceKey(kind, d.serial ?? ""));
+            return (
+              <option key={d.serial} value={d.serial} disabled={inUse}>
+                {d.label}
+                {inUse ? " (in use)" : ""}
+              </option>
+            );
+          })}
+        </select>
+        <button className="btn ghost small" disabled={s.findingRadios} onClick={findRadios}>
+          Refresh
+        </button>
+      </div>
+    </Field>
   );
 }
 
@@ -598,14 +605,6 @@ function GainStages(props: { i: number; gains: Record<string, number>; disabled:
   );
 }
 
-const KINDS: { kind: Source["type"]; label: string; drivers?: boolean }[] = [
-  { kind: "rtlsdr", label: "RTL-SDR" },
-  { kind: "usrp", label: "USRP", drivers: true },
-  { kind: "airspy", label: "Airspy", drivers: true },
-  { kind: "bladerf", label: "bladeRF", drivers: true },
-  { kind: "soapy", label: "SoapySDR", drivers: true },
-  { kind: "file", label: "Capture file" },
-];
 
 /** `fresh`: just added (measuring its roll-off is offered). */
 function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?: () => void }) {
@@ -618,16 +617,18 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
   const setKind = (kind: Source["type"]) =>
     updateConfig((x) => {
       const old = x.sources[i];
-      const fresh = kind === "rtlsdr" ? newDongle() : kind === "usrp" ? newUsrp() : kind === "airspy" ? newAirspy() : kind === "bladerf" ? newBladerf() : kind === "soapy" ? newSoapy() : newFile();
-      x.sources[i] = { ...fresh, centerHz: old.centerHz } as Source;
+      x.sources[i] = { ...SOURCE_KINDS[kind].fresh(), centerHz: old.centerHz } as Source;
     });
   const fileRef = useRef<HTMLInputElement>(null);
   const others = c.sources.filter((_, k) => k !== i);
-  const used = new Set(others.map((x) => (x.type === "rtlsdr" ? `r:${x.serial}` : x.type === "airspy" ? `a:${x.serial}` : x.type === "bladerf" ? `b:${x.serial}` : x.type === "usrp" ? `u:${x.args}` : x.type === "soapy" ? `s:${x.args}` : "")));
+  const used = new Set(others.map(sourceKey));
   const radios = s.radios;
+  // Its driver isn't installed (desktop app).
+  const driverState = needsDriver(src) ? radios?.[src.type] : undefined;
+  const missing = !!driverState && !driverState.available;
   const needs = useNeed()(`src-${i}`);
 
-  const kindLabel = KINDS.find((k) => k.kind === src.type)?.label ?? src.type;
+  const kindLabel = SOURCE_KINDS[src.type].label;
   const tuned = src.centerHz || auto;
 
   return (
@@ -667,11 +668,13 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
         <div className="field wide">
           <span className="field-label">Kind</span>
           <div className="seg small" role="radiogroup" aria-label={`Source ${i + 1} kind`}>
-            {KINDS.filter((k) => !k.drivers || can("drivers")).map((k) => (
-              <button key={k.kind} role="radio" aria-checked={src.type === k.kind} className={src.type === k.kind ? "on" : ""} onClick={() => setKind(k.kind)}>
-                {k.label}
-              </button>
-            ))}
+            {(Object.keys(SOURCE_KINDS) as Source["type"][])
+              .filter((k) => !SOURCE_KINDS[k].driver || can("drivers"))
+              .map((k) => (
+                <button key={k} role="radio" aria-checked={src.type === k} className={src.type === k ? "on" : ""} onClick={() => setKind(k)}>
+                  {SOURCE_KINDS[k].label}
+                </button>
+              ))}
           </div>
         </div>
         {src.type === "rtlsdr" && (
@@ -700,10 +703,8 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
           </Field>
         )}
         {src.type === "rtlsdr" && can("drivers") && <UsbTransfers src={src} sources={c.sources} devices={s.devices} edit={edit} />}
-        {src.type === "usrp" &&
-          (radios && !radios.usrp.available ? (
-            <DriverMissing kind="usrp" detail={radios.usrp.detail} />
-          ) : (
+        {missing && <DriverMissing kind={src.type} detail={driverState.detail} />}
+        {src.type === "usrp" && !missing && (
             <Field
               label="USRP"
               hint={
@@ -734,34 +735,15 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
                 </button>
               </div>
             </Field>
-          ))}
+        )}
         {src.type === "usrp" && (
           <Field label="Antenna" hint="e.g. RX2, TX/RX">
             <input className="mono" value={src.antenna} placeholder="default" onChange={(e) => edit((x) => x.type === "usrp" && void (x.antenna = e.target.value.trim()))} />
           </Field>
         )}
-        {src.type === "airspy" &&
-          (radios && !radios.airspy.available ? (
-            <DriverMissing kind="airspy" detail={radios.airspy.detail} />
-          ) : (
-            <Field label="Airspy" hint={radios?.airspy.devices?.length ? radios.airspy.detail : `${radios?.airspy.detail ?? "libairspy"} · none found`}>
-              <div className="row">
-                <select value={src.serial} onChange={(e) => edit((x) => x.type === "airspy" && void (x.serial = e.target.value))}>
-                  <option value="">First available</option>
-                  {src.serial && !(radios?.airspy.devices ?? []).some((d) => d.serial === src.serial) && <option value={src.serial}>SN {src.serial} (not connected)</option>}
-                  {(radios?.airspy.devices ?? []).map((d) => (
-                    <option key={d.serial} value={d.serial} disabled={used.has(`a:${d.serial}`)}>
-                      {d.label}
-                      {used.has(`a:${d.serial}`) ? " (in use)" : ""}
-                    </option>
-                  ))}
-                </select>
-                <button className="btn ghost small" disabled={s.findingRadios} onClick={findRadios}>
-                  Refresh
-                </button>
-              </div>
-            </Field>
-          ))}
+        {(src.type === "airspy" || src.type === "bladerf") && !missing && (
+          <SerialPicker kind={src.type} serial={src.serial} used={used} onChange={(v) => edit((x) => (x.type === "airspy" || x.type === "bladerf") && void (x.serial = v))} />
+        )}
         {src.type === "airspy" && (
           <>
             <Toggle label="Bias-T" hint="Powers an LNA via the antenna cable" checked={src.biasTee} onChange={(v) => edit((x) => x.type === "airspy" && void (x.biasTee = v))} />
@@ -773,35 +755,11 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
             />
           </>
         )}
-        {src.type === "bladerf" &&
-          (radios?.bladerf && !radios.bladerf.available ? (
-            <DriverMissing kind="bladerf" detail={radios.bladerf.detail} />
-          ) : (
-            <Field label="bladeRF" hint={radios?.bladerf?.devices?.length ? radios.bladerf.detail : `${radios?.bladerf?.detail ?? "libbladeRF"} · none found — plug one in and press Refresh`}>
-              <div className="row">
-                <select value={src.serial} onChange={(e) => edit((x) => x.type === "bladerf" && void (x.serial = e.target.value))}>
-                  <option value="">First available</option>
-                  {src.serial && !(radios?.bladerf?.devices ?? []).some((d) => d.serial === src.serial) && <option value={src.serial}>SN {src.serial} (not connected)</option>}
-                  {(radios?.bladerf?.devices ?? []).map((d) => (
-                    <option key={d.serial} value={d.serial} disabled={used.has(`b:${d.serial}`)}>
-                      {d.label}
-                      {used.has(`b:${d.serial}`) ? " (in use)" : ""}
-                    </option>
-                  ))}
-                </select>
-                <button className="btn ghost small" disabled={s.findingRadios} onClick={findRadios}>
-                  Refresh
-                </button>
-              </div>
-            </Field>
-          ))}
         {src.type === "bladerf" && (
           <Toggle label="Bias-T" hint="Powers an LNA via the antenna cable (bladeRF 2.0)" checked={src.biasTee} onChange={(v) => edit((x) => x.type === "bladerf" && void (x.biasTee = v))} />
         )}
         {src.type === "soapy" &&
-          (radios?.soapy && !radios.soapy.available ? (
-            <DriverMissing kind="soapy" detail={radios.soapy.detail} />
-          ) : (
+          (missing ? null : (
             <>
               <Field
                 label="Device"
@@ -823,9 +781,9 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
                   />
                   <datalist id={`soapy-${i}`}>
                     {(radios?.soapy?.devices ?? []).map((d) => (
-                      <option key={d.args} value={d.args} disabled={used.has(`s:${d.args}`)}>
+                      <option key={d.args} value={d.args} disabled={used.has(deviceKey("soapy", d.args))}>
                         {d.label}
-                        {used.has(`s:${d.args}`) ? " (in use)" : ""}
+                        {used.has(deviceKey("soapy", d.args)) ? " (in use)" : ""}
                       </option>
                     ))}
                   </datalist>
@@ -896,13 +854,13 @@ function SourceCard(props: { c: Config; i: number; fresh?: boolean; onFreshDone?
         </Field>
         <Field
           label="Sample rate"
-          hint={src.type === "usrp" ? "MSPS; wider costs more CPU" : src.type === "airspy" ? "R2: 10 or 2.5; Mini: 6 or 3" : src.type === "bladerf" ? "MSPS, 0.52–61.44" : src.type === "soapy" ? "MSPS, one the device supports" : undefined}
+          hint={SOURCE_KINDS[src.type].rateHint}
         >
           <RateInput
             key={src.type}
             hz={src.rateHz}
-            free={src.type === "usrp" || src.type === "bladerf" || src.type === "soapy" || (src.type === "file" && can("service"))}
-            options={src.type === "usrp" ? USRP_RATES : src.type === "airspy" ? AIRSPY_RATES : src.type === "bladerf" ? BLADERF_RATES : src.type === "soapy" ? SOAPY_RATES : src.type === "file" ? [...SAMPLE_RATES, 8_000_000, 10_000_000] : SAMPLE_RATES}
+            free={!!SOURCE_KINDS[src.type].freeRate || (src.type === "file" && can("service"))}
+            options={SOURCE_KINDS[src.type].rates}
             onChange={(hz) => edit((x) => void (x.rateHz = hz))}
           />
         </Field>

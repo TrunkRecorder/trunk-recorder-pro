@@ -10,6 +10,23 @@ pub mod bladerf;
 pub mod soapy;
 pub mod uhd;
 
+/// The frequency to ask a radio for: a reference off by `ppm` makes a
+/// requested f come out at f·(1 + ppm).
+pub fn ppm_corrected(hz: f64, ppm: f64) -> f64 {
+    hz / (1.0 + ppm * 1e-6)
+}
+
+/// A C string from a driver ("" for null).
+///
+/// SAFETY (callers): `p` is null or NUL-terminated.
+pub unsafe fn cstr(p: *const std::ffi::c_char) -> String {
+    if p.is_null() {
+        return String::new();
+    }
+    // SAFETY: as the caller promises.
+    unsafe { std::ffi::CStr::from_ptr(p) }.to_string_lossy().into_owned()
+}
+
 use std::path::PathBuf;
 
 use libloading::Library;

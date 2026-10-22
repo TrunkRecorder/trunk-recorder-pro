@@ -84,8 +84,7 @@ export interface SoapyState extends DriverState {
 export interface Radios {
   usrp: DriverState;
   airspy: DriverState;
-  /** Older recorders don't report it. */
-  bladerf?: DriverState;
+  bladerf: DriverState;
   soapy?: SoapyState;
 }
 

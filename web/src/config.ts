@@ -1,6 +1,6 @@
 // Config helpers for the setup form (the recorder validates again).
 
-import type { Channel, Config, Conventional, FccLicense, FccLicenses, LogSettings, RecordingOverride, Site, SiteIdentity, Source, System, SystemStatus, UnitNames } from "./protocol.ts";
+import type { Channel, Config, Conventional, FccLicense, FccLicenses, LogSettings, Radios, RecordingOverride, Site, SiteIdentity, Source, System, SystemStatus, UnitNames } from "./protocol.ts";
 import { normalizeTalkgroupCsv, splitCsvLine } from "./talkgroups.ts";
 import { dmrTalkgroup } from "./tones.ts";
 import { defaultConfig, parseChannelCsv, readConfig, usableHalfWidth } from "./rules.ts";
@@ -44,6 +44,108 @@ export function newSoapy(): Source {
 }
 export function newFile(): Source {
   return { type: "file", path: "", centerHz: 0, rateHz: 2_400_000, realtime: true, format: "cu8" };
+}
+
+export type Os = "windows" | "macos" | "linux";
+
+/** A driver library a kind of radio needs (desktop app), and how to install it. */
+export interface Driver {
+  /** "libairspy", "UHD". */
+  name: string;
+  /** Install commands, and what to do on Windows. */
+  macos: string;
+  linux: string;
+  windows: string;
+  /** A step after installing ("run uhd_images_downloader"). */
+  then?: string;
+}
+
+/**
+ * What the interface knows of each kind of source — Setup's card, the setup
+ * guide, the survey, the import. Adding a radio starts here (and in protocol.ts).
+ */
+export interface SourceKind {
+  label: string;
+  /** A new source of this kind. */
+  fresh: () => Source;
+  /** Sample rates offered; `freeRate`: any other can be typed too. */
+  rates: number[];
+  freeRate?: boolean;
+  rateHint?: string;
+  /** The field that names its device ("" = the first found). */
+  device?: "serial" | "args";
+  /** The library it needs, loaded at run time (desktop app only). */
+  driver?: Driver;
+  /** The name SoapySDR lists it under, when this source drives it natively. */
+  soapyDriver?: string;
+  /** The radios it covers, when its name doesn't say ("HackRF, SDRplay…"). */
+  covers?: string;
+}
+
+export const SOURCE_KINDS: Record<Source["type"], SourceKind> = {
+  rtlsdr: { label: "RTL-SDR", fresh: newDongle, rates: SAMPLE_RATES, device: "serial", soapyDriver: "rtlsdr" },
+  usrp: {
+    label: "USRP",
+    fresh: newUsrp,
+    rates: USRP_RATES,
+    freeRate: true,
+    rateHint: "MSPS; wider costs more CPU",
+    device: "args",
+    driver: { name: "UHD", macos: "brew install uhd", linux: "sudo apt install libuhd-dev uhd-host", windows: "Ettus's UHD installer", then: "run uhd_images_downloader" },
+    soapyDriver: "uhd",
+  },
+  airspy: {
+    label: "Airspy",
+    fresh: newAirspy,
+    rates: AIRSPY_RATES,
+    rateHint: "R2: 10 or 2.5; Mini: 6 or 3",
+    device: "serial",
+    driver: { name: "libairspy", macos: "brew install airspy", linux: "sudo apt install libairspy0", windows: "put airspy.dll (from airspy-tools) next to trunk-pro.exe" },
+    soapyDriver: "airspy",
+  },
+  bladerf: {
+    label: "bladeRF",
+    fresh: newBladerf,
+    rates: BLADERF_RATES,
+    freeRate: true,
+    rateHint: "MSPS, 0.52–61.44",
+    device: "serial",
+    driver: { name: "libbladeRF 2.x", macos: "brew install libbladerf", linux: "sudo apt install libbladerf2 bladerf-fpga-hostedxa4", windows: "Nuand's bladeRF installer" },
+    soapyDriver: "bladerf",
+  },
+  soapy: {
+    label: "SoapySDR",
+    fresh: newSoapy,
+    rates: SOAPY_RATES,
+    freeRate: true,
+    rateHint: "MSPS, one the device supports",
+    device: "args",
+    driver: { name: "SoapySDR and your radio's module", macos: "brew install soapysdr soapyhackrf", linux: "sudo apt install soapysdr0.8-module-all", windows: "PothosSDR or radioconda" },
+    covers: "HackRF, SDRplay, LimeSDR, PlutoSDR…",
+  },
+  file: { label: "Capture file", fresh: newFile, rates: [...SAMPLE_RATES, 8_000_000, 10_000_000] },
+};
+
+/** The kinds of source that need a driver (and so the desktop app): the recorder reports each in `radios`. */
+export type DriverKind = keyof Radios;
+export const DRIVER_KINDS = (Object.keys(SOURCE_KINDS) as Source["type"][]).filter((k): k is DriverKind => !!SOURCE_KINDS[k].driver);
+/** A source that needs a driver, and so the desktop app. */
+export const needsDriver = (x: Source): x is Extract<Source, { type: DriverKind }> => !!SOURCE_KINDS[x.type].driver;
+
+/** The device a source names ("" = the first found, or a file). */
+export function deviceId(x: Source): string {
+  const f = SOURCE_KINDS[x.type].device;
+  return f ? ((x as Record<string, unknown>)[f] as string) : "";
+}
+
+/** A device's key ("airspy:…"): two sources with one aren't both used. */
+export const deviceKey = (type: Source["type"], id: string) => `${type}:${id}`;
+export const sourceKey = (x: Source) => deviceKey(x.type, deviceId(x));
+
+/** A new source of `type` for device `id`. */
+export function sourceFor(type: Source["type"], id: string): Source {
+  const k = SOURCE_KINDS[type];
+  return (k.device ? { ...k.fresh(), [k.device]: id } : k.fresh()) as Source;
 }
 
 /** A capture's sample format from its name (as the recorder guesses it). */
@@ -487,7 +589,7 @@ export type ImportTodo =
   /** An RTL-SDR that wasn't free when imported (`serial` as configured). */
   | { kind: "source"; index: number; serial: string }
   /** A source whose driver isn't installed here. */
-  | { kind: "driver"; index: number; driver: "usrp" | "airspy" | "bladerf" | "soapy" }
+  | { kind: "driver"; index: number; driver: DriverKind }
   /** Conventional squelch means something else here (a conventional system's). */
   | { kind: "squelch"; system: string }
   /** Trunk Recorder plugins with no counterpart here. */
@@ -654,8 +756,7 @@ export function trConfigFiles(text: string): { file: string; kind: "talkgroups" 
 const baseName = (path: string) => path.split(/[\\/]/).pop() ?? path;
 
 /** Which device a source is, when it names one (null: the first free, or a file). */
-const deviceOf = (s: Source): string | null =>
-  s.type === "rtlsdr" || s.type === "airspy" ? (s.serial ? `${s.type}:${s.serial}` : null) : s.type === "usrp" || s.type === "soapy" ? (s.args ? `${s.type}:${s.args}` : null) : null;
+const deviceOf = (s: Source): string | null => (deviceId(s) ? sourceKey(s) : null);
 
 /**
  * Import a Trunk Recorder config.json: its sources (one per dongle / SDR),

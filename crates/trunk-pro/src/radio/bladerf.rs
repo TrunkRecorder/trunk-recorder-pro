@@ -6,7 +6,7 @@
 //! through the synchronous interface as SC16 Q11 with metadata, so overruns
 //! show as gaps in the sample timestamps and are reported as dropped.
 
-use std::ffi::{c_char, c_int, c_uint, c_void, CStr, CString};
+use std::ffi::{c_char, c_int, c_uint, c_void, CString};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, OnceLock};
@@ -15,8 +15,8 @@ use std::time::Duration;
 use libloading::Library;
 use num_complex::Complex32;
 
-use super::DriverInfo;
-use crate::sdr::{Control, SourceMsg};
+use super::{cstr, ppm_corrected, DriverInfo};
+use crate::sdr::{Applied, Control, SourceMsg, Tunable};
 
 type Dev = *mut c_void;
 
@@ -171,14 +171,6 @@ unsafe fn report_gain(a: &Api, dev: Dev) -> Option<(c_int, c_int)> {
     unsafe { (gm(dev, RX0, &mut mode) == 0 && gg(dev, RX0, &mut gain) == 0).then_some((mode, gain)) }
 }
 
-fn cstr(p: *const c_char) -> String {
-    if p.is_null() {
-        return String::new();
-    }
-    // SAFETY: a NUL-terminated string from libbladeRF.
-    unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned()
-}
-
 fn carr(a: &[c_char]) -> String {
     let bytes: Vec<u8> = a.iter().take_while(|&&c| c != 0).map(|&c| c as u8).collect();
     String::from_utf8_lossy(&bytes).into_owned()
@@ -191,7 +183,8 @@ pub fn info() -> DriverInfo {
             let mut v = Version { major: 0, minor: 0, patch: 0, describe: std::ptr::null() };
             // SAFETY: fills the struct.
             unsafe { (a.version)(&mut v) };
-            let d = cstr(v.describe);
+            // SAFETY: libbladeRF's static version string (or null).
+            let d = unsafe { cstr(v.describe) };
             DriverInfo { loaded: true, detail: format!("libbladeRF {}", if d.is_empty() { format!("{}.{}.{}", v.major, v.minor, v.patch) } else { d }) }
         }
         Err(e) => DriverInfo { loaded: false, detail: format!("libbladeRF {e}") },
@@ -202,7 +195,7 @@ fn check(a: &Api, what: &str, r: c_int) -> Result<(), String> {
     if r == 0 {
         return Ok(());
     }
-    Err(format!("bladeRF {what}: {}", cstr(unsafe { (a.strerror)(r) })))
+    Err(format!("bladeRF {what}: {}", unsafe { cstr((a.strerror)(r)) }))
 }
 
 /// Attached bladeRFs: [{serial, label}].
@@ -263,6 +256,22 @@ struct Device<'a> {
     a: &'a Api,
     dev: Dev,
     enabled: bool,
+    ppm: f64,
+}
+
+impl Tunable for Device<'_> {
+    fn tune(&mut self, hz: f64) -> Result<f64, String> {
+        // SAFETY: an open device.
+        check(self.a, "tune", unsafe { (self.a.set_frequency)(self.dev, RX0, ppm_corrected(hz, self.ppm).round() as u64) })?;
+        Ok(hz)
+    }
+    fn set_gain(&mut self, db: f32) -> Result<(), String> {
+        // SAFETY: an open device.
+        unsafe {
+            check(self.a, "manual gain", (self.a.set_gain_mode)(self.dev, RX0, GAIN_MGC))?;
+            check(self.a, "gain", (self.a.set_gain)(self.dev, RX0, db.round() as c_int))
+        }
+    }
 }
 
 impl Drop for Device<'_> {
@@ -293,11 +302,6 @@ fn identifier(serial: &str) -> String {
     }
 }
 
-/// The frequency to ask for, so that a reference off by `ppm` lands on `hz`.
-fn corrected(hz: f64, ppm: f64) -> u64 {
-    (hz / (1.0 + ppm * 1e-6)).round() as u64
-}
-
 fn stream_once(source: usize, cfg: &BladerfConfig, tx: &SyncSender<SourceMsg>, stop: &AtomicBool, ctl: Option<&Control>) -> Result<(), String> {
     let a = api()?;
     let id = CString::new(identifier(&cfg.serial)).map_err(|e| e.to_string())?;
@@ -306,7 +310,7 @@ fn stream_once(source: usize, cfg: &BladerfConfig, tx: &SyncSender<SourceMsg>, s
     unsafe {
         let r = (a.open)(&mut dev, if cfg.serial.trim().is_empty() { std::ptr::null() } else { id.as_ptr() });
         check(a, &format!("open {}", if cfg.serial.is_empty() { "(first)" } else { &cfg.serial }), r)?;
-        let mut d = Device { a, dev, enabled: false };
+        let mut d = Device { a, dev, enabled: false, ppm: cfg.ppm };
         let board = cstr((a.get_board_name)(d.dev));
 
         let want = cfg.rate_hz.round() as c_uint;
@@ -318,7 +322,7 @@ fn stream_once(source: usize, cfg: &BladerfConfig, tx: &SyncSender<SourceMsg>, s
         let bw = if cfg.bandwidth_hz > 0.0 { cfg.bandwidth_hz } else { cfg.rate_hz };
         let mut bw_actual: c_uint = 0;
         check(a, "bandwidth", (a.set_bandwidth)(d.dev, RX0, bw.round() as c_uint, &mut bw_actual))?;
-        check(a, "tune", (a.set_frequency)(d.dev, RX0, corrected(cfg.center_hz, cfg.ppm)))?;
+        d.tune(cfg.center_hz)?;
         set_gain(a, d.dev, cfg)?;
         match a.set_bias_tee {
             Some(f) => {
@@ -360,22 +364,11 @@ fn stream_once(source: usize, cfg: &BladerfConfig, tx: &SyncSender<SourceMsg>, s
         let mut timeouts = 0;
         while !stop.load(Ordering::Relaxed) {
             if let Some(c) = ctl {
-                let (freq, gain) = c.take();
-                if let Some(f) = freq {
-                    check(a, "tune", (a.set_frequency)(d.dev, RX0, corrected(f, cfg.ppm)))?;
-                    *c.current_hz.lock().unwrap() = Some(f);
-                }
-                if let Some(g) = gain {
-                    check(a, "manual gain", (a.set_gain_mode)(d.dev, RX0, GAIN_MGC))?;
-                    check(a, "gain", (a.set_gain)(d.dev, RX0, g.round() as c_int))?;
-                }
-                if freq.is_some() || gain.is_some() {
-                    let hz = c.current_hz.lock().unwrap().unwrap_or(cfg.center_hz);
+                match c.apply(&mut d, cfg.center_hz, tx)? {
                     // Samples already queued are from before the change: start over.
-                    next_t = None;
-                    if tx.send(SourceMsg::Tuned { center_hz: hz }).is_err() {
-                        return Ok(());
-                    }
+                    Applied::Tuned => next_t = None,
+                    Applied::Closed => return Ok(()),
+                    Applied::Nothing => {}
                 }
             }
             let mut md = Metadata { timestamp: 0, flags: META_FLAG_RX_NOW, status: 0, actual_count: 0, reserved: [0; 32] };
@@ -404,7 +397,7 @@ fn stream_once(source: usize, cfg: &BladerfConfig, tx: &SyncSender<SourceMsg>, s
             if n == 0 {
                 continue;
             }
-            let samples: Vec<Complex32> = raw[..n * 2].chunks_exact(2).map(|p| Complex32::new(p[0] as f32 / 2048.0, p[1] as f32 / 2048.0)).collect();
+            let samples: Vec<Complex32> = raw[..n * 2].as_chunks::<2>().0.iter().map(|&[i, q]| Complex32::new(i as f32 / 2048.0, q as f32 / 2048.0)).collect();
             if tx.send(SourceMsg::Iq { source, samples, dropped, at }).is_err() {
                 return Ok(());
             }

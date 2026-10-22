@@ -2,7 +2,7 @@
 // systems set up apart that are one on the air. `npm test`.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { activeSites, defaultConfig, importTrunkRecorderConfig, nameProblem, newSiteName, newSystem, normalizeSystem, planCenters, resolvedCenters, usableHalfWidth, sameOnTheAir, siteNameOf, startProblem } from "./config.ts";
+import { activeSites, defaultConfig, deviceId, DRIVER_KINDS, importTrunkRecorderConfig, nameProblem, newSiteName, newSystem, normalizeSystem, planCenters, resolvedCenters, usableHalfWidth, sameOnTheAir, siteNameOf, SOURCE_KINDS, sourceFor, sourceKey, startProblem } from "./config.ts";
 import type { Config, SiteIdentity, SiteStatus, SystemStatus } from "./protocol.ts";
 
 test("normalizeSystem: an older config's system gets its site; a system with sites keeps them", () => {
@@ -79,4 +79,20 @@ test("the first-run guide places radios with the recorder's planner: the busiest
   assert.equal(first, 851_400_000);
   assert.ok(second !== null && voice.every((v) => Math.abs(v.hz - second) <= usableHalfWidth(rtl.rateHz) && Math.abs(v.hz - second) >= 25_000), String(second));
   assert.equal(file, 860_000_000);
+});
+
+test("SOURCE_KINDS: each kind's new source is that kind, and names its device where it has one", () => {
+  for (const [type, k] of Object.entries(SOURCE_KINDS) as [keyof typeof SOURCE_KINDS, (typeof SOURCE_KINDS)[keyof typeof SOURCE_KINDS]][]) {
+    assert.equal(k.fresh().type, type);
+    if (k.device) assert.equal(deviceId(sourceFor(type, "x1")), "x1", type);
+  }
+  assert.deepEqual(DRIVER_KINDS, ["usrp", "airspy", "bladerf", "soapy"]);
+  assert.equal(sourceKey(sourceFor("bladerf", "f12ce103")), "bladerf:f12ce103");
+});
+
+test("importing a bladeRF already set up keeps one source", () => {
+  const tr = JSON.stringify({ sources: [{ center: 857e6, rate: 8e6, gain: 40, device: "bladerf=f12ce103" }], systems: [] });
+  const once = importTrunkRecorderConfig(tr, defaultConfig()).config;
+  const twice = importTrunkRecorderConfig(tr, once, {}, true).config;
+  assert.equal(twice.sources.filter((x) => x.type === "bladerf").length, 1);
 });

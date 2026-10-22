@@ -3,7 +3,7 @@
 //! or the Ettus PPA), or the Ettus installer on Windows — plus the FPGA
 //! images (`uhd_images_downloader`) that UHD needs to open a device.
 
-use std::ffi::{c_char, c_int, c_void, CStr, CString};
+use std::ffi::{c_char, c_int, c_void, CString};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, OnceLock};
@@ -12,8 +12,8 @@ use std::time::Duration;
 use libloading::Library;
 use num_complex::Complex32;
 
-use super::DriverInfo;
-use crate::sdr::{Control, SourceMsg};
+use super::{cstr, ppm_corrected, DriverInfo};
+use crate::sdr::{Applied, Control, SourceMsg, Tunable};
 
 type Handle = *mut c_void;
 type Err = c_int;
@@ -154,17 +154,12 @@ pub fn info() -> DriverInfo {
             let v = a.get_version_string.map(|f| {
                 // SAFETY: buffer and its length.
                 unsafe { f(buf.as_mut_ptr(), buf.len()) };
-                cstr(&buf)
+                unsafe { cstr(buf.as_ptr()) }
             });
             DriverInfo { loaded: true, detail: format!("UHD {}", v.unwrap_or_else(|| "(version unknown)".into())) }
         }
         Err(e) => DriverInfo { loaded: false, detail: format!("UHD {e}") },
     }
-}
-
-fn cstr(buf: &[c_char]) -> String {
-    // SAFETY: UHD NUL-terminates within the buffer we gave it.
-    unsafe { CStr::from_ptr(buf.as_ptr()) }.to_string_lossy().into_owned()
 }
 
 fn check(a: &Api, what: &str, e: Err) -> Result<(), String> {
@@ -174,7 +169,7 @@ fn check(a: &Api, what: &str, e: Err) -> Result<(), String> {
     let mut buf = [0 as c_char; 512];
     // SAFETY: buffer and its length.
     unsafe { (a.get_last_error)(buf.as_mut_ptr(), buf.len()) };
-    let msg = cstr(&buf);
+    let msg = unsafe { cstr(buf.as_ptr()) };
     Err(format!("USRP {what}: {}", if msg.is_empty() { format!("UHD error {e}") } else { msg }))
 }
 
@@ -195,7 +190,7 @@ pub fn find(args: &str) -> Result<Vec<String>, String> {
         for i in 0..n {
             let mut buf = [0 as c_char; 512];
             if (a.string_vector_at)(v, i, buf.as_mut_ptr(), buf.len()) == 0 {
-                out.push(cstr(&buf));
+                out.push(cstr(buf.as_ptr()));
             }
         }
         (a.string_vector_free)(&mut v);
@@ -254,6 +249,28 @@ struct Session<'a> {
     rx: Handle,
     md: Handle,
     streaming: bool,
+    ppm: f64,
+}
+
+impl Tunable for Session<'_> {
+    fn tune(&mut self, hz: f64) -> Result<f64, String> {
+        let mut req = TuneRequest {
+            target_freq: ppm_corrected(hz, self.ppm),
+            rf_freq_policy: POLICY_AUTO,
+            rf_freq: 0.0,
+            dsp_freq_policy: POLICY_AUTO,
+            dsp_freq: 0.0,
+            args: std::ptr::null_mut(),
+        };
+        let mut res = TuneResult::default();
+        // SAFETY: an open USRP; the request and result are live locals.
+        check(self.a, "tune", unsafe { (self.a.set_rx_freq)(self.usrp, &mut req, 0, &mut res) })?;
+        Ok(hz)
+    }
+    fn set_gain(&mut self, db: f32) -> Result<(), String> {
+        // SAFETY: an open USRP.
+        check(self.a, "set gain", unsafe { (self.a.set_rx_gain)(self.usrp, db as f64, 0, c"".as_ptr()) })
+    }
 }
 
 impl Drop for Session<'_> {
@@ -279,7 +296,7 @@ impl Drop for Session<'_> {
 
 fn stream_once(source: usize, cfg: &UsrpConfig, tx: &SyncSender<SourceMsg>, stop: &AtomicBool, ctl: Option<&Control>) -> Result<(), String> {
     let a = api()?;
-    let mut s = Session { a, usrp: std::ptr::null_mut(), rx: std::ptr::null_mut(), md: std::ptr::null_mut(), streaming: false };
+    let mut s = Session { a, usrp: std::ptr::null_mut(), rx: std::ptr::null_mut(), md: std::ptr::null_mut(), streaming: false, ppm: cfg.ppm };
     let args = CString::new(device_args(&cfg.args)).map_err(|e| e.to_string())?;
     // SAFETY: UHD C API calls on handles this session owns.
     unsafe {
@@ -304,17 +321,7 @@ fn stream_once(source: usize, cfg: &UsrpConfig, tx: &SyncSender<SourceMsg>, stop
             }
             check(a, "set gain", (a.set_rx_gain)(s.usrp, cfg.gain_db, 0, c"".as_ptr()))?;
         }
-        // A reference off by `ppm` makes a requested f come out at f·(1+ppm).
-        let mut req = TuneRequest {
-            target_freq: cfg.center_hz / (1.0 + cfg.ppm * 1e-6),
-            rf_freq_policy: POLICY_AUTO,
-            rf_freq: 0.0,
-            dsp_freq_policy: POLICY_AUTO,
-            dsp_freq: 0.0,
-            args: std::ptr::null_mut(),
-        };
-        let mut res = TuneResult::default();
-        check(a, "tune", (a.set_rx_freq)(s.usrp, &mut req, 0, &mut res))?;
+        s.tune(cfg.center_hz)?;
 
         let (cpu, otw, sargs) = (c"fc32".to_owned(), c"sc16".to_owned(), c"".to_owned());
         let mut chan = [0usize];
@@ -339,22 +346,10 @@ fn stream_once(source: usize, cfg: &UsrpConfig, tx: &SyncSender<SourceMsg>, stop
         let mut next_t: Option<f64> = None;
         let mut timeouts = 0;
         while !stop.load(Ordering::Relaxed) {
-            if let Some(c) = ctl {
-                let (freq, gain) = c.take();
-                if let Some(f) = freq {
-                    let mut req = TuneRequest { target_freq: f / (1.0 + cfg.ppm * 1e-6), ..req };
-                    check(a, "tune", (a.set_rx_freq)(s.usrp, &mut req, 0, &mut res))?;
-                    *c.current_hz.lock().unwrap() = Some(f);
-                }
-                if let Some(g) = gain {
-                    check(a, "set gain", (a.set_rx_gain)(s.usrp, g as f64, 0, c"".as_ptr()))?;
-                }
-                if freq.is_some() || gain.is_some() {
-                    let hz = c.current_hz.lock().unwrap().unwrap_or(cfg.center_hz);
-                    if tx.send(SourceMsg::Tuned { center_hz: hz }).is_err() {
-                        return Ok(());
-                    }
-                }
+            if let Some(c) = ctl
+                && c.apply(&mut s, cfg.center_hz, tx)? == Applied::Closed
+            {
+                return Ok(());
             }
             let mut buf = vec![Complex32::default(); per];
             let mut ptr = buf.as_mut_ptr() as *mut c_void;

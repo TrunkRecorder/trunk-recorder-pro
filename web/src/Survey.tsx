@@ -7,7 +7,7 @@
 // The recorder does the work (crates/trunk-core/src/survey.rs); this shows it.
 
 import { Fragment, useState } from "react";
-import { formatGain, formatMhz, siteNameOf, systemWithChannel } from "./config.ts";
+import { formatGain, formatMhz, needsDriver, siteNameOf, SOURCE_KINDS, systemWithChannel } from "./config.ts";
 import {
   can,
   addDmrSite,
@@ -486,7 +486,7 @@ export function SurveyPanel(props: { c: Config }) {
   const bands = picked ?? s.surveyBands.filter((b) => b.defaultOn).map((b) => b.id);
   const src = c.sources[Math.min(source, c.sources.length - 1)];
   const active = sv.stage !== "idle";
-  const unsupported = !can("drivers") && (src?.type === "usrp" || src?.type === "airspy" || src?.type === "bladerf" || src?.type === "soapy");
+  const unsupported = !can("drivers") && !!src && needsDriver(src);
   const bandLabel = (id: string) => s.surveyBands.find((b) => b.id === id)?.label ?? id;
 
   if (!s.surveyBands.length) return null;
@@ -524,7 +524,7 @@ export function SurveyPanel(props: { c: Config }) {
                 <select value={source} onChange={(e) => setSource(Number(e.target.value))}>
                   {c.sources.map((x, i) => (
                     <option key={i} value={i}>
-                      Source {i + 1} ({x.type === "rtlsdr" ? "RTL-SDR" : x.type === "usrp" ? "USRP" : x.type === "airspy" ? "Airspy" : x.type === "bladerf" ? "bladeRF" : x.type === "soapy" ? "SoapySDR" : "capture file"})
+                      Source {i + 1} ({SOURCE_KINDS[x.type].label})
                     </option>
                   ))}
                 </select>
@@ -559,7 +559,7 @@ export function SurveyPanel(props: { c: Config }) {
               ))}
             </fieldset>
           )}
-          {unsupported && <p className="warn small">USRP, Airspy, bladeRF and SoapySDR need the desktop app.</p>}
+          {unsupported && <p className="warn small">{SOURCE_KINDS[src.type].label} needs the desktop app.</p>}
           <div className="row">
             <button
               className="btn primary"

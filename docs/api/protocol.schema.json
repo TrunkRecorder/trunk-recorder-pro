@@ -4538,8 +4538,7 @@
           "$ref": "#/definitions/DriverState"
         },
         "bladerf": {
-          "$ref": "#/definitions/DriverState",
-          "description": "Older recorders don't report it."
+          "$ref": "#/definitions/DriverState"
         },
         "soapy": {
           "$ref": "#/definitions/SoapyState"
@@ -4547,7 +4546,8 @@
       },
       "required": [
         "usrp",
-        "airspy"
+        "airspy",
+        "bladerf"
       ],
       "additionalProperties": false
     },
