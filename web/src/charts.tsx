@@ -3,9 +3,10 @@
 // light and dark. Thin marks, recessive axes, a tooltip on hover.
 
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { systemColor } from "./config.ts";
 import { clockAt, ticks } from "./fmt.ts";
 import { useSeries } from "./series.ts";
-import type { SeriesData } from "./protocol.ts";
+import type { Config, SeriesData } from "./protocol.ts";
 
 export type Level = "ok" | "warn" | "bad" | "idle";
 
@@ -19,6 +20,26 @@ const LEVEL_TEXT: Record<Level, string> = { ok: "OK", warn: "Needs attention", b
 /** A status light, with its meaning for screen readers and on hover. */
 export function Light({ level, title }: { level: Level; title?: string }) {
   return <span className={`light light-${level}`} role="img" aria-label={title ?? LEVEL_TEXT[level]} title={title ?? LEVEL_TEXT[level]} />;
+}
+
+/** A system's mark: its colour, square (a status light is round, and wears no system's colour). */
+export function SystemDot({ color }: { color: string }) {
+  return <span className="sys-dot" style={{ background: color }} />;
+}
+
+/**
+ * A system named wherever it's shown: its mark, its name (and what follows,
+ * a site), and a light when something's wrong with it, the why on hover.
+ */
+export function SystemTag({ config, name, health, children }: { config: Config | null | undefined; name: string; health?: { level: Level; why: string }; children?: ReactNode }) {
+  return (
+    <span className="sys-tag">
+      <SystemDot color={systemColor(config, name)} />
+      {name}
+      {children}
+      {health && (health.level === "warn" || health.level === "bad") && <Light level={health.level} title={health.why} />}
+    </span>
+  );
 }
 
 /** ▲ / ▼ and how much, coloured by whether that direction is good. */

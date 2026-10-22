@@ -5,6 +5,82 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Share a system with the community directory** ([trunkrecorder.pro/directory](https://trunkrecorder.pro/directory/)):
+  a switch in each system's Basics (`"share": true`). While it records, the recorder shares what it
+  heard: the sites, their control and voice channels, neighbours, call signs heard on the air, and
+  the talkgroups granted (numbers, how often, where, encrypted or not). Not talkgroup names or
+  anything else typed in, and not a location. It shares after 5 minutes of decoding, then as it
+  hears new talkgroups or voice channels (at most hourly), otherwise daily. Setup shows the last
+  share and links to the system's page; the directory's IDs are kept as `directory` and each site's
+  `directoryId`. P25, SmartNet, DMR and NXDN; desktop and the browser build.
+- **Colours never look like a status light.** Green, amber, orange and red
+  now mean only OK, a warning or a problem. Systems and chart lines share
+  one palette of blues, teal, violets and magenta, and a system's mark is
+  square where a light is round (#40).
+- **A light names what it's about.** With several systems, radios or
+  plugins, the navigation's lights say which one is in trouble: "ipscpend:
+  Calls are being missed…". The Radio page shows the light and why on that
+  system's card, its button in the picker and its "What happened to calls".
+  The Overview's system cards include missed calls, and "Missed, 24 h" says
+  which systems missed them (#41).
+- **Two SDRplay radios in one process:** a second RSP source no longer
+  fails with `SelectDevice() failed`. SoapySDRPlay3 opens one SDRplay API
+  session per process, which can select only one radio, so trunk-pro now
+  opens one more session whenever a source with `driver=sdrplay` in its
+  device arguments opens while another radio is in use (as SDRTrunk does),
+  including after Setup's Restart. Two radios on one USB bus
+  can still run out of bandwidth: 3 + 3 MS/s failed in testing, and
+  2.5 + 6 MS/s worked. A source at 2 MS/s or
+  below runs its radio at 6 MS/s; use separate USB controllers if a
+  pair doesn't fit.
+
+## [0.2.7] — 2026-10-22
+
+- **EDACS** trunked systems (`"type": "edacs"`): Standard and Networked
+  sites (GE / Ericsson / Harris), with their analog FM calls and **ProVoice**
+  digital voice. The 9600 baud control channel is decoded (three copies of
+  each message voted, BCH corrected; a word is kept only when two of its
+  three copies agree), channel numbers turn into frequencies by each site's
+  channel list (`lcnTableHz`, an **EDACS** section in Setup), and
+  ProVoice's IMBE 7100 frames are decoded and spoken by the P25 vocoder.
+  ESK 0xA0 systems are read with `esk`. Extended Addressing isn't decoded
+  yet. Every frequency of a site is watched at once, so the control channel
+  is found wherever it moves, and each LCN's frequency is checked against
+  the air (the carrier that keys when a call is assigned it): a list whose
+  numbers are off is corrected. A site is reported in failsoft only when its site ID says so and it has
+  stopped assigning calls (some sites set the flag and trunk all the same).
+  A site ID is believed once three in
+  a row agree. A grant to the frequency the control channel is on is never
+  followed. The 9600 baud burst at the start of an analog transmission is
+  left out of the audio.
+- **bladeRF** sources (optional; bladeRF 2.0 micro xA4 / xA9 and the
+  original x40 / x115): used when libbladeRF 2.x is installed (`"type":
+  "bladerf"`). Serial, any sample rate to 61.44 MSPS, overall gain or the
+  board's AGC, analog filter bandwidth and bias-T; samples USB drops are
+  counted from the board's timestamps. Trunk Recorder's osmosdr
+  `bladerf=…` sources (and `"driver": "bladerf"`) import as bladeRF sources.
+- **Gain changes apply while recording** on RTL-SDRs and Airspys (the
+  gain and AGC on or off; an Airspy's preset or stages), and on USRPs,
+  bladeRFs and SoapySDR devices (the gain in dB, AGC off), without a Stop
+  and Start; the log says the gain each took, and a radio reopened after an error keeps
+  the gain it was given. Other radio settings still apply when recording
+  starts, which the log says too.
+- **Who is licensed on each frequency.** A system, trunked or conventional, can keep an `fcc` map:
+  the FCC licensee and call sign on each of its frequencies, in an **FCC licenses** table on its
+  card. **Identify** on the card looks them up from a location you give (trunkrecorder.pro's FCC
+  lookup; nothing is sent until you ask, and everything works the same without it). The survey's
+  **Identify surveyed sites** adds a *Licensed to* column, and the setup guide names the systems it
+  finds. Motorola P25 systems fill in their call signs from the air, from the base station ID they
+  send on control and voice channels. Plugins get them in `hello`.
+- **P25 Phase 2:** a Motorola `$83` MAC message no longer hides the messages after it in the same
+  PDU.
+- **Restart.** While recording, a Restart button beside Stop starts the run again with the
+  settings as they are now. Changing a setting that only applies at start (radios, systems,
+  recording options) shows a "Change requires restart" banner. Settings the recorder takes while
+  recording (plugins and their delays, the log, a radio's gain) don't raise it.
+- **A background tab that falls behind reconnects** (Safari and other browsers that slow
+  background tabs instead of freezing them): once it is more than 10 s behind the recorder, it
+  reconnects instead of replaying the backlog when brought forward.
 - **Conventional rows say what they record and what they file it under**: a row's Tone is now
   **Code** (tone, NAC, colour code or RAN), **Slot** (DMR) and **Match TG** (P25, DMR, NXDN), and
   the most specific row that fits takes a transmission. P25 rows can now split a frequency by
@@ -41,35 +117,6 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   air's number is named as its last named call was.
 - **Setup keeps a system's card open while its Short name is typed** (from #53's review): a pause
   saved the edit, and the recorder's copy coming back closed the card.
-- **Gain changes apply while recording** on RTL-SDRs and Airspys (the
-  gain and AGC on or off; an Airspy's preset or stages), and on USRPs,
-  bladeRFs and SoapySDR devices (the gain in dB, AGC off), without a Stop
-  and Start; the log says the gain each took, and a radio reopened after an error keeps
-  the gain it was given. Other radio settings still apply when recording
-  starts, which the log says too.
-- **bladeRF** sources (optional; bladeRF 2.0 micro xA4 / xA9 and the
-  original x40 / x115): used when libbladeRF 2.x is installed (`"type":
-  "bladerf"`). Serial, any sample rate to 61.44 MSPS, overall gain or the
-  board's AGC, analog filter bandwidth and bias-T; samples USB drops are
-  counted from the board's timestamps. Trunk Recorder's osmosdr
-  `bladerf=…` sources (and `"driver": "bladerf"`) import as bladeRF sources.
-- **EDACS** trunked systems (`"type": "edacs"`): Standard and Networked
-  sites (GE / Ericsson / Harris), with their analog FM calls and **ProVoice**
-  digital voice. The 9600 baud control channel is decoded (three copies of
-  each message voted, BCH corrected; a word is kept only when two of its
-  three copies agree), channel numbers turn into frequencies by each site's
-  channel list (`lcnTableHz`, an **EDACS** section in Setup), and
-  ProVoice's IMBE 7100 frames are decoded and spoken by the P25 vocoder.
-  ESK 0xA0 systems are read with `esk`. Extended Addressing isn't decoded
-  yet. Every frequency of a site is watched at once, so the control channel
-  is found wherever it moves, and each LCN's frequency is checked against
-  the air (the carrier that keys when a call is assigned it): a list whose
-  numbers are off is corrected. A site is reported in failsoft only when its site ID says so and it has
-  stopped assigning calls (some sites set the flag and trunk all the same).
-  A site ID is believed once three in
-  a row agree. A grant to the frequency the control channel is on is never
-  followed. The 9600 baud burst at the start of an analog transmission is
-  left out of the audio.
 - **P25 Phase 1 voice repeats fewer good frames.** A frame whose FEC corrected a lot of errors
   is repeated only when the errors fall in its pitch word *and* there are many in total, as
   TIA-102.BABA-A §7.7 has it, not on either one (an `||` inherited from op25, which taclane

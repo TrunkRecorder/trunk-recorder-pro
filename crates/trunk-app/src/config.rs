@@ -314,6 +314,14 @@ pub struct System {
     /// Its FCC licenses by frequency: see [`FccLicenses`].
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub fcc: FccLicenses,
+    /// Share it with the community directory (trunkrecorder.pro/directory):
+    /// what this recorder hears of it, now and then while it's recorded
+    /// ([`crate::share`]).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub share: bool,
+    /// The directory's record of it, once shared (or added from the directory).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub directory: Option<DirectoryLink>,
     #[serde(rename = "type")]
     pub kind: SystemKind,
     pub enabled: bool,
@@ -358,6 +366,9 @@ pub struct Site {
     /// talkgroup file's Preferred Site names it; calls and plugins say it.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub name: String,
+    /// The directory's ID for this site, once shared (or added from the directory).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub directory_id: String,
     pub enabled: bool,
     pub control_channels_hz: Vec<f64>,
     pub modulation: Modulation,
@@ -412,11 +423,25 @@ pub struct Site {
 fn is_zero(v: &f64) -> bool {
     *v == 0.0
 }
+fn is_zero_u64(v: &u64) -> bool {
+    *v == 0
+}
 fn is_zero_u16(v: &u16) -> bool {
     *v == 0
 }
 fn is_default<T: Default + PartialEq>(v: &T) -> bool {
     *v == T::default()
+}
+
+/// A system's record in the community directory: its ID there, the version
+/// this recorder last had of it, and when it last shared it (Unix ms).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct DirectoryLink {
+    pub id: String,
+    pub rev: u64,
+    #[serde(skip_serializing_if = "is_zero_u64")]
+    pub shared_at: u64,
 }
 
 /// A system's FCC licenses, by frequency (Hz on the 6.25 kHz raster, as a
@@ -739,6 +764,8 @@ impl Default for System {
             keys: String::new(),
             short_name: "sys1".into(),
             name: String::new(),
+            share: false,
+            directory: None,
             fcc: BTreeMap::new(),
             kind: SystemKind::P25,
             enabled: true,
@@ -757,6 +784,7 @@ impl Default for Site {
     fn default() -> Self {
         Site {
             name: String::new(),
+            directory_id: String::new(),
             enabled: true,
             control_channels_hz: vec![],
             modulation: Modulation::Auto,
@@ -1809,6 +1837,22 @@ impl Config {
     /// itself), into system `short_name`'s (trunked or conventional)
     /// [`FccLicenses`]: over a lookup's or another heard there, never over
     /// the user's. Whether it changed.
+    /// The directory's answer to a share of system `short_name`: its ID and
+    /// version there, when, and its sites' IDs (`site_ids`, in the order of
+    /// the share's sites, named `site_names`). Whether the config changed.
+    pub fn link_shared(&mut self, short_name: &str, id: &str, rev: u64, site_names: &[String], site_ids: &[String], shared_at: f64) -> bool {
+        let Some(sys) = self.systems.iter_mut().find(|s| s.short_name == short_name) else { return false };
+        let before = sys.clone();
+        sys.directory = Some(DirectoryLink { id: id.to_string(), rev, shared_at: shared_at.max(0.0) as u64 });
+        for (name, sid) in site_names.iter().zip(site_ids) {
+            let names: Vec<String> = sys.sites.iter().map(|t| sys.site_name(t).to_string()).collect();
+            if let Some(k) = names.iter().position(|n| n == name) {
+                sys.sites[k].directory_id = sid.clone();
+            }
+        }
+        *sys != before
+    }
+
     pub fn learn_call_sign(&mut self, short_name: &str, freq_hz: f64, call_sign: &str) -> bool {
         if !plausible_call_sign(call_sign) || freq_hz <= 0.0 {
             return false;

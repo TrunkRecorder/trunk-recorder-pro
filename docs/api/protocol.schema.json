@@ -1073,6 +1073,26 @@
       ],
       "additionalProperties": false
     },
+    "DirectoryLink": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "rev": {
+          "type": "number"
+        },
+        "sharedAt": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "rev"
+      ],
+      "additionalProperties": false,
+      "description": "A system's record in the community directory: its ID, its version when last shared, and when (Unix ms)."
+    },
     "DmrSiteStatus": {
       "type": "object",
       "properties": {
@@ -4978,12 +4998,48 @@
       "additionalProperties": false,
       "description": "One series from the history: points every `stepS` from `t0`; null where nothing was measured."
     },
+    "ShareStatus": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": [
+            "waiting",
+            "shared",
+            "error"
+          ]
+        },
+        "lastShared": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "state",
+        "lastShared",
+        "error"
+      ],
+      "additionalProperties": false,
+      "description": "A shared system's sharing: waiting (to decode it a while first), shared (when last), or its last error."
+    },
     "Site": {
       "type": "object",
       "properties": {
         "name": {
           "type": "string",
           "description": "Its name, unique in its system (absent: the system's short name). The talkgroup file's Preferred Site names it; calls and plugins say it."
+        },
+        "directoryId": {
+          "type": "string",
+          "description": "The community directory's ID for it, from the system's last share."
         },
         "enabled": {
           "type": "boolean"
@@ -6453,6 +6509,14 @@
           "$ref": "#/definitions/FccLicenses",
           "description": "Its FCC licenses by frequency (control, voice): see FccLicenses."
         },
+        "share": {
+          "type": "boolean",
+          "description": "Share it with the community directory (trunkrecorder.pro/directory): its sites, channels, and the talkgroups heard (numbers, how often, encrypted), not their names. P25, SmartNet, DMR and NXDN."
+        },
+        "directory": {
+          "$ref": "#/definitions/DirectoryLink",
+          "description": "The directory's record of it, from its last share (shares land on it)."
+        },
         "type": {
           "type": "string",
           "enum": [
@@ -6561,6 +6625,17 @@
         },
         "callsConcluded": {
           "type": "number"
+        },
+        "share": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ShareStatus"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Its sharing with the community directory; null when it isn't shared."
         },
         "sites": {
           "type": "array",

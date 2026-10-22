@@ -2,8 +2,8 @@
 // systems set up apart that are one on the air. `npm test`.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { activeSites, defaultConfig, deviceId, DRIVER_KINDS, importTrunkRecorderConfig, nameProblem, newSiteName, newSystem, normalizeSystem, planCenters, resolvedCenters, usableHalfWidth, sameOnTheAir, siteNameOf, SOURCE_KINDS, sourceFor, sourceKey, startProblem } from "./config.ts";
-import type { Config, SiteIdentity, SiteStatus, SystemStatus } from "./protocol.ts";
+import { activeSites, defaultConfig, deviceId, DRIVER_KINDS, importTrunkRecorderConfig, nameProblem, newSiteName, newSystem, normalizeSystem, planCenters, resolvedCenters, restartKey, usableHalfWidth, sameOnTheAir, siteNameOf, SOURCE_KINDS, sourceFor, sourceKey, startProblem } from "./config.ts";
+import type { Config, SiteIdentity, SiteStatus, Source, SystemStatus } from "./protocol.ts";
 
 test("normalizeSystem: an older config's system gets its site; a system with sites keeps them", () => {
   const old = normalizeSystem({ shortName: "a", type: "dmr", controlChannelsHz: [452175000], colorCode: 3, modulation: "qpsk", enabled: false, future: 1 } as never);
@@ -95,4 +95,17 @@ test("importing a bladeRF already set up keeps one source", () => {
   const once = importTrunkRecorderConfig(tr, defaultConfig()).config;
   const twice = importTrunkRecorderConfig(tr, once, {}, true).config;
   assert.equal(twice.sources.filter((x) => x.type === "bladerf").length, 1);
+});
+
+test("restartKey: a radio's gain doesn't need a restart on the desktop recorder; other settings do", () => {
+  const base = defaultConfig();
+  const c = (src: Partial<Source> & { type: Source["type"] }) => ({ ...base, sources: [{ ...SOURCE_KINDS[src.type].fresh(), ...src } as Source] });
+  const rtl = c({ type: "rtlsdr", gainDb: 30 });
+  assert.equal(restartKey(c({ type: "rtlsdr", gainDb: 20 }), true), restartKey(rtl, true), "an RTL-SDR's gain");
+  assert.equal(restartKey(c({ type: "rtlsdr", agc: true }), true), restartKey(rtl, true), "an RTL-SDR's AGC");
+  assert.notEqual(restartKey(c({ type: "rtlsdr", gainDb: 20 }), false), restartKey(rtl, false), "the browser build restarts for it");
+  assert.notEqual(restartKey(c({ type: "rtlsdr", gainDb: 30, centerHz: 851e6 }), true), restartKey(rtl, true), "a retune");
+  const blade = c({ type: "bladerf", gainDb: 30 });
+  assert.equal(restartKey(c({ type: "bladerf", gainDb: 42 }), true), restartKey(blade, true), "a bladeRF's gain");
+  assert.notEqual(restartKey(c({ type: "bladerf", gainDb: 30, agc: true }), true), restartKey(blade, true), "a bladeRF's AGC waits for the start");
 });

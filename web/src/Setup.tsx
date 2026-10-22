@@ -1,4 +1,5 @@
 import { Fragment, useId, useMemo, useRef, useState } from "react";
+import { SystemDot, SystemTag } from "./charts.tsx";
 import {
   activeSites,
   activeSystems,
@@ -68,6 +69,7 @@ import { DEFAULT_FORMAT, FilenameEditor } from "./FilenameEditor.tsx";
 import { GuardBand } from "./Rolloff.tsx";
 import { SurveyPanel } from "./Survey.tsx";
 import { FccTable, IdentifyFcc } from "./Identify.tsx";
+import { ShareSystem } from "./ShareSystem.tsx";
 import { siteFrequencies } from "./controller.ts";
 import { addCard, Card, ExpandAll, Group, Section, setCardOpen, Switch } from "./SetupLayout.tsx";
 import { TalkgroupsField } from "./TalkgroupsField.tsx";
@@ -1204,10 +1206,7 @@ function CoverageBar(props: { c: Config; center: number; rateHz: number; guardHz
           {formatMhz(center - half, 3)} – {formatMhz(center + half, 3)} MHz
         </span>
         {here.map((x) => (
-          <span key={x.shortName}>
-            <span className="sys-dot" style={{ background: systemColor(c, x.shortName) }} />
-            {x.shortName}
-          </span>
+          <SystemTag key={x.shortName} config={c} name={x.shortName} />
         ))}
         {conv.length > 0 && <span>{conv.length} conventional</span>}
         {!here.length && !conv.length && <span>nothing in range</span>}
@@ -2321,7 +2320,7 @@ function SystemCard(props: { c: Config; i: number }) {
       id={`need-sys-${sys.shortName}`}
       head={
         <>
-          <span className="sys-dot" style={{ background: color }} />
+          <SystemDot color={color} />
           <div className="set-card-title">
             <h3>{sys.shortName || "(no name)"}</h3>
             <span className="set-card-sub">
@@ -2416,6 +2415,7 @@ function SystemCard(props: { c: Config; i: number }) {
             </select>
           </Field>
         )}
+        <ShareSystem c={c} i={i} />
       </Group>
       <Group
         title="Sites"

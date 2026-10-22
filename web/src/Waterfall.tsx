@@ -4,6 +4,7 @@
 // its system's color).
 
 import { useEffect, useRef } from "react";
+import { SystemDot } from "./charts.tsx";
 import type { CallView, Spectrum } from "./protocol.ts";
 
 /** A control channel marker. */
@@ -115,7 +116,7 @@ export function Waterfall(props: { radio: Spectrum | undefined; label?: string; 
             .map((c) => (
               <span key={c.id} className={`mk mk-${c.state}${c.encrypted ? " mk-enc" : ""}`} style={{ left: `${pos(c.freqHz)}%` }} title={`${c.systemName} · TG ${c.talkgroup}`}>
                 <i>
-                  {props.multi && <span className="sys-dot" style={{ background: props.colorOf?.(c.systemName) ?? "var(--line)" }} />}
+                  {props.multi && <SystemDot color={props.colorOf?.(c.systemName) ?? "var(--line)"} />}
                   {c.alphaTag || c.patched?.find((t) => t.alphaTag)?.alphaTag || c.talkgroup}
                 </i>
               </span>

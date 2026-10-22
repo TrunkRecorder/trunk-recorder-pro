@@ -2,12 +2,12 @@
 // control channel decoding as usual, what's on the air), the sources, the
 // plugins and the computer in a line each, and what happened lately.
 
-import { formatMhz, systemColor } from "../config.ts";
+import { formatMhz } from "../config.ts";
 import { can, pluginOn, radioQuery, statsSince, setView, start, usePolled, useApp, type AppState } from "../controller.ts";
-import { Card, HeatStrip, LiveSpark, Light, Meter, Sparkline, Stat, Trend } from "../charts.tsx";
+import { Card, HeatStrip, LiveSpark, Light, Meter, Sparkline, Stat, SystemTag, Trend } from "../charts.tsx";
 import { ago, bytes, compact, hmm, mhz, num, pct } from "../fmt.ts";
 import type { FreqRow, MonitorEvent, RadioSummary } from "../protocol.ts";
-import { change, rateOver, dashSystems, K, KIND_LABEL, pluginHealth, platformHealth, recentAvg, running, systemHealth, total, useHistory, usualOf, useUsual, val, type DashSystem, type Usual } from "./data.ts";
+import { change, rateOver, dashSystems, K, KIND_LABEL, pluginHealth, platformHealth, recentAvg, running, systemOverallHealth, total, useHistory, usualOf, useUsual, val, type DashSystem, type Usual } from "./data.ts";
 import { SourceCard } from "./Rf.tsx";
 import { SiteRows } from "./Systems.tsx";
 import { BAD_MAX, badLevel, voiceBadPct } from "./Decode.tsx";
@@ -32,7 +32,12 @@ function Today({ s }: { s: AppState }) {
   const onAir = perS("all/airMs") / 1000;
   const rec = val(s, "eng/recording") ?? 0;
   const recMax = val(s, "eng/recorders") ?? s.config?.recording.maxRecorders ?? 0;
-  const missed = Math.round(systems.reduce((a, x) => a + (total(h24?.[K.sys(x.name, "why/no_recorder")]) ?? 0) + (total(h24?.[K.sys(x.name, "why/no_source")]) ?? 0), 0));
+  // Each system's, most first: with several, the stat says which.
+  const missedBy = systems
+    .map((x) => ({ name: x.name, n: Math.round((total(h24?.[K.sys(x.name, "why/no_recorder")]) ?? 0) + (total(h24?.[K.sys(x.name, "why/no_source")]) ?? 0)) }))
+    .filter((m) => m.n > 0)
+    .sort((a, b) => b.n - a.n);
+  const missed = missedBy.reduce((a, m) => a + m.n, 0);
   const load = val(s, "eng/load");
   const perHour = (k: string) => (h24?.[k]?.v ?? []).map((v) => (v === null ? null : v * 3600));
   return (
@@ -51,7 +56,7 @@ function Today({ s }: { s: AppState }) {
         sub={`${num(onAir, 1)} at once on average`}
         spark={<Sparkline v={(h24?.["all/airMs"]?.v ?? []).map((v) => (v === null ? null : v / 1000))} color="var(--series-3)" title="Calls on the air at once, last 24 h" />}
       />
-      <Stat label="Audio today" value={bytes(day("all/audioBytes", "day/audioBytes"))} sub={`${bytes(audioPerH)} an hour now`} spark={<Sparkline v={perHour("all/audioBytes")} color="var(--series-7)" />} />
+      <Stat label="Audio today" value={bytes(day("all/audioBytes", "day/audioBytes"))} sub={`${bytes(audioPerH)} an hour now`} spark={<Sparkline v={perHour("all/audioBytes")} color="var(--series-6)" />} />
       <Stat
         label="Recorders"
         value={
@@ -68,8 +73,8 @@ function Today({ s }: { s: AppState }) {
         label="Missed, 24 h"
         value={compact(missed)}
         level={missed > 0 ? "warn" : undefined}
-        sub={missed > 0 ? "no free recorder, or out of band" : "none"}
-        onClick={() => setView("radio")}
+        sub={missed === 0 ? "none" : systems.length > 1 ? missedBy.map((m) => `${m.name} ${compact(m.n)}`).join(", ") : "no free recorder, or out of band"}
+        onClick={() => (missedBy.length === 1 ? setView("radio", missedBy[0].name) : setView("radio"))}
       />
       <Stat
         label="Decoding load"
@@ -85,7 +90,7 @@ function Today({ s }: { s: AppState }) {
 // ── a system ─────────────────────────────────────────────────────────────────
 
 function SystemCard({ s, x, usuals, summary, freqs }: { s: AppState; x: DashSystem; usuals: Record<string, Usual | null>; summary?: RadioSummary; freqs?: FreqRow[] }) {
-  const h = systemHealth(s, x, usuals);
+  const h = systemOverallHealth(s, x, usuals);
   // Its (first) site's control channel; with several, each in a row of its own too.
   const site = x.sites[0];
   const cc = (k: string) => (site ? K.cc(site, k) : K.sys(x.name, `cc/${k}`));
@@ -110,10 +115,7 @@ function SystemCard({ s, x, usuals, summary, freqs }: { s: AppState; x: DashSyst
   return (
     <Card
       title={
-        <span className="row">
-          <span className="sys-dot" style={{ background: systemColor(s.config, x.name) }} />
-          {x.name}
-        </span>
+        <SystemTag config={s.config} name={x.name} />
       }
       level={h.level}
       why={h.why}

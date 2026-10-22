@@ -31,6 +31,8 @@ a system of its own.)
 | `shortName` | | `"sys1"` | string | The system's identity: its recordings folder, the `short_name` in call JSON, its talker alias file, and how plugins know it. Every system, trunked or conventional, enabled or not, needs its own. Keep it to letters, digits, `-` and `_` |
 | `name` | | `""` | string | What people call it ("County Public Safety"), for display |
 | `fcc` | | `{}` | object | Optional: who is licensed on each of its frequencies. See [FCC licenses](#fcc-licenses) |
+| `share` | | `false` | bool | Share it with the community directory while it records. See [Sharing with the directory](#sharing-with-the-directory) |
+| `directory` | | none | object | Set by sharing: the directory's record of it, `{ id, rev, sharedAt }` (its ID, its version when last shared, when, Unix ms). Shares land on that record |
 | `type` | | `"p25"` | string | `"p25"`, `"smartnet"`, `"dmr"`, `"nxdn"` or `"edacs"` (any case). Anything else is refused when the config is read |
 | `enabled` | | `true` | bool | `false` keeps it in the config without recording it |
 | `sites` | | `[]` | array | Where it is recorded from: one entry per site. See [Keys for each site](#keys-for-each-site) |
@@ -69,12 +71,37 @@ licensees near you, and names call signs heard on the air (sending only the call
 The call sign that names the system (plugins' `fcc_call_sign`) is its control channel's, else the
 one on the most of its frequencies.
 
+## Sharing with the directory
+
+With `share` on (**Share channel and talkgroup config with the community** in the system's Basics), the
+recorder shares the system with the community directory at
+[trunkrecorder.pro/directory](https://trunkrecorder.pro/directory/) while it records. Only P25, SmartNet,
+DMR and NXDN systems can be shared for now.
+
+What it sends is what the radio heard of the system:
+- each site that's decoded: its identity, control channels, modulation, band plan, and the neighbours it
+  announces;
+- the voice channels granted there, with how many grants;
+- the talkgroups granted: their numbers, how many grants, at which sites, whether encrypted;
+- call signs heard on the air (the `fcc` entries `from` the air).
+
+It doesn't send talkgroup names, descriptions, tags or groups, anything typed or looked up, radio IDs,
+aliases, audio, keys, or a location. Each share carries an anonymous ID for the install (kept in the data
+folder as `directory-recorder-id`; the browser build keeps its own).
+
+It first shares after the system has been decoded for 5 minutes, then again when it hears a talkgroup or
+voice channel it hadn't (at most once an hour), and otherwise once a day. A failed share is tried again
+later, waiting longer each time (up to 6 hours). Setup shows when it last shared, or why it couldn't, with
+a link to the system's page in the directory. The directory's answer is kept as `directory` and each site's
+`directoryId`, so later shares, and other recorders hearing other sites, build the same record.
+
 ## Keys for each site
 
 | Key | Required | Default | Type | Description |
 |---|:---:|---|---|---|
 | `name` | | the system's `shortName` | string | The site's name, unique in its system: what the talkgroup file's `Preferred Site` names, the `site` in call JSON and the log. Leave it out for a system of one site |
 | `enabled` | | `true` | bool | `false` keeps the site without recording from it (**Record** on its card) |
+| `directoryId` | | `""` | string | Set by [sharing](#sharing-with-the-directory): the directory's ID for the site |
 | `controlChannelsHz` | | `[]` | array of numbers | P25 and SmartNet: the control channel and its alternates, Hz. The recorder hunts through them, moving on when one goes quiet for 5 s. DMR and NXDN: every frequency listed is watched at once (NXDN Type-D: the repeaters) |
 | `expect` | | `{}` | object | Site lock: only follow a control channel with this identity. See [Site lock](#site-lock-expect) |
 | `voiceChannelsHz` | | `[]` | array of numbers | Voice channels Find my system heard. Used only to place Auto sources so they cover them too |

@@ -76,6 +76,13 @@ fn to_js(out: &mut Vec<Output>, history: &mut History) -> Array {
                 set(&obj, "freqHz", freq_hz);
                 set(&obj, "callSign", call_sign);
             }
+            // The worker sends it to the directory, then says how it went ([`WebSession::share_done`]).
+            Output::Share { short_name, observation, site_names } => {
+                set(&obj, "t", "share");
+                set(&obj, "shortName", short_name);
+                set(&obj, "json", observation.to_string());
+                set(&obj, "siteNames", serde_json::to_string(&site_names).unwrap_or_default());
+            }
             // (One page, which asked for its topics.)
             Output::Message(m) | Output::Topic { msg: m, .. } => {
                 set(&obj, "t", "text");
@@ -142,6 +149,20 @@ impl WebSession {
     /// A system's talkgroup file changed (an Ignore flag): calls from now on go by it.
     pub fn set_talkgroups(&mut self, short_name: &str, csv: &str) {
         self.s.set_talkgroups(short_name, csv);
+    }
+    /// This browser's directory recorder ID ([`directory_recorder_id`]): shares go under it.
+    pub fn set_recorder(&mut self, id: &str) {
+        self.s.set_recorder(id);
+    }
+    /// A system's sharing switched, or its directory link changed: `system_json`, its `System`.
+    pub fn set_share(&mut self, system_json: &str) {
+        if let Ok(sys) = serde_json::from_str::<trunk_app::config::System>(system_json) {
+            self.s.set_share(&sys);
+        }
+    }
+    /// How system `short_name`'s share went: `error` when it didn't.
+    pub fn share_done(&mut self, short_name: &str, now_ms: f64, error: Option<String>) {
+        self.s.share_done(short_name, now_ms, error.map_or(Ok(()), Err));
     }
     /// Preload the radio registry: JSON `{shortName: registry}` ([`WebSession::registry_unsaved`]).
     pub fn load_registry(&mut self, json: &str) {
@@ -225,6 +246,27 @@ impl WebSession {
 pub fn learn_call_sign(config_json: &str, short_name: &str, freq_hz: f64, call_sign: &str) -> Option<String> {
     let mut cfg = Config::from_json(config_json).ok()?;
     cfg.learn_call_sign(short_name, freq_hz, call_sign).then(|| serde_json::to_string(&cfg).unwrap_or_default())
+}
+
+/// config `config_json` with system `short_name` linked to the directory's
+/// records, as a share's answer gave them ([`Config::link_shared`]): the
+/// config (JSON) when it changed, else undefined. `site_names_json`, `site_ids_json`: arrays.
+#[wasm_bindgen]
+pub fn link_shared(config_json: &str, short_name: &str, id: &str, rev: f64, site_names_json: &str, site_ids_json: &str, shared_at: f64) -> Option<String> {
+    let mut cfg = Config::from_json(config_json).ok()?;
+    let names: Vec<String> = serde_json::from_str(site_names_json).ok()?;
+    let ids: Vec<String> = serde_json::from_str(site_ids_json).ok()?;
+    cfg.link_shared(short_name, id, rev as u64, &names, &ids, shared_at).then(|| serde_json::to_string(&cfg).unwrap_or_default())
+}
+
+/// A new directory recorder ID from 16 random bytes.
+#[wasm_bindgen]
+pub fn directory_recorder_id(random: &[u8]) -> String {
+    let mut b = [0u8; 16];
+    for (d, s) in b.iter_mut().zip(random) {
+        *d = *s;
+    }
+    trunk_app::share::recorder_id(&b)
 }
 
 /// The bands the survey can scan: JSON [{id, label, loHz, hiHz, defaultOn}].

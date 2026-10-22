@@ -58,6 +58,7 @@ import {
   newSystem,
   normalizeSite,
   resolvedCenters,
+  restartKey,
   sameSystem,
   shortNameFor,
   siteNameOf,
@@ -119,6 +120,8 @@ export interface AppState {
   /** A source's roll-off as last measured (Setup), and the source being measured now (null: none). */
   profile: SourceProfile | null;
   profiling: number | null;
+  /** Settings changed since this run started that only apply after a restart. */
+  restartNeeded: boolean;
   /** The plugins (desktop app); null until the recorder says. */
   plugins: PluginsList | null;
   /** A plugin this browser just installed: its settings open. */
@@ -206,6 +209,7 @@ let state: AppState = {
   surveyLicenses: null,
   profile: null,
   profiling: null,
+  restartNeeded: false,
   plugins: null,
   pluginJustInstalled: null,
   interfaces: null,
@@ -225,8 +229,20 @@ let state: AppState = {
 };
 
 const listeners = new Set<() => void>();
+/** restartKey of the config the current run started with (null: not running). */
+let runKey: string | null = null;
+/** The desktop recorder takes a radio's gain while recording; the browser build doesn't. */
+const liveGain = import.meta.env.MODE !== "web";
+
 function set(patch: Partial<AppState>): void {
+  const was = state;
   state = { ...state, ...patch };
+  // (Only when the config or phase changed: spectrum and stats come many times a second.)
+  if (state.config !== was.config || state.phase !== was.phase) {
+    const key = state.phase === "idle" || !state.config ? null : restartKey(state.config, liveGain);
+    runKey = key && (runKey ?? key);
+    state.restartNeeded = key !== runKey;
+  }
   // (Its rules' answers last as long as the config does: rules.ts.)
   if ("config" in patch) configReplaced(state.config);
   for (const l of listeners) l();
@@ -1455,7 +1471,9 @@ export function unlockKeys(source: string, password: string | null): void {
 
 export function start(): void {
   flushConfig();
-  set({ error: null, ended: false });
+  // The recorder reads the config now: what it runs with from here.
+  runKey = state.config ? restartKey(state.config, liveGain) : null;
+  set({ error: null, ended: false, restartNeeded: false });
   transport.send({ type: "start" });
   if (state.listen) player.resume();
 }

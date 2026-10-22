@@ -133,6 +133,10 @@ pub enum EngineCmd {
     Talkgroups { short_name: String, csv: String },
     /// A system's keys changed (a key container unlocked or locked): calls in progress take them too.
     Keys { short_name: String, ring: Option<Arc<trunk_core::p25::crypt::Keyring>> },
+    /// A system's sharing switched, or its directory link changed ([`crate::directory`]).
+    ShareSystem(trunk_app::config::System),
+    /// How a system's share went.
+    Shared { short_name: String, result: Result<(), String> },
 }
 
 impl Ctx {
@@ -354,6 +358,16 @@ impl Runner {
         Some(g)
     }
 
+    /// The sources went from `old` to `new` in Setup: each changed one, by its
+    /// place, with the gain it took at once ([`Runner::live_source`]) or None.
+    /// Sources added, removed or moved wait for the next start (all of them).
+    pub fn live_sources(&self, old: &[Source], new: &[Source]) -> Vec<(usize, Option<Gain>)> {
+        if old.len() != new.len() {
+            return vec![];
+        }
+        old.iter().zip(new).enumerate().filter(|(_, (o, n))| o != n).map(|(i, (o, n))| (i, self.live_source(i, o, n))).collect()
+    }
+
     /// The engine has stopped by itself (every capture file ended).
     pub fn finished(&self) -> bool {
         self.threads.last().is_some_and(|t| t.is_finished())
@@ -398,6 +412,13 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
     let talkgroups = ctx.talkgroups.lock().unwrap().clone();
     let mut session = Session::new(cfg.clone(), &talkgroups, epoch_ms, &|name| fs::read_to_string(bandplan_path(name)).ok(), local_offset)?;
     session.attach(ctx.shared.clone());
+    if cfg.systems.iter().any(|s| s.share) {
+        session.set_recorder(&crate::directory::recorder_id());
+    }
+    // (Testing sharing on a short capture: share after this many seconds of decoding, not 5 minutes.)
+    if let Some(s) = std::env::var("TRUNK_PRO_SHARE_AFTER_S").ok().and_then(|v| v.parse::<f64>().ok()) {
+        session.share_after(s * 1000.0);
+    }
     for k in keys {
         for s in &k.skipped {
             log::warn!("Key source {}: key left out: {s}", k.name);
@@ -908,6 +929,13 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
                 EngineCmd::Keys { short_name, ring } => {
                     session.set_keys(&short_name, ring);
                 }
+                EngineCmd::ShareSystem(sys) => {
+                    if sys.share {
+                        session.set_recorder(&crate::directory::recorder_id());
+                    }
+                    session.set_share(&sys);
+                }
+                EngineCmd::Shared { short_name, result } => session.share_done(&short_name, now_ms(), result),
             }
             next = rx.try_recv().ok();
         }
@@ -1059,8 +1087,28 @@ fn m4a_failed(rel: &str, err: &str) {
     }
 }
 
+/// Share a system with the directory; tell the engine how it went.
+fn share(ctx: &Arc<Ctx>, short_name: String, observation: serde_json::Value, site_names: Vec<String>) {
+    let base = ctx.config.lock().unwrap().server.trp_api_base().to_string();
+    let result = crate::directory::share(&base, &observation).and_then(|d| {
+        if d.system.is_empty() {
+            return Ok(());
+        }
+        let at = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |t| t.as_millis() as f64);
+        crate::server::edit_config(ctx, |c| {
+            c.link_shared(&short_name, &d.system, d.rev, &site_names, &d.sites, at);
+        })
+        .map_err(|e| format!("Shared, but the directory link couldn't be kept: {e}"))
+    });
+    match &result {
+        Ok(()) => log::info!("{short_name}: shared with the directory"),
+        Err(e) => log::warn!("{short_name}: not shared with the directory: {e}"),
+    }
+    ctx.tell_engine(EngineCmd::Shared { short_name, result });
+}
+
 /// Forward everything to the browsers and plugins; calls go to be stored.
-fn deliver(ctx: &Ctx, out: &mut Vec<Output>, plugins: Option<&PluginHost>, rules: &dyn Fn(u16) -> FileRules, finish: &dyn Fn(Finish)) {
+fn deliver(ctx: &Arc<Ctx>, out: &mut Vec<Output>, plugins: Option<&PluginHost>, rules: &dyn Fn(u16) -> FileRules, finish: &dyn Fn(Finish)) {
     for o in out.drain(..) {
         match o {
             Output::Message(m) => publish(&ctx.hub, m),
@@ -1090,6 +1138,11 @@ fn deliver(ctx: &Ctx, out: &mut Vec<Output>, plugins: Option<&PluginHost>, rules
                     Ok(()) if learned => log::info!("{short_name}: FCC call sign {call_sign} for {mhz:.4} MHz, from the air"),
                     Ok(()) => {}
                 }
+            }
+            // To the directory, on a thread of its own; its answer links the system in the config.
+            Output::Share { short_name, observation, site_names } => {
+                let ctx = ctx.clone();
+                let _ = std::thread::Builder::new().name("share".into()).spawn(move || share(&ctx, short_name, observation, site_names));
             }
             Output::File { rel, system, wav, record, frames, decrypted } => finish(Finish { rel, system, wav, record, frames, rules: rules(system), decrypted }),
         }
@@ -1263,5 +1316,32 @@ mod live_tests {
         assert_eq!(live_gain(&air_at(852e6), &air_at(853e6)), None, "an Airspy retune waits");
         let rtl = src("rtlsdr", json!({ "serial": "", "centerHz": 453e6, "rateHz": 2.4e6, "gainDb": 30, "ppm": 0 }));
         assert_eq!(live_gain(&rtl, &air_at(852e6)), None, "another kind of radio");
+    }
+
+    #[test]
+    fn several_airspys_each_take_their_own_gain() {
+        let air = |serial: &str, lna: u8| src("airspy", json!({ "serial": serial, "centerHz": 852e6, "rateHz": 6e6, "gainMode": "manual", "lnaStep": lna, "ppm": 0 }));
+        let lin = |serial: &str, step: u8| src("airspy", json!({ "serial": serial, "centerHz": 852e6, "rateHz": 6e6, "gainMode": "linearity", "gainStep": step, "ppm": 0 }));
+        let r = Runner { stop: Arc::default(), threads: vec![], controls: (0..3).map(|_| Arc::default()).collect() };
+        let pending = |i: usize| *r.controls[i].gain.lock().unwrap();
+        let old = [air("A1", 10), air("B2", 10), air("C3", 10)];
+        // The second's LNA: only it.
+        let one = r.live_sources(&old, &[air("A1", 10), air("B2", 14), air("C3", 10)]);
+        assert_eq!(one, vec![(1, Some(Gain::Airspy(airspy::AirspyGain::Manual { lna: 14, mixer: 10, vga: 10 })))]);
+        assert_eq!((pending(0), pending(2)), (None, None), "the others are left alone");
+        r.controls[1].take();
+        // Two in one save, one of them to another mode: each its own.
+        let two = r.live_sources(&old, &[lin("A1", 18), air("B2", 10), air("C3", 6)]);
+        assert_eq!(two.len(), 2);
+        assert_eq!(pending(0), Some(Gain::Airspy(airspy::AirspyGain::Linearity(18))));
+        assert_eq!(pending(1), None);
+        assert_eq!(pending(2), Some(Gain::Airspy(airspy::AirspyGain::Manual { lna: 6, mixer: 10, vga: 10 })));
+        (r.controls[0].take(), r.controls[2].take());
+        // Two swapped in Setup: another radio in each place, not a gain change.
+        assert_eq!(r.live_sources(&old, &[air("B2", 10), air("A1", 10), air("C3", 10)]), vec![(0, None), (1, None)]);
+        assert!((0..3).all(|i| pending(i).is_none()));
+        // One added: everything waits for the start.
+        assert!(r.live_sources(&old, &[air("A1", 12), air("B2", 10), air("C3", 10), air("D4", 10)]).is_empty());
+        assert!(pending(0).is_none());
     }
 }
