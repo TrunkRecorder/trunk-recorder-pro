@@ -1077,23 +1077,18 @@ impl Session {
                 "callsigns": y.callsigns.iter().map(|(c, hz)| json!({ "callSign": c, "freqHz": if *hz == 0 { None } else { Some(hz) } })).collect::<Vec<_>>(),
             })
         };
-        // Each system with a site running, its sites in order.
-        let mut systems: Vec<Value> = Vec::new();
-        for y in &st.sites {
-            match systems.iter_mut().find(|v| v["index"] == y.system) {
-                Some(v) => {
-                    for (k, n) in [("activeCalls", y.active_calls as u64), ("recording", y.recording as u64), ("callsConcluded", y.calls_concluded)] {
-                        v[k] = json!(v[k].as_u64().unwrap_or(0) + n);
-                    }
-                    v["sites"].as_array_mut().unwrap().push(site_json(y));
-                }
-                None => systems.push(json!({
-                    "index": y.system, "shortName": y.short_name,
-                    "activeCalls": y.active_calls, "recording": y.recording, "callsConcluded": y.calls_concluded,
-                    "sites": [site_json(y)],
-                })),
-            }
-        }
+        // Each system being recorded (trunked or conventional), its running sites in order.
+        let systems: Vec<Value> = st
+            .systems
+            .iter()
+            .map(|v| {
+                json!({
+                    "index": v.system, "shortName": v.short_name,
+                    "activeCalls": v.active_calls, "recording": v.recording, "conventionalOpen": v.conventional_open, "callsConcluded": v.calls_concluded,
+                    "sites": st.sites.iter().filter(|y| y.system == v.system).map(site_json).collect::<Vec<_>>(),
+                })
+            })
+            .collect();
         let calls = self
             .engine
             .active_calls()
@@ -1116,10 +1111,6 @@ impl Session {
             "activeCalls": st.active_calls, "recording": st.recording, "channelsOpen": st.channels_open, "conventionalOpen": st.conventional_open,
             "callsConcluded": st.calls_concluded,
             "systems": systems,
-            // The conventional systems, which have no sites to be in `systems`.
-            "conventional": st.conventional.iter().map(|v| json!({
-                "index": v.system, "shortName": v.short_name, "activeCalls": v.active_calls, "channelsOpen": v.channels_open, "callsConcluded": v.calls_concluded,
-            })).collect::<Vec<_>>(),
             // Every system's short name, by the number its calls and audio carry.
             "systemNames": self.cfg.call_systems().iter().map(|s| s.short_name).collect::<Vec<_>>(),
         });

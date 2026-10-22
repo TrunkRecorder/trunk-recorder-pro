@@ -175,10 +175,9 @@ channels has none, so it learns it from calls on the rows you ask:
 - Ask it of a **repeater output**: the base station holds its frequency, so every call says the
   same. Leave it off for simplex, talkaround or a repeater's input, where each radio is off by its
   own amount.
-- The source needs AutoTune on. Each frequency counts once (the median of its calls), so a busy
-  channel doesn't outvote the rest; once five calls are kept, a call more than 2 ppm from the
-  correction is left out. A control channel on the same source wins: its measurements are used and
-  the calls' are not.
+- The source needs AutoTune on. These calls count as a trunked call does: one measurement each,
+  kept with the control channels' and trunked calls' on the same source, and the correction is the
+  middle (median) of the last 20, so one radio off its frequency doesn't move it.
 
 Each call's JSON keeps the whole offset (`freq_error`, Hz, against the ppm you set), corrected or
 not, so the **Decode** page's frequency table shows the source's error either way.

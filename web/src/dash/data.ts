@@ -68,8 +68,7 @@ export function dashSystems(s: AppState): DashSystem[] {
   });
   for (const c of s.config.conventional) {
     if (c.enabled === false || !c.channels.some((ch) => ch.enabled)) continue;
-    const v = s.status?.conventional?.find((y) => y.shortName === c.shortName);
-    const status = v ? { index: v.index, shortName: v.shortName, activeCalls: v.activeCalls, recording: 0, callsConcluded: v.callsConcluded, sites: [] } : null;
+    const status = s.status?.systems.find((y) => y.shortName === c.shortName) ?? null;
     out.push({ name: c.shortName, kind: "conventional", status, sites: [] });
   }
   return out;

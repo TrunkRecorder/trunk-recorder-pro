@@ -55,7 +55,7 @@ use std::sync::Arc;
 use num_complex::Complex32;
 
 use super::calls::{Call, CallIds, CallManager, Flags, Voice, STUCK_CALL_S};
-use super::engine::{Event, SystemConfig};
+use super::engine::{Event, SystemConfig, Tuning};
 use super::frames::CallFrames;
 use super::record::{Reception, Transmissions};
 use super::voice::CipherId;
@@ -579,10 +579,9 @@ struct Chan {
     /// recorded call would be counted.
     skipped: [Option<(String, f64)>; 2],
     source: usize,
-    /// Its source's centre, and the AutoTune correction `offset_hz` places it
-    /// with, ppm (changed between calls: [`Conventional::on_block`]).
-    center_hz: f64,
-    tune_ppm: f64,
+    /// Where it is placed in its source (`offset_hz`): AutoTune's
+    /// correction is taken up between calls ([`Conventional::on_block`]).
+    tuning: Tuning,
     /// Its calls score the source's AutoTune: a digital row asks it.
     tune_ref: bool,
     offset_hz: f64,
@@ -688,13 +687,14 @@ impl Conventional {
                 continue;
             };
             let (center, rate, _) = sources[src];
-            let offset_hz = c.freq_hz - center;
+            let tuning = Tuning { center_hz: center, ppm: 0.0 };
+            let offset_hz = tuning.offset(c.freq_hz);
             let n = floor_slices(rate);
             let slice = floor_slice(n, rate, offset_hz);
             let bar = squelch_db.unwrap_or(cfg.squelch_db);
             let (freq_hz, mode, system, analog, shape) = (c.freq_hz, c.mode, c.system, c.analog, ChannelShape::of(c.mode, &c.analog));
             let tune_ref = !mode.analog() && rows.iter().any(|r| r.tune_ref);
-            chans.push(Chan { freq_hz, mode, system, analog, shape, squelch_db, rows, routed, skipped: [None, None], source: src, center_hz: center, tune_ppm: 0.0, tune_ref, offset_hz, slice, power: 0.0, watch: (mode == ConvMode::Am).then(am::LineWatch::default), ignored: Vec::new(), bar_db: bar, raised: false, open: None });
+            chans.push(Chan { freq_hz, mode, system, analog, shape, squelch_db, rows, routed, skipped: [None, None], source: src, tuning, tune_ref, offset_hz, slice, power: 0.0, watch: (mode == ConvMode::Am).then(am::LineWatch::default), ignored: Vec::new(), bar_db: bar, raised: false, open: None });
         }
         if !outside.is_empty() {
             return Err(format!("Conventional channel(s) outside every source's bandwidth: {} MHz — move a center frequency or disable them.", outside.join(", ")));
@@ -810,17 +810,17 @@ impl Conventional {
     /// `ids`: the engine's call ids. `systems`: the engine's (a channel's `system` indexes them).
     /// `gap`: the block is silence standing in for samples that never came
     /// ([`super::Engine::push_gap`]): calls open run on, nothing new opens,
-    /// and the noise floor is left as it was. `tune_ppm`: the source's
-    /// AutoTune correction now, which a channel takes up between calls.
+    /// and the noise floor is left as it was. `tuning`: where the source
+    /// puts channels now, which a channel takes up between calls.
     #[allow(clippy::too_many_arguments)]
-    pub fn on_block<'s>(&mut self, source: usize, chz: &mut Channelizer, now_s: f64, gap: bool, tune_ppm: f64, ids: &CallIds, system: &dyn Fn(usize) -> &'s SystemConfig, out: &mut Vec<ConvOut>) {
+    pub fn on_block<'s>(&mut self, source: usize, chz: &mut Channelizer, now_s: f64, gap: bool, tuning: Tuning, ids: &CallIds, system: &dyn Fn(usize) -> &'s SystemConfig, out: &mut Vec<ConvOut>) {
         if !self.chans.iter().any(|c| c.source == source) {
             return;
         }
         let n = self.floors[source].slices.len();
-        for ch in self.chans.iter_mut().filter(|c| c.source == source && c.open.is_none() && c.tune_ppm != tune_ppm) {
-            ch.tune_ppm = tune_ppm;
-            ch.offset_hz = ch.freq_hz * (1.0 + tune_ppm * 1e-6) - ch.center_hz;
+        for ch in self.chans.iter_mut().filter(|c| c.source == source && c.open.is_none() && c.tuning != tuning) {
+            ch.tuning = tuning;
+            ch.offset_hz = tuning.offset(ch.freq_hz);
             ch.slice = floor_slice(n, chz.fs(), ch.offset_hz);
         }
         let fl = &mut self.floors[source];
@@ -945,8 +945,6 @@ impl Conventional {
     /// Run the open channel's receiver over `iq` (air up to `now_s`).
     #[allow(clippy::too_many_arguments)]
     fn run(ch: &mut Chan, iq: &[Complex32], now_s: f64, meter_thr: f32, num: u32, ids: &CallIds, rules: &CallRules, max_call_s: f64, out: &mut Vec<ConvOut>) {
-        // The correction it was placed with, Hz: an offset measured is on top of it.
-        let applied_hz = ch.tune_ppm * 1e-6 * ch.freq_hz;
         let o = ch.open.as_mut().unwrap();
         let mut heard: [Heard; 2] = Default::default();
         // Digital: the carrier by the meter; analog: by the decoder's squelch, at the same threshold.
@@ -958,7 +956,7 @@ impl Conventional {
         // Its calls' frequency error, while the carrier is up and the receiver can tell.
         if let Some(off) = o.voice.offset_hz().filter(|_| carrier) {
             for l in o.live.iter_mut().flatten() {
-                l.freq_error.0 += off as f64 + applied_hz;
+                l.freq_error.0 += ch.tuning.error_hz(ch.freq_hz, off as f64);
                 l.freq_error.1 += 1;
             }
         }

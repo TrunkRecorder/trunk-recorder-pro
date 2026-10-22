@@ -16,7 +16,7 @@ const site = (index: number, name: string, identity: Partial<SiteIdentity>): Sit
   identity: { nac: 0x1f1, wacn: 0xbee00, sysId: 0x1a2, rfss: 1, site: null, ...identity },
   good: 100, bad: 0, modulation: null, activeCalls: 0, recording: 0, callsConcluded: 0, mismatch: null,
 });
-const system = (index: number, shortName: string, sites: SiteStatus[]): SystemStatus => ({ index, shortName, activeCalls: 0, recording: 0, callsConcluded: 0, sites });
+const system = (index: number, shortName: string, sites: SiteStatus[]): SystemStatus => ({ index, shortName, activeCalls: 0, recording: 0, conventionalOpen: 0, callsConcluded: 0, sites });
 
 /** The recorder says hello with `c` and is running these systems, these calls on the air. */
 function running(c: Config, systems: SystemStatus[], calls: Partial<CallView>[] = []): void {
@@ -98,7 +98,7 @@ test("Decode: a conventional system's page has its calls, and each channel's mod
   running(c, []);
   transport.onMessage({
     type: "status",
-    status: { systems: [], conventional: [{ index: 0, shortName: "town", activeCalls: 1, channelsOpen: 1, callsConcluded: 7 }], recording: 0 } as unknown as EngineStatus,
+    status: { systems: [{ index: 0, shortName: "town", activeCalls: 1, recording: 0, conventionalOpen: 1, callsConcluded: 7, sites: [] }], recording: 0 } as unknown as EngineStatus,
     sources: [], load: 0, calls: [],
   });
   setView("decode");

@@ -527,25 +527,17 @@ export interface PhaseState {
   ended: boolean;
 }
 
-/** One running system, with its sites that are. `index` is what calls and audio carry as `system`. */
+/** One system being recorded: trunked (with a site running) or conventional. `index` is what calls and audio carry as `system`. */
 export interface SystemStatus {
   index: number;
   shortName: string;
   activeCalls: number;
   recording: number;
+  /** Its conventional frequencies with a signal on them now. */
+  conventionalOpen: number;
   callsConcluded: number;
-  /** Its sites following their control channels, in order. */
+  /** Its sites following their control channels, in order (conventional: none). */
   sites: SiteStatus[];
-}
-
-/** One conventional system recording. `index` is what its calls carry as `system`. */
-export interface ConvSystemStatus {
-  index: number;
-  shortName: string;
-  activeCalls: number;
-  /** Its frequencies with a signal on them now. */
-  channelsOpen: number;
-  callsConcluded: number;
 }
 
 /** A patch standing now: the supergroup, and the talkgroups patched into it. */
@@ -632,8 +624,6 @@ export interface EngineStatus {
   conventionalOpen: number;
   callsConcluded: number;
   systems: SystemStatus[];
-  /** The conventional systems recording (they have no sites to be in `systems`). */
-  conventional: ConvSystemStatus[];
   /** Every system's short name, by the number its calls and live audio carry as `system` (trunked systems first, then conventional). */
   systemNames: string[];
 }

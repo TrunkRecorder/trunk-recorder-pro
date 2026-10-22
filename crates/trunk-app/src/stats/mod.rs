@@ -432,7 +432,7 @@ impl Stats {
                 "phaseErrDeg": c.quality.phase_err_deg.map(|v| r1(v as f64)), "calls": c.calls,
             });
             // A conventional channel: its mode and its rows' names.
-            if let Some(m) = c.mode {
+            if let trunk_core::trunk::ChannelKind::Conventional(m) = c.kind {
                 v["mode"] = json!(m.as_str());
                 v["names"] = json!(c.names);
             }
