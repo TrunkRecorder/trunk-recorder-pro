@@ -15,7 +15,7 @@ use libloading::Library;
 use num_complex::Complex32;
 
 use super::{ppm_corrected, DriverInfo};
-use crate::sdr::{Applied, Control, Pool, SourceMsg, Tunable};
+use crate::sdr::{Applied, Control, Gain, Pool, SourceMsg, Tunable};
 
 type Dev = *mut c_void;
 
@@ -172,7 +172,7 @@ pub struct AirspyConfig {
 }
 
 /// How its gain is set.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum AirspyGain {
     /// libairspy's linearity table, step 0..21.
     Linearity(u8),
@@ -184,10 +184,26 @@ pub enum AirspyGain {
     Agc { vga: u8 },
 }
 
+impl std::fmt::Display for AirspyGain {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            AirspyGain::Linearity(g) => write!(f, "linearity {g}"),
+            AirspyGain::Sensitivity(g) => write!(f, "sensitivity {g}"),
+            AirspyGain::Manual { lna, mixer, vga } => write!(f, "LNA {lna} · mixer {mixer} · VGA {vga}"),
+            AirspyGain::Agc { vga } => write!(f, "AGC (VGA {vga})"),
+        }
+    }
+}
+
 impl crate::sdr::Radio for AirspyConfig {
     const BACKOFF: Duration = Duration::from_secs(3);
     fn retune_to(&mut self, hz: f64) {
         self.center_hz = hz;
+    }
+    fn gain_to(&mut self, g: Gain) {
+        if let Gain::Airspy(g) = g {
+            self.gain = g;
+        }
     }
     fn stream_once(&self, source: usize, tx: &SyncSender<SourceMsg>, stop: &Arc<AtomicBool>, ctl: Option<&Control>) -> Result<(), String> {
         stream_once(source, self, tx, stop, ctl)
@@ -248,9 +264,12 @@ impl Tunable for Device<'_> {
         check(self.a, "tune", unsafe { (self.a.set_freq)(self.dev, ppm_corrected(hz, self.ppm).round() as u32) })?;
         Ok(hz)
     }
-    /// Left as configured: a survey keeps the linearity gain as set.
-    fn set_gain(&mut self, _db: f32) -> Result<(), String> {
-        Ok(())
+    /// Its own settings, which libairspy takes while streaming (a survey's
+    /// dB is left alone: the linearity gain stays as set).
+    fn set_gain(&mut self, g: Gain) -> Result<(), String> {
+        let Gain::Airspy(g) = g else { return Ok(()) };
+        // SAFETY: an open device.
+        unsafe { set_gain(self.a, self.dev, g) }
     }
 }
 
@@ -262,6 +281,30 @@ impl Drop for Device<'_> {
                 (self.a.stop_rx)(self.dev);
             }
             (self.a.close)(self.dev);
+        }
+    }
+}
+
+/// Set the gain as `g` says.
+///
+/// SAFETY (callers): `dev` is open.
+unsafe fn set_gain(a: &Api, dev: Dev, g: AirspyGain) -> Result<(), String> {
+    unsafe {
+        match g {
+            AirspyGain::Linearity(g) => check(a, "gain", (a.set_linearity_gain)(dev, g.min(21))),
+            AirspyGain::Sensitivity(g) => check(a, "gain", (a.set_sensitivity_gain)(dev, g.min(21))),
+            AirspyGain::Manual { lna, mixer, vga } => {
+                check(a, "LNA AGC off", (a.set_lna_agc)(dev, 0))?;
+                check(a, "mixer AGC off", (a.set_mixer_agc)(dev, 0))?;
+                check(a, "LNA gain", (a.set_lna_gain)(dev, lna.min(14)))?;
+                check(a, "mixer gain", (a.set_mixer_gain)(dev, mixer.min(15)))?;
+                check(a, "VGA gain", (a.set_vga_gain)(dev, vga.min(15)))
+            }
+            AirspyGain::Agc { vga } => {
+                check(a, "LNA AGC", (a.set_lna_agc)(dev, 1))?;
+                check(a, "mixer AGC", (a.set_mixer_agc)(dev, 1))?;
+                check(a, "VGA gain", (a.set_vga_gain)(dev, vga.min(15)))
+            }
         }
     }
 }

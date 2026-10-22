@@ -827,6 +827,19 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
                         ctx.tell_engine(crate::runtime::EngineCmd::ShareSystem(sys.clone()));
                     }
                 }
+                // A radio's gain changed while recording: it takes it now (the ones that can), the
+                // rest at the next start, which the log says.
+                if let crate::runtime::Lifecycle::Recording(r) = &*ctx.lifecycle.lock().unwrap()
+                    && old.sources.len() == c.sources.len()
+                {
+                    for (i, (o, n)) in old.sources.iter().zip(&c.sources).enumerate().filter(|(_, (o, n))| o != n) {
+                        if let Some(g) = r.live_source(i, o, n) {
+                            log::info!("Source {}: gain changed while recording, applied now: {g}", i + 1);
+                        } else {
+                            log::info!("Source {}: changed while recording; the change applies when recording starts next (Stop, then Start)", i + 1);
+                        }
+                    }
+                }
                 // Interfaces turned on or off, moved, added: served so at once.
                 if old.server.interfaces != c.server.interfaces {
                     tokio::spawn(crate::interfaces::serve::reconcile(ctx.clone()));
