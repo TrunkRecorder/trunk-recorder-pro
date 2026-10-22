@@ -84,7 +84,7 @@ export function inEffect(c: Config, id: string, system: string, tgs: string[] | 
 }
 
 /** The plugins on that take calls (what delays are for). */
-function takers(c: Config, list: PluginInfo[]): PluginInfo[] {
+export function takers(c: Config, list: PluginInfo[]): PluginInfo[] {
   return list.filter((p) => c.plugins?.[p.id]?.enabled && p.manifest && (p.manifest.subscribe.includes("call.concluded") || p.manifest.subscribe.includes("audio")));
 }
 

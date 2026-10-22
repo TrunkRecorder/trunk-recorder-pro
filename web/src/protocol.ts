@@ -113,6 +113,8 @@ export interface Channel {
   enabled: boolean;
   /** Digital rows: its calls' carrier offsets score its source's AutoTune (a repeater output to trust, not radios on simplex). Absent: off. */
   autoTune?: boolean;
+  /** The plugins taking finished calls its calls go to (ids, or copies' labels such as "rdioscanner#2"); absent: every plugin; []: none. */
+  sendTo?: string[];
 }
 
 /** How a conventional system's analog channels are demodulated; each left out is the default. */

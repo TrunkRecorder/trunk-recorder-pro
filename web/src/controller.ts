@@ -67,7 +67,7 @@ import {
 } from "./config.ts";
 import { WsTransport, type CallExt, type Transport } from "./transport.ts";
 import { parseUnitsCsv, type UnitAliases } from "./units.ts";
-import { withIgnore } from "./talkgroups.ts";
+import { withIgnore, withSendTo } from "./talkgroups.ts";
 import type { WorkerTransport } from "./web/workerTransport.ts";
 
 export interface AppState {
@@ -595,6 +595,11 @@ export function usePolled<T>(key: string, run: () => Promise<T>, everyMs: number
     };
   }, [key, everyMs]);
   return v && v.key === key ? v.v : null;
+}
+
+/** Set which plugins talkgroup `tg` of system `system` goes to (undefined: every plugin), in its talkgroup file's Send To column. */
+export function setTalkgroupSendTo(system: string, tg: number, sendTo: string[] | undefined, alphaTag = ""): void {
+  setTalkgroups(system, withSendTo(state.talkgroups[system] ?? "", tg, sendTo, alphaTag));
 }
 
 /** Mark talkgroup `tg` of system `system` ignored (or not) in its talkgroup file. */
