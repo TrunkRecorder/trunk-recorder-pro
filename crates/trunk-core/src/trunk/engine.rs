@@ -2060,14 +2060,17 @@ impl Core {
         let Some(copies) = self.multisite.conclude(call.id, held, |site, tg| site.and_then(|s| trunks.get(s as usize)).is_some_and(|t| t.preferred_for(tg))) else { return };
         // The best copy its site's rules keep is saved; the rest are its duplicates.
         // (None kept: each was reported not saved.)
-        let mut kept: Option<Call> = None;
+        // A copy is a duplicate only of a saved one that heard it (another site, the same
+        // time): a transmission linked through a long call elsewhere is saved when the
+        // copy kept didn't hear it.
+        let mut kept: Vec<Call> = Vec::new();
         for h in copies {
-            match &kept {
+            match kept.iter().find(|k| super::multisite::covers(k, &h.call)) {
                 Some(k) => self.events.push(Event::Duplicate { call: h.call, kept: k.clone() }),
                 None => {
                     let c = h.call.clone();
                     if self.write_call(h) {
-                        kept = Some(c);
+                        kept.push(c);
                     }
                 }
             }

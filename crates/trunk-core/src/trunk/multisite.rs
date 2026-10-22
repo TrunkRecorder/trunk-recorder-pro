@@ -104,6 +104,29 @@ pub struct MultiSite {
     next: u32,
 }
 
+/// Granted at nearly the same time.
+fn copy_start(o: &Call, c: &Call) -> bool {
+    (o.start_s - c.start_s).abs() <= TWIN_WINDOW_S
+}
+
+/// `o` began before `c` and was still being heard when `c` was granted.
+fn ongoing(o: &Call, c: &Call) -> bool {
+    o.start_s <= c.start_s && c.start_s - o.last_update_s.max(o.last_audio_s) <= TWIN_WINDOW_S
+}
+
+/// When `c` was last heard.
+fn heard_until(c: &Call) -> f64 {
+    c.last_update_s.max(c.last_audio_s).max(c.start_s)
+}
+
+/// `kept` (saved) holds what `c` heard: another site's copy, over the same
+/// time. A copy that isn't covered (a transmission a long call on another
+/// site linked, while the copy kept is a shorter one; or another call of
+/// the same site) is saved too.
+pub fn covers(kept: &Call, c: &Call) -> bool {
+    kept.site != c.site && c.start_s >= kept.start_s - TWIN_WINDOW_S && heard_until(c) <= heard_until(kept) + TWIN_WINDOW_S
+}
+
 impl MultiSite {
     /// `call` (on `site`) is a copy of `twins` (calls still going, with their sites).
     pub fn link(&mut self, call: CallId, site: u16, twins: &[(CallId, u16)]) {
@@ -181,13 +204,15 @@ impl MultiSite {
 impl MultiSite {
     /// Link call `c`, just granted on `site`, with the copies of it already
     /// going on the other sites of its system (`others`: their calls) — the
-    /// same talkgroup, granted within [`TWIN_WINDOW_S`]. (A unit-to-unit
+    /// same talkgroup, granted within [`TWIN_WINDOW_S`], or a call of it
+    /// still going there (a site that kept one channel through several
+    /// transmissions, where this one gave each its own). (A unit-to-unit
     /// call's "talkgroup" is the radio called: never a copy of a talkgroup's call.)
     pub fn link_new<'a>(&mut self, c: &Call, site: u16, others: impl IntoIterator<Item = &'a [Call]>) {
         let twins: Vec<(CallId, u16)> = others
             .into_iter()
             .flatten()
-            .filter(|o| o.talkgroup == c.talkgroup && o.unit_to_unit == c.unit_to_unit && (o.start_s - c.start_s).abs() <= TWIN_WINDOW_S)
+            .filter(|o| o.talkgroup == c.talkgroup && o.unit_to_unit == c.unit_to_unit && (copy_start(o, c) || ongoing(o, c)))
             .filter_map(|o| Some((o.id, o.site?)))
             .collect();
         self.link(c.id, site, &twins);
@@ -261,6 +286,30 @@ mod tests {
         assert!(m.twins(7).is_empty());
         m.link_new(&tg(9, 1, 1234, 0.0, true), 1, [&[tg(8, 0, 1234, 0.0, true)][..]]);
         assert_eq!(m.twins(9), [(8, 0)]);
+    }
+
+    /// Site 0 kept one channel through two transmissions (one call from 0 s);
+    /// site 1 gave the second its own (granted at 12 s): it's a copy too.
+    #[test]
+    fn a_transmission_is_a_copy_of_a_call_still_going_on_another_site() {
+        let tg = |id, site, start_s, heard_s| Call { talkgroup: 145, start_s, last_update_s: heard_s, ..call(id, site, start_s) };
+        let mut m = MultiSite::default();
+        m.link_new(&tg(2, 1, 12.0, 12.0), 1, [&[tg(1, 0, 0.0, 11.5)][..]]);
+        assert_eq!(m.twins(2), [(1, 0)]);
+        // One that ended long before isn't.
+        m.link_new(&tg(4, 1, 30.0, 30.0), 1, [&[tg(3, 0, 0.0, 20.0)][..]]);
+        assert!(m.twins(4).is_empty());
+    }
+
+    /// Only what the kept copy heard is a duplicate of it.
+    #[test]
+    fn a_copy_is_a_duplicate_only_of_one_that_heard_it() {
+        let c = |id, site, start_s, until_s| Call { talkgroup: 145, start_s, last_update_s: until_s, ..call(id, site, start_s) };
+        let long = c(1, 0, 0.0, 20.0);
+        assert!(covers(&long, &c(2, 1, 12.0, 18.0)), "a transmission the long call heard too");
+        assert!(covers(&c(3, 1, 0.2, 5.0), &c(4, 0, 0.0, 5.1)), "the same transmission");
+        assert!(!covers(&c(5, 1, 0.0, 5.0), &long), "the long call heard more than the short copy kept");
+        assert!(!covers(&c(6, 0, 0.0, 30.0), &c(7, 0, 10.0, 15.0)), "another call of the same site");
     }
 
     #[test]
