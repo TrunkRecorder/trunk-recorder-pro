@@ -24,7 +24,7 @@ the app: **Start recording when the app starts** on Setup's **Recording** tab; t
 | `autoStart` | | `false` | bool | Start recording when the app starts, as `--start` does. For headless machines and after a reboot |
 | `allowedOrigins` | | `[]` | array of strings | Web pages on other origins allowed to use the built-in interface's API, with control (a page served by something else, such as a dev server): `"http://host:port"` as the browser sends it, `"null"` for a page opened from a file, or `"*"` for any. Each interface's own pages, and programs that aren't browsers, always may |
 | `interfaces` | | `{}` | object | The other interfaces, by id. See below |
-| `trpApi` | | `""` (https://trunkrecorder.pro) | string | Where the trunkrecorder.pro API is, for the survey's **Identify surveyed sites**. Only for testing another copy of it (`"http://localhost:8788"`) |
+| `trpApi` | | `""` (https://trunkrecorder.pro) | string | Where the trunkrecorder.pro API is, for **Identify** and [sharing with the directory](systems.md#sharing-with-the-directory). Only for testing another copy of it (`"http://localhost:8788"`) |
 
 `bind` and `port` are read when the app starts; the rest apply at once.
 

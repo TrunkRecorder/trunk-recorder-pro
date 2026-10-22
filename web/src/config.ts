@@ -1,6 +1,6 @@
 // Config helpers for the setup form (the recorder validates again).
 
-import type { Channel, Config, Conventional, FccLicense, FccLicenses, LogSettings, Radios, RecordingOverride, Site, SiteIdentity, Source, System, SystemStatus, UnitNames } from "./protocol.ts";
+import type { Channel, Config, Conventional, DirectoryLink, FccLicense, FccLicenses, LogSettings, Radios, RecordingOverride, Site, SiteIdentity, Source, System, SystemStatus, UnitNames } from "./protocol.ts";
 import { normalizeTalkgroupCsv, splitCsvLine } from "./talkgroups.ts";
 import { defaultConfig, parseChannelCsv, readConfig, usableHalfWidth } from "./rules.ts";
 
@@ -17,7 +17,8 @@ export { autoCenter, bandplanProblem, channelsToCsv, defaultConfig, DEFAULT_GUAR
 export function restartKey(c: Config, liveGain: boolean): string {
   return JSON.stringify({
     sources: liveGain ? c.sources.map(withoutLiveGain) : c.sources,
-    systems: c.systems.map(({ plugins: _a, pluginDelays: _d, ...s }) => s),
+    // (Sharing and the directory's link apply live: a share saves the link.)
+    systems: c.systems.map(({ plugins: _a, pluginDelays: _d, share: _s, directory: _l, ...s }) => ({ ...s, sites: s.sites.map(({ directoryId: _i, ...x }) => x) })),
     conventional: c.conventional.map(({ plugins: _a, pluginDelays: _d, channelFileStatus: _f, ...s }) => s),
     recording: c.recording,
   });
@@ -248,11 +249,11 @@ const SITE_KEYS = [
 
 /** Every key of System this version knows (the rest are kept as they are: a newer version's, a hand edit's). */
 const SYSTEM_KEYS: (keyof System)[] = [
-  "shortName", "name", "fcc", "type", "nxdnType", "defaultMode", "enabled", "recording", "unitNames", "keys", "plugins", "pluginDelays", "sites",
+  "shortName", "name", "fcc", "share", "directory", "type", "nxdnType", "defaultMode", "enabled", "recording", "unitNames", "keys", "plugins", "pluginDelays", "sites",
 ];
 
 /** Every key of Site this version knows. */
-const SITE_FIELDS: readonly string[] = ["name", "enabled", ...SITE_KEYS];
+const SITE_FIELDS: readonly string[] = ["name", "directoryId", "enabled", ...SITE_KEYS];
 
 /** A frequency's key in FccLicenses: Hz on the 6.25 kHz raster. */
 export const fccKey = (hz: number) => String(Math.round(hz / 6250) * 6250);
@@ -301,6 +302,7 @@ export function normalizeSite(x: Partial<Site>, sys: Pick<System, "type">): Site
   return {
     ...unknownKeys(x, SITE_FIELDS),
     ...(x.name?.trim() ? { name: x.name } : {}),
+    ...(x.directoryId ? { directoryId: x.directoryId } : {}),
     enabled: x.enabled ?? true,
     controlChannelsHz: Array.isArray(x.controlChannelsHz) ? x.controlChannelsHz : [],
     modulation: x.modulation ?? "auto",
@@ -354,6 +356,8 @@ export function normalizeSystem(x: SystemInput): System {
     shortName: x.shortName ?? "sys1",
     ...(x.name?.trim() ? { name: x.name } : {}),
     ...fccMap(x.fcc),
+    ...(x.share ? { share: true } : {}),
+    ...(plain<DirectoryLink>(x.directory)?.id ? { directory: x.directory } : {}),
     type,
     ...(type === "nxdn" && x.nxdnType === "typeD" ? { nxdnType: "typeD" as const } : {}),
     ...(type === "smartnet" && x.defaultMode === "analog" ? { defaultMode: "analog" as const } : {}),

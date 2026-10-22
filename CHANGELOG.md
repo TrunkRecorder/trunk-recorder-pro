@@ -5,6 +5,14 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Share a system with the community directory** ([trunkrecorder.pro/directory](https://trunkrecorder.pro/directory/)):
+  a switch in each system's Basics (`"share": true`). While it records, the recorder shares what it
+  heard: the sites, their control and voice channels, neighbours, call signs heard on the air, and
+  the talkgroups granted (numbers, how often, where, encrypted or not). Not talkgroup names or
+  anything else typed in, and not a location. It shares after 5 minutes of decoding, then as it
+  hears new talkgroups or voice channels (at most hourly), otherwise daily. Setup shows the last
+  share and links to the system's page; the directory's IDs are kept as `directory` and each site's
+  `directoryId`. P25, SmartNet, DMR and NXDN; desktop and the browser build.
 - **Colours never look like a status light.** Green, amber, orange and red
   now mean only OK, a warning or a problem. Systems and chart lines share
   one palette of blues, teal, violets and magenta, and a system's mark is

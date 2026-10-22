@@ -2,7 +2,7 @@
 // RTL-SDR driver (WebUSB), speaking the same protocol as the desktop app's
 // server, so the interface is identical. Calls are stored in OPFS.
 
-import init, { learn_call_sign, survey_bands, WebProfiler, WebRtl, WebSession, WebSurvey } from "./pkg/trunk_web.js";
+import init, { directory_recorder_id, learn_call_sign, link_shared, survey_bands, WebProfiler, WebRtl, WebSession, WebSurvey } from "./pkg/trunk_web.js";
 import type { Config, FromRecorder, HeardCode, ToRecorder } from "../protocol.ts";
 import { activeSystems, needsDriver, resolvedCenters, SOURCE_KINDS } from "../config.ts";
 import { listCalls, readText, saveCall, writeText } from "./opfs.ts";
@@ -64,7 +64,7 @@ async function devices() {
 }
 
 /** Hand the session's outputs to the page / storage. */
-function deliver(outs: { t: string; json?: string; system?: number; shortName?: string; tg?: number; frame?: Uint8Array; rel?: string; wav?: Uint8Array; entry?: string; freqHz?: number; callSign?: string }[]): void {
+function deliver(outs: { t: string; json?: string; system?: number; shortName?: string; tg?: number; frame?: Uint8Array; rel?: string; wav?: Uint8Array; entry?: string; freqHz?: number; callSign?: string; siteNames?: string }[]): void {
   for (const o of outs) {
     if (o.t === "text") post(JSON.parse(o.json!) as FromRecorder);
     else if (o.t === "callSign") {
@@ -75,6 +75,7 @@ function deliver(outs: { t: string; json?: string; system?: number; shortName?: 
         post({ type: "config", config, version: ++configVersion });
       }
     }
+    else if (o.t === "share") void share(o.shortName!, o.json!, o.siteNames!);
     else if (o.t === "audio") {
       if (listen.on && (listen.system === null || listen.system === o.shortName) && (listen.talkgroup === null || listen.talkgroup === o.tg)) {
         const buf = o.frame!.slice().buffer;
@@ -191,6 +192,39 @@ async function licenseQuery(m: Extract<ToRecorder, { type: "licenseQuery" }>): P
 }
 
 /** Who holds some call signs heard on the air (no location): asked of the trunkrecorder.pro API. */
+const RECORDER_ID_FILE = "directory-recorder-id";
+
+/** This browser's directory recorder ID, made the first time (crates/trunk-pro directory.rs). */
+async function recorderId(): Promise<string> {
+  const kept = (await readText(RECORDER_ID_FILE).catch(() => null))?.trim();
+  if (kept?.startsWith("r_")) return kept;
+  const id = directory_recorder_id(crypto.getRandomValues(new Uint8Array(16)));
+  await writeText(RECORDER_ID_FILE, id).catch(() => {});
+  return id;
+}
+
+/** A system's share, to the directory: its answer links the system in the config (the page stores it). */
+async function share(shortName: string, observation: string, siteNames: string): Promise<void> {
+  const base = (config?.server?.trpApi || "https://trunkrecorder.pro").replace(/\/+$/, "");
+  let error: string | null = null;
+  try {
+    const r = await fetch(`${base}/directory/api/v1/observations`, { method: "POST", headers: { "content-type": "application/json" }, body: observation });
+    const v = (await r.json().catch(() => null)) as { system?: string; rev?: number; sites?: string[]; error?: string } | null;
+    if (r.status === 429) error = "Too many shares from this address for now: it tries again later.";
+    else if (r.status !== 201 && r.status !== 202) error = `The directory didn't take it: ${v?.error ?? `HTTP ${r.status}`}`;
+    else if (v?.system && config) {
+      const linked = link_shared(JSON.stringify(config), shortName, v.system, v.rev ?? 0, siteNames, JSON.stringify(v.sites ?? []), Date.now());
+      if (linked) {
+        config = JSON.parse(linked) as Config;
+        post({ type: "config", config, version: ++configVersion });
+      }
+    }
+  } catch (e) {
+    error = `Couldn't reach ${base} (${e instanceof Error ? e.message : String(e)}).`;
+  }
+  session?.share_done(shortName, wallMs(), error ?? undefined);
+}
+
 async function callSignQuery(m: Extract<ToRecorder, { type: "callSignQuery" }>): Promise<void> {
   const base = (config?.server?.trpApi || "https://trunkrecorder.pro").replace(/\/+$/, "");
   const answer = (results: unknown[], error: string | null) => post({ type: "callSignResult", id: m.id, results: results as never, error });
@@ -319,6 +353,7 @@ async function start(): Promise<void> {
     session.load_tune((await readText(TUNE_FILE)) ?? "");
     session.load_registry((await readText(REGISTRY_FILE)) ?? "{}");
     session.set_topics(JSON.stringify(topics));
+    if (cfg.systems.some((x) => x.share)) session.set_recorder(await recorderId());
     session.set_want_audio(listen.on);
     const centers = resolvedCenters(cfg);
     running = true;
@@ -446,10 +481,20 @@ onmessage = async (ev: MessageEvent<ToWorker>) => {
         capabilities: [],
       });
       break;
-    case "setConfig":
+    case "setConfig": {
+      const before = config;
       config = m.config;
       post({ type: "configSaved", version: ++configVersion });
+      // Sharing switched on or off: at once, as on the desktop.
+      for (const x of m.config.systems) {
+        const was = before?.systems.find((y) => y.shortName === x.shortName);
+        if (session && (!was || !!was.share !== !!x.share || JSON.stringify(was.directory) !== JSON.stringify(x.directory))) {
+          if (x.share) session.set_recorder(await recorderId());
+          session?.set_share(JSON.stringify(x));
+        }
+      }
       break;
+    }
     case "setTalkgroups": {
       // (A recording takes it at once: an Ignore flag set, a tag fixed.)
       if (m.csv.trim()) talkgroups[m.system] = m.csv;

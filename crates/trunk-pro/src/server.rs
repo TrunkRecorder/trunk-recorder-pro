@@ -820,6 +820,13 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
                 }
                 // Their delays apply at once, to what's waiting too (no restart).
                 ctx.plugins.set_delays(&c);
+                // Sharing switched on or off: at once too.
+                for sys in &c.systems {
+                    let was = old.systems.iter().find(|o| o.short_name == sys.short_name);
+                    if was.is_none_or(|o| o.share != sys.share || o.directory != sys.directory) {
+                        ctx.tell_engine(crate::runtime::EngineCmd::ShareSystem(sys.clone()));
+                    }
+                }
                 // A radio's gain changed while recording: it takes it now (the ones that can), the
                 // rest at the next start, which the log says.
                 if let crate::runtime::Lifecycle::Recording(r) = &*ctx.lifecycle.lock().unwrap()
