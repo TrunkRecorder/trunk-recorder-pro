@@ -194,7 +194,12 @@ pub struct Nbfm {
 /// Measured on the discriminator over a few ms.
 pub struct DataBurst {
     a: f32,
-    prev: [f32; 2],
+    /// The last `2 * lag` discriminator samples (a ring), for the second difference.
+    hist: Vec<f32>,
+    pos: usize,
+    /// The second difference's step, samples: one 24 kHz sample's time, so
+    /// what it measures doesn't depend on the channel's rate.
+    lag: usize,
     p2: f32,
     p4: f32,
     ph: f32,
@@ -213,15 +218,23 @@ pub struct DataBurst {
 const DATA_RMS: f32 = 0.3;
 /// (E d²)² / E d⁴: about 0.7 for data, 0.67 for a steady tone, ~0.3 for speech, ~0.2 for noise.
 const DATA_FLAT: f32 = 0.45;
-/// The second difference's power over the signal's: a tone in the voice band ~0.01, data 0.4+.
+/// The second difference's power over the signal's, its step 1/24000 s: a tone in the voice band ~0.01, data 0.4+.
 const DATA_HIGH: f32 = 0.2;
+/// The rate [`DATA_HIGH`] was set at: the second difference steps by this rate's sample
+/// whatever the channel's (at 4× the rate, one-sample steps see a 16th of the power).
+const STEP_RATE: f64 = 24_000.0;
+/// What the measures take a discriminator sample as at most (of full scale: 7.5 kHz).
+const DATA_CLIP: f32 = 1.5;
 
 impl DataBurst {
     pub fn new(rate: f64) -> Self {
         let n = |s: f64| (s * rate) as u32;
+        let lag = ((rate / STEP_RATE).round() as usize).max(1);
         DataBurst {
             a: (-1.0 / (0.004 * rate)).exp() as f32,
-            prev: [0.0; 2],
+            hist: vec![0.0; 2 * lag],
+            pos: 0,
+            lag,
             p2: 0.0,
             p4: 0.0,
             ph: 0.0,
@@ -237,8 +250,16 @@ impl DataBurst {
     /// One discriminator sample; whether a burst is on.
     #[inline]
     pub fn step(&mut self, d: f32) -> bool {
-        let h = d - 2.0 * self.prev[0] + self.prev[1];
-        self.prev = [d, self.prev[0]];
+        // A phase jump (the carrier keying up, a click) reads as a deviation up to the
+        // channel's rate / 2: far past any FM's, the more so the higher the rate, and
+        // in d⁴ it would hold the flatness down for many time constants. Data, voice
+        // and tones are well inside DATA_CLIP.
+        let d = d.clamp(-DATA_CLIP, DATA_CLIP);
+        // d[n] − 2·d[n−lag] + d[n−2·lag]; the ring holds the last 2·lag samples.
+        let len = self.hist.len();
+        let h = d - 2.0 * self.hist[(self.pos + self.lag) % len] + self.hist[self.pos];
+        self.hist[self.pos] = d;
+        self.pos = (self.pos + 1) % len;
         let b = 1.0 - self.a;
         let d2 = d * d;
         self.p2 = self.a * self.p2 + b * d2;
@@ -433,10 +454,16 @@ mod tests {
     }
 
     /// EDACS's 9600 baud burst at a transmission's start is left out; speech
-    /// (syllables of 1 and 2.5 kHz) and a steady tone aren't touched.
+    /// (syllables of 1 and 2.5 kHz) and a steady tone aren't touched. At every
+    /// channel rate a source gives (24 kHz up to a 61.44 MS/s source's 240 kHz).
     #[test]
     fn data_bursts_are_left_out_and_voice_is_not() {
-        let rate = 24_000.0;
+        for rate in [24_000.0, 37_500.0, 39_062.5, 46_875.0, 60_000.0, 78_125.0, 120_000.0, 240_000.0] {
+            data_burst_at(rate);
+        }
+    }
+
+    fn data_burst_at(rate: f64) {
         let burst = |n: usize| {
             let mut x = 0x1234_5678u32;
             let bits: Vec<f64> = (0..n)
@@ -475,12 +502,12 @@ mod tests {
         let plain = run(&voice, false).len();
         let cut = run(&with_burst, true).len();
         let kept = run(&with_burst, false).len();
-        assert!(kept > plain + 1000, "without muting the burst is heard: {kept} vs {plain}");
-        assert!(cut.abs_diff(plain) < 120, "the burst left out: {cut} samples, {plain} without it");
+        assert!(kept > plain + 1000, "{rate} Hz: without muting the burst is heard: {kept} vs {plain}");
+        assert!(cut.abs_diff(plain) < 60, "{rate} Hz: the burst left out: {cut} samples, {plain} without it");
         // Voice alone, and a steady tone, are never taken for data.
-        assert_eq!(run(&voice, true).len(), plain);
+        assert_eq!(run(&voice, true).len(), plain, "{rate} Hz: voice taken for data");
         let tone = fm_tone(rate, 1000.0, 3000.0, rate as usize, 0.5);
-        assert_eq!(run(&tone, true).len(), run(&tone, false).len());
+        assert_eq!(run(&tone, true).len(), run(&tone, false).len(), "{rate} Hz: a tone taken for data");
     }
 
     #[test]
