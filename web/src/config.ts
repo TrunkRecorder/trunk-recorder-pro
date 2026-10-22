@@ -403,7 +403,6 @@ export function newSiteName(sys: System, id: SiteIdentity = {}): string {
   for (let n = 2; ; n++) if (!taken.has(`${base}-${n}`)) return `${base}-${n}`;
 }
 
-/** A system's color (the dashboard, waterfall and setup agree): by its place among the active systems. */
 /**
  * A system's colour, by short name: its place among the trunked systems in
  * the config, so it's the same in Setup, on the dashboard and on the

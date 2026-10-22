@@ -13,6 +13,16 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   hears new talkgroups or voice channels (at most hourly), otherwise daily. Setup shows the last
   share and links to the system's page; the directory's IDs are kept as `directory` and each site's
   `directoryId`. P25, SmartNet, DMR and NXDN; desktop and the browser build.
+- **Colours never look like a status light.** Green, amber, orange and red
+  now mean only OK, a warning or a problem. Systems and chart lines share
+  one palette of blues, teal, violets and magenta, and a system's mark is
+  square where a light is round (#40).
+- **A light names what it's about.** With several systems, radios or
+  plugins, the navigation's lights say which one is in trouble: "ipscpend:
+  Calls are being missed…". The Radio page shows the light and why on that
+  system's card, its button in the picker and its "What happened to calls".
+  The Overview's system cards include missed calls, and "Missed, 24 h" says
+  which systems missed them (#41).
 
 ## [0.2.7] — 2026-10-22
 
