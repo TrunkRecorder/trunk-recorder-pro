@@ -146,7 +146,7 @@ It is written on a single line.
 | `talkgroup_description` | Its description |
 | `talkgroup_group_tag` | Its tag |
 | `talkgroup_group` | Its category |
-| `nac` | P25: the NAC its voice carried on a conventional channel, its site's on a trunked system, as a number (`659` is NAC `293`); `-1` for none |
+| `nac` | P25: the NAC its voice carried on a conventional channel, its site's on a trunked system, in hex as radios, RadioReference and channel files write it (`"293"`, a string); `""` for none |
 | `color_code` | DMR colour code; `-1` for none |
 | `ran` | NXDN RAN; `-1` for none |
 | `tone_mode`, `tone_detected`, `tone_confidence` | Analog conventional calls' tone: see [Tones](tones.md#how-tones-are-identified) |

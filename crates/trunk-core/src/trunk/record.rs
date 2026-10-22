@@ -215,7 +215,7 @@ pub fn call_record(call: &Call, info: &ConcludeInfo) -> (CallRecord, String) {
         talkgroup_description: t(|t| &t.description),
         talkgroup_group_tag: t(|t| &t.tag),
         talkgroup_group: t(|t| &t.group),
-        nac: call.nac.filter(|_| call.voice.decryptable()).map_or(-1, i64::from),
+        nac: call.nac.filter(|_| call.voice.decryptable()).map_or(String::new(), |n| format!("{n:03X}")),
         color_code: call.voice.color_code().map_or(-1, i64::from),
         ran: call.ran.map_or(-1, i64::from),
         // Trunk Recorder's (PR #1137) tone fields; "search": identified, not matched.
@@ -348,10 +348,13 @@ mod tests {
         // What it was and what the air carried: its system's kind, its voice, its NAC (P25 only).
         call.nac = Some(0x293);
         let r = call_record(&call, &info).0;
-        assert_eq!((r.system_type.as_str(), r.voice_mode.as_str(), r.nac), ("p25", "p25", 0x293));
+        assert_eq!((r.system_type.as_str(), r.voice_mode.as_str(), r.nac.as_str()), ("p25", "p25", "293"));
         call.voice = Voice::Fm;
         let r = call_record(&call, &info).0;
-        assert_eq!((r.voice_mode.as_str(), r.nac), ("fm", -1), "an analog call has no NAC");
+        assert_eq!((r.voice_mode.as_str(), r.nac.as_str()), ("fm", ""), "an analog call has no NAC");
+        call.voice = Voice::P25;
+        call.nac = Some(0x2a);
+        assert_eq!(call_record(&call, &info).0.nac, "02A", "three digits, as the NAC is written");
         call.voice = Voice::P25;
         // Each source's own flags.
         CallManager::note_source(&mut call, Some(8), 0.0, Flags { emergency: true, priority: 7, ..Default::default() });

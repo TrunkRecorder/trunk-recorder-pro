@@ -387,8 +387,9 @@ pub struct CallRecord {
     pub talkgroup_group_tag: String,
     pub talkgroup_group: String,
     /// P25: the NAC its voice carried on a conventional channel, its site's
-    /// on a trunked system (-1: none; this recorder's addition).
-    pub nac: i64,
+    /// on a trunked system, in hex as radios and channel files write it
+    /// (`"293"`; empty: none; this recorder's addition).
+    pub nac: String,
     /// DMR: its colour code (-1: none).
     pub color_code: i64,
     /// NXDN: its RAN (-1: none).
@@ -463,7 +464,7 @@ impl Default for CallRecord {
             talkgroup_description: String::new(),
             talkgroup_group_tag: String::new(),
             talkgroup_group: String::new(),
-            nac: -1,
+            nac: String::new(),
             color_code: -1,
             ran: -1,
             tone_mode: "off".into(),

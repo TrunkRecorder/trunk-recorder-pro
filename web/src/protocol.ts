@@ -734,8 +734,8 @@ export interface CallRecord {
   mode: number;
   /** TDMA / DMR slot (0 otherwise). */
   tdma_slot: number;
-  /** P25: the NAC its voice carried (conventional) or its site's (trunked); -1 otherwise (absent in calls saved before). */
-  nac?: number;
+  /** P25: the NAC its voice carried (conventional) or its site's (trunked), in hex as channel files write it ("293"); "" otherwise (absent in calls saved before). */
+  nac?: string;
   /** DMR color code; -1 otherwise. */
   color_code: number;
   /** NXDN RAN; -1 otherwise (absent in calls saved before NXDN). */

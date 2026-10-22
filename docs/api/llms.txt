@@ -178,7 +178,7 @@ CallEntry: a recorded call (rec.history, the "concluded" message)
     emergency (1/0), encrypted (1/0), audio_type ("analog" | "digital" |
     "digital tdma"), system_type? ("p25" | "smartnet" | "dmr" | "nxdn" |
     "conventional"), voice_mode? ("p25" | "p25_phase2" | "dmr" | "nxdn48" |
-    "nxdn96" | "fm" | "am"), nac? (P25's NAC as a number; -1 none), srcList [{ src (unit), tag (its name or ""), tag_ota,
+    "nxdn96" | "fm" | "am"), nac? (P25's NAC in hex, "293"; "" none), srcList [{ src (unit), tag (its name or ""), tag_ota,
     time (Unix s), pos (s into the audio), emergency, lat? lon? (GPS) }], signal / noise
     (dBFS) / snr (dB) (or null), tone_detected, patched_talkgroups?
 

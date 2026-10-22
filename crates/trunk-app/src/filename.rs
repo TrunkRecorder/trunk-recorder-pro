@@ -133,7 +133,8 @@ fn token(t: &str, r: &Value, sys_num: u16, utc_offset_s: i32) -> String {
         "signal" | "noise" => (r[t].as_f64().unwrap_or(0.0) as i64).to_string(),
         "source_num" | "recorder_num" | "emergency" | "encrypted" | "priority" | "color_code" | "ran" => num(t),
         "audio_type" | "system_type" | "voice_mode" => text(t),
-        "nac" => r["nac"].as_i64().filter(|&n| n >= 0).map_or(String::new(), |n| format!("{n:03X}")),
+        // Hex in the JSON already ("293").
+        "nac" => text("nac"),
         _ => format!("{{{t}}}"),
     }
 }
@@ -310,9 +311,9 @@ mod tests {
         assert_eq!(render("{talkgroup}/{talkgroup_ota}", &c, 0, 0), "46012/1-call_3");
         assert_eq!(render("{talkgroup}_{talkgroup_ota}", &json!({ "call_num": 4, "talkgroup": 5 }), 0, 0), "5_-call_4", "none named: empty");
         assert_eq!(problem("{talkgroup_ota}"), None);
-        let c = json!({ "call_num": 5, "nac": 0x293, "system_type": "conventional", "voice_mode": "p25" });
+        let c = json!({ "call_num": 5, "nac": "293", "system_type": "conventional", "voice_mode": "p25" });
         assert_eq!(render("{system_type}/{voice_mode}/{nac}", &c, 0, 0), "conventional/p25/293-call_5");
-        assert_eq!(render("{nac}x", &json!({ "call_num": 6, "nac": -1 }), 0, 0), "x-call_6", "none: empty");
+        assert_eq!(render("{nac}x", &json!({ "call_num": 6, "nac": "" }), 0, 0), "x-call_6", "none: empty");
     }
 
     #[test]

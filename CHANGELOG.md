@@ -34,7 +34,7 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 - **The call JSON says what kind of call it was**: `system_type` (`p25`, `smartnet`, `dmr`, `nxdn`
   or `conventional`, as plugins have it), `voice_mode` (`p25`, `p25_phase2`, `dmr`, `nxdn48`,
   `nxdn96`, `fm` or `am`) and, for P25, `nac`: the NAC a conventional channel's frames carried, a
-  trunked system's site NAC. The archive path has `{system_type}`, `{voice_mode}` and `{nac}`
+  trunked system's site NAC, in hex as channel files and Setup write it (`"293"`). The archive path has `{system_type}`, `{voice_mode}` and `{nac}`
   tokens. SDK 0.5.1 has the fields on `CallRecord`.
 - **The Radio page names a conventional system's talkgroups** as Listen does (from #53's review; it
   showed bare numbers in 0.2.6 too): by the row, else the talkgroup file; a talkgroup filed under the

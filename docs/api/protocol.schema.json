@@ -141,8 +141,8 @@
           "description": "TDMA / DMR slot (0 otherwise)."
         },
         "nac": {
-          "type": "number",
-          "description": "P25: the NAC its voice carried (conventional) or its site's (trunked); -1 otherwise (absent in calls saved before)."
+          "type": "string",
+          "description": "P25: the NAC its voice carried (conventional) or its site's (trunked), in hex as channel files write it (\"293\"); \"\" otherwise (absent in calls saved before)."
         },
         "color_code": {
           "type": "number",
