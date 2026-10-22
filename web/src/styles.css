@@ -153,6 +153,8 @@ table.channels input.narrow { width: 7em; }
 table.channels td { padding: 4px 6px; }
 table.channels .access-input { display: inline-flex; gap: 4px; align-items: center; white-space: nowrap; }
 table.channels input.invalid { border-color: var(--bad); }
+table.channels .send-to { display: flex; flex-wrap: wrap; gap: 2px 10px; font-size: 12px; white-space: nowrap; }
+table.channels .send-to-option { display: inline-flex; align-items: center; gap: 4px; }
 table.channels tr.shared-freq td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
 table.channels .row-actions { display: inline-flex; gap: 4px; white-space: nowrap; }
 table.channels tr.heard-row td { padding-top: 0; border-top: none; }

@@ -5,7 +5,9 @@
 
 import { useMemo, useState } from "react";
 import { systemColor } from "../config.ts";
-import { radioQuery, setTalkgroupIgnore, setView, usePolled, useApp, type AppState } from "../controller.ts";
+import { radioQuery, setTalkgroupIgnore, setTalkgroupSendTo, setView, usePolled, useApp, type AppState } from "../controller.ts";
+import { SendToPicker, sendToChoices, sendToText } from "../SendTo.tsx";
+import { sendTos } from "../talkgroups.ts";
 import { BackBar, Bipartite, Card, Choice, Heatmap, HeatStrip, Histogram, Light, RadialEgo, Stat, SystemTag, type Node } from "../charts.tsx";
 import { ago, clockAt, compact, dur, hmm, num } from "../fmt.ts";
 import type { CipherSeen, LengthHistogram, RadioResult, TgRow, UnitRow } from "../protocol.ts";
@@ -41,6 +43,24 @@ function TgName({ r }: { r: { tg: number; alphaTag: string } }) {
     </span>
   ) : (
     <span className="tg">{r.tg}</span>
+  );
+}
+
+/** Which plugins a trunked talkgroup's calls go to, set in its system's talkgroup file. */
+function TgSendTo({ s, sys, r }: { s: AppState; sys: DashSystem; r: TgRow }) {
+  const csv = s.talkgroups[sys.name] ?? "";
+  const sendTo = useMemo(() => sendTos(csv).get(r.tg), [csv, r.tg]);
+  const choices = s.config ? sendToChoices(s.config, s.plugins?.plugins ?? []) : [];
+  if (sys.kind === "conventional" || (!choices.length && sendTo === undefined)) return null;
+  return (
+    <div className="row small" title="Which plugins its calls go to: all ticked is every plugin, including ones added later">
+      <span className="muted">Send to</span>
+      {choices.length ? (
+        <SendToPicker sendTo={sendTo} choices={choices} onChange={(v) => setTalkgroupSendTo(sys.name, r.tg, v, r.alphaTag)} />
+      ) : (
+        <span>{sendToText(sendTo)}</span>
+      )}
+    </div>
   );
 }
 
@@ -101,6 +121,9 @@ function Talkgroups({ sys, rows, hours }: { sys: DashSystem; rows: TgRow[]; hour
   const [filter, setFilter] = useState<TgFilter>("all");
   const [q, setQ] = useState("");
   const [sort, setSort] = useState<"secs" | "calls" | "last" | "first">("secs");
+  // Talkgroups whose calls go only to some plugins (the talkgroup file's Send To).
+  const csv = useApp().talkgroups[sys.name] ?? "";
+  const routed = useMemo(() => sendTos(csv), [csv]);
   const shown = useMemo(() => {
     const f = q.trim().toLowerCase();
     return rows
@@ -170,6 +193,11 @@ function Talkgroups({ sys, rows, hours }: { sys: DashSystem; rows: TgRow[]; hour
                     </span>
                   )}
                   {r.ignore && <span className="badge ign">IGNORED</span>}
+                  {routed.has(r.tg) && (
+                    <span className="badge" title={`Its calls go to ${sendToText(routed.get(r.tg))}`}>
+                      → {sendToText(routed.get(r.tg))}
+                    </span>
+                  )}
                 </td>
                 <td className="mono">{r.calls}</td>
                 <td className="mono">{dur(r.secs)}</td>
@@ -360,6 +388,7 @@ function TgView({ s, sys, tg }: { s: AppState; sys: DashSystem; tg: number }) {
           {row.ignore && <span className="badge ign">IGNORED</span>}
           <IgnoreToggle sys={sys} r={row} />
         </div>
+        <TgSendTo s={s} sys={sys} r={row} />
       </section>
       <div className="kpis">
         <Stat label="Calls, 7 days" value={compact(row.calls)} sub={`${row.totalCalls} since first heard`} />

@@ -334,3 +334,88 @@ export function withIgnore(csv: string, tg: number, ignore: boolean, alphaTag = 
   }
   return lines.join("\n") + "\n";
 }
+
+/** A Send To cell's plugins, as the recorder reads it (crates/trunk-app config `send_to`): undefined = every plugin, [] = none. */
+export function parseSendTo(cell: string): string[] | undefined {
+  const t = cell.trim();
+  if (!t || /^all$/i.test(t) || t === "*") return undefined;
+  if (/^none$/i.test(t) || t === "-") return [];
+  return [...new Set(t.split(/[;,|]/).map(normPlugin).filter(Boolean))].sort();
+}
+
+/** A plugin id or copy label as the recorder compares them: no spaces, `-` or `_`, lower case. */
+export function normPlugin(s: string): string {
+  return s.replace(/[\s_-]/g, "").toLowerCase();
+}
+
+/** Each talkgroup's Send To in a talkgroup file that names plugins (its "Send To" column, any case and spacing; every plugin is left out). */
+export function sendTos(csv: string): Map<number, string[]> {
+  const out = new Map<number, string[]>();
+  const lines = dataLines(csv);
+  if (!lines.length) return out;
+  const delim = csvDelimiter(lines[0]);
+  const at = splitCsvLine(lines[0], delim).findIndex((h) => h.replace(/\s/g, "").toLowerCase() === "sendto");
+  if (at < 0) return out;
+  for (const l of lines.slice(1)) {
+    const f = splitCsvLine(l, delim);
+    const tg = Number.parseInt(f[0] ?? "", 10);
+    const to = parseSendTo(f[at] ?? "");
+    if (Number.isFinite(tg) && to !== undefined) out.set(tg, to);
+  }
+  return out;
+}
+
+/** Talkgroup `tg`'s Send To in a talkgroup file (undefined: every plugin). */
+export function sendToOf(csv: string, tg: number): string[] | undefined {
+  return sendTos(csv).get(tg);
+}
+
+/**
+ * The talkgroup file with talkgroup `tg`'s Send To set (`undefined`: every
+ * plugin, an empty cell; `[]`: `none`; else the plugins joined by `;`), in its
+ * "Send To" column — added when the file has none (a headerless, legacy file
+ * is given its header). Only that cell changes; a talkgroup not in the file
+ * gets a row (named `alphaTag`) when it's sent anywhere but every plugin.
+ */
+export function withSendTo(csv: string, tg: number, sendTo: string[] | undefined, alphaTag = ""): string {
+  const cell = sendTo === undefined ? "" : sendTo.length ? sendTo.join(";") : "none";
+  const lines = csv.split(/\r?\n/);
+  while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+  const data = (l: string) => !!l.trim() && !l.trim().startsWith("#");
+  let hi = lines.findIndex(data);
+  let header: string[];
+  if (hi < 0) {
+    if (!cell) return csv;
+    header = ["Decimal", "Hex", "Alpha Tag", "Mode", "Description", "Tag", "Category"];
+    lines.push(header.join(","));
+    hi = lines.length - 1;
+  } else if (canonical(splitCsvLine(lines[hi])[0] ?? "") === "Decimal") {
+    header = splitCsvLine(lines[hi]);
+  } else {
+    if (!cell) return csv;
+    header = legacyHeader(lines.filter(data));
+    lines.splice(hi, 0, header.join(","));
+  }
+  let at = header.findIndex((h) => h.replace(/\s/g, "").toLowerCase() === "sendto");
+  if (at < 0) {
+    if (!cell) return csv;
+    header.push("Send To");
+    at = header.length - 1;
+    lines[hi] = header.map(csvCell).join(",");
+  }
+  let found = false;
+  for (let i = hi + 1; i < lines.length; i++) {
+    if (!data(lines[i])) continue;
+    const f = splitCsvLine(lines[i]);
+    if (Number.parseInt(f[0], 10) !== tg) continue;
+    found = true;
+    while (f.length < header.length) f.push("");
+    f[at] = cell;
+    lines[i] = f.map(csvCell).join(",");
+  }
+  if (!found && cell) {
+    const f = header.map((h, k) => (k === at ? cell : canonical(h) === "Decimal" ? String(tg) : canonical(h) === "Hex" ? tg.toString(16) : canonical(h) === "Alpha Tag" ? alphaTag : ""));
+    lines.push(f.map(csvCell).join(","));
+  }
+  return lines.join("\n") + "\n";
+}

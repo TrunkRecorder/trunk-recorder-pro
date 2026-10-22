@@ -7,7 +7,17 @@ import { useMemo, useRef, useState } from "react";
 import { downloadText, setNotice, setTalkgroups, useApp } from "./controller.ts";
 import { FileInput } from "./inputs.tsx";
 import type { System } from "./protocol.ts";
-import { isEncryptedMode, normalizeTalkgroupCsv, parseRadioReferencePaste, readTalkgroupCsv, talkgroupsToCsv, withHeader, type Talkgroup } from "./talkgroups.ts";
+import { csvDelimiter, isEncryptedMode, normalizeTalkgroupCsv, splitCsvLine, parseRadioReferencePaste, readTalkgroupCsv, talkgroupsToCsv, withHeader, type Talkgroup } from "./talkgroups.ts";
+
+/** How many talkgroups' Send To cells name plugins (a headed CSV's "Send To" column, not empty). */
+function sendToCount(csv: string): number {
+  const lines = csv.replace(/^\uFEFF/, "").split(/\r?\n/).filter((l) => l.trim() && !l.trim().startsWith("#"));
+  if (!lines.length) return 0;
+  const delim = csvDelimiter(lines[0]);
+  const at = splitCsvLine(lines[0], delim).findIndex((h) => h.replace(/\s/g, "").toLowerCase() === "sendto");
+  if (at < 0) return 0;
+  return lines.slice(1).filter((l) => (splitCsvLine(l, delim)[at] ?? "").trim() !== "").length;
+}
 
 /** A system with a talkgroup file: trunked (its first site's identity helps find it on RadioReference), or conventional. */
 type TalkgroupsOf = Pick<System, "shortName"> & Partial<Pick<System, "sites">>;
@@ -21,6 +31,7 @@ export function TalkgroupsField(props: { sys: TalkgroupsOf; needs?: string; anch
   const tgs = [...report.talkgroups.values()];
   const ignored = tgs.filter((t) => t.ignore).length;
   const encrypted = tgs.filter((t) => isEncryptedMode(t.mode)).length;
+  const routed = useMemo(() => sendToCount(csv), [csv]);
   const set = (next: string) => setTalkgroups(sys.shortName, next);
 
   const onFile = async (f: File | undefined) => {
@@ -59,6 +70,11 @@ export function TalkgroupsField(props: { sys: TalkgroupsOf; needs?: string; anch
         <div className="row tg-facts">
           {ignored > 0 && <span className="chip">{ignored} ignored</span>}
           {encrypted > 0 && <span className="chip" title="Not recorded">{encrypted} encrypted</span>}
+          {routed > 0 && (
+            <span className="chip" title="Talkgroups whose Send To column names the plugins taking finished calls their calls go to (the rest go to every plugin)">
+              {routed} with Send To
+            </span>
+          )}
           {report.legacy && <span className="chip" title="Trunk Recorder's old fixed columns; Download adds a header row">no header row</span>}
           {report.missing.length > 0 && (
             <span className="chip warn" title="Trunk Recorder requires it">

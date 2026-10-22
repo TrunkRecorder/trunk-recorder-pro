@@ -188,6 +188,8 @@ impl Ctx {
     pub fn config_changed(&self, c: &Config) -> u64 {
         let files = self.talkgroups.lock().unwrap().clone();
         self.shared.names.lock().unwrap().set_config(c, &files);
+        // Send To: the channels' and talkgroup files' routes, for calls from now on.
+        self.plugins.set_routes(c, &files);
         let version = self.config_version.fetch_add(1, Ordering::SeqCst) + 1;
         publish(&self.hub, ToClient::Config { config: Box::new(c.clone()), version });
         version
@@ -441,6 +443,7 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
     session.load_units(&|name| fs::read_to_string(units_path(name)).ok());
     session.load_heard(&fs::read_to_string(heard_path(&cfg)).unwrap_or_default());
     session.load_tune(&fs::read_to_string(tune_path()).unwrap_or_default());
+    ctx.plugins.set_routes(&cfg, &ctx.talkgroups.lock().unwrap().clone());
     ctx.plugins.start(&cfg);
     if cfg.sources.iter().any(|s| matches!(s, Source::Rtlsdr { .. })) {
         if let Some(hint) = cfg.rtl_buflen_hint(sdr::rtl_most_on_a_bus()) {
@@ -538,6 +541,8 @@ pub fn set_talkgroups(ctx: &Ctx, system: &str, csv: String) -> Result<(), String
     // (The config first, then the names: as config_changed takes them.)
     let (cfg, files) = (ctx.config.lock().unwrap().clone(), ctx.talkgroups.lock().unwrap().clone());
     ctx.shared.names.lock().unwrap().set_config(&cfg, &files);
+    // (Its Send To column routes its calls from now on.)
+    ctx.plugins.set_routes(&cfg, &files);
     publish(&ctx.hub, ToClient::Talkgroups { system: system.to_string(), csv });
     Ok(())
 }
@@ -1037,7 +1042,8 @@ fn finish_calls(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, rx: 
 fn finish_one(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, mut f: Finish, encoder: Option<&(plugins::Encoder, u32)>) {
     let host = ctx.plugins.host();
     let r = f.rules;
-    let to_plugins = host.as_ref().map_or(Default::default(), |h| h.plugin_audio(f.decrypted));
+    // (Only the plugins its talkgroup goes to, Send To: the archive waits for their answers alone.)
+    let to_plugins = host.as_ref().map_or(Default::default(), |h| h.plugin_audio(&h.about_call(f.system, &f.record, f.decrypted)));
     let p = plugins::plan(r, to_plugins, encoder.is_some());
     let (keep_wav, keep_m4a, keep_json, keep_audio) = (p.keep_wav, p.keep_m4a, p.keep_json, p.keep_audio);
     let base = dir.join(&f.rel);

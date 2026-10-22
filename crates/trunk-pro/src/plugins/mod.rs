@@ -36,6 +36,7 @@ mod encode;
 pub mod hold;
 mod host;
 pub mod manage;
+pub mod route;
 pub mod store;
 mod timing;
 

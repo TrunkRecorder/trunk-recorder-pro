@@ -63,6 +63,7 @@ import {
 import { M4aSettings, PluginSetupPanel, SystemPluginSettings, useM4aPlugins } from "./Plugins.tsx";
 import { renameSystemRefs } from "./pluginSettings.ts";
 import { SystemDelays } from "./Delays.tsx";
+import { SendToCell, sendToChoices, showSendTo } from "./SendTo.tsx";
 import { IconAntenna, IconDongle, IconFolder, IconPuzzle, IconTower } from "./Onboarding.tsx";
 import type { AirspyGainMode, Channel, Config, Conventional, Demod, Device, HeardCode, LockableKeys, LogSettings, Recording, RecordingOverride, RecordingRules, Site, SiteIdentity, SoapyState, Source, System, UnitNames } from "./protocol.ts";
 import { DEFAULT_FORMAT, FilenameEditor } from "./FilenameEditor.tsx";
@@ -323,6 +324,7 @@ const CSV_COLUMNS: [string, React.ReactNode, string][] = [
   ["Bandwidth kHz", "fm and am: the channel filter's width, 4–20", "the mode's"],
   ["Enable", <><code>false</code>, <code>no</code>, <code>0</code> or <code>off</code> keeps the row without recording it</>, "on"],
   ["AutoTune", <>p25, dmr, nxdn: <code>true</code> lets its calls correct the source's frequency error (a repeater output to trust)</>, "off"],
+  ["Send To", <>The plugins its calls go to, separated by <code>;</code> (<code>rdioscanner</code>, <code>openmhz;rdioscanner</code>); <code>none</code>: no plugin</>, "every plugin"],
 ];
 
 type MatchKind = "tone" | "code" | "slot" | "tg" | "any";
@@ -440,12 +442,14 @@ function RowEditor(props: {
   onName: (field: NameField, value: string) => void;
   onAutoTune: (on: boolean) => void;
   onDone: () => void;
+  /** Columns it spans (one more with Send To). */
+  span?: number;
 }) {
   const { ch } = props;
   return (
     <tr className="rule-edit">
       <td />
-      <td colSpan={8}>
+      <td colSpan={props.span ?? 8}>
         <div className="row-editor">
           <fieldset>
             <legend>Records</legend>
@@ -499,7 +503,7 @@ const SHOWN_CODES = 8;
  * codes), most heard first, each with an Add that makes a row for it — the
  * way to find a frequency's codes without knowing them.
  */
-function HeardRow(props: { rows: Channel[]; heard: HeardCode[]; linked: boolean; onAdd: (p: AccessParts) => void }) {
+function HeardRow(props: { rows: Channel[]; heard: HeardCode[]; linked: boolean; span?: number; onAdd: (p: AccessParts) => void }) {
   const mode = props.rows[0].mode;
   // Only what this mode's Tone can say (NXDN's RAN 0 is any: "RAN 0 TG 201" is "TG 201").
   const nxdn = mode === "nxdn48" || mode === "nxdn96";
@@ -515,7 +519,7 @@ function HeardRow(props: { rows: Channel[]; heard: HeardCode[]; linked: boolean;
   return (
     <tr className="heard-row">
       <td />
-      <td colSpan={8}>
+      <td colSpan={props.span ?? 8}>
         <span className="muted small">Heard:</span>
         {shown.map((h) => (
           <span key={h.code} className="heard-code" title={`Last heard ${new Date(h.lastMs).toLocaleString()}`}>
@@ -1263,6 +1267,8 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
   const need = useNeed();
   const conv = c.conventional[k];
   const chans = conv.channels;
+  const sendChoices = sendToChoices(c, useApp().plugins?.plugins ?? []);
+  const sendCol = showSendTo(sendChoices, chans);
   const name = conv.shortName;
   const dupName = c.conventional.some((x, j) => j !== k && x.shortName === name);
   // Stable row keys (each edit clones the config; a frequency input keeps its own text).
@@ -1512,6 +1518,7 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
                     <th>Name</th>
                     <th title="Calls are filed under it. Empty: digital modes the talkgroup the air names, else the frequency in kHz. The air's is kept in the call's JSON as talkgroup_ota">TG Number</th>
                     <th title="dB above the noise floor">Squelch</th>
+                    {sendCol && <th title="The plugins its calls go to; all ticked is every plugin, including ones added later">Send to</th>}
                     <th />
                   </tr>
                 </thead>
@@ -1615,6 +1622,21 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
                           }
                         />
                       </td>
+                      {sendCol && (
+                        <td>
+                          <SendToCell
+                            ch={ch}
+                            choices={sendChoices}
+                            disabled={linked}
+                            onChange={(v) =>
+                              editRow(i, (x) => {
+                                if (v === undefined) delete x.sendTo;
+                                else x.sendTo = v;
+                              })
+                            }
+                          />
+                        </td>
+                      )}
                       <td>
                         <span className="row-actions">
                           <button
@@ -1648,6 +1670,7 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
                       {(editing.has(ids.current[i]) || "error" in parseAccess(ch.mode, ch.code ?? "")) && (
                         <RowEditor
                           key={`e${ch.mode}`}
+                          span={sendCol ? 9 : 8}
                           ch={ch}
                           disabled={linked}
                           lists={lists}
@@ -1659,6 +1682,7 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
                       )}
                       {lastOfFreq(i) === i && heard[String(Math.round(ch.freqHz))] && (
                         <HeardRow
+                          span={sendCol ? 9 : 8}
                           rows={chans.filter((o) => Math.abs(o.freqHz - ch.freqHz) < 1)}
                           heard={heard[String(Math.round(ch.freqHz))]}
                           linked={linked}

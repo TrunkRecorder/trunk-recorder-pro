@@ -89,6 +89,27 @@ pub(crate) fn split_csv_on(line: &str, delim: char) -> Vec<String> {
     out
 }
 
+/// One more column of a headed talkgroup CSV, by its header (any case): each
+/// talkgroup's value, where it isn't empty (e.g. this app's `Send To`).
+pub fn column(text: &str, name: &str) -> HashMap<u32, String> {
+    let lines: Vec<&str> = csv_lines(text).collect();
+    let mut out = HashMap::new();
+    let Some(&head) = lines.first() else { return out };
+    let delim = csv_delimiter(head);
+    let first = split_csv_on(head, delim);
+    let dec = first.iter().position(|c| matches!(c.trim().to_ascii_lowercase().as_str(), "decimal" | "dec"));
+    let want = name.replace(' ', "").to_ascii_lowercase();
+    let at = first.iter().position(|c| c.replace(' ', "").to_ascii_lowercase() == want);
+    let (Some(dec), Some(at)) = (dec, at) else { return out };
+    for line in &lines[1..] {
+        let f = split_csv_on(line, delim);
+        if let (Some(n), Some(v)) = (f.get(dec).and_then(|s| s.parse::<u32>().ok()), f.get(at).map(|v| v.trim()).filter(|v| !v.is_empty())) {
+            out.insert(n, v.to_string());
+        }
+    }
+    out
+}
+
 pub fn parse_csv(text: &str) -> Talkgroups {
     let lines: Vec<&str> = csv_lines(text).collect();
     let mut out = Talkgroups::new();
@@ -156,6 +177,15 @@ mod tests {
         let l = parse_csv("202,ca,E,Police,Tac 2,Law,City,3\n");
         assert!(l[&202].encrypted_mode());
         assert_eq!(l[&202].priority, 3);
+    }
+
+    #[test]
+    fn a_named_column_by_talkgroup() {
+        let c = column("Decimal,Alpha Tag,Send To\n101,Disp,openmhz;rdioscanner\n102,Tac,\n103,Ops,\"Rdio Scanner\"\n", "send to");
+        assert_eq!(c.get(&101).map(String::as_str), Some("openmhz;rdioscanner"));
+        assert!(!c.contains_key(&102));
+        assert_eq!(c.get(&103).map(String::as_str), Some("Rdio Scanner"));
+        assert!(column("101,65,D,Disp\n", "Send To").is_empty(), "headerless: no named columns");
     }
 
     #[test]

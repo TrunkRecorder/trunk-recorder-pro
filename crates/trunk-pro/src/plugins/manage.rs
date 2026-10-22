@@ -18,8 +18,8 @@ use trunk_app::protocol::{body, Install, StoreKind, ToClient};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime};
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -209,6 +209,8 @@ pub struct Plugins {
     pub archive: Arc<Archive>,
     /// What plugins are to have late (their delays), until it's due.
     pub hold: Arc<Hold>,
+    /// Which plugins each talkgroup's calls go to (the config's `Send To`s).
+    pub routes: Arc<RwLock<super::route::Routes>>,
     /// What the running recording's plugins were started with, to restart them.
     env: Mutex<Option<(Vec<SystemInfo>, PathBuf)>>,
     runtime: Arc<Mutex<BTreeMap<String, Runtime>>>,
@@ -225,6 +227,7 @@ impl Plugins {
     pub fn new(hub: Hub, monitor: Arc<trunk_app::stats::Shared>) -> Plugins {
         let archive: Arc<Archive> = Arc::default();
         let p = Plugins {
+            routes: Arc::default(),
             monitor,
             host: Mutex::new(None),
             hold: Hold::new(archive.clone()),
@@ -249,6 +252,12 @@ impl Plugins {
     /// The config's plugin delays changed (or may have): what's held is timed by them.
     pub fn set_delays(&self, cfg: &Config) {
         self.hold.set_delays(Delays::of(cfg));
+    }
+
+    /// The config or a talkgroup file changed (or may have): its plugin routes
+    /// (`Send To`) are taken up, for calls from now on.
+    pub fn set_routes(&self, cfg: &Config, talkgroups: &trunk_app::config::TalkgroupFiles) {
+        *self.routes.write().unwrap() = super::route::Routes::of(cfg, talkgroups);
     }
 
     /// The longest plugin delay: how long a call's files may wait for its plugins, besides their own time.
@@ -395,7 +404,7 @@ impl Plugins {
         if specs.is_empty() {
             return None;
         }
-        let host = PluginHost::start_when(specs, &cfg.recording.m4a, &systems, &capture_dir, notes, go, Some(self.hold.clone()));
+        let host = PluginHost::start_when(specs, &cfg.recording.m4a, &systems, &capture_dir, notes, go, Some(self.hold.clone()), self.routes.clone());
         (!host.is_empty()).then_some(host)
     }
 

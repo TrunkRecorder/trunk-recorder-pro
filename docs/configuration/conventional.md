@@ -95,6 +95,7 @@ Notes:
 | `bandwidthKhz` | | the mode's | number | `fm` and `am`: the channel filter's width, kHz, 4–20. FM: 11 (12.5 kHz channels), 16 for wide FM (25 kHz). AM: 11 below 225 MHz, 16 from 225 MHz (UHF military air); 6 for 8.33 kHz channels. Rows sharing a frequency need the same |
 | `enabled` | | `true` | bool | `false` keeps the row without recording it |
 | `autoTune` | | `false` | bool | `p25`, `dmr`, `nxdn`: its calls' carrier offsets correct its source's AutoTune (a repeater output to trust; see [Frequency correction](../guides/conventional.md#frequency-correction)) |
+| `sendTo` | | every plugin | array | The plugins taking finished calls its calls go to, by id (`["rdioscanner"]`); `[]`: none. See [Send To](plugins.md#send-to-which-plugins-get-which-calls) |
 
 ### Talkgroup numbers
 
@@ -209,6 +210,7 @@ A header row is required. Columns are matched in any case and any order; others 
 | `Bandwidth kHz` | `BandwidthKhz`, `Bandwidth` | `fm` and `am` rows: the filter's width, 4–20; empty = the mode's |
 | `Enable` | `Enabled` | `false`, `no`, `0` or `off` = off; anything else or empty = on |
 | `AutoTune` | `Auto Tune` | `true`, `yes`, `1` or `on` = its calls correct the source (digital rows); empty = off |
+| `Send To` | `Plugins` | The plugins its calls go to, separated by `;` (`rdioscanner`, `openmhz;rdioscanner`; `Rdio Scanner` works too). Empty = every plugin; `none` = no plugin |
 
 Parsing:
 

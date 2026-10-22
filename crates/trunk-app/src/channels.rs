@@ -47,7 +47,7 @@ use crate::config::{Channel, ChannelMode};
 use trunk_core::trunk::Access;
 
 /// The columns [`write`] produces.
-pub const HEADER: &str = "TG Number,Frequency,Code,Slot,Match TG,Mode,Alpha Tag,Description,Tag,Category,Squelch dB,Bandwidth kHz,Enable,AutoTune";
+pub const HEADER: &str = "TG Number,Frequency,Code,Slot,Match TG,Mode,Alpha Tag,Description,Tag,Category,Squelch dB,Bandwidth kHz,Enable,AutoTune,Send To";
 
 /// What a CSV held: its channels and anything worth telling the user.
 #[derive(Debug, Default)]
@@ -129,6 +129,7 @@ pub fn parse(text: &str) -> Result<Parsed, String> {
     let c_tone = c_code.or(col(&["tone"]));
     let c_slot = col(&["slot", "ts"]);
     let c_mtg = col(&["match tg", "matchtalkgroup", "match talkgroup"]);
+    let c_send = col(&["send to", "sendto", "plugins"]);
 
     let mut out = Parsed::default();
     let (mut bad_freq, mut bad_mode, mut bad_tg, mut bad_sq, mut bad_bw) = (vec![], vec![], vec![], vec![], vec![]);
@@ -218,6 +219,7 @@ pub fn parse(text: &str) -> Result<Parsed, String> {
             match_talkgroup,
             enabled,
             auto_tune,
+            send_to: crate::config::send_to(at(c_send)),
         });
     }
     if old {
@@ -296,6 +298,7 @@ pub fn write(channels: &[Channel]) -> String {
             c.bandwidth_khz.map_or(String::new(), |v| v.to_string()),
             c.enabled.to_string(),
             if c.auto_tune { "true".into() } else { String::new() },
+            cell(&crate::config::send_to_cell(&c.send_to)),
         ];
         out.push_str(&row.join(","));
         out.push('\n');
@@ -337,6 +340,16 @@ mod tests {
     }
 
     #[test]
+    fn send_to_spellings() {
+        let p = parse("Frequency,Alpha Tag,Send To\n154.43,Both,\n155.1,Rdio only,Rdio Scanner\n154.25,Neither,none\n153.8,Two,\"OpenMHz; rdio-scanner#2\"\n").unwrap();
+        let to: Vec<Option<Vec<String>>> = p.channels.iter().map(|c| c.send_to.clone()).collect();
+        assert_eq!(to[0], None);
+        assert_eq!(to[1], Some(vec!["rdioscanner".to_string()]));
+        assert_eq!(to[2], Some(vec![]));
+        assert_eq!(to[3], Some(vec!["openmhz".to_string(), "rdioscanner#2".to_string()]));
+    }
+
+    #[test]
     fn round_trip_and_excel_variants() {
         let chans = vec![
             Channel {
@@ -353,6 +366,7 @@ mod tests {
                 slot: None,
                 match_talkgroup: None,
                 enabled: true, auto_tune: false,
+                send_to: None,
             },
             Channel {
                 freq_hz: 460_125_000.0,
@@ -368,6 +382,7 @@ mod tests {
                 slot: None,
                 match_talkgroup: Some(1),
                 enabled: false, auto_tune: false,
+                send_to: Some(vec!["rdioscanner".into()]),
             },
             Channel {
                 freq_hz: 451_500_000.0,
@@ -383,6 +398,7 @@ mod tests {
                 slot: Some(1),
                 match_talkgroup: Some(1),
                 enabled: true, auto_tune: false,
+                send_to: None,
             },
         ];
         let csv = write(&chans);
@@ -408,8 +424,8 @@ mod tests {
         let p = parse("Frequency,Mode,AutoTune\n453.375,p25,yes\n451.75,p25,\n453.225,fm,false\n").unwrap();
         assert_eq!(p.channels.iter().map(|c| c.auto_tune).collect::<Vec<_>>(), [true, false, false]);
         let out = write(&p.channels);
-        assert!(out.lines().next().unwrap().ends_with(",Enable,AutoTune"), "{out}");
-        assert!(out.contains("\n,453.3750,,,,p25,,,,,,,true,true\n") && out.contains("\n,451.7500,,,,p25,,,,,,,true,\n"), "{out}");
+        assert!(out.lines().next().unwrap().ends_with(",Enable,AutoTune,Send To"), "{out}");
+        assert!(out.contains("\n,453.3750,,,,p25,,,,,,,true,true,\n") && out.contains("\n,451.7500,,,,p25,,,,,,,true,,\n"), "{out}");
         assert_eq!(parse(&out).unwrap().channels.iter().map(|c| c.auto_tune).collect::<Vec<_>>(), [true, false, false]);
     }
 
