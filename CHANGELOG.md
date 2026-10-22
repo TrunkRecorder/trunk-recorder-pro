@@ -67,6 +67,12 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   2.5 + 6 MS/s worked. A source at 2 MS/s or
   below runs its radio at 6 MS/s; use separate USB controllers if a
   pair doesn't fit.
+- **Airspy:** the sample rate is set by its IQ value, which libairspy sends as the rate's index;
+  older firmware ignored the doubled (real-sample) rate sent by value and kept its default, so
+  every channel landed off frequency.
+
+## [0.2.7] — 2026-10-22
+
 
 ## [0.2.7] — 2026-10-22
 
