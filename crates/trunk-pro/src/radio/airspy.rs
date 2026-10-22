@@ -334,7 +334,12 @@ fn stream_once(source: usize, cfg: &AirspyConfig, tx: &SyncSender<SourceMsg>, st
             let list: Vec<String> = rates.iter().map(|r| format!("{}", *r as f64 / per as f64 / 1e6)).collect();
             return Err(format!("this Airspy runs at {} MSPS, not {}", list.join(" / "), cfg.rate_hz / 1e6));
         }
-        check(a, "sample rate", (a.set_samplerate)(d.dev, want))?;
+        // Set by the IQ rate even for real samples: libairspy finds it in its own
+        // (IQ) list and sends the rate's index, which every firmware knows. The
+        // doubled rate isn't in that list, so libairspy would send it by value
+        // instead, which older firmware ignores without a word (it keeps its
+        // default rate, and every channel lands off frequency).
+        check(a, "sample rate", (a.set_samplerate)(d.dev, want / per))?;
         d.tune(cfg.center_hz)?;
         // (As a gain set while running is: a reopened radio comes back the same.)
         d.set_gain(Gain::Airspy(cfg.gain))?;
