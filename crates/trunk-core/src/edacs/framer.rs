@@ -14,14 +14,9 @@ use super::bch;
 
 /// The frame sync, first bit sent highest.
 pub const SYNC: u64 = 0x5555_5712_5555;
-const SYNC_MASK: u64 = 0xFFFF_FFFF_FFFF;
 pub const SYNC_BITS: usize = 48;
 /// Bits after the sync: two messages, three copies of 40 bits each.
 pub const BODY_BITS: usize = 240;
-pub const FRAME_BITS: usize = SYNC_BITS + BODY_BITS;
-/// Sync bits that may be wrong when hunting for a frame / when one is due.
-const HUNT_ERRORS: u32 = 4;
-const DUE_ERRORS: u32 = 12;
 /// Bits a copy of a message may be off from the corrected word.
 const COPY_ERRORS: u32 = 4;
 
@@ -42,16 +37,97 @@ enum State {
     Due { n: usize, inverted: bool },
 }
 
-pub struct Framer {
+/// Hunting for a sync, reading the body after it, and checking the next
+/// sync where it's due: what the control channel's framing and ProVoice's share.
+pub struct Sync {
+    words: &'static [u64],
+    bits: usize,
+    /// Sync bits that may be wrong when hunting / when one is due.
+    hunt: u32,
+    due: u32,
     sr: u64,
     state: State,
-    body: [f32; BODY_BITS],
-    t: f64,
+    /// The last body read, upright, and when its first bit was heard.
+    pub body: Vec<f32>,
+    pub t: f64,
+    /// Frames in a row whose sync came where it was due.
+    pub run: u32,
+}
+
+impl Sync {
+    /// `words`: the syncs (`bits` long, first bit sent highest) a frame may start with.
+    pub fn new(words: &'static [u64], bits: usize, body_bits: usize, hunt: u32, due: u32) -> Self {
+        Sync { words, bits, hunt, due, sr: 0, state: State::Hunt, body: vec![0.0; body_bits], t: 0.0, run: 0 }
+    }
+
+    pub fn in_sync(&self) -> bool {
+        self.run > 0 && self.state != State::Hunt
+    }
+
+    /// One bit (`soft` > 0: a 1 as sent upright), heard at `t`; true when it
+    /// ends a body ([`Sync::body`]).
+    pub fn push(&mut self, soft: f32, t: f64) -> bool {
+        self.sr = (self.sr << 1 | (soft > 0.0) as u64) & ((1 << self.bits) - 1);
+        match self.state {
+            State::Hunt => {
+                if let Some(inverted) = self.sync(self.hunt) {
+                    self.state = State::Body { n: 0, inverted };
+                }
+                false
+            }
+            State::Body { n, inverted } => {
+                if n == 0 {
+                    self.t = t;
+                }
+                self.body[n] = if inverted { -soft } else { soft };
+                if n + 1 < self.body.len() {
+                    self.state = State::Body { n: n + 1, inverted };
+                    return false;
+                }
+                self.state = State::Due { n: 0, inverted };
+                true
+            }
+            State::Due { n, inverted } => {
+                if n + 1 < self.bits {
+                    self.state = State::Due { n: n + 1, inverted };
+                    return false;
+                }
+                match self.sync(self.due) {
+                    Some(inv) if inv == inverted => {
+                        self.run += 1;
+                        self.state = State::Body { n: 0, inverted };
+                    }
+                    _ => {
+                        self.run = 0;
+                        self.state = State::Hunt;
+                    }
+                }
+                false
+            }
+        }
+    }
+
+    /// The last bits are a sync with at most `max` errors: upright (false)
+    /// or inverted (true).
+    fn sync(&self, max: u32) -> Option<bool> {
+        self.words.iter().find_map(|&w| {
+            let e = (self.sr ^ w).count_ones();
+            if e <= max {
+                Some(false)
+            } else if self.bits as u32 - e <= max {
+                Some(true)
+            } else {
+                None
+            }
+        })
+    }
+}
+
+pub struct Framer {
+    pub sync: Sync,
     /// Messages decoded / lost.
     pub good: u64,
     pub bad: u64,
-    /// Frames in a row whose sync came where it was due.
-    pub run: u32,
 }
 
 impl Default for Framer {
@@ -62,103 +138,55 @@ impl Default for Framer {
 
 impl Framer {
     pub fn new() -> Self {
-        Framer { sr: 0, state: State::Hunt, body: [0.0; BODY_BITS], t: 0.0, good: 0, bad: 0, run: 0 }
-    }
-
-    pub fn in_sync(&self) -> bool {
-        self.run > 0 && self.state != State::Hunt
+        // Sync bits that may be wrong when hunting for a frame / when one is due.
+        Framer { sync: Sync::new(&[SYNC], SYNC_BITS, BODY_BITS, 4, 12), good: 0, bad: 0 }
     }
 
     /// One bit (`soft` > 0: a 1 as sent upright), heard at `t`.
     pub fn push(&mut self, soft: f32, t: f64) -> Option<Frame> {
-        self.sr = (self.sr << 1 | (soft > 0.0) as u64) & SYNC_MASK;
-        match self.state {
-            State::Hunt => {
-                if let Some(inverted) = self.sync(HUNT_ERRORS) {
-                    self.state = State::Body { n: 0, inverted };
-                }
-                None
-            }
-            State::Body { n, inverted } => {
-                if n == 0 {
-                    self.t = t;
-                }
-                self.body[n] = if inverted { -soft } else { soft };
-                if n + 1 < BODY_BITS {
-                    self.state = State::Body { n: n + 1, inverted };
-                    return None;
-                }
-                self.state = State::Due { n: 0, inverted };
-                Some(self.decode())
-            }
-            State::Due { n, inverted } => {
-                if n + 1 < SYNC_BITS {
-                    self.state = State::Due { n: n + 1, inverted };
-                    return None;
-                }
-                match self.sync(DUE_ERRORS) {
-                    Some(inv) if inv == inverted => {
-                        self.run += 1;
-                        self.state = State::Body { n: 0, inverted };
-                    }
-                    _ => {
-                        self.run = 0;
-                        self.state = State::Hunt;
-                    }
-                }
-                None
-            }
+        if !self.sync.push(soft, t) {
+            return None;
         }
-    }
-
-    /// The last 48 bits are a sync with at most `max` errors: upright
-    /// (false) or inverted (true).
-    fn sync(&self, max: u32) -> Option<bool> {
-        let e = (self.sr ^ SYNC).count_ones();
-        if e <= max {
-            Some(false)
-        } else if SYNC_BITS as u32 - e <= max {
-            Some(true)
-        } else {
-            None
-        }
-    }
-
-    fn decode(&mut self) -> Frame {
-        let mut msgs = [None; 2];
-        for (k, m) in msgs.iter_mut().enumerate() {
-            let at = k * 120;
-            let copy = |c: usize, invert: bool| -> u64 {
-                (0..40).fold(0u64, |w, i| {
-                    let v = self.body[at + 40 * c + i];
-                    w << 1 | ((v > 0.0) != invert) as u64
-                })
-            };
-            let vote = (0..40).fold(0u64, |w, i| {
-                let v = self.body[at + i] - self.body[at + 40 + i] + self.body[at + 80 + i];
-                w << 1 | (v > 0.0) as u64
-            });
-            // The vote, corrected, stands only when two of the copies are
-            // close to it too: a word of noise passes the BCH check one time
-            // in five (two corrections reach that much of the space).
-            let copies = [copy(0, false), copy(1, true), copy(2, false)];
-            *m = bch::decode(vote).filter(|&(d, _)| {
-                let cw = bch::encode(d);
-                copies.iter().filter(|&&c| (c ^ cw).count_ones() <= COPY_ERRORS).count() >= 2
-            }).map(|(d, _)| d);
+        let msgs = decode(&self.sync.body);
+        for m in msgs {
             if m.is_some() {
                 self.good += 1;
             } else {
                 self.bad += 1;
             }
         }
-        Frame { msgs, t: self.t }
+        Some(Frame { msgs, t: self.sync.t })
     }
+}
+
+/// A body's two messages.
+fn decode(body: &[f32]) -> [Option<u32>; 2] {
+    std::array::from_fn(|k| {
+        let at = k * 120;
+        let copy = |c: usize, invert: bool| -> u64 {
+            (0..40).fold(0u64, |w, i| {
+                let v = body[at + 40 * c + i];
+                w << 1 | ((v > 0.0) != invert) as u64
+            })
+        };
+        let vote = (0..40).fold(0u64, |w, i| {
+            let v = body[at + i] - body[at + 40 + i] + body[at + 80 + i];
+            w << 1 | (v > 0.0) as u64
+        });
+        // The vote, corrected, stands only when two of the copies are
+        // close to it too: a word of noise passes the BCH check one time
+        // in five (two corrections reach that much of the space).
+        let copies = [copy(0, false), copy(1, true), copy(2, false)];
+        bch::decode(vote).filter(|&(d, _)| {
+            let cw = bch::encode(d);
+            copies.iter().filter(|&&c| (c ^ cw).count_ones() <= COPY_ERRORS).count() >= 2
+        }).map(|(d, _)| d)
+    })
 }
 
 /// The bits of a frame carrying `m1` and `m2` (for test signals and the bench).
 pub fn encode(m1: u32, m2: u32) -> Vec<u8> {
-    let mut bits = Vec::with_capacity(FRAME_BITS);
+    let mut bits = Vec::with_capacity(SYNC_BITS + BODY_BITS);
     bits.extend((0..SYNC_BITS).rev().map(|i| (SYNC >> i & 1) as u8));
     for m in [m1, m2] {
         let w = bch::encode(m);
@@ -219,7 +247,7 @@ mod tests {
                 assert_eq!(fr.msgs, [Some(0x0123456 + k as u32), Some(0x0FEDCBA - k as u32)]);
             }
             assert_eq!((f.good, f.bad), (20, 0));
-            assert!(f.in_sync());
+            assert!(f.sync.in_sync());
         }
     }
 }

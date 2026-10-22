@@ -38,6 +38,7 @@ import {
   usableHalfWidth,
   siteLockFields,
   siteText,
+  systemType,
 } from "./config.ts";
 import {
   can,
@@ -1575,20 +1576,7 @@ function DmrFields(props: { site: Site; edit: (fn: (x: Site) => void) => void })
           }
         />
       </Field>
-      <Field label="Channel table (optional)" hint="Channel = MHz, e.g. 101=452.275" wide>
-        <DraftInput
-          className="mono"
-          codec={lcnTable}
-          value={site.lcnTableHz ?? {}}
-          placeholder={"learned from the air"}
-          onChange={(t) =>
-            edit((x) => {
-              if (Object.keys(t).length) x.lcnTableHz = t;
-              else delete x.lcnTableHz;
-            })
-          }
-        />
-      </Field>
+      <LcnTableField site={site} edit={edit} label="Channel table (optional)" hint="Channel = MHz, e.g. 101=452.275" placeholder="learned from the air" />
     </>
   );
 }
@@ -1639,20 +1627,13 @@ function NxdnFields(props: { sys: System; site: Site; edit: (fn: (x: Site) => vo
           }
         />
       </Field>
-      <Field label="Channel table (optional)" hint={typeD ? "Repeater number = MHz, e.g. 1=451.0125" : "Channel number = MHz, e.g. 20=451.0125"} wide>
-        <DraftInput
-          className="mono"
-          codec={lcnTable}
-          value={site.lcnTableHz ?? {}}
-          placeholder={typeD ? "none" : "learned from the air"}
-          onChange={(t) =>
-            edit((x) => {
-              if (Object.keys(t).length) x.lcnTableHz = t;
-              else delete x.lcnTableHz;
-            })
-          }
-        />
-      </Field>
+      <LcnTableField
+        site={site}
+        edit={edit}
+        label="Channel table (optional)"
+        hint={typeD ? "Repeater number = MHz, e.g. 1=451.0125" : "Channel number = MHz, e.g. 20=451.0125"}
+        placeholder={typeD ? "none" : "learned from the air"}
+      />
       {!typeD && (
         <p className="muted small" style={{ gridColumn: "1 / -1", margin: 0 }}>
           A Type-C control channel grants channel numbers. Their frequencies come from the channel table (RadioReference lists it for many systems), from the site if it
@@ -1663,26 +1644,33 @@ function NxdnFields(props: { sys: System; site: Site; edit: (fn: (x: Site) => vo
   );
 }
 
+/** A site's `lcnTableHz`: channel number = MHz (DMR, NXDN, EDACS). */
+function LcnTableField(props: { site: Site; edit: (fn: (x: Site) => void) => void; label: string; hint: string; placeholder: string }) {
+  const { site, edit } = props;
+  return (
+    <Field label={props.label} hint={props.hint} wide>
+      <DraftInput
+        className="mono"
+        codec={lcnTable}
+        value={site.lcnTableHz ?? {}}
+        placeholder={props.placeholder}
+        onChange={(t) =>
+          edit((x) => {
+            if (Object.keys(t).length) x.lcnTableHz = t;
+            else delete x.lcnTableHz;
+          })
+        }
+      />
+    </Field>
+  );
+}
+
 /** An EDACS site's channel list (LCN → frequency) and ESK. */
 function EdacsFields(props: { site: Site; edit: (fn: (x: Site) => void) => void }) {
   const { site, edit } = props;
-  const n = Object.keys(site.lcnTableHz ?? {}).length;
   return (
     <>
-      <Field label="Channels (LCNs)" hint="LCN = MHz, in the site's order, e.g. 1=856.1875, 3=857.7125" wide>
-        <DraftInput
-          className="mono"
-          codec={lcnTable}
-          value={site.lcnTableHz ?? {}}
-          placeholder="1=856.1875, 2=…"
-          onChange={(t) =>
-            edit((x) => {
-              if (Object.keys(t).length) x.lcnTableHz = t;
-              else delete x.lcnTableHz;
-            })
-          }
-        />
-      </Field>
+      <LcnTableField site={site} edit={edit} label="Channels (LCNs)" hint="LCN = MHz, e.g. 1=856.1875, 3=857.7125" placeholder="1=856.1875, 2=…" />
       <Toggle
         label="ESK 0xA0"
         hint="Some Harris systems scramble the control channel"
@@ -1694,21 +1682,9 @@ function EdacsFields(props: { site: Site; edit: (fn: (x: Site) => void) => void 
           })
         }
       />
-      <Toggle
-        label="Learn channels in no list"
-        hint="Before the site sends its site ID: for a site that decodes well but never identifies itself"
-        checked={!!site.learnUnlisted}
-        onChange={(v) =>
-          edit((x) => {
-            if (v) x.learnUnlisted = true;
-            else delete x.learnUnlisted;
-          })
-        }
-      />
       <p className="muted small" style={{ gridColumn: "1 / -1", margin: 0 }}>
-        The control channel grants calls a channel number (LCN); this list turns it into a frequency, so it must be complete and in the site's order (RadioReference lists
-        it). {n === 0 ? "No channels yet: calls can't be followed." : `${n} channel${n === 1 ? "" : "s"}.`} A call on a channel missing here is logged once and not
-        recorded until its frequency is learned from the air.
+        The control channel grants calls a channel number (LCN); this list (RadioReference has it) turns it into a frequency. Every listed frequency is watched, so a list
+        with its numbers mixed up is put right from the air. A call on an LCN whose frequency isn't listed is logged and not recorded.
       </p>
     </>
   );
@@ -2060,7 +2036,7 @@ function SystemCard(props: { c: Config; i: number }) {
             value={sys.type}
             onChange={(e) =>
               edit((x) => {
-                x.type = e.target.value === "smartnet" ? "smartnet" : e.target.value === "dmr" ? "dmr" : e.target.value === "nxdn" ? "nxdn" : e.target.value === "edacs" ? "edacs" : "p25";
+                x.type = systemType(e.target.value);
                 if (x.type === "smartnet") for (const y of x.sites) y.bandplan ??= "800_standard";
               })
             }

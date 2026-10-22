@@ -16,10 +16,7 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   yet. Every frequency of a site is watched at once, so the control channel
   is found wherever it moves, and each LCN's frequency is checked against
   the air (the carrier that keys when a call is assigned it): a list whose
-  numbers are off is corrected, and a site's channel in no list is found on
-  its channel raster from the sources' spectrum (once the site has
-  identified itself, or with `learnUnlisted`; other sites' frequencies and
-  always-on carriers are never taken). A site is reported in failsoft only when its site ID says so and it has
+  numbers are off is corrected. A site is reported in failsoft only when its site ID says so and it has
   stopped assigning calls (some sites set the flag and trunk all the same).
   A site ID is believed once three in
   a row agree. A grant to the frequency the control channel is on is never

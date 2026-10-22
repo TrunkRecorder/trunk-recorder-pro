@@ -204,7 +204,7 @@ export interface Site {
   bandplanHighHz?: number;
   /** DMR: logical channel number → frequency, Hz (Trunk Recorder's lcnTable); the rest is learned.
    *  NXDN: the channel table, channel number → frequency (Type-D: repeater number → frequency).
-   *  EDACS: the site's channel list, LCN (1–25) → frequency; it can't be learned from the air. */
+   *  EDACS: the site's channel list, LCN (1–25) → frequency; checked against the air. */
   lcnTableHz?: Record<string, number>;
   /** DMR: voice frequencies to watch besides the control channels (Trunk Recorder's channels). */
   dmrChannelsHz?: number[];
@@ -219,9 +219,6 @@ export interface Site {
   ran?: number;
   /** EDACS: the system scrambles its control channel with ESK 0xA0. */
   esk?: boolean;
-  /** EDACS: learn channels on frequencies in no list even before the site has identified itself
-   *  (a site that decodes well but never sends its site ID). */
-  learnUnlisted?: boolean;
 }
 
 /**

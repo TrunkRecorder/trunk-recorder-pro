@@ -350,7 +350,7 @@ pub struct Site {
     pub bandplan_high_hz: f64,
     /// DMR / NXDN / EDACS: logical channel number → frequency, Hz (Trunk
     /// Recorder's `lcnTable`). DMR and NXDN learn channels left out from the
-    /// air; EDACS can't (its calls on a channel not listed aren't followed).
+    /// air; EDACS checks the list against the air but needs it.
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub lcn_table_hz: BTreeMap<String, f64>,
     /// DMR: voice frequencies to watch besides the control channels (Trunk
@@ -374,11 +374,6 @@ pub struct Site {
     /// EDACS: the system scrambles its control channel with ESK 0xA0.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub esk: bool,
-    /// EDACS: learn channels on frequencies in no list (the site's raster)
-    /// even before the site has identified itself — for a site whose
-    /// control channel decodes well but never sends its site ID.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub learn_unlisted: bool,
     #[serde(flatten)]
     pub other: BTreeMap<String, serde_json::Value>,
 }
@@ -639,7 +634,7 @@ impl Site {
         NxdnConfig {
             kind: if sys.nxdn_type == NxdnType::TypeD { Kind::TypeD } else { Kind::TypeC },
             rate: self.nxdn_rate.engine(),
-            channel_table: self.lcn_table_hz.iter().filter_map(|(k, &v)| Some((k.trim().parse().ok()?, v.round() as u64))).collect(),
+            channel_table: self.lcn_table(),
             channels: self.nxdn_channels_hz.clone(),
             ran: self.ran,
         }
@@ -661,30 +656,22 @@ impl Site {
     /// The DMR settings.
     pub fn dmr(&self) -> trunk_core::dmr::DmrConfig {
         trunk_core::dmr::DmrConfig {
-            lcn_table: self.lcn_table_hz.iter().filter_map(|(k, &v)| Some((k.trim().parse().ok()?, v.round() as u64))).collect(),
+            lcn_table: self.lcn_table(),
             channels: self.dmr_channels_hz.clone(),
             color_code: self.color_code,
         }
     }
 
-    /// The EDACS settings: `lcnTableHz` is the site's channel list.
-    pub fn edacs(&self) -> trunk_core::edacs::EdacsConfig {
-        trunk_core::edacs::EdacsConfig {
-            lcns: self.lcn_table_hz.iter().filter_map(|(k, &v)| Some((k.trim().parse().ok()?, v.round() as u64))).filter(|&(l, f): &(u8, u64)| (1..=25).contains(&l) && f > 0).collect(),
-            esk: self.esk,
-            learn_unlisted: self.learn_unlisted,
-            others: Vec::new(),
-        }
+    /// `lcnTableHz` with numbers for keys and frequencies in Hz (the keys that parse).
+    fn lcn_table<K: std::str::FromStr + Ord>(&self) -> BTreeMap<K, u64> {
+        self.lcn_table_hz.iter().filter_map(|(k, &v)| Some((k.trim().parse().ok()?, v.round() as u64))).collect()
     }
 
-    /// Voice channels known before the air says (for placing sources): the
-    /// survey's, and an EDACS site's channel list.
-    pub fn known_voice_channels(&self, sys: &System) -> Vec<f64> {
-        let mut v = self.voice_channels_hz.clone();
-        if sys.is_edacs() {
-            v.extend(self.edacs().lcns.values().map(|&f| f as f64));
-        }
-        v
+    /// The EDACS settings: `lcnTableHz` is the site's channel list (LCNs 1–25).
+    pub fn edacs(&self) -> trunk_core::edacs::EdacsConfig {
+        let mut lcns = self.lcn_table::<u8>();
+        lcns.retain(|l, &mut f| (1..=25).contains(l) && f > 0);
+        trunk_core::edacs::EdacsConfig { lcns, esk: self.esk }
     }
 
     /// The SmartNet settings, or why they don't work.
@@ -705,15 +692,7 @@ impl Site {
         } else if sys.is_nxdn() {
             Protocol::Nxdn(self.nxdn(sys))
         } else if sys.is_edacs() {
-            let mut e = self.edacs();
-            // The other sites' frequencies: one networked call keys them too, and they aren't this site's.
-            e.others = sys
-                .sites
-                .iter()
-                .filter(|o| !std::ptr::eq(*o, self))
-                .flat_map(|o| o.control_channels_hz.iter().map(|&f| f.round() as u64).chain(o.edacs().lcns.into_values()))
-                .collect();
-            Protocol::Edacs(e)
+            Protocol::Edacs(self.edacs())
         } else if let Some(sn) = sys.is_smartnet().then(|| self.smartnet(sys).ok()).flatten() {
             Protocol::SmartNet(sn)
         } else {
@@ -764,7 +743,6 @@ impl Default for Site {
             nxdn_channels_hz: vec![],
             ran: None,
             esk: false,
-            learn_unlisted: false,
             other: BTreeMap::new(),
         }
     }
@@ -2040,7 +2018,7 @@ impl Config {
                 // A DMR / NXDN site's watched frequencies are all needed.
                 let watched = s.watched_channels(sys);
                 let need: Vec<f64> = s.control_channels_hz.iter().chain(&watched).copied().collect();
-                (need.iter().chain(&s.known_voice_channels(sys)).copied().collect(), need)
+                (need.iter().chain(&s.voice_channels_hz).copied().collect(), need)
             })
             .collect();
         for v in self.conventional.iter().filter(|v| v.enabled) {
@@ -2649,7 +2627,7 @@ mod tests {
         let e = s.sites[0].edacs();
         assert_eq!(e.lcns.into_iter().collect::<Vec<_>>(), [(1, 856_187_500), (3, 857_712_500), (4, 854_137_500)], "LCN 30 isn't a channel");
         assert!(!e.esk);
-        assert!(s.sites[0].known_voice_channels(s).contains(&857_712_500.0));
+        assert!(s.sites[0].watched_channels(s).contains(&857_712_500.0));
         let back: System = serde_json::from_str(&serde_json::to_string(s).unwrap()).unwrap();
         assert_eq!(&back, s);
         assert_eq!(c.problem(), None);

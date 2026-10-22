@@ -20,10 +20,6 @@ pub struct EdacsConfig {
     pub lcns: BTreeMap<u8, u64>,
     /// The system scrambles its messages with ESK 0xA0 (some Harris systems).
     pub esk: bool,
-    /// Learn channels on frequencies in no list before the site has identified itself.
-    pub learn_unlisted: bool,
-    /// The system's other sites' frequencies, Hz: never learned as this site's.
-    pub others: Vec<u64>,
 }
 
 impl EdacsConfig {
@@ -84,12 +80,6 @@ impl Parser {
         Parser { cfg, site: None, cc_lcn: None, cc_hz: None, site_heard: None, site_run: 0, site_believed: None, failsoft: false, failsoft_run: 0, last_assigned: None, corrected: false, to_cc_said: false, missing: BTreeSet::new(), notes: Vec::new(), granted: Vec::new() }
     }
 
-    /// The site has identified itself (the same site ID, enough times in a
-    /// row): what's heard is this site's control channel, decoding well.
-    pub fn site_known(&self) -> bool {
-        self.site_believed.is_some()
-    }
-
     /// News for the log: (a warning?, text).
     pub fn take_notes(&mut self) -> Vec<(bool, String)> {
         std::mem::take(&mut self.notes)
@@ -107,7 +97,7 @@ impl Parser {
         }
         let f = self.cfg.freq(lcn);
         if f.is_none() && self.missing.insert(lcn) {
-            self.notes.push((true, format!("{what} on LCN {lcn}, which isn't in this site's channel list: not followed until its frequency is known (learned from the air when it's one of the site's frequencies, or added to the list)")));
+            self.notes.push((true, format!("{what} on LCN {lcn}, which isn't in this site's channel list: not followed until its frequency is known (learned from the air when it's one of the site's listed frequencies, or added to the list)")));
         }
         f
     }
@@ -334,7 +324,7 @@ mod tests {
     use super::*;
 
     fn cfg() -> EdacsConfig {
-        EdacsConfig { lcns: [(1, 856_187_500), (4, 854_137_500), (5, 856_687_500)].into_iter().collect(), esk: false, ..Default::default() }
+        EdacsConfig { lcns: [(1, 856_187_500), (4, 854_137_500), (5, 856_687_500)].into_iter().collect(), esk: false }
     }
 
     fn parse(p: &mut Parser, (m1, m2): (u32, u32)) -> Vec<Message> {

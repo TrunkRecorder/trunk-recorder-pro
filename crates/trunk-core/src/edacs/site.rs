@@ -23,6 +23,7 @@ use num_complex::Complex32;
 use super::framer::Framer;
 use super::parser::{EdacsConfig, Parser};
 use crate::smartnet::{Bit, Fsk2};
+use crate::trunk::message::{table_from_str, table_to_string};
 use crate::trunk::Message;
 
 /// A carrier keyed this long after (or before) an assignment is its channel.
@@ -33,8 +34,6 @@ const JUDGE_AFTER_S: f64 = 1.5;
 /// Votes an LCN needs for a frequency, and how far ahead of any other
 /// (a call keying several carriers at once gives each a share).
 const LEARN_VOTES: f32 = 3.0;
-/// Raster power is judged over this long.
-const SCAN_WINDOW_S: f64 = 0.05;
 /// Carrier power above the floor that keys it / unkeys it.
 const KEY_RATIO: f32 = 10.0;
 const UNKEY_RATIO: f32 = 4.0;
@@ -44,8 +43,6 @@ const CC_RUN: u32 = 5;
 const CC_LOST_S: f64 = 1.5;
 /// Same frequency, Hz.
 const SAME_HZ: u64 = 1000;
-/// A raster frequency whose floor is this far above the raster's is a carrier that's always on.
-const CONTINUOUS_RATIO: f32 = 4.0;
 
 struct Carrier {
     hz: u64,
@@ -65,26 +62,9 @@ struct Carrier {
     t: f64,
 }
 
-/// A raster frequency's power, measured from the source's spectrum (no receiver).
-#[derive(Default)]
-struct Slot {
-    sum: f32,
-    n: u32,
-    since: f64,
-    floor: f32,
-    keyed: bool,
-    keyed_at: Option<f64>,
-    /// Its power when it keyed (of neighbours keying together, the strongest is the one).
-    level: f32,
-}
-
 pub struct Site {
     pub parser: Parser,
     carriers: Vec<Carrier>,
-    /// The channel raster (first, step, Hz) the site's frequencies are on, and each raster frequency's power.
-    raster: Option<(f64, f64)>,
-    slots: BTreeMap<u64, Slot>,
-    scan_t: f64,
     /// The carrier the control channel is on.
     cc: Option<usize>,
     /// Assignments waiting to be judged: (LCN, when).
@@ -105,14 +85,7 @@ impl Site {
         hz.sort_unstable();
         hz.dedup_by(|a, b| a.abs_diff(*b) < SAME_HZ);
         let configured = cfg.lcns.clone();
-        // The raster: 25 kHz when every frequency is on one (800 MHz), else 12.5 kHz.
-        let raster = hz.first().and_then(|&first| {
-            [25_000u64, 12_500].into_iter().find(|&step| hz.iter().all(|&f| (f - first) % step < SAME_HZ || step - (f - first) % step < SAME_HZ)).map(|step| (first as f64, step as f64))
-        });
         Site {
-            raster,
-            slots: BTreeMap::new(),
-            scan_t: f64::NEG_INFINITY,
             parser: Parser::new(cfg),
             carriers: hz
                 .into_iter()
@@ -130,35 +103,6 @@ impl Site {
     /// The frequencies watched, Hz.
     pub fn carriers(&self) -> Vec<f64> {
         self.carriers.iter().map(|c| c.hz as f64).collect()
-    }
-
-    /// The raster to measure (see [`Site::scan`]).
-    pub fn scan_raster(&self) -> Option<(f64, f64)> {
-        self.raster
-    }
-
-    /// Each raster frequency's power in the block that ended at `t`: when
-    /// an LCN's frequency isn't among the site's, the carrier that keys for
-    /// its calls is found here.
-    pub fn scan(&mut self, t: f64, powers: &[(u64, f32)]) {
-        self.scan_t = self.scan_t.max(t);
-        for &(hz, p) in powers {
-            let s = self.slots.entry(hz).or_insert_with(|| Slot { since: t, floor: f32::MAX, ..Default::default() });
-            s.sum += p;
-            s.n += 1;
-            if t - s.since < SCAN_WINDOW_S {
-                continue;
-            }
-            let p = s.sum / s.n as f32;
-            let start = s.since;
-            (s.sum, s.n, s.since) = (0.0, 0, t);
-            s.floor = if p < s.floor { p } else { s.floor * 1.0005 }.max(1e-30);
-            if !s.keyed && p > s.floor * KEY_RATIO {
-                (s.keyed, s.keyed_at, s.level) = (true, Some(start), p);
-            } else if s.keyed && p < s.floor * UNKEY_RATIO {
-                s.keyed = false;
-            }
-        }
     }
 
     /// The control channel's frequency, once found.
@@ -217,7 +161,7 @@ impl Site {
         // The control channel: the carrier whose frames keep coming.
         let now = c.t;
         let lost = self.cc.is_none_or(|k| now - self.carriers[k].good_at > CC_LOST_S);
-        if lost && self.cc != Some(i) && self.carriers[i].framer.run >= CC_RUN && now - self.carriers[i].good_at < 0.5 {
+        if lost && self.cc != Some(i) && self.carriers[i].framer.sync.run >= CC_RUN && now - self.carriers[i].good_at < 0.5 {
             let was = self.cc.map(|k| self.carriers[k].hz);
             self.cc = Some(i);
             let hz = self.carriers[i].hz;
@@ -243,64 +187,28 @@ impl Site {
 
     /// Assignments old enough to judge: which carriers keyed for each.
     fn judge(&mut self) {
-        let now = self.carriers.iter().map(|c| c.t).fold(self.scan_t, f64::max);
+        let now = self.carriers.iter().map(|c| c.t).fold(f64::NEG_INFINITY, f64::max);
         let (ready, wait): (Vec<_>, Vec<_>) = self.pending.iter().partition(|&&(_, t)| now - t > JUDGE_AFTER_S);
         self.pending = wait;
         let cc = self.control_hz();
         for (lcn, t) in ready {
-            let near = |at: Option<f64>| at.is_some_and(|at| at >= t - ONSET_BEFORE_S && at <= t + ONSET_AFTER_S);
-            // The site's own frequencies, then the raster's others; the strongest of neighbours keying together.
-            let mut keyed: Vec<(u64, f32)> = self.carriers.iter().filter(|c| near(c.keyed_at)).map(|c| (c.hz, f32::MAX)).collect();
-            let own: Vec<u64> = self.carriers.iter().map(|c| c.hz).collect();
-            let step = self.raster.map_or(25_000, |r| r.1 as u64);
-            // Frequencies in no list only once the site has identified itself: a control
-            // channel heard badly (or another site's, faintly) mustn't teach them.
-            // (Or the config says to: a site that decodes well but never sends its ID.)
-            let known = self.parser.site_known() || self.parser.cfg.learn_unlisted;
-            // Never another site's frequency (a networked call keys those too), nor a carrier
-            // that's always on (another system's control channel: its floor is its own power).
-            let others = &self.parser.cfg.others;
-            let quiet = self.quiet_floor();
-            let mut raster: Vec<(u64, f32)> = self
-                .slots
-                .iter()
-                .filter(|&(&hz, s)| {
-                    known
-                        && near(s.keyed_at)
-                        && !own.iter().chain(others).any(|&o| o.abs_diff(hz) < step / 2)
-                        && quiet.is_some_and(|q| s.floor <= q * CONTINUOUS_RATIO)
-                })
-                .map(|(&hz, s)| (hz, s.level))
-                .collect();
-            raster.sort_unstable_by_key(|r| r.0);
-            for r in raster {
-                match keyed.last_mut().filter(|k| k.0.abs_diff(r.0) <= step && k.1 != f32::MAX) {
-                    Some(k) if r.1 > k.1 => *k = r,
-                    Some(_) => {}
-                    None => keyed.push(r),
-                }
-            }
             // Not the control channel, nor a frequency already learned as another LCN.
-            keyed.retain(|&(hz, _)| cc.is_none_or(|c| c.abs_diff(hz) >= SAME_HZ) && !self.learned.iter().any(|(&l, &f)| l != lcn && f.abs_diff(hz) < SAME_HZ));
+            let keyed: Vec<u64> = self
+                .carriers
+                .iter()
+                .filter(|c| c.keyed_at.is_some_and(|at| at >= t - ONSET_BEFORE_S && at <= t + ONSET_AFTER_S))
+                .map(|c| c.hz)
+                .filter(|&hz| cc.is_none_or(|c| c.abs_diff(hz) >= SAME_HZ) && !self.learned.iter().any(|(&l, &f)| l != lcn && f.abs_diff(hz) < SAME_HZ))
+                .collect();
             if keyed.is_empty() {
                 continue;
             }
             let share = 1.0 / keyed.len() as f32;
-            for (hz, _) in keyed {
+            for hz in keyed {
                 *self.votes.entry((lcn, hz)).or_default() += share;
             }
             self.decide(lcn);
         }
-    }
-
-    /// The raster's noise floor: the median of its frequencies' floors (most are empty).
-    fn quiet_floor(&self) -> Option<f32> {
-        let mut f: Vec<f32> = self.slots.values().map(|s| s.floor).filter(|f| f.is_finite() && *f < f32::MAX).collect();
-        if f.is_empty() {
-            return None;
-        }
-        f.sort_unstable_by(|a, b| a.total_cmp(b));
-        Some(f[f.len() / 2])
     }
 
     /// Enough votes for LCN `lcn`: its frequency, as the air says.
@@ -330,21 +238,17 @@ impl Site {
         self.parser.cfg.lcns.insert(lcn, hz);
     }
 
-    /// What was learned, to keep between runs: "lcn=hz" lines.
+    /// What was learned, to keep between runs.
     pub fn map_to_string(&self) -> String {
-        self.learned.iter().map(|(l, f)| format!("{l}={f}\n")).collect()
+        table_to_string(&self.learned)
     }
 
     pub fn map_from_str(&mut self, s: &str) {
-        for line in s.lines() {
-            let Some((l, f)) = line.trim().split_once('=') else { continue };
-            let (Ok(l), Ok(f)) = (l.trim().parse::<u8>(), f.trim().parse::<u64>()) else { continue };
-            // Never another site's frequency (an older version could learn one).
-            if (1..=25).contains(&l) && f > 0 && !self.parser.cfg.others.iter().any(|&o| o.abs_diff(f) < SAME_HZ) {
-                self.learned.insert(l, f);
-                self.parser.cfg.lcns.retain(|&k, g| k == l || g.abs_diff(f) >= SAME_HZ);
-                self.parser.cfg.lcns.insert(l, f);
-            }
+        // Only this site's frequencies are ever learned.
+        for (l, f) in table_from_str::<u8>(s).filter(|&(l, f)| (1..=25).contains(&l) && self.carriers.iter().any(|c| c.hz.abs_diff(f) < SAME_HZ)) {
+            self.learned.insert(l, f);
+            self.parser.cfg.lcns.retain(|&k, g| k == l || g.abs_diff(f) >= SAME_HZ);
+            self.parser.cfg.lcns.insert(l, f);
         }
     }
 }
@@ -362,7 +266,7 @@ mod tests {
     #[test]
     fn learns_the_channels_from_the_air() {
         let (fs, center) = (240_000.0, 857_040_000.0);
-        let cfg = EdacsConfig { lcns: [(1, 857_000_000), (2, 857_025_000), (3, 857_075_000), (4, 857_050_000)].into_iter().collect(), esk: false, ..Default::default() };
+        let cfg = EdacsConfig { lcns: [(1, 857_000_000), (2, 857_025_000), (3, 857_075_000), (4, 857_050_000)].into_iter().collect(), esk: false };
         // 10 s of control channel: the site, and a call on LCN 3 every 2 s.
         let mut bits = Vec::new();
         let mut keyed = Vec::new();

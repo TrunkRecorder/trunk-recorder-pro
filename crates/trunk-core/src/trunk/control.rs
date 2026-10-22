@@ -25,6 +25,7 @@ use super::message::{Message, MessageType, P25Parser};
 use super::patches;
 use super::voice::VoiceParams;
 use crate::dmr;
+use crate::dsp::AnalogTuning;
 use crate::edacs;
 use crate::metrics::{Instrumented, Sink};
 use crate::nxdn;
@@ -59,8 +60,7 @@ pub enum ProtocolStatus {
     Dmr(dmr::SiteStatus),
     /// Type-C / Type-D, the site's location and RAN, channel table and carriers.
     Nxdn(nxdn::trunking::SiteStatus),
-    /// The site's ID and its control channel's LCN, once it has said.
-    Edacs { site: Option<u32>, cc_lcn: Option<u8> },
+    Edacs,
 }
 
 /// Which carriers a system listens to.
@@ -94,9 +94,6 @@ pub trait ControlChannel: Send {
     fn restart(&mut self, _rate: f64) {}
     /// A different control channel: what was learned of the site may not hold.
     fn forget_site(&mut self) {}
-    /// The frequency of the control channel it is listening to, Hz (after each
-    /// [`ControlChannel::restart`]; a hunted control channel's).
-    fn on_frequency(&mut self, _hz: u64) {}
     /// IQ of carrier `carrier` (0 for a hunted control channel), whose first
     /// sample was at air time `t0`, at `rate`.
     fn push(&mut self, carrier: usize, iq: &[Complex32], t0: f64, rate: f64, out: &mut Vec<Step>);
@@ -136,14 +133,10 @@ pub trait ControlChannel: Send {
     fn patch_hold_s(&self) -> f64 {
         patches::P25_HOLD_S
     }
-    /// Watching: a channel raster (first frequency, step, Hz) whose power it
-    /// wants each block, across the sources its carriers are on (EDACS:
-    /// to find which frequency an unknown channel number is).
-    fn scan_raster(&self) -> Option<(f64, f64)> {
-        None
+    /// How its analog calls are demodulated.
+    fn analog(&self) -> AnalogTuning {
+        AnalogTuning::default()
     }
-    /// Each raster frequency's power in the block that ended at `t`.
-    fn scan(&mut self, _t: f64, _powers: &[(u64, f32)]) {}
     /// What it learned that's worth keeping between runs (a band plan,
     /// a channel table), as text; and loading it back.
     fn bandplan(&self) -> String {
@@ -444,11 +437,9 @@ impl ControlChannel for Edacs {
     fn patch_hold_s(&self) -> f64 {
         patches::SMARTNET_HOLD_S
     }
-    fn scan_raster(&self) -> Option<(f64, f64)> {
-        self.site.scan_raster()
-    }
-    fn scan(&mut self, t: f64, powers: &[(u64, f32)]) {
-        self.site.scan(t, powers);
+    /// Each analog transmission starts with a 9600 baud data burst, left out.
+    fn analog(&self) -> AnalogTuning {
+        AnalogTuning { data_mute: true, ..AnalogTuning::default() }
     }
     fn bandplan(&self) -> String {
         self.site.map_to_string()
@@ -457,7 +448,7 @@ impl ControlChannel for Edacs {
         self.site.map_from_str(s);
     }
     fn status(&self) -> ProtocolStatus {
-        ProtocolStatus::Edacs { site: self.site.parser.site, cc_lcn: self.site.parser.cc_lcn }
+        ProtocolStatus::Edacs
     }
 }
 

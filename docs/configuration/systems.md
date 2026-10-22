@@ -140,7 +140,6 @@ Extended Addressing (EA) sites aren't decoded yet.
 |---|:---:|---|---|---|
 | `lcnTableHz` | ✓ | `{}` | object | The site's channel list: LCN (1–25) → frequency, Hz, `{ "1": 856187500, "3": 857712500 }`. RadioReference lists each site's channels with their LCNs |
 | `esk` | | `false` | boolean | The system scrambles its control channel with ESK 0xA0 (some Harris systems): its messages don't decode without it |
-| `learnUnlisted` | | `false` | boolean | Learn channels on frequencies in no list even before the site has identified itself (a site whose control channel decodes well but never sends its site ID) |
 
 The control channel grants each call a channel number (LCN) and says whether its voice is analog
 or ProVoice; `lcnTableHz` turns the number into a frequency. Every frequency of the site (its
@@ -149,14 +148,8 @@ the site has moved it, and the list is checked against the air: when a call is a
 the carrier that keys just then is that channel. Once three calls agree, the LCN is that frequency,
 whatever the list says, and the log says so ("LCN 4 is 860.1125 MHz on the air, not 857.0375 MHz
 as the channel list has it"); what was learned is kept beside the config (`<shortName>.<site>.bandplan`)
-for the next start. An LCN on a frequency in neither list is found too: the site's frequencies sit
-on a channel raster (25 kHz at 800 MHz), and each raster frequency's power inside the sources is
-measured from their spectrum, so the one that keys for the LCN's calls is learned the same way
-(only inside a source's bandwidth). That happens only once the site has identified itself (its
-site ID, the same three times in a row), or with `learnUnlisted`; the system's other sites'
-frequencies, and carriers that are always on (another system's control channel), are never taken:
-on a networked system one call keys several sites at once. Until an LCN's frequency is known its
-calls are logged once and not recorded. A grant to the frequency the control channel is on is never
+for the next start. Only listed frequencies are watched: a call on an LCN whose frequency is in
+neither list is logged once and not recorded, so add the frequency to `lcnTableHz`. A grant to the frequency the control channel is on is never
 followed, whichever LCN it names. A site ID that disagrees with the list's numbers corrects them only
 once three in a row agree. The site lock (`expect`) compares the site number the control channel
 announces (`site`).

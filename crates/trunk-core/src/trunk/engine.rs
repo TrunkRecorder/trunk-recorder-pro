@@ -582,8 +582,6 @@ struct Tap {
     head: HeadId,
     cc: Cc,
     at: TapTime,
-    /// The control channel's channel raster (first, step, Hz), to measure each block on this tap's source.
-    scan: Option<(f64, f64)>,
 }
 
 /// Where a tap's samples sit on the system's clock.
@@ -626,7 +624,7 @@ struct VoiceResult {
 /// channel, in key order) and its control channels' carriers' samples.
 struct BlockDsp {
     voice: Vec<VoiceResult>,
-    taps: Vec<(u16, usize, HeadId, Cc, Vec<Complex32>, f64, Option<Vec<(u64, f32)>>)>,
+    taps: Vec<(u16, usize, HeadId, Cc, Vec<Complex32>, f64)>,
     rate: f64,
     /// The source's time at the block's end, its clock offset, and whether it was a gap.
     time: f64,
@@ -698,13 +696,7 @@ impl SourceRx {
                     TapTime::Hunt { start_s, offset_s } => start_s + (offset - offset_s),
                     TapTime::Watch { start } => start as f64 / fs + offset,
                 };
-                let powers = t.scan.map(|(first, step)| {
-                    let (center, half) = (self.src.cfg().center_hz, self.src.cfg().usable_half_width());
-                    let k0 = ((center - half - first) / step).ceil() as i64;
-                    let k1 = ((center + half - first) / step).floor() as i64;
-                    (k0..=k1).map(|k| first + k as f64 * step).map(|hz| (hz.round() as u64, self.src.chz.band_power(self.src.offset(hz), step * 0.3) as f32)).collect()
-                });
-                (t.site, t.carrier, t.head, t.cc.clone(), iq, t0, powers)
+                (t.site, t.carrier, t.head, t.cc.clone(), iq, t0)
             })
             .collect();
         BlockDsp { voice, taps, rate, time: self.src.time(), in_gap: self.src.in_gap }
@@ -725,13 +717,10 @@ impl BlockDsp {
     /// Its control channels' samples decoded, each control channel under its own lock.
     fn decode_control(&mut self) -> Vec<CcResult> {
         let mut out: Vec<CcResult> = Vec::new();
-        for (site, carrier, head, cc, iq, t0, powers) in self.taps.drain(..) {
+        for (site, carrier, head, cc, iq, t0) in self.taps.drain(..) {
             let mut steps = Vec::new();
             let (params, notes, control_hz, counts, offset_hz) = {
                 let mut cc = cc.lock().unwrap();
-                if let Some(p) = &powers {
-                    cc.scan(self.time, p);
-                }
                 cc.push(carrier, &iq, t0, self.rate, &mut steps);
                 (steps.iter().map(|st| cc.voice_params(&st.identity)).collect::<Vec<_>>(), cc.take_notes(), cc.control_hz(), cc.counts(), cc.offset_hz())
             };
@@ -832,8 +821,8 @@ struct SysHost<'a> {
     site: u16,
     bank: BankConfig,
     keys: Option<Arc<Keyring>>,
-    /// EDACS: its analog voice channels start with a data burst, left out.
-    edacs: bool,
+    /// How its analog calls are demodulated ([`ControlChannel::analog`]).
+    analog: AnalogTuning,
 }
 
 impl SysHost<'_> {
@@ -879,7 +868,7 @@ impl SysHost<'_> {
             // Analog squelch: this far above the noise under the channel.
             squelch: s.chz.threshold(prof[slice].max(1e-30), ChannelFilter::noise_bandwidth(), ANALOG_SQUELCH_DB),
             subaudible: false,
-            analog: AnalogTuning { data_mute: self.edacs, ..AnalogTuning::default() },
+            analog: self.analog,
             ignore_hz: Vec::new(),
             keys: self.keys.clone(),
         });
@@ -1056,7 +1045,7 @@ struct Trunk {
 
 impl Trunk {
     fn host<'a>(&self, radio: &'a mut Radio, sys: &SystemConfig) -> SysHost<'a> {
-        SysHost { radio, site: self.site, bank: self.cfg.bank, keys: sys.keys.clone(), edacs: matches!(self.cfg.protocol, Protocol::Edacs(_)) }
+        SysHost { radio, site: self.site, bank: self.cfg.bank, keys: sys.keys.clone(), analog: self.cc().analog() }
     }
 
     /// A note about this site.
@@ -1136,7 +1125,6 @@ impl Trunk {
         self.cc_hz = Some(hz.round() as u64);
         self.last_good_s = self.now_s;
         self.cc().restart(rate);
-        self.cc().on_frequency(hz.round() as u64);
         if retune {
             // Another control channel may be another site: learn it afresh.
             self.identity = Identity::default();
@@ -1151,7 +1139,7 @@ impl Trunk {
 
     /// Hunting: its control channel's tap.
     fn hunt_tap(site: u16, cc: &Cc, h: &Hunt) -> Tap {
-        Tap { site, carrier: 0, head: h.head, cc: cc.clone(), at: TapTime::Hunt { start_s: h.start_s, offset_s: h.offset_s }, scan: None }
+        Tap { site, carrier: 0, head: h.head, cc: cc.clone(), at: TapTime::Hunt { start_s: h.start_s, offset_s: h.offset_s } }
     }
 
     /// Watching: heads on the sources that cover each carrier.
@@ -1172,11 +1160,8 @@ impl Trunk {
             let name = self.cc().name();
             return Err(format!("{}: {} frequencies outside every source's bandwidth: {} MHz — move a center frequency.", sys.short_name, name, outside.join(", ")));
         }
-        let raster = self.cc().scan_raster();
         for (i, c) in heads.iter().enumerate() {
-            // The raster is measured once a block on each source: with its first carrier there.
-            let scan = raster.filter(|_| !heads[..i].iter().any(|h| h.source == c.source));
-            radio.rx(c.source).set_tap(Tap { site: self.site, carrier: i, head: c.head, cc: self.cc.clone(), at: TapTime::Watch { start: c.start }, scan });
+            radio.rx(c.source).set_tap(Tap { site: self.site, carrier: i, head: c.head, cc: self.cc.clone(), at: TapTime::Watch { start: c.start } });
         }
         self.listening = Listening::Watching(heads);
         events.push(self.note(NoteLevel::Info, note));
@@ -1330,9 +1315,6 @@ impl Trunk {
             rx.set_tap(tap);
             drop(rx);
             self.cc().restart(rate);
-            if let Some(f) = self.cc_hz {
-                self.cc().on_frequency(f);
-            }
         }
     }
 

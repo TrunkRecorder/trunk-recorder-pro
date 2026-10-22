@@ -36,7 +36,7 @@ use crate::dsp::c4fm::C4fm;
 use crate::dsp::{Receiver, Symbol};
 use crate::trunk::engine::NoteLevel;
 use crate::trunk::identity::{IdField, Identity};
-use crate::trunk::message::{Message, MessageType};
+use crate::trunk::message::{table_from_str, table_to_string, Message, MessageType};
 use crate::trunk::Voice;
 
 /// A grant waits this long for its group to show up on a watched carrier.
@@ -286,16 +286,10 @@ impl Site {
 
     /// The learned table as `channel=hz` lines.
     pub fn map_to_string(&self) -> String {
-        self.learned.iter().map(|(l, h)| format!("{l}={h}\n")).collect()
+        table_to_string(&self.learned)
     }
     pub fn map_from_str(&mut self, s: &str) {
-        for line in s.lines() {
-            if let Some((l, h)) = line.split_once('=') {
-                if let (Ok(l), Ok(h)) = (l.trim().parse(), h.trim().parse()) {
-                    self.learned.insert(l, h);
-                }
-            }
-        }
+        self.learned.extend(table_from_str(s));
     }
 
     /// Carrier `idx`'s channel IQ; `t0` + sample / `rate` is a sample's air time (s).

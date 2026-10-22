@@ -13,16 +13,14 @@
 //! in another order, so P25's vocoder speaks them.
 
 use crate::p25::fec::{golay23_decode, golay23_encode};
+use crate::p25::voice::pngen;
 
 /// The frame sync, first bit sent highest; EA systems send their own.
-pub const SYNC: u32 = 0x5712_3333;
-pub const SYNC_EA: u32 = 0x94DC_0D4D;
+pub const SYNC: u64 = 0x5712_3333;
+pub const SYNC_EA: u64 = 0x94DC_0D4D;
 pub const SYNC_BITS: usize = 32;
 /// Bits after the sync.
 pub const BODY_BITS: usize = 736;
-/// Seconds per frame (four vocoder frames).
-pub const FRAME_S: f64 = 0.08;
-pub const BAUD: f64 = 9600.0;
 
 /// The interleave: bit `i` of a frame's 142 (in the order sent) is word
 /// `W[i]`'s bit `X[i]` (DSD's pW / pX).
@@ -113,8 +111,7 @@ fn whitening(seed: u32) -> [u8; 101] {
     let mut pr = [0u8; 101];
     let mut v = 16 * seed;
     for b in pr.iter_mut().skip(1) {
-        v = (173 * v + 13849) & 0xffff;
-        *b = (v >> 15) as u8;
+        *b = pngen(&mut v, 1) as u8;
     }
     pr
 }

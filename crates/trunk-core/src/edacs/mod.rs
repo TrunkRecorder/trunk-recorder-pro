@@ -26,7 +26,6 @@ use crate::mbe;
 use crate::smartnet::{Bit, Fsk2, Fsk2Options};
 use crate::trunk::frames::{Codec, VoiceFrame};
 use crate::trunk::voice::TrackerOut;
-use crate::trunk::Message;
 
 /// Symbols a second, control channel and ProVoice alike.
 pub const BAUD: f64 = 9600.0;
@@ -41,69 +40,6 @@ fn receiver(rate: f64) -> Fsk2 {
     Fsk2::with_baud(rate, BAUD, NOMINAL_DEV_HZ, Fsk2Options { tones: false, dc: true, ..Default::default() })
 }
 
-/// A control channel: IQ in, messages out.
-pub struct ControlChannel {
-    rx: Fsk2,
-    framer: framer::Framer,
-    pub parser: Parser,
-    rate: f64,
-    bits: Vec<Bit>,
-}
-
-impl ControlChannel {
-    pub fn new(rate: f64, parser: Parser) -> Self {
-        ControlChannel { rx: receiver(rate), framer: framer::Framer::new(), parser, rate, bits: Vec::new() }
-    }
-
-    /// Messages decoded / lost so far.
-    pub fn counts(&self) -> (u64, u64) {
-        (self.framer.good, self.framer.bad)
-    }
-
-    pub fn in_sync(&self) -> bool {
-        self.framer.in_sync()
-    }
-
-    pub fn offset_hz(&self) -> f32 {
-        self.rx.offset_hz()
-    }
-
-    pub fn deviation_hz(&self) -> f32 {
-        self.rx.deviation_hz()
-    }
-
-    /// `iq` from the channel's head; `t0` is the air time of its first sample.
-    pub fn push(&mut self, iq: &[Complex32], t0: f64, out: &mut Vec<Message>) {
-        self.bits.clear();
-        self.rx.push(iq, &mut self.bits);
-        for b in &self.bits {
-            let t = t0 + b.sample / self.rate;
-            if let Some(f) = self.framer.push(b.soft, t) {
-                self.parser.frame(f.msgs[0], f.msgs[1], f.t, out);
-            }
-        }
-    }
-}
-
-impl crate::metrics::Instrumented for ControlChannel {
-    fn report(&self, sink: &mut dyn crate::metrics::Sink) {
-        sink.gauge("inSync", self.in_sync() as u8 as f64);
-        sink.gauge("offset", self.offset_hz() as f64);
-        sink.gauge("deviation", self.deviation_hz() as f64);
-    }
-}
-
-/// Sync bits that may be wrong when hunting for a ProVoice frame / when one is due.
-const PV_HUNT_ERRORS: u32 = 3;
-const PV_DUE_ERRORS: u32 = 8;
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum PvState {
-    Hunt,
-    Body { n: usize, inverted: bool },
-    Due { n: usize, inverted: bool },
-}
-
 /// What [`ProVoice`] heard, at air time `t`.
 #[derive(Debug)]
 pub struct PvOut {
@@ -115,10 +51,7 @@ pub struct PvOut {
 pub struct ProVoice {
     rx: Fsk2,
     rate: f64,
-    sr: u32,
-    state: PvState,
-    body: Vec<f32>,
-    t: f64,
+    sync: framer::Sync,
     vocoder: mbe::Decoder,
     layout: [[usize; 142]; 4],
     bits: Vec<Bit>,
@@ -134,10 +67,8 @@ impl ProVoice {
         ProVoice {
             rx: receiver(rate),
             rate,
-            sr: 0,
-            state: PvState::Hunt,
-            body: vec![0.0; provoice::BODY_BITS],
-            t: 0.0,
+            // Sync bits that may be wrong when hunting for a frame / when one is due.
+            sync: framer::Sync::new(&[provoice::SYNC, provoice::SYNC_EA], provoice::SYNC_BITS, provoice::BODY_BITS, 3, 8),
             vocoder,
             layout: provoice::layout(),
             bits: Vec::new(),
@@ -150,57 +81,13 @@ impl ProVoice {
         self.rx.offset_hz()
     }
 
-    fn sync(&self, max: u32) -> Option<bool> {
-        for s in [provoice::SYNC, provoice::SYNC_EA] {
-            let e = (self.sr ^ s).count_ones();
-            if e <= max {
-                return Some(false);
-            }
-            if 32 - e <= max {
-                return Some(true);
-            }
-        }
-        None
-    }
-
     pub fn push(&mut self, iq: &[Complex32], t0: f64, out: &mut Vec<PvOut>) {
         self.bits.clear();
         self.rx.push(iq, &mut self.bits);
         for i in 0..self.bits.len() {
             let b = self.bits[i];
-            self.bit(b.soft, t0 + b.sample / self.rate, out);
-        }
-    }
-
-    fn bit(&mut self, soft: f32, t: f64, out: &mut Vec<PvOut>) {
-        self.sr = self.sr << 1 | (soft > 0.0) as u32;
-        match self.state {
-            PvState::Hunt => {
-                if let Some(inverted) = self.sync(PV_HUNT_ERRORS) {
-                    self.state = PvState::Body { n: 0, inverted };
-                }
-            }
-            PvState::Body { n, inverted } => {
-                if n == 0 {
-                    self.t = t;
-                }
-                self.body[n] = if inverted { -soft } else { soft };
-                if n + 1 < provoice::BODY_BITS {
-                    self.state = PvState::Body { n: n + 1, inverted };
-                } else {
-                    self.state = PvState::Due { n: 0, inverted };
-                    self.frame(out);
-                }
-            }
-            PvState::Due { n, inverted } => {
-                if n + 1 < provoice::SYNC_BITS {
-                    self.state = PvState::Due { n: n + 1, inverted };
-                } else {
-                    self.state = match self.sync(PV_DUE_ERRORS) {
-                        Some(inv) if inv == inverted => PvState::Body { n: 0, inverted },
-                        _ => PvState::Hunt,
-                    };
-                }
+            if self.sync.push(b.soft, t0 + b.sample / self.rate) {
+                self.frame(out);
             }
         }
     }
@@ -211,7 +98,7 @@ impl ProVoice {
         let header_s = 144.0 / BAUD;
         for f in 0..4 {
             let at = &self.layout[f];
-            let words = provoice::deinterleave(|i| (self.body[at[i]] > 0.0) as u8);
+            let words = provoice::deinterleave(|i| (self.sync.body[at[i]] > 0.0) as u8);
             let (d, e0, et) = provoice::decode(&words);
             let mut buf = [0f32; mbe::FRAME_SAMPLES];
             let kind = self.vocoder.imbe(&d, e0, et, false, &mut buf);
@@ -220,7 +107,7 @@ impl ProVoice {
             }
             mbe::to_limited(&mut buf);
             let vf = VoiceFrame { codec: Codec::Imbe, bits: d.to_vec(), e0, errs: et, erased: false, kind };
-            out.push(PvOut { t: self.t + header_s + f as f64 * 0.02, out: TrackerOut::Audio(buf.to_vec(), vf) });
+            out.push(PvOut { t: self.sync.t + header_s + f as f64 * 0.02, out: TrackerOut::Audio(buf.to_vec(), vf) });
         }
     }
 }
@@ -228,7 +115,7 @@ impl ProVoice {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::trunk::MessageType;
+    use crate::trunk::{Message, MessageType};
     use std::f64::consts::PI;
 
     /// 9600 baud 2FSK of `bits` (1 = +dev), smoothed over a symbol (roughly GFSK).
@@ -264,11 +151,11 @@ pub(crate) mod tests {
 
     #[test]
     fn iq_to_grant() {
-        let cfg = EdacsConfig { lcns: [(1, 856_187_500), (3, 857_712_500)].into_iter().collect(), esk: false, ..Default::default() };
+        let cfg = EdacsConfig { lcns: [(1, 856_187_500), (3, 857_712_500)].into_iter().collect(), esk: false };
         let mut bits = Vec::new();
         for k in 0..12 {
             let (m1, m2) = match k {
-                3 => parser::group_grant(457, 1234, 3, true, false),
+                8 => parser::group_grant(457, 1234, 3, true, false),
                 _ => parser::site_id(2, 1),
             };
             bits.extend(framer::encode(m1, m2));
@@ -277,9 +164,9 @@ pub(crate) mod tests {
             let b: Vec<u8> = bits.iter().map(|&b| b ^ flip as u8).collect();
             let mut iq = modulate(&b, rate, 2600.0, offset);
             noise(&mut iq, 0.3, 7);
-            let mut cc = ControlChannel::new(rate, Parser::new(cfg.clone()));
+            let mut cc = site::Site::new(cfg.clone(), &[856_187_500], rate);
             let mut out = Vec::new();
-            cc.push(&iq, 0.0, &mut out);
+            cc.push(0, &iq, 0.0, rate, &mut out);
             let g: Vec<&Message> = out.iter().filter(|m| m.kind == MessageType::Grant).collect();
             assert_eq!(g.len(), 1, "rate {rate}: {out:?}");
             assert_eq!((g[0].talkgroup, g[0].source, g[0].freq_hz, g[0].voice), (457, 1234, 857_712_500, crate::trunk::Voice::ProVoice));
@@ -325,7 +212,7 @@ pub(crate) mod tests {
         use crate::trunk::{Engine, EngineConfig, Event, SiteConfig, SourceConfig, SystemConfig};
         let (fs, center) = (240_000.0, 857_025_000.0);
         let (cc_hz, vc_hz) = (857_000_000.0, 857_062_500.0);
-        let cfg = EdacsConfig { lcns: [(1, cc_hz as u64), (3, vc_hz as u64)].into_iter().collect(), esk: false, ..Default::default() };
+        let cfg = EdacsConfig { lcns: [(1, cc_hz as u64), (3, vc_hz as u64)].into_iter().collect(), esk: false };
         // 2.4 s of control channel: the site, then the grant and updates while the call goes on.
         let mut cc_bits = Vec::new();
         for k in 0..80 {
@@ -391,76 +278,5 @@ pub(crate) mod tests {
         assert!(k.call.voice == crate::trunk::Voice::Fm && k.call.talkgroup == 457, "{:?}", k.call);
         let secs = k.audio.len() as f64 / 8000.0;
         assert!(secs > 1.0, "{secs:.2} s of audio");
-    }
-
-    /// A site whose list lacks LCN 9: its calls key 857.075 MHz, which is
-    /// on the site's 25 kHz raster but in no list. The engine's raster
-    /// measurements find it (once the site has identified itself, or the
-    /// config says to learn anyway), unless it's another site's frequency.
-    /// (Learned: the notes, and the calls' frequencies.)
-    fn engine_unlisted(site_ids: bool, learn_unlisted: bool, others: Vec<u64>) -> (Vec<String>, Vec<(u64, usize)>) {
-        use crate::trunk::{Engine, EngineConfig, Event, SiteConfig, SourceConfig, SystemConfig};
-        let (fs, center) = (240_000.0, 857_040_000.0);
-        let cfg = EdacsConfig { lcns: [(1, 857_000_000), (2, 857_025_000)].into_iter().collect(), learn_unlisted, others, ..Default::default() };
-        let mut bits = Vec::new();
-        let mut keyed = Vec::new();
-        for k in 0..600 {
-            let t = k as f64 * 0.03;
-            let (m1, m2) = if k % 66 == 20 {
-                keyed.push(t);
-                parser::group_grant(863, 4321, 9, false, false)
-            } else if k % 66 > 20 && k % 66 < 50 && k % 4 == 0 {
-                parser::group_update(863, 9, false)
-            } else if site_ids {
-                parser::site_id(5, 1)
-            } else {
-                // A site that never says who it is: an affiliation instead.
-                (6 << 25 | 863 << 14 | 77, 0)
-            };
-            bits.extend(framer::encode(m1, m2));
-        }
-        let cc = modulate(&bits, fs, 2600.0, 857_000_000.0 - center);
-        let mut ph = 0.0f64;
-        let mut iq: Vec<Complex32> = (0..cc.len())
-            .map(|i| {
-                let t = i as f64 / fs;
-                let on = keyed.iter().any(|&k| t >= k + 0.2 && t < k + 1.0);
-                ph = (ph + 2.0 * PI * (857_075_000.0 - center + 2500.0 * (2.0 * PI * 1000.0 * t).sin()) / fs) % (2.0 * PI);
-                cc[i] * 0.3 + if on { Complex32::from_polar(0.3, ph as f32) } else { Complex32::default() }
-            })
-            .collect();
-        noise(&mut iq, 0.02, 9);
-        let ecfg = EngineConfig {
-            systems: vec![SystemConfig::trunked("nycomco", vec![SiteConfig { control_channels: vec![857_000_000.0], protocol: crate::trunk::Protocol::Edacs(cfg), ..Default::default() }])],
-            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: 30_000.0 }],
-            ..Default::default()
-        };
-        let e = Engine::new(ecfg).unwrap();
-        for chunk in iq.chunks(4096) {
-            e.push_iq(0, chunk);
-        }
-        e.finish();
-        let events = e.drain_events();
-        let notes = events.iter().filter_map(|ev| if let Event::Note { text, .. } = ev { Some(text.clone()) } else { None }).collect();
-        let done = events.iter().filter_map(|ev| if let Event::Concluded(k) = ev { Some((k.call.freq_hz, k.audio.len())) } else { None }).collect();
-        (notes, done)
-    }
-
-    #[test]
-    fn engine_learns_a_channel_missing_from_every_list() {
-        let (notes, done) = engine_unlisted(true, false, vec![]);
-        assert!(notes.iter().any(|n| n.contains("LCN 9 is 857.0750 MHz on the air")), "{notes:?}");
-        assert!(done.iter().any(|&(f, n)| f == 857_075_000 && n > 4000), "{done:?}");
-    }
-
-    #[test]
-    fn unlisted_channels_wait_for_the_site_id_unless_told() {
-        let (notes, _) = engine_unlisted(false, false, vec![]);
-        assert!(!notes.iter().any(|n| n.contains("LCN 9 is")), "a site that hasn't identified itself: {notes:?}");
-        let (notes, _) = engine_unlisted(false, true, vec![]);
-        assert!(notes.iter().any(|n| n.contains("LCN 9 is 857.0750 MHz on the air")), "learnUnlisted: {notes:?}");
-        // Another site's frequency never is this site's.
-        let (notes, _) = engine_unlisted(true, true, vec![857_075_000]);
-        assert!(!notes.iter().any(|n| n.contains("LCN 9 is")), "another site's: {notes:?}");
     }
 }
