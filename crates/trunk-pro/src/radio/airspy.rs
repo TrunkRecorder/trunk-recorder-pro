@@ -14,8 +14,8 @@ use std::time::Duration;
 use libloading::Library;
 use num_complex::Complex32;
 
-use super::DriverInfo;
-use crate::sdr::{Control, Pool, SourceMsg};
+use super::{ppm_corrected, DriverInfo};
+use crate::sdr::{Applied, Control, Pool, SourceMsg, Tunable};
 
 type Dev = *mut c_void;
 
@@ -239,6 +239,19 @@ struct Device<'a> {
     a: &'a Api,
     dev: Dev,
     streaming: bool,
+    ppm: f64,
+}
+
+impl Tunable for Device<'_> {
+    fn tune(&mut self, hz: f64) -> Result<f64, String> {
+        // SAFETY: an open device.
+        check(self.a, "tune", unsafe { (self.a.set_freq)(self.dev, ppm_corrected(hz, self.ppm).round() as u32) })?;
+        Ok(hz)
+    }
+    /// Left as configured: a survey keeps the linearity gain as set.
+    fn set_gain(&mut self, _db: f32) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 impl Drop for Device<'_> {
@@ -264,7 +277,7 @@ fn stream_once(source: usize, cfg: &AirspyConfig, tx: &SyncSender<SourceMsg>, st
             let sn = u64::from_str_radix(cfg.serial.trim_start_matches("0x"), 16).map_err(|_| format!("Airspy serial {:?} isn't hex", cfg.serial))?;
             check(a, "open", (a.open_sn)(&mut dev, sn))?;
         }
-        let mut d = Device { a, dev, streaming: false };
+        let mut d = Device { a, dev, streaming: false, ppm: cfg.ppm };
         // (Before the rate: for real samples libairspy lists and takes rates doubled.)
         let real = !library_iq();
         check(a, "sample type", (a.set_sample_type)(d.dev, if real { SAMPLE_INT16_REAL } else { SAMPLE_FLOAT32_IQ }))?;
@@ -279,7 +292,7 @@ fn stream_once(source: usize, cfg: &AirspyConfig, tx: &SyncSender<SourceMsg>, st
             return Err(format!("this Airspy runs at {} MSPS, not {}", list.join(" / "), cfg.rate_hz / 1e6));
         }
         check(a, "sample rate", (a.set_samplerate)(d.dev, want))?;
-        check(a, "tune", (a.set_freq)(d.dev, (cfg.center_hz / (1.0 + cfg.ppm * 1e-6)).round() as u32))?;
+        d.tune(cfg.center_hz)?;
         match cfg.gain {
             AirspyGain::Linearity(g) => check(a, "gain", (a.set_linearity_gain)(d.dev, g.min(21)))?,
             AirspyGain::Sensitivity(g) => check(a, "gain", (a.set_sensitivity_gain)(d.dev, g.min(21)))?,
@@ -308,13 +321,10 @@ fn stream_once(source: usize, cfg: &AirspyConfig, tx: &SyncSender<SourceMsg>, st
         let result = loop {
             std::thread::sleep(Duration::from_millis(if ctl.is_some() { 10 } else { 100 }));
             if let Some(c) = ctl {
-                // Only the frequency: a survey leaves the linearity gain as set.
-                if let (Some(f), _) = c.take() {
-                    if let Err(e) = check(a, "tune", (a.set_freq)(d.dev, (f / (1.0 + cfg.ppm * 1e-6)).round() as u32)) {
-                        break Err(e);
-                    }
-                    *c.current_hz.lock().unwrap() = Some(f);
-                    let _ = tx.send(SourceMsg::Tuned { center_hz: f });
+                match c.apply(&mut d, cfg.center_hz, tx) {
+                    Err(e) => break Err(e),
+                    Ok(Applied::Closed) => break Ok(()),
+                    Ok(_) => {}
                 }
             }
             if stop.load(Ordering::Relaxed) || ctx.closed.load(Ordering::Relaxed) {

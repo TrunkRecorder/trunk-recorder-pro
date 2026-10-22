@@ -5,6 +5,12 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **bladeRF** sources (optional; bladeRF 2.0 micro xA4 / xA9 and the
+  original x40 / x115): used when libbladeRF 2.x is installed (`"type":
+  "bladerf"`). Serial, any sample rate to 61.44 MSPS, overall gain or the
+  board's AGC, analog filter bandwidth and bias-T; samples USB drops are
+  counted from the board's timestamps. Trunk Recorder's osmosdr
+  `bladerf=…` sources (and `"driver": "bladerf"`) import as bladeRF sources.
 - **EDACS** trunked systems (`"type": "edacs"`): Standard and Networked
   sites (GE / Ericsson / Harris), with their analog FM calls and **ProVoice**
   digital voice. The 9600 baud control channel is decoded (three copies of

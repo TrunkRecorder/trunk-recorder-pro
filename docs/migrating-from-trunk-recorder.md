@@ -47,7 +47,8 @@ The importer reads Trunk Recorder's keys and writes this app's. A key not listed
 |---|---|
 | `driver: "osmosdr"`, `device: "rtl=…"` | `rtlsdr` source. A serial becomes `serial`; a device index (`rtl=0`) becomes `""`, the first free dongle. `buflen=` → `bufLen`, `buffers=` → `buffers`. A `rate` over 3.2 MSPS becomes 2.4 MSPS |
 | `device` containing `airspy` | `airspy` source. The serial from `airspy=0x…`; `bias=1` → `biasTee`. `lnaGain`, `mixGain`, `ifGain` / `vgaGain` (or `gainSettings` LNA / MIX / IF) → manual mode steps; otherwise `gain` → the linearity step (0–21). A rate the Airspy can't do becomes 6 MSPS |
-| `device: "hackrf=…"`, `bladerf`, `airspyhf`, `lime` / `limesdr`, `sdrplay`, `plutosdr`, `redpitaya`, `xtrx`, or `soapy=…` | `soapy` source with matching `args` (`driver=hackrf`, plus `serial=…` when the device string had one; `soapy=` arguments kept as they are). Stage gains (`lnaGain`, `vgaGain`, `ampGain`, `ifGain`, `bbGain`, `mixGain`, `tiaGain`, `pgaGain`, `vga1Gain`, `vga2Gain`, `gainSettings`) → `gains`. AGC is on if `agc` was, or if no gain was given |
+| `device` containing `bladerf` (`bladerf=0`, `bladerf=<serial>`, `numchan=1,feature=default,bladerf=<serial>`), or `driver: "bladerf"` | `bladerf` source. A serial becomes `serial`; an index (`bladerf=0`) becomes `""`, the first board. `rate`, `gain` (or `gainSettings` full), `agc`, `error` / `ppm`, `autoTune`, `biastee=` and `bandwidth=` come across |
+| `device: "hackrf=…"`, `airspyhf`, `lime` / `limesdr`, `sdrplay`, `plutosdr`, `redpitaya`, `xtrx`, or `soapy=…` | `soapy` source with matching `args` (`driver=hackrf`, plus `serial=…` when the device string had one; `soapy=` arguments kept as they are). Stage gains (`lnaGain`, `vgaGain`, `ampGain`, `ifGain`, `bbGain`, `mixGain`, `tiaGain`, `pgaGain`, `vga1Gain`, `vga2Gain`, `gainSettings`) → `gains`. AGC is on if `agc` was, or if no gain was given |
 | `driver: "usrp"` | `usrp` source; `device` → `args`, `antenna` → `antenna` |
 | Any other `driver` | Skipped, with a note |
 | `center` | `centerHz` |
@@ -58,7 +59,7 @@ The importer reads Trunk Recorder's keys and writes this app's. A key not listed
 | `error` (Hz) | Converted to `ppm` at the source's center frequency, sign reversed (`error: 3000` at 770 MHz → `ppm: -4`) |
 | `autoTune` | `autoTune` |
 
-USRP, Airspy and SoapySDR sources need their driver installed on this computer; the review says so.
+USRP, Airspy, bladeRF and SoapySDR sources need their driver installed on this computer; the review says so.
 
 ### Trunked systems
 

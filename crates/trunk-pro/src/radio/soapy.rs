@@ -16,8 +16,8 @@ use std::time::Duration;
 use libloading::Library;
 use num_complex::Complex32;
 
-use super::DriverInfo;
-use crate::sdr::{Control, SourceMsg};
+use super::{cstr, ppm_corrected, DriverInfo};
+use crate::sdr::{Applied, Control, SourceMsg, Tunable};
 
 type Dev = *mut c_void;
 type Stream = *mut c_void;
@@ -167,16 +167,6 @@ pub fn info() -> DriverInfo {
     }
 }
 
-/// SAFETY: `p` null or a NUL-terminated string.
-unsafe fn cstr(p: *const c_char) -> String {
-    unsafe {
-        if p.is_null() {
-            return String::new();
-        }
-        CStr::from_ptr(p).to_string_lossy().into_owned()
-    }
-}
-
 /// A string the library allocated, freed.
 unsafe fn owned(a: &Api, p: *mut c_char) -> String {
     unsafe {
@@ -295,7 +285,7 @@ pub fn search_paths() -> Vec<String> {
 }
 
 /// Drivers this recorder has its own source for: better used that way.
-const NATIVE: &[(&str, &str)] = &[("rtlsdr", "RTL-SDR"), ("airspy", "Airspy"), ("uhd", "USRP")];
+const NATIVE: &[(&str, &str)] = &[("rtlsdr", "RTL-SDR"), ("airspy", "Airspy"), ("bladerf", "bladeRF"), ("uhd", "USRP")];
 
 /// Devices the loaded modules can see: [{args, label, driver}]. A real
 /// search (USB, network): some modules take seconds, so it runs only when asked.
@@ -396,6 +386,7 @@ struct Device<'a> {
     dev: Dev,
     stream: Stream,
     active: bool,
+    ppm: f64,
 }
 
 impl Drop for Device<'_> {
@@ -415,13 +406,19 @@ impl Drop for Device<'_> {
     }
 }
 
-impl Device<'_> {
-    /// A reference off by `ppm` makes a requested f come out at f·(1+ppm).
-    unsafe fn tune(&self, hz: f64, ppm: f64) -> Result<(), String> {
-        unsafe {
-            check(self.a, "tune", (self.a.set_frequency)(self.dev, RX, 0, hz / (1.0 + ppm * 1e-6), std::ptr::null()))
-        }
+impl Tunable for Device<'_> {
+    fn tune(&mut self, hz: f64) -> Result<f64, String> {
+        // SAFETY: an open device.
+        check(self.a, "tune", unsafe { (self.a.set_frequency)(self.dev, RX, 0, ppm_corrected(hz, self.ppm), std::ptr::null()) })?;
+        Ok(hz)
     }
+    fn set_gain(&mut self, db: f32) -> Result<(), String> {
+        // SAFETY: an open device.
+        unsafe { self.gain(db as f64) }
+    }
+}
+
+impl Device<'_> {
     unsafe fn gain(&self, db: f64) -> Result<(), String> {
         unsafe {
             if (self.a.has_gain_mode)(self.dev, RX, 0) {
@@ -451,7 +448,7 @@ fn stream_once(source: usize, cfg: &SoapyConfig, tx: &SyncSender<SourceMsg>, sto
     // Modules load here rather than inside make, so a broken one is reported.
     modules();
     let args = CString::new(cfg.args.as_str()).map_err(|e| e.to_string())?;
-    let mut d = Device { a, dev: std::ptr::null_mut(), stream: std::ptr::null_mut(), active: false };
+    let mut d = Device { a, dev: std::ptr::null_mut(), stream: std::ptr::null_mut(), active: false, ppm: cfg.ppm };
     // SAFETY: SoapySDR C API calls on the device and stream `d` owns.
     unsafe {
         d.dev = (a.make)(args.as_ptr());
@@ -491,7 +488,7 @@ fn stream_once(source: usize, cfg: &SoapyConfig, tx: &SyncSender<SourceMsg>, sto
                 check(a, &format!("gain {k}"), (a.set_gain_element)(d.dev, RX, 0, ck.as_ptr(), *db))?;
             }
         }
-        d.tune(cfg.center_hz, cfg.ppm)?;
+        d.tune(cfg.center_hz)?;
 
         let chan = [0usize];
         d.stream = match a.setup_stream {
@@ -515,21 +512,10 @@ fn stream_once(source: usize, cfg: &SoapyConfig, tx: &SyncSender<SourceMsg>, sto
         let mut overflowed = false;
         let mut timeouts = 0;
         while !stop.load(Ordering::Relaxed) {
-            if let Some(c) = ctl {
-                let (freq, gain) = c.take();
-                if let Some(f) = freq {
-                    d.tune(f, cfg.ppm)?;
-                    *c.current_hz.lock().unwrap() = Some(f);
-                }
-                if let Some(g) = gain {
-                    d.gain(g as f64)?;
-                }
-                if freq.is_some() || gain.is_some() {
-                    let hz = c.current_hz.lock().unwrap().unwrap_or(cfg.center_hz);
-                    if tx.send(SourceMsg::Tuned { center_hz: hz }).is_err() {
-                        return Ok(());
-                    }
-                }
+            if let Some(c) = ctl
+                && c.apply(&mut d, cfg.center_hz, tx)? == Applied::Closed
+            {
+                return Ok(());
             }
             let mut buf = vec![Complex32::default(); per];
             let (mut got, mut dropped) = (0usize, 0u64);
