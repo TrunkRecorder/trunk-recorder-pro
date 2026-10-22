@@ -146,6 +146,9 @@ coloured light. Click one to go to the page about it. These are the events you c
 | `The RAM spool has room again (…% free)` | green | Back to normal. |
 | `The clock is … behind/ahead of <server>: call times are off by as much` | amber / red | The measured offset is 250 ms or more (red at 5 s). Check the operating system's time service. See [Clock](dashboard.md#clock). |
 | `The operating system says its clock isn't synchronized: …` | amber | The time service (chrony, systemd-timesyncd, ntpd) isn't running or can't reach its servers. |
+| `Calls are being stamped … behind/ahead of the right time: the clock was corrected after recording started…` | amber / red | The clock is right now, but calls keep the clock they started with. Stop and Start again. |
+| `Calls are being stamped … behind/ahead of <site>'s radio system clock…` | amber / red | No time server answers, and a radio system that vouches for its time says this computer's clock is off. |
+| `The clock jumped … forward (its time service set it, or the computer slept)` / `The clock was set back …` | amber | The wall clock jumped by half a second or more. Calls being recorded keep their clock until the next Start. |
 | `The clock is right again` | green | Back to normal. |
 
 The app keeps the last 200 events in memory, so a browser that opens later still sees them; they

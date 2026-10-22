@@ -132,10 +132,29 @@ pub struct Message {
     pub opcode: u8,
     /// Motorola: the site's callsign (its CW ID), from its base station ID.
     pub callsign: Option<String>,
+    /// P25 SYNC_BCST: the system's time as it sent this, Unix ms (to its
+    /// 7.5 ms micro-slot), and whether the system vouches for it (IST clear).
+    pub system_time_ms: Option<(i64, bool)>,
     /// Human-readable summary, as Trunk Recorder logs it.
     pub meta: String,
 }
 
+
+/// A date and time to the micro-slot (7.5 ms; 8000 a minute) as Unix ms,
+/// None when a field is out of range. P25's system time is UTC (its local
+/// offset is sent apart).
+fn unix_ms(y: u16, mo: u8, d: u8, h: u8, mi: u8, us: u16) -> Option<i64> {
+    if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 23 || mi > 59 || us >= 8000 {
+        return None;
+    }
+    // Days from 1970-01-01 (H. Hinnant's days_from_civil).
+    let (y, m) = (if mo <= 2 { y as i64 - 1 } else { y as i64 }, mo as i64);
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d as i64 - 1;
+    let days = era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468;
+    Some(((days * 24 + h as i64) * 60 + mi as i64) * 60_000 + us as i64 * 15 / 2)
+}
 
 /// What a deny or queued response's service type (the request's opcode)
 /// asked for: the standard's ISPs (AABC-D Annex D), or Motorola's (AABH §4.2).
@@ -512,9 +531,10 @@ impl P25Parser {
                 }
                 return out;
             }
-            Msg::SyncBroadcast { synced, time } => {
-                let when = time.map_or(String::new(), |(y, mo, d, h, mi)| format!(", {y}-{mo:02}-{d:02} {h:02}:{mi:02}"));
-                m.meta = format!("TDMA sync broadcast: traffic channels {}synced{when}", if *synced { "" } else { "not " });
+            Msg::SyncBroadcast { synced, time, time_valid } => {
+                m.system_time_ms = time.and_then(|(y, mo, d, h, mi, us)| unix_ms(y, mo, d, h, mi, us)).map(|ms| (ms, *time_valid));
+                let when = time.map_or(String::new(), |(y, mo, d, h, mi, us)| format!(", {y}-{mo:02}-{d:02} {h:02}:{mi:02}:{:06.3}", us as f64 * 0.0075));
+                m.meta = format!("TDMA sync broadcast: traffic channels {}synced{when}{}", if *synced { "" } else { "not " }, if time.is_some() && !*time_valid { " (marked not valid)" } else { "" });
             }
             Msg::MotPatchAdd { sg, groups } | Msg::MotPatchDelete { sg, groups } => {
                 let add = matches!(o.msg, Msg::MotPatchAdd { .. });
@@ -579,6 +599,17 @@ fn mfid(o: &Osp) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SYNC_BCST's time to the micro-slot, as Unix ms (checked against Python's UTC calendar).
+    #[test]
+    fn system_time_as_unix_ms() {
+        assert_eq!(unix_ms(2026, 10, 16, 12, 34, 6789), Some(1_792_154_090_917));
+        assert_eq!(unix_ms(2000, 2, 29, 0, 0, 0), Some(951_782_400_000));
+        assert_eq!(unix_ms(2036, 2, 7, 6, 28, 2133), Some(2_085_978_495_997));
+        assert_eq!(unix_ms(2099, 12, 31, 23, 59, 7999), Some(4_102_444_799_992));
+        assert_eq!(unix_ms(2026, 13, 1, 0, 0, 0), None);
+        assert_eq!(unix_ms(2026, 1, 1, 0, 0, 8000), None);
+    }
     use crate::p25::osp::from_tsbk;
 
     /// Opcode `op` from manufacturer `mfid`, with `fields` (octets 2..10), through `p`.

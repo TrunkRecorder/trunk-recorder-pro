@@ -787,6 +787,10 @@
     "ClockInfo": {
       "type": "object",
       "properties": {
+        "warnMs": {
+          "type": "number",
+          "description": "The warning threshold, ms (monitor.clockWarnMs)."
+        },
         "os": {
           "anyOf": [
             {
@@ -810,6 +814,86 @@
             }
           ],
           "description": "The OS's word (Linux, macOS; null elsewhere). maxErrorMs: its own loose bound."
+        },
+        "service": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "server": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "stratum": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "lastSync": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "name",
+                "server",
+                "stratum",
+                "lastSync"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The time service keeping the clock, when it says (Linux: chrony, systemd-timesyncd). lastSync: Unix s."
+        },
+        "driftMs": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "While recording: the wall clock less the clock calls are stamped by (the wall clock at Start, carried on monotonically), ms."
+        },
+        "radio": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "site": {
+                "type": "string"
+              },
+              "offsetMs": {
+                "type": "number"
+              },
+              "at": {
+                "type": "number"
+              },
+              "sane": {
+                "type": "boolean"
+              },
+              "valid": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "site",
+              "offsetMs",
+              "at",
+              "sane",
+              "valid"
+            ],
+            "additionalProperties": false
+          },
+          "description": "The radio systems' own clocks (P25 SYNC_BCST) against the recording's: offsetMs > 0 when the recording's is behind; `sane`: near enough to be the right time at all; `valid`: the system vouches for it (only then is it gone by)."
         },
         "server": {
           "type": [
@@ -902,7 +986,11 @@
         }
       },
       "required": [
+        "warnMs",
         "os",
+        "service",
+        "driftMs",
+        "radio",
         "server",
         "measured",
         "error",
@@ -2790,7 +2878,8 @@
                 "spoolFull",
                 "spoolRecovered",
                 "clockOff",
-                "clockOk"
+                "clockOk",
+                "clockStep"
               ]
             },
             "system": {
@@ -2873,6 +2962,10 @@
             },
             "bad": {
               "type": "boolean"
+            },
+            "byMs": {
+              "type": "number",
+              "description": "clockStep: how far the wall clock jumped, ms (positive: forward)."
             },
             "type": {
               "type": "string",
@@ -3741,11 +3834,16 @@
         "timeServer": {
           "type": "string",
           "description": "The time server asked how far off the clock is (SNTP every 15 min; port 123 unless given). It only measures. Empty: not asked."
+        },
+        "clockWarnMs": {
+          "type": "number",
+          "description": "The clock off by this much or more, ms: a warning, and calls marked clock_off (a problem at 5 s, or 4 times this)."
         }
       },
       "required": [
         "probeHosts",
-        "timeServer"
+        "timeServer",
+        "clockWarnMs"
       ],
       "additionalProperties": false
     },
@@ -4702,7 +4800,8 @@
           "type": "string",
           "enum": [
             "connect",
-            "time"
+            "time",
+            "service"
           ]
         },
         "target": {
@@ -5455,6 +5554,34 @@
             "additionalProperties": false
           },
           "description": "Every call sign its base station IDs say, each with the channel it's for (a site's licenses can be one a channel)."
+        },
+        "radioClock": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "offsetMs": {
+                  "type": "number"
+                },
+                "at": {
+                  "type": "number"
+                },
+                "valid": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "offsetMs",
+                "at",
+                "valid"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "P25 SYNC_BCST: the system's own clock less the recording's, ms (positive: the recording's is behind), and when it was heard, Unix s."
         }
       },
       "required": [

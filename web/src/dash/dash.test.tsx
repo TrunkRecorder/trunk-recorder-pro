@@ -144,8 +144,9 @@ test("Radio: calls missed on one of several systems name it, in the navigation's
   assert.equal((overview.match(/class="card card-warn[^"]*"/g) ?? []).length, 1, "and only other's card warns");
 });
 
-/** The computer as the recorder samples it, its clock as given. */
-function host(clock: ClockInfo): void {
+/** The computer as the recorder samples it, its clock as given (the rest as nothing known). */
+function host(given: Partial<ClockInfo>): void {
+  const clock: ClockInfo = { warnMs: 250, os: null, service: null, driftMs: null, radio: [], server: null, measured: null, error: null, problem: null, check: null, ...given };
   const platform: PlatformInfo = {
     os: "Linux", arch: "aarch64", host: "pi", cores: 4, container: null, cpuLimitCores: null, memTotal: 8e9, uptimeS: 3600, disks: [], probes: [], clock,
     perCore: null, interfaces: null, unavailable: [],
@@ -175,6 +176,24 @@ test("Platform: the clock as measured and as the OS says, and the light goes by 
   page = text(renderToString(<PlatformPage />));
   assert.match(page, /Offset, measured — pool\.ntp\.org: no answer/);
   assert.match(page, /3 of 3 queries unanswered .*UDP port 123/);
+});
+
+test("Platform: the time service, the recording's clock and the radio systems' clocks", () => {
+  twoSites();
+  setView("platform");
+  host({
+    os: synced, service: { name: "systemd-timesyncd", server: "2.debian.pool.ntp.org (45.33.53.84)", stratum: 2, lastSync: now() - 120 }, driftMs: 1800, warnMs: 500,
+    radio: [{ site: "dcfd", offsetMs: -12, at: now() - 30, sane: true, valid: false }, { site: "other", offsetMs: -4 * 3600e3, at: now() - 30, sane: false, valid: true }],
+    problem: { level: "warn", why: "Calls are being stamped 1.8 s behind the right time: the clock was corrected after recording started. Stop and Start again to stamp them by it" },
+  });
+  const page = text(renderToString(<PlatformPage />));
+  assert.match(page, /Kept by systemd-timesyncd from 2\.debian\.pool\.ntp\.org \(45\.33\.53\.84\), stratum 2, last synchronized 2 m/);
+  // (driftMs: the wall clock less the recording's: the recording's is behind.)
+  assert.match(page, /Calls are stamped by the clock as it was at Start: 1\.8 s behind the clock now/);
+  assert.match(page, /dcfd system clock: calls stamped 12 ms ahead of it \(the system marks its time not valid: shown, not gone by\)/);
+  assert.match(page, /other system clock set to another time \(its local time\?\): not compared/);
+  assert.match(page, /A warning at 500 ms off/);
+  assert.equal(pageHealth(snapshot()).platform.level, "warn");
 });
 
 /** A plugin that's on and running, with what it said of its work. */

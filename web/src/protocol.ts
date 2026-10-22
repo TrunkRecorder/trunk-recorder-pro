@@ -450,6 +450,8 @@ export interface MonitorSettings {
   probeHosts: string[];
   /** The time server asked how far off the clock is (SNTP every 15 min; port 123 unless given). It only measures. Empty: not asked. */
   timeServer: string;
+  /** The clock off by this much or more, ms: a warning, and calls marked clock_off (a problem at 5 s, or 4 times this). */
+  clockWarnMs: number;
 }
 
 /**
@@ -596,6 +598,8 @@ export interface SiteStatus {
   mismatch: string | null;
   /** Every call sign its base station IDs say, each with the channel it's for (a site's licenses can be one a channel). */
   callsigns?: { callSign: string; freqHz: number | null }[];
+  /** P25 SYNC_BCST: the system's own clock less the recording's, ms (positive: the recording's is behind), and when it was heard, Unix s. */
+  radioClock?: { offsetMs: number; at: number; valid: boolean } | null;
 }
 
 /** One running site's detail (decodeDetail): what its control channel announces. */
@@ -1280,7 +1284,8 @@ export interface MonitorEventBody {
     | "spoolFull"
     | "spoolRecovered"
     | "clockOff"
-    | "clockOk";
+    | "clockOk"
+    | "clockStep";
   /** A system's short name (talkgroup, radio, call volume, control channel events). */
   system?: string;
   /** Control channel events: the site's own name, when it has one other than its system's. */
@@ -1310,6 +1315,8 @@ export interface MonitorEventBody {
   /** clockOff: what's wrong, and whether it's badly off. */
   why?: string;
   bad?: boolean;
+  /** clockStep: how far the wall clock jumped, ms (positive: forward). */
+  byMs?: number;
 }
 
 /** The computer, as last sampled (desktop app). Missing values are listed in `unavailable`. */
@@ -1337,7 +1344,7 @@ export interface PlatformInfo {
 
 /** One of the checks and how it's been answering: an internet target ("connect") or the time server ("time"). */
 export interface ProbeRow {
-  kind: "connect" | "time";
+  kind: "connect" | "time" | "service";
   target: string;
   ok: boolean | null;
   rttMs: number | null;
@@ -1353,8 +1360,16 @@ export interface ProbeRow {
  * (monitor.timeServer) measured. Read only: the OS's time service keeps the clock.
  */
 export interface ClockInfo {
+  /** The warning threshold, ms (monitor.clockWarnMs). */
+  warnMs: number;
   /** The OS's word (Linux, macOS; null elsewhere). maxErrorMs: its own loose bound. */
   os: { synced: boolean; maxErrorMs: number } | null;
+  /** The time service keeping the clock, when it says (Linux: chrony, systemd-timesyncd). lastSync: Unix s. */
+  service: { name: string; server: string | null; stratum: number | null; lastSync: number | null } | null;
+  /** While recording: the wall clock less the clock calls are stamped by (the wall clock at Start, carried on monotonically), ms. */
+  driftMs: number | null;
+  /** The radio systems' own clocks (P25 SYNC_BCST) against the recording's: offsetMs > 0 when the recording's is behind; `sane`: near enough to be the right time at all; `valid`: the system vouches for it (only then is it gone by). */
+  radio: { site: string; offsetMs: number; at: number; sane: boolean; valid: boolean }[];
   /** The time server asked (null: none set, or not asked yet). */
   server: string | null;
   /** Its last answer: offsetMs > 0 when this clock is behind; `at` Unix s; `current`: recent enough to go by. */

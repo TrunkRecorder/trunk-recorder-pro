@@ -232,6 +232,11 @@ export function eventText(e: MonitorEvent): string {
       return e.why ?? "The clock is off";
     case "clockOk":
       return "The clock is right again";
+    case "clockStep": {
+      const by = Math.abs(e.byMs ?? 0);
+      const amount = by >= 1000 ? `${Math.round(by / 100) / 10} s` : `${Math.round(by)} ms`;
+      return (e.byMs ?? 0) > 0 ? `The clock jumped ${amount} forward (its time service set it, or the computer slept)` : `The clock was set back ${amount}`;
+    }
     default:
       return `${e.kind}${e.system ? ` (${e.system})` : ""}`;
   }

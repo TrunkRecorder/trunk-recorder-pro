@@ -838,6 +838,11 @@ impl Air {
 /// browsers' and the server's changes ([`Ctx::engine`] holds its sender).
 fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<mpsc::Receiver<SourceMsg>>, stop: Arc<AtomicBool>, epoch: (f64, Instant), ctl: (mpsc::Sender<EngineCmd>, mpsc::Receiver<EngineCmd>)) {
     ctx.set_phase("running", None, false);
+    // Calls are stamped by this clock: the clock's health watches it against the wall clock.
+    crate::clock::recording(Some(epoch));
+    // A capture played back carries its own day's radio clock: only live radios' are compared.
+    let live = !cfg.sources.iter().any(|s| matches!(s, Source::File { .. }));
+    let mut radio_at = Instant::now();
     let (ctl_tx, rx) = ctl;
     session.set_topics(ctx.topics());
     let at_ms: Arc<Vec<AtomicU64>> = Arc::new(cfg.sources.iter().map(|_| AtomicU64::new(0)).collect());
@@ -954,6 +959,10 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
             tune_at = Instant::now();
             save_tune(&mut session);
         }
+        if live && radio_at.elapsed() >= Duration::from_secs(5) {
+            radio_at = Instant::now();
+            crate::clock::set_radio(session.radio_clocks().into_iter().map(|r| crate::clock::Radio { site: r.site, offset_ms: r.offset_ms, at: r.at_s, valid: r.valid }).collect());
+        }
         if plans_at.elapsed() >= Duration::from_secs(10) {
             plans_at = Instant::now();
             save_bandplans(&session, &mut saved_plans);
@@ -986,6 +995,7 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
     save_units(&mut session);
     save_tune(&mut session);
     save_registry(&ctx.shared);
+    crate::clock::recording(None);
     stop.store(true, Ordering::Relaxed);
     ctx.set_phase("idle", None, ended_all);
 }

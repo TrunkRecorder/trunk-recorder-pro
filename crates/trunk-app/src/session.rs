@@ -320,6 +320,21 @@ impl Feeder {
     }
 }
 
+/// A radio system's own clock against the one calls are stamped by
+/// ([`Session::radio_clocks`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct RadioClock {
+    /// The site that said it.
+    pub site: String,
+    /// The system's time less the recording's, ms: positive when the
+    /// recording's clock is behind the system's.
+    pub offset_ms: f64,
+    /// When it was heard, Unix s.
+    pub at_s: f64,
+    /// The system vouches for its time (P25's IST clear).
+    pub valid: bool,
+}
+
 pub struct Session {
     cfg: Config,
     engine: Engine,
@@ -818,6 +833,17 @@ impl Session {
         self.epoch_ms / 1000.0 + s
     }
 
+    /// The radio systems' own clocks (P25's SYNC_BCST, on Phase 2 systems)
+    /// against the clock calls are stamped by: each site's latest.
+    pub fn radio_clocks(&self) -> Vec<RadioClock> {
+        self.engine.status().sites.iter().filter_map(|y| y.system_time.map(|(t, ms, valid)| self.radio_clock(&y.site_name, t, ms, valid))).collect()
+    }
+
+    fn radio_clock(&self, site: &str, t: f64, system_ms: i64, valid: bool) -> RadioClock {
+        let at_s = self.wall(t);
+        RadioClock { site: site.to_string(), offset_ms: system_ms as f64 - at_s * 1000.0, at_s, valid }
+    }
+
     /// The log header for a call.
     fn call_tag(c: &Call) -> CallTag {
         CallTag {
@@ -1149,6 +1175,7 @@ impl Session {
                 "activeCalls": y.active_calls, "recording": y.recording, "callsConcluded": y.calls_concluded,
                 "mismatch": y.mismatch,
                 "callsigns": y.callsigns.iter().map(|(c, hz)| json!({ "callSign": c, "freqHz": if *hz == 0 { None } else { Some(hz) } })).collect::<Vec<_>>(),
+                "radioClock": y.system_time.map(|(t, ms, valid)| { let r = self.radio_clock(&y.site_name, t, ms, valid); json!({ "offsetMs": (r.offset_ms * 10.0).round() / 10.0, "at": r.at_s.round(), "valid": valid }) }),
             })
         };
         // Each system with a site running, its sites in order.

@@ -333,13 +333,45 @@ function ClockCard({ c, offsets, osMissing }: { c: ClockInfo; offsets: SeriesDat
         />
         <Stat label="Round trip" value={m ? num(m.delayMs, 0) : "—"} unit={m ? "ms" : undefined} sub={m ? `stratum ${m.stratum}` : undefined} hint="The query's round trip, less the server's own time: the offset is good to about half of it." />
       </div>
+      {c.service && (
+        <p className="small">
+          Kept by <b>{c.service.name}</b>
+          {c.service.server ? <> from {c.service.server}</> : null}
+          {c.service.stratum ? `, stratum ${c.service.stratum}` : ""}
+          {c.service.lastSync ? `, last synchronized ${ago(c.service.lastSync)}` : ""}.
+        </p>
+      )}
+      {c.driftMs !== null && (
+        <p className={`small${Math.abs(c.driftMs) >= c.warnMs ? " warn" : ""}`} title="Calls are stamped by the clock as it was when recording started, carried on by a clock that never jumps: a correction since then doesn't reach them until the next Start.">
+          Calls are stamped by the clock as it was at Start:{" "}
+          {Math.abs(c.driftMs) < 1 ? "the same as the clock now" : `${offsetText(c.driftMs).by} ${offsetText(c.driftMs).way} the clock now`}.
+        </p>
+      )}
+      {c.radio.length > 0 && (
+        <ul className="line-list small" aria-label="Radio systems' clocks">
+          {c.radio.map((r) => {
+            const o = offsetText(r.offsetMs);
+            return (
+              <li key={r.site}>
+                <b>{r.site}</b>
+                <span className="muted">
+                  {r.sane ? ` system clock: calls stamped ${o.by} ${o.way} it` : " system clock set to another time (its local time?): not compared"}
+                  {r.sane && !r.valid ? " (the system marks its time not valid: shown, not gone by)" : ""}, {ago(r.at)}
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
       <TimeSeries lines={[{ label: "Offset, ms (+: this clock behind)", color: "var(--series-1)", data: offsets }]} height={110} fmt={(x) => x.toFixed(0)} />
       {c.check && c.check.fails > 0 && (
         <p className="muted small">
           {c.check.fails} of {c.check.tries} queries unanswered{c.error ? ` (last: ${c.error})` : ""}. Some networks block NTP (UDP port 123); the internet checks don't count it.
         </p>
       )}
-      <p className="muted small">The recorder only watches the clock: the operating system's time service keeps it.</p>
+      <p className="muted small">
+        The recorder only watches the clock: the operating system's time service keeps it. A warning at {c.warnMs >= 1000 ? `${num(c.warnMs / 1000, 1)} s` : `${num(c.warnMs, 0)} ms`} off (monitor.clockWarnMs).
+      </p>
     </Card>
   );
 }

@@ -23,6 +23,18 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   their upload time apart; older ones show the age alone.
 - **`clock_off` in a call's JSON** when the clock was off as it ended (250 ms
   or more, or the operating system said it wasn't synchronized).
+- **The clock calls are stamped by, judged** (#61): calls keep the clock they
+  started with, so a correction during a recording doesn't reach them. The
+  Clock card now says how far that is from the clock now, and the warning
+  goes by it ("Stop and Start again to stamp them by it").
+- **Radio systems' own clocks** (#61): P25 Phase 2 systems broadcast their
+  time to 7.5 ms (SYNC_BCST). Each site's offset from the call times is on
+  the Clock card and in the site's status. Without an answer from the time
+  server, the systems that vouch for their time are the reference.
+- **The time service on the Clock card** (Linux: chrony, systemd-timesyncd):
+  the server it follows, its stratum, when it last synchronized.
+- **`monitor.clockWarnMs`** sets the clock warning (250 ms by default), and a
+  jump of the clock is an event.
 - **Plugin SDK 0.6.0:** `call.result` takes `took_ms`
   (`Host::call_result_took`; `CallQueue` sends it), and `CallRecord` has
   `clock_off`.

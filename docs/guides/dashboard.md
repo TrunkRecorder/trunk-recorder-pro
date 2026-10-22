@@ -254,9 +254,27 @@ macOS) keeps it. Nothing extra needs installing, and nothing runs with privilege
 | **Operating system** | Whether the time service tells the kernel the clock is synchronized, and its own bound on the error. The bound is loose: a synchronized clock often claims hundreds of milliseconds. Linux and macOS; on Windows only the offset is measured. In a container this is the host's clock, which the container shares. |
 | **Round trip** | The query's round trip. The offset is good to about half of it. |
 
-The chart shows the offset over time. The Platform light turns amber, with an event, when the
-offset is 250 ms or more or the operating system says the clock isn't synchronized, and red at 5 s.
-A measurement over an hour old isn't counted. Some networks block NTP (UDP port 123): then nothing
+Under them, when they're known:
+- **Kept by…**: the time service and the server it follows, its stratum and when it last
+  synchronized (Linux: chrony or systemd-timesyncd).
+- **Calls are stamped by the clock as it was at Start**: while recording. Calls are stamped by the
+  clock as it was when recording started, carried on by a clock that never jumps, so a call's times
+  never go backwards. A correction the time service makes after Start reaches them only at the
+  next Start: this line says how far apart the two are now.
+- **The radio systems' clocks**: P25 systems (Phase 2) broadcast their own time, to 7.5 ms,
+  usually from GPS. Each site's line says how far call times are from it. Some systems mark their
+  time not valid even when it's right (DCFD does): those are shown, not gone by. A system set to its
+  local time is far off by hours and isn't compared.
+
+The chart shows the offset over time. The Platform light turns amber, with an event, when call
+times are off by `monitor.clockWarnMs` (250 ms) or more, or the operating system says the clock
+isn't synchronized; red at 5 s. What's judged is the clock calls are stamped by:
+- measured against the time server, as the clock now plus how far it has moved since Start;
+- without an answer from the time server, against the radio systems that vouch for their time
+  (offline recorders).
+
+A measurement over an hour old isn't counted. A jump of the clock (its time service setting it, or
+the computer sleeping) is an event of its own. Some networks block NTP (UDP port 123): then nothing
 is measured, the card says the queries go unanswered, and the internet checks don't count it.
 Pointing `monitor.timeServer` at a server inside your network (often your router) can help.
 

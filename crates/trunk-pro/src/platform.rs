@@ -24,6 +24,8 @@ pub const PROBE_EVERY: Duration = Duration::from_secs(15);
 /// every minute or so), and how soon again after it didn't answer.
 const TIME_EVERY: Duration = Duration::from_secs(15 * 60);
 const TIME_RETRY: Duration = Duration::from_secs(2 * 60);
+/// How often the OS's time service is asked what it follows.
+const SERVICE_EVERY: Duration = Duration::from_secs(5 * 60);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 /// Disks and temperatures change slowly: this often.
 const SLOW_EVERY: Duration = Duration::from_secs(30);
@@ -119,12 +121,15 @@ pub enum Check {
     /// [`crate::clock::measure`]). A time server that doesn't answer isn't
     /// the internet down (UDP port 123 is often blocked): it says nothing of `net/up`.
     Time(String),
+    /// Ask the OS's time service what it follows ([`crate::clock::read_service`]).
+    Service,
 }
 
 impl Check {
     fn target(&self) -> &str {
         match self {
             Check::Connect(t) | Check::Time(t) => t,
+            Check::Service => "time service",
         }
     }
 
@@ -133,6 +138,7 @@ impl Check {
         match self {
             Check::Connect(_) => PROBE_EVERY,
             Check::Time(_) => if ok { TIME_EVERY } else { TIME_RETRY },
+            Check::Service => SERVICE_EVERY,
         }
     }
 
@@ -144,6 +150,7 @@ impl Check {
                 let (r, dns) = crate::clock::measure(server);
                 (r.is_ok(), r.ok().map(|m| m.delay_ms), dns)
             }
+            Check::Service => (crate::clock::read_service().is_some(), None, None),
         }
     }
 }
@@ -252,7 +259,7 @@ impl Probes {
                 }
             }
             rows.push(json!({
-                "kind": if internet { "connect" } else { "time" }, "target": p.check.target(), "ok": p.ok, "rttMs": p.rtt_ms.map(|r| (r * 10.0).round() / 10.0),
+                "kind": match p.check { Check::Connect(_) => "connect", Check::Time(_) => "time", Check::Service => "service" }, "target": p.check.target(), "ok": p.ok, "rttMs": p.rtt_ms.map(|r| (r * 10.0).round() / 10.0),
                 "lastOk": p.last_ok, "lastFail": p.last_fail, "downSince": p.down_since, "tries": p.tries, "fails": p.fails,
             }));
         }
@@ -414,7 +421,7 @@ impl Platform {
         sink.counter("net/tx", tx);
         sink.counter("net/errors", err);
         let (probes, time): (Vec<Value>, Vec<Value>) = self.probes.report(sink).into_iter().partition(|r| r["kind"] == "connect");
-        let clock = clock_report(sink, time.into_iter().next(), &mut missing);
+        let clock = clock_report(sink, time.into_iter().find(|r| r["kind"] == "time"), &mut missing);
         // The slow ones.
         if self.last_slow.is_none_or(|t| t.elapsed() >= SLOW_EVERY) {
             self.last_slow = Some(Instant::now());
@@ -482,9 +489,20 @@ fn clock_report(sink: &mut dyn Sink, check: Option<Value>, missing: &mut impl Fn
         sink.gauge("clock/offsetMs", m.offset_ms);
         sink.gauge("clock/delayMs", m.delay_ms);
     }
+    if let Some(d) = h.drift_ms {
+        sink.gauge("clock/driftMs", d);
+    }
+    let radio_ref = h.radio_reference(now);
+    if let Some((_, r)) = &radio_ref {
+        sink.gauge("clock/radioMs", *r);
+    }
     let round = |v: f64| (v * 10.0).round() / 10.0;
     json!({
+        "warnMs": h.limits().0,
         "os": os.map(|o| json!({ "synced": o.synced, "maxErrorMs": round(o.max_error_ms) })),
+        "service": h.service.as_ref().map(|s| json!({ "name": s.name, "server": s.server, "stratum": s.stratum, "lastSync": s.last_sync })),
+        "driftMs": h.drift_ms.map(round),
+        "radio": h.radio.iter().map(|r| json!({ "site": r.site, "offsetMs": round(r.offset_ms), "at": r.at.round(), "sane": r.sane(), "valid": r.valid })).collect::<Vec<_>>(),
         "server": h.server,
         "measured": h.measured.map(|(m, at)| json!({ "offsetMs": round(m.offset_ms), "delayMs": round(m.delay_ms), "stratum": m.stratum, "at": at, "current": current.is_some() })),
         "error": h.error,

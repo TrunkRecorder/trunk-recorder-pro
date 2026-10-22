@@ -49,6 +49,7 @@ fn run(ctx: Arc<Ctx>) {
         let c = ctx.config.lock().unwrap();
         let mut checks: Vec<Check> = c.monitor.probe_hosts.iter().cloned().map(Check::Connect).collect();
         checks.extend(Some(c.monitor.time_server.trim()).filter(|s| !s.is_empty()).map(|s| Check::Time(s.to_string())));
+        checks.push(Check::Service);
         (checks, c.recording.capture_dir.clone())
     };
     let c2 = ctx.clone();
@@ -65,10 +66,15 @@ fn run_with(ctx: Arc<Ctx>, mut platform: Platform) {
     let mut spool = SpoolWatch::default();
     // The clock's level as last told: 0 fine, 1 off, 2 badly off.
     let mut clock_level = 0u8;
+    let mut steps = crate::clock::StepWatch::default();
     let spotlight: Arc<Mutex<Option<Value>>> = Default::default();
     let mut spotlight_for: Option<(String, Instant)> = None;
     loop {
         let t = crate::clock::unix_s();
+        crate::clock::set_warn_ms(ctx.config.lock().unwrap().monitor.clock_warn_ms);
+        if let Some(by_ms) = steps.check() {
+            ctx.event(MonitorEvent::ClockStep { by_ms: by_ms.round() });
+        }
         if let Some(r) = agg.begin(t) {
             ctx.store.add(r);
         }

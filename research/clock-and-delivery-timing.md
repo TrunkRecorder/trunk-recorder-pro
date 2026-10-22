@@ -227,11 +227,45 @@ would then be reported as a clock step.
       of 320 ms, ages of 0.8 and 4.9 s, and waiting = age − upload. On SDK
       0.5, the same run gave the age alone.
 
-### Phase 3: optional
-- [ ] Configurable clock offset threshold
-- [ ] SYNC_BCST micro-slots and timing; the radio-clock comparison; clock
-      steps as events
-- [ ] chrony / timesyncd details where found
+### Phase 3
+- [x] `monitor.clockWarnMs` (default 250 ms; a problem at 5 s or 4 times it),
+      applied at once; carried on `Health`, so its tests set it on the value
+      and not a global
+- [x] **The recording clock is what's judged.** Calls are stamped by the wall
+      clock at Start carried on monotonically (`Session::poll`'s clock), so a
+      correction after Start never reaches them. `Health::drift_ms` is the wall
+      clock less the recording's. The verdict takes the time server's offset
+      plus that, and says to Stop and Start when only the recording's clock is
+      off. (Found while building this: phase 1 judged the wall clock alone.)
+- [x] SYNC_BCST to the micro-slot: decoded (`osp.rs`), as Unix ms (`message.rs`,
+      a days-from-civil conversion, no date crate), each site's latest kept by
+      the engine (`SiteStatus::system_time`), and offset against the recording
+      clock in `Session::radio_clocks`, shown in each site's status
+      (`radioClock`). trunk-pro takes them every 5 s while recording from live
+      radios (a capture's are its own day's).
+- [x] On air, from the DCFD Phase 2 capture: the decoded time is 15:09:38.925
+      UTC at its first broadcast. That matches the file's time less its length
+      to the second, and it steps with the air time to the millisecond (81.675
+      s against 81.67 s). DCFD sets IST (time not valid) all the same, so a
+      time is decoded either way and carries `valid`: shown always, gone by
+      only when valid. Played live in the recorder, its offset stayed within
+      1 ms over 20 s.
+- [x] The radio systems as the reference when no time server answers:
+      the median of the recent, valid, sane ones (within 10 minutes of ours:
+      a system on local time isn't compared)
+- [x] Clock steps: `StepWatch`, the wall clock against a monotonic one each
+      monitor tick; half a second or more is a `clockStep` event. A forward
+      jump may be sleep, and the event says so. (Not `ClockFit`'s re-anchor:
+      that measures the sample clock against the recording clock, which never
+      jumps.)
+- [x] The time service: chrony (`chronyc -c -n tracking`) or systemd-timesyncd
+      (`timedatectl show-timesync`, the time of
+      /run/systemd/timesync/synchronized), every 5 minutes as a `Check::Service`
+      on the probe thread. Linux only. The timesyncd parser is tested on the
+      Pi testbed's real output. Chrony's is written to its documented CSV, but
+      no machine here runs chrony.
+- [ ] TIME_DATE_ANN (0x35, to the second) is still only named: SYNC_BCST is
+      what Phase 2 systems send, to 7.5 ms
 
 ## Not doing
 

@@ -345,6 +345,11 @@ pub struct SiteStatus {
     /// (Motorola's MOT_BSI_GRANT), each with the channel it's for, Hz: a
     /// site's licenses can be several, one a channel. Never another site's.
     pub callsigns: Vec<(String, u64)>,
+    /// The system's own clock, as its control channel last said it (P25's
+    /// SYNC_BCST): when it was heard, on the engine's clock (s), the time
+    /// the system said then, Unix ms, and whether it vouched for it. Never
+    /// another site's.
+    pub system_time: Option<(f64, i64, bool)>,
     /// Patches standing now: (supergroup, the talkgroups patched into it).
     pub patches: Vec<(u32, Vec<u32>)>,
     /// A trunked DMR site: its kind, rest channel, channel table, carriers.
@@ -1028,6 +1033,8 @@ struct Trunk {
     adjacent: std::collections::BTreeMap<(u32, u32, u32), AdjacentSite>,
     /// The call signs its base station IDs say, by the channel (Hz) each is for.
     callsigns: std::collections::BTreeMap<u64, String>,
+    /// Its system's time, last said ([`SiteStatus::system_time`]).
+    system_time: Option<(f64, i64, bool)>,
     /// What its protocol says of itself, once: the identity fields its site
     /// lock goes by, and whether a control channel is reopened at a correction.
     id_fields: &'static [IdField],
@@ -1132,6 +1139,7 @@ impl Trunk {
             self.mismatch = None;
             self.adjacent.clear();
             self.callsigns.clear();
+            self.system_time = None;
         }
         events.push(Event::ControlChannel { site: self.site, freq_hz: hz.round() as u64 });
         Ok(())
@@ -1239,6 +1247,9 @@ impl Trunk {
             for m in st.msgs.iter().filter(|m| m.kind == MessageType::Adjacent && m.freq_hz > 0) {
                 self.adjacent.insert((m.sys_id, m.rfss, m.site), AdjacentSite { sys_id: m.sys_id, rfss: m.rfss, site: m.site, freq_hz: m.freq_hz });
             }
+            if let Some(m) = st.msgs.iter().rev().find(|m| m.system_time_ms.is_some()) {
+                self.system_time = m.system_time_ms.map(|(ms, valid)| (m.time_s, ms, valid));
+            }
             for m in st.msgs.iter().filter(|m| m.kind == MessageType::BaseStationId) {
                 if let Some(c) = m.callsign.as_ref().filter(|_| m.freq_hz > 0) {
                     if self.callsigns.insert(m.freq_hz, c.clone()).as_ref() != Some(c) {
@@ -1341,6 +1352,7 @@ impl Trunk {
             mismatch: self.mismatch.clone(),
             adjacent: self.adjacent.values().copied().collect(),
             callsigns: if self.mismatch.is_none() { self.callsigns.iter().map(|(&hz, c)| (c.clone(), hz)).collect() } else { vec![] },
+            system_time: self.system_time.filter(|_| self.mismatch.is_none()),
             patches: self.calls.patches.active(),
             protocol,
         }
@@ -1460,6 +1472,7 @@ impl Core {
                 mismatch: None,
                 adjacent: Default::default(),
                 callsigns: Default::default(),
+                system_time: None,
                 id_fields: &[],
                 reopens: false,
                 voice_params: VoiceParams::default(),
