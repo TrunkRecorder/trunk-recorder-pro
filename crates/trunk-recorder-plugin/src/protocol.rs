@@ -371,6 +371,11 @@ pub struct CallRecord {
     /// Its encrypted voice was decrypted, at least in part (this recorder's addition).
     #[serde(deserialize_with = "flag", serialize_with = "flag_out")]
     pub decrypted: bool,
+    /// Its times may be off: when it ended, the recorder's clock was measured
+    /// a quarter second or more off, or the operating system said it wasn't
+    /// synchronized (this recorder's addition; absent when the clock was fine).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub clock_off: bool,
     /// Seconds of audio.
     #[serde(serialize_with = "plain")]
     pub call_length: f64,
@@ -456,6 +461,7 @@ impl Default for CallRecord {
             algid: -1,
             key_id: -1,
             decrypted: false,
+            clock_off: false,
             call_length: 0.0,
             call_length_ms: 0,
             talkgroup: 0,
@@ -743,6 +749,12 @@ pub enum PluginMessage {
         /// Where the call can be found now (a link to it on the service).
         #[serde(default, skip_serializing_if = "String::is_empty")]
         url: String,
+        /// How long the work on it took, ms (an upload: its last try, so
+        /// retries count as waiting). The recorder's delivery timing splits
+        /// a call's age into waiting and uploading by it; without it, it
+        /// shows the age alone. [`crate::CallQueue`] says it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        took_ms: Option<u64>,
     },
     /// How the plugin's work is going, for the dashboard: queue, results,
     /// timing and the services it talks to. Send it when it changes, at most

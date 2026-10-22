@@ -14,6 +14,18 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   macOS keep it. No new dependencies, no privileges; in a container it's
   the host's clock. A time server that doesn't answer (UDP port 123 is often
   blocked) isn't counted as the internet down.
+- **How long calls take to reach each plugin's service** (#61): on each
+  plugin's card, the age at delivery (from the call's end to the plugin's
+  success) over the last 5 minutes or the hour, its parts (held by delay
+  rules, waiting, the plugin's own upload) and the hour's longest. The same
+  for every plugin (Broadcastify Calls, OpenMHz, Rdio Scanner, a script);
+  measured by the recorder, by its own clock. Plugins built on SDK 0.6 tell
+  their upload time apart; older ones show the age alone.
+- **`clock_off` in a call's JSON** when the clock was off as it ended (250 ms
+  or more, or the operating system said it wasn't synchronized).
+- **Plugin SDK 0.6.0:** `call.result` takes `took_ms`
+  (`Host::call_result_took`; `CallQueue` sends it), and `CallRecord` has
+  `clock_off`.
 
 - **Share a system with the community directory** ([trunkrecorder.pro/directory](https://trunkrecorder.pro/directory/)):
   a switch in each system's Basics (`"share": true`). While it records, the recorder shares what it

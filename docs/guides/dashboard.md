@@ -210,13 +210,16 @@ The **Health** tab has a card for each plugin that's on (**Install & settings** 
 | **Sent** | Calls it handled this run, and how many it skipped |
 | **Failed** | Calls it failed on, as a share of tries. Hover for the last failure. |
 | **Waiting** | Calls queued for it (amber over 20), and how many are waiting to retry |
-| **Upload time** | How long its uploads take, and how much it has sent |
+| **Age at delivery** | How long after a call ended the plugin finished with it, over the last 5 minutes (or the hour, when nothing was delivered in the last 5), and its parts: **held** by your delay rules, **waiting** (the call's files being finished, the plugin's queue, failed tries) and the plugin's own **upload**. Then the hour's longest. A plugin built before SDK 0.6 doesn't say its upload time, so only the age shows. All by this computer's clock: no service reports it. |
 
-Under them: a bar per minute for the last hour (sent, skipped, failed), each service the plugin
+Under them: how much it has sent this run, a bar per minute for the last hour (sent, skipped, failed), each service the plugin
 talks to with its state, any figures of its own the plugin reports (simplestream's packets sent and
 dropped, for example), and when it last succeeded and failed. **Restarted N×** means the plugin
 crashed and was restarted; **Fell behind N events** means it was too slow to take events and some
-were dropped. **Last 24 h and log ▾** shows its history and recent log lines.
+were dropped. **Last 24 h and log ▾** shows its history (the age at delivery among it) and recent log lines.
+
+The age at delivery is local, so it's only as right as this computer's clock: see [Clock](#clock).
+A call recorded while the clock was off says so in its JSON (`"clock_off": true`).
 
 A service shows as down after 3 failures in a row, or 5 minutes without a success.
 

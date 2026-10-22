@@ -763,6 +763,8 @@ export interface CallRecord {
   key_id?: number;
   /** 1: its encrypted voice was decrypted, at least in part (absent in calls saved before). */
   decrypted?: number;
+  /** true: its times may be off: the recorder's clock was measured 250 ms or more off, or the operating system said it wasn't synchronized, when it ended (absent otherwise). */
+  clock_off?: boolean;
   phase2_tdma: number;
   duplex: number;
   /** Its P25 priority and service-option mode bit. */

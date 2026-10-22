@@ -776,6 +776,7 @@ anything on stderr becomes a log line.
 | `archive.rs` | `plan` (which of a call's files are written and kept); counts `call.result`s to decide when files can be deleted |
 | `encode.rs` | ffmpeg / afconvert / fdkaac M4A (the finish pool calls it) |
 | `delay.rs`, `hold.rs` | plugin delays (`pluginDelays`): what is held back from a plugin, and for how long |
+| `timing.rs` | `Deliveries`: each call's age at delivery to each plugin, and its parts (held, waiting, upload), as `plg/<id>/…` series |
 | `cli.rs` | `trunk-pro plugin …` commands |
 
 Per plugin process: a supervisor thread (`plugin-<id>`) reading stdout, a writer thread feeding

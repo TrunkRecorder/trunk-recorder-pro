@@ -8,11 +8,12 @@ import { defaultConfig, newSystem } from "../config.ts";
 import { setView, snapshot, transport } from "../controller.ts";
 import { clearSeries, feedSeries } from "../series.ts";
 import { pageHealth } from "./data.ts";
-import type { CallView, ClockInfo, Config, EngineStatus, FromRecorder, PlatformInfo, SiteIdentity, SiteStatus, SystemStatus } from "../protocol.ts";
+import type { CallView, ClockInfo, Config, PluginInfo, EngineStatus, FromRecorder, PlatformInfo, SiteIdentity, SiteStatus, SystemStatus } from "../protocol.ts";
 import { DecodePage } from "./Decode.tsx";
 import { Overview } from "./Overview.tsx";
 import { RadioPage } from "./Radio.tsx";
 import { PlatformPage } from "./Platform.tsx";
+import { PluginHealthPage } from "./PluginHealth.tsx";
 
 const site = (index: number, name: string, identity: Partial<SiteIdentity>): SiteStatus => ({
   index, name, nowS: 10, controlChannelHz: 851_000_000 + index * 500_000,
@@ -174,4 +175,39 @@ test("Platform: the clock as measured and as the OS says, and the light goes by 
   page = text(renderToString(<PlatformPage />));
   assert.match(page, /Offset, measured — pool\.ntp\.org: no answer/);
   assert.match(page, /3 of 3 queries unanswered .*UDP port 123/);
+});
+
+/** A plugin that's on and running, with what it said of its work. */
+function uploader(id: string): void {
+  const c = defaultConfig();
+  c.plugins = { [id]: { enabled: true, settings: {} } } as Config["plugins"];
+  const p: PluginInfo = {
+    id, path: `/plugins/${id}/${id}`, custom: false, problem: null,
+    manifest: { id, name: "Broadcastify Calls", version: "0.1.7", description: "", api: 1, subscribe: ["call.concluded"], audio_formats: [] },
+    runtime: { state: "ok", message: "", ok: 30, skipped: 0, failed: 0, lastFailure: "", log: [] },
+  };
+  running(c, []);
+  transport.onMessage({ type: "plugins", encoderFound: null, plugins: [p] });
+}
+
+test("Plugins: a call's age at delivery, and its parts, the same for any plugin", () => {
+  uploader("broadcastify");
+  setView("plugins");
+  // A delivery every 10 s, 2.5 s after the call's end: 0.4 s of it the upload, none held.
+  const t = Date.now() / 1000;
+  for (let i = 0; i < 5; i++) {
+    feedSeries(t - 60 + i * 10, { "plg/broadcastify/delivered": 0.1, "plg/broadcastify/ageMs": 250, "plg/broadcastify/heldMs": 0, "plg/broadcastify/uploads": 0.1, "plg/broadcastify/uploadMs": 40, "plg/broadcastify/waitMs": 210, "plg/broadcastify/age": 2500 });
+  }
+  const page = text(renderToString(<PluginHealthPage manage={null} />));
+  assert.match(page, /Age at delivery 2\.5 s last 5 min: waiting 2\.1 s · upload 0\.4 s/);
+  assert.doesNotMatch(page, /held/, "nothing held by a delay rule: not said");
+});
+
+test("Plugins: a plugin that doesn't say its upload time gives the age alone", () => {
+  uploader("broadcastify");
+  setView("plugins");
+  feedSeries(Date.now() / 1000, { "plg/broadcastify/delivered": 0.1, "plg/broadcastify/ageMs": 6200, "plg/broadcastify/heldMs": 6000, "plg/broadcastify/uploads": 0, "plg/broadcastify/uploadMs": 0, "plg/broadcastify/waitMs": 0 });
+  const html = renderToString(<PluginHealthPage manage={null} />);
+  assert.match(text(html), /Age at delivery 62\.0 s last 5 min: held 60\.0 s/);
+  assert.match(html, /doesn&#x27;t say its own upload time/);
 });

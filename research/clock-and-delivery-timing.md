@@ -144,7 +144,21 @@ The SDK adds `took_ms` to `CallResult`: the upload's own duration, which
 | Age at delivery | call ended → result, on the local clock |
 
 Each is a series under `plg/<id>/…` in the stats store, with failures
-counted apart. OpenMHz, Rdio Scanner and the upload script get these as
+counted apart.
+
+**As built** (`plugins/timing.rs`, `Deliveries`): simpler than the table
+above, with the parts adding up to the age.
+- **Held** is what the hold actually kept the call (from its hand-over), not
+  what the rule says.
+- **Waiting** is the age less Held and Upload: the call's files being
+  finished, the plugin's queue, and failed tries. That needs no offer time.
+- It's fed where the archive is: at finish (`ended`, with the plugins'
+  count, so a call is forgotten once all have answered), at the hold's
+  hand-over (`held`), and at each result.
+- It reports running totals (`delivered`, `ageMs`, `heldMs`, `uploads`,
+  `uploadMs`, `waitMs`), which make exact averages over any span, and each
+  tick's longest (`age`, `upload`), whose history keeps the highest. That
+  is the stats store's own idiom: no new rolling structure. OpenMHz, Rdio Scanner and the upload script get these as
 well as Broadcastify, and the Broadcastify plugin needs no change. If
 Broadcastify ever reports skew, the plugin sends it in `Metrics.extra`.
 
@@ -191,13 +205,27 @@ would then be reported as a clock step.
       its JSON (moved to phase 2, which touches the call path anyway)
 
 ### Phase 2: delivery timing
-- [ ] SDK: `CallResult.took_ms` from `CallQueue`; publish; re-release the
-      plugins
-- [ ] Host: offer time per call and plugin; Held from `Holds::delay`; the
-      four measures as `plg/<id>/…` series
-- [ ] Plugin page: the four measures with their windows; the note on skew
-- [ ] Tests: a held call's age less its hold; a failed call apart; a plugin
-      on an older SDK (no `took_ms`) shows the age only
+- [x] SDK 0.6.0: `CallResult.took_ms`, `Host::call_result_took`, `CallQueue`
+      sends it; `CallRecord.clock_off`
+- [ ] Publish SDK 0.6.0; re-release the plugins on it (until then they
+      show the age alone)
+- [x] Host: `Deliveries` (`plugins/timing.rs`): ended, held, results; the
+      measures as `plg/<id>/…` series
+- [x] Plugin card: "Age at delivery" (5 min, else the hour) with held ·
+      waiting · upload and the hour's longest, in place of the plugin's own
+      "Upload time"; its 24 h chart; the note that it's local
+- [x] `clock_off` on a call stamped while the clock was off (moved from
+      phase 1)
+- [x] Docs: the plugin protocol (`took_ms`), the dashboard guide, the call
+      JSON fields, the architecture notes
+- [x] Tests: age, held, upload and the waiting left; copies as their plugin;
+      an older plugin (no `took_ms`) gives the age alone; only Ok is timed;
+      the totals and each tick's longest; the hold's hand-over timed; render
+      tests for the card
+- [x] End to end: a real recording (the DCFD P25 capture played live) to
+      upload-script built on SDK 0.6 with a 0.3 s script. It gave an upload
+      of 320 ms, ages of 0.8 and 4.9 s, and waiting = age − upload. On SDK
+      0.5, the same run gave the age alone.
 
 ### Phase 3: optional
 - [ ] Configurable clock offset threshold

@@ -1024,13 +1024,15 @@ fn finish_calls(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, rx: 
 /// the .m4a (to keep, or for a plugin; its WAV instead should that fail),
 /// and the plugins, handed the files as they are; their results settle
 /// what's kept ([`crate::plugins::Archive`]).
-fn finish_one(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, f: Finish, encoder: Option<&(plugins::Encoder, u32)>) {
+fn finish_one(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, mut f: Finish, encoder: Option<&(plugins::Encoder, u32)>) {
     let host = ctx.plugins.host();
     let r = f.rules;
     let to_plugins = host.as_ref().map_or(Default::default(), |h| h.plugin_audio(f.decrypted));
     let p = plugins::plan(r, to_plugins, encoder.is_some());
     let (keep_wav, keep_m4a, keep_json, keep_audio) = (p.keep_wav, p.keep_m4a, p.keep_json, p.keep_audio);
     let base = dir.join(&f.rel);
+    // Stamped while the clock was off: said with it, for whoever matches it with others' calls.
+    f.record.clock_off = crate::clock::health().problem(crate::clock::unix_s()).is_some();
     // (The record written once, as the .json file has it.)
     let json = f.record.to_json();
     let need = json.len() + f.wav.len() / 4 + if p.write_wav && !keep_wav { f.wav.len() } else { 0 };
@@ -1072,6 +1074,7 @@ fn finish_one(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, f: Fin
         }
     }
     ctx.plugins.archive.expect(&f.rel, to_plugins.takers, r, &base, spooled.as_deref(), Some(wav_written));
+    ctx.plugins.deliveries.ended(&f.rel, f.record.stop_time_ms.max(0) as u64, to_plugins.takers);
     if let Some(h) = host {
         h.concluded(f.system, &f.rel, f.record, trunk_recorder_plugin::CallFiles { json: json_at, wav: wav_at, m4a }, f.decrypted);
     }

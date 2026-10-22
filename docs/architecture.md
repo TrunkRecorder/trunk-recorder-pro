@@ -705,6 +705,13 @@ changes what is recorded.
 - **Archive.** `Archive` counts `call.result`s to decide when a call's files
   can be deleted (`archiveWav: false`, `archiveM4a: false` / `callLog: false`). It is told at
   finish time whether a WAV was written.
+- **Delivery timing** (`timing.rs`, #61). `Deliveries` is told when each
+  finished call ended, how long the hold kept it from each plugin, and each
+  `call.result` (with the plugin's `took_ms`, when it says). Each `ok` gives
+  the call's age at delivery, split into held, waiting and upload, reported
+  per plugin as running totals (`plg/<id>/ageMs`, `heldMs`, `waitMs`,
+  `uploadMs`, `delivered`, `uploads`) and each tick's longest (`age`,
+  `upload`). It's the same for every plugin, so none measures it.
 - **WAV only when needed.** A call's `Plan` (`plugins::plan`) is the one
   place that says which of its files are written. The WAV goes to the
   encoder on stdin (afconvert gets a temporary file), so it's written only

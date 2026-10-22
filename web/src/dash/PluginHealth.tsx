@@ -7,8 +7,8 @@ import { useState, type ReactNode } from "react";
 import { pluginOn, setView, useApp, type AppState } from "../controller.ts";
 import { Card, Choice, Hint, LiveSpark, Light, Stat, StackedBars, TimeSeries } from "../charts.tsx";
 import { ago, bytes, compact, dur, num, pct } from "../fmt.ts";
-import type { PluginInfo } from "../protocol.ts";
-import { K, pluginHealth, useHistory } from "./data.ts";
+import type { PluginInfo, SeriesData } from "../protocol.ts";
+import { K, pluginHealth, recentAvg, total, useHistory } from "./data.ts";
 
 const ENDPOINT_LEVEL = { up: "ok", degraded: "warn", down: "bad", unknown: "idle" } as const;
 
@@ -33,13 +33,54 @@ function extraValue(v: unknown): string {
   return JSON.stringify(v);
 }
 
+/** Milliseconds as seconds, to a tenth. */
+const secs = (ms: number | null) => (ms === null ? "—" : `${num(ms / 1000, ms >= 100_000 ? 0 : 1)} s`);
+
+/** The highest a series reached (a gauge's per-step highs). */
+function highest(d: SeriesData | undefined): number | null {
+  const v = (d?.hi ?? d?.v ?? []).filter((x): x is number => x !== null);
+  return v.length ? Math.max(...v) : null;
+}
+
+/**
+ * How long its calls took to get there (the recorder's delivery timing, the same for every
+ * plugin): from a call's end to the plugin's success, and its parts (held by delay rules,
+ * waiting, the plugin's own upload). Averages over the last 5 minutes when there were
+ * deliveries then, else the hour, from the running totals; the hour's longest.
+ */
+function useDelivery(id: string) {
+  const parts = ["delivered", "ageMs", "heldMs", "uploads", "uploadMs", "waitMs"] as const;
+  const hour = useHistory([...parts, "age"].map((k) => K.plg(id, k)), "1h", 60);
+  const recent = recentAvg(K.plg(id, "delivered"), 300) ?? 0;
+  const per = (sum: (typeof parts)[number], of: "delivered" | "uploads") => {
+    if (recent > 0) {
+      const n = recentAvg(K.plg(id, of), 300) ?? 0;
+      return n > 0 ? (recentAvg(K.plg(id, sum), 300) ?? 0) / n : null;
+    }
+    const n = total(hour?.[K.plg(id, of)]) ?? 0;
+    return n > 0 ? (total(hour?.[K.plg(id, sum)]) ?? 0) / n : null;
+  };
+  const delivered = total(hour?.[K.plg(id, "delivered")]) ?? 0;
+  return {
+    span: recent > 0 ? "5 min" : "hour",
+    delivered: Math.round(delivered),
+    age: per("ageMs", "delivered"),
+    held: per("heldMs", "delivered"),
+    wait: per("waitMs", "uploads"),
+    upload: per("uploadMs", "uploads"),
+    longest: highest(hour?.[K.plg(id, "age")]),
+  };
+}
+
 function PluginCard({ s, p }: { s: AppState; p: PluginInfo }) {
   const on = pluginOn(s.config, p.id);
   const h = pluginHealth(p, on);
   const r = p.runtime;
   const m = r.metrics;
   const [open, setOpen] = useState(false);
-  const hist = useHistory([K.plg(p.id, "ok"), K.plg(p.id, "failed"), K.plg(p.id, "queued"), K.plg(p.id, "latency")], "24h", 96);
+  const hist = useHistory([K.plg(p.id, "ok"), K.plg(p.id, "failed"), K.plg(p.id, "queued"), K.plg(p.id, "age")], "24h", 96);
+  const d = useDelivery(p.id);
+  const parts = [d.held ? `held ${secs(d.held)}` : "", d.wait !== null ? `waiting ${secs(d.wait)}` : "", d.upload !== null ? `upload ${secs(d.upload)}` : ""].filter(Boolean).join(" · ");
   // The last hour, a column a minute: [ok, skipped, failed].
   const nowM = Math.floor(Date.now() / 60_000) * 60;
   const minutes = Array.from({ length: 60 }, (_, i) => {
@@ -82,12 +123,23 @@ function PluginCard({ s, p }: { s: AppState; p: PluginInfo }) {
               sub={m?.retrying ? `${m.retrying} to retry` : m ? "queue clear" : "not reported"}
               spark={m?.queued !== undefined ? <LiveSpark k={K.plg(p.id, "queued")} color="var(--series-4)" lo={0} sinceS={600} /> : undefined}
             />
-            <Stat label="Upload time" value={m?.latencyMs !== undefined ? num(m.latencyMs / 1000, 1) : "—"} unit={m?.latencyMs !== undefined ? "s" : undefined} sub={m?.bytesSent ? `${bytes(m.bytesSent)} sent` : undefined} />
+            <Stat
+              label="Age at delivery"
+              value={d.age !== null ? secs(d.age) : "—"}
+              sub={
+                d.age === null
+                  ? "no calls delivered in the last hour"
+                  : `${d.span === "5 min" ? "last 5 min" : "last hour"}${parts ? `: ${parts}` : ""}${d.longest !== null ? ` · longest ${secs(d.longest)}` : ""}`
+              }
+              spark={<LiveSpark k={K.plg(p.id, "age")} color="var(--series-1)" lo={0} sinceS={3600} />}
+              hint={`From a call's end to ${p.manifest?.name ?? p.id}'s success, by this computer's clock: held by delay rules, waiting (files, its queue, failed tries) and its upload.${d.age !== null && d.upload === null ? " It doesn't say its own upload time (a plugin built on SDK 0.6 or later does), so only the age is known." : ""} Measured here; no service reports it.`}
+            />
           </div>
           <div className="minutes">
             <StackedBars parts={minutes} colors={["var(--good)", "var(--muted-mark)", "var(--critical)"]} labels={["sent", "skipped", "failed"]} h={44} titles={minutes.map((c, i) => `${60 - i} min ago: ${c[0]} sent, ${c[1]} skipped, ${c[2]} failed`)} />
             <span className="muted small">last hour, per minute</span>
           </div>
+          {m?.bytesSent ? <p className="muted small">{bytes(m.bytesSent)} sent this run.</p> : null}
           {m?.endpoints && m.endpoints.length > 0 && (
             <ul className="line-list">
               {m.endpoints.map((e) => (
@@ -154,6 +206,9 @@ function PluginCard({ s, p }: { s: AppState; p: PluginInfo }) {
                 height={130}
               />
               {hist?.[K.plg(p.id, "queued")] && <TimeSeries lines={[{ label: "Waiting", color: "var(--series-4)", data: hist[K.plg(p.id, "queued")], band: true }]} zero height={110} />}
+              {hist?.[K.plg(p.id, "age")] && (
+                <TimeSeries lines={[{ label: "Age at delivery, s (longest each step)", color: "var(--series-1)", data: hist[K.plg(p.id, "age")], band: true, mul: 0.001 }]} zero height={110} fmt={(x) => x.toFixed(1)} />
+              )}
               <pre className="log-lines">
                 {[...r.log].reverse().map((l, i) => (
                   <div key={i} className={`k-${l.level === "error" ? "error" : "plugin"}`}>

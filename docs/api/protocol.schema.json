@@ -123,6 +123,10 @@
           "type": "number",
           "description": "1: its encrypted voice was decrypted, at least in part (absent in calls saved before)."
         },
+        "clock_off": {
+          "type": "boolean",
+          "description": "true: its times may be off: the recorder's clock was measured 250 ms or more off, or the operating system said it wasn't synchronized, when it ended (absent otherwise)."
+        },
         "phase2_tdma": {
           "type": "number"
         },

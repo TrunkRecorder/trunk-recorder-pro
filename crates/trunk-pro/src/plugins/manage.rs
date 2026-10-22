@@ -31,7 +31,7 @@ use super::hold::Hold;
 use super::host::Notes;
 use super::store::{self, Catalog};
 use crate::store::Shelf;
-use super::{describe, executable, plugins_dir, Archive, Encoder, Note, PluginHost, Spec};
+use super::{describe, executable, plugins_dir, Archive, Deliveries, Encoder, Note, PluginHost, Spec};
 use crate::config::{Config, PluginSetup};
 use crate::runtime::{publish, Hub};
 
@@ -209,6 +209,8 @@ pub struct Plugins {
     pub archive: Arc<Archive>,
     /// What plugins are to have late (their delays), until it's due.
     pub hold: Arc<Hold>,
+    /// How long finished calls take to reach each plugin's service.
+    pub deliveries: Arc<Deliveries>,
     /// What the running recording's plugins were started with, to restart them.
     env: Mutex<Option<(Vec<SystemInfo>, PathBuf)>>,
     runtime: Arc<Mutex<BTreeMap<String, Runtime>>>,
@@ -223,12 +225,13 @@ pub struct Plugins {
 
 impl Plugins {
     pub fn new(hub: Hub, monitor: Arc<trunk_app::stats::Shared>) -> Plugins {
-        let archive: Arc<Archive> = Arc::default();
+        let (archive, deliveries): (Arc<Archive>, Arc<Deliveries>) = Default::default();
         let p = Plugins {
             monitor,
             host: Mutex::new(None),
-            hold: Hold::new(archive.clone()),
+            hold: Hold::new(archive.clone(), deliveries.clone()),
             archive,
+            deliveries,
             env: Mutex::new(None),
             runtime: Arc::new(Mutex::new(BTreeMap::new())),
             manifests: Mutex::new(HashMap::new()),
@@ -462,6 +465,8 @@ impl Plugins {
                 }
             }
         }
+        drop(rt);
+        self.deliveries.report(sink);
     }
 
     fn publish_all_runtime(&self) {
@@ -473,7 +478,7 @@ impl Plugins {
 
     /// What plugins say, as log lines, runtime updates and results for the interface.
     fn notes(&self) -> Notes {
-        let (hub, runtime, archive, monitor) = (self.hub.clone(), self.runtime.clone(), self.archive.clone(), self.monitor.clone());
+        let (hub, runtime, archive, monitor, deliveries) = (self.hub.clone(), self.runtime.clone(), self.archive.clone(), self.monitor.clone(), self.deliveries.clone());
         let log = super::notes_to_log();
         Arc::new(move |n: Note| {
             if let Note::Result { path, outcome, .. } = &n {
@@ -482,6 +487,9 @@ impl Plugins {
             let label = match &n {
                 Note::Log { plugin, .. } | Note::State { plugin, .. } | Note::Result { plugin, .. } | Note::Metrics { plugin, .. } => plugin.clone(),
             };
+            if let Note::Result { path, outcome, took_ms, .. } = &n {
+                deliveries.result(&label, path, *outcome, *took_ms, crate::clock::unix_ms());
+            }
             // A copy's notes are its plugin's, said to be the copy's.
             let (id, copy) = super::parse_label(&label);
             let id = id.to_string();

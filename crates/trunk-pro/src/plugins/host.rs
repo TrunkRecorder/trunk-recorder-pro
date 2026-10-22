@@ -35,7 +35,8 @@ use super::{describe, executable, Encoder};
 pub enum Note {
     Log { plugin: String, level: Level, text: String },
     State { plugin: String, state: State, message: String },
-    Result { plugin: String, path: String, outcome: Outcome, message: String, url: String },
+    /// `took_ms`: the plugin's own time on it, when it said (SDK 0.6 and later).
+    Result { plugin: String, path: String, outcome: Outcome, message: String, url: String, took_ms: Option<u64> },
     /// Its figures (queue, timing, the services it talks to).
     Metrics { plugin: String, metrics: Metrics },
 }
@@ -729,7 +730,7 @@ fn run_once(sh: &Shared, p: &Plugin, rx: Receiver<Arc<str>>) -> (Result<Ended, S
             Ok(PluginMessage::Ready) => Note::State { plugin: p.id.clone(), state: State::Ok, message: "running".into() },
             Ok(PluginMessage::Log { level, message }) => Note::Log { plugin: p.id.clone(), level, text: message },
             Ok(PluginMessage::Status { state, message }) => Note::State { plugin: p.id.clone(), state, message },
-            Ok(PluginMessage::CallResult { path, outcome, message, url }) => Note::Result { plugin: p.id.clone(), path, outcome, message, url },
+            Ok(PluginMessage::CallResult { path, outcome, message, url, took_ms }) => Note::Result { plugin: p.id.clone(), path, outcome, message, url, took_ms },
             Ok(PluginMessage::Metrics(metrics)) => Note::Metrics { plugin: p.id.clone(), metrics },
             Ok(PluginMessage::Unknown) => continue,
             // Not the protocol (a stray print): keep it as a log line.
@@ -882,7 +883,7 @@ mod tests {
         let manifest = r#"{"id":"taker","name":"Taker","version":"1.0.0","api":1,"subscribe":["call.concluded","audio"]}"#;
         std::fs::write(&exe, format!("#!/bin/sh\nif [ \"$1\" = --describe ]; then echo '{manifest}'; exit 0; fi\necho '{{\"type\":\"ready\"}}'\ncat >> got.jsonl\n")).unwrap();
         std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let hold = Hold::new(Arc::default());
+        let hold = Hold::new(Arc::default(), Arc::default());
         let cfg = json!({ "systems": [{ "shortName": "dcfd", "pluginDelays": [{ "talkgroups": ["5"], "delayS": 3600 }] }] });
         hold.set_delays(super::super::delay::Delays::of(&serde_json::from_value(cfg).unwrap()));
         let systems = vec![SystemInfo { index: 0, short_name: "dcfd".into(), kind: "p25".into(), ..Default::default() }];
