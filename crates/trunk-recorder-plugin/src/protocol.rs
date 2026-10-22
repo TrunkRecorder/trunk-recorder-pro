@@ -165,7 +165,7 @@ pub struct SystemInfo {
     /// recorder's systems), its folder, and what users know it by. Every
     /// event carries it.
     pub short_name: String,
-    /// "p25" | "smartnet" | "dmr" | "nxdn" | "conventional"
+    /// "p25" | "smartnet" | "dmr" | "nxdn" | "edacs" | "conventional"
     pub kind: String,
     /// What people call it ("County Public Safety"); empty when the user gave no name.
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -229,6 +229,12 @@ pub struct CallInfo {
     #[serde(skip_serializing_if = "String::is_empty")]
     pub site: String,
     pub talkgroup: u32,
+    /// Conventional P25 / DMR / NXDN: the talkgroup the air named (this
+    /// recorder's addition, like `site`). `talkgroup` is what the call is
+    /// filed under, which a channel row may set to another number; none
+    /// for analog, trunked calls, or a call whose air named none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub talkgroup_ota: Option<u32>,
     /// The talkgroup's alpha tag, when known.
     pub talkgroup_tag: String,
     pub freq_hz: u64,
@@ -370,10 +376,20 @@ pub struct CallRecord {
     pub call_length: f64,
     pub call_length_ms: i64,
     pub talkgroup: u32,
+    /// Conventional P25 / DMR / NXDN: the talkgroup the air named (this
+    /// recorder's addition, like `site`). `talkgroup` is what the call is
+    /// filed under, which a channel row may set to another number; none
+    /// for analog, trunked calls, or a call whose air named none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub talkgroup_ota: Option<u32>,
     pub talkgroup_tag: String,
     pub talkgroup_description: String,
     pub talkgroup_group_tag: String,
     pub talkgroup_group: String,
+    /// P25: the NAC its voice carried on a conventional channel, its site's
+    /// on a trunked system, in hex as radios and channel files write it
+    /// (`"293"`; empty: none; this recorder's addition).
+    pub nac: String,
     /// DMR: its colour code (-1: none).
     pub color_code: i64,
     /// NXDN: its RAN (-1: none).
@@ -385,6 +401,15 @@ pub struct CallRecord {
     pub tone_confidence: f64,
     /// "digital" | "digital tdma" | "analog"
     pub audio_type: String,
+    /// The kind of system it came on, as [`SystemInfo::kind`] has it: "p25" |
+    /// "smartnet" | "dmr" | "nxdn" | "edacs" | "conventional" (this recorder's addition).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub system_type: String,
+    /// What its voice was: "p25" | "p25_phase2" | "dmr" | "nxdn48" | "nxdn96"
+    /// | "provoice" | "fm" | "am" — a conventional channel's `mode`, or a trunked grant's
+    /// (this recorder's addition).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub voice_mode: String,
     pub short_name: String,
     /// The site its copy was kept from (this recorder's addition; a system
     /// of one site: its short name; none for a conventional system's).
@@ -434,16 +459,20 @@ impl Default for CallRecord {
             call_length: 0.0,
             call_length_ms: 0,
             talkgroup: 0,
+            talkgroup_ota: None,
             talkgroup_tag: String::new(),
             talkgroup_description: String::new(),
             talkgroup_group_tag: String::new(),
             talkgroup_group: String::new(),
+            nac: String::new(),
             color_code: -1,
             ran: -1,
             tone_mode: "off".into(),
             tone_detected: String::new(),
             tone_confidence: 0.0,
             audio_type: "digital".into(),
+            system_type: String::new(),
+            voice_mode: String::new(),
             short_name: String::new(),
             site: String::new(),
             patched_talkgroups: Vec::new(),

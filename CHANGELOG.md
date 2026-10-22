@@ -5,6 +5,42 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Conventional rows say what they record and what they file it under**: a row's Tone is now
+  **Code** (tone, NAC, colour code or RAN), **Slot** (DMR) and **Match TG** (P25, DMR, NXDN), and
+  the most specific row that fits takes a transmission. P25 rows can now split a frequency by
+  talkgroup, not just by NAC. An older config's `tone`, and a channel file's `Tone` column, are read
+  as the three; RadioReference's `CC1 TS2 TG201` pasted into Code still works.
+- **A typed TG Number on a digital row now wins** over the talkgroup the air names (before, it was
+  used only when the air named none). Several P25 channels whose radios all send TG 1 can each file
+  under a number of their own. An empty TG Number keeps the air's, as before. P25 rows that shared a
+  frequency (and filed under their own number) have that number written in on upgrade, so nothing
+  already recorded files differently.
+- **`talkgroup_ota` in the call JSON**: a conventional P25, DMR or NXDN call keeps the talkgroup the
+  air named, also when its row files it under another number. A new talkgroup on the air still
+  starts a new call. Plugins see it on `CallRecord` and `CallInfo` (SDK 0.5.1).
+- **Shown where calls are**: the console log's `TG:` reads `46012 (air 1)` when a row files the
+  air's talkgroup under another number, as do Live calls and the Listen page (`air 1`); the
+  archive path has a `{talkgroup_ota}` token.
+- **Setup's channel table shows what each row records** as chips coloured by kind — tone / DCS,
+  NAC / colour code / RAN, slot, talkgroup, or everything else — opening the row's Code, Slot and
+  Match TG to edit; a code that doesn't read is marked. The CSV format's help is an example and a
+  table of the columns.
+- **A row's names come first**: a conventional call takes its row's names, if the row has any, else
+  the system's talkgroup file's for the number it's filed under.
+- **Every name on a conventional row can be edited in Setup**: **Edit** opens a row's codes and the
+  Description, Tag and Category its calls carry (before, only the Name could be changed without
+  editing the config), offering the tags and categories the system uses already. A row's tag and
+  category show under its name. **Export CSV** writes them all.
+- **The call JSON says what kind of call it was**: `system_type` (`p25`, `smartnet`, `dmr`, `nxdn`
+  or `conventional`, as plugins have it), `voice_mode` (`p25`, `p25_phase2`, `dmr`, `nxdn48`,
+  `nxdn96`, `provoice`, `fm` or `am`) and, for P25, `nac`: the NAC a conventional channel's frames carried, a
+  trunked system's site NAC, in hex as channel files and Setup write it (`"293"`). The archive path has `{system_type}`, `{voice_mode}` and `{nac}`
+  tokens. SDK 0.5.1 has the fields on `CallRecord`.
+- **The Radio page names a conventional system's talkgroups** as Listen does (from #53's review; it
+  showed bare numbers in 0.2.6 too): by the row, else the talkgroup file; a talkgroup filed under the
+  air's number is named as its last named call was.
+- **Setup keeps a system's card open while its Short name is typed** (from #53's review): a pause
+  saved the edit, and the recorder's copy coming back closed the card.
 - **Gain changes apply while recording** on RTL-SDRs and Airspys (the
   gain and AGC on or off; an Airspy's preset or stages), and on USRPs,
   bladeRFs and SoapySDR devices (the gain in dB, AGC off), without a Stop

@@ -81,30 +81,54 @@ export function sameTone(a: string, b: string): boolean {
   return false;
 }
 
+/** A row's code, and the slot and talkgroup it records (absent: any). */
+export interface AccessParts {
+  code: string;
+  slot?: number;
+  matchTalkgroup?: number;
+}
+
 /**
- * A row's Tone column for its mode, in the recorder's form (crates/trunk-core
- * src/trunk/conventional.rs: Access::parse — keep them together): FM as
- * parseTone; AM none; P25's NAC (`293`, `293 NAC`, `$293`, `0x293` → `NAC 293`; `F7E`
- * / `F7F` = any); DMR's colour code, slot and talkgroup (`CC1`, `1`,
- * `CC1 TS2 TG201`, `CC 1 TG 201 SL 2` → `CC 1 TS 2 TG 201`); NXDN's RAN
- * and group (`RAN 5`, `5`, `ran5 tg 201` → `RAN 5 TG 201`; RAN 0 = any).
+ * A row's Code column (or the old Tone) for its mode, split into the
+ * recorder's code, slot and talkgroup (crates/trunk-core
+ * src/trunk/conventional.rs: Access::parse and Access::parts — keep them
+ * together): FM as parseTone; AM none; P25's NAC (`293`, `293 NAC`, `$293`,
+ * `0x293` → `293`; `F7E` / `F7F` = any) and talkgroup (`NAC 293 TG 1`,
+ * `TG 1`); DMR's colour code, slot and talkgroup (`CC1`, `1`,
+ * `CC1 TS2 TG201`, `CC 1 TG 201 SL 2`); NXDN's RAN and group (`RAN 5`, `5`,
+ * `ran5 tg 201`; RAN 0 = any).
  */
-export function parseAccess(mode: "fm" | "am" | "p25" | "dmr" | "nxdn48" | "nxdn96", text: string): { tone: string } | { error: string } {
-  if (mode === "fm") return parseTone(text);
+export function parseAccess(mode: "fm" | "am" | "p25" | "dmr" | "nxdn48" | "nxdn96", text: string): AccessParts | { error: string } {
+  if (mode === "fm") {
+    const t = parseTone(text);
+    return "tone" in t ? { code: t.tone } : t;
+  }
   const up = text.trim().toUpperCase();
-  if (["", "0", "S", "ANY", "NONE", "SEARCH"].includes(up)) return { tone: "" };
+  if (["", "0", "S", "ANY", "NONE", "SEARCH"].includes(up)) return { code: "" };
   if (mode === "am") return { error: `"${text.trim()}": AM channels carry no tone or code — leave it empty` };
   if (mode === "p25") {
-    const bad = { error: `"${text.trim()}" isn't a NAC (up to 3 hex digits, like 293)` };
-    let body = up
+    const bad = { error: `"${text.trim()}" isn't a NAC (up to 3 hex digits, like 293) or talkgroup (TG 1)` };
+    const spaced = up.replace(/[,:=]/g, " ");
+    const at = spaced.indexOf("TG");
+    let tg: number | undefined;
+    if (at >= 0) {
+      const t = spaced.slice(at + 2).trim();
+      if (!/^\d+$/.test(t) || Number(t) < 1 || Number(t) >= 1 << 16) return { error: `TG ${t}: not a P25 talkgroup (1–65535)` };
+      tg = Number(t);
+    }
+    let body = (at >= 0 ? spaced.slice(0, at) : spaced)
       .split(/\s+/)
       .filter((w) => w && w !== "NAC")
       .join("")
       .replace(/^\$+/, "");
     if (body.startsWith("0X")) body = body.slice(2);
-    if (!/^[0-9A-F]{1,3}$/.test(body)) return bad;
-    const n = parseInt(body, 16);
-    return n === 0xf7e || n === 0xf7f ? { tone: "" } : { tone: `NAC ${n.toString(16).toUpperCase().padStart(3, "0")}` };
+    let code = "";
+    if (body || tg === undefined) {
+      if (!/^[0-9A-F]{1,3}$/.test(body)) return bad;
+      const n = parseInt(body, 16);
+      if (n !== 0xf7e && n !== 0xf7f) code = n.toString(16).toUpperCase().padStart(3, "0");
+    }
+    return tg === undefined ? { code } : { code, matchTalkgroup: tg };
   }
   const nxdn = mode === "nxdn48" || mode === "nxdn96";
   const bad = {
@@ -148,17 +172,14 @@ export function parseAccess(mode: "fm" | "am" | "p25" | "dmr" | "nxdn48" | "nxdn
       tg = v;
     } else if (key !== "SL") return bad;
   }
-  if (nxdn) {
-    // RAN 0 means "any" to a receiver.
-    const parts = [ran ? `RAN ${ran}` : "", tg !== undefined ? `TG ${tg}` : ""].filter(Boolean);
-    return { tone: parts.join(" ") };
-  }
-  const parts = [cc !== undefined ? `CC ${cc}` : "", slot !== undefined ? `TS ${slot}` : "", tg !== undefined ? `TG ${tg}` : ""].filter(Boolean);
-  return { tone: parts.join(" ") };
+  // (NXDN's RAN 0 means "any" to a receiver.)
+  const out: AccessParts = { code: nxdn ? (ran ? String(ran) : "") : cc !== undefined ? String(cc) : "" };
+  if (slot !== undefined) out.slot = slot;
+  if (tg !== undefined) out.matchTalkgroup = tg;
+  return out;
 }
 
-/** The talkgroup a DMR or NXDN row's code names, if any. */
-export function dmrTalkgroup(tone: string | undefined): number | undefined {
-  const m = /\bTG (\d+)/.exec(tone ?? "");
-  return m ? Number(m[1]) : undefined;
+/** Whether two rows' codes are for the same transmissions (a DCS code and its alias too). */
+export function sameAccess(a: AccessParts, b: AccessParts): boolean {
+  return (a.code === b.code || (!!a.code && !!b.code && sameTone(a.code, b.code))) && a.slot === b.slot && a.matchTalkgroup === b.matchTalkgroup;
 }

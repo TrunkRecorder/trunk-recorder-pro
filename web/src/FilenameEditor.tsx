@@ -12,6 +12,7 @@ export const DEFAULT_FORMAT = "{short_name}/{time:%Y}/{time:%-m}/{time:%-d}/{tal
 
 const TOKEN_LABEL: Record<string, string> = {
   talkgroup: "Talkgroup",
+  talkgroup_ota: "Air talkgroup",
   talkgroup_alpha_tag: "Alpha tag",
   talkgroup_tag: "Tag",
   talkgroup_description: "Description",
@@ -33,8 +34,11 @@ const TOKEN_LABEL: Record<string, string> = {
   recorder_num: "Recorder number",
   signal: "Signal, dB",
   noise: "Noise, dB",
+  nac: "P25 NAC",
   color_code: "Colour code",
   ran: "NXDN RAN",
+  system_type: "System type",
+  voice_mode: "Voice mode",
 };
 
 const TIME_LABEL: Record<string, string> = {
@@ -57,9 +61,9 @@ const TIME_LABEL: Record<string, string> = {
 };
 
 const GROUPS: { title: string; tokens: string[] }[] = [
-  { title: "Talkgroup", tokens: ["talkgroup", "talkgroup_alpha_tag", "talkgroup_tag", "talkgroup_description", "talkgroup_group"] },
-  { title: "Call", tokens: ["short_name", "site", "freq", "freq_mhz", "epoch", "call_num", "tdma_slot", "audio_type", "emergency", "encrypted", "priority"] },
-  { title: "Radio", tokens: ["sys_num", "source_num", "recorder_num", "signal", "noise", "color_code", "ran"] },
+  { title: "Talkgroup", tokens: ["talkgroup", "talkgroup_ota", "talkgroup_alpha_tag", "talkgroup_tag", "talkgroup_description", "talkgroup_group"] },
+  { title: "Call", tokens: ["short_name", "site", "freq", "freq_mhz", "epoch", "call_num", "tdma_slot", "audio_type", "voice_mode", "emergency", "encrypted", "priority"] },
+  { title: "Radio", tokens: ["system_type", "sys_num", "source_num", "recorder_num", "signal", "noise", "nac", "color_code", "ran"] },
 ];
 const TIMES = ["%Y", "%m", "%-m", "%d", "%-d", "%H", "%M", "%S", "%f", "%Y-%m-%d", "%H%M%S", "iso", "%j", "%a"];
 const JOINERS = ["-", "_", ".", " "];

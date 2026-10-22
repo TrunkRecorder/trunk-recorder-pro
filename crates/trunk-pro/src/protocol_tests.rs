@@ -108,7 +108,7 @@ fn air(fs: f64, secs: f64, mut each: impl FnMut(&[Complex32], f64)) {
 pub(crate) fn conventional_config() -> Config {
     serde_json::from_value(json!({
         "sources": [{ "type": "rtlsdr", "serial": "", "centerHz": 155000000, "rateHz": 2400000, "gainDb": 25, "agc": false, "ppm": 0 }],
-        "conventional": [{ "shortName": "conv", "channels": [{ "freqHz": 155200000, "mode": "fm", "name": "Fire", "tone": "151.4" }] }],
+        "conventional": [{ "shortName": "conv", "channels": [{ "freqHz": 155200000, "mode": "fm", "name": "Fire", "code": "151.4" }] }],
         "recording": { "callTimeoutS": 1 }
     }))
     .unwrap()

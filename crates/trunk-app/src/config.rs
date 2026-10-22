@@ -2,14 +2,14 @@
 //! trunked systems (sites) and/or conventional channels, recording rules and the web server. Stored as JSON in the platform
 //! config folder; the browser interface reads and edits it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use trunk_core::dsp::AnalogTuning;
 use trunk_core::p25::diversity::BankConfig;
 use trunk_core::trunk::{
-    check_channels, Access, parse_csv, CallConfig, Protocol, ConvChannel, ConvConfig, ConvMode, EngineConfig, IdField, Identity, SaveRules, SourceConfig,
+    check_channels, Access, parse_csv, CallConfig, Protocol, ConvChannel, Talkgroups, ConvConfig, ConvMode, EngineConfig, IdField, Identity, SaveRules, SourceConfig,
     SiteConfig, SystemConfig, Talkgroup, UnitTags, UnitTagsMode,
 };
 pub use trunk_core::trunk::{usable_half_width, DEFAULT_GUARD_HZ};
@@ -1062,18 +1062,25 @@ pub struct Channel {
     /// Short name (Trunk Recorder's alpha tag).
     #[serde(default)]
     pub name: String,
-    /// Talkgroup number the calls are filed under; default the frequency in
-    /// kHz (further rows on the frequency: that and a digit, see
-    /// [`ConvChannel::default_talkgroup_at`]). P25 files calls under the
-    /// talkgroup the air names, when it does.
+    /// Talkgroup number the calls are filed under (TG Number). None: the
+    /// talkgroup the air names (P25, DMR, NXDN), else the frequency in kHz
+    /// (further rows on the frequency: that and a digit, see
+    /// [`ConvChannel::default_talkgroup_at`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub talkgroup: Option<u32>,
-    /// The code it records ([`Access`]): FM's CTCSS tone or DCS code in Trunk
-    /// Recorder's form (`151.4`, `D023N`), P25's NAC (`NAC 293`), DMR's colour
-    /// code / slot / talkgroup (`CC 1 TS 2 TG 201`), NXDN's RAN / group
-    /// (`RAN 5 TG 201`); empty: any (beside rows with codes: the rest).
+    /// The code it records: FM's CTCSS tone or DCS code in Trunk Recorder's
+    /// form (`151.4`, `D023N`), P25's NAC (`293`), DMR's colour code (`1`),
+    /// NXDN's RAN (`5`); empty: any. With `slot` and `matchTalkgroup`, the
+    /// row's [`Access`] (none of them: any — beside rows with codes, the
+    /// rest). (Was `tone`, all three in one: see [`crate::migrate`].)
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub tone: String,
+    pub code: String,
+    /// DMR: record only this slot (1, 2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot: Option<u8>,
+    /// P25, DMR, NXDN: record only transmissions naming this talkgroup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub match_talkgroup: Option<u32>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub description: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -1101,22 +1108,36 @@ fn yes() -> bool {
     true
 }
 
-/// Each channel's talkgroup: its own; else a DMR row's talkgroup in its
-/// Tone; else by its place among the rows on its frequency (enabled or not,
-/// so switching one off renumbers nothing).
-pub fn channel_talkgroups(channels: &[Channel]) -> Vec<u32> {
+/// What each channel files a call under when neither it nor the air names
+/// a talkgroup: by its place among the rows on its frequency (enabled or
+/// not, so switching one off renumbers nothing).
+pub fn default_talkgroups(channels: &[Channel]) -> Vec<u32> {
     channels
         .iter()
         .enumerate()
         .map(|(i, c)| {
             let k = channels[..i].iter().filter(|o| (o.freq_hz - c.freq_hz).abs() < 1.0).count();
-            let air = match c.parsed_access() {
-                Ok(Some(Access::Dmr { tg, .. })) | Ok(Some(Access::Nxdn { tg, .. })) => tg,
-                _ => None,
-            };
-            c.talkgroup.or(air).unwrap_or_else(|| ConvChannel::default_talkgroup_at(c.freq_hz, k))
+            ConvChannel::default_talkgroup_at(c.freq_hz, k)
         })
         .collect()
+}
+
+/// Before v0.2.6 a P25 row on a frequency with others filed its calls
+/// under its own number (the default, if it gave none), the air's thrown
+/// away; now a row without one takes the air's. Writes that number in, so
+/// an older config or channel file keeps filing the same. Returns how many.
+pub fn keep_p25_numbers(channels: &mut [Channel]) -> usize {
+    let defaults = default_talkgroups(channels);
+    let mut n = 0;
+    for i in 0..channels.len() {
+        let c = &channels[i];
+        let shared = channels.iter().filter(|o| (o.freq_hz - c.freq_hz).abs() < 1.0).count() > 1;
+        if c.mode == ChannelMode::P25 && shared && c.talkgroup.is_none() {
+            channels[i].talkgroup = Some(defaults[i]);
+            n += 1;
+        }
+    }
+    n
 }
 
 impl Channel {
@@ -1129,17 +1150,28 @@ impl Channel {
         matches!(self.mode, ChannelMode::Fm | ChannelMode::Am)
     }
 
-    /// The code it records, read for its mode.
+    /// What it records (code, slot and talkgroup), read for its mode.
     pub fn parsed_access(&self) -> Result<Option<Access>, String> {
-        Access::parse(self.conv_mode(), &self.tone)
+        Access::join(self.conv_mode(), &self.code, self.slot, self.match_talkgroup)
     }
 
-    fn engine_channel(&self, tg: u32) -> ConvChannel {
+    /// `code`, `slot` and `matchTalkgroup` from one string as people write
+    /// it (`CC1 TS2 TG201`, `NAC 293 TG 1`, `151.4`): the old `tone`, a
+    /// RadioReference paste. Left as it is if it doesn't read.
+    pub fn set_access(&mut self, text: &str) -> Result<(), String> {
+        let (code, slot, tg) = Access::parse(self.conv_mode(), text)?.map_or((String::new(), None, None), Access::parts);
+        (self.code, self.slot, self.match_talkgroup) = (code, slot, tg);
+        Ok(())
+    }
+
+    fn engine_channel(&self, default_talkgroup: u32) -> ConvChannel {
+        let tg = self.talkgroup.unwrap_or(default_talkgroup);
         let named = !(self.name.is_empty() && self.description.is_empty() && self.tag.is_empty() && self.group.is_empty());
         ConvChannel {
             freq_hz: self.freq_hz,
             mode: self.conv_mode(),
-            talkgroup: tg,
+            talkgroup: self.talkgroup,
+            default_talkgroup,
             info: named.then(|| Talkgroup {
                 number: tg,
                 mode: if self.analog() { "A".into() } else { "D".into() },
@@ -1550,7 +1582,7 @@ pub struct CallSystem<'a> {
     /// The number its calls carry (`Call::system`).
     pub index: u16,
     pub short_name: &'a str,
-    /// "p25", "smartnet", "dmr", "nxdn" or "conventional".
+    /// "p25", "smartnet", "dmr", "nxdn", "edacs" or "conventional".
     pub kind: &'static str,
     /// Its own recording rules (over the config's).
     pub recording: &'a RecordingOverride,
@@ -1981,13 +2013,28 @@ impl Config {
         let mut out = Vec::new();
         let first = self.active_systems().count();
         for (k, v) in self.active_conventional().enumerate() {
-            let tgs = channel_talkgroups(&v.channels);
+            let tgs = default_talkgroups(&v.channels);
             for (c, tg) in v.channels.iter().zip(tgs).filter(|(c, _)| c.enabled) {
                 let mut e = c.engine_channel(tg);
                 e.system = first + k;
                 e.squelch_db = Some(e.squelch_db.unwrap_or(v.squelch_db));
                 e.analog = v.demod.tuning(c);
                 out.push(e);
+            }
+        }
+        out
+    }
+
+    /// What conventional rows name talkgroups known before a call is heard
+    /// ([`ConvChannel::names_ahead`]), by system short name: the dashboard's
+    /// names for them, ahead of the talkgroup file's, as a call's are. (A
+    /// number that comes from the air is named by the calls that carry it.)
+    pub fn row_talkgroups(&self) -> HashMap<String, Talkgroups> {
+        let names: Vec<&str> = self.active_systems().map(|s| s.short_name.as_str()).chain(self.active_conventional().map(|v| v.short_name.as_str())).collect();
+        let mut out: HashMap<String, Talkgroups> = HashMap::new();
+        for c in self.engine_channels() {
+            if let (Some(t), Some(name)) = (c.names_ahead(), names.get(c.system)) {
+                out.entry(name.to_string()).or_default().entry(t.number).or_insert_with(|| t.clone());
             }
         }
         out
@@ -2512,7 +2559,7 @@ mod tests {
         bad.conventional[0].channels[1].bandwidth_khz = Some(40.0);
         assert!(bad.problem().unwrap().contains("bandwidth"), "{:?}", bad.problem());
         let mut bad = c;
-        bad.conventional[0].channels[0].tone = "100.0".into();
+        bad.conventional[0].channels[0].code = "100.0".into();
         assert!(bad.problem().unwrap().contains("AM channels carry no tone"), "{:?}", bad.problem());
     }
 
@@ -2538,9 +2585,9 @@ mod tests {
         let e = c.engine_config(0.0, &Default::default());
         assert!(e.systems.iter().all(SystemConfig::is_conventional));
         assert_eq!(e.conventional.len(), 2);
-        assert_eq!(e.conventional[0].talkgroup, 1001);
+        assert_eq!(e.conventional[0].talkgroup, Some(1001));
         assert_eq!(e.conventional[0].info.as_ref().unwrap().alpha_tag, "County Fire Dispatch");
-        assert_eq!(e.conventional[1].talkgroup, 154100);
+        assert_eq!((e.conventional[1].talkgroup, e.conventional[1].default_talkgroup), (None, 154100));
         assert_eq!(e.conventional[1].squelch_db, Some(12.0));
         assert!(e.conventional[1].info.is_none());
         // Enabling the far channel no longer fits one dongle.
@@ -2584,6 +2631,38 @@ mod tests {
         let e = c.engine_config(0.0, &files);
         let fire = e.systems.iter().find(|s| s.short_name == "fire").unwrap();
         assert!(fire.talkgroups.contains_key(&7) && !fire.talkgroups.contains_key(&1), "its own, not county's");
+    }
+
+    /// The dashboard names a conventional system's talkgroups as its calls
+    /// are named: by a row, for the numbers known ahead, before the file.
+    #[test]
+    fn rows_name_the_numbers_they_file_under() {
+        let c: Config = serde_json::from_str(
+            r#"{
+                "sources": [{ "type": "rtlsdr", "serial": "", "centerHz": 155000000, "rateHz": 2400000, "agc": true, "ppm": 0 }],
+                "conventional": [{ "shortName": "town", "channels": [
+                    { "freqHz": 154430000, "mode": "fm", "name": "Fire Dispatch" },
+                    { "freqHz": 460125000, "mode": "p25", "talkgroup": 46012, "name": "Townville PD", "tag": "Law Dispatch" },
+                    { "freqHz": 453500000, "mode": "p25", "name": "Townville (other)" },
+                    { "freqHz": 155100000, "mode": "fm" }
+                ] }]
+            }"#,
+        )
+        .unwrap();
+        let rows = c.row_talkgroups();
+        let town = &rows["town"];
+        let mut named: Vec<(u32, &str)> = town.values().map(|t| (t.number, t.alpha_tag.as_str())).collect();
+        named.sort();
+        // The analog row's default and the P25 row's TG Number; not the catch-all (its numbers come from the air), nor a row without names.
+        assert_eq!(named, [(46012, "Townville PD"), (154430, "Fire Dispatch")]);
+        assert_eq!(town[&46012].tag, "Law Dispatch");
+        // Ahead of the talkgroup file, whose Ignore flag stays.
+        let mut book = crate::stats::NameBook::default();
+        let files: TalkgroupFiles = [("town".to_string(), "46012,File name\n9,Nine,,,,,,,true\n".to_string())].into();
+        book.set_config(&c, &files);
+        assert_eq!(book.tg("town", 46012).map(|t| t.alpha_tag), Some("Townville PD".into()));
+        assert_eq!(book.tg("town", 154430).map(|t| t.alpha_tag), Some("Fire Dispatch".into()));
+        assert!(book.tg("town", 7).is_none());
     }
 
     #[test]
@@ -2771,14 +2850,16 @@ mod tests {
             group: String::new(),
             squelch_db: None,
             bandwidth_khz: None,
-            tone: tone.into(),
+            code: tone.into(),
+            slot: None,
+            match_talkgroup: None,
             enabled: true,
         };
         let mut c = Config { conventional: vec![Conventional::default()], ..Default::default() };
         c.conventional[0].channels = vec![row("", None), row("D023N", None), row("151.4", Some(500)), row("94.8", None)];
         assert_eq!(c.problem(), None);
         let e = c.engine_channels();
-        assert_eq!(e.iter().map(|x| x.talkgroup).collect::<Vec<_>>(), vec![154325, 1543251, 500, 1543253]);
+        assert_eq!(e.iter().map(|x| x.talkgroup.unwrap_or(x.default_talkgroup)).collect::<Vec<_>>(), vec![154325, 1543251, 500, 1543253]);
         assert_eq!(e[1].access, Some(Access::Tone(trunk_core::dsp::tones::Tone::Dcs(23, false))));
         c.conventional[0].channels.push(row("D047I", None));
         assert_eq!(c.problem().as_deref(), Some("Conventional channel 154.32500 MHz has two rows for D023N and D047I (the same signal)."));
@@ -2788,6 +2869,22 @@ mod tests {
         c.conventional[0].channels.pop();
         c.conventional[0].channels.push(row("151.5", None));
         assert_eq!(c.problem().as_deref(), Some("Conventional channel 154.32500 MHz: 151.5 Hz isn't a standard CTCSS tone — 151.4?."));
+        c.conventional[0].channels.pop();
+        // FM names no talkgroup, and has no slots.
+        c.conventional[0].channels[3].match_talkgroup = Some(1);
+        assert_eq!(c.problem().as_deref(), Some("Conventional channel 154.32500 MHz: Match TG 1: FM names no talkgroup — leave it empty."));
+        c.conventional[0].channels[3].match_talkgroup = None;
+        c.conventional[0].channels[3].slot = Some(1);
+        assert!(c.problem().unwrap().contains("only DMR has slots"), "{:?}", c.problem());
+        // P25 rows split by talkgroup, a typed number filed under, the others the air's.
+        let p25 = |code: &str, tg: Option<u32>, m: Option<u32>| Channel { freq_hz: 154_325_000.0, mode: ChannelMode::P25, code: code.into(), match_talkgroup: m, ..row("", tg) };
+        c.conventional[0].channels = vec![p25("293", Some(45351), Some(1)), p25("293", None, Some(2)), p25("293", None, None)];
+        assert_eq!(c.problem(), None);
+        let e = c.engine_channels();
+        assert_eq!(e.iter().map(|x| (x.talkgroup, x.default_talkgroup)).collect::<Vec<_>>(), [(Some(45351), 154325), (None, 1543251), (None, 1543252)]);
+        assert_eq!(e[0].access, Some(Access::P25 { nac: Some(0x293), tg: Some(1) }));
+        c.conventional[0].channels.push(p25("NAC 293 TG 2", None, None));
+        assert_eq!(c.problem().as_deref(), Some("Conventional channel 154.32500 MHz has two rows for NAC 293 TG 2."));
     }
 
     #[test]
@@ -2806,13 +2903,15 @@ mod tests {
             group: String::new(),
             squelch_db: None,
             bandwidth_khz: None,
-            tone: String::new(),
+            code: String::new(),
+            slot: None,
+            match_talkgroup: None,
             enabled: true,
         }];
         // Linking a new path writes the current list there.
         c.link_channel_file(0, &cfg_path, "channels.csv").unwrap();
         let file = dir.join("channels.csv");
-        assert!(std::fs::read_to_string(&file).unwrap().contains("154.4300,,fm,Fire"));
+        assert!(std::fs::read_to_string(&file).unwrap().contains("154.4300,,,,fm,Fire"));
         // Edited in a spreadsheet: re-read.
         std::fs::write(&file, "Frequency,Mode,Alpha Tag
 154.4300,fm,Fire

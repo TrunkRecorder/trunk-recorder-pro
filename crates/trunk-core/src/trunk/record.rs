@@ -15,6 +15,8 @@ use crate::{loudness, mbe};
 
 pub struct ConcludeInfo<'a> {
     pub short_name: &'a str,
+    /// Its system's kind ([`super::Protocol::kind`], or "conventional").
+    pub system_type: &'a str,
     /// Its site's name (empty: a conventional system's call, which has none).
     pub site: &'a str,
     /// Wall-clock epoch ms at sample-clock time 0.
@@ -208,10 +210,12 @@ pub fn call_record(call: &Call, info: &ConcludeInfo) -> (CallRecord, String) {
         call_length: secs.round(),
         call_length_ms: (secs * 1000.0).round() as i64,
         talkgroup: call.talkgroup,
+        talkgroup_ota: call.talkgroup_ota,
         talkgroup_tag: t(|t| &t.alpha_tag),
         talkgroup_description: t(|t| &t.description),
         talkgroup_group_tag: t(|t| &t.tag),
         talkgroup_group: t(|t| &t.group),
+        nac: call.nac.filter(|_| call.voice.decryptable()).map_or(String::new(), |n| format!("{n:03X}")),
         color_code: call.voice.color_code().map_or(-1, i64::from),
         ran: call.ran.map_or(-1, i64::from),
         // Trunk Recorder's (PR #1137) tone fields; "search": identified, not matched.
@@ -225,6 +229,8 @@ pub fn call_record(call: &Call, info: &ConcludeInfo) -> (CallRecord, String) {
         tone_detected: call.tone.map_or(String::new(), |t| t.tone.to_string()),
         tone_confidence: call.tone.map_or(0.0, |t| t.confidence as f64),
         audio_type: if call.voice.analog() { "analog" } else if call.voice.tdma() { "digital tdma" } else { "digital" }.into(),
+        system_type: info.system_type.to_string(),
+        voice_mode: call.voice.mode_name().to_string(),
         short_name: info.short_name.to_string(),
         site: info.site.to_string(),
         // Only when patched with another, as Trunk Recorder writes it.
@@ -325,6 +331,7 @@ mod tests {
         let errors = FrameErrors::default();
         let info = ConcludeInfo {
             short_name: "s",
+            system_type: "p25",
             site: "",
             epoch_ms_at_zero: 0.0,
             audio_seconds: 1.0,
@@ -338,6 +345,17 @@ mod tests {
         };
         let json = call_record(&call, &info).0.to_json();
         assert!(json.contains("\"src\":7,") && json.matches("\"lat\"").count() == 1, "{json}");
+        // What it was and what the air carried: its system's kind, its voice, its NAC (P25 only).
+        call.nac = Some(0x293);
+        let r = call_record(&call, &info).0;
+        assert_eq!((r.system_type.as_str(), r.voice_mode.as_str(), r.nac.as_str()), ("p25", "p25", "293"));
+        call.voice = Voice::Fm;
+        let r = call_record(&call, &info).0;
+        assert_eq!((r.voice_mode.as_str(), r.nac.as_str()), ("fm", ""), "an analog call has no NAC");
+        call.voice = Voice::P25;
+        call.nac = Some(0x2a);
+        assert_eq!(call_record(&call, &info).0.nac, "02A", "three digits, as the NAC is written");
+        call.voice = Voice::P25;
         // Each source's own flags.
         CallManager::note_source(&mut call, Some(8), 0.0, Flags { emergency: true, priority: 7, ..Default::default() });
         let json = call_record(&call, &info).0.to_json();
@@ -405,6 +423,8 @@ pub struct Capture {
 pub struct SaveContext<'a> {
     pub rules: SaveRules,
     pub short_name: &'a str,
+    /// Its system's kind ([`super::Protocol::kind`], or "conventional").
+    pub system_type: &'a str,
     /// The site's name (empty: conventional).
     pub site: &'a str,
     /// Wall clock (Unix ms) at the engine's time 0.
@@ -481,6 +501,7 @@ pub fn save_call(mut h: Held, cx: &SaveContext) -> Result<Concluded, Call> {
         &call,
         &ConcludeInfo {
             short_name: cx.short_name,
+            system_type: cx.system_type,
             site: cx.site,
             epoch_ms_at_zero: cx.epoch_ms_at_zero,
             audio_seconds: audio.len() as f64 / mbe::SAMPLE_RATE as f64,

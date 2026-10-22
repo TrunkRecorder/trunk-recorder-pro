@@ -337,7 +337,7 @@ function take(m: FromRecorder): void {
       server = { config: m.config, version: m.version };
       // (Not over an edit of this browser's not saved yet: its answer says.)
       if (!pendingConfig && !saving) {
-        set({ config: m.config });
+        set({ config: keepCards(m.config, state.config) });
         basedOn = m.version;
       }
       break;
@@ -708,7 +708,7 @@ function configSaved(version: number, error: string | undefined): void {
     if (pendingConfig) clearTimeout(pendingConfig);
     pendingConfig = null;
     undoTalkgroupMoves();
-    if (server.config) set({ config: server.config });
+    if (server.config) set({ config: keepCards(server.config, state.config) });
     basedOn = server.version;
     set({ error });
     return;
@@ -788,6 +788,35 @@ export function cardKey(x: object, seed: string, among: readonly object[]): stri
     o[CARD] = key;
   }
   return o[CARD] as string;
+}
+
+/**
+ * `next` (the recorder's copy of the config, which has no card keys) with
+ * the card keys of the entries it replaces in `prev`: a card stays open,
+ * or closed, when an edit comes back from the recorder — a system renamed
+ * as its short name is typed keeps its card. Entries are matched by short
+ * name (sites by name), else by place.
+ */
+export function keepCards(next: Config, prev: Config | null): Config {
+  if (!prev) return next;
+  const carry = <T extends object>(to: T[], from: T[], id?: (x: T) => string) => {
+    const used = new Set<string>();
+    const keyOf = (y: T | undefined) => (y as Record<string, unknown> | undefined)?.[CARD];
+    to.forEach((x, i) => {
+      const was = [id && from.find((y) => id(y) === id(x)), from[i]].map((y) => keyOf(y || undefined)).find((k): k is string => typeof k === "string" && !used.has(k));
+      if (was === undefined) return;
+      used.add(was);
+      (x as Record<string, unknown>)[CARD] = was;
+    });
+  };
+  carry(next.sources, prev.sources);
+  carry(next.systems, prev.systems, (s) => s.shortName);
+  next.systems.forEach((s, i) => {
+    const was = prev.systems.find((p) => p.shortName === s.shortName) ?? prev.systems[i];
+    if (was) carry(s.sites, was.sites, (x) => x.name ?? "");
+  });
+  carry(next.conventional, prev.conventional, (v) => v.shortName);
+  return next;
 }
 
 /** `c` as the recorder takes it: without card keys. */
@@ -1411,7 +1440,7 @@ export function addNxdnChannel(freqHz: number, rate: "nxdn48" | "nxdn96", ran: n
       conv = newConventional(c);
       c.conventional.push(conv);
     }
-    conv.channels.push({ freqHz, mode: rate, name: "", enabled: true, ...(ran ? { tone: `RAN ${ran}` } : {}) });
+    conv.channels.push({ freqHz, mode: rate, name: "", enabled: true, ...(ran ? { code: String(ran) } : {}) });
     name = conv.shortName;
   });
   return name;

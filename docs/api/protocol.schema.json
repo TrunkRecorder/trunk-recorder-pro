@@ -60,6 +60,10 @@
         "talkgroup": {
           "type": "number"
         },
+        "talkgroup_ota": {
+          "type": "number",
+          "description": "Conventional P25 / DMR / NXDN: the talkgroup the air named (`talkgroup` is what the call is filed under, which a channel row may set to another number)."
+        },
         "talkgroup_tag": {
           "type": "string"
         },
@@ -136,6 +140,10 @@
           "type": "number",
           "description": "TDMA / DMR slot (0 otherwise)."
         },
+        "nac": {
+          "type": "string",
+          "description": "P25: the NAC its voice carried (conventional) or its site's (trunked), in hex as channel files write it (\"293\"); \"\" otherwise (absent in calls saved before)."
+        },
         "color_code": {
           "type": "number",
           "description": "DMR color code; -1 otherwise."
@@ -151,6 +159,32 @@
             "digital",
             "digital tdma"
           ]
+        },
+        "system_type": {
+          "type": "string",
+          "enum": [
+            "p25",
+            "smartnet",
+            "dmr",
+            "nxdn",
+            "edacs",
+            "conventional"
+          ],
+          "description": "The kind of system it came on (absent in calls saved before)."
+        },
+        "voice_mode": {
+          "type": "string",
+          "enum": [
+            "p25",
+            "p25_phase2",
+            "dmr",
+            "nxdn48",
+            "nxdn96",
+            "provoice",
+            "fm",
+            "am"
+          ],
+          "description": "What its voice was: a conventional row's mode, or a trunked grant's (absent in calls saved before)."
         },
         "tone_mode": {
           "type": "string",
@@ -438,6 +472,13 @@
         "talkgroup": {
           "type": "number"
         },
+        "talkgroupOta": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Conventional P25 / DMR / NXDN: the talkgroup the air named (a channel row may file the call under another)."
+        },
         "alphaTag": {
           "type": "string"
         },
@@ -590,9 +631,17 @@
         "talkgroup": {
           "type": "number"
         },
-        "tone": {
+        "code": {
           "type": "string",
-          "description": "FM: the CTCSS tone or DCS code it records, Trunk Recorder's form (\"151.4\", \"D023N\"); absent / \"\": any."
+          "description": "The code it records: FM's CTCSS tone or DCS code (\"151.4\", \"D023N\"), P25's NAC (\"293\"), DMR's colour code (\"1\"), NXDN's RAN (\"5\"); absent / \"\": any."
+        },
+        "slot": {
+          "type": "number",
+          "description": "DMR: record only this slot (1, 2)."
+        },
+        "matchTalkgroup": {
+          "type": "number",
+          "description": "P25, DMR, NXDN: record only transmissions naming this talkgroup."
         },
         "description": {
           "type": "string"
@@ -621,7 +670,7 @@
         "enabled"
       ],
       "additionalProperties": false,
-      "description": "A conventional channel. `talkgroup` defaults to the frequency in kHz; `squelchDb` to the section's."
+      "description": "A conventional channel. `talkgroup` (TG Number) is what calls are filed under; absent: the talkgroup the air names (P25, DMR, NXDN), else the frequency in kHz. `squelchDb` defaults to the section's."
     },
     "ChannelSnapshot": {
       "type": "object",

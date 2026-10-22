@@ -57,6 +57,17 @@ export const aliasOf = (s: Pick<AppState, "config" | "units">, system: string, i
 };
 
 /** Under a call's talkgroup: what's patched with it. */
+/** A conventional call whose row files the air's talkgroup under another number: the air's. */
+export function AirTg({ tg, ota }: { tg: number; ota?: number | null }) {
+  if (ota == null || ota === tg) return null;
+  return (
+    <span className="air-tg small" title={`The air named talkgroup ${ota}; its channel row files it under ${tg} (talkgroup_ota in the call's JSON)`}>
+      {" "}
+      air {ota}
+    </span>
+  );
+}
+
 export function PatchedWith({ tgs }: { tgs: TalkgroupName[] }) {
   if (!tgs.length) return null;
   const text = tgs.map(tgText).join(", ");
@@ -154,6 +165,7 @@ export function ActiveCalls({ s, system }: { s: AppState; system: string }) {
                         <span className="tg">{c.talkgroup}</span>
                         {c.alphaTag && <span className="tag">{c.alphaTag}</span>}
                       </button>
+                      <AirTg tg={c.talkgroup} ota={c.talkgroupOta} />
                       {c.emergency && <span className="badge bad">EMERG</span>}
                       {c.site && c.site !== system && <span className="muted small"> · {c.site}</span>}
                       <PatchedWith tgs={c.patched ?? []} />
