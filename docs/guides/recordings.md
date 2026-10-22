@@ -151,8 +151,8 @@ It is written on a single line.
 | `ran` | NXDN RAN; `-1` for none |
 | `tone_mode`, `tone_detected`, `tone_confidence` | Analog conventional calls' tone: see [Tones](tones.md#how-tones-are-identified) |
 | `audio_type` | `analog`, `digital` or `digital tdma` |
-| `system_type` | The kind of system it came on: `p25`, `smartnet`, `dmr`, `nxdn` or `conventional` (the same words plugins get) |
-| `voice_mode` | What its voice was: `p25`, `p25_phase2`, `dmr`, `nxdn48`, `nxdn96`, `fm` or `am`. With `system_type`, a conventional P25 call is `conventional` / `p25`, a SmartNet analog one `smartnet` / `fm` |
+| `system_type` | The kind of system it came on: `p25`, `smartnet`, `dmr`, `nxdn`, `edacs` or `conventional` (the same words plugins get) |
+| `voice_mode` | What its voice was: `p25`, `p25_phase2`, `dmr`, `nxdn48`, `nxdn96`, `provoice`, `fm` or `am`. With `system_type`, a conventional P25 call is `conventional` / `p25`, a SmartNet analog one `smartnet` / `fm` |
 | `short_name` | The system's short name |
 | `site` | The site the kept copy was heard on (a system of one site: its short name). Not on conventional calls. A call heard on several sites is saved once |
 | `patched_talkgroups` | Only when the talkgroup was patched with others: all of them |

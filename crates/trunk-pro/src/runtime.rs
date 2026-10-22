@@ -21,8 +21,8 @@ use trunk_app::{Feeder, Output, Session};
 
 use crate::config::{AirspyGain, Config, SampleFormat, Source};
 use crate::plugins::{self, FileRules, PluginHost};
-use crate::radio::{airspy, soapy, uhd};
-use crate::sdr::{self, RtlConfig, SourceMsg};
+use crate::radio::{airspy, bladerf, soapy, uhd};
+use crate::sdr::{self, Control, Gain, RtlConfig, SourceMsg};
 
 /// A message for the connected browsers, serialized once for all of them.
 pub enum Out {
@@ -307,9 +307,53 @@ pub enum Lifecycle {
 pub struct Runner {
     stop: Arc<AtomicBool>,
     threads: Vec<JoinHandle<()>>,
+    /// Each source's live controls (a gain changed in Setup goes through them).
+    controls: Vec<Arc<Control>>,
+}
+
+/// The gain to set on a source running with `old` now that it is `new`:
+/// when the gain is all that changed and the radio takes it while running.
+/// The gain in dB always; AGC on or off only on an RTL-SDR or an Airspy (the
+/// others take that at the next start).
+pub fn live_gain(old: &Source, new: &Source) -> Option<Gain> {
+    // `old` with `new`'s gain: equal to `new` when only the gain differs.
+    let mut o = old.clone();
+    let gain = match (&mut o, new) {
+        (Source::Rtlsdr { gain_db, agc, .. }, Source::Rtlsdr { gain_db: g, agc: a, .. }) => {
+            (*gain_db, *agc) = (*g, *a);
+            if *a { Gain::Agc } else { Gain::Db(*g as f32) }
+        }
+        (
+            Source::Airspy { gain_mode, gain_step, lna_step, mixer_step, vga_step, agc, .. },
+            Source::Airspy { gain_mode: m, gain_step: g, lna_step: l, mixer_step: x, vga_step: v, agc: a, .. },
+        ) => {
+            (*gain_mode, *gain_step, *lna_step, *mixer_step, *vga_step, *agc) = (*m, *g, *l, *x, *v, *a);
+            Gain::Airspy(airspy_gain(*m, *g, *l, *x, *v, *a))
+        }
+        (Source::Usrp { gain_db, agc: false, .. }, Source::Usrp { gain_db: g, agc: false, .. })
+        | (Source::Bladerf { gain_db, agc: false, .. }, Source::Bladerf { gain_db: g, agc: false, .. }) => {
+            *gain_db = *g;
+            Gain::Db(*g as f32)
+        }
+        (Source::Soapy { gain_db, agc: false, .. }, Source::Soapy { gain_db: Some(g), agc: false, .. }) => {
+            *gain_db = Some(*g);
+            Gain::Db(*g as f32)
+        }
+        _ => return None,
+    };
+    (o == *new).then_some(gain)
 }
 
 impl Runner {
+    /// Source `i`'s settings went from `old` to `new` in Setup: its gain is
+    /// applied at once when that's all that changed and the radio can take it
+    /// live ([`live_gain`]): that gain, or None when the change waits for the next start.
+    pub fn live_source(&self, i: usize, old: &Source, new: &Source) -> Option<Gain> {
+        let (c, g) = (self.controls.get(i)?, live_gain(old, new)?);
+        *c.gain.lock().unwrap() = Some(g);
+        Some(g)
+    }
+
     /// The engine has stopped by itself (every capture file ended).
     pub fn finished(&self) -> bool {
         self.threads.last().is_some_and(|t| t.is_finished())
@@ -384,6 +428,7 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
     // Each source's samples queue for its own decoding thread ([`feed_source`]).
     let mut queues = Vec::new();
     let centers = cfg.resolved_centers();
+    let controls: Vec<Arc<Control>> = cfg.sources.iter().map(|_| Arc::default()).collect();
     let mut threads = Vec::new();
     // A thread that can't be made: what was started is stopped again.
     let undo = |threads: Vec<JoinHandle<()>>, e: std::io::Error| {
@@ -398,7 +443,7 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
         let (tx, rx) = mpsc::sync_channel::<SourceMsg>(256);
         queues.push(rx);
         let (stop, center) = (stop.clone(), *center);
-        let spawned = spawn_source(&src, i, center, tx, stop, None, &format!("source-{i}"));
+        let spawned = spawn_source(&src, i, center, tx, stop, Some(controls[i].clone()), &format!("source-{i}"));
         match spawned {
             Ok(t) => threads.push(t),
             Err(e) => return Err(undo(threads, e)),
@@ -416,7 +461,7 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
             return Err(undo(threads, e));
         }
     }
-    Ok(Runner { stop, threads })
+    Ok(Runner { stop, threads, controls })
 }
 
 /// Where a system's band plan is kept between runs.
@@ -584,6 +629,9 @@ pub(crate) fn spawn_source(src: &Source, i: usize, center: f64, tx: SyncSender<S
         Source::Airspy { serial, rate_hz, gain_mode, gain_step, lna_step, mixer_step, vga_step, agc, bias_tee, packing, ppm, .. } => {
             let gain = airspy_gain(gain_mode, gain_step, lna_step, mixer_step, vga_step, agc);
             sdr::run_with(i, airspy::AirspyConfig { serial, center_hz: center, rate_hz, gain, bias_tee, packing, ppm }, tx, stop, ctl)
+        }
+        Source::Bladerf { serial, rate_hz, bandwidth_hz, gain_db, agc, bias_tee, ppm, .. } => {
+            sdr::run_with(i, bladerf::BladerfConfig { serial, center_hz: center, rate_hz, bandwidth_hz, gain_db, agc, bias_tee, ppm }, tx, stop, ctl)
         }
         Source::Soapy { args, rate_hz, agc, gain_db, gains, antenna, settings, ppm, .. } => {
             let gains = gains.into_iter().collect();
@@ -1179,4 +1227,41 @@ pub fn scan_history(dir: &Path, limit: usize) -> VecDeque<Value> {
             Some(json!({ "path": rel.to_string_lossy().replace('\\', "/"), "record": record, "audio": audio, "json": true }))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod live_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// A source of kind `kind` with the keys in `v`.
+    fn src(kind: &str, mut v: serde_json::Value) -> Source {
+        v["type"] = kind.into();
+        serde_json::from_value(v).unwrap()
+    }
+
+    #[test]
+    fn a_gain_change_goes_live_when_the_radio_can_take_it() {
+        let rtl = |gain: f64, agc: bool| src("rtlsdr", json!({ "serial": "1000", "centerHz": 453e6, "rateHz": 2.4e6, "gainDb": gain, "agc": agc, "ppm": 0 }));
+        assert_eq!(live_gain(&rtl(33.8, false), &rtl(22.9, false)), Some(Gain::Db(22.9)));
+        assert_eq!(live_gain(&rtl(33.8, false), &rtl(33.8, true)), Some(Gain::Agc), "an RTL-SDR's AGC, live");
+        let usrp = |gain: f64, agc: bool| src("usrp", json!({ "args": "", "antenna": "", "centerHz": 853e6, "rateHz": 8e6, "gainDb": gain, "agc": agc, "ppm": 0 }));
+        assert_eq!(live_gain(&usrp(40.0, false), &usrp(30.0, false)), Some(Gain::Db(30.0)));
+        assert_eq!(live_gain(&usrp(40.0, false), &usrp(40.0, true)), None, "USRP AGC waits for the start");
+        let blade = |gain: f64, agc: bool| src("bladerf", json!({ "serial": "f12ce103", "centerHz": 857e6, "rateHz": 8e6, "gainDb": gain, "agc": agc }));
+        assert_eq!(live_gain(&blade(30.0, false), &blade(42.0, false)), Some(Gain::Db(42.0)), "a bladeRF's gain, live");
+        assert_eq!(live_gain(&blade(30.0, false), &blade(30.0, true)), None, "bladeRF AGC waits for the start");
+        let air = |lna: u8| src("airspy", json!({ "serial": "", "centerHz": 852e6, "rateHz": 6e6, "gainMode": "manual", "lnaStep": lna, "ppm": 0 }));
+        assert_eq!(live_gain(&air(10), &air(12)), Some(Gain::Airspy(airspy::AirspyGain::Manual { lna: 12, mixer: 10, vga: 10 })), "an Airspy's LNA, live");
+    }
+
+    #[test]
+    fn anything_besides_the_gain_waits_for_the_start() {
+        let rtl_at = |center: f64, gain: f64| src("rtlsdr", json!({ "serial": "1000", "centerHz": center, "rateHz": 2.4e6, "gainDb": gain, "ppm": 0 }));
+        assert_eq!(live_gain(&rtl_at(453e6, 33.8), &rtl_at(460e6, 22.9)), None, "a retune with it");
+        let air_at = |center: f64| src("airspy", json!({ "serial": "", "centerHz": center, "rateHz": 6e6, "gainMode": "manual", "lnaStep": 10, "ppm": 0 }));
+        assert_eq!(live_gain(&air_at(852e6), &air_at(853e6)), None, "an Airspy retune waits");
+        let rtl = src("rtlsdr", json!({ "serial": "", "centerHz": 453e6, "rateHz": 2.4e6, "gainDb": 30, "ppm": 0 }));
+        assert_eq!(live_gain(&rtl, &air_at(852e6)), None, "another kind of radio");
+    }
 }

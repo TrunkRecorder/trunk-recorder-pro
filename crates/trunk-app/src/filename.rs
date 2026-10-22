@@ -11,8 +11,8 @@
 //! `{emergency}`, `{encrypted}`, `{priority}`, `{signal}`, `{noise}` (dBFS,
 //! whole dB cut toward zero as Trunk Recorder does; 0 when unmeasured),
 //! `{nac}` (P25's, three hex digits; empty for others), `{color_code}`, `{ran}`,
-//! `{system_type}` (`p25`, `smartnet`, `dmr`, `nxdn`, `conventional`),
-//! `{voice_mode}` (`p25`, `p25_phase2`, `dmr`, `nxdn48`, `nxdn96`, `fm`, `am`); and the start time, `{time:FORMAT}` in local time or
+//! `{system_type}` (`p25`, `smartnet`, `dmr`, `nxdn`, `edacs`, `conventional`),
+//! `{voice_mode}` (`p25`, `p25_phase2`, `dmr`, `nxdn48`, `nxdn96`, `provoice`, `fm`, `am`); and the start time, `{time:FORMAT}` in local time or
 //! `{ztime:FORMAT}` in UTC, FORMAT being strftime's (`%Y %m %d %H %M %S`,
 //! `%f` for milliseconds, `%-m` for no padding, …) or `iso` / `iso_ms`. Text from the talkgroup
 //! file has `\ / : * ? " < > |` and spaces made `_`.

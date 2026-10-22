@@ -120,7 +120,8 @@ trunk-pro devices [--usrp [args]]
 ```
 
 Lists the RTL-SDRs it can see (model and serial number), then whether the optional Airspy
-(libairspy), USRP (UHD) and SoapySDR drivers are installed. For Airspy it lists the devices; for
+(libairspy), bladeRF (libbladeRF), USRP (UHD) and SoapySDR drivers are installed. For Airspy and
+bladeRF it lists the devices, bladeRFs with their full serials; for
 SoapySDR it lists the installed modules (and any that failed to load, with why) and the devices
 found. USRPs are only searched for with `--usrp`, optionally with UHD device arguments
 (`--usrp type=b200`), because a search can be slow.
@@ -447,14 +448,16 @@ Replay it with a different key and it's noise.
 ```bash
 trunk-pro tool snr <capture.cu8> --center Hz --rate Hz --freq Hz --kind dmr|p25|smartnet|p2
                    [--seconds N] [--snr 40,20,16,14,12,10,8,6] [--variant base,…] [--cutoff Hz]
-                   [--trials 1] [--nac --sysid --wacn]
+                   [--trials 1] [--nac --sysid --wacn] [--repeat]
 ```
 
 Takes one strong channel from a capture and decodes it again and again with noise added at each
 SNR, counting how much of what the clean run decoded still comes through. It's how receiver
 changes are compared. `--kind p2` needs `--nac`, `--sysid` and `--wacn` (hex). `--quality`
 (with `--kind p2`) reports a real channel as it is, and `--separation` the C4FM receiver's level
-separation at each SNR.
+separation at each SNR. `--repeat` (with `--kind p25`) scores the vocoder's frame-repeat rules,
+on soft- and hard-decision error counts: wrong frames played, good frames repeated, and how far
+the audio is from the clean run's.
 
 ### tool revoice
 
@@ -465,7 +468,7 @@ trunk-pro tool revoice <call.sdr | call.frames.jsonl> <out.wav> [--profile enhan
 
 Runs a call's saved vocoder frames through the vocoder again, for example to hear it with another
 vocoder. The frames are saved when **Save vocoder frames** is on in Setup → Recording (or with
-`replay --capture-frames`). `--hard-fec` uses the standard's repeat thresholds; `--s16` writes raw
+`replay --capture-frames`). `--hard-fec` uses the standard's repeat rule; `--s16` writes raw
 16-bit samples instead of a WAV.
 
 ### tool sdr
@@ -551,6 +554,7 @@ trunk-pro interface add ~/wall-display --port 8090
 |---|---|
 | `TRUNK_PRO_UHD` | The UHD library file to load for USRPs, instead of searching for it |
 | `TRUNK_PRO_AIRSPY` | The libairspy library file to load, instead of searching |
+| `TRUNK_PRO_BLADERF` | The libbladeRF library file to load, instead of searching |
 | `TRUNK_PRO_SOAPY` | The SoapySDR library file to load, instead of searching |
 | `NO_COLOR` | When set (and `log.color` is empty), the log isn't coloured |
 | `XDG_CONFIG_HOME` | Linux: where the default config folder goes (`$XDG_CONFIG_HOME/trunk-pro`) |

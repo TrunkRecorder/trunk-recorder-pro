@@ -1000,6 +1000,7 @@ impl Session {
                             Voice::Dmr { .. } => "DMR",
                             Voice::P25Tdma { .. } => "P25 Phase 2",
                             Voice::P25 => "P25",
+                            Voice::ProVoice => "ProVoice",
                         };
                         let slot = c.voice.slot();
                         self.call_record(Level::Info, &c, Body::Recording { kind, slot })

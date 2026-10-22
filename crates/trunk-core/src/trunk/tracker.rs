@@ -201,7 +201,7 @@ impl VoiceTracker {
             TDU | TDULC => {
                 // Link control from whichever receiver's copy decodes. Motorola
                 // sends talker aliases here, in the terminators after the voice.
-                let lc = g.iter().filter(|f| f.nid.duid == TDULC).find_map(|f| decode_tdulc(&f.raw));
+                let lc = g.iter().filter(|f| f.nid.duid == TDULC).find_map(|f| decode_tdulc(f, true));
                 if let Some(lc) = lc {
                     let sign = if lc.protected {
                         AliasLc::Protected

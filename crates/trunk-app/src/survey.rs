@@ -68,6 +68,12 @@ pub fn survey_config(cfg: &Config, req: &Request) -> Result<SurveyConfig, String
             sc.tune_range_hz = (24e6, 1800e6);
             sc.settle_s = 0.2;
         }
+        // bladeRF 2.0 (AD9361): 47 MHz – 6 GHz.
+        Source::Bladerf { ppm, .. } => {
+            sc.ppm = *ppm;
+            sc.tune_range_hz = (47e6, 6e9);
+            sc.settle_s = 0.15;
+        }
         // The device's range isn't known here: the widest any module offers; a
         // tune it refuses shows as a source error.
         Source::Soapy { ppm, .. } => {

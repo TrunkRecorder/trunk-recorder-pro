@@ -33,7 +33,7 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   category show under its name. **Export CSV** writes them all.
 - **The call JSON says what kind of call it was**: `system_type` (`p25`, `smartnet`, `dmr`, `nxdn`
   or `conventional`, as plugins have it), `voice_mode` (`p25`, `p25_phase2`, `dmr`, `nxdn48`,
-  `nxdn96`, `fm` or `am`) and, for P25, `nac`: the NAC a conventional channel's frames carried, a
+  `nxdn96`, `provoice`, `fm` or `am`) and, for P25, `nac`: the NAC a conventional channel's frames carried, a
   trunked system's site NAC, in hex as channel files and Setup write it (`"293"`). The archive path has `{system_type}`, `{voice_mode}` and `{nac}`
   tokens. SDK 0.5.1 has the fields on `CallRecord`.
 - **The Radio page names a conventional system's talkgroups** as Listen does (from #53's review; it
@@ -41,6 +41,40 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   air's number is named as its last named call was.
 - **Setup keeps a system's card open while its Short name is typed** (from #53's review): a pause
   saved the edit, and the recorder's copy coming back closed the card.
+- **Gain changes apply while recording** on RTL-SDRs and Airspys (the
+  gain and AGC on or off; an Airspy's preset or stages), and on USRPs,
+  bladeRFs and SoapySDR devices (the gain in dB, AGC off), without a Stop
+  and Start; the log says the gain each took, and a radio reopened after an error keeps
+  the gain it was given. Other radio settings still apply when recording
+  starts, which the log says too.
+- **bladeRF** sources (optional; bladeRF 2.0 micro xA4 / xA9 and the
+  original x40 / x115): used when libbladeRF 2.x is installed (`"type":
+  "bladerf"`). Serial, any sample rate to 61.44 MSPS, overall gain or the
+  board's AGC, analog filter bandwidth and bias-T; samples USB drops are
+  counted from the board's timestamps. Trunk Recorder's osmosdr
+  `bladerf=…` sources (and `"driver": "bladerf"`) import as bladeRF sources.
+- **EDACS** trunked systems (`"type": "edacs"`): Standard and Networked
+  sites (GE / Ericsson / Harris), with their analog FM calls and **ProVoice**
+  digital voice. The 9600 baud control channel is decoded (three copies of
+  each message voted, BCH corrected; a word is kept only when two of its
+  three copies agree), channel numbers turn into frequencies by each site's
+  channel list (`lcnTableHz`, an **EDACS** section in Setup), and
+  ProVoice's IMBE 7100 frames are decoded and spoken by the P25 vocoder.
+  ESK 0xA0 systems are read with `esk`. Extended Addressing isn't decoded
+  yet. Every frequency of a site is watched at once, so the control channel
+  is found wherever it moves, and each LCN's frequency is checked against
+  the air (the carrier that keys when a call is assigned it): a list whose
+  numbers are off is corrected. A site is reported in failsoft only when its site ID says so and it has
+  stopped assigning calls (some sites set the flag and trunk all the same).
+  A site ID is believed once three in
+  a row agree. A grant to the frequency the control channel is on is never
+  followed. The 9600 baud burst at the start of an analog transmission is
+  left out of the audio.
+- **P25 Phase 1 voice repeats fewer good frames.** A frame whose FEC corrected a lot of errors
+  is repeated only when the errors fall in its pitch word *and* there are many in total, as
+  TIA-102.BABA-A §7.7 has it, not on either one (an `||` inherited from op25, which taclane
+  found). With noise added to a DCFD capture, the audio comes out closer to the clean decode's
+  at every SNR tried. `tool snr --repeat` measures repeat rules.
 
 ## [0.2.6] — 2026-10-20
 

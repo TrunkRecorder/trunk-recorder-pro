@@ -165,7 +165,7 @@ pub struct SystemInfo {
     /// recorder's systems), its folder, and what users know it by. Every
     /// event carries it.
     pub short_name: String,
-    /// "p25" | "smartnet" | "dmr" | "nxdn" | "conventional"
+    /// "p25" | "smartnet" | "dmr" | "nxdn" | "edacs" | "conventional"
     pub kind: String,
     /// What people call it ("County Public Safety"); empty when the user gave no name.
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -402,11 +402,11 @@ pub struct CallRecord {
     /// "digital" | "digital tdma" | "analog"
     pub audio_type: String,
     /// The kind of system it came on, as [`SystemInfo::kind`] has it: "p25" |
-    /// "smartnet" | "dmr" | "nxdn" | "conventional" (this recorder's addition).
+    /// "smartnet" | "dmr" | "nxdn" | "edacs" | "conventional" (this recorder's addition).
     #[serde(skip_serializing_if = "String::is_empty")]
     pub system_type: String,
     /// What its voice was: "p25" | "p25_phase2" | "dmr" | "nxdn48" | "nxdn96"
-    /// | "fm" | "am" — a conventional channel's `mode`, or a trunked grant's
+    /// | "provoice" | "fm" | "am" — a conventional channel's `mode`, or a trunked grant's
     /// (this recorder's addition).
     #[serde(skip_serializing_if = "String::is_empty")]
     pub voice_mode: String,

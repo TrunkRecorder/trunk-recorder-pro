@@ -176,9 +176,9 @@ CallEntry: a recorded call (rec.history, the "concluded" message)
     short_name (the system), site? (the site its copy was kept from), start_time / stop_time (Unix seconds),
     start_time_ms, call_length (seconds of audio), freq (Hz),
     emergency (1/0), encrypted (1/0), audio_type ("analog" | "digital" |
-    "digital tdma"), system_type? ("p25" | "smartnet" | "dmr" | "nxdn" |
+    "digital tdma"), system_type? ("p25" | "smartnet" | "dmr" | "nxdn" | "edacs" |
     "conventional"), voice_mode? ("p25" | "p25_phase2" | "dmr" | "nxdn48" |
-    "nxdn96" | "fm" | "am"), nac? (P25's NAC in hex, "293"; "" none), srcList [{ src (unit), tag (its name or ""), tag_ota,
+    "nxdn96" | "provoice" | "fm" | "am"), nac? (P25's NAC in hex, "293"; "" none), srcList [{ src (unit), tag (its name or ""), tag_ota,
     time (Unix s), pos (s into the audio), emergency, lat? lon? (GPS) }], signal / noise
     (dBFS) / snr (dB) (or null), tone_detected, patched_talkgroups?
 
