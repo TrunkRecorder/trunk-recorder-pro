@@ -43,3 +43,17 @@ test("oldTalkgroups: an older stored config's talkgroup files, by short name onc
   assert.deepEqual(oldTalkgroups(old), { a: "1,a", c: "3,c" }, "joined systems keep the first's");
   assert.deepEqual(oldTalkgroups({}), {});
 });
+
+test("a conventional channel's tone becomes its code, slot and talkgroup; P25 rows sharing a frequency keep their number", () => {
+  const { config, notes } = readConfig({
+    conventional: [{ shortName: "conv", channels: [
+      { freqHz: 451500000, mode: "dmr", tone: "CC 1 TS 2 TG 201", name: "Dispatch", enabled: true },
+      { freqHz: 453500000, mode: "p25", tone: "NAC 293", name: "", enabled: true },
+      { freqHz: 453500000, mode: "p25", tone: "NAC 4F1", name: "", enabled: true },
+    ] }],
+  });
+  const rows = config.conventional[0].channels.map((c) => [c.code, c.slot, c.matchTalkgroup, c.talkgroup]);
+  assert.deepEqual(rows, [["1", 2, 201, undefined], ["293", undefined, undefined, 453500], ["4F1", undefined, undefined, 4535001]]);
+  assert.ok(notes.some((n) => n.includes("2 P25 channel row(s)")), notes.join(" | "));
+  assert.ok(!JSON.stringify(config).includes('"tone"'));
+});

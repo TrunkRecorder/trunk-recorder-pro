@@ -391,7 +391,11 @@ impl Session {
             .collect();
         let recordings = cfg.recordings();
         let meas = Stats::new(&cfg, Shared::new(), local_offset);
-        meas.shared().names.lock().unwrap().set_systems(&systems);
+        {
+            let mut book = meas.shared().names.lock().unwrap();
+            book.set_systems(&systems);
+            book.set_rows(&cfg);
+        }
         let mut session = Session {
             meas,
             cfg,
@@ -434,7 +438,9 @@ impl Session {
     /// registry and the event monitor, instead of this session's own.
     pub fn attach(&mut self, shared: Arc<Shared>) {
         self.meas = Stats::new(&self.cfg, shared, self.local_offset);
-        self.meas.shared().names.lock().unwrap().set_systems(&self.engine.systems());
+        let mut book = self.meas.shared().names.lock().unwrap();
+        book.set_systems(&self.engine.systems());
+        book.set_rows(&self.cfg);
     }
 
     /// The registry and monitor this session feeds.
@@ -820,6 +826,7 @@ impl Session {
             tag: c.talkgroup_info.as_ref().map_or(String::new(), |t| t.alpha_tag.clone()),
             encrypted: c.encrypted,
             freq_hz: c.freq_hz as f64,
+            ota: c.talkgroup_ota,
         }
     }
 
@@ -875,6 +882,7 @@ impl Session {
             short_name: self.system_name(c.system).to_string(),
             site: self.site_name(c.site),
             talkgroup: c.talkgroup,
+            talkgroup_ota: c.talkgroup_ota,
             talkgroup_tag: c.talkgroup_info.as_ref().map_or(String::new(), |t| t.alpha_tag.clone()),
             freq_hz: c.freq_hz,
             tdma_slot: c.voice.slot(),
@@ -1228,6 +1236,8 @@ fn call_view(c: &Call, system_name: &str, patched: Vec<Value>) -> Value {
         "system": c.system,
         "systemName": system_name,
         "talkgroup": c.talkgroup,
+        // Conventional digital: the talkgroup the air named.
+        "talkgroupOta": c.talkgroup_ota,
         "alphaTag": c.talkgroup_info.as_ref().map_or("", |t| t.alpha_tag.as_str()),
         "freqHz": c.freq_hz,
         "slot": c.voice.slot(),

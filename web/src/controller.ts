@@ -58,6 +58,7 @@ import {
   newSystem,
   normalizeSite,
   resolvedCenters,
+  restartKey,
   sameSystem,
   shortNameFor,
   siteNameOf,
@@ -119,6 +120,8 @@ export interface AppState {
   /** A source's roll-off as last measured (Setup), and the source being measured now (null: none). */
   profile: SourceProfile | null;
   profiling: number | null;
+  /** Settings changed since this run started that only apply after a restart. */
+  restartNeeded: boolean;
   /** The plugins (desktop app); null until the recorder says. */
   plugins: PluginsList | null;
   /** A plugin this browser just installed: its settings open. */
@@ -206,6 +209,7 @@ let state: AppState = {
   surveyLicenses: null,
   profile: null,
   profiling: null,
+  restartNeeded: false,
   plugins: null,
   pluginJustInstalled: null,
   interfaces: null,
@@ -225,8 +229,20 @@ let state: AppState = {
 };
 
 const listeners = new Set<() => void>();
+/** restartKey of the config the current run started with (null: not running). */
+let runKey: string | null = null;
+/** The desktop recorder takes a radio's gain while recording; the browser build doesn't. */
+const liveGain = import.meta.env.MODE !== "web";
+
 function set(patch: Partial<AppState>): void {
+  const was = state;
   state = { ...state, ...patch };
+  // (Only when the config or phase changed: spectrum and stats come many times a second.)
+  if (state.config !== was.config || state.phase !== was.phase) {
+    const key = state.phase === "idle" || !state.config ? null : restartKey(state.config, liveGain);
+    runKey = key && (runKey ?? key);
+    state.restartNeeded = key !== runKey;
+  }
   // (Its rules' answers last as long as the config does: rules.ts.)
   if ("config" in patch) configReplaced(state.config);
   for (const l of listeners) l();
@@ -337,7 +353,7 @@ function take(m: FromRecorder): void {
       server = { config: m.config, version: m.version };
       // (Not over an edit of this browser's not saved yet: its answer says.)
       if (!pendingConfig && !saving) {
-        set({ config: m.config });
+        set({ config: keepCards(m.config, state.config) });
         basedOn = m.version;
       }
       break;
@@ -708,7 +724,7 @@ function configSaved(version: number, error: string | undefined): void {
     if (pendingConfig) clearTimeout(pendingConfig);
     pendingConfig = null;
     undoTalkgroupMoves();
-    if (server.config) set({ config: server.config });
+    if (server.config) set({ config: keepCards(server.config, state.config) });
     basedOn = server.version;
     set({ error });
     return;
@@ -788,6 +804,35 @@ export function cardKey(x: object, seed: string, among: readonly object[]): stri
     o[CARD] = key;
   }
   return o[CARD] as string;
+}
+
+/**
+ * `next` (the recorder's copy of the config, which has no card keys) with
+ * the card keys of the entries it replaces in `prev`: a card stays open,
+ * or closed, when an edit comes back from the recorder — a system renamed
+ * as its short name is typed keeps its card. Entries are matched by short
+ * name (sites by name), else by place.
+ */
+export function keepCards(next: Config, prev: Config | null): Config {
+  if (!prev) return next;
+  const carry = <T extends object>(to: T[], from: T[], id?: (x: T) => string) => {
+    const used = new Set<string>();
+    const keyOf = (y: T | undefined) => (y as Record<string, unknown> | undefined)?.[CARD];
+    to.forEach((x, i) => {
+      const was = [id && from.find((y) => id(y) === id(x)), from[i]].map((y) => keyOf(y || undefined)).find((k): k is string => typeof k === "string" && !used.has(k));
+      if (was === undefined) return;
+      used.add(was);
+      (x as Record<string, unknown>)[CARD] = was;
+    });
+  };
+  carry(next.sources, prev.sources);
+  carry(next.systems, prev.systems, (s) => s.shortName);
+  next.systems.forEach((s, i) => {
+    const was = prev.systems.find((p) => p.shortName === s.shortName) ?? prev.systems[i];
+    if (was) carry(s.sites, was.sites, (x) => x.name ?? "");
+  });
+  carry(next.conventional, prev.conventional, (v) => v.shortName);
+  return next;
 }
 
 /** `c` as the recorder takes it: without card keys. */
@@ -1411,7 +1456,7 @@ export function addNxdnChannel(freqHz: number, rate: "nxdn48" | "nxdn96", ran: n
       conv = newConventional(c);
       c.conventional.push(conv);
     }
-    conv.channels.push({ freqHz, mode: rate, name: "", enabled: true, ...(ran ? { tone: `RAN ${ran}` } : {}) });
+    conv.channels.push({ freqHz, mode: rate, name: "", enabled: true, ...(ran ? { code: String(ran) } : {}) });
     name = conv.shortName;
   });
   return name;
@@ -1426,7 +1471,9 @@ export function unlockKeys(source: string, password: string | null): void {
 
 export function start(): void {
   flushConfig();
-  set({ error: null, ended: false });
+  // The recorder reads the config now: what it runs with from here.
+  runKey = state.config ? restartKey(state.config, liveGain) : null;
+  set({ error: null, ended: false, restartNeeded: false });
   transport.send({ type: "start" });
   if (state.listen) player.resume();
 }

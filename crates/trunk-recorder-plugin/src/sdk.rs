@@ -87,7 +87,7 @@ pub struct System<C, S> {
     pub index: u16,
     /// Its identity: unique among the recorder's systems, and what users know it by.
     pub short_name: String,
-    /// "p25" | "smartnet" | "dmr" | "nxdn" | "conventional"
+    /// "p25" | "smartnet" | "dmr" | "nxdn" | "edacs" | "conventional"
     pub kind: String,
     /// What people call it; empty when the user gave no name.
     pub name: String,

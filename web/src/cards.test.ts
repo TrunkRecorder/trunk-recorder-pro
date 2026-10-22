@@ -3,7 +3,7 @@
 import "./testEnv.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { defaultConfig, newSystem } from "./config.ts";
+import { defaultConfig, newConventional, newSystem } from "./config.ts";
 import { cardKey, snapshot, transport, updateConfig } from "./controller.ts";
 import type { FromRecorder, ToRecorder } from "./protocol.ts";
 
@@ -30,6 +30,32 @@ test("a card key follows its system when one before it is removed, and isn't sen
     const save = sent.find((m) => m.type === "setConfig");
     assert.ok(save, "the edit was sent");
     assert.ok(!JSON.stringify(save).includes("_card"), "without card keys");
+  } finally {
+    transport.send = send;
+  }
+});
+
+test("a card keeps its key when the recorder's copy of a rename comes back after the save is answered", async () => {
+  const c = defaultConfig();
+  c.conventional.push(newConventional(c, { shortName: "fire", channels: [{ freqHz: 154430000, mode: "fm", name: "", enabled: true }] }));
+  transport.onConnection(true);
+  transport.onMessage({ type: "config", config: c, version: 1 });
+  const conv = () => snapshot().config!.conventional;
+  const key = () => cardKey(conv()[conv().length - 1], `conv:${conv()[conv().length - 1].shortName}`, conv());
+  const before = key();
+  const sent: ToRecorder[] = [];
+  const send = transport.send.bind(transport);
+  transport.send = (m) => void sent.push(m);
+  try {
+    updateConfig((x) => void (x.conventional[x.conventional.length - 1].shortName = "fire2"));
+    await new Promise((r) => setTimeout(r, 400));
+    const save = sent.find((m) => m.type === "setConfig");
+    assert.ok(save && save.type === "setConfig");
+    // The answer, then the recorder's copy (no card keys), as a pause in typing brings them.
+    transport.onMessage({ type: "configSaved", version: 2 });
+    transport.onMessage({ type: "config", config: save.config, version: 2 });
+    assert.equal(conv()[conv().length - 1].shortName, "fire2");
+    assert.equal(key(), before, "the card is still its own: it stays open");
   } finally {
     transport.send = send;
   }

@@ -1,7 +1,8 @@
 //! Upgrading what an older version left — for a while only: a system's
 //! keys file named in `keys` (before key sources, v0.1.10), interfaces as a
 //! list and `server.home` (before interfaces had ports, v0.1.14), the audio
-//! kept as `audioArchive` and `compressWav` (before v0.2.4), and each
+//! kept as `audioArchive` and `compressWav` (before v0.2.4), a
+//! conventional channel's `tone` (before v0.2.6), and each
 //! site a system of its own (before v0.1.15; see
 //! research/multi-site-systems.md). Everything that reads an older config,
 //! or the files kept under a former system's name, goes through here; the
@@ -31,7 +32,8 @@ pub fn config(v: &mut serde_json::Value) -> Vec<String> {
     keys(v);
     server(v);
     archive(v);
-    let mut notes = sites(v);
+    let mut notes = channels(v);
+    notes.extend(sites(v));
     notes.extend(talkgroups(v));
     notes
 }
@@ -115,6 +117,37 @@ fn keys(v: &mut serde_json::Value) {
     if changed {
         v["keys"] = Value::Object(sources);
     }
+}
+
+/// Before v0.2.6 a conventional channel's `tone` held its whole code
+/// (`CC 1 TS 2 TG 201`, `NAC 293`); now `code`, `slot` and
+/// `matchTalkgroup` do. And P25 rows sharing a frequency keep the number
+/// they filed under ([`crate::config::keep_p25_numbers`]). A row that doesn't
+/// read is left for the config's own error. Returns what changed, to tell.
+fn channels(v: &mut serde_json::Value) -> Vec<String> {
+    use crate::config::{keep_p25_numbers, Channel};
+    use serde_json::Value;
+    let mut kept = 0;
+    for sys in v.get_mut("conventional").and_then(Value::as_array_mut).into_iter().flatten() {
+        let Some(rows) = sys.get_mut("channels").and_then(Value::as_array_mut) else { continue };
+        if !rows.iter().any(|r| r.get("tone").is_some()) {
+            continue;
+        }
+        let Ok(mut chans) = rows.iter().map(|r| serde_json::from_value::<Channel>(r.clone())).collect::<Result<Vec<_>, _>>() else { continue };
+        for (c, r) in chans.iter_mut().zip(rows.iter()) {
+            let tone = r.get("tone").and_then(Value::as_str).unwrap_or("");
+            if c.set_access(tone).is_err() {
+                // As it was: Start says what's wrong with it.
+                c.code = tone.to_string();
+            }
+        }
+        kept += keep_p25_numbers(&mut chans);
+        *rows = chans.iter().filter_map(|c| serde_json::to_value(c).ok()).collect();
+    }
+    if kept == 0 {
+        return vec![];
+    }
+    vec![format!("{kept} P25 channel row(s) sharing a frequency now have the talkgroup number their calls were filed under written in: a row without one files calls under the talkgroup the air names.")]
 }
 
 /// Before v0.2.4 one setting kept a call's audio (`audioArchive`), and
@@ -311,6 +344,43 @@ mod tests {
         let c = Config::from_json(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert!(!serde_json::to_string(&c).unwrap().contains("talkgroupsCsv"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A channel's `tone` becomes its code, slot and talkgroup; P25 rows
+    /// sharing a frequency keep the number they filed under, a P25 row of
+    /// its own doesn't get one (it files under the air's, as before).
+    #[test]
+    fn a_channels_tone_becomes_code_slot_and_talkgroup() {
+        let c = Config::from_json(
+            r#"{ "conventional": [{ "shortName": "conv", "channels": [
+                { "freqHz": 154325000, "tone": "151.4" },
+                { "freqHz": 451500000, "mode": "dmr", "tone": "CC 1 TS 2 TG 201", "name": "Dispatch" },
+                { "freqHz": 453500000, "mode": "p25", "tone": "NAC 293" },
+                { "freqHz": 453500000, "mode": "p25", "tone": "NAC 4F1", "talkgroup": 77 },
+                { "freqHz": 453500000, "mode": "p25" },
+                { "freqHz": 460125000, "mode": "p25", "tone": "NAC 293" },
+                { "freqHz": 451800000, "mode": "nxdn48", "tone": "RAN 5" },
+                { "freqHz": 154430000, "tone": "151.5" } ] }] }"#,
+        )
+        .unwrap();
+        let rows: Vec<_> = c.conventional[0].channels.iter().map(|c| (c.code.as_str(), c.slot, c.match_talkgroup, c.talkgroup)).collect();
+        assert_eq!(
+            rows,
+            [
+                ("151.4", None, None, None),
+                ("1", Some(2), Some(201), None),
+                ("293", None, None, Some(453500)),
+                ("4F1", None, None, Some(77)),
+                ("", None, None, Some(4535002)),
+                ("293", None, None, None),
+                ("5", None, None, None),
+                ("151.5", None, None, None),
+            ]
+        );
+        assert!(c.notes.iter().any(|n| n.contains("2 P25 channel row(s)")), "{:?}", c.notes);
+        assert!(!serde_json::to_string(&c).unwrap().contains("\"tone\""));
+        // What doesn't read is kept, for Start to point out.
+        assert!(c.conventional[0].channels[7].parsed_access().unwrap_err().contains("151.5"));
     }
 
     /// `audioArchive` and `compressWav` become a setting for each kind of

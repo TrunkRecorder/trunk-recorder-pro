@@ -25,19 +25,21 @@
 //! ```
 //!
 //! Several rows on one frequency are one channel, each row with its own
-//! access code ([`Access`]: a CTCSS tone or DCS code, a P25 NAC, a DMR colour
-//! code / slot / talkgroup), at most one with none. Each transmission goes
-//! to the row whose code it carries (the most specific, for DMR), else to
-//! the row with none, else isn't recorded:
-//! - FM: held until its tone is known, then filed under that row's
-//!   talkgroup, as P25 files a call under the talkgroup its link control
-//!   names. A frequency whose only row has no tone isn't held.
-//! - P25: every frame carries the NAC, so nothing is held; on a frequency
-//!   with several rows, filed under the row's talkgroup (conventional radios
-//!   mostly send a talkgroup that says little, often 1).
-//! - DMR: per slot; filed under the talkgroup on the air, as always (the row
-//!   gives the names).
-//! - NXDN: by RAN and / or group, as DMR by colour code and talkgroup.
+//! access code ([`Access`]: a CTCSS tone or DCS code, a P25 NAC / talkgroup,
+//! a DMR colour code / slot / talkgroup, an NXDN RAN / talkgroup), at most
+//! one with none. Each transmission goes to the row whose code it carries
+//! (the most specific), else to the row with none, else isn't recorded:
+//! - FM: held until its tone is known. A frequency whose only row has no
+//!   tone isn't held.
+//! - P25: every frame carries the NAC, link control the talkgroup, so
+//!   nothing is held.
+//! - DMR: per slot. NXDN: by RAN and / or group.
+//!
+//! A call is filed under the row's talkgroup if it gives one, else the
+//! talkgroup the air named, else the row's default (the frequency in kHz).
+//! The air's talkgroup is kept beside it ([`Call::talkgroup_ota`]):
+//! conventional radios mostly send one that says little, often 1, so a row
+//! can file it under a number of its own.
 //!
 //! A detection the carrier meter doesn't confirm raises that channel's open
 //! threshold to just above what triggered it, until the band quietens again,
@@ -149,8 +151,12 @@ impl ConvMode {
 pub struct ConvChannel {
     pub freq_hz: f64,
     pub mode: ConvMode,
-    /// The talkgroup number calls are filed under (P25: when the air names none).
-    pub talkgroup: u32,
+    /// The talkgroup number calls are filed under, if the row gives one
+    /// (None: the air's, else `default_talkgroup`).
+    pub talkgroup: Option<u32>,
+    /// What a call is filed under when neither the row nor the air names a
+    /// talkgroup: [`ConvChannel::default_talkgroup_at`].
+    pub default_talkgroup: u32,
     /// Name, description, tag, group for the call record.
     pub info: Option<Talkgroup>,
     /// Open threshold, dB above the noise floor (None: [`ConvConfig::squelch_db`]).
@@ -166,13 +172,13 @@ pub struct ConvChannel {
 }
 
 /// How a row picks its transmissions out of a frequency's (the channel's
-/// Tone column).
+/// Code, Slot and Match TG columns).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Access {
     /// FM: a CTCSS tone or DCS code.
     Tone(Tone),
-    /// P25: the network access code.
-    Nac(u16),
+    /// P25: whichever of network access code and talkgroup are given.
+    P25 { nac: Option<u16>, tg: Option<u32> },
     /// DMR: whichever of colour code, slot (1, 2) and talkgroup are given.
     Dmr { cc: Option<u8>, slot: Option<u8>, tg: Option<u32> },
     /// NXDN: whichever of RAN and group (or unit) are given.
@@ -180,11 +186,14 @@ pub enum Access {
 }
 
 impl std::fmt::Display for Access {
-    /// `151.4`, `D023N` (Trunk Recorder's); `NAC 293`; `CC 1 TS 2 TG 201`.
+    /// `151.4`, `D023N` (Trunk Recorder's); `NAC 293 TG 1`; `CC 1 TS 2 TG 201`.
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match *self {
             Access::Tone(t) => write!(f, "{t}"),
-            Access::Nac(n) => write!(f, "NAC {n:03X}"),
+            Access::P25 { nac, tg } => {
+                let parts: Vec<String> = [nac.map(|n| format!("NAC {n:03X}")), tg.map(|t| format!("TG {t}"))].into_iter().flatten().collect();
+                write!(f, "{}", parts.join(" "))
+            }
             Access::Dmr { cc, slot, tg } => {
                 let parts: Vec<String> =
                     [cc.map(|c| format!("CC {c}")), slot.map(|s| format!("TS {s}")), tg.map(|t| format!("TG {t}"))].into_iter().flatten().collect();
@@ -199,10 +208,10 @@ impl std::fmt::Display for Access {
 }
 
 impl Access {
-    /// A row's Tone column as people write it, read for its mode:
+    /// A row's Code column (or the old Tone) as people write it, read for its mode:
     /// - FM: [`Tone::parse`] (`151.4 PL`, `023 DPL`, `D023N` …);
     /// - P25: `293`, `293 NAC`, `NAC 293`, `$293`, `0x293`; `F7E` / `F7F`
-    ///   (a radio's "receive any") mean any;
+    ///   (a radio's "receive any") mean any; `NAC 293 TG 1`, `TG 1`;
     /// - DMR: `CC1`, `1`, RadioReference's `CC1 TS2 TG201` or
     ///   `CC 1 TG 201 SL 2` (its scan list is ignored), `Slot 2`;
     /// - NXDN: `RAN 5`, `5`, `RAN5 TG 201`.
@@ -220,15 +229,25 @@ impl Access {
             return Err(format!("\"{}\": AM channels carry no tone or code — leave it empty", text.trim()));
         }
         if mode == ConvMode::P25 {
-            let bad = || format!("\"{}\" isn't a NAC (up to 3 hex digits, like 293)", text.trim());
-            let body: String = up.split_whitespace().filter(|w| *w != "NAC").collect();
+            let bad = || format!("\"{}\" isn't a NAC (up to 3 hex digits, like 293) or talkgroup (TG 1)", text.trim());
+            // The NAC (hex) before TG, the talkgroup (decimal) after it.
+            let up = up.replace([',', ':', '='], " ");
+            let (front, tg) = match up.find("TG") {
+                Some(i) => {
+                    let t = up[i + 2..].trim();
+                    (&up[..i], Some(t.parse::<u32>().ok().filter(|&t| t > 0 && t < 1 << 16).ok_or_else(|| format!("TG {t}: not a P25 talkgroup (1–65535)"))?))
+                }
+                None => (&up[..], None),
+            };
+            let body: String = front.split_whitespace().filter(|w| *w != "NAC").collect();
             let body = body.trim_start_matches('$');
             let body = body.strip_prefix("0X").unwrap_or(body);
-            if body.is_empty() || body.len() > 3 {
-                return Err(bad());
-            }
-            let n = u16::from_str_radix(body, 16).map_err(|_| bad())?;
-            return Ok((n != 0xf7e && n != 0xf7f).then_some(Access::Nac(n)));
+            let nac = match body {
+                "" if tg.is_some() => None,
+                _ if body.is_empty() || body.len() > 3 => return Err(bad()),
+                _ => Some(u16::from_str_radix(body, 16).map_err(|_| bad())?).filter(|&n| n != 0xf7e && n != 0xf7f),
+            };
+            return Ok((nac.is_some() || tg.is_some()).then_some(Access::P25 { nac, tg }));
         }
         let nxdn = matches!(mode, ConvMode::Nxdn(_));
         let bad = || {
@@ -275,6 +294,51 @@ impl Access {
         Ok((cc.is_some() || slot.is_some() || tg.is_some()).then_some(Access::Dmr { cc, slot, tg }))
     }
 
+    /// A row's Code, Slot and Match TG together. `code` may name the slot
+    /// or talkgroup too (RadioReference's `CC1 TS2 TG201`), if it agrees.
+    pub fn join(mode: ConvMode, code: &str, slot: Option<u8>, tg: Option<u32>) -> Result<Option<Access>, String> {
+        let a = Self::parse(mode, code)?;
+        if slot.is_none() && tg.is_none() {
+            return Ok(a);
+        }
+        let (_, s, t) = a.map_or((String::new(), None, None), Access::parts);
+        if slot.zip(s).is_some_and(|(a, b)| a != b) || tg.zip(t).is_some_and(|(a, b)| a != b) {
+            return Err(format!("\"{}\" names another slot or talkgroup than its own columns", code.trim()));
+        }
+        let (slot, tg) = (slot.or(s), tg.or(t));
+        if slot.is_some() && mode != ConvMode::Dmr {
+            return Err(format!("Slot {}: only DMR has slots — leave it empty", slot.unwrap()));
+        }
+        if slot.is_some_and(|s| !(1..=2).contains(&s)) {
+            return Err(format!("Slot {}: the slot is 1 or 2", slot.unwrap()));
+        }
+        let max = match mode {
+            ConvMode::Fm | ConvMode::Am => return Err(format!("Match TG {}: {} names no talkgroup — leave it empty", tg.unwrap(), if mode == ConvMode::Fm { "FM" } else { "AM" })),
+            ConvMode::Dmr => 1 << 24,
+            _ => 1 << 16,
+        };
+        if tg.is_some_and(|t| t == 0 || t >= max) {
+            return Err(format!("Match TG {}: not a talkgroup (1–{})", tg.unwrap(), max - 1));
+        }
+        Ok(Some(match (mode, a) {
+            (ConvMode::P25, a) => Access::P25 { nac: match a { Some(Access::P25 { nac, .. }) => nac, _ => None }, tg },
+            (ConvMode::Dmr, a) => Access::Dmr { cc: match a { Some(Access::Dmr { cc, .. }) => cc, _ => None }, slot, tg },
+            (_, a) => Access::Nxdn { ran: match a { Some(Access::Nxdn { ran, .. }) => ran, _ => None }, tg },
+        }))
+    }
+
+    /// The other way: (Code, Slot, Match TG), the code bare (`151.4`,
+    /// `293` for a NAC, `1` for a colour code, `5` for a RAN).
+    pub fn parts(self) -> (String, Option<u8>, Option<u32>) {
+        let bare = |v: Option<u32>| v.map_or(String::new(), |v| v.to_string());
+        match self {
+            Access::Tone(t) => (t.to_string(), None, None),
+            Access::P25 { nac, tg } => (nac.map_or(String::new(), |n| format!("{n:03X}")), None, tg),
+            Access::Dmr { cc, slot, tg } => (bare(cc.map(u32::from)), slot, tg),
+            Access::Nxdn { ran, tg } => (bare(ran.map(u32::from)), None, tg),
+        }
+    }
+
     /// Two rows can't tell these apart.
     fn same(self, other: Access) -> bool {
         match (self, other) {
@@ -288,7 +352,8 @@ impl Access {
         match self {
             Access::Dmr { cc, slot, tg } => cc.is_some() as usize + slot.is_some() as usize + tg.is_some() as usize,
             Access::Nxdn { ran, tg } => ran.is_some() as usize + tg.is_some() as usize,
-            _ => 1,
+            Access::P25 { nac, tg } => nac.is_some() as usize + tg.is_some() as usize,
+            Access::Tone(_) => 1,
         }
     }
 
@@ -297,7 +362,7 @@ impl Access {
     fn admits(self, nac: Option<u16>, slot: usize, cc: Option<u8>, tg: Option<u32>, ran: Option<u8>) -> bool {
         match self {
             Access::Tone(_) => false,
-            Access::Nac(n) => nac == Some(n),
+            Access::P25 { nac: n, tg: t } => n.is_none_or(|n| nac == Some(n)) && t.is_none_or(|t| tg == Some(t)),
             Access::Dmr { cc: c, slot: s, tg: t } => {
                 c.is_none_or(|c| cc == Some(c)) && s.is_none_or(|s| s as usize == slot + 1) && t.is_none_or(|t| tg == Some(t))
             }
@@ -307,11 +372,21 @@ impl Access {
 }
 
 impl ConvChannel {
-    /// A channel filed under its default talkgroup: the frequency in kHz
-    /// (154.430 MHz → 154430), stable however the list is ordered.
+    /// A channel with no talkgroup of its own: filed under the air's, else
+    /// the frequency in kHz (154.430 MHz → 154430), stable however the list
+    /// is ordered.
     pub fn new(freq_hz: f64, mode: ConvMode) -> Self {
         let analog = if mode == ConvMode::Am { AnalogTuning::am(freq_hz) } else { AnalogTuning::default() };
-        ConvChannel { freq_hz, mode, talkgroup: Self::default_talkgroup(freq_hz), info: None, squelch_db: None, access: None, system: 0, analog }
+        let default_talkgroup = Self::default_talkgroup(freq_hz);
+        ConvChannel { freq_hz, mode, talkgroup: None, default_talkgroup, info: None, squelch_db: None, access: None, system: 0, analog }
+    }
+
+    /// Its names, when the number they go with is known before a call is
+    /// heard: its TG Number, or an analog row's default (the air names
+    /// none). None when the number comes from the air, or it has no names.
+    pub fn names_ahead(&self) -> Option<&Talkgroup> {
+        let known = self.talkgroup.is_some() || matches!(self.mode, ConvMode::Fm | ConvMode::Am);
+        self.info.as_ref().filter(|_| known)
     }
 
     pub fn default_talkgroup(freq_hz: f64) -> u32 {
@@ -358,9 +433,11 @@ pub enum ConvOut {
     WrongKey(u16, CipherId),
 }
 
-/// What a conventional call carried, as a row's Tone would say it: the
-/// CTCSS / DCS heard ("" for none), the NAC, or the DMR colour code, slot
-/// and talkgroup — for finding a frequency's codes. None for a trunked call.
+/// What a conventional call carried, as a row's code would say it: the
+/// CTCSS / DCS heard ("" for none), the NAC and talkgroup, the DMR colour
+/// code, slot and talkgroup, the NXDN RAN and talkgroup (the air's, not
+/// the one it was filed under) — for finding a frequency's codes. None for
+/// a trunked call.
 pub fn heard_code(call: &Call) -> Option<String> {
     if call.site.is_some() {
         return None;
@@ -368,9 +445,9 @@ pub fn heard_code(call: &Call) -> Option<String> {
     match call.voice {
         Voice::Fm | Voice::Am => Some(call.tone.map_or(String::new(), |h| h.tone.to_string())),
         // (RAN 0 is "any": a row can't ask for it.)
-        Voice::Nxdn(_) => Some(Access::Nxdn { ran: call.ran.filter(|&r| r != 0), tg: Some(call.talkgroup) }.to_string()),
-        Voice::Dmr { slot, color_code: cc @ Some(_) } => Some(Access::Dmr { cc, slot: Some(slot + 1), tg: Some(call.talkgroup) }.to_string()),
-        _ => call.nac.map(|n| Access::Nac(n).to_string()),
+        Voice::Nxdn(_) => Some(Access::Nxdn { ran: call.ran.filter(|&r| r != 0), tg: call.talkgroup_ota }.to_string()),
+        Voice::Dmr { slot, color_code: cc @ Some(_) } => Some(Access::Dmr { cc, slot: Some(slot + 1), tg: call.talkgroup_ota }.to_string()),
+        _ => call.nac.map(|n| Access::P25 { nac: Some(n), tg: call.talkgroup_ota }.to_string()),
     }
 }
 
@@ -391,7 +468,7 @@ struct Heard {
     positions: Vec<Position>,
     /// Air time of the first voice frame, and the end of the last (digital).
     air: Option<(f64, f64)>,
-    /// The talkgroup the air named (FM with tones: the row's).
+    /// The talkgroup the air named.
     tg: Option<u32>,
     color_code: Option<u8>,
     /// NXDN: the RAN its SACCH carried.
@@ -437,8 +514,10 @@ struct Live {
     /// How far off its channel its carrier came in, Hz: the sum of the
     /// measurements and their number (as a trunked call's).
     freq_error: (f64, u32),
-    /// The talkgroup came from P25 link control (not the channel's default).
-    tg_from_air: bool,
+    /// The talkgroup the air named, once it has ([`Call::talkgroup_ota`]).
+    air_tg: Option<u32>,
+    /// The row it is filed by.
+    row: usize,
     /// FM: what tone the call carries.
     tones: Option<Box<ToneDetector>>,
 }
@@ -633,7 +712,7 @@ impl Conventional {
         let what = match rows[0].mode {
             ConvMode::Fm => "tone",
             ConvMode::Am => "code",
-            ConvMode::P25 => "NAC",
+            ConvMode::P25 => "NAC or talkgroup",
             ConvMode::Dmr => "colour code, slot or talkgroup",
             ConvMode::Nxdn(_) => "RAN or talkgroup",
         };
@@ -892,7 +971,6 @@ impl Conventional {
                     match Self::pick(rows, &t.tones, true) {
                         Some(Some(r)) => {
                             *h = std::mem::take(&mut t.held);
-                            h.tg = Some(rows[r].talkgroup);
                             h.row = Some(r);
                         }
                         _ => return Some(Self::tone_code(&t.tones)),
@@ -913,7 +991,6 @@ impl Conventional {
         }
         match t.row {
             Some(Some(r)) => {
-                h.tg = Some(rows[r].talkgroup);
                 h.row = Some(r);
                 None
             }
@@ -938,9 +1015,8 @@ impl Conventional {
         tones.heard().map_or(String::new(), |h| h.tone.to_string())
     }
 
-    /// P25 / DMR: the row this run's traffic on `slot` is for (none: it is
-    /// dropped, and its code returned). Several P25 rows file under the
-    /// row's talkgroup.
+    /// P25 / DMR / NXDN: the row this run's traffic on `slot` is for (none:
+    /// it is dropped, and its code returned).
     fn route_digital(rows: &[ConvChannel], slot: usize, h: &mut Heard) -> Option<String> {
         if h.audio.is_empty() && h.infos.is_empty() {
             return None;
@@ -958,18 +1034,15 @@ impl Conventional {
             }
             None => {
                 let code = match rows[0].mode {
-                    ConvMode::P25 => h.nac.map_or(String::new(), |n| Access::Nac(n).to_string()),
+                    ConvMode::P25 => Access::P25 { nac: h.nac, tg: h.tg }.to_string(),
                     ConvMode::Nxdn(_) => Access::Nxdn { ran: h.ran.filter(|&r| r != 0), tg: h.tg }.to_string(),
                     _ => Access::Dmr { cc: h.color_code, slot: Some(slot as u8 + 1), tg: h.tg }.to_string(),
                 };
                 *h = Heard::default();
                 Some(code)
             }
-            Some((i, r)) => {
+            Some((i, _)) => {
                 h.row = Some(i);
-                if r.mode == ConvMode::P25 && rows.len() > 1 {
-                    h.tg = Some(r.talkgroup);
-                }
                 None
             }
         }
@@ -993,27 +1066,32 @@ impl Conventional {
             return;
         }
         let o = ch.open.as_mut().unwrap();
-        // The talkgroup: link control's (or the row's, see route), else the row's.
-        let row = &ch.rows[h.row.unwrap_or(0)];
+        // The talkgroup: the row's, else the air's, else the row's default.
+        let r = h.row.unwrap_or(0);
+        let row = &ch.rows[r];
         let air_tg = h.tg;
-        let tg = air_tg.unwrap_or(row.talkgroup);
+        let tg = row.talkgroup.or(air_tg).unwrap_or(row.default_talkgroup);
         if let Some(l) = &o.live[slot] {
             let too_long = max_call_s > 0.0 && now_s - l.call.start_s > max_call_s;
-            // A different talkgroup on the air is a new call; the first one
-            // named just labels the call it arrived in.
-            let new_tg = l.tg_from_air && air_tg.is_some_and(|t| t != l.call.talkgroup);
-            if too_long || new_tg {
+            // A different talkgroup on the air, or another row's
+            // transmission, is a new call (digital traffic that hasn't named
+            // its talkgroup yet stays with the call it follows); the first
+            // talkgroup named just labels the call it arrived in.
+            let new_tg = l.air_tg.is_some() && air_tg.is_some_and(|t| Some(t) != l.air_tg);
+            let new_row = l.row != r && (ch.mode.analog() || air_tg.is_some());
+            if too_long || new_tg || new_row {
                 let l = o.live[slot].take().unwrap();
                 Self::end(l, num, out);
-            } else if air_tg.is_some() && !l.tg_from_air {
-                let info = Self::info_for(&ch.rows, row, tg, rules.talkgroups);
+            } else if air_tg.is_some() && l.air_tg.is_none() {
+                let info = Self::names(row, tg, rules.talkgroups);
                 let l = o.live[slot].as_mut().unwrap();
-                l.tg_from_air = true;
+                l.air_tg = air_tg;
+                l.call.talkgroup_ota = air_tg;
                 if l.call.talkgroup != tg {
                     l.call.talkgroup = tg;
                     l.call.talkgroup_info = info;
-                    out.push(ConvOut::Event(Event::CallUpdate(l.call.clone())));
                 }
+                out.push(ConvOut::Event(Event::CallUpdate(l.call.clone())));
             }
         }
         if o.live[slot].is_none() {
@@ -1025,6 +1103,7 @@ impl Conventional {
                 twin: false,
                 id: ids.next(),
                 talkgroup: tg,
+                talkgroup_ota: air_tg,
                 freq_hz: ch.freq_hz.round() as u64,
                 voice: ch.mode.voice(slot as u8, h.color_code),
                 unit_to_unit: false,
@@ -1043,7 +1122,7 @@ impl Conventional {
                 heard_s: now_s,
                 last_audio_s: now_s,
                 sources: Vec::new(),
-                talkgroup_info: Self::info_for(&ch.rows, row, tg, rules.talkgroups),
+                talkgroup_info: Self::names(row, tg, rules.talkgroups),
                 patched_talkgroups: Vec::new(),
                 ran: h.ran,
                 nac: h.nac,
@@ -1054,7 +1133,7 @@ impl Conventional {
                 },
             };
             out.push(ConvOut::Event(Event::CallStart(call.clone())));
-            o.live[slot] = Some(Live { call, audio: Vec::new(), frames: CallFrames::new(rules.capture_frames), tx: Transmissions::default(), reception: Reception::default(), freq_error: (0.0, 0), tg_from_air: air_tg.is_some(), tones: (ch.mode == ConvMode::Fm).then(Box::default) });
+            o.live[slot] = Some(Live { call, audio: Vec::new(), frames: CallFrames::new(rules.capture_frames), tx: Transmissions::default(), reception: Reception::default(), freq_error: (0.0, 0), air_tg, row: r, tones: (ch.mode == ConvMode::Fm).then(Box::default) });
         }
         let l = o.live[slot].as_mut().unwrap();
         l.call.last_update_s = now_s;
@@ -1112,15 +1191,10 @@ impl Conventional {
         }
     }
 
-    /// The call's names: the row's filed under `tg`; else the talkgroup
-    /// list's; else the names of the row it came on.
-    fn info_for(rows: &[ConvChannel], row: &ConvChannel, tg: u32, talkgroups: &Talkgroups) -> Option<Talkgroup> {
-        let named = |r: &ConvChannel| r.info.clone().map(|t| Talkgroup { number: tg, ..t });
-        let listed = talkgroups.get(&tg).cloned();
-        match rows.iter().find(|r| r.talkgroup == tg) {
-            Some(r) => named(r).or(listed),
-            None => listed.or_else(|| named(row)),
-        }
+    /// The call's names: the row's, if it has any (filed under `tg`); else
+    /// the system's talkgroup file's for `tg`.
+    fn names(row: &ConvChannel, tg: u32, talkgroups: &Talkgroups) -> Option<Talkgroup> {
+        row.info.clone().map(|t| Talkgroup { number: tg, ..t }).or_else(|| talkgroups.get(&tg).cloned())
     }
 
     fn end(l: Live, num: u32, out: &mut Vec<ConvOut>) {
@@ -1254,7 +1328,7 @@ mod tests {
     }
 
     fn fm(freq_hz: f64, tg: u32) -> ConvChannel {
-        ConvChannel { talkgroup: tg, ..ConvChannel::new(freq_hz, ConvMode::Fm) }
+        ConvChannel { talkgroup: Some(tg), ..ConvChannel::new(freq_hz, ConvMode::Fm) }
     }
 
     /// An encrypted P25 transmission on a conventional channel whose system
@@ -1299,7 +1373,7 @@ mod tests {
         let sys = SystemConfig { keys: Some(Arc::new(keys)), ..conv_system("conv") };
         let cfg = EngineConfig {
             sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
-            conventional: vec![ConvChannel { mode: ConvMode::P25, ..fm(freq, 9) }],
+            conventional: vec![ConvChannel::new(freq, ConvMode::P25)],
             systems: vec![sys],
             ..Default::default()
         };
@@ -1310,7 +1384,7 @@ mod tests {
         e.finish();
         let calls: Vec<Call> = e.drain_events().into_iter().filter_map(|ev| if let Event::Concluded(k) = ev { Some(k.call) } else { None }).collect();
         let [c] = &calls[..] else { panic!("{fs} S/s: {} calls", calls.len()) };
-        assert_eq!(c.talkgroup, 716);
+        assert_eq!((c.talkgroup, c.talkgroup_ota), (716, Some(716)));
         assert!(c.encrypted && c.decrypted);
         assert_eq!(c.cipher, Some(CipherId { algid: ALGID_AES_256, keyid: 0x4319 }));
     }
@@ -1355,7 +1429,7 @@ mod tests {
             am(-75_000.0, 50.0, vec![(3.2, 8.5)]),
             Tx { offset_hz: 300_000.0, snr_db: 25.0, on: vec![(1.0, 2.0)], ph: 0.0, am: false, audio: Vec::new() },
         ];
-        let air = |freq: f64, tg: u32| ConvChannel { talkgroup: tg, ..ConvChannel::new(freq, ConvMode::Am) };
+        let air = |freq: f64, tg: u32| ConvChannel { talkgroup: Some(tg), ..ConvChannel::new(freq, ConvMode::Am) };
         let chans = vec![air(c + 200_000.0, 1), air(c + 225_000.0, 2), air(c - 50_000.0, 3), fm(c + 300_000.0, 4)];
         let (calls, _, _) = run(fs, 9.0, &mut txs, chans);
         let mut got: Vec<(u32, bool, f64)> = calls.iter().map(|(k, n, _)| (k.talkgroup, k.voice.analog(), *n as f64 / 8000.0)).collect();
@@ -1376,7 +1450,7 @@ mod tests {
     fn weak_am_opens_by_its_carrier() {
         let (fs, c) = (2_400_000.0, 155_000_000.0);
         let mut txs = vec![Tx { offset_hz: 201_000.0, snr_db: 3.0, on: vec![(3.5, 6.0)], ph: 0.0, am: true, audio: Vec::new() }];
-        let air = |freq: f64, tg: u32| ConvChannel { talkgroup: tg, ..ConvChannel::new(freq, ConvMode::Am) };
+        let air = |freq: f64, tg: u32| ConvChannel { talkgroup: Some(tg), ..ConvChannel::new(freq, ConvMode::Am) };
         let (calls, starts, _) = run(fs, 7.5, &mut txs, vec![air(c + 200_000.0, 1), air(c + 250_000.0, 2)]);
         let got: Vec<(u32, f64)> = calls.iter().map(|(k, n, _)| (k.talkgroup, *n as f64 / 8000.0)).collect();
         assert_eq!(starts, 1, "{got:?}");
@@ -1398,7 +1472,7 @@ mod tests {
             // A channel with only a spur.
             spur(251_200.0, (0.0, 12.0)),
         ];
-        let air = |freq: f64, tg: u32| ConvChannel { talkgroup: tg, ..ConvChannel::new(freq, ConvMode::Am) };
+        let air = |freq: f64, tg: u32| ConvChannel { talkgroup: Some(tg), ..ConvChannel::new(freq, ConvMode::Am) };
         let (calls, starts, _) = run(fs, 12.0, &mut txs, vec![air(c + 200_000.0, 1), air(c + 250_000.0, 2)]);
         let got: Vec<(u32, f64)> = calls.iter().map(|(k, n, _)| (k.talkgroup, *n as f64 / 8000.0)).collect();
         assert_eq!(starts, 1, "{got:?}");
@@ -1414,7 +1488,7 @@ mod tests {
         let a = ConvChannel::new(f, ConvMode::Am);
         assert_eq!(a.analog.half_bw_hz, crate::dsp::am::HALF_BW_VHF);
         assert_eq!(ConvChannel::new(243e6, ConvMode::Am).analog.half_bw_hz, crate::dsp::am::HALF_BW_UHF);
-        let twice = Conventional::check(&[a.clone(), ConvChannel { talkgroup: 9, ..a.clone() }]).unwrap_err();
+        let twice = Conventional::check(&[a.clone(), ConvChannel { talkgroup: Some(9), ..a.clone() }]).unwrap_err();
         assert!(twice.contains("AM has no tone"), "{twice}");
         let mut narrow = ConvChannel::new(f, ConvMode::Fm);
         narrow.access = Access::parse(ConvMode::Fm, "100.0").unwrap();
@@ -1565,15 +1639,43 @@ mod tests {
     #[test]
     fn access_codes_as_people_write_them() {
         let p25 = |t: &str| Access::parse(ConvMode::P25, t);
+        let nac = |n| Ok(Some(Access::P25 { nac: Some(n), tg: None }));
         for t in ["293", "293 NAC", "NAC 293", "$293", "0x293", "nac 293"] {
-            assert_eq!(p25(t), Ok(Some(Access::Nac(0x293))), "{t}");
+            assert_eq!(p25(t), nac(0x293), "{t}");
         }
-        assert_eq!(p25("1a2"), Ok(Some(Access::Nac(0x1a2))));
+        assert_eq!(p25("1a2"), nac(0x1a2));
         for t in ["", "F7E", "$F7F", "S"] {
             assert_eq!(p25(t), Ok(None), "{t}");
         }
-        assert!(p25("1234").is_err() && p25("xyz").is_err());
-        assert_eq!(Access::Nac(0x2a).to_string(), "NAC 02A");
+        assert!(p25("1234").is_err() && p25("xyz").is_err() && p25("NAC").is_err() && p25("TG 70000").is_err());
+        assert_eq!(p25("NAC 293 TG 1"), Ok(Some(Access::P25 { nac: Some(0x293), tg: Some(1) })));
+        assert_eq!(p25("293, TG1"), Ok(Some(Access::P25 { nac: Some(0x293), tg: Some(1) })));
+        assert_eq!(p25("TG 46"), Ok(Some(Access::P25 { nac: None, tg: Some(46) })));
+        assert_eq!(p25("F7E TG 46"), Ok(Some(Access::P25 { nac: None, tg: Some(46) })));
+        assert_eq!(Access::P25 { nac: Some(0x2a), tg: None }.to_string(), "NAC 02A");
+        assert_eq!(Access::P25 { nac: Some(0x2a), tg: Some(7) }.to_string(), "NAC 02A TG 7");
+        // Code, Slot and Match TG: joined, and split back.
+        let join = Access::join;
+        assert_eq!(join(ConvMode::P25, "293", None, Some(1)), Ok(Some(Access::P25 { nac: Some(0x293), tg: Some(1) })));
+        assert_eq!(join(ConvMode::P25, "", None, None), Ok(None));
+        assert_eq!(join(ConvMode::Dmr, "CC1", Some(2), Some(201)), Ok(Some(Access::Dmr { cc: Some(1), slot: Some(2), tg: Some(201) })));
+        assert_eq!(join(ConvMode::Dmr, "CC1 TS2 TG201", Some(2), None), Ok(Some(Access::Dmr { cc: Some(1), slot: Some(2), tg: Some(201) })));
+        assert!(join(ConvMode::Dmr, "CC1 TS2", Some(1), None).is_err(), "two slots");
+        assert!(join(ConvMode::P25, "293", Some(1), None).is_err(), "P25 has no slots");
+        assert!(join(ConvMode::Fm, "151.4", None, Some(1)).is_err(), "FM names no talkgroup");
+        assert!(join(ConvMode::Am, "", None, Some(1)).is_err());
+        assert!(join(ConvMode::Nxdn(crate::nxdn::Rate::N48), "5", None, Some(70_000)).is_err());
+        for (mode, a) in [
+            (ConvMode::P25, Access::P25 { nac: Some(0x293), tg: Some(1) }),
+            (ConvMode::P25, Access::P25 { nac: None, tg: Some(1) }),
+            (ConvMode::Dmr, Access::Dmr { cc: Some(1), slot: Some(2), tg: None }),
+            (ConvMode::Nxdn(crate::nxdn::Rate::N48), Access::Nxdn { ran: Some(5), tg: Some(201) }),
+            (ConvMode::Fm, Access::parse(ConvMode::Fm, "D023N").unwrap().unwrap()),
+        ] {
+            let (code, slot, tg) = a.parts();
+            assert_eq!(join(mode, &code, slot, tg), Ok(Some(a)), "{a}");
+        }
+        assert_eq!(Access::P25 { nac: Some(0x293), tg: Some(1) }.parts(), ("293".into(), None, Some(1)));
         let dmr = |t: &str| Access::parse(ConvMode::Dmr, t);
         let d = |cc, slot, tg| Ok(Some(Access::Dmr { cc, slot, tg }));
         assert_eq!(dmr("CC1"), d(Some(1), None, None));
@@ -1600,5 +1702,110 @@ mod tests {
         assert!(check_channels(&[nac("293"), nac("1A2"), p25.clone()]).is_ok());
         assert!(check_channels(&[toned("151.4", 1), toned("151.4", 2)]).unwrap_err().contains("two rows for 151.4"));
         assert!(check_channels(&[toned("151.4", 1), toned("", 2), toned("D023N", 3)]).is_ok());
+    }
+
+    /// Unencrypted P25 transmissions `(start s, NAC, talkgroup)` on the
+    /// frequency of `rows` (155.05 MHz): the calls concluded with their JSON,
+    /// and the codes no row took.
+    fn p25_calls(txs: &[(f64, u16, u16)], rows: Vec<ConvChannel>, secs: f64) -> (Vec<(Call, String)>, Vec<String>) {
+        use crate::p25::synth::{dibits, imbe, modulate, Tx};
+        let (fs, center, freq) = (480_000.0, 155_000_000.0, 155_050_000.0);
+        let mut x = 3u32;
+        let mut pad = |n: usize| -> Vec<u8> {
+            (0..n)
+                .map(|_| {
+                    x = x.wrapping_mul(1664525).wrapping_add(1013904223);
+                    (x >> 30) as u8
+                })
+                .collect()
+        };
+        let mut iq = vec![Complex32::default(); (fs * secs) as usize];
+        for &(at, nac, talkgroup) in txs {
+            let tx = Tx { nac, talkgroup, source: 42, cipher: None, voice: (0..36).map(imbe).collect() };
+            let mut d = pad(1200);
+            d.extend(dibits(&tx.frames()));
+            d.extend(pad(1200));
+            let mut ph = 0.0;
+            for (k, v) in modulate(&d, fs, freq - center, 0.3, &mut ph).into_iter().enumerate() {
+                if let Some(s) = iq.get_mut((at * fs) as usize + k) {
+                    *s += v;
+                }
+            }
+        }
+        crate::nxdn::synth::add_noise(&mut iq, 0.003, &mut 9);
+        let cfg = EngineConfig {
+            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
+            conventional: rows.into_iter().map(|r| ConvChannel { freq_hz: freq, ..r }).collect(),
+            systems: vec![conv_system("conv")],
+            ..Default::default()
+        };
+        let e = Engine::new(cfg).unwrap();
+        for c in iq.chunks(32_768) {
+            e.push_iq(0, c);
+        }
+        e.finish();
+        let (mut calls, mut skipped) = (Vec::new(), Vec::new());
+        for ev in e.drain_events() {
+            match ev {
+                Event::Concluded(k) => calls.push((k.call.clone(), k.record.to_json())),
+                Event::ConvSkipped { code, .. } => skipped.push(code),
+                _ => {}
+            }
+        }
+        (calls, skipped)
+    }
+
+    /// A P25 row: its code (NAC / talkgroup), the number it files under, its name.
+    fn p25_row(code: &str, tg: Option<u32>, name: &str) -> ConvChannel {
+        let info = (!name.is_empty()).then(|| Talkgroup { alpha_tag: name.into(), ..Default::default() });
+        ConvChannel { access: Access::parse(ConvMode::P25, code).unwrap(), talkgroup: tg, info, ..ConvChannel::new(155_050_000.0, ConvMode::P25) }
+    }
+
+    /// (filed under, the air's, name) of each call.
+    fn filed(calls: &[(Call, String)]) -> Vec<(u32, Option<u32>, String)> {
+        calls.iter().map(|(c, _)| (c.talkgroup, c.talkgroup_ota, c.talkgroup_info.as_ref().map_or(String::new(), |t| t.alpha_tag.clone()))).collect()
+    }
+
+    #[test]
+    fn p25_rows_file_under_their_number_and_keep_the_airs() {
+        // No number: the air's, which the record names as the air's too.
+        let (calls, _) = p25_calls(&[(0.3, 0x293, 1)], vec![p25_row("", None, "")], 3.0);
+        assert_eq!(filed(&calls), [(1, Some(1), String::new())]);
+        assert!(calls[0].1.contains(r#""talkgroup":1,"talkgroup_ota":1,"#), "{}", calls[0].1);
+        // The NAC the frames carried, and what kind of call it was.
+        assert!(calls[0].1.contains(r#""nac":"293","#) && calls[0].1.contains(r#""system_type":"conventional","voice_mode":"p25","#), "{}", calls[0].1);
+        // A number of its own: filed under it, the air's kept.
+        let (calls, _) = p25_calls(&[(0.3, 0x293, 1)], vec![p25_row("", Some(46012), "Townville PD")], 3.0);
+        assert_eq!(filed(&calls), [(46012, Some(1), "Townville PD".into())]);
+        assert!(calls[0].1.contains(r#""talkgroup":46012,"talkgroup_ota":1,"#), "{}", calls[0].1);
+    }
+
+    #[test]
+    fn p25_rows_split_a_frequency_by_talkgroup() {
+        let rows = vec![p25_row("293 TG 1", Some(45351), "Townville PW"), p25_row("293 TG 2", Some(45353), "Townville Parks"), p25_row("293", None, "Townville (other)")];
+        let txs = [(0.3, 0x293, 1), (3.3, 0x293, 2), (6.3, 0x293, 7), (9.3, 0x4f1, 1)];
+        let (calls, skipped) = p25_calls(&txs, rows, 12.0);
+        assert_eq!(
+            filed(&calls),
+            [(45351, Some(1), "Townville PW".into()), (45353, Some(2), "Townville Parks".into()), (7, Some(7), "Townville (other)".into())]
+        );
+        assert_eq!(skipped, ["NAC 4F1 TG 1"]);
+    }
+
+    #[test]
+    fn a_new_talkgroup_on_a_folding_row_is_a_new_call() {
+        // Back to back, within the call timeout: two calls, one number.
+        let (calls, _) = p25_calls(&[(0.3, 0x293, 1), (1.5, 0x293, 2)], vec![p25_row("", Some(46012), "")], 4.0);
+        assert_eq!(filed(&calls), [(46012, Some(1), String::new()), (46012, Some(2), String::new())]);
+    }
+
+    #[test]
+    fn analog_records_name_no_air_talkgroup() {
+        let mut txs = [Tx { offset_hz: 200_000.0, snr_db: 30.0, on: vec![(0.5, 2.0)], ph: 0.0, am: false, audio: Vec::new() }];
+        let (calls, ..) = run(2_400_000.0, 4.0, &mut txs, vec![fm(155.2e6, 5)]);
+        let [(c, _, json)] = &calls[..] else { panic!("{} calls", calls.len()) };
+        assert_eq!((c.talkgroup, c.talkgroup_ota), (5, None));
+        assert!(!json.contains("talkgroup_ota"), "{json}");
+        assert!(json.contains(r#""nac":"","#) && json.contains(r#""voice_mode":"fm","#), "{json}");
     }
 }

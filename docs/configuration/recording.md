@@ -138,6 +138,7 @@ message naming it.
 | `{site}` | The site the call was kept from, by name (a system of one site: its short name; none for a conventional system) |
 | `{sys_num}` | The system's number: 0, 1, 2… for the systems being recorded, trunked first, then conventional (before 0.2.0 a conventional system's was counted down from 65535) |
 | `{talkgroup}`, `{talkgroup_display}` | The talkgroup number |
+| `{talkgroup_ota}` | A conventional P25, DMR or NXDN call's talkgroup as the air named it (its row may file it under another `{talkgroup}`); empty for other calls |
 | `{talkgroup_alpha_tag}` | The talkgroup's alpha tag |
 | `{talkgroup_description}` | Its description |
 | `{talkgroup_tag}` | Its tag ("Fire Dispatch") |
@@ -149,6 +150,9 @@ message naming it.
 | `{ztime:FORMAT}` | The same in UTC (`iso` ends in `Z`) |
 | `{call_num}` | The call's number |
 | `{tdma_slot}` | The slot (Phase 2, DMR); empty when the call has none |
+| `{system_type}` | The kind of system: `p25`, `smartnet`, `dmr`, `nxdn`, `edacs` or `conventional` |
+| `{voice_mode}` | What the call's voice was: `p25`, `p25_phase2`, `dmr`, `nxdn48`, `nxdn96`, `provoice`, `fm` or `am` |
+| `{nac}` | A P25 call's NAC, three hex digits (`293`); empty for other calls |
 | `{color_code}` | DMR colour code |
 | `{ran}` | An NXDN call's RAN; −1 otherwise |
 | `{source_num}`, `{recorder_num}` | Which source and recorder |

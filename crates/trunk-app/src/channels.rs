@@ -3,28 +3,36 @@
 //! rules are in web/src/config.ts — keep them together).
 //!
 //! ```text
-//! TG Number,Frequency,Tone,Mode,Alpha Tag,Description,Tag,Category,Squelch dB,Bandwidth kHz,Enable
-//! 1001,154.4300,,fm,County Fire Dispatch,,Fire Dispatch,Fire,,,true
-//! ,154.3250,D223N,fm,County A Fire,,,Fire,,,true
-//! ,154.3250,151.4,fm,County B Fire,,,Fire,,,true
-//! ,460.1250,,p25,PD Tac 2,,Law Tac,Police,12,,true
-//! ,119.1000,,am,DCA Tower,,Aircraft,Airport,,,true
+//! TG Number,Frequency,Code,Slot,Match TG,Mode,Alpha Tag,Description,Tag,Category,Squelch dB,Bandwidth kHz,Enable
+//! 1001,154.4300,,,,fm,County Fire Dispatch,,Fire Dispatch,Fire,,,true
+//! ,154.3250,D223N,,,fm,County A Fire,,,Fire,,,true
+//! ,154.3250,151.4,,,fm,County B Fire,,,Fire,,,true
+//! ,460.1250,,,,p25,PD Tac 2,,Law Tac,Police,12,,true
+//! 45351,453.5000,293,,1,p25,Townville PW,,Public Works,Public Works,,,true
+//! 9001,451.5000,1,1,1,dmr,Dispatch,,Business,Business,,,true
+//! ,119.1000,,,,am,DCA Tower,,Aircraft,Airport,,,true
 //! ```
 //!
 //! - A header row names the columns, in any order, any case. Trunk Recorder's
-//!   channel file reads as is; `Mode`, `Squelch dB` and `Bandwidth kHz` are additions.
+//!   channel file reads as is; `Code`, `Slot`, `Match TG`, `Mode`, `Squelch dB`
+//!   and `Bandwidth kHz` are additions.
 //! - `Frequency`: MHz when it has a decimal point (and is under 10 000), else Hz.
 //! - `Mode`: `fm` / `analog` / `A`, `am`, `p25` / `digital` / `D`, `dmr`,
 //!   `nxdn48` (or `nxdn`) / `nxdn96`; empty = fm.
-//! - `TG Number`: empty = the frequency in kHz (further rows on the same
-//!   frequency: that and a digit, 1543251, 1543252 …).
-//! - `Tone`: the code the row records, as Trunk Recorder or RadioReference
+//! - `TG Number`: what calls are filed under; empty = the talkgroup the air
+//!   names (p25, dmr, nxdn), else the frequency in kHz (further rows on the
+//!   same frequency: that and a digit, 1543251, 1543252 …).
+//! - `Code`: the code the row records, as Trunk Recorder or RadioReference
 //!   write it — FM's CTCSS tone or DCS code (`151.4`, `151.4 PL`, `D023N`,
-//!   `023 DPL`), P25's NAC (`293 NAC`, `$293`), DMR's colour code, slot and
-//!   talkgroup (`CC1`, `CC1 TS2 TG201`), NXDN's RAN and group (`RAN 5`,
-//!   `RAN 5 TG 201`); empty = any. Rows sharing a frequency split it by
-//!   code (one may have none: the rest). With no `Mode`, a NAC means p25, a
-//!   colour code dmr and a RAN nxdn48.
+//!   `023 DPL`), P25's NAC (`293`, `293 NAC`, `$293`), DMR's colour code
+//!   (`1`, `CC1`), NXDN's RAN (`5`, `RAN 5`); empty = any. A slot or
+//!   talkgroup in it (`CC1 TS2 TG201`, RadioReference's) is read into
+//!   `Slot` / `Match TG`. Trunk Recorder's `Tone` column reads as `Code`.
+//! - `Slot`: DMR's, 1 or 2; empty = either. `Match TG`: p25, dmr, nxdn —
+//!   record only transmissions naming this talkgroup; empty = any.
+//!   Rows sharing a frequency split it by these (one may have none: the
+//!   rest; the most specific that fits wins). With no `Mode`, a NAC means
+//!   p25, a colour code dmr and a RAN nxdn48.
 //! - `Squelch dB`: dB above the noise floor; empty = the section's. Trunk
 //!   Recorder's `Squelch` column is an absolute level and is not read.
 //! - `Bandwidth kHz`: an analog channel's filter width, 4–20; empty = the mode's.
@@ -37,7 +45,7 @@ use crate::config::{Channel, ChannelMode};
 use trunk_core::trunk::Access;
 
 /// The columns [`write`] produces.
-pub const HEADER: &str = "TG Number,Frequency,Tone,Mode,Alpha Tag,Description,Tag,Category,Squelch dB,Bandwidth kHz,Enable";
+pub const HEADER: &str = "TG Number,Frequency,Code,Slot,Match TG,Mode,Alpha Tag,Description,Tag,Category,Squelch dB,Bandwidth kHz,Enable";
 
 /// What a CSV held: its channels and anything worth telling the user.
 #[derive(Debug, Default)]
@@ -112,7 +120,12 @@ pub fn parse(text: &str) -> Result<Parsed, String> {
     let c_bw = col(&["bandwidth khz", "bandwidthkhz", "bandwidth"]);
     let c_tr_sq = col(&["squelch"]);
     let c_enable = col(&["enable", "enabled"]);
-    let c_tone = col(&["tone"]);
+    let c_code = col(&["code"]);
+    // Before Code, Slot and Match TG (and Trunk Recorder's): one Tone column.
+    let old = c_code.is_none() && col(&["tone"]).is_some();
+    let c_tone = c_code.or(col(&["tone"]));
+    let c_slot = col(&["slot", "ts"]);
+    let c_mtg = col(&["match tg", "matchtalkgroup", "match talkgroup"]);
 
     let mut out = Parsed::default();
     let (mut bad_freq, mut bad_mode, mut bad_tg, mut bad_sq, mut bad_bw) = (vec![], vec![], vec![], vec![], vec![]);
@@ -174,11 +187,16 @@ pub fn parse(text: &str) -> Result<Parsed, String> {
         let enabled = !matches!(at(c_enable).to_lowercase().as_str(), "false" | "no" | "0" | "off");
         search |= raw.eq_ignore_ascii_case("s");
         let conv = mode.conv();
-        let tone = match Access::parse(conv, raw) {
-            Ok(a) => a.map_or(String::new(), |a| a.to_string()),
+        let (slot, mtg) = (at(c_slot), at(c_mtg));
+        let num = |s: &str| if s.is_empty() { Ok(None) } else { s.parse::<u32>().map(Some).map_err(|_| format!("\"{s}\" isn't a number")) };
+        let access = num(slot)
+            .and_then(|s| Ok((s.map(|s| u8::try_from(s).unwrap_or(u8::MAX)), num(mtg)?)))
+            .and_then(|(s, t)| Access::join(conv, raw, s, t));
+        let (code, slot, match_talkgroup) = match access {
+            Ok(a) => a.map_or((String::new(), None, None), Access::parts),
             Err(e) => {
                 bad_tone.push(format!("row {row}: {e}"));
-                String::new()
+                (String::new(), None, None)
             }
         };
         out.channels.push(Channel {
@@ -191,9 +209,17 @@ pub fn parse(text: &str) -> Result<Parsed, String> {
             group: at(c_group).to_string(),
             squelch_db,
             bandwidth_khz,
-            tone,
+            code,
+            slot,
+            match_talkgroup,
             enabled,
         });
+    }
+    if old {
+        let n = crate::config::keep_p25_numbers(&mut out.channels);
+        if n > 0 {
+            out.notes.push(format!("{n} P25 row(s) sharing a frequency had no TG Number: given the one their calls were filed under before (a row without one now files calls under the talkgroup the air names)."));
+        }
     }
     if !bad_freq.is_empty() {
         out.notes.push(format!("Skipped row(s) {} — no usable frequency.", rows_list(&bad_freq)));
@@ -211,7 +237,7 @@ pub fn parse(text: &str) -> Result<Parsed, String> {
         out.notes.push(format!("Row(s) {}: Bandwidth kHz must be 4–20, on an fm or am channel — using the default.", rows_list(&bad_bw)));
     }
     if !bad_tone.is_empty() {
-        out.notes.push(format!("Tone not read (the row records any): {}.", bad_tone.join("; ")));
+        out.notes.push(format!("Code, Slot or Match TG not read (the row records any): {}.", bad_tone.join("; ")));
     }
     if search {
         out.notes.push("Tone S (search) needs no setting here: every analog call's tone is identified and written to its JSON.".into());
@@ -246,7 +272,9 @@ pub fn write(channels: &[Channel]) -> String {
         let row = [
             c.talkgroup.map_or(String::new(), |t| t.to_string()),
             mhz(c.freq_hz),
-            cell(&c.tone),
+            cell(&c.code),
+            c.slot.map_or(String::new(), |s| s.to_string()),
+            c.match_talkgroup.map_or(String::new(), |t| t.to_string()),
             match c.mode {
                 ChannelMode::Fm => "fm".into(),
                 ChannelMode::Am => "am".into(),
@@ -288,8 +316,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(p.channels.len(), 7);
-        let tones: Vec<&str> = p.channels.iter().map(|c| c.tone.as_str()).collect();
-        assert_eq!(tones, ["94.8", "151.4", "D023N", "", "", "NAC 293", "CC 1 TS 2 TG 201"]);
+        let codes: Vec<_> = p.channels.iter().map(|c| (c.code.as_str(), c.slot, c.match_talkgroup)).collect();
+        assert_eq!(codes, [("94.8", None, None), ("151.4", None, None), ("D023N", None, None), ("", None, None), ("", None, None), ("293", None, None), ("1", Some(2), Some(201))]);
         assert_eq!((p.channels[5].mode, p.channels[6].mode), (ChannelMode::P25, ChannelMode::Dmr));
         let (a, b) = (&p.channels[0], &p.channels[1]);
         assert_eq!((a.freq_hz, a.talkgroup, a.mode, a.enabled), (462_275_000.0, Some(300), ChannelMode::Fm, true));
@@ -315,7 +343,9 @@ mod tests {
                 group: "Fire".into(),
                 squelch_db: Some(10.5),
                 bandwidth_khz: None,
-                tone: "D023N".into(),
+                code: "D023N".into(),
+                slot: None,
+                match_talkgroup: None,
                 enabled: true,
             },
             Channel {
@@ -328,13 +358,31 @@ mod tests {
                 group: String::new(),
                 squelch_db: None,
                 bandwidth_khz: None,
-                tone: String::new(),
+                code: "293".into(),
+                slot: None,
+                match_talkgroup: Some(1),
                 enabled: false,
+            },
+            Channel {
+                freq_hz: 451_500_000.0,
+                mode: ChannelMode::Dmr,
+                name: "Dispatch".into(),
+                talkgroup: Some(9001),
+                description: String::new(),
+                tag: String::new(),
+                group: String::new(),
+                squelch_db: None,
+                bandwidth_khz: None,
+                code: "1".into(),
+                slot: Some(1),
+                match_talkgroup: Some(1),
+                enabled: true,
             },
         ];
         let csv = write(&chans);
-        assert!(csv.contains("1001,154.43125,D023N,fm,\"Fire, Main\""), "{csv}");
-        assert!(csv.contains(",460.1250,,p25,PD Tac,"), "{csv}");
+        assert!(csv.contains("1001,154.43125,D023N,,,fm,\"Fire, Main\""), "{csv}");
+        assert!(csv.contains(",460.1250,293,,1,p25,PD Tac,"), "{csv}");
+        assert!(csv.contains("9001,451.5000,1,1,1,dmr,Dispatch,"), "{csv}");
         let back = parse(&csv).unwrap();
         assert_eq!(back.channels, chans);
         assert!(back.notes.is_empty(), "{:?}", back.notes);
@@ -344,6 +392,23 @@ mod tests {
         assert_eq!(eu.channels[0].mode, ChannelMode::P25);
         assert_eq!(eu.channels[0].squelch_db, Some(12.5));
         assert!(parse("Name,Mode\nx,fm\n").unwrap_err().contains("No Frequency column"));
+    }
+
+    /// Code, Slot and Match TG; a slot named twice must agree; an older file
+    /// (a Tone column) keeps the numbers its P25 rows were filed under.
+    #[test]
+    fn code_slot_and_match_tg() {
+        let p = parse("Frequency,Mode,Code,Slot,Match TG\n451.5,dmr,CC1 TS2,2,201\n451.6,dmr,CC1 TS2,1,\n453.5,p25,293,,1\n154.43,fm,,,5\n").unwrap();
+        let got: Vec<_> = p.channels.iter().map(|c| (c.code.as_str(), c.slot, c.match_talkgroup)).collect();
+        assert_eq!(got, [("1", Some(2), Some(201)), ("", None, None), ("293", None, Some(1)), ("", None, None)]);
+        let notes = p.notes.join(" ");
+        assert!(notes.contains("row 3: \"CC1 TS2\" names another slot") && notes.contains("row 5: Match TG 5: FM names no talkgroup"), "{notes}");
+        let old = parse("Frequency,Mode,Tone\n453.5,p25,293 NAC\n453.5,p25,4F1\n460.125,p25,293\n").unwrap();
+        assert_eq!(old.channels.iter().map(|c| c.talkgroup).collect::<Vec<_>>(), [Some(453500), Some(4535001), None]);
+        assert!(old.notes.iter().any(|n| n.contains("2 P25 row(s)")), "{:?}", old.notes);
+        // The same columns from the new writer: nothing written in.
+        let new = parse("Frequency,Mode,Code\n453.5,p25,293\n453.5,p25,4F1\n").unwrap();
+        assert_eq!(new.channels.iter().map(|c| c.talkgroup).collect::<Vec<_>>(), [None, None]);
     }
 
     #[test]

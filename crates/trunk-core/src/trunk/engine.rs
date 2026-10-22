@@ -1979,6 +1979,7 @@ impl Core {
             &SaveContext {
                 rules: sys.cfg.save,
                 short_name: &sys.cfg.short_name,
+                system_type: trunk.map_or("conventional", |t| t.cfg.protocol.kind()),
                 site: trunk.map_or("", |t| &t.cfg.name),
                 epoch_ms_at_zero: self.epoch_ms_at_zero,
                 units: Some(&sys.aliases),
@@ -2391,7 +2392,7 @@ mod tests {
     /// An engine on one source, with a conventional channel (so it runs).
     fn plain_engine() -> Engine {
         use super::super::conventional::{ConvChannel, ConvMode};
-        let ch = ConvChannel { talkgroup: 1, ..ConvChannel::new(155.2e6, ConvMode::Fm) };
+        let ch = ConvChannel { talkgroup: Some(1), ..ConvChannel::new(155.2e6, ConvMode::Fm) };
         Engine::new(EngineConfig { sources: vec![SourceConfig { center_hz: 155e6, rate_hz: 2.4e6, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ }], conventional: vec![ch], ..Default::default() }).unwrap()
     }
 

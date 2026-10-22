@@ -88,14 +88,22 @@ export interface Radios {
   soapy?: SoapyState;
 }
 
-/** A conventional channel. `talkgroup` defaults to the frequency in kHz; `squelchDb` to the section's. */
+/**
+ * A conventional channel. `talkgroup` (TG Number) is what calls are filed
+ * under; absent: the talkgroup the air names (P25, DMR, NXDN), else the
+ * frequency in kHz. `squelchDb` defaults to the section's.
+ */
 export interface Channel {
   freqHz: number;
   mode: "fm" | "am" | "p25" | "dmr" | "nxdn48" | "nxdn96";
   name: string;
   talkgroup?: number;
-  /** FM: the CTCSS tone or DCS code it records, Trunk Recorder's form ("151.4", "D023N"); absent / "": any. */
-  tone?: string;
+  /** The code it records: FM's CTCSS tone or DCS code ("151.4", "D023N"), P25's NAC ("293"), DMR's colour code ("1"), NXDN's RAN ("5"); absent / "": any. */
+  code?: string;
+  /** DMR: record only this slot (1, 2). */
+  slot?: number;
+  /** P25, DMR, NXDN: record only transmissions naming this talkgroup. */
+  matchTalkgroup?: number;
   description?: string;
   tag?: string;
   group?: string;
@@ -679,6 +687,8 @@ export interface CallView {
   /** The site it is on (its name; none for a conventional system's call). */
   site?: string;
   talkgroup: number;
+  /** Conventional P25 / DMR / NXDN: the talkgroup the air named (a channel row may file the call under another). */
+  talkgroupOta?: number | null;
   alphaTag: string;
   freqHz: number;
   slot: number | null;
@@ -724,6 +734,8 @@ export interface CallRecord {
   /** The site its copy was kept from (a system of one site: its short name). */
   site?: string;
   talkgroup: number;
+  /** Conventional P25 / DMR / NXDN: the talkgroup the air named (`talkgroup` is what the call is filed under, which a channel row may set to another number). */
+  talkgroup_ota?: number;
   talkgroup_tag: string;
   talkgroup_description: string;
   /** The talkgroup file's Tag and Category columns. */
@@ -756,11 +768,17 @@ export interface CallRecord {
   mode: number;
   /** TDMA / DMR slot (0 otherwise). */
   tdma_slot: number;
+  /** P25: the NAC its voice carried (conventional) or its site's (trunked), in hex as channel files write it ("293"); "" otherwise (absent in calls saved before). */
+  nac?: string;
   /** DMR color code; -1 otherwise. */
   color_code: number;
   /** NXDN RAN; -1 otherwise (absent in calls saved before NXDN). */
   ran?: number;
   audio_type: "analog" | "digital" | "digital tdma";
+  /** The kind of system it came on (absent in calls saved before). */
+  system_type?: "p25" | "smartnet" | "dmr" | "nxdn" | "edacs" | "conventional";
+  /** What its voice was: a conventional row's mode, or a trunked grant's (absent in calls saved before). */
+  voice_mode?: "p25" | "p25_phase2" | "dmr" | "nxdn48" | "nxdn96" | "provoice" | "fm" | "am";
   /** Conventional analog: the tone it was matched on ("ctcss" / "dcs"), "search" (identified, not required), else "off". */
   tone_mode: "ctcss" | "dcs" | "search" | "off";
   /** The tone heard ("151.4 Hz", "D023N"), or "". */

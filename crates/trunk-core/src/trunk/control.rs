@@ -50,6 +50,20 @@ pub enum Protocol {
     Edacs(edacs::EdacsConfig),
 }
 
+impl Protocol {
+    /// Its name as the config's `type` gives it, and as plugins and the call
+    /// JSON's `system_type` have it (a conventional system's is "conventional").
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Protocol::P25 => "p25",
+            Protocol::SmartNet(_) => "smartnet",
+            Protocol::Dmr(_) => "dmr",
+            Protocol::Nxdn(_) => "nxdn",
+            Protocol::Edacs(_) => "edacs",
+        }
+    }
+}
+
 /// What a system's protocol has to show beyond what every system shows.
 #[derive(Clone, Debug, Default)]
 pub enum ProtocolStatus {

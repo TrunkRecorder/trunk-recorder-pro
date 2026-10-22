@@ -100,7 +100,7 @@ far behind loses events (counted on the dashboard) rather than slowing the recor
 Every event carries the system's `short_name`, which is its identity. The numeric `system` index is
 for the current run only, so store anything by short name. It counts from 0: the trunked systems
 being recorded first, then the conventional ones (there is no `CONVENTIONAL` index any more); a
-system's `kind` in `hello` (`p25`, `smartnet`, `dmr`, `nxdn` or `conventional`) says which it is. Calls and unit events also carry `site`,
+system's `kind` in `hello` (`p25`, `smartnet`, `dmr`, `nxdn`, `edacs` or `conventional`) says which it is. Calls and unit events also carry `site`,
 the name of the site they were heard on (a system of one site: its short name), and `status` has an
 entry per site, with its `site_name`. A call heard on several sites of a system is one call: one
 `call.start` and one `call.end` (from its first copy), and one `call.concluded`, for the copy kept.

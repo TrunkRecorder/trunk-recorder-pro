@@ -5,7 +5,7 @@ import "./testEnv.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { renderToString } from "react-dom/server";
-import { defaultConfig, normalizeSystem } from "./config.ts";
+import { defaultConfig, normalizeSystem, restartKey } from "./config.ts";
 import { snapshot, transport } from "./controller.ts";
 import type { Config, EngineStatus, ShareStatus, System } from "./protocol.ts";
 import { directoryUrl, ShareSystem } from "./ShareSystem.tsx";
@@ -54,4 +54,11 @@ test("Share: the config keeps the switch and the directory's link", () => {
   assert.deepEqual(sys.directory, { id: "sys_abc", rev: 4 });
   assert.equal(sys.sites[0].directoryId, "site_n");
   assert.equal(normalizeSystem({ shortName: "x", type: "p25", share: false }).share, undefined);
+});
+
+test("Share: switching it, or a share saving the directory's link, needs no restart", () => {
+  const before = { ...defaultConfig(), systems: [p25()] };
+  const after = { ...before, systems: [{ ...p25({ share: true, directory: { id: "sys_abc", rev: 2, sharedAt: 1 } }), sites: p25().sites.map((x) => ({ ...x, directoryId: "site_n" })) }] };
+  assert.equal(restartKey(after, true), restartKey(before, true));
+  assert.notEqual(restartKey({ ...before, systems: [p25({ name: "Other" })] }, true), restartKey(before, true));
 });
