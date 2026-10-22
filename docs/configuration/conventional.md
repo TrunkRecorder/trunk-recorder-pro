@@ -94,6 +94,7 @@ Notes:
 | `squelchDb` | | the system's | number | This channel's own squelch, dB above the noise floor |
 | `bandwidthKhz` | | the mode's | number | `fm` and `am`: the channel filter's width, kHz, 4–20. FM: 11 (12.5 kHz channels), 16 for wide FM (25 kHz). AM: 11 below 225 MHz, 16 from 225 MHz (UHF military air); 6 for 8.33 kHz channels. Rows sharing a frequency need the same |
 | `enabled` | | `true` | bool | `false` keeps the row without recording it |
+| `autoTune` | | `false` | bool | `p25`, `dmr`, `nxdn`: its calls' carrier offsets correct its source's AutoTune (a repeater output to trust; see [Frequency correction](../guides/conventional.md#frequency-correction)) |
 
 ### Talkgroup numbers
 
@@ -181,7 +182,7 @@ Channel files are a desktop feature; the browser version has no file to link. Se
 ### CSV format
 
 ```csv
-TG Number,Frequency,Code,Slot,Match TG,Mode,Alpha Tag,Description,Tag,Category,Squelch dB,Bandwidth kHz,Enable
+TG Number,Frequency,Code,Slot,Match TG,Mode,Alpha Tag,Description,Tag,Category,Squelch dB,Bandwidth kHz,Enable,AutoTune
 1001,154.4300,,,,fm,County Fire Dispatch,,Fire Dispatch,Fire,,,true
 ,154.3250,D223N,,,fm,County A Fire,,,Fire,,,true
 ,154.3250,151.4,,,fm,County B Fire,,,Fire,,,true
@@ -207,6 +208,7 @@ A header row is required. Columns are matched in any case and any order; others 
 | `Squelch dB` | `SquelchDb` | 3–40, dB above the noise floor; empty = the system's |
 | `Bandwidth kHz` | `BandwidthKhz`, `Bandwidth` | `fm` and `am` rows: the filter's width, 4–20; empty = the mode's |
 | `Enable` | `Enabled` | `false`, `no`, `0` or `off` = off; anything else or empty = on |
+| `AutoTune` | `Auto Tune` | `true`, `yes`, `1` or `on` = its calls correct the source (digital rows); empty = off |
 
 Parsing:
 

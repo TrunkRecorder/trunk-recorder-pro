@@ -105,6 +105,8 @@ function SystemCard({ s, x, usuals, summary, freqs }: { s: AppState; x: DashSyst
   const live = running(s);
   const dayRate = usualOf(day?.[cc("good")]);
   const dayCalls = total(day?.[K.sys(x.name, "calls")]);
+  // A conventional system: its calls this run, and its channels (open: a signal on them now).
+  const channels = x.kind === "conventional" ? (s.config?.conventional.find((v) => v.shortName === x.name)?.channels.filter((ch) => ch.enabled).length ?? 0) : 0;
   return (
     <Card
       title={
@@ -148,7 +150,17 @@ function SystemCard({ s, x, usuals, summary, freqs }: { s: AppState; x: DashSyst
             }
           />
         </div>
-      ) : null}
+      ) : (
+        <div className="sys-main">
+          <Stat
+            label="Calls"
+            value={x.status ? compact(x.status.callsConcluded) : "—"}
+            unit="this run"
+            spark={<LiveSpark k={K.sys(x.name, "calls")} mul={60} lo={0} title="Calls a minute, 10 min" />}
+            sub={`${dayCalls === null ? "—" : compact(dayCalls)} in 24 h · ${channels} channel${channels === 1 ? "" : "s"}${x.status?.conventionalOpen ? ` · ${x.status.conventionalOpen} open now` : ""}`}
+          />
+        </div>
+      )}
       {live && <div className="mini-stats">
         <div>
           <b>{num(callsMin, 1)}</b>

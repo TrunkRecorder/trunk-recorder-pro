@@ -3,7 +3,7 @@
 //! rules are in web/src/config.ts — keep them together).
 //!
 //! ```text
-//! TG Number,Frequency,Code,Slot,Match TG,Mode,Alpha Tag,Description,Tag,Category,Squelch dB,Bandwidth kHz,Enable
+//! TG Number,Frequency,Code,Slot,Match TG,Mode,Alpha Tag,Description,Tag,Category,Squelch dB,Bandwidth kHz,Enable,AutoTune
 //! 1001,154.4300,,,,fm,County Fire Dispatch,,Fire Dispatch,Fire,,,true
 //! ,154.3250,D223N,,,fm,County A Fire,,,Fire,,,true
 //! ,154.3250,151.4,,,fm,County B Fire,,,Fire,,,true
@@ -37,6 +37,8 @@
 //!   Recorder's `Squelch` column is an absolute level and is not read.
 //! - `Bandwidth kHz`: an analog channel's filter width, 4–20; empty = the mode's.
 //! - `Enable`: `false` / `no` / `0` switches a channel off; empty = on.
+//! - `AutoTune`: `true` / `yes` / `1` — a digital row's calls score its
+//!   source's AutoTune (a repeater output to trust); empty = off.
 //! - Commas, semicolons or tabs (from the header row); a UTF-8 byte-order
 //!   mark and decimal commas (with semicolons) are accepted, as Excel
 //!   writes them in some locales. Blank rows and `#` comments are skipped.
@@ -45,7 +47,7 @@ use crate::config::{Channel, ChannelMode};
 use trunk_core::trunk::Access;
 
 /// The columns [`write`] produces.
-pub const HEADER: &str = "TG Number,Frequency,Code,Slot,Match TG,Mode,Alpha Tag,Description,Tag,Category,Squelch dB,Bandwidth kHz,Enable";
+pub const HEADER: &str = "TG Number,Frequency,Code,Slot,Match TG,Mode,Alpha Tag,Description,Tag,Category,Squelch dB,Bandwidth kHz,Enable,AutoTune";
 
 /// What a CSV held: its channels and anything worth telling the user.
 #[derive(Debug, Default)]
@@ -120,6 +122,7 @@ pub fn parse(text: &str) -> Result<Parsed, String> {
     let c_bw = col(&["bandwidth khz", "bandwidthkhz", "bandwidth"]);
     let c_tr_sq = col(&["squelch"]);
     let c_enable = col(&["enable", "enabled"]);
+    let c_tune = col(&["autotune", "auto tune"]);
     let c_code = col(&["code"]);
     // Before Code, Slot and Match TG (and Trunk Recorder's): one Tone column.
     let old = c_code.is_none() && col(&["tone"]).is_some();
@@ -185,6 +188,7 @@ pub fn parse(text: &str) -> Result<Parsed, String> {
             },
         };
         let enabled = !matches!(at(c_enable).to_lowercase().as_str(), "false" | "no" | "0" | "off");
+        let auto_tune = matches!(at(c_tune).to_lowercase().as_str(), "true" | "yes" | "1" | "on");
         search |= raw.eq_ignore_ascii_case("s");
         let conv = mode.conv();
         let (slot, mtg) = (at(c_slot), at(c_mtg));
@@ -213,6 +217,7 @@ pub fn parse(text: &str) -> Result<Parsed, String> {
             slot,
             match_talkgroup,
             enabled,
+            auto_tune,
         });
     }
     if old {
@@ -290,6 +295,7 @@ pub fn write(channels: &[Channel]) -> String {
             c.squelch_db.map_or(String::new(), |v| v.to_string()),
             c.bandwidth_khz.map_or(String::new(), |v| v.to_string()),
             c.enabled.to_string(),
+            if c.auto_tune { "true".into() } else { String::new() },
         ];
         out.push_str(&row.join(","));
         out.push('\n');
@@ -346,7 +352,7 @@ mod tests {
                 code: "D023N".into(),
                 slot: None,
                 match_talkgroup: None,
-                enabled: true,
+                enabled: true, auto_tune: false,
             },
             Channel {
                 freq_hz: 460_125_000.0,
@@ -361,7 +367,7 @@ mod tests {
                 code: "293".into(),
                 slot: None,
                 match_talkgroup: Some(1),
-                enabled: false,
+                enabled: false, auto_tune: false,
             },
             Channel {
                 freq_hz: 451_500_000.0,
@@ -376,7 +382,7 @@ mod tests {
                 code: "1".into(),
                 slot: Some(1),
                 match_talkgroup: Some(1),
-                enabled: true,
+                enabled: true, auto_tune: false,
             },
         ];
         let csv = write(&chans);
@@ -396,6 +402,17 @@ mod tests {
 
     /// Code, Slot and Match TG; a slot named twice must agree; an older file
     /// (a Tone column) keeps the numbers its P25 rows were filed under.
+    /// AutoTune: yes / true / 1 / on asks it; written only when asked.
+    #[test]
+    fn autotune_column() {
+        let p = parse("Frequency,Mode,AutoTune\n453.375,p25,yes\n451.75,p25,\n453.225,fm,false\n").unwrap();
+        assert_eq!(p.channels.iter().map(|c| c.auto_tune).collect::<Vec<_>>(), [true, false, false]);
+        let out = write(&p.channels);
+        assert!(out.lines().next().unwrap().ends_with(",Enable,AutoTune"), "{out}");
+        assert!(out.contains("\n,453.3750,,,,p25,,,,,,,true,true\n") && out.contains("\n,451.7500,,,,p25,,,,,,,true,\n"), "{out}");
+        assert_eq!(parse(&out).unwrap().channels.iter().map(|c| c.auto_tune).collect::<Vec<_>>(), [true, false, false]);
+    }
+
     #[test]
     fn code_slot_and_match_tg() {
         let p = parse("Frequency,Mode,Code,Slot,Match TG\n451.5,dmr,CC1 TS2,2,201\n451.6,dmr,CC1 TS2,1,\n453.5,p25,293,,1\n154.43,fm,,,5\n").unwrap();

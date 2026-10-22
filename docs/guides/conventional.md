@@ -130,7 +130,7 @@ Frequencies in the config are in Hz. Every key is listed in the
 A header row names the columns, in any order and any case; then one channel per row:
 
 ```csv
-TG Number,Frequency,Code,Slot,Match TG,Mode,Alpha Tag,Description,Tag,Category,Squelch dB,Bandwidth kHz,Enable
+TG Number,Frequency,Code,Slot,Match TG,Mode,Alpha Tag,Description,Tag,Category,Squelch dB,Bandwidth kHz,Enable,AutoTune
 1001,154.4300,,,,fm,County Fire Dispatch,,Fire Dispatch,Fire,,,true
 ,154.3250,D223N,,,fm,County A Fire,,,Fire,,,true
 ,154.3250,151.4,,,fm,County B Fire,,,Fire,,,true
@@ -146,6 +146,8 @@ TG Number,Frequency,Code,Slot,Match TG,Mode,Alpha Tag,Description,Tag,Category,S
 - `Squelch dB` is 3-40 dB above the noise floor; empty uses the system's.
 - `Bandwidth kHz` is an `fm` or `am` row's filter width, 4-20; empty uses the mode's default.
 - `Enable` set to `false`, `no`, `0` or `off` turns a row off.
+- `AutoTune` set to `true`, `yes`, `1` or `on` lets a digital row's calls correct its source's
+  frequency error; empty is off. See [Frequency correction](#frequency-correction).
 - Commas, semicolons or tabs all work, as do decimal commas and the byte-order mark Excel adds in
   some locales. Blank rows and lines starting with `#` are skipped.
 
@@ -160,6 +162,25 @@ Every enabled channel must be inside a source's bandwidth. If a source's center 
 and says which ones are outside: `Conventional channel(s) outside every source's bandwidth: ...
 MHz — move a center frequency or disable them.` See [Radios](radios.md) for centers, sample rates
 and guard bands.
+
+### Frequency correction
+
+A source's [AutoTune](radios.md#autotune) corrects the conventional channels on it as it does
+trunked ones: each channel is placed by the source's correction, taken up between calls. A source
+with a control channel learns the correction there. A source that carries only conventional
+channels has none, so it learns it from calls on the rows you ask:
+
+- Turn on **AutoTune** in a digital row's editor (Setup, the row's **Edit**), or put `true` in the
+  CSV's `AutoTune` column. Its calls of a second or more then measure the source.
+- Ask it of a **repeater output**: the base station holds its frequency, so every call says the
+  same. Leave it off for simplex, talkaround or a repeater's input, where each radio is off by its
+  own amount.
+- The source needs AutoTune on. These calls count as a trunked call does: one measurement each,
+  kept with the control channels' and trunked calls' on the same source, and the correction is the
+  middle (median) of the last 20, so one radio off its frequency doesn't move it.
+
+Each call's JSON keeps the whole offset (`freq_error`, Hz, against the ppm you set), corrected or
+not, so the **Decode** page's frequency table shows the source's error either way.
 
 ## How a transmission is detected
 

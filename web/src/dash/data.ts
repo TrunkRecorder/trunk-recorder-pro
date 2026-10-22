@@ -66,7 +66,11 @@ export function dashSystems(s: AppState): DashSystem[] {
     });
     return { name: x.shortName, kind: (x.type ?? "p25") as DashSystem["kind"], status, sites };
   });
-  for (const c of s.config.conventional) if (c.enabled !== false && c.channels.some((ch) => ch.enabled)) out.push({ name: c.shortName, kind: "conventional", status: null, sites: [] });
+  for (const c of s.config.conventional) {
+    if (c.enabled === false || !c.channels.some((ch) => ch.enabled)) continue;
+    const status = s.status?.systems.find((y) => y.shortName === c.shortName) ?? null;
+    out.push({ name: c.shortName, kind: "conventional", status, sites: [] });
+  }
   return out;
 }
 
