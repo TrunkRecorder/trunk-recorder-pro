@@ -111,6 +111,8 @@ export interface Channel {
   /** FM / AM: the channel filter's width, kHz (4–20); absent = the mode's (FM 11, AM 11 or 16 from 225 MHz). */
   bandwidthKhz?: number;
   enabled: boolean;
+  /** Digital rows: its calls' carrier offsets score its source's AutoTune (a repeater output to trust, not radios on simplex). Absent: off. */
+  autoTune?: boolean;
 }
 
 /** How a conventional system's analog channels are demodulated; each left out is the default. */
@@ -561,16 +563,18 @@ export interface PhaseState {
   ended: boolean;
 }
 
-/** One running system, with its sites that are. `index` is what calls and audio carry as `system`. */
+/** One system being recorded: trunked (with a site running) or conventional. `index` is what calls and audio carry as `system`. */
 export interface SystemStatus {
   index: number;
   shortName: string;
   activeCalls: number;
   recording: number;
+  /** Its conventional frequencies with a signal on them now. */
+  conventionalOpen: number;
   callsConcluded: number;
   /** Its sharing with the community directory; null when it isn't shared. */
   share?: ShareStatus | null;
-  /** Its sites following their control channels, in order. */
+  /** Its sites following their control channels, in order (conventional: none). */
   sites: SiteStatus[];
 }
 
@@ -1255,6 +1259,10 @@ export interface ChannelSnapshot {
   /** CQPSK's phase error, RMS degrees (under 10 clean, ~25 noise). */
   phaseErrDeg: number | null;
   calls: number;
+  /** A conventional channel: its mode. */
+  mode?: Channel["mode"];
+  /** A conventional channel: its rows' names, each once. */
+  names?: string[];
 }
 
 /** Something notable (crates/trunk-app/src/stats/events.rs). Which fields come depends on `kind`. */

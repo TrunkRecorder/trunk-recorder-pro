@@ -665,6 +665,10 @@
         },
         "enabled": {
           "type": "boolean"
+        },
+        "autoTune": {
+          "type": "boolean",
+          "description": "Digital rows: its calls' carrier offsets score its source's AutoTune (a repeater output to trust, not radios on simplex). Absent: off."
         }
       },
       "required": [
@@ -735,6 +739,25 @@
         },
         "calls": {
           "type": "number"
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "fm",
+            "am",
+            "p25",
+            "dmr",
+            "nxdn48",
+            "nxdn96"
+          ],
+          "description": "A conventional channel: its mode."
+        },
+        "names": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "A conventional channel: its rows' names, each once."
         }
       },
       "required": [
@@ -6886,6 +6909,10 @@
         "recording": {
           "type": "number"
         },
+        "conventionalOpen": {
+          "type": "number",
+          "description": "Its conventional frequencies with a signal on them now."
+        },
         "callsConcluded": {
           "type": "number"
         },
@@ -6905,7 +6932,7 @@
           "items": {
             "$ref": "#/definitions/SiteStatus"
           },
-          "description": "Its sites following their control channels, in order."
+          "description": "Its sites following their control channels, in order (conventional: none)."
         }
       },
       "required": [
@@ -6913,11 +6940,12 @@
         "shortName",
         "activeCalls",
         "recording",
+        "conventionalOpen",
         "callsConcluded",
         "sites"
       ],
       "additionalProperties": false,
-      "description": "One running system, with its sites that are. `index` is what calls and audio carry as `system`."
+      "description": "One system being recorded: trunked (with a site running) or conventional. `index` is what calls and audio carry as `system`."
     },
     "TalkgroupName": {
       "type": "object",

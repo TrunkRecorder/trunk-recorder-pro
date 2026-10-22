@@ -1125,6 +1125,10 @@ pub struct Channel {
     pub bandwidth_khz: Option<f64>,
     #[serde(default = "yes")]
     pub enabled: bool,
+    /// Its calls' carrier offsets score its source's AutoTune (digital rows;
+    /// a repeater output to trust, not radios on simplex). Off by default.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_tune: bool,
 }
 
 /// A USRP's gain when none is given, dB (as the interface starts one).
@@ -1213,6 +1217,7 @@ impl Channel {
                 ignore: false,
             }),
             squelch_db: self.squelch_db,
+            tune_ref: self.auto_tune,
             access: self.parsed_access().ok().flatten(),
             system: 0,
             analog: Demod::default().tuning(self),
@@ -2904,7 +2909,7 @@ mod tests {
             code: tone.into(),
             slot: None,
             match_talkgroup: None,
-            enabled: true,
+            enabled: true, auto_tune: false,
         };
         let mut c = Config { conventional: vec![Conventional::default()], ..Default::default() };
         c.conventional[0].channels = vec![row("", None), row("D023N", None), row("151.4", Some(500)), row("94.8", None)];
@@ -2957,7 +2962,7 @@ mod tests {
             code: String::new(),
             slot: None,
             match_talkgroup: None,
-            enabled: true,
+            enabled: true, auto_tune: false,
         }];
         // Linking a new path writes the current list there.
         c.link_channel_file(0, &cfg_path, "channels.csv").unwrap();

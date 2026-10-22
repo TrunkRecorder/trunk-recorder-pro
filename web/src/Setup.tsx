@@ -322,6 +322,7 @@ const CSV_COLUMNS: [string, React.ReactNode, string][] = [
   ["Squelch dB", "Open threshold, dB above the noise floor, 3–40", "the system's"],
   ["Bandwidth kHz", "fm and am: the channel filter's width, 4–20", "the mode's"],
   ["Enable", <><code>false</code>, <code>no</code>, <code>0</code> or <code>off</code> keeps the row without recording it</>, "on"],
+  ["AutoTune", <>p25, dmr, nxdn: <code>true</code> lets its calls correct the source's frequency error (a repeater output to trust)</>, "off"],
 ];
 
 type MatchKind = "tone" | "code" | "slot" | "tg" | "any";
@@ -437,6 +438,7 @@ function RowEditor(props: {
   lists: Record<"tag" | "group", string>;
   onAccess: (p: AccessParts) => void;
   onName: (field: NameField, value: string) => void;
+  onAutoTune: (on: boolean) => void;
   onDone: () => void;
 }) {
   const { ch } = props;
@@ -464,6 +466,15 @@ function RowEditor(props: {
               </label>
             ))}
           </fieldset>
+          {digital(ch.mode) && (
+            <fieldset>
+              <legend>AutoTune</legend>
+              <label className="toggle" title="Its calls' carrier offsets correct the source's frequency error, when the source has AutoTune on and no control channel">
+                <input type="checkbox" checked={!!ch.autoTune} disabled={props.disabled} onChange={(e) => props.onAutoTune(e.target.checked)} />
+                <span className="small">Correct the source from its calls</span>
+              </label>
+            </fieldset>
+          )}
           <button className="btn small" onClick={props.onDone}>
             Done
           </button>
@@ -473,6 +484,7 @@ function RowEditor(props: {
           {ch.mode === "dmr" && " Slot: either, or one."}
           {digital(ch.mode) && " Match TG: only transmissions naming this talkgroup (empty: any). Give the row a TG Number to file them under another; the air's stays in the call's JSON as talkgroup_ota."}
           {" "}Names go with every call the row takes, as a talkgroup file's do (empty: the talkgroup file's for the number filed under, if the row has no names at all).
+          {digital(ch.mode) && " AutoTune: for a repeater output, whose base station holds its frequency; leave it off for simplex or talkaround, where each radio is off by its own amount."}
         </div>
       </td>
     </tr>
@@ -1563,6 +1575,11 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
                             {[ch.tag, ch.group].filter(Boolean).join(" · ") || ch.description}
                           </button>
                         )}
+                        {ch.autoTune && digital(ch.mode) && (
+                          <span className="row-meta small muted" title="Its calls correct the source's frequency error">
+                            AutoTune
+                          </span>
+                        )}
                       </td>
                       <td>
                         <NumberInput
@@ -1636,6 +1653,7 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
                           lists={lists}
                           onAccess={(p) => editRow(i, (x) => setAccess(x, p))}
                           onName={(f, v) => editRow(i, (x) => void (v ? (x[f] = v) : delete x[f]))}
+                          onAutoTune={(on) => editRow(i, (x) => void (on ? (x.autoTune = true) : delete x.autoTune))}
                           onDone={() => setEditing((e) => (e.delete(ids.current[i]) ? new Set(e) : e))}
                         />
                       )}

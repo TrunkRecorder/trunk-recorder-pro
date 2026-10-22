@@ -34,7 +34,7 @@ test("sameOnTheAir: systems set up apart whose sites announce one system", () =>
   const id = (x: Partial<SiteIdentity>): SiteIdentity => ({ nac: null, wacn: null, sysId: null, rfss: null, site: null, ...x });
   const site = (name: string, identity: Partial<SiteIdentity>): SiteStatus =>
     ({ index: 0, name, nowS: 0, controlChannelHz: null, identity: id(identity), good: 0, bad: 0, modulation: null, activeCalls: 0, recording: 0, callsConcluded: 0, mismatch: null });
-  const sys = (shortName: string, sites: SiteStatus[]): SystemStatus => ({ index: 0, shortName, activeCalls: 0, recording: 0, callsConcluded: 0, sites });
+  const sys = (shortName: string, sites: SiteStatus[]): SystemStatus => ({ index: 0, shortName, activeCalls: 0, recording: 0, conventionalOpen: 0, callsConcluded: 0, sites });
   assert.deepEqual(sameOnTheAir(c, []), []);
   const live = [sys("dcfd", [site("dcfd", { wacn: 0xbee00, sysId: 0x1a2, site: 1 })]), sys("dcfd2", [site("dcfd2", { wacn: 0xbee00, sysId: 0x1a2, site: 2 })])];
   assert.deepEqual(sameOnTheAir(c, live).map(([a, b]) => [a.shortName, b.shortName]), [["dcfd", "dcfd2"]]);
