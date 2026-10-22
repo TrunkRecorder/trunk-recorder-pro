@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -27,6 +27,7 @@ use trunk_recorder_plugin::{
 };
 
 use super::delay::About;
+use super::route::Routes;
 use super::hold::{Hold, Offer, Outlet};
 use super::{describe, executable, Encoder};
 
@@ -87,6 +88,8 @@ struct Shared {
     notes: Notes,
     /// Where what's delayed waits (None: nothing is).
     hold: Option<Arc<Hold>>,
+    /// Which plugins each talkgroup's calls go to (the `Send To`s), kept current by the manager.
+    routes: Arc<RwLock<Routes>>,
 }
 
 /// How long `shutdown` waits for a plugin to read what was queued before
@@ -148,7 +151,7 @@ impl PluginHost {
     /// Start `specs`. `systems`: every system calls come from (their `config` is filled in here).
     /// A plugin that can't start is reported and left out.
     pub fn start(specs: Vec<Spec>, audio: &super::AudioSettings, systems: &[SystemInfo], capture_dir: &Path, notes: Notes) -> PluginHost {
-        Self::start_when(specs, audio, systems, capture_dir, notes, Arc::new(AtomicBool::new(true)), None)
+        Self::start_when(specs, audio, systems, capture_dir, notes, Arc::new(AtomicBool::new(true)), None, Arc::default())
     }
 
     /// `start`, with the processes held back until `go` is set (events queue
@@ -162,6 +165,7 @@ impl PluginHost {
         notes: Notes,
         go: Arc<AtomicBool>,
         hold: Option<Arc<Hold>>,
+        routes: Arc<RwLock<Routes>>,
     ) -> PluginHost {
         let mut ready = Vec::new();
         for mut s in specs {
@@ -287,7 +291,7 @@ impl PluginHost {
                 audio_held_said: AtomicBool::new(false),
             });
         }
-        let shared = Arc::new(Shared { plugins, stopping: AtomicBool::new(false), go, notes, hold });
+        let shared = Arc::new(Shared { plugins, stopping: AtomicBool::new(false), go, notes, hold, routes });
         let supervisors = queues
             .into_iter()
             .enumerate()
@@ -366,16 +370,32 @@ impl PluginHost {
     /// The plugins that take concluded calls (each reports on every one);
     /// not one that gave up (a config error).
     /// (`decrypted`: a call decrypted with our keys, which only plugins with `shareDecrypted` take.)
-    pub fn call_takers(&self, decrypted: bool) -> usize {
-        self.shared.plugins.iter().filter(|p| p.manifest.subscribes(topic::CALL_CONCLUDED) && p.tx.lock().unwrap().is_some() && (!decrypted || p.share_decrypted)).count()
+    pub fn call_takers(&self, about: &About) -> usize {
+        self.takers(about).len()
+    }
+
+    /// The plugins that take this finished call: on, taking calls, allowed a
+    /// decrypted one if it is, and among those its talkgroup goes to (Send To).
+    fn takers(&self, about: &About) -> Vec<&Plugin> {
+        let routes = self.shared.routes.read().unwrap();
+        self.shared
+            .plugins
+            .iter()
+            .filter(|p| p.manifest.subscribes(topic::CALL_CONCLUDED) && p.tx.lock().unwrap().is_some() && (!about.decrypted || p.share_decrypted) && routes.allows(&p.id, about))
+            .collect()
+    }
+
+    /// What a finished call is about, for the rules that pick by it (delays, Send To).
+    pub fn about_call(&self, system: u16, record: &CallRecord, decrypted: bool) -> About {
+        About { system: self.names.get(&system).cloned().unwrap_or_else(|| record.short_name.clone()), talkgroup: Some(record.talkgroup), decrypted }
     }
 
     /// What the plugins take of a finished call (`decrypted`: one decrypted
     /// with our keys, which only plugins with `shareDecrypted` take): how
     /// many, and whether one takes the WAV, one wants an .m4a
     /// ([`super::archive::plan`] says what's written for them).
-    pub fn plugin_audio(&self, decrypted: bool) -> super::archive::PluginAudio {
-        let takers: Vec<&Plugin> = self.shared.plugins.iter().filter(|p| p.manifest.subscribes(topic::CALL_CONCLUDED) && p.tx.lock().unwrap().is_some() && (!decrypted || p.share_decrypted)).collect();
+    pub fn plugin_audio(&self, about: &About) -> super::archive::PluginAudio {
+        let takers = self.takers(about);
         super::archive::PluginAudio { takers: takers.len(), wav: takers.iter().any(|p| takes_wav(&p.manifest)), m4a: takers.iter().any(|p| p.manifest.wants_format(format::M4A)) }
     }
 
@@ -389,14 +409,13 @@ impl PluginHost {
     /// finish thread wrote what [`super::archive::plan`] said): to the
     /// plugins that take it. `decrypted`: some of it was decrypted with our keys.
     pub fn concluded(&self, system: u16, rel: &str, record: CallRecord, files: CallFiles, decrypted: bool) {
-        if self.call_takers(decrypted) == 0 {
+        let about = self.about_call(system, &record, decrypted);
+        if self.call_takers(&about) == 0 {
             if decrypted {
                 self.shared.say_all_withheld(topic::CALL_CONCLUDED);
             }
             return;
         }
-        let short_name = self.names.get(&system).cloned().unwrap_or_else(|| record.short_name.clone());
-        let about = About { system: short_name, talkgroup: Some(record.talkgroup), decrypted };
         let call = ConcludedCall { path: rel.to_string(), system, call: record, files };
         self.shared.dispatch(topic::CALL_CONCLUDED, &line(&HostMessage::CallConcluded(call)), &about, Some(rel));
     }
@@ -550,7 +569,14 @@ impl Shared {
     /// a call decrypted with our keys (or its audio) goes only to plugins with
     /// `shareDecrypted`; `call`: it's that finished call.
     fn dispatch(&self, t: &str, l: &Arc<str>, about: &About, call: Option<&str>) {
+        let routes = self.routes.read().unwrap();
         for p in self.plugins.iter().filter(|p| p.manifest.subscribes(t)) {
+            // Not one of the plugins its talkgroup goes to: nothing about it is sent. (Send To
+            // picks where finished calls go; a plugin that doesn't take them, such as a live
+            // audio stream, gets everything and filters by its own settings.)
+            if p.manifest.subscribes(topic::CALL_CONCLUDED) && !routes.allows(&p.id, about) {
+                continue;
+            }
             if about.decrypted && !p.share_decrypted {
                 self.say_withheld(p);
                 continue;
@@ -824,6 +850,7 @@ mod tests {
                 }
             }),
             hold: None,
+            routes: Arc::default(),
         };
         let msg: Arc<str> = "x\n".into();
         let (clear, decrypted) = (About { system: "dcfd".into(), ..Default::default() }, About { system: "dcfd".into(), decrypted: true, ..Default::default() });
@@ -889,7 +916,7 @@ mod tests {
         let systems = vec![SystemInfo { index: 0, short_name: "dcfd".into(), kind: "p25".into(), ..Default::default() }];
         let spec = Spec { id: "taker".into(), copy: 0, exe, config: Value::Null, systems: BTreeMap::new(), data_dir: Some(dir.join("data")), share_decrypted: false };
         let notes: Notes = Arc::new(|_| {});
-        let mut host = PluginHost::start_when(vec![spec], &super::super::AudioSettings::default(), &systems, &dir, notes, Arc::new(AtomicBool::new(true)), Some(hold.clone()));
+        let mut host = PluginHost::start_when(vec![spec], &super::super::AudioSettings::default(), &systems, &dir, notes, Arc::new(AtomicBool::new(true)), Some(hold.clone()), Arc::default());
         hold.attach(Some(host.outlet()));
         let call = |rel: &str, tg: u32| {
             host.concluded(0, rel, CallRecord { talkgroup: tg, short_name: "dcfd".into(), ..Default::default() }, CallFiles::default(), false);
@@ -915,6 +942,59 @@ mod tests {
         }
         host.shutdown(Duration::from_secs(1));
         assert!(lines().contains("dcfd/held"), "it goes once the delay is lifted");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Send To: a channel's calls (and live audio) go only to the call-taking
+    /// plugins it names, and the archive waits only for those; a live stream
+    /// (simplestream) isn't routed.
+    #[cfg(unix)]
+    #[test]
+    fn a_channel_goes_only_to_the_plugins_it_names() {
+        use serde_json::json;
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("trunk-pro-host-route-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let spec = |id: &str| {
+            let exe = dir.join(id);
+            let topics = if id == "simplestream" { r#"["audio","call.start","call.end"]"# } else { r#"["call.concluded","audio"]"# };
+            let manifest = format!(r#"{{"id":"{id}","name":"{id}","version":"1.0.0","api":1,"subscribe":{topics}}}"#);
+            std::fs::write(&exe, format!("#!/bin/sh\nif [ \"$1\" = --describe ]; then echo '{manifest}'; exit 0; fi\necho '{{\"type\":\"ready\"}}'\ncat >> got.jsonl\n")).unwrap();
+            std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+            Spec { id: id.into(), copy: 0, exe, config: Value::Null, systems: BTreeMap::new(), data_dir: Some(dir.join(id).with_extension("data")), share_decrypted: false }
+        };
+        // 154.430 (talkgroup 1) goes everywhere; 155.100 (talkgroup 2) only to Rdio Scanner.
+        let cfg: crate::config::Config = serde_json::from_value(json!({ "conventional": [{ "shortName": "dcfire", "channels": [
+            { "freqHz": 154430000, "talkgroup": 1 },
+            { "freqHz": 155100000, "talkgroup": 2, "sendTo": ["rdioscanner"] }
+        ] }] }))
+        .unwrap();
+        let routes = Arc::new(RwLock::new(Routes::of(&cfg, &Default::default())));
+        let systems = vec![SystemInfo { index: 0, short_name: "dcfire".into(), kind: "conventional".into(), ..Default::default() }];
+        let notes: Notes = Arc::new(|_| {});
+        let mut host = PluginHost::start_when(vec![spec("openmhz"), spec("rdioscanner"), spec("simplestream")], &super::super::AudioSettings::default(), &systems, &dir, notes, Arc::new(AtomicBool::new(true)), None, routes);
+        let record = |tg: u32| CallRecord { talkgroup: tg, short_name: "dcfire".into(), ..Default::default() };
+        assert_eq!(host.call_takers(&host.about_call(0, &record(1), false)), 2);
+        assert_eq!(host.call_takers(&host.about_call(0, &record(2), false)), 1, "the archive waits for Rdio Scanner alone");
+        for (rel, tg) in [("dcfire/both", 1), ("dcfire/rdio-only", 2)] {
+            host.concluded(0, rel, record(tg), CallFiles::default(), false);
+        }
+        let mut frame = vec![2u8, 0, 0, 1, 0, 0, 0];
+        frame.extend(2u32.to_le_bytes());
+        frame.extend([0u8; 320]);
+        host.audio_frame(&frame, false);
+        let got = |id: &str| std::fs::read_to_string(dir.join(id).with_extension("data").join("got.jsonl")).unwrap_or_default();
+        let t0 = Instant::now();
+        while !(got("rdioscanner").contains("rdio-only") && got("rdioscanner").contains("\"audio\"") && got("openmhz").contains("dcfire/both") && got("simplestream").contains("\"audio\"")) && t0.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        host.shutdown(Duration::from_secs(1));
+        let (o, r) = (got("openmhz"), got("rdioscanner"));
+        assert!(r.contains("dcfire/both") && r.contains("dcfire/rdio-only") && r.contains("\"audio\""), "Rdio Scanner: {r}");
+        assert!(o.contains("dcfire/both"), "OpenMHz: {o}");
+        assert!(!o.contains("rdio-only") && !o.contains("\"audio\""), "OpenMHz was sent talkgroup 2: {o}");
+        assert!(got("simplestream").contains("\"audio\""), "simplestream wasn't sent talkgroup 2's audio");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

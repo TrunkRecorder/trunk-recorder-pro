@@ -289,7 +289,7 @@ fn run_calls(a: &Args) {
         let decrypted = record.as_ref().map_or(true, |r| r.decrypted);
         // (An .m4a made here for a plugin that wants one, as the recorder's finish thread would.)
         let mut files = super::host::files_on_disk(&base);
-        if let Some((e, kbps)) = host.encoder_settings().filter(|_| files.m4a.is_none() && host.plugin_audio(decrypted).m4a) {
+        if let Some((e, kbps)) = host.encoder_settings().filter(|_| files.m4a.is_none() && host.plugin_audio(&host.about_call(system, record.as_ref().unwrap_or(&Default::default()), decrypted)).m4a) {
             let to = PathBuf::from(format!("{}.m4a", base.display()));
             if e.m4a(&std::fs::read(&files.wav).unwrap_or_default(), &to, *kbps).is_ok() {
                 files.m4a = Some(to);

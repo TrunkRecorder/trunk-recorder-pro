@@ -1129,6 +1129,42 @@ pub struct Channel {
     /// a repeater output to trust, not radios on simplex). Off by default.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub auto_tune: bool,
+    /// The plugins that take finished calls its calls go to, by id or copy
+    /// label (`openmhz`, `rdioscanner#2`); None: every plugin; empty: none.
+    /// See [`send_to`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub send_to: Option<Vec<String>>,
+}
+
+/// A `Send To` cell (a channel CSV's or a talkgroup CSV's): the plugins named,
+/// separated by `;`, `,` or `|`, each as its id (`OpenMHz`, `Rdio Scanner` and
+/// `rdio-scanner` all read as `openmhz` / `rdioscanner`; a copy as
+/// `rdioscanner#2`). Empty: None (every plugin); `none` or `-`: no plugin.
+pub fn send_to(cell: &str) -> Option<Vec<String>> {
+    let t = cell.trim();
+    if t.is_empty() || t.eq_ignore_ascii_case("all") || t == "*" {
+        return None;
+    }
+    if t.eq_ignore_ascii_case("none") || t == "-" {
+        return Some(Vec::new());
+    }
+    let mut v: Vec<String> = t
+        .split([';', ',', '|'])
+        .map(|p| p.chars().filter(|c| !c.is_whitespace() && *c != '-' && *c != '_').collect::<String>().to_ascii_lowercase())
+        .filter(|p| !p.is_empty())
+        .collect();
+    v.sort();
+    v.dedup();
+    Some(v)
+}
+
+/// [`send_to`] written back: `` (every plugin), `none`, or the ids joined by `;`.
+pub fn send_to_cell(v: &Option<Vec<String>>) -> String {
+    match v {
+        None => String::new(),
+        Some(v) if v.is_empty() => "none".into(),
+        Some(v) => v.join(";"),
+    }
 }
 
 /// A USRP's gain when none is given, dB (as the interface starts one).
@@ -2056,6 +2092,30 @@ impl Config {
         Ok(())
     }
 
+    /// Which plugins each talkgroup's calls go to, where that isn't every
+    /// plugin: ((system short name, talkgroup), plugins). From each system's
+    /// talkgroup file in `talkgroups` (its `Send To` column; trunked and
+    /// conventional alike) and each conventional channel's `sendTo` (by the
+    /// talkgroup its calls are filed under), which wins for its talkgroup.
+    pub fn plugin_routes(&self, talkgroups: &TalkgroupFiles) -> Vec<((String, u32), Vec<String>)> {
+        let mut out: BTreeMap<(String, u32), Vec<String>> = BTreeMap::new();
+        for (system, csv) in talkgroups {
+            for (tg, cell) in trunk_core::trunk::talkgroups::column(csv, "Send To") {
+                if let Some(v) = send_to(&cell) {
+                    out.insert((system.clone(), tg), v);
+                }
+            }
+        }
+        for v in &self.conventional {
+            for (c, tg) in v.channels.iter().zip(channel_talkgroups(&v.channels)) {
+                if let Some(p) = &c.send_to {
+                    out.insert((v.short_name.clone(), tg), p.clone());
+                }
+            }
+        }
+        out.into_iter().collect()
+    }
+
     /// The conventional channels being recorded: switched on, in a system that is.
     pub fn enabled_channels(&self) -> impl Iterator<Item = &Channel> {
         self.conventional.iter().filter(|v| v.enabled).flat_map(|v| v.channels.iter().filter(|c| c.enabled))
@@ -2910,6 +2970,7 @@ mod tests {
             slot: None,
             match_talkgroup: None,
             enabled: true, auto_tune: false,
+            send_to: None,
         };
         let mut c = Config { conventional: vec![Conventional::default()], ..Default::default() };
         c.conventional[0].channels = vec![row("", None), row("D023N", None), row("151.4", Some(500)), row("94.8", None)];
@@ -2963,6 +3024,7 @@ mod tests {
             slot: None,
             match_talkgroup: None,
             enabled: true, auto_tune: false,
+            send_to: None,
         }];
         // Linking a new path writes the current list there.
         c.link_channel_file(0, &cfg_path, "channels.csv").unwrap();
