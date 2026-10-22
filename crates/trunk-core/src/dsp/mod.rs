@@ -30,12 +30,15 @@ pub struct AnalogTuning {
     /// AM: the audio high-pass's corner, Hz (0: none).
     pub low_cut_hz: f64,
     pub squelch: SquelchTiming,
+    /// FM: leave out data bursts (EDACS's 9600 baud signalling at the start
+    /// of a transmission, on the voice channel): [`fm::DataBurst`].
+    pub data_mute: bool,
 }
 
 impl Default for AnalogTuning {
     /// Narrowband FM (12.5 kHz), 750 µs de-emphasis.
     fn default() -> Self {
-        AnalogTuning { half_bw_hz: fm::CHANNEL_HALF_BW, deemph_tau_s: fm::DEEMPH_TAU, level_tau_s: am::LEVEL_FAST_S, low_cut_hz: am::LOW_CUT_HZ, squelch: SquelchTiming::default() }
+        AnalogTuning { half_bw_hz: fm::CHANNEL_HALF_BW, deemph_tau_s: fm::DEEMPH_TAU, level_tau_s: am::LEVEL_FAST_S, low_cut_hz: am::LOW_CUT_HZ, squelch: SquelchTiming::default(), data_mute: false }
     }
 }
 

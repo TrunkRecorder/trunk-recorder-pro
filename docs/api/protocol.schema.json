@@ -4958,7 +4958,7 @@
           "additionalProperties": {
             "type": "number"
           },
-          "description": "DMR: logical channel number → frequency, Hz (Trunk Recorder's lcnTable); the rest is learned. NXDN: the channel table, channel number → frequency (Type-D: repeater number → frequency)."
+          "description": "DMR: logical channel number → frequency, Hz (Trunk Recorder's lcnTable); the rest is learned. NXDN: the channel table, channel number → frequency (Type-D: repeater number → frequency). EDACS: the site's channel list, LCN (1–25) → frequency; checked against the air."
         },
         "dmrChannelsHz": {
           "type": "array",
@@ -4989,6 +4989,10 @@
         "ran": {
           "type": "number",
           "description": "NXDN: only this RAN."
+        },
+        "esk": {
+          "type": "boolean",
+          "description": "EDACS: the system scrambles its control channel with ESK 0xA0."
         }
       },
       "required": [
@@ -6328,9 +6332,10 @@
             "p25",
             "smartnet",
             "dmr",
-            "nxdn"
+            "nxdn",
+            "edacs"
           ],
-          "description": "\"smartnet\": a Motorola SmartNet / SmartZone control channel (voice P25 or analog FM). \"dmr\": a trunked DMR site (Capacity Plus, Capacity Max, Connect Plus, Tier III); every control channel and `dmrChannelsHz` frequency is watched. \"nxdn\": an NXDN site (Type-C: a control channel; Type-D / IDAS: every repeater listed); every control channel and `nxdnChannelsHz` frequency is watched."
+          "description": "\"smartnet\": a Motorola SmartNet / SmartZone control channel (voice P25 or analog FM). \"dmr\": a trunked DMR site (Capacity Plus, Capacity Max, Connect Plus, Tier III); every control channel and `dmrChannelsHz` frequency is watched. \"nxdn\": an NXDN site (Type-C: a control channel; Type-D / IDAS: every repeater listed); every control channel and `nxdnChannelsHz` frequency is watched. \"edacs\": an EDACS Standard or Networked site (voice analog FM or ProVoice); `lcnTableHz` is its channel list."
         },
         "nxdnType": {
           "type": "string",

@@ -185,6 +185,80 @@ pub struct Nbfm {
     audio: AudioResampler,
     hpf: [Biquad; HPF_SOS.len()],
     gate: Gate,
+    data: Option<DataBurst>,
+}
+
+/// Fast data on an FM voice channel (EDACS's 9600 baud signalling): loud,
+/// steady deviation that sits at two levels (not speech's peaks and
+/// pauses, nor noise's clicks), with much of it above the voice band.
+/// Measured on the discriminator over a few ms.
+pub struct DataBurst {
+    a: f32,
+    prev: [f32; 2],
+    p2: f32,
+    p4: f32,
+    ph: f32,
+    /// Channel samples it has looked like data (or not) in a row.
+    run: u32,
+    quiet: u32,
+    on: bool,
+    /// Samples needed to start / end a burst.
+    start: u32,
+    end: u32,
+    /// 8 kHz samples cut back when one starts.
+    pub back: usize,
+}
+
+/// Deviation (RMS, of full scale: 5 kHz) data keeps up; speech's average is well under.
+const DATA_RMS: f32 = 0.3;
+/// (E d²)² / E d⁴: about 0.7 for data, 0.67 for a steady tone, ~0.3 for speech, ~0.2 for noise.
+const DATA_FLAT: f32 = 0.45;
+/// The second difference's power over the signal's: a tone in the voice band ~0.01, data 0.4+.
+const DATA_HIGH: f32 = 0.2;
+
+impl DataBurst {
+    pub fn new(rate: f64) -> Self {
+        let n = |s: f64| (s * rate) as u32;
+        DataBurst {
+            a: (-1.0 / (0.004 * rate)).exp() as f32,
+            prev: [0.0; 2],
+            p2: 0.0,
+            p4: 0.0,
+            ph: 0.0,
+            run: 0,
+            quiet: 0,
+            on: false,
+            start: n(0.008),
+            end: n(0.010),
+            back: ((0.004 + 0.008 + 0.004) * 8000.0) as usize,
+        }
+    }
+
+    /// One discriminator sample; whether a burst is on.
+    #[inline]
+    pub fn step(&mut self, d: f32) -> bool {
+        let h = d - 2.0 * self.prev[0] + self.prev[1];
+        self.prev = [d, self.prev[0]];
+        let b = 1.0 - self.a;
+        let d2 = d * d;
+        self.p2 = self.a * self.p2 + b * d2;
+        self.p4 = self.a * self.p4 + b * d2 * d2;
+        self.ph = self.a * self.ph + b * h * h;
+        let looks = self.p2 > DATA_RMS * DATA_RMS && self.p2 * self.p2 > DATA_FLAT * self.p4 && self.ph > DATA_HIGH * self.p2;
+        if looks {
+            self.run = self.run.saturating_add(1);
+            self.quiet = 0;
+        } else {
+            self.run = 0;
+            self.quiet = self.quiet.saturating_add(1);
+        }
+        if !self.on && self.run >= self.start {
+            self.on = true;
+        } else if self.on && self.quiet >= self.end {
+            self.on = false;
+        }
+        self.on
+    }
 }
 
 impl Nbfm {
@@ -212,6 +286,7 @@ impl Nbfm {
             audio: AudioResampler::new(rate, 3400.0),
             hpf: HPF_SOS.map(Biquad::new),
             gate: Gate::new(rate, t.squelch, FAST_S),
+            data: t.data_mute.then(|| DataBurst::new(rate)),
         }
     }
 
@@ -226,7 +301,7 @@ impl Nbfm {
     /// before the high-pass and the gate's ramp (CTCSS and DCS still in it).
     pub fn push_low(&mut self, iq: &[Complex32], open_power: f32, out: &mut Vec<f32>, mut low: Option<&mut Vec<f32>>) -> bool {
         let mut carrier = false;
-        let Nbfm { filter, last, disc_gain, de_a, de_y, de_gain, audio, hpf, gate } = self;
+        let Nbfm { filter, last, disc_gain, de_a, de_y, de_gain, audio, hpf, gate, data } = self;
         for &x in iq {
             let y = filter.step(x);
             let up = filter.power() > open_power;
@@ -234,6 +309,10 @@ impl Nbfm {
             gate.meter(y, up, open_power);
             let d = (y * last.conj()).arg() * *disc_gain;
             *last = y;
+            if let Some(db) = data {
+                let on = db.step(d);
+                gate.mute(on, db.back);
+            }
             *de_y += *de_a * (d - *de_y);
             audio.push(*de_y * *de_gain, |raw| {
                 let s = hpf.iter_mut().fold(raw, |s, h| h.step(s));
@@ -341,6 +420,67 @@ mod tests {
         for hz in [288.5, 313.0, 400.0, 1000.0, 3000.0] {
             assert!(gain(hz) > -3.5, "{hz} Hz {:.1} dB down", -gain(hz));
         }
+    }
+
+    /// FM IQ of instantaneous frequencies `f` (Hz) at `rate`.
+    fn fm_of(rate: f64, f: impl Iterator<Item = f64>) -> Vec<Complex32> {
+        let mut ph = 0.0f64;
+        f.map(|f| {
+            ph = (ph + 2.0 * PI * f / rate) % (2.0 * PI);
+            Complex32::from_polar(0.5, ph as f32)
+        })
+        .collect()
+    }
+
+    /// EDACS's 9600 baud burst at a transmission's start is left out; speech
+    /// (syllables of 1 and 2.5 kHz) and a steady tone aren't touched.
+    #[test]
+    fn data_bursts_are_left_out_and_voice_is_not() {
+        let rate = 24_000.0;
+        let burst = |n: usize| {
+            let mut x = 0x1234_5678u32;
+            let bits: Vec<f64> = (0..n)
+                .map(|k| {
+                    if k < 40 {
+                        return if k % 2 == 0 { 1.0 } else { -1.0 };
+                    }
+                    x ^= x << 13;
+                    x ^= x >> 17;
+                    x ^= x << 5;
+                    if x & 1 == 1 { 1.0 } else { -1.0 }
+                })
+                .collect();
+            let sps = rate / 9600.0;
+            fm_of(rate, (0..(n as f64 * sps) as usize).map(move |i| 3000.0 * bits[(i as f64 / sps) as usize]))
+        };
+        let speech = |secs: f64| {
+            fm_of(
+                rate,
+                (0..(secs * rate) as usize).map(|i| {
+                    let t = i as f64 / rate;
+                    let env = (0.5 - 0.5 * (2.0 * PI * 4.0 * t).cos()).powi(2);
+                    env * (2000.0 * (2.0 * PI * 1000.0 * t).sin() + 1000.0 * (2.0 * PI * 2500.0 * t).sin())
+                }),
+            )
+        };
+        let run = |iq: &[Complex32], mute: bool| {
+            let mut fm = Nbfm::with(rate, &AnalogTuning { data_mute: mute, ..Default::default() });
+            let mut out = Vec::new();
+            fm.push(iq, 1e-4, &mut out);
+            out
+        };
+        let voice = speech(1.0);
+        let mut with_burst = burst(1440); // 150 ms
+        with_burst.extend(&voice);
+        let plain = run(&voice, false).len();
+        let cut = run(&with_burst, true).len();
+        let kept = run(&with_burst, false).len();
+        assert!(kept > plain + 1000, "without muting the burst is heard: {kept} vs {plain}");
+        assert!(cut.abs_diff(plain) < 120, "the burst left out: {cut} samples, {plain} without it");
+        // Voice alone, and a steady tone, are never taken for data.
+        assert_eq!(run(&voice, true).len(), plain);
+        let tone = fm_tone(rate, 1000.0, 3000.0, rate as usize, 0.5);
+        assert_eq!(run(&tone, true).len(), run(&tone, false).len());
     }
 
     #[test]

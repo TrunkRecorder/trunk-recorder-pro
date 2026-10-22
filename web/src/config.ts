@@ -85,18 +85,24 @@ function dmrImport(sys: Record<string, unknown>): SystemInput {
  */
 export function siteLockFields(sys: Pick<System, "type" | "nxdnType">): (keyof SiteIdentity)[] {
   if (sys.type === "nxdn") return sys.nxdnType === "typeD" ? [] : ["sysId", "site"];
-  return sys.type === "smartnet" ? ["sysId", "site"] : sys.type === "dmr" ? [] : ["nac", "wacn", "sysId", "rfss", "site"];
+  return sys.type === "smartnet" ? ["sysId", "site"] : sys.type === "edacs" ? ["site"] : sys.type === "dmr" ? [] : ["nac", "wacn", "sysId", "rfss", "site"];
 }
 
-/** Frequencies a watching protocol (DMR, NXDN) needs besides the control channels (the recorder's Site::watched_channels). */
+/** A system's type as written: "p25" for one this version doesn't know. */
+export function systemType(t: unknown): System["type"] {
+  return t === "smartnet" || t === "dmr" || t === "nxdn" || t === "edacs" ? t : "p25";
+}
+
+/** Frequencies a watching protocol (DMR, NXDN, EDACS) needs besides the control channels (the recorder's Site::watched_channels). */
 export function watchedChannels(sys: Pick<System, "type">, x: Site): number[] {
+  if (sys.type === "edacs") return Object.entries(x.lcnTableHz ?? {}).filter(([k, f]) => +k >= 1 && +k <= 25 && f > 0).map(([, f]) => f);
   return sys.type === "dmr" ? (x.dmrChannelsHz ?? []) : sys.type === "nxdn" ? (x.nxdnChannelsHz ?? []) : [];
 }
 
 /** A site's fields in an older config's system (before sites, each system was one, its fields at the top). */
 const SITE_KEYS = [
   "controlChannelsHz", "modulation", "expect", "voiceChannelsHz", "bandplan", "bandplanBaseHz", "bandplanSpacingHz", "bandplanOffset", "bandplanHighHz",
-  "lcnTableHz", "dmrChannelsHz", "colorCode", "nxdnRate", "nxdnChannelsHz", "ran",
+  "lcnTableHz", "dmrChannelsHz", "colorCode", "nxdnRate", "nxdnChannelsHz", "ran", "esk",
 ] as const satisfies readonly (keyof Site)[];
 
 /** Every key of System this version knows (the rest are kept as they are: a newer version's, a hand edit's). */
@@ -174,6 +180,12 @@ export function normalizeSite(x: Partial<Site>, sys: Pick<System, "type">): Site
           ...(typeof x.ran === "number" ? { ran: x.ran } : {}),
         }
       : {}),
+    ...(type === "edacs"
+      ? {
+          ...(x.lcnTableHz && Object.keys(x.lcnTableHz).length ? { lcnTableHz: x.lcnTableHz } : {}),
+          ...(x.esk ? { esk: true } : {}),
+        }
+      : {}),
     ...(type === "smartnet"
       ? {
           bandplan: x.bandplan ?? "800_standard",
@@ -192,7 +204,7 @@ export function normalizeSite(x: Partial<Site>, sys: Pick<System, "type">): Site
  * site's fields at its top — gets that site.
  */
 export function normalizeSystem(x: SystemInput): System {
-  const type = x.type === "smartnet" ? "smartnet" : x.type === "dmr" ? "dmr" : x.type === "nxdn" ? "nxdn" : "p25";
+  const type = systemType(x.type);
   const sites: Partial<Site>[] = Array.isArray(x.sites)
     ? x.sites.filter((s): s is Partial<Site> => !!plain(s))
     : [{ ...Object.fromEntries(SITE_KEYS.filter((k) => k in x).map((k) => [k, x[k]])), ...(x.enabled === false ? { enabled: false } : {}) }];
