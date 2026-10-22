@@ -386,7 +386,8 @@ fn worker(sh: &Shared, key: &str, host: &Host, work: &Work, o: &QueueOptions) {
         drop(g);
         let started = Instant::now();
         let r = work(&it.call);
-        let took_ms = started.elapsed().as_secs_f64() * 1000.0;
+        let took = started.elapsed();
+        let took_ms = took.as_secs_f64() * 1000.0;
         g = sh.inner.lock().unwrap();
         g.changed = true;
         let lane = g.lanes.get_mut(key).expect("lane");
@@ -416,7 +417,7 @@ fn worker(sh: &Shared, key: &str, host: &Host, work: &Work, o: &QueueOptions) {
         let said = |m: &str| if key.is_empty() { m.to_string() } else { format!("{key}: {m}") };
         let mut error = None;
         match r {
-            Attempt::Done { url } => host.call_result(&it.call.path, Outcome::Ok, "", url),
+            Attempt::Done { url } => host.call_result_took(&it.call.path, Outcome::Ok, "", url, took),
             Attempt::Skip(m) => host.call_result(&it.call.path, Outcome::Skipped, m, ""),
             Attempt::Fail(m) => {
                 lane.last_error = m.clone();

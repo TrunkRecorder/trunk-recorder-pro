@@ -606,19 +606,16 @@ impl Drop for Subs {
     }
 }
 
-fn unix_now() -> i64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
-}
 
 /// `statsQuery`: the minute history.
 pub(crate) fn stats_query(ctx: &Ctx, q: &StatsQuery) -> ToClient {
     let h = ctx.series.lock().unwrap();
-    q.answer(&h, unix_now(), h.loading)
+    q.answer(&h, crate::clock::unix_s() as i64, h.loading)
 }
 
 /// `radioQuery`: the registry, with talkgroup names from the config and radio names as saved.
 pub(crate) fn radio_query(ctx: &Ctx, q: &Body) -> ToClient {
-    ctx.shared.radio_query(&Value::Object(q.clone()), unix_now())
+    ctx.shared.radio_query(&Value::Object(q.clone()), crate::clock::unix_s() as i64)
 }
 
 /// How long a connection may take to take one message. One that doesn't

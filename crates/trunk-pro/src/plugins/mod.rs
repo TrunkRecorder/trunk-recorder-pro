@@ -37,6 +37,7 @@ pub mod hold;
 mod host;
 pub mod manage;
 pub mod store;
+mod timing;
 
 pub use archive::{plan, Archive, FileRules};
 pub use encode::Encoder;

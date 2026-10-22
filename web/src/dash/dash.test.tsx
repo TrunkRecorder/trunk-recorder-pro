@@ -8,10 +8,12 @@ import { defaultConfig, newConventional, newSystem } from "../config.ts";
 import { setView, snapshot, transport } from "../controller.ts";
 import { clearSeries, feedSeries } from "../series.ts";
 import { pageHealth } from "./data.ts";
-import type { CallView, Channel, Config, EngineStatus, FromRecorder, SiteIdentity, SiteStatus, SystemStatus } from "../protocol.ts";
+import type { CallView, Channel, ClockInfo, Config, EngineStatus, FromRecorder, PlatformInfo, PluginInfo, SiteIdentity, SiteStatus, SystemStatus } from "../protocol.ts";
 import { DecodePage } from "./Decode.tsx";
 import { Overview } from "./Overview.tsx";
 import { RadioPage } from "./Radio.tsx";
+import { PlatformPage } from "./Platform.tsx";
+import { PluginHealthPage } from "./PluginHealth.tsx";
 
 const site = (index: number, name: string, identity: Partial<SiteIdentity>): SiteStatus => ({
   index, name, nowS: 10, controlChannelHz: 851_000_000 + index * 500_000,
@@ -163,4 +165,93 @@ test("Radio: calls missed on one of several systems name it, in the navigation's
   const overview = renderToString(<Overview />);
   assert.match(overview, /<h3><span class="sys-tag">.*?other<\/span><\/h3>/, "the Overview's system card names it by its tag");
   assert.equal((overview.match(/class="card card-warn[^"]*"/g) ?? []).length, 1, "and only other's card warns");
+});
+
+/** The computer as the recorder samples it, its clock as given (the rest as nothing known). */
+function host(given: Partial<ClockInfo>): void {
+  const clock: ClockInfo = { warnMs: 250, os: null, service: null, driftMs: null, radio: [], server: null, measured: null, error: null, problem: null, check: null, ...given };
+  const platform: PlatformInfo = {
+    os: "Linux", arch: "aarch64", host: "pi", cores: 4, container: null, cpuLimitCores: null, memTotal: 8e9, uptimeS: 3600, disks: [], probes: [], clock,
+    perCore: null, interfaces: null, unavailable: [],
+  };
+  transport.onMessage({ type: "host", t: Date.now() / 1000, values: {}, platform });
+}
+
+const now = () => Date.now() / 1000;
+const synced = { synced: true, maxErrorMs: 897 };
+
+test("Platform: the clock as measured and as the OS says, and the light goes by the recorder's verdict", () => {
+  twoSites();
+  setView("platform");
+  host({ os: synced, server: "pool.ntp.org", measured: { offsetMs: 35, delayMs: 20, stratum: 2, at: now() - 60, current: true }, error: null, problem: null, check: null });
+  let page = text(renderToString(<PlatformPage />));
+  assert.match(page, /Offset, measured 35 ms behind pool\.ntp\.org/);
+  assert.match(page, /Operating system synchronized within 897 ms by its own account/);
+  assert.match(page, /Round trip 20 ms stratum 2/);
+  assert.notEqual(pageHealth(snapshot()).platform.level, "warn");
+  const why = "The clock is 400 ms ahead of pool.ntp.org: call times are off by as much";
+  host({ os: synced, server: "pool.ntp.org", measured: { offsetMs: -400, delayMs: 20, stratum: 2, at: now() - 60, current: true }, error: null, problem: { level: "warn", cause: "clock", why }, check: null });
+  page = text(renderToString(<PlatformPage />));
+  assert.match(page, /Clock .*400 ms ahead of pool\.ntp\.org/);
+  assert.deepEqual(pageHealth(snapshot()).platform, { level: "warn", why }, "the navigation's light, in the recorder's words");
+  // Nothing measured (UDP 123 blocked), and an OS that doesn't say.
+  host({ os: null, server: "pool.ntp.org", measured: null, error: "pool.ntp.org: no answer", problem: null, check: { target: "pool.ntp.org", ok: false, rttMs: null, lastOk: null, lastFail: now(), downSince: now(), tries: 3, fails: 3 } });
+  page = text(renderToString(<PlatformPage />));
+  assert.match(page, /Offset, measured — pool\.ntp\.org: no answer/);
+  assert.match(page, /3 of 3 queries unanswered .*UDP port 123/);
+});
+
+test("Platform: the time service, the recording's clock and the radio systems' clocks", () => {
+  twoSites();
+  setView("platform");
+  host({
+    os: synced, service: { name: "systemd-timesyncd", server: "2.debian.pool.ntp.org (45.33.53.84)", stratum: 2, lastSync: now() - 120 }, driftMs: 1800, warnMs: 500,
+    radio: [{ site: "dcfd", offsetMs: -12, at: now() - 30, sane: true, valid: false }, { site: "other", offsetMs: -4 * 3600e3, at: now() - 30, sane: false, valid: true }],
+    problem: { level: "warn", cause: "recording", why: "Calls are being stamped 1.8 s behind the right time: the clock was corrected after recording started. Stop and Start again to stamp them by it" },
+  });
+  const html = renderToString(<PlatformPage />);
+  assert.match(html, /<p class="small warn"[^>]*>Calls are stamped by the clock as it was at Start/, "amber by the recorder's verdict (its cause), not a rule of its own");
+  const page = text(html);
+  assert.match(page, /Kept by systemd-timesyncd from 2\.debian\.pool\.ntp\.org \(45\.33\.53\.84\), stratum 2, last synchronized 2 m/);
+  // (driftMs: the wall clock less the recording's: the recording's is behind.)
+  assert.match(page, /Calls are stamped by the clock as it was at Start: 1\.8 s behind the clock now/);
+  assert.match(page, /dcfd system clock: calls stamped 12 ms ahead of it \(the system marks its time not valid: shown, not gone by\)/);
+  assert.match(page, /other system clock set to another time \(its local time\?\): not compared/);
+  assert.match(page, /A warning at 500 ms off/);
+  assert.equal(pageHealth(snapshot()).platform.level, "warn");
+});
+
+/** A plugin that's on and running, with what it said of its work. */
+function uploader(id: string): void {
+  const c = defaultConfig();
+  c.plugins = { [id]: { enabled: true, settings: {} } } as Config["plugins"];
+  const p: PluginInfo = {
+    id, path: `/plugins/${id}/${id}`, custom: false, problem: null,
+    manifest: { id, name: "Broadcastify Calls", version: "0.1.7", description: "", api: 1, subscribe: ["call.concluded"], audio_formats: [] },
+    runtime: { state: "ok", message: "", ok: 30, skipped: 0, failed: 0, lastFailure: "", log: [] },
+  };
+  running(c, []);
+  transport.onMessage({ type: "plugins", encoderFound: null, plugins: [p] });
+}
+
+test("Plugins: a call's age at delivery, and its parts, the same for any plugin", () => {
+  uploader("broadcastify");
+  setView("plugins");
+  // A delivery every 10 s, 2.5 s after the call's end: 0.4 s of it the upload, none held.
+  const t = Date.now() / 1000;
+  for (let i = 0; i < 5; i++) {
+    feedSeries(t - 60 + i * 10, { "plg/broadcastify/delivered": 0.1, "plg/broadcastify/ageMs": 250, "plg/broadcastify/heldMs": 0, "plg/broadcastify/uploads": 0.1, "plg/broadcastify/uploadMs": 40, "plg/broadcastify/waitMs": 210, "plg/broadcastify/age": 2500 });
+  }
+  const page = text(renderToString(<PluginHealthPage manage={null} />));
+  assert.match(page, /Age at delivery 2\.5 s last 5 min: waiting 2\.1 s · upload 400 ms/);
+  assert.doesNotMatch(page, /held/, "nothing held by a delay rule: not said");
+});
+
+test("Plugins: a plugin that doesn't say its upload time gives the age alone", () => {
+  uploader("broadcastify");
+  setView("plugins");
+  feedSeries(Date.now() / 1000, { "plg/broadcastify/delivered": 0.1, "plg/broadcastify/ageMs": 6200, "plg/broadcastify/heldMs": 6000, "plg/broadcastify/uploads": 0, "plg/broadcastify/uploadMs": 0, "plg/broadcastify/waitMs": 0 });
+  const html = renderToString(<PluginHealthPage manage={null} />);
+  assert.match(text(html), /Age at delivery 62 s last 5 min: held 60 s/);
+  assert.match(html, /doesn&#x27;t say its own upload time/);
 });

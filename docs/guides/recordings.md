@@ -138,6 +138,7 @@ It is written on a single line.
 | `emergency`, `encrypted` | `1` or `0` |
 | `algid`, `key_id` | P25: the cipher an encrypted call's voice named, as numbers (`132` = 0x84, AES-256); `-1` when none was heard |
 | `decrypted` | `1` when some of an encrypted call's voice was decrypted with a [key](../configuration/systems.md#encryption-keys-keys), else `0` |
+| `clock_off` | `true` when the clock calls are stamped by was off as the call ended: `monitor.clockWarnMs` (250 ms) or more from the time server (or, without one, a radio system's clock), or the operating system said it wasn't synchronized (see [Clock](dashboard.md#clock)). Then its times may be off too. Absent otherwise |
 | `priority`, `mode`, `duplex` | As Trunk Recorder writes them (`mode` and `duplex` are always `0` on conventional calls) |
 | `call_length`, `call_length_ms` | Length of the saved audio, seconds (rounded) and milliseconds |
 | `talkgroup` | Talkgroup number. On a conventional channel, the row's TG Number if it has one, else the talkgroup the air named, else a default from the frequency: see [Tones](tones.md#the-number-a-call-is-filed-under) |

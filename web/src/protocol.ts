@@ -450,6 +450,10 @@ export interface Config {
 export interface MonitorSettings {
   /** Where to check the internet answers (host:port, a TCP connect every 15 s). Empty: no checks. */
   probeHosts: string[];
+  /** The time server asked how far off the clock is (SNTP every 15 min; port 123 unless given). It only measures. Empty: not asked. */
+  timeServer: string;
+  /** The clock off by this much or more, ms: a warning, and calls marked clock_off (a problem at 5 s, or 4 times this). */
+  clockWarnMs: number;
 }
 
 /**
@@ -598,6 +602,8 @@ export interface SiteStatus {
   mismatch: string | null;
   /** Every call sign its base station IDs say, each with the channel it's for (a site's licenses can be one a channel). */
   callsigns?: { callSign: string; freqHz: number | null }[];
+  /** P25 SYNC_BCST: the system's own clock less the recording's, ms (positive: the recording's is behind), and when it was heard, Unix s. */
+  radioClock?: { offsetMs: number; at: number; valid: boolean } | null;
 }
 
 /** One running site's detail (decodeDetail): what its control channel announces. */
@@ -765,6 +771,8 @@ export interface CallRecord {
   key_id?: number;
   /** 1: its encrypted voice was decrypted, at least in part (absent in calls saved before). */
   decrypted?: number;
+  /** true: its times may be off: the recorder's clock was measured 250 ms or more off, or the operating system said it wasn't synchronized, when it ended (absent otherwise). */
+  clock_off?: boolean;
   phase2_tdma: number;
   duplex: number;
   /** Its P25 priority and service-option mode bit. */
@@ -1282,7 +1290,10 @@ export interface MonitorEventBody {
     | "diskLow"
     | "spoolLow"
     | "spoolFull"
-    | "spoolRecovered";
+    | "spoolRecovered"
+    | "clockOff"
+    | "clockOk"
+    | "clockStep";
   /** A system's short name (talkgroup, radio, call volume, control channel events). */
   system?: string;
   /** Control channel events: the site's own name, when it has one other than its system's. */
@@ -1309,6 +1320,11 @@ export interface MonitorEventBody {
   critical?: boolean;
   /** spoolFull: calls that went to the recordings folder for want of room. */
   calls?: number;
+  /** clockOff: what's wrong, and whether it's badly off. */
+  why?: string;
+  bad?: boolean;
+  /** clockStep: how far the wall clock jumped, ms (positive: forward). */
+  byMs?: number;
 }
 
 /** The computer, as last sampled (desktop app). Missing values are listed in `unavailable`. */
@@ -1326,11 +1342,51 @@ export interface PlatformInfo {
   disks: { name: string; path: string; mount: string; totalBytes: number; freeBytes: number; kind?: string; overflowed?: number }[];
   /** macOS: whether Spotlight indexes the recordings folder (null: not checked yet, or not macOS). */
   spotlight?: { path: string; state: "indexed" | "excluded" | "unknown"; why: string } | null;
-  probes: { target: string; ok: boolean | null; rttMs: number | null; lastOk: number | null; lastFail: number | null; downSince: number | null; tries: number; fails: number }[];
+  probes: ProbeRow[];
+  clock: ClockInfo;
   /** With the `platform` topic: each core's use, %, and the interfaces' traffic since the last sample. */
   perCore: number[] | null;
   interfaces: { name: string; rx: number; tx: number; state: string }[] | null;
   unavailable: { field: string; why: string }[];
+}
+
+/** Something checked again and again and how it's been answering: an internet target, or the time server. */
+export interface ProbeRow {
+  target: string;
+  ok: boolean | null;
+  rttMs: number | null;
+  lastOk: number | null;
+  lastFail: number | null;
+  downSince: number | null;
+  tries: number;
+  fails: number;
+}
+
+/**
+ * The computer's clock: what the operating system says of it, and what the time server
+ * (monitor.timeServer) measured. Read only: the OS's time service keeps the clock.
+ */
+export interface ClockInfo {
+  /** The warning threshold, ms (monitor.clockWarnMs). */
+  warnMs: number;
+  /** The OS's word (Linux, macOS; null elsewhere). maxErrorMs: its own loose bound. */
+  os: { synced: boolean; maxErrorMs: number } | null;
+  /** The time service keeping the clock, when it says (Linux: chrony, systemd-timesyncd). lastSync: Unix s. */
+  service: { name: string; server: string | null; stratum: number | null; lastSync: number | null } | null;
+  /** While recording: the wall clock less the clock calls are stamped by (the wall clock at Start, carried on monotonically), ms. */
+  driftMs: number | null;
+  /** The radio systems' own clocks (P25 SYNC_BCST) against the recording's: offsetMs > 0 when the recording's is behind; `sane`: near enough to be the right time at all; `valid`: the system vouches for it (only then is it gone by). */
+  radio: { site: string; offsetMs: number; at: number; sane: boolean; valid: boolean }[];
+  /** The time server asked (null: none set, or not asked yet). */
+  server: string | null;
+  /** Its last answer: offsetMs > 0 when this clock is behind; `at` Unix s; `current`: recent enough to go by. */
+  measured: { offsetMs: number; delayMs: number; stratum: number; at: number; current: boolean } | null;
+  /** Why the last query failed, while it fails. */
+  error: string | null;
+  /** What's wrong with the clock, decided by the recorder (the light and the events go by it). */
+  problem: { level: "warn" | "bad"; cause: "clock" | "recording" | "radio" | "os"; why: string } | null;
+  /** The time server's check: tries, failures, last answer. */
+  check: ProbeRow | null;
 }
 
 /** A talkgroup as heard (radioQuery talkgroups / tg). */
