@@ -4,9 +4,9 @@
 // so a bad channel, a band edge or a source's ppm shows up as a pattern.
 
 import { Fragment, useState } from "react";
-import { formatMhz, systemColor, usableHalfWidth } from "../config.ts";
+import { formatMhz, usableHalfWidth } from "../config.ts";
 import { radioQuery, setView, usePolled, useApp, useTopic, type AppState, type StatsRange } from "../controller.ts";
-import { BackBar, Card, Choice, HeatStrip, LiveSpark, Stat, TimeSeries, Trend, type Line } from "../charts.tsx";
+import { BackBar, Card, Choice, HeatStrip, LiveSpark, Stat, SystemTag, TimeSeries, Trend, type Line } from "../charts.tsx";
 import { mhz, num, signed } from "../fmt.ts";
 import type { FreqRow, SeriesData, SourceStatus } from "../protocol.ts";
 import { change, dashSystems, K, KIND_LABEL, recentAvg, running, runningSites, siteHealth, sourceGuard, systemHealth, useHistory, useUsual, val, type DashSite, type DashSystem, type Usual } from "./data.ts";
@@ -113,11 +113,9 @@ function DecodeCard({ s, x, site, usual, freqs, voice = true }: { s: AppState; x
   return (
     <Card
       title={
-        <span className="row">
-          <span className="sys-dot" style={{ background: systemColor(s.config, x.name) }} />
-          {x.name}
-          {several && site && <span className="muted"> / {site.name}</span>}
-        </span>
+        <SystemTag config={s.config} name={x.name}>
+          {several && site && <span className="muted">&nbsp;/ {site.name}</span>}
+        </SystemTag>
       }
       level={h.level}
       why={h.why}

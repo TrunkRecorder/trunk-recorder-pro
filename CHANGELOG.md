@@ -5,14 +5,16 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
-- **System colours never look like a status light.** Systems are now told
-  apart by blue, teal, violet and magenta only; amber, green, orange and
-  red are left to the warning, OK and problem lights (#40).
-- **A warning names its system.** With several systems, the Radio system
-  and Decode lights in the navigation say which system is missing calls or
-  losing its control channel. On the Radio page, that system's card shows
-  the light and why (no free recorder, or out of band), and so do its
-  button in the system picker and its "What happened to calls" card (#41).
+- **Colours never look like a status light.** Green, amber, orange and red
+  now mean only OK, a warning or a problem. Systems and chart lines share
+  one palette of blues, teal, violets and magenta, and a system's mark is
+  square where a light is round (#40).
+- **A light names what it's about.** With several systems, radios or
+  plugins, the navigation's lights say which one is in trouble: "ipscpend:
+  Calls are being missed…". The Radio page shows the light and why on that
+  system's card, its button in the picker and its "What happened to calls".
+  The Overview's system cards include missed calls, and "Missed, 24 h" says
+  which systems missed them (#41).
 
 ## [0.2.7] — 2026-10-22
 

@@ -32,6 +32,12 @@ function notify(): void {
   else setTimeout(run, 0);
 }
 
+/** Forget every series (a test starting from nothing). */
+export function clearSeries(): void {
+  rings.clear();
+  notify();
+}
+
 /** Add one tick's values (Unix seconds `t`). */
 export function feedSeries(t: number, values: Record<string, number>): void {
   for (const k in values) {

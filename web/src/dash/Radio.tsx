@@ -6,7 +6,7 @@
 import { useMemo, useState } from "react";
 import { systemColor } from "../config.ts";
 import { radioQuery, setTalkgroupIgnore, setView, usePolled, useApp, type AppState } from "../controller.ts";
-import { BackBar, Bipartite, Card, Choice, Heatmap, HeatStrip, Histogram, Light, RadialEgo, Stat, type Node } from "../charts.tsx";
+import { BackBar, Bipartite, Card, Choice, Heatmap, HeatStrip, Histogram, Light, RadialEgo, Stat, SystemTag, type Node } from "../charts.tsx";
 import { ago, clockAt, compact, dur, hmm, num } from "../fmt.ts";
 import type { CipherSeen, LengthHistogram, RadioResult, TgRow, UnitRow } from "../protocol.ts";
 import { ActiveCalls, aliasOf, Log } from "./Calls.tsx";
@@ -23,7 +23,7 @@ const REASONS: { k: string; label: string; color: string; hint: string }[] = [
   { k: "recorded", label: "Recorded", color: "var(--series-1)", hint: "" },
   { k: "monitored", label: "Followed only", color: "var(--series-3)", hint: "Followed, not recorded" },
   { k: "ignored", label: "Ignored", color: "var(--muted-mark)", hint: "Set to Ignore in the talkgroup file" },
-  { k: "encrypted", label: "Encrypted", color: "var(--series-7)", hint: "Encrypted calls are off" },
+  { k: "encrypted", label: "Encrypted", color: "var(--series-6)", hint: "Encrypted calls are off" },
   { k: "unknown_tg", label: "Not in the file", color: "var(--series-4)", hint: "Unknown talkgroups are off" },
   { k: "no_recorder", label: "No recorder", color: "var(--critical)", hint: "All recorders busy" },
   { k: "no_source", label: "Out of band", color: "var(--serious)", hint: "No source covers the frequency" },
@@ -530,11 +530,6 @@ function UnitView({ s, sys, unit }: { s: AppState; sys: DashSystem; unit: number
 
 // ── the page ─────────────────────────────────────────────────────────────────
 
-/** A light beside a system's name, only when something's wrong with it. */
-function Problem({ h }: { h: Health }) {
-  return h.level === "warn" || h.level === "bad" ? <Light level={h.level} title={h.why} /> : null;
-}
-
 /** Which system a page is about: its colour, name, kind and site. */
 function SystemHeader({ s, sys }: { s: AppState; sys: DashSystem }) {
   // Its sites as their control channels say: "SysID 1A2 · site 1-3", or "SysID 1A2 · sites 1-3, 1-4".
@@ -574,12 +569,7 @@ function AllSystems({ s, systems }: { s: AppState; systems: DashSystem[] }) {
             className="sys-section"
             level={h.level}
             why={h.why}
-            title={
-              <span className="row">
-                <span className="sys-dot" style={{ background: systemColor(s.config, x.name) }} />
-                {x.name}
-              </span>
-            }
+            title={<SystemTag config={s.config} name={x.name} />}
             onTitle={() => setView("radio", x.name)}
             actions={<span className="badge-kind">{KIND_LABEL[x.kind]}</span>}
           >
@@ -666,9 +656,7 @@ export function RadioPage() {
     <div className="filter-row" role="tablist" aria-label="System">
       {systems.map((x) => (
         <button key={x.name} className={`btn ghost small${x.name === sys.name ? " on" : ""}`} onClick={() => setView("radio", x.name)}>
-          <span className="sys-dot" style={{ background: systemColor(s.config, x.name) }} />
-          {x.name}
-          <Problem h={systemRadioHealth(s, x)} />
+          <SystemTag config={s.config} name={x.name} health={systemRadioHealth(s, x)} />
         </button>
       ))}
     </div>

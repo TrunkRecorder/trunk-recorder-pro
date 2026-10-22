@@ -163,17 +163,25 @@ const worst = (hs: Health[]): Health => {
 };
 
 /**
+ * The worst of several things' health (sites, systems, sources, plugins), the
+ * one in trouble named when there are several: a light then says which.
+ */
+export function worstOf<T>(items: T[], name: (x: T) => string, health: (x: T) => Health): Health {
+  return worst(items.map((x) => {
+    const h = health(x);
+    return items.length > 1 && (h.level === "warn" || h.level === "bad") ? { ...h, why: `${name(x)}: ${h.why}` } : h;
+  }));
+}
+
+/**
  * A trunked system's control channels, each judged against its own usual
  * rate (`usual`, by series key): the worst site's, named when it has several.
  */
 export function systemHealth(s: AppState, x: DashSystem, usual: Record<string, Usual | null> = {}): Health {
   if (!running(s)) return { level: "idle", why: "Not recording" };
   if (x.kind === "conventional") return OK("Listening on its channels");
-  const hs = x.sites.map((site) => {
-    const h = siteHealth(s, site, usual[K.cc(site, "good")]);
-    return x.sites.length > 1 ? { ...h, why: `${site.name}: ${h.why}` } : h;
-  });
-  return hs.length ? worst(hs) : { level: "bad", why: "No site set up" };
+  if (!x.sites.length) return { level: "bad", why: "No site set up" };
+  return worstOf(x.sites, (site) => site.name, (site) => siteHealth(s, site, usual[K.cc(site, "good")]));
 }
 
 /** A site's control channel, judged against its own usual rate. */
@@ -262,27 +270,19 @@ export function rfHealth(s: AppState): Health {
     const c = s.config?.sources[i];
     return !!c && "autoTune" in c && !!c.autoTune;
   };
-  return worst(s.sources.map((x, i) => sourceHealth(s, x, auto(i))));
-}
-
-/** The worst of several systems' health, each named when there are several (the navigation's light then says which). */
-function worstSystem(systems: DashSystem[], health: (x: DashSystem) => Health): Health {
-  return worst(systems.map((x) => {
-    const h = health(x);
-    return systems.length > 1 && h.level !== "ok" && h.level !== "idle" ? { ...h, why: `${x.name}: ${h.why}` } : h;
-  }));
+  return worstOf(s.sources.map((x, i) => ({ x, i })), ({ x }) => x.label, ({ x, i }) => sourceHealth(s, x, auto(i)));
 }
 
 export function decodeHealth(s: AppState): Health {
   if (!running(s)) return { level: "idle", why: "Not recording" };
-  return worstSystem(dashSystems(s), (x) => systemHealth(s, x));
+  return worstOf(dashSystems(s), (x) => x.name, (x) => systemHealth(s, x));
 }
 
 export function pluginsHealth(s: AppState): Health {
   const ps = s.plugins?.plugins ?? [];
   const on = (id: string) => !!s.config?.plugins?.[id]?.enabled;
-  const hs = ps.filter((p) => on(p.id)).map((p) => pluginHealth(p, true));
-  return hs.length ? worst(hs) : { level: "idle", why: "No plugins on" };
+  const ons = ps.filter((p) => on(p.id));
+  return ons.length ? worstOf(ons, (p) => p.manifest?.name ?? p.id, (p) => pluginHealth(p, true)) : { level: "idle", why: "No plugins on" };
 }
 
 /** A system's calls lost for want of a recorder or a source, last few minutes: which of the two. */
@@ -299,7 +299,12 @@ export function systemRadioHealth(s: AppState, x: DashSystem): Health {
 /** Calls lost, any system: the system that loses them named. */
 export function radioHealth(s: AppState): Health {
   if (!running(s)) return { level: "idle", why: "Not recording" };
-  return worstSystem(dashSystems(s), (x) => systemRadioHealth(s, x));
+  return worstOf(dashSystems(s), (x) => x.name, (x) => systemRadioHealth(s, x));
+}
+
+/** A system all told, as the Overview shows it: its control channels, and whether it's missing calls. */
+export function systemOverallHealth(s: AppState, x: DashSystem, usual: Record<string, Usual | null> = {}): Health {
+  return worst([systemHealth(s, x, usual), systemRadioHealth(s, x)]);
 }
 
 /** The health of a page, for the navigation's lights. */

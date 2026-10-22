@@ -14,16 +14,26 @@
   --bad: #ff6b6b;
   --rec: #ff5a5f;
   --trace: #6cd4ff;
-  /* A system's colour (config.ts systemColor): cool hues only — blue, teal,
-     violet, magenta — so none reads as a status light (--ok green, --warn
-     amber, --serious orange, --bad red). Validated with the dataviz checks:
-     every pair apart for normal vision, neighbours under colour blindness. */
-  --sys-0: #3fb6ff;
-  --sys-1: #5358ee;
-  --sys-2: #017e9a;
-  --sys-3: #ebaafa;
-  --sys-4: #b8338a;
-  --sys-5: #c065f9;
+  /* The categorical colours, for what's told apart by colour: systems
+     (--sys-*, config.ts systemColor) and chart series (--series-*). Cool hues
+     only — blue, teal, violet, magenta — because green, amber, orange and red
+     are the status colours (--ok, --warn, --serious, --bad): nothing else
+     wears them, so a colour that looks like a warning is one. Validated with
+     the dataviz checks on both themes' panels: every pair apart for normal
+     vision, neighbours apart under colour blindness, none near a status
+     colour. A system's mark is square, a status light round. */
+  --cat-1: #3fb6ff;
+  --cat-2: #5358ee;
+  --cat-3: #017e9a;
+  --cat-4: #ebaafa;
+  --cat-5: #b8338a;
+  --cat-6: #c065f9;
+  --sys-0: var(--cat-1);
+  --sys-1: var(--cat-2);
+  --sys-2: var(--cat-3);
+  --sys-3: var(--cat-4);
+  --sys-4: var(--cat-5);
+  --sys-5: var(--cat-6);
   --radius: 8px;
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
   color-scheme: dark;
@@ -43,12 +53,12 @@
     --bad: #d64545;
     --rec: #d63a3f;
     --trace: #0a7bd6;
-    --sys-0: #0a7bd6;
-    --sys-1: #4f38d9;
-    --sys-2: #05568b;
-    --sys-3: #9e87e0;
-    --sys-4: #ac30c5;
-    --sys-5: #753479;
+    --cat-1: #0a7bd6;
+    --cat-2: #4f38d9;
+    --cat-3: #05568b;
+    --cat-4: #9e87e0;
+    --cat-5: #ac30c5;
+    --cat-6: #753479;
     color-scheme: light;
   }
 }
@@ -259,6 +269,8 @@ td.unit-cell .unit, .now-playing .unit {
 .check b { font-weight: 600; margin-right: 4px; }
 
 /* several systems */
+.sys-tag { display: inline-flex; align-items: center; }
+.sys-tag .light { margin-left: 6px; }
 .sys-dot { display: inline-block; width: 10px; height: 10px; border-radius: 3px; flex: none; vertical-align: baseline; margin-right: 6px; }
 .system-card { border: 1px solid var(--line); border-left: 3px solid var(--sys-color, var(--line)); border-radius: var(--radius); padding: 10px 12px; background: var(--panel-2); display: flex; flex-direction: column; gap: 10px; }
 .system-card.off { opacity: 0.65; }
@@ -278,7 +290,6 @@ td.unit-cell .unit, .now-playing .unit {
 .coverage .tick.voice { opacity: 0.55; }
 .legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--muted); }
 .filter-row { display: flex; gap: 6px; flex-wrap: wrap; }
-.filter-row .btn .light { margin-left: 6px; }
 .filter-row .btn.on { border-color: var(--accent); box-shadow: inset 0 -2px 0 var(--accent); }
 
 /* pages */
@@ -819,14 +830,14 @@ input.ob-picker-path:hover, input.ob-picker-path:focus { border-color: var(--lin
 .panel.off { opacity: 0.65; }
 
 /* ══ The dashboard ═══════════════════════════════════════════════════════════
-   Data colours: a validated categorical order (--series-1…8, dataviz
-   reference palette, re-checked on these surfaces), one-hue ramps for
+   Data colours: the categorical order (--series-1…6, the --cat-* colours
+   systems wear too, clear of the status colours), one-hue ramps for
    magnitude (--seq-*: activity, blue) and trouble (--hot-*: orange → red),
    and the status colours (--ok / --warn / --bad, plus --serious). Marks
    wear them; text never does. */
 :root {
-  --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500;
-  --series-5: #d55181; --series-6: #008300; --series-7: #9085e9; --series-8: #e66767;
+  --series-1: var(--cat-1); --series-2: var(--cat-2); --series-3: var(--cat-3);
+  --series-4: var(--cat-4); --series-5: var(--cat-5); --series-6: var(--cat-6);
   --good: var(--ok); --critical: var(--bad); --serious: #ec835a; --muted-mark: #5b6676;
   --seq-0: #1d2532; --seq-1: #104281; --seq-2: #1c5cab; --seq-3: #2a78d6; --seq-4: #5598e7; --seq-5: #9ec5f4;
   --hot-0: #1d2532; --hot-1: #4a2a1a; --hot-2: #7a3418; --hot-3: #b8481f; --hot-4: #e8693a; --hot-5: #f59a72;
@@ -837,8 +848,6 @@ input.ob-picker-path:hover, input.ob-picker-path:focus { border-color: var(--lin
 }
 @media (prefers-color-scheme: light) {
   :root {
-    --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a; --series-4: #eda100;
-    --series-5: #e87ba4; --series-6: #008300; --series-7: #4a3aa7; --series-8: #e34948;
     --muted-mark: #b4bcc8;
     --seq-0: #eef1f5; --seq-1: #cde2fb; --seq-2: #9ec5f4; --seq-3: #5598e7; --seq-4: #2a78d6; --seq-5: #184f95;
     --hot-0: #eef1f5; --hot-1: #fde3d6; --hot-2: #f6b394; --hot-3: #ec835a; --hot-4: #d95926; --hot-5: #a8360f;
@@ -911,7 +920,7 @@ h2.big { font-size: 26px; text-transform: none; letter-spacing: -0.01em; color: 
 .badge-kind { font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; white-space: nowrap; }
 .badge.new { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent); }
 .badge.unknown { background: color-mix(in srgb, var(--warn) 20%, transparent); color: var(--warn); }
-.badge.enc { background: color-mix(in srgb, var(--series-7) 25%, transparent); color: var(--text); }
+.badge.enc { background: color-mix(in srgb, var(--series-6) 25%, transparent); color: var(--text); }
 .badge.ign { background: var(--panel-2); color: var(--muted); border: 1px solid var(--line); }
 .btn.on { border-color: var(--accent); color: var(--text); background: color-mix(in srgb, var(--accent) 14%, transparent); }
 

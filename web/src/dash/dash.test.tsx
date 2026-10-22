@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { renderToString } from "react-dom/server";
 import { defaultConfig, newSystem } from "../config.ts";
 import { setView, snapshot, transport } from "../controller.ts";
-import { feedSeries } from "../series.ts";
+import { clearSeries, feedSeries } from "../series.ts";
 import { pageHealth } from "./data.ts";
 import type { CallView, Config, EngineStatus, FromRecorder, SiteIdentity, SiteStatus, SystemStatus } from "../protocol.ts";
 import { DecodePage } from "./Decode.tsx";
@@ -29,6 +29,7 @@ function running(c: Config, systems: SystemStatus[], calls: Partial<CallView>[] 
     { type: "history", entries: [] },
     { type: "hello", version: "test", platform: "test", api: 1, surveyBands: [], capabilities: ["service", "drivers", "plugins", "interfaces", "host", "keys"] },
   ];
+  clearSeries();
   for (const m of greeting) transport.onMessage(m);
   transport.onMessage({ type: "status", status: { systems, recording: 0 } as unknown as EngineStatus, sources: [], load: 0, calls: calls as CallView[] });
 }
@@ -123,7 +124,6 @@ test("Radio: a system's page goes back as Decode's does, with the systems beside
   assert.match(tg, /^ ?← dcfd dcfd P25/, "back to its system, no picker");
 });
 
-// (Last: the series it feeds stay for the rest of the file.)
 test("Radio: calls missed on one of several systems name it, in the navigation's light and on its card", () => {
   twoSites();
   feedSeries(Date.now() / 1000, { "sys/other/why/no_source": 1 });
@@ -136,4 +136,8 @@ test("Radio: calls missed on one of several systems name it, in the navigation's
   assert.match(text(html), /other P25 Calls are being missed: their frequencies are outside every source/);
   setView("radio", "dcfd");
   assert.match(renderToString(<RadioPage />), /other<span class="light light-warn"/, "the picker marks the other system");
+  setView("overview");
+  const overview = renderToString(<Overview />);
+  assert.match(overview, /<h3><span class="sys-tag">.*?other<\/span><\/h3>/, "the Overview's system card names it by its tag");
+  assert.equal((overview.match(/class="card card-warn[^"]*"/g) ?? []).length, 1, "and only other's card warns");
 });
