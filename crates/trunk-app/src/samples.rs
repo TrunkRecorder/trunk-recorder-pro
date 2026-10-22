@@ -49,5 +49,7 @@ mod tests {
         assert!(matches!(c.sources[0], crate::config::Source::Airspy { gain_step: 14, .. }));
         let c: crate::Config = serde_json::from_str(r#"{"sources":[{"type":"soapy","centerHz":1,"rateHz":8000000}]}"#).unwrap();
         assert!(matches!(&c.sources[0], crate::config::Source::Soapy { args, gain_db: None, .. } if args.is_empty()));
+        let c: crate::Config = serde_json::from_str(r#"{"sources":[{"type":"bladerf","centerHz":1,"rateHz":10000000}]}"#).unwrap();
+        assert!(matches!(&c.sources[0], crate::config::Source::Bladerf { serial, bandwidth_hz, gain_db, agc: false, bias_tee: false, .. } if serial.is_empty() && *bandwidth_hz == 0.0 && *gain_db == 30.0));
     }
 }

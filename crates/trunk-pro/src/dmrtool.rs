@@ -9,7 +9,6 @@
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
-use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::time::Instant;
 
@@ -19,20 +18,12 @@ use trunk_core::dsp::c4fm::{C4fm, C4fmOptions};
 use trunk_core::dsp::{Channelizer, Receiver};
 use trunk_core::mbe::{self, FRAME_SAMPLES};
 
-use crate::{die, Args};
-
-fn capture(a: &Args, what: &str) -> (Vec<u8>, f64, f64) {
-    let path = a.positional.get(1).unwrap_or_else(|| die(&format!("tool {what}: no capture")));
-    let mut cap = std::fs::read(path).unwrap_or_else(|e| die(&format!("{path}: {e}")));
-    let fs = a.num("fs", a.num("rate", 2_400_000.0));
-    if let Some(s) = a.get("seconds").and_then(|v| v.parse::<f64>().ok()) {
-        cap.truncate((s * fs) as usize * 2);
-    }
-    (cap, fs, a.num("center", 0.0))
-}
+use crate::toolkit::{hex, AudioOut, Capture};
+use crate::Args;
 
 pub fn run_scan(a: &Args) {
-    let (cap, fs, center) = capture(a, "dmrscan");
+    let cap = Capture::from_args_seconds(a, "dmrscan");
+    let (fs, center) = (cap.fs, cap.center);
     let mut chz = Channelizer::new(fs, 24_000.0, 0.1);
     let rate = chz.output_rate();
     let span = trunk_core::trunk::usable_half_width(fs, a.num("guard", trunk_core::trunk::DEFAULT_GUARD_HZ));
@@ -60,16 +51,7 @@ pub fn run_scan(a: &Args) {
         .collect();
     let t0 = Instant::now();
     let (mut syms, mut bursts, mut ev) = (Vec::new(), Vec::new(), Vec::new());
-    let mut off = 0;
-    while off < cap.len() {
-        let (used, ran) = chz.feed_u8(&cap[off..]);
-        off += used;
-        if !ran {
-            if used == 0 {
-                break;
-            }
-            continue;
-        }
+    cap.channelize(&mut chz, |chz| {
         for c in chans.iter_mut() {
             syms.clear();
             bursts.clear();
@@ -98,8 +80,8 @@ pub fn run_scan(a: &Args) {
                 }
             }
         }
-    }
-    let secs = cap.len() as f64 / 2.0 / fs;
+    });
+    let secs = cap.air();
     eprintln!("{} channels, {secs:.1} s of capture in {:.1} s", chans.len(), t0.elapsed().as_secs_f64());
     chans.retain(|c| c.syncs.values().sum::<u64>() >= 4);
     chans.sort_by_key(|c| std::cmp::Reverse(c.syncs.values().sum::<u64>()));
@@ -112,7 +94,8 @@ pub fn run_scan(a: &Args) {
 }
 
 pub fn run(a: &Args) {
-    let (cap, fs, center) = capture(a, "dmr");
+    let cap = Capture::from_args_seconds(a, "dmr");
+    let (fs, center) = (cap.fs, cap.center);
     let freq = a.num("freq", 0.0);
     let all = a.flag("bursts");
     let want_slot = a.num("slot", 0.0) as u8;
@@ -123,7 +106,7 @@ pub fn run(a: &Args) {
     let mut framer = Framer::new();
     let mut chan = dmr::Channel::default();
     let mut vocoders = [mbe::Decoder::new(mbe::lcg(1), mbe::Profile::Enhanced), mbe::Decoder::new(mbe::lcg(2), mbe::Profile::Enhanced)];
-    let mut audio_out = a.get("audio").map(|p| BufWriter::new(File::create(p).unwrap_or_else(|e| die(&format!("{p}: {e}")))));
+    let mut audio_out = AudioOut::open(a, "audio");
     let stdout = std::io::stdout();
     let mut out = BufWriter::new(stdout.lock());
     let (mut syms, mut bursts, mut ev) = (Vec::new(), Vec::<Burst>::new(), Vec::new());
@@ -132,16 +115,7 @@ pub fn run(a: &Args) {
     // Per slot: the last LC printed (only changes are), voice frames since.
     let mut last_lc: [Option<dmr::Lc>; 2] = [None, None];
     let t0 = Instant::now();
-    let mut off = 0;
-    while off < cap.len() {
-        let (used, ran) = chz.feed_u8(&cap[off..]);
-        off += used;
-        if !ran {
-            if used == 0 {
-                break;
-            }
-            continue;
-        }
+    cap.channelize(&mut chz, |chz| {
         syms.clear();
         bursts.clear();
         rx.push(chz.output(head).unwrap(), &mut syms);
@@ -190,9 +164,7 @@ pub fn run(a: &Args) {
                                 let mut buf = [0f32; FRAME_SAMPLES];
                                 vocoders[s as usize].ambe(&frame.bits, frame.errs, &mut buf);
                                 mbe::to_unit(&mut buf);
-                                for v in buf {
-                                    let _ = w.write_all(&v.to_le_bytes());
-                                }
+                                w.samples(&buf);
                             }
                         }
                     }
@@ -231,9 +203,9 @@ pub fn run(a: &Args) {
                 }
             }
         }
-    }
+    });
     let _ = out.flush();
-    let secs = cap.len() as f64 / 2.0 / fs;
+    let secs = cap.air();
     eprintln!("{secs:.1} s in {:.2} s; bursts {} syncs {} (framer locked: {}); CACH errors {}", t0.elapsed().as_secs_f64(), framer.bursts, framer.syncs, framer.locked(), chan.tact_errors);
     eprintln!("voice codewords {vcw}: {:.1} % with ≤ 1 error, {:.2} errors each", 100.0 * vcw_clean as f64 / vcw.max(1) as f64, vcw_errs as f64 / vcw.max(1) as f64);
     for (s, d) in chan.slots.iter().enumerate() {
@@ -242,8 +214,4 @@ pub fn run(a: &Args) {
     for (k, n) in counts {
         eprintln!("  {k}: {n}");
     }
-}
-
-fn hex(b: &[u8]) -> String {
-    b.iter().map(|x| format!("{x:02x}")).collect()
 }

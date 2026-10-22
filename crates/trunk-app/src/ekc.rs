@@ -61,6 +61,8 @@ pub struct Key {
     pub kid: u16,
     pub name: String,
     pub bytes: Zeroizing<Vec<u8>>,
+    /// In the active keyset (KFDtool's ActiveKeyset).
+    pub active: bool,
 }
 
 impl fmt::Debug for Key {
@@ -209,11 +211,19 @@ pub fn parse(file: &[u8], password: &str) -> Result<Container, EkcError> {
             skip("key bytes that are not hex");
             continue;
         };
-        if out.keys.iter().any(|k| k.algid == algid && k.kid == kid) {
-            skip("a second key for the same algorithm and key id");
+        // One key ID can be in two keysets while keys change over: radios
+        // receive with the active keyset's first (AACA-A §6.1).
+        let active = flag("ActiveKeyset");
+        if let Some(i) = out.keys.iter().position(|k| k.algid == algid && k.kid == kid) {
+            if active && !out.keys[i].active {
+                let old = std::mem::replace(&mut out.keys[i], Key { algid, kid, name: name.clone(), bytes: Zeroizing::new(bytes), active });
+                out.skipped.push(Skipped { name: old.name, reason: "the same algorithm and key id as an active keyset's key, in an inactive keyset" });
+            } else {
+                skip(if active == out.keys[i].active { "a second key for the same algorithm and key id" } else { "the same algorithm and key id as an active keyset's key, in an inactive keyset" });
+            }
             continue;
         }
-        out.keys.push(Key { algid, kid, name: name.clone(), bytes: Zeroizing::new(bytes) });
+        out.keys.push(Key { algid, kid, name: name.clone(), bytes: Zeroizing::new(bytes), active });
     }
     Ok(out)
 }

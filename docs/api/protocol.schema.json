@@ -11,6 +11,14 @@
         "manual"
       ]
     },
+    "ApiAccess": {
+      "type": "string",
+      "enum": [
+        "listen",
+        "control"
+      ],
+      "description": "What a page may do with the recorder's API. \"listen\": see what the recorder does and play its calls, change nothing (its config comes without plugin settings and key sources). \"control\": everything the built-in interface can."
+    },
     "CallEntry": {
       "type": "object",
       "properties": {
@@ -45,8 +53,16 @@
         "short_name": {
           "type": "string"
         },
+        "site": {
+          "type": "string",
+          "description": "The site its copy was kept from (a system of one site: its short name)."
+        },
         "talkgroup": {
           "type": "number"
+        },
+        "talkgroup_ota": {
+          "type": "number",
+          "description": "Conventional P25 / DMR / NXDN: the talkgroup the air named (`talkgroup` is what the call is filed under, which a channel row may set to another number)."
         },
         "talkgroup_tag": {
           "type": "string"
@@ -124,6 +140,10 @@
           "type": "number",
           "description": "TDMA / DMR slot (0 otherwise)."
         },
+        "nac": {
+          "type": "string",
+          "description": "P25: the NAC its voice carried (conventional) or its site's (trunked), in hex as channel files write it (\"293\"); \"\" otherwise (absent in calls saved before)."
+        },
         "color_code": {
           "type": "number",
           "description": "DMR color code; -1 otherwise."
@@ -139,6 +159,32 @@
             "digital",
             "digital tdma"
           ]
+        },
+        "system_type": {
+          "type": "string",
+          "enum": [
+            "p25",
+            "smartnet",
+            "dmr",
+            "nxdn",
+            "edacs",
+            "conventional"
+          ],
+          "description": "The kind of system it came on (absent in calls saved before)."
+        },
+        "voice_mode": {
+          "type": "string",
+          "enum": [
+            "p25",
+            "p25_phase2",
+            "dmr",
+            "nxdn48",
+            "nxdn96",
+            "provoice",
+            "fm",
+            "am"
+          ],
+          "description": "What its voice was: a conventional row's mode, or a trunked grant's (absent in calls saved before)."
         },
         "tone_mode": {
           "type": "string",
@@ -351,6 +397,61 @@
       "additionalProperties": false,
       "description": "Trunk Recorder's call JSON: each call's .json file, and `record` in `concluded` and `hello.history`."
     },
+    "CallSignHolder": {
+      "type": "object",
+      "properties": {
+        "callSign": {
+          "type": "string"
+        },
+        "licensee": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "serviceCode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "serviceDesc": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "city": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "callSign",
+        "licensee",
+        "serviceCode",
+        "serviceDesc",
+        "status",
+        "city",
+        "state"
+      ],
+      "additionalProperties": false,
+      "description": "Who holds a call sign (the trunkrecorder.pro API's)."
+    },
     "CallView": {
       "type": "object",
       "properties": {
@@ -359,13 +460,24 @@
         },
         "system": {
           "type": "number",
-          "description": "SystemStatus.index; conventionalSystem(k) for conventional system k's channels."
+          "description": "Its system's number this run (EngineStatus.systemNames names it)."
         },
         "systemName": {
           "type": "string"
         },
+        "site": {
+          "type": "string",
+          "description": "The site it is on (its name; none for a conventional system's call)."
+        },
         "talkgroup": {
           "type": "number"
+        },
+        "talkgroupOta": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Conventional P25 / DMR / NXDN: the talkgroup the air named (a channel row may file the call under another)."
         },
         "alphaTag": {
           "type": "string"
@@ -460,7 +572,7 @@
           "items": {
             "type": "string"
           },
-          "description": "Multi-site: the other sites carrying this call (one copy is saved)."
+          "description": "The other sites of its system carrying this call, by name (one copy is saved)."
         }
       },
       "required": [
@@ -484,6 +596,18 @@
       ],
       "additionalProperties": false
     },
+    "Capability": {
+      "type": "string",
+      "enum": [
+        "service",
+        "drivers",
+        "plugins",
+        "interfaces",
+        "host",
+        "keys"
+      ],
+      "description": "Something a recorder can do beyond recording (`hello.capabilities`).\n- `service`: a program of its own on a computer: quit, start recording when it starts, log files, M4A encoding, files by path (capture files, channel files, browsing folders, a Trunk Recorder config, the recordings folder, the RAM spool, keeping audio and JSON once plugins are done)\n- `drivers`: radio drivers beyond RTL-SDR (USRP, Airspy, SoapySDR), finding radios, an RTL-SDR's USB transfer sizes\n- `plugins`: plugins (listing, adding, the store, their settings)\n- `interfaces`: other interfaces, served on ports of their own\n- `host`: the computer's and plugins' figures (`host`)\n- `keys`: key containers opened with a password"
+    },
     "Channel": {
       "type": "object",
       "properties": {
@@ -494,6 +618,7 @@
           "type": "string",
           "enum": [
             "fm",
+            "am",
             "p25",
             "dmr",
             "nxdn48",
@@ -506,9 +631,17 @@
         "talkgroup": {
           "type": "number"
         },
-        "tone": {
+        "code": {
           "type": "string",
-          "description": "FM: the CTCSS tone or DCS code it records, Trunk Recorder's form (\"151.4\", \"D023N\"); absent / \"\": any."
+          "description": "The code it records: FM's CTCSS tone or DCS code (\"151.4\", \"D023N\"), P25's NAC (\"293\"), DMR's colour code (\"1\"), NXDN's RAN (\"5\"); absent / \"\": any."
+        },
+        "slot": {
+          "type": "number",
+          "description": "DMR: record only this slot (1, 2)."
+        },
+        "matchTalkgroup": {
+          "type": "number",
+          "description": "P25, DMR, NXDN: record only transmissions naming this talkgroup."
         },
         "description": {
           "type": "string"
@@ -522,6 +655,10 @@
         "squelchDb": {
           "type": "number"
         },
+        "bandwidthKhz": {
+          "type": "number",
+          "description": "FM / AM: the channel filter's width, kHz (4–20); absent = the mode's (FM 11, AM 11 or 16 from 225 MHz)."
+        },
         "enabled": {
           "type": "boolean"
         }
@@ -533,13 +670,20 @@
         "enabled"
       ],
       "additionalProperties": false,
-      "description": "A conventional channel. `talkgroup` defaults to the frequency in kHz; `squelchDb` to the section's."
+      "description": "A conventional channel. `talkgroup` (TG Number) is what calls are filed under; absent: the talkgroup the air names (P25, DMR, NXDN), else the frequency in kHz. `squelchDb` defaults to the section's."
     },
     "ChannelSnapshot": {
       "type": "object",
       "properties": {
         "system": {
           "type": "string"
+        },
+        "site": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The site it is for (none: a conventional channel)."
         },
         "freqHz": {
           "type": "number"
@@ -655,8 +799,7 @@
           "type": "array",
           "items": {
             "$ref": "#/definitions/Conventional"
-          },
-          "description": "The conventional systems; the k-th's calls carry `system` conventionalSystem(k)."
+          }
         },
         "recording": {
           "$ref": "#/definitions/Recording"
@@ -665,10 +808,12 @@
           "type": "object",
           "properties": {
             "bind": {
-              "type": "string"
+              "type": "string",
+              "description": "The address every interface listens on."
             },
             "port": {
-              "type": "number"
+              "type": "number",
+              "description": "The built-in interface's port."
             },
             "autoStart": {
               "type": "boolean"
@@ -678,18 +823,18 @@
               "items": {
                 "type": "string"
               },
-              "description": "Web pages from other origins that may use the API (\"http://host:port\", \"null\" a file, \"*\" any)."
+              "description": "Web pages from other origins that may use the built-in interface's API (\"http://host:port\", \"null\" a file, \"*\" any)."
             },
             "interfaces": {
-              "type": "array",
-              "items": {
-                "$ref": "#/definitions/CustomInterface"
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/definitions/InterfaceSetup"
               },
-              "description": "Interfaces of your own, served at /ui/<name>/ (docs/api)."
+              "description": "The other interfaces, by id, each on a port of its own (desktop app; docs/interfaces)."
             },
-            "home": {
+            "trpApi": {
               "type": "string",
-              "description": "What / shows: \"\" the built-in interface (always at /builtin/ too), else an interface's name."
+              "description": "Where the trunkrecorder.pro API is, for the survey's license lookup (absent: https://trunkrecorder.pro)."
             }
           },
           "required": [
@@ -749,12 +894,19 @@
           "type": "string",
           "description": "What people call it; the short name is its folder."
         },
+        "fcc": {
+          "$ref": "#/definitions/FccLicenses",
+          "description": "Its channels' FCC licenses by frequency (they can be different licensees'): see FccLicenses."
+        },
         "enabled": {
           "type": "boolean"
         },
         "squelchDb": {
           "type": "number",
           "description": "Open threshold above the noise floor, dB (each channel may have its own)."
+        },
+        "demod": {
+          "$ref": "#/definitions/Demod"
         },
         "channelFile": {
           "type": "string",
@@ -805,25 +957,6 @@
       "additionalProperties": false,
       "description": "A conventional system (Trunk Recorder's conventional / conventionalP25 / conventionalDMR): energy-detected channels with their own short name, squelch, channel file, recording rules, unit names and upload settings. A frequency belongs to one system."
     },
-    "CustomInterface": {
-      "type": "object",
-      "properties": {
-        "name": {
-          "type": "string",
-          "description": "Its address: /ui/<name>/ (letters, digits, - and _)."
-        },
-        "path": {
-          "type": "string",
-          "description": "The folder: absolute, ~/…, or relative to the config file's folder."
-        }
-      },
-      "required": [
-        "name",
-        "path"
-      ],
-      "additionalProperties": false,
-      "description": "An interface of your own: a folder with an index.html, served as it is on disk at /ui/<name>/."
-    },
     "DelayRule": {
       "type": "object",
       "properties": {
@@ -852,6 +985,37 @@
       "additionalProperties": false,
       "description": "Plugins wait this long for the calls its fields pick, each left out picking all. When several apply, one that narrows another (a system's over every system's, a talkgroup's over its system's, a plugin's over every plugin's) replaces it; of the rest, the longest wins."
     },
+    "Demod": {
+      "type": "object",
+      "properties": {
+        "fmDeemphasis": {
+          "type": "boolean",
+          "description": "FM: undo 750 µs pre-emphasis (default true)."
+        },
+        "amLevel": {
+          "type": "string",
+          "enum": [
+            "fast",
+            "slow"
+          ],
+          "description": "AM: how fast the level follows the carrier (default fast: 50 ms; slow: 0.5 s)."
+        },
+        "amLowCutHz": {
+          "type": "number",
+          "description": "AM: audio high-pass corner, Hz (default 200; 0 = none)."
+        },
+        "squelchOpenMs": {
+          "type": "number",
+          "description": "Carrier held this long before the audio opens, ms (default 30)."
+        },
+        "squelchHangMs": {
+          "type": "number",
+          "description": "Audio kept open this long after the carrier goes, ms (default 2)."
+        }
+      },
+      "additionalProperties": false,
+      "description": "How a conventional system's analog channels are demodulated; each left out is the default."
+    },
     "Device": {
       "type": "object",
       "properties": {
@@ -870,6 +1034,13 @@
             "null"
           ],
           "description": "Why it can't be opened now (another program has it); absent / null = free."
+        },
+        "bus": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The USB bus (host controller) it's plugged into, desktop app; dongles on one share its bandwidth."
         }
       },
       "required": [
@@ -1088,6 +1259,13 @@
           "items": {
             "$ref": "#/definitions/SystemStatus"
           }
+        },
+        "systemNames": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Every system's short name, by the number its calls and live audio carry as `system` (trunked systems first, then conventional)."
         }
       },
       "required": [
@@ -1097,9 +1275,41 @@
         "channelsOpen",
         "conventionalOpen",
         "callsConcluded",
-        "systems"
+        "systems",
+        "systemNames"
       ],
       "additionalProperties": false
+    },
+    "FccLicense": {
+      "type": "object",
+      "properties": {
+        "callSign": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "from": {
+          "type": "string",
+          "enum": [
+            "user",
+            "air",
+            "lookup"
+          ]
+        }
+      },
+      "required": [
+        "callSign"
+      ],
+      "additionalProperties": false,
+      "description": "Who is licensed on a frequency: its call sign, who holds it (as the FCC has it; absent: not looked up), and where that came from: the user (never replaced), the air (a Motorola base station ID), or a license lookup."
+    },
+    "FccLicenses": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/definitions/FccLicense"
+      },
+      "description": "A system's FCC licenses by frequency (Hz on the 6.25 kHz raster, as a string). Optional, for reference; plugins are told them."
     },
     "FreqRow": {
       "type": "object",
@@ -1210,71 +1420,13 @@
             "platform": {
               "type": "string"
             },
-            "config": {
-              "$ref": "#/definitions/Config"
+            "api": {
+              "type": "number",
+              "description": "The interface API this recorder speaks (docs/interfaces)."
             },
             "configPath": {
-              "type": "string"
-            },
-            "devices": {
-              "type": "array",
-              "items": {
-                "$ref": "#/definitions/Device"
-              }
-            },
-            "phase": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "type": {
-                  "type": "string",
-                  "const": "state"
-                },
-                "phase": {
-                  "$ref": "#/definitions/Phase"
-                },
-                "error": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "ended": {
-                  "type": "boolean"
-                }
-              },
-              "required": [
-                "ended",
-                "error",
-                "phase",
-                "type"
-              ]
-            },
-            "history": {
-              "type": "array",
-              "items": {
-                "$ref": "#/definitions/CallEntry"
-              }
-            },
-            "units": {
-              "type": "object",
-              "additionalProperties": {
-                "type": "string"
-              },
-              "description": "Each system's radios' talker aliases, as saved: short name → unitTagsOTA CSV."
-            },
-            "heard": {
-              "type": "object",
-              "additionalProperties": {
-                "type": "array",
-                "items": {
-                  "$ref": "#/definitions/HeardCode"
-                }
-              },
-              "description": "The codes each conventional frequency (Hz, as a string) carried, as saved."
-            },
-            "radios": {
-              "$ref": "#/definitions/Radios"
+              "type": "string",
+              "description": "The config file (control access only)."
             },
             "surveyBands": {
               "type": "array",
@@ -1282,214 +1434,62 @@
                 "$ref": "#/definitions/SurveyBand"
               }
             },
-            "survey": {
-              "anyOf": [
-                {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "properties": {
-                    "stage": {
-                      "type": "string",
-                      "const": "idle"
-                    },
-                    "type": {
-                      "type": "string",
-                      "const": "survey"
-                    }
-                  },
-                  "required": [
-                    "stage",
-                    "type"
-                  ]
-                },
-                {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "properties": {
-                    "stage": {
-                      "type": "string",
-                      "enum": [
-                        "scanning",
-                        "monitoring",
-                        "done"
-                      ]
-                    },
-                    "source": {
-                      "type": "number"
-                    },
-                    "bands": {
-                      "type": "array",
-                      "items": {
-                        "type": "string"
-                      }
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "error": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "progress": {
-                      "anyOf": [
-                        {
-                          "type": "object",
-                          "properties": {
-                            "hop": {
-                              "type": "number"
-                            },
-                            "hops": {
-                              "type": "number"
-                            },
-                            "band": {
-                              "type": "string"
-                            },
-                            "centerHz": {
-                              "type": "number"
-                            }
-                          },
-                          "required": [
-                            "hop",
-                            "hops",
-                            "band",
-                            "centerHz"
-                          ],
-                          "additionalProperties": false
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "candidates": {
-                      "type": "array",
-                      "items": {
-                        "$ref": "#/definitions/SurveyCandidate"
-                      }
-                    },
-                    "monitor": {
-                      "anyOf": [
-                        {
-                          "$ref": "#/definitions/SurveyMonitor"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "suggest": {
-                      "anyOf": [
-                        {
-                          "$ref": "#/definitions/SurveySuggestion"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "type": {
-                      "type": "string",
-                      "const": "survey"
-                    }
-                  },
-                  "required": [
-                    "bands",
-                    "candidates",
-                    "error",
-                    "message",
-                    "monitor",
-                    "progress",
-                    "source",
-                    "stage",
-                    "suggest",
-                    "type"
-                  ]
-                }
-              ]
-            },
-            "events": {
+            "capabilities": {
               "type": "array",
               "items": {
-                "$ref": "#/definitions/MonitorEvent"
+                "$ref": "#/definitions/Capability"
               },
-              "description": "The dashboard: recent notable events (oldest first)."
-            },
-            "host": {
-              "anyOf": [
-                {
-                  "type": "object",
-                  "properties": {
-                    "type": {
-                      "type": "string",
-                      "const": "host"
-                    },
-                    "t": {
-                      "type": "number"
-                    },
-                    "values": {
-                      "type": "object",
-                      "additionalProperties": {
-                        "type": "number"
-                      }
-                    },
-                    "platform": {
-                      "$ref": "#/definitions/PlatformInfo"
-                    }
-                  },
-                  "required": [
-                    "type",
-                    "t",
-                    "values",
-                    "platform"
-                  ],
-                  "additionalProperties": false
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "The computer as last sampled (desktop app)."
-            },
-            "pluginRuntime": {
-              "type": "object",
-              "additionalProperties": {
-                "$ref": "#/definitions/PluginRuntime"
-              },
-              "description": "Every plugin's runtime, by id (desktop app)."
-            },
-            "keys": {
-              "type": "object",
-              "properties": {
-                "type": {
-                  "type": "string",
-                  "const": "keys"
-                },
-                "sources": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/definitions/LockableKeys"
-                  }
-                }
-              },
-              "required": [
-                "type",
-                "sources"
-              ],
-              "additionalProperties": false,
-              "description": "Key containers waiting for a password, and which are unlocked (desktop app)."
+              "description": "What this recorder can do beyond recording: show only what works. The desktop app can do all of them; the browser build, none."
             }
           },
           "required": [
             "type",
             "version",
             "platform",
-            "config",
-            "configPath",
-            "devices",
-            "phase",
-            "history"
+            "api",
+            "surveyBands",
+            "capabilities"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "history"
+            },
+            "entries": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/CallEntry"
+              }
+            }
+          },
+          "required": [
+            "type",
+            "entries"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "units"
+            },
+            "system": {
+              "type": "string"
+            },
+            "csv": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "system",
+            "csv"
           ],
           "additionalProperties": false
         },
@@ -1567,11 +1567,56 @@
             },
             "config": {
               "$ref": "#/definitions/Config"
+            },
+            "version": {
+              "type": "number"
             }
           },
           "required": [
             "type",
-            "config"
+            "config",
+            "version"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "configSaved"
+            },
+            "version": {
+              "type": "number"
+            },
+            "error": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "version"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "talkgroups"
+            },
+            "system": {
+              "type": "string"
+            },
+            "csv": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "system",
+            "csv"
           ],
           "additionalProperties": false
         },
@@ -1909,6 +1954,68 @@
         },
         {
           "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "licenseResult"
+            },
+            "id": {
+              "type": "number"
+            },
+            "results": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/LicenseResultRow"
+              }
+            },
+            "error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "results",
+            "error"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "callSignResult"
+            },
+            "id": {
+              "type": "number"
+            },
+            "results": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/CallSignHolder"
+              }
+            },
+            "error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "results",
+            "error"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
           "additionalProperties": false,
           "properties": {
             "source": {
@@ -2195,6 +2302,23 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
+            "kind": {
+              "type": "string",
+              "const": "plugin"
+            },
+            "target": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "This computer's release target, e.g. universal-apple-darwin."
+            },
+            "listings": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/PluginListing"
+              }
+            },
             "source": {
               "type": "string",
               "enum": [
@@ -2202,7 +2326,7 @@
                 "saved",
                 "built-in"
               ],
-              "description": "\"registry\": just fetched; \"saved\": fetched before (the registry couldn't be reached); \"built-in\": this version's copy."
+              "description": "\"registry\": just fetched; \"saved\": fetched before (it couldn't be reached); \"built-in\": this version's copy."
             },
             "fetched": {
               "type": [
@@ -2216,29 +2340,17 @@
                 "string",
                 "null"
               ],
-              "description": "Why the registry couldn't be reached."
-            },
-            "target": {
-              "type": [
-                "string",
-                "null"
-              ],
-              "description": "This computer's release target, e.g. universal-apple-darwin."
-            },
-            "plugins": {
-              "type": "array",
-              "items": {
-                "$ref": "#/definitions/StoreListing"
-              }
+              "description": "Why it couldn't be reached."
             },
             "type": {
               "type": "string",
-              "const": "pluginStore"
+              "const": "store"
             }
           },
           "required": [
             "fetched",
-            "plugins",
+            "kind",
+            "listings",
             "problem",
             "source",
             "target",
@@ -2249,12 +2361,66 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
+            "kind": {
+              "type": "string",
+              "const": "interface"
+            },
+            "listings": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/InterfaceListing"
+              }
+            },
+            "source": {
+              "type": "string",
+              "enum": [
+                "registry",
+                "saved",
+                "built-in"
+              ],
+              "description": "\"registry\": just fetched; \"saved\": fetched before (it couldn't be reached); \"built-in\": this version's copy."
+            },
+            "fetched": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "description": "When it was fetched, Unix seconds."
+            },
+            "problem": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Why it couldn't be reached."
+            },
+            "type": {
+              "type": "string",
+              "const": "store"
+            }
+          },
+          "required": [
+            "fetched",
+            "kind",
+            "listings",
+            "problem",
+            "source",
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "$ref": "#/definitions/StoreKind"
+            },
             "key": {
               "type": "string"
             },
             "id": {
               "type": "string",
-              "description": "The plugin's id, once known."
+              "description": "What it installs, once known."
             },
             "stage": {
               "type": "string",
@@ -2275,14 +2441,40 @@
             },
             "type": {
               "type": "string",
-              "const": "pluginInstall"
+              "const": "installProgress"
             }
           },
           "required": [
             "id",
             "key",
+            "kind",
             "message",
             "stage",
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "interfaces": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/InterfaceInfo"
+              }
+            },
+            "api": {
+              "type": "number",
+              "description": "The interface API this recorder speaks."
+            },
+            "type": {
+              "type": "string",
+              "const": "interfaces"
+            }
+          },
+          "required": [
+            "api",
+            "interfaces",
             "type"
           ]
         },
@@ -2384,12 +2576,26 @@
               "items": {
                 "$ref": "#/definitions/ChannelSnapshot"
               }
+            },
+            "sites": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/SiteDetail"
+              }
+            },
+            "patches": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/Patch"
+              }
             }
           },
           "required": [
             "type",
             "system",
-            "channels"
+            "channels",
+            "sites",
+            "patches"
           ],
           "additionalProperties": false
         },
@@ -2436,6 +2642,10 @@
             "system": {
               "type": "string",
               "description": "A system's short name (talkgroup, radio, call volume, control channel events)."
+            },
+            "site": {
+              "type": "string",
+              "description": "Control channel events: the site's own name, when it has one other than its system's."
             },
             "talkgroup": {
               "type": "number"
@@ -2884,48 +3094,280 @@
       "additionalProperties": false,
       "description": "A code a conventional frequency carried (crates/trunk-app/src/heard.rs), in a row's Tone form (\"\" = none)."
     },
-    "Identity": {
+    "InterfaceInfo": {
       "type": "object",
       "properties": {
-        "nac": {
-          "type": [
-            "number",
-            "null"
-          ]
+        "id": {
+          "type": "string"
         },
-        "wacn": {
-          "type": [
-            "number",
-            "null"
-          ]
+        "folder": {
+          "type": "string",
+          "description": "The folder it's served from."
         },
-        "sysId": {
-          "type": [
-            "number",
-            "null"
-          ]
+        "installed": {
+          "type": "boolean",
+          "description": "Installed from the store (false: a folder of your own)."
         },
-        "rfss": {
-          "type": [
-            "number",
-            "null"
-          ]
+        "dev": {
+          "type": "boolean",
+          "description": "Served this run only (`trunk-pro --ui <folder>`); not in the config."
         },
-        "site": {
+        "manifest": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/InterfaceManifest"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Its interface.json (null: it has none)."
+        },
+        "repository": {
           "type": [
-            "number",
+            "string",
             "null"
-          ]
+          ],
+          "description": "The repository it was installed from."
+        },
+        "reviewed": {
+          "type": "boolean",
+          "description": "Installed from the store's list (false: a GitHub release nobody reviewed, or a folder of your own)."
+        },
+        "port": {
+          "type": "number"
+        },
+        "access": {
+          "$ref": "#/definitions/ApiAccess"
+        },
+        "serving": {
+          "type": "boolean",
+          "description": "Being served on its port now."
+        },
+        "problem": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Why it isn't served (no index.html, its port taken…); null when it's fine or off."
         }
       },
       "required": [
-        "nac",
-        "wacn",
-        "sysId",
-        "rfss",
-        "site"
+        "id",
+        "folder",
+        "installed",
+        "dev",
+        "manifest",
+        "repository",
+        "reviewed",
+        "port",
+        "access",
+        "serving",
+        "problem"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "An interface on this recorder, and how it's doing. Its port, access and on/off are the config's."
+    },
+    "InterfaceListing": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "repository": {
+          "type": "string"
+        },
+        "homepage": {
+          "type": "string"
+        },
+        "license": {
+          "type": "string"
+        },
+        "tier": {
+          "type": "string",
+          "enum": [
+            "official",
+            "community",
+            "unlisted"
+          ]
+        },
+        "version": {
+          "type": "string"
+        },
+        "api": {
+          "type": "number"
+        },
+        "access": {
+          "$ref": "#/definitions/ApiAccess",
+          "description": "What it needs: installed with this access."
+        },
+        "tag": {
+          "type": "string"
+        },
+        "commit": {
+          "type": "string"
+        },
+        "asset": {
+          "type": "object",
+          "properties": {
+            "url": {
+              "type": "string"
+            },
+            "sha256": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "url",
+            "sha256"
+          ],
+          "additionalProperties": false,
+          "description": "Its release archive (web files: the same on every computer)."
+        },
+        "screenshots": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "url": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string"
+              },
+              "caption": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "url",
+              "sha256"
+            ],
+            "additionalProperties": false
+          },
+          "description": "Pictures of it, each a file of its release. The built-in interface's port serves them, checked, at /store/screenshots/<sha256>."
+        },
+        "unavailable": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Why this recorder can't install it (a newer interface API); null when it can."
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "description",
+        "repository",
+        "license",
+        "tier",
+        "version",
+        "api",
+        "access",
+        "tag",
+        "commit",
+        "asset",
+        "unavailable"
+      ],
+      "additionalProperties": false,
+      "description": "An interface in the store (crates/trunk-pro/src/interfaces/store.rs): one release of it, pinned."
+    },
+    "InterfaceManifest": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Lowercase letters, digits and -."
+        },
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "api": {
+          "type": "number",
+          "description": "The interface API it's written for (hello's `api`)."
+        },
+        "access": {
+          "$ref": "#/definitions/ApiAccess",
+          "description": "What it needs."
+        },
+        "license": {
+          "type": "string"
+        },
+        "homepage": {
+          "type": "string"
+        },
+        "repository": {
+          "type": "string"
+        },
+        "screenshots": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "caption": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "additionalProperties": false
+          },
+          "description": "Pictures of it: files in its folder (PNG, JPEG or WebP, at most 6). The built-in interface's port serves installed ones at /interfaces/<id>/screenshots/<n>."
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "version",
+        "description",
+        "api",
+        "access"
+      ],
+      "additionalProperties": false,
+      "description": "What an interface says it is: interface.json in its folder."
+    },
+    "InterfaceSetup": {
+      "type": "object",
+      "properties": {
+        "port": {
+          "type": "number"
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "Served (false: kept, not served)."
+        },
+        "access": {
+          "$ref": "#/definitions/ApiAccess"
+        },
+        "path": {
+          "type": "string",
+          "description": "A folder of your own (absolute, ~/…, or relative to the config file's folder); absent: the copy installed from the store."
+        }
+      },
+      "required": [
+        "port",
+        "enabled",
+        "access"
+      ],
+      "additionalProperties": false,
+      "description": "An interface besides the built-in one: static web files, served with the API beside them on a port of its own."
     },
     "KeySource": {
       "type": "object",
@@ -2968,6 +3410,30 @@
       ],
       "additionalProperties": false
     },
+    "LicenseResultRow": {
+      "type": "object",
+      "properties": {
+        "freqHz": {
+          "type": "number"
+        },
+        "historical": {
+          "type": "boolean"
+        },
+        "licenses": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/SurveyLicense"
+          }
+        }
+      },
+      "required": [
+        "freqHz",
+        "historical",
+        "licenses"
+      ],
+      "additionalProperties": false,
+      "description": "The licenses found on one frequency looked up; `historical`: none active on it, so these have lapsed."
+    },
     "LockableKeys": {
       "type": "object",
       "properties": {
@@ -2997,7 +3463,15 @@
       "type": "object",
       "properties": {
         "timeS": {
-          "type": "number"
+          "type": "number",
+          "description": "Seconds into the recording (the decoder's lines; 0 for the recorder's own)."
+        },
+        "time": {
+          "type": "number",
+          "description": "The recorder's own lines (not the decoder's): when, Unix seconds, and how serious (\"info\", \"warning\", \"error\"…). Warnings and errors go to every connection, the rest to those watching `log`."
+        },
+        "level": {
+          "type": "string"
         },
         "kind": {
           "type": "string"
@@ -3007,7 +3481,10 @@
         },
         "system": {
           "type": "string",
-          "description": "The system's short name, for its messages."
+          "description": "The system's short name, for its messages, and the site's name."
+        },
+        "site": {
+          "type": "string"
         }
       },
       "required": [
@@ -3089,129 +3566,6 @@
       ],
       "additionalProperties": false,
       "description": "The log (desktop app), with Trunk Recorder's options (crates/trunk-app/src/config.rs LogSettings)."
-    },
-    "MonitorEvent": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "t": {
-          "type": "number",
-          "description": "Unix seconds."
-        },
-        "level": {
-          "type": "string",
-          "enum": [
-            "info",
-            "ok",
-            "warn",
-            "bad"
-          ]
-        },
-        "kind": {
-          "type": "string",
-          "enum": [
-            "tgFirstSeen",
-            "unitFirstSeen",
-            "tgActive",
-            "unitActive",
-            "unitAffiliated",
-            "callVolume",
-            "controlLost",
-            "controlRegained",
-            "sourceDrops",
-            "sourceClipping",
-            "sourceRecovered",
-            "pluginHealth",
-            "linkDown",
-            "linkUp",
-            "diskLow",
-            "spoolLow",
-            "spoolFull",
-            "spoolRecovered"
-          ]
-        },
-        "system": {
-          "type": "string",
-          "description": "A system's short name (talkgroup, radio, call volume, control channel events)."
-        },
-        "talkgroup": {
-          "type": "number"
-        },
-        "alphaTag": {
-          "type": "string"
-        },
-        "unit": {
-          "type": "number"
-        },
-        "alias": {
-          "type": "string"
-        },
-        "units": {
-          "type": "array",
-          "items": {
-            "type": "number"
-          }
-        },
-        "perMin": {
-          "type": "number"
-        },
-        "freqHz": {
-          "type": [
-            "number",
-            "null"
-          ]
-        },
-        "source": {
-          "type": "string",
-          "description": "A source's series name (its label)."
-        },
-        "perS": {
-          "type": "number"
-        },
-        "pct": {
-          "type": "number"
-        },
-        "plugin": {
-          "type": "string"
-        },
-        "state": {
-          "type": "string"
-        },
-        "message": {
-          "type": "string"
-        },
-        "target": {
-          "type": "string"
-        },
-        "downS": {
-          "type": "number"
-        },
-        "path": {
-          "type": "string"
-        },
-        "freePct": {
-          "type": "number"
-        },
-        "critical": {
-          "type": "boolean",
-          "description": "spoolLow: nearly full."
-        },
-        "calls": {
-          "type": "number",
-          "description": "spoolFull: calls that went to the recordings folder for want of room."
-        },
-        "type": {
-          "type": "string",
-          "const": "monitorEvent"
-        }
-      },
-      "required": [
-        "kind",
-        "level",
-        "t",
-        "type"
-      ],
-      "description": "Something notable (crates/trunk-app/src/stats/events.rs). Which fields come depends on `kind`."
     },
     "MonitorSettings": {
       "type": "object",
@@ -3410,6 +3764,26 @@
         "carriers"
       ],
       "additionalProperties": false
+    },
+    "Patch": {
+      "type": "object",
+      "properties": {
+        "supergroup": {
+          "$ref": "#/definitions/TalkgroupName"
+        },
+        "members": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/TalkgroupName"
+          }
+        }
+      },
+      "required": [
+        "supergroup",
+        "members"
+      ],
+      "additionalProperties": false,
+      "description": "A patch standing now: the supergroup, and the talkgroups patched into it."
     },
     "Phase": {
       "type": "string",
@@ -3756,6 +4130,92 @@
       ],
       "additionalProperties": false,
       "description": "An installed plugin (or one the config names), and what it is. Whether it's on, and its settings, are in the config."
+    },
+    "PluginListing": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "repository": {
+          "type": "string"
+        },
+        "homepage": {
+          "type": "string"
+        },
+        "license": {
+          "type": "string"
+        },
+        "tier": {
+          "type": "string",
+          "enum": [
+            "official",
+            "community",
+            "unlisted"
+          ]
+        },
+        "version": {
+          "type": "string"
+        },
+        "api": {
+          "type": "number"
+        },
+        "tag": {
+          "type": "string"
+        },
+        "commit": {
+          "type": "string"
+        },
+        "assets": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "url": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "url",
+              "sha256"
+            ],
+            "additionalProperties": false
+          },
+          "description": "Its release downloads, by target (\"aarch64-unknown-linux-gnu\", \"universal-apple-darwin\", …)."
+        },
+        "unavailable": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Why this recorder can't install it (no build for this computer, a newer plugin API); null when it can."
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "description",
+        "repository",
+        "license",
+        "tier",
+        "version",
+        "api",
+        "tag",
+        "commit",
+        "assets",
+        "unavailable"
+      ],
+      "additionalProperties": false,
+      "description": "A plugin in the registry (crates/trunk-pro/src/plugins/store.rs): one release of it, pinned."
     },
     "PluginManifest": {
       "type": "object",
@@ -4126,13 +4586,17 @@
         "airspy": {
           "$ref": "#/definitions/DriverState"
         },
+        "bladerf": {
+          "$ref": "#/definitions/DriverState"
+        },
         "soapy": {
           "$ref": "#/definitions/SoapyState"
         }
       },
       "required": [
         "usrp",
-        "airspy"
+        "airspy",
+        "bladerf"
       ],
       "additionalProperties": false
     },
@@ -4249,13 +4713,13 @@
         "analogLevelDb": {
           "type": "number"
         },
-        "compressWav": {
+        "archiveWav": {
           "type": "boolean",
-          "description": "Desktop: also keep an .m4a of every call (compressWav)."
+          "description": "Desktop: keep each call's .wav once every upload plugin has handled it (with archiveM4a, Trunk Recorder's audioArchive)."
         },
-        "audioArchive": {
+        "archiveM4a": {
           "type": "boolean",
-          "description": "Desktop: keep the audio once every upload plugin has handled the call (audioArchive)."
+          "description": "Desktop: keep an .m4a of each call (Trunk Recorder's compressWav)."
         },
         "callLog": {
           "type": "boolean",
@@ -4336,12 +4800,12 @@
       "required": [
         "analogLevelDb",
         "archiveFilesOnFailure",
-        "audioArchive",
+        "archiveM4a",
+        "archiveWav",
         "callLog",
         "callTimeoutS",
         "captureDir",
         "captureFrames",
-        "compressWav",
         "digitalLevelDb",
         "dropDuplicateCalls",
         "filenameFormat",
@@ -4403,13 +4867,13 @@
         "analogLevelDb": {
           "type": "number"
         },
-        "compressWav": {
+        "archiveWav": {
           "type": "boolean",
-          "description": "Desktop: also keep an .m4a of every call (compressWav)."
+          "description": "Desktop: keep each call's .wav once every upload plugin has handled it (with archiveM4a, Trunk Recorder's audioArchive)."
         },
-        "audioArchive": {
+        "archiveM4a": {
           "type": "boolean",
-          "description": "Desktop: keep the audio once every upload plugin has handled the call (audioArchive)."
+          "description": "Desktop: keep an .m4a of each call (Trunk Recorder's compressWav)."
         },
         "callLog": {
           "type": "boolean",
@@ -4491,6 +4955,179 @@
       "additionalProperties": false,
       "description": "One series from the history: points every `stepS` from `t0`; null where nothing was measured."
     },
+    "Site": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Its name, unique in its system (absent: the system's short name). The talkgroup file's Preferred Site names it; calls and plugins say it."
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "controlChannelsHz": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        },
+        "modulation": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "fsk4",
+            "qpsk"
+          ]
+        },
+        "expect": {
+          "$ref": "#/definitions/SiteIdentity",
+          "description": "Only follow a control channel with this identity (this site, not a neighbour)."
+        },
+        "voiceChannelsHz": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "Voice channels the survey heard (for placing sources)."
+        },
+        "bandplan": {
+          "type": "string",
+          "description": "SmartNet: \"800_standard\" | \"800_reband\" | \"800_splinter\" | \"900\" | \"400_custom\" (with base / spacing / offset / high; offset a channel number)."
+        },
+        "bandplanBaseHz": {
+          "type": "number"
+        },
+        "bandplanSpacingHz": {
+          "type": "number"
+        },
+        "bandplanOffset": {
+          "type": "number"
+        },
+        "bandplanHighHz": {
+          "type": "number"
+        },
+        "lcnTableHz": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number"
+          },
+          "description": "DMR: logical channel number → frequency, Hz (Trunk Recorder's lcnTable); the rest is learned. NXDN: the channel table, channel number → frequency (Type-D: repeater number → frequency). EDACS: the site's channel list, LCN (1–25) → frequency; checked against the air."
+        },
+        "dmrChannelsHz": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "DMR: voice frequencies to watch besides the control channels (Trunk Recorder's channels)."
+        },
+        "colorCode": {
+          "type": "number",
+          "description": "DMR: only this colour code."
+        },
+        "nxdnRate": {
+          "type": "string",
+          "enum": [
+            "nxdn48",
+            "nxdn96"
+          ],
+          "description": "NXDN: the control channel's (Type-D: the repeaters') rate; default \"nxdn48\"."
+        },
+        "nxdnChannelsHz": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "NXDN: voice frequencies to watch besides the control channels (Type-D: the repeaters). A grant to a channel number not in `lcnTableHz` is learned when its call comes up on one."
+        },
+        "ran": {
+          "type": "number",
+          "description": "NXDN: only this RAN."
+        },
+        "esk": {
+          "type": "boolean",
+          "description": "EDACS: the system scrambles its control channel with ESK 0xA0."
+        }
+      },
+      "required": [
+        "enabled",
+        "controlChannelsHz",
+        "modulation",
+        "expect",
+        "voiceChannelsHz"
+      ],
+      "additionalProperties": false,
+      "description": "One site of a system: a control channel to follow, and how."
+    },
+    "SiteDetail": {
+      "type": "object",
+      "properties": {
+        "index": {
+          "type": "number"
+        },
+        "name": {
+          "type": "string"
+        },
+        "adjacent": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "sysId": {
+                "type": "number"
+              },
+              "rfss": {
+                "type": "number"
+              },
+              "site": {
+                "type": "number"
+              },
+              "freqHz": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "sysId",
+              "rfss",
+              "site",
+              "freqHz"
+            ],
+            "additionalProperties": false
+          },
+          "description": "Neighbouring sites its control channel announces."
+        },
+        "dmr": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/DmrSiteStatus"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A trunked DMR site."
+        },
+        "nxdn": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/NxdnSiteStatus"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "An NXDN site."
+        }
+      },
+      "required": [
+        "index",
+        "name",
+        "adjacent",
+        "dmr",
+        "nxdn"
+      ],
+      "additionalProperties": false,
+      "description": "One running site's detail (decodeDetail): what its control channel announces."
+    },
     "SiteIdentity": {
       "type": "object",
       "properties": {
@@ -4526,7 +5163,98 @@
         }
       },
       "additionalProperties": false,
-      "description": "A P25 site's identity (NAC, WACN, System ID are hex on the air). Absent = unknown / any."
+      "description": "A site's identity (NAC, WACN, System ID are hex on the air): what a site in the config expects (absent: any), and what a control channel said of itself in status and the survey (absent: not heard yet). Compare with `!= null`."
+    },
+    "SiteStatus": {
+      "type": "object",
+      "properties": {
+        "index": {
+          "type": "number"
+        },
+        "name": {
+          "type": "string",
+          "description": "Its name (a system of one site: the system's short name)."
+        },
+        "nowS": {
+          "type": "number"
+        },
+        "controlChannelHz": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "identity": {
+          "$ref": "#/definitions/SiteIdentity"
+        },
+        "good": {
+          "type": "number"
+        },
+        "bad": {
+          "type": "number"
+        },
+        "modulation": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "activeCalls": {
+          "type": "number"
+        },
+        "recording": {
+          "type": "number"
+        },
+        "callsConcluded": {
+          "type": "number"
+        },
+        "mismatch": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The control channel is another system's / site's: why (its grants are not followed)."
+        },
+        "callsigns": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "callSign": {
+                "type": "string"
+              },
+              "freqHz": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "callSign",
+              "freqHz"
+            ],
+            "additionalProperties": false
+          },
+          "description": "Every call sign its base station IDs say, each with the channel it's for (a site's licenses can be one a channel)."
+        }
+      },
+      "required": [
+        "index",
+        "name",
+        "nowS",
+        "controlChannelHz",
+        "identity",
+        "good",
+        "bad",
+        "modulation",
+        "activeCalls",
+        "recording",
+        "callsConcluded",
+        "mismatch"
+      ],
+      "additionalProperties": false,
+      "description": "One running site, as its control channel describes it. `index` is what calls carry as `site`."
     },
     "SmartnetBandplan": {
       "type": "object",
@@ -4535,16 +5263,16 @@
           "type": "string",
           "description": "\"800_standard\" | \"800_reband\" | \"800_splinter\" | \"900\" | \"400_custom\"."
         },
-        "bandplanBase": {
+        "bandplanBaseHz": {
           "type": "number"
         },
-        "bandplanSpacing": {
+        "bandplanSpacingHz": {
           "type": "number"
         },
         "bandplanOffset": {
           "type": "number"
         },
-        "bandplanHigh": {
+        "bandplanHighHz": {
           "type": "number"
         }
       },
@@ -4686,6 +5414,12 @@
             },
             "ppm": {
               "type": "number"
+            },
+            "bufLen": {
+              "type": "number"
+            },
+            "buffers": {
+              "type": "number"
             }
           },
           "required": [
@@ -4789,6 +5523,10 @@
             "biasTee": {
               "type": "boolean"
             },
+            "packing": {
+              "type": "boolean",
+              "description": "12-bit samples packed on the USB: a quarter less of the bus (default true)."
+            },
             "ppm": {
               "type": "number"
             }
@@ -4801,11 +5539,63 @@
             "gainStep",
             "lnaStep",
             "mixerStep",
+            "packing",
             "ppm",
             "rateHz",
             "serial",
             "type",
             "vgaStep"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "autoTune": {
+              "type": "boolean"
+            },
+            "guardHz": {
+              "type": "number"
+            },
+            "type": {
+              "type": "string",
+              "const": "bladerf"
+            },
+            "serial": {
+              "type": "string"
+            },
+            "centerHz": {
+              "type": "number"
+            },
+            "rateHz": {
+              "type": "number"
+            },
+            "bandwidthHz": {
+              "type": "number"
+            },
+            "gainDb": {
+              "type": "number"
+            },
+            "agc": {
+              "type": "boolean"
+            },
+            "biasTee": {
+              "type": "boolean"
+            },
+            "ppm": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "agc",
+            "bandwidthHz",
+            "biasTee",
+            "centerHz",
+            "gainDb",
+            "ppm",
+            "rateHz",
+            "serial",
+            "type"
           ]
         },
         {
@@ -4980,91 +5770,13 @@
       ],
       "additionalProperties": false
     },
-    "StoreListing": {
-      "type": "object",
-      "properties": {
-        "id": {
-          "type": "string"
-        },
-        "name": {
-          "type": "string"
-        },
-        "description": {
-          "type": "string"
-        },
-        "repository": {
-          "type": "string"
-        },
-        "homepage": {
-          "type": "string"
-        },
-        "license": {
-          "type": "string"
-        },
-        "tier": {
-          "type": "string",
-          "enum": [
-            "official",
-            "community",
-            "unlisted"
-          ]
-        },
-        "version": {
-          "type": "string"
-        },
-        "api": {
-          "type": "number"
-        },
-        "tag": {
-          "type": "string"
-        },
-        "commit": {
-          "type": "string"
-        },
-        "assets": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "object",
-            "properties": {
-              "url": {
-                "type": "string"
-              },
-              "sha256": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "url",
-              "sha256"
-            ],
-            "additionalProperties": false
-          },
-          "description": "Its release downloads, by target (\"aarch64-unknown-linux-gnu\", \"universal-apple-darwin\", …)."
-        },
-        "unavailable": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "Why this recorder can't install it (no build for this computer, a newer plugin API); null when it can."
-        }
-      },
-      "required": [
-        "id",
-        "name",
-        "description",
-        "repository",
-        "license",
-        "tier",
-        "version",
-        "api",
-        "tag",
-        "commit",
-        "assets",
-        "unavailable"
+    "StoreKind": {
+      "type": "string",
+      "enum": [
+        "plugin",
+        "interface"
       ],
-      "additionalProperties": false,
-      "description": "A plugin in the registry (crates/trunk-pro/src/plugins/store.rs): one release of it, pinned."
+      "description": "Which store: the plugins' (the registry) or the interfaces'."
     },
     "SurveyBand": {
       "type": "object",
@@ -5142,7 +5854,7 @@
           "type": "string"
         },
         "identity": {
-          "$ref": "#/definitions/SurveyIdentity"
+          "$ref": "#/definitions/SiteIdentity"
         },
         "dmr": {
           "anyOf": [
@@ -5236,48 +5948,106 @@
       "additionalProperties": false,
       "description": "A signal the scan found. `freqHz` as heard (uncorrected); `correctedHz` once the ppm is known."
     },
-    "SurveyIdentity": {
+    "SurveyLicense": {
       "type": "object",
       "properties": {
-        "nac": {
+        "callSign": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "licensee": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "serviceCode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "serviceDesc": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "freqHz": {
           "type": [
             "number",
             "null"
           ]
         },
-        "wacn": {
+        "emission": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "distanceM": {
           "type": [
             "number",
             "null"
           ]
         },
-        "sysId": {
+        "bearingDeg": {
           "type": [
             "number",
             "null"
           ]
         },
-        "rfss": {
+        "bearingCardinal": {
           "type": [
-            "number",
+            "string",
             "null"
           ]
         },
-        "site": {
+        "city": {
           "type": [
-            "number",
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "\"A\" active; anything else has lapsed."
+        },
+        "locationKind": {
+          "type": [
+            "string",
             "null"
           ]
         }
       },
       "required": [
-        "nac",
-        "wacn",
-        "sysId",
-        "rfss",
-        "site"
+        "callSign",
+        "licensee",
+        "serviceCode",
+        "serviceDesc",
+        "freqHz",
+        "emission",
+        "distanceM",
+        "bearingDeg",
+        "bearingCardinal",
+        "city",
+        "state",
+        "status",
+        "locationKind"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "An FCC license near the user on a frequency the survey heard (the trunkrecorder.pro API's)."
     },
     "SurveyMonitor": {
       "type": "object",
@@ -5292,7 +6062,7 @@
           "type": "number"
         },
         "identity": {
-          "$ref": "#/definitions/SurveyIdentity"
+          "$ref": "#/definitions/SiteIdentity"
         },
         "advertisedHz": {
           "type": [
@@ -5618,35 +6388,9 @@
         "spanHz": {
           "type": "number"
         },
-        "nac": {
-          "type": [
-            "number",
-            "null"
-          ]
-        },
-        "sysId": {
-          "type": [
-            "number",
-            "null"
-          ]
-        },
-        "wacn": {
-          "type": [
-            "number",
-            "null"
-          ]
-        },
-        "rfss": {
-          "type": [
-            "number",
-            "null"
-          ]
-        },
-        "site": {
-          "type": [
-            "number",
-            "null"
-          ]
+        "identity": {
+          "$ref": "#/definitions/SiteIdentity",
+          "description": "The site it heard."
         },
         "voiceChannels": {
           "type": "array",
@@ -5666,11 +6410,7 @@
         "voiceCovered",
         "voiceTotal",
         "spanHz",
-        "nac",
-        "sysId",
-        "wacn",
-        "rfss",
-        "site",
+        "identity",
         "voiceChannels"
       ],
       "additionalProperties": false,
@@ -5686,49 +6426,20 @@
           "type": "string",
           "description": "What people call it (\"County Public Safety\"); the short name is its folder."
         },
+        "fcc": {
+          "$ref": "#/definitions/FccLicenses",
+          "description": "Its FCC licenses by frequency (control, voice): see FccLicenses."
+        },
         "type": {
           "type": "string",
           "enum": [
             "p25",
             "smartnet",
             "dmr",
-            "nxdn"
+            "nxdn",
+            "edacs"
           ],
-          "description": "\"smartnet\": a Motorola SmartNet / SmartZone control channel (voice P25 or analog FM). \"dmr\": a trunked DMR site (Capacity Plus, Capacity Max, Connect Plus, Tier III); every control channel and `dmrChannelsHz` frequency is watched. \"nxdn\": an NXDN site (Type-C: a control channel; Type-D / IDAS: every repeater listed); every control channel and `nxdnChannelsHz` frequency is watched."
-        },
-        "bandplan": {
-          "type": "string",
-          "description": "SmartNet: \"800_standard\" | \"800_reband\" | \"800_splinter\" | \"900\" | \"400_custom\" (with base / spacing / offset / high; offset a channel number)."
-        },
-        "bandplanBaseHz": {
-          "type": "number"
-        },
-        "bandplanSpacingHz": {
-          "type": "number"
-        },
-        "bandplanOffset": {
-          "type": "number"
-        },
-        "bandplanHighHz": {
-          "type": "number"
-        },
-        "lcnTableHz": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "number"
-          },
-          "description": "DMR: logical channel number → frequency, Hz (Trunk Recorder's lcnTable); the rest is learned. NXDN: the channel table, channel number → frequency (Type-D: repeater number → frequency)."
-        },
-        "dmrChannelsHz": {
-          "type": "array",
-          "items": {
-            "type": "number"
-          },
-          "description": "DMR: voice frequencies to watch besides the control channels (Trunk Recorder's channels)."
-        },
-        "colorCode": {
-          "type": "number",
-          "description": "DMR: only this colour code."
+          "description": "\"smartnet\": a Motorola SmartNet / SmartZone control channel (voice P25 or analog FM). \"dmr\": a trunked DMR site (Capacity Plus, Capacity Max, Connect Plus, Tier III); every control channel and `dmrChannelsHz` frequency is watched. \"nxdn\": an NXDN site (Type-C: a control channel; Type-D / IDAS: every repeater listed); every control channel and `nxdnChannelsHz` frequency is watched. \"edacs\": an EDACS Standard or Networked site (voice analog FM or ProVoice); `lcnTableHz` is its channel list."
         },
         "nxdnType": {
           "type": "string",
@@ -5737,25 +6448,6 @@
             "typeD"
           ],
           "description": "NXDN: \"typeC\" (a control channel; the default) or \"typeD\" (IDAS distributed: list every repeater)."
-        },
-        "nxdnRate": {
-          "type": "string",
-          "enum": [
-            "nxdn48",
-            "nxdn96"
-          ],
-          "description": "NXDN: the control channel's (Type-D: the repeaters') rate; default \"nxdn48\"."
-        },
-        "nxdnChannelsHz": {
-          "type": "array",
-          "items": {
-            "type": "number"
-          },
-          "description": "NXDN: voice frequencies to watch besides the control channels (Type-D: the repeaters). A grant to a channel number not in `lcnTableHz` is learned when its call comes up on one."
-        },
-        "ran": {
-          "type": "number",
-          "description": "NXDN: only this RAN."
         },
         "defaultMode": {
           "type": "string",
@@ -5768,37 +6460,6 @@
         "enabled": {
           "type": "boolean"
         },
-        "controlChannelsHz": {
-          "type": "array",
-          "items": {
-            "type": "number"
-          }
-        },
-        "modulation": {
-          "type": "string",
-          "enum": [
-            "auto",
-            "fsk4",
-            "qpsk"
-          ]
-        },
-        "talkgroupsCsv": {
-          "type": "string"
-        },
-        "talkgroupsName": {
-          "type": "string"
-        },
-        "expect": {
-          "$ref": "#/definitions/SiteIdentity",
-          "description": "Only follow a control channel with this identity (e.g. this site, not a neighbour)."
-        },
-        "voiceChannelsHz": {
-          "type": "array",
-          "items": {
-            "type": "number"
-          },
-          "description": "Voice channels the survey heard (for placing sources)."
-        },
         "recording": {
           "$ref": "#/definitions/RecordingOverride",
           "description": "Its own recording rules; each left out is the Recording tab's."
@@ -5806,10 +6467,6 @@
         "unitNames": {
           "$ref": "#/definitions/UnitNames",
           "description": "Names for its radios (Trunk Recorder's unitTagsFile and unitTagsMode)."
-        },
-        "siteGroup": {
-          "type": "string",
-          "description": "Multi-site: sites with one group are one system (a call on several is saved once). Absent: grouped by what the control channels say (P25 WACN + System ID, SmartNet System ID)."
         },
         "keys": {
           "type": "string",
@@ -5828,20 +6485,23 @@
             "$ref": "#/definitions/DelayRule"
           },
           "description": "How long plugins wait for its calls; these come before the whole recorder's (see DelayRule)."
+        },
+        "sites": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Site"
+          },
+          "description": "Where it is recorded from: one site, or several of one system."
         }
       },
       "required": [
         "shortName",
         "type",
         "enabled",
-        "controlChannelsHz",
-        "modulation",
-        "talkgroupsCsv",
-        "talkgroupsName",
-        "expect",
-        "voiceChannelsHz"
+        "sites"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "A trunked system: its talkgroups, radios, rules and plugin settings, and the sites it is recorded from — each a control channel to follow. A call heard on several of its sites is one call (saved once, from the site that heard it best)."
     },
     "SystemPluginValues": {
       "anyOf": [
@@ -5866,30 +6526,6 @@
         "shortName": {
           "type": "string"
         },
-        "nowS": {
-          "type": "number"
-        },
-        "controlChannelHz": {
-          "type": [
-            "number",
-            "null"
-          ]
-        },
-        "identity": {
-          "$ref": "#/definitions/Identity"
-        },
-        "good": {
-          "type": "number"
-        },
-        "bad": {
-          "type": "number"
-        },
-        "modulation": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
         "activeCalls": {
           "type": "number"
         },
@@ -5899,111 +6535,24 @@
         "callsConcluded": {
           "type": "number"
         },
-        "mismatch": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "The control channel is another system's / site's: why (its grants are not followed)."
-        },
-        "adjacent": {
+        "sites": {
           "type": "array",
           "items": {
-            "type": "object",
-            "properties": {
-              "sysId": {
-                "type": "number"
-              },
-              "rfss": {
-                "type": "number"
-              },
-              "site": {
-                "type": "number"
-              },
-              "freqHz": {
-                "type": "number"
-              }
-            },
-            "required": [
-              "sysId",
-              "rfss",
-              "site",
-              "freqHz"
-            ],
-            "additionalProperties": false
+            "$ref": "#/definitions/SiteStatus"
           },
-          "description": "Neighbouring sites its control channel announces."
-        },
-        "patches": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "supergroup": {
-                "$ref": "#/definitions/TalkgroupName"
-              },
-              "members": {
-                "type": "array",
-                "items": {
-                  "$ref": "#/definitions/TalkgroupName"
-                }
-              }
-            },
-            "required": [
-              "supergroup",
-              "members"
-            ],
-            "additionalProperties": false
-          },
-          "description": "Patches standing now: the supergroup, and the talkgroups patched into it."
-        },
-        "dmr": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/DmrSiteStatus"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "A trunked DMR site."
-        },
-        "nxdn": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/NxdnSiteStatus"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "An NXDN site."
-        },
-        "siteGroup": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "Multi-site: the system it is a site of (\"p25:bee00.1a2\", \"group:<name>\"), once known."
+          "description": "Its sites following their control channels, in order."
         }
       },
       "required": [
         "index",
         "shortName",
-        "nowS",
-        "controlChannelHz",
-        "identity",
-        "good",
-        "bad",
-        "modulation",
         "activeCalls",
         "recording",
         "callsConcluded",
-        "mismatch",
-        "adjacent"
+        "sites"
       ],
       "additionalProperties": false,
-      "description": "One running system (site). `index` is what calls and audio carry as `system`."
+      "description": "One running system, with its sites that are. `index` is what calls and audio carry as `system`."
     },
     "TalkgroupName": {
       "type": "object",
@@ -6109,11 +6658,36 @@
             },
             "config": {
               "$ref": "#/definitions/Config"
+            },
+            "version": {
+              "type": "number"
             }
           },
           "required": [
             "type",
-            "config"
+            "config",
+            "version"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "setTalkgroups"
+            },
+            "system": {
+              "type": "string"
+            },
+            "csv": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "system",
+            "csv"
           ],
           "additionalProperties": false
         },
@@ -6369,6 +6943,78 @@
           "properties": {
             "type": {
               "type": "string",
+              "const": "callSignQuery"
+            },
+            "id": {
+              "type": "number"
+            },
+            "callSigns": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "callSigns"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "licenseQuery"
+            },
+            "id": {
+              "type": "number"
+            },
+            "lat": {
+              "type": "number"
+            },
+            "lon": {
+              "type": "number"
+            },
+            "radiusM": {
+              "type": "number"
+            },
+            "signals": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "freqHz": {
+                    "type": "number"
+                  },
+                  "widthHz": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "freqHz"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "lat",
+            "lon",
+            "radiusM",
+            "signals"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
               "const": "profileSource"
             },
             "source": {
@@ -6437,10 +7083,72 @@
           "properties": {
             "type": {
               "type": "string",
-              "const": "pluginStore"
+              "const": "store"
+            },
+            "kind": {
+              "$ref": "#/definitions/StoreKind"
             },
             "refresh": {
               "type": "boolean"
+            }
+          },
+          "required": [
+            "type",
+            "kind"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "install"
+            },
+            "kind": {
+              "$ref": "#/definitions/StoreKind"
+            },
+            "id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "kind",
+            "id"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "install"
+            },
+            "kind": {
+              "$ref": "#/definitions/StoreKind"
+            },
+            "repository": {
+              "type": "string"
+            },
+            "tag": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "kind",
+            "repository"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "interfaces"
             }
           },
           "required": [
@@ -6453,15 +7161,15 @@
           "properties": {
             "type": {
               "type": "string",
-              "const": "installPlugin"
+              "const": "addInterface"
             },
-            "id": {
+            "path": {
               "type": "string"
             }
           },
           "required": [
             "type",
-            "id"
+            "path"
           ],
           "additionalProperties": false
         },
@@ -6470,18 +7178,15 @@
           "properties": {
             "type": {
               "type": "string",
-              "const": "installPlugin"
+              "const": "removeInterface"
             },
-            "repository": {
-              "type": "string"
-            },
-            "tag": {
+            "id": {
               "type": "string"
             }
           },
           "required": [
             "type",
-            "repository"
+            "id"
           ],
           "additionalProperties": false
         },

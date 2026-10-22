@@ -3,17 +3,19 @@
 // health rules — plain functions returning a level and why, the why worded as
 // a hint (what it means, what to try).
 
-import { activeSystems } from "../config.ts";
+import { activeSystems, siteActive, siteNameOf } from "../config.ts";
 import { snapshot, statsQuery, usePolled, type AppState, type StatsRange } from "../controller.ts";
 import { keyPart, num, pct } from "../fmt.ts";
 import { seriesPoints } from "../series.ts";
 import type { Level } from "../charts.tsx";
-import type { PluginInfo, SeriesData, SourceStatus, SystemStatus } from "../protocol.ts";
+import type { PluginInfo, SeriesData, SiteDetail, SiteStatus, SourceStatus, SystemStatus } from "../protocol.ts";
 
 // ── series names (crates/trunk-app/src/stats) ────────────────────────────────
 
 export const K = {
   sys: (short: string, k: string) => `sys/${keyPart(short)}/${k}`,
+  /** A site's control channel series (the recorder's SiteConfig::stats_key). */
+  cc: (site: DashSite, k: string) => `${site.key}/cc/${k}`,
   src: (label: string, k: string) => `src/${keyPart(label)}/${k}`,
   plg: (id: string, k: string) => `plg/${keyPart(id)}/${k}`,
 };
@@ -34,24 +36,52 @@ export function recentAvg(key: string, sinceS: number): number | null {
 
 export interface DashSystem {
   name: string;
-  kind: "p25" | "smartnet" | "dmr" | "nxdn" | "conventional";
-  /** The running system's status (trunked, once its control channel is open). */
+  kind: "p25" | "smartnet" | "dmr" | "nxdn" | "edacs" | "conventional";
+  /** The running system's status (trunked, once a control channel is open). */
   status: SystemStatus | null;
+  /** Its sites being recorded (a conventional system: none). */
+  sites: DashSite[];
 }
 
-/** Every system set up (trunked, then conventional with channels), with its status while running. */
+/** One site of a dashboard system. */
+export interface DashSite {
+  name: string;
+  /** Where its control channel's series are: see [`K.cc`]. */
+  key: string;
+  /** Its status, once its control channel is open. */
+  status: SiteStatus | null;
+}
+
+/** A site's series key (the recorder's SiteKey::stats_key): a site named as its system is under the system's. */
+export const siteKey = (system: string, site: string) => (site === system ? `sys/${keyPart(system)}` : `sys/${keyPart(system)}/site/${keyPart(site)}`);
+
+/** Every system set up (trunked, then conventional with channels), with its sites and its status while running. */
 export function dashSystems(s: AppState): DashSystem[] {
   if (!s.config) return [];
-  const out: DashSystem[] = activeSystems(s.config).map((x) => ({
-    name: x.shortName,
-    kind: (x.type ?? "p25") as DashSystem["kind"],
-    status: s.status?.systems.find((y) => y.shortName === x.shortName) ?? null,
-  }));
-  for (const c of s.config.conventional) if (c.enabled !== false && c.channels.some((ch) => ch.enabled)) out.push({ name: c.shortName, kind: "conventional", status: null });
+  const out: DashSystem[] = activeSystems(s.config).map((x) => {
+    const status = s.status?.systems.find((y) => y.shortName === x.shortName) ?? null;
+    const sites = x.sites.filter(siteActive).map((site) => {
+      const name = siteNameOf(x, site);
+      return { name, key: siteKey(x.shortName, name), status: status?.sites.find((y) => y.name === name) ?? null };
+    });
+    return { name: x.shortName, kind: (x.type ?? "p25") as DashSystem["kind"], status, sites };
+  });
+  for (const c of s.config.conventional) if (c.enabled !== false && c.channels.some((ch) => ch.enabled)) out.push({ name: c.shortName, kind: "conventional", status: null, sites: [] });
   return out;
 }
 
-export const KIND_LABEL: Record<DashSystem["kind"], string> = { p25: "P25", smartnet: "SmartNet", dmr: "DMR", nxdn: "NXDN", conventional: "Conventional" };
+/** A running site, with its system's short name and how the dashboard names it: "dcfd", "dcfd/south". */
+export type RunningSite = SiteStatus & { shortName: string; label: string };
+
+/** A running site with its detail (decodeDetail: what its control channel announces). */
+export type DetailedSite = RunningSite & SiteDetail;
+
+/** Every running site, its system's in order. */
+export function runningSites(systems: SystemStatus[]): RunningSite[] {
+  return systems.flatMap((y) => y.sites.map((x) => ({ ...x, shortName: y.shortName, label: x.name === y.shortName ? y.shortName : `${y.shortName}/${x.name}` })));
+}
+
+export const KIND_LABEL: Record<DashSystem["kind"], string> = { p25: "P25", smartnet: "SmartNet", dmr: "DMR", nxdn: "NXDN", edacs: "EDACS", conventional: "Conventional" };
 
 export const running = (s: AppState) => s.phase === "running" || s.phase === "starting";
 
@@ -132,17 +162,29 @@ const worst = (hs: Health[]): Health => {
   return { level: "idle", why: "" };
 };
 
-/** A trunked system's control channel, judged against its own usual rate. */
-export function systemHealth(s: AppState, x: DashSystem, usualRate?: Usual | null): Health {
+/**
+ * A trunked system's control channels, each judged against its own usual
+ * rate (`usual`, by series key): the worst site's, named when it has several.
+ */
+export function systemHealth(s: AppState, x: DashSystem, usual: Record<string, Usual | null> = {}): Health {
   if (!running(s)) return { level: "idle", why: "Not recording" };
   if (x.kind === "conventional") return OK("Listening on its channels");
-  const st = x.status;
+  const hs = x.sites.map((site) => {
+    const h = siteHealth(s, site, usual[K.cc(site, "good")]);
+    return x.sites.length > 1 ? { ...h, why: `${site.name}: ${h.why}` } : h;
+  });
+  return hs.length ? worst(hs) : { level: "bad", why: "No site set up" };
+}
+
+/** A site's control channel, judged against its own usual rate. */
+export function siteHealth(s: AppState, site: DashSite, usualRate?: Usual | null): Health {
+  const st = site.status;
   if (!st) return { level: "bad", why: "No control channel open — is one inside a source's band?" };
   if (st.mismatch) return { level: "bad", why: `The control channel is another system's: ${st.mismatch}` };
-  const locked = val(s, K.sys(x.name, "cc/locked"));
-  const rate = recentAvg(K.sys(x.name, "cc/good"), 30);
-  const bad = recentAvg(K.sys(x.name, "cc/bad"), 60) ?? 0;
-  const good = recentAvg(K.sys(x.name, "cc/good"), 60) ?? 0;
+  const locked = val(s, K.cc(site, "locked"));
+  const rate = recentAvg(K.cc(site, "good"), 30);
+  const bad = recentAvg(K.cc(site, "bad"), 60) ?? 0;
+  const good = recentAvg(K.cc(site, "good"), 60) ?? 0;
   const badPct = good + bad > 0 ? (100 * bad) / (good + bad) : 0;
   if (locked === 0) return { level: "bad", why: "Not decoding its control channel — hunting for another. Check the antenna, the gain, and that the frequency is right." };
   if (rate === null) return { level: "ok", why: "Starting…" };

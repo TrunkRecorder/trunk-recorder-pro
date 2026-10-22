@@ -10,6 +10,8 @@
 //! * [`WebProfiler`] — a source's roll-off for Setup: takes u8 IQ, answers
 //!   with a `sourceProfile` message.
 //!
+//! And to the page (both builds'): the config's rules ([`rules`]).
+//!
 //! Build: `cargo build -p trunk-web --target wasm32-unknown-unknown --profile
 //! dist` with `-C target-feature=+simd128`, then `wasm-bindgen --target web`
 //! (see web/package.json `build:wasm`).
@@ -24,6 +26,8 @@ use trunk_app::stats::{History, Topics};
 use trunk_app::{Config, Output, Session};
 use trunk_core::survey::Command;
 use wasm_bindgen::prelude::*;
+
+pub mod rules;
 
 fn local_offset(t: i64) -> i32 {
     let d = js_sys::Date::new(&JsValue::from_f64(t as f64 * 1000.0));
@@ -65,10 +69,17 @@ fn to_js(out: &mut Vec<Output>, history: &mut History) -> Array {
                 history.insert(&r);
                 continue;
             }
+            // The worker puts it in the config ([`learn_call_sign`]).
+            Output::CallSign { short_name, freq_hz, call_sign } => {
+                set(&obj, "t", "callSign");
+                set(&obj, "shortName", short_name);
+                set(&obj, "freqHz", freq_hz);
+                set(&obj, "callSign", call_sign);
+            }
             // (One page, which asked for its topics.)
-            Output::Text(t) | Output::Topic { text: t, .. } => {
+            Output::Message(m) | Output::Topic { msg: m, .. } => {
                 set(&obj, "t", "text");
-                set(&obj, "json", t);
+                set(&obj, "json", m.to_json());
             }
             Output::Audio { system, short_name, tg, frame, .. } => {
                 set(&obj, "t", "audio");
@@ -78,12 +89,12 @@ fn to_js(out: &mut Vec<Output>, history: &mut History) -> Array {
                 set(&obj, "frame", Uint8Array::from(frame.as_slice()));
             }
             // (No frame capture in the browser: the setting is desktop-only.)
-            Output::File { rel, wav, json, entry, .. } => {
+            Output::File { rel, wav, record, .. } => {
                 set(&obj, "t", "file");
-                set(&obj, "rel", rel);
                 set(&obj, "wav", Uint8Array::from(wav.as_slice()));
-                set(&obj, "json", json);
-                set(&obj, "entry", entry.to_string());
+                set(&obj, "json", record.to_json());
+                set(&obj, "entry", trunk_app::session::call_entry(&rel, &record).to_string());
+                set(&obj, "rel", rel);
             }
         }
         a.push(&obj);
@@ -101,14 +112,16 @@ pub struct WebSession {
 
 #[wasm_bindgen]
 impl WebSession {
-    /// `config_json`: the interface's Config. `bandplans_json`: `{shortName: plan}`
-    /// saved from a previous run ([`WebSession::bandplans`]).
+    /// `config_json`: the interface's Config. `talkgroups_json`: each system's talkgroup file, `{shortName: csv}`.
+    /// `bandplans_json`: `{key: plan}` (a site's key: [`trunk_app::session::bandplan_key`]) saved from a previous run
+    /// ([`WebSession::bandplans`]).
     #[wasm_bindgen(constructor)]
-    pub fn new(config_json: &str, epoch_ms: f64, bandplans_json: Option<String>) -> Result<WebSession, JsError> {
-        let cfg: Config = serde_json::from_str(config_json).map_err(|e| JsError::new(&format!("config: {e}")))?;
+    pub fn new(config_json: &str, talkgroups_json: &str, epoch_ms: f64, bandplans_json: Option<String>) -> Result<WebSession, JsError> {
+        let cfg = Config::from_json(config_json).map_err(|e| JsError::new(&format!("config: {e}")))?;
+        let talkgroups: trunk_app::config::TalkgroupFiles = serde_json::from_str(talkgroups_json).unwrap_or_default();
         let plans: serde_json::Map<String, serde_json::Value> = bandplans_json.and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default();
         let plan = |name: &str| plans.get(name).and_then(|v| v.as_str()).map(str::to_string);
-        let s = Session::new(cfg, epoch_ms, &plan, local_offset).map_err(|e| JsError::new(&e))?;
+        let s = Session::new(cfg, &talkgroups, epoch_ms, &plan, local_offset).map_err(|e| JsError::new(&e))?;
         Ok(WebSession { s, out: Vec::new(), history: History::default() })
     }
     /// What the page watches: JSON `["spectrum:0", "log", …]`.
@@ -118,25 +131,13 @@ impl WebSession {
     }
     /// A `statsQuery` (JSON) → its `statsResult` (JSON), from this session's minutes.
     pub fn stats_query(&self, query_json: &str) -> String {
-        let q: serde_json::Value = serde_json::from_str(query_json).unwrap_or_default();
-        let now = (js_sys::Date::now() / 1000.0) as i64;
-        let back = match q["range"].as_str().unwrap_or("1h") {
-            "10m" => 600,
-            "6h" => 6 * 3600,
-            "24h" => 86400,
-            "7d" => 7 * 86400,
-            _ => 3600,
-        };
-        let to = q["to"].as_i64().unwrap_or(now);
-        let from = q["from"].as_i64().unwrap_or(to - back);
-        let patterns: Vec<String> = q["series"].as_array().into_iter().flatten().filter_map(|t| t.as_str().map(String::from)).collect();
-        let series = self.history.query(&patterns, from, to, q["points"].as_u64().unwrap_or(0) as usize);
-        serde_json::json!({ "type": "statsResult", "id": q["id"], "from": from, "to": to, "loading": false, "series": series }).to_string()
+        let q: trunk_app::protocol::StatsQuery = serde_json::from_str(query_json).unwrap_or_default();
+        q.answer(&self.history, (js_sys::Date::now() / 1000.0) as i64, false).to_json()
     }
     /// A `radioQuery` (JSON) → its `radioResult` (JSON).
     pub fn radio_query(&self, query_json: &str) -> String {
         let q: serde_json::Value = serde_json::from_str(query_json).unwrap_or_default();
-        self.s.radio_query(&q, (js_sys::Date::now() / 1000.0) as i64).to_string()
+        self.s.shared().radio_query(&q, (js_sys::Date::now() / 1000.0) as i64).to_json()
     }
     /// A system's talkgroup file changed (an Ignore flag): calls from now on go by it.
     pub fn set_talkgroups(&mut self, short_name: &str, csv: &str) {
@@ -211,10 +212,19 @@ impl WebSession {
     pub fn tune_unsaved(&mut self) -> Option<String> {
         self.s.tune_unsaved()
     }
-    /// Each system's band plan, as JSON `{shortName: plan}`.
+    /// Each site's band plan, as JSON `{key: plan}`.
     pub fn bandplans(&self) -> String {
         serde_json::Value::Object(self.s.bandplans().into_iter().map(|(n, p)| (n, serde_json::Value::String(p))).collect()).to_string()
     }
+}
+
+/// A call sign heard on the air for `freq_hz` of system `short_name`, into
+/// config `config_json`'s FCC licenses ([`Config::learn_call_sign`]): the
+/// config (JSON) when it changed, else undefined.
+#[wasm_bindgen]
+pub fn learn_call_sign(config_json: &str, short_name: &str, freq_hz: f64, call_sign: &str) -> Option<String> {
+    let mut cfg = Config::from_json(config_json).ok()?;
+    cfg.learn_call_sign(short_name, freq_hz, call_sign).then(|| serde_json::to_string(&cfg).unwrap_or_default())
 }
 
 /// The bands the survey can scan: JSON [{id, label, loHz, hiHz, defaultOn}].
@@ -234,7 +244,7 @@ impl WebSurvey {
     /// `request_json`: {source, bands, findGain}.
     #[wasm_bindgen(constructor)]
     pub fn new(config_json: &str, request_json: &str) -> Result<WebSurvey, JsError> {
-        let cfg: Config = serde_json::from_str(config_json).map_err(|e| JsError::new(&format!("config: {e}")))?;
+        let cfg = Config::from_json(config_json).map_err(|e| JsError::new(&format!("config: {e}")))?;
         let req: serde_json::Value = serde_json::from_str(request_json).map_err(|e| JsError::new(&e.to_string()))?;
         let s = SurveySession::new(&cfg, &Request::from_json(&req)).map_err(|e| JsError::new(&e))?;
         Ok(WebSurvey { s, out: Vec::new() })

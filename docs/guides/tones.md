@@ -18,21 +18,26 @@ traffic. A scanner (or recorder) without the code hears all of them.
 - **DMR** carries a colour code (0-15), and each transmission is on slot 1 or 2 with a talkgroup.
 - **NXDN** carries a RAN (radio access number, 0-63) and a group.
 
-Give a row a code in its **Tone** column (`tone` in the config) and it records only transmissions
-carrying that code.
+Give a row a code in its **Code** column (`code` in the config) and it records only transmissions
+carrying that code. DMR rows also have **Slot** (`slot`, 1 or 2), and P25, DMR and NXDN rows
+**Match TG** (`matchTalkgroup`): record only transmissions naming that talkgroup. Configs from
+before these keys, with a `tone` key, are upgraded when loaded.
 
 ## Typing a code
 
-Type the code the way RadioReference or Trunk Recorder shows it. It is tidied to one form, and a
-mistake is pointed out as you type (for example `151.5 Hz isn't a standard CTCSS tone — 151.4?`).
+Type the code the way RadioReference or Trunk Recorder shows it. It is tidied to one form (the bare
+code), and a mistake is pointed out as you type (for example `151.5 Hz isn't a standard CTCSS tone — 151.4?`).
 
 | Mode | Code | You can type | Shown as |
 |---|---|---|---|
 | Analog FM | CTCSS tone | `151.4`, `151.4 PL`, `PL 151.4`, `151.4 Hz`, `100` | `151.4`, `100.0` |
 | Analog FM | DCS code | `D023N`, `023 DPL`, `D023`, `D023I` | `D023N`, `D023I` |
-| P25 | NAC | `293`, `293 NAC`, `NAC 293`, `$293`, `0x293` | `NAC 293` |
-| DMR | colour code, and optionally slot and talkgroup | `CC1`, `1`, `CC1 TS2 TG201`, `CC 1 TG 201 SL 2`, `Slot 2` | `CC 1 TS 2 TG 201` |
-| NXDN | RAN, and optionally group | `RAN 5`, `5`, `RAN5 TG 201` | `RAN 5 TG 201` |
+| P25 | NAC | `293`, `293 NAC`, `NAC 293`, `$293`, `0x293` | `293` |
+| DMR | colour code | `CC1`, `1`, `CC1 TS2 TG201`, `CC 1 TG 201 SL 2` | `1` |
+| NXDN | RAN | `RAN 5`, `5`, `RAN5 TG 201` | `5` |
+
+A combined string such as RadioReference's `CC1 TS2 TG201` or `NAC 293 TG 1` typed into Code is
+split into the three boxes: code `1`, slot `2`, match talkgroup `201`.
 
 Some values mean "any code", the same as leaving the box empty: `0`, `S` (Trunk Recorder's search),
 `CSQ` and `none` for analog; `F7E` and `F7F` (a radio's "receive any" NAC) for P25; `RAN 0` for
@@ -46,10 +51,10 @@ To split a frequency, list it once per code. In the channel table, the **+ tone*
 with its own talkgroup number already filled in. You can also add the rows in a CSV or the config:
 
 ```csv
-TG Number,Frequency,Tone,Mode,Alpha Tag
-,154.3250,D223N,fm,County A Fire
-,154.3250,118.8,fm,County B Fire
-,154.3250,,fm,County other
+TG Number,Frequency,Code,Slot,Match TG,Mode,Alpha Tag
+,154.3250,D223N,,,fm,County A Fire
+,154.3250,118.8,,,fm,County B Fire
+,154.3250,,,,fm,County other
 ```
 
 Each transmission goes to the row whose code it carries. Otherwise it goes to the row with no
@@ -63,7 +68,8 @@ code, if there is one. Otherwise it isn't recorded:
 
 So a channel listed with no code records everything. Only rows with codes leave anything out.
 
-Each row files its calls under its own talkgroup number, so each agency's calls get their own
+Each row files its calls under its own talkgroup number (see [The number a call is filed
+under](#the-number-a-call-is-filed-under)), so each agency's calls get their own
 name, folder (with a [file name format](recordings.md#choosing-folders-and-file-names) that uses
 the talkgroup) and upload settings. Left blank, the first row on 154.325 MHz is talkgroup 154325,
 the next 1543251, then 1543252.
@@ -87,20 +93,34 @@ A frequency with a single row and no tone isn't held at all.
 
 ### P25
 
-Every P25 frame carries the NAC, so nothing needs holding. A single row with a NAC only filters:
-its calls keep the talkgroup the radio sends. When several rows split a frequency, each row's calls
-are filed under that row's talkgroup, because conventional P25 radios often send a talkgroup that
-says little (frequently 1).
+Every P25 frame carries the NAC, so nothing needs holding. Rows split by NAC, and also by
+**Match TG**: a row with a talkgroup records only transmissions naming it. Conventional P25 radios
+often send a talkgroup that says little (frequently 1), so give each row its own **Talkgroup**; the
+call is then filed under it and the air's number is kept in `talkgroup_ota`.
 
 ### DMR
 
 Each slot is handled on its own. The most specific row that fits wins: `CC1 TS2 TG201` beats `CC1`.
-Calls keep the talkgroup on the air, and the row supplies the names. A row whose code names a
-talkgroup is filed under it when its own **Talkgroup** is blank.
+Slot and **Match TG** narrow a row further. Calls are filed under the row's **Talkgroup** if it has
+one, otherwise the talkgroup on the air.
 
 ### NXDN
 
 As DMR, with the RAN in place of the colour code, and no slots.
+
+## The number a call is filed under
+
+The call JSON's `talkgroup` is, in order:
+
+1. the row's **Talkgroup** (TG Number), if it gives one;
+2. else the talkgroup the air named (P25, DMR and NXDN);
+3. else the frequency default: the kHz, then kHz and a digit for further rows on the frequency.
+
+The names (alpha tag and so on) are the row's own if it has any, else the conventional system's
+talkgroup file entry for the number filed under. On P25, DMR and NXDN calls the talkgroup the air
+named is also written as `talkgroup_ota`, even when it equals `talkgroup`; it is absent for FM and
+AM and for calls whose air named none. A new talkgroup on the air within an open call still starts a
+new call, even when the row files both under the same number.
 
 ## Finding a frequency's codes
 
@@ -175,8 +195,8 @@ and don't exist here.
 
 ## Coming from Trunk Recorder
 
-- Trunk Recorder's channel file `Tone` column reads as it is, including DCS codes. `S` (search)
+- Trunk Recorder's channel file `Tone` column reads as it is (as **Code**), including DCS codes. `S` (search)
   needs no setting here: every analog call's tone is identified and written to its JSON anyway.
-- Trunk Recorder doesn't filter by NAC, colour code or RAN; here the same `Tone` column does.
+- Trunk Recorder doesn't filter by NAC, colour code or RAN; here the same column does.
 - The JSON tone fields (`tone_mode`, `tone_detected`, `tone_confidence`) use the names from Trunk
   Recorder's pull request #1137.

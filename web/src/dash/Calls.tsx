@@ -1,12 +1,19 @@
-// Live: the calls on the air now (with live audio), and the control
-// channel's log (made only while it's open). Recorded calls are on Listen.
+// A system's calls on the air now (with live audio) and its control
+// channel's log (made only while it's open), on its Radio system page; and
+// what other pages show of calls. Recorded calls are on Listen.
 
 import { useState } from "react";
 import { formatMhz, systemColor } from "../config.ts";
-import { setListen, useTopic, type AppState } from "../controller.ts";
+import { setListen, setView, useTopic, type AppState } from "../controller.ts";
 import type { CallView, TalkgroupName } from "../protocol.ts";
 import { unitName } from "../units.ts";
 import { tgText } from "./Systems.tsx";
+
+/** An analog call on one of its conventional system's AM channels (calls say only analog). */
+function isAm(s: AppState, c: CallView): boolean {
+  const v = s.config?.conventional.find((x) => x.shortName === c.systemName);
+  return !!v?.channels.some((ch) => ch.mode === "am" && Math.abs(ch.freqHz - c.freqHz) < 1);
+}
 
 export function clock(s: number): string {
   const h = Math.floor(s / 3600);
@@ -32,7 +39,7 @@ export function Unit({ id, alias }: { id: number; alias: string | undefined }) {
  * talker alias heard (live, or `saved` with the call), as the recorder picks
  * a call's `tag`.
  */
-export const aliasOf = (s: AppState, system: string, id: number, saved?: string) => {
+export const aliasOf = (s: Pick<AppState, "config" | "units">, system: string, id: number, saved?: string) => {
   const c = s.config;
   const names = c?.systems.find((x) => x.shortName === system)?.unitNames ?? c?.conventional.find((x) => x.shortName === system)?.unitNames;
   const heard = () => s.units[system]?.[id] || saved || undefined;
@@ -50,6 +57,17 @@ export const aliasOf = (s: AppState, system: string, id: number, saved?: string)
 };
 
 /** Under a call's talkgroup: what's patched with it. */
+/** A conventional call whose row files the air's talkgroup under another number: the air's. */
+export function AirTg({ tg, ota }: { tg: number; ota?: number | null }) {
+  if (ota == null || ota === tg) return null;
+  return (
+    <span className="air-tg small" title={`The air named talkgroup ${ota}; its channel row files it under ${tg} (talkgroup_ota in the call's JSON)`}>
+      {" "}
+      air {ota}
+    </span>
+  );
+}
+
 export function PatchedWith({ tgs }: { tgs: TalkgroupName[] }) {
   if (!tgs.length) return null;
   const text = tgs.map(tgText).join(", ");
@@ -85,66 +103,35 @@ export function systemChoices(s: AppState): string[] {
   return out;
 }
 
-/** Pick one system (or all), by short name: filter chips. */
-export function SystemFilter(props: { s: AppState; choices: string[]; value: string | null; onChange: (v: string | null) => void }) {
-  if (props.choices.length < 2) return null;
-  return (
-    <div className="filter-row" role="radiogroup" aria-label="System">
-      <button className={`btn ghost small${props.value === null ? " on" : ""}`} role="radio" aria-checked={props.value === null} onClick={() => props.onChange(null)}>
-        All
-      </button>
-      {props.choices.map((name) => (
-        <button
-          key={name}
-          className={`btn ghost small${props.value === name ? " on" : ""}`}
-          role="radio"
-          aria-checked={props.value === name}
-          onClick={() => props.onChange(name)}
-        >
-          <span className="sys-dot" style={{ background: systemColor(props.s.config, name) }} />
-          {name}
-        </button>
-      ))}
-    </div>
-  );
-}
-
-export function ActiveCalls({ s }: { s: AppState }) {
+/** A system's calls on the air now (with live audio): on its Radio system page. */
+export function ActiveCalls({ s, system }: { s: AppState; system: string }) {
   const now = s.status?.nowS ?? 0;
-  const choices = systemChoices(s);
-  const multi = choices.length > 1;
-  const [only, setOnly] = useState<string | null>(null);
-  const pick = (v: string | null) => {
-    setOnly(v);
-    // Live audio follows the filter.
-    if (s.listen) setListen(true, v, null);
-  };
-  const calls = [...s.calls]
-    .filter((c) => only === null || c.systemName === only)
-    .sort((a, b) => Number(b.state === "recording") - Number(a.state === "recording") || b.startS - a.startS);
-  const playingCall = s.nowPlaying && s.calls.find((c) => c.id === s.nowPlaying?.callId);
+  const calls = s.calls.filter((c) => c.systemName === system).sort((a, b) => Number(b.state === "recording") - Number(a.state === "recording") || b.startS - a.startS);
+  // (Live audio is one system's at a time: this one's, or another's.)
+  const mine = s.listen && s.listenSystem === system;
+  const playingCall = mine && s.nowPlaying ? s.calls.find((c) => c.id === s.nowPlaying?.callId) : undefined;
   const talkerId = playingCall?.sources.at(-1);
-  const talker = playingCall && talkerId !== undefined ? { id: talkerId, alias: aliasOf(s, playingCall.systemName, talkerId) } : null;
+  const talker = playingCall && talkerId !== undefined ? { id: talkerId, alias: aliasOf(s, system, talkerId) } : null;
   return (
     <section className="panel">
       <header className="panel-head">
         <h2>Active calls</h2>
         <div className="row">
+          {s.listen && !mine && <span className="muted small">Listening to {s.listenSystem ?? "every system"}</span>}
           <label className="toggle">
-            <input type="checkbox" checked={s.listen} onChange={(e) => setListen(e.target.checked, e.target.checked ? only : null, e.target.checked ? s.listenTalkgroup : null)} />
+            <input type="checkbox" checked={mine} onChange={(e) => setListen(e.target.checked, e.target.checked ? system : null, null)} />
             <span>Listen live</span>
           </label>
-          {s.listen && (s.listenTalkgroup !== null || s.listenSystem !== null) && (
-            <button className="btn ghost" onClick={() => setListen(true, null, null)}>
-              {[s.listenSystem !== null && multi ? s.listenSystem : "", s.listenTalkgroup !== null ? `TG ${s.listenTalkgroup}` : ""].filter(Boolean).join(" ")} only ✕
+          {mine && s.listenTalkgroup !== null && (
+            <button className="btn ghost" onClick={() => setListen(true, system, null)}>
+              TG {s.listenTalkgroup} only ✕
             </button>
           )}
         </div>
       </header>
-      <SystemFilter s={s} choices={choices} value={only} onChange={pick} />
-      {s.nowPlaying && s.listen && (
+      {s.nowPlaying && mine && (
         <div className="now-playing">
-          ▶ {multi ? `${s.nowPlaying.system} · ` : ""}TG {s.nowPlaying.talkgroup}
+          ▶ TG {s.nowPlaying.talkgroup}
           {talker && (
             <>
               {" · "}
@@ -160,7 +147,6 @@ export function ActiveCalls({ s }: { s: AppState }) {
           <table className="calls">
             <thead>
               <tr>
-                {multi && <th>System</th>}
                 <th>Talkgroup</th>
                 <th>Freq, MHz</th>
                 <th>Source</th>
@@ -170,46 +156,55 @@ export function ActiveCalls({ s }: { s: AppState }) {
               </tr>
             </thead>
             <tbody>
-              {calls.map((c) => (
-                <tr key={c.id} className={`st-${c.state}${c.emergency ? " emergency" : ""}`}>
-                  {multi && (
-                    <td className="sys-name">
-                      <span className="sys-dot" style={{ background: systemColor(s.config, c.systemName) }} />
-                      {c.systemName}
-                    </td>
-                  )}
-                  <td>
-                    <span className="tg">{c.talkgroup}</span>
-                    {c.alphaTag && <span className="tag">{c.alphaTag}</span>}
-                    {c.emergency && <span className="badge bad">EMERG</span>}
-                    <PatchedWith tgs={c.patched ?? []} />
-                    {c.alsoOn?.length ? (
-                      <div className="patched small" title="Same call on other sites; best copy saved">
-                        also on {c.alsoOn.join(", ")}
-                      </div>
-                    ) : null}
-                  </td>
-                  <td className="mono">
-                    {formatMhz(c.freqHz, 4)}
-                    {c.slot !== null && <span className="muted"> · s{c.slot}</span>}
-                    {c.analog && <span className="muted"> · FM{c.tone ? ` ${c.tone}` : ""}</span>}
-                    {c.nxdn && <span className="muted"> · {c.nxdn.toUpperCase()}{c.ran != null ? ` RAN ${c.ran}` : ""}</span>}
-                  </td>
-                  <td className="unit-cell">{c.sources.length ? <Unit id={c.sources.at(-1)!} alias={aliasOf(s, c.systemName, c.sources.at(-1)!)} /> : "—"}</td>
-                  <td className="mono">{clock(Math.max(0, now - c.startS))}</td>
-                  <td>
-                    <span className={`dot dot-${c.state}${c.encrypted ? " dot-enc" : ""}`} /> {reasonText(c)}
-                  </td>
-                  <td>
-                    {c.state === "recording" && (
-                      // Heard on several sites: one copy plays, from whichever site has it.
-                      <button className="btn ghost small" onClick={() => setListen(true, c.alsoOn?.length ? null : c.systemName, c.talkgroup)} title="This talkgroup only">
-                        Listen
+              {calls.map((c) => {
+                const unit = c.sources.at(-1);
+                return (
+                  <tr key={c.id} className={`st-${c.state}${c.emergency ? " emergency" : ""}`}>
+                    <td>
+                      <button className="linkish" onClick={() => setView("radio", system, "tg", c.talkgroup)} title="This talkgroup's page">
+                        <span className="tg">{c.talkgroup}</span>
+                        {c.alphaTag && <span className="tag">{c.alphaTag}</span>}
                       </button>
-                    )}
-                  </td>
-                </tr>
-              ))}
+                      <AirTg tg={c.talkgroup} ota={c.talkgroupOta} />
+                      {c.emergency && <span className="badge bad">EMERG</span>}
+                      {c.site && c.site !== system && <span className="muted small"> · {c.site}</span>}
+                      <PatchedWith tgs={c.patched ?? []} />
+                      {c.alsoOn?.length ? (
+                        <div className="patched small" title="The same call on other sites of its system; the best copy is saved">
+                          also on {c.alsoOn.join(", ")}
+                        </div>
+                      ) : null}
+                    </td>
+                    <td className="mono">
+                      {formatMhz(c.freqHz, 4)}
+                      {c.slot !== null && <span className="muted"> · s{c.slot}</span>}
+                      {c.analog && <span className="muted"> · {isAm(s, c) ? "AM" : "FM"}{c.tone ? ` ${c.tone}` : ""}</span>}
+                      {c.nxdn && <span className="muted"> · {c.nxdn.toUpperCase()}{c.ran != null ? ` RAN ${c.ran}` : ""}</span>}
+                    </td>
+                    <td className="unit-cell">
+                      {unit !== undefined ? (
+                        <button className="linkish" onClick={() => setView("radio", system, "unit", unit)} title="This radio's page">
+                          <Unit id={unit} alias={aliasOf(s, system, unit)} />
+                        </button>
+                      ) : (
+                        "—"
+                      )}
+                    </td>
+                    <td className="mono">{clock(Math.max(0, now - c.startS))}</td>
+                    <td>
+                      <span className={`dot dot-${c.state}${c.encrypted ? " dot-enc" : ""}`} /> {reasonText(c)}
+                    </td>
+                    <td>
+                      {c.state === "recording" && (
+                        // (Heard on several sites: one copy plays, from whichever site has it.)
+                        <button className="btn ghost small" onClick={() => setListen(true, system, c.talkgroup)} title="This talkgroup only">
+                          Listen
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -218,29 +213,25 @@ export function ActiveCalls({ s }: { s: AppState }) {
   );
 }
 
-export function Log({ s }: { s: AppState }) {
+/** A system's control channel log (made only while it's open): on its Radio system page. */
+export function Log({ s, system }: { s: AppState; system: string }) {
   const [show, setShow] = useState<"calls" | "all">("calls");
   // Every control message as a line costs the recorder: only while it's open.
   const [open, setOpen] = useState(false);
   useTopic(open ? "log" : null);
-  const [only, setOnly] = useState<string | null>(null);
-  const systems = s.status?.systems ?? [];
-  const multi = systems.length > 1;
-  const lines = (show === "all" ? s.log : s.log.filter((l) => /grant|update|control|patch|status|sysid|adjacent|error|note|alias|plugin|duplicate/.test(l.kind))).filter(
-    (l) => only === null || l.system === only,
-  );
+  const mine = s.log.filter((l) => l.system === system);
+  const lines = show === "all" ? mine : mine.filter((l) => /grant|update|control|patch|status|sysid|adjacent|error|note|alias|plugin|duplicate/.test(l.kind));
   return (
     <details className="panel log" open={open} onToggle={(e) => setOpen(e.currentTarget.open)}>
       <summary className="panel-head">
         <h2>Control channel log</h2>
-        {open && <span className="muted small">{s.log.length} recent messages</span>}
+        {open && <span className="muted small">{mine.length} recent messages</span>}
       </summary>
       <div className="row log-filter">
         <label className="toggle">
           <input type="checkbox" checked={show === "all"} onChange={(e) => setShow(e.target.checked ? "all" : "calls")} />
           <span>Show unit activity</span>
         </label>
-        {multi && <SystemFilter s={s} choices={systems.map((x) => x.shortName)} value={only} onChange={setOnly} />}
       </div>
       <pre className="log-lines">
         {lines
@@ -248,21 +239,11 @@ export function Log({ s }: { s: AppState }) {
           .reverse()
           .map((l, i) => (
             <div key={i} className={`k-${l.kind}`}>
-              <span className="muted">{l.timeS.toFixed(1).padStart(7)}s</span> {multi && l.system ? <span className="muted">[{l.system}] </span> : null}
+              <span className="muted">{l.time ? new Date(l.time * 1000).toLocaleTimeString([], { hour12: false }).padStart(8) : `${l.timeS.toFixed(1).padStart(7)}s`}</span> {l.site && l.site !== system ? <span className="muted">[{l.site}] </span> : null}
               {l.text}
             </div>
           ))}
       </pre>
     </details>
-  );
-}
-
-/** The Live page: on the air now, and the log. */
-export function LivePage({ s }: { s: AppState }) {
-  return (
-    <>
-      <ActiveCalls s={s} />
-      <Log s={s} />
-    </>
   );
 }

@@ -2,28 +2,13 @@
 // RTL-SDR driver (WebUSB), speaking the same protocol as the desktop app's
 // server, so the interface is identical. Calls are stored in OPFS.
 
-import init, { survey_bands, WebProfiler, WebRtl, WebSession, WebSurvey } from "./pkg/trunk_web.js";
-import type { Config, FromRecorder, HeardCode } from "../protocol.ts";
-import { activeSystems, resolvedCenters } from "../config.ts";
+import init, { learn_call_sign, survey_bands, WebProfiler, WebRtl, WebSession, WebSurvey } from "./pkg/trunk_web.js";
+import type { Config, FromRecorder, HeardCode, ToRecorder } from "../protocol.ts";
+import { activeSystems, needsDriver, resolvedCenters, SOURCE_KINDS } from "../config.ts";
 import { listCalls, readText, saveCall, writeText } from "./opfs.ts";
 
-export type ToWorker =
-  | { type: "init"; config: Config }
-  | { type: "setConfig"; config: Config }
-  | { type: "files"; files: (File | null)[] }
-  | { type: "start" }
-  | { type: "stop" }
-  | { type: "devices" }
-  | { type: "listen"; on: boolean; system: string | null; talkgroup: number | null }
-  | { type: "surveyStart"; source: number; bands: string[]; findGain: boolean }
-  | { type: "surveyListen"; freqHz: number }
-  | { type: "surveyRescan" }
-  | { type: "surveyStop" }
-  | { type: "profileSource"; source: number; centerHz: number }
-  | { type: "olderCalls"; before: number; limit: number }
-  | { type: "subscribe"; topics: string[] }
-  | { type: "statsQuery"; id: number; series: string[]; range?: string; from?: number; to?: number; points?: number }
-  | { type: "radioQuery"; id: number; what: string; system?: string; key?: number; hours?: number; limit?: number };
+/** Page → worker: the protocol's commands (those it can't do get an `error`), and its own setup. */
+export type ToWorker = ToRecorder | { type: "init"; config: Config; talkgroups: Record<string, string> } | { type: "files"; files: (File | null)[] };
 
 /** Worker → page: a protocol message, or a live audio frame. */
 export type FromWorker = { msg: FromRecorder } | { audio: ArrayBuffer; tg: number };
@@ -33,6 +18,10 @@ const post = (msg: FromRecorder) => postMessage({ msg } satisfies FromWorker);
 const wallMs = () => performance.timeOrigin + performance.now();
 
 let config: Config | null = null;
+/** The config's version (one page edits it: every edit is taken). */
+let configVersion = 1;
+/** Each system's talkgroup file, by short name (the page keeps them). */
+let talkgroups: Record<string, string> = {};
 let files: (File | null)[] = [];
 let session: WebSession | null = null;
 let rtls: WebRtl[] = [];
@@ -75,9 +64,17 @@ async function devices() {
 }
 
 /** Hand the session's outputs to the page / storage. */
-function deliver(outs: { t: string; json?: string; system?: number; shortName?: string; tg?: number; frame?: Uint8Array; rel?: string; wav?: Uint8Array; entry?: string }[]): void {
+function deliver(outs: { t: string; json?: string; system?: number; shortName?: string; tg?: number; frame?: Uint8Array; rel?: string; wav?: Uint8Array; entry?: string; freqHz?: number; callSign?: string }[]): void {
   for (const o of outs) {
     if (o.t === "text") post(JSON.parse(o.json!) as FromRecorder);
+    else if (o.t === "callSign") {
+      // A frequency's FCC call sign, heard on the air: into its system's licenses (the page stores the config).
+      const learned = config && learn_call_sign(JSON.stringify(config), o.shortName!, o.freqHz!, o.callSign!);
+      if (learned) {
+        config = JSON.parse(learned) as Config;
+        post({ type: "config", config, version: ++configVersion });
+      }
+    }
     else if (o.t === "audio") {
       if (listen.on && (listen.system === null || listen.system === o.shortName) && (listen.talkgroup === null || listen.talkgroup === o.tg)) {
         const buf = o.frame!.slice().buffer;
@@ -105,7 +102,7 @@ async function profileSource(req: { source: number; centerHz: number }): Promise
   let rtl: WebRtl | null = null;
   try {
     await ready;
-    if (src.type === "usrp" || src.type === "airspy" || src.type === "soapy") throw new Error("USRP, Airspy and SoapySDR need the desktop app.");
+    if (needsDriver(src)) throw new Error(`${SOURCE_KINDS[src.type].label} needs the desktop app.`);
     if (src.type === "rtlsdr") {
       if (!(req.centerHz > 0)) throw new Error("Choose a frequency to look at.");
       const p = new WebProfiler(req.source, req.centerHz, src.rateHz);
@@ -153,7 +150,7 @@ async function surveyStart(req: { source: number; bands: string[]; findGain: boo
     await ready;
     const src = config.sources[req.source];
     if (!src) throw new Error("No such source.");
-    if (src.type === "usrp" || src.type === "airspy" || src.type === "soapy") throw new Error("USRP, Airspy and SoapySDR need the desktop app.");
+    if (needsDriver(src)) throw new Error(`${SOURCE_KINDS[src.type].label} needs the desktop app.`);
     const s = new WebSurvey(JSON.stringify(config), JSON.stringify(req));
     survey = s;
     surveying = true;
@@ -173,6 +170,37 @@ async function surveyStart(req: { source: number; bands: string[]; findGain: boo
   } catch (e) {
     await surveyStop();
     post({ type: "error", message: e instanceof Error ? e.message : String(e) });
+  }
+}
+
+/** Who is licensed on some frequencies near the location the user gave:
+ *  asked of the trunkrecorder.pro API (as the desktop app does). */
+async function licenseQuery(m: Extract<ToRecorder, { type: "licenseQuery" }>): Promise<void> {
+  const base = (config?.server?.trpApi || "https://trunkrecorder.pro").replace(/\/+$/, "");
+  const answer = (results: unknown[], error: string | null) => post({ type: "licenseResult", id: m.id, results: results as never, error });
+  const body = JSON.stringify({ lat: m.lat, lon: m.lon, radiusM: m.radiusM, signals: m.signals.slice(0, 64) });
+  try {
+    const r = await fetch(`${base}/api/v1/fcc/identify`, { method: "POST", headers: { "content-type": "application/json" }, body });
+    const v = await r.json().catch(() => null);
+    if (r.ok && Array.isArray(v?.results)) answer(v.results, null);
+    else if (r.status === 429) answer([], "Too many license lookups for now: try again in a minute.");
+    else answer([], `The license lookup failed: ${v?.error ?? `HTTP ${r.status}`}`);
+  } catch (e) {
+    answer([], `Couldn't reach ${base} to look up licenses (${e instanceof Error ? e.message : String(e)}).`);
+  }
+}
+
+/** Who holds some call signs heard on the air (no location): asked of the trunkrecorder.pro API. */
+async function callSignQuery(m: Extract<ToRecorder, { type: "callSignQuery" }>): Promise<void> {
+  const base = (config?.server?.trpApi || "https://trunkrecorder.pro").replace(/\/+$/, "");
+  const answer = (results: unknown[], error: string | null) => post({ type: "callSignResult", id: m.id, results: results as never, error });
+  try {
+    const r = await fetch(`${base}/api/v1/fcc/callsigns`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ callSigns: m.callSigns.slice(0, 64) }) });
+    const v = await r.json().catch(() => null);
+    if (r.ok && Array.isArray(v?.results)) answer(v.results, null);
+    else answer([], r.status === 429 ? "Too many license lookups for now: try again in a minute." : `The license lookup failed: ${v?.error ?? `HTTP ${r.status}`}`);
+  } catch (e) {
+    answer([], `Couldn't reach ${base} to look up licenses (${e instanceof Error ? e.message : String(e)}).`);
   }
 }
 
@@ -285,7 +313,7 @@ async function start(): Promise<void> {
       if (p) plans[x.shortName] = p;
     }
     // The session's clock: Unix ms that never jump (performance.now() from the page's start).
-    session = new WebSession(JSON.stringify(cfg), wallMs(), JSON.stringify(plans));
+    session = new WebSession(JSON.stringify(cfg), JSON.stringify(talkgroups), wallMs(), JSON.stringify(plans));
     session.load_units(JSON.stringify(await savedUnits(cfg)));
     session.load_heard((await readText(heardFile(cfg))) ?? "");
     session.load_tune((await readText(TUNE_FILE)) ?? "");
@@ -301,8 +329,8 @@ async function start(): Promise<void> {
         const rtl = await WebRtl.open(s.serial, centers[i] ?? s.centerHz, s.rateHz, s.agc ? undefined : s.gainDb, s.ppm);
         rtls.push(rtl);
         void pumpRtl(i, rtl);
-      } else if (s.type === "usrp" || s.type === "airspy" || s.type === "soapy") {
-        throw new Error(`Source ${i + 1}: USRP, Airspy and SoapySDR need the desktop app.`);
+      } else if (needsDriver(s)) {
+        throw new Error(`Source ${i + 1}: ${SOURCE_KINDS[s.type].label} needs the desktop app.`);
       } else {
         if (s.format && s.format !== "cu8") throw new Error(`Source ${i + 1}: the browser version reads rtl_sdr (cu8) captures only.`);
         const f = files[i];
@@ -397,31 +425,37 @@ onmessage = async (ev: MessageEvent<ToWorker>) => {
   switch (m.type) {
     case "init":
       config = m.config;
+      talkgroups = m.talkgroups;
+      // The greeting, as the desktop app's (crates/trunk-pro server.rs): how things are, then hello.
+      post(phase);
+      post({ type: "config", config: m.config, version: configVersion });
+      for (const [system, csv] of Object.entries(m.talkgroups)) post({ type: "talkgroups", system, csv });
+      for (const [system, csv] of Object.entries(await savedUnits(m.config))) post({ type: "units", system, csv });
+      post({ type: "heard", heard: await savedHeard(m.config) });
+      post({ type: "history", entries: await listCalls(300) });
+      post({ type: "survey", stage: "idle" });
+      post({ type: "devices", devices: await devices() });
       post({
         type: "hello",
         version: __APP_VERSION__,
         platform: "web",
-        config: m.config,
+        api: 1,
         configPath: "this browser",
-        devices: await devices(),
-        phase,
-        history: await listCalls(300),
-        units: await savedUnits(m.config),
-        heard: await savedHeard(m.config),
         surveyBands: await ready.then(() => JSON.parse(survey_bands())).catch(() => []),
-        survey: { type: "survey", stage: "idle" },
+        // The page is the recorder: no program of its own, no drivers but WebUSB's RTL-SDR, no plugins.
+        capabilities: [],
       });
       break;
-    case "setConfig": {
-      // A talkgroup file changed while recording (an Ignore flag): the session takes it now.
-      const old = config;
+    case "setConfig":
       config = m.config;
-      if (session && old) {
-        for (const x of m.config.systems) {
-          const was = old.systems.find((o) => o.shortName === x.shortName);
-          if (was && was.talkgroupsCsv !== x.talkgroupsCsv) session.set_talkgroups(x.shortName, x.talkgroupsCsv);
-        }
-      }
+      post({ type: "configSaved", version: ++configVersion });
+      break;
+    case "setTalkgroups": {
+      // (A recording takes it at once: an Ignore flag set, a tag fixed.)
+      if (m.csv.trim()) talkgroups[m.system] = m.csv;
+      else delete talkgroups[m.system];
+      session?.set_talkgroups(m.system, m.csv);
+      post({ type: "talkgroups", system: m.system, csv: m.csv });
       break;
     }
     case "subscribe":
@@ -469,12 +503,21 @@ onmessage = async (ev: MessageEvent<ToWorker>) => {
     case "surveyRescan":
       survey?.rescan();
       break;
+    case "licenseQuery":
+      void licenseQuery(m);
+      break;
+    case "callSignQuery":
+      void callSignQuery(m);
+      break;
     case "surveyStop":
       await surveyStop();
       break;
     case "profileSource":
       await profileSource(m);
       break;
+    default:
+      // What hello's capabilities said this recorder can't do (the desktop app's commands).
+      post({ type: "error", message: `The browser version can't do "${m.type}": that needs the desktop app.` });
   }
 };
 

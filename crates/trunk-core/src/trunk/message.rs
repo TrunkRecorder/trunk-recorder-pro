@@ -1,14 +1,27 @@
-//! Trunking messages (Trunk Recorder's `TrunkMessage`) and the P25 TSBK
-//! parser (Trunk Recorder's P25Parser::decode_tsbk, opcode for opcode, with
-//! its IDEN band-plan tables and TDMA slot mapping). Field positions are
-//! `bitset_shift_mask(tsbk, shift, mask)` on the block as a 96-bit integer.
-//! MBTs arrive re-packed as the TSBK they stand for ([`Mbt::to_tsbk`]).
+//! Trunking messages (Trunk Recorder's `TrunkMessage`), and what a P25
+//! control channel's messages ([`Osp`]) mean to a recorder: calls granted
+//! and in progress, patches, units, the site. Channels resolve on the band
+//! plan the parser learns from the air.
 
 use std::collections::BTreeMap;
 use std::fmt::Write;
 
-use crate::p25::mbt::Mbt;
-use crate::p25::Tsbk;
+use super::calls::Voice;
+use crate::p25::osp::{Answer, Channel, HarrisMember, Identifier, Msg, Osp, ServiceOptions, MFID_MOTOROLA};
+
+/// A channel table learned from the air (DMR, NXDN, EDACS) as `channel=hz`
+/// lines, kept between runs like a band plan.
+pub fn table_to_string<K: std::fmt::Display>(t: &BTreeMap<K, u64>) -> String {
+    t.iter().map(|(k, hz)| format!("{k}={hz}\n")).collect()
+}
+
+/// [`table_to_string`]'s lines read back (the ones that parse).
+pub fn table_from_str<K: std::str::FromStr>(s: &str) -> impl Iterator<Item = (K, u64)> + '_ {
+    s.lines().filter_map(|line| {
+        let (k, hz) = line.split_once('=')?;
+        Some((k.trim().parse().ok()?, hz.trim().parse().ok()?))
+    })
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum MessageType {
@@ -28,8 +41,16 @@ pub enum MessageType {
     UuAnsReq,
     UuVGrant,
     UuVUpdate,
+    /// A telephone interconnect call (`talkgroup` and `source` the radio).
+    PhoneGrant,
+    PhoneUpdate,
     CallAlert,
-    /// A neighbouring site (`sys_id`, `rfss`, `site`, its control channel `freq_hz`).
+    /// A radio's status (`source`, to `talkgroup` the unit it's for).
+    StatusUpdate,
+    /// A radio's short message (as [`MessageType::StatusUpdate`]).
+    MessageUpdate,
+    /// A neighbouring site (`wacn`, `sys_id`, `rfss`, `site`, its control
+    /// channel `freq_hz`) a radio could move to.
     Adjacent,
     /// A request refused (`source` the unit that asked; `talkgroup` a group call's group).
     Deny,
@@ -63,7 +84,11 @@ impl MessageType {
             UuAnsReq => "uu_ans_req",
             UuVGrant => "uu_v_grant",
             UuVUpdate => "uu_v_update",
+            PhoneGrant => "phone_grant",
+            PhoneUpdate => "phone_update",
             CallAlert => "call_alert",
+            StatusUpdate => "status_update",
+            MessageUpdate => "message_update",
             Adjacent => "adjacent",
             Deny => "deny",
             Queued => "queued",
@@ -94,20 +119,15 @@ pub struct Message {
     pub duplex: bool,
     pub mode: bool,
     pub priority: u8,
-    pub phase2_tdma: bool,
-    pub tdma_slot: u8,
+    /// A grant's (or update's): what the call's voice is on.
+    pub voice: Voice,
     pub sys_id: u32,
     pub wacn: u32,
     pub nac: u16,
     pub rfss: u32,
     pub site: u32,
-    /// SmartNet: the voice channel is analog FM (P25 otherwise).
-    pub analog: bool,
     pub patch: Option<Patch>,
-    /// DMR: the colour code; a DMR grant's slot is `tdma_slot`.
-    pub color_code: Option<u8>,
-    /// NXDN: the voice channel's rate, and the site's (or carrier's) RAN.
-    pub nxdn: Option<crate::nxdn::Rate>,
+    /// NXDN: the site's (or carrier's) RAN.
     pub ran: Option<u8>,
     pub opcode: u8,
     /// Motorola: the site's callsign (its CW ID), from its base station ID.
@@ -116,41 +136,51 @@ pub struct Message {
     pub meta: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct FreqTable {
-    pub offset_hz: i64,
-    pub step_hz: u64,
-    pub base_hz: u64,
-    pub phase2_tdma: bool,
-    pub slots_per_carrier: u32,
-    pub bandwidth_khz: f64,
-}
 
-/// What a deny or queued response's service type (the request's opcode) asked for.
-fn service_name(service: u32) -> String {
-    match service {
-        0x00 => "group voice".into(),
-        0x04 => "unit-to-unit voice".into(),
-        0x05 => "unit-to-unit answer".into(),
-        0x08 => "telephone".into(),
-        0x10..=0x14 => "data".into(),
-        0x28 => "affiliation".into(),
-        0x2c => "registration".into(),
-        s => format!("service 0x{s:02x}"),
+/// What a deny or queued response's service type (the request's opcode)
+/// asked for: the standard's ISPs (AABC-D Annex D), or Motorola's (AABH §4.2).
+fn service_name(service: u8, mfid: u8) -> String {
+    match (mfid, service) {
+        (MFID_MOTOROLA, 0x00) => "supergroup voice".into(),
+        (MFID_MOTOROLA, s) => format!("Motorola service 0x{s:02x}"),
+        (_, 0x00) => "group voice".into(),
+        (_, 0x04) => "unit-to-unit voice".into(),
+        (_, 0x05) => "unit-to-unit answer".into(),
+        (_, 0x08..=0x0a) => "telephone".into(),
+        (_, 0x10..=0x14) => "data".into(),
+        (_, 0x18) => "status update".into(),
+        (_, 0x1c) => "message update".into(),
+        (_, 0x1f) => "call alert".into(),
+        (_, 0x28) => "affiliation".into(),
+        (_, 0x2c) => "registration".into(),
+        (_, s) => format!("service 0x{s:02x}"),
     }
 }
 
-/// Why a request was refused: the standard's reasons, or (`custom`)
-/// Motorola's and L3Harris's own.
-fn deny_reason(r: u32, custom: bool) -> String {
-    let s = match (custom, r) {
+/// Whether a service type is for a group, so a response's additional
+/// information is the call's options and group (AABC-D §6.2.5, AABH §4.4.6).
+fn group_service(service: u8) -> bool {
+    matches!(service, 0x00 | 0x11)
+}
+
+/// Why a request was refused: the standard's reasons (AABC-D Annex B), or
+/// (`own`) Motorola's.
+fn deny_reason(r: u8, own: bool) -> String {
+    let s = match (own, r) {
         (true, 0x00) => "secure request on a clear supergroup",
         (true, 0x01) => "clear request on a secure supergroup",
         (true, _) => return format!("reason 0x{r:02x}"),
         (_, 0x10) => "requesting unit not valid",
         (_, 0x11) => "requesting unit not authorized",
+        (_, 0x12) => "requesting unit not registered with its home",
         (_, 0x20) => "target unit not valid",
         (_, 0x21) => "target unit not authorized",
+        (_, 0x22) => "the radio failed authentication",
+        (_, 0x23) => "the system failed authentication",
+        (_, 0x24) => "the radio couldn't be authenticated",
+        (_, 0x25) => "target unit not registered with its home",
+        (_, 0x26) => "target unit's home unknown",
+        (_, 0x27) => "target unit unavailable",
         (_, 0x2f) => "target unit refused the call",
         (_, 0x30) => "target group not valid",
         (_, 0x31) => "target group not authorized",
@@ -160,8 +190,12 @@ fn deny_reason(r: u32, custom: bool) -> String {
         (_, 0x50) => "call timeout",
         (_, 0x51) => "landline terminated the call",
         (_, 0x52) => "subscriber unit terminated the call",
+        (_, 0x53) => "no network resources",
+        (_, 0x54) => "no RF resources",
+        (_, 0x55) => "already being set up by another party",
         (_, 0x5f) => "call preempted",
         (_, 0x60) => "site access denied",
+        // $61-$EF are the system's own; these two are Motorola's.
         (_, 0x67) => "PTT collide",
         (_, 0x77) => "PTT bonk",
         (_, 0xf0) => "call options not valid for the service",
@@ -174,8 +208,8 @@ fn deny_reason(r: u32, custom: bool) -> String {
     s.into()
 }
 
-/// Why a request was queued.
-fn queued_reason(r: u32) -> String {
+/// Why a request was queued (AABC-D Annex C).
+fn queued_reason(r: u8) -> String {
     match r {
         0x10 => "requesting unit busy in another service".into(),
         0x20 => "target unit busy in another service".into(),
@@ -189,25 +223,31 @@ fn queued_reason(r: u32) -> String {
     }
 }
 
-/// An encryption algorithm ID, by name.
-fn algid_name(algid: u32) -> String {
-    match algid {
-        0x80 => "clear".into(),
-        0x81 => "DES-OFB".into(),
-        0x83 => "3DES".into(),
-        0x84 => "AES-256".into(),
-        0x85 => "AES-128".into(),
-        0xaa => "ADP".into(),
-        a => format!("ALGID 0x{a:02x}"),
+/// An extended function (AABC-D Table 2.3.15-1, AABH Table 4-2).
+fn extended_function(class: u8, operand: u8, args: u32, mfid: u8) -> String {
+    match (class, operand) {
+        (0x00, 0x00) => "radio check".into(),
+        (0x00, 0x7d) => "radio detach".into(),
+        (0x00, 0x7e) => "radio uninhibit".into(),
+        (0x00, 0x7f) => "radio inhibit".into(),
+        (0x00, 0x80) => "radio check acknowledged".into(),
+        (0x00, 0xfd) => "radio detach acknowledged".into(),
+        (0x00, 0xfe) => "radio uninhibit acknowledged".into(),
+        (0x00, 0xff) => "radio inhibit acknowledged".into(),
+        // Arguments are top-justified (AABH §4.4.5): the group in octets 0-1.
+        (0x02, 0x00) if mfid == MFID_MOTOROLA => format!("regrouped onto supergroup {}", args >> 8),
+        (0x02, 0x01) if mfid == MFID_MOTOROLA => format!("regroup on supergroup {} cancelled", args >> 8),
+        (0x02, 0x00) => "dynamic regroup".into(),
+        (0x02, 0x01) => "regroup cancelled".into(),
+        _ => format!("extended function class 0x{class:02x} operand 0x{operand:02x} args 0x{args:06x}"),
     }
 }
 
-/// A registration or affiliation response's value other than 0 (accepted).
-fn refusal(v: u32) -> &'static str {
-    match v {
-        1 => "failed",
-        2 => "denied",
-        _ => "refused",
+/// An encryption algorithm ID, by name.
+fn algid_name(algid: u8) -> String {
+    match crate::p25::crypt::algid_name(algid) {
+        "unknown" => format!("ALGID 0x{algid:02x}"),
+        n => n.into(),
     }
 }
 
@@ -219,35 +259,42 @@ fn mhz(hz: u64) -> String {
     }
 }
 
-/// One per system. Learns the band plan (IDEN_UP*) from the air; the plan can
-/// also be preloaded (see [`TsbkParser::bandplan_to_string`]).
+/// One per system: what its control channel says ([`Osp`]), as
+/// [`Message`]s. Learns the band plan (IDEN_UP*) and the site's system
+/// (NET_STS_BCST) from the air; the band plan can also be preloaded (see
+/// [`P25Parser::bandplan_to_string`]).
 #[derive(Default, Clone)]
-pub struct TsbkParser {
-    pub tables: BTreeMap<u8, FreqTable>,
+pub struct P25Parser {
+    pub tables: BTreeMap<u8, Identifier>,
+    /// The site's (WACN, System ID): a band plan for another system's
+    /// channels (an extended IDEN_UP_TDMA naming it) isn't this one's.
+    system: Option<(u32, u16)>,
 }
 
-impl TsbkParser {
-    pub fn channel_to_hz(&self, ch: u32) -> u64 {
-        let Some(t) = self.tables.get(&(((ch >> 12) & 0xf) as u8)) else { return 0 };
-        let channel = (ch & 0xfff) as u64;
-        if t.phase2_tdma {
-            t.base_hz + t.step_hz * (channel / t.slots_per_carrier.max(1) as u64)
-        } else {
-            t.base_hz + t.step_hz * channel
+impl P25Parser {
+    /// A channel's carrier frequency (0: its band plan unknown yet) and, on a
+    /// TDMA carrier, its slot.
+    pub fn resolve(&self, ch: Channel) -> (u64, Option<u8>) {
+        match self.tables.get(&ch.iden()) {
+            Some(i) => {
+                let (hz, slot) = i.resolve(ch);
+                (hz, (i.slots > 1).then_some(slot))
+            }
+            None => (0, None),
         }
     }
 
-    pub fn tdma_slot(&self, ch: u32) -> Option<u8> {
-        self.tables.get(&(((ch >> 12) & 0xf) as u8)).filter(|t| t.phase2_tdma).map(|_| (ch & 1) as u8)
+    pub fn channel_to_hz(&self, ch: Channel) -> u64 {
+        self.resolve(ch).0
     }
 
-    /// The band plan as text (one IDEN per line), to persist between runs: it
-    /// almost never changes, and without it a grant heard before the next IDEN
-    /// broadcast can't be followed.
+    /// The band plan as text (one identifier per line), to persist between
+    /// runs: it almost never changes, and without it a grant heard before the
+    /// next IDEN broadcast can't be followed.
     pub fn bandplan_to_string(&self) -> String {
         let mut s = String::new();
         for (id, t) in &self.tables {
-            let _ = writeln!(s, "{id} {} {} {} {} {} {}", t.offset_hz, t.step_hz, t.base_hz, t.phase2_tdma as u8, t.slots_per_carrier, t.bandwidth_khz);
+            let _ = writeln!(s, "{id} {} {} {} {} {} {}", t.tx_offset_hz, t.spacing_hz, t.base_hz, (t.slots > 1) as u8, t.slots, t.bandwidth_hz as f64 / 1000.0);
         }
         s
     }
@@ -258,409 +305,389 @@ impl TsbkParser {
                 continue;
             }
             let p = |i: usize| f.get(i).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
+            let iden = p(0) as u8;
+            let slots = (p(5) as u8).max(1);
             self.tables.insert(
-                p(0) as u8,
-                FreqTable {
-                    offset_hz: p(1) as i64,
-                    step_hz: p(2) as u64,
-                    base_hz: p(3) as u64,
-                    phase2_tdma: p(4) != 0.0,
-                    slots_per_carrier: p(5) as u32,
-                    bandwidth_khz: p(6),
-                },
+                iden,
+                Identifier { iden, tx_offset_hz: p(1) as i64, spacing_hz: p(2) as u64, base_hz: p(3) as u64, slots, bandwidth_hz: (p(6) * 1000.0) as u32, system: None },
             );
         }
     }
 
-    /// An MBT without a TSBK form ([`Mbt::to_tsbk`]): logged, not acted on.
-    pub fn unknown_mbt(m: &Mbt, nac: u16, time_s: f64) -> Message {
-        let mfid = if m.mfid() == 0 { String::new() } else { format!(" mfid 0x{:02x}", m.mfid()) };
-        Message { time_s, opcode: m.opcode(), nac, source: -1, meta: format!("MBT opcode 0x{:02x}{mfid}", m.opcode()), ..Default::default() }
+    /// A message's channel: its frequency and TDMA slot.
+    fn on(&self, m: &mut Message, ch: Channel) {
+        let (hz, slot) = self.resolve(ch);
+        m.freq_hz = hz;
+        m.voice = slot.map_or(Voice::P25, |slot| Voice::P25Tdma { slot });
     }
 
-    /// One CRC-valid TSBK → messages. `nac` from the frame's NID.
-    pub fn parse(&mut self, block: &Tsbk, nac: u16, time_s: f64) -> Vec<Message> {
-        let t = block.iter().fold(0u128, |a, &b| (a << 8) | b as u128);
-        let b = |shift: u32, mask: u64| ((t >> shift) as u64 & mask) as u32;
-        let opcode = b(88, 0x3f) as u8;
+    /// What a control channel message means. `nac` from its frame's NID.
+    pub fn parse(&mut self, o: &Osp, nac: u16, time_s: f64) -> Vec<Message> {
+        let mut m = Message { time_s, opcode: o.opcode, nac, source: -1, ..Default::default() };
         let mut out = Vec::new();
-        let mut m = Message { time_s, opcode, nac, source: -1, ..Default::default() };
-        let opts = |m: &mut Message| {
-            m.emergency = b(72, 0x80) != 0;
-            m.encrypted = b(72, 0x40) != 0;
-            m.duplex = b(72, 0x20) != 0;
-            m.mode = b(72, 0x10) != 0;
-            m.priority = b(72, 0x07) as u8;
+        let opts = |m: &mut Message, o: ServiceOptions| {
+            m.emergency = o.emergency();
+            m.encrypted = o.protected();
+            m.duplex = o.duplex();
+            m.mode = o.packet();
+            m.priority = o.priority();
         };
-        let set_slot = |p: &TsbkParser, m: &mut Message, ch: u32| {
-            let s = p.tdma_slot(ch);
-            m.phase2_tdma = s.is_some();
-            m.tdma_slot = s.unwrap_or(0);
-        };
-        // MFID 0 or 1: the standard's messages. Any other: the manufacturer's
-        // own, whose opcodes mean something else.
-        let mfid = b(80, 0xff);
-        let vendor = if mfid <= 1 { 0 } else { mfid };
-        match (vendor, opcode) {
-            (0x90, 0x00) => {
-                m.kind = MessageType::PatchAdd;
-                let p = Patch { sg: b(64, 0xffff), ga: [b(48, 0xffff), b(32, 0xffff), b(16, 0xffff)] };
-                m.meta = format!("Moto patch add sg {}: {} {} {}", p.sg, p.ga[0], p.ga[1], p.ga[2]);
-                m.patch = Some(p);
+        let slot = |m: &Message| m.voice.slot().map_or(String::new(), |s| format!(" slot {s}"));
+        let enc = |m: &Message| if m.encrypted { " ENC" } else { "" };
+        match &o.msg {
+            Msg::GroupVoiceGrant { opts: so, ch, group, source, .. } => {
+                opts(&mut m, *so);
+                self.on(&mut m, *ch);
+                (m.kind, m.talkgroup, m.source) = (MessageType::Grant, *group as u32, *source as i64);
+                m.meta = format!("Grant TG {} {} MHz src {}{}{}", m.talkgroup, mhz(m.freq_hz), m.source, slot(&m), enc(&m));
             }
-            (0, 0x00) => {
-                opts(&mut m);
-                let ch = b(56, 0xffff);
-                m.kind = MessageType::Grant;
-                m.freq_hz = self.channel_to_hz(ch);
-                m.talkgroup = b(40, 0xffff);
-                m.source = b(16, 0xffffff) as i64;
-                set_slot(self, &mut m, ch);
-                m.meta = format!(
-                    "Grant TG {} {} MHz src {}{}{}",
-                    m.talkgroup,
-                    mhz(m.freq_hz),
-                    m.source,
-                    if m.phase2_tdma { format!(" slot {}", m.tdma_slot) } else { String::new() },
-                    if m.encrypted { " ENC" } else { "" }
-                );
-            }
-            // Motorola patch delete: the supergroup and the groups leaving it.
-            (0x90, 0x01) => {
-                m.kind = MessageType::PatchDelete;
-                let p = Patch { sg: b(64, 0xffff), ga: [b(48, 0xffff), b(32, 0xffff), b(16, 0xffff)] };
-                m.meta = format!("Moto patch delete sg {}: {} {} {}", p.sg, p.ga[0], p.ga[1], p.ga[2]);
-                m.patch = Some(p);
-            }
-            (0x90, 0x02) => {
-                opts(&mut m);
-                let ch = b(56, 0xffff);
-                m.kind = MessageType::Grant;
-                m.freq_hz = self.channel_to_hz(ch);
-                m.talkgroup = b(40, 0xffff);
-                m.source = b(16, 0xffffff) as i64;
-                set_slot(self, &mut m, ch);
-                m.meta = format!("Patch grant SG {} {} MHz src {}", m.talkgroup, mhz(m.freq_hz), m.source);
-            }
-            (0, 0x02) => {
-                let (ch1, ga1, ch2, ga2) = (b(64, 0xffff), b(48, 0xffff), b(32, 0xffff), b(16, 0xffff));
-                let (f1, f2) = (self.channel_to_hz(ch1), self.channel_to_hz(ch2));
-                m.kind = MessageType::Update;
-                m.freq_hz = f1;
-                m.talkgroup = ga1;
-                set_slot(self, &mut m, ch1);
-                m.meta = format!("Update TG {ga1} {} MHz", mhz(f1));
-                if f1 != f2 && ch2 != 0xffff {
-                    out.push(m.clone());
-                    m.freq_hz = f2;
-                    m.talkgroup = ga2;
-                    set_slot(self, &mut m, ch2);
-                    m.meta = format!("Update TG {ga2} {} MHz", mhz(f2));
+            Msg::GroupVoiceUpdate { calls } | Msg::MotPatchUpdate { calls } => {
+                let what = if matches!(o.msg, Msg::MotPatchUpdate { .. }) { "Patch update SG" } else { "Update TG" };
+                for &(ch, group) in calls {
+                    let mut u = m.clone();
+                    self.on(&mut u, ch);
+                    (u.kind, u.talkgroup) = (MessageType::Update, group as u32);
+                    u.meta = format!("{what} {group} {} MHz{}", mhz(u.freq_hz), slot(&u));
+                    out.push(u);
                 }
+                return out;
             }
-            (0x90, 0x03) => {
-                let (ch1, sg1, ch2, sg2) = (b(64, 0xffff), b(48, 0xffff), b(32, 0xffff), b(16, 0xffff));
-                let (f1, f2) = (self.channel_to_hz(ch1), self.channel_to_hz(ch2));
-                m.kind = MessageType::Update;
-                m.freq_hz = f1;
-                m.talkgroup = sg1;
-                set_slot(self, &mut m, ch1);
-                m.meta = format!("Patch update SG {sg1} {} MHz", mhz(f1));
-                if f1 != f2 {
-                    out.push(m.clone());
-                    m.freq_hz = f2;
-                    m.talkgroup = sg2;
-                    set_slot(self, &mut m, ch2);
-                    m.meta = format!("Patch update SG {sg2} {} MHz", mhz(f2));
+            Msg::GroupVoiceUpdateExplicit { opts: so, ch, group, .. } => {
+                opts(&mut m, *so);
+                self.on(&mut m, *ch);
+                (m.kind, m.talkgroup) = (MessageType::Update, *group as u32);
+                m.meta = format!("Explicit update TG {} {} MHz{}{}", m.talkgroup, mhz(m.freq_hz), slot(&m), enc(&m));
+            }
+            Msg::UnitVoiceGrant { opts: so, ch, target, source, .. } | Msg::UnitVoiceUpdate { opts: so, ch, target, source, .. } => {
+                if let Some(so) = so {
+                    opts(&mut m, *so);
                 }
+                self.on(&mut m, *ch);
+                let grant = matches!(o.msg, Msg::UnitVoiceGrant { .. });
+                m.kind = if grant { MessageType::UuVGrant } else { MessageType::UuVUpdate };
+                (m.talkgroup, m.source) = (*target, *source as i64);
+                m.meta = format!("Unit-to-unit {} {source} → {target} {} MHz{}{}", if grant { "grant" } else { "update" }, mhz(m.freq_hz), slot(&m), enc(&m));
             }
-            (0, 0x03) => {
-                m.emergency = b(72, 0x80) != 0;
-                m.encrypted = b(72, 0x40) != 0;
-                let ch1 = b(48, 0xffff);
-                m.kind = MessageType::Update;
-                m.freq_hz = self.channel_to_hz(ch1);
-                m.talkgroup = b(16, 0xffff);
-                set_slot(self, &mut m, ch1);
-                m.meta = format!("Explicit update TG {} {} MHz", m.talkgroup, mhz(m.freq_hz));
+            Msg::UnitAnswerRequest { opts: so, target, source } => {
+                opts(&mut m, *so);
+                (m.kind, m.talkgroup, m.source) = (MessageType::UuAnsReq, *target, *source as i64);
+                m.meta = format!("Unit-to-unit answer request {source} → {target}");
             }
-            // Motorola extended function: class, operand, arguments, target
-            // radio. Class 2 regroups a radio onto a supergroup (operand 0) or
-            // off it (1): no talkgroup is patched.
-            (0x90, 0x04) => {
-                let (class, operand, args, target) = (b(72, 0xff), b(64, 0xff), b(40, 0xffffff), b(16, 0xffffff));
-                m.source = target as i64;
-                m.meta = match (class, operand) {
-                    (0x02, 0 | 1) => format!("Moto regroup sg {}: unit {target} {}", args & 0xffff, if operand == 0 { "joins" } else { "leaves" }),
-                    _ => format!("Moto extended function class 0x{class:02x} operand 0x{operand:02x} args 0x{args:06x} unit {target}"),
-                };
+            Msg::PhoneGrant { opts: so, ch, timer_ds, unit, .. } | Msg::PhoneUpdate { opts: so, ch, timer_ds, unit, .. } => {
+                opts(&mut m, *so);
+                self.on(&mut m, *ch);
+                let grant = matches!(o.msg, Msg::PhoneGrant { .. });
+                m.kind = if grant { MessageType::PhoneGrant } else { MessageType::PhoneUpdate };
+                (m.talkgroup, m.source) = (*unit, *unit as i64);
+                let timer = if *timer_ds > 0 { format!(" for {:.1} s", *timer_ds as f64 / 10.0) } else { String::new() };
+                m.meta = format!("Telephone {} unit {unit} {} MHz{}{timer}{}", if grant { "grant" } else { "update" }, mhz(m.freq_hz), slot(&m), enc(&m));
             }
-            // Deny and queued responses, the standard's and Motorola's (the
-            // same layout; Motorola's RC bit marks a reason of its own): the
-            // service asked for (its request's opcode), why, more (a group
-            // call's group), and the unit that asked.
-            (0, 0x21 | 0x27) | (0x90, 0x06 | 0x07) => {
-                let deny = opcode == 0x27 || opcode == 0x07;
-                let (service, reason, info) = (b(72, 0x3f), b(64, 0xff), b(40, 0xffffff));
+            Msg::PhoneAnswerRequest { digits, target } => {
+                m.source = *target as i64;
+                m.meta = format!("Telephone call for unit {target}{}", if digits.is_empty() { String::new() } else { format!(" from {digits}") });
+            }
+            Msg::DataGrant { opts: so, ch, target, .. } => {
+                opts(&mut m, *so);
+                self.on(&mut m, *ch);
+                (m.kind, m.source) = (MessageType::DataGrant, *target as i64);
+                m.meta = format!("Data grant unit {target} {} MHz", mhz(m.freq_hz));
+            }
+            Msg::Acknowledge { service, source, target } => {
+                (m.kind, m.source) = (MessageType::Acknowledge, *target as i64);
+                let from = source.map_or(String::new(), |s| format!(" from {s}"));
+                m.meta = format!("Acknowledge {} for unit {target}{from}", service_name(*service, o.mfid));
+            }
+            Msg::Queued { service, reason, info, target } | Msg::Denied { service, reason, info, target, .. } => {
+                let deny = matches!(o.msg, Msg::Denied { .. });
                 m.kind = if deny { MessageType::Deny } else { MessageType::Queued };
-                m.source = b(16, 0xffffff) as i64;
-                let group = service == 0x00;
-                if group {
-                    m.talkgroup = info & 0xffff;
-                }
-                let why = if deny { deny_reason(reason, vendor == 0x90 && b(79, 1) == 1) } else { queued_reason(reason) };
-                m.meta = format!(
-                    "{} {} for unit {}{}: {why}",
-                    if deny { "Denied" } else { "Queued" },
-                    service_name(service),
-                    m.source,
-                    if group { format!(" on TG {}", m.talkgroup) } else { String::new() }
-                );
-            }
-            // Motorola emergency alarm: the group and the radio.
-            (0x90, 0x0a) => {
-                m.kind = MessageType::EmergencyAlarm;
-                m.emergency = true;
-                m.talkgroup = b(40, 0xffff);
-                m.source = b(16, 0xffffff) as i64;
-                m.meta = format!("Emergency alarm from {} on TG {}", m.source, m.talkgroup);
-            }
-            // Motorola base station ID: the site's callsign, eight 6-bit
-            // characters (+ 43 for ASCII; 0 none), and its channel.
-            (0x90, 0x0b) => {
-                let callsign: String = (0..8).map(|i| b(74 - 6 * i, 0x3f)).filter(|&c| c != 0).map(|c| (c as u8 + 43) as char).collect();
-                m.kind = MessageType::BaseStationId;
-                m.freq_hz = self.channel_to_hz(b(16, 0xffff));
-                m.meta = format!("Base station ID {callsign} {} MHz", mhz(m.freq_hz));
-                m.callsign = Some(callsign);
-            }
-            (0, 0x04) => {
-                opts(&mut m);
-                let ch = b(64, 0xffff);
-                m.kind = MessageType::UuVGrant;
-                m.freq_hz = self.channel_to_hz(ch);
-                m.talkgroup = b(40, 0xffffff);
-                m.source = b(16, 0xffffff) as i64;
-                set_slot(self, &mut m, ch);
-                m.meta = format!("Unit-to-unit grant {} → {} {} MHz", m.source, m.talkgroup, mhz(m.freq_hz));
-            }
-            (0x90, 0x05) => {
-                m.meta = "MOTOROLA_OSP_TRAFFIC_CHANNEL_ID".into();
-            }
-            (0, 0x05) => {
-                opts(&mut m);
-                m.kind = MessageType::UuAnsReq;
-                m.source = b(16, 0xffffff) as i64;
-                m.talkgroup = b(40, 0xffffff);
-                m.meta = format!("Unit-to-unit answer request {} → {}", m.talkgroup, m.source);
-            }
-            (0, 0x06) => {
-                let ch = b(64, 0xffff);
-                m.kind = MessageType::UuVUpdate;
-                m.freq_hz = self.channel_to_hz(ch);
-                m.talkgroup = b(40, 0xffffff);
-                m.source = b(16, 0xffffff) as i64;
-                set_slot(self, &mut m, ch);
-                m.meta = format!("Unit-to-unit update {} → {} {} MHz", m.source, m.talkgroup, mhz(m.freq_hz));
-            }
-            (0, 0x14) => {
-                m.emergency = b(72, 0x80) != 0;
-                m.encrypted = b(72, 0x40) != 0;
-                m.duplex = b(72, 0x20) != 0;
-                m.mode = b(72, 0x10) != 0;
-                m.kind = MessageType::DataGrant;
-                m.source = b(16, 0xffffff) as i64;
-                m.freq_hz = self.channel_to_hz(b(56, 0xffff));
-                m.meta = format!("Data grant src {} {} MHz", m.source, mhz(m.freq_hz));
-            }
-            (0, 0x1f) => {
-                m.kind = MessageType::CallAlert;
-                m.source = b(16, 0xffffff) as i64;
-                m.talkgroup = b(40, 0xffffff);
-                m.meta = format!("Call alert {} → {}", m.source, m.talkgroup);
-            }
-            (0, 0x20) => {
-                m.kind = MessageType::Acknowledge;
-                m.talkgroup = b(40, 0xffff);
-                m.source = b(16, 0xffffff) as i64;
-                m.meta = format!("Acknowledge src {}", m.source);
-            }
-            (0, 0x28) => {
-                m.source = b(16, 0xffffff) as i64;
-                m.talkgroup = b(40, 0xffff);
-                // GAV: 0 accepted; failed, denied or refused, the unit isn't on the group.
-                match b(72, 0x3) {
-                    0 => {
-                        m.kind = MessageType::Affiliation;
-                        m.meta = format!("Affiliation {} → TG {}", m.source, m.talkgroup);
-                    }
-                    gav => m.meta = format!("Affiliation {} → TG {} {}", m.source, m.talkgroup, refusal(gav)),
-                }
-            }
-            (0, 0x29 | 0x39) => {
-                let (f1, f2) = (self.channel_to_hz(b(48, 0xffff)), self.channel_to_hz(b(24, 0xffff)));
-                m.meta = format!("Secondary CC rfss {} site {}: {} / {} MHz", b(72, 0xff), b(64, 0xff), mhz(f1), mhz(f2));
-                if f1 != 0 && f2 != 0 {
-                    m.kind = MessageType::ControlChannel;
-                    m.freq_hz = f1;
-                    out.push(m.clone());
-                    m.freq_hz = f2;
-                }
-            }
-            (0, 0x2b) => {
-                m.kind = MessageType::Location;
-                m.talkgroup = b(56, 0xffff);
-                m.source = b(16, 0xffffff) as i64;
-                m.meta = format!("Location registration {} TG {}", m.source, m.talkgroup);
-            }
-            (0, 0x2c) => {
-                m.source = b(40, 0xffffff) as i64;
-                // RV: 0 accepted; failed, denied or refused, the unit isn't on the system.
-                match b(76, 0x3) {
-                    0 => {
-                        m.kind = MessageType::Registration;
-                        m.meta = format!("Registration {}", m.source);
-                    }
-                    rv => m.meta = format!("Registration {} {}", m.source, refusal(rv)),
-                }
-            }
-            (0, 0x2f) => {
-                m.kind = MessageType::Deregistration;
-                m.source = b(16, 0xffffff) as i64;
-                m.meta = format!("Deregistration {}", m.source);
-            }
-            // L3Harris group regroup (explicit encryption): options (simulselect,
-            // talkgroup target, activate, sequence number), supergroup, key
-            // ID, target. A talkgroup target is its algorithm ID and the group.
-            (0xa4, 0x30) => {
-                let (opts, sg, key, target) = (b(72, 0xff), b(56, 0xffff), b(40, 0xffff), b(16, 0xffffff));
-                let what = if opts & 0x80 != 0 { "simulselect" } else { "patch" };
-                let add = opts & 0x20 != 0;
-                if opts & 0x40 != 0 {
-                    let (tg, algid) = (target & 0xffff, target >> 16);
-                    m.kind = if add { MessageType::PatchAdd } else { MessageType::PatchDelete };
-                    m.patch = Some(Patch { sg, ga: [tg, tg, tg] });
-                    m.encrypted = algid != 0 && algid != 0x80;
-                    let enc = if m.encrypted { format!(" {} key 0x{key:04x}", algid_name(algid)) } else { String::new() };
-                    m.meta = format!("L3Harris {what} {} sg {sg} TG {tg}{enc}", if add { "add" } else { "delete" });
-                } else {
-                    // A radio regrouped onto the supergroup: no talkgroup patched.
-                    m.source = target as i64;
-                    m.meta = format!("L3Harris {what} sg {sg}: unit {target} {}", if add { "joins" } else { "leaves" });
-                }
-            }
-            (0, 0x30) => {
-                m.meta = "TDMA sync broadcast".into();
-            }
-            (0, 0x33) => {
-                let (iden, ct, toff0, spac) = (b(76, 0xf) as u8, b(72, 0xf) as usize, b(58, 0x3fff) as i64, b(48, 0x3ff) as i64);
-                let mut toff = toff0 & 0x1fff;
-                if (toff0 >> 13) & 1 == 0 {
-                    toff = -toff;
-                }
-                let slots = [1u32, 1, 1, 2, 4, 2].get(ct).copied().unwrap_or(1);
-                let base = b(16, 0xffffffff) as u64 * 5;
-                self.tables.insert(
-                    iden,
-                    FreqTable { offset_hz: toff * spac * 125, step_hz: spac as u64 * 125, base_hz: base, phase2_tdma: slots > 1, slots_per_carrier: slots, bandwidth_khz: 6.25 },
-                );
-                m.meta = format!("IDEN_UP_TDMA {iden}: base {} MHz, step {} Hz, {slots} slot(s)", mhz(base), spac * 125);
-            }
-            (0, 0x34) => {
-                let (iden, bwvu, toff0, spac) = (b(76, 0xf) as u8, b(72, 0xf), b(58, 0x3fff) as i64, b(48, 0x3ff) as i64);
-                let mut toff = toff0 & 0x1fff;
-                if (toff0 >> 13) & 1 == 0 {
-                    toff = -toff;
-                }
-                let base = b(16, 0xffffffff) as u64 * 5;
-                let bw = match bwvu {
-                    4 => 6.25,
-                    5 => 12.5,
-                    _ => 0.0,
+                m.source = *target as i64;
+                let group = info.filter(|_| group_service(*service)).map(|i| i & 0xffff);
+                m.talkgroup = group.unwrap_or(0);
+                let why = match o.msg {
+                    Msg::Denied { own_reason, .. } => deny_reason(*reason, own_reason),
+                    _ => queued_reason(*reason),
                 };
-                self.tables.insert(
-                    iden,
-                    FreqTable { offset_hz: toff * spac * 125, step_hz: spac as u64 * 125, base_hz: base, phase2_tdma: false, slots_per_carrier: 0, bandwidth_khz: bw },
-                );
-                m.meta = format!("IDEN_UP_VU {iden}: base {} MHz, step {} Hz", mhz(base), spac * 125);
+                let on = group.map_or(String::new(), |g| format!(" on TG {g}"));
+                m.meta = format!("{} {} for unit {target}{on}: {why}", if deny { "Denied" } else { "Queued" }, service_name(*service, o.mfid));
             }
-            (0, 0x3a) => {
-                m.kind = MessageType::SysId;
-                m.sys_id = b(56, 0xfff);
-                m.rfss = b(48, 0xff);
-                m.site = b(40, 0xff);
-                m.meta = format!("RFSS status sysid {:x} rfss {} site {}", m.sys_id, m.rfss, m.site);
+            Msg::ExtendedFunction { class, operand, args, target } => {
+                m.source = *target as i64;
+                m.meta = format!("Unit {target}: {}", extended_function(*class, *operand, *args, o.mfid));
             }
-            (0, 0x3b) => {
-                let f1 = self.channel_to_hz(b(24, 0xffff));
-                m.meta = format!("Network status wacn {:x} sysid {:x} CC {} MHz", b(52, 0xfffff), b(40, 0xfff), mhz(f1));
-                if f1 != 0 {
-                    m.kind = MessageType::Status;
-                    m.wacn = b(52, 0xfffff);
-                    m.sys_id = b(40, 0xfff);
-                    m.freq_hz = f1;
+            Msg::CallAlert { target, source } => {
+                (m.kind, m.talkgroup, m.source) = (MessageType::CallAlert, *target, *source as i64);
+                m.meta = format!("Call alert {source} → {target}");
+            }
+            Msg::StatusUpdate { status, target, source } => {
+                (m.kind, m.talkgroup, m.source) = (MessageType::StatusUpdate, *target, *source as i64);
+                m.meta = format!("Status from {source} to {target}: user 0x{:02x} unit 0x{:02x}", status >> 8, status & 0xff);
+            }
+            Msg::MessageUpdate { message, target, source } => {
+                (m.kind, m.talkgroup, m.source) = (MessageType::MessageUpdate, *target, *source as i64);
+                m.meta = format!("Message from {source} to {target}: 0x{message:04x}");
+            }
+            Msg::StatusQuery { target, .. } | Msg::AffiliationQuery { target, .. } | Msg::RegistrationCommand { target, .. } => {
+                m.source = *target as i64;
+                m.meta = format!("{} unit {target}", o.msg.alias());
+            }
+            Msg::Affiliation { answer, group, target, .. } => {
+                (m.talkgroup, m.source) = (*group as u32, *target as i64);
+                if *answer == Answer::Accept {
+                    m.kind = MessageType::Affiliation;
+                }
+                m.meta = format!("Affiliation {target} → TG {group}{}", refused(*answer));
+            }
+            Msg::LocationRegistration { answer, group, rfss, site, target } => {
+                (m.talkgroup, m.source) = (*group as u32, *target as i64);
+                if *answer == Answer::Accept {
+                    m.kind = MessageType::Location;
+                }
+                m.meta = format!("Location registration {target} TG {group} at {rfss}-{site}{}", refused(*answer));
+            }
+            Msg::Registration { answer, unit, id, .. } => {
+                m.source = *unit as i64;
+                if *answer == Answer::Accept {
+                    m.kind = MessageType::Registration;
+                }
+                let home = if id != unit { format!(" (ID {id})") } else { String::new() };
+                m.meta = format!("Registration {unit}{home}{}", refused(*answer));
+            }
+            Msg::Deregistration { id, .. } => {
+                (m.kind, m.source) = (MessageType::Deregistration, *id as i64);
+                m.meta = format!("Deregistration {id}");
+            }
+            Msg::Identifier(i) => {
+                let kind = if i.slots > 1 { format!(", {} slots", i.slots) } else { String::new() };
+                m.meta = format!("IDEN {}: base {} MHz, step {} Hz{kind}", i.iden, mhz(i.base_hz), i.spacing_hz);
+                if i.system.is_none() || i.system == self.system {
+                    self.tables.insert(i.iden, Identifier { system: None, ..*i });
+                } else {
+                    let (w, s) = i.system.unwrap_or_default();
+                    m.meta += &format!(" for system {w:x}.{s:x}: not this one's");
                 }
             }
-            (0, 0x3c) => {
-                m.kind = MessageType::Adjacent;
-                m.sys_id = b(56, 0xfff);
-                m.rfss = b(48, 0xff);
-                m.site = b(40, 0xff);
-                m.freq_hz = self.channel_to_hz(b(24, 0xffff));
-                m.meta = format!("Adjacent site rfss {} site {} CC {} MHz", m.rfss, m.site, mhz(m.freq_hz));
+            Msg::RfssStatus { site: s, networked } => {
+                self.on(&mut m, s.ch);
+                (m.kind, m.sys_id, m.rfss, m.site) = (MessageType::SysId, s.sys_id as u32, s.rfss as u32, s.site as u32);
+                m.meta = format!("RFSS status sysid {:x} rfss {} site {} CC {} MHz{}", s.sys_id, s.rfss, s.site, mhz(m.freq_hz), if *networked { "" } else { " (site trunking)" });
             }
-            (0, 0x3d) => {
-                let (iden, bw, toff0, spac) = (b(76, 0xf) as u8, b(67, 0x1ff), b(58, 0x1ff) as i64, b(48, 0x3ff) as i64);
-                let mut toff = toff0 & 0xff;
-                if (toff0 >> 8) & 1 == 0 {
-                    toff = -toff;
+            Msg::NetworkStatus(s) => {
+                // Whether or not the channel resolves: the WACN is what lets
+                // the site lock (and a band plan for this system) through.
+                let wacn = s.wacn.unwrap_or(0);
+                self.system = Some((wacn, s.sys_id));
+                self.on(&mut m, s.ch);
+                (m.kind, m.wacn, m.sys_id) = (MessageType::Status, wacn, s.sys_id as u32);
+                m.meta = format!("Network status wacn {wacn:x} sysid {:x} CC {} MHz", s.sys_id, mhz(m.freq_hz));
+            }
+            Msg::AdjacentStatus { site: s, own_plan, conventional, failed, valid, .. } => {
+                // A neighbour on another band plan (ADJ_STS_BCST_UNC) has a
+                // channel this one can't resolve.
+                if *own_plan {
+                    self.on(&mut m, s.ch);
                 }
-                let base = b(16, 0xffffffff) as u64 * 5;
-                self.tables.insert(
-                    iden,
-                    FreqTable { offset_hz: toff * 250_000, step_hz: spac as u64 * 125, base_hz: base, phase2_tdma: false, slots_per_carrier: 1, bandwidth_khz: bw as f64 * 0.125 },
-                );
-                m.meta = format!("IDEN_UP {iden}: base {} MHz, step {} Hz", mhz(base), spac * 125);
+                (m.sys_id, m.rfss, m.site) = (s.sys_id as u32, s.rfss as u32, s.site as u32);
+                m.wacn = s.wacn.or(self.system.map(|(w, _)| w)).unwrap_or(0);
+                let mut flags = String::new();
+                for (on, f) in [(*conventional, " conventional"), (*failed, " failed"), (!*valid, " unverified")] {
+                    if on {
+                        flags += f;
+                    }
+                }
+                // A site radios can move to: a trunked one that is up.
+                if !conventional && !failed {
+                    m.kind = MessageType::Adjacent;
+                }
+                m.meta = format!("Adjacent site {:x}.{} {} CC {} MHz{flags}", s.sys_id, s.rfss, s.site, mhz(m.freq_hz));
             }
-            (0, _) => m.meta = format!("TSBK opcode 0x{opcode:02x}"),
-            (_, _) => m.meta = format!("TSBK opcode 0x{opcode:02x} mfid 0x{mfid:02x}"),
+            Msg::SecondaryControl { rfss, site, channels } => {
+                for c in channels {
+                    let mut u = m.clone();
+                    self.on(&mut u, c.ch);
+                    u.meta = format!("Secondary CC rfss {rfss} site {site}: {} MHz", mhz(u.freq_hz));
+                    if u.freq_hz != 0 {
+                        u.kind = MessageType::ControlChannel;
+                    }
+                    out.push(u);
+                }
+                return out;
+            }
+            Msg::SyncBroadcast { synced, time } => {
+                let when = time.map_or(String::new(), |(y, mo, d, h, mi)| format!(", {y}-{mo:02}-{d:02} {h:02}:{mi:02}"));
+                m.meta = format!("TDMA sync broadcast: traffic channels {}synced{when}", if *synced { "" } else { "not " });
+            }
+            Msg::MotPatchAdd { sg, groups } | Msg::MotPatchDelete { sg, groups } => {
+                let add = matches!(o.msg, Msg::MotPatchAdd { .. });
+                m.kind = if add { MessageType::PatchAdd } else { MessageType::PatchDelete };
+                let p = Patch { sg: *sg as u32, ga: groups.map(u32::from) };
+                m.meta = format!("Moto patch {} sg {}: {} {} {}", if add { "add" } else { "delete" }, p.sg, p.ga[0], p.ga[1], p.ga[2]);
+                m.patch = Some(p);
+            }
+            Msg::MotPatchGrant { protected, ch, sg, source, .. } => {
+                self.on(&mut m, *ch);
+                (m.kind, m.encrypted, m.talkgroup, m.source) = (MessageType::Grant, *protected, *sg as u32, *source as i64);
+                m.meta = format!("Patch grant SG {sg} {} MHz src {source}{}{}", mhz(m.freq_hz), slot(&m), enc(&m));
+            }
+            Msg::MotEmergencyAlarm { group, source } => {
+                (m.kind, m.emergency, m.talkgroup, m.source) = (MessageType::EmergencyAlarm, true, *group as u32, *source as i64);
+                m.meta = format!("Emergency alarm from {source} on TG {group}");
+            }
+            Msg::MotBaseStationId { callsign, ch } => {
+                self.on(&mut m, *ch);
+                m.kind = MessageType::BaseStationId;
+                // (None: the station is identified another way, as by Morse code on that channel.)
+                m.meta = if callsign.is_empty() { format!("Base station ID {} MHz, no call sign", mhz(m.freq_hz)) } else { format!("Base station ID {callsign} {} MHz", mhz(m.freq_hz)) };
+                m.callsign = Some(callsign.clone()).filter(|c| !c.is_empty());
+            }
+            Msg::HarrisRegroup { simulselect, sg, member, activate, key_id } => {
+                let what = if *simulselect { "simulselect" } else { "patch" };
+                let sg = *sg as u32;
+                match *member {
+                    HarrisMember::Talkgroup { group, algid } => {
+                        let tg = group as u32;
+                        m.kind = if *activate { MessageType::PatchAdd } else { MessageType::PatchDelete };
+                        m.patch = Some(Patch { sg, ga: [tg, tg, tg] });
+                        m.encrypted = algid != 0 && algid != 0x80;
+                        let enc = if m.encrypted { format!(" {} key 0x{key_id:04x}", algid_name(algid)) } else { String::new() };
+                        m.meta = format!("L3Harris {what} {} sg {sg} TG {tg}{enc}", if *activate { "add" } else { "delete" });
+                    }
+                    // A radio regrouped onto the supergroup: no talkgroup patched.
+                    HarrisMember::Unit(unit) => {
+                        m.source = unit as i64;
+                        m.meta = format!("L3Harris {what} sg {sg}: unit {unit} {}", if *activate { "joins" } else { "leaves" });
+                    }
+                }
+            }
+            Msg::Protected => m.meta = format!("Protected opcode 0x{:02x}{}", o.opcode, mfid(o)),
+            Msg::Other(name) => m.meta = format!("{name}{}", mfid(o)),
+            Msg::Unknown => m.meta = format!("Opcode 0x{:02x}{}", o.opcode, mfid(o)),
         }
         out.push(m);
         out
     }
 }
 
+/// A refused answer, for the log.
+fn refused(a: Answer) -> String {
+    if a == Answer::Accept { String::new() } else { format!(" {}", a.name()) }
+}
+
+fn mfid(o: &Osp) -> String {
+    if o.standard() { String::new() } else { format!(" mfid 0x{:02x}", o.mfid) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::p25::osp::from_tsbk;
 
-    /// A TSBK from a 96-bit value.
-    fn tsbk(t: u128) -> Tsbk {
-        let mut blk = [0u8; 12];
-        for (i, v) in blk.iter_mut().enumerate() {
-            *v = (t >> (88 - 8 * i)) as u8;
-        }
-        blk
-    }
-
-    /// Opcode `op` from manufacturer `mfid`, with `fields` (octets 2..10).
-    fn msg(op: u8, mfid: u8, fields: [u8; 8]) -> Message {
+    /// Opcode `op` from manufacturer `mfid`, with `fields` (octets 2..10), through `p`.
+    fn parse(p: &mut P25Parser, op: u8, mfid: u8, fields: [u8; 8]) -> Vec<Message> {
         let mut blk = [0u8; 12];
         blk[0] = 0x80 | op;
         blk[1] = mfid;
         blk[2..10].copy_from_slice(&fields);
-        TsbkParser::default().parse(&blk, 0x443, 0.0).pop().unwrap()
+        p.parse(&from_tsbk(&blk), 0x443, 0.0)
+    }
+    fn msg(op: u8, mfid: u8, fields: [u8; 8]) -> Message {
+        parse(&mut P25Parser::default(), op, mfid, fields).pop().unwrap()
+    }
+
+    /// IDEN_UP 1: base 851.00625 MHz, 6.25 kHz steps; IDEN_UP_TDMA 2: 2 slots
+    /// per 12.5 kHz carrier from 769.00625 MHz.
+    fn with_band_plan() -> P25Parser {
+        let mut p = P25Parser::default();
+        let base = (851_006_250u32 / 5).to_be_bytes();
+        parse(&mut p, 0x3d, 0, [0x10, 0x00, 0x00, 50, base[0], base[1], base[2], base[3]]);
+        let base = (769_006_250u32 / 5).to_be_bytes();
+        parse(&mut p, 0x33, 0, [0x23, 0x00, 0x00, 100, base[0], base[1], base[2], base[3]]);
+        p
     }
 
     #[test]
-    fn a_manufacturers_opcode_is_not_the_standards() {
-        // Motorola 0x04 (extended function) and 0x06 (queued) aren't unit-to-unit calls.
-        let f = [0x02, 0x00, 0x00, 0xff, 0xf1, 0x12, 0x34, 0x56];
-        assert_eq!(msg(0x04, 0, f).kind, MessageType::UuVGrant);
-        assert_ne!(msg(0x04, 0x90, f).kind, MessageType::UuVGrant);
-        assert_ne!(msg(0x06, 0x90, f).kind, MessageType::UuVUpdate);
-        // MFID 1 is the standard's too.
-        assert_eq!(msg(0x04, 1, f).kind, MessageType::UuVGrant);
+    fn iden_then_grant_resolves_frequency() {
+        let mut p = with_band_plan();
+        assert_eq!(p.channel_to_hz(Channel(0x1000 | 100)), 851_006_250 + 100 * 6250);
+        let m = parse(&mut p, 0x00, 0, [0x00, 0x10, 100, 0x01, 0x01, 0x0a, 0x0b, 0x0c]).pop().unwrap();
+        assert_eq!((m.kind, m.freq_hz, m.talkgroup, m.source, m.voice.tdma()), (MessageType::Grant, 851_631_250, 0x0101, 0x0a0b0c, false));
+    }
+
+    /// AABC-D Figure 4.2.5-1 has no service options: a channel iden of 0xC
+    /// doesn't make a unit-to-unit call emergency and encrypted.
+    #[test]
+    fn a_unit_to_unit_grant_has_no_options() {
+        let m = msg(0x04, 0, [0xc0, 0x01, 0x04, 0x05, 0x06, 0x01, 0x02, 0x03]);
+        assert_eq!((m.kind, m.source, m.talkgroup, m.encrypted, m.emergency, m.priority), (MessageType::UuVGrant, 0x010203, 0x040506, false, false, 0));
+    }
+
+    /// Two calls on the two slots of one TDMA carrier are two calls.
+    #[test]
+    fn an_update_names_both_slots_of_a_carrier() {
+        let mut p = with_band_plan();
+        let ms = parse(&mut p, 0x02, 0, [0x20, 0x02, 0x01, 0x01, 0x20, 0x03, 0x02, 0x02]);
+        let got: Vec<_> = ms.iter().map(|m| (m.talkgroup, m.freq_hz, m.voice.slot().unwrap_or(0))).collect();
+        assert_eq!(got, [(0x0101, 769_018_750, 0), (0x0202, 769_018_750, 1)]);
+    }
+
+    /// AABC-D §2.3.9.2: slot = channel MOD slots per carrier (4 on a type 4 carrier).
+    #[test]
+    fn a_four_slot_carriers_slot() {
+        let mut p = P25Parser::default();
+        parse(&mut p, 0x33, 0, [0x34, 0x00, 0x00, 100, 0, 0, 0, 1]);
+        assert_eq!(p.resolve(Channel(0x3000 | 7)), (5 + 12_500, Some(3)));
+    }
+
+    /// A site whose band plan comes only in the extended IDEN_UP_TDMA (for
+    /// its own WACN and System ID): its network status, though its channel
+    /// can't be resolved yet, says which system it is, and the plan is taken.
+    #[test]
+    fn network_status_before_the_band_plan() {
+        let mut p = P25Parser::default();
+        let m = parse(&mut p, 0x3b, 0, [0x12, 0xbe, 0xe0, 0x09, 0xef, 0x10, 0x01, 0x70]).pop().unwrap();
+        assert_eq!((m.kind, m.wacn, m.sys_id, m.freq_hz), (MessageType::Status, 0xbee00, 0x9ef, 0));
+        let iden = |sys: u16| {
+            let mut h = crate::p25::mbt::tests::ambtc_header(0x33, [0x11, 0xbe, 0xe0], [0x00 | (sys >> 8) as u8, sys as u8]);
+            h[2] = 0;
+            crate::p25::osp::from_mbt(&crate::p25::mbt::Mbt { header: h, data: vec![0x09, 0x15, 0x75, 0x62, 0xcb, 0x00, 0x32, 0] })
+        };
+        p.parse(&iden(0x3a9), 0x443, 0.0);
+        assert!(p.tables.is_empty(), "another system's");
+        p.parse(&iden(0x9ef), 0x443, 0.0);
+        assert_eq!(p.channel_to_hz(Channel(0x1000)), 762_006_250);
+    }
+
+    /// SCCB_EXP is one channel: Channel (T), then Channel (R), the FNE's receive (not another CC).
+    #[test]
+    fn sccb_exp_is_one_control_channel() {
+        let mut p = with_band_plan();
+        let ms = parse(&mut p, 0x29, 0, [1, 7, 0x10, 0x05, 0, 0x10, 0x06, 0x70]);
+        let ccs: Vec<u64> = ms.iter().filter(|m| m.kind == MessageType::ControlChannel).map(|m| m.freq_hz).collect();
+        assert_eq!(ccs, [851_006_250 + 5 * 6250]);
+    }
+
+    /// A refused location registration (RV 3) is not an affiliation.
+    #[test]
+    fn a_refused_location_registration() {
+        assert_eq!(msg(0x2b, 0, [0x00, 0x01, 0x01, 1, 7, 0x0a, 0x0b, 0x0c]).kind, MessageType::Location);
+        assert_eq!(msg(0x2b, 0, [0x03, 0x01, 0x01, 1, 7, 0x0a, 0x0b, 0x0c]).kind, MessageType::Unknown);
+    }
+
+    /// A neighbour radios can move to; a failed or conventional one isn't.
+    #[test]
+    fn adjacent_sites() {
+        let mut p = with_band_plan();
+        let m = parse(&mut p, 0x3c, 0, [0x12, 0x33, 0xa9, 1, 7, 0x10, 0x01, 0x70]).pop().unwrap();
+        assert_eq!((m.kind, m.sys_id, m.rfss, m.site, m.freq_hz), (MessageType::Adjacent, 0x3a9, 1, 7, 851_012_500));
+        assert_ne!(parse(&mut p, 0x3c, 0, [0x12, 0x73, 0xa9, 1, 7, 0x10, 0x01, 0x70]).pop().unwrap().kind, MessageType::Adjacent);
+        assert_ne!(parse(&mut p, 0x3c, 0, [0x12, 0xb3, 0xa9, 1, 7, 0x10, 0x01, 0x70]).pop().unwrap().kind, MessageType::Adjacent);
+    }
+
+    #[test]
+    fn telephone_calls() {
+        let mut p = with_band_plan();
+        let m = parse(&mut p, 0x08, 0, [0x04, 0x10, 0x01, 0x02, 0x58, 0x0a, 0x0b, 0x0c]).pop().unwrap();
+        assert_eq!((m.kind, m.talkgroup, m.source, m.freq_hz), (MessageType::PhoneGrant, 0x0a0b0c, 0x0a0b0c, 851_012_500));
+        assert!(m.meta.ends_with("for 60.0 s"), "{}", m.meta);
     }
 
     #[test]
@@ -692,29 +719,42 @@ mod tests {
         f[..6].copy_from_slice(&bits.to_be_bytes()[2..]);
         let m = msg(0x0b, 0x90, f);
         assert_eq!((m.kind, m.callsign.as_deref()), (MessageType::BaseStationId, Some("WQAB123")));
+        // Extended function: unit 0x0a0b0c regrouped onto supergroup 2001 (arguments top-justified).
+        let m = msg(0x04, 0x90, [0x02, 0x00, 0x07, 0xd1, 0x00, 0x0a, 0x0b, 0x0c]);
+        assert!(m.meta.ends_with("regrouped onto supergroup 2001"), "{}", m.meta);
     }
 
     #[test]
     fn deny_and_queued_responses() {
         // Standard deny: group voice on TG 0x0101 for unit 0x123456, target group not authorized.
-        let m = msg(0x27, 0, [0x00, 0x31, 0x00, 0x01, 0x01, 0x12, 0x34, 0x56]);
+        let m = msg(0x27, 0, [0x80, 0x31, 0x00, 0x01, 0x01, 0x12, 0x34, 0x56]);
         assert_eq!((m.kind, m.source, m.talkgroup), (MessageType::Deny, 0x123456, 0x0101));
         assert!(m.meta.ends_with("target group not authorized"), "{}", m.meta);
+        // AIV clear: no talkgroup, whatever the octets say.
+        let m = msg(0x27, 0, [0x00, 0x31, 0x00, 0x01, 0x01, 0x12, 0x34, 0x56]);
+        assert_eq!(m.talkgroup, 0);
         // Motorola's own reason (RC set): a clear request on a secure supergroup.
         let m = msg(0x07, 0x90, [0x80, 0x01, 0x00, 0x01, 0x01, 0x12, 0x34, 0x56]);
         assert!(m.kind == MessageType::Deny && m.meta.ends_with("clear request on a secure supergroup"), "{}", m.meta);
         // Queued, no channel free.
-        let m = msg(0x21, 0, [0x00, 0x40, 0x00, 0x01, 0x01, 0x12, 0x34, 0x56]);
+        let m = msg(0x21, 0, [0x80, 0x40, 0x00, 0x01, 0x01, 0x12, 0x34, 0x56]);
         assert!(m.kind == MessageType::Queued && m.meta.ends_with("no channel free"), "{}", m.meta);
     }
 
     #[test]
-    fn iden_then_grant_resolves_frequency() {
-        let mut p = TsbkParser::default();
-        // IDEN_UP id 1: base 851.00625 MHz (170201250 × 5 Hz), step 6.25 kHz (50 × 125).
-        let base = 851_006_250u64 / 5;
-        let t: u128 = (0x3d_u128 << 88) | (1u128 << 76) | (0x001u128 << 58) | (50u128 << 48) | ((base as u128) << 16);
-        p.parse(&tsbk(t), 0x443, 0.0);
-        assert_eq!(p.channel_to_hz((1 << 12) | 100), 851_006_250 + 100 * 6250);
+    fn a_protected_message_is_not_read() {
+        let mut blk = [0u8; 12];
+        blk[0] = 0xc0; // last block, protected: GRP_V_CH_GRANT's arguments are encrypted
+        blk[2..10].copy_from_slice(&[0x00, 0x10, 100, 0x01, 0x01, 0x0a, 0x0b, 0x0c]);
+        let m = with_band_plan().parse(&from_tsbk(&blk), 0x443, 0.0).pop().unwrap();
+        assert_eq!(m.kind, MessageType::Unknown);
+    }
+
+    #[test]
+    fn the_band_plan_persists() {
+        let p = with_band_plan();
+        let mut q = P25Parser::default();
+        q.bandplan_from_str(&p.bandplan_to_string());
+        assert_eq!(q.tables, p.tables);
     }
 }

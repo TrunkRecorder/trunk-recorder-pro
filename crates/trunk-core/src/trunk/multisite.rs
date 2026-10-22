@@ -1,12 +1,9 @@
 //! Multi-site: a call heard on several sites of one system is saved once.
 //!
-//! Sites belong to one system when their control channels say so — P25 by
-//! WACN and System ID, SmartNet by System ID — or when the config names
-//! them into one group ([`super::engine::SystemConfig::site_group`]: DMR,
-//! ISSI-linked systems). Copies of a call are the same talkgroup granted on
-//! different sites of a group within [`TWIN_WINDOW_S`] of each other; two
-//! configs following the same site are not copies of each other (as in
-//! Trunk Recorder).
+//! The config says which sites are one system ([`super::engine::SystemConfig::sites`]).
+//! Copies of a call are the same talkgroup (or the same radio called, unit
+//! to unit) granted on different sites of a system within [`TWIN_WINDOW_S`]
+//! of each other.
 //!
 //! Unlike Trunk Recorder (record the first grant, ignore the rest), every
 //! copy is recorded and the best kept once the last one ends — so a site
@@ -29,28 +26,6 @@ pub const PREFERRED_SHARE: f64 = 0.9;
 /// Live audio stays with one copy until it has been quiet this long.
 const LEAD_HOLD_S: f64 = 0.5;
 
-/// Which system a site belongs to, and which site it is.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SiteKey {
-    /// "p25:<wacn>.<sysid>", "smartnet:<sysid>", or "group:<name>" from the config.
-    pub group: String,
-    /// (RFSS, site), once the control channel has said.
-    pub site: Option<(u32, u32)>,
-    /// The control channel it follows (before the site is heard, one
-    /// control channel is one site).
-    pub cc_hz: Option<u64>,
-}
-
-impl SiteKey {
-    /// Another site of the same system (not the same site followed twice).
-    pub fn twin(&self, o: &SiteKey) -> bool {
-        fn same<T: PartialEq>(a: Option<T>, b: Option<T>) -> bool {
-            a.is_some() && a == b
-        }
-        self.group == o.group && !same(self.site, o.site) && !same(self.cc_hz, o.cc_hz)
-    }
-}
-
 /// A copy's recording, held until its twins end.
 #[derive(Clone, Debug)]
 pub struct Held {
@@ -71,8 +46,15 @@ impl Held {
     /// Leave out what the saved call won't have: transmissions shorter than
     /// `min_tx_s` and encrypted ones not decrypted ([`super::record::Transmissions::kept`]),
     /// their frames and the error summary with them.
+    /// Each source is placed in the audio first, and moves with it.
     pub fn trim(&mut self, min_tx_s: f64) {
+        self.tx.place(&mut self.call.sources, self.audio.len());
         if let Some(ranges) = self.tx.kept(self.audio.len(), min_tx_s, SAMPLE_RATE) {
+            // Kept audio before it (a source in a part left out starts where the next kept part does).
+            let moved = |p: usize| ranges.iter().map(|r| p.clamp(r.start, r.end) - r.start).sum::<usize>();
+            for s in &mut self.call.sources {
+                s.audio_pos = s.audio_pos.map(moved);
+            }
             self.frames.keep(&ranges, self.audio.len());
             self.audio = ranges.iter().flat_map(|r| self.audio[r.clone()].iter().copied()).collect();
             self.tx = Default::default();
@@ -96,7 +78,7 @@ impl Held {
 
 #[derive(Default)]
 struct Conversation {
-    /// Every copy: (call, its system); `open` those not ended yet.
+    /// Every copy: (call, its site); `open` those not ended yet.
     members: Vec<(CallId, u16)>,
     open: Vec<CallId>,
     held: Vec<Held>,
@@ -123,8 +105,8 @@ pub struct MultiSite {
 }
 
 impl MultiSite {
-    /// `call` (on `system`) is a copy of `twins` (calls still going, with their systems).
-    pub fn link(&mut self, call: CallId, system: u16, twins: &[(CallId, u16)]) {
+    /// `call` (on `site`) is a copy of `twins` (calls still going, with their sites).
+    pub fn link(&mut self, call: CallId, site: u16, twins: &[(CallId, u16)]) {
         if twins.is_empty() {
             return;
         }
@@ -151,16 +133,16 @@ impl MultiSite {
             conv.held.extend(c.held);
         }
         let conv = self.convs.get_mut(&id).unwrap();
-        for &(c, sys) in twins.iter().chain([&(call, system)]) {
+        for &(c, at) in twins.iter().chain([&(call, site)]) {
             if !conv.members.iter().any(|m| m.0 == c) {
-                conv.members.push((c, sys));
+                conv.members.push((c, at));
                 conv.open.push(c);
                 self.of.insert(c, id);
             }
         }
     }
 
-    /// The other copies of `call` (ended ones too, while it's going): (call, system).
+    /// The other copies of `call` (ended ones too, while it's going): (call, site).
     pub fn twins(&self, call: CallId) -> Vec<(CallId, u16)> {
         self.of.get(&call).and_then(|i| self.convs.get(i)).map_or_else(Vec::new, |c| c.members.iter().copied().filter(|m| m.0 != call).collect())
     }
@@ -197,28 +179,27 @@ impl MultiSite {
 }
 
 impl MultiSite {
-    /// Link call `c`, just granted on site `key`, with the copies of it
-    /// already going on other sites of its system — the same talkgroup,
-    /// granted within [`TWIN_WINDOW_S`]. `sites`: every other site's key
-    /// (None: not known yet) and its calls.
-    pub fn link_new<'a>(&mut self, c: &Call, key: &SiteKey, sites: impl IntoIterator<Item = (Option<SiteKey>, &'a [Call])>) {
-        let twins: Vec<(CallId, u16)> = sites
+    /// Link call `c`, just granted on `site`, with the copies of it already
+    /// going on the other sites of its system (`others`: their calls) — the
+    /// same talkgroup, granted within [`TWIN_WINDOW_S`]. (A unit-to-unit
+    /// call's "talkgroup" is the radio called: never a copy of a talkgroup's call.)
+    pub fn link_new<'a>(&mut self, c: &Call, site: u16, others: impl IntoIterator<Item = &'a [Call]>) {
+        let twins: Vec<(CallId, u16)> = others
             .into_iter()
-            .filter(|(k, _)| k.as_ref().is_some_and(|k| k.twin(key)))
-            .flat_map(|(_, calls)| calls.iter())
-            .filter(|o| o.talkgroup == c.talkgroup && (o.start_s - c.start_s).abs() <= TWIN_WINDOW_S)
-            .map(|o| (o.id, o.system))
+            .flatten()
+            .filter(|o| o.talkgroup == c.talkgroup && o.unit_to_unit == c.unit_to_unit && (o.start_s - c.start_s).abs() <= TWIN_WINDOW_S)
+            .filter_map(|o| Some((o.id, o.site?)))
             .collect();
-        self.link(c.id, c.system, &twins);
+        self.link(c.id, site, &twins);
     }
 
     /// Call `id` ended (`held`: its recording, None when it wasn't
     /// recorded). When it was the last of its copies: all of them, the one
     /// to save first ([`pick`]), then the others, best first — the next to
     /// try when one isn't kept (too short for its site's rules).
-    /// `prefers(system, tg)`: whether `system`'s site is the one the
-    /// talkgroup file wants `tg` from.
-    pub fn conclude(&mut self, id: CallId, held: Option<Held>, prefers: impl Fn(u16, &Talkgroup) -> bool) -> Option<Vec<Held>> {
+    /// `prefers(site, tg)`: whether `site` is the one the talkgroup file
+    /// wants `tg` from.
+    pub fn conclude(&mut self, id: CallId, held: Option<Held>, prefers: impl Fn(Option<u16>, &Talkgroup) -> bool) -> Option<Vec<Held>> {
         let mut copies = match self.end(id, held) {
             Ended::Alone(None) | Ended::Waiting => return None,
             Ended::Alone(Some(h)) => vec![h],
@@ -226,7 +207,7 @@ impl MultiSite {
         };
         // The talkgroup's preferred site, by any site's talkgroup file.
         let prefs: Vec<&Talkgroup> = copies.iter().filter_map(|h| h.call.talkgroup_info.as_ref()).collect();
-        let preferred: Vec<bool> = copies.iter().map(|h| prefs.iter().any(|tg| prefers(h.call.system, tg))).collect();
+        let preferred: Vec<bool> = copies.iter().map(|h| prefs.iter().any(|tg| prefers(h.call.site, tg))).collect();
         let k = pick(&copies, &preferred)?;
         let first = copies.remove(k);
         copies.sort_by(|a, b| b.clean_s().total_cmp(&a.clean_s()));
@@ -255,34 +236,41 @@ mod tests {
     use crate::mbe::Kind;
     use crate::trunk::frames::{Codec, VoiceFrame};
 
-    fn key(group: &str, site: Option<(u32, u32)>) -> SiteKey {
-        SiteKey { group: group.into(), site, cc_hz: None }
-    }
-
-    fn call(id: CallId, system: u16, start_s: f64) -> Call {
-        Call { id, system, start_s, ..Default::default() }
+    fn call(id: CallId, site: u16, start_s: f64) -> Call {
+        Call { id, site: Some(site), start_s, ..Default::default() }
     }
 
     /// `good` clean frames then `bad` repeated ones, `errs` bit errors each.
-    fn held(id: CallId, system: u16, good: usize, bad: usize, errs: u32) -> Held {
+    fn held(id: CallId, site: u16, good: usize, bad: usize, errs: u32) -> Held {
         let mut frames = CallFrames::new(false);
         for k in 0..good + bad {
             let kind = if k < good { Kind::Voice } else { Kind::Repeat };
             frames.push(VoiceFrame { codec: Codec::Imbe, bits: vec![0; 88], e0: 0, errs, erased: false, kind });
         }
-        Held { call: call(id, system, id as f64 * 0.1), audio: vec![0.1; (good + bad) * FRAME_SAMPLES], frames, recorder_num: 0, tx: Default::default(), freq_error_hz: None, reception: Default::default() }
+        Held { call: call(id, site, id as f64 * 0.1), audio: vec![0.1; (good + bad) * FRAME_SAMPLES], frames, recorder_num: 0, tx: Default::default(), freq_error_hz: None, reception: Default::default() }
     }
 
     #[test]
-    fn sites_of_one_system_are_twins_and_one_site_twice_is_not() {
-        let a = key("p25:bee00.1a2", Some((1, 3)));
-        assert!(a.twin(&key("p25:bee00.1a2", Some((1, 4)))));
-        assert!(a.twin(&key("p25:bee00.1a2", None)), "site not heard yet");
-        assert!(!a.twin(&key("p25:bee00.1a2", Some((1, 3)))));
-        let cc = |hz| SiteKey { cc_hz: Some(hz), ..key("smartnet:2011", None) };
-        assert!(cc(856_000_000).twin(&cc(857_000_000)), "no site number: other control channels are other sites");
-        assert!(!cc(856_000_000).twin(&cc(856_000_000)));
-        assert!(!a.twin(&key("p25:bee00.1a3", Some((1, 4)))));
+    fn copies_are_the_same_talkgroup_granted_close_together() {
+        let tg = |id, site, talkgroup, start_s, u2u| Call { talkgroup, unit_to_unit: u2u, ..call(id, site, start_s) };
+        let mut m = MultiSite::default();
+        m.link_new(&tg(5, 1, 101, 10.0, false), 1, [&[tg(1, 0, 101, 8.0, false), tg(2, 0, 102, 10.0, false), tg(3, 0, 101, 5.0, false)][..]]);
+        assert_eq!(m.twins(5), [(1, 0)], "another talkgroup, or granted too long before, isn't a copy");
+        // A call to a radio is no copy of a talkgroup call of its number; the same radio called on two sites is.
+        m.link_new(&tg(7, 1, 1234, 0.0, true), 1, [&[tg(6, 0, 1234, 0.0, false)][..]]);
+        assert!(m.twins(7).is_empty());
+        m.link_new(&tg(9, 1, 1234, 0.0, true), 1, [&[tg(8, 0, 1234, 0.0, true)][..]]);
+        assert_eq!(m.twins(9), [(8, 0)]);
+    }
+
+    #[test]
+    fn a_call_to_a_radio_is_no_copy_of_a_talkgroup_call_of_its_number() {
+        let tg = |id, site, u2u| Call { talkgroup: 1234, unit_to_unit: u2u, ..call(id, site, 0.0) };
+        let mut m = MultiSite::default();
+        m.link_new(&tg(2, 1, true), 1, [&[tg(1, 0, false)][..]]);
+        assert!(m.twins(2).is_empty());
+        m.link_new(&tg(4, 1, true), 1, [&[tg(3, 0, true)][..]]);
+        assert_eq!(m.twins(4), [(3, 0)], "the same radio called on two sites is one call");
     }
 
     #[test]
@@ -373,5 +361,36 @@ mod tests {
         let before = burst.audio.len();
         burst.trim(20.0 * frame_s);
         assert_eq!(burst.audio.len(), before);
+    }
+
+    #[test]
+    fn sources_are_placed_by_where_they_are_in_the_audio() {
+        use crate::trunk::calls::CallSource;
+        // Three transmissions with dead air between: 2 s at 0 s, a 0.4 s key-up at 10 s, 3 s at 20 s.
+        let mut h = held(1, 0, 0, 0, 0);
+        for (t0, secs) in [(0.0, 2.0), (10.0, 0.4), (20.0, 3.0)] {
+            let mut t = t0;
+            let end = h.audio.len() + (secs * SAMPLE_RATE as f64) as usize;
+            while h.audio.len() < end {
+                h.tx.note(h.audio.len(), t);
+                h.audio.extend(std::iter::repeat_n(0.1, FRAME_SAMPLES * 9));
+                t += 0.18;
+            }
+        }
+        // Granted at -0.5 s; one source heard mid-way through the first, one at the key-up, one in the gap before the last.
+        let src = |src, time_s| CallSource { src, time_s, ..Default::default() };
+        h.call.start_s = -0.5;
+        h.call.sources = vec![src(7, -0.5), src(8, 1.0), src(9, 10.0), src(10, 15.0)];
+        let mut all = h.clone();
+        all.trim(0.0);
+        let at: Vec<_> = all.call.sources.iter().map(|s| s.audio_pos.unwrap()).collect();
+        // (Audio comes 9 frames, 1440 samples, at a time: the first transmission is 12 of those, the key-up 3.)
+        let chunk = 9 * FRAME_SAMPLES;
+        assert_eq!(at, [0, 6 * chunk, 12 * chunk, 15 * chunk], "the key-up starts where the first transmission ends, not 10.5 s in");
+        // The key-up left out: who keyed it starts where the next kept audio does.
+        h.trim(1.0);
+        let at: Vec<_> = h.call.sources.iter().map(|s| s.audio_pos.unwrap()).collect();
+        assert_eq!(at, [0, 6 * chunk, 12 * chunk, 12 * chunk]);
+        assert_eq!(h.audio.len(), 12 * chunk + 17 * chunk);
     }
 }

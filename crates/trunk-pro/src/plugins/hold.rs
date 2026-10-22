@@ -464,11 +464,11 @@ mod tests {
     fn calls_held_through_a_restart() {
         let dir = folder("restart");
         let archive: Arc<Archive> = Arc::default();
-        let rules = super::super::FileRules { compress_wav: false, audio_archive: false, call_log: false, archive_files_on_failure: false };
+        let rules = super::super::FileRules { archive_wav: false, archive_m4a: false, call_log: false, archive_files_on_failure: false };
         let base = dir.join("rec/dcfd/a");
         std::fs::create_dir_all(base.parent().unwrap()).unwrap();
         std::fs::write(base.with_extension("wav"), b"x").unwrap();
-        archive.expect("dcfd/a", 1, rules, &base, None);
+        archive.expect("dcfd/a", 1, rules, &base, None, Some(true));
         let hold = Hold::new(archive);
         hold.open(&dir.join("hold"));
         hold.set_delays(delays(json!({ "pluginDelays": [{ "delayS": 3600 }] })));

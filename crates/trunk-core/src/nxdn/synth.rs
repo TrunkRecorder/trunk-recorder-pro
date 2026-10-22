@@ -304,7 +304,7 @@ mod tests {
     use crate::trunk::{Access, Engine, EngineConfig, Event, SourceConfig, Talkgroup};
 
     fn run_engine(cfg: EngineConfig, iq: &[Complex32]) -> (Vec<crate::trunk::Concluded>, Vec<String>) {
-        let mut e = Engine::new(cfg).unwrap();
+        let e = Engine::new(cfg).unwrap();
         for c in iq.chunks(8192) {
             e.push_iq(0, c);
         }
@@ -358,13 +358,13 @@ mod tests {
             let (done, _) = run_engine(cfg, &iq);
             assert_eq!(done.len(), 1, "{rate:?}: {:?}", done.iter().map(|k| &k.call).collect::<Vec<_>>());
             let c = &done[0].call;
-            assert_eq!((c.talkgroup, c.ran, c.nxdn), (3100, Some(3), Some(rate)), "{rate:?}");
+            assert_eq!((c.talkgroup, c.ran, c.voice.nxdn()), (3100, Some(3), Some(rate)), "{rate:?}");
             assert_eq!(c.sources.iter().map(|s| s.src).collect::<Vec<_>>(), [501]);
             let secs = done[0].audio.len() as f64 / 8000.0;
             // 10 superframes: 160 codewords at 4800, 80 at 9600 (every other frame is FACCH1).
             let want = if rate == Rate::N48 { 3.2 } else { 1.6 };
             assert!((secs - want).abs() < 0.15, "{rate:?}: {secs:.2} s of audio");
-            assert!(done[0].json.contains("\"ran\":3"), "{}", done[0].json);
+            assert!(done[0].record.to_json().contains("\"ran\":3"), "{}", done[0].record.to_json());
         }
     }
 
@@ -382,8 +382,8 @@ mod tests {
                 };
                 let (done, _) = run_engine(cfg, &keyed(&tx, fs, freq - center));
                 assert_eq!(done.len(), 1, "{rate:?} {alias}");
-                assert!(done[0].json.contains("\"src\":501,"), "{}", done[0].json);
-                assert!(done[0].json.contains(&format!("\"tag_ota\":\"{alias}\"")), "{rate:?}: {}", done[0].json);
+                assert!(done[0].record.to_json().contains("\"src\":501,"), "{}", done[0].record.to_json());
+                assert!(done[0].record.to_json().contains(&format!("\"tag_ota\":\"{alias}\"")), "{rate:?}: {}", done[0].record.to_json());
             }
         }
         // No alias sent: none made up.
@@ -393,7 +393,7 @@ mod tests {
             ..Default::default()
         };
         let (done, _) = run_engine(cfg, &keyed(&conv_tx(Rate::N48), fs, freq - center));
-        assert!(done[0].json.contains("\"tag_ota\":\"\""), "{}", done[0].json);
+        assert!(done[0].record.to_json().contains("\"tag_ota\":\"\""), "{}", done[0].record.to_json());
     }
 
     #[test]
@@ -401,10 +401,10 @@ mod tests {
         let (fs, center, freq) = (1_200_000.0, 460_000_000.0, 460_056_250.0);
         let iq = keyed(&conv_tx(Rate::N48), fs, freq - center);
         let mode = ConvMode::Nxdn(Rate::N48);
-        let row = |code: &str, tg: u32, name: &str| ConvChannel {
+        let row = |code: &str, tg: Option<u32>, name: &str| ConvChannel {
             access: Access::parse(mode, code).unwrap(),
             talkgroup: tg,
-            info: Some(Talkgroup { number: tg, alpha_tag: name.into(), ..Default::default() }),
+            info: Some(Talkgroup { number: tg.unwrap_or(0), alpha_tag: name.into(), ..Default::default() }),
             ..ConvChannel::new(freq, mode)
         };
         let calls = |rows: Vec<ConvChannel>| {
@@ -412,9 +412,11 @@ mod tests {
             let (done, skipped) = run_engine(cfg, &iq);
             (done.into_iter().map(|k| (k.call.talkgroup, k.call.talkgroup_info.map(|t| t.alpha_tag))).collect::<Vec<_>>(), skipped)
         };
-        assert_eq!(calls(vec![row("RAN 3", 1, "Ops"), row("RAN 4", 2, "Other")]).0, [(3100, Some("Ops".to_string()))]);
-        assert_eq!(calls(vec![row("RAN 3 TG 3100", 1, "Exact"), row("RAN 3", 2, "Site")]).0, [(3100, Some("Exact".to_string()))]);
-        let (none, skipped) = calls(vec![row("RAN 9", 1, "A")]);
+        assert_eq!(calls(vec![row("RAN 3", None, "Ops"), row("RAN 4", None, "Other")]).0, [(3100, Some("Ops".to_string()))]);
+        assert_eq!(calls(vec![row("RAN 3 TG 3100", None, "Exact"), row("RAN 3", Some(2), "Site")]).0, [(3100, Some("Exact".to_string()))]);
+        // A number of its own wins over the air's.
+        assert_eq!(calls(vec![row("RAN 3", Some(77), "Ops")]).0, [(77, Some("Ops".to_string()))]);
+        let (none, skipped) = calls(vec![row("RAN 9", None, "A")]);
         assert!(none.is_empty());
         assert_eq!(skipped, ["RAN 3 TG 3100"]);
     }
@@ -465,7 +467,7 @@ mod tests {
         use super::super::channel::Sr as S;
         use super::super::layer3::build as l3;
         use crate::nxdn::trunking::NxdnConfig;
-        use crate::trunk::{Protocol, SystemConfig};
+        use crate::trunk::{Protocol, SiteConfig, SystemConfig};
         let (fs, center) = (240_000.0, 451_043_750.0);
         let (cc, vc) = (451_018_750.0, 451_068_750.0);
         let h = CallHead { cc_option: 0, call_type: CALL_CONFERENCE, option: 0, source: 77, destination: 3001 };
@@ -485,13 +487,13 @@ mod tests {
         nc.channel_table.insert(7, vc as u64);
         let cfg = EngineConfig {
             sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
-            systems: vec![SystemConfig { short_name: "nx".into(), control_channels: vec![cc], protocol: Protocol::Nxdn(nc), ..Default::default() }],
+            systems: vec![SystemConfig::trunked("nx", vec![SiteConfig { control_channels: vec![cc], protocol: Protocol::Nxdn(nc), ..Default::default() }])],
             ..Default::default()
         };
         let (done, _) = run_engine(cfg, &iq);
         assert_eq!(done.len(), 1, "{:?}", done.iter().map(|k| &k.call).collect::<Vec<_>>());
         let c = &done[0].call;
-        assert_eq!((c.talkgroup, c.freq_hz, c.nxdn, c.ran), (3001, vc as u64, Some(Rate::N48), Some(5)));
+        assert_eq!((c.talkgroup, c.freq_hz, c.voice.nxdn(), c.ran), (3001, vc as u64, Some(Rate::N48), Some(5)));
         assert_eq!(c.sources.first().map(|s| s.src), Some(77));
         let secs = done[0].audio.len() as f64 / 8000.0;
         assert!((secs - 3.2).abs() < 0.2, "{secs:.2} s of audio");
@@ -501,7 +503,7 @@ mod tests {
     fn engine_records_a_type_d_call_on_a_watched_repeater() {
         use crate::nxdn::channel::build as cb;
         use crate::nxdn::trunking::{Kind, NxdnConfig};
-        use crate::trunk::{Protocol, SystemConfig};
+        use crate::trunk::{Protocol, SiteConfig, SystemConfig};
         let (fs, center) = (240_000.0, 452_037_500.0);
         let (r1, r2) = (452_012_500.0, 452_062_500.0);
         let tg: u16 = 3 << 11 | 101;
@@ -525,12 +527,11 @@ mod tests {
         let iq = band(&[(r1 - center, r1_frames), (r2 - center, r2_frames)], Rate::N48, fs);
         let cfg = EngineConfig {
             sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
-            systems: vec![SystemConfig {
-                short_name: "idas".into(),
+            systems: vec![SystemConfig::trunked("idas", vec![SiteConfig {
                 control_channels: vec![r1, r2],
                 protocol: Protocol::Nxdn(NxdnConfig { kind: Kind::TypeD, ..Default::default() }),
                 ..Default::default()
-            }],
+            }])],
             ..Default::default()
         };
         let (done, _) = run_engine(cfg, &iq);

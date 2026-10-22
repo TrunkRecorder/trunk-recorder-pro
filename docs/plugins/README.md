@@ -102,6 +102,11 @@ trunk-pro plugin uninstall openmhz
 trunk-pro plugin list                   # what's installed, on or off, and the M4A encoder
 ```
 
+After upgrading the recorder to 0.2.0, update your plugins too: the store's plugins are rebuilt on
+plugin SDK 0.5.0 (OpenMHz 0.1.6, Broadcastify 0.1.6, Rdio Scanner 0.1.5, simplestream 0.1.5, Upload
+script 0.1.4, MQTT 0.1.7). Systems are numbered from 0 now, and an older plugin (MQTT especially)
+reads a call's fields wrongly. The Plugins page offers **Update to vX** for each.
+
 Add `--config path/to/config.json` if your config isn't in the usual place: plugins are installed
 beside it. A plugin installed this way is off; turn it on in Setup. See the
 [command-line reference](../command-line.md) for every option.
@@ -152,7 +157,7 @@ by plugin id:
   "systems": [
     {
       "shortName": "dcfd",
-      "controlChannelsHz": [857987500],
+      "sites": [{ "controlChannelsHz": [857987500] }],
       "plugins": { "openmhz": { "apiKey": "your-openmhz-api-key" } }
     }
   ]
@@ -189,7 +194,7 @@ encoding falls behind or fails for a call, that call goes to the plugins as WAV,
 so.
 
 The M4A made for the plugins is deleted once they're done with it, unless you also keep M4As
-(**Also save an M4A**). See [Recordings](../guides/recordings.md).
+(**Keep .m4a**). See [Recordings](../guides/recordings.md).
 
 ## What happens to the files
 
@@ -198,9 +203,10 @@ them have answered, the recorder applies the **Archive** settings in Setup's **R
 
 | Setting | On | Off |
 |---|---|---|
-| **Keep audio** | The audio is kept once the plugins are done | It's deleted once the plugins are done |
+| **Keep .wav** | The WAV is kept once the plugins are done | It's deleted once the plugins are done |
+| **Keep .m4a** | An M4A is kept once the plugins are done | The M4A made for a plugin is deleted once the plugins are done |
 | **Keep call JSON** | The call JSON is kept | It's deleted once the plugins are done |
-| **Keep when a plugin fails** | If any plugin reports a failure, the audio and JSON are kept anyway | Failures change nothing |
+| **Keep when a plugin fails** | If any plugin reports a failure, every file the call has is kept anyway | Failures change nothing |
 
 **Done and skipped count the same**: a plugin that skipped a call (a system it has no settings
 for, say) is finished with it, and the call's files go if the Keep settings say so. A plugin that
@@ -237,9 +243,10 @@ On **Plugins** > **Install & settings**, each installed plugin's card shows:
 - what it listens to (**Hears recorded calls**, **live audio**, …) and **Uploads M4A audio** if it
   asks for M4A
 - **Log (N)**: its last 50 log lines
-- **Update to vX** when the registry has a newer version. Updating a running plugin restarts it
-  with the new version, and its settings carry over
-- **Uninstall** (or **Remove**, for a build of your own)
+- **Update to vX** when the registry has a newer version, else **Reinstall**: the same again from
+  where it came (the registry, its GitHub repository's latest release, or your build's file). A
+  running plugin restarts with it, and its settings carry over
+- **Uninstall** (a build of your own: its settings are forgotten, the file stays)
 
 A plugin's log lines (except debug ones) also go to the recorder's log, prefixed with its id, like
 `[openmhz] uploading dcfd as dcfd (key …3f)`.
@@ -303,8 +310,8 @@ To run a plugin you've built, or any executable that speaks the protocol:
   ```
 
 `path` runs that executable instead of an installed copy. The store doesn't update it, and
-**Remove** forgets it without deleting the file. After you rebuild, turn it off and on again (while
-recording) to run the new build.
+**Uninstall** forgets it without deleting the file. After you rebuild, **Reinstall** runs the new
+build (restarting it while recording).
 
 ## Trying a plugin on recorded calls
 
@@ -350,5 +357,6 @@ subscribes to, and its settings.
 | [Rdio Scanner](rdioscanner.md) | Uploads recorded calls to an Rdio Scanner server |
 | [simplestream](simplestream.md) | Streams live call audio to other programs over UDP or TCP |
 | [Upload script](upload-script.md) | Runs a script of yours on each recorded call |
+| [MQTT](mqtt.md) | Publishes calls, radio activity and system status to an MQTT broker |
 
 To write your own, see [Writing plugins](writing-plugins.md).

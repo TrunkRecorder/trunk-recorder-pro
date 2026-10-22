@@ -32,11 +32,10 @@ at once, one receiver each.
 
 ## Setting it up
 
-In **Setup** → **Systems**, **Add a system** and set **Type** to **NXDN (trunked)**. The fields
-are:
+In **Setup** → **Systems**, **Add a system** and set **Type** to **NXDN (trunked)**. Set the
+system's **NXDN type** (`nxdnType`): **Type-C (control channel)** (the default) or **Type-D / IDAS
+(no control channel)** (`"typeD"`). Its site (under **Sites**) has these fields:
 
-- **NXDN type** (`nxdnType`): **Type-C (control channel)** (the default) or **Type-D / IDAS (no
-  control channel)** (`"typeD"`).
 - **Control channels, MHz** (Type-C) or **Repeaters, MHz** (Type-D) (`controlChannelsHz`): the
   control channel, or every repeater of the site.
 - **Rate**: the control channel's rate (Type-D: the repeaters').
@@ -50,13 +49,14 @@ are:
 In the config file (frequencies in Hz):
 
 ```json
-{ "shortName": "nexedge", "type": "nxdn", "controlChannelsHz": [451018750],
-  "nxdnChannelsHz": [451118750, 452381250], "lcnTableHz": { "12": 451118750 } }
+{ "shortName": "nexedge", "type": "nxdn",
+  "sites": [{ "controlChannelsHz": [451018750], "nxdnChannelsHz": [451118750, 452381250],
+              "lcnTableHz": { "12": 451118750 } }] }
 ```
 
 ```json
-{ "shortName": "idas", "type": "nxdn", "nxdnType": "typeD", "nxdnRate": "nxdn48",
-  "controlChannelsHz": [452012500, 452062500, 452112500] }
+{ "shortName": "idas", "type": "nxdn", "nxdnType": "typeD",
+  "sites": [{ "nxdnRate": "nxdn48", "controlChannelsHz": [452012500, 452062500, 452112500] }] }
 ```
 
 **Find my system** recognises NXDN control channels, with their rate, RAN, system and site, and
@@ -107,13 +107,13 @@ The call JSON has `ran`, and file name formats can use `{ran}`.
 
 ## Site lock and several sites
 
-A Type-C site announces a system code and a site code. The **Site lock** on the system card takes
+A Type-C site announces a system code and a site code. The **Site lock** on the site's card takes
 **System ID** (in hex) and **Site**; a control channel announcing something else isn't followed.
-Type-C sites with the same system code are grouped as one system, so a call heard on two of them
-is saved once.
+A call heard on two sites of one system is saved once. When two systems set up apart announce the
+same system code, Setup offers **Make them one system**.
 
-Type-D sites announce nothing to lock to or group by. To record several Type-D sites of one
-system, give them the same **Site group**. See [Several systems and sites](multi-site.md).
+Type-D sites announce nothing to lock to. To record several Type-D sites of one system, add each
+under the system's **Sites**. See [Several systems and sites](multi-site.md).
 
 ## Encryption
 
@@ -129,7 +129,7 @@ Kenwood NEXEDGE radios can send their programmed name ("E12 CAPT") while they ta
 characters at a time in the SACCH and FACCH1 of the traffic channel. Trunk Recorder Pro puts
 the pieces together once the call has named its radio, checks the alias's checksum, and learns it
 as it does a P25 talker alias: it appears as the radio's `tag_ota` in the call JSON and on the
-**Calls** page, and is kept in `<shortName>.units.csv`. See
+**Radio system** page, and is kept in `<shortName>.units.csv`. See
 [Talker aliases](talkgroups-and-units.md#talker-aliases) for the file and for how a unit names
 file combines with it. It works on trunked (Type-C) and conventional channels, at both rates.
 
@@ -148,7 +148,7 @@ The system's detail on the **Decode** page has an **NXDN** panel:
 - channels in the table that aren't watched;
 - a warning listing channel numbers that were granted but aren't in the channel table yet.
 
-On the **Calls** page an NXDN call shows its rate and RAN after the frequency.
+On a system's page under **Radio system** an NXDN call shows its rate and RAN after the frequency.
 
 ## Diagnostic tools
 

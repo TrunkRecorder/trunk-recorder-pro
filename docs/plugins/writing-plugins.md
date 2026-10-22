@@ -23,7 +23,7 @@ plugins.
 | [docs.rs/trunk-recorder-plugin](https://docs.rs/trunk-recorder-plugin) | The SDK's API reference |
 | [The template's protocol page](https://github.com/TrunkRecorder/trunk-plugin-template/blob/main/docs/protocol.md) | The wire format, for plugins in other languages |
 | [TrunkRecorder/plugins](https://github.com/TrunkRecorder/plugins) | The registry the plugin store installs from |
-| The published plugins ([OpenMHz](https://github.com/TrunkRecorder/trunk-plugin-openmhz), [Broadcastify](https://github.com/TrunkRecorder/trunk-plugin-broadcastify), [Rdio Scanner](https://github.com/TrunkRecorder/trunk-plugin-rdioscanner), [simplestream](https://github.com/TrunkRecorder/trunk-plugin-simplestream), [upload-script](https://github.com/TrunkRecorder/trunk-plugin-upload-script)) | Complete plugins to learn from |
+| The published plugins ([OpenMHz](https://github.com/TrunkRecorder/trunk-plugin-openmhz), [Broadcastify](https://github.com/TrunkRecorder/trunk-plugin-broadcastify), [Rdio Scanner](https://github.com/TrunkRecorder/trunk-plugin-rdioscanner), [simplestream](https://github.com/TrunkRecorder/trunk-plugin-simplestream), [upload-script](https://github.com/TrunkRecorder/trunk-plugin-upload-script), [MQTT](https://github.com/TrunkRecorder/trunk-plugin-mqtt)) | Complete plugins to learn from |
 
 ## Starting from the template
 
@@ -90,15 +90,20 @@ far behind loses events (counted on the dashboard) rather than slowing the recor
 
 | Topic | Message | When |
 |---|---|---|
-| `call.start` | `CallInfo` | A call starts: talkgroup and its tag, frequency, TDMA slot, analog / encrypted / emergency flags, whether it's recorded (and why not), the radios heard so far, patched talkgroups |
+| `call.start` | `CallInfo` | A call starts: talkgroup and its tag, frequency, TDMA slot, analog / encrypted / emergency flags and the grant's duplex / packet / priority, whether it's recorded (and why not), the radios heard so far (`sources`: each with what its own transmission said of itself — emergency, encrypted, duplex, packet, priority), patched talkgroups |
 | `call.end` | `CallInfo` | A call ends; its files follow in `call.concluded` |
-| `call.concluded` | `ConcludedCall` | A recorded call's files are on disk: its path key, its call JSON (Trunk Recorder's format) and the paths of its `.json`, `.wav` and, when asked for, `.m4a` |
+| `call.concluded` | `ConcludedCall` | A recorded call's files are on disk: its path key, its call JSON (Trunk Recorder's format, as a typed `CallRecord`: every field the recorder writes is a named field) and the paths of its `.json`, `.wav` and, when asked for, `.m4a` |
 | `unit` | `UnitEvent` | A radio registered, deregistered, affiliated, acknowledged, reported its location, got a data grant, or sent an answer request or call alert |
 | `audio` | `AudioChunk` | Live audio of recording calls: 16-bit mono PCM at 8 kHz, base64 |
 | `status` | `Status` | Every system's state every few seconds: control channel, decode rate, active and recording calls |
 
 Every event carries the system's `short_name`, which is its identity. The numeric `system` index is
-for the current run only, so store anything by short name.
+for the current run only, so store anything by short name. It counts from 0: the trunked systems
+being recorded first, then the conventional ones (there is no `CONVENTIONAL` index any more); a
+system's `kind` in `hello` (`p25`, `smartnet`, `dmr`, `nxdn`, `edacs` or `conventional`) says which it is. Calls and unit events also carry `site`,
+the name of the site they were heard on (a system of one site: its short name), and `status` has an
+entry per site, with its `site_name`. A call heard on several sites of a system is one call: one
+`call.start` and one `call.end` (from its first copy), and one `call.concluded`, for the copy kept.
 
 ### What a plugin sends back
 
@@ -133,13 +138,16 @@ Add the crate and `schemars` (for the settings form):
 
 ```toml
 [dependencies]
-trunk-recorder-plugin = "0.2.1"
+trunk-recorder-plugin = "0.5.0"
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ```
 
-A plugin implements the `Plugin` trait and calls `run` from `main`:
+SDK 0.5.0 is the one for Trunk Recorder Pro 0.2.0. A plugin built on an older SDK should be rebuilt
+on it: systems are numbered from 0 now (conventional ones too), and the call record names every
+field instead of keeping some in `extra`. A plugin implements the `Plugin` trait and calls `run`
+from `main`:
 
 ```rust
 use trunk_recorder_plugin::{topic, ConcludedCall, Host, Manifest, NoConfig, Outcome, Plugin, Setup};
@@ -173,15 +181,15 @@ The main pieces:
 | `Plugin` | The trait. `Config` and `SystemConfig` are your settings types (`NoConfig` for none). `manifest()`, `start()`, one method per topic (`call_start`, `call_end`, `call_concluded`, `unit`, `audio`, `status`) and `shutdown(grace)`. Every method runs on the one thread reading the recorder's messages, so return quickly and hand network or disk work to threads of your own |
 | `manifest!()` | A `Manifest` with the id, version, description, homepage, repository, authors and license from `Cargo.toml`; set `name`, `subscribe` and `audio_formats` |
 | `run::<P>()` | Answers `--describe` (and `--version`), parses `hello` and your settings, calls your methods, and exits with 78 when `start` returns `Err` |
-| `Setup` | What `start` gets: `config`, `systems` (each with `index`, `short_name`, `kind` and your `SystemConfig` or `None`), `capture_dir`, `data_dir`, `audio_formats`; `system_named()` and `has_format()` |
+| `Setup` | What `start` gets: `config`, `systems` (each with `index`, `short_name`, `kind`, `name`, `fcc` (its FCC licenses by frequency), `fcc_call_sign` and `fcc_name` (the one that names it), `sites` (each `SiteInfo { name }`), and your `SystemConfig` or `None`), `capture_dir`, `data_dir`, `audio_formats`; `system_named()` and `has_format()`. The name and FCC licenses are optional, so often empty |
 | `Host` | The way back, usable from any thread: `info`/`warn`/`error`/`debug`, `status`, `call_result`, `metrics`. Never `println!` in a plugin: stdout belongs to the protocol |
 | `CallQueue`, `QueueOptions`, `Attempt` | An upload queue on worker threads (2 by default) with retries after 10 s, 1 min, 5 min and 15 min, a warning status while calls wait, `call.result`s and `metrics` sent for you, and calls still waiting at shutdown saved to the data folder (`QueueOptions::saved_in`) and resumed next start. Your closure returns `Attempt::Done`, `Skip`, `Retry` or `Fail`. `CallQueue::start_by` also takes a closure naming each call's lane (the server it goes to): each lane gets workers, retries and an endpoint status of its own |
 | `TalkgroupFilter` | Trunk Recorder's talkgroup allow and deny patterns (`507*`, `12?45`); `filter::patterns` deserializes a list that mixes numbers and strings |
 | `Multipart` | A `multipart/form-data` body for any HTTP client |
 | `testing` | Run a plugin without the recorder (below) |
 
-Four of the five published plugins use `CallQueue` (simplestream, which is live, doesn't), and each
-is short enough to read in one sitting.
+Four of the six published plugins use `CallQueue` (simplestream, which is live, and MQTT, which has
+a queue of its own, don't), and the smaller ones are short enough to read in one sitting.
 
 ### Settings for each system
 

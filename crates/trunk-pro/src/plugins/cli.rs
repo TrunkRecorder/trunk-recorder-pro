@@ -104,8 +104,8 @@ fn list(a: &Args) {
         };
         println!("  {id} [{}] {}\n    {what}", if e.enabled { "on" } else { "off" }, exe.display());
     }
-    let enc = super::Encoder::find(&cfg.recording.m4a.encoder);
-    println!("M4A encoder ({}): {}", cfg.recording.m4a.encoder, enc.as_ref().map_or("none found (install ffmpeg)", |e| e.name()));
+    let enc = super::Encoder::find(cfg.recording.m4a.encoder);
+    println!("M4A encoder ({}): {}", cfg.recording.m4a.encoder.name(), enc.as_ref().map_or("none found (install ffmpeg)", |e| e.name()));
 }
 
 /// The installed plugin's version, if it's installed and answers.
@@ -114,31 +114,10 @@ fn installed_version(id: &str) -> Option<String> {
     exe.is_file().then(|| describe(&exe).ok().map(|m| m.version)).flatten()
 }
 
-fn say_source(cat: &store::Catalog) {
-    match cat.source {
-        "registry" => {}
-        "saved" => eprintln!("(The registry couldn't be reached: {}. Using the list fetched before.)", cat.problem.as_deref().unwrap_or("")),
-        _ => eprintln!("(The registry couldn't be reached: {}. Using the list built into this version.)", cat.problem.as_deref().unwrap_or("")),
-    }
-}
-
 fn search(a: &Args) {
-    let text = a.positional.get(1).map(|t| t.to_lowercase()).unwrap_or_default();
     let cat = store::catalog();
-    say_source(&cat);
-    let found: Vec<&Listing> = cat.index.plugins.iter().filter(|l| [&l.id, &l.name, &l.description].iter().any(|f| f.to_lowercase().contains(&text))).collect();
-    if found.is_empty() {
-        println!("No plugins{}.", if text.is_empty() { String::new() } else { format!(" match {text:?}") });
-    }
-    for l in found {
-        let status = match (installed_version(&l.id), l.unavailable()) {
-            (Some(v), _) if store::newer(&l.version, &v) => format!("installed {v}, update available"),
-            (Some(v), _) => format!("installed {v}"),
-            (None, Some(why)) => why,
-            (None, None) => String::new(),
-        };
-        println!("{} {} [{}]{}\n    {}\n    {}", l.id, l.version, l.tier, if status.is_empty() { String::new() } else { format!(" — {status}") }, l.description, l.repository);
-    }
+    cat.say_source();
+    cat.search(a.positional.get(1).map_or("", String::as_str), &installed_version);
 }
 
 /// The listing to install for `what`: an id in the registry, or a GitHub repository.
@@ -184,7 +163,7 @@ fn install_listing(cfg: &Config, l: &Listing) -> bool {
 fn install(a: &Args) {
     let what = a.positional.get(1).unwrap_or_else(|| die("trunk-pro plugin install <id | GitHub repository> [--tag v1.2.0]"));
     let cat = store::catalog();
-    say_source(&cat);
+    cat.say_source();
     let l = listing_for(what, a.get("tag"), &cat);
     let (_, cfg) = load_config(a);
     if !install_listing(&cfg, &l) {
@@ -201,7 +180,7 @@ fn update(a: &Args) {
         ids.sort();
     }
     let cat = store::catalog();
-    say_source(&cat);
+    cat.say_source();
     let mut failed = false;
     for id in &ids {
         let entry = cfg.plugins.get(id).cloned().unwrap_or_default();
@@ -214,29 +193,9 @@ fn update(a: &Args) {
             continue;
         };
         // From the registry, or from the repository it came from.
-        let unlisted = store::unlisted_from(id);
-        let latest = if unlisted.is_none() {
-            match cat.find(id) {
-                Some(l) => l.clone(),
-                None => {
-                    println!("{id} {have}: not in the registry");
-                    continue;
-                }
-            }
-        } else {
-            match store::release_listing(unlisted.as_deref().unwrap_or_default(), None) {
-                Ok(l) => l,
-                Err(e) => {
-                    println!("{id} {have}: {e}");
-                    continue;
-                }
-            }
-        };
-        if !store::newer(&latest.version, &have) {
-            println!("{id} {have}: up to date");
+        let Some(latest) = cat.newer_release(id, &have, store::unlisted_from(id).as_deref(), &|repo| store::release_listing(repo, None)) else {
             continue;
-        }
-        println!("{id}: {have} → {}", latest.version);
+        };
         failed |= !install_listing(&cfg, &latest);
     }
     if failed {
@@ -309,26 +268,34 @@ fn run_calls(a: &Args) {
         let v: Value = serde_json::from_str(j).unwrap_or_default();
         let name = v["short_name"].as_str().unwrap_or("").to_string();
         if !systems.iter().any(|s| s.short_name == name) {
-            let index = systems.iter().filter(|s| trunk_core::trunk::conventional_index(s.index).is_none()).count() as u16;
-            systems.push(SystemInfo { index, short_name: name, kind: "p25".into(), ..Default::default() });
+            systems.push(SystemInfo { index: systems.len() as u16, short_name: name, kind: "p25".into(), ..Default::default() });
         }
     }
     let notes: super::host::Notes = Arc::new(print_note);
-    let audio = AudioSettings { encoder: a.get("encoder").unwrap_or("auto").to_string(), ..Default::default() };
+    let encoder = a.get("encoder").map_or(Ok(Default::default()), |e| serde_json::from_value(serde_json::json!(e))).unwrap_or_else(|_| die("--encoder: auto, ffmpeg, afconvert, fdkaac or none"));
+    let audio = AudioSettings { encoder, ..Default::default() };
     let mut host = PluginHost::start(vec![spec], &audio, &systems, &capture_dir, notes);
     if host.is_empty() {
         std::process::exit(1);
     }
     eprintln!("M4A: {}", host.encoder().unwrap_or("none"));
     for (p, json) in &loaded {
-        let v: Value = serde_json::from_str(json).unwrap_or_default();
-        let system = systems.iter().find(|s| Some(s.short_name.as_str()) == v["short_name"].as_str()).map_or(0, |s| s.index);
+        let record = serde_json::from_str::<trunk_recorder_plugin::CallRecord>(json);
+        let system = record.as_ref().ok().and_then(|r| systems.iter().find(|s| s.short_name == r.short_name)).map_or(0, |s| s.index);
         // Its key: relative to the capture folder (absolute when it isn't in there).
         let base = p.with_extension("");
         let rel = base.strip_prefix(&capture_dir).map(Path::to_path_buf).unwrap_or(base.clone());
         // (A call JSON that can't be read is taken for a decrypted one.)
-        let decrypted = serde_json::from_str::<trunk_recorder_plugin::CallRecord>(json).map_or(true, |r| r.decrypted);
-        host.concluded(system, &rel.to_string_lossy().replace('\\', "/"), json, super::host::CallAudio::on_disk(&base), decrypted);
+        let decrypted = record.as_ref().map_or(true, |r| r.decrypted);
+        // (An .m4a made here for a plugin that wants one, as the recorder's finish thread would.)
+        let mut files = super::host::files_on_disk(&base);
+        if let Some((e, kbps)) = host.encoder_settings().filter(|_| files.m4a.is_none() && host.plugin_audio(decrypted).m4a) {
+            let to = PathBuf::from(format!("{}.m4a", base.display()));
+            if e.m4a(&std::fs::read(&files.wav).unwrap_or_default(), &to, *kbps).is_ok() {
+                files.m4a = Some(to);
+            }
+        }
+        host.concluded(system, &rel.to_string_lossy().replace('\\', "/"), record.unwrap_or_default(), files, decrypted);
     }
     let grace: f64 = a.get("grace").and_then(|s| s.parse().ok()).unwrap_or(30.0);
     host.shutdown(Duration::from_secs_f64(grace));

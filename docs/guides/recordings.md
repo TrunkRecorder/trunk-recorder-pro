@@ -60,16 +60,17 @@ would be for a call right now. **macOS / Linux** and **Windows** switch the exam
 
 Problems, such as an unknown token or a `{` without a `}`, are listed under the field in red.
 
-Each system and conventional system can have its own format in its **Recording override**; left at
-default, it follows the Recording tab's.
+Each system and conventional system can have its own format, under **Archive** in the **Recording**
+group of its card; left at default, it follows the Recording tab's.
 
 ### Tokens
 
 | Token | Gives |
 |---|---|
 | `{short_name}` | The system's short name |
-| `{sys_num}` | The system's number: trunked systems from 0; conventional systems 65535, 65534, ... |
+| `{sys_num}` | The system's number, from 0: the trunked systems, then the conventional ones |
 | `{talkgroup}`, `{talkgroup_display}` | The talkgroup number |
+| `{talkgroup_ota}` | A conventional P25, DMR or NXDN call's talkgroup as the air named it (its row may file it under another `{talkgroup}`); empty for other calls |
 | `{talkgroup_alpha_tag}` | The talkgroup's alpha tag, e.g. `FD_Disp` |
 | `{talkgroup_tag}` | The talkgroup's tag, e.g. `Fire_Dispatch` |
 | `{talkgroup_description}` | The talkgroup's description |
@@ -85,6 +86,8 @@ default, it follows the Recording tab's.
 | `{emergency}`, `{encrypted}` | `1` or `0` |
 | `{priority}`, `{source_num}`, `{recorder_num}` | As in the call JSON |
 | `{color_code}`, `{ran}` | DMR colour code, NXDN RAN; `-1` when the call has none |
+| `{nac}` | A P25 call's NAC, three hex digits (`293`); empty when it has none |
+| `{system_type}`, `{voice_mode}` | As in the call JSON: `conventional`, `p25`… |
 | `{signal}`, `{noise}` | The call's signal and noise levels in whole dBFS (-45.7 becomes `-45`, as in Trunk Recorder); `0` when not measured |
 
 `FORMAT` is strftime's: `%Y` year, `%m` month, `%d` day, `%H%M%S` time, `%j` day of the year, `%a`
@@ -111,7 +114,7 @@ make folders (`{time:%Y/%m}`).
 |---|---|
 | `<name>.wav` | 8 kHz mono 16-bit PCM. Written unless nothing keeps or needs it (see [The archive](#the-archive-whats-kept-and-whats-deleted)) |
 | `<name>.json` | The [call JSON](#the-call-json) |
-| `<name>.m4a` | With **Also save an M4A**, or when an upload plugin wants M4A |
+| `<name>.m4a` | With **Keep .m4a**, or when an upload plugin wants M4A (then deleted once the plugins are done, unless kept) |
 | `<name>.sdr` | With **Save vocoder frames**, for digital calls (NXDN: `<name>.frames.jsonl`) |
 
 ## The call JSON
@@ -123,7 +126,7 @@ It is written on a single line.
 |---|---|
 | `call_num` | The call's number |
 | `freq` | Frequency, Hz |
-| `freq_error` | How far off the channel the voice was, Hz (0 when not measured) |
+| `freq_error` | How far off the channel the voice was, Hz (0 when not measured). Conventional P25 calls have it too; conventional analog and DMR receivers don't measure one |
 | `signal`, `noise` | The channel's power during the call and the noise floor under it, dBFS, one decimal; `null` if not measured |
 | `snr` | `signal` minus `noise`, dB |
 | `clean_voice_pct` | Share of vocoder frames decoded cleanly, %; `null` for analog calls |
@@ -137,16 +140,21 @@ It is written on a single line.
 | `decrypted` | `1` when some of an encrypted call's voice was decrypted with a [key](../configuration/systems.md#encryption-keys-keys), else `0` |
 | `priority`, `mode`, `duplex` | As Trunk Recorder writes them (`mode` and `duplex` are always `0` on conventional calls) |
 | `call_length`, `call_length_ms` | Length of the saved audio, seconds (rounded) and milliseconds |
-| `talkgroup` | Talkgroup number |
+| `talkgroup` | Talkgroup number. On a conventional channel, the row's TG Number if it has one, else the talkgroup the air named, else a default from the frequency: see [Tones](tones.md#the-number-a-call-is-filed-under) |
+| `talkgroup_ota` | Conventional P25, DMR and NXDN calls only: the talkgroup the air named, whenever it named one, even when equal to `talkgroup`. Absent otherwise, and on trunked calls |
 | `talkgroup_tag` | The talkgroup's alpha tag |
 | `talkgroup_description` | Its description |
 | `talkgroup_group_tag` | Its tag |
 | `talkgroup_group` | Its category |
+| `nac` | P25: the NAC its voice carried on a conventional channel, its site's on a trunked system, in hex as radios, RadioReference and channel files write it (`"293"`, a string); `""` for none |
 | `color_code` | DMR colour code; `-1` for none |
 | `ran` | NXDN RAN; `-1` for none |
 | `tone_mode`, `tone_detected`, `tone_confidence` | Analog conventional calls' tone: see [Tones](tones.md#how-tones-are-identified) |
 | `audio_type` | `analog`, `digital` or `digital tdma` |
+| `system_type` | The kind of system it came on: `p25`, `smartnet`, `dmr`, `nxdn`, `edacs` or `conventional` (the same words plugins get) |
+| `voice_mode` | What its voice was: `p25`, `p25_phase2`, `dmr`, `nxdn48`, `nxdn96`, `provoice`, `fm` or `am`. With `system_type`, a conventional P25 call is `conventional` / `p25`, a SmartNet analog one `smartnet` / `fm` |
 | `short_name` | The system's short name |
+| `site` | The site the kept copy was heard on (a system of one site: its short name). Not on conventional calls. A call heard on several sites is saved once |
 | `patched_talkgroups` | Only when the talkgroup was patched with others: all of them |
 | `freqList` | One entry for the call: `freq`, `time`, `pos` (0), `len` (seconds of audio), `error_count` (FEC errors), `spike_count` (0) |
 | `errorList` | Per 10 s of audio: `pos`, `len`, `frames`, `error_count`, `bad_frames` (repeated, muted or erased), `max_frame_errors` |
@@ -154,7 +162,8 @@ It is written on a single line.
 
 Compared with Trunk Recorder's JSON:
 
-- `snr`, `clean_voice_pct`, `ran`, `errorList` and the three tone fields are additions.
+- `snr`, `clean_voice_pct`, `nac`, `ran`, `talkgroup_ota`, `system_type`, `voice_mode`, `errorList`
+  and the three tone fields are additions.
 - `signal` and `noise` are in dBFS with a decimal, not whole numbers.
 - `freqList` has one entry for the whole call rather than one per transmission.
 - Trunk Recorder pretty-prints its JSON; this is one line. JSON readers don't mind.
@@ -182,8 +191,8 @@ which removes CTCSS tones from what you hear.
 
 ## M4A files
 
-M4A (AAC audio) is about a tenth the size of WAV. Some upload plugins send M4A, and **Also save an
-M4A** (`compressWav`) keeps one of every call.
+M4A (AAC audio) is about a tenth the size of WAV. Some upload plugins send M4A, and **Keep .m4a**
+(`archiveM4a`) keeps one of every call.
 
 Nothing is built in for this: Trunk Recorder Pro runs an encoder installed on the computer. The
 **M4A audio** panel on the Recording tab picks it:
@@ -195,24 +204,26 @@ Nothing is built in for this: Trunk Recorder Pro runs an encoder installed on th
 - **Bitrate, kbps**: 32 by default, as Trunk Recorder uses. ffmpeg and afconvert encode 16 kHz
   mono AAC.
 
-The panel's header shows which encoder was found, or "no encoder found". If **Also save an M4A**
+The panel's header shows which encoder was found, or "no encoder found". If **Keep .m4a**
 is on and there's no encoder, the log says `No M4A encoder found (install ffmpeg): calls are kept
-as WAV only`. If encoding a call fails, the error is logged and the call keeps its WAV.
+as WAV only`. If encoding a call fails, the error is logged and the call keeps its WAV. Either
+way, a call whose M4A is to be kept but couldn't be made keeps its WAV in its place.
 
 The WAV is fed to the encoder from memory. If the call's WAV isn't being kept, it is never written
 to disk at all.
 
 ## The archive: what's kept and what's deleted
 
-Three settings in Setup's **Recording** tab, under **Archive**, decide what of a call stays in the
+Four settings in Setup's **Recording** tab, under **Archive**, decide what of a call stays in the
 recordings folder once the plugins are done with it. Each system can set them again for itself
-(its **Recording override**).
+(under **Archive** in the **Recording** group of its card).
 
 | Setting | Key | Default | On | Off |
 |---|---|---|---|---|
-| **Keep audio** | `audioArchive` | on | The audio (WAV, frames file, and the M4A with **Also save an M4A**) is kept once the plugins are done | It's deleted once the plugins are done |
+| **Keep .wav** | `archiveWav` | on | The WAV is kept once the plugins are done | It's deleted then (with no plugin, never written) |
+| **Keep .m4a** | `archiveM4a` | off | An M4A of each call is kept once the plugins are done. Needs an encoder | The M4A made for a plugin that uploads M4A is deleted once the plugins are done |
 | **Keep call JSON** | `callLog` | on | The call JSON is kept | It's deleted once the plugins are done |
-| **Keep when a plugin fails** | `archiveFilesOnFailure` | on | If any plugin reports a failure, the call's audio and JSON are kept anyway | Failures change nothing |
+| **Keep when a plugin fails** | `archiveFilesOnFailure` | on | If any plugin reports a failure, every file the call has (WAV, M4A, JSON, frames) is kept anyway | Failures change nothing |
 
 What "the plugins are done" means:
 
@@ -223,27 +234,30 @@ What "the plugins are done" means:
   plugin fails** on.
 - **Nothing is deleted until every one of them has answered.**
 - **A plugin that hasn't answered within an hour counts as having failed.**
-- **With no plugin taking calls there's nothing to wait for**: the two Keep settings alone decide,
-  as soon as the call ends. With **Keep audio** off and no plugin, a call's audio is never saved at
-  all; Setup says so under the settings.
-- **Keep when a plugin fails** is greyed out when **Keep audio** and **Keep call JSON** are both
-  on: everything is kept anyway.
+- **With no plugin taking calls there's nothing to wait for**: the Keep settings alone decide,
+  as soon as the call ends. With **Keep .wav** and **Keep .m4a** off and no plugin, a call's audio
+  is never saved at all; Setup says so under the settings.
+- **Keep when a plugin fails** is greyed out when **Keep .wav**, **Keep .m4a** and **Keep call JSON**
+  are all on: everything is kept anyway.
 
 Some examples:
 
-- **Keep everything** (the default): leave all three on. Plugins get each call and the recordings
+- **Keep everything** (the default): leave the first three on (**Keep .m4a** too, if you want M4As). Plugins get each call and the recordings
   folder keeps it all.
-- **Upload calls without keeping them:** turn off **Keep audio** and **Keep call JSON**, and leave
+- **Upload calls without keeping them:** turn off **Keep .wav**, **Keep .m4a** and **Keep call JSON**, and leave
   **Keep when a plugin fails** on. Calls a plugin failed on stay, so you can see what went wrong and
   send them again. Calls the plugins skipped (a system they have no settings for, say) are deleted
-  like the rest: if a system's calls should be kept, turn its **Keep audio** back on in its
-  Recording override.
-- **Keep only the call log:** turn off **Keep audio** and leave **Keep call JSON** on.
+  like the rest: if a system's calls should be kept, turn its **Keep .wav** back on under
+  **Archive** on its card.
+- **Keep only the call log:** turn off **Keep .wav** and **Keep .m4a** and leave **Keep call JSON** on.
+- **Keep only the M4A:** turn off **Keep .wav** and turn on **Keep .m4a**.
 
 Also:
 
-- **An M4A made only for a plugin** (with **Also save an M4A** off) is deleted with the rest of
-  what isn't kept, and when the audio is kept, unless it's the only audio the call has.
+- **An M4A made only for a plugin** (with **Keep .m4a** off) is deleted once the plugins are done.
+- **A call's audio is never all lost** when some of it is to be kept: if the M4A is to be kept and
+  none could be made, the WAV stays in its place.
+- **The frames file** (`.sdr`) stays when either kind of audio is kept.
 - **Nothing that won't be kept is written** when no plugin takes calls. With plugins, the files
   they need are written (to the RAM spool, if it's on) and deleted once they're done.
 
@@ -311,8 +325,8 @@ whose name ends in `.noindex` is never indexed, which is another way to exclude 
 ## Call rules
 
 These are under **Call rules** on the Recording tab. Each system and conventional system can
-override them in its **Recording override**; each one left at **Default** follows the Recording
-tab.
+override them under **Recording** in the **Recording** group of its card; each one left at
+**Default** follows the Recording tab.
 
 **What is recorded**
 

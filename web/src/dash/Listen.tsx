@@ -29,10 +29,13 @@ import {
   wanted,
   type Selection,
 } from "../listen.ts";
-import type { CallEntry } from "../protocol.ts";
+import type { CallEntry, Config, RecordingOverride } from "../protocol.ts";
 import { parseTalkgroupCsv } from "../talkgroups.ts";
 import { BrowserStorage } from "../web/BrowserStorage.tsx";
-import { aliasOf } from "./Calls.tsx";
+import { aliasOf, AirTg } from "./Calls.tsx";
+
+/** What the Listen page reads of the store (the page selects only this). */
+type ListenState = Pick<AppState, "connected" | "config" | "units" | "talkgroups">;
 
 /** A talkgroup as the scanner shows it. */
 interface Tg {
@@ -46,22 +49,37 @@ interface Tg {
 }
 
 /**
- * Every system and talkgroup there is to hear: each system's talkgroup file,
- * and what calls were heard on (conventional channels, talkgroups not in a file).
+ * The systems whose calls' audio isn't kept (Keep .wav and Keep .m4a off:
+ * theirs or the Recording tab's): it's deleted once the plugins are done, so
+ * there's nothing to play. (In the browser every call's is kept.)
  */
-function catalog(s: Pick<AppState, "config">, calls: CallEntry[]): Map<string, Tg[]> {
+export function audioNotKept(config: Config | null): string[] {
+  if (web || !config) return [];
+  const kept = (o: RecordingOverride | undefined) => (o?.archiveWav ?? config.recording.archiveWav) || (o?.archiveM4a ?? config.recording.archiveM4a);
+  return [...config.systems, ...config.conventional].filter((x) => x.enabled && !kept(x.recording)).map((x) => x.shortName);
+}
+
+/**
+ * Every system and talkgroup there is to hear: each system's talkgroup file,
+ * and what calls were heard on (conventional channels, talkgroups not in a
+ * file). Not the systems whose audio isn't kept.
+ */
+function catalog(s: Pick<AppState, "config" | "talkgroups">, calls: CallEntry[]): Map<string, Tg[]> {
   const out = new Map<string, Map<number, Tg>>();
+  const silent = new Set(audioNotKept(s.config));
   const sys = (name: string) => out.get(name) ?? out.set(name, new Map()).get(name)!;
   for (const x of s.config?.systems ?? []) {
-    if (!x.enabled) continue;
-    const m = sys(x.shortName);
-    for (const t of parseTalkgroupCsv(x.talkgroupsCsv).values()) {
-      if (!t.ignore) m.set(t.number, { system: x.shortName, talkgroup: t.number, key: tgKey(x.shortName, t.number), alphaTag: t.alphaTag, description: t.description, tag: t.tag, group: t.group });
+    if (!x.enabled || silent.has(x.shortName)) continue;
+    const name = x.shortName;
+    const m = sys(name);
+    for (const t of parseTalkgroupCsv(s.talkgroups[name] ?? "").values()) {
+      if (!t.ignore && !m.has(t.number)) m.set(t.number, { system: name, talkgroup: t.number, key: tgKey(name, t.number), alphaTag: t.alphaTag, description: t.description, tag: t.tag, group: t.group });
     }
   }
-  for (const v of s.config?.conventional ?? []) if (v.enabled) sys(v.shortName);
+  for (const v of s.config?.conventional ?? []) if (v.enabled && !silent.has(v.shortName)) sys(v.shortName);
   for (const c of calls) {
     const name = systemOf(c);
+    if (silent.has(name)) continue;
     const m = sys(name);
     const r = c.record;
     if (!m.has(r.talkgroup)) {
@@ -84,7 +102,7 @@ const timeOf = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: "2-di
 const mmss = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 
 /** The radio that spoke first, by name when known. */
-function unitOf(s: AppState, c: CallEntry): string {
+function unitOf(s: ListenState, c: CallEntry): string {
   const u = c.record.srcList?.find((x) => x.src > 0);
   if (!u) return "";
   return aliasOf(s, systemOf(c), u.src, u.tag || u.tag_ota) ?? String(u.src);
@@ -94,7 +112,7 @@ function Led({ color, blink }: { color: string; blink?: boolean }) {
   return <span className={`led${blink ? " blink" : ""}`} style={{ background: color, color }} aria-hidden="true" />;
 }
 
-function Display({ s }: { s: AppState }) {
+function Display({ s }: { s: ListenState }) {
   const l = useListen((x) => x);
   const c = l.playing;
   if (!c) {
@@ -130,7 +148,10 @@ function Display({ s }: { s: AppState }) {
       <dl className="scan-fields">
         <div>
           <dt>TGID</dt>
-          <dd className="mono">{r.talkgroup}</dd>
+          <dd className="mono">
+            {r.talkgroup}
+            <AirTg tg={r.talkgroup} ota={r.talkgroup_ota} />
+          </dd>
         </div>
         <div>
           <dt>Freq</dt>
@@ -203,7 +224,7 @@ function Controls() {
   );
 }
 
-function Recent({ s }: { s: AppState }) {
+function Recent({ s }: { s: ListenState }) {
   const played = useListen((x) => x.played);
   if (!played.length) return null;
   return (
@@ -221,8 +242,8 @@ function Recent({ s }: { s: AppState }) {
   );
 }
 
-function Scanner({ s }: { s: AppState }) {
-  const l = useListen((x) => ({ feed: x.feed, queue: x.queue.length, missed: x.missed, hold: x.sel.hold }));
+function Scanner({ s }: { s: ListenState }) {
+  const l = useListen((x) => ({ feed: x.feed, queue: x.queue.length, missed: x.missed, hold: x.sel.hold, sel: x.sel }));
   const status = !s.connected ? "No link" : l.feed ? "Live" : "Feed off";
   return (
     <section className="panel scanner">
@@ -249,7 +270,22 @@ function Scanner({ s }: { s: AppState }) {
 
 // ── the calls ────────────────────────────────────────────────────────────────
 
-function CallList({ s }: { s: AppState }) {
+/** Why systems are missing from Listen: their calls' audio isn't kept. */
+function NoAudio({ config }: { config: Config | null }) {
+  const systems = audioNotKept(config);
+  if (!systems.length) return null;
+  const one = systems.length === 1;
+  return (
+    <div className="banner subtle small">
+      <span>
+        <b>{systems.join(", ")}</b> {one ? "isn't" : "aren't"} here: {one ? "its" : "their"} calls' audio is deleted once the plugins are done with it (Keep .wav and Keep .m4a are off), so there's nothing to play. To hear{" "}
+        {one ? "it" : "them"}, turn on Keep .wav or Keep .m4a in Setup, under Archive on {one ? "the system's" : "each system's"} card or on the Recording tab.
+      </span>
+    </div>
+  );
+}
+
+function CallList({ s }: { s: ListenState }) {
   const l = useListen((x) => ({ calls: x.calls, sel: x.sel, queue: x.queue, playing: x.playing, loadingOlder: x.loadingOlder, moreOlder: x.moreOlder }));
   const [onlySelected, setOnlySelected] = useState(true);
   const [filter, setFilter] = useState("");
@@ -351,9 +387,9 @@ function Chips({ title, by, sel, tgs, known }: { title: string; by: (t: Tg) => s
   );
 }
 
-function Talkgroups({ s }: { s: AppState }) {
+export function Talkgroups({ s }: { s: ListenState }) {
   const l = useListen((x) => ({ calls: x.calls, sel: x.sel }));
-  const cat = useMemo(() => catalog(s, l.calls), [s.config, l.calls]);
+  const cat = useMemo(() => catalog(s, l.calls), [s.config, s.talkgroups, l.calls]);
   const [filter, setFilter] = useState("");
   const all = useMemo(() => [...cat.values()].flat(), [cat]);
   const known = useMemo(() => all.map((t) => t.key), [all]);
@@ -407,6 +443,7 @@ function Talkgroups({ s }: { s: AppState }) {
       {[...cat].map(([system, tgs]) => {
         const sysOn = !sel.offSystems.includes(system);
         const shown = tgs.filter(match);
+        const sites = s.config?.systems.find((x) => x.shortName === system)?.sites.length ?? 0;
         if (f && !shown.length) return null;
         return (
           <div key={system} className="tg-system">
@@ -414,6 +451,7 @@ function Talkgroups({ s }: { s: AppState }) {
               <input type="checkbox" checked={sysOn} onChange={(e) => setSystemOn(system, e.target.checked)} />
               <Led color={systemColor(s.config, system)} />
               <b>{system}</b>
+              {sites > 1 && <span className="chip small" title="A call plays whichever site it was kept from">{sites} sites</span>}
               <span className="muted small">
                 {sysOn ? tgs.filter((t) => !sel.offTalkgroups.includes(t.key)).length : 0} of {tgs.length} talkgroups
               </span>
@@ -438,9 +476,10 @@ function Talkgroups({ s }: { s: AppState }) {
   );
 }
 
-export function ListenPage() {
-  const s = useSelect((x) => ({ connected: x.connected, config: x.config, units: x.units }) as AppState);
-  const [tab, setTab] = useState<"calls" | "talkgroups">("calls");
+/** `tab`: the side panel's tab to open on (the calls). */
+export function ListenPage({ tab: first = "calls" }: { tab?: "calls" | "talkgroups" } = {}) {
+  const s: ListenState = useSelect((x) => ({ connected: x.connected, config: x.config, units: x.units, talkgroups: x.talkgroups }));
+  const [tab, setTab] = useState<"calls" | "talkgroups">(first);
   const off = useListen((x) => x.sel.offSystems.length + x.sel.offTalkgroups.length);
   return (
     <div className="listen">
@@ -454,6 +493,7 @@ export function ListenPage() {
             Talkgroups{off ? <span className="muted small"> · some off</span> : null}
           </button>
         </div>
+        <NoAudio config={s.config} />
         {tab === "calls" ? <CallList s={s} /> : <Talkgroups s={s} />}
         {web && (
           <footer className="panel-foot muted small">

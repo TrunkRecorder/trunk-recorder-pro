@@ -31,10 +31,21 @@ pub enum MonitorEvent {
     /// Calls in the last minute (once a minute: watchers only).
     #[serde(rename_all = "camelCase")]
     CallVolume { system: String, per_min: u32 },
+    /// A site's control channel stopped decoding (`site`: its own name, if it has one).
     #[serde(rename_all = "camelCase")]
-    ControlLost { system: String, freq_hz: Option<u64> },
+    ControlLost {
+        system: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        site: Option<String>,
+        freq_hz: Option<u64>,
+    },
     #[serde(rename_all = "camelCase")]
-    ControlRegained { system: String, freq_hz: Option<u64> },
+    ControlRegained {
+        system: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        site: Option<String>,
+        freq_hz: Option<u64>,
+    },
     /// A source dropped samples after a quiet spell.
     #[serde(rename_all = "camelCase")]
     SourceDrops { source: String, per_s: f64 },
@@ -163,7 +174,7 @@ mod tests {
         assert!(!m.wants_frequent());
         m.add_watcher(Box::new(Count(seen.clone())));
         assert!(m.wants_frequent());
-        let v = m.emit(100.0, MonitorEvent::ControlLost { system: "dcfd".into(), freq_hz: Some(851_000_000) }).unwrap();
+        let v = m.emit(100.0, MonitorEvent::ControlLost { system: "dcfd".into(), site: None, freq_hz: Some(851_000_000) }).unwrap();
         assert_eq!(v["kind"], "controlLost");
         assert_eq!(v["level"], "bad");
         assert_eq!(v["freqHz"], 851_000_000);

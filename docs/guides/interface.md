@@ -1,12 +1,14 @@
 # The web interface
 
 Trunk Recorder Pro is run from your web browser. This page is a tour of the interface: the
-frame around every page, Setup, the Listen page, the Live page, events, quitting, where the
-history is kept, reaching it from another machine, and serving an interface of your own. The
-measurement pages (Overview, RF, Decode, Radio system, Plugins, Platform) and what their numbers
+frame around every page, Setup, the Listen page, events, quitting, where the
+history is kept, reaching it from another machine, and the other interfaces it serves. The
+measurement pages (Overview, RF, Decode, Radio system, Platform, Plugins) and what their numbers
 mean are on [The dashboard](dashboard.md).
 
-When you start `trunk-pro` it opens the interface at <http://localhost:8080>. If you closed the
+The interface needs a browser with WebAssembly SIMD (Safari 16.4, Chrome 91, Firefox 89 or later); an
+older one shows "This browser can't run the dashboard". When you start `trunk-pro` it opens the
+interface at <http://localhost:8080>. If you closed the
 tab, open that address again, or start the app again: a second copy notices the first one and
 just opens the browser on it.
 
@@ -20,10 +22,10 @@ On the left is the list of pages:
 | **Listen** | A scanner over the recorded calls: hear them as they're recorded, pick the talkgroups, go back through the day |
 | **RF** | How well the radios hear the air: noise floor, headroom, frequency error, dropped samples, the waterfall |
 | **Decode** | How well signals turn into messages and voice, per system and per frequency |
-| **Radio system** | The system as heard: talkgroups, radios, what happened to calls |
-| **Live** | Calls on the air now (with live audio), the control channel log |
-| **Plugins** | Each plugin's health, and installing and setting them up |
+| **Radio system** | The system as heard: talkgroups, radios, what happened to calls, calls on the air now (with live audio), the control channel log |
 | **Platform** | The computer: CPU, memory, disks, network |
+| **Plugins** | Each plugin's health, and installing and setting them up |
+| **Interfaces** | Other interfaces (a player, a scanner wall) for people who listen, each on a port of its own: installing them, their ports and what they may do |
 | **Setup** | Sources, systems, recording, the log, plugins |
 
 Next to a page's name is a light, and hovering over it says why it is that colour:
@@ -60,7 +62,7 @@ same recorder.
 | **Systems** | **Find my system**, your trunked systems, **Add a system**, **Import Trunk Recorder config…** | [Find my system](find-my-system.md), [P25](p25.md), [SmartNet](smartnet.md), [DMR](dmr.md), [NXDN](nxdn.md) |
 | **Conventional** | Conventional systems and their channels | [Conventional](conventional.md) |
 | **Radios** | Your sources (dongles, other radios, capture files), **Add a source**, **Dongle not showing up?** | [Radios](radios.md) |
-| **Recording** | **Recorder** (recordings folder, recorders, pre-roll, voice decoder, RAM spool, start on launch), **Call rules**, **Log**, **M4A audio**, **Interfaces** | [Recordings](recordings.md), [Interfaces of your own](#interfaces-of-your-own) |
+| **Recording** | **Recorder** (recordings folder, recorders, pre-roll, voice decoder, RAM spool, start on launch), **Call rules**, **Log**, **M4A audio** | [Recordings](recordings.md) |
 | **Plugins** | Each plugin's settings | [Plugins](../plugins/README.md) |
 
 There's no Save button. Every change is saved to the config file a moment after you make it.
@@ -81,7 +83,7 @@ the talkgroups to hear.
 
 - **Live feed**: on, each new call you've chosen is queued and played in turn; `Q` is how many
   are waiting. Off, nothing new plays. A call is heard once it ends, so the feed runs a call's
-  length behind the air. Turning it on also turns off **Listen live** on the Live page (one sound
+  length behind the air. Turning it on also turns off **Listen live** on a system's Radio system page (one sound
   at a time).
 - **Hold sys** / **Hold TG**: only the current call's system, or its talkgroup, plays until you
   press it again.
@@ -96,7 +98,7 @@ file, the system, the talkgroup ID, the frequency, the first radio to speak and 
 call it is (click the bar to jump). **Recent** under the buttons is the last five calls played;
 click one to hear it again.
 
-Encrypted calls and calls whose audio wasn't kept (**Keep audio** off) are left out. A call
+Encrypted calls and calls whose audio wasn't kept (**Keep .wav** and **Keep .m4a** off) are left out. A call
 kept as M4A plays the M4A, else the WAV.
 
 ### Calls
@@ -119,62 +121,6 @@ turn them off.
 
 What you pick, holds and avoids are kept in this browser, so another browser (or another
 computer) has its own.
-
-## Live
-
-The Live page has two parts.
-
-### Active calls
-
-Every call on the air now, recording ones first:
-
-| Column | What it shows |
-|---|---|
-| **System** | Only with more than one system |
-| **Talkgroup** | Its number and name, `EMERG` for an emergency call, what it's patched with, and `also on …` when the same call is on other sites (the best copy is saved) |
-| **Freq, MHz** | The voice channel, with `s0`/`s1` for a TDMA slot, `FM` (and its tone) for analog, `NXDN48`/`NXDN96` and the RAN for NXDN |
-| **Source** | The radio talking now: its name or talker alias when known, else its unit ID |
-| **Time** | How long the call has gone on |
-| **State** | `recording`, `recording (encrypted)`, or why it isn't being recorded |
-
-The reasons a call isn't recorded:
-
-| State | Why | What to do |
-|---|---|---|
-| `encrypted — not recorded` | The call is encrypted and encrypted calls are off | Nothing: encrypted audio can't be decoded |
-| `outside tuned range` | No source covers its voice frequency | Move a source's centre, or add a source. See [Radios](radios.md). |
-| `no free recorder` | Every recorder is busy | Raise **Recorders** in Setup → Recording |
-| `not in talkgroup list` | It's not in the talkgroup file and **Talkgroups not in the talkgroup file** is off | Add it, or turn that on in Call rules |
-| `ignored (talkgroup list)` | It's set to Ignore in the talkgroup file | Un-ignore it on the Radio system page |
-| `monitoring` | Followed, not recorded, for another reason | |
-
-With several systems, chips above the table (**All**, then each system) show one system's calls.
-
-### Listening live
-
-Tick **Listen live** to hear calls as they're decoded, like a scanner. It stays on one call
-until that call has been quiet for 2 seconds, then takes the next one. The line under the
-heading shows what's playing (`▶ TG 3747 · <radio>`).
-
-- **The system chips filter what you hear too**: pick a system and only its calls play.
-- The **Listen** button on a recording call plays only that talkgroup. A button then appears
-  next to **Listen live** (`TG 3747 only ✕`); click it to go back to everything.
-- Only calls being recorded can be heard.
-- The audio comes from the recorder over the same connection as the rest of the page, so it works
-  from another machine too.
-- Safari can pause the audio when you switch tabs or audio devices; a click or key press anywhere
-  on the page starts it again.
-
-### Control channel log
-
-Click **Control channel log** to open it. It shows the last 150 control channel messages as they
-arrive, newest first: grants, updates, patches, the system's identity, neighbouring sites, talker
-aliases, protocol notes (such as a DMR site's colour code and kind), plugin notes and errors. Tick **Show unit activity** to also see affiliations,
-registrations and the like. With several systems, chips pick one.
-
-The log is only made while it's open, because turning every control message into a line costs
-the recorder some work. This is not the same as the app's log file: see
-[Log levels and log files](../troubleshooting.md#where-is-the-log).
 
 ## Events
 
@@ -236,11 +182,15 @@ machine on your network, start with `--bind 0.0.0.0`, or set `server.bind` in th
 trunk-pro serve --bind 0.0.0.0 --no-open
 ```
 
-Then browse to `http://<that machine's address>:8080`.
+Then browse to `http://<that machine's address>:8080`. The other interfaces are reachable the
+same way, each at its own port (`:8081`, …), which the firewall must let through too.
 
-**There is no login.** Anyone who can reach the port can change the settings, start and stop
-recording, quit the app, listen, and download your recordings. Only do this on a network you
-trust, never on a port open to the internet.
+**There is no login.** Anyone who can reach the built-in interface's port can change the
+settings, start and stop recording, quit the app, listen, and download your recordings. Only do
+this on a network you trust, never on a port open to the internet. An interface with listen
+access is safer to share: on its port, the recorder can be listened to but not changed. That's
+what the other interfaces are for — give the people who listen a player's address, not the
+recorder's.
 
 A safer way, from a machine that can SSH to the recorder, is an SSH tunnel. Leave the recorder
 bound to `127.0.0.1`, then on your machine:
@@ -256,41 +206,29 @@ and open <http://localhost:8080>. The interface is now reachable only through yo
 The app checks every request a browser sends, so that some other web page you happen to have open
 can't drive the recorder behind your back:
 
-- A web page from another origin (a custom interface served somewhere else, or a page opened from
-  a file) is refused with
+- A web page from another origin (a page served somewhere else, a page opened from a file, or an
+  interface's page reaching for another port than its own) is refused with
   `Refused a page from <origin>: add it to server.allowedOrigins in the config to let it use the interface.`
 - While bound to `127.0.0.1`, a request that arrives under any name other than `localhost` (or a
   loopback address) is refused with `Refused a request for <host>: this server only answers to
   localhost …`. This blocks DNS rebinding.
 
-To allow a page, add its origin to **Other pages allowed to use the API** in Setup → Recording →
-Interfaces (`server.allowedOrigins`), one per line, as the browser sends it
+To allow a page, add its origin to **Pages served elsewhere** on the Interfaces page
+(`server.allowedOrigins`), one per line, as the browser sends it
 (`http://192.168.1.50:3000`). `null` allows pages opened from a file, and `*` allows any page:
 only on a private network. Programs that aren't browsers (scripts, `curl`) aren't affected by any
 of this.
 
-## Interfaces of your own
+## Other interfaces
 
-You can replace or add to the built-in interface with web pages of your own: a scanner page, a
-wall display, a talkgroup monitor. The recorder serves them and they talk to it over the same API
-the built-in interface uses.
-
-In Setup → Recording → **Interfaces**:
-
-1. **Add an interface**, give it a **Name** (letters, digits, `-` and `_`) and a **Folder** with an
-   `index.html` in it (absolute, `~/…`, or relative to the config file's folder).
-2. It's served at `/ui/<name>/`. **All interfaces** (`/ui/`) lists yours along with the examples.
-3. **Show at /** picks what <http://localhost:8080/> shows: **This interface** (the built-in one)
-   or one of yours. The built-in interface is always at `/builtin/`.
-
-From the command line, `--ui <folder>` serves a folder at `/` for one run without changing the
-config. These are kept in `server.interfaces` and `server.home`.
-
-How to build one (the API, its messages, examples and a JavaScript client) is in
-[docs/api](../api/README.md); a running recorder serves the same guide at `/api/docs`.
+This interface is for whoever runs the recorder. For people who just want to listen, the
+recorder serves other interfaces besides it — a player, a scanner wall, a phone page — each on a
+port of its own, with access only to listen unless you say otherwise. The **Interfaces** page
+installs them from the interface store, adds folders of your own, sets their ports and what they
+may do. See [Interfaces](../interfaces/README.md).
 
 ## In the browser version
 
-The browser version (no install) has the same pages except **Plugins** and **Platform**, and no
+The browser version (no install) has the same pages except **Plugins**, **Interfaces** and **Platform**, and no
 **Quit**: it records in the tab, keeping the screen awake while it does, and keeps calls in the
 browser. See [In the browser](../install/browser.md).

@@ -42,10 +42,10 @@ export function Group(props: { title: string; hint?: ReactNode; actions?: ReactN
 }
 
 /** A card's on/off switch ("Record"). */
-export function Switch(props: { label: string; checked: boolean; onChange: (v: boolean) => void; title?: string }) {
+export function Switch(props: { label: string; checked: boolean; onChange: (v: boolean) => void; title?: string; disabled?: boolean }) {
   return (
     <label className="switch" title={props.title}>
-      <input type="checkbox" role="switch" checked={props.checked} onChange={(e) => props.onChange(e.target.checked)} />
+      <input type="checkbox" role="switch" checked={props.checked} disabled={props.disabled} onChange={(e) => props.onChange(e.target.checked)} />
       <span className="switch-track" aria-hidden="true" />
       <span>{props.label}</span>
     </label>
@@ -53,10 +53,17 @@ export function Switch(props: { label: string; checked: boolean; onChange: (v: b
 }
 
 /*
- * Which cards are open, by key ("sys-0", "conv-1", "src-2"), remembered in
- * this browser. A key not set falls back to the card's default.
+ * Which cards are open, by card key (controller.ts `cardKey`: "sys:dcfd",
+ * "src:0"…), remembered in this browser. A key not set falls back to the
+ * card's default.
  */
-const OPEN_KEY = "trp.setupOpen";
+const OPEN_KEY = "trp.setupCards";
+try {
+  // (Cards were known by their position before.)
+  localStorage.removeItem("trp.setupOpen");
+} catch {
+  // No storage: nothing to tidy.
+}
 let opened: Record<string, boolean> = (() => {
   try {
     return JSON.parse(localStorage.getItem(OPEN_KEY) ?? "{}") as Record<string, boolean>;
@@ -83,6 +90,7 @@ function useOpened(): Record<string, boolean> {
       return () => void listeners.delete(l);
     },
     () => opened,
+    () => opened,
   );
 }
 
@@ -91,30 +99,18 @@ export function setCardOpen(key: string, open: boolean): void {
   saveOpened({ ...opened, [key]: open });
 }
 
-/** Open or close a list's cards (`${prefix}0` … `${prefix}${n - 1}`). */
-export function setCardsOpen(prefix: string, n: number, open: boolean): void {
+/** Open or close a list's cards. */
+export function setCardsOpen(keys: string[], open: boolean): void {
   const next = { ...opened };
-  for (let k = 0; k < n; k++) next[`${prefix}${k}`] = open;
+  for (const k of keys) next[k] = open;
   saveOpened(next);
 }
 
-/** A card is added to a list of n: it opens, and the others stay as they look now. */
-export function addCard(prefix: string, n: number): void {
+/** Card `key` is added to a list (`keys`, as it is): it opens, and the others stay as they look now. */
+export function addCard(keys: string[], key: string): void {
   const next = { ...opened };
-  for (let k = 0; k < n; k++) next[`${prefix}${k}`] ??= openByDefault(n);
-  next[`${prefix}${n}`] = true;
-  saveOpened(next);
-}
-
-/** Card k of a list of n is gone: the ones after it move up, and keep their state. */
-export function forgetCard(prefix: string, k: number, n: number): void {
-  const next = { ...opened };
-  for (let j = k; j < n - 1; j++) {
-    const v = opened[`${prefix}${j + 1}`];
-    if (v === undefined) delete next[`${prefix}${j}`];
-    else next[`${prefix}${j}`] = v;
-  }
-  delete next[`${prefix}${n - 1}`];
+  for (const k of keys) next[k] ??= openByDefault(keys.length);
+  next[key] = true;
   saveOpened(next);
 }
 
@@ -122,17 +118,17 @@ export function forgetCard(prefix: string, k: number, n: number): void {
 export const openByDefault = (n: number) => n <= 1;
 
 /** Whether every card of a list is open. */
-export function useAllOpen(prefix: string, n: number): boolean {
+export function useAllOpen(keys: string[]): boolean {
   const o = useOpened();
-  return Array.from({ length: n }, (_, k) => o[`${prefix}${k}`] ?? openByDefault(n)).every(Boolean);
+  return keys.every((k) => o[k] ?? openByDefault(keys.length));
 }
 
 /** "Expand all" / "Collapse all", for a list of more than one card. */
-export function ExpandAll(props: { prefix: string; n: number }) {
-  const all = useAllOpen(props.prefix, props.n);
-  if (props.n < 2) return null;
+export function ExpandAll(props: { keys: string[] }) {
+  const all = useAllOpen(props.keys);
+  if (props.keys.length < 2) return null;
   return (
-    <button className="btn ghost" onClick={() => setCardsOpen(props.prefix, props.n, !all)}>
+    <button className="btn ghost" onClick={() => setCardsOpen(props.keys, !all)}>
       {all ? "Collapse all" : "Expand all"}
     </button>
   );

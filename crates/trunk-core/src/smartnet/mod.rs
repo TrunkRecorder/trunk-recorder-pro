@@ -118,7 +118,7 @@ mod tests {
     /// that call's FM voice (a 1 kHz tone) on its channel → a recorded FM call.
     #[test]
     fn engine_records_an_analog_grant() {
-        use crate::trunk::{Engine, EngineConfig, Event, SmartnetConfig, SourceConfig, SystemConfig};
+        use crate::trunk::{Engine, EngineConfig, Event, SmartnetConfig, SourceConfig, SiteConfig, SystemConfig};
         use std::f64::consts::PI;
         let (fs, center) = (240_000.0, 460_000_000.0);
         // OBT: chan 380 = 459.0 MHz, 10 kHz steps; CC 460.03 (chan 483), voice 459.96 (chan 476).
@@ -154,15 +154,15 @@ mod tests {
             })
             .collect();
         let cfg = EngineConfig {
-            systems: vec![SystemConfig {
+            systems: vec![SystemConfig::trunked("sys1", vec![SiteConfig {
                 control_channels: vec![cc_hz],
                 protocol: crate::trunk::Protocol::SmartNet(SmartnetConfig { bandplan, analog_default: false }),
                 ..Default::default()
-            }],
+            }])],
             sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
             ..Default::default()
         };
-        let mut e = Engine::new(cfg).unwrap();
+        let e = Engine::new(cfg).unwrap();
         for chunk in iq.chunks(4096) {
             e.push_iq(0, chunk);
         }
@@ -171,7 +171,7 @@ mod tests {
         let done: Vec<_> = events.iter().filter_map(|ev| if let Event::Concluded(k) = ev { Some(k) } else { None }).collect();
         assert_eq!(done.len(), 1, "{:?}", events.iter().filter(|e| !matches!(e, Event::Audio { .. })).collect::<Vec<_>>());
         let k = done[0];
-        assert!(k.call.analog && k.call.talkgroup == 0x1230 && k.call.freq_hz == 459_960_000, "{:?}", k.call);
+        assert!(k.call.voice.analog() && k.call.talkgroup == 0x1230 && k.call.freq_hz == 459_960_000, "{:?}", k.call);
         let secs = k.audio.len() as f64 / 8000.0;
         assert!(secs > 1.5, "{secs:.2} s of audio");
         // The tone is there: Goertzel at 1 kHz carries most of the power.

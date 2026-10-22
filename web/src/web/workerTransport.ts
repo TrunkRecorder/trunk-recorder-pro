@@ -5,10 +5,13 @@
 import { decodeAudioFrame, type AudioChunk, type Config, type FromRecorder, type ToRecorder } from "../protocol.ts";
 import type { CallExt, Transport } from "../transport.ts";
 import { defaultConfig, storedConfig } from "../config.ts";
+import { oldTalkgroups } from "../migrate.ts";
 import type { FromWorker, ToWorker } from "./engine.worker.ts";
 import { callBlob } from "./opfs.ts";
 
 const CONFIG_KEY = "trp.config";
+/** Each system's talkgroup file, by short name: kept beside the config, not in it. */
+const TALKGROUPS_KEY = "trp.talkgroups";
 
 function loadConfig(): Config {
   try {
@@ -20,10 +23,29 @@ function loadConfig(): Config {
   return defaultConfig();
 }
 
+function loadTalkgroups(): Record<string, string> {
+  try {
+    const kept = JSON.parse(localStorage.getItem(TALKGROUPS_KEY) ?? "{}") as Record<string, string>;
+    // An older config's, moved out of it (migrate.ts).
+    const old = oldTalkgroups(JSON.parse(localStorage.getItem(CONFIG_KEY) ?? "{}"));
+    return { ...old, ...kept };
+  } catch {
+    return {};
+  }
+}
+
 export const RTL_USB_FILTERS = [
   { vendorId: 0x0bda, productId: 0x2838 },
   { vendorId: 0x0bda, productId: 0x2832 },
 ];
+
+function saveConfig(c: Config): void {
+  try {
+    localStorage.setItem(CONFIG_KEY, JSON.stringify(c));
+  } catch {
+    /* not persisted; still used this session */
+  }
+}
 
 export class WorkerTransport implements Transport {
   readonly kind = "web" as const;
@@ -32,6 +54,7 @@ export class WorkerTransport implements Transport {
   onConnection: (connected: boolean) => void = () => {};
   private worker: Worker;
   private files: (File | null)[] = [];
+  private talkgroups: Record<string, string> = {};
 
   constructor() {
     this.worker = new Worker(new URL("./engine.worker.ts", import.meta.url), { type: "module" });
@@ -40,10 +63,15 @@ export class WorkerTransport implements Transport {
       if ("audio" in d) {
         const a = decodeAudioFrame(d.audio);
         if (a) this.onAudio(a);
-      } else this.onMessage(d.msg);
+      } else {
+        // The recorder changed the config itself (a call sign heard on the air): kept.
+        if (d.msg.type === "config") saveConfig(d.msg.config);
+        this.onMessage(d.msg);
+      }
     };
     this.worker.onerror = (e) => this.onMessage({ type: "error", message: `Engine worker crashed: ${e.message}` });
-    this.post({ type: "init", config: loadConfig() });
+    this.talkgroups = loadTalkgroups();
+    this.post({ type: "init", config: loadConfig(), talkgroups: this.talkgroups });
     queueMicrotask(() => this.onConnection(true));
   }
 
@@ -52,24 +80,16 @@ export class WorkerTransport implements Transport {
   }
 
   send(msg: ToRecorder): void {
-    if (msg.type === "setConfig") {
+    if (msg.type === "setTalkgroups") {
+      if (msg.csv.trim()) this.talkgroups[msg.system] = msg.csv;
+      else delete this.talkgroups[msg.system];
       try {
-        localStorage.setItem(CONFIG_KEY, JSON.stringify(msg.config));
+        localStorage.setItem(TALKGROUPS_KEY, JSON.stringify(this.talkgroups));
       } catch {
         /* not persisted; still used this session */
       }
     }
-    // Desktop-only (no plugins in the browser either).
-    if (msg.type === "quit" || msg.type === "findRadios" || msg.type === "channelFile" || msg.type === "listDir" || msg.type === "readTrConfig") return;
-    if (msg.type === "unlockKeys" || msg.type === "lockKeys") return;
-    if (
-      msg.type === "plugins" ||
-      msg.type === "addPlugin" ||
-      msg.type === "removePlugin" ||
-      msg.type === "pluginStore" ||
-      msg.type === "installPlugin"
-    )
-      return;
+    if (msg.type === "setConfig") saveConfig(msg.config);
     if (msg.type === "start" || msg.type === "surveyStart" || msg.type === "profileSource") this.post({ type: "files", files: this.files });
     this.post(msg);
   }

@@ -25,19 +25,20 @@ the easiest way to set up a VHF or UHF system.
 To add one by hand, click **Add a system** on **Setup** → **Systems**, set **Type** to
 **SmartNet / SmartZone**, and fill in:
 
-- **Control channels, MHz**: the control channel, then the alternates ("Later ones are
-  fallbacks").
-- **Band plan**: see below.
 - **Voice of unknown talkgroups**: see [Analog and digital voice](#analog-and-digital-voice).
-- **P25 voice modulation**: how the system's P25 voice channels are modulated. It works as on a
-  P25 system ([Modulation](p25.md#modulation-auto-c4fm-or-cqpsk)); **Auto (both receivers)** is
-  safe. It doesn't apply to the control channel or to analog calls.
 - **Talkgroups**: see [Talkgroups and units](talkgroups-and-units.md).
+- On its site, under **Sites** (open it):
+  - **Control channels, MHz**: the control channel, then the alternates ("Later ones are
+    fallbacks").
+  - **Band plan**: see below.
+  - **P25 voice modulation**: how the system's P25 voice channels are modulated. It works as on a
+    P25 system ([Modulation](p25.md#modulation-auto-c4fm-or-cqpsk)); **Auto (both receivers)** is
+    safe. It doesn't apply to the control channel or to analog calls.
 
 An 800 MHz system in the config file (frequencies in Hz):
 
 ```json
-{ "shortName": "county", "type": "smartnet", "controlChannelsHz": [856112500], "bandplan": "800_reband" }
+{ "shortName": "county", "type": "smartnet", "sites": [{ "controlChannelsHz": [856112500], "bandplan": "800_reband" }] }
 ```
 
 ## Band plans
@@ -79,12 +80,14 @@ WMATA's UHF system, for example:
 {
   "shortName": "wmata",
   "type": "smartnet",
-  "controlChannelsHz": [496437500],
-  "bandplan": "400_custom",
-  "bandplanBaseHz": 489087500,
-  "bandplanSpacingHz": 25000,
-  "bandplanOffset": 380,
-  "bandplanHighHz": 496612500
+  "sites": [{
+    "controlChannelsHz": [496437500],
+    "bandplan": "400_custom",
+    "bandplanBaseHz": 489087500,
+    "bandplanSpacingHz": 25000,
+    "bandplanOffset": 380,
+    "bandplanHighHz": 496612500
+  }]
 }
 ```
 
@@ -134,7 +137,7 @@ noise.
   **Talkgroups not in the talkgroup file** off), and the call JSON lists the patched talkgroups.
   The **Decode** page shows the patches standing now.
 - **Site lock.** A SmartNet control channel announces a **System ID** (and on some VHF/UHF
-  systems a **Site**). The **Site lock** fields on the system card take the System ID in hex. See
+  systems a **Site**). The **Site lock** fields on each site's card take the System ID in hex. See
   [Several systems and sites](multi-site.md#site-lock).
 
 ## What the dashboard shows
@@ -145,7 +148,7 @@ lost** (OSWs that failed their checksum), **Deviation** (the control channel's t
 **Voice lost** for its P25 calls. The badge reads **SmartNet · 2FSK**. The system's detail adds the
 frequencies table, channels open now and patches.
 
-On the **Calls** page, an analog call shows `FM` after its frequency.
+On a system's page under **Radio system**, an analog call shows `FM` after its frequency.
 
 ## Diagnostic tools
 

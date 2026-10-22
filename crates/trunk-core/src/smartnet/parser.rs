@@ -13,6 +13,7 @@ use std::collections::{HashMap, VecDeque};
 
 use super::osw::Osw;
 use crate::trunk::message::{Message, MessageType, Patch};
+use crate::trunk::Voice;
 
 /// Three-OSW messages, two idles slipped in, and a reset marker.
 const QUEUE_SIZE: usize = 6;
@@ -203,7 +204,7 @@ impl Parser {
         m.source = src.map_or(-1, |s| s as i64);
         m.encrypted = encrypted;
         m.emergency = emergency;
-        m.analog = analog;
+        m.voice = if analog { Voice::Fm } else { Voice::P25 };
         m.meta = format!(
             "{} tg {tg} {:.5} MHz{}{}{}{}",
             if kind == MessageType::Grant { "grant" } else { "update" },
@@ -515,10 +516,10 @@ mod tests {
         );
         let g: Vec<&Message> = out.iter().filter(|m| m.kind == MessageType::Grant).collect();
         assert_eq!(g.len(), 1);
-        assert_eq!((g[0].talkgroup, g[0].freq_hz, g[0].source, g[0].analog), (0x8050, 496_462_500, 40020, false));
+        assert_eq!((g[0].talkgroup, g[0].freq_hz, g[0].source, g[0].voice.analog()), (0x8050, 496_462_500, 40020, false));
         let u: Vec<&Message> = out.iter().filter(|m| m.kind == MessageType::Update).collect();
         assert_eq!(u.len(), 1);
-        assert!(!u[0].analog, "update inherits the grant's mode");
+        assert!(!u[0].voice.analog(), "update inherits the grant's mode");
     }
 
     #[test]
@@ -535,7 +536,7 @@ mod tests {
                 Osw { addr: 0x1f00, grp: false, cmd: 0x030 },
             ],
         );
-        let g: Vec<(u32, u64, bool, bool)> = out.iter().filter(|m| m.kind == MessageType::Grant).map(|m| (m.talkgroup, m.freq_hz, m.analog, m.encrypted)).collect();
+        let g: Vec<(u32, u64, bool, bool)> = out.iter().filter(|m| m.kind == MessageType::Grant).map(|m| (m.talkgroup, m.freq_hz, m.voice.analog(), m.encrypted)).collect();
         assert_eq!(g, vec![(0x0210, 851_412_500, true, false), (0x0220, 851_812_500, false, true)]);
         assert_eq!(p.sys_id, Some(0x0abc));
         assert_eq!(p.cc_hz, Some(851_012_500 + 0x30 * 25_000));

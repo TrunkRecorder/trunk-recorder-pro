@@ -39,6 +39,10 @@ const EWMA: f32 = 0.1;
 pub struct Tg {
     pub first: i64,
     pub last: i64,
+    /// The alpha tag its last named call carried: what it's called when
+    /// neither a row nor the talkgroup file names its number (a conventional
+    /// row that files under the air's talkgroup names every one it hears).
+    pub name: String,
     pub calls: u32,
     pub secs: f32,
     /// Calls that were encrypted.
@@ -48,6 +52,27 @@ pub struct Tg {
     pub ciphers: Vec<(u8, u16, u32, i64)>,
     /// (hour = Unix s / 3600, calls, seconds), oldest first, last week only.
     pub hours: VecDeque<(i64, (u32, f32))>,
+}
+
+impl Tg {
+    /// A call of it began or ended: keep the name it carried, if any.
+    fn note_name(&mut self, c: &Call) {
+        if let Some(t) = c.talkgroup_info.as_ref().filter(|t| !t.alpha_tag.is_empty()) {
+            if t.alpha_tag != self.name {
+                self.name = t.alpha_tag.clone();
+            }
+        }
+    }
+}
+
+/// What talkgroup `tg` of system `name` is called: by a conventional row or
+/// the talkgroup file ([`Names::tg`]), else as its last named call was.
+fn tg_alpha(name: &str, s: &SystemRadio, tg: u32, names: &Names) -> String {
+    (names.tg)(name, tg)
+        .map(|i| i.alpha_tag)
+        .filter(|a| !a.is_empty())
+        .or_else(|| s.tgs.get(&tg).map(|g| g.name.clone()))
+        .unwrap_or_default()
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -216,6 +241,7 @@ impl Registry {
             let new = !s.tgs.contains_key(&c.talkgroup);
             let g = s.tgs.entry(c.talkgroup).or_insert_with(|| Tg { first: t, ..Default::default() });
             g.last = t;
+            g.note_name(c);
             firsts.tg = new && base;
         }
         for src in &c.sources {
@@ -237,6 +263,7 @@ impl Registry {
         if !c.unit_to_unit {
             let g = s.tgs.entry(c.talkgroup).or_insert_with(|| Tg { first: start, ..Default::default() });
             g.last = t;
+            g.note_name(c);
             g.calls += 1;
             g.secs += secs;
             g.enc += c.encrypted as u32;
@@ -319,7 +346,7 @@ impl Registry {
                 }
                 None
             }
-            MessageType::UuVGrant | MessageType::UuAnsReq => {
+            MessageType::UuVGrant | MessageType::UuAnsReq | MessageType::PhoneGrant => {
                 let s = self.sys(system, t);
                 s.unit(unit, t);
                 if m.talkgroup != 0 {
@@ -341,13 +368,13 @@ impl Registry {
     }
 
     /// A recorded call's file (Trunk Recorder's call JSON): how its frequency decoded.
-    pub fn concluded(&mut self, system: &str, record: &Value, t: i64) {
-        let Some(freq) = record["freq"].as_u64() else { return };
+    pub fn concluded(&mut self, system: &str, record: &trunk_recorder_plugin::CallRecord, t: i64) {
+        let freq = record.freq;
         let (mut frames, mut errors, mut bad) = (0u64, 0u64, 0u64);
-        for i in record["errorList"].as_array().into_iter().flatten() {
-            frames += i["frames"].as_u64().unwrap_or(0);
-            errors += i["error_count"].as_u64().unwrap_or(0);
-            bad += i["bad_frames"].as_u64().unwrap_or(0);
+        for i in &record.error_list {
+            frames += i.frames;
+            errors += i.error_count;
+            bad += i.bad_frames;
         }
         let s = self.sys(system, t);
         let f = s.freqs.entry(freq).or_default();
@@ -360,9 +387,9 @@ impl Registry {
         f.frames += frames;
         f.errors += errors;
         f.bad += bad;
-        f.snr = ewma(f.snr, record["snr"].as_f64());
-        f.ferr = ewma(f.ferr, record["freq_error"].as_f64());
-        f.clean = ewma(f.clean, record["clean_voice_pct"].as_f64());
+        f.snr = ewma(f.snr, record.snr);
+        f.ferr = ewma(f.ferr, Some(record.freq_error as f64));
+        f.clean = ewma(f.clean, record.clean_voice_pct);
         f.last = t;
         bump_hour(&mut f.hours, t.div_euclid(3600), |v: &mut (u32, u64, u64, u64)| {
             v.0 += 1;
@@ -467,11 +494,11 @@ fn tg_row(name: &str, s: &SystemRadio, tg: u32, g: &Tg, now: i64, hours: i64, na
     let (c, sec) = hourly(g, now, hours);
     json!({
         "tg": tg,
-        "alphaTag": info.as_ref().map_or("", |i| i.alpha_tag.as_str()),
+        "alphaTag": tg_alpha(name, s, tg, names),
         "known": info.is_some(),
         "ignore": info.as_ref().is_some_and(|i| i.ignore),
         "first": g.first, "last": g.last,
-        "calls": c.iter().sum::<u32>(), "secs": (sec.iter().sum::<f32>() * 10.0).round() / 10.0,
+        "calls": c.iter().sum::<u32>(), "secs": (sec.iter().sum::<f32>() as f64 * 10.0).round() / 10.0,
         "totalCalls": g.calls,
         "encPct": if g.calls > 0 { (g.enc as f64 * 1000.0 / g.calls as f64).round() / 10.0 } else { 0.0 },
         "new": is_new(s, g.first, now),
@@ -516,7 +543,7 @@ fn unit_row(name: &str, s: &SystemRadio, id: u32, u: &Unit, now: i64, names: &Na
         "unit": id,
         "alias": (names.unit)(name, id).unwrap_or_default(),
         "first": u.first, "last": u.last, "lastTx": if u.last_tx > 0 { Some(u.last_tx) } else { None },
-        "tx": u.tx, "txSecs": (u.tx_secs * 10.0).round() / 10.0,
+        "tx": u.tx, "txSecs": (u.tx_secs as f64 * 10.0).round() / 10.0,
         "aff": u.aff, "affT": if u.aff.is_some() { Some(u.aff_t) } else { None }, "reg": u.reg,
         "tgs": u.tgs,
         "partners": if partners_n > 0 { partners(s, id, partners_n) } else { Vec::new() },
@@ -554,12 +581,12 @@ fn tg_detail(name: &str, s: &SystemRadio, tg: u32, now: i64, hours: i64, names: 
 
 fn unit_detail(name: &str, s: &SystemRadio, id: u32, now: i64, names: &Names) -> Value {
     let Some(u) = s.units.get(&id) else { return json!({ "unit": id, "row": null }) };
-    let tg_name = |tg: u32| (names.tg)(name, tg).map(|i| i.alpha_tag).unwrap_or_default();
+    let tg_name = |tg: u32| tg_alpha(name, s, tg, names);
     let partners = partners(s, id, 24);
     json!({
         "unit": id,
         "row": unit_row(name, s, id, u, now, names, 0),
-        "recent": u.recent.iter().rev().map(|&(t, tg, secs)| json!({ "t": t, "tg": tg, "alphaTag": tg_name(tg), "secs": (secs * 10.0).round() / 10.0 })).collect::<Vec<_>>(),
+        "recent": u.recent.iter().rev().map(|&(t, tg, secs)| json!({ "t": t, "tg": tg, "alphaTag": tg_name(tg), "secs": (secs as f64 * 10.0).round() / 10.0 })).collect::<Vec<_>>(),
         "affiliations": s.affiliations.iter().rev().filter(|a| a.1 == id).take(50).map(|&(t, _, tg)| json!({ "t": t, "tg": tg, "alphaTag": tg_name(tg) })).collect::<Vec<_>>(),
         "tgs": u.tgs.iter().map(|&(tg, n)| json!({ "tg": tg, "alphaTag": tg_name(tg), "n": n })).collect::<Vec<_>>(),
         "partners": partners.iter().map(|&(p, n)| json!({ "unit": p, "alias": (names.unit)(name, p).unwrap_or_default(), "n": n })).collect::<Vec<_>>(),
@@ -594,9 +621,9 @@ fn freqs(s: &SystemRadio, now: i64, hours: i64) -> Value {
                 "allErrPerFrame": if f.frames > 0 { Some((f.errors as f64 / f.frames as f64 * 1000.0).round() / 1000.0) } else { None },
                 "badPct": if fr > 0 { Some((bd as f64 * 1000.0 / fr as f64).round() / 10.0) } else { None },
                 "allBadPct": if f.frames > 0 { Some((f.bad as f64 * 1000.0 / f.frames as f64).round() / 10.0) } else { None },
-                "snr": f.snr.map(|v| (v * 10.0).round() / 10.0),
+                "snr": f.snr.map(|v| (v as f64 * 10.0).round() / 10.0),
                 "freqError": f.ferr.map(|v| v.round()),
-                "clean": f.clean.map(|v| (v * 10.0).round() / 10.0),
+                "clean": f.clean.map(|v| (v as f64 * 10.0).round() / 10.0),
                 "last": f.last,
                 "hourly": spark,
             })
@@ -612,7 +639,7 @@ fn summary(name: &str, s: &SystemRadio, now: i64, names: &Names) -> Value {
         .tgs
         .iter()
         .filter(|(_, g)| is_new(s, g.first, now))
-        .map(|(k, g)| json!({ "tg": k, "first": g.first, "alphaTag": (names.tg)(name, *k).map(|i| i.alpha_tag).unwrap_or_default() }))
+        .map(|(k, g)| json!({ "tg": k, "first": g.first, "alphaTag": tg_alpha(name, s, *k, names) }))
         .collect();
     let unknown = s.tgs.iter().filter(|(k, g)| g.last >= day && (names.tg)(name, **k).is_none()).count();
     json!({
@@ -687,12 +714,37 @@ mod tests {
     }
 
     #[test]
+    fn a_talkgroup_nothing_names_is_named_as_its_calls_were() {
+        // A conventional catch-all that files under the air's talkgroup names every one it hears.
+        let mut r = Registry::default();
+        let t0 = 1_700_000_000;
+        let mut c = call(7, &[], 0.0, 2.0);
+        c.talkgroup_info = Some(trunk_core::trunk::Talkgroup { number: 7, alpha_tag: "Townville (other)".into(), ..Default::default() });
+        r.call_start("conv", &c, t0);
+        r.call_end("conv", &c, t0 + 2);
+        // A later call that carried no name keeps it.
+        c.talkgroup_info = None;
+        r.call_end("conv", &c, t0 + 5);
+        let (tg, unit) = names();
+        let n = Names { tg: &tg, unit: &unit };
+        let q = r.query(&json!({ "what": "talkgroups", "system": "conv", "hours": 24 }), t0 + 10, &n);
+        assert_eq!((q["rows"][0]["alphaTag"].as_str(), q["rows"][0]["known"].as_bool()), (Some("Townville (other)"), Some(false)));
+    }
+
+    #[test]
     fn affiliations_and_saving() {
         let mut r = Registry::default();
         let m = Message { kind: MessageType::Affiliation, source: 42, talkgroup: 100, ..Default::default() };
         assert_eq!(r.message("x", &m, 10), Some((42, 100)));
         assert_eq!(r.message("x", &m, 11), None, "the same again isn't news");
-        let rec = json!({ "freq": 851_000_000u64, "snr": 20.0, "freq_error": -30, "clean_voice_pct": 98.0, "errorList": [{ "frames": 100, "error_count": 5, "bad_frames": 1 }] });
+        let rec = trunk_recorder_plugin::CallRecord {
+            freq: 851_000_000,
+            snr: Some(20.0),
+            freq_error: -30,
+            clean_voice_pct: Some(98.0),
+            error_list: vec![trunk_recorder_plugin::ErrorInterval { frames: 100, error_count: 5, bad_frames: 1, ..Default::default() }],
+            ..Default::default()
+        };
         r.concluded("x", &rec, 20);
         let saved = r.take_dirty();
         assert_eq!(saved.len(), 1);
