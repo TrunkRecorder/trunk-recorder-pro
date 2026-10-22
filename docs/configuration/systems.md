@@ -349,7 +349,7 @@ It comes in two forms:
 - **With a header row**, if the first cell is `Decimal` (or RadioReference's `DEC`). These columns
   are recognised, in any order and any case: `Decimal`, `Hex`, `Mode`, `Alpha Tag` (or `AlphaTag`),
   `Description`, `Tag`, `Category` (or `Group`), `Priority`, `Preferred NAC`, `Preferred Site`,
-  `Ignore`. Others are ignored.
+  `Ignore`, `Send To`. Others are ignored.
 - **Without a header**, the columns are, in order:
   `Decimal,Hex,Mode,Alpha Tag,Description,Tag,Group[,Priority]`.
 
@@ -369,6 +369,7 @@ Parsing:
 | `Ignore` | `true`, `yes`, `y`, `1`, `x` or `ignore` (any case): never record |
 | `Preferred Site` | Multi-site: a site's `name` (a site with none: the system's `shortName`). Its copy of a call is kept when it has at least 90 % of the best copy's clean audio |
 | `Preferred NAC` | The same, by the site's NAC, or by RFSS and site written `RRRRssss` (RFSS 1, site 23: `10023`) |
+| `Send To` | The plugins its calls go to, separated by `;` (`rdioscanner`, `openmhz;rdioscanner`; `Rdio Scanner` works too). Empty: every plugin. `none`: no plugin. See [Send To](plugins.md#send-to-which-plugins-get-which-calls) |
 
 A talkgroup not in the file is still recorded unless `recordUnknown` is off; see
 [recording.md](recording.md#recording-keys). Changes to the talkgroup file apply at once, even while

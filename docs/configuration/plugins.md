@@ -143,10 +143,52 @@ on every system** below the cards holds the other top-level rules. A system's ca
 delays** under Plugins for its own, with what they come to for each plugin. The Plugins page shows
 how many calls are waiting for each plugin.
 
+## Send To: which plugins get which calls
+
+Every plugin is sent every call, unless a talkgroup or channel names the plugins its calls go to:
+
+- a system's [talkgroup file](systems.md#talkgroup-file) (`<shortName>.talkgroups.csv` beside the
+  config, trunked or conventional): a `Send To` column. In the interface, a trunked talkgroup's
+  page (**Radio system** → the system → the talkgroup) has **Send to**, a box for each plugin that
+  takes calls; it writes the column (adding it, and a row for a talkgroup not in the file). The
+  system's talkgroup list marks each talkgroup that goes only to some plugins;
+- a conventional channel: `sendTo` in the config, or the `Send To` column of its
+  [channel file](conventional.md#csv-format). In Setup, the conventional channel table has a **Send
+  to** column, with a box for each plugin that takes calls.
+
+A `Send To` cell lists plugin ids separated by `;` (`openmhz;rdioscanner`). Names are read loosely:
+`OpenMHz`, `Rdio Scanner` and `rdio-scanner` are `openmhz` and `rdioscanner`. One copy of a plugin
+is `rdioscanner#2`; `rdioscanner` covers every copy. Empty is every plugin, as before; `none` is no
+plugin (the call is still recorded and kept as the Keep settings say).
+
+Send To decides for plugins that take finished calls (OpenMHz, Rdio Scanner, Broadcastify…). A
+plugin that only streams live audio, such as simplestream, isn't affected: it gets every call and
+streams what its own settings say.
+
+For a talkgroup that isn't sent to a plugin, that plugin gets nothing about it: not the call when
+it ends, its start and end, its live audio, or unit events on it. The archive doesn't wait for the
+plugin's answer on those calls, so **Keep audio** and **Keep call JSON** apply as they would with
+that plugin not there. Delays are decided after Send To, for the plugins a call goes to.
+
+With this, one set of radios can feed two services whose lists differ. Leave the channels both
+carry as they are, and give the others the one plugin that takes them:
+
+```csv
+TG Number,Frequency,Mode,Alpha Tag,Send To
+1,453.9000,fm,DC911 Disp,
+2,453.9250,fm,DC911 Resp,
+40,154.2500,fm,Town Fire,rdioscanner
+```
+
+Talkgroups 1 and 2 go to OpenMHz and Rdio Scanner; 40 only to Rdio Scanner. A P25 conventional
+channel files its calls under the talkgroup the air names, so its `sendTo` applies to calls filed
+under the channel's own talkgroup only: use the system's talkgroups for the others.
+
 ## When changes apply
 
 A change to the delays applies at once, without restarting the plugins, to the calls already
-waiting too: shortening one lets them go sooner.
+waiting too: shortening one lets them go sooner. A change to Send To (in Setup, a talkgroup file, or
+a channel file on **Reload**) applies at once to calls from then on.
 
 Changing any other plugin setting, recorder-wide or per system, or `recording.m4a`, restarts the running
 plugins at once with the new settings, even while recording. The OpenMHz, Broadcastify, Rdio Scanner
