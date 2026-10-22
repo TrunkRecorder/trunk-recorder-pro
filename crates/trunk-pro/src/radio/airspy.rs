@@ -336,22 +336,8 @@ fn stream_once(source: usize, cfg: &AirspyConfig, tx: &SyncSender<SourceMsg>, st
         }
         check(a, "sample rate", (a.set_samplerate)(d.dev, want))?;
         d.tune(cfg.center_hz)?;
-        match cfg.gain {
-            AirspyGain::Linearity(g) => check(a, "gain", (a.set_linearity_gain)(d.dev, g.min(21)))?,
-            AirspyGain::Sensitivity(g) => check(a, "gain", (a.set_sensitivity_gain)(d.dev, g.min(21)))?,
-            AirspyGain::Manual { lna, mixer, vga } => {
-                check(a, "LNA AGC off", (a.set_lna_agc)(d.dev, 0))?;
-                check(a, "mixer AGC off", (a.set_mixer_agc)(d.dev, 0))?;
-                check(a, "LNA gain", (a.set_lna_gain)(d.dev, lna.min(14)))?;
-                check(a, "mixer gain", (a.set_mixer_gain)(d.dev, mixer.min(15)))?;
-                check(a, "VGA gain", (a.set_vga_gain)(d.dev, vga.min(15)))?;
-            }
-            AirspyGain::Agc { vga } => {
-                check(a, "LNA AGC", (a.set_lna_agc)(d.dev, 1))?;
-                check(a, "mixer AGC", (a.set_mixer_agc)(d.dev, 1))?;
-                check(a, "VGA gain", (a.set_vga_gain)(d.dev, vga.min(15)))?;
-            }
-        }
+        // (As a gain set while running is: a reopened radio comes back the same.)
+        d.set_gain(Gain::Airspy(cfg.gain))?;
         check(a, "bias-T", (a.set_rf_bias)(d.dev, cfg.bias_tee as u8))?;
         // (Older firmware can't pack: it streams unpacked then, as it always did.)
         if cfg.packing && (a.set_packing)(d.dev, 1) != 0 {
