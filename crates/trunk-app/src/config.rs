@@ -2107,7 +2107,14 @@ impl Config {
             }
         }
         for v in &self.conventional {
-            for (c, tg) in v.channels.iter().zip(channel_talkgroups(&v.channels)) {
+            for (c, default) in v.channels.iter().zip(default_talkgroups(&v.channels)) {
+                // A digital row with no TG Number files calls under the air's talkgroup:
+                // that talkgroup's Send To is the talkgroup file's.
+                let tg = match c.talkgroup {
+                    Some(t) => t,
+                    None if matches!(c.mode, ChannelMode::Fm | ChannelMode::Am) => default,
+                    None => continue,
+                };
                 if let Some(p) = &c.send_to {
                     out.insert((v.short_name.clone(), tg), p.clone());
                 }
