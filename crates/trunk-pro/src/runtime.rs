@@ -358,6 +358,16 @@ impl Runner {
         Some(g)
     }
 
+    /// The sources went from `old` to `new` in Setup: each changed one, by its
+    /// place, with the gain it took at once ([`Runner::live_source`]) or None.
+    /// Sources added, removed or moved wait for the next start (all of them).
+    pub fn live_sources(&self, old: &[Source], new: &[Source]) -> Vec<(usize, Option<Gain>)> {
+        if old.len() != new.len() {
+            return vec![];
+        }
+        old.iter().zip(new).enumerate().filter(|(_, (o, n))| o != n).map(|(i, (o, n))| (i, self.live_source(i, o, n))).collect()
+    }
+
     /// The engine has stopped by itself (every capture file ended).
     pub fn finished(&self) -> bool {
         self.threads.last().is_some_and(|t| t.is_finished())
@@ -1306,5 +1316,32 @@ mod live_tests {
         assert_eq!(live_gain(&air_at(852e6), &air_at(853e6)), None, "an Airspy retune waits");
         let rtl = src("rtlsdr", json!({ "serial": "", "centerHz": 453e6, "rateHz": 2.4e6, "gainDb": 30, "ppm": 0 }));
         assert_eq!(live_gain(&rtl, &air_at(852e6)), None, "another kind of radio");
+    }
+
+    #[test]
+    fn several_airspys_each_take_their_own_gain() {
+        let air = |serial: &str, lna: u8| src("airspy", json!({ "serial": serial, "centerHz": 852e6, "rateHz": 6e6, "gainMode": "manual", "lnaStep": lna, "ppm": 0 }));
+        let lin = |serial: &str, step: u8| src("airspy", json!({ "serial": serial, "centerHz": 852e6, "rateHz": 6e6, "gainMode": "linearity", "gainStep": step, "ppm": 0 }));
+        let r = Runner { stop: Arc::default(), threads: vec![], controls: (0..3).map(|_| Arc::default()).collect() };
+        let pending = |i: usize| *r.controls[i].gain.lock().unwrap();
+        let old = [air("A1", 10), air("B2", 10), air("C3", 10)];
+        // The second's LNA: only it.
+        let one = r.live_sources(&old, &[air("A1", 10), air("B2", 14), air("C3", 10)]);
+        assert_eq!(one, vec![(1, Some(Gain::Airspy(airspy::AirspyGain::Manual { lna: 14, mixer: 10, vga: 10 })))]);
+        assert_eq!((pending(0), pending(2)), (None, None), "the others are left alone");
+        r.controls[1].take();
+        // Two in one save, one of them to another mode: each its own.
+        let two = r.live_sources(&old, &[lin("A1", 18), air("B2", 10), air("C3", 6)]);
+        assert_eq!(two.len(), 2);
+        assert_eq!(pending(0), Some(Gain::Airspy(airspy::AirspyGain::Linearity(18))));
+        assert_eq!(pending(1), None);
+        assert_eq!(pending(2), Some(Gain::Airspy(airspy::AirspyGain::Manual { lna: 6, mixer: 10, vga: 10 })));
+        (r.controls[0].take(), r.controls[2].take());
+        // Two swapped in Setup: another radio in each place, not a gain change.
+        assert_eq!(r.live_sources(&old, &[air("B2", 10), air("A1", 10), air("C3", 10)]), vec![(0, None), (1, None)]);
+        assert!((0..3).all(|i| pending(i).is_none()));
+        // One added: everything waits for the start.
+        assert!(r.live_sources(&old, &[air("A1", 12), air("B2", 10), air("C3", 10), air("D4", 10)]).is_empty());
+        assert!(pending(0).is_none());
     }
 }
