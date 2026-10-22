@@ -7,8 +7,8 @@
 //! indexes that layout.
 
 use super::fec::{
-    golay23_decode, golay23_decode_soft, golay23_encode, golay24_decode, hamming1063_decode, hamming15_decode, hamming15_decode_soft, hamming15_encode,
-    rs_decode_erasures, Fec,
+    golay18_codewords, golay23_decode, golay23_decode_soft, golay23_encode, golay24_codewords, golay24_decode, hamming1063_codewords,
+    hamming1063_decode, hamming15_decode, hamming15_decode_soft, hamming15_encode, ml_decode, rs_decode_erasures, rs_decode_gmd, Fec,
 };
 use super::frame::Frame;
 use super::lc::{self, LinkControl};
@@ -38,8 +38,10 @@ pub struct ImbeParams {
 fn extract(cw: &[u8], begin: usize, end: usize) -> u32 {
     cw[begin..end].iter().fold(0, |v, &b| (v << 1) | (b & 1) as u32)
 }
+/// The IMBE whitening generator: the next `nbits` bits, from state `pr`
+/// (ProVoice whitens with it too).
 #[inline]
-fn pngen(pr: &mut u32, nbits: u32) -> u32 {
+pub(crate) fn pngen(pr: &mut u32, nbits: u32) -> u32 {
     let mut n = 0;
     for i in (0..nbits).rev() {
         *pr = (173 * *pr + 13849) & 0xffff;
@@ -234,17 +236,38 @@ pub(crate) fn bytes_to_hexbits(bytes: &[u8]) -> Vec<u8> {
         .collect()
 }
 
-/// An LDU's 24 Hamming(10,6) hexbits (from 39, as RS(63,·) shortened), and
-/// those whose word has more errors than it can correct: erasures.
-fn ldu_hexbits(fb: &[u8]) -> ([u8; 63], Vec<usize>) {
+/// Parity symbols the soft RS decoders keep spare on a try with erasures
+/// (see [`rs_decode_gmd`]), so a word too damaged to decode is refused
+/// rather than rewritten to the nearest codeword. LC has no other check
+/// behind it.
+const LC_SPARE: usize = 4;
+const ES_SPARE: usize = 4;
+const HDU_SPARE: usize = 6;
+
+/// A small code's word read from frame-body bits `at` (MSB first) and,
+/// when soft, their reliabilities.
+fn word(f: &Frame, at: &[u16], soft: bool) -> (u32, Option<Vec<f32>>) {
+    let cw = at.iter().fold(0, |cw, &k| (cw << 1) | bit(&f.raw, k as usize));
+    let w = (soft && !f.raw_soft.is_empty()).then(|| at.iter().map(|&k| f.raw_soft.get(k as usize).copied().unwrap_or(0.0)).collect());
+    (cw, w)
+}
+
+/// An LDU's 24 Hamming(10,6) hexbits (from 39, as RS(63,·) shortened), the
+/// erasures (hard: words with more errors than the code corrects) and each
+/// hexbit's reliability (soft: maximum likelihood's margin).
+fn ldu_hexbits(f: &Frame, soft: bool) -> ([u8; 63], Vec<usize>, Option<[f32; 63]>) {
     let mut hb = [0u8; 63];
+    let mut rel = [f32::INFINITY; 63];
     let mut erasures = Vec::new();
-    let mut k = 0;
+    let mut is_soft = false;
     for i in 0..24 {
-        let mut cw = 0u32;
-        for _ in 0..10 {
-            cw = (cw << 1) | bit(fb, LDU_LS_DATA_BITS[k] as usize);
-            k += 1;
+        let (cw, w) = word(f, &LDU_LS_DATA_BITS[10 * i..10 * i + 10], soft);
+        if let Some(w) = w {
+            let r = ml_decode(cw, &w, 10, hamming1063_codewords());
+            hb[39 + i] = r.data as u8;
+            rel[39 + i] = r.margin;
+            is_soft = true;
+            continue;
         }
         match hamming1063_decode(cw >> 4, cw & 0x0f) {
             Some(h) => hb[39 + i] = h,
@@ -254,19 +277,29 @@ fn ldu_hexbits(fb: &[u8]) -> ([u8; 63], Vec<usize>) {
             }
         }
     }
-    (hb, erasures)
+    (hb, erasures, is_soft.then_some(rel))
 }
 
-/// LDU1 link control: RS(24,12,13).
-pub fn decode_ldu1_lc(fb: &[u8]) -> Option<LinkControl> {
-    let (mut hb, erasures) = ldu_hexbits(fb);
-    (rs_decode_erasures(&mut hb, 12, &erasures, 39) >= 0).then(|| lc::parse(&hexbits_to_bytes(&hb, 39)))
+/// RS errors-and-erasures (hard: the words found too damaged erased), or
+/// GMD when there are reliabilities.
+fn rs(hb: &mut [u8; 63], nroots: usize, erasures: &[usize], first: usize, rel: Option<[f32; 63]>, spare: usize) -> bool {
+    match rel {
+        Some(rel) => rs_decode_gmd(hb, nroots, first, &rel, spare) >= 0,
+        None => rs_decode_erasures(hb, nroots, erasures, first) >= 0,
+    }
+}
+
+/// LDU1 link control: RS(24,12,13). `soft`: from the frame's bit
+/// reliabilities, when it has them.
+pub fn decode_ldu1_lc(f: &Frame, soft: bool) -> Option<LinkControl> {
+    let (mut hb, erasures, rel) = ldu_hexbits(f, soft);
+    rs(&mut hb, 12, &erasures, 39, rel, LC_SPARE).then(|| lc::parse(&hexbits_to_bytes(&hb, 39)))
 }
 
 /// LDU2 encryption sync: RS(24,16,9).
-pub fn decode_ldu2_es(fb: &[u8]) -> Option<EncryptionSync> {
-    let (mut hb, erasures) = ldu_hexbits(fb);
-    if rs_decode_erasures(&mut hb, 8, &erasures, 39) < 0 {
+pub fn decode_ldu2_es(f: &Frame, soft: bool) -> Option<EncryptionSync> {
+    let (mut hb, erasures, rel) = ldu_hexbits(f, soft);
+    if !rs(&mut hb, 8, &erasures, 39, rel, ES_SPARE) {
         return None;
     }
     let j = 51;
@@ -279,17 +312,21 @@ pub fn decode_ldu2_es(fb: &[u8]) -> Option<EncryptionSync> {
 }
 
 /// HDU: 36 Golay(18,6) hexbits → RS(36,20,17). The (18,6) code is the
-/// (24,12) with its first six bits deleted (BAAA-A §5.7): a correction
-/// there means the word was too damaged, an erasure.
-pub fn decode_hdu(fb: &[u8]) -> Option<HduInfo> {
+/// (24,12) with its first six bits deleted (BAAA-A §5.7): hard, a
+/// correction there means the word was too damaged, an erasure.
+pub fn decode_hdu(f: &Frame, soft: bool) -> Option<HduInfo> {
     let mut hb = [0u8; 63];
+    let mut rel = [f32::INFINITY; 63];
     let mut erasures = Vec::new();
-    let mut k = 0;
+    let mut is_soft = false;
     for i in 0..36 {
-        let mut cw = 0u32;
-        for _ in 0..18 {
-            cw = (cw << 1) | bit(fb, HDU_CODEWORD_BITS[k] as usize);
-            k += 1;
+        let (cw, w) = word(f, &HDU_CODEWORD_BITS[18 * i..18 * i + 18], soft);
+        if let Some(w) = w {
+            let r = ml_decode(cw, &w, 18, golay18_codewords());
+            hb[27 + i] = r.data as u8;
+            rel[27 + i] = r.margin;
+            is_soft = true;
+            continue;
         }
         let r = golay24_decode(cw);
         hb[27 + i] = (r.data & 63) as u8;
@@ -297,7 +334,7 @@ pub fn decode_hdu(fb: &[u8]) -> Option<HduInfo> {
             erasures.push(27 + i);
         }
     }
-    if rs_decode_erasures(&mut hb, 16, &erasures, 27) < 0 {
+    if !rs(&mut hb, 16, &erasures, 27, is_soft.then_some(rel), HDU_SPARE) {
         return None;
     }
     let j = 39;
@@ -314,26 +351,30 @@ pub fn decode_hdu(fb: &[u8]) -> Option<HduInfo> {
     hdu.es.plausible().then_some(hdu)
 }
 
-/// TDULC: 12 Golay(24,12) words, two hexbits each (a word it can't
-/// correct: both erasures) → RS(24,12,13) → link control.
-pub fn decode_tdulc(fb: &[u8]) -> Option<LinkControl> {
+/// TDULC: 12 Golay(24,12) words, two hexbits each (hard: a word it can't
+/// correct, both erasures) → RS(24,12,13) → link control.
+pub fn decode_tdulc(f: &Frame, soft: bool) -> Option<LinkControl> {
     let mut hb = [0u8; 63];
+    let mut rel = [f32::INFINITY; 63];
     let mut erasures = Vec::new();
-    let mut k = 0;
+    let mut is_soft = false;
     for i in (0..=22).step_by(2) {
-        let mut cw = 0u32;
-        for _ in 0..24 {
-            cw = (cw << 1) | bit(fb, HDU_CODEWORD_BITS[k] as usize);
-            k += 1;
-        }
-        let r = golay24_decode(cw);
+        let (cw, w) = word(f, &HDU_CODEWORD_BITS[12 * i..12 * i + 24], soft);
+        let r = match w {
+            Some(w) => {
+                is_soft = true;
+                ml_decode(cw, &w, 24, golay24_codewords())
+            }
+            None => golay24_decode(cw),
+        };
         hb[39 + i] = (r.data >> 6) as u8;
         hb[40 + i] = (r.data & 63) as u8;
+        (rel[39 + i], rel[40 + i]) = (r.margin, r.margin);
         if r.errs < 0 {
             erasures.extend([39 + i, 40 + i]);
         }
     }
-    (rs_decode_erasures(&mut hb, 12, &erasures, 39) >= 0).then(|| lc::parse(&hexbits_to_bytes(&hb, 39)))
+    rs(&mut hb, 12, &erasures, 39, is_soft.then_some(rel), LC_SPARE).then(|| lc::parse(&hexbits_to_bytes(&hb, 39)))
 }
 
 #[cfg(test)]

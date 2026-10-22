@@ -499,6 +499,11 @@ than beside it.
   in the comment is a pair (`conventional`/`nxdn48`, `smartnet`/`fm`); a DMR site's variant
   (Capacity Plus, Tier III) is the site's, not the call's, and stays on the status page. Archive
   path tokens `{nac}` (three hex digits), `{system_type}`, `{voice_mode}`.
+  - **The NAC in hex** (gofaster, after the first round): written first as a number (`"nac": 1090`),
+    while the channel file, Setup's Heard list and RadioReference write `442`. It is now that text,
+    three uppercase hex digits (`"nac": "442"`, `""` for none): the same form everywhere the app
+    shows or reads a NAC, no `0x` (the CSV has none). `color_code` and `ran` stay numbers: they are
+    decimal wherever they are written.
 - **Talkgroup names missing on the Radio page** (gofaster; on `main` too). Rule 3 (names: the
   row's, else the file's) was applied per call, so Listen had them; the server's `NameBook`, which
   names the Radio page's talkgroups, only read talkgroup files. It now also reads the rows

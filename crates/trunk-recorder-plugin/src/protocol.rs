@@ -165,7 +165,7 @@ pub struct SystemInfo {
     /// recorder's systems), its folder, and what users know it by. Every
     /// event carries it.
     pub short_name: String,
-    /// "p25" | "smartnet" | "dmr" | "nxdn" | "conventional"
+    /// "p25" | "smartnet" | "dmr" | "nxdn" | "edacs" | "conventional"
     pub kind: String,
     /// What people call it ("County Public Safety"); empty when the user gave no name.
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -387,8 +387,9 @@ pub struct CallRecord {
     pub talkgroup_group_tag: String,
     pub talkgroup_group: String,
     /// P25: the NAC its voice carried on a conventional channel, its site's
-    /// on a trunked system (-1: none; this recorder's addition).
-    pub nac: i64,
+    /// on a trunked system, in hex as radios and channel files write it
+    /// (`"293"`; empty: none; this recorder's addition).
+    pub nac: String,
     /// DMR: its colour code (-1: none).
     pub color_code: i64,
     /// NXDN: its RAN (-1: none).
@@ -401,11 +402,11 @@ pub struct CallRecord {
     /// "digital" | "digital tdma" | "analog"
     pub audio_type: String,
     /// The kind of system it came on, as [`SystemInfo::kind`] has it: "p25" |
-    /// "smartnet" | "dmr" | "nxdn" | "conventional" (this recorder's addition).
+    /// "smartnet" | "dmr" | "nxdn" | "edacs" | "conventional" (this recorder's addition).
     #[serde(skip_serializing_if = "String::is_empty")]
     pub system_type: String,
     /// What its voice was: "p25" | "p25_phase2" | "dmr" | "nxdn48" | "nxdn96"
-    /// | "fm" | "am" — a conventional channel's `mode`, or a trunked grant's
+    /// | "provoice" | "fm" | "am" — a conventional channel's `mode`, or a trunked grant's
     /// (this recorder's addition).
     #[serde(skip_serializing_if = "String::is_empty")]
     pub voice_mode: String,
@@ -463,7 +464,7 @@ impl Default for CallRecord {
             talkgroup_description: String::new(),
             talkgroup_group_tag: String::new(),
             talkgroup_group: String::new(),
-            nac: -1,
+            nac: String::new(),
             color_code: -1,
             ran: -1,
             tone_mode: "off".into(),

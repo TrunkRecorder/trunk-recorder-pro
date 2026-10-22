@@ -38,6 +38,8 @@ pub enum Voice {
     Fm,
     /// Analog AM (conventional channels).
     Am,
+    /// EDACS ProVoice (9600 baud 2FSK, IMBE 7100).
+    ProVoice,
 }
 
 impl Voice {
@@ -50,6 +52,7 @@ impl Voice {
             Voice::Nxdn(r) => VoiceKind::Nxdn(r),
             Voice::Fm => VoiceKind::Analog,
             Voice::Am => VoiceKind::Am,
+            Voice::ProVoice => VoiceKind::ProVoice,
         }
     }
 
@@ -84,7 +87,7 @@ impl Voice {
     }
 
     /// Its name in the call JSON's `voice_mode`: a conventional row's `mode`
-    /// (`p25`, `dmr`, `nxdn48`, `nxdn96`, `fm`, `am`), or `p25_phase2`.
+    /// (`p25`, `dmr`, `nxdn48`, `nxdn96`, `fm`, `am`), `p25_phase2` or `provoice`.
     pub fn mode_name(self) -> &'static str {
         match self {
             Voice::P25 => "p25",
@@ -93,6 +96,7 @@ impl Voice {
             Voice::Nxdn(r) => r.name(),
             Voice::Fm => "fm",
             Voice::Am => "am",
+            Voice::ProVoice => "provoice",
         }
     }
 

@@ -877,6 +877,8 @@ struct SysHost<'a> {
     site: u16,
     bank: BankConfig,
     keys: Option<Arc<Keyring>>,
+    /// How its analog calls are demodulated ([`ControlChannel::analog`]).
+    analog: AnalogTuning,
 }
 
 impl SysHost<'_> {
@@ -922,7 +924,7 @@ impl SysHost<'_> {
             // Analog squelch: this far above the noise under the channel.
             squelch: s.chz.threshold(prof[slice].max(1e-30), ChannelFilter::noise_bandwidth(), ANALOG_SQUELCH_DB),
             subaudible: false,
-            analog: AnalogTuning::default(),
+            analog: self.analog,
             ignore_hz: Vec::new(),
             keys: self.keys.clone(),
         });
@@ -1099,7 +1101,7 @@ struct Trunk {
 
 impl Trunk {
     fn host<'a>(&self, radio: &'a mut Radio, sys: &SystemConfig) -> SysHost<'a> {
-        SysHost { radio, site: self.site, bank: self.cfg.bank, keys: sys.keys.clone() }
+        SysHost { radio, site: self.site, bank: self.cfg.bank, keys: sys.keys.clone(), analog: self.cc().analog() }
     }
 
     /// A note about this site.

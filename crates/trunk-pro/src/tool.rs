@@ -18,7 +18,7 @@
 //! `tool revoice <call.sdr | call.frames.jsonl> <out.wav> [--profile
 //! enhanced|fixed|mbelib] [--seed 1] [--hard-fec] [--s16]` — vocode a call's
 //! frame capture (the recording setting "Save vocoder frames") again, e.g.
-//! with another vocoder profile; `--hard-fec` uses TIA's repeat thresholds,
+//! with another vocoder profile; `--hard-fec` uses TIA's repeat rule,
 //! `--s16` writes raw 16-bit samples at the vocoder's own scale instead of a
 //! WAV.
 //!
@@ -134,7 +134,7 @@ fn run_p25(a: &Args, mode: &str) {
                     } else {
                         None
                     };
-                    let (lc, es) = if div { (best_lc(&g), best_es(&g)) } else { (decode_ldu1_lc(&f.raw), decode_ldu2_es(&f.raw)) };
+                    let (lc, es) = if div { (best_lc(&g), best_es(&g)) } else { (decode_ldu1_lc(f, soft_fec), decode_ldu2_es(f, soft_fec)) };
                     let line = voice_line(f, chosen.as_ref(), lc, es, st, &mut vocoder, audio_out.as_mut());
                     let _ = writeln!(out, "{line}");
                 }
@@ -255,13 +255,13 @@ fn voice_line(
                 }
             }
         }
-        HDU => match decode_hdu(&f.raw) {
+        HDU => match decode_hdu(f, true) {
             Some(h) => {
                 let _ = write!(s, ",\"hdu\":{{\"algid\":{},\"keyid\":{},\"mi\":\"{}\",\"mfid\":{},\"tgid\":{}}}", h.es.algid, h.es.keyid, hex(&h.es.mi), h.mfid, h.tgid);
             }
             None => s.push_str(",\"hdu\":null"),
         },
-        TDULC => s.push_str(&lc_json("tdulc", decode_tdulc(&f.raw))),
+        TDULC => s.push_str(&lc_json("tdulc", decode_tdulc(f, true))),
         _ => {}
     }
     s.push('}');

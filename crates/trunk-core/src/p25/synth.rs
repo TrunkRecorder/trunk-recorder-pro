@@ -418,12 +418,12 @@ mod tests {
         let duids: Vec<u8> = f.iter().map(|f| f.nid.duid).collect();
         assert_eq!(duids, [HDU, LDU1, LDU2, LDU1, LDU2, LDU1, LDU2, TDU]);
         assert!(f.iter().all(|f| f.nid.nac == 0x293 && f.nid.errors == 0));
-        let h = decode_hdu(&f[0].raw).expect("HDU");
+        let h = decode_hdu(&f[0], true).expect("HDU");
         assert_eq!((h.es, h.tgid, h.mfid), (es(ALGID_AES_256, 0x370E), 1201, 0));
-        let lc = decode_ldu1_lc(&f[1].raw).expect("LC");
+        let lc = decode_ldu1_lc(&f[1], true).expect("LC");
         assert_eq!((lc.lco, lc.opts().map(|o| o.0), lc.group(), lc.source()), (0, Some(0x40), Some(1201), Some(1_234_567)));
         for s in 0..3 {
-            let e = decode_ldu2_es(&f[2 + 2 * s].raw).expect("ES");
+            let e = decode_ldu2_es(&f[2 + 2 * s], true).expect("ES");
             assert_eq!(e, EncryptionSync { mi: t.mi(s + 1).unwrap(), ..es(ALGID_AES_256, 0x370E) });
         }
         // The IMBE words are the ciphertext; clear, they're the voice.
@@ -435,7 +435,7 @@ mod tests {
                 assert_eq!(imbe_params_to_bits(&p.u), t.voice[9 * n + k], "LDU{} frame {k}", n + 1);
             }
         }
-        assert_eq!(decode_hdu(&f[0].raw).unwrap().es.algid, 0x80);
+        assert_eq!(decode_hdu(&f[0], true).unwrap().es.algid, 0x80);
     }
 
     struct Heard {
@@ -554,7 +554,7 @@ mod tests {
                 ldu2[p / 2] ^= 1 << (1 - p % 2);
             }
         }
-        assert!(decode_ldu2_es(&raw(ldu2).raw).is_none());
+        assert!(decode_ldu2_es(&raw(ldu2), true).is_none());
         let h = hear(&frames, Some(keyring(ALGID_ADP, 0x1B50, &[9, 8, 7, 6, 5])), 0.0);
         assert_eq!(h.voice.len(), t.voice.len());
         assert!(h.voice.iter().zip(&t.voice).all(|((b, e), v)| !e && b == v));

@@ -1,6 +1,6 @@
 # Other radios
 
-This page covers using radios other than a current RTL-SDR: USRPs, Airspy R2 / Mini, anything with
+This page covers using radios other than a current RTL-SDR: USRPs, Airspy R2 / Mini, bladeRFs, anything with
 a SoapySDR module, and older RTL-SDR dongles. It explains which driver each needs, how Trunk
 Recorder Pro finds it, and how to check it worked. These radios only work in the desktop app, not
 in the [browser version](browser.md) or the [Docker image](docker.md).
@@ -16,7 +16,8 @@ same download works with or without them:
 |---|---|---|
 | USRP (Ettus / NI) | UHD (`libuhd`) | **USRP** |
 | Airspy R2, Airspy Mini | libairspy | **Airspy** |
-| HackRF, SDRplay, LimeSDR, PlutoSDR, BladeRF, Airspy HF+, older RTL-SDRs, ... | SoapySDR plus the device's module | **SoapySDR** |
+| bladeRF 2.0 micro xA4 / xA9, original bladeRF x40 / x115 | libbladeRF 2.x | **bladeRF** |
+| HackRF, SDRplay, LimeSDR, PlutoSDR, Airspy HF+, older RTL-SDRs, ... | SoapySDR plus the device's module | **SoapySDR** |
 
 The driver is looked for once, when Trunk Recorder Pro starts. **After installing a driver,
 restart Trunk Recorder Pro.** If you choose a source type whose driver wasn't found, **Setup →
@@ -28,6 +29,7 @@ Radios** says what's missing and how to install it.
 |---|---|---|---|
 | USRP | `brew install uhd` | `sudo apt install libuhd-dev uhd-host` | Ettus's UHD installer (puts `uhd.dll` on the `PATH`) |
 | Airspy | `brew install airspy` | `sudo apt install libairspy0` | `airspy.dll` from the airspy-tools release, next to `trunk-pro.exe` |
+| bladeRF | `brew install libbladerf` | `sudo apt install libbladerf2 bladerf-fpga-hostedxa4` (xA9: `bladerf-fpga-hostedxa9`; or Nuand's PPA `ppa:nuandllc/bladerf`) | Nuand's bladeRF installer (`bladeRF.dll`) |
 | SoapySDR | `brew install soapysdr` and the device's module, e.g. `brew install soapyhackrf` | `sudo apt install libsoapysdr0.8` and the device's module, e.g. `soapysdr0.8-module-hackrf` (or `soapysdr0.8-module-all`) | PothosSDR or radioconda |
 
 **USRPs also need UHD's FPGA images**, downloaded once after installing UHD:
@@ -38,7 +40,8 @@ uhd_images_downloader          # sudo uhd_images_downloader on Linux
 
 On Linux, the udev rule from the [Linux](linux.md#dongle-access-udev) package already covers the
 Airspy R2 / Mini and the USB USRPs (B200, B210, B200mini); UHD's and libairspy's own packages
-usually add rules for them as well. Other SoapySDR devices need the udev rules their own packages
+usually add rules for them as well. bladeRFs get theirs from the libbladeRF package
+(`88-nuand-bladerf*.rules`). Other SoapySDR devices need the udev rules their own packages
 install.
 
 On macOS the app can load libraries installed by Homebrew (`/opt/homebrew/lib` or
@@ -47,7 +50,7 @@ On macOS the app can load libraries installed by Homebrew (`/opt/homebrew/lib` o
 ### Checking what was found
 
 ```bash
-trunk-pro devices              # RTL-SDRs, Airspys, which drivers were found, SoapySDR modules and devices
+trunk-pro devices              # RTL-SDRs, Airspys, bladeRFs, which drivers were found, SoapySDR modules and devices
 trunk-pro devices --usrp       # also search for USRPs (it can take a few seconds)
 ```
 
@@ -69,6 +72,7 @@ an environment variable:
 |---|---|
 | `TRUNK_PRO_UHD` | UHD, e.g. `/opt/uhd/lib/libuhd.so.4.6.0` |
 | `TRUNK_PRO_AIRSPY` | libairspy |
+| `TRUNK_PRO_BLADERF` | libbladeRF |
 | `TRUNK_PRO_SOAPY` | SoapySDR |
 
 ```bash
@@ -104,6 +108,18 @@ listed in [Sources](../configuration/sources.md). What's particular to each:
   each a single step from 0 to 21, or **Each stage** to set the LNA (0–14), mixer (0–15) and VGA
   (0–15) yourself. With **Each stage**, **AGC** hands the LNA and mixer to the Airspy's AGC.
 - **Bias-T**: powers an LNA through the antenna cable. Leave it off unless you have one.
+
+### bladeRF
+
+- **bladeRF**: pick it from the list by serial (blank is the first one found). Boards another
+  program already has open are marked; name the serial whenever more than one is plugged in.
+- **Sample rate**: any rate from 0.52 to 61.44 MSPS. Over about 40 MSPS needs USB 3 and a fast CPU.
+- **Gain, dB**: one overall RX gain (bladeRF 2.0: about −15 to 60), or **AGC** for the board's own.
+- **Bandwidth**: the analog low-pass filter; blank follows the sample rate.
+- **Bias-T**: powers an LNA through the antenna cable (bladeRF 2.0 only).
+
+Samples lost over USB are counted from the board's sample timestamps and show as **Dropped** on
+the RF page. A bladeRF that SoapySDR finds is pointed to the **bladeRF** source type instead.
 
 ### SoapySDR
 

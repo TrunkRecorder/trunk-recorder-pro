@@ -465,10 +465,10 @@ impl FixedImbe {
     }
 
     /// One frame with TIA repeat and mute (imbe_decode_checked): repeat when
-    /// the pitch index is invalid, E0 ≥ `repeat_e0` or ET ≥ ⌊`repeat_et` +
-    /// 40·ER⌋; mute after four repeats or when ER > 0.0875. `fv`: u0..u6 and
-    /// u7 (7 bits, unshifted); `erased`: the frame is known lost.
-    pub fn decode_checked(&mut self, fv: &[i16; 8], e0: u32, et: u32, erased: bool, repeat_e0: u32, repeat_et: f32, snd: &mut [i16; FRAME]) -> Out {
+    /// the pitch index is invalid or by `repeat` (its ET threshold
+    /// ⌊`et` + 40·ER⌋); mute after four repeats or when ER > 0.0875. `fv`:
+    /// u0..u6 and u7 (7 bits, unshifted); `erased`: the frame is known lost.
+    pub fn decode_checked(&mut self, fv: &[i16; 8], e0: u32, et: u32, erased: bool, repeat: super::Repeat, snd: &mut [i16; FRAME]) -> Out {
         let b0 = ((fv[0] >> 4) & 0xfc) | ((fv[7] >> 1) & 0x3);
         if !erased {
             self.er = 0.95 * self.er + 0.000365 * et as f32;
@@ -477,7 +477,7 @@ impl FixedImbe {
             self.mute(snd);
             return Out::Muted;
         }
-        if erased || b0 > 207 || e0 >= repeat_e0 || et >= (repeat_et + 40.0 * self.er) as u32 {
+        if erased || b0 > 207 || repeat.hit(e0 >= repeat.e0, et >= (repeat.et as f32 + 40.0 * self.er) as u32) {
             self.rpt += 1;
             if self.rpt >= 4 {
                 self.mute(snd);
@@ -1150,7 +1150,7 @@ mod tests {
         let mut dec = FixedImbe::new();
         let mut snd = [0i16; FRAME];
         for _ in 0..20 {
-            assert_eq!(dec.decode_checked(&fv, 0, 0, false, 3, 10.0, &mut snd), Out::Voice);
+            assert_eq!(dec.decode_checked(&fv, 0, 0, false, super::super::HARD_REPEAT, &mut snd), Out::Voice);
         }
         assert!(snd.iter().all(|s| s.abs() < 400), "{:?}", &snd[..8]);
     }
