@@ -72,6 +72,7 @@ import { DEFAULT_FORMAT, FilenameEditor } from "./FilenameEditor.tsx";
 import { GuardBand } from "./Rolloff.tsx";
 import { SurveyPanel } from "./Survey.tsx";
 import { FccTable, IdentifyFcc } from "./Identify.tsx";
+import { ShareSystem } from "./ShareSystem.tsx";
 import { siteFrequencies } from "./controller.ts";
 import { addCard, Card, ExpandAll, Group, Section, setCardOpen, Switch } from "./SetupLayout.tsx";
 import { TalkgroupsField } from "./TalkgroupsField.tsx";
@@ -2072,6 +2073,7 @@ function SystemCard(props: { c: Config; i: number }) {
             </select>
           </Field>
         )}
+        <ShareSystem c={c} i={i} />
       </Group>
       <Group
         title="Sites"

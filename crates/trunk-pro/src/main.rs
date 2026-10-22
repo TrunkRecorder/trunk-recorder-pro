@@ -92,6 +92,7 @@
 //! ```
 
 mod access;
+mod directory;
 mod dmrtool;
 mod interfaces;
 mod licenses;

@@ -18,6 +18,7 @@ pub mod profile;
 pub mod protocol;
 pub mod samples;
 pub mod session;
+pub mod share;
 pub mod stats;
 pub mod survey;
 

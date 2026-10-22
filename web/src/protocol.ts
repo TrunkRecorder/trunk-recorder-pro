@@ -122,6 +122,20 @@ export interface FccLicense {
 /** A system's FCC licenses by frequency (Hz on the 6.25 kHz raster, as a string). Optional, for reference; plugins are told them. */
 export type FccLicenses = Record<string, FccLicense>;
 
+/** A system's record in the community directory: its ID, its version when last shared, and when (Unix ms). */
+export interface DirectoryLink {
+  id: string;
+  rev: number;
+  sharedAt?: number;
+}
+
+/** A shared system's sharing: waiting (to decode it a while first), shared (when last), or its last error. */
+export interface ShareStatus {
+  state: "waiting" | "shared" | "error";
+  lastShared: number | null;
+  error: string | null;
+}
+
 /**
  * A site's identity (NAC, WACN, System ID are hex on the air): what a site in
  * the config expects (absent: any), and what a control channel said of itself
@@ -157,6 +171,11 @@ export interface System {
   name?: string;
   /** Its FCC licenses by frequency (control, voice): see FccLicenses. */
   fcc?: FccLicenses;
+  /** Share it with the community directory (trunkrecorder.pro/directory): its sites, channels, and the
+   *  talkgroups heard (numbers, how often, encrypted), not their names. P25, SmartNet, DMR and NXDN. */
+  share?: boolean;
+  /** The directory's record of it, from its last share (shares land on it). */
+  directory?: DirectoryLink;
   /** "smartnet": a Motorola SmartNet / SmartZone control channel (voice P25 or analog FM).
    *  "dmr": a trunked DMR site (Capacity Plus, Capacity Max, Connect Plus, Tier III); every
    *  control channel and `dmrChannelsHz` frequency is watched.
@@ -189,6 +208,8 @@ export interface Site {
   /** Its name, unique in its system (absent: the system's short name). The talkgroup file's
    *  Preferred Site names it; calls and plugins say it. */
   name?: string;
+  /** The community directory's ID for it, from the system's last share. */
+  directoryId?: string;
   enabled: boolean;
   controlChannelsHz: number[];
   modulation: "auto" | "fsk4" | "qpsk";
@@ -529,6 +550,8 @@ export interface SystemStatus {
   activeCalls: number;
   recording: number;
   callsConcluded: number;
+  /** Its sharing with the community directory; null when it isn't shared. */
+  share?: ShareStatus | null;
   /** Its sites following their control channels, in order. */
   sites: SiteStatus[];
 }

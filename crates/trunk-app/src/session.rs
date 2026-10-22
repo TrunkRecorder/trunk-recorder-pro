@@ -52,6 +52,11 @@ pub enum Output {
     /// The platform puts it in the config's [`crate::config::FccLicenses`]
     /// ([`Config::learn_call_sign`]), saved.
     CallSign { short_name: String, freq_hz: f64, call_sign: String },
+    /// System `short_name`'s share for the community directory is due
+    /// ([`crate::share`]): the platform posts `observation` to the directory,
+    /// links the answer into the config (`site_names`: the share's sites, in
+    /// order: [`Config::link_shared`]) and says how it went ([`Session::share_done`]).
+    Share { short_name: String, observation: Value, site_names: Vec<String> },
 }
 
 /// Trunk Recorder's status summary comes this often (engine time), s.
@@ -354,6 +359,10 @@ pub struct Session {
     next_status_s: f64,
     /// The call sign each frequency of each system (by number) was last heard to say.
     call_signs: std::collections::BTreeMap<(u16, u64), String>,
+    /// What the systems shared with the directory have been heard doing, and when to share them.
+    share: crate::share::Ledger,
+    /// This install's anonymous ID for the directory (the platform keeps it); empty: nothing is shared.
+    recorder_id: String,
 }
 
 impl Session {
@@ -383,7 +392,7 @@ impl Session {
         let recordings = cfg.recordings();
         let meas = Stats::new(&cfg, Shared::new(), local_offset);
         meas.shared().names.lock().unwrap().set_systems(&systems);
-        Ok(Session {
+        let mut session = Session {
             meas,
             cfg,
             engine,
@@ -410,7 +419,11 @@ impl Session {
             rate_at: Vec::new(),
             next_status_s: STATUS_EVERY_S,
             call_signs: Default::default(),
-        })
+            share: Default::default(),
+            recorder_id: String::new(),
+        };
+        session.share = crate::share::Ledger::new(session.cfg.systems.iter());
+        Ok(session)
     }
 
     pub fn config(&self) -> &Config {
@@ -618,6 +631,7 @@ impl Session {
                 self.last_plugin_status_ms = now_ms;
                 out.push(Output::Plugin(HostMessage::Status(self.plugin_status(dt))));
             }
+            self.poll_share(now_ms, out);
             let load = self.busy_ms() / (now_ms - start).max(1.0);
             out.push(Output::Message(self.status_message(load)));
         }
@@ -714,6 +728,61 @@ impl Session {
     }
 
     /// A system's short name (a call's `system`).
+    /// The install's ID for the directory: sharing starts once there is one.
+    pub fn set_recorder(&mut self, id: &str) {
+        self.recorder_id = id.to_string();
+    }
+
+    /// Share first after `ms` of decoding, not 5 minutes (testing against a short capture).
+    pub fn share_after(&mut self, ms: f64) {
+        self.share.first_after(ms);
+    }
+
+    /// A system's `share` switched (or its directory link changed) while recording.
+    pub fn set_share(&mut self, sys: &crate::config::System) {
+        self.share.set(sys);
+        if let Some(c) = self.cfg.systems.iter_mut().find(|s| s.short_name == sys.short_name) {
+            (c.share, c.directory) = (sys.share, sys.directory.clone());
+            for (a, b) in c.sites.iter_mut().zip(&sys.sites) {
+                a.directory_id = b.directory_id.clone();
+            }
+        }
+    }
+
+    /// How system `short_name`'s share went.
+    pub fn share_done(&mut self, short_name: &str, now_ms: f64, result: Result<(), String>) {
+        self.share.done(short_name, now_ms, result);
+    }
+
+    /// Each shared system: decoded now? due? its share, then.
+    fn poll_share(&mut self, now_ms: f64, out: &mut Vec<Output>) {
+        if self.recorder_id.is_empty() {
+            return;
+        }
+        let st = self.engine.status();
+        let systems = self.engine.systems();
+        let shared: Vec<crate::config::System> = self.cfg.systems.iter().filter(|s| self.share.shares(&s.short_name)).cloned().collect();
+        for sys in &shared {
+            let sites: Vec<&trunk_core::trunk::SiteStatus> = st.sites.iter().filter(|y| y.short_name == sys.short_name).collect();
+            if sites.iter().any(|y| y.good > 0 && y.mismatch.is_none()) {
+                self.share.decoding(&sys.short_name, now_ms);
+            }
+            if !self.share.due(&sys.short_name, now_ms) {
+                continue;
+            }
+            let Some(ev) = self.share.evidence(&sys.short_name) else { continue };
+            let tgs = systems.iter().find(|y| y.short_name == sys.short_name).map(|y| &y.talkgroups);
+            if let Some((observation, site_names)) = crate::share::observation(&self.recorder_id, concat!("trunk-pro/", env!("CARGO_PKG_VERSION")), sys, &sites, ev, tgs) {
+                out.push(Output::Share { short_name: sys.short_name.clone(), observation, site_names });
+            }
+        }
+        for o in out.iter() {
+            if let Output::Share { short_name, .. } = o {
+                self.share.sent(short_name);
+            }
+        }
+    }
+
     fn system_name(&self, system: u16) -> &str {
         self.cfg.short_name_of(system).unwrap_or("conv")
     }
@@ -952,6 +1021,8 @@ impl Session {
             }
             // Once a run for each frequency and call sign: the platform takes it into the config.
             Event::CallSign { system, freq_hz, call_sign } => {
+                let short = self.system_name(system).to_string();
+                self.share.call_sign(&short, freq_hz, &call_sign);
                 if self.call_signs.get(&(system, freq_hz)) != Some(&call_sign) {
                     self.call_signs.insert((system, freq_hz), call_sign.clone());
                     let name = self.system_name(system).to_string();
@@ -982,6 +1053,8 @@ impl Session {
                 self.log.push(json!({ "timeS": call.start_s, "kind": "duplicate", "text": text, "system": self.system_name(call.system), "site": also_at }));
             }
             Event::CallStart(c) => {
+                let short = self.system_name(c.system).to_string();
+                self.share.call(&short, c.site, c.talkgroup, c.freq_hz, c.encrypted, c.twin);
                 let r = match c.reason {
                     _ if c.recording => {
                         use trunk_core::trunk::Voice;
@@ -1081,7 +1154,7 @@ impl Session {
                     v["sites"].as_array_mut().unwrap().push(site_json(y));
                 }
                 None => systems.push(json!({
-                    "index": y.system, "shortName": y.short_name,
+                    "index": y.system, "shortName": y.short_name, "share": self.share.status_json(&y.short_name),
                     "activeCalls": y.active_calls, "recording": y.recording, "callsConcluded": y.calls_concluded,
                     "sites": [site_json(y)],
                 })),
